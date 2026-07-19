@@ -382,6 +382,13 @@ shows the engine ceiling with methodology stated.
 **Not in v1:** transformers/derived streams, CDC, WASM/process connector hosts, object-store
 WAL spill, Python bindings, SQL sources (fast follow), vector destinations.
 
+**Delivered post-v1 (feature 002, 2026-07-19):** bundled file source (JSONL + Parquet,
+glob + per-file incremental cursors), minimal parquet-file destination, and engine
+Arrow passthrough (structured streams: schema mapping + policy + `_rdlt_load_id` only;
+Merge rejected — clauses S7/E7/B4). The §8 "Arrow passthrough: parquet → parquet"
+benchmark cell is realized via the parquet destination, with a parquet→DuckDB bonus
+row for context.
+
 ## 10. Key dependencies
 
 `arrow` + `parquet` (arrow-rs; `rdlt-core` depends only on `arrow-schema`), `tokio`,
