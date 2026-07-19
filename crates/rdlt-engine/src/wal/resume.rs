@@ -1,0 +1,221 @@
+//! WAL resume: single forward scan of the manifest, replay of the uncommitted span
+//! (crash-matrix row 2), degradation to re-extraction on any damage (row 4 — slower,
+//! never wrong).
+
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
+
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use rdlt_connector::LoadSession;
+use rdlt_core::{CommitMeta, LoadId, RdltError, StateDoc};
+
+use super::WalRecord;
+use crate::load::LoadItem;
+
+/// The uncommitted tail of a previous run.
+#[derive(Debug)]
+pub(crate) struct RecoverySpan {
+    pub(crate) load_id: LoadId,
+    /// The seq the recovery commit must use — max committed seq of that load + 1.
+    /// If the crash was mid-commit the destination already holds this seq and
+    /// idempotence returns the prior receipt.
+    pub(crate) next_commit_seq: u64,
+    pub(crate) records: Vec<WalRecord>,
+}
+
+/// Scan outcome. `Damaged` means segments/manifest can't support replay — the caller
+/// clears the WAL and falls back to cursor re-extraction.
+#[derive(Debug)]
+pub(crate) enum Scan {
+    Nothing,
+    Recover(RecoverySpan),
+    Damaged(String),
+}
+
+/// Forward-scan the manifest. A torn FINAL line (crash mid-append) is truncated;
+/// damage anywhere else degrades to re-extraction.
+pub(crate) fn scan(dir: &Path) -> Scan {
+    let path = dir.join("manifest.jsonl");
+    let file = match File::open(&path) {
+        Ok(f) => f,
+        Err(_) => return Scan::Nothing,
+    };
+    let mut records: Vec<WalRecord> = Vec::new();
+    let mut damaged: Option<String> = None;
+    let mut lines = BufReader::new(file).lines();
+    while let Some(line) = lines.next() {
+        let line = match line {
+            Ok(l) => l,
+            Err(e) => {
+                damaged = Some(format!("manifest read: {e}"));
+                break;
+            }
+        };
+        if line.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<WalRecord>(&line) {
+            Ok(record) => records.push(record),
+            Err(e) => {
+                // Torn tail is fine only if nothing follows it.
+                if lines.next().is_some() {
+                    damaged = Some(format!("mid-manifest corruption: {e}"));
+                }
+                break;
+            }
+        }
+    }
+    if let Some(reason) = damaged {
+        return Scan::Damaged(reason);
+    }
+
+    // Find the uncommitted tail: records after the last Committed, within the last Run.
+    let mut load_id: Option<LoadId> = None;
+    let mut max_committed_seq: u64 = 0;
+    let mut span: Vec<WalRecord> = Vec::new();
+    for record in records {
+        match record {
+            WalRecord::Run { load_id: id, .. } => {
+                // A run only ever starts after the previous span was resolved
+                // (recovery runs before `Wal::open` appends the new header), so a Run
+                // record always begins a fresh span.
+                span.clear();
+                load_id = Some(id);
+                max_committed_seq = 0;
+            }
+            WalRecord::Committed { commit_seq } => {
+                max_committed_seq = max_committed_seq.max(commit_seq);
+                span.clear();
+            }
+            other => span.push(other),
+        }
+    }
+
+    // CRITICAL: replay only up to the LAST checkpoint. Segments beyond it are not
+    // covered by any cursor — committing them would double-apply once the source
+    // re-extracts that range (recovery invariant 2). The uncovered tail is discarded;
+    // re-extraction re-delivers it. A span with no checkpoint at all has nothing
+    // safely replayable.
+    let last_checkpoint = span
+        .iter()
+        .rposition(|r| matches!(r, WalRecord::Checkpoint { .. }));
+    match (load_id, last_checkpoint) {
+        (Some(load_id), Some(idx)) => {
+            span.truncate(idx + 1);
+            Scan::Recover(RecoverySpan {
+                load_id,
+                next_commit_seq: max_committed_seq + 1,
+                records: span,
+            })
+        }
+        _ => Scan::Nothing,
+    }
+}
+
+/// Replay one span into an open session and commit it under the ORIGINAL run's
+/// identity. Returns the number of replayed batches; `Err(Damaged…)`-style failures
+/// come back as `Ok(None)` so the caller can degrade to re-extraction.
+pub(crate) async fn replay(
+    dir: &Path,
+    span: RecoverySpan,
+    session: &mut Box<dyn LoadSession>,
+    state: &mut StateDoc,
+    caps: rdlt_connector::DestCapabilities,
+) -> Result<Option<u64>, RdltError> {
+    // Damage checks first: all segment files must be readable before any write.
+    let mut items: Vec<LoadItem> = Vec::new();
+    let mut batches: u64 = 0;
+    for record in span.records {
+        match record {
+            WalRecord::Delta {
+                schema,
+                delta,
+                mode,
+            } => {
+                items.push(LoadItem::Delta {
+                    schema,
+                    delta,
+                    mode,
+                });
+            }
+            WalRecord::Checkpoint { stream, cursor } => {
+                items.push(LoadItem::Checkpoint { stream, cursor });
+            }
+            WalRecord::Segment { table, file, .. } => {
+                let path = dir.join(&file);
+                let reader = match File::open(&path)
+                    .map_err(|e| e.to_string())
+                    .and_then(|f| {
+                        ParquetRecordBatchReaderBuilder::try_new(f).map_err(|e| e.to_string())
+                    })
+                    .and_then(|b| b.build().map_err(|e| e.to_string()))
+                {
+                    Ok(reader) => reader,
+                    Err(_) => return Ok(None), // quarantine → degrade to re-extract
+                };
+                for batch in reader {
+                    match batch {
+                        Ok(batch) => {
+                            batches += 1;
+                            items.push(LoadItem::Batch {
+                                table: table.clone(),
+                                batch,
+                            });
+                        }
+                        Err(_) => return Ok(None),
+                    }
+                }
+            }
+            WalRecord::Run { .. } | WalRecord::Committed { .. } => {}
+        }
+    }
+
+    // Apply in WAL order: delta-before-batch survives crashes (invariant 3).
+    for item in items {
+        match item {
+            LoadItem::Delta {
+                schema,
+                delta: _,
+                mode,
+            } => {
+                // Same lowering seam as the live loader (design doc §5.3).
+                let lowered = crate::load::lowering::lower_schema(&schema, &caps);
+                session
+                    .ensure_table(&lowered, &mode)
+                    .await
+                    .map_err(RdltError::destination)?;
+                state
+                    .schema_hashes
+                    .insert(schema.table.clone(), schema.content_hash());
+            }
+            LoadItem::Batch { table, batch } => {
+                let lowered = crate::load::lowering::lower_batch(&batch, &caps)?;
+                session
+                    .write(&table, lowered)
+                    .await
+                    .map_err(RdltError::destination)?;
+            }
+            LoadItem::Checkpoint { stream, cursor } => {
+                state.cursors.insert(stream, cursor);
+            }
+            // Never persisted to the WAL; nothing to replay.
+            LoadItem::Discarded { .. } | LoadItem::Retried { .. } => {}
+        }
+    }
+
+    state.last_commit = Some(rdlt_core::LastCommit {
+        load_id: span.load_id.clone(),
+        commit_seq: span.next_commit_seq,
+    });
+    session
+        .commit(CommitMeta {
+            load_id: span.load_id,
+            commit_seq: span.next_commit_seq,
+            state: state.clone(),
+            counters: Default::default(),
+        })
+        .await
+        .map_err(RdltError::destination)?;
+    Ok(Some(batches))
+}

@@ -1,0 +1,311 @@
+//! Per-column type observation with value-checked widening (design doc §5.2).
+//!
+//! Drives `rdlt_core::widen` and layers the *value* checks the pure lattice cannot
+//! know about: an `Int64` beyond ±2^53 meeting `Float64` escalates the column to
+//! `Utf8` — losslessness is enforced at runtime, never assumed.
+
+use rdlt_core::types::{LogicalType, int64_fits_in_f64, widen};
+use rdlt_core::{ColumnDef, ColumnType, Provenance};
+use serde_json::Value;
+
+use super::canon::parse_timestamp_tz;
+
+/// Observation state for a scalar position (column, struct field, or list item).
+#[derive(Debug, Default, Clone)]
+pub(crate) struct ScalarState {
+    /// `None` until the first non-null value.
+    ty: Option<LogicalType>,
+    /// Fixed by a per-column hint: inference must not widen it.
+    pinned: bool,
+    saw_inexact_int: bool,
+    saw_float: bool,
+}
+
+impl ScalarState {
+    pub(crate) fn pinned(ty: LogicalType) -> Self {
+        Self {
+            ty: Some(ty),
+            pinned: true,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn observe(&mut self, value: &Value) {
+        if self.pinned {
+            return;
+        }
+        let observed = match value {
+            Value::Null => return,
+            Value::Bool(_) => LogicalType::Bool,
+            Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    if !int64_fits_in_f64(i) {
+                        self.saw_inexact_int = true;
+                    }
+                    LogicalType::Int64
+                } else if n.as_u64().is_some() {
+                    // u64 beyond i64::MAX: definitely not exactly representable paths
+                    // we track; treat as inexact-int territory.
+                    self.saw_inexact_int = true;
+                    LogicalType::Int64
+                } else {
+                    self.saw_float = true;
+                    LogicalType::Float64
+                }
+            }
+            Value::String(s) => {
+                if parse_timestamp_tz(s).is_some() {
+                    LogicalType::TimestampTz
+                } else {
+                    LogicalType::Utf8
+                }
+            }
+            // Non-scalars reaching a scalar position are a shape conflict → Json.
+            Value::Object(_) | Value::Array(_) => LogicalType::Json,
+        };
+        let joined = match self.ty {
+            None => observed,
+            Some(current) => widen(current, observed),
+        };
+        // Value-checked escalation: Float64 cannot exactly hold every observed Int64.
+        self.ty = Some(if joined == LogicalType::Float64 && self.saw_inexact_int {
+            LogicalType::Utf8
+        } else {
+            joined
+        });
+    }
+
+    /// Resolved type; `Utf8` for never-observed (all-null) positions.
+    pub(crate) fn resolve(&self) -> LogicalType {
+        self.ty.unwrap_or(LogicalType::Utf8)
+    }
+}
+
+/// Observation state for one column position, tracking shape as well as type.
+#[derive(Debug, Clone)]
+pub(crate) enum ColState {
+    /// Only nulls seen so far.
+    Unknown,
+    Scalar(ScalarState),
+    /// Nested object: fields in first-seen order (order is part of the schema hash).
+    Struct(Vec<(String, ColState)>),
+    ScalarList(ScalarState),
+    /// List of objects — rows live in a child table; the column itself vanishes.
+    ChildTable,
+    /// Irreconcilable shapes; values preserved verbatim.
+    Json,
+}
+
+impl ColState {
+    pub(crate) fn observe(&mut self, value: &Value, lists_as_columns: bool) {
+        if matches!(value, Value::Null) {
+            return;
+        }
+        match self {
+            ColState::Json => {}
+            ColState::Unknown => {
+                *self = Self::fresh(value, lists_as_columns);
+            }
+            ColState::Scalar(state) => match value {
+                Value::Object(_) | Value::Array(_) => *self = ColState::Json,
+                scalar => state.observe(scalar),
+            },
+            ColState::Struct(fields) => match value {
+                Value::Object(map) => {
+                    for (key, item) in map {
+                        match fields.iter_mut().find(|(name, _)| name == key) {
+                            Some((_, state)) => state.observe(item, lists_as_columns),
+                            None => {
+                                let mut state = ColState::Unknown;
+                                state.observe(item, lists_as_columns);
+                                fields.push((key.clone(), state));
+                            }
+                        }
+                    }
+                }
+                _ => *self = ColState::Json,
+            },
+            ColState::ScalarList(item_state) => match value {
+                Value::Array(items) => {
+                    if items.iter().any(Value::is_object) {
+                        // scalars-then-objects in the same list position: irreconcilable
+                        *self = ColState::Json;
+                    } else {
+                        for item in items {
+                            if item.is_array() {
+                                *self = ColState::Json; // nested lists: v1 escape hatch
+                                return;
+                            }
+                            item_state.observe(item);
+                        }
+                    }
+                }
+                _ => *self = ColState::Json,
+            },
+            ColState::ChildTable => {
+                // Empty lists and further lists (of objects or scalars — scalar items
+                // become {"value": …} child rows) are fine. A non-array or a mixed
+                // list is a shape conflict: the column becomes Json for conflicting
+                // values; the child table stops growing.
+                if !matches!(
+                    array_shape(value),
+                    ArrayShape::Objects | ArrayShape::Scalars | ArrayShape::Empty
+                ) {
+                    *self = ColState::Json;
+                }
+            }
+        }
+    }
+
+    fn fresh(value: &Value, lists_as_columns: bool) -> Self {
+        match value {
+            Value::Null => ColState::Unknown,
+            Value::Object(map) => {
+                let mut fields = Vec::with_capacity(map.len());
+                for (key, item) in map {
+                    let mut state = ColState::Unknown;
+                    state.observe(item, lists_as_columns);
+                    fields.push((key.clone(), state));
+                }
+                ColState::Struct(fields)
+            }
+            Value::Array(items) => match array_shape(value) {
+                ArrayShape::Empty => ColState::Unknown, // decide when data arrives
+                ArrayShape::Objects => ColState::ChildTable,
+                ArrayShape::Scalars => {
+                    if lists_as_columns {
+                        let mut item_state = ScalarState::default();
+                        for item in items {
+                            item_state.observe(item);
+                        }
+                        ColState::ScalarList(item_state)
+                    } else {
+                        ColState::ChildTable
+                    }
+                }
+                ArrayShape::Mixed => ColState::Json,
+            },
+            scalar => {
+                let mut state = ScalarState::default();
+                state.observe(scalar);
+                ColState::Scalar(state)
+            }
+        }
+    }
+
+    /// Resolve to a schema column type; `None` for positions that are not columns
+    /// (child tables) or never got data.
+    pub(crate) fn resolve(&self) -> Option<ColumnType> {
+        match self {
+            ColState::Unknown | ColState::ChildTable => None,
+            ColState::Json => Some(ColumnType::scalar(LogicalType::Json)),
+            ColState::Scalar(s) => Some(ColumnType::scalar(s.resolve())),
+            ColState::ScalarList(item) => Some(ColumnType::ScalarList {
+                item: item.resolve(),
+            }),
+            ColState::Struct(fields) => {
+                let resolved: Vec<ColumnDef> = fields
+                    .iter()
+                    .filter_map(|(name, state)| {
+                        state.resolve().map(|ty| ColumnDef {
+                            name: name.clone(),
+                            ty,
+                            nullable: true,
+                            provenance: Provenance::Inferred,
+                        })
+                    })
+                    .collect();
+                if resolved.is_empty() {
+                    None // an object whose every field is still unknown
+                } else {
+                    Some(ColumnType::Struct { fields: resolved })
+                }
+            }
+        }
+    }
+
+    pub(crate) fn is_child_table(&self) -> bool {
+        matches!(self, ColState::ChildTable)
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ArrayShape {
+    Empty,
+    Objects,
+    Scalars,
+    Mixed,
+}
+
+fn array_shape(value: &Value) -> ArrayShape {
+    let Value::Array(items) = value else {
+        return ArrayShape::Mixed;
+    };
+    let non_null: Vec<&Value> = items.iter().filter(|v| !v.is_null()).collect();
+    if non_null.is_empty() {
+        return ArrayShape::Empty;
+    }
+    let objects = non_null.iter().filter(|v| v.is_object()).count();
+    if objects == non_null.len() {
+        ArrayShape::Objects
+    } else if objects == 0 {
+        ArrayShape::Scalars
+    } else {
+        ArrayShape::Mixed
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn observe_all(values: &[Value]) -> ColState {
+        let mut state = ColState::Unknown;
+        for v in values {
+            state.observe(v, true);
+        }
+        state
+    }
+
+    #[test]
+    fn value_checked_escalation_beyond_2_53() {
+        let state = observe_all(&[json!(10.5), json!(9007199254740993i64)]);
+        assert_eq!(state.resolve(), Some(ColumnType::scalar(LogicalType::Utf8)));
+        // Pure ints beyond 2^53 with no float stay Int64 — nothing lossy happened.
+        let state = observe_all(&[json!(9007199254740993i64), json!(1)]);
+        assert_eq!(
+            state.resolve(),
+            Some(ColumnType::scalar(LogicalType::Int64))
+        );
+        // Order-insensitive: big int first, float later.
+        let state = observe_all(&[json!(9007199254740993i64), json!(0.5)]);
+        assert_eq!(state.resolve(), Some(ColumnType::scalar(LogicalType::Utf8)));
+    }
+
+    #[test]
+    fn timestamps_detect_strictly_and_widen_to_text() {
+        let state = observe_all(&[json!("2026-07-19T10:00:00Z")]);
+        assert_eq!(
+            state.resolve(),
+            Some(ColumnType::scalar(LogicalType::TimestampTz))
+        );
+        let state = observe_all(&[json!("2026-07-19T10:00:00Z"), json!("not a timestamp")]);
+        assert_eq!(state.resolve(), Some(ColumnType::scalar(LogicalType::Utf8)));
+    }
+
+    #[test]
+    fn shape_conflicts_go_to_json() {
+        let state = observe_all(&[json!({"a": 1}), json!(5)]);
+        assert_eq!(state.resolve(), Some(ColumnType::scalar(LogicalType::Json)));
+        let state = observe_all(&[json!([1, 2]), json!("x")]);
+        assert_eq!(state.resolve(), Some(ColumnType::scalar(LogicalType::Json)));
+    }
+
+    #[test]
+    fn pinned_hint_never_widens() {
+        let mut state = ScalarState::pinned(LogicalType::TimestampTz);
+        state.observe(&json!("definitely not a timestamp"));
+        assert_eq!(state.resolve(), LogicalType::TimestampTz);
+    }
+}

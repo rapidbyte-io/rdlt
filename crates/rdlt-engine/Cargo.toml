@@ -1,0 +1,36 @@
+[package]
+name = "rdlt-engine"
+description = "rdlt engine: shredder, schema registry, WAL, state, runtime, loader (deep module)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rdlt-core = { workspace = true }
+rdlt-connector = { workspace = true }
+arrow = { workspace = true }
+parquet = { workspace = true }
+bytes = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tokio-util = { workspace = true }
+fs4 = { workspace = true }
+
+[dev-dependencies]
+rdlt-testkit = { workspace = true }
+proptest = { workspace = true }
+tempfile = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "shred"
+harness = false
+
+[lints]
+workspace = true
