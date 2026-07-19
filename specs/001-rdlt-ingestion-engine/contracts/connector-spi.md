@@ -54,6 +54,7 @@ pub enum SourceError {
 | S4 | Treat `ChannelClosed` as cancellation: return promptly without error escalation. |
 | S5 | Awaiting a push **is** flow control — no internal unbounded buffering. |
 | S6 | Non-rewindable sources (queues/webhooks): checkpoint frequently; redelivered rows must be byte-stable so `_rdlt_id` dedup holds under `Merge`. |
+| S7 | *(feature 002)* A source that pushes `arrow(batch)` on a stream MUST declare that stream `structured: true` in its `StreamSpec`. Arrow pushes on undeclared streams are rejected at runtime. Mixed raw_json+arrow pushes on one stream are unsupported in v1. |
 
 ## Destination
 
@@ -104,3 +105,4 @@ pub trait LoadSession: Send {
 | E4 | Batches passed to `write` conform exactly to the last `ensure_table`'d schema. |
 | E5 | Transient/rate-limited errors are retried with backoff and `retry_after` honoring; retry counts surface in `RunReport`. |
 | E6 | `since` cursors passed to `read` are only ever cursors the destination previously committed (never speculative). |
+| E7 | *(feature 002)* Structured streams bypass the shredder: arrow schema maps to the logical schema (unmappable types are typed, column-naming errors), schema policies apply identically (Discard applies to column additions by projection; value-level discards are a typed error), `_rdlt_load_id` is the ONLY system column, and row data is never copied or value-transformed. Append-mode delivery within a crash-recovery redelivery window is at-least-once for structured streams (no per-row identity to dedup with). Merge is rejected for them at plan time (clause B4, embedder contract). |

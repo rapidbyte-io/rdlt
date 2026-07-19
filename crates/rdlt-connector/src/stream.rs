@@ -16,6 +16,12 @@ pub struct StreamSpec {
     pub cursor_field: Option<String>,
     /// Per-column logical-type hints; take precedence over inference.
     pub type_hints: BTreeMap<String, LogicalType>,
+    /// This stream pushes already-structured Arrow batches (contract clause S7,
+    /// feature 002). Structured streams carry run-level provenance only (no
+    /// `_rdlt_id`), so `Merge` is rejected at plan time (clause B4). Additive field:
+    /// serde-defaults to `false`.
+    #[serde(default)]
+    pub structured: bool,
 }
 
 impl StreamSpec {
@@ -25,7 +31,14 @@ impl StreamSpec {
             primary_key: None,
             cursor_field: None,
             type_hints: BTreeMap::new(),
+            structured: false,
         }
+    }
+
+    /// Declare this stream as pushing already-structured Arrow batches (clause S7).
+    pub fn structured(mut self) -> Self {
+        self.structured = true;
+        self
     }
 
     pub fn with_primary_key(mut self, key: impl IntoIterator<Item = impl Into<String>>) -> Self {
