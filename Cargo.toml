@@ -1,0 +1,75 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/rdlt-core",
+    "crates/rdlt-connector",
+    "crates/rdlt-engine",
+    "crates/rdlt",
+    "crates/rdlt-testkit",
+    "crates/rdlt-source-rest",
+    "crates/rdlt-dest-duckdb",
+    "crates/rdlt-dest-postgres",
+    "crates/rdlt-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/rapidbyte/rdlt"
+
+[workspace.dependencies]
+# Internal crates (path deps; version for future publishing)
+rdlt-core = { path = "crates/rdlt-core", version = "0.1.0" }
+rdlt-connector = { path = "crates/rdlt-connector", version = "0.1.0" }
+rdlt-engine = { path = "crates/rdlt-engine", version = "0.1.0" }
+rdlt = { path = "crates/rdlt", version = "0.1.0" }
+rdlt-testkit = { path = "crates/rdlt-testkit", version = "0.1.0" }
+rdlt-source-rest = { path = "crates/rdlt-source-rest", version = "0.1.0" }
+rdlt-dest-duckdb = { path = "crates/rdlt-dest-duckdb", version = "0.1.0" }
+rdlt-dest-postgres = { path = "crates/rdlt-dest-postgres", version = "0.1.0" }
+
+# arrow-rs: single workspace-wide major (research.md R10). Pinned to the major that
+# duckdb-rs links — connectors receive `RecordBatch` through the rdlt-connector
+# re-export, so version identity across the workspace is a correctness requirement,
+# not a preference.
+arrow = "58.3"
+arrow-schema = "58.3"
+arrow-array = "58.3"
+parquet = "58.3"
+
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "fs", "macros"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+async-trait = "0.1"
+thiserror = "2"
+tracing = "0.1"
+bytes = "1"
+blake3 = "1"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+futures = "0.3"
+tokio-util = "0.7"
+fs4 = "0.13"
+
+# Connectors
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "gzip"] }
+serde_yaml = "0.9"
+duckdb = { version = "1", features = ["bundled", "appender-arrow"] }
+tokio-postgres = { version = "0.7", features = ["with-chrono-0_4"] }
+
+# Dev / test
+proptest = "1"
+criterion = "0.5"
+wiremock = "0.6"
+testcontainers = "0.23"
+testcontainers-modules = { version = "0.11", features = ["postgres"] }
+tempfile = "3"
+toml = "0.8"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"

@@ -1,0 +1,22 @@
+[package]
+name = "rdlt-core"
+description = "rdlt vocabulary: pure data contracts and semantic laws (ids, logical types, widening lattice, schemas, cursors, reports)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Charter: pure data + pure functions. If it needs tokio, I/O, or arrow compute,
+# it does not go in this crate.
+[dependencies]
+arrow-schema = { workspace = true }
+blake3 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true
