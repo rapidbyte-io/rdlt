@@ -1,0 +1,31 @@
+[package]
+name = "rdlt"
+description = "rdlt facade: Pipeline builder, prelude, connector features"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+rest = ["dep:rdlt-source-rest"]
+duckdb = ["dep:rdlt-dest-duckdb"]
+postgres = ["dep:rdlt-dest-postgres"]
+
+[dependencies]
+rdlt-core = { workspace = true }
+rdlt-connector = { workspace = true }
+rdlt-engine = { workspace = true }
+rdlt-source-rest = { workspace = true, optional = true }
+rdlt-dest-duckdb = { workspace = true, optional = true }
+rdlt-dest-postgres = { workspace = true, optional = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+
+[dev-dependencies]
+rdlt-testkit = { workspace = true }
+rdlt-connector = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true
