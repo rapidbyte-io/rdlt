@@ -41,6 +41,8 @@ enum WriteModeSpec {
 enum SourceSpec {
     /// Path to the declarative REST source YAML.
     Rest { config: PathBuf },
+    /// Path to the file source YAML (jsonl/parquet streams).
+    File { config: PathBuf },
 }
 
 #[derive(Debug, Deserialize)]
@@ -48,6 +50,7 @@ enum SourceSpec {
 enum DestSpec {
     Duckdb { path: PathBuf },
     Postgres { conn: String, dataset: String },
+    Parquet { path: PathBuf },
 }
 
 fn usage() -> ExitCode {
@@ -110,58 +113,82 @@ async fn run(spec_path: PathBuf, report_path: Option<PathBuf>) -> Result<(), Cli
     let spec: Spec =
         toml::from_str(&raw).map_err(|e| CliError::Usage(format!("parsing spec: {e}")))?;
 
-    let source = match &spec.source {
+    // The source and destination arms each fix the builder's generic type, so the
+    // whole tail expands per combination via a macro (typestate-friendly).
+    macro_rules! run_with {
+        ($source:expr) => {{
+            let builder = Pipeline::builder(spec.pipeline.as_str()).source($source);
+            let builder = match &spec.write_mode {
+                None | Some(WriteModeSpec::Append) => builder.write_mode(WriteMode::Append),
+                Some(WriteModeSpec::Replace) => builder.write_mode(WriteMode::Replace),
+                Some(WriteModeSpec::Merge { key }) => {
+                    builder.write_mode(WriteMode::Merge { key: key.clone() })
+                }
+            };
+            let builder = match &spec.workdir {
+                Some(dir) => builder.workdir(dir),
+                None => builder.workdir(".rdlt"),
+            };
+            let mut pipeline = match &spec.destination {
+                DestSpec::Duckdb { path } => {
+                    let dest = rdlt::duckdb::DuckDb::open(path)
+                        .map_err(|e| CliError::Usage(format!("opening duckdb: {e}")))?;
+                    builder.destination(dest).build()?
+                }
+                DestSpec::Postgres { conn, dataset } => {
+                    let dest = rdlt::postgres::Postgres::connect(conn).dataset(dataset);
+                    builder.destination(dest).build()?
+                }
+                DestSpec::Parquet { path } => {
+                    let dest = rdlt::parquet::ParquetDir::open(path)
+                        .map_err(|e| CliError::Usage(format!("opening parquet dir: {e}")))?;
+                    builder.destination(dest).build()?
+                }
+            };
+            drive(&mut pipeline, report_path).await
+        }};
+    }
+
+    match &spec.source {
         SourceSpec::Rest { config } => {
             let yaml = std::fs::read_to_string(config)
                 .map_err(|e| CliError::Usage(format!("reading {}: {e}", config.display())))?;
-            rdlt::rest::RestSource::from_yaml(&yaml).map_err(|e| CliError::Usage(e.to_string()))?
+            let source = rdlt::rest::RestSource::from_yaml(&yaml)
+                .map_err(|e| CliError::Usage(e.to_string()))?;
+            run_with!(source)
         }
-    };
+        SourceSpec::File { config } => {
+            let yaml = std::fs::read_to_string(config)
+                .map_err(|e| CliError::Usage(format!("reading {}: {e}", config.display())))?;
+            let source = rdlt::file::FileSource::from_yaml(&yaml)
+                .map_err(|e| CliError::Usage(e.to_string()))?;
+            run_with!(source)
+        }
+    }
+}
 
-    let builder = Pipeline::builder(spec.pipeline.as_str()).source(source);
-    let builder = match &spec.write_mode {
-        None | Some(WriteModeSpec::Append) => builder.write_mode(WriteMode::Append),
-        Some(WriteModeSpec::Replace) => builder.write_mode(WriteMode::Replace),
-        Some(WriteModeSpec::Merge { key }) => {
-            builder.write_mode(WriteMode::Merge { key: key.clone() })
-        }
-    };
-    let builder = match &spec.workdir {
-        Some(dir) => builder.workdir(dir),
-        None => builder.workdir(".rdlt"),
-    };
-
-    // The destination arm fixes the builder's type, so finish per-arm.
-    let mut pipeline = match &spec.destination {
-        DestSpec::Duckdb { path } => {
-            let dest = rdlt::duckdb::DuckDb::open(path)
-                .map_err(|e| CliError::Usage(format!("opening duckdb: {e}")))?;
-            builder.destination(dest).build()?
-        }
-        DestSpec::Postgres { conn, dataset } => {
-            let dest = rdlt::postgres::Postgres::connect(conn).dataset(dataset);
-            builder.destination(dest).build()?
-        }
-    };
-
-    // Human-readable event feed on stderr while the run proceeds.
+/// Event feed + run + report emission (shared tail after the pipeline is built).
+async fn drive(
+    pipeline: &mut rdlt::Pipeline,
+    report_path: Option<PathBuf>,
+) -> Result<(), CliError> {
     let mut events = pipeline.events().expect("events available before run");
     let feed = tokio::spawn(async move {
         while let Some(event) = events.recv().await {
             match event {
-                PipelineEvent::StreamStarted { stream } => eprintln!("→ stream {stream} started"),
+                PipelineEvent::StreamStarted { stream } => eprintln!("-> stream {stream} started"),
                 PipelineEvent::BatchLoaded { table, rows, .. } => {
                     eprintln!("  {table}: +{rows} rows")
                 }
                 PipelineEvent::SchemaEvolved { delta } => {
                     eprintln!(
-                        "  schema: {} → {} changes",
+                        "  schema: {} -> {} changes",
                         delta.table,
                         delta.changes.len()
                     )
                 }
                 PipelineEvent::Committed { commit_seq, .. } => {
-                    eprintln!("✓ commit {commit_seq}")
+                    eprintln!("commit {commit_seq} ok")
                 }
                 PipelineEvent::Discarded {
                     table,
@@ -175,7 +202,7 @@ async fn run(spec_path: PathBuf, report_path: Option<PathBuf>) -> Result<(), Cli
                     eprintln!("! retry attempt {attempt} ({stream:?})")
                 }
                 PipelineEvent::StreamFinished { stream } => {
-                    eprintln!("→ stream {stream} finished")
+                    eprintln!("-> stream {stream} finished")
                 }
                 _ => {}
             }

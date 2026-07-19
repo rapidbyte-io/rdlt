@@ -37,6 +37,12 @@ pub use rdlt_dest_duckdb as duckdb;
 #[cfg(feature = "postgres")]
 pub use rdlt_dest_postgres as postgres;
 
+#[cfg(feature = "file")]
+pub use rdlt_source_file as file;
+
+#[cfg(feature = "parquet")]
+pub use rdlt_dest_parquet as parquet;
+
 pub mod prelude {
     pub use crate::{
         CommitPolicy, Pipeline, PipelineEvent, PolicyAction, RdltError, RunReport, SchemaPolicy,
