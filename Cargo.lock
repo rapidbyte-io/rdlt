@@ -1308,6 +1308,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "glob"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
+
+[[package]]
 name = "h2"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2560,8 +2566,10 @@ dependencies = [
  "rdlt-connector",
  "rdlt-core",
  "rdlt-dest-duckdb",
+ "rdlt-dest-parquet",
  "rdlt-dest-postgres",
  "rdlt-engine",
+ "rdlt-source-file",
  "rdlt-source-rest",
  "rdlt-testkit",
  "serde_json",
@@ -2623,6 +2631,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "rdlt-dest-parquet"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "async-trait",
+ "parquet",
+ "rdlt-connector",
+ "rdlt-engine",
+ "rdlt-source-file",
+ "rdlt-testkit",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "rdlt-dest-postgres"
 version = "0.1.0"
 dependencies = [
@@ -2645,6 +2670,7 @@ name = "rdlt-engine"
 version = "0.1.0"
 dependencies = [
  "arrow",
+ "async-trait",
  "bytes",
  "chrono",
  "criterion",
@@ -2662,6 +2688,27 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "rdlt-source-file"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "async-trait",
+ "bytes",
+ "glob",
+ "parquet",
+ "rdlt-connector",
+ "rdlt-dest-duckdb",
+ "rdlt-engine",
+ "rdlt-testkit",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]

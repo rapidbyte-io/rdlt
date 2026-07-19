@@ -1,0 +1,110 @@
+//! File source configuration (contract: specs/002…/contracts/file-connectors.md).
+
+use std::collections::BTreeMap;
+
+use rdlt_connector::core::LogicalType;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileConfig {
+    pub streams: Vec<FileStream>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Format {
+    Jsonl,
+    Parquet,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileStream {
+    pub name: String,
+    /// Explicit — no extension magic (research R13).
+    pub format: Format,
+    /// Explicit file path or glob pattern. An explicitly named missing file is an
+    /// error; an empty glob is an empty stream.
+    pub path: String,
+    /// Record-stream options (jsonl only; parquet streams are structured and carry
+    /// no per-row identity — clause S7/B4).
+    #[serde(default)]
+    pub primary_key: Option<Vec<String>>,
+    #[serde(default)]
+    pub type_hints: BTreeMap<String, HintType>,
+    /// JSONL only: validate each line before pushing so malformed input fails naming
+    /// the file + byte offset (default true; disable for maximum throughput — errors
+    /// then surface from the engine with stream-level context only).
+    #[serde(default = "default_validate")]
+    pub validate: bool,
+}
+
+fn default_validate() -> bool {
+    true
+}
+
+/// Same human-friendly hint names as the REST source.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HintType {
+    Bool,
+    Int64,
+    Float64,
+    Utf8,
+    TimestampTz,
+    Date,
+    Time,
+    Uuid,
+    Json,
+}
+
+impl From<HintType> for LogicalType {
+    fn from(hint: HintType) -> Self {
+        match hint {
+            HintType::Bool => LogicalType::Bool,
+            HintType::Int64 => LogicalType::Int64,
+            HintType::Float64 => LogicalType::Float64,
+            HintType::Utf8 => LogicalType::Utf8,
+            HintType::TimestampTz => LogicalType::TimestampTz,
+            HintType::Date => LogicalType::Date,
+            HintType::Time => LogicalType::Time,
+            HintType::Uuid => LogicalType::Uuid,
+            HintType::Json => LogicalType::Json,
+        }
+    }
+}
+
+impl FileConfig {
+    pub fn from_yaml(yaml: &str) -> Result<Self, ConfigError> {
+        let config: FileConfig = serde_yaml::from_str(yaml)?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    fn validate(&self) -> Result<(), ConfigError> {
+        if self.streams.is_empty() {
+            return Err(ConfigError::Invalid(
+                "at least one stream is required".into(),
+            ));
+        }
+        for stream in &self.streams {
+            if stream.format == Format::Parquet && stream.primary_key.is_some() {
+                return Err(ConfigError::Invalid(format!(
+                    "stream `{}`: parquet streams are structured and cannot declare \
+                     primary_key (no per-row identity; contract clause S7)",
+                    stream.name
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    #[error("invalid file source YAML: {0}")]
+    Yaml(#[from] serde_yaml::Error),
+    #[error("invalid file source config: {0}")]
+    Invalid(String),
+}
