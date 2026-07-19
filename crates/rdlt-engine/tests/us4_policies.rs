@@ -158,3 +158,54 @@ async fn per_column_policy_overrides_table_policy() {
     assert_eq!(report.total_rows(), 2);
     assert!(dest.schema("t").expect("schema").column("extra").is_some());
 }
+
+/// Review finding #6 regression: DiscardRow on a MIDDLE table must cascade to
+/// grandchildren (and deeper) — no orphaned rows with dangling lineage, and the
+/// cascade is counted.
+#[tokio::test]
+async fn discard_row_on_middle_table_cascades_to_grandchildren() {
+    let dest = MemoryDestination::new();
+    let mut config = EngineConfig::new("cascade");
+    config.schema_policy = SchemaPolicy::evolve().table("orders__items", PolicyAction::DiscardRow);
+
+    let source = MemorySource::new(vec![MemoryStream::new(
+        rdlt_connector::StreamSpec::new("orders"),
+        vec![
+            // Batch 1 establishes the items schema (no `bad` column).
+            MemoryBatch::new(vec![json!({
+                "id": 1,
+                "items": [{"sku": "a", "tags": [{"t": "x"}]}]
+            })]),
+            // Batch 2's item carries a new column → DiscardRow fires on the item;
+            // its tag (a grandchild of the root) must cascade away with it.
+            MemoryBatch::new(vec![json!({
+                "id": 2,
+                "items": [{"sku": "b", "bad": 1, "tags": [{"t": "y"}]}]
+            })]),
+        ],
+    )]);
+    let report = Engine::new(config, source, dest.clone())
+        .run()
+        .await
+        .expect("run");
+
+    assert_eq!(dest.committed_rows("orders").len(), 2, "roots unaffected");
+    let items = dest.committed_rows("orders__items");
+    assert_eq!(items.len(), 1, "offending item dropped");
+    assert_eq!(items[0]["sku"], json!("a"));
+    let tags = dest.committed_rows("orders__items__tags");
+    assert_eq!(
+        tags.len(),
+        1,
+        "grandchild of the dropped item must NOT survive as an orphan"
+    );
+    assert_eq!(tags[0]["t"], json!("x"));
+
+    let items_report = &report.tables[&TableName::new("orders__items")];
+    assert_eq!(items_report.discarded_rows, 1);
+    let tags_report = &report.tables[&TableName::new("orders__items__tags")];
+    assert_eq!(
+        tags_report.discarded_rows, 1,
+        "cascade drops are counted, never silent"
+    );
+}

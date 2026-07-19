@@ -119,7 +119,13 @@ fn suffixed(base: &str, source: &str, rules: IdentRules) -> String {
 }
 
 fn short_hash(source: &str) -> String {
-    blake3::hash(source.as_bytes()).to_hex()[..8].to_string()
+    ident_hash(source, 8)
+}
+
+/// Deterministic short hex digest for building bounded-length identifiers (e.g.
+/// destination staging-table names). Stable across runs and machines.
+pub fn ident_hash(input: &str, hex_len: usize) -> String {
+    blake3::hash(input.as_bytes()).to_hex()[..hex_len.clamp(4, 64)].to_string()
 }
 
 #[cfg(test)]

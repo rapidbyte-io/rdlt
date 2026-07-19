@@ -69,8 +69,38 @@ fn quote(ident: &str) -> String {
     format!("\"{}\"", ident.replace('"', "\"\""))
 }
 
-fn stage_name(table: &TableName) -> String {
-    format!("_rdlt_stage_{}", table.as_str())
+/// Arrival-order column on STAGE tables only: makes merge dedup deterministic
+/// ("last wins" for real — finding #7). Excluded from publish column lists because it
+/// is not part of the logical schema.
+const ARRIVAL_COL: &str = "__rdlt_arrival";
+
+/// Stage names are pipeline-scoped and hashed: scoping stops one pipeline's `open`
+/// from truncating another's live staged rows in a shared schema (finding #3), and
+/// hashing bounds the identifier under Postgres's 63-byte limit, where silent
+/// truncation used to cut off exactly the disambiguation suffix (finding #8).
+fn stage_prefix(pipeline: &PipelineId) -> String {
+    format!(
+        "_rdlt_stage_{}_",
+        rdlt_connector::core::naming::ident_hash(pipeline.as_str(), 8)
+    )
+}
+
+fn stage_name(pipeline: &PipelineId, table: &TableName) -> String {
+    format!(
+        "{}{}",
+        stage_prefix(pipeline),
+        rdlt_connector::core::naming::ident_hash(table.as_str(), 16)
+    )
+}
+
+/// Quoted, comma-joined logical columns — publishes are ALWAYS by name (finding #4).
+fn column_list(schema: &TableSchema) -> String {
+    schema
+        .columns
+        .iter()
+        .map(|c| quote(&c.name))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Postgres SQL type per (already lowered) column type.
@@ -141,12 +171,15 @@ impl Destination for Postgres {
             .await
             .map_err(transient)?;
 
-        // Clause D4: staged data from any dead session becomes invisible/reclaimable.
+        // Clause D4: staged data from THIS PIPELINE's dead sessions becomes
+        // invisible/reclaimable. Scoped by pipeline-hash prefix: other pipelines
+        // sharing the schema keep their live staged rows (finding #3).
+        let prefix_pattern = format!("{}%", stage_prefix(&_ctx.pipeline).replace('_', "\\_"));
         let stale: Vec<String> = client
             .query(
                 "SELECT tablename FROM pg_tables
-                 WHERE schemaname = $1 AND tablename LIKE '\\_rdlt\\_stage\\_%'",
-                &[&self.schema],
+                 WHERE schemaname = $1 AND tablename LIKE $2",
+                &[&self.schema, &prefix_pattern],
             )
             .await
             .map_err(transient)?
@@ -162,6 +195,7 @@ impl Destination for Postgres {
 
         Ok(Box::new(PgSession {
             client,
+            pipeline: _ctx.pipeline,
             tables: BTreeMap::new(),
             replaced: BTreeSet::new(),
             last_replace_load: None,
@@ -171,6 +205,7 @@ impl Destination for Postgres {
 
 struct PgSession {
     client: Client,
+    pipeline: PipelineId,
     tables: BTreeMap<TableName, (TableSchema, WriteMode)>,
     replaced: BTreeSet<TableName>,
     last_replace_load: Option<LoadId>,
@@ -201,17 +236,21 @@ impl LoadSession for PgSession {
         mode: &WriteMode,
     ) -> Result<(), DestError> {
         let previous = self.tables.get(&schema.table).map(|(s, _)| s.clone());
-        for (name, unlogged) in [
+        for (name, is_stage) in [
             (schema.table.as_str().to_owned(), false),
-            (stage_name(&schema.table), true),
+            (stage_name(&self.pipeline, &schema.table), true),
         ] {
-            let columns = schema
+            let mut columns = schema
                 .columns
                 .iter()
                 .map(|c| format!("{} {}", quote(&c.name), sql_type(&c.ty)))
                 .collect::<Vec<_>>()
                 .join(", ");
-            let unlogged = if unlogged { "UNLOGGED " } else { "" };
+            if is_stage {
+                // Arrival order for deterministic merge dedup (finding #7).
+                columns.push_str(&format!(", {} BIGSERIAL", quote(ARRIVAL_COL)));
+            }
+            let unlogged = if is_stage { "UNLOGGED " } else { "" };
             self.client
                 .batch_execute(&format!(
                     "CREATE {unlogged}TABLE IF NOT EXISTS {} ({columns})",
@@ -254,7 +293,7 @@ impl LoadSession for PgSession {
     }
 
     async fn write(&mut self, table: &TableName, batch: RecordBatch) -> Result<(), DestError> {
-        let stage = stage_name(table);
+        let stage = stage_name(&self.pipeline, table);
         let arrow_schema = batch.schema();
         let column_names = arrow_schema
             .fields()
@@ -323,22 +362,30 @@ impl LoadSession for PgSession {
             .get::<_, i64>(0);
         if already > 0 {
             for table in self.tables.keys() {
-                tx.batch_execute(&format!("TRUNCATE TABLE {}", quote(&stage_name(table))))
-                    .await
-                    .map_err(transient)?;
+                tx.batch_execute(&format!(
+                    "TRUNCATE TABLE {}",
+                    quote(&stage_name(&self.pipeline, table))
+                ))
+                .await
+                .map_err(transient)?;
             }
             tx.commit().await.map_err(transient)?;
             return Ok(receipt);
         }
 
-        for (table, (_schema, mode)) in &self.tables {
+        for (table, (schema, mode)) in &self.tables {
             let target = quote(table.as_str());
-            let stage = quote(&stage_name(table));
+            let stage = quote(&stage_name(&self.pipeline, table));
+            // Publishes are ALWAYS by name (finding #4) — and the list excludes the
+            // stage-only arrival column.
+            let cols = column_list(schema);
             match mode {
                 WriteMode::Append => {
-                    tx.batch_execute(&format!("INSERT INTO {target} SELECT * FROM {stage}"))
-                        .await
-                        .map_err(transient)?;
+                    tx.batch_execute(&format!(
+                        "INSERT INTO {target} ({cols}) SELECT {cols} FROM {stage}"
+                    ))
+                    .await
+                    .map_err(transient)?;
                 }
                 WriteMode::Replace => {
                     if self.replaced.insert(table.clone()) {
@@ -346,19 +393,22 @@ impl LoadSession for PgSession {
                             .await
                             .map_err(transient)?;
                     }
-                    tx.batch_execute(&format!("INSERT INTO {target} SELECT * FROM {stage}"))
-                        .await
-                        .map_err(transient)?;
+                    tx.batch_execute(&format!(
+                        "INSERT INTO {target} ({cols}) SELECT {cols} FROM {stage}"
+                    ))
+                    .await
+                    .map_err(transient)?;
                 }
                 WriteMode::Merge { .. } => {
                     let root = &roots[table];
-                    let root_stage = quote(&stage_name(root));
+                    let root_stage = quote(&stage_name(&self.pipeline, root));
                     let id_col = if table == root {
                         system_columns::ID
                     } else {
                         system_columns::ROOT_ID
                     };
-                    // Subtree replacement by root id + in-batch dedup (last wins).
+                    // Subtree replacement by root id + DETERMINISTIC in-batch dedup:
+                    // arrival order breaks ties, so "last wins" is real (finding #7).
                     tx.batch_execute(&format!(
                         "DELETE FROM {target} WHERE {} IN (SELECT {} FROM {root_stage})",
                         quote(id_col),
@@ -367,9 +417,13 @@ impl LoadSession for PgSession {
                     .await
                     .map_err(transient)?;
                     tx.batch_execute(&format!(
-                        "INSERT INTO {target} SELECT DISTINCT ON ({id}) * FROM {stage} \
-                         ORDER BY {id}",
+                        "INSERT INTO {target} ({cols}) \
+                         SELECT {cols} FROM ( \
+                             SELECT DISTINCT ON ({id}) * FROM {stage} \
+                             ORDER BY {id}, {arrival} DESC \
+                         ) deduped",
                         id = quote(system_columns::ID),
+                        arrival = quote(ARRIVAL_COL),
                     ))
                     .await
                     .map_err(transient)?;
@@ -379,9 +433,12 @@ impl LoadSession for PgSession {
         // Truncate stages only after ALL tables published: child-table merges read the
         // ROOT's stage for their delete-by-root-id subquery.
         for table in self.tables.keys() {
-            tx.batch_execute(&format!("TRUNCATE TABLE {}", quote(&stage_name(table))))
-                .await
-                .map_err(transient)?;
+            tx.batch_execute(&format!(
+                "TRUNCATE TABLE {}",
+                quote(&stage_name(&self.pipeline, table))
+            ))
+            .await
+            .map_err(transient)?;
         }
 
         // Clause D2: state travels in the SAME transaction as the data.

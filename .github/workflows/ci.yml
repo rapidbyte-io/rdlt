@@ -38,15 +38,26 @@ jobs:
         run: cargo test --doc --workspace
 
   semver:
-    # Seam crates are SEMVER-SACRED (plan.md). NOTE: this job runs red exactly once
-    # on the bootstrap PR — the published baseline predates the crates. Expected.
+    # Seam crates are SEMVER-SACRED (plan.md): every PR is checked against the
+    # merge-base on main — a real, BLOCKING gate (no continue-on-error escape hatch;
+    # review finding #9). The only skip is structural: main not carrying the crates
+    # yet (the bootstrap PR), detected explicitly rather than by swallowing failures.
     runs-on: ubuntu-latest
-    continue-on-error: ${{ github.event_name == 'pull_request' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: semver-checks (rdlt-core, rdlt-connector)
-        uses: obi1kenobi/cargo-semver-checks-action@v2
+      - uses: taiki-e/install-action@v2
         with:
-          package: rdlt-core, rdlt-connector
+          tool: cargo-semver-checks
+      - name: semver-checks (rdlt-core, rdlt-connector) vs main
+        run: |
+          if git ls-tree --name-only origin/main | grep -qx crates; then
+            cargo semver-checks check-release \
+              --baseline-rev origin/main \
+              -p rdlt-core -p rdlt-connector
+          else
+            echo "origin/main has no crates yet (bootstrap PR) — nothing to compare"
+          fi

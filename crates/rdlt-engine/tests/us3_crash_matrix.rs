@@ -268,3 +268,36 @@ async fn dropped_run_recovers_like_a_crash() {
     let _ = report;
     assert_eq!(comparable(&dest), uninterrupted().await);
 }
+
+/// Review finding #2 regression: a destination failure while the byte-budget channel
+/// is saturated must surface as an error, not deadlock the run (stream tasks parked
+/// in `send` unblock when the loader drops the receiver).
+#[tokio::test]
+async fn loader_failure_with_saturated_channel_errors_instead_of_hanging() {
+    let inner = MemoryDestination::new();
+    let flaky = FlakyDestination::new(inner, FaultPoint::BeforeWrite(1));
+    // Many sizable batches, no checkpoints, and a tiny byte budget: the channel is
+    // guaranteed saturated while the loader fails on the very first write.
+    let big_rows: Vec<serde_json::Value> = (0..200)
+        .map(|i| json!({"n": i, "pad": "x".repeat(200)}))
+        .collect();
+    let source = MemorySource::new(vec![MemoryStream::new(
+        rdlt_connector::StreamSpec::new("events"),
+        (0..20)
+            .map(|_| MemoryBatch::new(big_rows.clone()))
+            .collect(),
+    )]);
+    let mut config = EngineConfig::new("deadlock");
+    config.byte_budget = 4096;
+
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        Engine::new(config, source, flaky).run(),
+    )
+    .await
+    .expect("run must terminate, not deadlock");
+    assert!(
+        matches!(outcome, Err(RdltError::Destination { .. })),
+        "expected the destination error to surface, got {outcome:?}"
+    );
+}

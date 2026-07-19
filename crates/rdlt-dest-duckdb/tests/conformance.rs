@@ -103,3 +103,67 @@ async fn incremental_run_against_duckdb() {
     assert_eq!(report.total_rows(), 0);
     assert_eq!(dest.count_rows("nums").expect("count"), 2, "no duplicates");
 }
+
+/// Review finding #7 regression: two versions of the same key in ONE commit span —
+/// the LAST version must win, deterministically.
+#[tokio::test(flavor = "multi_thread")]
+async fn merge_in_batch_dedup_is_last_wins() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let dest = DuckDb::open(dir.path().join("dedup.duckdb")).expect("open db");
+    let source = MemorySource::single_stream(
+        rdlt_connector::StreamSpec::new("kv").with_primary_key(["k"]),
+        vec![json!({"k": 1, "v": "old"}), json!({"k": 1, "v": "new"})],
+    );
+    let mut config = EngineConfig::new("dedup");
+    config.write_mode = rdlt_connector::WriteMode::Merge {
+        key: vec!["k".into()],
+    };
+    Engine::new(config, source, dest.clone())
+        .run()
+        .await
+        .expect("run");
+
+    assert_eq!(dest.count_rows("kv").expect("count"), 1);
+    let v = dest
+        .query_string("SELECT v FROM kv WHERE k = 1")
+        .expect("query");
+    assert_eq!(v, "new", "last version in the span must win");
+}
+
+/// Review finding #4 regression: a later run whose batch discovers columns in a
+/// DIFFERENT order (and misses a historical column) must still publish correctly —
+/// by-name inserts, never positional.
+#[tokio::test(flavor = "multi_thread")]
+async fn cross_run_column_drift_publishes_by_name() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let dest = DuckDb::open(dir.path().join("drift.duckdb")).expect("open db");
+
+    // Run 1: columns discovered as (a, b, c).
+    let source = MemorySource::single_stream(
+        rdlt_connector::StreamSpec::new("t"),
+        vec![json!({"a": "a1", "b": "b1", "c": "c1"})],
+    );
+    Engine::new(EngineConfig::new("drift"), source, dest.clone())
+        .run()
+        .await
+        .expect("run 1");
+
+    // Run 2: `c` never appears and `b` is discovered before `a`.
+    let source = MemorySource::single_stream(
+        rdlt_connector::StreamSpec::new("t"),
+        vec![json!({"b": "b2", "a": "a2"})],
+    );
+    Engine::new(EngineConfig::new("drift"), source, dest.clone())
+        .run()
+        .await
+        .expect("run 2");
+
+    assert_eq!(dest.count_rows("t").expect("count"), 2);
+    let a2 = dest
+        .query_string("SELECT a FROM t WHERE b = 'b2'")
+        .expect("query");
+    assert_eq!(
+        a2, "a2",
+        "values must land in their named columns, not positionally"
+    );
+}

@@ -22,6 +22,11 @@ pub(crate) struct RecoverySpan {
     /// idempotence returns the prior receipt.
     pub(crate) next_commit_seq: u64,
     pub(crate) records: Vec<WalRecord>,
+    /// Latest known schema + mode per table across the WHOLE manifest (committed
+    /// spans included). A span whose schema delta committed earlier still needs
+    /// `ensure_table` on the fresh recovery session (clause E1) — sessions register
+    /// publishable tables per session.
+    pub(crate) schemas: Vec<(rdlt_core::TableSchema, rdlt_core::WriteMode)>,
 }
 
 /// Scan outcome. `Damaged` means segments/manifest can't support replay — the caller
@@ -71,12 +76,34 @@ pub(crate) fn scan(dir: &Path) -> Scan {
     }
 
     // Find the uncommitted tail: records after the last Committed, within the last Run.
+    // Schemas accumulate across the WHOLE manifest: a replay span may contain batches
+    // for tables whose delta committed in an earlier span.
     let mut load_id: Option<LoadId> = None;
     let mut max_committed_seq: u64 = 0;
     let mut span: Vec<WalRecord> = Vec::new();
+    let mut schemas: std::collections::BTreeMap<
+        rdlt_core::TableName,
+        (rdlt_core::TableSchema, rdlt_core::WriteMode),
+    > = std::collections::BTreeMap::new();
     for record in records {
+        if let WalRecord::Delta { schema, mode, .. } = &record {
+            schemas.insert(schema.table.clone(), (schema.clone(), mode.clone()));
+        }
         match record {
-            WalRecord::Run { load_id: id, .. } => {
+            WalRecord::Run {
+                format_version,
+                load_id: id,
+                ..
+            } => {
+                if format_version > super::WAL_FORMAT_VERSION {
+                    // A future engine wrote this workdir: don't guess — degrade to
+                    // cursor re-extraction (slower, never wrong).
+                    return Scan::Damaged(format!(
+                        "manifest format v{format_version} is newer than supported \
+                         v{}",
+                        super::WAL_FORMAT_VERSION
+                    ));
+                }
                 // A run only ever starts after the previous span was resolved
                 // (recovery runs before `Wal::open` appends the new header), so a Run
                 // record always begins a fresh span.
@@ -107,6 +134,7 @@ pub(crate) fn scan(dir: &Path) -> Scan {
                 load_id,
                 next_commit_seq: max_committed_seq + 1,
                 records: span,
+                schemas: schemas.into_values().collect(),
             })
         }
         _ => Scan::Nothing,
@@ -171,6 +199,20 @@ pub(crate) async fn replay(
         }
     }
 
+    // Every known table is ensured on THIS session before any write: destinations
+    // register publishable tables per session, and a span's delta may have committed
+    // in an earlier span (clause E1; review finding — silently lost spans otherwise).
+    for (schema, mode) in &span.schemas {
+        let lowered = crate::load::lowering::lower_schema(schema, &caps);
+        session
+            .ensure_table(&lowered, mode)
+            .await
+            .map_err(RdltError::destination)?;
+        state
+            .schema_hashes
+            .insert(schema.table.clone(), schema.content_hash());
+    }
+
     // Apply in WAL order: delta-before-batch survives crashes (invariant 3).
     for item in items {
         match item {
@@ -200,7 +242,7 @@ pub(crate) async fn replay(
                 state.cursors.insert(stream, cursor);
             }
             // Never persisted to the WAL; nothing to replay.
-            LoadItem::Discarded { .. } | LoadItem::Retried { .. } => {}
+            LoadItem::Discarded { .. } => {}
         }
     }
 

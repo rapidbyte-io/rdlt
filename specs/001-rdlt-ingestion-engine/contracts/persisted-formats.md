@@ -23,25 +23,39 @@ replayable buffer.** Every format below carries an explicit `format_version`.
 
 ## 2. WAL segment files (workdir — the disposable one)
 
-- Layout: `<workdir>/wal/<load_id>/<table>/<seq>.parquet`, standard parquet, schema equal
-  to the manifested `SchemaHash`'s Arrow projection (system columns included).
+*(Amended 2026-07-19 to match the implementation; the correctness properties are
+unchanged, the byte layout is now stated as built.)*
+
+- Layout: `<workdir>/wal/<load_id>-<seq>.parquet`, standard parquet, schema equal to
+  the current table schema's Arrow projection (system columns included); the owning
+  table is recorded in the manifest's `segment` record.
 - Loss/corruption of any segment is **recoverable by design**: recovery degrades to
   re-extraction from the last committed cursor (crash-matrix row 4) — slower, never wrong.
-  A corrupt segment therefore quarantines (renamed aside, warned, counted), never aborts
-  recovery.
+  A damaged span never aborts recovery.
 - fsync policy: segments are fsynced at commit boundaries only; between commits, loss on
   power failure is expected and covered by the degradation path.
 
 ## 3. WAL manifest (workdir)
 
-- Append-only JSON-lines file per run: each record is one of
-  `segment { load_id, table, seq, schema_hash, bytes }`,
-  `delta { from_hash, to_hash, delta }`,
-  `checkpoint { stream, cursor, covers_up_to_seq }`,
-  `committed { commit_seq, receipt }`.
-- Ordering invariant on disk = replay invariant: a `delta` record precedes the first
-  `segment` at its `to_hash`; a `checkpoint` follows every segment it covers; `committed`
-  marks segments GC-eligible.
+*(Amended 2026-07-19 to the implemented record shapes.)*
+
+- ONE append-only JSON-lines file (`manifest.jsonl`) shared across runs; each run
+  begins with a `run` header record. Records (serde-tagged with `rec`):
+  - `run { format_version, load_id, pipeline }` — starts a run; `format_version`
+    governs the whole manifest (a newer-than-supported version degrades recovery to
+    cursor re-extraction, never a misread),
+  - `delta { schema, delta, mode }` — the FULL `TableSchema` is embedded (recovery
+    must `ensure_table` on a fresh session even when the delta committed in an
+    earlier span; hashes alone could not reconstruct it),
+  - `segment { table, file, rows }`,
+  - `checkpoint { stream, cursor }` — coverage is positional: a checkpoint covers
+    every segment recorded before it within the run,
+  - `committed { commit_seq }` — the receipt identity is `(run.load_id, commit_seq)`.
+- Ordering invariant on disk = replay invariant: a `delta` precedes the first
+  `segment` at its version; a `checkpoint` follows every segment it covers;
+  `committed` marks segments GC-eligible. Replay applies only up to the LAST
+  checkpoint of the uncommitted span — segments beyond it are not cursor-covered and
+  are re-extracted instead (never double-applied).
 - Recovery scan is a single forward pass; a torn final line (crash mid-append) is
   truncated and ignored (append-only ⇒ prefix is always valid).
 

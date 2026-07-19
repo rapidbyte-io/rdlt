@@ -83,7 +83,24 @@ fn quote(ident: &str) -> String {
 }
 
 fn stage_name(table: &TableName) -> String {
-    format!("_rdlt_stage_{}", table.as_str())
+    // Hashed: bounded length regardless of table-name length, collision-safe.
+    format!(
+        "_rdlt_stage_{}",
+        rdlt_connector::core::naming::ident_hash(table.as_str(), 16)
+    )
+}
+
+/// Quoted, comma-joined column list from the session schema — publishes are ALWAYS
+/// by name: the persistent target's column order is historical while the temp stage
+/// uses this run's order, so positional `SELECT *` corrupts or breaks on drift
+/// (review finding #4).
+fn column_list(schema: &TableSchema) -> String {
+    schema
+        .columns
+        .iter()
+        .map(|c| quote(&c.name))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// DuckDB SQL type for a logical column type — struct-native lowering.
@@ -302,21 +319,29 @@ impl LoadSession for DuckDbSession {
                 return Ok((replaced, true));
             }
 
-            for (table, (_schema, mode)) in &tables {
+            for (table, (schema, mode)) in &tables {
                 let target = quote(table.as_str());
                 let stage = quote(&stage_name(table));
+                // Publishes are ALWAYS by name: the persistent target's column order
+                // is historical while the temp stage uses this run's order, so a
+                // positional `SELECT *` corrupts or breaks on drift (finding #4).
+                let cols = column_list(schema);
                 match mode {
                     WriteMode::Append => {
-                        tx.execute_batch(&format!("INSERT INTO {target} SELECT * FROM {stage}"))
-                            .map_err(fatal)?;
+                        tx.execute_batch(&format!(
+                            "INSERT INTO {target} ({cols}) SELECT {cols} FROM {stage}"
+                        ))
+                        .map_err(fatal)?;
                     }
                     WriteMode::Replace => {
                         if replaced.insert(table.clone()) {
                             tx.execute_batch(&format!("DELETE FROM {target}"))
                                 .map_err(fatal)?;
                         }
-                        tx.execute_batch(&format!("INSERT INTO {target} SELECT * FROM {stage}"))
-                            .map_err(fatal)?;
+                        tx.execute_batch(&format!(
+                            "INSERT INTO {target} ({cols}) SELECT {cols} FROM {stage}"
+                        ))
+                        .map_err(fatal)?;
                     }
                     WriteMode::Merge { .. } => {
                         let root = &roots[table];
@@ -327,7 +352,9 @@ impl LoadSession for DuckDbSession {
                             system_columns::ROOT_ID
                         };
                         // Subtree replacement by root id (design doc §5.4), then
-                        // insert with in-batch dedup by _rdlt_id (last wins).
+                        // insert with DETERMINISTIC in-batch dedup: rowid reflects
+                        // append order in the stage, so "last wins" is real
+                        // (finding #7 — no ORDER BY meant "arbitrary wins").
                         tx.execute_batch(&format!(
                             "DELETE FROM {target} WHERE {} IN \
                              (SELECT {} FROM {root_stage})",
@@ -336,8 +363,9 @@ impl LoadSession for DuckDbSession {
                         ))
                         .map_err(fatal)?;
                         tx.execute_batch(&format!(
-                            "INSERT INTO {target} SELECT * FROM {stage} \
-                             QUALIFY row_number() OVER (PARTITION BY {}) = 1",
+                            "INSERT INTO {target} ({cols}) SELECT {cols} FROM {stage} \
+                             QUALIFY row_number() OVER \
+                             (PARTITION BY {} ORDER BY rowid DESC) = 1",
                             quote(system_columns::ID),
                         ))
                         .map_err(fatal)?;

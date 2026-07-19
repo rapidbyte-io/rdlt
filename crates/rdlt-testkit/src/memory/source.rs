@@ -40,6 +40,10 @@ pub struct MemoryStream {
     /// Retry testing: fail with a Transient error at the start of the first N `read`
     /// attempts (clause E5 — the engine must retry, the source never does).
     pub transient_start_failures: u32,
+    /// Retry testing: on the FIRST read attempt only, fail transiently after this
+    /// many batches were pushed (reproduces mid-stream transient failures with rows
+    /// already staged past a checkpoint).
+    pub transient_fail_after_once: Option<usize>,
 }
 
 impl MemoryStream {
@@ -50,7 +54,13 @@ impl MemoryStream {
             fail_after: None,
             batch_delay: None,
             transient_start_failures: 0,
+            transient_fail_after_once: None,
         }
+    }
+
+    pub fn transient_fail_after_once(mut self, batches: usize) -> Self {
+        self.transient_fail_after_once = Some(batches);
+        self
     }
 
     pub fn transient_start_failures(mut self, attempts: u32) -> Self {
@@ -171,6 +181,11 @@ impl Source for MemorySource {
             pushed += 1;
             if stream.fail_after == Some(pushed) {
                 return Err(SourceError::fatal("injected source crash"));
+            }
+            if attempt == 1 && stream.transient_fail_after_once == Some(pushed) {
+                return Err(SourceError::transient(
+                    "injected mid-stream transient failure",
+                ));
             }
         }
         Ok(())

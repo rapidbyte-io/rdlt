@@ -119,3 +119,40 @@ async fn retry_budget_exhaustion_is_a_classified_error() {
         .expect_err("must eventually fail");
     assert!(matches!(err, rdlt_core::RdltError::Source { .. }));
 }
+
+/// Review finding #5 regression: a transient failure AFTER rows were staged past the
+/// last checkpoint must not publish those rows twice. Run-level retry restarts
+/// through the crash path (session re-open tears down staging), so re-extraction is
+/// the ONLY delivery.
+#[tokio::test]
+async fn mid_stream_transient_retry_does_not_duplicate_staged_rows() {
+    let dest = MemoryDestination::new();
+    let source = MemorySource::new(vec![
+        MemoryStream::new(
+            rdlt_connector::StreamSpec::new("s"),
+            vec![
+                MemoryBatch::new(vec![json!({"seq": 1}), json!({"seq": 2})]).with_checkpoint(1),
+                MemoryBatch::new(vec![json!({"seq": 3})]), // staged, NOT checkpointed…
+                MemoryBatch::new(vec![json!({"seq": 4})]).with_checkpoint(3),
+            ],
+        )
+        .transient_fail_after_once(2), // …then the source dies transiently
+    ]);
+    let mut config = EngineConfig::new("retry-nodup");
+    config.commit_policy = rdlt_core::CommitPolicy::EveryCheckpoints(1);
+
+    let report = Engine::new(config, source, dest.clone())
+        .run()
+        .await
+        .expect("run");
+    assert_eq!(report.retries, 1);
+
+    let rows = dest.committed_rows("s");
+    let mut seqs: Vec<i64> = rows.iter().map(|r| r["seq"].as_i64().unwrap()).collect();
+    seqs.sort_unstable();
+    assert_eq!(
+        seqs,
+        vec![1, 2, 3, 4],
+        "row 3 must appear exactly once, got {seqs:?}"
+    );
+}

@@ -39,18 +39,13 @@ pub(crate) enum LoadItem {
         rows: u64,
         values: u64,
     },
-    /// The engine retried a transient source failure (clause E5) — counted.
-    Retried { stream: StreamName, attempt: u32 },
 }
 
 impl ByteSized for LoadItem {
     fn byte_size(&self) -> usize {
         match self {
             LoadItem::Batch { batch, .. } => batch.get_array_memory_size(),
-            LoadItem::Delta { .. }
-            | LoadItem::Checkpoint { .. }
-            | LoadItem::Discarded { .. }
-            | LoadItem::Retried { .. } => 0,
+            LoadItem::Delta { .. } | LoadItem::Checkpoint { .. } | LoadItem::Discarded { .. } => 0,
         }
     }
 }
@@ -187,13 +182,6 @@ impl Loader {
                 entry.discarded_values += values;
                 self.counters.discarded_rows += rows;
                 self.counters.discarded_values += values;
-            }
-            LoadItem::Retried { stream, attempt } => {
-                self.emit(rdlt_core::PipelineEvent::Retried {
-                    stream: Some(stream),
-                    attempt,
-                });
-                self.report.retries += 1;
             }
         }
         Ok(())

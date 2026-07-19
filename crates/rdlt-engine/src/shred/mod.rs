@@ -31,10 +31,15 @@ impl StreamShredder {
         let mut discarded_ids: BTreeSet<RowId> = BTreeSet::new();
 
         for idx in 0..self.tables.len() {
-            // Cascade: drop rows whose parent or root was discarded upstream.
+            // Cascade: drop rows whose parent or root was discarded upstream. A
+            // cascade-dropped row's OWN id joins the set, so its descendants at any
+            // depth cascade too (parent-first table order makes one pass complete);
+            // cascade drops are counted — never silent (review finding #6).
             if !discarded_ids.is_empty() {
                 let buffer = &mut self.tables[idx];
-                buffer.rows.retain(|row| {
+                let mut cascade_dropped = 0u64;
+                let mut kept = Vec::with_capacity(buffer.rows.len());
+                for row in buffer.rows.drain(..) {
                     let doomed = row
                         .parent_id
                         .as_ref()
@@ -43,8 +48,21 @@ impl StreamShredder {
                             .root_id
                             .as_ref()
                             .is_some_and(|r| discarded_ids.contains(r));
-                    !doomed
-                });
+                    if doomed {
+                        discarded_ids.insert(row.id);
+                        cascade_dropped += 1;
+                    } else {
+                        kept.push(row);
+                    }
+                }
+                buffer.rows = kept;
+                if cascade_dropped > 0 {
+                    items.push(LoadItem::Discarded {
+                        table: buffer.table.clone(),
+                        rows: cascade_dropped,
+                        values: 0,
+                    });
+                }
             }
 
             let has_rows = !self.tables[idx].rows.is_empty();

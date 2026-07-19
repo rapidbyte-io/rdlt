@@ -68,7 +68,12 @@ impl Source for JsonlSource {
             if slab.is_empty() {
                 break;
             }
-            if req.out.raw_json(Bytes::copy_from_slice(&slab)).await.is_err() {
+            if req
+                .out
+                .raw_json(Bytes::copy_from_slice(&slab))
+                .await
+                .is_err()
+            {
                 return Ok(());
             }
         }
@@ -79,8 +84,14 @@ impl Source for JsonlSource {
 #[tokio::main]
 async fn main() {
     let mut args = std::env::args().skip(1);
-    let input = PathBuf::from(args.next().expect("usage: jsonl_to_duckdb <in.jsonl> <out.duckdb>"));
-    let output = PathBuf::from(args.next().expect("usage: jsonl_to_duckdb <in.jsonl> <out.duckdb>"));
+    let input = PathBuf::from(
+        args.next()
+            .expect("usage: jsonl_to_duckdb <in.jsonl> <out.duckdb>"),
+    );
+    let output = PathBuf::from(
+        args.next()
+            .expect("usage: jsonl_to_duckdb <in.jsonl> <out.duckdb>"),
+    );
     let _ = std::fs::remove_file(&output);
 
     let started = std::time::Instant::now();

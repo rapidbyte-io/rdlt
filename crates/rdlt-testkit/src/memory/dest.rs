@@ -132,6 +132,7 @@ impl Destination for MemoryDestination {
         drop(inner);
         Ok(Box::new(MemorySession {
             inner: Arc::clone(&self.inner),
+            ensured: std::collections::BTreeSet::new(),
         }))
     }
 }
@@ -139,6 +140,10 @@ impl Destination for MemoryDestination {
 #[derive(Debug)]
 struct MemorySession {
     inner: Arc<Mutex<Inner>>,
+    /// Tables ensured on THIS session — real destinations register publishable
+    /// tables per session, so writes to un-ensured tables are contract violations
+    /// (clause E1) and must fail here too.
+    ensured: std::collections::BTreeSet<TableName>,
 }
 
 impl MemorySession {
@@ -154,6 +159,7 @@ impl LoadSession for MemorySession {
         schema: &TableSchema,
         mode: &WriteMode,
     ) -> Result<(), DestError> {
+        self.ensured.insert(schema.table.clone());
         let mut inner = self.lock();
         // Clause D5: apply migrations. Widened columns cast existing rows to the new
         // type's representation — the in-memory analogue of `ALTER TABLE … USING`.
@@ -185,12 +191,12 @@ impl LoadSession for MemorySession {
 
     async fn write(&mut self, table: &TableName, batch: RecordBatch) -> Result<(), DestError> {
         let rows = batch_to_rows(&batch);
-        let mut inner = self.lock();
-        if !inner.schemas.contains_key(table) {
+        if !self.ensured.contains(table) {
             return Err(DestError::fatal(format!(
-                "write before ensure_table for `{table}` (violates clause E1)"
+                "write before ensure_table for `{table}` ON THIS SESSION (violates clause E1)"
             )));
         }
+        let mut inner = self.lock();
         inner.staged.push((table.clone(), rows));
         Ok(())
     }

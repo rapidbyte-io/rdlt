@@ -39,7 +39,17 @@ pub enum RdltError {
 
     /// Operator action: check the upstream API/source.
     #[error("source error on stream `{stream}`: {message}")]
-    Source { stream: StreamName, message: String },
+    Source {
+        stream: StreamName,
+        message: String,
+        /// `true` for transient/rate-limited failures the engine may retry by
+        /// restarting the run from committed state (clause E5).
+        #[serde(default)]
+        retryable: bool,
+        /// Rate-limit hint carried from `SourceError::RateLimited`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        retry_after_ms: Option<u64>,
+    },
 
     /// Operator action: check the destination/warehouse.
     #[error("destination error: {message}")]
@@ -71,6 +81,21 @@ impl RdltError {
         RdltError::Source {
             stream,
             message: message.to_string(),
+            retryable: false,
+            retry_after_ms: None,
+        }
+    }
+
+    pub fn source_retryable(
+        stream: StreamName,
+        message: impl std::fmt::Display,
+        retry_after: Option<std::time::Duration>,
+    ) -> Self {
+        RdltError::Source {
+            stream,
+            message: message.to_string(),
+            retryable: true,
+            retry_after_ms: retry_after.map(|d| d.as_millis() as u64),
         }
     }
 

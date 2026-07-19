@@ -24,12 +24,24 @@ use serde::{Deserialize, Serialize};
 
 use crate::load::LoadItem;
 
+/// Manifest format version (contracts/persisted-formats.md §3). Bumped on any
+/// record-shape change; a newer-than-supported manifest degrades to re-extraction
+/// rather than being misread.
+pub(crate) const WAL_FORMAT_VERSION: u32 = 1;
+
+fn default_wal_version() -> u32 {
+    1
+}
+
 /// One manifest line. Order on disk IS the replay order.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "rec", rename_all = "snake_case")]
 pub(crate) enum WalRecord {
-    /// First record of each run; identifies the load for recovery commits.
+    /// First record of each run; identifies the load for recovery commits and
+    /// carries the manifest format version.
     Run {
+        #[serde(default = "default_wal_version")]
+        format_version: u32,
         load_id: LoadId,
         pipeline: PipelineId,
     },
@@ -90,6 +102,7 @@ impl Wal {
             pending_gc: Vec::new(),
         };
         wal.append(&WalRecord::Run {
+            format_version: WAL_FORMAT_VERSION,
             load_id: load_id.clone(),
             pipeline: pipeline.clone(),
         })?;
@@ -125,8 +138,8 @@ impl Wal {
                     rows: batch.num_rows() as u64,
                 })
             }
-            // Report-only accounting; a replay regenerates nothing from these.
-            LoadItem::Discarded { .. } | LoadItem::Retried { .. } => Ok(()),
+            // Report-only accounting; a replay regenerates nothing from it.
+            LoadItem::Discarded { .. } => Ok(()),
         }
     }
 

@@ -28,7 +28,10 @@ fn nested_rows(n: usize) -> Vec<serde_json::Value> {
 }
 
 fn bench_shred(c: &mut Criterion) {
-    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("rt");
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("rt");
     const ROWS: usize = 10_000;
     let rows = nested_rows(ROWS);
 
@@ -36,10 +39,8 @@ fn bench_shred(c: &mut Criterion) {
     group.throughput(Throughput::Elements(ROWS as u64));
     group.bench_function("nested_json_10k_rows", |b| {
         b.iter(|| {
-            let source = MemorySource::single_stream(
-                rdlt_connector::StreamSpec::new("bench"),
-                rows.clone(),
-            );
+            let source =
+                MemorySource::single_stream(rdlt_connector::StreamSpec::new("bench"), rows.clone());
             let dest = MemoryDestination::new();
             let report = runtime
                 .block_on(Engine::new(EngineConfig::new("bench"), source, dest).run())
