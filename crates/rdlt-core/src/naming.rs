@@ -76,12 +76,25 @@ pub struct UniqueNamer {
     taken: HashMap<String, String>,
 }
 
+/// Owner marker for reserved names: contains a NUL so no real source name can
+/// ever equal it (source names are normalized text).
+const RESERVED_OWNER: &str = "\0reserved";
+
 impl UniqueNamer {
     pub fn new(rules: IdentRules) -> Self {
         Self {
             rules,
             taken: HashMap::new(),
         }
+    }
+
+    /// Claim `name` so that NO source column may take it verbatim — even a source
+    /// column literally named `name` gets a hash suffix. Used for system columns
+    /// (`_rdlt_*`): without this, an input field named `_rdlt_id` would alias the
+    /// lineage column instead of being suffixed.
+    pub fn reserve(&mut self, name: &str) {
+        self.taken
+            .insert(normalize_ident(name, self.rules), RESERVED_OWNER.to_owned());
     }
 
     pub fn name_for(&mut self, source: &str) -> String {

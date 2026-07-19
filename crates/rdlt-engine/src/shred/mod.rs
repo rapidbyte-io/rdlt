@@ -5,6 +5,7 @@ pub(crate) mod build;
 pub(crate) mod canon;
 pub(crate) mod infer;
 pub(crate) mod nest;
+pub(crate) mod passthrough;
 
 use std::collections::BTreeSet;
 

@@ -42,8 +42,8 @@ pub(crate) struct TableBuffer {
 impl TableBuffer {
     fn new(table: TableName, parent: Option<ParentLink>, rules: IdentRules) -> Self {
         let mut namer = UniqueNamer::new(rules);
-        // System columns claim their names first: a source field literally named
-        // `_rdlt_id` gets suffixed rather than colliding with lineage.
+        // System columns RESERVE their names: a source field literally named
+        // `_rdlt_id` gets suffixed rather than aliasing the lineage column.
         for sys in [
             system_columns::LOAD_ID,
             system_columns::ID,
@@ -51,7 +51,7 @@ impl TableBuffer {
             system_columns::POS,
             system_columns::ROOT_ID,
         ] {
-            namer.name_for(sys);
+            namer.reserve(sys);
         }
         Self {
             table,

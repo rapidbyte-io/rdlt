@@ -246,3 +246,30 @@ async fn structless_destination_gets_flattened_columns() {
         "struct column must be flattened away"
     );
 }
+
+/// Regression (shredder twin of the passthrough case): a JSON field literally named
+/// `_rdlt_id` is suffixed, never aliased with the lineage column.
+#[tokio::test]
+async fn json_field_named_like_system_column_is_suffixed() {
+    let dest = MemoryDestination::new();
+    let source = MemorySource::single_stream(
+        rdlt_connector::StreamSpec::new("s"),
+        vec![json!({"id": 1, "_rdlt_id": "upstream"})],
+    );
+    Engine::new(EngineConfig::new("sysname"), source, dest.clone())
+        .run()
+        .await
+        .expect("run");
+    let rows = dest.committed_rows("s");
+    let row = &rows[0];
+    assert_ne!(
+        row["_rdlt_id"],
+        json!("upstream"),
+        "lineage column not aliased"
+    );
+    assert!(
+        row.keys().any(|k| k.starts_with("_rdlt_id_")),
+        "upstream field suffixed, got {:?}",
+        row.keys()
+    );
+}

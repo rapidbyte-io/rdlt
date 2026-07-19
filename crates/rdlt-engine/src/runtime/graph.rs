@@ -140,6 +140,15 @@ async fn run_once(
                 destination.spec().name
             )));
         }
+        // Clause B4: structured streams carry no per-row identity — Merge cannot
+        // deduplicate. Rejected here, at plan time, before the destination opens.
+        if spec.structured && matches!(config.mode_for(&spec.name), WriteMode::Merge { .. }) {
+            return Err(RdltError::config(format!(
+                "stream `{}` is structured (Arrow passthrough, no per-row identity) \
+                 and cannot use Merge (contract clause B4); use Append or Replace",
+                spec.name
+            )));
+        }
     }
 
     // ---- Workdir lock (one process per pipeline, clause R5) ----
@@ -241,6 +250,7 @@ async fn run_once(
             let span = tracing::info_span!("rdlt.extract", stream = %stream_name);
             let _guard = span.enter();
 
+            let arrow_table = root_table.clone();
             let mut shredder = Some(StreamShredder::new(spec.clone(), caps, root_table));
             let mut registry = Some(SchemaRegistry::default());
 
@@ -296,11 +306,32 @@ async fn run_once(
                             }
                         }
                     }
-                    PushPayload::Arrow(_batch) => {
-                        break Err(RdltError::config(
-                            "Arrow passthrough lands with the benchmark phase; \
-                             push raw_json/rows for now",
-                        ));
+                    PushPayload::Arrow(batch) => {
+                        // Structured fast path (clause E7); undeclared streams are a
+                        // contract violation (clause S7).
+                        if !spec.structured {
+                            break Err(RdltError::source(
+                                stream_name.clone(),
+                                "source pushed Arrow batches on a stream not declared \
+                                 `structured` (contract clause S7)",
+                            ));
+                        }
+                        let mut reg = registry.take().expect("registry present");
+                        let items = crate::shred::passthrough::passthrough_items(
+                            &batch,
+                            &arrow_table,
+                            &mut reg,
+                            &policy,
+                            &load_id,
+                            &mode,
+                            caps,
+                        );
+                        registry = Some(reg);
+                        for item in items? {
+                            if tx.send(item).await.is_err() {
+                                break;
+                            }
+                        }
                     }
                     PushPayload::Checkpoint(cursor) => {
                         if tx
