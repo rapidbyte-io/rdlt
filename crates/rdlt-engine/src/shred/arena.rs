@@ -22,6 +22,16 @@ use super::view::{JsonView, Kind};
 /// Index of a node within its arena.
 pub(crate) type NodeId = u32;
 
+/// Arena indices are u32 by design (half the footprint of usize on the hot
+/// vectors). A single document dense enough to overflow them (~4.29e9 nodes,
+/// which is ~100 GB of arena before the cast even matters) panics with a clear
+/// message instead of silently wrapping into aliased ranges; the engine
+/// surfaces test/prod panics from the shred stage as typed task errors.
+#[inline]
+fn checked_idx(len: usize) -> u32 {
+    u32::try_from(len).expect("arena index overflow: a single JSON document exceeds 4.29e9 nodes")
+}
+
 #[derive(Debug)]
 pub(crate) enum ANode<'s> {
     Null,
@@ -83,7 +93,7 @@ impl<'s> Arena<'s> {
 
     /// `{"value": <node>}` — for bare-scalar/array rows and scalar child items.
     pub(crate) fn wrap_in_value_obj(&mut self, node: NodeId) -> NodeId {
-        let start = self.obj_entries.len() as u32;
+        let start = checked_idx(self.obj_entries.len());
         self.obj_entries.push((Cow::Borrowed("value"), node));
         self.push_node(ANode::Obj(start, start + 1))
     }
@@ -93,7 +103,7 @@ impl<'s> Arena<'s> {
     }
 
     fn push_node(&mut self, node: ANode<'s>) -> NodeId {
-        let id = self.nodes.len() as u32;
+        let id = checked_idx(self.nodes.len());
         self.nodes.push(node);
         id
     }
@@ -285,9 +295,9 @@ where
         while let Some(id) = seq.next_element_seed(NodeSeed { arena: self.arena })? {
             items.push(id);
         }
-        let start = self.arena.arr_items.len() as u32;
+        let start = checked_idx(self.arena.arr_items.len());
         self.arena.arr_items.extend_from_slice(&items);
-        let end = self.arena.arr_items.len() as u32;
+        let end = checked_idx(self.arena.arr_items.len());
         Ok(self.arena.push_node(ANode::Arr(start, end)))
     }
 
@@ -304,9 +314,9 @@ where
                 None => entries.push((key, value)),
             }
         }
-        let start = self.arena.obj_entries.len() as u32;
+        let start = checked_idx(self.arena.obj_entries.len());
         self.arena.obj_entries.extend(entries);
-        let end = self.arena.obj_entries.len() as u32;
+        let end = checked_idx(self.arena.obj_entries.len());
         Ok(self.arena.push_node(ANode::Obj(start, end)))
     }
 }
@@ -350,7 +360,39 @@ where
 mod tests {
     use super::*;
     use crate::shred::canon::canonical_json_bytes;
+    use crate::shred::view::JsonView;
     use serde_json::Value;
+
+    /// Duplicate keys keep FIRST-occurrence POSITION with LAST-occurrence value
+    /// (IndexMap insert semantics — the view contract schema column order
+    /// depends on). Canonicalization sorts and is structurally blind to
+    /// position, so this asserts the entry ORDER directly, against both views.
+    #[test]
+    fn duplicate_keys_keep_first_position_last_value() {
+        let input = br#"{"dup":1,"other":2,"dup":3}"#;
+        let mut arena = Arena::default();
+        let rows = arena.parse_rows(input).expect("parse");
+        let node = arena.node(rows[0]);
+        let arena_entries: Vec<(String, String)> = node
+            .obj_entries()
+            .map(|(k, v)| (k.to_owned(), format!("{:?}", v.kind())))
+            .collect();
+        assert_eq!(
+            arena_entries,
+            vec![
+                ("dup".to_owned(), "Int(3)".to_owned()),
+                ("other".to_owned(), "Int(2)".to_owned()),
+            ],
+            "first position, last value"
+        );
+        // The &Value view (serde_json preserve_order) must agree exactly.
+        let value: Value = serde_json::from_slice(input).expect("value parse");
+        let value_entries: Vec<(String, String)> = (&value)
+            .obj_entries()
+            .map(|(k, v)| (k.to_owned(), format!("{:?}", v.kind())))
+            .collect();
+        assert_eq!(arena_entries, value_entries, "views agree on dup-key order");
+    }
 
     /// The two views must agree on canonical bytes for any input — parsing,
     /// dedup, ordering, numbers, and escapes all fold into this one check.

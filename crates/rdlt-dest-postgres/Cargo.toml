@@ -22,6 +22,10 @@ rdlt-testkit = { workspace = true }
 rdlt-engine = { workspace = true }
 testcontainers-modules = { workspace = true }
 chrono = { workspace = true }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true
+
+[features]
+failpoints = ["rdlt-connector/failpoints"]

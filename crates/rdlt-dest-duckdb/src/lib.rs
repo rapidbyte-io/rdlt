@@ -10,7 +10,7 @@
 //! state document, and records the `(load_id, commit_seq)` receipt — all in ONE
 //! DuckDB transaction (clauses D1–D3).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -20,8 +20,8 @@ use rdlt_connector::{
     CommitMeta, CommitReceipt, ConnectorSpec, DestCapabilities, DestError, Destination,
     LoadSession, OpenCtx, RecordBatch, WriteMode,
     core::{
-        ColumnType, LoadId, LogicalType, PipelineId, StateDoc, TableName, TableSchema,
-        naming::IdentRules, schema::system_columns,
+        ColumnType, LogicalType, PipelineId, StateDoc, TableName, TableSchema, naming::IdentRules,
+        schema::system_columns,
     },
 };
 
@@ -199,8 +199,6 @@ impl Destination for DuckDb {
         Ok(Box::new(DuckDbSession {
             conn: Mutex::new(conn),
             tables: BTreeMap::new(),
-            replaced: BTreeSet::new(),
-            last_replace_load: None,
         }))
     }
 }
@@ -210,8 +208,6 @@ struct DuckDbSession {
     /// while every call still runs on &mut self.
     conn: Mutex<Connection>,
     tables: BTreeMap<TableName, (TableSchema, WriteMode)>,
-    replaced: BTreeSet<TableName>,
-    last_replace_load: Option<LoadId>,
 }
 
 impl DuckDbSession {
@@ -309,12 +305,6 @@ impl LoadSession for DuckDbSession {
             "duck.tx.commit",
             Err(DestError::fatal("injected crash at duck.tx.commit"))
         );
-        // Replace bookkeeping is per load.
-        if self.last_replace_load.as_ref() != Some(&meta.load_id) {
-            self.replaced.clear();
-            self.last_replace_load = Some(meta.load_id.clone());
-        }
-
         let receipt = CommitReceipt {
             load_id: meta.load_id.clone(),
             commit_seq: meta.commit_seq,
@@ -324,7 +314,6 @@ impl LoadSession for DuckDbSession {
             .keys()
             .map(|t| (t.clone(), self.root_of(t)))
             .collect();
-        let mut replaced = std::mem::take(&mut self.replaced);
         let state_json = serde_json::to_string(&meta.state).map_err(fatal)?;
 
         let result = self.with_conn(move |conn| {
@@ -337,6 +326,19 @@ impl LoadSession for DuckDbSession {
                     |row| row.get(0),
                 )
                 .map_err(fatal)?;
+            // Replace truncates at most once per LOAD, guarded DURABLY: "has any
+            // earlier commit of this load landed?" comes from the receipt log,
+            // not session memory — a crash-recovery session (fresh state, same
+            // load) must never re-truncate rows an earlier commit already
+            // published (the parquet twin of this bug was the feature-002
+            // review's confirmed data-loss finding; this is the same fix).
+            let load_committed_before: u64 = tx
+                .query_row(
+                    "SELECT count(*) FROM _rdlt_commits WHERE load_id = ?",
+                    duckdb::params![meta.load_id.as_str()],
+                    |row| row.get(0),
+                )
+                .map_err(fatal)?;
             if already > 0 {
                 // Prior receipt: publish nothing, discard the staged span.
                 for table in tables.keys() {
@@ -344,7 +346,7 @@ impl LoadSession for DuckDbSession {
                         .map_err(fatal)?;
                 }
                 tx.commit().map_err(fatal)?;
-                return Ok((replaced, true));
+                return Ok(true);
             }
 
             for (table, (schema, mode)) in &tables {
@@ -362,7 +364,7 @@ impl LoadSession for DuckDbSession {
                         .map_err(fatal)?;
                     }
                     WriteMode::Replace => {
-                        if replaced.insert(table.clone()) {
+                        if load_committed_before == 0 {
                             tx.execute_batch(&format!("DELETE FROM {target}"))
                                 .map_err(fatal)?;
                         }
@@ -419,14 +421,11 @@ impl LoadSession for DuckDbSession {
             )
             .map_err(fatal)?;
             tx.commit().map_err(fatal)?;
-            Ok((replaced, false))
+            Ok(false)
         });
 
         match result {
-            Ok((replaced, _idempotent_hit)) => {
-                self.replaced = replaced;
-                Ok(receipt)
-            }
+            Ok(_idempotent_hit) => Ok(receipt),
             Err(e) => Err(e),
         }
     }

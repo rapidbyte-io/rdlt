@@ -2720,6 +2720,7 @@ dependencies = [
 name = "rdlt-dest-duckdb"
 version = "0.2.0"
 dependencies = [
+ "arrow",
  "async-trait",
  "bytes",
  "duckdb",
@@ -2761,6 +2762,7 @@ dependencies = [
  "rdlt-engine",
  "rdlt-testkit",
  "serde_json",
+ "tempfile",
  "testcontainers-modules",
  "tokio",
  "tokio-postgres",

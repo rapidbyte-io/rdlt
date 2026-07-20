@@ -54,6 +54,25 @@ variants in lowering/load/wal clusters pending verification by the scheduled
 CI run (isolated runner; local full runs are now bounded with
 `NEXTEST_TEST_THREADS=2 --jobs 2` after two host OOMs).
 
+## Bugs found by the comprehensive review + sweep-writing (2026-07-20)
+
+Writing the Postgres crash sweep (review finding: G2.1 coverage absent)
+exposed that BOTH SQL destinations carried the parquet Replace-recovery
+data-loss bug the feature-002 review had fixed only in parquet: the
+truncate-once-per-load guard lived in session memory (`replaced` +
+`last_replace_load`), so a crash between commits of one load recovered into a
+fresh session that re-truncated the target inside its publish transaction —
+atomically deleting the earlier commit's durably-acknowledged rows and
+re-inserting only the replayed tail. Fixed in both crates with the parquet
+pattern (durable guard from the receipt log: any receipt for this load ⇒ never
+truncate again), dead session fields removed, regression tests mirroring
+parquet's `replace_recovery_session_keeps_prior_commits_of_same_load`.
+
+Root cause of the blind spot: the sweep armed each fail point CONTINUOUSLY, so
+every boundary was only ever exercised at its FIRST occurrence — crash-between-
+commits was unreachable. The sweep matrix now includes a `1*off->return` pass
+(skip the first hit, fire on the second) in both sweep suites.
+
 ## Bug found while closing survivors
 
 The registry-widening closure test (`cross_batch_narrowing_keeps_the_wide_type`)

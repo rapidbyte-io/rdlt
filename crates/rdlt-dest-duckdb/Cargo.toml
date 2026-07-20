@@ -18,6 +18,8 @@ rdlt-testkit = { workspace = true }
 rdlt-engine = { workspace = true }
 tempfile = { workspace = true }
 bytes = { workspace = true }
+arrow = { workspace = true }
+tokio = { workspace = true }
 
 [lints]
 workspace = true

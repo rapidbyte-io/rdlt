@@ -5,7 +5,7 @@
 //! receipt (clauses D1–D4). Receives FLATTENED schemas — `structs: false` makes the
 //! engine lower nested objects at the seam. Depends on the SPI only.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use arrow_array::{
     Array, BinaryArray, BooleanArray, Date32Array, Float64Array, Int64Array, StringArray,
@@ -17,8 +17,8 @@ use rdlt_connector::{
     CommitMeta, CommitReceipt, ConnectorSpec, DestCapabilities, DestError, Destination,
     LoadSession, OpenCtx, RecordBatch, WriteMode,
     core::{
-        ColumnType, LoadId, LogicalType, PipelineId, StateDoc, TableName, TableSchema,
-        naming::IdentRules, schema::system_columns,
+        ColumnType, LogicalType, PipelineId, StateDoc, TableName, TableSchema, naming::IdentRules,
+        schema::system_columns,
     },
 };
 use tokio_postgres::binary_copy::BinaryCopyInWriter;
@@ -56,6 +56,17 @@ impl Postgres {
         Ok(client)
     }
 }
+
+use rdlt_connector::core::crash_point;
+
+/// Fail-point registry (gate G2.2): every `crash_point!` site in this crate —
+/// the ENGINE-OWNED protocol boundaries (stage writes, the publish transaction
+/// edges, the D3 redelivery window). Postgres' internal transaction atomicity
+/// is the database's own guarantee and is deliberately NOT instrumented
+/// (research R20 scope guard).
+#[cfg(feature = "failpoints")]
+#[doc(hidden)]
+pub const FAIL_POINTS: &[&str] = &["pg.stage.copy", "pg.publish.begin", "pg.tx.commit"];
 
 fn transient(e: impl std::fmt::Display) -> DestError {
     DestError::transient(e.to_string())
@@ -197,8 +208,6 @@ impl Destination for Postgres {
             client,
             pipeline: _ctx.pipeline,
             tables: BTreeMap::new(),
-            replaced: BTreeSet::new(),
-            last_replace_load: None,
         }))
     }
 }
@@ -207,8 +216,6 @@ struct PgSession {
     client: Client,
     pipeline: PipelineId,
     tables: BTreeMap<TableName, (TableSchema, WriteMode)>,
-    replaced: BTreeSet<TableName>,
-    last_replace_load: Option<LoadId>,
 }
 
 impl PgSession {
@@ -293,6 +300,10 @@ impl LoadSession for PgSession {
     }
 
     async fn write(&mut self, table: &TableName, batch: RecordBatch) -> Result<(), DestError> {
+        crash_point!(
+            "pg.stage.copy",
+            Err(DestError::fatal("injected crash at pg.stage.copy"))
+        );
         let stage = stage_name(&self.pipeline, table);
         let arrow_schema = batch.schema();
         let column_names = arrow_schema
@@ -336,10 +347,6 @@ impl LoadSession for PgSession {
     }
 
     async fn commit(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestError> {
-        if self.last_replace_load.as_ref() != Some(&meta.load_id) {
-            self.replaced.clear();
-            self.last_replace_load = Some(meta.load_id.clone());
-        }
         let receipt = CommitReceipt {
             load_id: meta.load_id.clone(),
             commit_seq: meta.commit_seq,
@@ -350,6 +357,10 @@ impl LoadSession for PgSession {
             .map(|t| (t.clone(), self.root_of(t)))
             .collect();
 
+        crash_point!(
+            "pg.publish.begin",
+            Err(DestError::fatal("injected crash at pg.publish.begin"))
+        );
         let tx = self.client.transaction().await.map_err(transient)?;
         // Clause D3: idempotence by (load_id, commit_seq).
         let already = tx
@@ -360,6 +371,20 @@ impl LoadSession for PgSession {
             .await
             .map_err(transient)?
             .get::<_, i64>(0);
+        // Replace truncates at most once per LOAD, guarded DURABLY from the
+        // receipt log — a crash-recovery session (fresh memory, same load) must
+        // never re-truncate rows an earlier commit already published (the
+        // parquet twin of this bug was the feature-002 review's confirmed
+        // data-loss finding; same fix, same reasoning).
+        let load_committed_before = tx
+            .query_one(
+                "SELECT count(*) FROM _rdlt_commits WHERE load_id = $1",
+                &[&meta.load_id.as_str()],
+            )
+            .await
+            .map_err(transient)?
+            .get::<_, i64>(0)
+            > 0;
         if already > 0 {
             for table in self.tables.keys() {
                 tx.batch_execute(&format!(
@@ -388,7 +413,7 @@ impl LoadSession for PgSession {
                     .map_err(transient)?;
                 }
                 WriteMode::Replace => {
-                    if self.replaced.insert(table.clone()) {
+                    if !load_committed_before {
                         tx.batch_execute(&format!("TRUNCATE TABLE {target}"))
                             .await
                             .map_err(transient)?;
@@ -456,6 +481,14 @@ impl LoadSession for PgSession {
         )
         .await
         .map_err(transient)?;
+        // The canonical redelivery window: everything published in ONE server-side
+        // transaction; a crash at either edge of tx.commit() must replay
+        // idempotently (D3) — the injected error models the client dying without
+        // learning the outcome.
+        crash_point!(
+            "pg.tx.commit",
+            Err(DestError::fatal("injected crash at pg.tx.commit"))
+        );
         tx.commit().await.map_err(transient)?;
         Ok(receipt)
     }

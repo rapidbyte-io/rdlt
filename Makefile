@@ -44,7 +44,9 @@ else ifeq ($(TARGET),unit)
 else ifeq ($(TARGET),e2e)
 	cargo nextest run --workspace -E 'binary(/e2e/)' --no-tests=pass
 else ifeq ($(TARGET),sweep)
-	cargo nextest run -p rdlt-engine --features failpoints -E 'test(crash_sweep)' --no-tests=pass
+	cargo nextest run -p rdlt-engine --features failpoints -E 'binary(crash_sweep)' --no-tests=pass
+	# Postgres sweep self-skips without a container runtime (G2.1).
+	cargo nextest run -p rdlt-dest-postgres --features failpoints -E 'binary(crash_sweep)' --no-tests=pass
 else ifeq ($(TARGET),prop)
 	PROPTEST_CASES=4096 cargo nextest run -p rdlt-engine -E 'test(shred_property)' --no-tests=pass
 else ifeq ($(TARGET),fuzz)
