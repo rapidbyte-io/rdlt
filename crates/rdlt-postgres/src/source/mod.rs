@@ -22,7 +22,7 @@ use std::collections::BTreeMap;
 use async_trait::async_trait;
 use futures::TryStreamExt;
 use rdlt_connector::{ConnectorSpec, ReadRequest, Source, SourceError, StreamSpec};
-use tokio_postgres::{Client, NoTls};
+use tokio_postgres::Client;
 
 pub use config::{ConfigError, PostgresConfig};
 
@@ -279,38 +279,31 @@ impl PostgresSource {
     }
 }
 
-/// Open one connection. TLS is not yet wired for the postgres connectors
-/// (matching `rdlt-dest-postgres`): a conn string demanding TLS is a Fatal
-/// config error, stated plainly. The conn string is PARSED here (not
-/// string-matched): parse failure is Fatal (contract rule 1 — never the
-/// Transient/retry path), and the TLS policy reads the parsed ssl_mode, so
-/// every libpq syntax form is covered. `PostgresConfig` has pub fields, so
-/// this enforcement point holds even for configs built without `validate`.
+/// Open one connection through the shared TLS policy (feature 006, contract
+/// tls-policy.md): conn parse failure is Fatal (never the Transient retry
+/// path); the effective policy resolves from the parsed sslmode + the
+/// config's `tls:` block; verification failures are Fatal (retries don't
+/// mint certificates), network-shaped failures Transient (E5). Enforcement
+/// lives HERE so it holds even for configs built without `validate`
+/// (`PostgresConfig` has pub fields).
 pub(crate) async fn connect(config: &PostgresConfig) -> Result<Client, SourceError> {
-    let conn = config.conn.as_str();
-    let parsed: tokio_postgres::Config = conn.parse().map_err(|e| {
+    let parsed: tokio_postgres::Config = config.conn.parse().map_err(|e| {
         errors::fatal(
             Phase::Connect,
             None,
             format!("conn string does not parse: {e}"),
         )
     })?;
-    if parsed.get_ssl_mode() == tokio_postgres::config::SslMode::Require {
-        return Err(errors::fatal(
-            Phase::Connect,
-            None,
-            "sslmode=require requested, but TLS is not yet wired for the \
-             postgres connectors (recorded backlog item); use sslmode=disable/prefer",
-        ));
+    let policy = crate::tls::resolve_policy(&parsed, config.tls.as_ref())
+        .map_err(|e| errors::fatal(Phase::Connect, None, e))?;
+    match crate::tls::connect(&parsed, &policy).await {
+        Ok(client) => Ok(client),
+        Err(crate::tls::ConnectResult::Config(e)) => Err(errors::fatal(Phase::Connect, None, e)),
+        Err(crate::tls::ConnectResult::Connect(e)) if e.transient => {
+            Err(errors::transient(Phase::Connect, None, e))
+        }
+        Err(crate::tls::ConnectResult::Connect(e)) => Err(errors::fatal(Phase::Connect, None, e)),
     }
-    let (client, connection) = parsed
-        .connect(NoTls)
-        .await
-        .map_err(|e| errors::classify(Phase::Connect, None, &e))?;
-    tokio::spawn(async move {
-        let _ = connection.await; // connection task ends with the client
-    });
-    Ok(client)
 }
 
 #[async_trait]
@@ -616,13 +609,20 @@ mod tests {
     }
 
     #[test]
-    fn tls_demand_rejected_at_config_validation() {
-        // The from_yaml path rejects TLS demands at validate (config.rs has
-        // the full matrix incl. the spaced keyword form); the sibling test
-        // above proves connect() enforces it even when validate is bypassed.
-        let err =
-            PostgresConfig::from_yaml("conn: \"postgresql://u:p@localhost/db?sslmode=require\"\n")
-                .unwrap_err();
-        assert!(err.to_string().contains("TLS is not yet wired"), "{err}");
+    fn tls_contradiction_rejected_at_config_validation() {
+        // Feature 006: sslmode=require is ACCEPTED (TLS is wired); the
+        // config-level rejection is now the contradiction rule.
+        assert!(
+            PostgresConfig::from_yaml(
+                "conn: \"postgresql://u:p@localhost/db?sslmode=require\"\n"
+            )
+            .is_ok(),
+            "require now validates — TLS is wired"
+        );
+        let err = PostgresConfig::from_yaml(
+            "conn: \"postgresql://u:p@localhost/db?sslmode=require\"\ntls:\n  mode: disable\n",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("contradicts"), "{err}");
     }
 }

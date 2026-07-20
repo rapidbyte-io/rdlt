@@ -57,6 +57,8 @@ enum DestSpec {
     Postgres {
         conn: String,
         dataset: String,
+        /// Optional TLS block: `tls = { mode = "verify_full", root_cert = "/ca.pem" }`.
+        tls: Option<rdlt::postgres_tls::TlsPolicy>,
     },
     Parquet {
         path: PathBuf,
@@ -170,8 +172,11 @@ async fn run(spec_path: PathBuf, report_path: Option<PathBuf>) -> Result<(), Cli
                     }
                     builder.destination(dest).build()?
                 }
-                DestSpec::Postgres { conn, dataset } => {
-                    let dest = rdlt::postgres::Postgres::connect(conn).dataset(dataset);
+                DestSpec::Postgres { conn, dataset, tls } => {
+                    let mut dest = rdlt::postgres::Postgres::connect(conn).dataset(dataset);
+                    if let Some(policy) = tls {
+                        dest = dest.tls(policy.clone());
+                    }
                     builder.destination(dest).build()?
                 }
                 DestSpec::Parquet { path } => {

@@ -66,7 +66,7 @@ serde_yaml = "0.9"
 duckdb = { version = "1", features = ["bundled", "appender-arrow"] }
 tokio-postgres = { version = "0.7", features = ["with-chrono-0_4"] }
 tokio-postgres-rustls = "0.13"
-rustls = "0.23"
+rustls = { version = "0.23", features = ["ring"] }
 rustls-pemfile = "2"
 rustls-native-certs = "0.8"
 schemars = "1"

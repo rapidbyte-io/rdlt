@@ -9,6 +9,9 @@
 //! Facade paths are unchanged: `rdlt::postgres` re-exports [`dest`],
 //! `rdlt::postgres_source` re-exports [`source`].
 
+pub mod tls;
+mod tls_verify;
+
 #[cfg(feature = "dest")]
 pub mod dest;
 #[cfg(feature = "source")]

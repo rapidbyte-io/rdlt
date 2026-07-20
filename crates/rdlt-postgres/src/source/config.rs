@@ -35,6 +35,11 @@ pub struct PostgresConfig {
     /// Absent ⇒ discover ALL tables in `schema`.
     #[serde(default)]
     pub tables: Option<Vec<TableConfig>>,
+    /// TLS posture (feature 006): full sslmode matrix; verify-* modes are
+    /// expressible only here (conn-string sslmode covers disable/prefer/
+    /// require). Contradicting an explicit conn sslmode is a config error.
+    #[serde(default)]
+    pub tls: Option<crate::tls::TlsPolicy>,
     /// Decoder cuts a RecordBatch at this many buffered bytes (R4).
     #[serde(default = "default_batch_target_bytes")]
     pub batch_target_bytes: usize,
@@ -158,13 +163,10 @@ impl PostgresConfig {
         match self.conn.parse::<tokio_postgres::Config>() {
             Err(e) => return invalid(format!("`conn` does not parse: {e}")),
             Ok(parsed) => {
-                if parsed.get_ssl_mode() == tokio_postgres::config::SslMode::Require {
-                    return invalid(
-                        "sslmode=require requested, but TLS is not yet wired for the \
-                         postgres connectors (recorded backlog item); use \
-                         sslmode=disable/prefer"
-                            .into(),
-                    );
+                // Feature 006: TLS is wired — validate mode consistency here
+                // (fail fast); root resolution happens at open.
+                if let Err(e) = crate::tls::resolve_policy(&parsed, self.tls.as_ref()) {
+                    return invalid(e.to_string());
                 }
             }
         }
@@ -348,21 +350,34 @@ tables:
         // Contract rule 1: parse failure = typed CONFIG error, up front.
         let err = PostgresConfig::from_yaml("conn: not-a-conn-string\n").unwrap_err();
         assert!(err.to_string().contains("does not parse"), "{err}");
-        // TLS demand rejected at validate — including the SPACED keyword form
-        // the old string-match missed (005 review).
+        // Feature 006: TLS is wired — every conn-string sslmode level now
+        // passes config validation (incl. the spaced keyword form).
         for conn in [
             "postgresql://u:p@h/db?sslmode=require",
             "host=h sslmode=require",
             "host=h sslmode = require",
+            "host=h sslmode=prefer",
+            "host=h sslmode=disable",
         ] {
-            let err = PostgresConfig::from_yaml(&format!("conn: \"{conn}\"\n")).unwrap_err();
             assert!(
-                err.to_string().contains("TLS is not yet wired"),
-                "{conn}: {err}"
+                PostgresConfig::from_yaml(&format!("conn: \"{conn}\"\n")).is_ok(),
+                "{conn} must validate"
             );
         }
-        // prefer/disable pass config validation.
-        assert!(PostgresConfig::from_yaml("conn: \"host=h sslmode=prefer\"\n").is_ok());
+        // Contradiction rule (tls-policy.md): explicit conn sslmode reversed
+        // by the block = typed config error; refinement is allowed.
+        let err = PostgresConfig::from_yaml(
+            "conn: \"host=h sslmode=disable\"\ntls:\n  mode: verify_full\n",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("contradicts"), "{err}");
+        assert!(
+            PostgresConfig::from_yaml(
+                "conn: \"host=h sslmode=require\"\ntls:\n  mode: verify_full\n"
+            )
+            .is_ok(),
+            "require -> verify_full is refinement, not contradiction"
+        );
     }
 
     #[test]

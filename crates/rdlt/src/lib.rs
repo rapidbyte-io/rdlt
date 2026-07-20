@@ -46,6 +46,10 @@ pub use rdlt_dest_parquet as parquet;
 #[cfg(feature = "postgres-source")]
 pub use rdlt_postgres::source as postgres_source;
 
+/// Shared TLS policy for the Postgres connectors (feature 006).
+#[cfg(any(feature = "postgres", feature = "postgres-source"))]
+pub use rdlt_postgres::tls as postgres_tls;
+
 pub mod prelude {
     pub use crate::{
         CommitPolicy, Pipeline, PipelineEvent, PolicyAction, RdltError, RunReport, SchemaPolicy,

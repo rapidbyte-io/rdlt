@@ -23,12 +23,13 @@ use rdlt_connector::{
 };
 use tokio_postgres::binary_copy::BinaryCopyInWriter;
 use tokio_postgres::types::{ToSql, Type};
-use tokio_postgres::{Client, NoTls};
+use tokio_postgres::Client;
 
 #[derive(Debug, Clone)]
 pub struct Postgres {
     conn_string: String,
     schema: String,
+    tls: Option<crate::tls::TlsPolicy>,
 }
 
 impl Postgres {
@@ -37,6 +38,7 @@ impl Postgres {
         Self {
             conn_string: conn_string.into(),
             schema: "public".into(),
+            tls: None,
         }
     }
 
@@ -46,14 +48,28 @@ impl Postgres {
         self
     }
 
+    /// TLS posture (feature 006, contract tls-policy.md) — the SAME policy
+    /// type the source uses; the two directions share one connect path.
+    pub fn tls(mut self, policy: crate::tls::TlsPolicy) -> Self {
+        self.tls = Some(policy);
+        self
+    }
+
     async fn client(&self) -> Result<Client, DestError> {
-        let (client, connection) = tokio_postgres::connect(&self.conn_string, NoTls)
-            .await
-            .map_err(transient)?;
-        tokio::spawn(async move {
-            let _ = connection.await; // connection task ends with the client
-        });
-        Ok(client)
+        let parsed: tokio_postgres::Config = self
+            .conn_string
+            .parse()
+            .map_err(|e| DestError::fatal(format!("conn string does not parse: {e}")))?;
+        let policy = crate::tls::resolve_policy(&parsed, self.tls.as_ref())
+            .map_err(|e| DestError::fatal(e.to_string()))?;
+        match crate::tls::connect(&parsed, &policy).await {
+            Ok(client) => Ok(client),
+            Err(crate::tls::ConnectResult::Config(e)) => Err(DestError::fatal(e.to_string())),
+            Err(crate::tls::ConnectResult::Connect(e)) if e.transient => {
+                Err(transient(e))
+            }
+            Err(crate::tls::ConnectResult::Connect(e)) => Err(DestError::fatal(e.to_string())),
+        }
     }
 }
 
