@@ -44,7 +44,11 @@ fn tagged(phase: Phase, table: Option<&str>, detail: impl std::fmt::Display) -> 
     }
 }
 
-pub(crate) fn fatal(phase: Phase, table: Option<&str>, detail: impl std::fmt::Display) -> SourceError {
+pub(crate) fn fatal(
+    phase: Phase,
+    table: Option<&str>,
+    detail: impl std::fmt::Display,
+) -> SourceError {
     SourceError::fatal(tagged(phase, table, detail))
 }
 

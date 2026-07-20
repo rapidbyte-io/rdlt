@@ -91,13 +91,19 @@ async fn open_boundary_skips_watermark_equal_rows() {
     let rig = Rig::new();
     let cfg = "      boundary: open\n";
 
-    assert_eq!(rig.run(source(&fixture.conn_url(), cfg), "inc-open").await, 3);
+    assert_eq!(
+        rig.run(source(&fixture.conn_url(), cfg), "inc-open").await,
+        3
+    );
     // A late row at the exact watermark: the open boundary (strict >) never
     // re-fetches it — the documented monotonic-cursor trade-off.
     fixture
         .seed("INSERT INTO ev VALUES (4, 'd', '2026-01-02T00:00:00Z');")
         .await;
-    assert_eq!(rig.run(source(&fixture.conn_url(), cfg), "inc-open").await, 0);
+    assert_eq!(
+        rig.run(source(&fixture.conn_url(), cfg), "inc-open").await,
+        0
+    );
     assert_eq!(rig.count(), 3, "watermark-equal late row skipped by design");
 }
 
@@ -124,7 +130,10 @@ async fn null_cursor_policies() {
         .dest
         .query_string("SELECT CAST(count(*) AS VARCHAR) FROM ev WHERE id = 90")
         .expect("null copies");
-    assert_eq!(null_copies, "2", "null-cursor rows re-fetch every run under include");
+    assert_eq!(
+        null_copies, "2",
+        "null-cursor rows re-fetch every run under include"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -159,10 +168,15 @@ async fn initial_and_end_value_window() {
     let rig = Rig::new();
     let cfg = "      initial_value: \"2026-01-02T00:00:00Z\"\n      end_value: \"2026-01-06T00:00:00Z\"\n";
     // Closed start (>= 01-02), exclusive end (< 01-06): ids 2,3,8.
-    assert_eq!(rig.run(source(&fixture.conn_url(), cfg), "inc-win").await, 3);
+    assert_eq!(
+        rig.run(source(&fixture.conn_url(), cfg), "inc-win").await,
+        3
+    );
     let ids = rig
         .dest
-        .query_string("SELECT CAST(string_agg(CAST(id AS VARCHAR), ',' ORDER BY id) AS VARCHAR) FROM ev")
+        .query_string(
+            "SELECT CAST(string_agg(CAST(id AS VARCHAR), ',' ORDER BY id) AS VARCHAR) FROM ev",
+        )
         .expect("ids");
     assert_eq!(ids, "2,3,8");
 }
@@ -177,13 +191,19 @@ async fn pkless_table_dedups_via_row_hash() {
         )
         .await;
     let rig = Rig::new();
-    assert_eq!(rig.run(source(&fixture.conn_url(), ""), "inc-hash").await, 2);
+    assert_eq!(
+        rig.run(source(&fixture.conn_url(), ""), "inc-hash").await,
+        2
+    );
     // New DISTINCT row at the watermark: row-hash dedup passes it, drops the
     // re-fetched identical ones.
     fixture
         .seed("INSERT INTO ev VALUES (3, 'c', '2026-01-02T00:00:00Z');")
         .await;
-    assert_eq!(rig.run(source(&fixture.conn_url(), ""), "inc-hash").await, 1);
+    assert_eq!(
+        rig.run(source(&fixture.conn_url(), ""), "inc-hash").await,
+        1
+    );
     assert_eq!(rig.count(), 3);
 }
 
@@ -198,11 +218,16 @@ async fn merge_mode_rejected_for_structured_streams() {
     let dir = tempfile::tempdir().expect("tempdir");
     let dest = DuckDb::open(dir.path().join("out.duckdb")).expect("open db");
     let mut config = EngineConfig::new("inc-merge");
-    config.write_mode = rdlt_connector::core::WriteMode::Merge { key: vec!["id".into()] };
+    config.write_mode = rdlt_connector::core::WriteMode::Merge {
+        key: vec!["id".into()],
+    };
     let err = Engine::new(config, source(&fixture.conn_url(), ""), dest)
         .run()
         .await
         .expect_err("merge must be rejected for structured streams");
     let msg = err.to_string().to_lowercase();
-    assert!(msg.contains("merge") && (msg.contains("structured") || msg.contains("arrow")), "{msg}");
+    assert!(
+        msg.contains("merge") && (msg.contains("structured") || msg.contains("arrow")),
+        "{msg}"
+    );
 }

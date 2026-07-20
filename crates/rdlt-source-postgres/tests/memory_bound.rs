@@ -33,7 +33,11 @@ fn release_cli() -> Option<std::path::PathBuf> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn snapshot_ten_times_larger_than_memory_ceiling() {
-    if std::process::Command::new("prlimit").arg("--version").output().is_err() {
+    if std::process::Command::new("prlimit")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
         eprintln!("SKIP memory_bound: prlimit not available (util-linux)");
         return;
     }
@@ -105,6 +109,8 @@ async fn snapshot_ten_times_larger_than_memory_ceiling() {
     let report: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&report_path).expect("report"))
             .expect("report json");
-    let rows = report["tables"]["big"]["rows"].as_u64().expect("rows in report");
+    let rows = report["tables"]["big"]["rows"]
+        .as_u64()
+        .expect("rows in report");
     assert_eq!(rows, ROWS);
 }

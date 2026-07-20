@@ -56,7 +56,10 @@ pub(crate) enum Decode {
     Float4,
     Float8,
     /// NBASE-10000 numeric → i128 at the declared precision/scale.
-    Decimal { precision: u8, scale: u8 },
+    Decimal {
+        precision: u8,
+        scale: u8,
+    },
     /// UTF-8 text payload (text family, json, every ::text projection).
     Utf8,
     /// jsonb wire payload: 1 version byte, then UTF-8 JSON text.
@@ -65,7 +68,9 @@ pub(crate) enum Decode {
     UuidText,
     Bytea,
     /// µs since PG epoch (2000-01-01); rebased; ±infinity saturates.
-    Timestamp { tz: bool },
+    Timestamp {
+        tz: bool,
+    },
     /// days since PG epoch; rebased; ±infinity saturates.
     Date,
     /// µs since midnight.
@@ -253,7 +258,10 @@ mod tests {
             DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
         );
         let naive = map_type(&base(oid::TIMESTAMP, -1));
-        assert_eq!(naive.arrow, DataType::Timestamp(TimeUnit::Microsecond, None));
+        assert_eq!(
+            naive.arrow,
+            DataType::Timestamp(TimeUnit::Microsecond, None)
+        );
     }
 
     #[test]
@@ -281,19 +289,40 @@ mod tests {
         assert!(m.documented_lossy);
         // Oversized precision numeric(50, 2) → text.
         let typmod = ((50 << 16) | 2) + 4;
-        assert_eq!(map_type(&base(oid::NUMERIC, typmod)).select, SelectPolicy::CastText);
+        assert_eq!(
+            map_type(&base(oid::NUMERIC, typmod)).select,
+            SelectPolicy::CastText
+        );
         // Negative scale (PG15+) → text.
         let typmod = ((10 << 16) | ((-2i32) & 0x7FF)) + 4;
-        assert_eq!(map_type(&base(oid::NUMERIC, typmod)).select, SelectPolicy::CastText);
+        assert_eq!(
+            map_type(&base(oid::NUMERIC, typmod)).select,
+            SelectPolicy::CastText
+        );
         // Enum → label text.
-        let e = map_type(&PgTypeInfo { oid: 99_999, typtype: 'e', typcategory: 'E', typmod: -1 });
+        let e = map_type(&PgTypeInfo {
+            oid: 99_999,
+            typtype: 'e',
+            typcategory: 'E',
+            typmod: -1,
+        });
         assert_eq!(e.select, SelectPolicy::CastText);
         // Array → canonical JSON text.
-        let a = map_type(&PgTypeInfo { oid: 1007, typtype: 'b', typcategory: 'A', typmod: -1 });
+        let a = map_type(&PgTypeInfo {
+            oid: 1007,
+            typtype: 'b',
+            typcategory: 'A',
+            typmod: -1,
+        });
         assert_eq!(a.select, SelectPolicy::CastJsonbText);
         // Composite / range / multirange → canonical JSON text.
         for tt in ['c', 'r', 'm'] {
-            let m = map_type(&PgTypeInfo { oid: 88_888, typtype: tt, typcategory: 'C', typmod: -1 });
+            let m = map_type(&PgTypeInfo {
+                oid: 88_888,
+                typtype: tt,
+                typcategory: 'C',
+                typmod: -1,
+            });
             assert_eq!(m.select, SelectPolicy::CastJsonbText, "typtype {tt}");
         }
         // Textual fallback: interval (1186), money (790), inet (869), timetz (1266).

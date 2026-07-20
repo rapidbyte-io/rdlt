@@ -369,6 +369,8 @@ reproducible harness (dlt in a container). Benchmark suite is v1 scope, not an a
 | Arrow passthrough: parquet → parquet | ≥ 2x | **2.6x** ✅ |
 | Peak RSS (file→DuckDB run) | ≤ 1/5th | **1/5.4** ✅ |
 | Cold start to first row loaded | ≤ 40 ms absolute on reference hardware (converted from ≤ 1/20th ratio, 2026-07-20 — see the RESULTS.md version-policy entry; dlt ratio is scoreboard-only) | **23.6 ms** ✅ (`resolved (a)`; scoreboard: 1/17.7) |
+| Postgres source → DuckDB (1M-row wide table; feature 005) | ≥ 6x vs dlt's fastest documented config (set measurement-first, 2026-07-20 policy entry) | **7.8x** ✅ (43.6x vs dlt default; 2.2x vs its connectorx Rust reader) |
+| Postgres source → Postgres (1M-row wide table; feature 005) | ≥ 6x (same protocol) | **8.9x** ✅ (55.8x vs dlt default) |
 
 Rationale: dlt's JSON-normalize hot path is per-row interpreted Python with per-value
 allocation — the Rust shredder parses raw JSON bytes (`RecordsOut::raw_json`) straight
@@ -394,7 +396,15 @@ WAL spill, Python bindings, SQL sources (fast follow), vector destinations.
 **Delivered post-v1 (feature 002, 2026-07-19):** bundled file source (JSONL + Parquet,
 glob + per-file incremental cursors), minimal parquet-file destination, and engine
 Arrow passthrough (structured streams: schema mapping + policy + `_rdlt_load_id` only;
-Merge rejected — clauses S7/E7/B4). The §8 "Arrow passthrough: parquet → parquet"
+Merge rejected — clauses S7/E7/B4).
+
+**Delivered post-v1 (feature 005, 2026-07-20):** the SQL-source fast-follow —
+`rdlt-source-postgres`: catalog reflection, binary-COPY-to-Arrow extraction on the
+structured path, cursor-column incremental (closed/open boundaries, mid-table
+checkpointed resume), crash-sweep + memory-ceiling hardened, gated decoder bench.
+CDC and non-Postgres dialects remain out; TLS for the postgres connectors,
+merge-for-structured-streams, and structured-path logical-type fidelity
+(uuid/json labels) are recorded backlog items. The §8 "Arrow passthrough: parquet → parquet"
 benchmark cell is realized via the parquet destination, with a parquet→DuckDB bonus
 row for context.
 

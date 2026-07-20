@@ -98,13 +98,25 @@ async fn type_matrix_round_trip() {
     assert_eq!(val("vc"), "varchar");
     assert_eq!(val("ch"), "abc  ", "char(5) keeps pad spaces as stored");
     assert_eq!(val("hex(byt)"), "DEADBEEF");
-    assert!(val("ts").starts_with("2026-01-02 03:04:05.123456"), "{}", val("ts"));
-    assert!(val("tstz").starts_with("2026-01-02 03:04:05.123456"), "{}", val("tstz"));
+    assert!(
+        val("ts").starts_with("2026-01-02 03:04:05.123456"),
+        "{}",
+        val("ts")
+    );
+    assert!(
+        val("tstz").starts_with("2026-01-02 03:04:05.123456"),
+        "{}",
+        val("tstz")
+    );
     assert_eq!(val("d"), "2026-01-02");
     assert_eq!(val("tm"), "03:04:05.123456");
     assert_eq!(val("u"), "550e8400-e29b-41d4-a716-446655440000");
     // Policy rows (contract table 2): canonical text, values survive.
-    assert_eq!(val("numu"), "1.23456789", "unconstrained numeric → lossless text");
+    assert_eq!(
+        val("numu"),
+        "1.23456789",
+        "unconstrained numeric → lossless text"
+    );
     assert_eq!(
         val("numb"),
         "123456789012345678901234567890123456789012345.67891",
@@ -116,7 +128,11 @@ async fn type_matrix_round_trip() {
     assert_eq!(val("tags"), r#"["a", "b"]"#, "array → canonical JSON text");
     assert_eq!(val("iv"), "1 day 02:00:00", "interval canonical text");
     assert_eq!(val("mn"), "$100.00", "money canonical text");
-    assert_eq!(val("ip"), "10.0.0.1/32", "inet canonical text (PG includes the netmask)");
+    assert_eq!(
+        val("ip"),
+        "10.0.0.1/32",
+        "inet canonical text (PG includes the netmask)"
+    );
 
     // All-NULL row survives as NULLs.
     let nulls = dest
@@ -132,7 +148,10 @@ async fn type_matrix_round_trip() {
     let max_is_inf_row = dest
         .query_string("SELECT CAST(i8 AS VARCHAR) FROM type_matrix WHERE tstz IS NOT NULL ORDER BY tstz DESC LIMIT 1")
         .expect("max tstz");
-    assert_eq!(max_is_inf_row, "3", "+infinity sorts above every real timestamp");
+    assert_eq!(
+        max_is_inf_row, "3",
+        "+infinity sorts above every real timestamp"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -154,7 +173,10 @@ CREATE VIEW gamma AS SELECT id FROM alpha;
     let (dest, _) = run_to_duckdb(source_for(&fixture.conn_url(), ""), "conf-discovery").await;
     assert_eq!(dest.count_rows("alpha").expect("alpha"), 1);
     assert_eq!(dest.count_rows("beta").expect("beta"), 1);
-    assert!(dest.count_rows("gamma").is_err(), "views excluded by default");
+    assert!(
+        dest.count_rows("gamma").is_err(),
+        "views excluded by default"
+    );
 
     // include_views: the view becomes a stream.
     let (dest, _) = run_to_duckdb(
@@ -202,7 +224,10 @@ INSERT INTO "Order ""Items""" VALUES (1, 'kw', 'hidden');
              WHERE table_name = 'order__items_' AND column_name = 'secret'",
         )
         .expect("column probe");
-    assert_eq!(secret_cols, "0", "excluded column must not exist downstream");
+    assert_eq!(
+        secret_cols, "0",
+        "excluded column must not exist downstream"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -218,7 +243,8 @@ async fn empty_table_materializes_with_schema() {
     .await;
     assert_eq!(report.total_rows(), 0);
     assert_eq!(
-        dest.count_rows("hollow").expect("table exists with declared schema"),
+        dest.count_rows("hollow")
+            .expect("table exists with declared schema"),
         0
     );
 }
@@ -235,7 +261,9 @@ async fn drift_column_added_dropped_retyped() {
         .await;
     let source = source_for(&fixture.conn_url(), "tables:\n  - name: d\n");
     source.streams().await.expect("reflect");
-    fixture.seed("ALTER TABLE d ADD COLUMN extra int4; UPDATE d SET extra = 7;").await;
+    fixture
+        .seed("ALTER TABLE d ADD COLUMN extra int4; UPDATE d SET extra = 7;")
+        .await;
     let db = tempfile::tempdir().expect("tempdir");
     let dest = DuckDb::open(db.path().join("out.duckdb")).expect("open db");
     std::mem::forget(db);
@@ -244,7 +272,8 @@ async fn drift_column_added_dropped_retyped() {
         .await
         .expect("added column is invisible this run, never misaligned");
     assert!(
-        dest.query_string("SELECT CAST(extra AS VARCHAR) FROM d").is_err(),
+        dest.query_string("SELECT CAST(extra AS VARCHAR) FROM d")
+            .is_err(),
         "column added after reflection must not appear this run"
     );
     // Next run (fresh reflection) picks it up via schema evolution.
@@ -285,7 +314,9 @@ async fn drift_column_added_dropped_retyped() {
         .await;
     let source = source_for(&fixture.conn_url(), "tables:\n  - name: d\n");
     source.streams().await.expect("reflect");
-    fixture.seed("ALTER TABLE d ALTER COLUMN n TYPE int8;").await;
+    fixture
+        .seed("ALTER TABLE d ALTER COLUMN n TYPE int8;")
+        .await;
     let db = tempfile::tempdir().expect("tempdir");
     let dest = DuckDb::open(db.path().join("out.duckdb")).expect("open db");
     let err = Engine::new(EngineConfig::new("drift-retype"), source, dest)
@@ -293,7 +324,10 @@ async fn drift_column_added_dropped_retyped() {
         .await
         .expect_err("retyped column must fail loudly");
     let msg = err.to_string();
-    assert!(msg.contains("decode") || msg.contains("copy phase"), "{msg}");
+    assert!(
+        msg.contains("decode") || msg.contains("copy phase"),
+        "{msg}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

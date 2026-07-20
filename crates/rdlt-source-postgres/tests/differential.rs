@@ -9,8 +9,8 @@ mod common;
 use std::sync::OnceLock;
 
 use arrow_array::builder::{
-    BinaryBuilder, BooleanBuilder, Decimal128Builder, Float64Builder, Int64Builder,
-    StringBuilder, TimestampMicrosecondBuilder,
+    BinaryBuilder, BooleanBuilder, Decimal128Builder, Float64Builder, Int64Builder, StringBuilder,
+    TimestampMicrosecondBuilder,
 };
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
@@ -40,13 +40,26 @@ fn row_strategy() -> impl Strategy<Value = Row> {
         any::<i64>(),
         proptest::option::of(any::<i32>()),
         proptest::option::of("[ -~—π🦀]{0,24}"), // printable + unicode, no NUL
-        proptest::option::of(prop_oneof![any::<f64>(), Just(f64::NAN), Just(f64::INFINITY)]),
+        proptest::option::of(prop_oneof![
+            any::<f64>(),
+            Just(f64::NAN),
+            Just(f64::INFINITY)
+        ]),
         proptest::option::of(-999_999_999_999i64..=999_999_999_999), // |v| < 10^8 at scale 4
         proptest::option::of(-2_000_000_000_000_000i64..=4_000_000_000_000_000),
         proptest::option::of(any::<bool>()),
         proptest::option::of(proptest::collection::vec(any::<u8>(), 0..32)),
     )
-        .prop_map(|(id, a, b, c, d, e, f, g)| Row { id, a, b, c, d, e, f, g })
+        .prop_map(|(id, a, b, c, d, e, f, g)| Row {
+            id,
+            a,
+            b,
+            c,
+            d,
+            e,
+            f,
+            g,
+        })
 }
 
 fn decimal_text(scaled: i64) -> String {
@@ -75,15 +88,17 @@ fn shared() -> &'static (tokio::runtime::Runtime, PgFixture, String) {
 
 /// The source-under-test path: drive `read()` directly, collect Arrow pushes.
 async fn read_via_copy(conn: &str) -> RecordBatch {
-    let source = PostgresSource::from_yaml(&format!(
-        "conn: \"{conn}\"\ntables:\n  - name: diff\n"
-    ))
-    .expect("config");
+    let source = PostgresSource::from_yaml(&format!("conn: \"{conn}\"\ntables:\n  - name: diff\n"))
+        .expect("config");
     let specs = source.streams().await.expect("streams");
     let (out, mut input) = records_channel(64 << 20);
     let read = tokio::spawn(async move {
         source
-            .read(ReadRequest::new(specs.into_iter().next().expect("spec"), None, out))
+            .read(ReadRequest::new(
+                specs.into_iter().next().expect("spec"),
+                None,
+                out,
+            ))
             .await
     });
     let mut batches = Vec::new();
@@ -192,7 +207,10 @@ async fn read_via_driver(fixture: &PgFixture) -> RecordBatch {
 
 async fn seed_rows(fixture: &PgFixture, rows: &[Row]) {
     let client = fixture.client().await;
-    client.execute("TRUNCATE diff", &[]).await.expect("truncate");
+    client
+        .execute("TRUNCATE diff", &[])
+        .await
+        .expect("truncate");
     let stmt = client
         .prepare(
             "INSERT INTO diff VALUES ($1, $2, $3, $4, $5::text::numeric, \
@@ -206,7 +224,9 @@ async fn seed_rows(fixture: &PgFixture, rows: &[Row]) {
         client
             .execute(
                 &stmt,
-                &[&row.id, &row.a, &row.b, &row.c, &d_text, &e_us, &row.f, &row.g],
+                &[
+                    &row.id, &row.a, &row.b, &row.c, &d_text, &e_us, &row.f, &row.g,
+                ],
             )
             .await
             .expect("insert");

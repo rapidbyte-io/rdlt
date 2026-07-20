@@ -111,7 +111,11 @@ async fn sweep_postgres_source() {
             );
             // Convergence: one more clean run moves nothing.
             let stable = rig.attempt(&conn).await.expect("stable run");
-            assert_eq!(stable.total_rows(), 0, "[{point} / {action}] not convergent");
+            assert_eq!(
+                stable.total_rows(),
+                0,
+                "[{point} / {action}] not convergent"
+            );
             assert_eq!(rig.count(), TOTAL_ROWS);
         }
     }
@@ -131,11 +135,21 @@ async fn transient_mid_copy_resumes_within_one_run() {
     // Fail the first two COPY chunk polls, then heal: attempt 1 commits some
     // checkpointed batches before dying, attempts 2–3 resume past them.
     fail::cfg("pg.src.mid_copy", "2*return->off").expect("configure");
-    let report = rig.attempt(&fixture.conn_url()).await.expect("run recovers in-run");
+    let report = rig
+        .attempt(&fixture.conn_url())
+        .await
+        .expect("run recovers in-run");
     fail::remove("pg.src.mid_copy");
 
-    assert_eq!(rig.count(), TOTAL_ROWS, "exactly-once across in-run retries");
-    assert!(report.retries > 0, "the engine's retry counter surfaces in the report");
+    assert_eq!(
+        rig.count(),
+        TOTAL_ROWS,
+        "exactly-once across in-run retries"
+    );
+    assert!(
+        report.retries > 0,
+        "the engine's retry counter surfaces in the report"
+    );
 }
 
 /// A REAL connection loss: the container dies mid-read. The error is typed
@@ -163,7 +177,8 @@ async fn container_kill_mid_read_is_typed_and_preserves_commits() {
 
     let err = outcome.expect_err("mid-read container death must fail the run");
     assert!(
-        err.contains("postgres source") && (err.contains("copy phase") || err.contains("connect phase")),
+        err.contains("postgres source")
+            && (err.contains("copy phase") || err.contains("connect phase")),
         "typed error names source + phase: {err}"
     );
     // Whatever committed before the kill is a consistent cursor-ordered

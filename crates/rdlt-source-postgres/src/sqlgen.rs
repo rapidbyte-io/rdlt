@@ -107,14 +107,17 @@ pub(crate) fn incremental_clauses(
         "{ident} {} NULLS FIRST",
         if direction_max { "ASC" } else { "DESC" }
     );
-    IncrementalClauses { where_sql, order_sql }
+    IncrementalClauses {
+        where_sql,
+        order_sql,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::reflect::ReflectedColumn;
-    use crate::types::{map_type, oid, PgTypeInfo};
+    use crate::types::{PgTypeInfo, map_type, oid};
 
     fn col(name: &str, o: u32) -> ReflectedColumn {
         ReflectedColumn {
@@ -172,9 +175,15 @@ mod tests {
         assert_eq!(c.where_sql, r#""ts" >= 5::int8 AND "ts" IS NOT NULL"#);
         assert_eq!(c.order_sql, r#""ts" ASC NULLS FIRST"#);
         let c = incremental_clauses("ts", true, Some((&w, false)), Some(&e), false);
-        assert_eq!(c.where_sql, r#""ts" > 5::int8 AND "ts" < 9::int8 AND "ts" IS NOT NULL"#);
+        assert_eq!(
+            c.where_sql,
+            r#""ts" > 5::int8 AND "ts" < 9::int8 AND "ts" IS NOT NULL"#
+        );
         let c = incremental_clauses("ts", false, Some((&w, true)), Some(&e), false);
-        assert_eq!(c.where_sql, r#""ts" <= 5::int8 AND "ts" > 9::int8 AND "ts" IS NOT NULL"#);
+        assert_eq!(
+            c.where_sql,
+            r#""ts" <= 5::int8 AND "ts" > 9::int8 AND "ts" IS NOT NULL"#
+        );
         assert_eq!(c.order_sql, r#""ts" DESC NULLS FIRST"#);
         // NULL policy include wraps with OR IS NULL; bare include has no filter.
         let c = incremental_clauses("ts", true, Some((&w, true)), None, true);
@@ -186,7 +195,11 @@ mod tests {
         // Hostile cursor string literal stays inert.
         let hostile = Watermark::Text("x'; DROP TABLE t; --".into());
         let c = incremental_clauses("v", true, Some((&hostile, true)), None, false);
-        assert!(c.where_sql.contains("'x''; DROP TABLE t; --'::text"), "{}", c.where_sql);
+        assert!(
+            c.where_sql.contains("'x''; DROP TABLE t; --'::text"),
+            "{}",
+            c.where_sql
+        );
     }
 
     #[test]

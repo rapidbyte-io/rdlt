@@ -67,7 +67,7 @@ pub mod testhook {
         let mut wire = b"PGCOPY\n\xff\r\n\0".to_vec();
         wire.extend_from_slice(&0i32.to_be_bytes());
         wire.extend_from_slice(&0i32.to_be_bytes());
-        let mut field = |wire: &mut Vec<u8>, bytes: &[u8]| {
+        let field = |wire: &mut Vec<u8>, bytes: &[u8]| {
             wire.extend_from_slice(&(bytes.len() as i32).to_be_bytes());
             wire.extend_from_slice(bytes);
         };
@@ -100,14 +100,54 @@ pub mod testhook {
         use arrow_schema::{DataType, TimeUnit};
 
         let plans = vec![
-            FieldPlan { name: "id".into(), decode: Decode::Int8, arrow: DataType::Int64, not_null: true },
-            FieldPlan { name: "small".into(), decode: Decode::Int4, arrow: DataType::Int64, not_null: false },
-            FieldPlan { name: "ratio".into(), decode: Decode::Float8, arrow: DataType::Float64, not_null: false },
-            FieldPlan { name: "name".into(), decode: Decode::Utf8, arrow: DataType::Utf8, not_null: false },
-            FieldPlan { name: "at".into(), decode: Decode::Timestamp { tz: true }, arrow: DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())), not_null: false },
-            FieldPlan { name: "ok".into(), decode: Decode::Bool, arrow: DataType::Boolean, not_null: false },
-            FieldPlan { name: "token".into(), decode: Decode::UuidText, arrow: DataType::Utf8, not_null: false },
-            FieldPlan { name: "doc".into(), decode: Decode::JsonbText, arrow: DataType::Utf8, not_null: false },
+            FieldPlan {
+                name: "id".into(),
+                decode: Decode::Int8,
+                arrow: DataType::Int64,
+                not_null: true,
+            },
+            FieldPlan {
+                name: "small".into(),
+                decode: Decode::Int4,
+                arrow: DataType::Int64,
+                not_null: false,
+            },
+            FieldPlan {
+                name: "ratio".into(),
+                decode: Decode::Float8,
+                arrow: DataType::Float64,
+                not_null: false,
+            },
+            FieldPlan {
+                name: "name".into(),
+                decode: Decode::Utf8,
+                arrow: DataType::Utf8,
+                not_null: false,
+            },
+            FieldPlan {
+                name: "at".into(),
+                decode: Decode::Timestamp { tz: true },
+                arrow: DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+                not_null: false,
+            },
+            FieldPlan {
+                name: "ok".into(),
+                decode: Decode::Bool,
+                arrow: DataType::Boolean,
+                not_null: false,
+            },
+            FieldPlan {
+                name: "token".into(),
+                decode: Decode::UuidText,
+                arrow: DataType::Utf8,
+                not_null: false,
+            },
+            FieldPlan {
+                name: "doc".into(),
+                decode: Decode::JsonbText,
+                arrow: DataType::Utf8,
+                not_null: false,
+            },
         ];
         let mut decoder = CopyDecoder::new(plans, 8 << 20, 65_536);
         // Feed in 64 KiB chunks — socket-realistic boundaries.
@@ -132,17 +172,62 @@ pub mod testhook {
         use arrow_schema::{DataType, TimeUnit};
 
         let plans = vec![
-            FieldPlan { name: "a".into(), decode: Decode::Int8, arrow: DataType::Int64, not_null: true },
-            FieldPlan { name: "b".into(), decode: Decode::Utf8, arrow: DataType::Utf8, not_null: false },
-            FieldPlan { name: "c".into(), decode: Decode::Decimal { precision: 10, scale: 2 }, arrow: DataType::Decimal128(10, 2), not_null: false },
-            FieldPlan { name: "d".into(), decode: Decode::Timestamp { tz: true }, arrow: DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())), not_null: false },
-            FieldPlan { name: "e".into(), decode: Decode::UuidText, arrow: DataType::Utf8, not_null: false },
-            FieldPlan { name: "f".into(), decode: Decode::JsonbText, arrow: DataType::Utf8, not_null: false },
-            FieldPlan { name: "g".into(), decode: Decode::Bytea, arrow: DataType::Binary, not_null: false },
-            FieldPlan { name: "h".into(), decode: Decode::Bool, arrow: DataType::Boolean, not_null: false },
+            FieldPlan {
+                name: "a".into(),
+                decode: Decode::Int8,
+                arrow: DataType::Int64,
+                not_null: true,
+            },
+            FieldPlan {
+                name: "b".into(),
+                decode: Decode::Utf8,
+                arrow: DataType::Utf8,
+                not_null: false,
+            },
+            FieldPlan {
+                name: "c".into(),
+                decode: Decode::Decimal {
+                    precision: 10,
+                    scale: 2,
+                },
+                arrow: DataType::Decimal128(10, 2),
+                not_null: false,
+            },
+            FieldPlan {
+                name: "d".into(),
+                decode: Decode::Timestamp { tz: true },
+                arrow: DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+                not_null: false,
+            },
+            FieldPlan {
+                name: "e".into(),
+                decode: Decode::UuidText,
+                arrow: DataType::Utf8,
+                not_null: false,
+            },
+            FieldPlan {
+                name: "f".into(),
+                decode: Decode::JsonbText,
+                arrow: DataType::Utf8,
+                not_null: false,
+            },
+            FieldPlan {
+                name: "g".into(),
+                decode: Decode::Bytea,
+                arrow: DataType::Binary,
+                not_null: false,
+            },
+            FieldPlan {
+                name: "h".into(),
+                decode: Decode::Bool,
+                arrow: DataType::Boolean,
+                not_null: false,
+            },
         ];
         let mut decoder = CopyDecoder::new(plans, 4096, 64);
-        let Some((&split, rest)) = data.split_first() else { return };
+        let Some((&split, rest)) = data.split_first() else {
+            return;
+        };
         let cut = (split as usize).min(rest.len());
         let (one, two) = rest.split_at(cut);
         if decoder.feed(one).is_err() {
@@ -239,7 +324,11 @@ impl Source for PostgresSource {
             let mut spec = StreamSpec::new(name).structured();
             let pk: Vec<String> = match table_config.and_then(|t| t.primary_key.clone()) {
                 Some(overridden) => overridden,
-                None => table.primary_key().iter().map(|s| (*s).to_owned()).collect(),
+                None => table
+                    .primary_key()
+                    .iter()
+                    .map(|s| (*s).to_owned())
+                    .collect(),
             };
             if !pk.is_empty() {
                 spec = spec.with_primary_key(pk);
@@ -262,7 +351,11 @@ impl Source for PostgresSource {
         let columns = table.selected_columns(table_config)?;
         crash_point!(
             "pg.src.after_reflect",
-            Err(errors::fatal(Phase::Reflect, Some(&name), "injected: after reflect"))
+            Err(errors::fatal(
+                Phase::Reflect,
+                Some(&name),
+                "injected: after reflect"
+            ))
         );
         let plans: Vec<FieldPlan> = columns
             .iter()
@@ -307,10 +400,7 @@ impl Source for PostgresSource {
                 // under the configured boundary.
                 let closed_default = cc.boundary == config::Boundary::Closed;
                 let lower: Option<(cursor::Watermark, bool)> = match &stored {
-                    Some(state) => Some((
-                        state.watermark.clone(),
-                        !state.boundary_keys.is_empty(),
-                    )),
+                    Some(state) => Some((state.watermark.clone(), !state.boundary_keys.is_empty())),
                     None => match &cc.initial_value {
                         Some(text) => Some((
                             cursor::Watermark::parse_config_literal(cursor_decode, text, &name)?,
@@ -338,7 +428,11 @@ impl Source for PostgresSource {
                 // selection; otherwise whole-row hashing.
                 let pk_names: Vec<String> = match table_config.and_then(|t| t.primary_key.clone()) {
                     Some(overridden) => overridden,
-                    None => table.primary_key().iter().map(|s| (*s).to_owned()).collect(),
+                    None => table
+                        .primary_key()
+                        .iter()
+                        .map(|s| (*s).to_owned())
+                        .collect(),
                 };
                 let key_columns: Option<Vec<usize>> = if pk_names.is_empty() {
                     None
@@ -360,7 +454,8 @@ impl Source for PostgresSource {
             }
         };
 
-        let select = sqlgen::select_sql(&self.config.schema, &name, &columns, &where_sql, &order_sql);
+        let select =
+            sqlgen::select_sql(&self.config.schema, &name, &columns, &where_sql, &order_sql);
         let copy = sqlgen::copy_sql(&select);
 
         let client = connect(&self.config).await?;
@@ -370,7 +465,11 @@ impl Source for PostgresSource {
             .map_err(|e| errors::classify(Phase::Copy, Some(&name), &e))?;
         futures::pin_mut!(stream);
 
-        let mut decoder = CopyDecoder::new(plans, self.config.batch_target_bytes, self.config.batch_max_rows);
+        let mut decoder = CopyDecoder::new(
+            plans,
+            self.config.batch_target_bytes,
+            self.config.batch_max_rows,
+        );
         let mut pushed_any = false;
         loop {
             let chunk = stream
@@ -382,7 +481,11 @@ impl Source for PostgresSource {
             // retries the whole read from committed state (E5/E6/S1).
             crash_point!(
                 "pg.src.mid_copy",
-                Err(errors::transient(Phase::Copy, Some(&name), "injected: connection lost mid-COPY"))
+                Err(errors::transient(
+                    Phase::Copy,
+                    Some(&name),
+                    "injected: connection lost mid-COPY"
+                ))
             );
             let batches = decoder
                 .feed(&chunk)
@@ -390,7 +493,7 @@ impl Source for PostgresSource {
             for batch in batches {
                 if !push_tracked(&mut req, &mut incremental, batch, &mut pushed_any).await? {
                     return Ok(()); // cancellation (clause S4); dropping the
-                                   // client aborts the server-side COPY
+                    // client aborts the server-side COPY
                 }
             }
         }
@@ -413,7 +516,11 @@ impl Source for PostgresSource {
             Some((tracker, cc)) => {
                 crash_point!(
                     "pg.src.before_checkpoint",
-                    Err(errors::fatal(Phase::Copy, Some(&name), "injected: before final checkpoint"))
+                    Err(errors::fatal(
+                        Phase::Copy,
+                        Some(&name),
+                        "injected: before final checkpoint"
+                    ))
                 );
                 let keep_keys = cc.boundary == config::Boundary::Closed;
                 if let Some(state) = tracker.final_state(keep_keys)
@@ -456,7 +563,11 @@ async fn push_tracked(
                 }
                 crash_point!(
                     "pg.src.after_batch_push",
-                    Err(errors::transient(Phase::Copy, None, "injected: after batch push"))
+                    Err(errors::transient(
+                        Phase::Copy,
+                        None,
+                        "injected: after batch push"
+                    ))
                 );
             }
             if let Some(state) = checkpoint
@@ -491,10 +602,9 @@ mod tests {
 
     #[test]
     fn tls_demand_is_fatal_config_error() {
-        let config = PostgresConfig::from_yaml(
-            "conn: \"postgresql://u:p@localhost/db?sslmode=require\"\n",
-        )
-        .expect("parses");
+        let config =
+            PostgresConfig::from_yaml("conn: \"postgresql://u:p@localhost/db?sslmode=require\"\n")
+                .expect("parses");
         let err = futures::executor::block_on(connect(&config)).unwrap_err();
         let msg = format!("{err:?}");
         assert!(msg.contains("Fatal"), "{msg}");

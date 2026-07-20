@@ -162,7 +162,10 @@ impl PostgresConfig {
                         table.name
                     ));
                 }
-                if let Some(cols) = table.included_columns.as_deref().or(table.excluded_columns.as_deref())
+                if let Some(cols) = table
+                    .included_columns
+                    .as_deref()
+                    .or(table.excluded_columns.as_deref())
                     && cols.is_empty()
                 {
                     return invalid(format!(
@@ -173,7 +176,10 @@ impl PostgresConfig {
                 if let Some(pk) = &table.primary_key
                     && pk.is_empty()
                 {
-                    return invalid(format!("table `{}`: primary_key present but empty", table.name));
+                    return invalid(format!(
+                        "table `{}`: primary_key present but empty",
+                        table.name
+                    ));
                 }
             }
         }
@@ -233,7 +239,12 @@ tables:
         assert_eq!(cursor.boundary, Boundary::Open);
         assert_eq!(cursor.direction, Direction::Min);
         assert_eq!(cursor.nulls, NullPolicy::Include);
-        assert!(c.table_config("customers").expect("customers").cursor.is_none());
+        assert!(
+            c.table_config("customers")
+                .expect("customers")
+                .cursor
+                .is_none()
+        );
     }
 
     #[test]
@@ -244,10 +255,8 @@ tables:
 
     #[test]
     fn qualified_table_name_rejected() {
-        let err = PostgresConfig::from_yaml(
-            "conn: x\ntables:\n  - name: sales.orders\n",
-        )
-        .unwrap_err();
+        let err =
+            PostgresConfig::from_yaml("conn: x\ntables:\n  - name: sales.orders\n").unwrap_err();
         assert!(err.to_string().contains("schema-qualified"), "{err}");
     }
 
@@ -269,16 +278,17 @@ tables:
             "conn: \"\"\n",
             "conn: x\nbatch_max_rows: 0\n",
         ] {
-            assert!(PostgresConfig::from_yaml(doc).is_err(), "should reject: {doc}");
+            assert!(
+                PostgresConfig::from_yaml(doc).is_err(),
+                "should reject: {doc}"
+            );
         }
     }
 
     #[test]
     fn duplicate_tables_rejected() {
-        let err = PostgresConfig::from_yaml(
-            "conn: x\ntables:\n  - name: t\n  - name: t\n",
-        )
-        .unwrap_err();
+        let err =
+            PostgresConfig::from_yaml("conn: x\ntables:\n  - name: t\n  - name: t\n").unwrap_err();
         assert!(err.to_string().contains("listed twice"), "{err}");
     }
 }

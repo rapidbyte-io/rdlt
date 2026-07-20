@@ -26,6 +26,18 @@
 > `specs/004-close-perf-misses/evidence/resolution-shred.md` (+
 > `profile-shred.md`). Perf-gate baselines untouched (no accepted change).
 >
+> **2026-07-20 — feature 005: Postgres-source cells added, bars set
+> measurement-first**: pg→DuckDB and pg→Postgres (1M-row wide table,
+> dataset identity recorded) measured baseline-first against pinned dlt
+> 1.29.0's `sql_database` source in its fastest documented configuration
+> (pyarrow backend) — NOT its slow default — with sqlalchemy-default and
+> connectorx (Rust reader) as scoreboard rows. Gated bars ≥ 6× derive
+> from the session's WORST-case run pairs (medians 7.8×/8.9×; worst
+> 6.6×/7.1×) so ordinary jitter cannot flap them — the 004 protocol
+> applied from birth. New gated iai entry `pg_copy_decode_10k` recorded
+> as a NEW baseline (existing entries untouched). Evidence:
+> `specs/005-postgres-source/evidence/bench-pg.md`.
+>
 > **2026-07-20 — cold-start criterion converted ratio → absolute
 > (measurement-design fix)**: the gated bar is now an absolute bound on
 > reference hardware (see the split rows below); the dlt ratio remains as
@@ -49,6 +61,11 @@
 | mock REST → Postgres, 100k records | 5.40 s / 173 MB | 0.70 s / 37 MB | **7.7× faster** | ≥ 5× | gated | ✅ met |
 | Arrow passthrough: parquet → parquet | 0.209 s / 263 MB | 0.08 s / 47 MB | **2.6× faster** | ≥ 2× | gated | ✅ met |
 | parquet → DuckDB (bonus context row) | 0.387 s / 419 MB | 0.37 s / 161 MB | 1.0× | — | scoreboard | — |
+| Postgres → DuckDB, 1M-row wide table (feature 005) | 10.19 s (dlt pyarrow backend) | 1.31 s / 444 MB | **7.8× faster** | ≥ 6× (set measurement-first) | gated | ✅ met |
+| Postgres → Postgres, 1M-row wide table (feature 005) | 17.02 s (dlt pyarrow backend) | 1.92 s / 138 MB | **8.9× faster** | ≥ 6× (set measurement-first) | gated | ✅ met |
+| — same cells vs dlt DEFAULT (sqlalchemy backend) | 57.1 s / 107.1 s | same rdlt | 43.6× / 55.8× | — | scoreboard | — |
+| — pg → DuckDB vs dlt connectorx backend (Rust reader) | 2.94 s | 1.31 s | **2.2× faster** | — | scoreboard | — |
+| Postgres (jsonb docs) → DuckDB, 200k nested (feature 005) | 4.51 s (pyarrow) | 0.24 s | 18.8× | — | scoreboard | — |
 | Cold start, one-row pipeline (absolute) | — | 23.6 ms | — | ≤ 40 ms (abs; protocol P3) | gated | `resolved (a)` — [record](../specs/004-close-perf-misses/evidence/resolution-cold-start.md) |
 | Cold start vs dlt (ratio, context only) | 0.417 s | 23.6 ms | **1/17.7 overhead** | — | scoreboard | — |
 
@@ -104,7 +121,11 @@ cross-toolchain comparisons refused — re-record deliberately). Recorded
 - 2026-07-20 (feature 004 close): full-matrix re-measure, same pin, no
   engine code changes. Shred bar adjusted ≥20× → ≥10× (owner decision,
   policy entry above); cold-start criterion converted to a gated absolute
-  ≤ 40 ms with the dlt ratio demoted to scoreboard. The matrix above.
+  ≤ 40 ms with the dlt ratio demoted to scoreboard.
+- 2026-07-20 (feature 005): Postgres source lands — pg→DuckDB 7.8×,
+  pg→Postgres 8.9× vs dlt's fastest documented config (43.6×/55.8× vs
+  its default; 2.2× vs its connectorx Rust reader), jsonb docs 18.8×;
+  bars ≥ 6× measurement-first. The matrix above.
 
 Reproduce: `benches/run-e2e.sh` (jsonl, parquet, cold-start cells) and the
 REST→Postgres recipe in RESULTS history / `benches/baseline/pipeline_rest_pg.py`.

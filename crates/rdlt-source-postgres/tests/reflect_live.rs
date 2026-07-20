@@ -4,8 +4,8 @@
 mod common;
 
 use common::PgFixture;
-use rdlt_source_postgres::testhook::reflect_for_tests;
 use rdlt_source_postgres::PostgresConfig;
+use rdlt_source_postgres::testhook::reflect_for_tests;
 
 const SEED: &str = r#"
 CREATE SCHEMA sales;
@@ -54,7 +54,10 @@ async fn reflects_schema_shape_pks_views_and_type_policies() {
     // Declared-type facts, per the type-mapping contract.
     assert_eq!(col("total").arrow_type().to_string(), "Decimal128(10, 2)");
     // Domain resolves one level to numeric(12,4).
-    assert_eq!(col("unit_price").arrow_type().to_string(), "Decimal128(12, 4)");
+    assert_eq!(
+        col("unit_price").arrow_type().to_string(),
+        "Decimal128(12, 4)"
+    );
     // Array + enum + jsonb → Utf8 policy rows.
     for policy_col in ["tags", "mood", "payload"] {
         assert_eq!(
@@ -75,7 +78,9 @@ async fn reflects_schema_shape_pks_views_and_type_policies() {
         fixture.conn_url()
     ))
     .expect("config");
-    let with_views = reflect_for_tests(&config_views).await.expect("reflect views");
+    let with_views = reflect_for_tests(&config_views)
+        .await
+        .expect("reflect views");
     assert!(with_views.contains_key("orders_view"));
 
     // Unknown listed table is a typed reflect error.

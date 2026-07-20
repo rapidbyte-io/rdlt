@@ -64,7 +64,11 @@ impl Watermark {
     /// Parse a config-provided literal (`initial_value`/`end_value`) for the
     /// cursor column's decode kind. Formats are the canonical text forms the
     /// type-mapping contract documents.
-    pub fn parse_config_literal(decode: Decode, text: &str, table: &str) -> Result<Self, SourceError> {
+    pub fn parse_config_literal(
+        decode: Decode,
+        text: &str,
+        table: &str,
+    ) -> Result<Self, SourceError> {
         let bad = |detail: String| errors::fatal(Phase::Reflect, Some(table), detail);
         match decode {
             Decode::Int2 | Decode::Int4 | Decode::Int8 => text
@@ -73,19 +77,32 @@ impl Watermark {
                 .map_err(|e| bad(format!("cursor literal `{text}` is not an integer: {e}"))),
             Decode::Decimal { scale, .. } => parse_decimal(text, scale)
                 .map(|scaled| Watermark::Decimal { scaled, scale })
-                .ok_or_else(|| bad(format!("cursor literal `{text}` is not a numeric(…,{scale})"))),
+                .ok_or_else(|| {
+                    bad(format!(
+                        "cursor literal `{text}` is not a numeric(…,{scale})"
+                    ))
+                }),
             Decode::Utf8 | Decode::UuidText => Ok(Watermark::Text(text.to_owned())),
             Decode::Timestamp { tz } => {
-                let parsed = chrono_parse_us(text)
-                    .ok_or_else(|| bad(format!("cursor literal `{text}` is not an RFC3339/ISO timestamp")))?;
-                Ok(if tz { Watermark::TimestampTz(parsed) } else { Watermark::TimestampNaive(parsed) })
+                let parsed = chrono_parse_us(text).ok_or_else(|| {
+                    bad(format!(
+                        "cursor literal `{text}` is not an RFC3339/ISO timestamp"
+                    ))
+                })?;
+                Ok(if tz {
+                    Watermark::TimestampTz(parsed)
+                } else {
+                    Watermark::TimestampNaive(parsed)
+                })
             }
             Decode::Date => parse_date_days(text)
                 .map(Watermark::Date)
                 .ok_or_else(|| bad(format!("cursor literal `{text}` is not a YYYY-MM-DD date"))),
-            Decode::Time => parse_time_us(text)
-                .map(Watermark::Time)
-                .ok_or_else(|| bad(format!("cursor literal `{text}` is not a HH:MM[:SS[.ffffff]] time"))),
+            Decode::Time => parse_time_us(text).map(Watermark::Time).ok_or_else(|| {
+                bad(format!(
+                    "cursor literal `{text}` is not a HH:MM[:SS[.ffffff]] time"
+                ))
+            }),
             _ => Err(bad("cursor column type is not cursor-capable".into())),
         }
     }
@@ -167,7 +184,6 @@ fn parse_time_us(text: &str) -> Option<i64> {
     Some(time.num_seconds_from_midnight() as i64 * 1_000_000 + (time.nanosecond() / 1_000) as i64)
 }
 
-
 /// Per-stream incremental tracking (research R5): boundary dedup on resume,
 /// watermark/prev-distinct tracking for mid-stream checkpoints, and the
 /// final boundary-key run. Depends on cursor-ordered streams (NULLS FIRST,
@@ -243,7 +259,9 @@ impl Tracker {
                         hasher.update(b"\xff\x00");
                     } else {
                         hasher.update(
-                            array_value_to_string(column, row).unwrap_or_default().as_bytes(),
+                            array_value_to_string(column, row)
+                                .unwrap_or_default()
+                                .as_bytes(),
                         );
                         hasher.update(b"\x00");
                     }
@@ -388,8 +406,8 @@ pub(crate) fn watermark_at(
     row: usize,
 ) -> Option<Watermark> {
     use arrow_array::{
-        Array, Date32Array, Decimal128Array, Int64Array, StringArray,
-        Time64MicrosecondArray, TimestampMicrosecondArray,
+        Array, Date32Array, Decimal128Array, Int64Array, StringArray, Time64MicrosecondArray,
+        TimestampMicrosecondArray,
     };
     if column.is_null(row) {
         return None;
@@ -408,9 +426,15 @@ pub(crate) fn watermark_at(
         )),
         Decode::Timestamp { tz } => {
             let v = any.downcast_ref::<TimestampMicrosecondArray>()?.value(row);
-            Some(if tz { Watermark::TimestampTz(v) } else { Watermark::TimestampNaive(v) })
+            Some(if tz {
+                Watermark::TimestampTz(v)
+            } else {
+                Watermark::TimestampNaive(v)
+            })
         }
-        Decode::Date => Some(Watermark::Date(any.downcast_ref::<Date32Array>()?.value(row))),
+        Decode::Date => Some(Watermark::Date(
+            any.downcast_ref::<Date32Array>()?.value(row),
+        )),
         Decode::Time => Some(Watermark::Time(
             any.downcast_ref::<Time64MicrosecondArray>()?.value(row),
         )),
@@ -482,18 +506,29 @@ mod tests {
             "'O''Brien''; DROP--'::text"
         );
         assert_eq!(
-            Watermark::Decimal { scaled: -12345, scale: 2 }.to_sql_literal(),
+            Watermark::Decimal {
+                scaled: -12345,
+                scale: 2
+            }
+            .to_sql_literal(),
             "'-123.45'::numeric"
         );
         assert_eq!(
-            Watermark::Decimal { scaled: 5, scale: 4 }.to_sql_literal(),
+            Watermark::Decimal {
+                scaled: 5,
+                scale: 4
+            }
+            .to_sql_literal(),
             "'0.0005'::numeric"
         );
         assert_eq!(
             Watermark::TimestampTz(1_000_000).to_sql_literal(),
             "(TIMESTAMPTZ 'epoch' + 1000000::int8 * INTERVAL '1 microsecond')"
         );
-        assert_eq!(Watermark::Date(20_000).to_sql_literal(), "(DATE 'epoch' + 20000::int4)");
+        assert_eq!(
+            Watermark::Date(20_000).to_sql_literal(),
+            "(DATE 'epoch' + 20000::int4)"
+        );
     }
 
     #[test]
@@ -504,13 +539,27 @@ mod tests {
             Watermark::Int(17)
         );
         assert_eq!(
-            Watermark::parse_config_literal(Decode::Decimal { precision: 10, scale: 2 }, "1.5", "t")
-                .expect("decimal"),
-            Watermark::Decimal { scaled: 150, scale: 2 }
+            Watermark::parse_config_literal(
+                Decode::Decimal {
+                    precision: 10,
+                    scale: 2
+                },
+                "1.5",
+                "t"
+            )
+            .expect("decimal"),
+            Watermark::Decimal {
+                scaled: 150,
+                scale: 2
+            }
         );
         assert_eq!(
-            Watermark::parse_config_literal(Decode::Timestamp { tz: true }, "2026-01-01T00:00:00Z", "t")
-                .expect("ts"),
+            Watermark::parse_config_literal(
+                Decode::Timestamp { tz: true },
+                "2026-01-01T00:00:00Z",
+                "t"
+            )
+            .expect("ts"),
             Watermark::TimestampTz(1_767_225_600_000_000)
         );
         assert_eq!(
@@ -519,8 +568,15 @@ mod tests {
         );
         assert!(Watermark::parse_config_literal(Decode::Int8, "abc", "t").is_err());
         assert!(
-            Watermark::parse_config_literal(Decode::Decimal { precision: 10, scale: 2 }, "1.234", "t")
-                .is_err(),
+            Watermark::parse_config_literal(
+                Decode::Decimal {
+                    precision: 10,
+                    scale: 2
+                },
+                "1.234",
+                "t"
+            )
+            .is_err(),
             "more precision than the column carries"
         );
     }

@@ -12,8 +12,8 @@
 use std::sync::Arc;
 
 use arrow_array::builder::{
-    BinaryBuilder, BooleanBuilder, Date32Builder, Decimal128Builder, Float64Builder,
-    Int64Builder, StringBuilder, Time64MicrosecondBuilder, TimestampMicrosecondBuilder,
+    BinaryBuilder, BooleanBuilder, Date32Builder, Decimal128Builder, Float64Builder, Int64Builder,
+    StringBuilder, Time64MicrosecondBuilder, TimestampMicrosecondBuilder,
 };
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
@@ -146,9 +146,13 @@ fn decode_numeric(field: &[u8], scale: u8) -> Result<i128, DecodeError> {
     let negative = match sign {
         0x0000 => false,
         0x4000 => true,
-        0xC000 => return err("numeric NaN is not representable as Decimal (contract: typed error)"),
+        0xC000 => {
+            return err("numeric NaN is not representable as Decimal (contract: typed error)");
+        }
         0xD000 | 0xF000 => {
-            return err("numeric ±Infinity is not representable as Decimal (contract: typed error)")
+            return err(
+                "numeric ±Infinity is not representable as Decimal (contract: typed error)",
+            );
         }
         other => return err(format!("numeric: unknown sign word {other:#06x}")),
     };
@@ -196,14 +200,16 @@ fn rebase_timestamp(v: i64) -> i64 {
     if v == i64::MAX || v == i64::MIN {
         return v;
     }
-    v.checked_add(PG_EPOCH_US).unwrap_or(if v > 0 { i64::MAX } else { i64::MIN })
+    v.checked_add(PG_EPOCH_US)
+        .unwrap_or(if v > 0 { i64::MAX } else { i64::MIN })
 }
 
 fn rebase_date(v: i32) -> i32 {
     if v == i32::MAX || v == i32::MIN {
         return v;
     }
-    v.checked_add(PG_EPOCH_DAYS).unwrap_or(if v > 0 { i32::MAX } else { i32::MIN })
+    v.checked_add(PG_EPOCH_DAYS)
+        .unwrap_or(if v > 0 { i32::MAX } else { i32::MIN })
 }
 
 fn uuid_text(bytes: &[u8; 16]) -> String {
@@ -308,7 +314,8 @@ impl CopyDecoder {
                 }
                 Consumed::Row(next) => {
                     pos = next;
-                    if self.rows_in_batch >= self.max_rows || self.bytes_in_batch >= self.target_bytes
+                    if self.rows_in_batch >= self.max_rows
+                        || self.bytes_in_batch >= self.target_bytes
                     {
                         batches.push(self.cut_batch()?);
                     }
@@ -334,7 +341,11 @@ impl CopyDecoder {
     }
 
     fn cut_batch(&mut self) -> Result<RecordBatch, DecodeError> {
-        let arrays: Vec<ArrayRef> = self.builders.iter_mut().map(ColumnBuilder::finish).collect();
+        let arrays: Vec<ArrayRef> = self
+            .builders
+            .iter_mut()
+            .map(ColumnBuilder::finish)
+            .collect();
         self.rows_in_batch = 0;
         self.bytes_in_batch = 0;
         RecordBatch::try_new(Arc::clone(&self.schema), arrays)
@@ -579,9 +590,17 @@ mod tests {
         assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 2);
         assert_eq!(decoder.rows_decoded(), 2);
         let batch = &batches[0];
-        let ids = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+        let ids = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
         assert_eq!(ids.value(0), 7);
-        let names = batch.column(1).as_any().downcast_ref::<StringArray>().unwrap();
+        let names = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
         assert_eq!(names.value(0), "seven");
         assert!(names.is_null(1));
     }
@@ -602,7 +621,10 @@ mod tests {
         if let Some(tail) = decoder.finish().expect("finish") {
             batches.push(tail);
         }
-        assert_eq!(batches.iter().map(|b| b.num_rows()).collect::<Vec<_>>(), [2, 2, 1]);
+        assert_eq!(
+            batches.iter().map(|b| b.num_rows()).collect::<Vec<_>>(),
+            [2, 2, 1]
+        );
     }
 
     #[test]
@@ -611,7 +633,10 @@ mod tests {
         let mut decoder = CopyDecoder::new(
             vec![plan(
                 "n",
-                Decode::Decimal { precision: 10, scale: 2 },
+                Decode::Decimal {
+                    precision: 10,
+                    scale: 2,
+                },
                 DataType::Decimal128(10, 2),
                 false,
             )],
@@ -623,7 +648,13 @@ mod tests {
         // -0.05: digits [500], weight -1, sign negative.
         wire.extend(tuple(&[Some(numeric_wire(1, -1, 0x4000, 2, &[500]))]));
         // 12345678.99: digits [1234, 5678, 9900], weight 1.
-        wire.extend(tuple(&[Some(numeric_wire(3, 1, 0x0000, 2, &[1234, 5678, 9900]))]));
+        wire.extend(tuple(&[Some(numeric_wire(
+            3,
+            1,
+            0x0000,
+            2,
+            &[1234, 5678, 9900],
+        ))]));
         wire.extend(trailer());
         let mut batches = decoder.feed(&wire).expect("feed");
         if let Some(tail) = decoder.finish().expect("finish") {
@@ -745,7 +776,11 @@ mod tests {
         if let Some(tail) = decoder.finish().expect("finish") {
             batches.push(tail);
         }
-        let col = batches[0].column(0).as_any().downcast_ref::<StringArray>().unwrap();
+        let col = batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
         assert_eq!(col.value(0), r#"{"a":1}"#);
     }
 }

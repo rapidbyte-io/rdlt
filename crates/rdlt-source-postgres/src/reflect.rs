@@ -10,7 +10,7 @@ use tokio_postgres::Client;
 
 use crate::config::{PostgresConfig, TableConfig};
 use crate::errors::{self, Phase};
-use crate::types::{map_type, MappedType, PgTypeInfo};
+use crate::types::{MappedType, PgTypeInfo, map_type};
 
 #[derive(Debug, Clone)]
 pub struct ReflectedColumn {
@@ -167,7 +167,11 @@ pub(crate) async fn reflect_schema(
                     oid: oid as u32,
                     typtype: bt.chars().next().unwrap_or('b'),
                     typcategory: bc.chars().next().unwrap_or('X'),
-                    typmod: if domain_typmod != -1 { domain_typmod } else { typmod },
+                    typmod: if domain_typmod != -1 {
+                        domain_typmod
+                    } else {
+                        typmod
+                    },
                 },
                 _ => PgTypeInfo {
                     oid: 0,
@@ -249,7 +253,7 @@ pub(crate) fn validate_cursor_column<'t>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{oid, Decode};
+    use crate::types::{Decode, oid};
 
     fn table(cols: &[(&str, u32, bool)]) -> ReflectedTable {
         ReflectedTable {
@@ -274,7 +278,11 @@ mod tests {
 
     #[test]
     fn selection_include_exclude_and_errors() {
-        let t = table(&[("a", oid::INT8, true), ("b", oid::TEXT, false), ("c", oid::BOOL, false)]);
+        let t = table(&[
+            ("a", oid::INT8, true),
+            ("b", oid::TEXT, false),
+            ("c", oid::BOOL, false),
+        ]);
         let all = t.selected_columns(None).expect("all");
         assert_eq!(all.len(), 3);
 
@@ -286,7 +294,10 @@ mod tests {
             excluded_columns: None,
         };
         let picked = t.selected_columns(Some(&cfg_inc)).expect("included");
-        assert_eq!(picked.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["a", "c"]);
+        assert_eq!(
+            picked.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            ["a", "c"]
+        );
 
         let cfg_missing = TableConfig {
             included_columns: Some(vec!["nope".into()]),
@@ -306,7 +317,10 @@ mod tests {
     fn cursor_validation() {
         let t = table(&[("id", oid::INT8, true), ("blob", oid::BYTEA, false)]);
         assert_eq!(
-            validate_cursor_column(&t, "id").expect("capable").mapped.decode,
+            validate_cursor_column(&t, "id")
+                .expect("capable")
+                .mapped
+                .decode,
             Decode::Int8
         );
         assert!(validate_cursor_column(&t, "blob").is_err());
@@ -315,7 +329,11 @@ mod tests {
 
     #[test]
     fn primary_key_extraction() {
-        let t = table(&[("id", oid::INT8, true), ("ts", oid::TIMESTAMPTZ, true), ("v", oid::TEXT, false)]);
+        let t = table(&[
+            ("id", oid::INT8, true),
+            ("ts", oid::TIMESTAMPTZ, true),
+            ("v", oid::TEXT, false),
+        ]);
         assert_eq!(t.primary_key(), ["id", "ts"]);
     }
 }

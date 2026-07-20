@@ -1,5 +1,51 @@
 # Tasks: Postgres SQL Source Connector
 
+> ## Implementation notes (feature close, 2026-07-20)
+>
+> **Outcome**: `rdlt-source-postgres` shipped — reflection, binary-COPY→
+> Arrow snapshot, dlt-parity incremental with mid-table checkpointed
+> resume, crash-sweep + memory-ceiling hardened, benchmark cells
+> measured. Cells (baseline-first vs pinned dlt 1.29.0 `sql_database`,
+> pyarrow backend = its fastest documented config): pg→DuckDB **7.8×**
+> gated ≥6×; pg→Postgres **8.9×** gated ≥6× (bars from worst-case run
+> pairs — 004 flap rule at birth); scoreboard: 43.6×/55.8× vs dlt's
+> default backend, **2.2× vs its connectorx Rust reader**, 18.8× on
+> jsonb docs. Decoder gate bench: 21.88 M instr / 10k×8-col rows
+> (~2.2k instr/row ≈ 17× cheaper per row than the JSON shred path).
+> Memory: 6.9 GB table through a 256 MiB prlimit ceiling at 39 MB peak.
+>
+> **WORKSPACE FIX (out-of-scope catch, kept in-feature)**: rdlt-core's
+> `failpoints` feature never enabled `fail/failpoints` — `fail_point!`
+> is a no-op without it, so every crash sweep since 003 (engine + both
+> destinations) was VACUOUSLY green. One-line fix + a permanent
+> `crash_points_actually_fire` probe. The newly-armed 003 sweeps pass —
+> the recovery protocols were sound; the instrument was dead. The armed
+> 005 sweep then immediately caught a real exactly-once bug (see next).
+>
+> **Design correction found by the armed sweep**: prev-distinct
+> intermediate checkpoints under-covered pushed rows at the current
+> cursor value → engine committed them → strict-`>` resume re-fetched
+> one (101/100). Fix: EVERY checkpoint carries `{watermark: last value,
+> boundary_keys: its run}`; resume is always `>=` + key dedup; only an
+> open-boundary FINAL state strips keys.
+>
+> **Recorded deviations** (each declared where it bites):
+> - R6 corrected pre-code: retries are ENGINE-owned (SPI S3/E5) — the
+>   plan's source-side retry was a seam violation; config has no retry
+>   block. Safe mid-stream retry follows from E6/S1/D1–D4.
+> - TLS: postgres connectors are NoTls (house posture); sslmode=require
+>   is a typed error. Backlog: TLS for BOTH postgres connectors.
+> - Structured-path constraint (engine E7): logical types derive from
+>   Arrow, so uuid/json/jsonb/arrays land as Utf8 (canonical text/JSON);
+>   contract amended. Backlog: logical-type fidelity via arrow metadata.
+> - Spec US2-AS5 (Merge upserts) blocked by engine clause B4 (Merge
+>   rejected for structured streams); asserted as a boundary test.
+>   Backlog: keyed merge for structured streams.
+>
+> **Backlog surfaced**: TLS (both pg connectors), merge-for-structured,
+> structured logical-type fidelity, dialect seam second database, custom
+> SQL streams, cross-table snapshot, CDC (design-doc stance unchanged).
+
 **Input**: Design documents from `/specs/005-postgres-source/`
 
 **Prerequisites**: plan.md, spec.md, research.md (R1–R9), data-model.md,
@@ -241,7 +287,7 @@ derivations (spec US3 independent test).
       `make bench TARGET=iai` + `benches/compare-iai.sh`; record its
       NEW baseline in `benches/perf-baselines.json` in a commit naming
       this feature (P5-compliant new entry, not a drift re-record).
-- [ ] T028 [US3] Measure + record: same-session baseline-first pairs
+- [X] T028 [US3] Measure + record: same-session baseline-first pairs
       for both cells; set gated bars measurement-first with explicit
       headroom; add matrix rows (Gated? status), version-policy
       entries, History note in `benches/RESULTS.md`; evidence artifacts
@@ -253,19 +299,19 @@ derivations (spec US3 independent test).
 
 ## Phase 7: Polish & cross-cutting
 
-- [ ] T029 [P] Docs: crate README + rustdoc examples for
+- [X] T029 [P] Docs: crate README + rustdoc examples for
       `rdlt-source-postgres` (config walkthrough from the contract),
       design-doc `2026-07-18-rdlt-engine-design.md` §9 "Delivered
       post-v1" entry (SQL source fast-follow delivered, CDC still out),
       quickstart.md kept truthful against the shipped CLI surface.
-- [ ] T030 Full verification sweep on the final tree: `make check`
+- [X] T030 Full verification sweep on the final tree: `make check`
       (lint, nextest incl. new suites, crash sweeps, iai gate) +
       `cargo test --doc`; `cargo semver-checks check-release
       --baseline-rev origin/main -p rdlt-core -p rdlt-connector`
       (FR-012: no SPI breakage); record the sweep + SC-006-style
       traceability walk (spec claims → evidence) in
       `specs/005-postgres-source/evidence/README.md`.
-- [ ] T031 Implementation-notes block at the top of this tasks.md
+- [X] T031 Implementation-notes block at the top of this tasks.md
       (house convention): outcomes, measured cells, deviations,
       backlog surfaced (e.g. cross-table snapshot, custom SQL streams,
       other dialects).
