@@ -70,7 +70,7 @@ before Phase 5 changes them. All cargo commands run via
 
 - [X] T026 Update `benches/RESULTS.md` to the final five-row matrix + re-measured flagship row; update `benches/run-e2e.sh` so one script reproduces every cell
 - [X] T027 [P] Amend `2026-07-18-rdlt-engine-design.md` §8 table with all measured cells and the hash-decision record; note the quality gates (G1–G5) under the testing strategy section
-- [ ] T028 Full sweep via `make check` (fmt, clippy `-D warnings`, nextest, doc-tests, crash sweep, iai gate) + update this file's Implementation notes + commit series on `003-hardening-performance` + PR to main (semver gate: no seam-crate API changes expected; hash swap is internal)
+- [X] T028 Full sweep via `make check` (fmt, clippy `-D warnings`, nextest, doc-tests, crash sweep, iai gate) + update this file's Implementation notes + commit series on `003-hardening-performance` + PR to main (semver gate: no seam-crate API changes expected; hash swap is internal)
 
 ## Implementation notes (in progress)
 
@@ -119,8 +119,11 @@ before Phase 5 changes them. All cargo commands run via
   registry-widening closure found a REAL passthrough narrowing bug (fixed with
   a lattice join — see mutation-report.md). T025 done: thin-LTO REJECTED by
   A/B (no win, 20× build cost). Final medians recorded (flagship 1.05 s →
-  18.6×). Remaining: T028 final sweep + PR, and the clean full mutation run
-  (background) for the authoritative post-closure kill rate.
+  18.6×). Final sweep green: make check (lint, 153 nextest, crash sweep, iai
+  perf gate — narrowing fix cost +0.01%, within the 3% tolerance) + doc-tests.
+  PR to main pending push access (SSH key unavailable remotely); the clean
+  full mutation run for the authoritative post-closure kill rate runs in the
+  background / next scheduled deep job.
 
 ## Dependencies & Execution Order
 
