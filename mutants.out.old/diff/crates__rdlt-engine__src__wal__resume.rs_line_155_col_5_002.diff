@@ -1,0 +1,121 @@
+--- crates/rdlt-engine/src/wal/resume.rs
++++ replace replay -> Result<Option<u64>, RdltError> with Ok(Some(1))
+@@ -147,117 +147,10 @@
+ pub(crate) async fn replay(
+     dir: &Path,
+     span: RecoverySpan,
+     session: &mut Box<dyn LoadSession>,
+     state: &mut StateDoc,
+     caps: rdlt_connector::DestCapabilities,
+ ) -> Result<Option<u64>, RdltError> {
+     // Damage checks first: all segment files must be readable before any write.
+-    let mut items: Vec<LoadItem> = Vec::new();
+-    let mut batches: u64 = 0;
+-    for record in span.records {
+-        match record {
+-            WalRecord::Delta {
+-                schema,
+-                delta,
+-                mode,
+-            } => {
+-                items.push(LoadItem::Delta {
+-                    schema,
+-                    delta,
+-                    mode,
+-                });
+-            }
+-            WalRecord::Checkpoint { stream, cursor } => {
+-                items.push(LoadItem::Checkpoint { stream, cursor });
+-            }
+-            WalRecord::Segment { table, file, .. } => {
+-                let path = dir.join(&file);
+-                let reader = match File::open(&path)
+-                    .map_err(|e| e.to_string())
+-                    .and_then(|f| {
+-                        ParquetRecordBatchReaderBuilder::try_new(f).map_err(|e| e.to_string())
+-                    })
+-                    .and_then(|b| b.build().map_err(|e| e.to_string()))
+-                {
+-                    Ok(reader) => reader,
+-                    Err(_) => return Ok(None), // quarantine → degrade to re-extract
+-                };
+-                for batch in reader {
+-                    match batch {
+-                        Ok(batch) => {
+-                            batches += 1;
+-                            items.push(LoadItem::Batch {
+-                                table: table.clone(),
+-                                batch,
+-                            });
+-                        }
+-                        Err(_) => return Ok(None),
+-                    }
+-                }
+-            }
+-            WalRecord::Run { .. } | WalRecord::Committed { .. } => {}
+-        }
+-    }
+-
+-    // Every known table is ensured on THIS session before any write: destinations
+-    // register publishable tables per session, and a span's delta may have committed
+-    // in an earlier span (clause E1; review finding — silently lost spans otherwise).
+-    for (schema, mode) in &span.schemas {
+-        let lowered = crate::load::lowering::lower_schema(schema, &caps);
+-        session
+-            .ensure_table(&lowered, mode)
+-            .await
+-            .map_err(RdltError::destination)?;
+-        state
+-            .schema_hashes
+-            .insert(schema.table.clone(), schema.content_hash());
+-    }
+-
+-    // Apply in WAL order: delta-before-batch survives crashes (invariant 3).
+-    for item in items {
+-        match item {
+-            LoadItem::Delta {
+-                schema,
+-                delta: _,
+-                mode,
+-            } => {
+-                // Same lowering seam as the live loader (design doc §5.3).
+-                let lowered = crate::load::lowering::lower_schema(&schema, &caps);
+-                session
+-                    .ensure_table(&lowered, &mode)
+-                    .await
+-                    .map_err(RdltError::destination)?;
+-                state
+-                    .schema_hashes
+-                    .insert(schema.table.clone(), schema.content_hash());
+-            }
+-            LoadItem::Batch { table, batch } => {
+-                let lowered = crate::load::lowering::lower_batch(&batch, &caps)?;
+-                session
+-                    .write(&table, lowered)
+-                    .await
+-                    .map_err(RdltError::destination)?;
+-            }
+-            LoadItem::Checkpoint { stream, cursor } => {
+-                state.cursors.insert(stream, cursor);
+-            }
+-            // Never persisted to the WAL; nothing to replay.
+-            LoadItem::Discarded { .. } => {}
+-        }
+-    }
+-
+-    state.last_commit = Some(rdlt_core::LastCommit {
+-        load_id: span.load_id.clone(),
+-        commit_seq: span.next_commit_seq,
+-    });
+-    session
+-        .commit(CommitMeta {
+-            load_id: span.load_id,
+-            commit_seq: span.next_commit_seq,
+-            state: state.clone(),
+-            counters: Default::default(),
+-        })
+-        .await
+-        .map_err(RdltError::destination)?;
+-    Ok(Some(batches))
++    Ok(Some(1)) /* ~ changed by cargo-mutants ~ */
+ }

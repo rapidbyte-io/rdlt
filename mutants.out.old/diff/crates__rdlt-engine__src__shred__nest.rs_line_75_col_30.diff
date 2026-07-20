@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/nest.rs
++++ replace == with != in TableBuffer::source_key_for
+@@ -67,17 +67,17 @@
+     pub(crate) fn name_map(&self) -> &[(String, String)] {
+         &self.names
+     }
+ 
+     /// Reverse lookup: normalized column name → source key.
+     pub(crate) fn source_key_for(&self, normalized: &str) -> Option<&str> {
+         self.names
+             .iter()
+-            .find(|(_, n)| n == normalized)
++            .find(|(_, n)| n != /* ~ changed by cargo-mutants ~ */ normalized)
+             .map(|(source, _)| source.as_str())
+     }
+ 
+     /// Policy enforcement: revert one column's observation state to its pre-batch
+     /// snapshot (or remove it if the column first appeared this batch).
+     pub(crate) fn revert_column(
+         &mut self,
+         source_key: &str,

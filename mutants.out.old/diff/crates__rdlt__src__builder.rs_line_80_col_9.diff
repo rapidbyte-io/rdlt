@@ -1,0 +1,22 @@
+--- crates/rdlt/src/builder.rs
++++ replace PipelineBuilder<S, D>::commit_policy -> Self with Default::default()
+@@ -72,18 +72,17 @@
+     /// Schema-change policy (default: evolve).
+     pub fn schema_policy(mut self, policy: SchemaPolicy) -> Self {
+         self.config.schema_policy = policy;
+         self
+     }
+ 
+     /// Commit grouping policy (default: every checkpoint).
+     pub fn commit_policy(mut self, policy: CommitPolicy) -> Self {
+-        self.config.commit_policy = policy;
+-        self
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Local work directory (holds the WAL). Default: `.rdlt`.
+     pub fn workdir(mut self, dir: impl Into<PathBuf>) -> Self {
+         self.config.workdir = Some(dir.into());
+         self
+     }
+ 

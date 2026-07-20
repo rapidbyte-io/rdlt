@@ -1,0 +1,24 @@
+--- crates/rdlt-engine/src/lib.rs
++++ replace EngineConfig::mode_for -> WriteMode with Default::default()
+@@ -49,20 +49,17 @@
+             schema_policy: SchemaPolicy::evolve(),
+             commit_policy: CommitPolicy::default(),
+             workdir: None,
+             byte_budget: 64 << 20,
+         }
+     }
+ 
+     pub(crate) fn mode_for(&self, stream: &StreamName) -> WriteMode {
+-        self.write_modes
+-            .get(stream)
+-            .cloned()
+-            .unwrap_or_else(|| self.write_mode.clone())
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// One pipeline execution: consumes itself on [`Engine::run`].
+ pub struct Engine {
+     config: EngineConfig,
+     source: Arc<dyn Source>,
+     destination: Arc<dyn Destination>,

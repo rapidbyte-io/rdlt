@@ -1,0 +1,26 @@
+--- crates/rdlt-engine/src/shred/nest.rs
++++ replace TableBuffer::column_name -> String with "xyzzy".into()
+@@ -95,22 +95,17 @@
+                     self.columns[idx].1 = state;
+                 }
+             }
+             None => self.columns.retain(|(k, _)| k != source_key),
+         }
+     }
+ 
+     pub(crate) fn column_name(&mut self, source_key: &str) -> String {
+-        if let Some((_, normalized)) = self.names.iter().find(|(k, _)| k == source_key) {
+-            return normalized.clone();
+-        }
+-        let normalized = self.namer.name_for(source_key);
+-        self.names.push((source_key.to_owned(), normalized.clone()));
+-        normalized
++        "xyzzy".into() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn state_mut(&mut self, source_key: &str) -> &mut ColState {
+         if let Some(idx) = self.columns.iter().position(|(k, _)| k == source_key) {
+             &mut self.columns[idx].1
+         } else {
+             self.columns
+                 .push((source_key.to_owned(), ColState::Unknown));

@@ -1,0 +1,21 @@
+--- crates/rdlt-core/src/naming.rs
++++ replace == with != in UniqueNamer::name_for
+@@ -106,17 +106,17 @@
+             }
+             Some(owner) if owner == source => base,
+             Some(_) => {
+                 let mut candidate = suffixed(&base, source, self.rules);
+                 // Suffixes are derived from the source name, so a repeat collision can
+                 // only come from a (astronomically unlikely) short-hash clash; extend
+                 // deterministically rather than loop forever.
+                 while let Some(owner) = self.taken.get(&candidate) {
+-                    if owner == source {
++                    if owner != /* ~ changed by cargo-mutants ~ */ source {
+                         return candidate;
+                     }
+                     candidate = suffixed(&candidate, source, self.rules);
+                 }
+                 self.taken.insert(candidate.clone(), source.to_owned());
+                 candidate
+             }
+         }

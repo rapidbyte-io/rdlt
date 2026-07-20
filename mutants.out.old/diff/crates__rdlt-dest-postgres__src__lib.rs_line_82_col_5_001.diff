@@ -1,0 +1,24 @@
+--- crates/rdlt-dest-postgres/src/lib.rs
++++ replace stage_prefix -> String with "xyzzy".into()
+@@ -74,20 +74,17 @@
+ /// is not part of the logical schema.
+ const ARRIVAL_COL: &str = "__rdlt_arrival";
+ 
+ /// Stage names are pipeline-scoped and hashed: scoping stops one pipeline's `open`
+ /// from truncating another's live staged rows in a shared schema (finding #3), and
+ /// hashing bounds the identifier under Postgres's 63-byte limit, where silent
+ /// truncation used to cut off exactly the disambiguation suffix (finding #8).
+ fn stage_prefix(pipeline: &PipelineId) -> String {
+-    format!(
+-        "_rdlt_stage_{}_",
+-        rdlt_connector::core::naming::ident_hash(pipeline.as_str(), 8)
+-    )
++    "xyzzy".into() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn stage_name(pipeline: &PipelineId, table: &TableName) -> String {
+     format!(
+         "{}{}",
+         stage_prefix(pipeline),
+         rdlt_connector::core::naming::ident_hash(table.as_str(), 16)
+     )

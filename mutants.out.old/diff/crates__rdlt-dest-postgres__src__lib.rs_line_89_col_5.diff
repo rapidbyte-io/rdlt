@@ -1,0 +1,25 @@
+--- crates/rdlt-dest-postgres/src/lib.rs
++++ replace stage_name -> String with String::new()
+@@ -81,21 +81,17 @@
+ fn stage_prefix(pipeline: &PipelineId) -> String {
+     format!(
+         "_rdlt_stage_{}_",
+         rdlt_connector::core::naming::ident_hash(pipeline.as_str(), 8)
+     )
+ }
+ 
+ fn stage_name(pipeline: &PipelineId, table: &TableName) -> String {
+-    format!(
+-        "{}{}",
+-        stage_prefix(pipeline),
+-        rdlt_connector::core::naming::ident_hash(table.as_str(), 16)
+-    )
++    String::new() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Quoted, comma-joined logical columns — publishes are ALWAYS by name (finding #4).
+ fn column_list(schema: &TableSchema) -> String {
+     schema
+         .columns
+         .iter()
+         .map(|c| quote(&c.name))

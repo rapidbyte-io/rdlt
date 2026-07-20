@@ -1,0 +1,62 @@
+--- crates/rdlt-dest-postgres/src/lib.rs
++++ replace <impl Destination for Postgres>::open -> Result<Box<dyn LoadSession>, DestError> with Ok(Box::new(Default::default()))
+@@ -153,58 +153,17 @@
+             scalar_lists: false, // → scalar lists become child tables at shred planning
+             json_type: false,
+             decimal: false, // → engine lowers decimals to canonical text
+             ident_rules: IdentRules { max_len: 63 },
+         }
+     }
+ 
+     async fn open(&self, _ctx: OpenCtx) -> Result<Box<dyn LoadSession>, DestError> {
+-        let client = self.client().await?;
+-        let schema = quote(&self.schema);
+-        client
+-            .batch_execute(&format!(
+-                "CREATE SCHEMA IF NOT EXISTS {schema};
+-                 SET search_path TO {schema};
+-                 CREATE TABLE IF NOT EXISTS _rdlt_state (pipeline TEXT PRIMARY KEY, doc TEXT);
+-                 CREATE TABLE IF NOT EXISTS _rdlt_commits (
+-                     load_id TEXT, commit_seq BIGINT, PRIMARY KEY (load_id, commit_seq));"
+-            ))
+-            .await
+-            .map_err(transient)?;
+-
+-        // Clause D4: staged data from THIS PIPELINE's dead sessions becomes
+-        // invisible/reclaimable. Scoped by pipeline-hash prefix: other pipelines
+-        // sharing the schema keep their live staged rows (finding #3).
+-        let prefix_pattern = format!("{}%", stage_prefix(&_ctx.pipeline).replace('_', "\\_"));
+-        let stale: Vec<String> = client
+-            .query(
+-                "SELECT tablename FROM pg_tables
+-                 WHERE schemaname = $1 AND tablename LIKE $2",
+-                &[&self.schema, &prefix_pattern],
+-            )
+-            .await
+-            .map_err(transient)?
+-            .into_iter()
+-            .map(|row| row.get::<_, String>(0))
+-            .collect();
+-        for table in stale {
+-            client
+-                .batch_execute(&format!("TRUNCATE TABLE {}", quote(&table)))
+-                .await
+-                .map_err(transient)?;
+-        }
+-
+-        Ok(Box::new(PgSession {
+-            client,
+-            pipeline: _ctx.pipeline,
+-            tables: BTreeMap::new(),
+-            replaced: BTreeSet::new(),
+-            last_replace_load: None,
+-        }))
++        Ok(Box::new(Default::default())) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ struct PgSession {
+     client: Client,
+     pipeline: PipelineId,
+     tables: BTreeMap<TableName, (TableSchema, WriteMode)>,
+     replaced: BTreeSet<TableName>,

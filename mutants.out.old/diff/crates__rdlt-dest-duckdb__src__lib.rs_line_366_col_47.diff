@@ -1,0 +1,21 @@
+--- crates/rdlt-dest-duckdb/src/lib.rs
++++ replace == with != in <impl LoadSession for DuckDbSession>::commit
+@@ -358,17 +358,17 @@
+                         tx.execute_batch(&format!(
+                             "INSERT INTO {target} ({cols}) SELECT {cols} FROM {stage}"
+                         ))
+                         .map_err(fatal)?;
+                     }
+                     WriteMode::Merge { .. } => {
+                         let root = &roots[table];
+                         let root_stage = quote(&stage_name(root));
+-                        let id_col = if table == root {
++                        let id_col = if table != /* ~ changed by cargo-mutants ~ */ root {
+                             system_columns::ID
+                         } else {
+                             system_columns::ROOT_ID
+                         };
+                         // Subtree replacement by root id (design doc §5.4), then
+                         // insert with DETERMINISTIC in-batch dedup: rowid reflects
+                         // append order in the stage, so "last wins" is real
+                         // (finding #7 — no ORDER BY meant "arbitrary wins").

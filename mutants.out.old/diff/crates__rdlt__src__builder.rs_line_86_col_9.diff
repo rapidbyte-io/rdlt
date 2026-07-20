@@ -1,0 +1,22 @@
+--- crates/rdlt/src/builder.rs
++++ replace PipelineBuilder<S, D>::workdir -> Self with Default::default()
+@@ -78,18 +78,17 @@
+     /// Commit grouping policy (default: every checkpoint).
+     pub fn commit_policy(mut self, policy: CommitPolicy) -> Self {
+         self.config.commit_policy = policy;
+         self
+     }
+ 
+     /// Local work directory (holds the WAL). Default: `.rdlt`.
+     pub fn workdir(mut self, dir: impl Into<PathBuf>) -> Self {
+-        self.config.workdir = Some(dir.into());
+-        self
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Cap on in-flight bytes per stage channel — the memory bound.
+     pub fn byte_budget(mut self, bytes: usize) -> Self {
+         self.config.byte_budget = bytes;
+         self
+     }
+ }

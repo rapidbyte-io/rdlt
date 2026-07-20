@@ -1,0 +1,30 @@
+--- crates/rdlt-connector/src/lib.rs
++++ replace RecordsOut::rows -> Result<(), ChannelClosed> with Ok(())
+@@ -173,26 +173,17 @@
+     }
+ 
+     /// Convenience path for programmatically constructed rows; serialized here to
+     /// NDJSON so hosts see a single JSON ingest path.
+     pub async fn rows(
+         &mut self,
+         rows: impl IntoIterator<Item = serde_json::Value>,
+     ) -> Result<(), ChannelClosed> {
+-        let mut buf = Vec::new();
+-        for row in rows {
+-            serde_json::to_writer(&mut buf, &row).map_err(|_| ChannelClosed)?;
+-            buf.push(b'\n');
+-        }
+-        if buf.is_empty() {
+-            return Ok(());
+-        }
+-        let size = buf.len();
+-        self.send(PushPayload::RawJson(buf.into()), size).await
++        Ok(()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub async fn arrow(&mut self, batch: RecordBatch) -> Result<(), ChannelClosed> {
+         let size = batch.get_array_memory_size();
+         self.send(PushPayload::Arrow(batch), size).await
+     }
+ 
+     /// "All rows pushed so far are complete up to `cursor`" (clause S2).

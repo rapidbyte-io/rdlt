@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/load/lowering.rs
++++ delete ! in flatten_array
+@@ -105,17 +105,17 @@
+     namer: &mut UniqueNamer,
+     fields: &mut Vec<arrow::datatypes::Field>,
+     out: &mut Vec<ArrayRef>,
+ ) -> Result<(), RdltError> {
+     use arrow::datatypes::DataType;
+     let mut full_path: Vec<&str> = path.to_vec();
+     full_path.push(field.name());
+     match field.data_type() {
+-        DataType::Struct(children) if !caps.structs => {
++        DataType::Struct(children) if  /* ~ changed by cargo-mutants ~ */caps.structs => {
+             let struct_array = array
+                 .as_any()
+                 .downcast_ref::<StructArray>()
+                 .ok_or_else(|| RdltError::config("schema says struct, array is not"))?;
+             let parent_nulls = struct_array.nulls().cloned();
+             for (i, child_field) in children.iter().enumerate() {
+                 let child = with_merged_nulls(struct_array.column(i), parent_nulls.as_ref());
+                 flatten_array(child_field, &full_path, child, caps, namer, fields, out)?;

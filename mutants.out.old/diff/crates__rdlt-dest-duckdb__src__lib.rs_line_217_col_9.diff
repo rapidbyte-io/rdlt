@@ -1,0 +1,22 @@
+--- crates/rdlt-dest-duckdb/src/lib.rs
++++ replace DuckDbSession::with_conn -> Result<T, DestError> with Ok(Default::default())
+@@ -209,18 +209,17 @@
+     last_replace_load: Option<LoadId>,
+ }
+ 
+ impl DuckDbSession {
+     fn with_conn<T>(
+         &mut self,
+         f: impl FnOnce(&mut Connection) -> Result<T, DestError>,
+     ) -> Result<T, DestError> {
+-        let mut guard = self.conn.lock().map_err(|_| fatal("connection poisoned"))?;
+-        f(&mut guard)
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn root_of(&self, table: &TableName) -> TableName {
+         let mut current = table.clone();
+         for _ in 0..64 {
+             match self
+                 .tables
+                 .get(&current)

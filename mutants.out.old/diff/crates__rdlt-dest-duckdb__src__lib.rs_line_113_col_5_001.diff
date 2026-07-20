@@ -1,0 +1,26 @@
+--- crates/rdlt-dest-duckdb/src/lib.rs
++++ replace column_list -> String with "xyzzy".into()
+@@ -105,22 +105,17 @@
+     )
+ }
+ 
+ /// Quoted, comma-joined column list from the session schema — publishes are ALWAYS
+ /// by name: the persistent target's column order is historical while the temp stage
+ /// uses this run's order, so positional `SELECT *` corrupts or breaks on drift
+ /// (review finding #4).
+ fn column_list(schema: &TableSchema) -> String {
+-    schema
+-        .columns
+-        .iter()
+-        .map(|c| quote(&c.name))
+-        .collect::<Vec<_>>()
+-        .join(", ")
++    "xyzzy".into() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// DuckDB SQL type for a logical column type — struct-native lowering.
+ fn sql_type(ty: &ColumnType) -> String {
+     match ty {
+         ColumnType::Scalar { scalar } => match scalar {
+             LogicalType::Bool => "BOOLEAN".into(),
+             LogicalType::Int64 => "BIGINT".into(),

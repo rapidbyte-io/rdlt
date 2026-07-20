@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/load/lowering.rs
++++ delete ! in flatten_array
+@@ -139,17 +139,17 @@
+             ));
+             out.push(Arc::new(rendered));
+             Ok(())
+         }
+         other => {
+             fields.push(arrow::datatypes::Field::new(
+                 namer.name_for(&full_path.join("__")),
+                 other.clone(),
+-                field.is_nullable() || !path.is_empty(),
++                field.is_nullable() ||  /* ~ changed by cargo-mutants ~ */path.is_empty(),
+             ));
+             out.push(array);
+             Ok(())
+         }
+     }
+ }
+ 
+ /// A struct-null row must null its flattened children too.

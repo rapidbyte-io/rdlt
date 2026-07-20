@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/infer.rs
++++ replace == with != in ColState::observe
+@@ -108,17 +108,17 @@
+             }
+             ColState::Scalar(state) => match value {
+                 Value::Object(_) | Value::Array(_) => *self = ColState::Json,
+                 scalar => state.observe(scalar),
+             },
+             ColState::Struct(fields) => match value {
+                 Value::Object(map) => {
+                     for (key, item) in map {
+-                        match fields.iter_mut().find(|(name, _)| name == key) {
++                        match fields.iter_mut().find(|(name, _)| name != /* ~ changed by cargo-mutants ~ */ key) {
+                             Some((_, state)) => state.observe(item, lists_as_columns),
+                             None => {
+                                 let mut state = ColState::Unknown;
+                                 state.observe(item, lists_as_columns);
+                                 fields.push((key.clone(), state));
+                             }
+                         }
+                     }

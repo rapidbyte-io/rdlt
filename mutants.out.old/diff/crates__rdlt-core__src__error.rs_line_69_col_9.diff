@@ -1,0 +1,23 @@
+--- crates/rdlt-core/src/error.rs
++++ replace RdltError::config -> Self with Default::default()
+@@ -61,19 +61,17 @@
+ 
+     /// The run was cancelled; recovery on next run is identical to a crash.
+     #[error("run cancelled")]
+     Cancelled,
+ }
+ 
+ impl RdltError {
+     pub fn config(message: impl Into<String>) -> Self {
+-        RdltError::Config {
+-            message: message.into(),
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub fn destination(message: impl std::fmt::Display) -> Self {
+         RdltError::Destination {
+             message: message.to_string(),
+         }
+     }
+ 

@@ -1,0 +1,61 @@
+--- crates/rdlt-cli/src/main.rs
++++ replace drive -> Result<(), CliError> with Ok(())
+@@ -167,57 +167,10 @@
+     }
+ }
+ 
+ /// Event feed + run + report emission (shared tail after the pipeline is built).
+ async fn drive(
+     pipeline: &mut rdlt::Pipeline,
+     report_path: Option<PathBuf>,
+ ) -> Result<(), CliError> {
+-    let mut events = pipeline.events().expect("events available before run");
+-    let feed = tokio::spawn(async move {
+-        while let Some(event) = events.recv().await {
+-            match event {
+-                PipelineEvent::StreamStarted { stream } => eprintln!("-> stream {stream} started"),
+-                PipelineEvent::BatchLoaded { table, rows, .. } => {
+-                    eprintln!("  {table}: +{rows} rows")
+-                }
+-                PipelineEvent::SchemaEvolved { delta } => {
+-                    eprintln!(
+-                        "  schema: {} -> {} changes",
+-                        delta.table,
+-                        delta.changes.len()
+-                    )
+-                }
+-                PipelineEvent::Committed { commit_seq, .. } => {
+-                    eprintln!("commit {commit_seq} ok")
+-                }
+-                PipelineEvent::Discarded {
+-                    table,
+-                    rows,
+-                    values,
+-                    ..
+-                } => {
+-                    eprintln!("! {table}: discarded {rows} rows / {values} values")
+-                }
+-                PipelineEvent::Retried { stream, attempt } => {
+-                    eprintln!("! retry attempt {attempt} ({stream:?})")
+-                }
+-                PipelineEvent::StreamFinished { stream } => {
+-                    eprintln!("-> stream {stream} finished")
+-                }
+-                _ => {}
+-            }
+-        }
+-    });
+-
+-    let report = pipeline.run().await?;
+-    let _ = feed.await;
+-
+-    let json = serde_json::to_string_pretty(&report)
+-        .map_err(|e| CliError::Usage(format!("encoding report: {e}")))?;
+-    match report_path {
+-        Some(path) => std::fs::write(&path, json)
+-            .map_err(|e| CliError::Usage(format!("writing {}: {e}", path.display())))?,
+-        None => println!("{json}"),
+-    }
+-    Ok(())
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }

@@ -1,0 +1,21 @@
+--- crates/rdlt-core/src/identity.rs
++++ replace RowIdBuilder::keyed -> Self with Default::default()
+@@ -27,17 +27,17 @@
+     /// `Merge` (design doc §5.4).
+     pub fn keyless() -> Self {
+         Self::with_domain(DOMAIN_KEYLESS)
+     }
+ 
+     /// Identity for a keyed row: hash of the declared key fields only, so updates to
+     /// non-key fields keep the id stable (what `Merge` merges on).
+     pub fn keyed() -> Self {
+-        Self::with_domain(DOMAIN_KEYED)
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn with_domain(domain: &[u8]) -> Self {
+         let mut hasher = blake3::Hasher::new();
+         hasher.update(domain);
+         Self { hasher }
+     }
+ 

@@ -1,0 +1,21 @@
+--- crates/rdlt-source-file/src/jsonl.rs
++++ replace < with == in read_task
+@@ -37,17 +37,17 @@
+     // Whether the consumed range ends at a newline. A final line without one still
+     // loads (files legitimately end that way), but the cursor remembers it: if the
+     // file GROWS later, the recorded offset points mid-record and resume must fail
+     // loudly instead of reading from the middle of a record.
+     let mut ended_on_newline = true;
+     loop {
+         // Fill a slab with complete lines.
+         slab.clear();
+-        while slab.len() < SLAB_BYTES {
++        while slab.len() == /* ~ changed by cargo-mutants ~ */ SLAB_BYTES {
+             line.clear();
+             let n = reader.read_line(&mut line).map_err(|e| {
+                 SourceError::fatal(format!("reading `{}` at offset {offset}: {e}", task.path))
+             })?;
+             if n == 0 {
+                 break; // EOF
+             }
+             if validate && !line.trim().is_empty() {

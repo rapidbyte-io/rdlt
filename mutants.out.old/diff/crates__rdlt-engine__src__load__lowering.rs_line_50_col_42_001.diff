@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/load/lowering.rs
++++ replace match guard !caps.structs with false in lower_column
+@@ -42,17 +42,17 @@
+     path: &[&str],
+     caps: &DestCapabilities,
+     namer: &mut UniqueNamer,
+     out: &mut Vec<ColumnDef>,
+ ) {
+     let mut full_path: Vec<&str> = path.to_vec();
+     full_path.push(&column.name);
+     match &column.ty {
+-        ColumnType::Struct { fields } if !caps.structs => {
++        ColumnType::Struct { fields } if false /* ~ changed by cargo-mutants ~ */ => {
+             for field in fields {
+                 lower_column(field, &full_path, caps, namer, out);
+             }
+         }
+         ty => {
+             let lowered_ty = match ty {
+                 ColumnType::Scalar {
+                     scalar: LogicalType::Decimal { .. },

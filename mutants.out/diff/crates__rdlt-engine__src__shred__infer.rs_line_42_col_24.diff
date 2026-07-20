@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/infer.rs
++++ delete ! in ScalarState::observe
+@@ -34,17 +34,17 @@
+         if self.pinned {
+             return;
+         }
+         let observed = match value {
+             Value::Null => return,
+             Value::Bool(_) => LogicalType::Bool,
+             Value::Number(n) => {
+                 if let Some(i) = n.as_i64() {
+-                    if !int64_fits_in_f64(i) {
++                    if  /* ~ changed by cargo-mutants ~ */int64_fits_in_f64(i) {
+                         self.saw_inexact_int = true;
+                     }
+                     LogicalType::Int64
+                 } else if n.as_u64().is_some() {
+                     // u64 beyond i64::MAX: definitely not exactly representable paths
+                     // we track; treat as inexact-int territory.
+                     self.saw_inexact_int = true;
+                     LogicalType::Int64

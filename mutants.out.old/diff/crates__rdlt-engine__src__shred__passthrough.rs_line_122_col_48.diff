@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/passthrough.rs
++++ replace == with != in passthrough_items
+@@ -114,17 +114,17 @@
+     for column in &current.columns {
+         if column.name == system_columns::LOAD_ID {
+             arrays.push(Arc::new(StringArray::from(vec![load_id.as_str(); rows])));
+             continue;
+         }
+         let target_type = arrow_column_type(&column.ty);
+         let array = match name_map
+             .iter()
+-            .find(|(normalized, _)| normalized == &column.name)
++            .find(|(normalized, _)| normalized != /* ~ changed by cargo-mutants ~ */ &column.name)
+         {
+             Some((_, idx)) => {
+                 let source = batch.column(*idx);
+                 if source.data_type() == &target_type {
+                     Arc::clone(source) // the common zero-copy path
+                 } else {
+                     // Cross-batch widening (e.g. Int64 batch under a Float64 column).
+                     cast(source.as_ref(), &target_type).map_err(|e| {

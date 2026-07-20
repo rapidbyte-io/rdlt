@@ -1,0 +1,25 @@
+--- crates/rdlt-core/src/naming.rs
++++ replace suffixed -> String with String::new()
+@@ -119,21 +119,17 @@
+                 self.taken.insert(candidate.clone(), source.to_owned());
+                 candidate
+             }
+         }
+     }
+ }
+ 
+ fn suffixed(base: &str, source: &str, rules: IdentRules) -> String {
+-    let mut out = base.to_owned();
+-    out.truncate(rules.max_len.saturating_sub(SUFFIX_LEN).min(out.len()));
+-    out.push('_');
+-    out.push_str(&short_hash(source));
+-    out
++    String::new() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn short_hash(source: &str) -> String {
+     ident_hash(source, 8)
+ }
+ 
+ /// Deterministic short hex digest for building bounded-length identifiers (e.g.
+ /// destination staging-table names). Stable across runs and machines.

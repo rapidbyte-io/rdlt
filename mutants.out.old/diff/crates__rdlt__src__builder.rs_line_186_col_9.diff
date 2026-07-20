@@ -1,0 +1,19 @@
+--- crates/rdlt/src/builder.rs
++++ replace Pipeline::run -> Result<RunReport, RdltError> with Ok(Default::default())
+@@ -178,15 +178,11 @@
+     /// Subscribe before calling [`Pipeline::run`]; `None` once the pipeline ran.
+     pub fn events(&self) -> Option<rdlt_engine::EventStream> {
+         self.engine.as_ref().map(Engine::events)
+     }
+ 
+     /// Run to completion. Resumable: after a crash or cancellation, constructing the
+     /// same pipeline again and calling `run` continues from committed state.
+     pub async fn run(&mut self) -> Result<RunReport, RdltError> {
+-        let engine = self
+-            .engine
+-            .take()
+-            .ok_or_else(|| RdltError::config("this pipeline was already run; build a new one"))?;
+-        engine.run().await
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ }

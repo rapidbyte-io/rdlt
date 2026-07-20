@@ -1,0 +1,21 @@
+--- crates/rdlt-dest-postgres/src/lib.rs
++++ replace != with == in <impl LoadSession for PgSession>::commit
+@@ -331,17 +331,17 @@
+                 .collect();
+             writer.as_mut().write(&refs).await.map_err(transient)?;
+         }
+         writer.finish().await.map_err(transient)?;
+         Ok(())
+     }
+ 
+     async fn commit(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestError> {
+-        if self.last_replace_load.as_ref() != Some(&meta.load_id) {
++        if self.last_replace_load.as_ref() == /* ~ changed by cargo-mutants ~ */ Some(&meta.load_id) {
+             self.replaced.clear();
+             self.last_replace_load = Some(meta.load_id.clone());
+         }
+         let receipt = CommitReceipt {
+             load_id: meta.load_id.clone(),
+             commit_seq: meta.commit_seq,
+         };
+         let roots: BTreeMap<TableName, TableName> = self

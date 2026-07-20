@@ -1,0 +1,142 @@
+--- crates/rdlt-dest-postgres/src/lib.rs
++++ replace <impl LoadSession for PgSession>::commit -> Result<CommitReceipt, DestError> with Ok(Default::default())
+@@ -331,138 +331,17 @@
+                 .collect();
+             writer.as_mut().write(&refs).await.map_err(transient)?;
+         }
+         writer.finish().await.map_err(transient)?;
+         Ok(())
+     }
+ 
+     async fn commit(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestError> {
+-        if self.last_replace_load.as_ref() != Some(&meta.load_id) {
+-            self.replaced.clear();
+-            self.last_replace_load = Some(meta.load_id.clone());
+-        }
+-        let receipt = CommitReceipt {
+-            load_id: meta.load_id.clone(),
+-            commit_seq: meta.commit_seq,
+-        };
+-        let roots: BTreeMap<TableName, TableName> = self
+-            .tables
+-            .keys()
+-            .map(|t| (t.clone(), self.root_of(t)))
+-            .collect();
+-
+-        let tx = self.client.transaction().await.map_err(transient)?;
+-        // Clause D3: idempotence by (load_id, commit_seq).
+-        let already = tx
+-            .query_one(
+-                "SELECT count(*) FROM _rdlt_commits WHERE load_id = $1 AND commit_seq = $2",
+-                &[&meta.load_id.as_str(), &(meta.commit_seq as i64)],
+-            )
+-            .await
+-            .map_err(transient)?
+-            .get::<_, i64>(0);
+-        if already > 0 {
+-            for table in self.tables.keys() {
+-                tx.batch_execute(&format!(
+-                    "TRUNCATE TABLE {}",
+-                    quote(&stage_name(&self.pipeline, table))
+-                ))
+-                .await
+-                .map_err(transient)?;
+-            }
+-            tx.commit().await.map_err(transient)?;
+-            return Ok(receipt);
+-        }
+-
+-        for (table, (schema, mode)) in &self.tables {
+-            let target = quote(table.as_str());
+-            let stage = quote(&stage_name(&self.pipeline, table));
+-            // Publishes are ALWAYS by name (finding #4) — and the list excludes the
+-            // stage-only arrival column.
+-            let cols = column_list(schema);
+-            match mode {
+-                WriteMode::Append => {
+-                    tx.batch_execute(&format!(
+-                        "INSERT INTO {target} ({cols}) SELECT {cols} FROM {stage}"
+-                    ))
+-                    .await
+-                    .map_err(transient)?;
+-                }
+-                WriteMode::Replace => {
+-                    if self.replaced.insert(table.clone()) {
+-                        tx.batch_execute(&format!("TRUNCATE TABLE {target}"))
+-                            .await
+-                            .map_err(transient)?;
+-                    }
+-                    tx.batch_execute(&format!(
+-                        "INSERT INTO {target} ({cols}) SELECT {cols} FROM {stage}"
+-                    ))
+-                    .await
+-                    .map_err(transient)?;
+-                }
+-                WriteMode::Merge { .. } => {
+-                    let root = &roots[table];
+-                    let root_stage = quote(&stage_name(&self.pipeline, root));
+-                    let id_col = if table == root {
+-                        system_columns::ID
+-                    } else {
+-                        system_columns::ROOT_ID
+-                    };
+-                    // Subtree replacement by root id + DETERMINISTIC in-batch dedup:
+-                    // arrival order breaks ties, so "last wins" is real (finding #7).
+-                    tx.batch_execute(&format!(
+-                        "DELETE FROM {target} WHERE {} IN (SELECT {} FROM {root_stage})",
+-                        quote(id_col),
+-                        quote(system_columns::ID),
+-                    ))
+-                    .await
+-                    .map_err(transient)?;
+-                    tx.batch_execute(&format!(
+-                        "INSERT INTO {target} ({cols}) \
+-                         SELECT {cols} FROM ( \
+-                             SELECT DISTINCT ON ({id}) * FROM {stage} \
+-                             ORDER BY {id}, {arrival} DESC \
+-                         ) deduped",
+-                        id = quote(system_columns::ID),
+-                        arrival = quote(ARRIVAL_COL),
+-                    ))
+-                    .await
+-                    .map_err(transient)?;
+-                }
+-            }
+-        }
+-        // Truncate stages only after ALL tables published: child-table merges read the
+-        // ROOT's stage for their delete-by-root-id subquery.
+-        for table in self.tables.keys() {
+-            tx.batch_execute(&format!(
+-                "TRUNCATE TABLE {}",
+-                quote(&stage_name(&self.pipeline, table))
+-            ))
+-            .await
+-            .map_err(transient)?;
+-        }
+-
+-        // Clause D2: state travels in the SAME transaction as the data.
+-        let doc = serde_json::to_string(&meta.state).map_err(fatal)?;
+-        tx.execute(
+-            "INSERT INTO _rdlt_state VALUES ($1, $2)
+-             ON CONFLICT (pipeline) DO UPDATE SET doc = EXCLUDED.doc",
+-            &[&meta.state.pipeline.as_str(), &doc],
+-        )
+-        .await
+-        .map_err(transient)?;
+-        tx.execute(
+-            "INSERT INTO _rdlt_commits VALUES ($1, $2)",
+-            &[&meta.load_id.as_str(), &(meta.commit_seq as i64)],
+-        )
+-        .await
+-        .map_err(transient)?;
+-        tx.commit().await.map_err(transient)?;
+-        Ok(receipt)
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     async fn read_state(&mut self, pipeline: &PipelineId) -> Result<Option<StateDoc>, DestError> {
+         let row = self
+             .client
+             .query_opt(
+                 "SELECT doc FROM _rdlt_state WHERE pipeline = $1",
+                 &[&pipeline.as_str()],

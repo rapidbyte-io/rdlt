@@ -1,0 +1,21 @@
+--- crates/rdlt-connector/src/error.rs
++++ replace SourceError::transient -> Self with Default::default()
+@@ -23,17 +23,17 @@
+     },
+     /// Run aborts with a classified error.
+     #[error("fatal source error: {0}")]
+     Fatal(#[source] BoxError),
+ }
+ 
+ impl SourceError {
+     pub fn transient(err: impl Into<BoxError>) -> Self {
+-        SourceError::Transient(err.into())
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub fn fatal(err: impl Into<BoxError>) -> Self {
+         SourceError::Fatal(err.into())
+     }
+ }
+ 
+ #[derive(Debug, thiserror::Error)]

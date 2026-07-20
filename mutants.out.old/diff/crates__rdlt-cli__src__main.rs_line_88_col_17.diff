@@ -1,0 +1,21 @@
+--- crates/rdlt-cli/src/main.rs
++++ delete match arm RdltError::Schema(_) in main
+@@ -80,17 +80,17 @@
+         Err(CliError::Usage(message)) => {
+             eprintln!("error: {message}");
+             ExitCode::from(2)
+         }
+         Err(CliError::Run(error)) => {
+             eprintln!("error: {error}");
+             ExitCode::from(match error {
+                 RdltError::Config { .. } => 2,
+-                RdltError::Schema(_) => 3,
++                 /* ~ changed by cargo-mutants ~ */
+                 RdltError::Source { .. } => 4,
+                 RdltError::Destination { .. } => 5,
+                 RdltError::Wal { .. } => 6,
+                 RdltError::Cancelled => 7,
+                 _ => 2,
+             })
+         }
+     }

@@ -1,0 +1,21 @@
+--- crates/rdlt-source-file/src/jsonl.rs
++++ replace > with < in read_task
+@@ -20,17 +20,17 @@
+ ) -> Result<bool, SourceError> {
+     let file = std::fs::File::open(&task.path)
+         .map_err(|e| SourceError::fatal(format!("opening `{}`: {e}", task.path)))?;
+     let total_size = file
+         .metadata()
+         .map_err(|e| SourceError::fatal(format!("stat `{}`: {e}", task.path)))?
+         .len();
+     let mut reader = BufReader::with_capacity(SLAB_BYTES, file);
+-    if task.start > 0 {
++    if task.start < /* ~ changed by cargo-mutants ~ */ 0 {
+         reader
+             .seek(SeekFrom::Start(task.start))
+             .map_err(|e| SourceError::fatal(format!("seek `{}`: {e}", task.path)))?;
+     }
+ 
+     let mut offset = task.start;
+     let mut slab: Vec<u8> = Vec::with_capacity(SLAB_BYTES);
+     let mut line = String::new();

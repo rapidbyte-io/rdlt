@@ -1,0 +1,25 @@
+--- crates/rdlt-engine/src/shred/nest.rs
++++ replace content_hash -> RowId with Default::default()
+@@ -288,21 +288,17 @@
+                 builder.finish()
+             }
+             _ => content_hash(row),
+         }
+     }
+ }
+ 
+ fn content_hash(row: &Value) -> RowId {
+-    let mut canonical = Vec::new();
+-    canonical_json_bytes(row, &mut canonical);
+-    let mut builder = RowIdBuilder::keyless();
+-    builder.field("", FieldValue::Bytes(&canonical));
+-    builder.finish()
++    Default::default() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Parse a raw-JSON push: NDJSON, a top-level array, or a single document.
+ pub(crate) fn parse_rows(bytes: &[u8]) -> Result<Vec<Value>, serde_json::Error> {
+     let mut rows = Vec::new();
+     let stream = serde_json::Deserializer::from_slice(bytes).into_iter::<Value>();
+     for doc in stream {
+         match doc? {

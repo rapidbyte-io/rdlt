@@ -1,0 +1,16 @@
+--- crates/rdlt-connector/src/stream.rs
++++ replace StreamSpec::with_type_hint -> Self with Default::default()
+@@ -48,12 +48,11 @@
+     }
+ 
+     pub fn with_cursor_field(mut self, field: impl Into<String>) -> Self {
+         self.cursor_field = Some(field.into());
+         self
+     }
+ 
+     pub fn with_type_hint(mut self, column: impl Into<String>, ty: LogicalType) -> Self {
+-        self.type_hints.insert(column.into(), ty);
+-        self
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ }

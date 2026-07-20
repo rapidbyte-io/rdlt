@@ -1,0 +1,23 @@
+--- crates/rdlt-engine/src/lib.rs
++++ replace Engine::events -> EventStream with Default::default()
+@@ -109,19 +109,17 @@
+             cancel: CancellationToken::new(),
+             events: tokio::sync::broadcast::channel(4096).0,
+         }
+     }
+ 
+     /// Subscribe to the typed event stream. Call before [`Engine::run`]; multiple
+     /// subscribers each see every event.
+     pub fn events(&self) -> EventStream {
+-        EventStream {
+-            rx: self.events.subscribe(),
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Cancelling is safe at any instant and equivalent to a crash: the next run
+     /// recovers identically (recovery invariant 4).
+     pub fn cancellation_token(&self) -> CancellationToken {
+         self.cancel.clone()
+     }
+ 

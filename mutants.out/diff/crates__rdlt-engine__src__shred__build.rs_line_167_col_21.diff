@@ -1,0 +1,24 @@
+--- crates/rdlt-engine/src/shred/build.rs
++++ delete match arm Some(Value::Array(items)) in build_column
+@@ -159,20 +159,17 @@
+         }
+         ColumnType::ScalarList { item } => {
+             let mut offsets: Vec<i32> = Vec::with_capacity(values.len() + 1);
+             offsets.push(0);
+             let mut flat: Vec<Option<&Value>> = Vec::new();
+             let mut validity: Vec<bool> = Vec::with_capacity(values.len());
+             for value in values {
+                 match value {
+-                    Some(Value::Array(items)) => {
+-                        flat.extend(items.iter().map(Some));
+-                        validity.push(true);
+-                    }
++                     /* ~ changed by cargo-mutants ~ */
+                     _ => validity.push(value.is_some()),
+                 }
+                 offsets.push(flat.len() as i32);
+             }
+             let item_array = build_scalar(*item, &flat);
+             Arc::new(ListArray::new(
+                 Arc::new(Field::new("item", arrow_scalar_type(*item), true)),
+                 OffsetBuffer::new(offsets.into()),

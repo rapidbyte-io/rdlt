@@ -1,0 +1,17 @@
+--- crates/rdlt-engine/src/fuzzing.rs
++++ delete match arm crate::load::LoadItem::Batch{batch, ..} in bench_passthrough
+@@ -91,13 +91,13 @@
+         &LoadId::new("bench-load"),
+         &WriteMode::Append,
+         DestCapabilities::default(),
+     )
+     .expect("bench passthrough succeeds");
+     items
+         .iter()
+         .map(|item| match item {
+-            crate::load::LoadItem::Batch { batch, .. } => batch.num_rows() as u64,
++             /* ~ changed by cargo-mutants ~ */
+             _ => 0,
+         })
+         .sum()
+ }

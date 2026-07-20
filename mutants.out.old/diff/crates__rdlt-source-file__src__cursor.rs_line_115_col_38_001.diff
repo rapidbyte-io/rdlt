@@ -1,0 +1,21 @@
+--- crates/rdlt-source-file/src/cursor.rs
++++ replace < with > in FileCursor::plan
+@@ -107,17 +107,17 @@
+                     {
+                         return Err(SourceError::fatal(format!(
+                             "file `{}` was rewritten in place (same size, but modified \
+                              since the last run); refusing to trust recorded progress — \
+                              clear it from the pipeline state or restore the file",
+                             meta.path
+                         )));
+                     }
+-                    if progress.done < meta.size {
++                    if progress.done > /* ~ changed by cargo-mutants ~ */ meta.size {
+                         if !progress.eol {
+                             return Err(SourceError::fatal(format!(
+                                 "file `{}` grew after a run that consumed an unterminated \
+                                  final line; the recorded offset {} points mid-record — \
+                                  clear it from the pipeline state or restore the file",
+                                 meta.path, progress.done
+                             )));
+                         }

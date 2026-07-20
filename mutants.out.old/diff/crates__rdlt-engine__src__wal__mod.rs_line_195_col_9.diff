@@ -1,0 +1,32 @@
+--- crates/rdlt-engine/src/wal/mod.rs
++++ replace Wal::append -> Result<(), RdltError> with Ok(())
+@@ -187,28 +187,17 @@
+         for path in self.pending_gc.drain(..) {
+             // Best-effort: a survivor just gets replay-skipped via the Committed record.
+             let _ = std::fs::remove_file(path);
+         }
+         Ok(())
+     }
+ 
+     fn append(&mut self, record: &WalRecord) -> Result<(), RdltError> {
+-        crash_point!(
+-            "wal.manifest.append",
+-            Err(wal_err(
+-                "append manifest",
+-                std::io::Error::other("injected crash"),
+-            ))
+-        );
+-        let mut line = serde_json::to_vec(record).map_err(|e| wal_err("encode record", e))?;
+-        line.push(b'\n');
+-        self.manifest
+-            .write_all(&line)
+-            .map_err(|e| wal_err("append manifest", e))
++        Ok(()) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ fn write_segment(path: &Path, batch: &RecordBatch) -> Result<(), RdltError> {
+     let file = File::create(path).map_err(|e| wal_err("create segment", e))?;
+     let mut writer = ArrowWriter::try_new(file, Arc::clone(&batch.schema()), None)
+         .map_err(|e| wal_err("open segment writer", e))?;
+     writer

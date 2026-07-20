@@ -1,0 +1,23 @@
+--- crates/rdlt-cli/src/main.rs
++++ delete match arm PipelineEvent::Retried{stream, attempt} in drive
+@@ -193,19 +193,17 @@
+                 PipelineEvent::Discarded {
+                     table,
+                     rows,
+                     values,
+                     ..
+                 } => {
+                     eprintln!("! {table}: discarded {rows} rows / {values} values")
+                 }
+-                PipelineEvent::Retried { stream, attempt } => {
+-                    eprintln!("! retry attempt {attempt} ({stream:?})")
+-                }
++                 /* ~ changed by cargo-mutants ~ */
+                 PipelineEvent::StreamFinished { stream } => {
+                     eprintln!("-> stream {stream} finished")
+                 }
+                 _ => {}
+             }
+         }
+     });
+ 

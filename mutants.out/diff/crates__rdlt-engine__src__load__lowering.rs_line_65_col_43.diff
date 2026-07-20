@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/load/lowering.rs
++++ replace || with && in lower_column
+@@ -57,17 +57,17 @@
+                 ColumnType::Scalar {
+                     scalar: LogicalType::Decimal { .. },
+                 } if !caps.decimal => ColumnType::scalar(LogicalType::Utf8),
+                 other => other.clone(),
+             };
+             out.push(ColumnDef {
+                 name: namer.name_for(&full_path.join("__")),
+                 ty: lowered_ty,
+-                nullable: column.nullable || !path.is_empty(),
++                nullable: column.nullable && /* ~ changed by cargo-mutants ~ */ !path.is_empty(),
+                 provenance: column.provenance,
+             });
+         }
+     }
+ }
+ 
+ /// Lower a batch. Driven by the batch's OWN arrow schema (which mirrors the engine
+ /// schema by clause E4), so replay can lower without engine-schema bookkeeping.

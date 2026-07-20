@@ -1,0 +1,21 @@
+--- crates/rdlt-dest-parquet/src/lib.rs
++++ replace commits_file -> String with String::new()
+@@ -63,17 +63,17 @@
+     ident_hash(pipeline.as_str(), 12)
+ }
+ 
+ fn state_file(scope: &str) -> String {
+     format!("_rdlt_state.{scope}.json")
+ }
+ 
+ fn commits_file(scope: &str) -> String {
+-    format!("_rdlt_commits.{scope}.json")
++    String::new() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+ struct CommitLog {
+     #[serde(default)]
+     format_version: u32,
+     #[serde(default)]
+     receipts: Vec<(String, u64)>,

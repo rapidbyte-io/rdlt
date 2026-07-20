@@ -1,0 +1,21 @@
+--- crates/rdlt-source-file/src/cursor.rs
++++ replace FileCursor::record with ()
+@@ -130,17 +130,17 @@
+                     // done == size (+ same mtime): complete and unchanged → skip.
+                 }
+             }
+         }
+         Ok(tasks)
+     }
+ 
+     pub fn record(&mut self, path: &str, progress: FileProgress) {
+-        self.files.insert(path.to_owned(), progress);
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+ 
+     fn meta(path: &str, size: u64) -> FileMeta {

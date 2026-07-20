@@ -1,0 +1,15 @@
+--- crates/rdlt-engine/src/load/lowering.rs
++++ replace - with / in render_decimal
+@@ -173,11 +173,11 @@
+ fn render_decimal(raw: i128, scale: u8) -> String {
+     if scale == 0 {
+         return raw.to_string();
+     }
+     let negative = raw < 0;
+     let digits = raw.unsigned_abs().to_string();
+     let scale = scale as usize;
+     let padded = format!("{digits:0>width$}", width = scale + 1);
+-    let (int_part, frac_part) = padded.split_at(padded.len() - scale);
++    let (int_part, frac_part) = padded.split_at(padded.len() / /* ~ changed by cargo-mutants ~ */ scale);
+     format!("{}{int_part}.{frac_part}", if negative { "-" } else { "" })
+ }

@@ -1,0 +1,21 @@
+--- crates/rdlt-dest-parquet/src/lib.rs
++++ replace == with != in <impl LoadSession for ParquetSession>::write
+@@ -219,17 +219,17 @@
+         if !self.tables.contains_key(table) {
+             return Err(fatal(format!(
+                 "write before ensure_table for `{table}` (clause E1)"
+             )));
+         }
+         // Staged name is deterministic per (table, per-table write index); the FINAL
+         // name is assigned at commit (needs commit_seq). Per-table writes arrive in
+         // order (clause E1), so recovery replay reproduces both (research R18).
+-        let n = self.staged.iter().filter(|(t, _)| t == table).count();
++        let n = self.staged.iter().filter(|(t, _)| t != /* ~ changed by cargo-mutants ~ */ table).count();
+         let name = format!("{}-{}-{n}.parquet", self.load_id, table);
+         let path = self.staging.join(&name);
+         let file = std::fs::File::create(&path).map_err(fatal)?;
+         let mut writer =
+             ArrowWriter::try_new(file, Arc::clone(&batch.schema()), None).map_err(fatal)?;
+         writer.write(&batch).map_err(fatal)?;
+         let file = writer.close().map_err(fatal).map(|_| ())?;
+         let _ = file;

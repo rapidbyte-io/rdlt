@@ -1,0 +1,21 @@
+--- crates/rdlt-dest-parquet/src/lib.rs
++++ replace == with != in <impl LoadSession for ParquetSession>::commit
+@@ -269,17 +269,17 @@
+         if !load_committed_before {
+             crash_point!("pq.replace.truncate");
+             for (table, (_, mode)) in &self.tables {
+                 if matches!(mode, WriteMode::Replace) {
+                     let dir = self.out.join(table.as_str());
+                     if let Ok(entries) = std::fs::read_dir(&dir) {
+                         for entry in entries.flatten() {
+                             let path = entry.path();
+-                            if path.extension().is_some_and(|e| e == "parquet") {
++                            if path.extension().is_some_and(|e| e != /* ~ changed by cargo-mutants ~ */ "parquet") {
+                                 std::fs::remove_file(path).map_err(fatal)?;
+                             }
+                         }
+                     }
+                 }
+             }
+         }
+ 

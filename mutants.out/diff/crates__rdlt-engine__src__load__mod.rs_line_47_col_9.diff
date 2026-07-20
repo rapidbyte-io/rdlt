@@ -1,0 +1,24 @@
+--- crates/rdlt-engine/src/load/mod.rs
++++ replace <impl ByteSized for LoadItem>::byte_size -> usize with 0
+@@ -39,20 +39,17 @@
+         table: TableName,
+         rows: u64,
+         values: u64,
+     },
+ }
+ 
+ impl ByteSized for LoadItem {
+     fn byte_size(&self) -> usize {
+-        match self {
+-            LoadItem::Batch { batch, .. } => batch.get_array_memory_size(),
+-            LoadItem::Delta { .. } | LoadItem::Checkpoint { .. } | LoadItem::Discarded { .. } => 0,
+-        }
++        0 /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ pub(crate) struct Loader {
+     session: Box<dyn LoadSession>,
+     pub(crate) report: RunReport,
+     /// The evolving pipeline state; every commit persists a snapshot of it.
+     state: StateDoc,

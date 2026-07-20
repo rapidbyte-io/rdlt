@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/runtime/graph.rs
++++ replace match guard !state.cursors.is_empty() with true in run_once
+@@ -168,17 +168,17 @@
+         .await
+         .map_err(RdltError::destination)?;
+     if let Some(state) = &recovered {
+         state
+             .check_readable()
+             .map_err(|e| RdltError::config(e.to_string()))?;
+     }
+     let mut resumed_from = match &recovered {
+-        Some(state) if !state.cursors.is_empty() => ResumedFrom::Cursor,
++        Some(state) if true /* ~ changed by cargo-mutants ~ */ => ResumedFrom::Cursor,
+         _ => ResumedFrom::Fresh,
+     };
+     let mut base_state = recovered.unwrap_or_else(|| StateDoc::new(config.pipeline.clone()));
+ 
+     // ---- WAL recovery: replay the uncommitted span of a crashed run (row 2), or
+     // degrade to cursor re-extraction on damage (row 4 — slower, never wrong) ----
+     if let Some(wal_dir) = &wal_dir {
+         match crate::wal::resume::scan(wal_dir) {

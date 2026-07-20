@@ -1,0 +1,31 @@
+--- crates/rdlt-dest-duckdb/src/lib.rs
++++ replace create_table_sql -> String with "xyzzy".into()
+@@ -145,27 +145,17 @@
+         }
+         ColumnType::ScalarList { item } => {
+             format!("{}[]", sql_type(&ColumnType::scalar(*item)))
+         }
+     }
+ }
+ 
+ fn create_table_sql(name: &str, schema: &TableSchema, temp: bool) -> String {
+-    let columns = schema
+-        .columns
+-        .iter()
+-        .map(|c| format!("{} {}", quote(&c.name), sql_type(&c.ty)))
+-        .collect::<Vec<_>>()
+-        .join(", ");
+-    let temp = if temp { "TEMP " } else { "" };
+-    format!(
+-        "CREATE {temp}TABLE IF NOT EXISTS {} ({columns})",
+-        quote(name)
+-    )
++    "xyzzy".into() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[async_trait]
+ impl Destination for DuckDb {
+     fn spec(&self) -> ConnectorSpec {
+         ConnectorSpec::new("duckdb", env!("CARGO_PKG_VERSION"))
+     }
+ 

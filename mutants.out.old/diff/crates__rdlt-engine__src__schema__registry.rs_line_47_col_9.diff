@@ -1,0 +1,63 @@
+--- crates/rdlt-engine/src/schema/registry.rs
++++ replace SchemaRegistry::diff -> Vec<SchemaChange> with vec![]
+@@ -39,59 +39,17 @@
+         self.tables.insert(observed.table.clone(), observed);
+         Some(delta)
+     }
+ 
+     /// Non-mutating: what would change if `observed` became current?
+     /// Columns only append and types only widen — the shredder's observation states
+     /// guarantee it; debug assertions verify (a shrink here is an engine bug).
+     pub(crate) fn diff(&self, observed: &TableSchema) -> Vec<SchemaChange> {
+-        let table = &observed.table;
+-        let Some(current) = self.tables.get(table) else {
+-            return vec![SchemaChange::CreateTable {
+-                schema: observed.clone(),
+-            }];
+-        };
+-
+-        let mut changes = Vec::new();
+-        for column in &observed.columns {
+-            match current.column(&column.name) {
+-                None => changes.push(SchemaChange::AddColumn {
+-                    column: column.clone(),
+-                }),
+-                Some(existing) if existing.ty != column.ty => {
+-                    debug_assert!(
+-                        is_widening(&existing.ty, &column.ty),
+-                        "schema regression on {}.{}: {:?} -> {:?}",
+-                        table,
+-                        column.name,
+-                        existing.ty,
+-                        column.ty
+-                    );
+-                    changes.push(SchemaChange::WidenColumn {
+-                        name: column.name.clone(),
+-                        from: existing.ty.clone(),
+-                        to: column.ty.clone(),
+-                    });
+-                }
+-                Some(_) => {}
+-            }
+-        }
+-        for existing in &current.columns {
+-            if schema::system_columns::is_system(&existing.name) {
+-                continue;
+-            }
+-            debug_assert!(
+-                observed.column(&existing.name).is_some(),
+-                "column {}.{} vanished from observation",
+-                table,
+-                existing.name
+-            );
+-        }
+-        changes
++        vec![] /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// Structural widening check (used in debug assertions): scalar-lattice order,
+ /// struct fields append/widen, anything → Json.
+ fn is_widening(from: &ColumnType, to: &ColumnType) -> bool {
+     use rdlt_core::types::is_widening_of;
+     match (from, to) {

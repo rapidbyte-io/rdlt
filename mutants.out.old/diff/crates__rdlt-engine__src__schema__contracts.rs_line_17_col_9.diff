@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/schema/contracts.rs
++++ delete match arm (Value::Null, _) in value_fits
+@@ -9,17 +9,17 @@
+ use serde_json::Value;
+ 
+ use crate::shred::canon::parse_timestamp_tz;
+ 
+ /// Does `value` conform to `ty` without requiring any schema change?
+ /// (`true` = storable as-is; `false` = this value is what forced the widening.)
+ pub(crate) fn value_fits(value: &Value, ty: &ColumnType) -> bool {
+     match (value, ty) {
+-        (Value::Null, _) => true,
++         /* ~ changed by cargo-mutants ~ */
+         (_, ColumnType::Scalar { scalar }) => scalar_fits(value, *scalar),
+         (Value::Object(map), ColumnType::Struct { fields }) => map.iter().all(|(key, item)| {
+             match fields.iter().find(|f| &f.name == key) {
+                 Some(field) => value_fits(item, &field.ty),
+                 None => item.is_null(), // a new nested field forced an evolution
+             }
+         }),
+         (Value::Array(items), ColumnType::ScalarList { item }) => {

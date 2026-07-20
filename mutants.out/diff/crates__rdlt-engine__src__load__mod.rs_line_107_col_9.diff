@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/load/mod.rs
++++ replace Loader::emit with ()
+@@ -99,17 +99,17 @@
+             dirty: false,
+             wal,
+             events,
+             caps,
+         }
+     }
+ 
+     fn emit(&self, event: rdlt_core::PipelineEvent) {
+-        let _ = self.events.send(event); // no listeners is fine
++        () /* ~ changed by cargo-mutants ~ */ // no listeners is fine
+     }
+ 
+     pub(crate) async fn process(&mut self, item: LoadItem) -> Result<(), RdltError> {
+         let span = tracing::info_span!("rdlt.load");
+         let _guard = span.enter();
+         // Write-ahead: the item is durable-intent before the destination sees it.
+         if let Some(wal) = &mut self.wal {
+             wal.record(&item)?;

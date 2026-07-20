@@ -1,0 +1,21 @@
+--- crates/rdlt-source-file/src/lib.rs
++++ replace FileSource::from_yaml -> Result<Self, config::ConfigError> with Ok(Default::default())
+@@ -19,17 +19,17 @@
+ 
+ #[derive(Debug)]
+ pub struct FileSource {
+     config: FileConfig,
+ }
+ 
+ impl FileSource {
+     pub fn from_yaml(yaml: &str) -> Result<Self, config::ConfigError> {
+-        Ok(Self::new(FileConfig::from_yaml(yaml)?))
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub fn new(config: FileConfig) -> Self {
+         Self { config }
+     }
+ 
+     fn stream_config(&self, name: &str) -> Option<&FileStream> {
+         self.config.streams.iter().find(|s| s.name == name)

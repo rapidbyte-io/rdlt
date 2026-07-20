@@ -1,0 +1,26 @@
+--- crates/rdlt-dest-postgres/src/lib.rs
++++ replace column_list -> String with String::new()
+@@ -90,22 +90,17 @@
+         "{}{}",
+         stage_prefix(pipeline),
+         rdlt_connector::core::naming::ident_hash(table.as_str(), 16)
+     )
+ }
+ 
+ /// Quoted, comma-joined logical columns — publishes are ALWAYS by name (finding #4).
+ fn column_list(schema: &TableSchema) -> String {
+-    schema
+-        .columns
+-        .iter()
+-        .map(|c| quote(&c.name))
+-        .collect::<Vec<_>>()
+-        .join(", ")
++    String::new() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Postgres SQL type per (already lowered) column type.
+ fn sql_type(ty: &ColumnType) -> &'static str {
+     match ty {
+         ColumnType::Scalar { scalar } => match scalar {
+             LogicalType::Bool => "BOOLEAN",
+             LogicalType::Int64 => "BIGINT",

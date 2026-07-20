@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/fuzzing.rs
++++ replace parse_slab with ()
+@@ -3,17 +3,17 @@
+ //! they are not API and may change at any time.
+ 
+ use rdlt_connector::{DestCapabilities, StreamSpec};
+ use rdlt_core::{LoadId, SchemaPolicy, TableName, WriteMode};
+ 
+ /// Raw-JSON slab parsing only (NDJSON / array / single doc): must never panic,
+ /// hang, or blow memory — errors are the only acceptable failure.
+ pub fn parse_slab(bytes: &[u8]) {
+-    let _ = crate::shred::nest::parse_rows(bytes);
++    () /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// The FULL shred path over arbitrary bytes: parse, observe, resolve, build.
+ /// Asserts the cheap invariants inline (system columns first, unique names).
+ pub fn shred_slab(bytes: &[u8]) {
+     let caps = DestCapabilities::default();
+     let mut shredder = crate::shred::StreamShredder::new(
+         StreamSpec::new("fuzz"),

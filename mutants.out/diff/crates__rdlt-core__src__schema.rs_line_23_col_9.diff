@@ -1,0 +1,21 @@
+--- crates/rdlt-core/src/schema.rs
++++ replace system_columns::is_system -> bool with true
+@@ -15,17 +15,17 @@
+ pub mod system_columns {
+     pub const LOAD_ID: &str = "_rdlt_load_id";
+     pub const ID: &str = "_rdlt_id";
+     pub const PARENT_ID: &str = "_rdlt_parent_id";
+     pub const POS: &str = "_rdlt_pos";
+     pub const ROOT_ID: &str = "_rdlt_root_id";
+ 
+     pub fn is_system(name: &str) -> bool {
+-        matches!(name, LOAD_ID | ID | PARENT_ID | POS | ROOT_ID)
++        true /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// Where a column's type came from; excluded from the content hash's semantic meaning
+ /// but recorded for diagnostics.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+ #[serde(rename_all = "snake_case")]
+ pub enum Provenance {

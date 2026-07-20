@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/load/lowering.rs
++++ delete ! in lower_batch
+@@ -71,17 +71,17 @@
+ 
+ /// Lower a batch. Driven by the batch's OWN arrow schema (which mirrors the engine
+ /// schema by clause E4), so replay can lower without engine-schema bookkeeping.
+ /// Field names/paths are identical to `lower_schema`'s inputs → identical names out.
+ pub(crate) fn lower_batch(
+     batch: &RecordBatch,
+     caps: &DestCapabilities,
+ ) -> Result<RecordBatch, RdltError> {
+-    if !needs_lowering(caps) {
++    if  /* ~ changed by cargo-mutants ~ */needs_lowering(caps) {
+         return Ok(batch.clone());
+     }
+     let mut namer = UniqueNamer::new(caps.ident_rules);
+     let mut fields: Vec<arrow::datatypes::Field> = Vec::new();
+     let mut arrays: Vec<ArrayRef> = Vec::new();
+     for (idx, field) in batch.schema().fields().iter().enumerate() {
+         flatten_array(
+             field,

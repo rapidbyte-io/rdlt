@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/nest.rs
++++ replace TableBuffer::name_map -> &[(String, String)] with Vec::leak(vec![("xyzzy".into(), String::new())])
+@@ -60,17 +60,17 @@
+             namer,
+             names: Vec::new(),
+             rows: Vec::new(),
+         }
+     }
+ 
+     /// Source key → normalized column name pairs accumulated so far.
+     pub(crate) fn name_map(&self) -> &[(String, String)] {
+-        &self.names
++        Vec::leak(vec![("xyzzy".into(), String::new())]) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Reverse lookup: normalized column name → source key.
+     pub(crate) fn source_key_for(&self, normalized: &str) -> Option<&str> {
+         self.names
+             .iter()
+             .find(|(_, n)| n == normalized)
+             .map(|(source, _)| source.as_str())

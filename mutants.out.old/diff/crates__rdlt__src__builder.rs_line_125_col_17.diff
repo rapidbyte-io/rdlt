@@ -1,0 +1,21 @@
+--- crates/rdlt/src/builder.rs
++++ replace && with || in PipelineBuilder<S, D>::build
+@@ -117,17 +117,17 @@
+                             .collect::<Vec<_>>()
+                             .join(", ")
+                     )
+                 }
+             )));
+         }
+         for (stream, mode) in &self.config.write_modes {
+             if let WriteMode::Merge { key } = mode
+-                && key.is_empty()
++                || /* ~ changed by cargo-mutants ~ */ key.is_empty()
+             {
+                 return Err(RdltError::config(format!(
+                     "stream `{stream}`: Merge requires at least one key column"
+                 )));
+             }
+         }
+         if let WriteMode::Merge { key } = &self.config.write_mode
+             && key.is_empty()

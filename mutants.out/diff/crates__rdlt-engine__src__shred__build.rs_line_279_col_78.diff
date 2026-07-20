@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/build.rs
++++ replace / with % in build_scalar
+@@ -271,17 +271,17 @@
+         LogicalType::Time => {
+             let mut b = Time64MicrosecondBuilder::new();
+             for v in values {
+                 let micros = v.and_then(|v| v.as_str()).and_then(|s| {
+                     chrono::NaiveTime::parse_from_str(s, "%H:%M:%S%.f")
+                         .ok()
+                         .map(|t| {
+                             i64::from(chrono::Timelike::num_seconds_from_midnight(&t)) * 1_000_000
+-                                + i64::from(chrono::Timelike::nanosecond(&t) / 1_000)
++                                + i64::from(chrono::Timelike::nanosecond(&t) % /* ~ changed by cargo-mutants ~ */ 1_000)
+                         })
+                 });
+                 b.append_option(micros);
+             }
+             Arc::new(b.finish())
+         }
+         LogicalType::Decimal { precision, scale } => {
+             let mut b = Decimal128Builder::new();

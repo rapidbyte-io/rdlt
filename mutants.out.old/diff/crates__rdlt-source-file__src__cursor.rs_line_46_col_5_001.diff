@@ -1,0 +1,21 @@
+--- crates/rdlt-source-file/src/cursor.rs
++++ replace default_version -> u32 with 1
+@@ -38,17 +38,17 @@
+ #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+ pub struct FileCursor {
+     #[serde(default = "default_version")]
+     pub format_version: u32,
+     pub files: BTreeMap<String, FileProgress>,
+ }
+ 
+ fn default_version() -> u32 {
+-    CURSOR_FORMAT_VERSION
++    1 /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// One matched file as observed on disk this run.
+ #[derive(Debug, Clone, PartialEq, Eq)]
+ pub struct FileMeta {
+     pub path: String,
+     /// Bytes (jsonl) / row groups (parquet).
+     pub size: u64,

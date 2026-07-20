@@ -1,0 +1,21 @@
+--- crates/rdlt-core/src/identity.rs
++++ replace RowIdBuilder::finish -> RowId with Default::default()
+@@ -59,17 +59,17 @@
+     }
+ 
+     fn update_lp(&mut self, bytes: &[u8]) {
+         self.hasher.update(&(bytes.len() as u64).to_le_bytes());
+         self.hasher.update(bytes);
+     }
+ 
+     pub fn finish(&self) -> RowId {
+-        RowId::from_bytes(*self.hasher.finalize().as_bytes())
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// Canonical value bytes for identity hashing. The shredder renders values with the
+ /// same canonical encodings used for `Utf8` widening, so identity is stable across
+ /// type widenings of *other* columns.
+ #[derive(Debug, Clone, Copy)]
+ pub enum FieldValue<'a> {

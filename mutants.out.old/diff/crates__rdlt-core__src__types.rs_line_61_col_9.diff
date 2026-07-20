@@ -1,0 +1,30 @@
+--- crates/rdlt-core/src/types.rs
++++ delete match arm (Decimal{precision:p1, scale:s1,}, Decimal{precision:p2, scale:s2,},) in widen
+@@ -53,26 +53,17 @@
+         return a;
+     }
+     match (a, b) {
+         // Top absorbs everything.
+         (Json, _) | (_, Json) => Json,
+         // Binary is textable only via encodings we refuse to invent silently.
+         (Binary, _) | (_, Binary) => Json,
+         // Decimal ⊔ Decimal: max integer digits, max scale, bounded by 128-bit precision.
+-        (
+-            Decimal {
+-                precision: p1,
+-                scale: s1,
+-            },
+-            Decimal {
+-                precision: p2,
+-                scale: s2,
+-            },
+-        ) => join_decimals(p1, s1, p2, s2),
++         /* ~ changed by cargo-mutants ~ */
+         // Int64 fits Decimal(>=19, 0); widen the decimal to cover it.
+         (Int64, Decimal { precision, scale }) | (Decimal { precision, scale }, Int64) => {
+             join_decimals(precision, scale, 19, 0)
+         }
+         (Int64, Float64) | (Float64, Int64) => Float64,
+         // Everything textable meets at Utf8 (canonical renderings, design doc §5.2).
+         _ => Utf8,
+     }

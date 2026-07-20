@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/nest.rs
++++ replace match guard !key_fields.is_empty() with false in StreamShredder::row_identity
+@@ -271,17 +271,17 @@
+         ));
+         self.tables.len() - 1
+     }
+ 
+     /// `_rdlt_id` for a root row: key hash when the stream declares a primary key,
+     /// content hash otherwise (design doc §5.4).
+     fn row_identity(&self, row: &Value) -> RowId {
+         match &self.spec.primary_key {
+-            Some(key_fields) if !key_fields.is_empty() => {
++            Some(key_fields) if false /* ~ changed by cargo-mutants ~ */ => {
+                 let mut builder = RowIdBuilder::keyed();
+                 for field in key_fields {
+                     let rendered = row.get(field).and_then(render_scalar);
+                     match &rendered {
+                         Some(text) => builder.field(field, FieldValue::Bytes(text.as_bytes())),
+                         None => builder.field(field, FieldValue::Null),
+                     };
+                 }

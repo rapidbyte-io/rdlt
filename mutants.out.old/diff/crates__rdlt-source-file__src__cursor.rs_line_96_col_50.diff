@@ -1,0 +1,21 @@
+--- crates/rdlt-source-file/src/cursor.rs
++++ replace || with && in FileCursor::plan
+@@ -88,17 +88,17 @@
+         for meta in matched {
+             match self.files.get(&meta.path) {
+                 None => tasks.push(FileTask {
+                     path: meta.path.clone(),
+                     start: 0,
+                     mtime_ms: meta.mtime_ms,
+                 }),
+                 Some(progress) => {
+-                    if meta.size < progress.size || progress.done > meta.size {
++                    if meta.size < progress.size && /* ~ changed by cargo-mutants ~ */ progress.done > meta.size {
+                         return Err(SourceError::fatal(format!(
+                             "file `{}` shrank or was rewritten (recorded {} of {} \
+                              bytes, now {}); refusing to read from a stale \
+                              offset — clear it from the pipeline state or restore the file",
+                             meta.path, progress.done, progress.size, meta.size
+                         )));
+                     }
+                     if meta.size == progress.size

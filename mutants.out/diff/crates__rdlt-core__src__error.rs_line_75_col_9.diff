@@ -1,0 +1,23 @@
+--- crates/rdlt-core/src/error.rs
++++ replace RdltError::destination -> Self with Default::default()
+@@ -67,19 +67,17 @@
+ impl RdltError {
+     pub fn config(message: impl Into<String>) -> Self {
+         RdltError::Config {
+             message: message.into(),
+         }
+     }
+ 
+     pub fn destination(message: impl std::fmt::Display) -> Self {
+-        RdltError::Destination {
+-            message: message.to_string(),
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub fn source(stream: StreamName, message: impl std::fmt::Display) -> Self {
+         RdltError::Source {
+             stream,
+             message: message.to_string(),
+             retryable: false,
+             retry_after_ms: None,

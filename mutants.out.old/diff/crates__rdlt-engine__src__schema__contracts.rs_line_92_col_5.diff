@@ -1,0 +1,18 @@
+--- crates/rdlt-engine/src/schema/contracts.rs
++++ replace change_column -> Option<&str> with None
+@@ -84,14 +84,10 @@
+     match ty {
+         ColumnType::Scalar { scalar } => Some(*scalar),
+         _ => None,
+     }
+ }
+ 
+ /// The column a change concerns, for policy resolution (None = table-level).
+ pub(crate) fn change_column(change: &SchemaChange) -> Option<&str> {
+-    match change {
+-        SchemaChange::CreateTable { .. } => None,
+-        SchemaChange::AddColumn { column } => Some(&column.name),
+-        SchemaChange::WidenColumn { name, .. } => Some(name),
+-    }
++    None /* ~ changed by cargo-mutants ~ */
+ }

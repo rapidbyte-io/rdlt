@@ -1,0 +1,38 @@
+--- crates/rdlt-connector/src/lib.rs
++++ replace RecordsOut::send -> Result<(), ChannelClosed> with Ok(())
+@@ -198,34 +198,17 @@
+     /// "All rows pushed so far are complete up to `cursor`" (clause S2).
+     pub async fn checkpoint(&mut self, cursor: Cursor) -> Result<(), ChannelClosed> {
+         self.send(PushPayload::Checkpoint(cursor), 0).await
+     }
+ 
+     async fn send(&mut self, payload: PushPayload, size: usize) -> Result<(), ChannelClosed> {
+         // A single oversized message may not exceed the whole budget or it would
+         // deadlock; it degrades to "budget fully drained" instead.
+-        let permits = size.min(self.budget_max).try_into().unwrap_or(u32::MAX);
+-        let permit = if permits > 0 {
+-            Some(
+-                Arc::clone(&self.budget)
+-                    .acquire_many_owned(permits)
+-                    .await
+-                    .map_err(|_| ChannelClosed)?,
+-            )
+-        } else {
+-            None
+-        };
+-        self.tx
+-            .send(SourcePush {
+-                payload,
+-                _permit: permit,
+-            })
+-            .await
+-            .map_err(|_| ChannelClosed)
++        Ok(()) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// Receiving half held by hosts (the engine, or a conformance harness).
+ #[derive(Debug)]
+ pub struct RecordsIn {
+     rx: mpsc::Receiver<SourcePush>,
+     budget: Arc<Semaphore>,

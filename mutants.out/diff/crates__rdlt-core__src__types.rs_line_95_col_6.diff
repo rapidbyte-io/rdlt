@@ -1,0 +1,21 @@
+--- crates/rdlt-core/src/types.rs
++++ delete - in int64_fits_in_f64
+@@ -87,17 +87,17 @@
+         _ => Utf8,
+     }
+ }
+ 
+ /// `true` iff `v` converts to `f64` exactly. Values outside ±2^53 do not; the shredder
+ /// must escalate the column instead of silently rounding (spec FR-002).
+ pub fn int64_fits_in_f64(v: i64) -> bool {
+     const EXACT: i64 = 1 << 53;
+-    (-EXACT..=EXACT).contains(&v)
++    ( /* ~ changed by cargo-mutants ~ */EXACT..=EXACT).contains(&v)
+ }
+ 
+ /// `a ⊑ b` in the widening order (i.e. `b` can hold everything `a` can).
+ pub fn is_widening_of(a: LogicalType, b: LogicalType) -> bool {
+     widen(a, b) == b
+ }
+ 
+ #[cfg(test)]

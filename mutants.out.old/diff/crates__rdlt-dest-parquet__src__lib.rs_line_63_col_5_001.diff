@@ -1,0 +1,21 @@
+--- crates/rdlt-dest-parquet/src/lib.rs
++++ replace pipeline_scope -> String with "xyzzy".into()
+@@ -55,17 +55,17 @@
+     "pq.part.rename",
+     "pq.dir.fsync",
+     "pq.state.write",
+     "pq.receipt.write",
+ ];
+ 
+ /// Short stable scope key for one pipeline's files inside a shared output dir.
+ fn pipeline_scope(pipeline: &PipelineId) -> String {
+-    ident_hash(pipeline.as_str(), 12)
++    "xyzzy".into() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn state_file(scope: &str) -> String {
+     format!("_rdlt_state.{scope}.json")
+ }
+ 
+ fn commits_file(scope: &str) -> String {
+     format!("_rdlt_commits.{scope}.json")

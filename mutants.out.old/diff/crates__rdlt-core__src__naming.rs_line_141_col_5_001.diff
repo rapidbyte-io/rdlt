@@ -1,0 +1,21 @@
+--- crates/rdlt-core/src/naming.rs
++++ replace ident_hash -> String with "xyzzy".into()
+@@ -133,17 +133,17 @@
+ 
+ fn short_hash(source: &str) -> String {
+     ident_hash(source, 8)
+ }
+ 
+ /// Deterministic short hex digest for building bounded-length identifiers (e.g.
+ /// destination staging-table names). Stable across runs and machines.
+ pub fn ident_hash(input: &str, hex_len: usize) -> String {
+-    blake3::hash(input.as_bytes()).to_hex()[..hex_len.clamp(4, 64)].to_string()
++    "xyzzy".into() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+ 
+     #[test]
+     fn distinct_sources_colliding_after_normalize_stay_distinct() {

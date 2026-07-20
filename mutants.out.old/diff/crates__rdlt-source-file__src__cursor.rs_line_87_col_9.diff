@@ -1,0 +1,68 @@
+--- crates/rdlt-source-file/src/cursor.rs
++++ replace FileCursor::plan -> Result<Vec<FileTask>, SourceError> with Ok(vec![])
+@@ -79,64 +79,17 @@
+ 
+     pub fn encode(&self) -> Cursor {
+         Cursor::new(serde_json::to_value(self).expect("cursor serialization"))
+     }
+ 
+     /// Plan this run against the matched files (already sorted). Skips
+     /// complete-and-unchanged files; fails on shrunk/rewritten ones.
+     pub fn plan(&self, matched: &[FileMeta]) -> Result<Vec<FileTask>, SourceError> {
+-        let mut tasks = Vec::new();
+-        for meta in matched {
+-            match self.files.get(&meta.path) {
+-                None => tasks.push(FileTask {
+-                    path: meta.path.clone(),
+-                    start: 0,
+-                    mtime_ms: meta.mtime_ms,
+-                }),
+-                Some(progress) => {
+-                    if meta.size < progress.size || progress.done > meta.size {
+-                        return Err(SourceError::fatal(format!(
+-                            "file `{}` shrank or was rewritten (recorded {} of {} \
+-                             bytes, now {}); refusing to read from a stale \
+-                             offset — clear it from the pipeline state or restore the file",
+-                            meta.path, progress.done, progress.size, meta.size
+-                        )));
+-                    }
+-                    if meta.size == progress.size
+-                        && let (Some(then), Some(now)) = (progress.mtime_ms, meta.mtime_ms)
+-                        && then != now
+-                    {
+-                        return Err(SourceError::fatal(format!(
+-                            "file `{}` was rewritten in place (same size, but modified \
+-                             since the last run); refusing to trust recorded progress — \
+-                             clear it from the pipeline state or restore the file",
+-                            meta.path
+-                        )));
+-                    }
+-                    if progress.done < meta.size {
+-                        if !progress.eol {
+-                            return Err(SourceError::fatal(format!(
+-                                "file `{}` grew after a run that consumed an unterminated \
+-                                 final line; the recorded offset {} points mid-record — \
+-                                 clear it from the pipeline state or restore the file",
+-                                meta.path, progress.done
+-                            )));
+-                        }
+-                        tasks.push(FileTask {
+-                            path: meta.path.clone(),
+-                            start: progress.done,
+-                            mtime_ms: meta.mtime_ms,
+-                        });
+-                    }
+-                    // done == size (+ same mtime): complete and unchanged → skip.
+-                }
+-            }
+-        }
+-        Ok(tasks)
++        Ok(vec![]) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub fn record(&mut self, path: &str, progress: FileProgress) {
+         self.files.insert(path.to_owned(), progress);
+     }
+ }
+ 
+ #[cfg(test)]

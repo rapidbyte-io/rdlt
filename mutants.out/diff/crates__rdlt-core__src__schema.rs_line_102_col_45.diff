@@ -1,0 +1,21 @@
+--- crates/rdlt-core/src/schema.rs
++++ replace == with != in TableSchema::column
+@@ -94,17 +94,17 @@
+         let canonical = serde_json::to_vec(self).expect("TableSchema serialization is infallible");
+         let mut hasher = blake3::Hasher::new();
+         hasher.update(b"rdlt:table-schema:v1\0");
+         hasher.update(&canonical);
+         SchemaHash::from_bytes(*hasher.finalize().as_bytes())
+     }
+ 
+     pub fn column(&self, name: &str) -> Option<&ColumnDef> {
+-        self.columns.iter().find(|c| c.name == name)
++        self.columns.iter().find(|c| c.name != /* ~ changed by cargo-mutants ~ */ name)
+     }
+ }
+ 
+ /// One evolution step: `from` (None = table creation) to `to`, as a minimal change set.
+ /// The only way schemas change (data-model.md §3).
+ #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+ pub struct SchemaDelta {
+     pub table: TableName,

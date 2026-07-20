@@ -1,0 +1,23 @@
+--- crates/rdlt-dest-parquet/src/lib.rs
++++ replace fsync_dir -> Result<(), DestError> with Ok(())
+@@ -76,19 +76,17 @@
+     #[serde(default)]
+     format_version: u32,
+     #[serde(default)]
+     receipts: Vec<(String, u64)>,
+ }
+ 
+ /// Fsync a directory so a preceding rename inside it survives power loss.
+ fn fsync_dir(path: &Path) -> Result<(), DestError> {
+-    std::fs::File::open(path)
+-        .and_then(|f| f.sync_all())
+-        .map_err(fatal)
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Atomic durable JSON rewrite: write-temp + fsync + rename + parent-dir fsync.
+ /// The data-file path fsyncs before rename too — metadata must not be LESS durable
+ /// than the parquet parts it describes (clause D2).
+ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), DestError> {
+     use std::io::Write;
+     let tmp = path.with_extension("json.tmp");

@@ -1,0 +1,23 @@
+--- crates/rdlt-dest-parquet/src/lib.rs
++++ replace ParquetDir::open -> Result<Self, DestError> with Ok(Default::default())
+@@ -115,19 +115,17 @@
+ #[derive(Debug, Clone)]
+ pub struct ParquetDir {
+     out: PathBuf,
+ }
+ 
+ impl ParquetDir {
+     /// Open (creating if needed) an output directory as a destination.
+     pub fn open(out: impl Into<PathBuf>) -> Result<Self, DestError> {
+-        let out = out.into();
+-        std::fs::create_dir_all(&out).map_err(fatal)?;
+-        Ok(Self { out })
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Test/inspection helper: total published rows of a table (parquet footers).
+     pub fn count_rows(&self, table: &str) -> Result<u64, DestError> {
+         use parquet::file::reader::{FileReader, SerializedFileReader};
+         let dir = self.out.join(table);
+         let mut total = 0u64;
+         let entries = match std::fs::read_dir(&dir) {

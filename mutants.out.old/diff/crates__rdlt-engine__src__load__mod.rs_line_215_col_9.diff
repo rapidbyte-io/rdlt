@@ -1,0 +1,24 @@
+--- crates/rdlt-engine/src/load/mod.rs
++++ replace Loader::finish -> Result<(), RdltError> with Ok(())
+@@ -207,20 +207,17 @@
+             }
+         }
+     }
+ 
+     /// Trailing work (rows after the last checkpoint, or a run that never
+     /// checkpointed) gets one final commit; a clean no-op run still commits once so a
+     /// fresh pipeline's state document exists.
+     pub(crate) async fn finish(&mut self) -> Result<(), RdltError> {
+-        if self.dirty || self.commit_seq == 0 {
+-            self.commit().await?;
+-        }
+-        Ok(())
++        Ok(()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     async fn commit(&mut self) -> Result<(), RdltError> {
+         self.commit_seq += 1;
+         self.state.last_commit = Some(rdlt_core::LastCommit {
+             load_id: self.load_id.clone(),
+             commit_seq: self.commit_seq,
+         });

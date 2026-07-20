@@ -1,0 +1,39 @@
+--- crates/rdlt-dest-parquet/src/lib.rs
++++ replace <impl Destination for ParquetDir>::open -> Result<Box<dyn LoadSession>, DestError> with Ok(Box::new(Default::default()))
+@@ -160,35 +160,17 @@
+             scalar_lists: true,
+             json_type: false,
+             decimal: true,
+             ident_rules: IdentRules::default(),
+         }
+     }
+ 
+     async fn open(&self, ctx: OpenCtx) -> Result<Box<dyn LoadSession>, DestError> {
+-        let scope = pipeline_scope(&ctx.pipeline);
+-        // Clause D4: staged data from THIS PIPELINE's dead sessions becomes
+-        // invisible/reclaimable. Scoped — another pipeline sharing this output
+-        // directory keeps its live staged data (the same rule the Postgres
+-        // destination applies to its stage tables).
+-        let scope_root = self.out.join(STAGING_DIR).join(&scope);
+-        if scope_root.exists() {
+-            std::fs::remove_dir_all(&scope_root).map_err(fatal)?;
+-        }
+-        let staging = scope_root.join(ctx.load_id.as_str());
+-        std::fs::create_dir_all(&staging).map_err(fatal)?;
+-        Ok(Box::new(ParquetSession {
+-            out: self.out.clone(),
+-            staging,
+-            scope,
+-            load_id: ctx.load_id,
+-            tables: BTreeMap::new(),
+-            staged: Vec::new(),
+-        }))
++        Ok(Box::new(Default::default())) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ struct ParquetSession {
+     out: PathBuf,
+     staging: PathBuf,
+     scope: String,
+     load_id: LoadId,

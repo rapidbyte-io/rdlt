@@ -1,0 +1,23 @@
+--- crates/rdlt-source-file/src/config.rs
++++ replace FileConfig::from_yaml -> Result<Self, ConfigError> with Ok(Default::default())
+@@ -72,19 +72,17 @@
+             HintType::Uuid => LogicalType::Uuid,
+             HintType::Json => LogicalType::Json,
+         }
+     }
+ }
+ 
+ impl FileConfig {
+     pub fn from_yaml(yaml: &str) -> Result<Self, ConfigError> {
+-        let config: FileConfig = serde_yaml::from_str(yaml)?;
+-        config.validate()?;
+-        Ok(config)
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn validate(&self) -> Result<(), ConfigError> {
+         if self.streams.is_empty() {
+             return Err(ConfigError::Invalid(
+                 "at least one stream is required".into(),
+             ));
+         }

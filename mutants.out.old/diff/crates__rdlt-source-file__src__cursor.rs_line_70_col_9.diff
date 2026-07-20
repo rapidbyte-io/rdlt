@@ -1,0 +1,28 @@
+--- crates/rdlt-source-file/src/cursor.rs
++++ replace FileCursor::decode -> Result<Self, SourceError> with Ok(Default::default())
+@@ -62,24 +62,17 @@
+     /// Where to start (bytes / row groups); equals prior `done` (0 for new files).
+     pub start: u64,
+     /// The mtime observed at planning time, recorded with this file's progress.
+     pub mtime_ms: Option<u64>,
+ }
+ 
+ impl FileCursor {
+     pub fn decode(cursor: Option<&Cursor>) -> Result<Self, SourceError> {
+-        match cursor {
+-            None => Ok(Self {
+-                format_version: CURSOR_FORMAT_VERSION,
+-                files: BTreeMap::new(),
+-            }),
+-            Some(cursor) => serde_json::from_value(cursor.as_value().clone())
+-                .map_err(|e| SourceError::fatal(format!("unreadable file cursor: {e}"))),
+-        }
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub fn encode(&self) -> Cursor {
+         Cursor::new(serde_json::to_value(self).expect("cursor serialization"))
+     }
+ 
+     /// Plan this run against the matched files (already sorted). Skips
+     /// complete-and-unchanged files; fails on shrunk/rewritten ones.

@@ -294,6 +294,15 @@ replayable). Contracts per table/column/type: `Evolve | Freeze | DiscardRow | Di
 `Freeze` turns a would-be delta into a typed error before any row is written; discards are
 counted, never silent.
 
+**Row-id hash decision (feature 003, FR-008 — recorded 2026-07-20):** the
+incumbent blake3 stays. Measured on the iai instruction benches: keyed identity
+20.5 M instr / 10k rows, keyless 29.3 M / 10k; total blake3 work is ~16% of the
+shred stage (531 M instr / 10k rows post-optimization), which bounds any hash
+swap's flagship end-to-end effect at well under the >30% switch threshold the
+feature clarified. xxh3-128 would be a real but small win at the cost of
+changing every persisted `_rdlt_id` before release; incumbent stability wins.
+The algorithm is FROZEN at the first release tag.
+
 ## 6. WAL, checkpoints & recovery
 
 **Principle: the destination is the sole source of truth; the WAL is a replayable buffer.**

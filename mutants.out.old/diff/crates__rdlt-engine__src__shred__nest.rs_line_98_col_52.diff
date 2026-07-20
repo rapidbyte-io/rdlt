@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/nest.rs
++++ replace != with == in TableBuffer::revert_column
+@@ -90,17 +90,17 @@
+                 .map(|(_, state)| state.clone())
+         });
+         match prior {
+             Some(state) => {
+                 if let Some(idx) = self.columns.iter().position(|(k, _)| k == source_key) {
+                     self.columns[idx].1 = state;
+                 }
+             }
+-            None => self.columns.retain(|(k, _)| k != source_key),
++            None => self.columns.retain(|(k, _)| k == /* ~ changed by cargo-mutants ~ */ source_key),
+         }
+     }
+ 
+     pub(crate) fn column_name(&mut self, source_key: &str) -> String {
+         if let Some((_, normalized)) = self.names.iter().find(|(k, _)| k == source_key) {
+             return normalized.clone();
+         }
+         let normalized = self.namer.name_for(source_key);

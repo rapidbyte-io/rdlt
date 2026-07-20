@@ -1,0 +1,26 @@
+--- crates/rdlt-core/src/identity.rs
++++ replace child_row_id -> RowId with Default::default()
+@@ -75,22 +75,17 @@
+ pub enum FieldValue<'a> {
+     Null,
+     Bytes(&'a [u8]),
+ }
+ 
+ /// Identity of a child row: parent id + position + the child's own content hash.
+ /// Position participates so reordered list elements are different rows.
+ pub fn child_row_id(parent: &RowId, pos: u64, child_content: &RowId) -> RowId {
+-    let mut hasher = blake3::Hasher::new();
+-    hasher.update(DOMAIN_CHILD);
+-    hasher.update(parent.as_bytes());
+-    hasher.update(&pos.to_le_bytes());
+-    hasher.update(child_content.as_bytes());
+-    RowId::from_bytes(*hasher.finalize().as_bytes())
++    Default::default() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+ 
+     #[test]
+     fn null_and_missing_are_distinct() {

@@ -1,0 +1,25 @@
+--- crates/rdlt/src/builder.rs
++++ replace PipelineBuilder<S, D>::destination -> PipelineBuilder<S, ND> with Default::default()
+@@ -45,21 +45,17 @@
+         PipelineBuilder {
+             config: self.config,
+             source,
+             destination: self.destination,
+         }
+     }
+ 
+     pub fn destination<ND: Destination>(self, destination: ND) -> PipelineBuilder<S, ND> {
+-        PipelineBuilder {
+-            config: self.config,
+-            source: self.source,
+-            destination,
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Default write disposition for every stream (default: `Append`).
+     pub fn write_mode(mut self, mode: WriteMode) -> Self {
+         self.config.write_mode = mode;
+         self
+     }
+ 

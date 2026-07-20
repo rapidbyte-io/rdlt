@@ -1,0 +1,15 @@
+--- crates/rdlt-core/src/cursor.rs
++++ replace Cursor::as_value -> &serde_json::Value with Box::leak(Box::new(Default::default()))
+@@ -10,11 +10,11 @@
+ pub struct Cursor(serde_json::Value);
+ 
+ impl Cursor {
+     pub fn new(value: impl Into<serde_json::Value>) -> Self {
+         Self(value.into())
+     }
+ 
+     pub fn as_value(&self) -> &serde_json::Value {
+-        &self.0
++        Box::leak(Box::new(Default::default())) /* ~ changed by cargo-mutants ~ */
+     }
+ }

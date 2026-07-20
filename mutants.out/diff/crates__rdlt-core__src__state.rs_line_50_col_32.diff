@@ -1,0 +1,21 @@
+--- crates/rdlt-core/src/state.rs
++++ replace > with == in StateDoc::check_readable
+@@ -42,17 +42,17 @@
+             engine_version: env!("CARGO_PKG_VERSION").to_owned(),
+         }
+     }
+ 
+     /// A newer on-disk format than this engine knows must be a typed failure, never a
+     /// silent reset (a silent reset would re-extract from zero and duplicate under
+     /// Append). Persisted-formats contract §1.
+     pub fn check_readable(&self) -> Result<(), UnsupportedStateVersion> {
+-        if self.format_version > STATE_FORMAT_VERSION {
++        if self.format_version == /* ~ changed by cargo-mutants ~ */ STATE_FORMAT_VERSION {
+             return Err(UnsupportedStateVersion {
+                 found: self.format_version,
+                 supported: STATE_FORMAT_VERSION,
+             });
+         }
+         Ok(())
+     }
+ }

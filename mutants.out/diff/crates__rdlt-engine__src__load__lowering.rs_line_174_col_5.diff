@@ -1,0 +1,22 @@
+--- crates/rdlt-engine/src/load/lowering.rs
++++ replace render_decimal -> String with String::new()
+@@ -166,18 +166,10 @@
+         .into_builder()
+         .nulls(merged)
+         .build()
+         .expect("null-merge preserves layout");
+     arrow::array::make_array(data)
+ }
+ 
+ fn render_decimal(raw: i128, scale: u8) -> String {
+-    if scale == 0 {
+-        return raw.to_string();
+-    }
+-    let negative = raw < 0;
+-    let digits = raw.unsigned_abs().to_string();
+-    let scale = scale as usize;
+-    let padded = format!("{digits:0>width$}", width = scale + 1);
+-    let (int_part, frac_part) = padded.split_at(padded.len() - scale);
+-    format!("{}{int_part}.{frac_part}", if negative { "-" } else { "" })
++    String::new() /* ~ changed by cargo-mutants ~ */
+ }

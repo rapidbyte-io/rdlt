@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/load/mod.rs
++++ replace += with -= in Loader::process
+@@ -184,17 +184,17 @@
+             } => {
+                 self.emit(rdlt_core::PipelineEvent::Discarded {
+                     table: table.clone(),
+                     rows,
+                     values,
+                     reason: "schema policy".to_owned(),
+                 });
+                 let entry = self.report.table_mut(&table);
+-                entry.discarded_rows += rows;
++                entry.discarded_rows -= /* ~ changed by cargo-mutants ~ */ rows;
+                 entry.discarded_values += values;
+                 self.counters.discarded_rows += rows;
+                 self.counters.discarded_values += values;
+             }
+         }
+         Ok(())
+     }
+ 

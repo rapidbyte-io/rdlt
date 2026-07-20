@@ -1,0 +1,22 @@
+--- crates/rdlt-connector/src/lib.rs
++++ replace RecordsOut::raw_json -> Result<(), ChannelClosed> with Ok(())
+@@ -163,18 +163,17 @@
+     budget: Arc<Semaphore>,
+     budget_max: usize,
+ }
+ 
+ impl RecordsOut {
+     /// Perf path: raw JSON bytes (one document, an array, or NDJSON). Sources that
+     /// already hold bytes (HTTP bodies, files) should always use this.
+     pub async fn raw_json(&mut self, bytes: Bytes) -> Result<(), ChannelClosed> {
+-        let size = bytes.len();
+-        self.send(PushPayload::RawJson(bytes), size).await
++        Ok(()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Convenience path for programmatically constructed rows; serialized here to
+     /// NDJSON so hosts see a single JSON ingest path.
+     pub async fn rows(
+         &mut self,
+         rows: impl IntoIterator<Item = serde_json::Value>,
+     ) -> Result<(), ChannelClosed> {

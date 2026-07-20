@@ -1,0 +1,81 @@
+--- crates/rdlt-engine/src/shred/build.rs
++++ replace build_batch -> Result<RecordBatch, ArrowError> with Ok(Default::default())
+@@ -62,77 +62,17 @@
+ /// Build one table's batch. `name_map` maps source keys to normalized column names
+ /// (the schema speaks normalized; the buffered rows speak source).
+ pub(crate) fn build_batch(
+     schema: &TableSchema,
+     name_map: &[(String, String)],
+     rows: &[BufferedRow],
+     load_id: &LoadId,
+ ) -> Result<RecordBatch, ArrowError> {
+-    let mut arrays: Vec<ArrayRef> = Vec::with_capacity(schema.columns.len());
+-    for column in &schema.columns {
+-        let array: ArrayRef = match column.name.as_str() {
+-            system_columns::LOAD_ID => {
+-                let mut b = StringBuilder::new();
+-                for _ in rows {
+-                    b.append_value(load_id.as_str());
+-                }
+-                Arc::new(b.finish())
+-            }
+-            system_columns::ID => {
+-                let mut b = StringBuilder::new();
+-                for row in rows {
+-                    b.append_value(row.id.to_hex());
+-                }
+-                Arc::new(b.finish())
+-            }
+-            system_columns::PARENT_ID => {
+-                let mut b = StringBuilder::new();
+-                for row in rows {
+-                    match &row.parent_id {
+-                        Some(id) => b.append_value(id.to_hex()),
+-                        None => b.append_null(),
+-                    }
+-                }
+-                Arc::new(b.finish())
+-            }
+-            system_columns::ROOT_ID => {
+-                let mut b = StringBuilder::new();
+-                for row in rows {
+-                    match &row.root_id {
+-                        Some(id) => b.append_value(id.to_hex()),
+-                        None => b.append_null(),
+-                    }
+-                }
+-                Arc::new(b.finish())
+-            }
+-            system_columns::POS => {
+-                let mut b = Int64Builder::new();
+-                for row in rows {
+-                    match row.pos {
+-                        Some(pos) => b.append_value(pos as i64),
+-                        None => b.append_null(),
+-                    }
+-                }
+-                Arc::new(b.finish())
+-            }
+-            _ => {
+-                let source_key = name_map
+-                    .iter()
+-                    .find(|(_, normalized)| normalized == &column.name)
+-                    .map(|(source, _)| source.as_str())
+-                    .unwrap_or(column.name.as_str());
+-                let values: Vec<Option<&Value>> =
+-                    rows.iter().map(|row| row.value.get(source_key)).collect();
+-                build_column(&column.ty, &values)
+-            }
+-        };
+-        arrays.push(array);
+-    }
+-    RecordBatch::try_new(Arc::new(arrow_schema(schema)), arrays)
++    Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn build_column(ty: &ColumnType, values: &[Option<&Value>]) -> ArrayRef {
+     match ty {
+         ColumnType::Scalar { scalar } => build_scalar(*scalar, values),
+         ColumnType::Struct { fields } => {
+             let validity: Vec<bool> = values
+                 .iter()

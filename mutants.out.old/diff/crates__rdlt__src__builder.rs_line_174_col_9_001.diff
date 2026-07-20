@@ -1,0 +1,21 @@
+--- crates/rdlt/src/builder.rs
++++ replace Pipeline::cancellation_token -> Option<tokio_util::sync::CancellationToken> with Some(Default::default())
+@@ -166,17 +166,17 @@
+ impl Pipeline {
+     pub fn builder(name: impl Into<rdlt_core::PipelineId>) -> PipelineBuilder<Missing, Missing> {
+         PipelineBuilder::new(name)
+     }
+ 
+     /// Token for cancelling a running pipeline; safe at any instant (cancellation is
+     /// recovered exactly like a crash).
+     pub fn cancellation_token(&self) -> Option<tokio_util::sync::CancellationToken> {
+-        self.engine.as_ref().map(Engine::cancellation_token)
++        Some(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Typed event stream (StreamStarted, BatchLoaded, SchemaEvolved, Committed, …).
+     /// Subscribe before calling [`Pipeline::run`]; `None` once the pipeline ran.
+     pub fn events(&self) -> Option<rdlt_engine::EventStream> {
+         self.engine.as_ref().map(Engine::events)
+     }
+ 

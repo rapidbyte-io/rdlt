@@ -1,0 +1,118 @@
+--- crates/rdlt-engine/src/wal/resume.rs
++++ replace scan -> Scan with Default::default()
+@@ -36,114 +36,17 @@
+     Nothing,
+     Recover(RecoverySpan),
+     Damaged(String),
+ }
+ 
+ /// Forward-scan the manifest. A torn FINAL line (crash mid-append) is truncated;
+ /// damage anywhere else degrades to re-extraction.
+ pub(crate) fn scan(dir: &Path) -> Scan {
+-    let path = dir.join("manifest.jsonl");
+-    let file = match File::open(&path) {
+-        Ok(f) => f,
+-        Err(_) => return Scan::Nothing,
+-    };
+-    let mut records: Vec<WalRecord> = Vec::new();
+-    let mut damaged: Option<String> = None;
+-    let mut lines = BufReader::new(file).lines();
+-    while let Some(line) = lines.next() {
+-        let line = match line {
+-            Ok(l) => l,
+-            Err(e) => {
+-                damaged = Some(format!("manifest read: {e}"));
+-                break;
+-            }
+-        };
+-        if line.trim().is_empty() {
+-            continue;
+-        }
+-        match serde_json::from_str::<WalRecord>(&line) {
+-            Ok(record) => records.push(record),
+-            Err(e) => {
+-                // Torn tail is fine only if nothing follows it.
+-                if lines.next().is_some() {
+-                    damaged = Some(format!("mid-manifest corruption: {e}"));
+-                }
+-                break;
+-            }
+-        }
+-    }
+-    if let Some(reason) = damaged {
+-        return Scan::Damaged(reason);
+-    }
+-
+-    // Find the uncommitted tail: records after the last Committed, within the last Run.
+-    // Schemas accumulate across the WHOLE manifest: a replay span may contain batches
+-    // for tables whose delta committed in an earlier span.
+-    let mut load_id: Option<LoadId> = None;
+-    let mut max_committed_seq: u64 = 0;
+-    let mut span: Vec<WalRecord> = Vec::new();
+-    let mut schemas: std::collections::BTreeMap<
+-        rdlt_core::TableName,
+-        (rdlt_core::TableSchema, rdlt_core::WriteMode),
+-    > = std::collections::BTreeMap::new();
+-    for record in records {
+-        if let WalRecord::Delta { schema, mode, .. } = &record {
+-            schemas.insert(schema.table.clone(), (schema.clone(), mode.clone()));
+-        }
+-        match record {
+-            WalRecord::Run {
+-                format_version,
+-                load_id: id,
+-                ..
+-            } => {
+-                if format_version > super::WAL_FORMAT_VERSION {
+-                    // A future engine wrote this workdir: don't guess — degrade to
+-                    // cursor re-extraction (slower, never wrong).
+-                    return Scan::Damaged(format!(
+-                        "manifest format v{format_version} is newer than supported \
+-                         v{}",
+-                        super::WAL_FORMAT_VERSION
+-                    ));
+-                }
+-                // A run only ever starts after the previous span was resolved
+-                // (recovery runs before `Wal::open` appends the new header), so a Run
+-                // record always begins a fresh span.
+-                span.clear();
+-                load_id = Some(id);
+-                max_committed_seq = 0;
+-            }
+-            WalRecord::Committed { commit_seq } => {
+-                max_committed_seq = max_committed_seq.max(commit_seq);
+-                span.clear();
+-            }
+-            other => span.push(other),
+-        }
+-    }
+-
+-    // CRITICAL: replay only up to the LAST checkpoint. Segments beyond it are not
+-    // covered by any cursor — committing them would double-apply once the source
+-    // re-extracts that range (recovery invariant 2). The uncovered tail is discarded;
+-    // re-extraction re-delivers it. A span with no checkpoint at all has nothing
+-    // safely replayable.
+-    let last_checkpoint = span
+-        .iter()
+-        .rposition(|r| matches!(r, WalRecord::Checkpoint { .. }));
+-    match (load_id, last_checkpoint) {
+-        (Some(load_id), Some(idx)) => {
+-            span.truncate(idx + 1);
+-            Scan::Recover(RecoverySpan {
+-                load_id,
+-                next_commit_seq: max_committed_seq + 1,
+-                records: span,
+-                schemas: schemas.into_values().collect(),
+-            })
+-        }
+-        _ => Scan::Nothing,
+-    }
++    Default::default() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Replay one span into an open session and commit it under the ORIGINAL run's
+ /// identity. Returns the number of replayed batches; `Err(Damaged…)`-style failures
+ /// come back as `Ok(None)` so the caller can degrade to re-extraction.
+ pub(crate) async fn replay(
+     dir: &Path,
+     span: RecoverySpan,

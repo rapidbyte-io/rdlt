@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/fuzzing.rs
++++ delete match arm crate::load::LoadItem::Batch{batch, ..} in bench_shred_bytes
+@@ -69,17 +69,17 @@
+             &LoadId::new("bench-load"),
+             &WriteMode::Append,
+             &SchemaPolicy::evolve(),
+         )
+         .expect("bench shred succeeds");
+     items
+         .iter()
+         .map(|item| match item {
+-            crate::load::LoadItem::Batch { batch, .. } => batch.num_rows() as u64,
++             /* ~ changed by cargo-mutants ~ */
+             _ => 0,
+         })
+         .sum()
+ }
+ 
+ /// Passthrough over one structured batch; returns emitted row count.
+ pub fn bench_passthrough(batch: &arrow::record_batch::RecordBatch) -> u64 {
+     let mut registry = crate::schema::registry::SchemaRegistry::default();

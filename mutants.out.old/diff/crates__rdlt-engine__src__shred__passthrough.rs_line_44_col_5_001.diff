@@ -1,0 +1,127 @@
+--- crates/rdlt-engine/src/shred/passthrough.rs
++++ replace passthrough_items -> Result<Vec<LoadItem>, RdltError> with Ok(vec![Default::default()])
+@@ -36,123 +36,17 @@
+     table: &TableName,
+     registry: &mut SchemaRegistry,
+     policy: &SchemaPolicy,
+     load_id: &LoadId,
+     mode: &WriteMode,
+     caps: DestCapabilities,
+ ) -> Result<Vec<LoadItem>, RdltError> {
+     // ---- Map the arrow schema onto the logical schema ----
+-    let (observed, name_map) = schema_from_arrow(batch, table, caps)?;
+-
+-    // ---- Policy resolution (same rules as the shredder) ----
+-    let changes = registry.diff(&observed);
+-    let mut dropped_columns: Vec<String> = Vec::new();
+-    let mut kept: Vec<SchemaChange> = Vec::new();
+-    for change in changes {
+-        let action = if matches!(change, SchemaChange::CreateTable { .. }) {
+-            PolicyAction::Evolve // first version, not evolution
+-        } else {
+-            policy.action_for(table, change_column(&change))
+-        };
+-        match (&change, action) {
+-            (_, PolicyAction::Evolve) => kept.push(change),
+-            (_, PolicyAction::Freeze) => {
+-                return Err(RdltError::Schema(violation_for(table, &change)));
+-            }
+-            (SchemaChange::AddColumn { column }, _) => {
+-                // Discard on a structured stream: project the refused column away
+-                // (exact for column additions), counted below.
+-                dropped_columns.push(column.name.clone());
+-            }
+-            (SchemaChange::WidenColumn { name, .. }, _) => {
+-                return Err(RdltError::config(format!(
+-                    "table `{table}` column `{name}`: Discard policies cannot filter \
+-                     value-level type changes on structured streams (clause E7); use \
+-                     Evolve or Freeze"
+-                )));
+-            }
+-            (SchemaChange::CreateTable { .. }, _) => unreachable!("handled as Evolve"),
+-        }
+-    }
+-
+-    let mut items = Vec::new();
+-    let observed = if dropped_columns.is_empty() {
+-        observed
+-    } else {
+-        items.push(LoadItem::Discarded {
+-            table: table.clone(),
+-            rows: 0,
+-            values: batch.num_rows() as u64 * dropped_columns.len() as u64,
+-        });
+-        let mut projected = observed;
+-        projected
+-            .columns
+-            .retain(|c| !dropped_columns.contains(&c.name));
+-        projected
+-    };
+-    let changes = if dropped_columns.is_empty() {
+-        kept
+-    } else {
+-        registry.diff(&observed)
+-    };
+-
+-    if let Some(delta) = registry.apply(observed, changes) {
+-        let current = registry
+-            .get(&delta.table)
+-            .expect("apply() just stored this schema")
+-            .clone();
+-        items.push(LoadItem::Delta {
+-            schema: current,
+-            delta,
+-            mode: mode.clone(),
+-        });
+-    }
+-
+-    // ---- Assemble the outgoing batch against the CURRENT registry schema ----
+-    let current = registry.get(table).expect("registered above").clone();
+-    let rows = batch.num_rows();
+-    let mut arrays: Vec<ArrayRef> = Vec::with_capacity(current.columns.len());
+-    for column in &current.columns {
+-        if column.name == system_columns::LOAD_ID {
+-            arrays.push(Arc::new(StringArray::from(vec![load_id.as_str(); rows])));
+-            continue;
+-        }
+-        let target_type = arrow_column_type(&column.ty);
+-        let array = match name_map
+-            .iter()
+-            .find(|(normalized, _)| normalized == &column.name)
+-        {
+-            Some((_, idx)) => {
+-                let source = batch.column(*idx);
+-                if source.data_type() == &target_type {
+-                    Arc::clone(source) // the common zero-copy path
+-                } else {
+-                    // Cross-batch widening (e.g. Int64 batch under a Float64 column).
+-                    cast(source.as_ref(), &target_type).map_err(|e| {
+-                        RdltError::config(format!(
+-                            "table `{table}` column `{}`: cannot cast {} to {target_type}: {e}",
+-                            column.name,
+-                            source.data_type()
+-                        ))
+-                    })?
+-                }
+-            }
+-            // Historical column absent from this batch: null-filled.
+-            None => new_null_array(&target_type, rows),
+-        };
+-        arrays.push(array);
+-    }
+-    let out = RecordBatch::try_new(Arc::new(arrow_schema(&current)), arrays)
+-        .map_err(|e| RdltError::config(format!("passthrough batch assembly: {e}")))?;
+-    items.push(LoadItem::Batch {
+-        table: table.clone(),
+-        batch: out,
+-    });
+-    Ok(items)
++    Ok(vec![Default::default()]) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Logical schema for a structured batch: `_rdlt_load_id` + the batch's fields
+ /// (normalized names, mapped types). Also returns normalized-name → column-index.
+ fn schema_from_arrow(
+     batch: &RecordBatch,
+     table: &TableName,
+     caps: DestCapabilities,

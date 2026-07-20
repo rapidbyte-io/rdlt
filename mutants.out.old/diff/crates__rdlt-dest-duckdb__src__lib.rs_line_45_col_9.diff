@@ -1,0 +1,24 @@
+--- crates/rdlt-dest-duckdb/src/lib.rs
++++ replace DuckDb::open -> Result<Self, DestError> with Ok(Default::default())
+@@ -37,20 +37,17 @@
+     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+         f.debug_struct("DuckDb").finish_non_exhaustive()
+     }
+ }
+ 
+ impl DuckDb {
+     /// Open (or create) a DuckDB database file as a destination.
+     pub fn open(path: impl Into<PathBuf>) -> Result<Self, DestError> {
+-        let conn = Connection::open(path.into()).map_err(fatal)?;
+-        Ok(Self {
+-            db: std::sync::Arc::new(Mutex::new(conn)),
+-        })
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn clone_conn(&self) -> Result<Connection, DestError> {
+         let guard = self.db.lock().map_err(|_| fatal("connection poisoned"))?;
+         guard.try_clone().map_err(fatal)
+     }
+ 
+     /// Test/inspection helper: count reader-visible rows.

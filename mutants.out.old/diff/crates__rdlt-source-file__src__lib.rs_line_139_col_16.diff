@@ -1,0 +1,19 @@
+--- crates/rdlt-source-file/src/lib.rs
++++ delete ! in <impl Source for FileSource>::read
+@@ -131,15 +131,15 @@
+ 
+         for task in &tasks {
+             let proceeded = match stream.format {
+                 Format::Jsonl => {
+                     jsonl::read_task(task, stream.validate, &mut cursor, &mut req.out).await?
+                 }
+                 Format::Parquet => parquet::read_task(task, &mut cursor, &mut req.out).await?,
+             };
+-            if !proceeded {
++            if  /* ~ changed by cargo-mutants ~ */proceeded {
+                 return Ok(()); // cancellation (clause S4)
+             }
+         }
+         Ok(())
+     }
+ }

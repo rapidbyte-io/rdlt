@@ -1,0 +1,28 @@
+--- crates/rdlt-cli/src/main.rs
++++ delete match arm PipelineEvent::Discarded{table, rows, values, ..} in drive
+@@ -185,24 +185,17 @@
+                         "  schema: {} -> {} changes",
+                         delta.table,
+                         delta.changes.len()
+                     )
+                 }
+                 PipelineEvent::Committed { commit_seq, .. } => {
+                     eprintln!("commit {commit_seq} ok")
+                 }
+-                PipelineEvent::Discarded {
+-                    table,
+-                    rows,
+-                    values,
+-                    ..
+-                } => {
+-                    eprintln!("! {table}: discarded {rows} rows / {values} values")
+-                }
++                 /* ~ changed by cargo-mutants ~ */
+                 PipelineEvent::Retried { stream, attempt } => {
+                     eprintln!("! retry attempt {attempt} ({stream:?})")
+                 }
+                 PipelineEvent::StreamFinished { stream } => {
+                     eprintln!("-> stream {stream} finished")
+                 }
+                 _ => {}
+             }

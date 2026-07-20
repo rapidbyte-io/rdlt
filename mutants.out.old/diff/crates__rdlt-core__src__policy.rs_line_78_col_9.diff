@@ -1,0 +1,30 @@
+--- crates/rdlt-core/src/policy.rs
++++ replace SchemaPolicy::action_for -> PolicyAction with Default::default()
+@@ -70,26 +70,17 @@
+                 column: column.into(),
+             },
+             action,
+         );
+         self
+     }
+ 
+     pub fn action_for(&self, table: &TableName, column: Option<&str>) -> PolicyAction {
+-        if let Some(column) = column {
+-            let key = ColumnRef {
+-                table: table.clone(),
+-                column: column.to_owned(),
+-            };
+-            if let Some(action) = self.per_column.get(&key) {
+-                return *action;
+-            }
+-        }
+-        self.per_table.get(table).copied().unwrap_or(self.default)
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ impl Default for SchemaPolicy {
+     fn default() -> Self {
+         Self::evolve()
+     }
+ }

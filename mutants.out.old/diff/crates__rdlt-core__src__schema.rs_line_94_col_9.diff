@@ -1,0 +1,25 @@
+--- crates/rdlt-core/src/schema.rs
++++ replace TableSchema::content_hash -> SchemaHash with Default::default()
+@@ -86,21 +86,17 @@
+     pub columns: Vec<ColumnDef>,
+ }
+ 
+ impl TableSchema {
+     /// Content hash of the canonical form. Provenance participates in serialization but
+     /// the canonical form is the full struct — deterministic because struct fields and
+     /// column order are fixed.
+     pub fn content_hash(&self) -> SchemaHash {
+-        let canonical = serde_json::to_vec(self).expect("TableSchema serialization is infallible");
+-        let mut hasher = blake3::Hasher::new();
+-        hasher.update(b"rdlt:table-schema:v1\0");
+-        hasher.update(&canonical);
+-        SchemaHash::from_bytes(*hasher.finalize().as_bytes())
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub fn column(&self, name: &str) -> Option<&ColumnDef> {
+         self.columns.iter().find(|c| c.name == name)
+     }
+ }
+ 
+ /// One evolution step: `from` (None = table creation) to `to`, as a minimal change set.

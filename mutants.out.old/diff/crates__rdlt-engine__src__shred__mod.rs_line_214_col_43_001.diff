@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/mod.rs
++++ replace += with *= in StreamShredder::enforce_discards
+@@ -206,17 +206,17 @@
+                         dropped_rows += 1;
+                         discarded_ids.insert(row.id);
+                         keep = false;
+                         break;
+                     }
+                     PolicyAction::DiscardValue => {
+                         if let Some(slot) = row.value.get_mut(&offense.source_key) {
+                             *slot = serde_json::Value::Null;
+-                            nulled_values += 1;
++                            nulled_values *= /* ~ changed by cargo-mutants ~ */ 1;
+                         }
+                     }
+                     PolicyAction::Evolve | PolicyAction::Freeze => unreachable!("filtered above"),
+                 }
+             }
+             keep
+         });
+ 

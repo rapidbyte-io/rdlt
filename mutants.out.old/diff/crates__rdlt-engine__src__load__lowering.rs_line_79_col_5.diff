@@ -1,0 +1,39 @@
+--- crates/rdlt-engine/src/load/lowering.rs
++++ replace lower_batch -> Result<RecordBatch, RdltError> with Ok(Default::default())
+@@ -71,35 +71,17 @@
+ 
+ /// Lower a batch. Driven by the batch's OWN arrow schema (which mirrors the engine
+ /// schema by clause E4), so replay can lower without engine-schema bookkeeping.
+ /// Field names/paths are identical to `lower_schema`'s inputs → identical names out.
+ pub(crate) fn lower_batch(
+     batch: &RecordBatch,
+     caps: &DestCapabilities,
+ ) -> Result<RecordBatch, RdltError> {
+-    if !needs_lowering(caps) {
+-        return Ok(batch.clone());
+-    }
+-    let mut namer = UniqueNamer::new(caps.ident_rules);
+-    let mut fields: Vec<arrow::datatypes::Field> = Vec::new();
+-    let mut arrays: Vec<ArrayRef> = Vec::new();
+-    for (idx, field) in batch.schema().fields().iter().enumerate() {
+-        flatten_array(
+-            field,
+-            &[],
+-            Arc::clone(batch.column(idx)),
+-            caps,
+-            &mut namer,
+-            &mut fields,
+-            &mut arrays,
+-        )?;
+-    }
+-    RecordBatch::try_new(Arc::new(arrow::datatypes::Schema::new(fields)), arrays)
+-        .map_err(|e| RdltError::config(format!("lowering produced invalid batch: {e}")))
++    Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn flatten_array(
+     field: &arrow::datatypes::Field,
+     path: &[&str],
+     array: ArrayRef,
+     caps: &DestCapabilities,
+     namer: &mut UniqueNamer,

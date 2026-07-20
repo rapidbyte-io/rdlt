@@ -1,0 +1,26 @@
+--- crates/rdlt-engine/src/schema/registry.rs
++++ delete match arm (ColumnType::Struct{fields:from_fields,}, ColumnType::Struct{fields:to_fields},) in is_widening
+@@ -102,22 +102,12 @@
+             },
+         ) => true,
+         (ColumnType::Scalar { scalar: a }, ColumnType::Scalar { scalar: b }) => {
+             is_widening_of(*a, *b)
+         }
+         (ColumnType::ScalarList { item: a }, ColumnType::ScalarList { item: b }) => {
+             is_widening_of(*a, *b)
+         }
+-        (
+-            ColumnType::Struct {
+-                fields: from_fields,
+-            },
+-            ColumnType::Struct { fields: to_fields },
+-        ) => from_fields.iter().all(|f| {
+-            to_fields
+-                .iter()
+-                .find(|t| t.name == f.name)
+-                .is_some_and(|t| f.ty == t.ty || is_widening(&f.ty, &t.ty))
+-        }),
++         /* ~ changed by cargo-mutants ~ */
+         _ => false,
+     }
+ }

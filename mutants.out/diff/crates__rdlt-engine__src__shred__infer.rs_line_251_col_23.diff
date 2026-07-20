@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/infer.rs
++++ replace == with != in array_shape
+@@ -243,17 +243,17 @@
+     };
+     let non_null: Vec<&Value> = items.iter().filter(|v| !v.is_null()).collect();
+     if non_null.is_empty() {
+         return ArrayShape::Empty;
+     }
+     let objects = non_null.iter().filter(|v| v.is_object()).count();
+     if objects == non_null.len() {
+         ArrayShape::Objects
+-    } else if objects == 0 {
++    } else if objects != /* ~ changed by cargo-mutants ~ */ 0 {
+         ArrayShape::Scalars
+     } else {
+         ArrayShape::Mixed
+     }
+ }
+ 
+ #[cfg(test)]
+ mod tests {

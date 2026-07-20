@@ -1,0 +1,24 @@
+--- crates/rdlt-dest-duckdb/src/lib.rs
++++ replace stage_name -> String with String::new()
+@@ -94,20 +94,17 @@
+ pub const FAIL_POINTS: &[&str] = &["duck.append", "duck.tx.commit"];
+ 
+ fn quote(ident: &str) -> String {
+     format!("\"{}\"", ident.replace('"', "\"\""))
+ }
+ 
+ fn stage_name(table: &TableName) -> String {
+     // Hashed: bounded length regardless of table-name length, collision-safe.
+-    format!(
+-        "_rdlt_stage_{}",
+-        rdlt_connector::core::naming::ident_hash(table.as_str(), 16)
+-    )
++    String::new() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Quoted, comma-joined column list from the session schema — publishes are ALWAYS
+ /// by name: the persistent target's column order is historical while the temp stage
+ /// uses this run's order, so positional `SELECT *` corrupts or breaks on drift
+ /// (review finding #4).
+ fn column_list(schema: &TableSchema) -> String {
+     schema

@@ -1,0 +1,35 @@
+--- crates/rdlt-engine/src/schema/registry.rs
++++ replace SchemaRegistry::apply -> Option<SchemaDelta> with Some(Default::default())
+@@ -18,31 +18,17 @@
+ 
+     /// Store `observed` as current, described by pre-computed `changes` (usually from
+     /// [`Self::diff`], possibly policy-filtered). No-op when nothing changed.
+     pub(crate) fn apply(
+         &mut self,
+         observed: TableSchema,
+         changes: Vec<SchemaChange>,
+     ) -> Option<SchemaDelta> {
+-        if changes.is_empty() {
+-            return None;
+-        }
+-        let from = self
+-            .tables
+-            .get(&observed.table)
+-            .map(TableSchema::content_hash);
+-        let delta = SchemaDelta {
+-            table: observed.table.clone(),
+-            from,
+-            to: observed.content_hash(),
+-            changes,
+-        };
+-        self.tables.insert(observed.table.clone(), observed);
+-        Some(delta)
++        Some(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Non-mutating: what would change if `observed` became current?
+     /// Columns only append and types only widen — the shredder's observation states
+     /// guarantee it; debug assertions verify (a shrink here is an engine bug).
+     pub(crate) fn diff(&self, observed: &TableSchema) -> Vec<SchemaChange> {
+         let table = &observed.table;
+         let Some(current) = self.tables.get(table) else {

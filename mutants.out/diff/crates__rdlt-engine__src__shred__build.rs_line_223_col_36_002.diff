@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/build.rs
++++ delete ! in build_scalar
+@@ -215,17 +215,17 @@
+                 }
+             }
+             Arc::new(b.finish())
+         }
+         LogicalType::Json => {
+             let mut b = StringBuilder::new();
+             for v in values {
+                 match v {
+-                    Some(value) if !value.is_null() => {
++                    Some(value) if  /* ~ changed by cargo-mutants ~ */value.is_null() => {
+                         b.append_value(serde_json::to_string(value).expect("Value serialization"))
+                     }
+                     _ => b.append_null(),
+                 }
+             }
+             Arc::new(b.finish())
+         }
+         LogicalType::TimestampTz => {

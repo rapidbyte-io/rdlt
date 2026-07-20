@@ -1,0 +1,17 @@
+--- crates/rdlt-dest-parquet/src/lib.rs
++++ replace <impl LoadSession for ParquetSession>::read_state -> Result<Option<StateDoc>, DestError> with Ok(Some(Default::default()))
+@@ -319,13 +319,11 @@
+         log.format_version = LAYOUT_FORMAT_VERSION;
+         log.receipts.push(key);
+         crash_point!("pq.receipt.write");
+         write_json_atomic(&commits_path, &log)?;
+         Ok(receipt)
+     }
+ 
+     async fn read_state(&mut self, pipeline: &PipelineId) -> Result<Option<StateDoc>, DestError> {
+-        let path = self.out.join(state_file(&pipeline_scope(pipeline)));
+-        let state: Option<StateDoc> = read_json(&path)?;
+-        Ok(state.filter(|s| &s.pipeline == pipeline))
++        Ok(Some(Default::default())) /* ~ changed by cargo-mutants ~ */
+     }
+ }

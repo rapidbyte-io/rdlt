@@ -1,0 +1,21 @@
+--- crates/rdlt-core/src/policy.rs
++++ replace SchemaPolicy::freeze -> Self with Default::default()
+@@ -37,17 +37,17 @@
+ }
+ 
+ impl SchemaPolicy {
+     pub fn evolve() -> Self {
+         Self::with_default(PolicyAction::Evolve)
+     }
+ 
+     pub fn freeze() -> Self {
+-        Self::with_default(PolicyAction::Freeze)
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub fn with_default(default: PolicyAction) -> Self {
+         Self {
+             default,
+             per_table: BTreeMap::new(),
+             per_column: BTreeMap::new(),
+         }

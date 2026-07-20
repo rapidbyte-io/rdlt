@@ -1,0 +1,21 @@
+--- crates/rdlt-dest-parquet/src/lib.rs
++++ delete ! in <impl LoadSession for ParquetSession>::commit
+@@ -261,17 +261,17 @@
+         // (fresh state, same load_id) never re-truncates files that a prior commit
+         // of this load already published. If no receipt landed, re-truncating is
+         // convergent: WAL replay re-delivers everything since the last committed
+         // checkpoint.
+         let load_committed_before = log
+             .receipts
+             .iter()
+             .any(|(load, _)| load == meta.load_id.as_str());
+-        if !load_committed_before {
++        if  /* ~ changed by cargo-mutants ~ */load_committed_before {
+             crash_point!("pq.replace.truncate");
+             for (table, (_, mode)) in &self.tables {
+                 if matches!(mode, WriteMode::Replace) {
+                     let dir = self.out.join(table.as_str());
+                     if let Ok(entries) = std::fs::read_dir(&dir) {
+                         for entry in entries.flatten() {
+                             let path = entry.path();
+                             if path.extension().is_some_and(|e| e == "parquet") {

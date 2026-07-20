@@ -1,0 +1,42 @@
+--- crates/rdlt-source-file/src/lib.rs
++++ replace <impl Source for FileSource>::streams -> Result<Vec<StreamSpec>, SourceError> with Ok(vec![Default::default()])
+@@ -87,38 +87,17 @@
+ 
+ #[async_trait]
+ impl Source for FileSource {
+     fn spec(&self) -> ConnectorSpec {
+         ConnectorSpec::new("file", env!("CARGO_PKG_VERSION"))
+     }
+ 
+     async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
+-        Ok(self
+-            .config
+-            .streams
+-            .iter()
+-            .map(|stream| {
+-                let mut spec = StreamSpec::new(stream.name.as_str());
+-                match stream.format {
+-                    Format::Jsonl => {
+-                        if let Some(key) = &stream.primary_key {
+-                            spec = spec.with_primary_key(key.iter().cloned());
+-                        }
+-                        for (column, hint) in &stream.type_hints {
+-                            spec = spec.with_type_hint(column.clone(), (*hint).into());
+-                        }
+-                    }
+-                    // Parquet streams are structured: Arrow batches, run-level
+-                    // provenance only (clause S7).
+-                    Format::Parquet => spec = spec.structured(),
+-                }
+-                spec
+-            })
+-            .collect())
++        Ok(vec![Default::default()]) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     async fn read(&self, mut req: ReadRequest) -> Result<(), SourceError> {
+         let stream = self
+             .stream_config(req.stream.name.as_str())
+             .ok_or_else(|| SourceError::fatal(format!("unknown stream {}", req.stream.name)))?;
+ 
+         let mut cursor = FileCursor::decode(req.since.as_ref())?;

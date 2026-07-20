@@ -1,0 +1,21 @@
+--- crates/rdlt-source-file/src/jsonl.rs
++++ replace << with >>
+@@ -3,17 +3,17 @@
+ 
+ use std::io::{BufRead, BufReader, Seek, SeekFrom};
+ 
+ use bytes::Bytes;
+ use rdlt_connector::{RecordsOut, SourceError};
+ 
+ use crate::cursor::{FileCursor, FileProgress, FileTask};
+ 
+-const SLAB_BYTES: usize = 8 << 20;
++const SLAB_BYTES: usize = 8 >> /* ~ changed by cargo-mutants ~ */ 20;
+ 
+ /// Read one file task, pushing slabs and checkpointing progress into `cursor`.
+ /// Returns Ok(false) if the host closed the channel (cancellation).
+ pub(crate) async fn read_task(
+     task: &FileTask,
+     validate: bool,
+     cursor: &mut FileCursor,
+     out: &mut RecordsOut,

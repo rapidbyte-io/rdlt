@@ -1,0 +1,29 @@
+--- crates/rdlt-engine/src/wal/resume.rs
++++ delete match arm (Some(load_id), Some(idx)) in scan
+@@ -123,25 +123,17 @@
+     // covered by any cursor — committing them would double-apply once the source
+     // re-extracts that range (recovery invariant 2). The uncovered tail is discarded;
+     // re-extraction re-delivers it. A span with no checkpoint at all has nothing
+     // safely replayable.
+     let last_checkpoint = span
+         .iter()
+         .rposition(|r| matches!(r, WalRecord::Checkpoint { .. }));
+     match (load_id, last_checkpoint) {
+-        (Some(load_id), Some(idx)) => {
+-            span.truncate(idx + 1);
+-            Scan::Recover(RecoverySpan {
+-                load_id,
+-                next_commit_seq: max_committed_seq + 1,
+-                records: span,
+-                schemas: schemas.into_values().collect(),
+-            })
+-        }
++         /* ~ changed by cargo-mutants ~ */
+         _ => Scan::Nothing,
+     }
+ }
+ 
+ /// Replay one span into an open session and commit it under the ORIGINAL run's
+ /// identity. Returns the number of replayed batches; `Err(Damaged…)`-style failures
+ /// come back as `Ok(None)` so the caller can degrade to re-extraction.
+ pub(crate) async fn replay(

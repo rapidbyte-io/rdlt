@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/runtime/channel.rs
++++ replace ByteRx<T>::recv -> Option<T> with None
+@@ -78,17 +78,17 @@
+             .await
+             .map_err(|_| StageClosed)
+     }
+ }
+ 
+ impl<T> ByteRx<T> {
+     /// `None` once all senders are dropped and the channel is drained.
+     pub(crate) async fn recv(&mut self) -> Option<T> {
+-        self.rx.recv().await.map(|item| item.value)
++        None /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ pub(crate) fn byte_channel<T>(byte_budget: usize) -> (ByteTx<T>, ByteRx<T>) {
+     let budget = Arc::new(Semaphore::new(byte_budget));
+     // Message-count capacity is a secondary bound so zero-byte items (markers) can't
+     // queue unboundedly.
+     let (tx, rx) = mpsc::channel(256);

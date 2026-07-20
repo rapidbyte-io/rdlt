@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/runtime/graph.rs
++++ replace match guard saw_cancelled with false in run_once
+@@ -447,17 +447,17 @@
+     // Precedence: a concrete stream error > a concrete loader error > Cancelled.
+     // (A loader failure cancels the streams; their induced `Cancelled` results must
+     // not mask the original destination error.)
+     if let Some(error) = first_error {
+         return Err(error);
+     }
+     match loader_result {
+         Err(e) => return Err(e),
+-        Ok(()) if saw_cancelled => return Err(RdltError::Cancelled),
++        Ok(()) if false /* ~ changed by cargo-mutants ~ */ => return Err(RdltError::Cancelled),
+         Ok(()) => {}
+     }
+ 
+     // ---- Final commit: trailing work; state travels with the data (design doc §6) ----
+     loader.finish().await?;
+ 
+     // Clean finish: nothing left to replay.
+     if let Some(dir) = &wal_dir {

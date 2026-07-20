@@ -1,0 +1,41 @@
+--- crates/rdlt-core/src/naming.rs
++++ replace normalize_ident -> String with String::new()
+@@ -27,37 +27,17 @@
+ 
+ /// Suffix length: `_` + 8 hex chars of the source-name hash.
+ const SUFFIX_LEN: usize = 9;
+ 
+ /// Normalize a source name into a destination-safe identifier: lowercase,
+ /// `[a-z0-9_]` charset, no leading digit, truncated (with a disambiguating hash
+ /// suffix) to `rules.max_len`.
+ pub fn normalize_ident(source: &str, rules: IdentRules) -> String {
+-    let mut out = String::with_capacity(source.len());
+-    for c in source.chars() {
+-        match c {
+-            'a'..='z' | '0'..='9' | '_' => out.push(c),
+-            'A'..='Z' => out.push(c.to_ascii_lowercase()),
+-            _ => out.push('_'),
+-        }
+-    }
+-    if out.is_empty() {
+-        out.push('_');
+-    }
+-    if out.as_bytes()[0].is_ascii_digit() {
+-        out.insert(0, '_');
+-    }
+-    if out.len() > rules.max_len {
+-        // Truncation can merge distinct names; the hash of the *source* keeps them apart.
+-        out.truncate(rules.max_len.saturating_sub(SUFFIX_LEN));
+-        out.push('_');
+-        out.push_str(&short_hash(source));
+-    }
+-    out
++    String::new() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// The child-table name for a list-of-objects field.
+ pub fn child_table_name(parent: &str, field: &str, rules: IdentRules) -> String {
+     normalize_ident(&format!("{parent}__{field}"), rules)
+ }
+ 
+ /// The flattened column name for a nested object path (destinations without struct

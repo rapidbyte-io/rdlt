@@ -1,0 +1,22 @@
+--- crates/rdlt-connector/src/lib.rs
++++ replace RecordsOut::arrow -> Result<(), ChannelClosed> with Ok(())
+@@ -186,18 +186,17 @@
+         if buf.is_empty() {
+             return Ok(());
+         }
+         let size = buf.len();
+         self.send(PushPayload::RawJson(buf.into()), size).await
+     }
+ 
+     pub async fn arrow(&mut self, batch: RecordBatch) -> Result<(), ChannelClosed> {
+-        let size = batch.get_array_memory_size();
+-        self.send(PushPayload::Arrow(batch), size).await
++        Ok(()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// "All rows pushed so far are complete up to `cursor`" (clause S2).
+     pub async fn checkpoint(&mut self, cursor: Cursor) -> Result<(), ChannelClosed> {
+         self.send(PushPayload::Checkpoint(cursor), 0).await
+     }
+ 
+     async fn send(&mut self, payload: PushPayload, size: usize) -> Result<(), ChannelClosed> {

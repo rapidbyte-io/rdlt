@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/runtime/lock.rs
++++ delete ! in WorkdirLock::acquire
+@@ -20,17 +20,17 @@
+             .map_err(|e| RdltError::wal(format!("creating workdir {}: {e}", workdir.display())))?;
+         let path = workdir.join(".lock");
+         let file = OpenOptions::new()
+             .create(true)
+             .truncate(false)
+             .write(true)
+             .open(&path)
+             .map_err(|e| RdltError::wal(format!("opening lock {}: {e}", path.display())))?;
+-        if !file
++        if  /* ~ changed by cargo-mutants ~ */file
+             .try_lock_exclusive()
+             .map_err(|e| RdltError::wal(format!("locking {}: {e}", path.display())))?
+         {
+             return Err(RdltError::config(format!(
+                 "another run holds the workdir lock at {} — one process per pipeline",
+                 path.display()
+             )));
+         }

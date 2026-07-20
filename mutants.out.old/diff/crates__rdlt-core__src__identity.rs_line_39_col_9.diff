@@ -1,0 +1,23 @@
+--- crates/rdlt-core/src/identity.rs
++++ replace RowIdBuilder::with_domain -> Self with Default::default()
+@@ -31,19 +31,17 @@
+ 
+     /// Identity for a keyed row: hash of the declared key fields only, so updates to
+     /// non-key fields keep the id stable (what `Merge` merges on).
+     pub fn keyed() -> Self {
+         Self::with_domain(DOMAIN_KEYED)
+     }
+ 
+     fn with_domain(domain: &[u8]) -> Self {
+-        let mut hasher = blake3::Hasher::new();
+-        hasher.update(domain);
+-        Self { hasher }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Feed one field. `name` and canonical `value` bytes are length-prefixed.
+     /// A null field must be recorded too (skipping it would make `{a:1}` and
+     /// `{a:1, b:null}` collide only sometimes).
+     pub fn field(&mut self, name: &str, value: FieldValue<'_>) -> &mut Self {
+         self.update_lp(name.as_bytes());
+         match value {

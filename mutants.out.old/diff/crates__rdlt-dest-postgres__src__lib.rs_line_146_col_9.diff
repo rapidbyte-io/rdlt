@@ -1,0 +1,21 @@
+--- crates/rdlt-dest-postgres/src/lib.rs
++++ replace <impl Destination for Postgres>::spec -> ConnectorSpec with Default::default()
+@@ -138,17 +138,17 @@
+         DataType::Date32 => Type::DATE,
+         other => return Err(fatal(format!("unsupported arrow type for COPY: {other}"))),
+     })
+ }
+ 
+ #[async_trait]
+ impl Destination for Postgres {
+     fn spec(&self) -> ConnectorSpec {
+-        ConnectorSpec::new("postgres", env!("CARGO_PKG_VERSION"))
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn capabilities(&self) -> DestCapabilities {
+         DestCapabilities {
+             merge: true,
+             structs: false,      // → engine flattens collision-safely at the seam
+             scalar_lists: false, // → scalar lists become child tables at shred planning
+             json_type: false,

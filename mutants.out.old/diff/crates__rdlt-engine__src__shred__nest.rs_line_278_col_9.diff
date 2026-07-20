@@ -1,0 +1,34 @@
+--- crates/rdlt-engine/src/shred/nest.rs
++++ replace StreamShredder::row_identity -> RowId with Default::default()
+@@ -270,30 +270,17 @@
+             self.caps.ident_rules,
+         ));
+         self.tables.len() - 1
+     }
+ 
+     /// `_rdlt_id` for a root row: key hash when the stream declares a primary key,
+     /// content hash otherwise (design doc §5.4).
+     fn row_identity(&self, row: &Value) -> RowId {
+-        match &self.spec.primary_key {
+-            Some(key_fields) if !key_fields.is_empty() => {
+-                let mut builder = RowIdBuilder::keyed();
+-                for field in key_fields {
+-                    let rendered = row.get(field).and_then(render_scalar);
+-                    match &rendered {
+-                        Some(text) => builder.field(field, FieldValue::Bytes(text.as_bytes())),
+-                        None => builder.field(field, FieldValue::Null),
+-                    };
+-                }
+-                builder.finish()
+-            }
+-            _ => content_hash(row),
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ fn content_hash(row: &Value) -> RowId {
+     let mut canonical = Vec::new();
+     canonical_json_bytes(row, &mut canonical);
+     let mut builder = RowIdBuilder::keyless();
+     builder.field("", FieldValue::Bytes(&canonical));

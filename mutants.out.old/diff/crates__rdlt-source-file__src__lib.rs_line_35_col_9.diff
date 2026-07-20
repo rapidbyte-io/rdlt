@@ -1,0 +1,21 @@
+--- crates/rdlt-source-file/src/lib.rs
++++ replace FileSource::stream_config -> Option<&FileStream> with None
+@@ -27,17 +27,17 @@
+         Ok(Self::new(FileConfig::from_yaml(yaml)?))
+     }
+ 
+     pub fn new(config: FileConfig) -> Self {
+         Self { config }
+     }
+ 
+     fn stream_config(&self, name: &str) -> Option<&FileStream> {
+-        self.config.streams.iter().find(|s| s.name == name)
++        None /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// Resolve a path-or-glob into a lexicographically sorted file snapshot.
+ /// Empty glob ⇒ empty list (success); explicitly named missing file ⇒ error.
+ /// A path naming an EXISTING file is always taken literally, even when it contains
+ /// glob metacharacters (`events[prod].jsonl` is a file, not a character class).
+ /// Glob-expansion errors (e.g. an unreadable directory) are fatal — a partial match

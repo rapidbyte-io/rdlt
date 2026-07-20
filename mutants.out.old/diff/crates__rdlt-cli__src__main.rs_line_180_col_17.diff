@@ -1,0 +1,23 @@
+--- crates/rdlt-cli/src/main.rs
++++ delete match arm PipelineEvent::BatchLoaded{table, rows, ..} in drive
+@@ -172,19 +172,17 @@
+     pipeline: &mut rdlt::Pipeline,
+     report_path: Option<PathBuf>,
+ ) -> Result<(), CliError> {
+     let mut events = pipeline.events().expect("events available before run");
+     let feed = tokio::spawn(async move {
+         while let Some(event) = events.recv().await {
+             match event {
+                 PipelineEvent::StreamStarted { stream } => eprintln!("-> stream {stream} started"),
+-                PipelineEvent::BatchLoaded { table, rows, .. } => {
+-                    eprintln!("  {table}: +{rows} rows")
+-                }
++                 /* ~ changed by cargo-mutants ~ */
+                 PipelineEvent::SchemaEvolved { delta } => {
+                     eprintln!(
+                         "  schema: {} -> {} changes",
+                         delta.table,
+                         delta.changes.len()
+                     )
+                 }
+                 PipelineEvent::Committed { commit_seq, .. } => {

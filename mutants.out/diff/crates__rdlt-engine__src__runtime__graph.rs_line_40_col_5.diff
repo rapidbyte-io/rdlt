@@ -1,0 +1,26 @@
+--- crates/rdlt-engine/src/runtime/graph.rs
++++ replace new_load_id -> LoadId with Default::default()
+@@ -32,22 +32,17 @@
+ use crate::load::{LoadItem, Loader};
+ use crate::runtime::channel::byte_channel;
+ use crate::schema::registry::SchemaRegistry;
+ use crate::shred::StreamShredder;
+ 
+ static LOAD_COUNTER: AtomicU64 = AtomicU64::new(0);
+ 
+ fn new_load_id() -> LoadId {
+-    let millis = std::time::SystemTime::now()
+-        .duration_since(std::time::UNIX_EPOCH)
+-        .map(|d| d.as_millis())
+-        .unwrap_or(0);
+-    let seq = LOAD_COUNTER.fetch_add(1, Ordering::Relaxed);
+-    LoadId::new(format!("{millis:x}-{:x}-{seq:x}", std::process::id()))
++    Default::default() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Engine-owned retry ceiling for transient source failures (clause E5).
+ const MAX_SOURCE_ATTEMPTS: u32 = 5;
+ 
+ fn backoff(attempt: u32) -> std::time::Duration {
+     std::time::Duration::from_millis(100u64.saturating_mul(1 << attempt.min(6)))
+ }

@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/nest.rs
++++ replace == with != in TableBuffer::revert_column
+@@ -81,17 +81,17 @@
+     pub(crate) fn revert_column(
+         &mut self,
+         source_key: &str,
+         snapshot: Option<&[(String, ColState)]>,
+     ) {
+         let prior = snapshot.and_then(|columns| {
+             columns
+                 .iter()
+-                .find(|(key, _)| key == source_key)
++                .find(|(key, _)| key != /* ~ changed by cargo-mutants ~ */ source_key)
+                 .map(|(_, state)| state.clone())
+         });
+         match prior {
+             Some(state) => {
+                 if let Some(idx) = self.columns.iter().position(|(k, _)| k == source_key) {
+                     self.columns[idx].1 = state;
+                 }
+             }

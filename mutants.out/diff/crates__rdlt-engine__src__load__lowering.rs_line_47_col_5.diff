@@ -1,0 +1,43 @@
+--- crates/rdlt-engine/src/load/lowering.rs
++++ replace lower_column with ()
+@@ -39,39 +39,17 @@
+ 
+ fn lower_column(
+     column: &ColumnDef,
+     path: &[&str],
+     caps: &DestCapabilities,
+     namer: &mut UniqueNamer,
+     out: &mut Vec<ColumnDef>,
+ ) {
+-    let mut full_path: Vec<&str> = path.to_vec();
+-    full_path.push(&column.name);
+-    match &column.ty {
+-        ColumnType::Struct { fields } if !caps.structs => {
+-            for field in fields {
+-                lower_column(field, &full_path, caps, namer, out);
+-            }
+-        }
+-        ty => {
+-            let lowered_ty = match ty {
+-                ColumnType::Scalar {
+-                    scalar: LogicalType::Decimal { .. },
+-                } if !caps.decimal => ColumnType::scalar(LogicalType::Utf8),
+-                other => other.clone(),
+-            };
+-            out.push(ColumnDef {
+-                name: namer.name_for(&full_path.join("__")),
+-                ty: lowered_ty,
+-                nullable: column.nullable || !path.is_empty(),
+-                provenance: column.provenance,
+-            });
+-        }
+-    }
++    () /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Lower a batch. Driven by the batch's OWN arrow schema (which mirrors the engine
+ /// schema by clause E4), so replay can lower without engine-schema bookkeeping.
+ /// Field names/paths are identical to `lower_schema`'s inputs → identical names out.
+ pub(crate) fn lower_batch(
+     batch: &RecordBatch,
+     caps: &DestCapabilities,

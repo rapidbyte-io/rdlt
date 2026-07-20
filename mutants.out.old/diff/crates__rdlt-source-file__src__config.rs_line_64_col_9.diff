@@ -1,0 +1,31 @@
+--- crates/rdlt-source-file/src/config.rs
++++ replace <impl From<HintType> for LogicalType>::from -> Self with Default::default()
+@@ -56,27 +56,17 @@
+     Date,
+     Time,
+     Uuid,
+     Json,
+ }
+ 
+ impl From<HintType> for LogicalType {
+     fn from(hint: HintType) -> Self {
+-        match hint {
+-            HintType::Bool => LogicalType::Bool,
+-            HintType::Int64 => LogicalType::Int64,
+-            HintType::Float64 => LogicalType::Float64,
+-            HintType::Utf8 => LogicalType::Utf8,
+-            HintType::TimestampTz => LogicalType::TimestampTz,
+-            HintType::Date => LogicalType::Date,
+-            HintType::Time => LogicalType::Time,
+-            HintType::Uuid => LogicalType::Uuid,
+-            HintType::Json => LogicalType::Json,
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ impl FileConfig {
+     pub fn from_yaml(yaml: &str) -> Result<Self, ConfigError> {
+         let config: FileConfig = serde_yaml::from_str(yaml)?;
+         config.validate()?;
+         Ok(config)

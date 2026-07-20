@@ -1,0 +1,37 @@
+--- crates/rdlt-dest-parquet/src/lib.rs
++++ replace ParquetDir::count_rows -> Result<u64, DestError> with Ok(1)
+@@ -122,33 +122,17 @@
+     pub fn open(out: impl Into<PathBuf>) -> Result<Self, DestError> {
+         let out = out.into();
+         std::fs::create_dir_all(&out).map_err(fatal)?;
+         Ok(Self { out })
+     }
+ 
+     /// Test/inspection helper: total published rows of a table (parquet footers).
+     pub fn count_rows(&self, table: &str) -> Result<u64, DestError> {
+-        use parquet::file::reader::{FileReader, SerializedFileReader};
+-        let dir = self.out.join(table);
+-        let mut total = 0u64;
+-        let entries = match std::fs::read_dir(&dir) {
+-            Ok(entries) => entries,
+-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+-            Err(e) => return Err(fatal(e)),
+-        };
+-        for entry in entries {
+-            let path = entry.map_err(fatal)?.path();
+-            if path.extension().is_some_and(|e| e == "parquet") {
+-                let file = std::fs::File::open(&path).map_err(fatal)?;
+-                let reader = SerializedFileReader::new(file).map_err(fatal)?;
+-                total += reader.metadata().file_metadata().num_rows() as u64;
+-            }
+-        }
+-        Ok(total)
++        Ok(1) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ #[async_trait]
+ impl Destination for ParquetDir {
+     fn spec(&self) -> ConnectorSpec {
+         ConnectorSpec::new("parquet-dir", env!("CARGO_PKG_VERSION"))
+     }

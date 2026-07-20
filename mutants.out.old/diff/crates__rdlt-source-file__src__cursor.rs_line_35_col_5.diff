@@ -1,0 +1,21 @@
+--- crates/rdlt-source-file/src/cursor.rs
++++ replace default_true -> bool with false
+@@ -27,17 +27,17 @@
+     /// File mtime (ms since epoch) observed when this progress was recorded. A
+     /// same-size file whose mtime moved was rewritten in place — size alone cannot
+     /// see that, so this is the loud-failure tripwire for it.
+     #[serde(default)]
+     pub mtime_ms: Option<u64>,
+ }
+ 
+ fn default_true() -> bool {
+-    true
++    false /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+ pub struct FileCursor {
+     #[serde(default = "default_version")]
+     pub format_version: u32,
+     pub files: BTreeMap<String, FileProgress>,
+ }

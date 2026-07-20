@@ -1,0 +1,19 @@
+--- crates/rdlt-core/src/report.rs
++++ replace RunReport::table_mut -> &mut TableReport with Box::leak(Box::new(Default::default()))
+@@ -68,15 +68,15 @@
+             cursors: BTreeMap::new(),
+             resumed_from: ResumedFrom::Fresh,
+             commits: 0,
+             elapsed_ms: 0,
+         }
+     }
+ 
+     pub fn table_mut(&mut self, table: &TableName) -> &mut TableReport {
+-        self.tables.entry(table.clone()).or_default()
++        Box::leak(Box::new(Default::default())) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub fn total_rows(&self) -> u64 {
+         self.tables.values().map(|t| t.rows).sum()
+     }
+ }

@@ -1,0 +1,21 @@
+--- crates/rdlt-dest-duckdb/src/lib.rs
++++ replace > with >= in <impl LoadSession for DuckDbSession>::commit
+@@ -321,17 +321,17 @@
+             // Clause D3: idempotence by (load_id, commit_seq).
+             let already: u64 = tx
+                 .query_row(
+                     "SELECT count(*) FROM _rdlt_commits WHERE load_id = ? AND commit_seq = ?",
+                     duckdb::params![meta.load_id.as_str(), meta.commit_seq as i64],
+                     |row| row.get(0),
+                 )
+                 .map_err(fatal)?;
+-            if already > 0 {
++            if already >= /* ~ changed by cargo-mutants ~ */ 0 {
+                 // Prior receipt: publish nothing, discard the staged span.
+                 for table in tables.keys() {
+                     tx.execute_batch(&format!("DELETE FROM {}", quote(&stage_name(table))))
+                         .map_err(fatal)?;
+                 }
+                 tx.commit().map_err(fatal)?;
+                 return Ok((replaced, true));
+             }

@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/mod.rs
++++ replace > with < in StreamShredder::enforce_discards
+@@ -215,17 +215,17 @@
+                         }
+                     }
+                     PolicyAction::Evolve | PolicyAction::Freeze => unreachable!("filtered above"),
+                 }
+             }
+             keep
+         });
+ 
+-        if dropped_rows > 0 || nulled_values > 0 {
++        if dropped_rows < /* ~ changed by cargo-mutants ~ */ 0 || nulled_values > 0 {
+             items.push(LoadItem::Discarded {
+                 table: table_name,
+                 rows: dropped_rows,
+                 values: nulled_values,
+             });
+         }
+         Ok(())
+     }

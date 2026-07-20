@@ -1,0 +1,21 @@
+--- crates/rdlt-dest-postgres/src/lib.rs
++++ replace == with != in <impl LoadSession for PgSession>::commit
+@@ -397,17 +397,17 @@
+                         "INSERT INTO {target} ({cols}) SELECT {cols} FROM {stage}"
+                     ))
+                     .await
+                     .map_err(transient)?;
+                 }
+                 WriteMode::Merge { .. } => {
+                     let root = &roots[table];
+                     let root_stage = quote(&stage_name(&self.pipeline, root));
+-                    let id_col = if table == root {
++                    let id_col = if table != /* ~ changed by cargo-mutants ~ */ root {
+                         system_columns::ID
+                     } else {
+                         system_columns::ROOT_ID
+                     };
+                     // Subtree replacement by root id + DETERMINISTIC in-batch dedup:
+                     // arrival order breaks ties, so "last wins" is real (finding #7).
+                     tx.batch_execute(&format!(
+                         "DELETE FROM {target} WHERE {} IN (SELECT {} FROM {root_stage})",

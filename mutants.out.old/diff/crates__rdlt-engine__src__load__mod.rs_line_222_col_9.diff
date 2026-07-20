@@ -1,0 +1,57 @@
+--- crates/rdlt-engine/src/load/mod.rs
++++ replace Loader::commit -> Result<(), RdltError> with Ok(())
+@@ -214,53 +214,11 @@
+     pub(crate) async fn finish(&mut self) -> Result<(), RdltError> {
+         if self.dirty || self.commit_seq == 0 {
+             self.commit().await?;
+         }
+         Ok(())
+     }
+ 
+     async fn commit(&mut self) -> Result<(), RdltError> {
+-        self.commit_seq += 1;
+-        self.state.last_commit = Some(rdlt_core::LastCommit {
+-            load_id: self.load_id.clone(),
+-            commit_seq: self.commit_seq,
+-        });
+-        // Commit protocol step 1: the WAL span becomes durable BEFORE the
+-        // destination commit — a crash after this point replays instead of
+-        // re-extracting (crash-matrix row 2).
+-        if let Some(wal) = &mut self.wal {
+-            wal.sync_for_commit()?;
+-        }
+-        let meta = CommitMeta {
+-            load_id: self.load_id.clone(),
+-            commit_seq: self.commit_seq,
+-            state: self.state.clone(),
+-            counters: std::mem::take(&mut self.counters),
+-        };
+-        self.session
+-            .commit(meta)
+-            .await
+-            .map_err(RdltError::destination)?;
+-        // The canonical redelivery window: destination acknowledged, WAL not yet
+-        // marked — a crash here MUST replay idempotently (D3).
+-        crash_point!(
+-            "session.after_commit",
+-            Err(RdltError::config(
+-                "injected crash after destination commit (failpoint)",
+-            ))
+-        );
+-        // Step 3: receipt in hand — mark and reclaim covered segments.
+-        if let Some(wal) = &mut self.wal {
+-            wal.mark_committed(self.commit_seq)?;
+-        }
+-        self.emit(rdlt_core::PipelineEvent::Committed {
+-            commit_seq: self.commit_seq,
+-            cursors: self.state.cursors.clone(),
+-        });
+-        self.report.commits += 1;
+-        self.checkpoints_since_commit = 0;
+-        self.bytes_since_commit = 0;
+-        self.last_commit_at = Instant::now();
+-        self.dirty = false;
+-        Ok(())
++        Ok(()) /* ~ changed by cargo-mutants ~ */
+     }
+ }

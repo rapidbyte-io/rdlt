@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/passthrough.rs
++++ replace == with != in passthrough_items
+@@ -118,17 +118,17 @@
+         }
+         let target_type = arrow_column_type(&column.ty);
+         let array = match name_map
+             .iter()
+             .find(|(normalized, _)| normalized == &column.name)
+         {
+             Some((_, idx)) => {
+                 let source = batch.column(*idx);
+-                if source.data_type() == &target_type {
++                if source.data_type() != /* ~ changed by cargo-mutants ~ */ &target_type {
+                     Arc::clone(source) // the common zero-copy path
+                 } else {
+                     // Cross-batch widening (e.g. Int64 batch under a Float64 column).
+                     cast(source.as_ref(), &target_type).map_err(|e| {
+                         RdltError::config(format!(
+                             "table `{table}` column `{}`: cannot cast {} to {target_type}: {e}",
+                             column.name,
+                             source.data_type()

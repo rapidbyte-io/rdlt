@@ -1,0 +1,108 @@
+--- crates/rdlt-engine/src/load/mod.rs
++++ replace Loader::process -> Result<(), RdltError> with Ok(())
+@@ -103,104 +103,17 @@
+         }
+     }
+ 
+     fn emit(&self, event: rdlt_core::PipelineEvent) {
+         let _ = self.events.send(event); // no listeners is fine
+     }
+ 
+     pub(crate) async fn process(&mut self, item: LoadItem) -> Result<(), RdltError> {
+-        let span = tracing::info_span!("rdlt.load");
+-        let _guard = span.enter();
+-        // Write-ahead: the item is durable-intent before the destination sees it.
+-        if let Some(wal) = &mut self.wal {
+-            wal.record(&item)?;
+-        }
+-        match item {
+-            LoadItem::Delta {
+-                schema,
+-                delta,
+-                mode,
+-            } => {
+-                // Lowering at the destination seam: flatten/downcast for the
+-                // destination's capabilities; the engine keeps the rich schema.
+-                let lowered = lowering::lower_schema(&schema, &self.caps);
+-                self.session
+-                    .ensure_table(&lowered, &mode)
+-                    .await
+-                    .map_err(RdltError::destination)?;
+-                crash_point!(
+-                    "session.after_ensure",
+-                    Err(RdltError::config(
+-                        "injected crash after ensure_table (failpoint)",
+-                    ))
+-                );
+-                self.state
+-                    .schema_hashes
+-                    .insert(schema.table.clone(), schema.content_hash());
+-                self.emit(rdlt_core::PipelineEvent::SchemaEvolved {
+-                    delta: delta.clone(),
+-                });
+-                self.report.schema_migrations.push(delta);
+-                self.dirty = true;
+-            }
+-            LoadItem::Batch { table, batch } => {
+-                let rows = batch.num_rows() as u64;
+-                let bytes = batch.get_array_memory_size() as u64;
+-                let lowered = lowering::lower_batch(&batch, &self.caps)?;
+-                self.session
+-                    .write(&table, lowered)
+-                    .await
+-                    .map_err(RdltError::destination)?;
+-                crash_point!(
+-                    "session.after_write",
+-                    Err(RdltError::config("injected crash after write (failpoint)",))
+-                );
+-                self.emit(rdlt_core::PipelineEvent::BatchLoaded {
+-                    table: table.clone(),
+-                    rows,
+-                    bytes,
+-                });
+-                let entry = self.report.table_mut(&table);
+-                entry.rows += rows;
+-                entry.bytes += bytes;
+-                self.counters.rows += rows;
+-                self.counters.bytes += bytes;
+-                self.bytes_since_commit += bytes;
+-                self.dirty = true;
+-            }
+-            LoadItem::Checkpoint { stream, cursor } => {
+-                self.state.cursors.insert(stream.clone(), cursor.clone());
+-                self.report.cursors.insert(stream, cursor);
+-                self.checkpoints_since_commit += 1;
+-                self.dirty = true;
+-                // Commit decisions are made only here — a checkpoint boundary.
+-                if self.policy_triggers() {
+-                    self.commit().await?;
+-                }
+-            }
+-            LoadItem::Discarded {
+-                table,
+-                rows,
+-                values,
+-            } => {
+-                self.emit(rdlt_core::PipelineEvent::Discarded {
+-                    table: table.clone(),
+-                    rows,
+-                    values,
+-                    reason: "schema policy".to_owned(),
+-                });
+-                let entry = self.report.table_mut(&table);
+-                entry.discarded_rows += rows;
+-                entry.discarded_values += values;
+-                self.counters.discarded_rows += rows;
+-                self.counters.discarded_values += values;
+-            }
+-        }
+-        Ok(())
++        Ok(()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn policy_triggers(&self) -> bool {
+         match self.policy {
+             CommitPolicy::EveryCheckpoints(n) => self.checkpoints_since_commit >= n.max(1),
+             CommitPolicy::EveryBytes(bytes) => self.bytes_since_commit >= bytes,
+             CommitPolicy::EverySeconds(secs) => {
+                 self.last_commit_at.elapsed().as_secs() >= u64::from(secs)

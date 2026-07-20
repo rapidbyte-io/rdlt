@@ -1,0 +1,21 @@
+--- crates/rdlt-core/src/types.rs
++++ delete match arm (Json, _) |(_, Json) in widen
+@@ -49,17 +49,17 @@
+ /// shred time (`Int64 → Float64` is exact only within ±2^53); an inexact value
+ /// escalates the column further along the lattice. See `int64_fits_in_f64`.
+ pub fn widen(a: LogicalType, b: LogicalType) -> LogicalType {
+     if a == b {
+         return a;
+     }
+     match (a, b) {
+         // Top absorbs everything.
+-        (Json, _) | (_, Json) => Json,
++         /* ~ changed by cargo-mutants ~ */
+         // Binary is textable only via encodings we refuse to invent silently.
+         (Binary, _) | (_, Binary) => Json,
+         // Decimal ⊔ Decimal: max integer digits, max scale, bounded by 128-bit precision.
+         (
+             Decimal {
+                 precision: p1,
+                 scale: s1,
+             },

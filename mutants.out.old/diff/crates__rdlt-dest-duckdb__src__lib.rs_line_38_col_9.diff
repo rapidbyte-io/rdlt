@@ -1,0 +1,21 @@
+--- crates/rdlt-dest-duckdb/src/lib.rs
++++ replace <impl std::fmt::Debug for DuckDb>::fmt -> std::fmt::Result with Ok(Default::default())
+@@ -30,17 +30,17 @@
+ /// instances — the second cannot see the first's un-checkpointed catalog.)
+ #[derive(Clone)]
+ pub struct DuckDb {
+     db: std::sync::Arc<Mutex<Connection>>,
+ }
+ 
+ impl std::fmt::Debug for DuckDb {
+     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+-        f.debug_struct("DuckDb").finish_non_exhaustive()
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ impl DuckDb {
+     /// Open (or create) a DuckDB database file as a destination.
+     pub fn open(path: impl Into<PathBuf>) -> Result<Self, DestError> {
+         let conn = Connection::open(path.into()).map_err(fatal)?;
+         Ok(Self {
