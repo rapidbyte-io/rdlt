@@ -57,15 +57,7 @@ fn structured_batch(rows: usize) -> RecordBatch {
 #[library_benchmark]
 #[bench::rows_10k(nested_ndjson(ROWS))]
 fn shred_nested_10k(bytes: Vec<u8>) -> u64 {
-    // The PRODUCTION (tape) path since feature 003.
     black_box(rdlt_engine::fuzzing::bench_shred_bytes(&bytes))
-}
-
-#[library_benchmark]
-#[bench::rows_10k(nested_ndjson(ROWS))]
-fn shred_tree_reference_10k(bytes: Vec<u8>) -> u64 {
-    // The pre-003 tree path, kept while the equivalence gate lives (G5.3).
-    black_box(rdlt_engine::fuzzing::bench_shred_bytes_tree(&bytes))
 }
 
 #[library_benchmark]
@@ -102,6 +94,6 @@ fn identity_keyless_10k(rows: usize) -> u64 {
 
 library_benchmark_group!(
     name = hotpath;
-    benchmarks = shred_nested_10k, shred_tree_reference_10k, passthrough_10k, identity_keyed_10k, identity_keyless_10k
+    benchmarks = shred_nested_10k, passthrough_10k, identity_keyed_10k, identity_keyless_10k
 );
 main!(library_benchmark_groups = hotpath);

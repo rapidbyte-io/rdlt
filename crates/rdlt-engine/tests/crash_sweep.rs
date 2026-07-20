@@ -16,12 +16,24 @@ use std::path::Path;
 use rdlt_connector::{Destination, StreamSpec};
 use rdlt_core::WriteMode;
 use rdlt_core::failpoint::fail;
-use rdlt_engine::failpoints::ENGINE_POINTS;
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{MemoryBatch, MemoryDestination, MemorySource, MemoryStream};
 use serde_json::json;
 
 const TOTAL_ROWS: u64 = 100;
+
+/// Engine-owned fail points (registry discipline, gate G2.2): every
+/// `crash_point!` site in rdlt-engine MUST appear here — grep-auditable, and
+/// `sweep_covers_entire_registry` pins the union against the expected list.
+const ENGINE_POINTS: &[&str] = &[
+    "wal.segment.write",
+    "wal.segment.fsync",
+    "wal.manifest.append",
+    "wal.manifest.fsync",
+    "session.after_ensure",
+    "session.after_write",
+    "session.after_commit",
+];
 
 /// 4 checkpointed batches × 25 rows → 4 commits under EveryCheckpoints(1):
 /// every sweep iteration exercises multi-commit recovery, not a single commit.

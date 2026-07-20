@@ -8,20 +8,18 @@ use rdlt_core::{LoadId, SchemaPolicy, TableName, WriteMode};
 /// Raw-JSON slab parsing only (NDJSON / array / single doc): must never panic,
 /// hang, or blow memory — errors are the only acceptable failure.
 pub fn parse_slab(bytes: &[u8]) {
-    let _ = crate::shred::nest::parse_rows(bytes);
+    let _ = crate::shred::table::parse_rows(bytes);
 }
 
-/// The FULL shred path over arbitrary bytes: parse, observe, resolve, build.
-/// Asserts the cheap invariants inline (system columns first, unique names).
+/// The FULL (tape) shred path over arbitrary bytes: parse, observe, resolve,
+/// build. Asserts the cheap invariants inline (unique destination names).
 pub fn shred_slab(bytes: &[u8]) {
     let caps = DestCapabilities::default();
     let mut shredder =
-        crate::shred::TreeShredder::new(StreamSpec::new("fuzz"), caps, TableName::new("fuzz"));
-    if shredder.push_bytes(bytes).is_err() {
-        return; // malformed JSON: typed error is the correct outcome
-    }
+        crate::shred::TapeShredder::new(StreamSpec::new("fuzz"), caps, TableName::new("fuzz"));
     let mut registry = crate::schema::registry::SchemaRegistry::default();
-    let items = shredder.drain_batch(
+    let items = shredder.push_and_drain(
+        bytes,
         &mut registry,
         &LoadId::new("fuzz-load"),
         &WriteMode::Append,
@@ -50,46 +48,21 @@ pub fn map_arrow_type(dt: &arrow::datatypes::DataType) {
 
 // ---- bench entry points (iai_hotpath / perf gate G1) ----
 
-/// Full shred path over one raw slab; returns emitted row count (anti-DCE).
+/// Production (tape) shred path over one raw slab; returns emitted row count.
 pub fn bench_shred_bytes(bytes: &[u8]) -> u64 {
     let caps = DestCapabilities::default();
     let mut shredder =
-        crate::shred::TreeShredder::new(StreamSpec::new("bench"), caps, TableName::new("bench"));
-    shredder.push_bytes(bytes).expect("valid bench input");
+        crate::shred::TapeShredder::new(StreamSpec::new("bench"), caps, TableName::new("bench"));
     let mut registry = crate::schema::registry::SchemaRegistry::default();
     let items = shredder
-        .drain_batch(
+        .push_and_drain(
+            bytes,
             &mut registry,
             &LoadId::new("bench-load"),
             &WriteMode::Append,
             &SchemaPolicy::evolve(),
         )
-        .expect("bench shred succeeds");
-    items
-        .iter()
-        .map(|item| match item {
-            crate::load::LoadItem::Batch { batch, .. } => batch.num_rows() as u64,
-            _ => 0,
-        })
-        .sum()
-}
-
-/// REFERENCE (tree) shred path — the pre-feature-003 implementation, kept for
-/// the equivalence gate; benched so the tape path's win stays measured.
-pub fn bench_shred_bytes_tree(bytes: &[u8]) -> u64 {
-    let caps = DestCapabilities::default();
-    let mut shredder =
-        crate::shred::TreeShredder::new(StreamSpec::new("bench"), caps, TableName::new("bench"));
-    shredder.push_bytes(bytes).expect("valid bench input");
-    let mut registry = crate::schema::registry::SchemaRegistry::default();
-    let items = shredder
-        .drain_batch(
-            &mut registry,
-            &LoadId::new("bench-load"),
-            &WriteMode::Append,
-            &SchemaPolicy::evolve(),
-        )
-        .expect("bench shred succeeds");
+        .unwrap_or_else(|_| panic!("bench shred succeeds"));
     items
         .iter()
         .map(|item| match item {

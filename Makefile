@@ -46,7 +46,7 @@ else ifeq ($(TARGET),e2e)
 else ifeq ($(TARGET),sweep)
 	cargo nextest run -p rdlt-engine --features failpoints -E 'test(crash_sweep)' --no-tests=pass
 else ifeq ($(TARGET),prop)
-	PROPTEST_CASES=4096 cargo nextest run -p rdlt-engine -E 'test(/shred_property|shred_equivalence/)' --no-tests=pass
+	PROPTEST_CASES=4096 cargo nextest run -p rdlt-engine -E 'test(shred_property)' --no-tests=pass
 else ifeq ($(TARGET),fuzz)
 	cd fuzz && for t in $(FUZZ_TARGETS); do \
 		cargo +nightly fuzz run $$t -- -timeout=10 -max_total_time=$(FUZZ_SECONDS) || exit 1; \

@@ -94,13 +94,14 @@ before Phase 5 changes them. All cargo commands run via
   observation/canonical/identity/policy/build exist ONCE, generic; `TreeShredder`
   (reference) and `TapeShredder` (production, slab arena, no per-row trees)
   differ only in the ~60-line traversal. Equivalence proptest passed on its
-  first full run. THE profile finding: the tape rewrite alone changed nothing —
-  `RowId::to_hex` via `write!("{:02x}")` was **48% of all shred instructions**.
-  Table-driven hex + stack-buffer id columns + zero-clone Utf8 builds + scratch
-  reuse: shred 1.094 G → 531 M instr (2.06×), wall 1.66 s → 0.95 s (8.1× vs
-  dlt normalize), flagship e2e 1.73 s → **0.92 s (21.3× vs dlt)**, RSS 642 →
-  515 MB. Hash decision (T023): blake3 KEPT — measured bound ~16% of stage,
-  cannot clear the 30% e2e bar; recorded in design doc §5.4.
+  first full run. Profile findings (final attribution — a mislabeled bench
+  entry point initially hid the tape win, caught during cleanup): (1)
+  `RowId::to_hex` via `write!("{:02x}")` was **48% of all shred instructions**
+  (table encoder halved the stage); (2) the tape path cuts a further **31%**
+  vs the tree path. Net shred: 1.094 G → 362 M instr (3.0×), wall 1.66 →
+  0.58 s (13.1× vs dlt normalize). Flagship e2e 1.73 → 1.05 s median (18.6×),
+  RSS → 355 MB (met). Hash decision (T023): blake3 KEPT — cannot clear the
+  30% e2e bar; recorded in design doc §5.4.
 - T022 done (memchr slab reader — landed as FR-007 required behavior; e2e
   neutral within noise). T024 done: RSS 642 → 355 MB (SC-005 met at 1/5.6) —
   the fix was glibc arena retention (mallopt in the CLI), NOT DuckDB

@@ -48,7 +48,7 @@ impl<'s> Arena<'s> {
     /// Parse a raw-JSON push (NDJSON, a top-level array, or a single document)
     /// into this arena, returning the ROW nodes: top-level arrays flatten into
     /// their items, and non-object rows are wrapped as `{"value": …}` — the
-    /// exact semantics of `nest::parse_rows` + `push_row`'s wrapping.
+    /// exact semantics of `table::parse_rows` + the traversal's wrapping.
     ///
     /// Documents are located zero-copy via `&RawValue` (serde_json's stream
     /// iterator cannot seed), then each document slice is seed-parsed into the
@@ -369,7 +369,7 @@ mod tests {
             let bytes = case.as_bytes();
             let mut arena = Arena::default();
             let arena_rows = arena.parse_rows(bytes).expect("arena parse");
-            let value_rows = crate::shred::nest::parse_rows(bytes).expect("value parse");
+            let value_rows = crate::shred::table::parse_rows(bytes).expect("value parse");
             assert_eq!(arena_rows.len(), value_rows.len(), "row count for {case}");
             for (node, value) in arena_rows.iter().zip(&value_rows) {
                 // Wrap the Value side exactly like push_row does.

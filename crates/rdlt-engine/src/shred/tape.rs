@@ -1,12 +1,12 @@
 //! The TAPE shred path (feature 003 R24, FR-006) — the production default:
 //! slab → arena → drained Arrow batches, with NO per-row owned tree.
 //!
-//! Mirrors `nest::TreeShredder`'s traversal EXACTLY — same breadth-first
-//! order, same wrapping, same identity assignment, same child-position rule —
-//! but rows are arena node ids borrowing the slab. Everything downstream of the
-//! traversal (observation, canonicalization, identity, policy, build) is the
-//! SAME generic code both paths share; the equivalence proptest
-//! (`tests/shred_equivalence.rs`) pins the whole relation.
+//! Breadth-first traversal (design doc §§5.3–5.4): observe every field,
+//! extract child tables at any depth, assign lineage identities — rows are
+//! arena node ids borrowing the slab. Everything downstream (observation,
+//! canonicalization, identity, policy, build) is the generic `JsonView` core;
+//! the behavioral invariants are pinned by `tests/shred_property.rs` and the
+//! hazard cases in `arena.rs`/`tests/passthrough.rs`.
 
 use std::collections::VecDeque;
 
@@ -17,7 +17,7 @@ use rdlt_core::{ParentLink, RdltError, RowId, TableName};
 
 use super::arena::{Arena, NodeId};
 use super::infer::{ColState, ScalarState};
-use super::nest::{TableBuffer, content_hash_with, row_identity};
+use super::table::{TableBuffer, content_hash_with, row_identity};
 use super::view::JsonView;
 use super::{DrainRow, drain_tables};
 use crate::load::LoadItem;

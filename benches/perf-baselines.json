@@ -9,13 +9,10 @@
       "instructions": 29276639
     },
     "passthrough_10k": {
-      "instructions": 601449
+      "instructions": 601698
     },
     "shred_nested_10k": {
-      "instructions": 530817273
-    },
-    "shred_tree_reference_10k": {
-      "instructions": 530780426
+      "instructions": 362456649
     }
   }
 }

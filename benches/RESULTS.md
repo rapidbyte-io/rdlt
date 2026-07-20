@@ -88,16 +88,17 @@ parquet→parquet cell isolates actual engine overhead and is the honest ≥2× 
 
 | Metric | pinned dlt | rdlt | multiple | target | status |
 |---|---|---|---|---|---|
-| Stage time | 7.63 s | 0.95 s | **8.1× faster** | ≥ 20× | ❌ missed (honest) |
+| Stage time | 7.63 s | 0.58 s | **13.1× faster** | ≥ 20× | ❌ missed (honest) |
 
-Re-measured 2026-07-20 after the US3 work (was 4.6×). The profile-driven story:
-the tape rewrite alone moved nothing — instruction counts proved the Value trees
-were never the bottleneck. The real cost was `RowId::to_hex` formatting via
-`write!("{:02x}")` (48% of ALL shred instructions), fixed with a table encoder,
-plus per-cell String clones. Shred stage: 1.094 G → 531 M instructions (2.06×),
-wall 1.66 s → 0.95 s. The remaining gap to 20× is allocator traffic + blake3 +
-arrow building — hash swap measured and REJECTED (blake3 is ~16% of the stage;
-the >30% e2e switch bar is unreachable; see design doc §5.4).
+Re-measured 2026-07-20 after the US3 work (was 4.6× before it). Two compounding
+wins, correctly attributed after a bench-labeling error was caught in cleanup:
+(1) `RowId::to_hex` formatted via `write!("{:02x}")` was 48% of ALL shred
+instructions — a table encoder halved the stage; (2) the tape path (slab arena,
+no per-row `Value` trees) cuts a further 31% of instructions vs the tree path.
+Net: 1.094 G → 362 M instructions/10k rows (3.0×), wall 1.66 s → 0.58 s median
+(clean runs 0.50 s; measured beside a background mutation job). The remaining
+gap to 20× is allocator traffic + blake3 + arrow building — hash swap measured
+and REJECTED (blake3 can't clear the >30% e2e switch bar; design doc §5.4).
 
 **Cold start, one-row pipeline**
 - rdlt: release CLI, 10 fresh runs, median, INCLUDING full process startup.
@@ -114,14 +115,14 @@ the >30% e2e switch bar is unreachable; see design doc §5.4).
 Instruction-count baselines for the hot paths live in
 `benches/perf-baselines.json` (iai-callgrind; >3% regression blocks CI —
 `TARGET=iai make bench`). Recorded 2026-07-20 post-optimization: shred (tape)
-531 M instructions / 10k nested rows; tree reference 549 M; passthrough 601 k;
-identity keyed/keyless 20.5 M / 29.3 M.
+362 M instructions / 10k nested rows; passthrough 602 k; identity keyed/keyless
+20.5 M / 29.3 M.
 
 ## Still pending
 
 | Benchmark | blocker |
 |---|---|
-| Shred-only ≥20× | 8.1× after the feature-003 hot-path work; next levers are allocator traffic and arrow building (documented miss) |
+| Shred-only ≥20× | 13.1× after the feature-003 hot-path work; next levers are allocator traffic, blake3, arrow building (documented miss) |
 
 
 Reproduce: `benches/run-e2e.sh` (dataset gen, baseline container, rdlt CLI runs —

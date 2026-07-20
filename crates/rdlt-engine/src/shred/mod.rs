@@ -1,24 +1,20 @@
 //! The shredder: raw JSON → typed, lineage-stamped Arrow batches, under the
 //! schema-change policy.
 //!
-//! Two input paths, ONE semantics: the production TAPE path (`tape`, arena
-//! nodes borrowing the input slab) and the reference TREE path (`nest`, owned
-//! `serde_json::Value`s — kept for the equivalence gate, G5.3) both feed
-//! [`drain_tables`] — the single generic
-//! resolve/policy/build pipeline (feature 003 R24). Anything semantics-bearing
-//! lives in the generic layer; the paths differ only in row representation.
+//! The tape path (`tape`: slab arena, no per-row trees) feeds [`drain_tables`]
+//! — the generic resolve/policy/build pipeline over the [`view::JsonView`]
+//! seam (feature 003 R24). The seam stays generic even with one production
+//! path: the `&serde_json::Value` view backs the unit tests, and everything
+//! semantics-bearing remains representation-independent by construction.
 
 pub(crate) mod arena;
 pub(crate) mod build;
 pub(crate) mod canon;
 pub(crate) mod infer;
-pub(crate) mod nest;
 pub(crate) mod passthrough;
+pub(crate) mod table;
 pub(crate) mod tape;
 pub(crate) mod view;
-
-#[cfg(test)]
-mod equivalence_tests;
 
 use std::collections::BTreeSet;
 
@@ -28,8 +24,7 @@ use crate::load::LoadItem;
 use crate::schema::contracts::{change_column, value_fits, violation_for};
 use crate::schema::registry::SchemaRegistry;
 use infer::ColState;
-use nest::TableBuffer;
-pub(crate) use nest::TreeShredder;
+use table::TableBuffer;
 pub(crate) use tape::TapeShredder;
 use view::JsonView;
 
@@ -56,47 +51,6 @@ impl<V: Copy> DrainRow<V> {
             return None;
         }
         self.value.obj_get(key)
-    }
-}
-
-impl TreeShredder {
-    /// Finalize the current micro-batch: resolve schemas, enforce the schema policy
-    /// (Freeze fails before anything is emitted; Discard* filters and counts), diff
-    /// against the registry (delta-before-batch order), build Arrow batches.
-    pub(crate) fn drain_batch(
-        &mut self,
-        registry: &mut SchemaRegistry,
-        load_id: &LoadId,
-        mode: &WriteMode,
-        policy: &SchemaPolicy,
-    ) -> Result<Vec<LoadItem>, RdltError> {
-        // Take ownership of the buffered rows; the drain works on borrowed views.
-        let owned: Vec<Vec<nest::OwnedRow>> = self.rows.iter_mut().map(std::mem::take).collect();
-        let mut rows: Vec<Vec<DrainRow<&serde_json::Value>>> = owned
-            .iter()
-            .map(|table_rows| {
-                table_rows
-                    .iter()
-                    .map(|row| DrainRow {
-                        value: &row.value,
-                        id: row.id,
-                        parent_id: row.parent_id,
-                        root_id: row.root_id,
-                        pos: row.pos,
-                        nulled: Vec::new(),
-                    })
-                    .collect()
-            })
-            .collect();
-        drain_tables(
-            &mut self.tables,
-            &mut rows,
-            &self.pre_batch,
-            registry,
-            load_id,
-            mode,
-            policy,
-        )
     }
 }
 
@@ -151,7 +105,7 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
         }
 
         let has_rows = !rows[idx].is_empty();
-        let observed = nest::resolve_schema(&mut tables[idx]);
+        let observed = table::resolve_schema(&mut tables[idx]);
         let table = observed.table.clone();
         if !has_rows && registry.get(&table).is_none() {
             continue;
@@ -194,7 +148,7 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
                 &mut items,
             );
             // Re-resolve after rollback + filtering; everything left is approved.
-            let observed = nest::resolve_schema(&mut tables[idx]);
+            let observed = table::resolve_schema(&mut tables[idx]);
             let changes = registry.diff(&observed);
             (observed, changes)
         };

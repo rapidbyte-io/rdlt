@@ -3,11 +3,11 @@
 //!
 //! Everything semantics-bearing in the shredder — type observation, canonical
 //! bytes, identity hashing, policy fit checks, Arrow building — is written ONCE,
-//! generic over [`JsonView`]. The tree path backs it with `&serde_json::Value`;
-//! the streaming path backs it with an arena node borrowing the input slab.
-//! Byte-identical output across paths is then a property of the two views
-//! agreeing, which is pinned by the contract below and the equivalence suite —
-//! not of two hand-synchronized copies of the logic.
+//! generic over [`JsonView`]. Production backs it with an arena node borrowing
+//! the input slab (`arena::Node`); `&serde_json::Value` keeps a view too — it
+//! powers the unit tests and holds the seam honest. Correctness of the arena
+//! view against serde_json semantics is pinned by the contract below plus the
+//! canonical-agreement tests in `arena.rs`.
 //!
 //! ## View contract (what both implementations MUST guarantee)
 //!
