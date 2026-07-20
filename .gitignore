@@ -8,3 +8,5 @@
 .vscode/
 # rdlt runtime work directories (WAL etc.)
 .rdlt/
+mutants.out/
+mutants.out.old/
