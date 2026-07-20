@@ -2,14 +2,18 @@
 
 **Feature**: 005-postgres-source | **Date**: 2026-07-20
 
-The YAML document accepted by `PostgresSource::from_yaml` (and via the
-CLI's `[source.postgres] config = <path>`). Same contract style as the
-REST source: one document a platform can render and validate; unknown
-fields are errors.
+ONE document shape, three entry points, shared validation:
+`from_yaml(&str)` (human/CLI files), `from_json(&str)` (JSON text), and
+`from_value(serde_json::Value)` — the EMBEDDER entry point: a platform
+(rapidbyte) holding connector configs as JSON documents validated
+against the connector's declared config schema (`ConnectorSpec`) passes
+the Value directly, no string round-trip. The CLI picks YAML or JSON by
+file extension (`.json`). Same contract style as the REST source:
+unknown fields are errors everywhere.
 
 ```yaml
 # required
-conn: "postgresql://user:pass@host:5432/db?sslmode=require"
+conn: "postgresql://user:pass@host:5432/db"  # sslmode=require is rejected (TLS backlog)
 
 # optional, defaults shown
 schema: public

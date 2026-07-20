@@ -141,6 +141,23 @@ impl RestConfig {
         Ok(config)
     }
 
+    /// JSON text form — same document shape and validation as YAML.
+    pub fn from_json(json: &str) -> Result<Self, ConfigError> {
+        let config: RestConfig = serde_json::from_str(json)?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// The embedder entry point: a platform holding connector configs as
+    /// JSON documents (validated against the connector's declared config
+    /// schema, `ConnectorSpec`) passes the `serde_json::Value` directly —
+    /// no string round-trip, same validation as every other entry point.
+    pub fn from_value(value: serde_json::Value) -> Result<Self, ConfigError> {
+        let config: RestConfig = serde_json::from_value(value)?;
+        config.validate()?;
+        Ok(config)
+    }
+
     fn validate(&self) -> Result<(), ConfigError> {
         if self.streams.is_empty() {
             return Err(ConfigError::Invalid(
@@ -163,6 +180,8 @@ impl RestConfig {
 pub enum ConfigError {
     #[error("invalid REST source YAML: {0}")]
     Yaml(#[from] serde_yaml::Error),
+    #[error("invalid REST source JSON: {0}")]
+    Json(#[from] serde_json::Error),
     #[error("invalid REST source config: {0}")]
     Invalid(String),
 }

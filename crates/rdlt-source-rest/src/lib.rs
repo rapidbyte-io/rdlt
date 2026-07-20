@@ -27,6 +27,15 @@ impl RestSource {
         Ok(Self::new(RestConfig::from_yaml(yaml)?))
     }
 
+    pub fn from_json(json: &str) -> Result<Self, config::ConfigError> {
+        Ok(Self::new(RestConfig::from_json(json)?))
+    }
+
+    /// Embedder entry point (see [`RestConfig::from_value`]).
+    pub fn from_value(value: serde_json::Value) -> Result<Self, config::ConfigError> {
+        Ok(Self::new(RestConfig::from_value(value)?))
+    }
+
     pub fn new(config: RestConfig) -> Self {
         Self {
             config,

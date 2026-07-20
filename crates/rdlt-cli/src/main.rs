@@ -184,26 +184,45 @@ async fn run(spec_path: PathBuf, report_path: Option<PathBuf>) -> Result<(), Cli
         }};
     }
 
+    // Source config files: YAML by default, JSON when the file says so —
+    // the same document shape either way (the library's from_yaml/from_json
+    // share validation; embedders pass serde_json::Value via from_value).
+    let is_json = |path: &PathBuf| {
+        path.extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("json"))
+    };
     match &spec.source {
         SourceSpec::Rest { config } => {
-            let yaml = std::fs::read_to_string(config)
+            let text = std::fs::read_to_string(config)
                 .map_err(|e| CliError::Usage(format!("reading {}: {e}", config.display())))?;
-            let source = rdlt::rest::RestSource::from_yaml(&yaml)
-                .map_err(|e| CliError::Usage(e.to_string()))?;
+            let source = if is_json(config) {
+                rdlt::rest::RestSource::from_json(&text)
+            } else {
+                rdlt::rest::RestSource::from_yaml(&text)
+            }
+            .map_err(|e| CliError::Usage(e.to_string()))?;
             run_with!(source)
         }
         SourceSpec::File { config } => {
-            let yaml = std::fs::read_to_string(config)
+            let text = std::fs::read_to_string(config)
                 .map_err(|e| CliError::Usage(format!("reading {}: {e}", config.display())))?;
-            let source = rdlt::file::FileSource::from_yaml(&yaml)
-                .map_err(|e| CliError::Usage(e.to_string()))?;
+            let source = if is_json(config) {
+                rdlt::file::FileSource::from_json(&text)
+            } else {
+                rdlt::file::FileSource::from_yaml(&text)
+            }
+            .map_err(|e| CliError::Usage(e.to_string()))?;
             run_with!(source)
         }
         SourceSpec::Postgres { config } => {
-            let yaml = std::fs::read_to_string(config)
+            let text = std::fs::read_to_string(config)
                 .map_err(|e| CliError::Usage(format!("reading {}: {e}", config.display())))?;
-            let source = rdlt::postgres_source::PostgresSource::from_yaml(&yaml)
-                .map_err(|e| CliError::Usage(e.to_string()))?;
+            let source = if is_json(config) {
+                rdlt::postgres_source::PostgresSource::from_json(&text)
+            } else {
+                rdlt::postgres_source::PostgresSource::from_yaml(&text)
+            }
+            .map_err(|e| CliError::Usage(e.to_string()))?;
             run_with!(source)
         }
     }

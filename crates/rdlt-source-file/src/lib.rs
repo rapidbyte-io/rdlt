@@ -27,6 +27,15 @@ impl FileSource {
         Ok(Self::new(FileConfig::from_yaml(yaml)?))
     }
 
+    pub fn from_json(json: &str) -> Result<Self, config::ConfigError> {
+        Ok(Self::new(FileConfig::from_json(json)?))
+    }
+
+    /// Embedder entry point (see [`FileConfig::from_value`]).
+    pub fn from_value(value: serde_json::Value) -> Result<Self, config::ConfigError> {
+        Ok(Self::new(FileConfig::from_value(value)?))
+    }
+
     pub fn new(config: FileConfig) -> Self {
         Self { config }
     }

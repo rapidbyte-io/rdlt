@@ -12,6 +12,10 @@ type rule, lossy rules explicit).
 
 ## Configuration
 
+One document shape, three entry points sharing validation: `from_yaml`
+(files/CLI), `from_json`, and `from_value(serde_json::Value)` — the
+embedder path for platforms that store connector configs as JSON.
+
 ```yaml
 conn: "postgresql://user:pass@host:5432/db"   # TLS not yet wired: sslmode=require is a typed error
 schema: public          # reflection scope (default: public)
