@@ -140,7 +140,7 @@ byte-identical.
 loads under the old policies; inclusive boundary row loads exactly
 once.
 
-- [ ] T010 [P] [US4] `NullPolicy::Error`:
+- [X] T010 [P] [US4] `NullPolicy::Error`:
       `crates/rdlt-postgres/src/source/config.rs` third variant;
       raise in the tracker
       (`crates/rdlt-postgres/src/source/cursor.rs`) on first NULL —
@@ -148,7 +148,7 @@ once.
       conformance in `tests/incremental.rs`: fails typed, no
       duplicates after retry-then-fix (N2), exclude/include pins
       unchanged (N3) (SC-004).
-- [ ] T011 [P] [US4] Inclusive end bound:
+- [X] T011 [P] [US4] Inclusive end bound:
       `CursorConfig.end_bound` (exclusive default) in `config.rs`;
       direction-aware `<=`/`>=` arm in `sqlgen.rs` upper-bound matrix
       (E1); conformance in `tests/incremental.rs`: boundary row loads

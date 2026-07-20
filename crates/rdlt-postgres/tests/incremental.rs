@@ -451,3 +451,155 @@ async fn lag_rejections_are_typed_and_early() {
         .await
         .expect("whole-day lag on date is fine");
 }
+
+// ---- Feature 007 US4: cursor edge policies (cursor-lag.md N1-N3, E1-E2) ----
+
+#[tokio::test(flavor = "multi_thread")]
+async fn null_cursor_error_policy_fails_typed_and_old_policies_unchanged() {
+    let fixture = PgFixture::start().await;
+    fixture
+        .seed(
+            "CREATE TABLE ev (id int8 PRIMARY KEY, v text, ts timestamptz); \
+             INSERT INTO ev VALUES (1, 'a', '2026-01-01T00:00:00Z'), \
+             (2, 'null-cursor', NULL), (3, 'c', '2026-01-02T00:00:00Z');",
+        )
+        .await;
+    let src = |nulls: &str| {
+        PostgresSource::from_yaml(&format!(
+            "conn: \"{}\"\ntables:\n  - name: ev\n    cursor:\n      column: ts\n      nulls: {nulls}\n",
+            fixture.conn_url()
+        ))
+        .expect("config")
+    };
+
+    // `error`: typed FATAL naming stream and column; nothing publishes.
+    let rig = Rig::new();
+    let err = Engine::new(
+        EngineConfig::new("inc-nulls-err"),
+        src("error"),
+        rig.dest.clone(),
+    )
+    .run()
+    .await
+    .expect_err("NULL cursor under `error` must fail");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("ev") && msg.contains("ts") && msg.contains("NULL"),
+        "{msg}"
+    );
+    assert_eq!(
+        rig.dest.count_rows("ev").unwrap_or(0),
+        0,
+        "N2: nothing published from the failed run"
+    );
+
+    // Fix the data, re-run same pipeline: clean load, no duplicates (N2).
+    fixture
+        .seed("UPDATE ev SET ts = '2026-01-03T00:00:00Z' WHERE id = 2;")
+        .await;
+    assert_eq!(
+        Engine::new(
+            EngineConfig::new("inc-nulls-err"),
+            src("error"),
+            rig.dest.clone()
+        )
+        .run()
+        .await
+        .expect("clean after fix")
+        .total_rows(),
+        3
+    );
+    assert_eq!(rig.count(), 3);
+    assert_eq!(rig.distinct_ids(), "3");
+
+    // N3: exclude (default) and include pins — byte-identical behavior.
+    let fixture2 = PgFixture::start().await;
+    fixture2
+        .seed(
+            "CREATE TABLE ev (id int8 PRIMARY KEY, v text, ts timestamptz); \
+             INSERT INTO ev VALUES (1, 'a', '2026-01-01T00:00:00Z'), (2, 'n', NULL);",
+        )
+        .await;
+    let src2 = |nulls: &str| {
+        PostgresSource::from_yaml(&format!(
+            "conn: \"{}\"\ntables:\n  - name: ev\n    cursor:\n      column: ts\n      nulls: {nulls}\n",
+            fixture2.conn_url()
+        ))
+        .expect("config")
+    };
+    let rig2 = Rig::new();
+    assert_eq!(
+        Engine::new(
+            EngineConfig::new("inc-nulls-ex"),
+            src2("exclude"),
+            rig2.dest.clone()
+        )
+        .run()
+        .await
+        .expect("exclude")
+        .total_rows(),
+        1,
+        "exclude filters the NULL row"
+    );
+    let rig3 = Rig::new();
+    assert_eq!(
+        Engine::new(
+            EngineConfig::new("inc-nulls-in"),
+            src2("include"),
+            rig3.dest.clone()
+        )
+        .run()
+        .await
+        .expect("include")
+        .total_rows(),
+        2,
+        "include loads the NULL row"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn inclusive_end_bound_loads_boundary_rows_exactly_once() {
+    let fixture = PgFixture::start().await;
+    fixture.seed(BASE).await; // ids 1..3, ts 01-01 .. 01-02
+    let src = |end_bound: &str| {
+        PostgresSource::from_yaml(&format!(
+            "conn: \"{}\"\ntables:\n  - name: ev\n    cursor:\n      column: ts\n      end_value: \"2026-01-02T00:00:00Z\"\n      end_bound: {end_bound}\n",
+            fixture.conn_url()
+        ))
+        .expect("config")
+    };
+
+    // Exclusive (default semantics): boundary rows (ids 2,3 at 01-02) do NOT load.
+    let rig = Rig::new();
+    assert_eq!(
+        Engine::new(
+            EngineConfig::new("inc-endx"),
+            src("exclusive"),
+            rig.dest.clone()
+        )
+        .run()
+        .await
+        .expect("exclusive")
+        .total_rows(),
+        1,
+        "E1: exclusive stops before the bound"
+    );
+
+    // Inclusive: boundary rows load; re-run stays stable (E2).
+    let rig = Rig::new();
+    let run = || {
+        let dest = rig.dest.clone();
+        let source = src("inclusive");
+        async move {
+            Engine::new(EngineConfig::new("inc-endi"), source, dest)
+                .run()
+                .await
+                .expect("inclusive")
+                .total_rows()
+        }
+    };
+    assert_eq!(run().await, 3, "E1: rows exactly AT the bound load");
+    assert_eq!(run().await, 0, "E2: re-run moves nothing");
+    assert_eq!(rig.count(), 3);
+    assert_eq!(rig.distinct_ids(), "3");
+}

@@ -563,8 +563,12 @@ impl Source for PostgresSource {
                     direction_max,
                     lower.as_ref().map(|(w, closed)| (w, *closed)),
                     lag_delta.as_deref(),
-                    upper.as_ref(),
-                    cc.nulls == config::NullPolicy::Include,
+                    upper
+                        .as_ref()
+                        .map(|w| (w, cc.end_bound == config::EndBound::Inclusive)),
+                    // `error` keeps NULL rows IN the read (like include) so
+                    // the tracker can raise on them (N1).
+                    cc.nulls != config::NullPolicy::Exclude,
                     matches!(cursor_decode, types::Decode::Utf8),
                 );
                 // Row keys: configured/reflected PK columns present in the
@@ -591,6 +595,8 @@ impl Source for PostgresSource {
                     direction_max,
                     stored,
                     key_columns,
+                    (cc.nulls == config::NullPolicy::Error)
+                        .then(|| (name.clone(), cc.column.clone())),
                 );
                 incremental = Some((tracker, cc.clone()));
                 (clauses.where_sql, clauses.order_sql)
@@ -708,7 +714,7 @@ async fn push_tracked(
             Ok(req.out.arrow(batch).await.is_ok())
         }
         Some((tracker, _)) => {
-            let (filtered, checkpoint) = tracker.process(batch);
+            let (filtered, checkpoint) = tracker.process(batch)?;
             if let Some(filtered) = filtered {
                 *pushed_any = true;
                 if req.out.arrow(filtered).await.is_err() {

@@ -103,9 +103,15 @@ pub struct CursorConfig {
     pub boundary: Boundary,
     #[serde(default)]
     pub direction: Direction,
-    /// Optional upper bound (typed literal, exclusive under `max`).
+    /// Optional upper bound (typed literal, exclusive under `max` unless
+    /// `end_bound: inclusive`).
     #[serde(default)]
     pub end_value: Option<String>,
+    /// Upper-bound semantics (feature 007, cursor-lag.md E1): `exclusive`
+    /// (default, unchanged) or `inclusive` — rows exactly AT `end_value`
+    /// load. A read filter only; never resume state.
+    #[serde(default)]
+    pub end_bound: EndBound,
     #[serde(default)]
     pub nulls: NullPolicy,
     /// Attribution window (feature 007, contract cursor-lag.md): each
@@ -237,6 +243,20 @@ impl Lag {
     }
 }
 
+/// Upper-bound semantics for `end_value` (feature 007, dlt `range_end`
+/// parity).
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum EndBound {
+    /// `<` under max / `>` under min — the pre-007 behavior.
+    #[default]
+    Exclusive,
+    /// `<=` / `>=` — the window `[start, end]` directly expressible.
+    Inclusive,
+}
+
 /// Lower-bound semantics on resume (dlt parity).
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
@@ -272,6 +292,10 @@ pub enum NullPolicy {
     Exclude,
     /// NULL-cursor rows are included on every run (`… OR cursor IS NULL`).
     Include,
+    /// A NULL cursor value is a DATA-CONTRACT violation: the run fails with
+    /// a typed error naming stream and column (feature 007, cursor-lag.md
+    /// N1) — for pipelines that treat NULL `updated_at` as a bug.
+    Error,
 }
 
 fn default_schema() -> String {

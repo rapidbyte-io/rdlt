@@ -202,6 +202,8 @@ pub(crate) struct Tracker {
     stored: Option<CursorState>,
     /// Column indices forming the row key; None ⇒ hash every column.
     key_columns: Option<Vec<usize>>,
+    /// `NullPolicy::Error` context: (stream, column) when configured.
+    null_error: Option<(String, String)>,
     /// True until a row strictly beyond the stored watermark is seen.
     in_boundary: bool,
     last_value: Option<Watermark>,
@@ -220,9 +222,13 @@ impl Tracker {
         direction_max: bool,
         stored: Option<CursorState>,
         key_columns: Option<Vec<usize>>,
+        // `NullPolicy::Error` context: (stream, column) — a NULL cursor
+        // value fails `process` with a typed error naming both (N1).
+        null_error: Option<(String, String)>,
     ) -> Self {
         Self {
             cursor_idx,
+            null_error,
             decode,
             direction_max,
             stored,
@@ -285,10 +291,25 @@ impl Tracker {
     pub fn process(
         &mut self,
         batch: arrow_array::RecordBatch,
-    ) -> (Option<arrow_array::RecordBatch>, Option<CursorState>) {
+    ) -> Result<(Option<arrow_array::RecordBatch>, Option<CursorState>), SourceError> {
         use arrow_array::builder::BooleanBuilder;
 
         let cursor_col = batch.column(self.cursor_idx).clone();
+        // NullPolicy::Error (N1): zero cost when clean — one null_count()
+        // check per batch, typed Fatal on the first violation.
+        if let Some((stream, column)) = &self.null_error
+            && cursor_col.null_count() > 0
+        {
+            return Err(crate::source::errors::fatal(
+                crate::source::Phase::Copy,
+                Some(stream),
+                format!(
+                    "cursor column `{column}` contains a NULL value and \
+                     `nulls: error` is configured — NULL cursors are a data-contract \
+                     violation under this policy (exclude/include accept them)"
+                ),
+            ));
+        }
         let mut keep = BooleanBuilder::with_capacity(batch.num_rows());
         let mut any_dropped = false;
         let mut kept_rows: Vec<usize> = Vec::with_capacity(batch.num_rows());
@@ -361,7 +382,7 @@ impl Tracker {
                 true
             }
         });
-        (out_batch, checkpoint)
+        Ok((out_batch, checkpoint))
     }
 
     /// The current resume-safe state: watermark = last value seen, keys =

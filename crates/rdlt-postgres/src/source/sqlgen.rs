@@ -112,7 +112,8 @@ pub(crate) fn incremental_clauses(
     // Feature 007 lag: SQL delta widening the resume window BEHIND the
     // watermark (`- delta` under max, `+ delta` under min) — read-side only.
     lag_delta: Option<&str>,
-    upper: Option<&crate::source::cursor::Watermark>,
+    // (value, inclusive?) — feature 007 E1: `<=`/`>=` when inclusive.
+    upper: Option<(&crate::source::cursor::Watermark, bool)>,
     nulls_include: bool,
     // Text cursors force COLLATE "C": the tracker compares watermarks in
     // Rust byte order, so the SQL ordering/filtering must use byte order
@@ -143,8 +144,13 @@ pub(crate) fn incremental_clauses(
         };
         predicates.push(format!("{ident} {op} {bound}"));
     }
-    if let Some(value) = upper {
-        let op = if direction_max { "<" } else { ">" };
+    if let Some((value, inclusive)) = upper {
+        let op = match (direction_max, inclusive) {
+            (true, false) => "<",
+            (true, true) => "<=",
+            (false, false) => ">",
+            (false, true) => ">=",
+        };
         predicates.push(format!("{ident} {op} {}", value.to_sql_literal()));
     }
     let where_sql = match (predicates.is_empty(), nulls_include) {
@@ -228,12 +234,28 @@ mod tests {
         let c = incremental_clauses("ts", true, Some((&w, true)), None, None, false, false);
         assert_eq!(c.where_sql, r#""ts" >= 5::int8 AND "ts" IS NOT NULL"#);
         assert_eq!(c.order_sql, r#""ts" ASC NULLS FIRST"#);
-        let c = incremental_clauses("ts", true, Some((&w, false)), None, Some(&e), false, false);
+        let c = incremental_clauses(
+            "ts",
+            true,
+            Some((&w, false)),
+            None,
+            Some((&e, false)),
+            false,
+            false,
+        );
         assert_eq!(
             c.where_sql,
             r#""ts" > 5::int8 AND "ts" < 9::int8 AND "ts" IS NOT NULL"#
         );
-        let c = incremental_clauses("ts", false, Some((&w, true)), None, Some(&e), false, false);
+        let c = incremental_clauses(
+            "ts",
+            false,
+            Some((&w, true)),
+            None,
+            Some((&e, false)),
+            false,
+            false,
+        );
         assert_eq!(
             c.where_sql,
             r#""ts" <= 5::int8 AND "ts" > 9::int8 AND "ts" IS NOT NULL"#
