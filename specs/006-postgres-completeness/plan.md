@@ -7,10 +7,12 @@
 ## Summary
 
 Close the four measured dlt-parity gaps and the trust surfaces. TLS
-lands as a small shared crate (`rdlt-pg-tls`: policy + rustls connector
-construction) consumed by BOTH postgres connectors — full sslmode
+lands inside a MERGED `rdlt-postgres` crate (owner decision — the two
+postgres connectors become one crate with `source`/`dest` feature-gated
+modules and a shared `tls` module; facade paths unchanged via
+re-exports; amends 005 R9, recorded in research R1) — full sslmode
 matrix with libpq semantics, custom root CAs, typed verification
-errors. The source gains per-column type hints (server-side cast
+errors, structurally drift-proof between the two directions. The source gains per-column type hints (server-side cast
 projections, closed conversion table) and query streams (user SQL
 wrapped as a subquery — which also enforces read-only — with
 describe-based schemas). The engine's clause B4 is amended by a
@@ -42,8 +44,8 @@ tests, the three advisory closures
 
 **Target Platform**: Linux; reference machine unchanged
 
-**Project Type**: Rust library workspace + dev CLI; ONE new internal
-crate (`rdlt-pg-tls`)
+**Project Type**: Rust library workspace + dev CLI; NET −1 crate (the
+two postgres crates merge into `rdlt-postgres`)
 
 **Performance Goals**: no new cells; existing gated benches stay within
 the armed ±3% gate (TLS is off-path for the plaintext benchmarks —
@@ -58,8 +60,9 @@ field, `PipelineEvent` is `#[non_exhaustive]` if ever needed); the B4
 lift is a RECORDED amendment to the feature-002 contract, not a silent
 rewrite; 005 benchmark records untouched
 
-**Scale/Scope**: 1 new small crate; source crate grows hints + query
-streams; engine plan-time merge validation change + both SQL
+**Scale/Scope**: one crate-merge migration (mechanical moves, facade/
+Makefile/fuzz/CI references updated); the source module grows hints +
+query streams; engine plan-time merge validation change + both SQL
 destinations' merge-by-key; 3 config crates gain schemars derives;
 contracts: 3 new + 2 amended; test surface grows the TLS matrix and
 merge sweep modes
@@ -99,16 +102,16 @@ specs/006-postgres-completeness/
 ### Source Code (repository root)
 
 ```text
-crates/rdlt-pg-tls/          # NEW: TlsPolicy, root resolution, rustls connector
-├── src/lib.rs               #   modes, native/custom roots
-└── src/verify.rs            #   require/verify-ca verifiers (quarantined, documented)
-crates/rdlt-source-postgres/
-├── src/config.rs            # + tls block, + type_hints, + queries[], schemars derive
-├── src/lib.rs               # TLS-aware connect, query streams, lossy tracing
-├── src/types.rs             # hint conversion table (HintType → cast + decode)
-├── src/reflect.rs           # describe-based schema for query streams
-└── tests/                   # tls_matrix.rs, hints/query conformance, merge sweep mode
-crates/rdlt-dest-postgres/   # TLS-aware connect (same policy crate), merge-by-key
+crates/rdlt-postgres/        # MERGED crate (features: source, dest — both default)
+├── src/tls.rs               # shared: TlsPolicy, roots, connector construction
+├── src/tls_verify.rs        # require/verify-ca verifiers (quarantined, documented)
+├── src/source/              # moved from rdlt-source-postgres (module tree intact)
+│   ├── config.rs            # + tls block, + type_hints, + queries[], schemars derive
+│   ├── mod.rs               # TLS-aware connect, query streams, lossy tracing
+│   ├── types.rs             # hint conversion table (HintType → cast + decode)
+│   └── reflect.rs           # describe-based schema for query streams
+├── src/dest/                # moved from rdlt-dest-postgres; TLS + merge-by-key
+└── tests/                   # moved suites (dest_* prefixes), + tls_matrix.rs
 crates/rdlt-dest-duckdb/     # merge-by-key for structured streams
 crates/rdlt-engine/          # plan-time B4 lift (keyed structured + merge capability)
 crates/rdlt-source-rest/     # schemars derive + config_schema in spec()
@@ -116,9 +119,12 @@ crates/rdlt-source-file/     # schemars derive + config_schema in spec()
 crates/rdlt-cli/             # dest tls options passthrough
 ```
 
-**Structure Decision**: TLS lives in one shared internal crate so the
-two postgres connectors cannot drift (the 005 lesson about symmetric
-backlog items); everything else extends existing crates in place.
+**Structure Decision**: one `rdlt-postgres` crate, two feature-gated
+direction modules, one shared `tls` module — drift between the
+directions is structurally impossible, and the crate count drops.
+Facade (`rdlt::postgres`, `rdlt::postgres_source`), Makefile, fuzz,
+and CI references are updated in the migration task; everything else
+extends in place.
 
 ## Phase ordering
 

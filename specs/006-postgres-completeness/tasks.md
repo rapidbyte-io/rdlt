@@ -19,12 +19,19 @@ mutually independent after Phase 1 (US2 and US1 both touch the source
 
 ## Phase 1: Setup
 
-- [ ] T001 Create crate `crates/rdlt-pg-tls` (workspace member +
-      workspace deps: `tokio-postgres-rustls`, `rustls`,
-      `rustls-pemfile`, `rustls-native-certs`; dev: `rcgen`; add
-      `schemars` to workspace deps for US4) with module stubs
-      (`src/lib.rs` policy types, `src/verify.rs`), building clean
-      under `[lints] workspace = true`.
+- [ ] T001 Crate merge (owner decision, research R1 — amends 005 R9):
+      create `crates/rdlt-postgres` with `source`/`dest` feature-gated
+      modules (both default) and move `rdlt-source-postgres` →
+      `src/source/`, `rdlt-dest-postgres` → `src/dest/` intact;
+      per-direction `FAIL_POINTS` consts preserved; tests move with
+      `dest_` prefixes on colliding binaries; iai_pg bench moves;
+      update workspace members/deps, facade (`rdlt::postgres` /
+      `rdlt::postgres_source` re-exports + features), CLI, Makefile
+      sweep/iai lines, fuzz/Cargo.toml, CI references. Add workspace
+      deps for this feature: `tokio-postgres-rustls`, `rustls`,
+      `rustls-pemfile`, `rustls-native-certs`, `schemars`; dev
+      `rcgen`. FULL suite green after the move (pure relocation — no
+      behavior change; sweeps + gate prove it).
 
 ## Phase 2: User Story 1 — TLS, the full sslmode matrix (Priority: P1) 🎯 MVP
 
@@ -37,46 +44,46 @@ unknown CA × five modes × two connectors) behaves per the contract
 table, `prefer` falls back, `require` connects against self-signed.
 
 - [ ] T002 [US1] `TlsPolicy` + root resolution in
-      `crates/rdlt-pg-tls/src/lib.rs`: mode enum (serde +
+      `crates/rdlt-postgres/src/tls.rs`: mode enum (serde +
       conn-sslmode interop), `RootCert` (path | inline PEM), root
       loading (custom else `rustls-native-certs`), typed config errors
       (unreadable/unparseable root names the path; verify-* with no
       resolvable roots); unit tests on the error paths with rcgen-made
       and corrupted PEMs.
-- [ ] T003 [US1] Verifiers in `crates/rdlt-pg-tls/src/verify.rs`
+- [ ] T003 [US1] Verifiers in `crates/rdlt-postgres/src/tls_verify.rs`
       (quarantined, loudly documented): `require` accept-any verifier;
       `verify-ca` wrapper delegating chain checks to the webpki
       verifier while waiving ONLY hostname mismatch; unit tests against
       rcgen chains (good chain passes both; unknown CA fails verify-ca
       but passes require; name mismatch fails full, passes ca).
 - [ ] T004 [US1] Connector construction + error taxonomy in
-      `crates/rdlt-pg-tls/src/lib.rs`: policy → NoTls | rustls
+      `crates/rdlt-postgres/src/tls.rs`: policy → NoTls | rustls
       connector per mode (prefer relies on tokio-postgres's native
       fallback), and a mapping from rustls/tokio-postgres errors to
       the contract's distinguished connect failures (trust-anchor /
       chain / hostname / server-refused-TLS); unit tests for the
       mapping.
-- [ ] T005 [US1] Source wiring: `crates/rdlt-source-postgres/src/config.rs`
+- [ ] T005 [US1] Source wiring: `crates/rdlt-postgres/src/source/config.rs`
       gains the `tls:` block (mode + root_cert; contradiction vs conn
       `sslmode` = typed config error; verify-* only via block) with
-      schema-visible docs; `src/lib.rs::connect` builds the policy
+      schema-visible docs; `src/source/mod.rs::connect` builds the policy
       (conn sslmode as default, block override-with-consistency) and
       REMOVES the 005 rejection; config unit tests updated (the
       sslmode=require rejection tests become acceptance tests).
 - [ ] T006 [P] [US1] Destination wiring:
-      `crates/rdlt-dest-postgres/src/lib.rs` `Postgres::tls(TlsPolicy)`
-      builder + connect path through `rdlt-pg-tls`;
+      `crates/rdlt-postgres/src/dest/mod.rs` `Postgres::tls(TlsPolicy)`
+      builder + connect path through the shared `tls` module;
       `crates/rdlt-cli/src/main.rs` `[destination.postgres]` gains
       optional `tls = { mode, root_cert }`.
 - [ ] T007 [US1] TLS test rig in
-      `crates/rdlt-source-postgres/tests/common/mod.rs`: rcgen CA +
+      `crates/rdlt-postgres/tests/common/mod.rs`: rcgen CA +
       server certs (SAN localhost/127.0.0.1 + a wrong-SAN pair), TLS
       postgres container via entrypoint shim (certs copied 0600,
       `ssl=on`, optional hostssl-only pg_hba), returning conn info +
       cert paths.
 - [ ] T008 [US1] Matrix conformance in
-      `crates/rdlt-source-postgres/tests/tls_matrix.rs` (dest driven
-      via dev-dep): five modes × {match, mismatch, unknown CA} for
+      `crates/rdlt-postgres/tests/tls_matrix.rs` (both directions in
+      one suite — same crate now): five modes × {match, mismatch, unknown CA} for
       source AND destination; `prefer` fallback on a plaintext server;
       `require` success on self-signed; hostssl server rejects
       `disable`; each negative asserts the DISTINGUISHED typed error.
@@ -97,30 +104,30 @@ join query lands with described schema + working incremental; invalid
 hints/queries fail typed at open.
 
 - [ ] T009 [US2] Hint vocabulary + closed conversion table in
-      `crates/rdlt-source-postgres/src/types.rs`: `HintType` (shared
+      `crates/rdlt-postgres/src/source/types.rs`: `HintType` (shared
       vocabulary incl. `decimal(p,s)`), `apply_hint(source_info, hint)
       -> Result<MappedType>` implementing contracts/type-hints.md
       exactly (undefined pair = typed error; [documented-lossy]
       flagged); exhaustive unit tests keyed to the contract rows incl.
       rejections.
 - [ ] T010 [US2] Table hints end-to-end:
-      `crates/rdlt-source-postgres/src/config.rs` `tables[].type_hints`
+      `crates/rdlt-postgres/src/source/config.rs` `tables[].type_hints`
       + open-time validation (column exists, pair allowed, hinted
-      cursor stays cursor-capable) in `src/lib.rs`/`src/reflect.rs`;
+      cursor stays cursor-capable) in `src/source/{mod,reflect}.rs`;
       conformance in `tests/conformance.rs`: text→timestamp_tz lands
       typed downstream, unconstrained-numeric→decimal(p,s) hint
       restores decimality, cast-failure surfaces as a typed copy-phase
       error naming the column.
 - [ ] T011 [US2] Query streams core:
-      `crates/rdlt-source-postgres/src/config.rs` `queries[]` (name
+      `crates/rdlt-postgres/src/source/config.rs` `queries[]` (name
       uniqueness across tables+queries, cursor/primary_key/type_hints);
-      describe-based schema in `src/reflect.rs` (prepare
+      describe-based schema in `src/source/reflect.rs` (prepare
       `SELECT * FROM (sql) AS q`, map column OIDs via the existing
       contract, all-nullable, typmod-unknown ⇒ textual numeric policy);
-      `src/sqlgen.rs`/`src/lib.rs` read path over the wrapped FROM
+      `src/source/{sqlgen,mod}.rs` read path over the wrapped FROM
       with unchanged incremental/checkpoint machinery.
 - [ ] T012 [US2] Query conformance in
-      `crates/rdlt-source-postgres/tests/query_streams.rs`: join query
+      `crates/rdlt-postgres/tests/query_streams.rs`: join query
       snapshot + schema assertions; incremental on a query stream
       (delta, boundary dedup via declared primary_key, mid-run
       checkpoints); mutating SQL (INSERT/UPDATE/data-modifying CTE)
@@ -160,12 +167,12 @@ merge mode.
       (multi-column keys); conformance: update-heavy convergence,
       idempotent re-commit (D3).
 - [ ] T016 [P] [US3] Postgres merge-by-key in
-      `crates/rdlt-dest-postgres/src/lib.rs`: same generalization +
+      `crates/rdlt-postgres/src/dest/mod.rs`: same generalization +
       conformance.
 - [ ] T017 [US3] Merge under fire:
-      `crates/rdlt-source-postgres/tests/crash_sweep.rs` gains a Merge
+      `crates/rdlt-postgres/tests/crash_sweep.rs` gains a Merge
       mode loop (keyed incremental source; armed-fire assertions
-      extended); `crates/rdlt-dest-postgres/tests/crash_sweep.rs` +
+      extended); `crates/rdlt-postgres/tests/dest_crash_sweep.rs` +
       engine sweep pins extended where merge mode reaches new
       boundaries; keyless + parquet rejections re-asserted;
       `tests/incremental.rs` merge-rejection test updated to the new
@@ -185,21 +192,21 @@ all three sources; advisory tests fail when their regressions are
 injected.
 
 - [ ] T018 [P] [US4] Lossy visibility in
-      `crates/rdlt-source-postgres/src/lib.rs`: one
+      `crates/rdlt-postgres/src/source/mod.rs`: one
       `tracing::warn!(target: "rdlt::lossy", …)` per
       [documented-lossy] column per read (policy rows + textual
       fallback + lossy hints); capture-subscriber test (exactly once;
       silent when clean); amend the 005 type-mapping contract's "run
       report" wording to name this surface.
 - [ ] T019 [P] [US4] Config schemas: `schemars::JsonSchema` derives on
-      the config families of `crates/rdlt-source-postgres`,
+      the config families of `crates/rdlt-postgres` (source),
       `crates/rdlt-source-rest`, `crates/rdlt-source-file`; each crate
       exposes `config_schema()` and fills
       `ConnectorSpec.config_schema` in `spec()`; round-trip tests per
       crate (documented examples validate; unknown-field configs fail;
       schema-valid ⇒ parses over the test corpus).
 - [ ] T020 [P] [US4] Advisory closures: differential multi-batch
-      variant in `crates/rdlt-source-postgres/tests/differential.rs`
+      variant in `crates/rdlt-postgres/tests/differential.rs`
       (`batch_max_rows: 3`, larger row sets, arrow-select concat
       before compare); `tests/memory_bound.rs` honors `RDLT_HEAVY=1`
       (missing prereqs FAIL with instructions; Makefile sweep/deep
@@ -226,8 +233,10 @@ T001 ─► US1: T002 → T003 → T004 → T005 ∥ T006 → T007 → T008
                     all ─► T021
 ```
 
+- T001 (the crate merge) is a pure-relocation gate: full suite must
+  be green on it BEFORE any feature work stacks on top.
 - US1 is the MVP and blocks nothing except by file contention
-  (config.rs: T005 before T010/T011).
+  (source/config.rs: T005 before T010/T011).
 - US3 touches engine + destinations only — fully parallel to US1/US2
   by files, calendar-ordered with them for review sanity.
 - T015/T016 are genuinely parallel (different crates).

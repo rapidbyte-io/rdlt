@@ -8,9 +8,24 @@ dlt review; current SPI surface facts verified this session:
 Option<serde_json::Value>` exists (defaulting None), `PipelineEvent` is
 `#[non_exhaustive]`.
 
-## R1 — TLS: one shared policy crate, rustls, libpq semantics
+## R1 — TLS home: ONE `rdlt-postgres` crate (owner decision, amends 005 R9)
 
-**Decision**: new internal crate `rdlt-pg-tls`:
+**Decision (revised at owner direction)**: instead of a tls-only
+crate, the two postgres connectors MERGE into a single crate
+`crates/rdlt-postgres` with `source`/`dest` modules behind `source`/
+`dest` cargo features (both default). TLS, the config vocabulary, and
+Postgres type knowledge get one natural home (`src/tls.rs`), the crate
+count DROPS by one, and the facade paths (`rdlt::postgres`,
+`rdlt::postgres_source`) are preserved by re-exports so embedders and
+the CLI see no change. This AMENDS the 005 R9 one-connector-one-crate
+convention for Postgres specifically (recorded here; rationale: one
+integration, two directions — the alternative was either a
+250-line leaf crate or cross-direction dependencies). Fail-point
+registries stay per-direction (`source::FAIL_POINTS`,
+`dest::FAIL_POINTS`); sweep suites and the iai bench move with their
+code; colliding test-binary names get `dest_` prefixes.
+
+The TLS policy itself:
 `TlsPolicy { mode: Disable|Prefer|Require|VerifyCa|VerifyFull, root_cert: Option<RootCert> }`
 (`RootCert` = file path or inline PEM). It builds the
 `tokio-postgres-rustls` connector for a policy:
@@ -42,16 +57,17 @@ surprises happen. verify-* therefore requires the block — documented in
 the contract with examples. No string surgery on conn strings (the 005
 lesson: parse, never pattern-match).
 
-**Destination symmetry**: `rdlt-dest-postgres` gains the same
-`TlsPolicy` (builder method + CLI TOML fields); both connectors call
-the shared crate — they cannot drift.
+**Destination symmetry**: the dest module gains the same `TlsPolicy`
+(builder method + CLI TOML fields); both directions call the SAME
+`tls` module in the same crate — drift is structurally impossible.
 
-**Alternatives**: openssl (FFI, platform pain — rejected);
-native-tls (weaker control over the verify-ca/require distinction —
-rejected); duplicating TLS per crate (drift — rejected); making
-`require` verify certificates (breaks the ecosystem vocabulary
-operators rely on — rejected, verify-full is the loud recommendation
-instead).
+**Alternatives**: a dedicated `rdlt-pg-tls` leaf crate (clean
+layering but one more crate — rejected by owner preference);
+dest→source dependency (pulls the Arrow decoder into the destination
+tree — rejected); duplication (drift — rejected); openssl/native-tls
+(FFI pain / weaker verify-level control — rejected); making `require`
+verify certificates (breaks the ecosystem vocabulary — rejected,
+verify-full is the loud recommendation instead).
 
 ## R2 — Type hints: server-side casts from a closed conversion table
 
