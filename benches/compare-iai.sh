@@ -48,9 +48,10 @@ if not measured:
 
 mode = sys.argv[1]
 if mode == "--record":
-    toolchain = ""
-    if BASELINE_FILE.exists():
-        toolchain = json.loads(BASELINE_FILE.read_text()).get("toolchain", "")
+    import subprocess
+    toolchain = subprocess.run(
+        ["rustc", "--version"], capture_output=True, text=True
+    ).stdout.strip()
     BASELINE_FILE.write_text(json.dumps({
         "format_version": 1,
         "toolchain": toolchain,
@@ -61,7 +62,22 @@ if mode == "--record":
 
 if not BASELINE_FILE.exists():
     sys.exit(f"{BASELINE_FILE} missing — record baselines first (compare-iai.sh --record)")
-baselines = json.loads(BASELINE_FILE.read_text())["benches"]
+doc = json.loads(BASELINE_FILE.read_text())
+baselines = doc["benches"]
+
+# Instruction counts are only comparable within one compiler: a rustc bump
+# shifts codegen and would either flap the gate or silently absorb a real
+# regression. Refuse to compare across toolchains; re-record deliberately.
+import subprocess
+current = subprocess.run(["rustc", "--version"], capture_output=True, text=True).stdout.strip()
+recorded = doc.get("toolchain", "")
+if recorded and current and recorded != current:
+    sys.exit(
+        f"PERF GATE: toolchain mismatch — baselines recorded with '{recorded}', "
+        f"current is '{current}'. Re-record deliberately in a dedicated commit: "
+        f"cargo bench -p rdlt-engine --bench iai_hotpath -- --save-summary=json "
+        f"&& benches/compare-iai.sh --record"
+    )
 
 failures = []
 for name, entry in sorted(baselines.items()):
