@@ -13,7 +13,7 @@ unknown fields are errors everywhere.
 
 ```yaml
 # required
-conn: "postgresql://user:pass@host:5432/db"  # sslmode=require is rejected (TLS backlog)
+conn: "postgresql://user:pass@host:5432/db"  # TLS: see 006 contracts/tls-policy.md (full sslmode matrix)
 
 # optional, defaults shown
 schema: public

@@ -37,6 +37,9 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 iai-callgrind = "0.16"
+tokio-postgres-rustls = { workspace = true }
+rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
 rcgen = { workspace = true }
 proptest = { workspace = true }
 rdlt-dest-duckdb = { workspace = true }

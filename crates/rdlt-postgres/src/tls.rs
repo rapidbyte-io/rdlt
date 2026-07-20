@@ -146,17 +146,18 @@ fn root_store(policy: &TlsPolicy) -> Result<RootCertStore, TlsConfigError> {
     let mut store = RootCertStore::empty();
     match &policy.root_cert {
         Some(RootCert(source)) => {
-            let (label, pem_bytes): (String, Vec<u8>) = if source.trim_start().starts_with("-----BEGIN") {
-                ("<inline pem>".into(), source.clone().into_bytes())
-            } else {
-                (
-                    source.clone(),
-                    std::fs::read(source).map_err(|e| TlsConfigError::RootCert {
-                        path: source.clone(),
-                        detail: format!("unreadable: {e}"),
-                    })?,
-                )
-            };
+            let (label, pem_bytes): (String, Vec<u8>) =
+                if source.trim_start().starts_with("-----BEGIN") {
+                    ("<inline pem>".into(), source.clone().into_bytes())
+                } else {
+                    (
+                        source.clone(),
+                        std::fs::read(source).map_err(|e| TlsConfigError::RootCert {
+                            path: source.clone(),
+                            detail: format!("unreadable: {e}"),
+                        })?,
+                    )
+                };
             let mut cursor = std::io::Cursor::new(pem_bytes);
             let mut added = 0usize;
             for item in rustls_pemfile::certs(&mut cursor) {
@@ -211,12 +212,12 @@ fn client_config(policy: &TlsPolicy) -> Result<Option<rustls::ClientConfig>, Tls
             let store = root_store(policy)?;
             builder()?
                 .dangerous()
-                .with_custom_certificate_verifier(Arc::new(ChainOnly::new(store).map_err(
-                    |e| TlsConfigError::RootCert {
+                .with_custom_certificate_verifier(Arc::new(ChainOnly::new(store).map_err(|e| {
+                    TlsConfigError::RootCert {
                         path: "<trust store>".into(),
                         detail: format!("building verifier: {e}"),
-                    },
-                )?))
+                    }
+                })?))
                 .with_no_client_auth()
         }
         TlsMode::VerifyFull => {
@@ -237,7 +238,15 @@ pub fn classify_connect_error(err: &tokio_postgres::Error) -> ConnectError {
     let detail = format!("{err}");
     let mut source: Option<&(dyn std::error::Error + 'static)> = err.source();
     while let Some(cause) = source {
-        if let Some(rustls_err) = cause.downcast_ref::<rustls::Error>() {
+        // io::Error::source() skips its own inner error (it delegates to the
+        // inner's source) — reach the rustls error through get_ref().
+        let rustls_ref = cause.downcast_ref::<rustls::Error>().or_else(|| {
+            cause
+                .downcast_ref::<std::io::Error>()
+                .and_then(|io| io.get_ref())
+                .and_then(|inner| inner.downcast_ref::<rustls::Error>())
+        });
+        if let Some(rustls_err) = rustls_ref {
             use rustls::CertificateError as CE;
             let failure = match rustls_err {
                 rustls::Error::InvalidCertificate(ce) => match ce {
@@ -267,7 +276,11 @@ pub fn classify_connect_error(err: &tokio_postgres::Error) -> ConnectError {
         None => true,
         Some(state) => matches!(&state.code()[..2], "08" | "53" | "57" | "40"),
     };
-    ConnectError { failure: TlsFailure::Other, detail, transient }
+    ConnectError {
+        failure: TlsFailure::Other,
+        detail,
+        transient,
+    }
 }
 
 /// THE connect path for both connectors: parsed config + resolved policy →
@@ -330,19 +343,32 @@ mod tests {
     fn policy_resolution_and_contradictions() {
         // Conn-only: sslmode maps straight through.
         assert_eq!(
-            resolve_policy(&conn("host=h sslmode=require"), None).unwrap().mode,
+            resolve_policy(&conn("host=h sslmode=require"), None)
+                .unwrap()
+                .mode,
             TlsMode::Require
         );
-        assert_eq!(resolve_policy(&conn("host=h"), None).unwrap().mode, TlsMode::Prefer);
-        // Block refines require → verify_full: allowed.
-        let block = TlsPolicy { mode: TlsMode::VerifyFull, root_cert: None };
         assert_eq!(
-            resolve_policy(&conn("host=h sslmode=require"), Some(&block)).unwrap().mode,
+            resolve_policy(&conn("host=h"), None).unwrap().mode,
+            TlsMode::Prefer
+        );
+        // Block refines require → verify_full: allowed.
+        let block = TlsPolicy {
+            mode: TlsMode::VerifyFull,
+            root_cert: None,
+        };
+        assert_eq!(
+            resolve_policy(&conn("host=h sslmode=require"), Some(&block))
+                .unwrap()
+                .mode,
             TlsMode::VerifyFull
         );
         // Contradictions: disable vs encryption, require vs disable.
         assert!(resolve_policy(&conn("host=h sslmode=disable"), Some(&block)).is_err());
-        let disable = TlsPolicy { mode: TlsMode::Disable, root_cert: None };
+        let disable = TlsPolicy {
+            mode: TlsMode::Disable,
+            root_cert: None,
+        };
         assert!(resolve_policy(&conn("host=h sslmode=require"), Some(&disable)).is_err());
         // Prefer composes with anything.
         assert!(resolve_policy(&conn("host=h sslmode=prefer"), Some(&block)).is_ok());

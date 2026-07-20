@@ -613,10 +613,8 @@ mod tests {
         // Feature 006: sslmode=require is ACCEPTED (TLS is wired); the
         // config-level rejection is now the contradiction rule.
         assert!(
-            PostgresConfig::from_yaml(
-                "conn: \"postgresql://u:p@localhost/db?sslmode=require\"\n"
-            )
-            .is_ok(),
+            PostgresConfig::from_yaml("conn: \"postgresql://u:p@localhost/db?sslmode=require\"\n")
+                .is_ok(),
             "require now validates — TLS is wired"
         );
         let err = PostgresConfig::from_yaml(

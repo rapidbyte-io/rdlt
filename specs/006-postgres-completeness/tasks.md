@@ -43,45 +43,45 @@ wired" rejection gone.
 unknown CA × five modes × two connectors) behaves per the contract
 table, `prefer` falls back, `require` connects against self-signed.
 
-- [ ] T002 [US1] `TlsPolicy` + root resolution in
+- [X] T002 [US1] `TlsPolicy` + root resolution in
       `crates/rdlt-postgres/src/tls.rs`: mode enum (serde +
       conn-sslmode interop), `RootCert` (path | inline PEM), root
       loading (custom else `rustls-native-certs`), typed config errors
       (unreadable/unparseable root names the path; verify-* with no
       resolvable roots); unit tests on the error paths with rcgen-made
       and corrupted PEMs.
-- [ ] T003 [US1] Verifiers in `crates/rdlt-postgres/src/tls_verify.rs`
+- [X] T003 [US1] Verifiers in `crates/rdlt-postgres/src/tls_verify.rs`
       (quarantined, loudly documented): `require` accept-any verifier;
       `verify-ca` wrapper delegating chain checks to the webpki
       verifier while waiving ONLY hostname mismatch; unit tests against
       rcgen chains (good chain passes both; unknown CA fails verify-ca
       but passes require; name mismatch fails full, passes ca).
-- [ ] T004 [US1] Connector construction + error taxonomy in
+- [X] T004 [US1] Connector construction + error taxonomy in
       `crates/rdlt-postgres/src/tls.rs`: policy → NoTls | rustls
       connector per mode (prefer relies on tokio-postgres's native
       fallback), and a mapping from rustls/tokio-postgres errors to
       the contract's distinguished connect failures (trust-anchor /
       chain / hostname / server-refused-TLS); unit tests for the
       mapping.
-- [ ] T005 [US1] Source wiring: `crates/rdlt-postgres/src/source/config.rs`
+- [X] T005 [US1] Source wiring: `crates/rdlt-postgres/src/source/config.rs`
       gains the `tls:` block (mode + root_cert; contradiction vs conn
       `sslmode` = typed config error; verify-* only via block) with
       schema-visible docs; `src/source/mod.rs::connect` builds the policy
       (conn sslmode as default, block override-with-consistency) and
       REMOVES the 005 rejection; config unit tests updated (the
       sslmode=require rejection tests become acceptance tests).
-- [ ] T006 [P] [US1] Destination wiring:
+- [X] T006 [P] [US1] Destination wiring:
       `crates/rdlt-postgres/src/dest/mod.rs` `Postgres::tls(TlsPolicy)`
       builder + connect path through the shared `tls` module;
       `crates/rdlt-cli/src/main.rs` `[destination.postgres]` gains
       optional `tls = { mode, root_cert }`.
-- [ ] T007 [US1] TLS test rig in
+- [X] T007 [US1] TLS test rig in
       `crates/rdlt-postgres/tests/common/mod.rs`: rcgen CA +
       server certs (SAN localhost/127.0.0.1 + a wrong-SAN pair), TLS
       postgres container via entrypoint shim (certs copied 0600,
       `ssl=on`, optional hostssl-only pg_hba), returning conn info +
       cert paths.
-- [ ] T008 [US1] Matrix conformance in
+- [X] T008 [US1] Matrix conformance in
       `crates/rdlt-postgres/tests/tls_matrix.rs` (both directions in
       one suite — same crate now): five modes × {match, mismatch, unknown CA} for
       source AND destination; `prefer` fallback on a plaintext server;

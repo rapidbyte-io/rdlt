@@ -21,9 +21,9 @@ use rdlt_connector::{
         schema::system_columns,
     },
 };
+use tokio_postgres::Client;
 use tokio_postgres::binary_copy::BinaryCopyInWriter;
 use tokio_postgres::types::{ToSql, Type};
-use tokio_postgres::Client;
 
 #[derive(Debug, Clone)]
 pub struct Postgres {
@@ -65,9 +65,7 @@ impl Postgres {
         match crate::tls::connect(&parsed, &policy).await {
             Ok(client) => Ok(client),
             Err(crate::tls::ConnectResult::Config(e)) => Err(DestError::fatal(e.to_string())),
-            Err(crate::tls::ConnectResult::Connect(e)) if e.transient => {
-                Err(transient(e))
-            }
+            Err(crate::tls::ConnectResult::Connect(e)) if e.transient => Err(transient(e)),
             Err(crate::tls::ConnectResult::Connect(e)) => Err(DestError::fatal(e.to_string())),
         }
     }

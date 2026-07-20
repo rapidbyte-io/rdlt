@@ -17,7 +17,7 @@ One document shape, three entry points sharing validation: `from_yaml`
 embedder path for platforms that store connector configs as JSON.
 
 ```yaml
-conn: "postgresql://user:pass@host:5432/db"   # TLS not yet wired: sslmode=require is a typed error
+conn: "postgresql://user:pass@host:5432/db"   # TLS: full sslmode matrix (verify_full recommended)
 schema: public          # reflection scope (default: public)
 include_views: false    # views/matviews join discovery when true
 batch_target_bytes: 8388608
@@ -36,6 +36,20 @@ tables:
     excluded_columns: [internal]  # or included_columns (mutually exclusive)
   - name: customers               # snapshot stream (full re-read per run)
 ```
+
+### TLS
+
+```yaml
+tls:
+  mode: verify_full        # disable | prefer | require | verify_ca | verify_full
+  root_cert: /etc/ca.pem   # path or inline PEM; omit for the platform store
+```
+
+libpq semantics: `require` encrypts WITHOUT validating (use `verify_full`
+in production); conn-string `sslmode` covers disable/prefer/require;
+verify-* needs the block; contradictions are typed config errors. The
+DESTINATION takes the same policy (`Postgres::tls(...)` / CLI TOML
+`tls = {...}`) through the same code path.
 
 ## Semantics worth knowing
 
