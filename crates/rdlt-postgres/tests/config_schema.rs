@@ -9,11 +9,13 @@ fn example() -> serde_json::Value {
     json!({
         "conn": "postgres://app@db.internal/app",
         "schema": "public",
-        "tls": {"mode": "verify_full", "root_cert": "/etc/rdlt/ca.pem"},
+        "tls": {"mode": "verify_full", "root_cert": "/etc/rdlt/ca.pem",
+                "client_cert": "/etc/rdlt/client.pem", "client_key": "/etc/rdlt/client.key"},
         "tables": [
             {
                 "name": "orders",
-                "cursor": {"column": "updated_at"},
+                "cursor": {"column": "updated_at", "lag": "5m",
+                           "end_bound": "inclusive", "nulls": "error"},
                 "type_hints": {"total": "decimal(12,4)", "created": "timestamp_tz"}
             }
         ],
@@ -78,4 +80,18 @@ fn schema_valid_corpus_parses() {
         "tables": [{"name": "t", "type_hints": {"c": "decimal(banana)"}}]});
     assert!(!validator.is_valid(&bad_hint));
     assert!(PostgresConfig::from_value(bad_hint).is_err());
+    // Feature 007: bad lag strings likewise (pattern mirrors FromStr)…
+    let bad_lag = json!({"conn": "postgres://u@h/d",
+        "tables": [{"name": "t", "cursor": {"column": "ts", "lag": "soon"}}]});
+    assert!(!validator.is_valid(&bad_lag));
+    assert!(PostgresConfig::from_value(bad_lag).is_err());
+    // …and the new field corpus is schema-valid AND parses.
+    let new_fields = json!({"conn": "postgres://u@h/d",
+        "tls": {"mode": "require", "client_cert": "/c.pem", "client_key": "/k.pem"},
+        "tables": [{"name": "t",
+                    "cursor": {"column": "ts", "lag": "1d",
+                               "end_value": "2026-01-01T00:00:00Z",
+                               "end_bound": "inclusive", "nulls": "error"}}]});
+    assert!(validator.is_valid(&new_fields), "new fields validate");
+    PostgresConfig::from_value(new_fields).expect("new fields parse");
 }

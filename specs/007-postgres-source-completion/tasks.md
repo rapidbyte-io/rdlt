@@ -17,6 +17,42 @@ dependencies; zero engine/SPI changes.
 calendar-ordered (both rework `tls.rs`); US2, US4, US5 are mutually
 independent of the TLS chain and of each other.
 
+## Implementation notes (close-out, 2026-07-21)
+
+All 15 tasks done. Gates: `make check` green (lint, 253/253 workspace
+tests, engine + postgres crash sweeps, iai perf gate within tolerance —
+every 007 change is off the hot path as planned), doc-tests green,
+semver-checks vs origin/main clean for rdlt-core and rdlt-connector
+("no update required" — zero SPI changes, as promised). Discoveries
+worth keeping:
+
+- **tokio-postgres Display opacity, third encounter**: auth-phase 28000
+  rejections render as just "db error" — the ClientCert classifier reads
+  `as_db_error()` for the real server message. Anywhere classification
+  keys off message text, go through the DbError, never Display.
+- **`sslmode=verify-ca|verify-full` in conn strings**: the driver itself
+  rejects these libpq spellings — discovered when the first
+  production-shaped URL corpus entry failed. The gate now translates
+  them into the policy mode (block may keep or strengthen, never
+  weaken), which US3's spec text didn't anticipate but its "working
+  libpq URL just works" goal requires.
+- **Split credentials forced a validation move**: cert-from-URL +
+  key-from-block is legitimate (P2), so both-or-neither validation
+  moved from `resolve_policy` (block-only view) to `parse_conn`
+  (post-merge view). `parse_conn` is now the ONLY entry to policy
+  resolution for both connectors.
+- **rustls ambient-provider pitfall recurred in TEST code**: the
+  pg_stat_activity probe built its own ClientConfig and panicked at
+  runtime — any rustls construction anywhere in the tree needs the
+  pinned-provider builder, tests included.
+- **Lag closed-flag subtlety**: stored open-boundary finals carry no
+  boundary keys, which would render `>` on resume — with lag configured
+  the window re-read forces closed (`>=`) regardless, or the lagged
+  window would silently exclude the watermark row itself.
+- **NullPolicy::Error costs one `null_count()` per batch** (Arrow keeps
+  it precomputed) — the zero-cost-when-clean claim is real, not
+  aspirational.
+
 ## Format: `[ID] [P?] [Story] Description`
 
 ## Phase 1: Setup
@@ -184,12 +220,12 @@ foreign-table non-discovery.
 
 ## Phase 7: Polish & close-out
 
-- [ ] T014 Config schemas in
+- [X] T014 Config schemas in
       `crates/rdlt-postgres/tests/config_schema.rs`: examples/corpus
       gain `client_cert`/`client_key`, `lag`, `end_bound`,
       `nulls: error`; schema-valid ⇒ parses, unknown fields fail
       both, bad `lag` strings stopped by the pattern (SC-007).
-- [ ] T015 Close-out: `make check` + `cargo test --doc` +
+- [X] T015 Close-out: `make check` + `cargo test --doc` +
       `cargo semver-checks check-release --baseline-rev origin/main
       -p rdlt-core -p rdlt-connector` (must stay "no update
       required"); perf gate within tolerance — no bar or baseline
