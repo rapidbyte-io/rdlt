@@ -209,9 +209,9 @@ async fn type_hints_end_to_end() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn partitioned_tables_load_once_via_parent() {
-    // 005 review finding: without a relispartition filter, schema-wide
-    // discovery streamed BOTH the partitioned parent and every leaf,
-    // double-loading every row.
+    // 005 review finding (generalized by 007 R7 to pg_inherits): without a
+    // hierarchy-child filter, schema-wide discovery streamed BOTH the
+    // partitioned parent and every leaf, double-loading every row.
     let fixture = PgFixture::start().await;
     fixture
         .seed(
@@ -234,6 +234,70 @@ async fn partitioned_tables_load_once_via_parent() {
         dest.count_rows("metrics_jan").is_err() && dest.count_rows("metrics_feb").is_err(),
         "leaf partitions must not become their own streams"
     );
+
+    // Feature 007: an EXPLICITLY listed leaf overrides the exclusion —
+    // reading one partition alone is a legitimate backfill.
+    let (dest, report) = run_to_duckdb(
+        source_for(&fixture.conn_url(), "tables:\n  - name: metrics_jan\n"),
+        "conf-part-listed",
+    )
+    .await;
+    assert_eq!(report.total_rows(), 1, "the January leaf alone");
+    assert_eq!(dest.count_rows("metrics_jan").expect("listed leaf"), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn inherits_children_load_once_via_parent() {
+    // Feature 007 US5 (contract: discovery scope): classic INHERITS
+    // children are excluded exactly like declarative partitions — the
+    // parent SELECT already includes child rows, so discovery streaming
+    // both double-loaded every child row (dlt has the same defect; we fix
+    // it). Mixed hierarchies (a child that is ALSO a partition parent)
+    // still load each row exactly once.
+    let fixture = PgFixture::start().await;
+    fixture
+        .seed(
+            "CREATE TABLE cities (name text, population int8); \
+             CREATE TABLE capitals (state text) INHERITS (cities); \
+             INSERT INTO cities VALUES ('springfield', 100); \
+             INSERT INTO capitals VALUES ('boston', 700, 'MA'); \
+             \
+             CREATE TABLE events (id int8 NOT NULL, day date NOT NULL); \
+             CREATE TABLE events_hist () INHERITS (events); \
+             CREATE TABLE events_hot (id int8 NOT NULL, day date NOT NULL) \
+                 PARTITION BY RANGE (day); \
+             CREATE TABLE events_hot_jan PARTITION OF events_hot \
+                 FOR VALUES FROM ('2026-01-01') TO ('2026-02-01'); \
+             INSERT INTO events_hist VALUES (1, '2025-06-01'); \
+             INSERT INTO events_hot VALUES (2, '2026-01-05');",
+        )
+        .await;
+    let (dest, _report) = run_to_duckdb(source_for(&fixture.conn_url(), ""), "conf-inh").await;
+
+    // cities parent covers both rows; capitals is NOT its own stream.
+    assert_eq!(dest.count_rows("cities").expect("parent"), 2);
+    assert!(
+        dest.count_rows("capitals").is_err(),
+        "INHERITS child must not become its own stream"
+    );
+    // Two separate roots: `events` covers its INHERITS child's row;
+    // `events_hot` (its own partitioned root) covers its leaf. Each row
+    // loads exactly once, no child becomes a stream.
+    assert_eq!(dest.count_rows("events").expect("events root"), 1);
+    assert_eq!(dest.count_rows("events_hot").expect("hot root"), 1);
+    assert!(
+        dest.count_rows("events_hist").is_err() && dest.count_rows("events_hot_jan").is_err(),
+        "children of either hierarchy kind must not be streams"
+    );
+
+    // Explicitly listed INHERITS child: readable alone (the override).
+    let (dest, report) = run_to_duckdb(
+        source_for(&fixture.conn_url(), "tables:\n  - name: capitals\n"),
+        "conf-inh-listed",
+    )
+    .await;
+    assert_eq!(report.total_rows(), 1, "the child alone");
+    assert_eq!(dest.count_rows("capitals").expect("listed child"), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]

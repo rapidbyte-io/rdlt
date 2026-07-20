@@ -60,15 +60,26 @@ the parser cannot drift.
 
 ```yaml
 tls:
-  mode: verify_full        # disable | prefer | require | verify_ca | verify_full
-  root_cert: /etc/ca.pem   # path or inline PEM; omit for the platform store
+  mode: verify_full          # disable | prefer | require | verify_ca | verify_full
+  root_cert: /etc/ca.pem     # path or inline PEM; omit for the platform store
+  client_cert: /etc/c.pem    # mutual TLS (feature 007): both-or-neither with…
+  client_key: /etc/c.key     # …an unencrypted PKCS#8/RSA/SEC1 key
 ```
 
 libpq semantics: `require` encrypts WITHOUT validating (use `verify_full`
-in production); conn-string `sslmode` covers disable/prefer/require;
-verify-* needs the block; contradictions are typed config errors. The
-DESTINATION takes the same policy (`Postgres::tls(...)` / CLI TOML
-`tls = {...}`) through the same code path.
+in production); contradictions are typed config errors. The DESTINATION
+takes the same policy (`Postgres::tls(...)` / CLI TOML `tls = {...}`)
+through the same code path. Server rejection of the client credential is
+the distinguished `ClientCert` failure, separate from our verification of
+the server.
+
+Existing libpq URLs just work (feature 007): `sslmode=verify-ca|verify-full`,
+`sslrootcert=` (`system` = platform store), `sslcert=`/`sslkey=` translate
+into the policy; a conn parameter and a block field that disagree fail
+typed naming both. Any unsupported parameter is rejected BY NAME — never a
+bare parse error. libpq's implicit `~/.postgresql/*` file defaults are NOT
+emulated. Every connection carries `application_name = rdlt` unless the
+conn string sets its own.
 
 ## Semantics worth knowing
 
@@ -82,6 +93,17 @@ DESTINATION takes the same policy (`Postgres::tls(...)` / CLI TOML
 - **Watermarks never regress**; closed boundaries re-fetch watermark-equal
   rows and dedup them by primary key (or whole-row hash when the table has
   no PK).
+- **Late-arriving rows**: `cursor.lag` (e.g. `"5m"`) re-scans a window
+  behind the watermark every run, so commits that landed with an older
+  cursor value are captured. Requires a closed boundary and a primary key;
+  pair with Merge write mode for exact totals — under Append the window
+  rows re-deliver each run (documented at-least-once). `nulls: error`
+  makes a NULL cursor value a typed failure; `end_bound: inclusive` makes
+  `end_value` a closed upper bound.
+- **Discovery scope**: partition leaves AND classic `INHERITS` children
+  are excluded (rows arrive once, via the parent); list a child explicitly
+  under `tables:` to read it alone. Foreign tables (`relkind 'f'`) are
+  never discovered.
 - **Types**: uuid/json/jsonb/arrays/enums land as text-typed columns
   (canonical text / JSON text) — the structured path derives logical types
   from Arrow, which carries no uuid/json. Unconstrained or >38-digit

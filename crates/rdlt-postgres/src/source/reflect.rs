@@ -203,9 +203,12 @@ pub(crate) fn hinted_columns(
 
 /// One round trip: every column of every relation in `schema` matching the
 /// relkind filter, with type shape + PK membership, in attnum order.
-/// Partition CHILDREN are excluded (`NOT relispartition`): the partitioned
-/// parent's stream already scans every leaf — reflecting leaves too would
-/// double-load every row under schema-wide discovery (005 review finding). Domains
+/// Hierarchy CHILDREN are excluded via `pg_inherits` (feature 007 R7 —
+/// declarative partitions AND classic INHERITS children in one predicate):
+/// the parent's stream already scans every child — reflecting children too
+/// would double-load every row under schema-wide discovery (005 review
+/// finding, generalized). Explicitly LISTED names override the exclusion
+/// ($3) — reading one partition/child alone is a legitimate backfill. Domains
 /// resolve one level to their base (nested domains fall to the textual
 /// fallback — documented); the domain's own typmod wins when present.
 const REFLECT_SQL: &str = r#"
@@ -231,7 +234,8 @@ LEFT JOIN (SELECT conrelid, conkey FROM pg_constraint WHERE contype = 'p') pk
        ON pk.conrelid = c.oid
 WHERE n.nspname = $1
   AND c.relkind::text = ANY($2)
-  AND NOT c.relispartition
+  AND (NOT EXISTS (SELECT 1 FROM pg_inherits i WHERE i.inhrelid = c.oid)
+       OR c.relname = ANY($3))
 ORDER BY c.relname, a.attnum
 "#;
 
@@ -244,8 +248,15 @@ pub(crate) async fn reflect_schema(
     } else {
         vec!["r", "p"]
     };
+    // Explicitly listed tables bypass the hierarchy-child exclusion (R7).
+    let listed: Vec<String> = config
+        .tables
+        .iter()
+        .flatten()
+        .map(|t| t.name.clone())
+        .collect();
     let rows = client
-        .query(REFLECT_SQL, &[&config.schema, &relkinds])
+        .query(REFLECT_SQL, &[&config.schema, &relkinds, &listed])
         .await
         .map_err(|e| errors::classify(Phase::Reflect, None, &e))?;
 

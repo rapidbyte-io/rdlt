@@ -164,7 +164,7 @@ explicit-listing override; truthful docs.
 exactly once; a listed child reads as its own stream; docs state
 foreign-table non-discovery.
 
-- [ ] T012 [US5] Discovery filter in
+- [X] T012 [US5] Discovery filter in
       `crates/rdlt-postgres/src/source/reflect.rs`: replace
       `NOT c.relispartition` with the `pg_inherits` NOT-EXISTS
       predicate + listed-name exception parameter (research R7);
@@ -175,7 +175,7 @@ foreign-table non-discovery.
       inheritance+partition hierarchies (exact totals, children not
       streams), add explicit-listing override cells for a partition
       leaf AND an INHERITS child (SC-005).
-- [ ] T013 [P] [US5] Docs truthfulness in
+- [X] T013 [P] [US5] Docs truthfulness in
       `crates/rdlt-postgres/README.md`: discovery scope (partitions +
       INHERITS excluded, listing override, foreign tables never
       discovered — FR-012), mTLS + conn-string parameter sections,
