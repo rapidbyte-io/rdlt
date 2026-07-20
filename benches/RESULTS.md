@@ -11,15 +11,22 @@
 
 ## The matrix — 2026-07-20, dlt 1.29.0, all cells same-session pairs
 
-| Cell | pinned dlt 1.29.0 | rdlt | multiple | target (design §8) | status |
-|---|---|---|---|---|---|
-| jsonl → DuckDB, 200k nested records (product CLI) | 14.38 s / 1,870 MB | 1.04 s / 348 MB | **13.8× faster** | ≥ 10× | ✅ met |
-| — peak RSS of that run | 1,870 MB | 348 MB | **1/5.4** | ≤ 1/5th | ✅ met |
-| Shred stage only (dlt `normalize()` vs `shred_only`) | 5.95 s | 0.50 s | **12.0× faster** | ≥ 20× | ❌ missed (honest) |
-| mock REST → Postgres, 100k records | 5.50 s / 180 MB | 0.85 s / 29 MB | **6.5× faster** | ≥ 5× | ✅ met |
-| Arrow passthrough: parquet → parquet | 0.228 s / 195 MB | 0.083 s / 47 MB | **2.75× faster** | ≥ 2× | ✅ met |
-| parquet → DuckDB (bonus context row) | 0.395 s / 335 MB | 0.329 s / 159 MB | 1.2× | — | — |
-| Cold start, one-row pipeline | 0.418 s | 0.030 s | **1/14.2 overhead** | ≤ 1/20th | ❌ missed (honest) |
+> **Gated vs scoreboard** (feature 004): a `gated` row participates in
+> pass/fail decisions and can block; a `scoreboard` row is reported context
+> and cannot. Status vocabulary for formerly-missed cells: `resolved (a)` =
+> bar met, perf gate re-baselined; `resolved (b)` = bar adjusted with
+> committed evidence, recorded in the version policy. Resolution records live
+> in `specs/004-close-perf-misses/evidence/`.
+
+| Cell | pinned dlt 1.29.0 | rdlt | multiple | target (design §8) | Gated? | status |
+|---|---|---|---|---|---|---|
+| jsonl → DuckDB, 200k nested records (product CLI) | 14.38 s / 1,870 MB | 1.04 s / 348 MB | **13.8× faster** | ≥ 10× | gated | ✅ met |
+| — peak RSS of that run | 1,870 MB | 348 MB | **1/5.4** | ≤ 1/5th | gated | ✅ met |
+| Shred stage only (dlt `normalize()` vs `shred_only`) | 5.95 s | 0.50 s | **12.0× faster** | ≥ 20× | gated | ❌ missed (honest) |
+| mock REST → Postgres, 100k records | 5.50 s / 180 MB | 0.85 s / 29 MB | **6.5× faster** | ≥ 5× | gated | ✅ met |
+| Arrow passthrough: parquet → parquet | 0.228 s / 195 MB | 0.083 s / 47 MB | **2.75× faster** | ≥ 2× | gated | ✅ met |
+| parquet → DuckDB (bonus context row) | 0.395 s / 335 MB | 0.329 s / 159 MB | 1.2× | — | scoreboard | — |
+| Cold start, one-row pipeline | 0.418 s | 0.030 s | **1/14.2 overhead** | ≤ 1/20th | gated | ❌ missed (honest) |
 
 Caveats, stated so the numbers stay honest:
 

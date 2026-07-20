@@ -22,20 +22,20 @@ hard-ordered after both.
 **Purpose**: restore and verify the environment every downstream number
 depends on. Nothing is measured before this phase is green.
 
-- [ ] T001 Restore the distrobox build environment (missing from PATH at
+- [X] T001 Restore the distrobox build environment (missing from PATH at
       feature start; container may have lost gcc — see build-env history):
       verify `distrobox enter my-distrobox -- cargo --version`, valgrind,
       hyperfine, and that `rustc --version` matches the toolchain recorded in
       `benches/perf-baselines.json` (the gate's cross-toolchain refusal must
       NOT fire). Record the repair steps taken in
       `specs/004-close-perf-misses/evidence/environment.md`.
-- [ ] T002 Write the environment-identity header (R7) into
+- [X] T002 Write the environment-identity header (R7) into
       `specs/004-close-perf-misses/evidence/environment.md`: CPU model,
       kernel, rustc, dataset identity (200k-row NDJSON row count + content
       hash regenerated via `benches/run-e2e.sh` datagen), and confirmation
       this is the 003 matrix machine. This file is the header template every
       later evidence artifact copies.
-- [ ] T003 Reproduce the close-out numbers on the restored environment before
+- [X] T003 Reproduce the close-out numbers on the restored environment before
       changing anything: `cargo bench -p rdlt-engine --bench shred` (expect
       ~0.50 s stage wall) and the run-e2e.sh cold cell (expect ~30 ms
       median); `make bench TARGET=iai` must pass against the recorded
@@ -53,11 +53,11 @@ written once, in final form.
 
 **⚠️ CRITICAL**: no user story work before this phase completes.
 
-- [ ] T004 Restructure the matrix in `benches/RESULTS.md` per data-model §1:
+- [X] T004 Restructure the matrix in `benches/RESULTS.md` per data-model §1:
       add the **Gated?** column (`gated` for every design-§8-target row,
       `scoreboard` for the parquet→DuckDB bonus row), no value changes; add
       the two-leaf `resolved (a)/(b)` status vocabulary note above the table.
-- [ ] T005 [P] Create
+- [X] T005 [P] Create
       `specs/004-close-perf-misses/evidence/README.md` stating the artifact
       formats (profile and A/B record required sections, data-model §3), the
       environment-header rule (copy from environment.md), and the P4
