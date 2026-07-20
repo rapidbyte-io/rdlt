@@ -2832,6 +2832,7 @@ dependencies = [
  "bytes",
  "chrono",
  "futures",
+ "iai-callgrind",
  "proptest",
  "rdlt-connector",
  "rdlt-dest-duckdb",

@@ -26,6 +26,7 @@ tokio-postgres = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+iai-callgrind = "0.16"
 rdlt-engine = { workspace = true }
 rdlt-testkit = { workspace = true }
 rdlt-dest-duckdb = { workspace = true }
@@ -35,6 +36,10 @@ tempfile = { workspace = true }
 
 [lints]
 workspace = true
+
+[[bench]]
+name = "iai_pg"
+harness = false
 
 [features]
 failpoints = ["rdlt-connector/failpoints"]

@@ -72,6 +72,7 @@ ifeq ($(TARGET),)
 	cargo bench -p rdlt-engine --bench shred
 else ifeq ($(TARGET),iai)
 	cargo bench -p rdlt-engine --bench iai_hotpath -- --save-summary=json
+	cargo bench -p rdlt-source-postgres --bench iai_pg -- --save-summary=json
 	benches/compare-iai.sh
 else ifeq ($(TARGET),e2e)
 	benches/run-e2e.sh

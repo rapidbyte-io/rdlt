@@ -216,12 +216,12 @@ regresses.
 baseline-first pairs, dataset identity, and policy-linked bar
 derivations (spec US3 independent test).
 
-- [ ] T024 [US3] Deterministic seed in `benches/baseline/seed_pg.py`
+- [X] T024 [US3] Deterministic seed in `benches/baseline/seed_pg.py`
       (+ SQL): pg-wide (1 M × 12 typed cols) and pg-jsonb (200 k nested
       docs, reusing the harness generator) datasets into postgres:16;
       prints row counts + content hash (identity, R7); idempotent
       re-seed.
-- [ ] T025 [US3] dlt baseline scripts
+- [X] T025 [US3] dlt baseline scripts
       `benches/baseline/pipeline_pg_duckdb.py` and
       `benches/baseline/pipeline_pg_pg.py` (backend parameter:
       pyarrow | sqlalchemy | connectorx), in-process self-timing +
@@ -229,12 +229,12 @@ derivations (spec US3 independent test).
       `benches/baseline/Dockerfile` with sql_database extras
       (sqlalchemy/psycopg2/pyarrow/connectorx) — dlt pin unchanged
       (1.29.0) and recorded.
-- [ ] T026 [US3] rdlt cells recipe in `benches/run-e2e.sh` (or sibling
+- [X] T026 [US3] rdlt cells recipe in `benches/run-e2e.sh` (or sibling
       `benches/run-pg.sh` if run-e2e length demands): baseline FIRST
       (pyarrow gated, sqlalchemy + connectorx scoreboard), then rdlt
       pg→DuckDB and pg→Postgres via the CLI, 5-run medians,
       `/usr/bin/time -v` RSS; quiet-machine discipline per 004.
-- [ ] T027 [US3] Gated decoder bench `pg_copy_decode_10k` (canned COPY
+- [X] T027 [US3] Gated decoder bench `pg_copy_decode_10k` (canned COPY
       bytes → Arrow, no network) in
       `crates/rdlt-engine/benches/iai_hotpath.rs` pattern — placed as
       `crates/rdlt-source-postgres/benches/iai_pg.rs` wired into

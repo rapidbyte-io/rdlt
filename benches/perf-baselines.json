@@ -13,6 +13,9 @@
     },
     "shred_nested_10k": {
       "instructions": 362456649
+    },
+    "pg_copy_decode_10k": {
+      "instructions": 21882873
     }
   }
 }
