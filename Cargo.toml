@@ -15,23 +15,23 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/rapidbyte/rdlt"
 
 [workspace.dependencies]
 # Internal crates (path deps; version for future publishing)
-rdlt-core = { path = "crates/rdlt-core", version = "0.1.0" }
-rdlt-connector = { path = "crates/rdlt-connector", version = "0.1.0" }
-rdlt-engine = { path = "crates/rdlt-engine", version = "0.1.0" }
-rdlt = { path = "crates/rdlt", version = "0.1.0" }
-rdlt-testkit = { path = "crates/rdlt-testkit", version = "0.1.0" }
-rdlt-source-rest = { path = "crates/rdlt-source-rest", version = "0.1.0" }
-rdlt-dest-duckdb = { path = "crates/rdlt-dest-duckdb", version = "0.1.0" }
-rdlt-dest-postgres = { path = "crates/rdlt-dest-postgres", version = "0.1.0" }
-rdlt-source-file = { path = "crates/rdlt-source-file", version = "0.1.0" }
-rdlt-dest-parquet = { path = "crates/rdlt-dest-parquet", version = "0.1.0" }
+rdlt-core = { path = "crates/rdlt-core", version = "0.2.0" }
+rdlt-connector = { path = "crates/rdlt-connector", version = "0.2.0" }
+rdlt-engine = { path = "crates/rdlt-engine", version = "0.2.0" }
+rdlt = { path = "crates/rdlt", version = "0.2.0" }
+rdlt-testkit = { path = "crates/rdlt-testkit", version = "0.2.0" }
+rdlt-source-rest = { path = "crates/rdlt-source-rest", version = "0.2.0" }
+rdlt-dest-duckdb = { path = "crates/rdlt-dest-duckdb", version = "0.2.0" }
+rdlt-dest-postgres = { path = "crates/rdlt-dest-postgres", version = "0.2.0" }
+rdlt-source-file = { path = "crates/rdlt-source-file", version = "0.2.0" }
+rdlt-dest-parquet = { path = "crates/rdlt-dest-parquet", version = "0.2.0" }
 
 # arrow-rs: single workspace-wide major (research.md R10). Pinned to the major that
 # duckdb-rs links — connectors receive `RecordBatch` through the rdlt-connector

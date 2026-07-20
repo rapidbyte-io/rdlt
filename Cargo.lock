@@ -2561,7 +2561,7 @@ dependencies = [
 
 [[package]]
 name = "rdlt"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rdlt-connector",
  "rdlt-core",
@@ -2579,7 +2579,7 @@ dependencies = [
 
 [[package]]
 name = "rdlt-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rdlt",
  "serde",
@@ -2590,7 +2590,7 @@ dependencies = [
 
 [[package]]
 name = "rdlt-connector"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -2605,7 +2605,7 @@ dependencies = [
 
 [[package]]
 name = "rdlt-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "arrow-schema",
  "blake3",
@@ -2617,7 +2617,7 @@ dependencies = [
 
 [[package]]
 name = "rdlt-dest-duckdb"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2632,7 +2632,7 @@ dependencies = [
 
 [[package]]
 name = "rdlt-dest-parquet"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "arrow",
  "async-trait",
@@ -2649,7 +2649,7 @@ dependencies = [
 
 [[package]]
 name = "rdlt-dest-postgres"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -2667,7 +2667,7 @@ dependencies = [
 
 [[package]]
 name = "rdlt-engine"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "arrow",
  "async-trait",
@@ -2692,7 +2692,7 @@ dependencies = [
 
 [[package]]
 name = "rdlt-source-file"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "arrow",
  "async-trait",
@@ -2713,7 +2713,7 @@ dependencies = [
 
 [[package]]
 name = "rdlt-source-rest"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2730,7 +2730,7 @@ dependencies = [
 
 [[package]]
 name = "rdlt-testkit"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "arrow",
  "async-trait",

@@ -18,8 +18,9 @@ pub struct StreamSpec {
     pub type_hints: BTreeMap<String, LogicalType>,
     /// This stream pushes already-structured Arrow batches (contract clause S7,
     /// feature 002). Structured streams carry run-level provenance only (no
-    /// `_rdlt_id`), so `Merge` is rejected at plan time (clause B4). Additive field:
-    /// serde-defaults to `false`.
+    /// `_rdlt_id`), so `Merge` is rejected at plan time (clause B4). Wire-additive
+    /// (serde-defaults to `false`); as a new public field on a constructible struct
+    /// it is source-BREAKING for struct-literal users — shipped in 0.2.0.
     #[serde(default)]
     pub structured: bool,
 }
