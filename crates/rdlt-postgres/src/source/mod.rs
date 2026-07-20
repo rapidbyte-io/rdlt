@@ -684,6 +684,12 @@ async fn push_tracked(
     }
 }
 
+/// JSON Schema GENERATED from the config structs (feature 006, US4) — the
+/// declared schema and the parser cannot drift.
+pub fn config_schema() -> serde_json::Value {
+    serde_json::to_value(schemars::schema_for!(config::PostgresConfig)).expect("schema serializes")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -719,10 +725,4 @@ mod tests {
         .unwrap_err();
         assert!(err.to_string().contains("contradicts"), "{err}");
     }
-}
-
-/// JSON Schema GENERATED from the config structs (feature 006, US4) — the
-/// declared schema and the parser cannot drift.
-pub fn config_schema() -> serde_json::Value {
-    serde_json::to_value(schemars::schema_for!(config::PostgresConfig)).expect("schema serializes")
 }

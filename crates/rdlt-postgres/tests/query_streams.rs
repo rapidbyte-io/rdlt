@@ -97,42 +97,63 @@ async fn join_query_lands_with_described_schema_and_incremental_works() {
     assert_eq!(count, "3", "no duplicates across incremental runs");
 }
 
+/// `streams()` opens a fresh connection per call; the source NEVER retries
+/// (clause S3 — retries are the caller's). Under full-gate load a container
+/// port-proxy can transiently refuse a connect, which would surface here as a
+/// connect-phase error instead of the typed rejection under test — so this
+/// harness plays the engine's role and retries ONLY transient connect errors.
+async fn rejection_of(source: &PostgresSource) -> String {
+    use rdlt_connector::Source as _;
+    for _ in 0..3 {
+        let err = source
+            .streams()
+            .await
+            .expect_err("stream validation must fail");
+        let text = err.to_string();
+        if text.contains("connect phase") {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            continue;
+        }
+        return text;
+    }
+    panic!("connect phase stayed transient across retries");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn rejections_are_typed_and_early() {
     let fixture = PgFixture::start().await;
     fixture.seed(SEED).await;
-    use rdlt_connector::Source as _;
 
     // Mutating SQL: rejected at describe time (subquery rules), before data.
     let bad = source(
         &fixture.conn_url(),
         "queries:\n  - name: nope\n    sql: \"DELETE FROM orders RETURNING id\"\n",
     );
-    let err = bad.streams().await.expect_err("mutating SQL must fail");
-    assert!(err.to_string().contains("read-only"), "{err}");
+    let err = rejection_of(&bad).await;
+    assert!(err.contains("read-only"), "{err}");
 
     // Data-modifying CTE: same rejection through the same wrapper.
     let cte = source(
         &fixture.conn_url(),
         "queries:\n  - name: nope\n    sql: \"WITH d AS (DELETE FROM orders RETURNING id) SELECT * FROM d\"\n",
     );
-    assert!(cte.streams().await.is_err(), "data-modifying CTE rejected");
+    rejection_of(&cte).await; // any typed rejection — message pinned above
 
     // Cursor column absent from the described output.
     let no_cursor = source(
         &fixture.conn_url(),
         "queries:\n  - name: q\n    sql: \"SELECT id FROM orders\"\n    cursor:\n      column: updated_at\n",
     );
-    let err = no_cursor.streams().await.expect_err("cursor not in output");
-    assert!(err.to_string().contains("updated_at"), "{err}");
+    let err = rejection_of(&no_cursor).await;
+    assert!(err.contains("updated_at"), "{err}");
 
     // Name collision with a reflected table.
     let collide = source(
         &fixture.conn_url(),
         "queries:\n  - name: orders\n    sql: \"SELECT 1 AS x\"\n",
     );
-    let err = collide.streams().await.expect_err("collision");
-    assert!(err.to_string().contains("collides"), "{err}");
+    let err = rejection_of(&collide).await;
+    assert!(err.contains("collides"), "{err}");
 
     // Duplicate query names die at config parse (validation).
     assert!(

@@ -15,6 +15,41 @@ rustls verifiers are safe trait impls, quarantined + documented.
 mutually independent after Phase 1 (US2 and US1 both touch the source
 `config.rs` — calendar-ordered, not parallel).
 
+## Implementation notes (close-out, 2026-07-20)
+
+All 21 tasks done; full suite 234/234 green, extended sweeps green,
+doc-tests green, semver-checks clean (rdlt-core, rdlt-connector: no
+semver update required). Deviations and discoveries worth keeping:
+
+- **Crate merge (T001, research R1)**: `rdlt-postgres` with feature-gated
+  `source`/`dest` modules replaced the two 005 crates AND the planned
+  `rdlt-pg-tls` helper — owner decision amending 005's R9 one-crate-per-
+  direction convention. The facade re-exports (`rdlt::postgres`,
+  `rdlt::postgres_source`, `rdlt::postgres_tls`) keep embedder paths
+  stable.
+- **verify_ca semantics**: the ChainOnly verifier delegates to webpki and
+  waives ONLY `NotValidForName(Context)` — rcgen test CAs needed DISTINCT
+  subject DNs or wrong-CA failures surfaced as BadSignature instead of
+  UnknownIssuer. `io::Error::source()` skips the inner error; classifying
+  rustls failures requires `get_ref()` downcast.
+- **HintType config form** is the contract's literal string vocabulary
+  (`"decimal(12,4)"`) via custom serde — an externally-tagged enum would
+  have leaked `!decimal` YAML tags; the manual `JsonSchema` impl mirrors
+  `FromStr` with a pattern.
+- **Keyed structured merge (US3)**: destinations discriminate structured
+  tables by the ABSENCE of `_rdlt_id` in the ensured schema — no SPI
+  change needed. MemoryDestination models the same semantics so the
+  engine unit tests are destination-faithful. The postgres SOURCE sweep
+  doubles as the keyed-arm crash sweep (structured stream + Merge into
+  DuckDB under every source fail point).
+- **RDLT_HEAVY export deviates from the task text**: `deep` only, NOT
+  `sweep` — sweep is part of `make check` (the PR gate), which must stay
+  container-optional; the deep job is where silent skips were the risk.
+- **`schema-valid ⇒ parses` forced a schema fix**: file source's
+  at-least-one-stream rule moved INTO the generated schema
+  (`length(min = 1)`) — the round-trip test caught the drift the moment
+  it existed, which is the point of SC-005.
+
 ## Format: `[ID] [P?] [Story] Description`
 
 ## Phase 1: Setup
@@ -215,7 +250,7 @@ injected.
 
 ## Phase 6: Polish & close-out
 
-- [ ] T021 Close-out: complete the spec's parity table (every "006
+- [X] T021 Close-out: complete the spec's parity table (every "006
       action" row → done; OUT rows carry reasons — SC-007);
       `make check` + `cargo test --doc` + `cargo semver-checks
       check-release --baseline-rev origin/main -p rdlt-core -p
