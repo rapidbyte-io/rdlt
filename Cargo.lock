@@ -2669,6 +2669,7 @@ dependencies = [
  "rdlt-dest-postgres",
  "rdlt-engine",
  "rdlt-source-file",
+ "rdlt-source-postgres",
  "rdlt-source-rest",
  "rdlt-testkit",
  "serde_json",
@@ -2824,8 +2825,10 @@ version = "0.2.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
+ "arrow-select",
  "async-trait",
  "bytes",
+ "chrono",
  "futures",
  "proptest",
  "rdlt-connector",

@@ -43,6 +43,9 @@ pub use rdlt_source_file as file;
 #[cfg(feature = "parquet")]
 pub use rdlt_dest_parquet as parquet;
 
+#[cfg(feature = "postgres-source")]
+pub use rdlt_source_postgres as postgres_source;
+
 pub mod prelude {
     pub use crate::{
         CommitPolicy, Pipeline, PipelineEvent, PolicyAction, RdltError, RunReport, SchemaPolicy,

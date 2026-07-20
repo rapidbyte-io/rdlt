@@ -15,7 +15,6 @@ pub(crate) enum Phase {
     Reflect,
     Copy,
     Decode,
-    Checkpoint,
 }
 
 impl std::fmt::Display for Phase {
@@ -25,7 +24,6 @@ impl std::fmt::Display for Phase {
             Phase::Reflect => "reflect",
             Phase::Copy => "copy",
             Phase::Decode => "decode",
-            Phase::Checkpoint => "checkpoint",
         })
     }
 }

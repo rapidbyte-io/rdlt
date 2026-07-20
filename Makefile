@@ -21,7 +21,7 @@
 
 TARGET ?=
 FUZZ_SECONDS ?= 600
-FUZZ_TARGETS := jsonl_slab cursor_decode file_config arrow_schema_map shred_push
+FUZZ_TARGETS := jsonl_slab cursor_decode file_config arrow_schema_map shred_push pg_copy_decode
 
 .PHONY: build release lint test bench check
 

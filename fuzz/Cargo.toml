@@ -15,6 +15,7 @@ rdlt-core = { path = "../crates/rdlt-core" }
 rdlt-connector = { path = "../crates/rdlt-connector" }
 rdlt-engine = { path = "../crates/rdlt-engine" }
 rdlt-source-file = { path = "../crates/rdlt-source-file" }
+rdlt-source-postgres = { path = "../crates/rdlt-source-postgres" }
 
 # Standalone workspace: libFuzzer needs nightly; the main build never sees this.
 [workspace]
@@ -51,3 +52,10 @@ name = "shred_push"
 path = "fuzz_targets/shred_push.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "pg_copy_decode"
+path = "fuzz_targets/pg_copy_decode.rs"
+test = false
+doc = false
+bench = false

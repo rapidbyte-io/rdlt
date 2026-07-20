@@ -75,7 +75,7 @@ statement-level snapshot.
 pipeline to DuckDB; row counts, types, and values match exactly
 (spec US1 independent test).
 
-- [ ] T007 [US1] Binary COPY decoder core in
+- [X] T007 [US1] Binary COPY decoder core in
       `crates/rdlt-source-postgres/src/copy_decode.rs` (R1/R4): COPY
       BINARY header/trailer + length-prefixed tuple parsing (NULL = -1)
       into Arrow builders for the LOSSLESS contract rows (bool, ints,
@@ -84,29 +84,29 @@ pipeline to DuckDB; row counts, types, and values match exactly
       `batch_target_bytes`/`batch_max_rows`; typed decode errors (never
       panics); unit tests on hand-crafted wire bytes incl. truncation
       and NOT-NULL-violation drift.
-- [ ] T008 [US1] Decoder policy rows in `copy_decode.rs` +
+- [X] T008 [US1] Decoder policy rows in `copy_decode.rs` +
       `types.rs`: unconstrained/oversized numeric → Utf8 canonical
       text, enums → label text, arrays/composites/ranges → canonical
       Json, interval/inet/money/timetz → Utf8, ±infinity timestamp/date
       saturation (contract "Special values"); unit tests per rule.
-- [ ] T009 [US1] SQL generation (snapshot half) in
+- [X] T009 [US1] SQL generation (snapshot half) in
       `crates/rdlt-source-postgres/src/sqlgen.rs`: strict identifier
       quoting, column projection from included/excluded config,
       `COPY (SELECT …) TO STDOUT (FORMAT BINARY)` statement assembly;
       unit tests incl. hostile identifiers (quote-injection attempts).
-- [ ] T010 [US1] `Source` impl (snapshot path) in
+- [X] T010 [US1] `Source` impl (snapshot path) in
       `crates/rdlt-source-postgres/src/lib.rs`: `spec()`, `streams()`
       (reflection → `StreamSpec{structured: true, cursor_field}`),
       `read()` driving copy_out → decoder → `PushPayload::Arrow`
       awaited pushes (S5 backpressure) → final `Checkpoint`;
       `ChannelClosed` = cancel (S4), connection dropped; typed errors
       naming table + phase (FR-008 surface).
-- [ ] T011 [P] [US1] Facade + CLI wiring: export
+- [X] T011 [P] [US1] Facade + CLI wiring: export
       `rdlt::postgres_source::PostgresSource` in
       `crates/rdlt/src/lib.rs`; add `SourceSpec::Postgres { config }`
       arm to `crates/rdlt-cli/src/main.rs` (mirrors rest/file arms);
       doc-comment examples compile (`cargo test --doc`).
-- [ ] T012 [US1] Conformance suite in
+- [X] T012 [US1] Conformance suite in
       `crates/rdlt-source-postgres/tests/conformance.rs`
       (testcontainers): full type-matrix round-trip into DuckDB
       (values + arrow types asserted per contract row), selection
@@ -114,12 +114,12 @@ pipeline to DuckDB; row counts, types, and values match exactly
       + mixed-case identifiers, non-default schema, empty table,
       zero-data-column rejection, table dropped between reflect and
       read → typed error (US1 acceptance scenarios 1–3 + edge cases).
-- [ ] T013 [P] [US1] Differential property test in
+- [X] T013 [P] [US1] Differential property test in
       `crates/rdlt-source-postgres/tests/differential.rs` (R8):
       proptest typed row sets seeded into pg; assert `copy_decode`
       batches ≡ driver-`FromSql`-built reference batches,
       byte-identical, across the generator's full type coverage.
-- [ ] T014 [P] [US1] Decoder fuzz target in
+- [X] T014 [P] [US1] Decoder fuzz target in
       `fuzz/fuzz_targets/pg_copy_decode.rs`: arbitrary bytes → decoder
       must return typed errors, never panic/OOM; register in
       FUZZ_TARGETS (Makefile) alongside existing targets.

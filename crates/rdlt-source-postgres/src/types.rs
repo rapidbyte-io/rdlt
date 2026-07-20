@@ -283,7 +283,7 @@ mod tests {
         let typmod = ((50 << 16) | 2) + 4;
         assert_eq!(map_type(&base(oid::NUMERIC, typmod)).select, SelectPolicy::CastText);
         // Negative scale (PG15+) → text.
-        let typmod = ((10 << 16) | (((-2i32) & 0x7FF) as i32)) + 4;
+        let typmod = ((10 << 16) | ((-2i32) & 0x7FF)) + 4;
         assert_eq!(map_type(&base(oid::NUMERIC, typmod)).select, SelectPolicy::CastText);
         // Enum → label text.
         let e = map_type(&PgTypeInfo { oid: 99_999, typtype: 'e', typcategory: 'E', typmod: -1 });

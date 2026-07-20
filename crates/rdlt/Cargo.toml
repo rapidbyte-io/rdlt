@@ -12,6 +12,7 @@ rest = ["dep:rdlt-source-rest"]
 duckdb = ["dep:rdlt-dest-duckdb"]
 postgres = ["dep:rdlt-dest-postgres"]
 file = ["dep:rdlt-source-file"]
+postgres-source = ["dep:rdlt-source-postgres"]
 parquet = ["dep:rdlt-dest-parquet"]
 
 [dependencies]
@@ -22,6 +23,7 @@ rdlt-source-rest = { workspace = true, optional = true }
 rdlt-dest-duckdb = { workspace = true, optional = true }
 rdlt-dest-postgres = { workspace = true, optional = true }
 rdlt-source-file = { workspace = true, optional = true }
+rdlt-source-postgres = { workspace = true, optional = true }
 rdlt-dest-parquet = { workspace = true, optional = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }

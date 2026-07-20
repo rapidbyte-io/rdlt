@@ -43,6 +43,8 @@ enum SourceSpec {
     Rest { config: PathBuf },
     /// Path to the file source YAML (jsonl/parquet streams).
     File { config: PathBuf },
+    /// Path to the Postgres source YAML (tables, cursors, batching).
+    Postgres { config: PathBuf },
 }
 
 #[derive(Debug, Deserialize)]
@@ -194,6 +196,13 @@ async fn run(spec_path: PathBuf, report_path: Option<PathBuf>) -> Result<(), Cli
             let yaml = std::fs::read_to_string(config)
                 .map_err(|e| CliError::Usage(format!("reading {}: {e}", config.display())))?;
             let source = rdlt::file::FileSource::from_yaml(&yaml)
+                .map_err(|e| CliError::Usage(e.to_string()))?;
+            run_with!(source)
+        }
+        SourceSpec::Postgres { config } => {
+            let yaml = std::fs::read_to_string(config)
+                .map_err(|e| CliError::Usage(format!("reading {}: {e}", config.display())))?;
+            let source = rdlt::postgres_source::PostgresSource::from_yaml(&yaml)
                 .map_err(|e| CliError::Usage(e.to_string()))?;
             run_with!(source)
         }
