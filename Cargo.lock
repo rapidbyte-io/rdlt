@@ -2824,9 +2824,11 @@ name = "rdlt-source-postgres"
 version = "0.2.0"
 dependencies = [
  "arrow-array",
+ "arrow-cast",
  "arrow-schema",
  "arrow-select",
  "async-trait",
+ "blake3",
  "bytes",
  "chrono",
  "futures",

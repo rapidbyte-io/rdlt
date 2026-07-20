@@ -136,23 +136,23 @@ engine state; exactly-once across restarts.
 watermark-equal duplicates), re-run — exactly the new rows land and
 state holds the max cursor (spec US2 independent test).
 
-- [ ] T015 [US2] Cursor state in
+- [X] T015 [US2] Cursor state in
       `crates/rdlt-source-postgres/src/cursor.rs` (R5, data-model §3):
       `{watermark, boundary_keys}` ↔ engine `Cursor` JSON encode/decode
       for every cursor-capable type (contract rendering rules),
       monotonicity guard; property test `decode(encode(v)) == v`
       (data-model validation rule).
-- [ ] T016 [US2] SQL generation (incremental half) in `sqlgen.rs`:
+- [X] T016 [US2] SQL generation (incremental half) in `sqlgen.rs`:
       typed-literal-with-cast rendering (COPY takes no binds —
       injection-safe by construction, R5), boundary matrix (closed ≥ /
       open >, max/min direction, optional end_value < / ≤), NULL
       include (`IS NULL` union) / exclude; unit tests over the full
       matrix incl. literal-escaping of string/uuid/timestamp cursors.
-- [ ] T017 [US2] Incremental `read()` in `lib.rs`: `since` → resume
+- [X] T017 [US2] Incremental `read()` in `lib.rs`: `since` → resume
       predicate; per-batch watermark + boundary-key tracking; closed-
       boundary re-fetch dedup source-side; `Checkpoint(Cursor)` cadence
       after covered pushes; never emit a regressed watermark (FR-007).
-- [ ] T018 [US2] Incremental suite in
+- [X] T018 [US2] Incremental suite in
       `crates/rdlt-source-postgres/tests/incremental.rs`
       (testcontainers): first-run-full/second-run-delta,
       watermark-equal duplicates deduped (closed) vs open-boundary

@@ -45,6 +45,7 @@ arrow = "58.3"
 arrow-schema = "58.3"
 arrow-array = "58.3"
 arrow-select = "58.3"
+arrow-cast = "58.3"
 parquet = "58.3"
 
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "fs", "macros"] }

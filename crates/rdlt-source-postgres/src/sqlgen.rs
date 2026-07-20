@@ -65,6 +65,51 @@ pub(crate) fn copy_sql(select: &str) -> String {
     format!("COPY ({select}) TO STDOUT (FORMAT BINARY)")
 }
 
+/// Incremental WHERE/ORDER BY rendering (research R5): the full dlt-parity
+/// boundary matrix. `lower_closed` is the RESUME semantics (`>=` re-fetches
+/// watermark-equal rows for dedup; `>` skips them), independent of direction.
+pub(crate) struct IncrementalClauses {
+    pub where_sql: String,
+    pub order_sql: String,
+}
+
+pub(crate) fn incremental_clauses(
+    column: &str,
+    direction_max: bool,
+    lower: Option<(&crate::cursor::Watermark, bool)>, // (value, closed?)
+    upper: Option<&crate::cursor::Watermark>,
+    nulls_include: bool,
+) -> IncrementalClauses {
+    let ident = quote_ident(column);
+    let mut predicates: Vec<String> = Vec::new();
+    if let Some((value, closed)) = lower {
+        let op = match (direction_max, closed) {
+            (true, true) => ">=",
+            (true, false) => ">",
+            (false, true) => "<=",
+            (false, false) => "<",
+        };
+        predicates.push(format!("{ident} {op} {}", value.to_sql_literal()));
+    }
+    if let Some(value) = upper {
+        let op = if direction_max { "<" } else { ">" };
+        predicates.push(format!("{ident} {op} {}", value.to_sql_literal()));
+    }
+    let where_sql = match (predicates.is_empty(), nulls_include) {
+        (true, true) => String::new(),
+        (true, false) => format!("{ident} IS NOT NULL"),
+        (false, true) => format!("(({}) OR {ident} IS NULL)", predicates.join(" AND ")),
+        (false, false) => format!("{} AND {ident} IS NOT NULL", predicates.join(" AND ")),
+    };
+    // NULLS FIRST keeps the watermark tail at the stream end in BOTH
+    // directions — checkpoint tracking depends on it.
+    let order_sql = format!(
+        "{ident} {} NULLS FIRST",
+        if direction_max { "ASC" } else { "DESC" }
+    );
+    IncrementalClauses { where_sql, order_sql }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -115,6 +160,33 @@ mod tests {
             sql,
             r#"SELECT "id", ("price")::text AS "price", to_jsonb("tags")::text AS "tags" FROM "public"."t""#
         );
+    }
+
+    #[test]
+    fn incremental_boundary_matrix() {
+        use crate::cursor::Watermark;
+        let w = Watermark::Int(5);
+        let e = Watermark::Int(9);
+        // (direction_max, closed) × operators
+        let c = incremental_clauses("ts", true, Some((&w, true)), None, false);
+        assert_eq!(c.where_sql, r#""ts" >= 5::int8 AND "ts" IS NOT NULL"#);
+        assert_eq!(c.order_sql, r#""ts" ASC NULLS FIRST"#);
+        let c = incremental_clauses("ts", true, Some((&w, false)), Some(&e), false);
+        assert_eq!(c.where_sql, r#""ts" > 5::int8 AND "ts" < 9::int8 AND "ts" IS NOT NULL"#);
+        let c = incremental_clauses("ts", false, Some((&w, true)), Some(&e), false);
+        assert_eq!(c.where_sql, r#""ts" <= 5::int8 AND "ts" > 9::int8 AND "ts" IS NOT NULL"#);
+        assert_eq!(c.order_sql, r#""ts" DESC NULLS FIRST"#);
+        // NULL policy include wraps with OR IS NULL; bare include has no filter.
+        let c = incremental_clauses("ts", true, Some((&w, true)), None, true);
+        assert_eq!(c.where_sql, r#"(("ts" >= 5::int8) OR "ts" IS NULL)"#);
+        let c = incremental_clauses("ts", true, None, None, true);
+        assert_eq!(c.where_sql, "");
+        let c = incremental_clauses("ts", true, None, None, false);
+        assert_eq!(c.where_sql, r#""ts" IS NOT NULL"#);
+        // Hostile cursor string literal stays inert.
+        let hostile = Watermark::Text("x'; DROP TABLE t; --".into());
+        let c = incremental_clauses("v", true, Some((&hostile, true)), None, false);
+        assert!(c.where_sql.contains("'x''; DROP TABLE t; --'::text"), "{}", c.where_sql);
     }
 
     #[test]

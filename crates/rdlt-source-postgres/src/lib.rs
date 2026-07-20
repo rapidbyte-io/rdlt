@@ -11,6 +11,7 @@
 
 pub mod config;
 mod copy_decode;
+mod cursor;
 mod errors;
 mod reflect;
 mod sqlgen;
@@ -183,13 +184,6 @@ impl Source for PostgresSource {
             errors::fatal(Phase::Reflect, Some(&name), "stream has no reflected table")
         })?;
         let table_config = self.config.table_config(&name);
-        if table_config.and_then(|t| t.cursor.as_ref()).is_some() {
-            return Err(errors::fatal(
-                Phase::Reflect,
-                Some(&name),
-                "incremental cursor reads land in Phase 4 (T017); snapshot-only for now",
-            ));
-        }
         let columns = table.selected_columns(table_config)?;
         let plans: Vec<FieldPlan> = columns
             .iter()
@@ -201,7 +195,92 @@ impl Source for PostgresSource {
             })
             .collect();
 
-        let select = sqlgen::select_sql(&self.config.schema, &name, &columns, "", "");
+        // Incremental setup (research R5): resume state, boundary matrix,
+        // ordered read + tracker. Snapshot streams skip all of it.
+        let cursor_config = table_config.and_then(|t| t.cursor.as_ref());
+        let mut incremental: Option<(cursor::Tracker, config::CursorConfig)> = None;
+        let (where_sql, order_sql) = match cursor_config {
+            None => (String::new(), String::new()),
+            Some(cc) => {
+                let reflected_cursor = reflect::validate_cursor_column(table, &cc.column)?;
+                let cursor_decode = reflected_cursor.mapped.decode;
+                let cursor_idx = columns
+                    .iter()
+                    .position(|c| c.name == cc.column)
+                    .ok_or_else(|| {
+                        errors::fatal(
+                            Phase::Reflect,
+                            Some(&name),
+                            format!(
+                                "cursor column `{}` is excluded by the column selection",
+                                cc.column
+                            ),
+                        )
+                    })?;
+                let direction_max = cc.direction == config::Direction::Max;
+                let stored = match &req.since {
+                    Some(since) => Some(cursor::CursorState::decode(since, &name)?),
+                    None => None,
+                };
+                // Lower bound: stored state (closed iff boundary keys exist —
+                // intermediate checkpoints resume strictly); else the
+                // configured initial_value under the configured boundary.
+                let closed_default = cc.boundary == config::Boundary::Closed;
+                let lower: Option<(cursor::Watermark, bool)> = match &stored {
+                    Some(state) => Some((
+                        state.watermark.clone(),
+                        closed_default && !state.boundary_keys.is_empty(),
+                    )),
+                    None => match &cc.initial_value {
+                        Some(text) => Some((
+                            cursor::Watermark::parse_config_literal(cursor_decode, text, &name)?,
+                            closed_default,
+                        )),
+                        None => None,
+                    },
+                };
+                let upper: Option<cursor::Watermark> = match &cc.end_value {
+                    Some(text) => Some(cursor::Watermark::parse_config_literal(
+                        cursor_decode,
+                        text,
+                        &name,
+                    )?),
+                    None => None,
+                };
+                let clauses = sqlgen::incremental_clauses(
+                    &cc.column,
+                    direction_max,
+                    lower.as_ref().map(|(w, closed)| (w, *closed)),
+                    upper.as_ref(),
+                    cc.nulls == config::NullPolicy::Include,
+                );
+                // Row keys: configured/reflected PK columns present in the
+                // selection; otherwise whole-row hashing.
+                let pk_names: Vec<String> = match table_config.and_then(|t| t.primary_key.clone()) {
+                    Some(overridden) => overridden,
+                    None => table.primary_key().iter().map(|s| (*s).to_owned()).collect(),
+                };
+                let key_columns: Option<Vec<usize>> = if pk_names.is_empty() {
+                    None
+                } else {
+                    pk_names
+                        .iter()
+                        .map(|k| columns.iter().position(|c| &c.name == k))
+                        .collect()
+                };
+                let tracker = cursor::Tracker::new(
+                    cursor_idx,
+                    cursor_decode,
+                    direction_max,
+                    stored,
+                    key_columns,
+                );
+                incremental = Some((tracker, cc.clone()));
+                (clauses.where_sql, clauses.order_sql)
+            }
+        };
+
+        let select = sqlgen::select_sql(&self.config.schema, &name, &columns, &where_sql, &order_sql);
         let copy = sqlgen::copy_sql(&select);
 
         let client = connect(&self.config).await?;
@@ -212,6 +291,7 @@ impl Source for PostgresSource {
         futures::pin_mut!(stream);
 
         let mut decoder = CopyDecoder::new(plans, self.config.batch_target_bytes, self.config.batch_max_rows);
+        let mut pushed_any = false;
         loop {
             let chunk = stream
                 .try_next()
@@ -222,7 +302,7 @@ impl Source for PostgresSource {
                 .feed(&chunk)
                 .map_err(|e| errors::fatal(Phase::Decode, Some(&name), e))?;
             for batch in batches {
-                if req.out.arrow(batch).await.is_err() {
+                if !push_tracked(&mut req, &mut incremental, batch, &mut pushed_any).await? {
                     return Ok(()); // cancellation (clause S4); dropping the
                                    // client aborts the server-side COPY
                 }
@@ -231,17 +311,67 @@ impl Source for PostgresSource {
         if let Some(tail) = decoder
             .finish()
             .map_err(|e| errors::fatal(Phase::Decode, Some(&name), e))?
-            && req.out.arrow(tail).await.is_err()
+            && !push_tracked(&mut req, &mut incremental, tail, &mut pushed_any).await?
         {
             return Ok(());
         }
-        if decoder.rows_decoded() == 0 && req.out.arrow(decoder.empty_batch()).await.is_err() {
+        if !pushed_any && req.out.arrow(decoder.empty_batch()).await.is_err() {
             return Ok(()); // still cancellation (S4)
         }
-        tracing::debug!(table = %name, rows = decoder.rows_decoded(), "snapshot complete");
-        // Snapshot (cursor-less) streams never checkpoint: every run is a
-        // full read by definition; there is no meaningful resume cursor.
+        match incremental {
+            None => {
+                // Snapshot (cursor-less) streams never checkpoint: every run
+                // is a full read by definition; no meaningful resume cursor.
+                tracing::debug!(table = %name, rows = decoder.rows_decoded(), "snapshot complete");
+            }
+            Some((tracker, cc)) => {
+                let keep_keys = cc.boundary == config::Boundary::Closed;
+                if let Some(state) = tracker.final_state(keep_keys)
+                    && req.out.checkpoint(state.encode()).await.is_err()
+                {
+                    return Ok(());
+                }
+                tracing::debug!(
+                    table = %name,
+                    rows = decoder.rows_decoded(),
+                    deduped = tracker.deduped_rows,
+                    "incremental read complete"
+                );
+            }
+        }
         Ok(())
+    }
+}
+
+/// Push one decoded batch, routed through the incremental tracker when
+/// present (dedup → push → intermediate checkpoint, in that order — S2).
+/// Returns Ok(false) on cancellation.
+async fn push_tracked(
+    req: &mut ReadRequest,
+    incremental: &mut Option<(cursor::Tracker, config::CursorConfig)>,
+    batch: arrow_array::RecordBatch,
+    pushed_any: &mut bool,
+) -> Result<bool, SourceError> {
+    match incremental {
+        None => {
+            *pushed_any = true;
+            Ok(req.out.arrow(batch).await.is_ok())
+        }
+        Some((tracker, _)) => {
+            let (filtered, checkpoint) = tracker.process(batch);
+            if let Some(filtered) = filtered {
+                *pushed_any = true;
+                if req.out.arrow(filtered).await.is_err() {
+                    return Ok(false);
+                }
+            }
+            if let Some(state) = checkpoint
+                && req.out.checkpoint(state.encode()).await.is_err()
+            {
+                return Ok(false);
+            }
+            Ok(true)
+        }
     }
 }
 

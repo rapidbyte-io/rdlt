@@ -9,9 +9,13 @@ repository.workspace = true
 [dependencies]
 rdlt-connector = { workspace = true }
 arrow-array = { workspace = true }
+arrow-cast = { workspace = true }
 arrow-schema = { workspace = true }
+arrow-select = { workspace = true }
+blake3 = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
+chrono = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -22,8 +26,6 @@ tokio-postgres = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-arrow-select = { workspace = true }
-chrono = { workspace = true }
 rdlt-engine = { workspace = true }
 rdlt-testkit = { workspace = true }
 rdlt-dest-duckdb = { workspace = true }
