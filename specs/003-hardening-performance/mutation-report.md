@@ -13,7 +13,7 @@ bounds) stack allocations and can OOM the host (observed: a mutated
 
 | date | commit | mutants | caught | missed | unviable | timeout | kill rate |
 |---|---|---|---|---|---|---|---|
-| 2026-07-20 | 852049f (pre-tape snapshot) | 470 | 241 | 127 | 94 | 8 | 64.1% |
+| 2026-07-20 | 8d44055-era tree (pre-tape; earlier rows misattributed this to 852049f) | 470 | 241 | 127 | 94 | 8 | 64.1% |
 | 2026-07-20 | c4a90f9 (OOM-killed at 349/595) | 349 partial | 188 | 79 | 74 | 8 | 68.4% partial |
 | 2026-07-20 | ce9972c, post-closures (OOM-killed at 347/595) | 347 partial | 237 | 29 | 74 | 7 | **86.8% partial — bar met on the tested set** |
 

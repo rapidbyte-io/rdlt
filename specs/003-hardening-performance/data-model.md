@@ -70,7 +70,7 @@ row. Honesty rules unchanged (no multiple without both columns).
 ## 6. Hash decision record (design doc §5.4 amendment)
 
 Fields: candidates, microbench numbers (keyed/keyless), flagship e2e numbers,
-threshold applied (>10% e2e), decision, date, consequence note (dev-state reset
+threshold applied (>30% e2e — clarified 2026-07-20), decision, date, consequence note (dev-state reset
 if switched). Written before any release tag (FR-008).
 
 ## 7. Streaming-shred equivalence gate (COMPLETED and retired)

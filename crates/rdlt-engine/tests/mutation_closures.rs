@@ -163,6 +163,48 @@ async fn fresh_run_reads_with_no_cursor() {
     );
 }
 
+/// Kills: the resumed-from guard (`!state.cursors.is_empty()`→true) — a
+/// recovered state whose cursors are EMPTY (first run never checkpointed) must
+/// report `Fresh`, not `Cursor`.
+#[tokio::test]
+async fn empty_cursor_state_reports_fresh_resume() {
+    use rdlt_core::ResumedFrom;
+    let dest = MemoryDestination::new();
+    // No checkpoints: state commits with an empty cursor map.
+    let stream = MemoryStream::new(
+        StreamSpec::new("s"),
+        vec![MemoryBatch::new(vec![json!({"id": 1})])],
+    );
+    let report = Engine::new(
+        EngineConfig::new("nocursor"),
+        MemorySource::new(vec![stream]),
+        dest.clone(),
+    )
+    .run()
+    .await
+    .expect("run 1");
+    assert_eq!(report.resumed_from, ResumedFrom::Fresh);
+
+    // Second run recovers a StateDoc — but with no cursors it is still Fresh.
+    let stream = MemoryStream::new(
+        StreamSpec::new("s"),
+        vec![MemoryBatch::new(vec![json!({"id": 2})])],
+    );
+    let report = Engine::new(
+        EngineConfig::new("nocursor"),
+        MemorySource::new(vec![stream]),
+        dest,
+    )
+    .run()
+    .await
+    .expect("run 2");
+    assert_eq!(
+        report.resumed_from,
+        ResumedFrom::Fresh,
+        "empty cursors must never report a cursor resume"
+    );
+}
+
 /// Kills: the cancellation error-precedence guard (`saw_cancelled`→false) —
 /// a cancelled run must surface EXACTLY `RdltError::Cancelled`.
 #[tokio::test(flavor = "multi_thread")]

@@ -12,7 +12,7 @@
 #     TARGET=fuzz make test      fuzz all targets (nightly toolchain; FUZZ_SECONDS each)
 #     TARGET=mutants make test   mutation pass (slow)
 #     TARGET=deep make test      everything scheduled CI runs (prop+sweep+mutants+fuzz)
-#   make bench                 shred/passthrough microbenches (criterion)
+#   make bench                 shred microbench (criterion)
 #     TARGET=iai make bench      instruction-count benches + baseline comparison (perf gate)
 #     TARGET=e2e make bench      full end-to-end benchmark script
 #   make check                 everything a PR must pass (lint + test + sweep + perf gate)

@@ -43,7 +43,8 @@ pub(crate) trait JsonView<'a>: Copy {
     type ArrIter: Iterator<Item = Self>;
 
     fn kind(self) -> Kind<'a>;
-    /// Entries in sorted-key, last-duplicate-wins order (see view contract).
+    /// Entries in NATIVE order — first-occurrence position, last-occurrence
+    /// value (see the view contract above); canonicalization sorts separately.
     fn obj_entries(self) -> Self::ObjIter;
     fn arr_items(self) -> Self::ArrIter;
     /// Top-level object lookup (last duplicate wins); `None` off objects.
