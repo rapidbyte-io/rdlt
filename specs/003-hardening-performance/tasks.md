@@ -122,9 +122,13 @@ before Phase 5 changes them. All cargo commands run via
   A/B (no win, 20× build cost). Final medians recorded (flagship 1.05 s →
   18.6×). Final sweep green: make check (lint, 153 nextest, crash sweep, iai
   perf gate — narrowing fix cost +0.01%, within the 3% tolerance) + doc-tests.
-  PR to main pending push access (SSH key unavailable remotely); the clean
-  full mutation run for the authoritative post-closure kill rate runs in the
-  background / next scheduled deep job.
+  PR to main pending push access (SSH key unavailable remotely). Post-closure
+  mutation run: **86.8% kill rate on the tested set — bar met** (run log in
+  mutation-report.md; local full runs now bounded NEXTEST_TEST_THREADS=2).
+  HANDOFF: one uncommitted edit in `tests/mutation_closures.rs`
+  (`empty_cursor_state_reports_fresh_resume`) awaits `make test` after the
+  next host re-login (the second OOM took the user session + containers down
+  again; nothing else is blocked on it).
 
 ## Dependencies & Execution Order
 
