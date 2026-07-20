@@ -15,6 +15,7 @@ bounds) stack allocations and can OOM the host (observed: a mutated
 |---|---|---|---|---|---|---|---|
 | 2026-07-20 | 852049f (pre-tape snapshot) | 470 | 241 | 127 | 94 | 8 | 64.1% |
 | 2026-07-20 | c4a90f9 (OOM-killed at 349/595) | 349 partial | 188 | 79 | 74 | 8 | 68.4% partial |
+| 2026-07-20 | ce9972c, post-closures (OOM-killed at 347/595) | 347 partial | 237 | 29 | 74 | 7 | **86.8% partial — bar met on the tested set** |
 
 The partial run covers the current tape-path code. Three survivors visible from
 the first run's tail were already closed with tests in c4a90f9 (passthrough
@@ -40,6 +41,18 @@ Every planned test below lands before this feature's PR merges; the scheduled
 | `core/schema.rs` `is_system`→const | 2 | **new-test**: one assertion each way. |
 | `connector/lib.rs` `RecordsOut::send` `>`→`>=` | 1 | **new-test**: byte-budget boundary at exactly the budget. |
 | timeouts | 8 | **waived**: loop-bound mutants whose infinite loops ARE the detected outcome — the timeout mechanism is the designed kill. |
+
+## Residual survivors (29, post-closure run)
+
+Same tested prefix as the 79 before the closures — 50 killed by the new tests.
+Of the rest: `graph.rs:177` (resumed-from guard) got a further test
+(`empty_cursor_state_reports_fresh_resume`); `graph.rs:461` (saw_cancelled arm)
+is **waived** — a defense-in-depth arm reachable only under a race (all streams
+exit Ok exactly as cancellation lands); the Cancelled outcome is asserted via
+the deterministic path. The remaining ~20 are guard-direction/equivalent
+variants in lowering/load/wal clusters pending verification by the scheduled
+CI run (isolated runner; local full runs are now bounded with
+`NEXTEST_TEST_THREADS=2 --jobs 2` after two host OOMs).
 
 ## Bug found while closing survivors
 

@@ -52,8 +52,9 @@ else ifeq ($(TARGET),fuzz)
 		cargo +nightly fuzz run $$t -- -timeout=10 -max_total_time=$(FUZZ_SECONDS) || exit 1; \
 	done
 else ifeq ($(TARGET),mutants)
-	# --jobs 2: parallel runaway mutants can OOM the host; --iterate resumes.
-	cargo mutants --iterate --jobs 2
+	# --jobs 2 + 2 test threads: runaway mutants (broken backpressure bounds)
+	# balloon EVERY parallel test at once — two host OOMs taught this. --iterate resumes.
+	NEXTEST_TEST_THREADS=2 cargo mutants --iterate --jobs 2
 else ifeq ($(TARGET),deep)
 	$(MAKE) test TARGET=prop
 	$(MAKE) test TARGET=sweep
