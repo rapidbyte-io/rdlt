@@ -130,6 +130,12 @@ before Phase 5 changes them. All cargo commands run via
   next host re-login (the second OOM took the user session + containers down
   again; nothing else is blocked on it).
 
+## Phase 7: Post-review fixes (comprehensive review 2026-07-20, 12 findings scored, none ≥80; sub-bar cluster queued deliberately)
+
+- [ ] T029 Text/doc corrections: `view.rs` obj_entries doc line (said "sorted-key" against its own module contract), mutation-report baseline commit attribution (8d44055, not 852049f), `data-model.md` §6 hash threshold >10%→>30%, Makefile bench header overclaim
+- [ ] T030 [P] Gate robustness: toolchain-mismatch check in `benches/compare-iai.sh` (recorded vs current rustc — fail with a re-record instruction instead of flapping/masking on stable bumps); checked `u32` casts in `arena.rs` (typed error instead of silent wrap on >4.29e9-node documents); non-circular G2.2 (crash_sweep greps engine sources for `crash_point!` count == ENGINE_POINTS len); arena dup-key POSITION test (first-occurrence order — canonicalization is blind to it)
+- [ ] T031 Postgres crash-sweep coverage (G2.1 debt): `crash_point!` sites + `FAIL_POINTS` in `rdlt-dest-postgres` (engine-owned protocol boundaries: stage create/copy/publish/state/truncate — NOT the DB's internal tx atomicity), a `sweep_postgres_destination` gated on `DOCKER_HOST` availability, registry test updated; the deep-checks postgres service finally gets used
+
 ## Dependencies & Execution Order
 
 ```
