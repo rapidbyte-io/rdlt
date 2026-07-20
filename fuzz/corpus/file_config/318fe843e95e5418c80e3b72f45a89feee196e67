@@ -1,0 +1,4 @@
+streams:
+  -mat: jsonl
+       fams:
+

@@ -1,0 +1,4 @@
+streams:
+  - name: events
+    format: jsonl
+  ! hpath: s

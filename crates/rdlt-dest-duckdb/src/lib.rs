@@ -77,6 +77,13 @@ impl DuckDb {
 fn fatal(e: impl std::fmt::Display) -> DestError {
     DestError::fatal(e.to_string())
 }
+use rdlt_connector::core::crash_point;
+
+/// Fail-point registry (gate G2.2); coarse by design — DuckDB's own
+/// transaction is one atomic step. Macro defined once in `rdlt_core::failpoint`.
+#[cfg(feature = "failpoints")]
+#[doc(hidden)]
+pub const FAIL_POINTS: &[&str] = &["duck.append", "duck.tx.commit"];
 
 fn quote(ident: &str) -> String {
     format!("\"{}\"", ident.replace('"', "\"\""))
@@ -269,6 +276,10 @@ impl LoadSession for DuckDbSession {
     }
 
     async fn write(&mut self, table: &TableName, batch: RecordBatch) -> Result<(), DestError> {
+        crash_point!(
+            "duck.append",
+            Err(DestError::fatal("injected crash at duck.append"))
+        );
         let stage = stage_name(table);
         self.with_conn(move |conn| {
             let mut appender = conn.appender(&stage).map_err(fatal)?;
@@ -281,6 +292,10 @@ impl LoadSession for DuckDbSession {
     }
 
     async fn commit(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestError> {
+        crash_point!(
+            "duck.tx.commit",
+            Err(DestError::fatal("injected crash at duck.tx.commit"))
+        );
         // Replace bookkeeping is per load.
         if self.last_replace_load.as_ref() != Some(&meta.load_id) {
             self.replaced.clear();

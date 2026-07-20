@@ -1,0 +1,5 @@
+streams:
+  -ms:
+  - name: n
+    form: jso+n*
+    ptah: "/datnl"/

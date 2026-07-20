@@ -17,6 +17,7 @@ pub mod commit;
 pub mod cursor;
 pub mod error;
 pub mod event;
+pub mod failpoint;
 pub mod identity;
 pub mod ids;
 pub mod naming;

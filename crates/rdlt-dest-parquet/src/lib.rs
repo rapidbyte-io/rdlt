@@ -35,6 +35,20 @@ pub const LAYOUT_FORMAT_VERSION: u32 = 1;
 fn fatal(e: impl std::fmt::Display) -> DestError {
     DestError::fatal(e.to_string())
 }
+use rdlt_connector::core::crash_point;
+
+/// Fail-point registry (gate G2.2): every `crash_point!` site in this crate.
+/// The macro is defined once in `rdlt_core::failpoint`.
+#[cfg(feature = "failpoints")]
+#[doc(hidden)]
+pub const FAIL_POINTS: &[&str] = &[
+    "pq.replace.truncate",
+    "pq.staged.sync",
+    "pq.part.rename",
+    "pq.dir.fsync",
+    "pq.state.write",
+    "pq.receipt.write",
+];
 
 /// Short stable scope key for one pipeline's files inside a shared output dir.
 fn pipeline_scope(pipeline: &PipelineId) -> String {
@@ -245,6 +259,10 @@ impl LoadSession for ParquetSession {
             .iter()
             .any(|(load, _)| load == meta.load_id.as_str());
         if !load_committed_before {
+            crash_point!(
+                "pq.replace.truncate",
+                Err(DestError::fatal("injected crash at pq.replace.truncate"))
+            );
             for (table, (_, mode)) in &self.tables {
                 if matches!(mode, WriteMode::Replace) {
                     let dir = self.out.join(table.as_str());
@@ -276,21 +294,41 @@ impl LoadSession for ParquetSession {
             *n += 1;
             let from = self.staging.join(staged_name);
             let to = self.out.join(table.as_str()).join(final_name);
+            crash_point!(
+                "pq.staged.sync",
+                Err(DestError::fatal("injected crash at pq.staged.sync"))
+            );
             let file = std::fs::File::open(&from).map_err(fatal)?;
             file.sync_all().map_err(fatal)?;
+            crash_point!(
+                "pq.part.rename",
+                Err(DestError::fatal("injected crash at pq.part.rename"))
+            );
             std::fs::rename(&from, &to).map_err(fatal)?;
         }
         // Renames are only durable once their directories are — fsync each touched
         // table dir before the receipt claims the commit happened (clause D2).
+        crash_point!(
+            "pq.dir.fsync",
+            Err(DestError::fatal("injected crash at pq.dir.fsync"))
+        );
         for table in per_table.keys() {
             fsync_dir(&self.out.join(table.as_str()))?;
         }
         self.staged.clear();
 
         // State + receipt land last (write-temp + fsync + rename each).
+        crash_point!(
+            "pq.state.write",
+            Err(DestError::fatal("injected crash at pq.state.write"))
+        );
         write_json_atomic(&self.out.join(state_file(&self.scope)), &meta.state)?;
         log.format_version = LAYOUT_FORMAT_VERSION;
         log.receipts.push(key);
+        crash_point!(
+            "pq.receipt.write",
+            Err(DestError::fatal("injected crash at pq.receipt.write"))
+        );
         write_json_atomic(&commits_path, &log)?;
         Ok(receipt)
     }

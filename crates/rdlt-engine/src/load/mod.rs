@@ -17,6 +17,7 @@ use rdlt_core::{
 
 use crate::runtime::channel::ByteSized;
 use crate::wal::Wal;
+use rdlt_core::crash_point;
 
 /// One unit of work flowing shred → load. Per-table order within the channel is the
 /// ordering guarantee (delta before first batch at the new version).
@@ -126,6 +127,12 @@ impl Loader {
                     .ensure_table(&lowered, &mode)
                     .await
                     .map_err(RdltError::destination)?;
+                crash_point!(
+                    "session.after_ensure",
+                    Err(RdltError::config(
+                        "injected crash after ensure_table (failpoint)",
+                    ))
+                );
                 self.state
                     .schema_hashes
                     .insert(schema.table.clone(), schema.content_hash());
@@ -143,6 +150,10 @@ impl Loader {
                     .write(&table, lowered)
                     .await
                     .map_err(RdltError::destination)?;
+                crash_point!(
+                    "session.after_write",
+                    Err(RdltError::config("injected crash after write (failpoint)",))
+                );
                 self.emit(rdlt_core::PipelineEvent::BatchLoaded {
                     table: table.clone(),
                     rows,
@@ -229,6 +240,14 @@ impl Loader {
             .commit(meta)
             .await
             .map_err(RdltError::destination)?;
+        // The canonical redelivery window: destination acknowledged, WAL not yet
+        // marked — a crash here MUST replay idempotently (D3).
+        crash_point!(
+            "session.after_commit",
+            Err(RdltError::config(
+                "injected crash after destination commit (failpoint)",
+            ))
+        );
         // Step 3: receipt in hand — mark and reclaim covered segments.
         if let Some(wal) = &mut self.wal {
             wal.mark_committed(self.commit_seq)?;

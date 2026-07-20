@@ -1,0 +1,3 @@
+streams:
+  - name: !nts
+    fprmat: ja/-*.jsonl"

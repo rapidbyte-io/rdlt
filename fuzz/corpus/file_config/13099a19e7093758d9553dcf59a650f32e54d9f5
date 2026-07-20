@@ -1,0 +1,4 @@
+streams:
+  -ms:
+  - nam  - name: events
+    format: jso/data/*.jsonl"

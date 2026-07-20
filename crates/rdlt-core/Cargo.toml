@@ -9,6 +9,7 @@ repository.workspace = true
 # Charter: pure data + pure functions. If it needs tokio, I/O, or arrow compute,
 # it does not go in this crate.
 [dependencies]
+fail = { workspace = true, optional = true }
 arrow-schema = { workspace = true }
 blake3 = { workspace = true }
 serde = { workspace = true }
@@ -20,3 +21,7 @@ proptest = { workspace = true }
 
 [lints]
 workspace = true
+
+[features]
+# Test infrastructure (crash sweep); never enabled in release builds.
+failpoints = ["dep:fail"]

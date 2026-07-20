@@ -21,6 +21,7 @@ license = "Apache-2.0"
 repository = "https://github.com/rapidbyte/rdlt"
 
 [workspace.dependencies]
+fail = "0.5"
 # Internal crates (path deps; version for future publishing)
 rdlt-core = { path = "crates/rdlt-core", version = "0.2.0" }
 rdlt-connector = { path = "crates/rdlt-connector", version = "0.2.0" }

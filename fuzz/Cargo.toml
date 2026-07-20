@@ -1,0 +1,53 @@
+[package]
+name = "rdlt-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1"
+arrow = "58.3"
+rdlt-core = { path = "../crates/rdlt-core" }
+rdlt-connector = { path = "../crates/rdlt-connector" }
+rdlt-engine = { path = "../crates/rdlt-engine" }
+rdlt-source-file = { path = "../crates/rdlt-source-file" }
+
+# Standalone workspace: libFuzzer needs nightly; the main build never sees this.
+[workspace]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "jsonl_slab"
+path = "fuzz_targets/jsonl_slab.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "cursor_decode"
+path = "fuzz_targets/cursor_decode.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "file_config"
+path = "fuzz_targets/file_config.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "arrow_schema_map"
+path = "fuzz_targets/arrow_schema_map.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "shred_push"
+path = "fuzz_targets/shred_push.rs"
+test = false
+doc = false

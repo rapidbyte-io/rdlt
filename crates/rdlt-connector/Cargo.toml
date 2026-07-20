@@ -19,3 +19,8 @@ tokio = { workspace = true, features = ["sync", "macros", "rt", "time"] }
 
 [lints]
 workspace = true
+
+[features]
+# Forwarded test infrastructure (crash sweep): connectors depend on the SPI
+# only, so the fail-point feature routes through this seam to rdlt-core.
+failpoints = ["rdlt-core/failpoints"]

@@ -1,0 +1,4 @@
+stre:
+  - name: ents
+    fmat: json*
+    ptah: "/*nl"/

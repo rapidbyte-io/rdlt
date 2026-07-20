@@ -23,6 +23,7 @@ use rdlt_core::{
 use serde::{Deserialize, Serialize};
 
 use crate::load::LoadItem;
+use rdlt_core::crash_point;
 
 /// Manifest format version (contracts/persisted-formats.md §3). Bumped on any
 /// record-shape change; a newer-than-supported manifest degrades to re-extraction
@@ -126,6 +127,13 @@ impl Wal {
                 cursor: cursor.clone(),
             }),
             LoadItem::Batch { table, batch } => {
+                crash_point!(
+                    "wal.segment.write",
+                    Err(wal_err(
+                        "write segment",
+                        std::io::Error::other("injected crash"),
+                    ))
+                );
                 let file = format!("{}-{:06}.parquet", self.load_id, self.segment_seq);
                 self.segment_seq += 1;
                 let path = self.dir.join(&file);
@@ -145,6 +153,13 @@ impl Wal {
 
     /// Step (1) of the commit protocol: make the whole span durable.
     pub(crate) fn sync_for_commit(&mut self) -> Result<(), RdltError> {
+        crash_point!(
+            "wal.segment.fsync",
+            Err(wal_err(
+                "fsync segment",
+                std::io::Error::other("injected crash"),
+            ))
+        );
         for path in self.pending_sync.drain(..) {
             File::open(&path)
                 .and_then(|f| f.sync_all())
@@ -153,6 +168,13 @@ impl Wal {
         self.manifest
             .flush()
             .map_err(|e| wal_err("flush manifest", e))?;
+        crash_point!(
+            "wal.manifest.fsync",
+            Err(wal_err(
+                "fsync manifest",
+                std::io::Error::other("injected crash"),
+            ))
+        );
         self.manifest
             .sync_all()
             .map_err(|e| wal_err("fsync manifest", e))?;
@@ -170,6 +192,13 @@ impl Wal {
     }
 
     fn append(&mut self, record: &WalRecord) -> Result<(), RdltError> {
+        crash_point!(
+            "wal.manifest.append",
+            Err(wal_err(
+                "append manifest",
+                std::io::Error::other("injected crash"),
+            ))
+        );
         let mut line = serde_json::to_vec(record).map_err(|e| wal_err("encode record", e))?;
         line.push(b'\n');
         self.manifest

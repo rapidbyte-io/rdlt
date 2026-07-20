@@ -1,0 +1,35 @@
+# cargo-mutants configuration (feature 003, research R21).
+# Scope: the engine and the two semver-sacred seam crates — where an uncaught
+# mutant means a correctness hole, not a cosmetic one.
+
+examine_globs = [
+    "crates/rdlt-engine/src/**/*.rs",
+    "crates/rdlt-core/src/**/*.rs",
+    "crates/rdlt-connector/src/**/*.rs",
+]
+
+exclude_globs = [
+    "**/benches/**",
+    "**/examples/**",
+    # Fuzz/bench entry shims — not product logic; mutating them is noise.
+    "crates/rdlt-engine/src/fuzzing.rs",
+]
+
+# Cosmetic surfaces: mutating a Display/Debug string or an error message body
+# produces survivor noise, not correctness signal.
+exclude_re = [
+    "impl (std::fmt::)?Display",
+    "fn fmt\\(",
+]
+
+# Whole-suite runs can legitimately take a while (crash matrix, proptests).
+timeout_multiplier = 3.0
+
+# The suite the mutants must survive against.
+test_tool = "nextest"
+
+# A mutant anywhere must face the WHOLE workspace suite — the seam crates have
+# few local unit tests; their behavior is pinned by engine/testkit integration
+# tests (the first baseline run proved package-only testing yields vacuous
+# survivors).
+test_workspace = true

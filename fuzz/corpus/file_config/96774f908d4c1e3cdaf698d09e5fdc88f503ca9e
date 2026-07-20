@@ -1,0 +1,4 @@
+streams:
+  - name: entevs
+    format: jsonl
+    format: jsta/*

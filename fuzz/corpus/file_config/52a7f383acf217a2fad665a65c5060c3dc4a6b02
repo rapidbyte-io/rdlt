@@ -1,0 +1,3 @@
+streams:
+  - name: events
+    format: {  -}/0ams:

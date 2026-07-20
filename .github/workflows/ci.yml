@@ -18,10 +18,8 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - name: Format
-        run: cargo fmt --all --check
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Lint (make lint)
+        run: make lint
 
   test:
     runs-on: ubuntu-latest
@@ -32,10 +30,25 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
-      - name: Tests
-        run: cargo nextest run --workspace
-      - name: Doc-tests
-        run: cargo test --doc --workspace
+      - name: Tests (make test)
+        run: make test
+      - name: Crash sweep (make test TARGET=sweep)
+        run: make test TARGET=sweep
+
+  perf-gate:
+    # Instruction-count regression gate (feature 003, G1): deterministic on
+    # shared runners; >3% vs benches/perf-baselines.json blocks like semver.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install valgrind + iai runner
+        run: |
+          sudo apt-get update && sudo apt-get install -y valgrind
+          cargo install iai-callgrind-runner --version 0.16.1 --locked
+      - name: Perf gate (make bench TARGET=iai)
+        run: make bench TARGET=iai
 
   semver:
     # Seam crates are SEMVER-SACRED (plan.md): every PR is checked against the

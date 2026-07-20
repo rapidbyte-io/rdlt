@@ -1,0 +1,69 @@
+# Scheduled deep checks (feature 003, gate G3): too slow for per-PR, blocking
+# for RELEASES. Everything routes through the Makefile (gate G4) — the same
+# verbs a contributor types.
+name: Deep checks
+
+on:
+  schedule:
+    - cron: "17 2 * * *" # nightly: fuzz + extended properties + full sweep
+    - cron: "47 3 * * 0" # weekly (Sun): mutation pass
+  # Manual dispatch runs BOTH jobs (schedule-gated `if`s pass on dispatch).
+  # No inputs by design: untrusted strings never reach run: commands.
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  nightly:
+    # Fuzz (1h/target toward the SC-003 24-CPU-hour budget), extended property
+    # runs, and the FULL crash sweep including the Postgres destination.
+    if: github.event_name != 'schedule' || github.event.schedule == '17 2 * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 420
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: rdlt
+        ports: ["5432:5432"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest,cargo-fuzz
+      - name: Extended property runs
+        run: make test TARGET=prop
+      - name: Full crash sweep
+        run: make test TARGET=sweep
+      - name: Fuzz (1h per target)
+        run: FUZZ_SECONDS=3600 make test TARGET=fuzz
+      - name: Upload fuzz artifacts on findings
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/
+
+  weekly-mutants:
+    if: github.event_name != 'schedule' || github.event.schedule == '47 3 * * 0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest,cargo-mutants
+      - name: Mutation pass
+        run: make test TARGET=mutants
+      - name: Upload mutants report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-report
+          path: mutants.out/
