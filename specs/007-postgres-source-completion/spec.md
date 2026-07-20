@@ -183,8 +183,9 @@ duplicates); the docs contain the foreign-table statement.
    partitions are, the parent read covers all rows, and totals match the
    source exactly.
 3. **Given** a child table explicitly listed in the tables config, **Then**
-   it is read as its own stream (explicit listing overrides exclusion, same
-   rule as partitions).
+   it is read as its own stream — an override 007 INTRODUCES for both
+   inheritance children and declarative partitions (research R7: no such
+   rule existed before; the 005 partition conformance pin is updated).
 4. **Given** a schema containing foreign tables, **Then** discovery skips
    them and the user documentation says so.
 
@@ -230,10 +231,13 @@ duplicates); the docs contain the foreign-table statement.
   time-typed cursors, magnitude for numeric cursors); each resumed run
   lowers the effective lower bound by the lag while the SAVED watermark
   continues to advance normally (never lowered by lag).
-- **FR-004**: Rows re-read inside the lag window MUST NOT duplicate —
-  overlap is absorbed by the existing closed-boundary dedup mechanism, and
-  lag with an open boundary is a typed config contradiction (open boundaries
-  exist to skip dedup; lag requires it).
+- **FR-004** *(amended per research R4)*: Lag requires a closed lower
+  boundary AND a stream with a primary key (reflected or declared) — both
+  validated typed at open (open boundary + lag is a contradiction; no key
+  means no dedup path exists). Destination totals MUST equal the source
+  exactly under keyed Merge write mode (the conformance mode for lag);
+  under Append, rows inside the window re-deliver each run — a documented
+  at-least-once property of the window, never silent.
 - **FR-005**: Lag on cursor types where the subtraction is undefined (e.g.
   text) MUST fail typed at open, naming the column and type; boundary
   clamping (before initial_value or type minimum) MUST be safe.
@@ -288,9 +292,11 @@ duplicates); the docs contain the foreign-table statement.
   connectors complete a full sync; the without-certificate and wrong-CA
   attempts each fail with their distinguished typed error — demonstrated by
   an automated matrix covering source and destination.
-- **SC-002**: In an automated late-arrival scenario (row committed behind
-  the watermark, inside the lag), the row loads on the next run, totals
-  match the source exactly, and three consecutive re-runs move zero rows.
+- **SC-002** *(amended per research R4)*: In an automated late-arrival
+  scenario (row committed behind the watermark, inside the lag), the row
+  loads on the next run and destination totals remain exactly equal to the
+  source across three consecutive re-runs (window rows re-deliver and merge
+  idempotently — no duplicates, newest values win).
 - **SC-003**: A production-shaped libpq URL carrying `sslrootcert=` (and one
   carrying `sslcert=`/`sslkey=`) connects with an empty TLS block; every
   rejected parameter error names the parameter. Zero bare parse errors
