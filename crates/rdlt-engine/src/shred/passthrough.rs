@@ -2,9 +2,13 @@
 //!
 //! Already-structured batches are NOT re-shredded: the batch's arrow schema maps
 //! onto the logical schema, the SAME registry/policy seam governs evolution, and the
-//! only new data is one appended constant `_rdlt_load_id` column. Structured streams
-//! carry no per-row identity (no `_rdlt_id`) — which is why Merge is rejected for
-//! them (clause B4).
+//! only new data is one appended constant `_rdlt_load_id` column. Columns whose
+//! arrow type equals the table's current logical type pass through zero-copy
+//! (`Arc` clone); when cross-batch widening or an arrow representation difference
+//! (Large* variants, timestamp unit/zone) changed a column's type, its values are
+//! cast LOSSLESSLY to the current type — never semantically coerced (clause E7).
+//! Structured streams carry no per-row identity (no `_rdlt_id`) — which is why
+//! Merge is rejected for them (clause B4).
 
 use std::sync::Arc;
 

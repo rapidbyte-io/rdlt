@@ -316,16 +316,34 @@ async fn run_once(
                                  `structured` (contract clause S7)",
                             ));
                         }
+                        // Same blocking-pool ping-pong as the shred arm: the common
+                        // path is cheap (schema map + one constant column), but a
+                        // widened column casts real data — that work must not sit on
+                        // the async executor.
                         let mut reg = registry.take().expect("registry present");
-                        let items = crate::shred::passthrough::passthrough_items(
-                            &batch,
-                            &arrow_table,
-                            &mut reg,
-                            &policy,
-                            &load_id,
-                            &mode,
-                            caps,
-                        );
+                        let batch_load_id = load_id.clone();
+                        let batch_mode = mode.clone();
+                        let batch_policy = policy.clone();
+                        let batch_table = arrow_table.clone();
+                        let joined = tokio::task::spawn_blocking(move || {
+                            let span = tracing::info_span!("rdlt.passthrough");
+                            let _guard = span.enter();
+                            let items = crate::shred::passthrough::passthrough_items(
+                                &batch,
+                                &batch_table,
+                                &mut reg,
+                                &batch_policy,
+                                &batch_load_id,
+                                &batch_mode,
+                                caps,
+                            );
+                            (reg, items)
+                        })
+                        .await
+                        .map_err(|e| {
+                            RdltError::config(format!("passthrough task panicked: {e}"))
+                        })?;
+                        let (reg, items) = joined;
                         registry = Some(reg);
                         for item in items? {
                             if tx.send(item).await.is_err() {

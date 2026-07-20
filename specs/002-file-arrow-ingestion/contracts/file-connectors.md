@@ -21,7 +21,7 @@ Behavioral contract (beyond the S-clauses):
 | Rule | Behavior |
 |---|---|
 | Selection | Glob resolved once per run; lexicographic path order; empty glob ⇒ empty stream (success), explicitly named missing file ⇒ fatal error naming it. |
-| Resume | Cursor = per-file progress (data-model §1). Completed ranges are never re-read; appended tails resume at the recorded offset; shrunk/rewritten files are a fatal, file-naming error. |
+| Resume | Cursor = per-file progress (data-model §1). Completed ranges are never re-read; appended tails resume at the recorded offset (only when the consumed range ended at a record boundary — growth after an unterminated final line is a fatal error, never a mid-record read); shrunk files, and same-size files whose mtime moved (rewritten in place), are a fatal, file-naming error. |
 | Checkpoints | After every pushed slab / row-group batch and at each file boundary. |
 | Malformed input | Invalid JSON line / non-UTF-8 / corrupt parquet ⇒ fatal error naming the file (and byte offset for JSONL). Never skip silently. |
 | Format semantics | `jsonl` streams are record streams (full lineage, Merge allowed). `parquet` streams are structured (S7/E7/B4 apply). |

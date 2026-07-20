@@ -141,6 +141,26 @@ Phase 6: T019 after US1; T020 after US2; T021–T022 last.
 - Postgres conformance in the full sweep requires the podman user socket
   (`systemctl --user start podman.socket` + `DOCKER_HOST=unix:///run/user/1000/podman/podman.sock`).
 - Final sweep: fmt clean, clippy 0 warnings, 109/109 nextest, doc-tests green.
+- **Pre-merge multi-agent code review** (5 reviewers + per-finding confidence scoring)
+  confirmed one critical bug and seven high-likelihood ones; all fixed on-branch with
+  regression tests (119/119 after):
+  1. Parquet dest Replace double-truncate on crash recovery (score 100, data loss):
+     the truncate-once guard was in-memory session state; now derived durably from
+     the receipt log ("has any earlier commit of this load landed?").
+  2. Parquet dest final part names used a GLOBAL cross-table index (duplicate rows
+     after crash+replay under concurrent streams): now per-table, matching R18.
+  3. Parquet dest `open()` wiped ALL of `.rdlt-staging`; staging/state/commit-log
+     are now pipeline-scoped (ident_hash), mirroring the Postgres stage fix.
+  4. State/commit JSON writes now fsync (file + dir) before/after rename — metadata
+     is no less durable than the parquet parts it describes (D2).
+  5. JSONL: consuming an unterminated final line is now remembered (`eol` flag);
+     growth afterwards fails loudly instead of resuming mid-record.
+  6. Same-size in-place rewrites now trip a fatal error via recorded mtime.
+  7. Glob expansion errors are fatal (no silent partial file lists); a literal path
+     that EXISTS wins over glob interpretation (`events[prod].jsonl`).
+  8. Arrow passthrough runs on the blocking pool (same ping-pong as shred); E7/R16/
+     plan wording now states the lossless-cast-on-widening reality (zero-copy is the
+     same-type path, not an unconditional claim).
 
 ## Notes
 

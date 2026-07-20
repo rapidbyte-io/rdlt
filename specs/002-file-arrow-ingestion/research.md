@@ -48,12 +48,15 @@ decisions.
   a `TableSchema` (inverse of the existing physical mapping; unmappable arrow types →
   typed error naming the column, never coercion), runs the SAME registry diff +
   `SchemaPolicy` enforcement as shredded streams, appends a constant
-  `_rdlt_load_id` column, and emits the standard Delta/Batch load items. No data
-  copy: the appended column is the only new allocation.
+  `_rdlt_load_id` column, and emits the standard Delta/Batch load items. No
+  semantic transformation: same-typed columns pass through as Arc'd arrays and the
+  appended column is the only new allocation; a column whose registry type widened
+  across batches (or arrived in a different arrow representation, e.g. LargeUtf8,
+  a nanosecond timestamp) is cast LOSSLESSLY to the current type.
 - **Rationale**: Policies and evolution must behave identically regardless of how a
-  stream arrives — one registry seam, two producers. Batch data stays zero-copy
-  (Arc'd arrays pass through; WAL, lowering, and destinations already operate on
-  batches).
+  stream arrives — one registry seam, two producers. Batch data stays zero-copy on
+  the same-type common path (Arc'd arrays pass through; WAL, lowering, and
+  destinations already operate on batches).
 - **Alternatives**: Bypass the registry for structured streams (policy holes);
   convert batches to JSON and re-shred (absurd cost, defeats the point).
 

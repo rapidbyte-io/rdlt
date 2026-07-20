@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use rdlt_connector::{ConnectorSpec, ReadRequest, Source, SourceError, StreamSpec};
 
 pub use config::{FileConfig, FileStream, Format};
-use cursor::FileCursor;
+use cursor::{FileCursor, FileMeta};
 
 #[derive(Debug)]
 pub struct FileSource {
@@ -36,33 +36,51 @@ impl FileSource {
     }
 }
 
-/// Resolve a path-or-glob into a lexicographically sorted `(path, size)` snapshot.
+/// Resolve a path-or-glob into a lexicographically sorted file snapshot.
 /// Empty glob ⇒ empty list (success); explicitly named missing file ⇒ error.
-fn resolve_files(pattern: &str) -> Result<Vec<(String, u64)>, SourceError> {
-    let is_glob = pattern.contains(['*', '?', '[']);
-    let mut matched: Vec<String> = if is_glob {
-        glob::glob(pattern)
-            .map_err(|e| SourceError::fatal(format!("invalid glob `{pattern}`: {e}")))?
-            .filter_map(Result::ok)
-            .filter(|p| p.is_file())
-            .map(|p| p.to_string_lossy().into_owned())
-            .collect()
-    } else {
-        if !std::path::Path::new(pattern).is_file() {
-            return Err(SourceError::fatal(format!(
-                "file `{pattern}` does not exist"
-            )));
-        }
+/// A path naming an EXISTING file is always taken literally, even when it contains
+/// glob metacharacters (`events[prod].jsonl` is a file, not a character class).
+/// Glob-expansion errors (e.g. an unreadable directory) are fatal — a partial match
+/// list must never pass as a complete one.
+fn resolve_files(pattern: &str) -> Result<Vec<FileMeta>, SourceError> {
+    let mut matched: Vec<String> = if std::path::Path::new(pattern).is_file() {
         vec![pattern.to_owned()]
+    } else if pattern.contains(['*', '?', '[']) {
+        let mut paths = Vec::new();
+        for entry in glob::glob(pattern)
+            .map_err(|e| SourceError::fatal(format!("invalid glob `{pattern}`: {e}")))?
+        {
+            let path = entry.map_err(|e| {
+                SourceError::fatal(format!(
+                    "expanding glob `{pattern}`: {e}; refusing to load a partial file list"
+                ))
+            })?;
+            if path.is_file() {
+                paths.push(path.to_string_lossy().into_owned());
+            }
+        }
+        paths
+    } else {
+        return Err(SourceError::fatal(format!(
+            "file `{pattern}` does not exist"
+        )));
     };
     matched.sort();
     matched
         .into_iter()
         .map(|path| {
-            let size = std::fs::metadata(&path)
-                .map_err(|e| SourceError::fatal(format!("stat `{path}`: {e}")))?
-                .len();
-            Ok((path, size))
+            let meta = std::fs::metadata(&path)
+                .map_err(|e| SourceError::fatal(format!("stat `{path}`: {e}")))?;
+            let mtime_ms = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as u64);
+            Ok(FileMeta {
+                path,
+                size: meta.len(),
+                mtime_ms,
+            })
         })
         .collect()
 }

@@ -1,11 +1,17 @@
 //! # rdlt-dest-parquet — minimal parquet-file destination
 //!
 //! Write-only, Append/Replace (no merge — `merge: false`). One directory per table;
-//! staged batches live under `.rdlt-staging/<session>/` and publication is a set of
-//! atomic renames plus a rewrite of the JSON state/receipt files (contract:
+//! staged batches live under `.rdlt-staging/<pipeline>/<load>/` and publication is a
+//! set of atomic renames plus a rewrite of the JSON state/receipt files (contract:
 //! specs/002-file-arrow-ingestion/contracts/file-connectors.md; honesty note on
 //! multi-file set-atomicity in research R18 — recovery converges because staged
-//! names are deterministic per (load_id, commit_seq, table, n)).
+//! names are deterministic per (load_id, commit_seq, table, n), with `n` counted
+//! PER TABLE so cross-table arrival order cannot change a file's final name).
+//!
+//! Pipeline scoping: staging, state, and the commit log are all keyed by a hash of
+//! the pipeline id, so pipelines sharing one output directory cannot clobber each
+//! other's staged data, cursors, or receipts (same rule the Postgres destination
+//! applies to its stage tables).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -16,17 +22,31 @@ use parquet::arrow::ArrowWriter;
 use rdlt_connector::{
     CommitMeta, CommitReceipt, ConnectorSpec, DestCapabilities, DestError, Destination,
     LoadSession, OpenCtx, RecordBatch, WriteMode,
-    core::{LoadId, PipelineId, StateDoc, TableName, TableSchema, naming::IdentRules},
+    core::{
+        LoadId, PipelineId, StateDoc, TableName, TableSchema,
+        naming::{IdentRules, ident_hash},
+    },
 };
 use serde::{Deserialize, Serialize};
 
-const STATE_FILE: &str = "_rdlt_state.json";
-const COMMITS_FILE: &str = "_rdlt_commits.json";
 const STAGING_DIR: &str = ".rdlt-staging";
 pub const LAYOUT_FORMAT_VERSION: u32 = 1;
 
 fn fatal(e: impl std::fmt::Display) -> DestError {
     DestError::fatal(e.to_string())
+}
+
+/// Short stable scope key for one pipeline's files inside a shared output dir.
+fn pipeline_scope(pipeline: &PipelineId) -> String {
+    ident_hash(pipeline.as_str(), 12)
+}
+
+fn state_file(scope: &str) -> String {
+    format!("_rdlt_state.{scope}.json")
+}
+
+fn commits_file(scope: &str) -> String {
+    format!("_rdlt_commits.{scope}.json")
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -37,12 +57,28 @@ struct CommitLog {
     receipts: Vec<(String, u64)>,
 }
 
-/// Atomic JSON rewrite: write-temp + rename.
+/// Fsync a directory so a preceding rename inside it survives power loss.
+fn fsync_dir(path: &Path) -> Result<(), DestError> {
+    std::fs::File::open(path)
+        .and_then(|f| f.sync_all())
+        .map_err(fatal)
+}
+
+/// Atomic durable JSON rewrite: write-temp + fsync + rename + parent-dir fsync.
+/// The data-file path fsyncs before rename too — metadata must not be LESS durable
+/// than the parquet parts it describes (clause D2).
 fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), DestError> {
+    use std::io::Write;
     let tmp = path.with_extension("json.tmp");
     let bytes = serde_json::to_vec_pretty(value).map_err(fatal)?;
-    std::fs::write(&tmp, bytes).map_err(fatal)?;
+    let mut file = std::fs::File::create(&tmp).map_err(fatal)?;
+    file.write_all(&bytes).map_err(fatal)?;
+    file.sync_all().map_err(fatal)?;
+    drop(file);
     std::fs::rename(&tmp, path).map_err(fatal)?;
+    if let Some(parent) = path.parent() {
+        fsync_dir(parent)?;
+    }
     Ok(())
 }
 
@@ -107,20 +143,24 @@ impl Destination for ParquetDir {
     }
 
     async fn open(&self, ctx: OpenCtx) -> Result<Box<dyn LoadSession>, DestError> {
-        // Clause D4: staged data from any dead session becomes invisible/reclaimable.
-        let staging_root = self.out.join(STAGING_DIR);
-        if staging_root.exists() {
-            std::fs::remove_dir_all(&staging_root).map_err(fatal)?;
+        let scope = pipeline_scope(&ctx.pipeline);
+        // Clause D4: staged data from THIS PIPELINE's dead sessions becomes
+        // invisible/reclaimable. Scoped — another pipeline sharing this output
+        // directory keeps its live staged data (the same rule the Postgres
+        // destination applies to its stage tables).
+        let scope_root = self.out.join(STAGING_DIR).join(&scope);
+        if scope_root.exists() {
+            std::fs::remove_dir_all(&scope_root).map_err(fatal)?;
         }
-        let staging = staging_root.join(ctx.load_id.as_str());
+        let staging = scope_root.join(ctx.load_id.as_str());
         std::fs::create_dir_all(&staging).map_err(fatal)?;
         Ok(Box::new(ParquetSession {
             out: self.out.clone(),
             staging,
+            scope,
             load_id: ctx.load_id,
             tables: BTreeMap::new(),
             staged: Vec::new(),
-            replaced: Vec::new(),
         }))
     }
 }
@@ -128,12 +168,11 @@ impl Destination for ParquetDir {
 struct ParquetSession {
     out: PathBuf,
     staging: PathBuf,
+    scope: String,
     load_id: LoadId,
     tables: BTreeMap<TableName, (TableSchema, WriteMode)>,
     /// Staged batches in arrival order: (table, staged file name).
     staged: Vec<(TableName, String)>,
-    /// Tables already truncated by Replace in this load.
-    replaced: Vec<TableName>,
 }
 
 #[async_trait]
@@ -160,9 +199,9 @@ impl LoadSession for ParquetSession {
                 "write before ensure_table for `{table}` (clause E1)"
             )));
         }
-        // Staged name is deterministic per session write index; the FINAL name is
-        // assigned at commit (needs commit_seq). Recovery replay repeats the same
-        // write sequence, so both are reproducible (research R18).
+        // Staged name is deterministic per (table, per-table write index); the FINAL
+        // name is assigned at commit (needs commit_seq). Per-table writes arrive in
+        // order (clause E1), so recovery replay reproduces both (research R18).
         let n = self.staged.iter().filter(|(t, _)| t == table).count();
         let name = format!("{}-{}-{n}.parquet", self.load_id, table);
         let path = self.staging.join(&name);
@@ -181,7 +220,7 @@ impl LoadSession for ParquetSession {
             load_id: meta.load_id.clone(),
             commit_seq: meta.commit_seq,
         };
-        let commits_path = self.out.join(COMMITS_FILE);
+        let commits_path = self.out.join(commits_file(&self.scope));
         let mut log: CommitLog = read_json(&commits_path)?.unwrap_or_default();
         let key = (meta.load_id.as_str().to_owned(), meta.commit_seq);
 
@@ -194,41 +233,62 @@ impl LoadSession for ParquetSession {
             return Ok(receipt);
         }
 
-        // Replace: clear each replace-mode table's data files once per load.
-        for (table, (_, mode)) in &self.tables {
-            if matches!(mode, WriteMode::Replace) && !self.replaced.contains(table) {
-                let dir = self.out.join(table.as_str());
-                if let Ok(entries) = std::fs::read_dir(&dir) {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if path.extension().is_some_and(|e| e == "parquet") {
-                            std::fs::remove_file(path).map_err(fatal)?;
+        // Replace: clear each replace-mode table's data files once per load. The
+        // guard is DURABLE — "has any earlier commit of THIS load landed?" comes
+        // from the receipt log, not session memory, so a crash-recovery session
+        // (fresh state, same load_id) never re-truncates files that a prior commit
+        // of this load already published. If no receipt landed, re-truncating is
+        // convergent: WAL replay re-delivers everything since the last committed
+        // checkpoint.
+        let load_committed_before = log
+            .receipts
+            .iter()
+            .any(|(load, _)| load == meta.load_id.as_str());
+        if !load_committed_before {
+            for (table, (_, mode)) in &self.tables {
+                if matches!(mode, WriteMode::Replace) {
+                    let dir = self.out.join(table.as_str());
+                    if let Ok(entries) = std::fs::read_dir(&dir) {
+                        for entry in entries.flatten() {
+                            let path = entry.path();
+                            if path.extension().is_some_and(|e| e == "parquet") {
+                                std::fs::remove_file(path).map_err(fatal)?;
+                            }
                         }
                     }
                 }
-                self.replaced.push(table.clone());
             }
         }
 
-        // Publish: rename staged files to their deterministic final names.
-        // (Multi-file rename is not atomic as a SET — see research R18: a mid-commit
-        // crash re-runs this with identical names, overwriting idempotently.)
-        for (n, (table, staged_name)) in self.staged.iter().enumerate() {
+        // Publish: rename staged files to their deterministic final names —
+        // (load_id, commit_seq, n) with n counted PER TABLE, inside the table's own
+        // directory. Cross-table arrival order (concurrent streams) cannot change a
+        // name, so a mid-commit crash re-runs this with identical names,
+        // overwriting idempotently (research R18).
+        let mut per_table: BTreeMap<&TableName, u64> = BTreeMap::new();
+        for (table, staged_name) in &self.staged {
+            let n = per_table.entry(table).or_insert(0);
             let final_name = format!(
                 "part-{}-{}-{n}.parquet",
                 meta.load_id.as_str(),
                 meta.commit_seq
             );
+            *n += 1;
             let from = self.staging.join(staged_name);
             let to = self.out.join(table.as_str()).join(final_name);
             let file = std::fs::File::open(&from).map_err(fatal)?;
             file.sync_all().map_err(fatal)?;
             std::fs::rename(&from, &to).map_err(fatal)?;
         }
+        // Renames are only durable once their directories are — fsync each touched
+        // table dir before the receipt claims the commit happened (clause D2).
+        for table in per_table.keys() {
+            fsync_dir(&self.out.join(table.as_str()))?;
+        }
         self.staged.clear();
 
-        // State + receipt land last (write-temp + rename each).
-        write_json_atomic(&self.out.join(STATE_FILE), &meta.state)?;
+        // State + receipt land last (write-temp + fsync + rename each).
+        write_json_atomic(&self.out.join(state_file(&self.scope)), &meta.state)?;
         log.format_version = LAYOUT_FORMAT_VERSION;
         log.receipts.push(key);
         write_json_atomic(&commits_path, &log)?;
@@ -236,7 +296,8 @@ impl LoadSession for ParquetSession {
     }
 
     async fn read_state(&mut self, pipeline: &PipelineId) -> Result<Option<StateDoc>, DestError> {
-        let state: Option<StateDoc> = read_json(&self.out.join(STATE_FILE))?;
+        let path = self.out.join(state_file(&pipeline_scope(pipeline)));
+        let state: Option<StateDoc> = read_json(&path)?;
         Ok(state.filter(|s| &s.pipeline == pipeline))
     }
 }

@@ -185,3 +185,101 @@ async fn unchanged_second_run_reads_nothing() {
         "SC-002: zero rows on an unchanged file set"
     );
 }
+
+#[tokio::test]
+async fn growth_after_unterminated_final_line_fails_loudly() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("a.jsonl");
+    // Final line has NO trailing newline — legal, and it must load.
+    std::fs::write(&path, "{\"n\":1}\n{\"n\":2}").expect("write");
+    let pattern = format!("{}/*.jsonl", dir.path().display());
+
+    let source = source_for(&pattern);
+    let (rows, cursor) = read_all(&source, None).await.expect("first read");
+    assert_eq!(rows.len(), 2, "unterminated final line still loads");
+
+    // The writer finishes that line and appends more: the recorded offset points
+    // mid-record, so resume must fail naming the file — never read mid-record.
+    use std::io::Write;
+    let mut fh = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .expect("open");
+    write!(fh, "0\n{{\"n\":3}}\n").expect("append");
+    drop(fh);
+
+    let source = source_for(&pattern);
+    let err = read_all(&source, cursor).await.expect_err("must fail");
+    assert!(err.contains("a.jsonl"), "error names the file, got: {err}");
+    assert!(
+        err.contains("unterminated"),
+        "error explains why, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn same_size_rewrite_fails_loudly() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_file(dir.path(), "a.jsonl", &[r#"{"n":1}"#]);
+    let pattern = format!("{}/*.jsonl", dir.path().display());
+
+    let source = source_for(&pattern);
+    let (_, cursor) = read_all(&source, None).await.expect("first read");
+
+    // Rewrite with DIFFERENT content but the SAME byte length; force a distinct
+    // mtime explicitly so the test never races the filesystem's clock granularity.
+    std::fs::write(&path, "{\"n\":9}\n").expect("rewrite");
+    let now = std::time::SystemTime::now() + std::time::Duration::from_secs(7);
+    let fh = std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .expect("open");
+    fh.set_times(std::fs::FileTimes::new().set_modified(now))
+        .expect("set mtime");
+    drop(fh);
+
+    let source = source_for(&pattern);
+    let err = read_all(&source, cursor).await.expect_err("must fail");
+    assert!(err.contains("a.jsonl"), "error names the file, got: {err}");
+    assert!(
+        err.contains("rewritten in place"),
+        "error explains why, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn literal_path_with_glob_metacharacters_is_taken_literally() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // A real file whose name LOOKS like a character class.
+    write_file(dir.path(), "events[prod].jsonl", &[r#"{"n":1}"#]);
+    let source = source_for(&format!("{}/events[prod].jsonl", dir.path().display()));
+    let (rows, _) = read_all(&source, None).await.expect("literal path wins");
+    assert_eq!(
+        rows.len(),
+        1,
+        "existing file is read, not glob-expanded to nothing"
+    );
+}
+
+#[tokio::test]
+async fn unreadable_directory_in_glob_is_an_error_not_a_partial_list() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let sub = dir.path().join("locked");
+    std::fs::create_dir(&sub).expect("mkdir");
+    write_file(&sub, "a.jsonl", &[r#"{"n":1}"#]);
+    std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+
+    let source = source_for(&format!("{}/*/*.jsonl", dir.path().display()));
+    let result = read_all(&source, None).await;
+    // Restore permissions FIRST so tempdir cleanup works.
+    std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o755)).expect("chmod back");
+    match result {
+        // Root (CI containers) can traverse 0o000 dirs — then the file simply loads.
+        Ok((rows, _)) => assert_eq!(rows.len(), 1, "if traversal succeeded, nothing is dropped"),
+        Err(err) => assert!(
+            err.contains("glob"),
+            "a partial expansion must surface as an error, got: {err}"
+        ),
+    }
+}

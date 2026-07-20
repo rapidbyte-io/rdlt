@@ -31,4 +31,4 @@ pub struct StreamSpec {
 
 | # | Clause |
 |---|---|
-| B4 | `Merge` write mode on a stream declared `structured: true` fails at `build()` with an error naming the stream and stating that merge requires per-row identity (`_rdlt_id`), which structured streams do not carry in v1. Append and Replace are permitted. |
+| B4 | `Merge` write mode on a stream declared `structured: true` fails at run-start planning (stream specs come from the async `streams()` call), strictly before the destination is opened with an error naming the stream and stating that merge requires per-row identity (`_rdlt_id`), which structured streams do not carry in v1. Append and Replace are permitted. |

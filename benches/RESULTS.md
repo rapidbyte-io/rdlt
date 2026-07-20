@@ -46,9 +46,9 @@ Caveats, stated so the numbers stay honest:
 
 | Cell | pinned dlt 1.11.0 | rdlt | multiple | target (design §8) | status |
 |---|---|---|---|---|---|
-| parquet → parquet, wall | 0.185 s | 0.077 s | **2.4× faster** | ≥ 2× | ✅ met |
+| parquet → parquet, wall | 0.185 s | 0.078 s | **2.4× faster** | ≥ 2× | ✅ met |
 | parquet → parquet, peak RSS | 218 MB | 47 MB | **4.6× less** | — | — |
-| parquet → DuckDB (bonus), wall | 0.352 s | 0.307 s | 1.15× faster | — (context row) | — |
+| parquet → DuckDB (bonus), wall | 0.352 s | 0.317 s | 1.11× faster | — (context row) | — |
 | parquet → DuckDB (bonus), peak RSS | 343 MB | 203 MB | 1.7× less | — | — |
 
 The bonus row is near-parity by design: both sides reduce to "hand arrow batches to

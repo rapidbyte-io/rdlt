@@ -5,19 +5,22 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use rdlt_connector::{RecordsOut, SourceError};
 
-use crate::cursor::{FileCursor, FileTask};
+use crate::cursor::{FileCursor, FileMeta, FileProgress, FileTask};
 
 /// Like `resolve_files`, but sizes are ROW GROUP counts (the parquet seek unit).
-pub(crate) fn resolve_with_row_groups(pattern: &str) -> Result<Vec<(String, u64)>, SourceError> {
+pub(crate) fn resolve_with_row_groups(pattern: &str) -> Result<Vec<FileMeta>, SourceError> {
     let files = crate::resolve_files(pattern)?;
     files
         .into_iter()
-        .map(|(path, _bytes)| {
-            let file = std::fs::File::open(&path)
-                .map_err(|e| SourceError::fatal(format!("opening `{path}`: {e}")))?;
+        .map(|meta| {
+            let file = std::fs::File::open(&meta.path)
+                .map_err(|e| SourceError::fatal(format!("opening `{}`: {e}", meta.path)))?;
             let reader = SerializedFileReader::new(file)
-                .map_err(|e| SourceError::fatal(format!("reading parquet `{path}`: {e}")))?;
-            Ok((path, reader.metadata().num_row_groups() as u64))
+                .map_err(|e| SourceError::fatal(format!("reading parquet `{}`: {e}", meta.path)))?;
+            Ok(FileMeta {
+                size: reader.metadata().num_row_groups() as u64,
+                ..meta
+            })
         })
         .collect()
 }
@@ -54,7 +57,15 @@ pub(crate) async fn read_task(
                 return Ok(false); // cancellation (clause S4)
             }
         }
-        cursor.record(&task.path, group + 1, total_groups);
+        cursor.record(
+            &task.path,
+            FileProgress {
+                done: group + 1,
+                size: total_groups,
+                eol: true, // row groups are whole records by construction
+                mtime_ms: task.mtime_ms,
+            },
+        );
         if out.checkpoint(cursor.encode()).await.is_err() {
             return Ok(false);
         }

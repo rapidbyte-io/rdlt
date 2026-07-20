@@ -11,16 +11,23 @@ Opaque to the engine (stored/returned like any cursor); defined by `rdlt-source-
 {
   "format_version": 1,
   "files": {
-    "<absolute path>": { "done": 12345, "size": 12345 }
+    "<absolute path>": { "done": 12345, "size": 12345, "eol": true, "mtime_ms": 1789000000000 }
   }
 }
 ```
 
 - `done`: bytes consumed (JSONL) or row groups consumed (Parquet).
 - `size`: file length (bytes) / total row groups when last read — the change detector.
+- `eol` (default true): consumed range ended at a record boundary. False only when a
+  JSONL file's final line had no trailing newline.
+- `mtime_ms` (optional): file mtime observed at read time — the same-size-rewrite
+  tripwire.
 - **Invariants**: complete ⇔ `done == size`; on resume, `current_size < size` for any
-  tracked file is a fatal, file-naming error (FR-003); `current_size > size` with
-  `done == size` reopens the file at `done` (appended tail).
+  tracked file is a fatal, file-naming error (FR-003); `current_size == size` with a
+  moved mtime is a fatal error (rewritten in place); `current_size > size` with
+  `done == size` reopens the file at `done` (appended tail) — but only if `eol` is
+  true; growth after an unterminated final line is a fatal error (the offset points
+  mid-record).
 - Ordering: matched files processed in lexicographic path order; the match list is
   snapshotted once per run.
 

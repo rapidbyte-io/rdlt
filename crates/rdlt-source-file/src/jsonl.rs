@@ -6,7 +6,7 @@ use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use bytes::Bytes;
 use rdlt_connector::{RecordsOut, SourceError};
 
-use crate::cursor::{FileCursor, FileTask};
+use crate::cursor::{FileCursor, FileProgress, FileTask};
 
 const SLAB_BYTES: usize = 8 << 20;
 
@@ -34,6 +34,11 @@ pub(crate) async fn read_task(
     let mut offset = task.start;
     let mut slab: Vec<u8> = Vec::with_capacity(SLAB_BYTES);
     let mut line = String::new();
+    // Whether the consumed range ends at a newline. A final line without one still
+    // loads (files legitimately end that way), but the cursor remembers it: if the
+    // file GROWS later, the recorded offset points mid-record and resume must fail
+    // loudly instead of reading from the middle of a record.
+    let mut ended_on_newline = true;
     loop {
         // Fill a slab with complete lines.
         slab.clear();
@@ -57,6 +62,7 @@ pub(crate) async fn read_task(
             }
             slab.extend_from_slice(line.as_bytes());
             offset += n as u64;
+            ended_on_newline = line.ends_with('\n');
         }
         if slab.is_empty() {
             break;
@@ -66,13 +72,29 @@ pub(crate) async fn read_task(
         }
         // Progress is durable-intent only once checkpointed (clause S2: the
         // checkpoint covers exactly the rows pushed before it).
-        cursor.record(&task.path, offset, total_size.max(offset));
+        cursor.record(
+            &task.path,
+            FileProgress {
+                done: offset,
+                size: total_size.max(offset),
+                eol: ended_on_newline,
+                mtime_ms: task.mtime_ms,
+            },
+        );
         if out.checkpoint(cursor.encode()).await.is_err() {
             return Ok(false);
         }
     }
     // File fully consumed: mark complete at its observed end position.
-    cursor.record(&task.path, offset, offset.max(task.start));
+    cursor.record(
+        &task.path,
+        FileProgress {
+            done: offset,
+            size: offset.max(task.start),
+            eol: ended_on_newline,
+            mtime_ms: task.mtime_ms,
+        },
+    );
     if out.checkpoint(cursor.encode()).await.is_err() {
         return Ok(false);
     }

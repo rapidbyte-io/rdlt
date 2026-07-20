@@ -40,8 +40,9 @@ connectors must pass the public conformance suites (spec FR-004/FR-011).
 parquet→parquet ≥2× engine-bound (SC-004); parquet→DuckDB bonus row.
 
 **Constraints**: unchanged (byte-bounded memory, exactly-once visibility, no silent
-failures). New: passthrough must not copy batch data (schema check + one appended
-constant column only).
+failures). New: passthrough must not copy batch data on the same-type path (schema
+check + one appended constant column only; lossless casts are permitted only when
+widening or an arrow representation difference changed a column's type).
 
 **Scale/Scope**: +2 connector crates, ~4 engine files touched, 1 contract amendment,
 3 benchmark rows.
