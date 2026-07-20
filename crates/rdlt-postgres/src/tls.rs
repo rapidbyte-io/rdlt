@@ -56,6 +56,13 @@ pub struct TlsPolicy {
     pub mode: TlsMode,
     #[serde(default)]
     pub root_cert: Option<RootCert>,
+    /// Client certificate for mutual TLS (feature 007, contract
+    /// tls-client-auth.md). Path or inline PEM; requires `client_key`.
+    #[serde(default)]
+    pub client_cert: Option<RootCert>,
+    /// Private key matching `client_cert` (PKCS#8/RSA/SEC1, unencrypted).
+    #[serde(default)]
+    pub client_key: Option<RootCert>,
 }
 
 /// Config-shaped TLS failures (open phase).
@@ -74,6 +81,8 @@ pub enum TlsConfigError {
          (no tls.root_cert and the platform trust store is empty/unavailable)"
     )]
     NoRoots(TlsMode),
+    #[error("tls client credential `{input}`: {detail}")]
+    ClientCredential { input: String, detail: String },
 }
 
 /// Connect-phase TLS failures, distinguished per the contract.
@@ -87,6 +96,9 @@ pub enum TlsFailure {
     Hostname,
     /// The server refused TLS while the policy demands it.
     ServerRefusedTls,
+    /// The server rejected OUR client credential (mTLS, feature 007):
+    /// TLS-level certificate alerts or auth-phase SQLSTATE 28000.
+    ClientCert,
     /// Any other connection error (not TLS-classified).
     Other,
 }
@@ -118,7 +130,7 @@ pub fn resolve_policy(
                 SslMode::Require => TlsMode::Require,
                 _ => TlsMode::Prefer,
             },
-            root_cert: None,
+            ..TlsPolicy::default()
         });
     };
     let contradiction = match conn_mode {
@@ -139,7 +151,93 @@ pub fn resolve_policy(
             block: block.mode,
         });
     }
+    validate_credentials(block)?;
     Ok(block.clone())
+}
+
+/// Client-credential shape rules (contract tls-client-auth.md C2), enforced
+/// BEFORE any connection: both-or-neither, and never with plaintext.
+pub(crate) fn validate_credentials(policy: &TlsPolicy) -> Result<(), TlsConfigError> {
+    match (&policy.client_cert, &policy.client_key) {
+        (Some(_), None) => Err(TlsConfigError::ClientCredential {
+            input: "client_cert".into(),
+            detail: "client_key is missing — a certificate cannot authenticate without \
+                     its private key"
+                .into(),
+        }),
+        (None, Some(_)) => Err(TlsConfigError::ClientCredential {
+            input: "client_key".into(),
+            detail: "client_cert is missing — a private key alone is not a credential".into(),
+        }),
+        (Some(_), Some(_)) if policy.mode == TlsMode::Disable => {
+            Err(TlsConfigError::ClientCredential {
+                input: "client_cert".into(),
+                detail: "tls.mode is `disable` — a client certificate cannot be presented \
+                         over plaintext; enable TLS or drop the credential"
+                    .into(),
+            })
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Resolve a `RootCert`-shaped input (path or inline PEM) to labeled bytes.
+fn pem_bytes(source: &RootCert, kind: &str) -> Result<(String, Vec<u8>), TlsConfigError> {
+    let RootCert(source) = source;
+    if source.trim_start().starts_with("-----BEGIN") {
+        Ok((format!("<inline {kind} pem>"), source.clone().into_bytes()))
+    } else {
+        let bytes = std::fs::read(source).map_err(|e| TlsConfigError::ClientCredential {
+            input: source.clone(),
+            detail: format!("unreadable: {e}"),
+        })?;
+        Ok((source.clone(), bytes))
+    }
+}
+
+/// Load the client credential when configured: certificate chain + private
+/// key, with typed errors naming the offending input (contract C2/C4).
+fn client_credential(
+    policy: &TlsPolicy,
+) -> Result<
+    Option<(
+        Vec<rustls::pki_types::CertificateDer<'static>>,
+        rustls::pki_types::PrivateKeyDer<'static>,
+    )>,
+    TlsConfigError,
+> {
+    validate_credentials(policy)?;
+    let (Some(cert), Some(key)) = (&policy.client_cert, &policy.client_key) else {
+        return Ok(None);
+    };
+    let (cert_label, cert_bytes) = pem_bytes(cert, "client cert")?;
+    let mut cursor = std::io::Cursor::new(cert_bytes);
+    let chain: Vec<_> = rustls_pemfile::certs(&mut cursor)
+        .collect::<Result<_, _>>()
+        .map_err(|e| TlsConfigError::ClientCredential {
+            input: cert_label.clone(),
+            detail: format!("PEM parse error: {e}"),
+        })?;
+    if chain.is_empty() {
+        return Err(TlsConfigError::ClientCredential {
+            input: cert_label,
+            detail: "no certificates found in PEM input".into(),
+        });
+    }
+    let (key_label, key_bytes) = pem_bytes(key, "client key")?;
+    let mut cursor = std::io::Cursor::new(key_bytes);
+    let key = rustls_pemfile::private_key(&mut cursor)
+        .map_err(|e| TlsConfigError::ClientCredential {
+            input: key_label.clone(),
+            detail: format!("PEM parse error: {e}"),
+        })?
+        .ok_or_else(|| TlsConfigError::ClientCredential {
+            input: key_label,
+            detail: "no private key found in PEM input (encrypted keys are \
+                     unsupported — provide an unencrypted PKCS#8/RSA/SEC1 key)"
+                .into(),
+        })?;
+    Ok(Some((chain, key)))
 }
 
 /// Load the trust store for a verifying mode: the custom root when given,
@@ -204,29 +302,47 @@ fn builder()
 }
 
 fn client_config(policy: &TlsPolicy) -> Result<Option<rustls::ClientConfig>, TlsConfigError> {
+    // A mismatched cert/key pair fails HERE (rustls checks consistency at
+    // config construction) — a config error before any connection (C4).
+    let credential = client_credential(policy)?;
+    let auth = move |builder: rustls::ConfigBuilder<
+        rustls::ClientConfig,
+        rustls::client::WantsClientCert,
+    >|
+          -> Result<rustls::ClientConfig, TlsConfigError> {
+        match credential {
+            Some((chain, key)) => builder.with_client_auth_cert(chain, key).map_err(|e| {
+                TlsConfigError::ClientCredential {
+                    input: "client_cert/client_key".into(),
+                    detail: format!("rejected by TLS stack (mismatched pair?): {e}"),
+                }
+            }),
+            None => Ok(builder.with_no_client_auth()),
+        }
+    };
     let config = match policy.mode {
         TlsMode::Disable => return Ok(None),
-        TlsMode::Prefer | TlsMode::Require => builder()?
-            .dangerous()
-            .with_custom_certificate_verifier(Arc::new(AcceptAnyCert::new()))
-            .with_no_client_auth(),
-        TlsMode::VerifyCa => {
-            let store = root_store(policy)?;
+        TlsMode::Prefer | TlsMode::Require => auth(
             builder()?
                 .dangerous()
-                .with_custom_certificate_verifier(Arc::new(ChainOnly::new(store).map_err(|e| {
-                    TlsConfigError::RootCert {
-                        path: "<trust store>".into(),
-                        detail: format!("building verifier: {e}"),
-                    }
-                })?))
-                .with_no_client_auth()
+                .with_custom_certificate_verifier(Arc::new(AcceptAnyCert::new())),
+        )?,
+        TlsMode::VerifyCa => {
+            let store = root_store(policy)?;
+            auth(
+                builder()?
+                    .dangerous()
+                    .with_custom_certificate_verifier(Arc::new(ChainOnly::new(store).map_err(
+                        |e| TlsConfigError::RootCert {
+                            path: "<trust store>".into(),
+                            detail: format!("building verifier: {e}"),
+                        },
+                    )?)),
+            )?
         }
         TlsMode::VerifyFull => {
             let store = root_store(policy)?;
-            builder()?
-                .with_root_certificates(store)
-                .with_no_client_auth()
+            auth(builder()?.with_root_certificates(store))?
         }
     };
     Ok(Some(config))
@@ -249,17 +365,8 @@ pub fn classify_connect_error(err: &tokio_postgres::Error) -> ConnectError {
                 .and_then(|inner| inner.downcast_ref::<rustls::Error>())
         });
         if let Some(rustls_err) = rustls_ref {
-            use rustls::CertificateError as CE;
-            let failure = match rustls_err {
-                rustls::Error::InvalidCertificate(ce) => match ce {
-                    CE::UnknownIssuer => TlsFailure::TrustAnchor,
-                    CE::NotValidForName | CE::NotValidForNameContext { .. } => TlsFailure::Hostname,
-                    _ => TlsFailure::Chain,
-                },
-                _ => TlsFailure::Chain,
-            };
             return ConnectError {
-                failure,
+                failure: classify_rustls(rustls_err),
                 detail: format!("{detail}: {rustls_err}"),
                 transient: false,
             };
@@ -273,6 +380,21 @@ pub fn classify_connect_error(err: &tokio_postgres::Error) -> ConnectError {
             transient: false,
         };
     }
+    // Auth-phase client-certificate rejection (contract tls-client-auth C3):
+    // pg_hba `cert`/`clientcert=` failures surface as SQLSTATE 28000 with a
+    // certificate-naming message, AFTER a successful handshake. The Display
+    // form is just "db error" (tokio-postgres drops the cause — 006 finding),
+    // so read the REAL server message through as_db_error().
+    if let Some(db) = err.as_db_error()
+        && db.code().code() == "28000"
+        && db.message().to_lowercase().contains("certificate")
+    {
+        return ConnectError {
+            failure: TlsFailure::ClientCert,
+            detail: format!("{detail}: {}", db.message()),
+            transient: false,
+        };
+    }
     // Non-TLS failure: the 005 SQLSTATE heuristic (no code = io-shaped).
     let transient = match err.code() {
         None => true,
@@ -282,6 +404,31 @@ pub fn classify_connect_error(err: &tokio_postgres::Error) -> ConnectError {
         failure: TlsFailure::Other,
         detail,
         transient,
+    }
+}
+
+/// The rustls-error half of classification, factored for direct unit tests.
+fn classify_rustls(err: &rustls::Error) -> TlsFailure {
+    use rustls::AlertDescription as AD;
+    use rustls::CertificateError as CE;
+    match err {
+        rustls::Error::InvalidCertificate(ce) => match ce {
+            CE::UnknownIssuer => TlsFailure::TrustAnchor,
+            CE::NotValidForName | CE::NotValidForNameContext { .. } => TlsFailure::Hostname,
+            _ => TlsFailure::Chain,
+        },
+        // The server aborting the handshake over OUR certificate (mTLS):
+        // certificate-shaped alerts, plus the handshake_failure/access_denied
+        // forms TLS 1.2 servers send when a required client cert is absent.
+        rustls::Error::AlertReceived(
+            AD::CertificateRequired
+            | AD::BadCertificate
+            | AD::UnknownCA
+            | AD::CertificateUnknown
+            | AD::AccessDenied
+            | AD::HandshakeFailure,
+        ) => TlsFailure::ClientCert,
+        _ => TlsFailure::Chain,
     }
 }
 
@@ -358,6 +505,7 @@ mod tests {
         let block = TlsPolicy {
             mode: TlsMode::VerifyFull,
             root_cert: None,
+            ..TlsPolicy::default()
         };
         assert_eq!(
             resolve_policy(&conn("host=h sslmode=require"), Some(&block))
@@ -370,6 +518,7 @@ mod tests {
         let disable = TlsPolicy {
             mode: TlsMode::Disable,
             root_cert: None,
+            ..TlsPolicy::default()
         };
         assert!(resolve_policy(&conn("host=h sslmode=require"), Some(&disable)).is_err());
         // Prefer composes with anything.
@@ -381,6 +530,7 @@ mod tests {
         let missing = TlsPolicy {
             mode: TlsMode::VerifyFull,
             root_cert: Some(RootCert("/nonexistent/ca.pem".into())),
+            ..TlsPolicy::default()
         };
         let err = root_store(&missing).unwrap_err();
         assert!(err.to_string().contains("/nonexistent/ca.pem"), "{err}");
@@ -388,6 +538,7 @@ mod tests {
         let garbage = TlsPolicy {
             mode: TlsMode::VerifyFull,
             root_cert: Some(RootCert("-----BEGIN CERTIFICATE-----\ngarbage".into())),
+            ..TlsPolicy::default()
         };
         let err = root_store(&garbage).unwrap_err();
         let msg = err.to_string();
@@ -404,6 +555,7 @@ mod tests {
         let inline = TlsPolicy {
             mode: TlsMode::VerifyFull,
             root_cert: Some(RootCert(pem.clone())),
+            ..TlsPolicy::default()
         };
         assert_eq!(root_store(&inline).expect("inline").len(), 1);
 
@@ -413,7 +565,134 @@ mod tests {
         let from_path = TlsPolicy {
             mode: TlsMode::VerifyCa,
             root_cert: Some(RootCert(path.display().to_string())),
+            ..TlsPolicy::default()
         };
         assert_eq!(root_store(&from_path).expect("path").len(), 1);
+    }
+
+    // ---- feature 007: client credentials (contract tls-client-auth.md) ----
+
+    fn client_pair() -> (String, String) {
+        let key = rcgen::KeyPair::generate().expect("key");
+        let cert = rcgen::CertificateParams::new(Vec::<String>::new())
+            .expect("params")
+            .self_signed(&key)
+            .expect("cert");
+        (cert.pem(), key.serialize_pem())
+    }
+
+    fn policy(mode: TlsMode, cert: Option<&str>, key: Option<&str>) -> TlsPolicy {
+        TlsPolicy {
+            mode,
+            root_cert: None,
+            client_cert: cert.map(|c| RootCert(c.into())),
+            client_key: key.map(|k| RootCert(k.into())),
+        }
+    }
+
+    #[test]
+    fn credential_shape_rules_are_typed_and_early() {
+        let (cert, key) = client_pair();
+        // Cert without key / key without cert: name the missing counterpart.
+        let err = validate_credentials(&policy(TlsMode::Require, Some(&cert), None)).unwrap_err();
+        assert!(err.to_string().contains("client_key is missing"), "{err}");
+        let err = validate_credentials(&policy(TlsMode::Require, None, Some(&key))).unwrap_err();
+        assert!(err.to_string().contains("client_cert is missing"), "{err}");
+        // Credential over plaintext: contradiction.
+        let err =
+            validate_credentials(&policy(TlsMode::Disable, Some(&cert), Some(&key))).unwrap_err();
+        assert!(err.to_string().contains("disable"), "{err}");
+        // Complete pair with TLS active: fine, and the handshake config builds.
+        let ok = policy(TlsMode::Require, Some(&cert), Some(&key));
+        validate_credentials(&ok).expect("valid shape");
+        assert!(client_config(&ok).expect("config builds").is_some());
+    }
+
+    #[test]
+    fn credential_material_errors_name_the_input() {
+        let (cert, _) = client_pair();
+        // Unreadable key path.
+        let err = client_credential(&policy(
+            TlsMode::Require,
+            Some(&cert),
+            Some("/nonexistent/client.key"),
+        ))
+        .unwrap_err();
+        assert!(err.to_string().contains("/nonexistent/client.key"), "{err}");
+        // A PEM with no key in it (e.g. a certificate pasted as the key) —
+        // the message names the encrypted-key limitation too.
+        let err =
+            client_credential(&policy(TlsMode::Require, Some(&cert), Some(&cert))).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("no private key") && msg.contains("encrypted"),
+            "{msg}"
+        );
+        // Garbage cert PEM.
+        let (_, key) = client_pair();
+        let err = client_credential(&policy(
+            TlsMode::Require,
+            Some("-----BEGIN CERTIFICATE-----\ngarbage"),
+            Some(&key),
+        ))
+        .unwrap_err();
+        assert!(err.to_string().contains("inline client cert"), "{err}");
+    }
+
+    #[test]
+    fn credentials_compose_with_every_verifying_mode() {
+        // C5: adding a credential must not change what any mode means —
+        // the config still BUILDS under all four TLS-active modes.
+        let (cert, key) = client_pair();
+        let ca = rcgen::CertificateParams::new(Vec::<String>::new())
+            .expect("params")
+            .self_signed(&rcgen::KeyPair::generate().expect("key"))
+            .expect("ca");
+        for mode in [
+            TlsMode::Prefer,
+            TlsMode::Require,
+            TlsMode::VerifyCa,
+            TlsMode::VerifyFull,
+        ] {
+            let mut p = policy(mode, Some(&cert), Some(&key));
+            p.root_cert = Some(RootCert(ca.pem()));
+            assert!(
+                client_config(&p).expect("config").is_some(),
+                "mode {mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rustls_classification_distinguishes_client_cert_rejection() {
+        use rustls::AlertDescription as AD;
+        use rustls::CertificateError as CE;
+        // Server-verification failures keep their 006 classes…
+        assert_eq!(
+            classify_rustls(&rustls::Error::InvalidCertificate(CE::UnknownIssuer)),
+            TlsFailure::TrustAnchor
+        );
+        assert_eq!(
+            classify_rustls(&rustls::Error::InvalidCertificate(CE::NotValidForName)),
+            TlsFailure::Hostname
+        );
+        // …while the server aborting over OUR certificate is ClientCert.
+        for alert in [
+            AD::CertificateRequired,
+            AD::BadCertificate,
+            AD::UnknownCA,
+            AD::HandshakeFailure,
+        ] {
+            assert_eq!(
+                classify_rustls(&rustls::Error::AlertReceived(alert)),
+                TlsFailure::ClientCert,
+                "{alert:?}"
+            );
+        }
+        // Unrelated alerts stay in the generic Chain bucket.
+        assert_eq!(
+            classify_rustls(&rustls::Error::AlertReceived(AD::RecordOverflow)),
+            TlsFailure::Chain
+        );
     }
 }

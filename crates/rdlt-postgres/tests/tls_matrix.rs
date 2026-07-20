@@ -112,6 +112,7 @@ async fn destination_uses_the_same_policy_path() {
         .tls(TlsPolicy {
             mode: TlsMode::VerifyFull,
             root_cert: Some(RootCert(fixture.pki.ca_pem.clone())),
+            ..TlsPolicy::default()
         });
     assert!(
         ok.open(OpenCtx::new(pipeline.clone(), load.clone()))
@@ -126,6 +127,7 @@ async fn destination_uses_the_same_policy_path() {
         .tls(TlsPolicy {
             mode: TlsMode::VerifyFull,
             root_cert: Some(RootCert(fixture.pki.wrong_ca_pem.clone())),
+            ..TlsPolicy::default()
         });
     let err = match bad.open(OpenCtx::new(pipeline, load)).await {
         Ok(_) => panic!("wrong CA must fail the destination identically"),
@@ -145,4 +147,101 @@ fn config_validation_matrix() {
         PostgresConfig::from_yaml("conn: \"host=h sslmode=require\"\ntls:\n  mode: verify_ca\n")
             .is_ok()
     );
+}
+
+// ---- Feature 007 US1: mutual TLS (contract tls-client-auth.md) ----
+
+fn pem_block(name: &str, pem: &str) -> String {
+    let indented = pem.trim().replace('\n', "\n    ");
+    format!("  {name}: |\n    {indented}\n")
+}
+
+fn mtls_yaml(mode: &str, root: &str, client: Option<(&str, &str)>) -> String {
+    let mut yaml = format!("tls:\n  mode: {mode}\n");
+    yaml.push_str(&pem_block("root_cert", root));
+    if let Some((cert, key)) = client {
+        yaml.push_str(&pem_block("client_cert", cert));
+        yaml.push_str(&pem_block("client_key", key));
+    }
+    yaml
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn client_cert_matrix_against_cert_auth_server() {
+    use rdlt_connector::core::{LoadId, PipelineId};
+    use rdlt_connector::{Destination as _, OpenCtx};
+
+    let fixture = TlsPgFixture::start_cert_auth().await;
+    let pki = &fixture.pki;
+    let localhost = fixture.conn_localhost();
+
+    // Valid credential: the SOURCE syncs…
+    let good = mtls_yaml(
+        "verify_full",
+        &pki.ca_pem,
+        Some((&pki.client_cert_pem, &pki.client_key_pem)),
+    );
+    probe_source(&localhost, &good)
+        .await
+        .expect("valid client cert + key must connect (source)");
+
+    // …and the DESTINATION opens through the same path.
+    let dest = rdlt_postgres::dest::Postgres::connect(fixture.conn_localhost())
+        .dataset("mtls_ok")
+        .tls(TlsPolicy {
+            mode: TlsMode::VerifyFull,
+            root_cert: Some(RootCert(pki.ca_pem.clone())),
+            client_cert: Some(RootCert(pki.client_cert_pem.clone())),
+            client_key: Some(RootCert(pki.client_key_pem.clone())),
+        });
+    dest.open(OpenCtx::new(
+        PipelineId::new("mtls"),
+        LoadId::new("mtls-load"),
+    ))
+    .await
+    .expect("destination over mTLS must open");
+
+    // No credential: the server demands one — distinguished ClientCert.
+    let err = probe_source(&localhost, &mtls_yaml("verify_full", &pki.ca_pem, None))
+        .await
+        .expect_err("cert-auth server must reject a credential-less client");
+    assert!(err.contains("ClientCert"), "distinguished: {err}");
+
+    // Wrong-CA credential: same distinguished class, whichever layer the
+    // server rejects at (TLS alert or auth-phase 28000).
+    let wrong = mtls_yaml(
+        "verify_full",
+        &pki.ca_pem,
+        Some((&pki.wrong_client_cert_pem, &pki.wrong_client_key_pem)),
+    );
+    let err = probe_source(&localhost, &wrong)
+        .await
+        .expect_err("wrong-CA client cert must be rejected");
+    assert!(err.contains("ClientCert"), "distinguished: {err}");
+
+    // Mismatched key: a CONFIG error before any connection.
+    let mismatched = mtls_yaml(
+        "verify_full",
+        &pki.ca_pem,
+        Some((&pki.client_cert_pem, &pki.wrong_client_key_pem)),
+    );
+    let err = probe_source(&localhost, &mismatched)
+        .await
+        .expect_err("mismatched cert/key must fail as config");
+    assert!(err.contains("client credential"), "config-shaped: {err}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn credential_offered_but_unused_still_syncs() {
+    // C5: against a server that does NOT verify clients, carrying a
+    // credential changes nothing.
+    let fixture = TlsPgFixture::start().await;
+    let yaml = mtls_yaml(
+        "verify_full",
+        &fixture.pki.ca_pem,
+        Some((&fixture.pki.client_cert_pem, &fixture.pki.client_key_pem)),
+    );
+    probe_source(&fixture.conn_localhost(), &yaml)
+        .await
+        .expect("credential offered but unused must not break the sync");
 }

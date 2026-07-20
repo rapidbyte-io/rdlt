@@ -67,6 +67,14 @@ pub struct TlsPki {
     pub wrong_ca_pem: String,
     server_cert_pem: String,
     server_key_pem: String,
+    /// Client credential signed by the REAL CA, CN=postgres (pg `cert` auth
+    /// maps the CN to the login role) — feature 007 mTLS cells.
+    pub client_cert_pem: String,
+    pub client_key_pem: String,
+    /// Client credential signed by the WRONG CA (same CN) — the
+    /// server-rejects-our-cert case.
+    pub wrong_client_cert_pem: String,
+    pub wrong_client_key_pem: String,
 }
 
 #[allow(dead_code)]
@@ -97,11 +105,32 @@ impl TlsPki {
         wrong_params.distinguished_name = wrong_dn;
         let wrong_ca = wrong_params.self_signed(&wrong_ca_key).expect("wrong ca");
 
+        // Client credentials: CN must be the pg login role (`cert` auth uses
+        // the CN as the user); one pair per CA so wrong-CA rejection is a
+        // pure trust decision, not a name mismatch.
+        let client_cert = |ca_cert: &rcgen::Certificate, ca_key: &KeyPair| {
+            let key = KeyPair::generate().expect("client key");
+            let mut params = CertificateParams::new(Vec::<String>::new()).expect("client params");
+            let mut dn = DistinguishedName::new();
+            dn.push(DnType::CommonName, "postgres");
+            params.distinguished_name = dn;
+            let cert = params
+                .signed_by(&key, ca_cert, ca_key)
+                .expect("client cert");
+            (cert.pem(), key.serialize_pem())
+        };
+        let (client_cert_pem, client_key_pem) = client_cert(&ca, &ca_key);
+        let (wrong_client_cert_pem, wrong_client_key_pem) = client_cert(&wrong_ca, &wrong_ca_key);
+
         Self {
             ca_pem: ca.pem(),
             wrong_ca_pem: wrong_ca.pem(),
             server_cert_pem: server.pem(),
             server_key_pem: server_key.serialize_pem(),
+            client_cert_pem,
+            client_key_pem,
+            wrong_client_cert_pem,
+            wrong_client_key_pem,
         }
     }
 }
@@ -120,22 +149,46 @@ pub struct TlsPgFixture {
 #[allow(dead_code)]
 impl TlsPgFixture {
     pub async fn start() -> Self {
+        Self::start_with(false).await
+    }
+
+    /// Feature 007: a server that REQUIRES client certificates — the test
+    /// CA becomes `ssl_ca_file` and pg_hba uses `cert` auth (the handshake
+    /// identity IS the login; CN maps to the role).
+    pub async fn start_cert_auth() -> Self {
+        Self::start_with(true).await
+    }
+
+    async fn start_with(cert_auth: bool) -> Self {
         let pki = TlsPki::generate();
-        let init = r#"#!/bin/bash
+        let hba = if cert_auth {
+            "hostssl all all 0.0.0.0/0   cert\nhostssl all all ::0/0       cert"
+        } else {
+            "hostssl all all 0.0.0.0/0   trust\nhostssl all all ::0/0       trust"
+        };
+        let ca_conf = if cert_auth {
+            "ssl_ca_file = 'ca.crt'"
+        } else {
+            ""
+        };
+        let init = format!(
+            r#"#!/bin/bash
 set -e
 install -m 600 -o postgres -g postgres /tls-in/server.key "$PGDATA/server.key"
 install -m 644 -o postgres -g postgres /tls-in/server.crt "$PGDATA/server.crt"
+install -m 644 -o postgres -g postgres /tls-in/ca.crt "$PGDATA/ca.crt"
 cat >> "$PGDATA/postgresql.conf" <<CONF
 ssl = on
 ssl_cert_file = 'server.crt'
 ssl_key_file = 'server.key'
+{ca_conf}
 CONF
 cat > "$PGDATA/pg_hba.conf" <<HBA
 local   all all             trust
-hostssl all all 0.0.0.0/0   trust
-hostssl all all ::0/0       trust
+{hba}
 HBA
-"#;
+"#
+        );
         let container = PostgresImage::default()
             .with_tag("16-alpine")
             .with_copy_to(
@@ -146,6 +199,7 @@ HBA
                 "/tls-in/server.key",
                 pki.server_key_pem.clone().into_bytes(),
             )
+            .with_copy_to("/tls-in/ca.crt", pki.ca_pem.clone().into_bytes())
             .with_copy_to(
                 "/docker-entrypoint-initdb.d/zz-tls.sh",
                 init.as_bytes().to_vec(),

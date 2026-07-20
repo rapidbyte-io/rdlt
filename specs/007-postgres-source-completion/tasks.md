@@ -34,7 +34,7 @@ syncs (source and destination), no-cert and wrong-CA-cert fail with
 the distinguished `ClientCert` error, mismatched key is a config error
 before any connection.
 
-- [ ] T001 [US1] Config + validation in
+- [X] T001 [US1] Config + validation in
       `crates/rdlt-postgres/src/tls.rs`: `TlsPolicy` gains
       `client_cert`/`client_key` (both `Option<RootCert>`, path or
       inline PEM); `resolve_policy` enforces both-or-neither (error
@@ -42,7 +42,7 @@ before any connection.
       contradiction, unreadable/unparseable/encrypted-key errors
       naming the input (contract C2); unit tests for the full
       rejection matrix with rcgen-made and corrupted PEMs.
-- [ ] T002 [US1] Handshake + classification in
+- [X] T002 [US1] Handshake + classification in
       `crates/rdlt-postgres/src/tls.rs`: the three `client_config()`
       arms swap `with_no_client_auth()` for `with_client_auth_cert`
       when credentials resolve (key parsed via existing
@@ -51,13 +51,13 @@ before any connection.
       rustls certificate alerts (via the 006 `get_ref()` downcast
       chain) AND auth-phase SQLSTATE 28000 (contract C3, research R2);
       unit tests for the mapping arms.
-- [ ] T003 [US1] Test rig in
+- [X] T003 [US1] Test rig in
       `crates/rdlt-postgres/tests/common/mod.rs`: `TlsPki` issues
       client certs from the test CA and the wrong CA (distinct-CN
       discipline); `TlsPgFixture` initdb script installs the CA as
       `ssl_ca_file` and writes a `hostssl … cert` pg_hba variant
       (research R3) selectable by the test.
-- [ ] T004 [US1] Matrix conformance in
+- [X] T004 [US1] Matrix conformance in
       `crates/rdlt-postgres/tests/tls_matrix.rs`: the five contract
       cells — valid cert+key syncs via SOURCE and DESTINATION;
       no-credential → `ClientCert` naming the missing credential;
