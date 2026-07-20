@@ -108,6 +108,133 @@ pub struct CursorConfig {
     pub end_value: Option<String>,
     #[serde(default)]
     pub nulls: NullPolicy,
+    /// Attribution window (feature 007, contract cursor-lag.md): each
+    /// RESUMED run widens the read window this far behind the watermark so
+    /// late-committed rows are captured. Requires a closed boundary and a
+    /// primary key; the saved watermark is never lowered.
+    #[serde(default)]
+    pub lag: Option<Lag>,
+}
+
+/// Lag vocabulary: `"90s"`/`"5m"`/`"2h"`/`"1d"` (time cursors; whole days
+/// for `date`) or a plain positive magnitude (`"1000"`, `"0.5"`) for
+/// integer/decimal cursors. Config form is the literal string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Lag {
+    /// Whole seconds (from a duration form).
+    Duration { seconds: u64 },
+    /// Validated positive numeric literal for numeric cursors.
+    Magnitude(String),
+}
+
+impl std::str::FromStr for Lag {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let t = s.trim();
+        if let Some(unit) = t.chars().last().filter(|c| "smhd".contains(*c)) {
+            let count: u64 = t[..t.len() - 1]
+                .parse()
+                .map_err(|e| format!("lag `{t}`: {e}"))?;
+            if count == 0 {
+                return Err(format!("lag `{t}` must be positive"));
+            }
+            let factor = match unit {
+                's' => 1,
+                'm' => 60,
+                'h' => 3600,
+                _ => 86400,
+            };
+            return Ok(Self::Duration {
+                seconds: count * factor,
+            });
+        }
+        let numeric = !t.is_empty()
+            && t.chars().all(|c| c.is_ascii_digit() || c == '.')
+            && t.parse::<f64>().is_ok_and(|v| v > 0.0);
+        if numeric {
+            Ok(Self::Magnitude(t.to_string()))
+        } else {
+            Err(format!(
+                "lag `{t}` is neither a duration (\"90s\", \"5m\", \"2h\", \"1d\") \
+                 nor a positive magnitude"
+            ))
+        }
+    }
+}
+
+impl std::fmt::Display for Lag {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Duration { seconds } => write!(f, "{seconds}s"),
+            Self::Magnitude(m) => f.write_str(m),
+        }
+    }
+}
+
+impl serde::Serialize for Lag {
+    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        ser.collect_str(self)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Lag {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(de)?;
+        text.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+impl schemars::JsonSchema for Lag {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Lag".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        // Mirrors `FromStr` exactly — the string vocabulary IS the config form.
+        schemars::json_schema!({
+            "type": "string",
+            "description": "Attribution window: a duration (\"90s\", \"5m\", \
+                            \"2h\", \"1d\") for time cursors, or a positive \
+                            magnitude for numeric cursors",
+            "pattern": "^([0-9]+[smhd]|[0-9]+(\\.[0-9]+)?)$"
+        })
+    }
+}
+
+impl Lag {
+    /// The SQL delta subtracted from (direction max) or added to (min) the
+    /// watermark, per cursor family. Err = the pair is undefined — surfaced
+    /// as a typed open-time error naming the column.
+    pub(crate) fn sql_delta(&self, decode: crate::source::types::Decode) -> Result<String, String> {
+        use crate::source::types::Decode;
+        match (self, decode) {
+            (Self::Duration { seconds }, Decode::Timestamp { .. }) => {
+                Ok(format!("INTERVAL '{seconds} seconds'"))
+            }
+            (Self::Duration { seconds }, Decode::Date) if seconds % 86_400 == 0 => {
+                Ok(format!("{}::int4", seconds / 86_400))
+            }
+            (Self::Duration { .. }, Decode::Date) => {
+                Err("date cursors take whole-day lags (e.g. \"2d\")".into())
+            }
+            (Self::Magnitude(m), Decode::Int2 | Decode::Int4 | Decode::Int8) => {
+                if m.contains('.') {
+                    Err("integer cursors take integer lags".into())
+                } else {
+                    Ok(format!("{m}::int8"))
+                }
+            }
+            (Self::Magnitude(m), Decode::Decimal { .. }) => Ok(format!("'{m}'::numeric")),
+            (Self::Duration { .. }, Decode::Int2 | Decode::Int4 | Decode::Int8) => {
+                Err("integer cursors take a plain magnitude lag, not a duration".into())
+            }
+            (Self::Magnitude(_), Decode::Timestamp { .. } | Decode::Date) => {
+                Err("time cursors take a duration lag (\"90s\", \"5m\", \"1d\")".into())
+            }
+            _ => Err("lag is not defined for this cursor type".into()),
+        }
+    }
 }
 
 /// Lower-bound semantics on resume (dlt parity).
@@ -195,6 +322,21 @@ impl PostgresConfig {
         // parse errors (contract connstring-portability.md).
         if let Err(e) = crate::tls::parse_conn(&self.conn, self.tls.as_ref()) {
             return invalid(e.to_string());
+        }
+        for cursor in self
+            .tables
+            .iter()
+            .flatten()
+            .filter_map(|t| t.cursor.as_ref())
+            .chain(self.queries.iter().filter_map(|q| q.cursor.as_ref()))
+        {
+            if cursor.lag.is_some() && cursor.boundary == Boundary::Open {
+                return invalid(format!(
+                    "cursor `{}`: lag requires a CLOSED boundary (open boundaries \
+                     exist to skip re-reads; lag is a deliberate re-read)",
+                    cursor.column
+                ));
+            }
         }
         if self.schema.trim().is_empty() {
             return invalid("`schema` must not be empty".into());
@@ -457,5 +599,76 @@ tables:
             PostgresConfig::from_yaml("conn: host=localhost\ntables:\n  - name: t\n  - name: t\n")
                 .unwrap_err();
         assert!(err.to_string().contains("listed twice"), "{err}");
+    }
+
+    // ---- feature 007: lag vocabulary + validation (cursor-lag.md) ----
+
+    #[test]
+    fn lag_vocabulary_round_trips_and_rejects() {
+        use crate::source::types::Decode;
+        // Duration forms.
+        assert_eq!("90s".parse::<Lag>().unwrap(), Lag::Duration { seconds: 90 });
+        assert_eq!("5m".parse::<Lag>().unwrap(), Lag::Duration { seconds: 300 });
+        assert_eq!(
+            "2h".parse::<Lag>().unwrap(),
+            Lag::Duration { seconds: 7200 }
+        );
+        assert_eq!(
+            "1d".parse::<Lag>().unwrap(),
+            Lag::Duration { seconds: 86_400 }
+        );
+        // Magnitudes.
+        assert_eq!(
+            "1000".parse::<Lag>().unwrap(),
+            Lag::Magnitude("1000".into())
+        );
+        assert_eq!("0.5".parse::<Lag>().unwrap(), Lag::Magnitude("0.5".into()));
+        // Rejections: zero, negative, garbage, empty.
+        for bad in ["0s", "-5m", "soon", "", "5 m"] {
+            assert!(bad.parse::<Lag>().is_err(), "{bad}");
+        }
+        // Display round-trips through FromStr semantically.
+        let lag: Lag = "5m".parse().unwrap();
+        assert_eq!(lag.to_string().parse::<Lag>().unwrap(), lag);
+
+        // sql_delta family matrix (contract L2).
+        let five_m = Lag::Duration { seconds: 300 };
+        assert_eq!(
+            five_m.sql_delta(Decode::Timestamp { tz: true }).unwrap(),
+            "INTERVAL '300 seconds'"
+        );
+        let two_d = Lag::Duration { seconds: 172_800 };
+        assert_eq!(two_d.sql_delta(Decode::Date).unwrap(), "2::int4");
+        assert!(five_m.sql_delta(Decode::Date).is_err(), "sub-day on date");
+        let thousand = Lag::Magnitude("1000".into());
+        assert_eq!(thousand.sql_delta(Decode::Int8).unwrap(), "1000::int8");
+        let half = Lag::Magnitude("0.5".into());
+        assert!(half.sql_delta(Decode::Int8).is_err(), "fractional on int");
+        assert_eq!(
+            half.sql_delta(Decode::Decimal {
+                precision: 10,
+                scale: 2
+            })
+            .unwrap(),
+            "'0.5'::numeric"
+        );
+        // Undefined families and unit mismatches.
+        assert!(five_m.sql_delta(Decode::Utf8).is_err(), "text cursor");
+        assert!(thousand.sql_delta(Decode::Timestamp { tz: false }).is_err());
+        assert!(five_m.sql_delta(Decode::Int8).is_err());
+    }
+
+    #[test]
+    fn lag_with_open_boundary_dies_at_config_parse() {
+        let err = PostgresConfig::from_yaml(
+            "conn: host=localhost\ntables:\n  - name: t\n    cursor:\n      column: ts\n      boundary: open\n      lag: \"5m\"\n",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("CLOSED boundary"), "{err}");
+        // Closed (default) parses fine.
+        PostgresConfig::from_yaml(
+            "conn: host=localhost\ntables:\n  - name: t\n    cursor:\n      column: ts\n      lag: \"5m\"\n",
+        )
+        .expect("closed + lag parses");
     }
 }

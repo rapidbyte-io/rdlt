@@ -355,6 +355,14 @@ impl Source for PostgresSource {
             // rule 3 + 006 hints): fail fast, before any data moves. The
             // cursor check runs POST-hint (a hint may change capability).
             let hinted = reflect::hinted_columns(table, table_config)?;
+            let pk: Vec<String> = match table_config.and_then(|t| t.primary_key.clone()) {
+                Some(overridden) => overridden,
+                None => table
+                    .primary_key()
+                    .iter()
+                    .map(|s| (*s).to_owned())
+                    .collect(),
+            };
             if let Some(cursor) = table_config.and_then(|t| t.cursor.as_ref()) {
                 let col = hinted
                     .iter()
@@ -376,16 +384,43 @@ impl Source for PostgresSource {
                         ),
                     ));
                 }
+                // Lag validation (feature 007, contract L2), all typed and
+                // early: closed boundary (also caught at config parse),
+                // defined cursor-family subtraction, and a primary key so
+                // the keyed-Merge dedup path exists (research R4).
+                if let Some(lag) = &cursor.lag {
+                    if cursor.boundary == config::Boundary::Open {
+                        return Err(errors::fatal(
+                            Phase::Reflect,
+                            Some(name),
+                            format!("cursor `{}`: lag requires a closed boundary", cursor.column),
+                        ));
+                    }
+                    if let Err(detail) = lag.sql_delta(col.mapped.decode) {
+                        return Err(errors::fatal(
+                            Phase::Reflect,
+                            Some(name),
+                            format!(
+                                "cursor lag on `{}` ({}): {detail}",
+                                cursor.column, col.type_name
+                            ),
+                        ));
+                    }
+                    if pk.is_empty() {
+                        return Err(errors::fatal(
+                            Phase::Reflect,
+                            Some(name),
+                            format!(
+                                "cursor `{}`: lag requires a primary key (reflected or \
+                                 declared) — window rows re-deliver and dedup by key \
+                                 under Merge (contract cursor-lag.md L3)",
+                                cursor.column
+                            ),
+                        ));
+                    }
+                }
             }
             let mut spec = StreamSpec::new(name).structured();
-            let pk: Vec<String> = match table_config.and_then(|t| t.primary_key.clone()) {
-                Some(overridden) => overridden,
-                None => table
-                    .primary_key()
-                    .iter()
-                    .map(|s| (*s).to_owned())
-                    .collect(),
-            };
             if !pk.is_empty() {
                 spec = spec.with_primary_key(pk);
             }
@@ -504,10 +539,30 @@ impl Source for PostgresSource {
                     )?),
                     None => None,
                 };
+                // Lag (feature 007, contract cursor-lag.md L1): widen the
+                // RESUMED window only — run 1 (no watermark) is unaffected,
+                // and the saved watermark is never lowered. The window
+                // re-read forces closed semantics regardless of how the
+                // stored state's boundary flag landed.
+                let lag_delta: Option<String> = match (&cc.lag, &stored) {
+                    (Some(lag), Some(_)) => Some(lag.sql_delta(cursor_decode).map_err(|d| {
+                        errors::fatal(
+                            Phase::Reflect,
+                            Some(&name),
+                            format!("cursor lag on `{}`: {d}", cc.column),
+                        )
+                    })?),
+                    _ => None,
+                };
+                let lower = match (lower, &lag_delta) {
+                    (Some((w, _)), Some(_)) => Some((w, true)),
+                    (other, _) => other,
+                };
                 let clauses = sqlgen::incremental_clauses(
                     &cc.column,
                     direction_max,
                     lower.as_ref().map(|(w, closed)| (w, *closed)),
+                    lag_delta.as_deref(),
                     upper.as_ref(),
                     cc.nulls == config::NullPolicy::Include,
                     matches!(cursor_decode, types::Decode::Utf8),

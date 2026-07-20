@@ -186,10 +186,10 @@ pub fn parse_conn(conn: &str, block: Option<&TlsPolicy>) -> Result<ParsedConn, T
 
     // Merge the trio: conn value + absent block field fills in; agreeing
     // duplicates pass; disagreement is a typed conflict (P1–P3).
-    let mut merge = |param: &'static str,
-                     param_field: &'static str,
-                     conn_value: Option<String>,
-                     field: &mut Option<RootCert>|
+    let merge = |param: &'static str,
+                 param_field: &'static str,
+                 conn_value: Option<String>,
+                 field: &mut Option<RootCert>|
      -> Result<(), TlsConfigError> {
         let Some(conn_value) = conn_value else {
             return Ok(());
@@ -311,7 +311,7 @@ fn extract_tls_params(conn: &str) -> ExtractedConn {
         sslkey: None,
         sslmode_verify: None,
     };
-    let mut capture = |key: &str, value: String, out: &mut ExtractedConn| -> bool {
+    let capture = |key: &str, value: String, out: &mut ExtractedConn| -> bool {
         match key {
             "sslrootcert" => out.sslrootcert = Some(value),
             "sslcert" => out.sslcert = Some(value),

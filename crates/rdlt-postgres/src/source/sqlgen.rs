@@ -109,6 +109,9 @@ pub(crate) fn incremental_clauses(
     column: &str,
     direction_max: bool,
     lower: Option<(&crate::source::cursor::Watermark, bool)>, // (value, closed?)
+    // Feature 007 lag: SQL delta widening the resume window BEHIND the
+    // watermark (`- delta` under max, `+ delta` under min) — read-side only.
+    lag_delta: Option<&str>,
     upper: Option<&crate::source::cursor::Watermark>,
     nulls_include: bool,
     // Text cursors force COLLATE "C": the tracker compares watermarks in
@@ -130,7 +133,15 @@ pub(crate) fn incremental_clauses(
             (false, true) => "<=",
             (false, false) => "<",
         };
-        predicates.push(format!("{ident} {op} {}", value.to_sql_literal()));
+        let literal = value.to_sql_literal();
+        let bound = match lag_delta {
+            Some(delta) => format!(
+                "({literal} {} {delta})",
+                if direction_max { "-" } else { "+" }
+            ),
+            None => literal,
+        };
+        predicates.push(format!("{ident} {op} {bound}"));
     }
     if let Some(value) = upper {
         let op = if direction_max { "<" } else { ">" };
@@ -214,30 +225,30 @@ mod tests {
         let w = Watermark::Int(5);
         let e = Watermark::Int(9);
         // (direction_max, closed) × operators
-        let c = incremental_clauses("ts", true, Some((&w, true)), None, false, false);
+        let c = incremental_clauses("ts", true, Some((&w, true)), None, None, false, false);
         assert_eq!(c.where_sql, r#""ts" >= 5::int8 AND "ts" IS NOT NULL"#);
         assert_eq!(c.order_sql, r#""ts" ASC NULLS FIRST"#);
-        let c = incremental_clauses("ts", true, Some((&w, false)), Some(&e), false, false);
+        let c = incremental_clauses("ts", true, Some((&w, false)), None, Some(&e), false, false);
         assert_eq!(
             c.where_sql,
             r#""ts" > 5::int8 AND "ts" < 9::int8 AND "ts" IS NOT NULL"#
         );
-        let c = incremental_clauses("ts", false, Some((&w, true)), Some(&e), false, false);
+        let c = incremental_clauses("ts", false, Some((&w, true)), None, Some(&e), false, false);
         assert_eq!(
             c.where_sql,
             r#""ts" <= 5::int8 AND "ts" > 9::int8 AND "ts" IS NOT NULL"#
         );
         assert_eq!(c.order_sql, r#""ts" DESC NULLS FIRST"#);
         // NULL policy include wraps with OR IS NULL; bare include has no filter.
-        let c = incremental_clauses("ts", true, Some((&w, true)), None, true, false);
+        let c = incremental_clauses("ts", true, Some((&w, true)), None, None, true, false);
         assert_eq!(c.where_sql, r#"(("ts" >= 5::int8) OR "ts" IS NULL)"#);
-        let c = incremental_clauses("ts", true, None, None, true, false);
+        let c = incremental_clauses("ts", true, None, None, None, true, false);
         assert_eq!(c.where_sql, "");
-        let c = incremental_clauses("ts", true, None, None, false, false);
+        let c = incremental_clauses("ts", true, None, None, None, false, false);
         assert_eq!(c.where_sql, r#""ts" IS NOT NULL"#);
         // Hostile cursor string literal stays inert.
         let hostile = Watermark::Text("x'; DROP TABLE t; --".into());
-        let c = incremental_clauses("v", true, Some((&hostile, true)), None, false, true);
+        let c = incremental_clauses("v", true, Some((&hostile, true)), None, None, false, true);
         assert!(
             c.where_sql.contains("'x''; DROP TABLE t; --'::text"),
             "{}",
@@ -257,5 +268,47 @@ mod tests {
             copy_sql("SELECT 1"),
             "COPY (SELECT 1) TO STDOUT (FORMAT BINARY)"
         );
+    }
+
+    // ---- feature 007: lag rendering (cursor-lag.md L1) ----
+
+    #[test]
+    fn lag_delta_widens_the_lower_bound_direction_aware() {
+        use crate::source::cursor::Watermark;
+        let w = Watermark::TimestampTz(1_000_000);
+        // max direction: watermark MINUS the window, closed.
+        let c = incremental_clauses(
+            "ts",
+            true,
+            Some((&w, true)),
+            Some("INTERVAL '300 seconds'"),
+            None,
+            false,
+            false,
+        );
+        assert_eq!(
+            c.where_sql,
+            "\"ts\" >= ((TIMESTAMPTZ 'epoch' + 1000000::int8 * INTERVAL '1 microsecond') \
+             - INTERVAL '300 seconds') AND \"ts\" IS NOT NULL"
+        );
+        // min direction: watermark PLUS the window.
+        let c = incremental_clauses(
+            "ts",
+            false,
+            Some((&w, true)),
+            Some("INTERVAL '300 seconds'"),
+            None,
+            false,
+            false,
+        );
+        assert!(
+            c.where_sql.contains("+ INTERVAL '300 seconds'"),
+            "{}",
+            c.where_sql
+        );
+        assert!(c.where_sql.contains("<="), "{}", c.where_sql);
+        // No lag: rendering byte-identical to before (state untouched).
+        let c = incremental_clauses("ts", true, Some((&w, true)), None, None, false, false);
+        assert!(!c.where_sql.contains("INTERVAL '300"), "{}", c.where_sql);
     }
 }

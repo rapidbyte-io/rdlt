@@ -106,7 +106,7 @@ watermark never regresses; exact totals under keyed Merge.
 inside the lag loads next run; totals exactly match the source across
 three further runs; rejection matrix all typed.
 
-- [ ] T007 [P] [US2] Lag vocabulary + validation:
+- [X] T007 [P] [US2] Lag vocabulary + validation:
       `crates/rdlt-postgres/src/source/config.rs` gains `Lag` (custom
       FromStr/Display/serde + manual JsonSchema mirroring the pattern
       — HintType precedent) and `CursorConfig.lag`; open-time
@@ -115,14 +115,14 @@ three further runs; rejection matrix all typed.
       integer/decimal; text/uuid typed error naming column+type),
       whole-days-only for `date`, stream primary key required
       (research R4 / contract L2); unit rejection matrix.
-- [ ] T008 [US2] Read-path wiring:
+- [X] T008 [US2] Read-path wiring:
       `crates/rdlt-postgres/src/source/sqlgen.rs` renders
       `($watermark - lag)` per cursor family (`- interval 'N
       seconds'`, native magnitude, days) as the closed lower bound;
       `mod.rs` passes lag ONLY into the read bound — saved watermark
       advances unchanged (L1); unit tests pin the rendered SQL per
       family and that state handling is untouched.
-- [ ] T009 [US2] Conformance in
+- [X] T009 [US2] Conformance in
       `crates/rdlt-postgres/tests/incremental.rs`: late-arrival under
       keyed Merge — sync, insert a row behind the watermark inside
       the window, sync → captured; destination totals exactly equal

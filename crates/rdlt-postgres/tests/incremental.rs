@@ -349,3 +349,105 @@ async fn merge_by_declared_key_converges_and_keyless_is_rejected() {
         "{msg}"
     );
 }
+
+// ---- Feature 007 US2: cursor lag (contract cursor-lag.md) ----
+
+#[tokio::test(flavor = "multi_thread")]
+async fn lag_captures_late_arrivals_with_exact_totals_under_merge() {
+    let fixture = PgFixture::start().await;
+    fixture.seed(BASE).await;
+    let rig = Rig::new();
+
+    let lag_source = |conn: &str| {
+        PostgresSource::from_yaml(&format!(
+            "conn: \"{conn}\"\ntables:\n  - name: ev\n    cursor:\n      column: ts\n      lag: \"5m\"\n"
+        ))
+        .expect("config")
+    };
+    let run_merge = |src: PostgresSource| {
+        let dest = rig.dest.clone();
+        async move {
+            let mut config = EngineConfig::new("inc-lag");
+            config.write_mode = rdlt_connector::core::WriteMode::Merge {
+                key: vec!["id".into()],
+            };
+            Engine::new(config, src, dest)
+                .run()
+                .await
+                .expect("lag run")
+                .total_rows()
+        }
+    };
+
+    assert_eq!(run_merge(lag_source(&fixture.conn_url())).await, 3);
+
+    // A LATE commit: cursor value 3 minutes BEHIND the watermark (inside the
+    // 5m window) — invisible without lag. Plus one far beyond the window.
+    fixture
+        .seed(
+            "INSERT INTO ev VALUES (4, 'late', '2026-01-01T23:57:00Z'), \
+             (5, 'too-old', '2026-01-01T12:00:00Z');",
+        )
+        .await;
+    run_merge(lag_source(&fixture.conn_url())).await;
+    assert_eq!(rig.count(), 4, "late row captured, beyond-window row not");
+    assert_eq!(rig.distinct_ids(), "4");
+    let missing = rig
+        .dest
+        .query_string("SELECT CAST(count(*) AS VARCHAR) FROM ev WHERE id = 5")
+        .expect("count");
+    assert_eq!(missing, "0", "L5: the window bounds the guarantee");
+
+    // Idempotent window re-merge: three further runs, totals NEVER move —
+    // window rows re-deliver and merge by key (SC-002 as amended by R4).
+    for _ in 0..3 {
+        run_merge(lag_source(&fixture.conn_url())).await;
+        assert_eq!(rig.count(), 4, "destination totals stay exact");
+        assert_eq!(rig.distinct_ids(), "4");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn lag_rejections_are_typed_and_early() {
+    use rdlt_connector::Source as _;
+    let fixture = PgFixture::start().await;
+    fixture
+        .seed(
+            "CREATE TABLE ev (id int8 PRIMARY KEY, v text, ts timestamptz); \
+             CREATE TABLE nokey (x int8, ts timestamptz); \
+             CREATE TABLE dated (id int8 PRIMARY KEY, d date);",
+        )
+        .await;
+    let src = |extra: &str| {
+        PostgresSource::from_yaml(&format!("conn: \"{}\"\n{extra}", fixture.conn_url()))
+            .expect("config")
+    };
+
+    // Text cursor: no defined subtraction — names column and type.
+    let err = src("tables:\n  - name: ev\n    cursor:\n      column: v\n      lag: \"5m\"\n")
+        .streams()
+        .await
+        .expect_err("lag on text cursor");
+    let msg = err.to_string();
+    assert!(msg.contains('v') && msg.contains("lag"), "{msg}");
+
+    // Keyless stream: the merge dedup path must exist.
+    let err = src("tables:\n  - name: nokey\n    cursor:\n      column: ts\n      lag: \"5m\"\n")
+        .streams()
+        .await
+        .expect_err("lag without a primary key");
+    assert!(err.to_string().contains("primary key"), "{err}");
+
+    // Sub-day lag on a date cursor.
+    let err = src("tables:\n  - name: dated\n    cursor:\n      column: d\n      lag: \"5m\"\n")
+        .streams()
+        .await
+        .expect_err("sub-day lag on date");
+    assert!(err.to_string().contains("whole-day"), "{err}");
+
+    // Whole-day lag on date: accepted.
+    src("tables:\n  - name: dated\n    cursor:\n      column: d\n      lag: \"2d\"\n")
+        .streams()
+        .await
+        .expect("whole-day lag on date is fine");
+}
