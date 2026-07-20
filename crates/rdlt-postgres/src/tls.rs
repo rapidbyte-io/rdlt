@@ -16,7 +16,9 @@ use tokio_postgres::config::SslMode;
 
 use crate::tls_verify::{AcceptAnyCert, ChainOnly, provider};
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum TlsMode {
     /// Plaintext only.
@@ -42,12 +44,12 @@ impl TlsMode {
 
 /// A trust root: a filesystem path to a PEM bundle, or the PEM text inline
 /// (config strings starting with `-----BEGIN` are treated as inline).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(transparent)]
 pub struct RootCert(pub String);
 
 /// The per-connection TLS posture shared by source and destination.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TlsPolicy {
     #[serde(default)]

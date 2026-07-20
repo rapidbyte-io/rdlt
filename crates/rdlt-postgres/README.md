@@ -1,14 +1,18 @@
-# rdlt-source-postgres
+# rdlt-postgres
 
-Bundled PostgreSQL source for rdlt: catalog reflection publishes declared
-schemas, rows stream as typed Arrow batches decoded **directly from the
-binary COPY wire format** (the engine's structured path — no JSON, no
-shredding, no inference), and cursor-column incremental loading has
-closed/open boundary semantics with mid-table checkpointed resume.
+Bundled PostgreSQL connectors for rdlt — SOURCE and DESTINATION in one
+crate (feature-gated `source`/`dest` modules, both default; shared `tls`
+module). Source: catalog reflection publishes declared schemas, rows
+stream as typed Arrow batches decoded **directly from the binary COPY
+wire format** (the engine's structured path — no JSON, no shredding, no
+inference), and cursor-column incremental loading has closed/open
+boundary semantics with mid-table checkpointed resume.
 
 Contracts: `specs/005-postgres-source/contracts/source-config.md` (the YAML
-document) and `contracts/type-mapping.md` (every Postgres type → engine
-type rule, lossy rules explicit).
+document), `contracts/type-mapping.md` (every Postgres type → engine type
+rule, lossy rules explicit), and feature 006's
+`specs/006-postgres-completeness/contracts/` (tls-policy, type-hints,
+query-streams, merge-structured).
 
 ## Configuration
 
@@ -34,8 +38,23 @@ tables:
       nulls: exclude              # exclude | include (re-fetched every run)
     primary_key: [id]             # overrides the reflected PK
     excluded_columns: [internal]  # or included_columns (mutually exclusive)
+    type_hints:                   # per-column overrides (closed conversion table)
+      total: decimal(12,4)        #   e.g. unconstrained numeric → real decimality
+      created: timestamp_tz       #   text → typed via strict server-side cast
   - name: customers               # snapshot stream (full re-read per run)
+# custom SQL streams: schema DESCRIBED by the database, wrapped read-only
+queries:
+  - name: order_totals
+    sql: "SELECT o.id, max(o.updated_at) AS updated_at, sum(i.amount) AS total
+          FROM orders o JOIN order_items i ON i.order_id = o.id GROUP BY o.id"
+    cursor: { column: updated_at }
+    primary_key: [id]
+    type_hints: { total: decimal(14,2) }
 ```
+
+The connector's `ConnectorSpec.config_schema` is a JSON Schema GENERATED
+from these structs (`source::config_schema()`), so platform validation and
+the parser cannot drift.
 
 ### TLS
 
@@ -68,16 +87,22 @@ DESTINATION takes the same policy (`Postgres::tls(...)` / CLI TOML
   from Arrow, which carries no uuid/json. Unconstrained or >38-digit
   numerics arrive as lossless text, never truncated. `±infinity`
   timestamps saturate to the representable extremes, visibly.
-- **Merge write mode is rejected** for structured streams by the engine
-  (no per-row `_rdlt_id`); incremental is Append-mode. Merge-for-structured
-  is a recorded backlog item.
+- **Merge write mode** works for structured streams WITH a declared
+  `primary_key` (engine clause B4 as amended by feature 006): updates
+  converge to one row per key, exactly-once under the crash model. Keyless
+  structured streams still reject Merge at plan time.
+- **Lossy mappings announce themselves**: every [documented-lossy] column
+  emits one `tracing::warn!` on the `rdlt::lossy` target per read.
 
 ## Verification
 
-`cargo nextest run -p rdlt-source-postgres` — conformance (full
+`cargo nextest run -p rdlt-postgres` — conformance (full
 type-matrix round-trip against real Postgres), incremental boundary
 semantics, differential property test (decoder ≡ an independent driver
-reference), drift matrix. `--features failpoints` adds the crash sweep
+reference, single- AND multi-batch), drift matrix, TLS matrix (five
+sslmode levels × cert scenarios, both directions), query streams, config
+schema round-trips. `--features failpoints` adds the crash sweeps
 (exactly-once under kill/panic at every registered fail point, both
-occurrence passes) and the memory-ceiling test (a 6.9 GB table through a
-256 MiB process ceiling). Fuzz target: `pg_copy_decode`.
+occurrence passes, Append + Merge modes) and the memory-ceiling test (a
+6.9 GB table through a 256 MiB process ceiling; `RDLT_HEAVY=1` makes
+missing prerequisites a hard failure). Fuzz target: `pg_copy_decode`.

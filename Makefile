@@ -58,6 +58,10 @@ else ifeq ($(TARGET),mutants)
 	# balloon EVERY parallel test at once — two host OOMs taught this. --iterate resumes.
 	NEXTEST_TEST_THREADS=2 cargo mutants --iterate --jobs 2
 else ifeq ($(TARGET),deep)
+	# RDLT_HEAVY=1: the memory-bound claim must RUN here — missing prereqs
+	# (prlimit, release CLI) hard-fail instead of silently skipping. Not on
+	# sweep: sweep is part of the PR gate, which stays container-optional.
+	RDLT_HEAVY=1 cargo nextest run -p rdlt-postgres -E 'binary(memory_bound)'
 	$(MAKE) test TARGET=prop
 	$(MAKE) test TARGET=sweep
 	$(MAKE) test TARGET=mutants

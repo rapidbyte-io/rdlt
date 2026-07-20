@@ -191,21 +191,21 @@ example configs validate / invalid fail against generated schemas for
 all three sources; advisory tests fail when their regressions are
 injected.
 
-- [ ] T018 [P] [US4] Lossy visibility in
+- [X] T018 [P] [US4] Lossy visibility in
       `crates/rdlt-postgres/src/source/mod.rs`: one
       `tracing::warn!(target: "rdlt::lossy", …)` per
       [documented-lossy] column per read (policy rows + textual
       fallback + lossy hints); capture-subscriber test (exactly once;
       silent when clean); amend the 005 type-mapping contract's "run
       report" wording to name this surface.
-- [ ] T019 [P] [US4] Config schemas: `schemars::JsonSchema` derives on
+- [X] T019 [P] [US4] Config schemas: `schemars::JsonSchema` derives on
       the config families of `crates/rdlt-postgres` (source),
       `crates/rdlt-source-rest`, `crates/rdlt-source-file`; each crate
       exposes `config_schema()` and fills
       `ConnectorSpec.config_schema` in `spec()`; round-trip tests per
       crate (documented examples validate; unknown-field configs fail;
       schema-valid ⇒ parses over the test corpus).
-- [ ] T020 [P] [US4] Advisory closures: differential multi-batch
+- [X] T020 [P] [US4] Advisory closures: differential multi-batch
       variant in `crates/rdlt-postgres/tests/differential.rs`
       (`batch_max_rows: 3`, larger row sets, arrow-select concat
       before compare); `tests/memory_bound.rs` honors `RDLT_HEAVY=1`

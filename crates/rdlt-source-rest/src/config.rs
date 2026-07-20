@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use rdlt_connector::core::LogicalType;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RestConfig {
     /// e.g. `https://api.example.com`
@@ -17,7 +17,7 @@ pub struct RestConfig {
     pub streams: Vec<RestStream>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Auth {
     #[default]
@@ -37,7 +37,7 @@ pub enum Auth {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RestStream {
     /// Stream name (becomes the root table name).
@@ -67,7 +67,7 @@ pub struct RestStream {
     pub type_hints: BTreeMap<String, HintType>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum Pagination {
     /// Single request.
@@ -104,7 +104,7 @@ fn default_limit_param() -> String {
 }
 
 /// Human-friendly hint names in YAML, mapped onto the engine's logical types.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum HintType {
     Bool,

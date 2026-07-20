@@ -61,7 +61,6 @@ impl RestSource {
 impl Source for RestSource {
     fn spec(&self) -> ConnectorSpec {
         let mut spec = ConnectorSpec::new("rest", env!("CARGO_PKG_VERSION"));
-        // A light schema of the YAML shape, for platform UIs.
         spec.config_schema = Some(config_schema());
         spec
     }
@@ -270,14 +269,8 @@ fn classify_status(status: reqwest::StatusCode, response: &reqwest::Response) ->
     SourceError::fatal(format!("HTTP {status}"))
 }
 
-fn config_schema() -> Value {
-    serde_json::json!({
-        "type": "object",
-        "required": ["base_url", "streams"],
-        "properties": {
-            "base_url": {"type": "string"},
-            "auth": {"type": "object"},
-            "streams": {"type": "array"}
-        }
-    })
+/// JSON Schema GENERATED from the config structs (feature 006, US4) — the
+/// declared schema and the parser cannot drift.
+pub fn config_schema() -> Value {
+    serde_json::to_value(schemars::schema_for!(RestConfig)).expect("schema serializes")
 }

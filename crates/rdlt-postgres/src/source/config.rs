@@ -20,11 +20,11 @@ pub enum ConfigError {
     Invalid(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PostgresConfig {
-    /// libpq-style connection string/URL. TLS is not yet wired for the
-    /// postgres connectors: `sslmode=require`/`verify-*` is rejected at open.
+    /// libpq-style connection string/URL; `sslmode` up to `require` may be
+    /// set here (verify-* modes go in the `tls` block).
     pub conn: String,
     /// Reflection scope; bare table names below resolve inside it.
     #[serde(default = "default_schema")]
@@ -53,7 +53,7 @@ pub struct PostgresConfig {
     pub batch_max_rows: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TableConfig {
     /// Bare table name; `schema` owns qualification (qualified names rejected).
@@ -75,7 +75,7 @@ pub struct TableConfig {
     pub type_hints: std::collections::BTreeMap<String, crate::source::HintType>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct QueryConfig {
     /// Stream name — unique across tables AND queries.
@@ -91,7 +91,7 @@ pub struct QueryConfig {
     pub type_hints: std::collections::BTreeMap<String, crate::source::HintType>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CursorConfig {
     /// Must exist on the table with a cursor-capable type (validated at open).
@@ -111,7 +111,9 @@ pub struct CursorConfig {
 }
 
 /// Lower-bound semantics on resume (dlt parity).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Boundary {
     /// `>=` — watermark-equal rows re-fetched and deduped via boundary keys.
@@ -121,7 +123,9 @@ pub enum Boundary {
     Open,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Direction {
     /// Ascending cursor, watermark = max seen.
@@ -131,7 +135,9 @@ pub enum Direction {
     Min,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum NullPolicy {
     /// NULL-cursor rows are filtered out (`IS NOT NULL`).

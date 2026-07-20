@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 rdlt-connector = { workspace = true }
+schemars = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 reqwest = { workspace = true }
@@ -18,6 +19,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
+jsonschema = { workspace = true }
 rdlt-testkit = { workspace = true }
 wiremock = { workspace = true }
 

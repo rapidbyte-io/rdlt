@@ -438,3 +438,97 @@ async fn drift_table_dropped_between_reflect_and_read() {
         "typed error names phase + table: {msg}"
     );
 }
+
+/// US4 lossy visibility (T018): every [documented-lossy] column announces
+/// itself EXACTLY ONCE per read on the dedicated `rdlt::lossy` tracing
+/// target — and a clean table stays silent. Suppression-proof: the signal is
+/// a structured tracing event, not log text.
+#[tokio::test(flavor = "multi_thread")]
+async fn lossy_mappings_announce_once_per_read_on_dedicated_target() {
+    use std::sync::{Mutex, OnceLock};
+
+    /// Minimal collector for `rdlt::lossy` events (no tracing-subscriber dep):
+    /// records `stream/column` pairs.
+    struct LossyCollector;
+    static EVENTS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+
+    impl tracing::Subscriber for LossyCollector {
+        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+            metadata.target() == "rdlt::lossy"
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            #[derive(Default)]
+            struct Fields {
+                stream: String,
+                column: String,
+            }
+            impl tracing::field::Visit for Fields {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    match field.name() {
+                        "stream" => self.stream = format!("{value:?}").replace('"', ""),
+                        "column" => self.column = format!("{value:?}").replace('"', ""),
+                        _ => {}
+                    }
+                }
+            }
+            let mut fields = Fields::default();
+            event.record(&mut fields);
+            EVENTS
+                .get_or_init(Mutex::default)
+                .lock()
+                .expect("collector lock")
+                .push(format!("{}/{}", fields.stream, fields.column));
+        }
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    // Global because engine reads run on arbitrary tokio workers; the target
+    // filter keeps every other test's events out.
+    let _ = tracing::subscriber::set_global_default(LossyCollector);
+    EVENTS.get_or_init(Mutex::default);
+
+    let fixture = PgFixture::start().await;
+    fixture
+        .seed(
+            "CREATE TABLE noisy (id int8 PRIMARY KEY, dur interval, tags int8[], plain text); \
+             INSERT INTO noisy VALUES (1, '1 hour', '{1,2}', 'x'); \
+             CREATE TABLE clean (id int8 PRIMARY KEY, name text); \
+             INSERT INTO clean VALUES (1, 'quiet');",
+        )
+        .await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let dest = DuckDb::open(dir.path().join("out.duckdb")).expect("open db");
+    let source = PostgresSource::from_yaml(&format!(
+        "conn: \"{}\"\ntables:\n  - name: noisy\n  - name: clean\n",
+        fixture.conn_url()
+    ))
+    .expect("config");
+    Engine::new(EngineConfig::new("lossy-cap"), source, dest)
+        .run()
+        .await
+        .expect("run");
+
+    let mut events = EVENTS
+        .get()
+        .expect("initialized")
+        .lock()
+        .expect("collector lock")
+        .clone();
+    events.retain(|e| e.starts_with("noisy/") || e.starts_with("clean/"));
+    events.sort();
+    assert_eq!(
+        events,
+        vec!["noisy/dur", "noisy/tags"],
+        "exactly one event per lossy column, none for lossless columns or the clean table"
+    );
+}

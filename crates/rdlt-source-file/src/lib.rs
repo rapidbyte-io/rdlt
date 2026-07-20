@@ -97,7 +97,9 @@ fn resolve_files(pattern: &str) -> Result<Vec<FileMeta>, SourceError> {
 #[async_trait]
 impl Source for FileSource {
     fn spec(&self) -> ConnectorSpec {
-        ConnectorSpec::new("file", env!("CARGO_PKG_VERSION"))
+        let mut spec = ConnectorSpec::new("file", env!("CARGO_PKG_VERSION"));
+        spec.config_schema = Some(config_schema());
+        spec
     }
 
     async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
@@ -151,4 +153,10 @@ impl Source for FileSource {
         }
         Ok(())
     }
+}
+
+/// JSON Schema GENERATED from the config structs (feature 006, US4) — the
+/// declared schema and the parser cannot drift.
+pub fn config_schema() -> serde_json::Value {
+    serde_json::to_value(schemars::schema_for!(config::FileConfig)).expect("schema serializes")
 }

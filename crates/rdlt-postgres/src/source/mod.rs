@@ -334,7 +334,9 @@ pub(crate) async fn connect(config: &PostgresConfig) -> Result<Client, SourceErr
 #[async_trait]
 impl Source for PostgresSource {
     fn spec(&self) -> ConnectorSpec {
-        ConnectorSpec::new("postgres", env!("CARGO_PKG_VERSION"))
+        let mut spec = ConnectorSpec::new("postgres", env!("CARGO_PKG_VERSION"));
+        spec.config_schema = Some(config_schema());
+        spec
     }
 
     async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
@@ -410,6 +412,21 @@ impl Source for PostgresSource {
         let owned_config = self.stream_config(&name);
         let table_config = owned_config.as_ref();
         let owned_columns = reflect::hinted_columns(table, table_config)?;
+        // US4 lossy visibility (type-mapping contract): each [documented-lossy]
+        // column announces itself ONCE per read on a dedicated target, so
+        // embedders can subscribe to `rdlt::lossy` without log-scraping.
+        for column in &owned_columns {
+            if column.mapped.documented_lossy {
+                tracing::warn!(
+                    target: "rdlt::lossy",
+                    stream = %name,
+                    column = %column.name,
+                    source_type = %column.type_name,
+                    "documented-lossy mapping: values arrive via a textual or \
+                     normalizing conversion (see contracts/type-hints.md)"
+                );
+            }
+        }
         let columns: Vec<&reflect::ReflectedColumn> = owned_columns.iter().collect();
         crash_point!(
             "pg.src.after_reflect",
@@ -702,4 +719,10 @@ mod tests {
         .unwrap_err();
         assert!(err.to_string().contains("contradicts"), "{err}");
     }
+}
+
+/// JSON Schema GENERATED from the config structs (feature 006, US4) — the
+/// declared schema and the parser cannot drift.
+pub fn config_schema() -> serde_json::Value {
+    serde_json::to_value(schemars::schema_for!(config::PostgresConfig)).expect("schema serializes")
 }

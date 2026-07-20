@@ -88,8 +88,31 @@ fn shared() -> &'static (tokio::runtime::Runtime, PgFixture, String) {
 
 /// The source-under-test path: drive `read()` directly, collect Arrow pushes.
 async fn read_via_copy(conn: &str) -> RecordBatch {
-    let source = PostgresSource::from_yaml(&format!("conn: \"{conn}\"\ntables:\n  - name: diff\n"))
-        .expect("config");
+    let batches = collect_copy_batches(conn, "").await;
+    // ≤ 32 generated rows and a 64k-row batch cap ⇒ exactly one batch
+    // (the empty-table schema batch when zero rows).
+    assert_eq!(batches.len(), 1, "expected a single batch for ≤32 rows");
+    let batch = batches.into_iter().next().expect("batch");
+    // COPY snapshots stream in heap order; the reference query orders by id.
+    // Sort here so the comparison is order-insensitive (a harness concern,
+    // not product behavior).
+    sort_by_id(&batch)
+}
+
+/// Multi-batch variant (005 review advisory): tiny `batch_max_rows` forces
+/// row-group boundaries THROUGH the decoder; concat before compare.
+async fn read_via_copy_batched(conn: &str) -> (usize, RecordBatch) {
+    let batches = collect_copy_batches(conn, "batch_max_rows: 3\n").await;
+    let schema = batches[0].schema();
+    let combined = arrow_select::concat::concat_batches(&schema, &batches).expect("concat batches");
+    (batches.len(), sort_by_id(&combined))
+}
+
+async fn collect_copy_batches(conn: &str, extra: &str) -> Vec<RecordBatch> {
+    let source = PostgresSource::from_yaml(&format!(
+        "conn: \"{conn}\"\n{extra}tables:\n  - name: diff\n"
+    ))
+    .expect("config");
     let specs = source.streams().await.expect("streams");
     let (out, mut input) = records_channel(64 << 20);
     let read = tokio::spawn(async move {
@@ -110,14 +133,7 @@ async fn read_via_copy(conn: &str) -> RecordBatch {
         }
     }
     read.await.expect("join").expect("read");
-    // ≤ 32 generated rows and a 64k-row batch cap ⇒ exactly one batch
-    // (the empty-table schema batch when zero rows).
-    assert_eq!(batches.len(), 1, "expected a single batch for ≤32 rows");
-    let batch = batches.into_iter().next().expect("batch");
-    // COPY snapshots stream in heap order; the reference query orders by id.
-    // Sort here so the comparison is order-insensitive (a harness concern,
-    // not product behavior).
-    sort_by_id(&batch)
+    batches
 }
 
 fn sort_by_id(batch: &RecordBatch) -> RecordBatch {
@@ -244,6 +260,39 @@ proptest! {
             let via_copy = read_via_copy(conn).await;
             let reference = read_via_driver(fixture).await;
             // NaN != NaN under arrow equality; compare float column textually.
+            prop_assert_eq!(via_copy.num_rows(), reference.num_rows());
+            prop_assert_eq!(via_copy.schema(), reference.schema());
+            for (idx, (ours, theirs)) in via_copy.columns().iter().zip(reference.columns()).enumerate() {
+                if idx == 3 {
+                    prop_assert_eq!(
+                        format!("{ours:?}"), format!("{theirs:?}"),
+                        "float column (NaN-tolerant debug compare)"
+                    );
+                } else {
+                    prop_assert_eq!(ours, theirs, "column {}", idx);
+                }
+            }
+            Ok(())
+        })?;
+    }
+
+    /// 005 review advisory closure: same differential property ACROSS batch
+    /// boundaries — `batch_max_rows: 3` forces many cuts, results concatenated
+    /// before compare, so boundary handling itself is under test.
+    #[test]
+    fn copy_decoder_matches_reference_across_batch_boundaries(
+        rows in proptest::collection::vec(row_strategy(), 10..60)
+    ) {
+        let (rt, fixture, conn) = shared();
+        rt.block_on(async {
+            seed_rows(fixture, &rows).await;
+            let reference = read_via_driver(fixture).await;
+            let (batch_count, via_copy) = read_via_copy_batched(conn).await;
+            prop_assert!(
+                batch_count >= reference.num_rows().div_ceil(3).max(1),
+                "row cap must actually cut: {} batches for {} rows",
+                batch_count, reference.num_rows()
+            );
             prop_assert_eq!(via_copy.num_rows(), reference.num_rows());
             prop_assert_eq!(via_copy.schema(), reference.schema());
             for (idx, (ours, theirs)) in via_copy.columns().iter().zip(reference.columns()).enumerate() {

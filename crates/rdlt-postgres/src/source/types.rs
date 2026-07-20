@@ -448,6 +448,24 @@ impl<'de> serde::Deserialize<'de> for HintType {
     }
 }
 
+impl schemars::JsonSchema for HintType {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "HintType".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        // Mirrors `FromStr` exactly — the string vocabulary IS the config form.
+        schemars::json_schema!({
+            "type": "string",
+            "description": "Type-hint vocabulary (contract type-hints.md): a \
+                            fixed name or `decimal(p,s)`",
+            "pattern": "^(bool|int64|float64|utf8|binary|timestamp_tz|\
+                        timestamp_naive|date|time|uuid|json|\
+                        decimal\\([0-9]+, ?[0-9]+\\))$"
+        })
+    }
+}
+
 /// The CLOSED conversion table (contract type-hints.md): every allowed
 /// (source type → hint) pair yields the server-side cast + decode; anything
 /// else is an error the caller surfaces as a typed config failure at open.

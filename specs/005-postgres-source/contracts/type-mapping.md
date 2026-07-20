@@ -5,7 +5,10 @@
 The binding correspondence from reflected Postgres types to
 `rdlt_core::LogicalType`. Every cell is conformance-tested (round-trip
 through a real Postgres). Rules marked **[documented-lossy]** change
-representation, never value content, and are called out in user docs.
+representation, never value content, and are announced visibly: one
+`tracing::warn!` on the dedicated `rdlt::lossy` target per affected
+column per read (feature 006, suppression-proof — a subscriber test
+pins it).
 Silent coercion is forbidden — any type not covered below falls to the
 **textual fallback** rule, never to inference.
 
@@ -54,7 +57,7 @@ Silent coercion is forbidden — any type not covered below falls to the
 | `inet`, `cidr`, `macaddr(8)` | `Utf8` | canonical text |
 | `money` | `Utf8` | locale-dependent semantics; text preserves what PG returns |
 | domains | base type's rule | reflected through to the base |
-| anything else | `Utf8` | **textual fallback**: value's canonical text; run report notes the column |
+| anything else | `Utf8` | **textual fallback**: value's canonical text; surfaced per read on the `rdlt::lossy` tracing target (feature 006) |
 
 ## Special values
 

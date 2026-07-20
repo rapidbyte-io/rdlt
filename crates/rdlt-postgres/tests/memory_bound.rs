@@ -11,7 +11,9 @@
 //! source table → 39 MB peak RSS under this ceiling.
 //!
 //! Self-skips (visibly) without `prlimit`, a container runtime, or a built
-//! release CLI (`make release`).
+//! release CLI (`make release`) — UNLESS `RDLT_HEAVY=1` (the sweep/deep
+//! targets), where a missing prerequisite is a hard FAIL with instructions:
+//! the deep job must never green-wash this claim by silently skipping.
 
 mod common;
 
@@ -33,15 +35,26 @@ fn release_cli() -> Option<std::path::PathBuf> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn snapshot_ten_times_larger_than_memory_ceiling() {
+    let heavy = std::env::var("RDLT_HEAVY").is_ok_and(|v| v == "1");
     if std::process::Command::new("prlimit")
         .arg("--version")
         .output()
         .is_err()
     {
+        assert!(
+            !heavy,
+            "RDLT_HEAVY=1 but prlimit is missing — install util-linux; \
+             this test must RUN in the deep job, not skip"
+        );
         eprintln!("SKIP memory_bound: prlimit not available (util-linux)");
         return;
     }
     let Some(cli) = release_cli() else {
+        assert!(
+            !heavy,
+            "RDLT_HEAVY=1 but the release CLI is not built — run `make release` \
+             first; this test must RUN in the deep job, not skip"
+        );
         eprintln!("SKIP memory_bound: release CLI not built (run `make release` first)");
         return;
     };

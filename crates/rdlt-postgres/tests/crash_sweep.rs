@@ -201,8 +201,19 @@ async fn container_kill_mid_read_is_typed_and_preserves_commits() {
     let rig = Rig::new();
     let conn = fixture.conn_url();
 
+    // Deterministic kill point (005 review advisory): wait until AT LEAST ONE
+    // commit landed, so the prefix-integrity assertion below is unconditional
+    // — a fixed sleep raced the first commit and could green-wash the test.
+    let watched = rig.dest.clone();
     let killer = tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while watched.count_rows("ev").unwrap_or(0) == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no commit observed within 60s — cannot kill deterministically"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
         drop(fixture); // container stops; sockets die mid-stream
     });
     let outcome = rig.attempt(&conn).await;
@@ -214,14 +225,14 @@ async fn container_kill_mid_read_is_typed_and_preserves_commits() {
             && (err.contains("copy phase") || err.contains("connect phase")),
         "typed error names source + phase: {err}"
     );
-    // Whatever committed before the kill is a consistent cursor-ordered
-    // prefix: max(id) == count(*) under the ordered incremental read.
+    // ≥1 commit is GUARANTEED by the kill protocol, so integrity asserts
+    // unconditionally: the committed rows are a consistent cursor-ordered
+    // prefix — max(id) == count(*) under the ordered incremental read.
     let count = rig.count();
-    if count > 0 {
-        let max_id = rig
-            .dest
-            .query_string("SELECT CAST(max(id) AS VARCHAR) FROM ev")
-            .expect("max id");
-        assert_eq!(max_id, count.to_string(), "committed prefix is contiguous");
-    }
+    assert!(count > 0, "kill protocol guarantees a committed prefix");
+    let max_id = rig
+        .dest
+        .query_string("SELECT CAST(max(id) AS VARCHAR) FROM ev")
+        .expect("max id");
+    assert_eq!(max_id, count.to_string(), "committed prefix is contiguous");
 }

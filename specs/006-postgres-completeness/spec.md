@@ -24,12 +24,12 @@ deliberately out, and where rdlt already leads:
 | Chunking / memory bounds | chunk_size | byte+row bounded, backpressure | — (rdlt leads) |
 | Extraction speed | pyarrow/connectorx backends | 7.8× their fastest, 2.2× connectorx | — (rdlt leads) |
 | Retry / resume / snapshot consistency | none | engine-owned, per-table snapshot | — (rdlt leads) |
-| **TLS to the database** | ✓ (via drivers) | ✗ rejected with typed error | **US1** |
-| **Per-column type-hint overrides** | `type_adapter_callback` | ✗ (rest/file have hints; pg does not) | **US2** |
-| **Custom SQL per stream** | `query_adapter_callback` | ✗ (deferred in 005) | **US2** |
-| **Merge/upsert write disposition** | ✓ | ✗ (engine clause B4 rejects for structured) | **US3** |
-| Lossy-mapping visibility | n/a (implicit coercions) | flag computed, never surfaced | **US4** |
-| Declared config schema | JSON-schema per source | claimed by SPI, hand-waved | **US4** |
+| **TLS to the database** | ✓ (via drivers) | ✗ rejected with typed error | **US1 — DONE**: full sslmode matrix (disable/prefer/require/verify_ca/verify_full), both connectors, custom roots, typed failures (contracts/tls-policy.md; tests/tls_matrix.rs) |
+| **Per-column type-hint overrides** | `type_adapter_callback` | ✗ (rest/file have hints; pg does not) | **US2 — DONE**: closed conversion table incl. `decimal(p,s)`, server-side casts, typed open-time rejections (contracts/type-hints.md) |
+| **Custom SQL per stream** | `query_adapter_callback` | ✗ (deferred in 005) | **US2 — DONE**: `queries[]` streams, describe-based schemas, subquery-enforced read-only, full incremental semantics (contracts/query-streams.md) |
+| **Merge/upsert write disposition** | ✓ | ✗ (engine clause B4 rejects for structured) | **US3 — DONE**: B4 amended — keyed structured streams merge by declared primary_key on both SQL destinations, crash-swept; keyless still rejected (contracts/merge-structured.md) |
+| Lossy-mapping visibility | n/a (implicit coercions) | flag computed, never surfaced | **US4 — DONE**: one `rdlt::lossy` tracing event per affected column per read; capture-subscriber test pins it |
+| Declared config schema | JSON-schema per source | claimed by SPI, hand-waved | **US4 — DONE**: schemas GENERATED from the config structs (schemars) for postgres/rest/file; validation round-trip tests |
 | Custom aggregation cursors (`last_value_func`) | ✓ (disables pushdown) | ✗ | OUT — niche; full-scan semantics contradict rdlt's ordered-resume design; documented |
 | Deferred reflection (Airflow DAG-build) | ✓ | ✗ | OUT — orchestrator-specific, no rdlt analog |
 | FK → lineage hints | `resolve_foreign_keys` | ✗ | OUT — needs an SPI vocabulary for references; recorded backlog |
