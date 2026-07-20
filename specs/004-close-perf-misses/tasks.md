@@ -79,14 +79,14 @@ evidence-backed bar adjustment.
 policy holds an adjustment entry linking committed profiling evidence in
 which every R2 candidate carries a measured disposition.
 
-- [ ] T006 [US1] Fresh attribution profile of the shred stage on current
+- [X] T006 [US1] Fresh attribution profile of the shred stage on current
       code: callgrind via `cargo bench -p rdlt-engine --bench iai_hotpath` +
       `callgrind_annotate` (primary, gate units) AND
       `perf stat -e cycles,instructions,cache-misses,branch-misses` on
       `crates/rdlt-engine/benches/shred.rs` (secondary lens). Write
       `specs/004-close-perf-misses/evidence/profile-shred.md`: top-N table
       with shares, both lenses, environment header.
-- [ ] T007 [US1] Rank candidates C1–C5 (research R2) in
+- [X] T007 [US1] Rank candidates C1–C5 (research R2) in
       `specs/004-close-perf-misses/evidence/profile-shred.md`: measured share
       per candidate, viable/exhausted classification against the 1.68×
       requirement (R3 arithmetic restated in the artifact), C5/blake3 reopen
