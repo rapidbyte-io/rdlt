@@ -71,6 +71,10 @@ pub(crate) struct Loader {
     events: tokio::sync::broadcast::Sender<rdlt_core::PipelineEvent>,
     /// Destination capabilities drive lowering at this seam (design doc §5.3).
     caps: DestCapabilities,
+    /// Feature-006 keyed structured merge: tables whose write mode is Merge
+    /// and whose schema carries NO per-row identity — their key columns must
+    /// never be NULL (keys are identities; validated per batch).
+    structured_merge_keys: std::collections::BTreeMap<TableName, Vec<String>>,
 }
 
 impl Loader {
@@ -100,6 +104,7 @@ impl Loader {
             wal,
             events,
             caps,
+            structured_merge_keys: std::collections::BTreeMap::new(),
         }
     }
 
@@ -133,6 +138,18 @@ impl Loader {
                         "injected crash after ensure_table (failpoint)",
                     ))
                 );
+                // Track keyed STRUCTURED merges (no `_rdlt_id` column ⇒ the
+                // stream is structured; feature 006): batches must carry
+                // non-NULL keys.
+                if let rdlt_core::WriteMode::Merge { key } = &mode
+                    && !schema
+                        .columns
+                        .iter()
+                        .any(|c| c.name == rdlt_core::schema::system_columns::ID)
+                {
+                    self.structured_merge_keys
+                        .insert(schema.table.clone(), key.clone());
+                }
                 self.state
                     .schema_hashes
                     .insert(schema.table.clone(), schema.content_hash());
@@ -143,6 +160,23 @@ impl Loader {
                 self.dirty = true;
             }
             LoadItem::Batch { table, batch } => {
+                // Keyed structured merge (006): merge keys are identities —
+                // a NULL key is a typed error, never a silent mis-merge.
+                if let Some(keys) = self.structured_merge_keys.get(&table) {
+                    for key in keys {
+                        let column = batch.column_by_name(key).ok_or_else(|| {
+                            RdltError::config(format!(
+                                "merge key `{key}` is not a column of table `{table}`"
+                            ))
+                        })?;
+                        if column.null_count() > 0 {
+                            return Err(RdltError::config(format!(
+                                "merge key `{key}` contains NULLs in table `{table}` — \
+                                 merge keys are identities (contract merge-structured.md)"
+                            )));
+                        }
+                    }
+                }
                 let rows = batch.num_rows() as u64;
                 let bytes = batch.get_array_memory_size() as u64;
                 let lowered = lowering::lower_batch(&batch, &self.caps)?;

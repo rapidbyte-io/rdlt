@@ -96,16 +96,26 @@ async fn sweep_postgres_destination() {
     let mut fired: std::collections::BTreeSet<(&str, &str)> = std::collections::BTreeSet::new();
     for &point in rdlt_postgres::dest::FAIL_POINTS {
         for action in ["return", "panic", "1*off->return"] {
-            for mode in [WriteMode::Append, WriteMode::Replace] {
+            for mode in [
+                WriteMode::Append,
+                WriteMode::Replace,
+                // Shredded identity merge (feature 006 sweep extension): the
+                // dedup DELETE+INSERT arm under the same protocol edges.
+                WriteMode::Merge {
+                    key: vec!["id".into()],
+                },
+            ] {
                 // Fresh dataset per cell isolates state on the one container.
+                let mode_label = match &mode {
+                    WriteMode::Append => "append",
+                    WriteMode::Replace => "replace",
+                    _ => "merge",
+                };
                 let dataset = format!(
                     "sweep_{}_{}_{}",
                     point.replace('.', "_"),
-                    action,
-                    match mode {
-                        WriteMode::Append => "append",
-                        _ => "replace",
-                    }
+                    action.replace(['*', '-', '>'], "_"),
+                    mode_label
                 );
                 let dir = tempfile::tempdir().expect("tempdir");
                 let workdir = dir.path().join("wal");
@@ -117,13 +127,7 @@ async fn sweep_postgres_destination() {
                 let armed2 = attempt(&workdir, &dest, &mode).await;
                 fail::remove(point);
                 if armed1.is_err() || armed2.is_err() {
-                    fired.insert((
-                        point,
-                        match mode {
-                            WriteMode::Append => "append",
-                            _ => "replace",
-                        },
-                    ));
+                    fired.insert((point, mode_label));
                 }
 
                 let recovered = attempt(&workdir, &dest, &mode).await;
@@ -140,11 +144,11 @@ async fn sweep_postgres_destination() {
         }
     }
     // Anti-vacuousness pin (005 review): every registered point must have
-    // failed at least one armed attempt in BOTH modes — a dead crash_point!
+    // failed at least one armed attempt in ALL THREE modes — a dead crash_point!
     // site fails here instead of passing silently.
     let expected: std::collections::BTreeSet<(&str, &str)> = rdlt_postgres::dest::FAIL_POINTS
         .iter()
-        .flat_map(|&p| [(p, "append"), (p, "replace")])
+        .flat_map(|&p| [(p, "append"), (p, "replace"), (p, "merge")])
         .collect();
     assert_eq!(
         fired, expected,

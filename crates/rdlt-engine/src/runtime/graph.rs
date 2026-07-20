@@ -141,14 +141,30 @@ async fn run_once(
                 destination.spec().name
             )));
         }
-        // Clause B4: structured streams carry no per-row identity — Merge cannot
-        // deduplicate. Rejected here, at plan time, before the destination opens.
-        if spec.structured && matches!(config.mode_for(&spec.name), WriteMode::Merge { .. }) {
-            return Err(RdltError::config(format!(
-                "stream `{}` is structured (Arrow passthrough, no per-row identity) \
-                 and cannot use Merge (contract clause B4); use Append or Replace",
-                spec.name
-            )));
+        // Clause B4 (feature-006 amendment, contracts/merge-structured.md):
+        // structured streams merge ONLY by a declared key — accepted iff the
+        // stream declares a non-empty primary_key AND Merge{key} names exactly
+        // that key (the destination's merge capability was checked above).
+        // Keyless structured streams keep the original rejection.
+        if spec.structured
+            && let WriteMode::Merge { key } = config.mode_for(&spec.name)
+        {
+            let declared = spec.primary_key.clone().unwrap_or_default();
+            if declared.is_empty() {
+                return Err(RdltError::config(format!(
+                    "stream `{}` is structured with no declared primary_key and \
+                     cannot use Merge (contract clause B4); declare a key on the \
+                     stream and set Merge {{ key }} to it, or use Append/Replace",
+                    spec.name
+                )));
+            }
+            if key != declared {
+                return Err(RdltError::config(format!(
+                    "stream `{}`: Merge key {:?} must equal the stream's declared \
+                     primary_key {:?} (feature-006 keyed structured merge)",
+                    spec.name, key, declared
+                )));
+            }
         }
     }
 

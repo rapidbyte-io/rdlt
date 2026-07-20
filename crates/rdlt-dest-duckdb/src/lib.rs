@@ -373,6 +373,29 @@ impl LoadSession for DuckDbSession {
                         ))
                         .map_err(fatal)?;
                     }
+                    WriteMode::Merge { key }
+                        if !tables[table]
+                            .0
+                            .columns
+                            .iter()
+                            .any(|c| c.name == system_columns::ID) =>
+                    {
+                        // Keyed STRUCTURED merge (feature 006,
+                        // merge-structured.md): delete-by-declared-key, then
+                        // insert with deterministic last-wins by key.
+                        let key_list = key.iter().map(|k| quote(k)).collect::<Vec<_>>().join(", ");
+                        tx.execute_batch(&format!(
+                            "DELETE FROM {target} WHERE ({key_list}) IN \
+                             (SELECT {key_list} FROM {stage})"
+                        ))
+                        .map_err(fatal)?;
+                        tx.execute_batch(&format!(
+                            "INSERT INTO {target} ({cols}) SELECT {cols} FROM {stage} \
+                             QUALIFY row_number() OVER \
+                             (PARTITION BY {key_list} ORDER BY rowid DESC) = 1"
+                        ))
+                        .map_err(fatal)?;
+                    }
                     WriteMode::Merge { .. } => {
                         let root = &roots[table];
                         let root_stage = quote(&stage_name(root));

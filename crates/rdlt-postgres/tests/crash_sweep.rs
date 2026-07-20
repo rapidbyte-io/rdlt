@@ -50,8 +50,18 @@ impl Rig {
     }
 
     async fn attempt(&self, conn: &str) -> Result<rdlt_engine::RunReport, String> {
+        self.attempt_mode(conn, &rdlt_connector::core::WriteMode::Append)
+            .await
+    }
+
+    async fn attempt_mode(
+        &self,
+        conn: &str,
+        mode: &rdlt_connector::core::WriteMode,
+    ) -> Result<rdlt_engine::RunReport, String> {
         let mut config = EngineConfig::new("pg-src-sweep");
         config.workdir = Some(self.workdir.clone());
+        config.write_mode = mode.clone();
         let engine = Engine::new(config, source(conn), self.dest.clone());
         match tokio::spawn(engine.run()).await {
             Ok(Ok(report)) => Ok(report),
@@ -88,48 +98,58 @@ async fn sweep_postgres_source() {
     fixture.seed(SEED).await;
     let conn = fixture.conn_url();
 
+    // Append + keyed structured Merge (feature 006): the merge axis drives the
+    // keyed delete+insert commit path under every crash point.
+    let modes = [
+        rdlt_connector::core::WriteMode::Append,
+        rdlt_connector::core::WriteMode::Merge {
+            key: vec!["id".into()],
+        },
+    ];
     for &point in rdlt_postgres::source::FAIL_POINTS {
         // First-occurrence, panic, and SECOND-occurrence passes (003 lesson:
         // sweeps that only fire a point's first occurrence missed real bugs).
         for action in ["return", "panic", "1*off->return"] {
-            let rig = Rig::new();
-            fail::cfg(point, action).expect("configure fail point");
-            let armed1 = rig.attempt(&conn).await;
-            // Second attempt still armed: failure during recovery itself.
-            let armed2 = rig.attempt(&conn).await;
-            fail::remove(point);
-            // The instrument must FIRE (005 review): a deleted or unreachable
-            // crash_point! site would leave armed attempts green and this
-            // sweep vacuous — the exact class the fail/failpoints fix killed.
-            match action {
-                "1*off->return" => assert!(
-                    armed1.is_err() || armed2.is_err(),
-                    "[{point} / {action}] armed attempts never failed — point not firing"
-                ),
-                _ => assert!(
-                    armed1.is_err(),
-                    "[{point} / {action}] first armed attempt succeeded — point not firing"
-                ),
-            }
+            for mode in &modes {
+                let rig = Rig::new();
+                fail::cfg(point, action).expect("configure fail point");
+                let armed1 = rig.attempt_mode(&conn, mode).await;
+                // Second attempt still armed: failure during recovery itself.
+                let armed2 = rig.attempt_mode(&conn, mode).await;
+                fail::remove(point);
+                // The instrument must FIRE (005 review): a deleted or unreachable
+                // crash_point! site would leave armed attempts green and this
+                // sweep vacuous — the exact class the fail/failpoints fix killed.
+                match action {
+                    "1*off->return" => assert!(
+                        armed1.is_err() || armed2.is_err(),
+                        "[{point} / {action}] armed attempts never failed — point not firing"
+                    ),
+                    _ => assert!(
+                        armed1.is_err(),
+                        "[{point} / {action}] first armed attempt succeeded — point not firing"
+                    ),
+                }
 
-            let recovered = rig.attempt(&conn).await;
-            assert!(
-                recovered.is_ok(),
-                "[{point} / {action}] recovery failed: {recovered:?}"
-            );
-            assert_eq!(
-                rig.count(),
-                TOTAL_ROWS,
-                "[{point} / {action}] exactly-once violated"
-            );
-            // Convergence: one more clean run moves nothing.
-            let stable = rig.attempt(&conn).await.expect("stable run");
-            assert_eq!(
-                stable.total_rows(),
-                0,
-                "[{point} / {action}] not convergent"
-            );
-            assert_eq!(rig.count(), TOTAL_ROWS);
+                let recovered = rig.attempt_mode(&conn, mode).await;
+                assert!(
+                    recovered.is_ok(),
+                    "[{point} / {action} / {mode:?}] recovery failed: {recovered:?}"
+                );
+                assert_eq!(
+                    rig.count(),
+                    TOTAL_ROWS,
+                    "[{point} / {action} / {mode:?}] exactly-once violated"
+                );
+                // Convergence: one more clean run moves nothing.
+                let stable = rig.attempt_mode(&conn, mode).await.expect("stable run");
+                assert_eq!(
+                    stable.total_rows(),
+                    0,
+                    "[{point} / {action} / {mode:?}] not convergent"
+                );
+                assert_eq!(rig.count(), TOTAL_ROWS);
+            }
         }
     }
 }

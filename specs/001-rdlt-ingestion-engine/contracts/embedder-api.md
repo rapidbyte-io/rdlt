@@ -29,7 +29,7 @@ let report: RunReport = pipeline.run().await?;         // resumable; cancel-safe
 | B1 | Builder uses typestate: missing source or destination is a **compile** error, not a runtime one. |
 | B2 | `build()` validates configuration against `DestCapabilities` pre-I/O: e.g. `Merge` requested but unsupported, ident-rule conflicts — die here, never mid-run. |
 | B3 | `build()` performs no network or destination I/O; first I/O happens in `run()`. |
-| B4 | *(feature 002)* `Merge` on a stream declared `structured: true` fails with an error naming the stream — merge requires per-row identity, which structured streams lack in v1. Enforced at run-start planning (stream specs come from the async `streams()` call), strictly BEFORE the destination is opened or any data moves. |
+| B4 | *(feature 002, amended by feature 006)* `Merge` on a KEYLESS structured stream fails with an error naming the stream and pointing at the keyed alternative; a structured stream WITH a non-empty declared `primary_key`, a `merge`-capable destination, and `Merge{key}` equal to the declared key MERGES by that key (see `specs/006-postgres-completeness/contracts/merge-structured.md`). Enforced at run-start planning, strictly BEFORE the destination is opened or any data moves. |
 
 ### Run time
 

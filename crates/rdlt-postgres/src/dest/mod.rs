@@ -413,6 +413,9 @@ impl LoadSession for PgSession {
         }
 
         for (table, (schema, mode)) in &self.tables {
+            // Feature 006: a schema without the per-row identity column is a
+            // STRUCTURED stream's table — merge (if requested) goes by key.
+            let schema_has_identity = schema.columns.iter().any(|c| c.name == system_columns::ID);
             let target = quote(table.as_str());
             let stage = quote(&stage_name(&self.pipeline, table));
             // Publishes are ALWAYS by name (finding #4) — and the list excludes the
@@ -434,6 +437,27 @@ impl LoadSession for PgSession {
                     }
                     tx.batch_execute(&format!(
                         "INSERT INTO {target} ({cols}) SELECT {cols} FROM {stage}"
+                    ))
+                    .await
+                    .map_err(transient)?;
+                }
+                WriteMode::Merge { key } if !schema_has_identity => {
+                    // Keyed STRUCTURED merge (feature 006, merge-structured.md):
+                    // delete-by-declared-key, then insert with deterministic
+                    // last-wins in-batch dedup by the same key.
+                    let key_list = key.iter().map(|k| quote(k)).collect::<Vec<_>>().join(", ");
+                    tx.batch_execute(&format!(
+                        "DELETE FROM {target} WHERE ({key_list}) IN (SELECT {key_list} FROM {stage})"
+                    ))
+                    .await
+                    .map_err(transient)?;
+                    tx.batch_execute(&format!(
+                        "INSERT INTO {target} ({cols}) \
+                         SELECT {cols} FROM ( \
+                             SELECT DISTINCT ON ({key_list}) * FROM {stage} \
+                             ORDER BY {key_list}, {arrival} DESC \
+                         ) deduped",
+                        arrival = quote(ARRIVAL_COL),
                     ))
                     .await
                     .map_err(transient)?;

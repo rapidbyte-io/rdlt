@@ -8,7 +8,7 @@
 //! (Large* variants, timestamp unit/zone) changed a column's type, its values are
 //! cast LOSSLESSLY to the current type — never semantically coerced (clause E7).
 //! Structured streams carry no per-row identity (no `_rdlt_id`) — which is why
-//! Merge is rejected for them (clause B4).
+//! Keyless Merge is rejected for them; keyed structured merge lands per the feature-006 amendment (clause B4).
 
 use std::sync::Arc;
 

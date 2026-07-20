@@ -350,3 +350,125 @@ async fn cross_batch_narrowing_keeps_the_wide_type() {
         "int cast losslessly to text"
     );
 }
+
+// ---- Feature 006: keyed structured merge (contract merge-structured.md) ----
+
+/// Structured source that DECLARES a primary key, making it merge-eligible
+/// under the amended clause B4.
+struct KeyedArrowSource {
+    batches: Vec<RecordBatch>,
+    key: Vec<String>,
+}
+
+#[async_trait]
+impl Source for KeyedArrowSource {
+    fn spec(&self) -> ConnectorSpec {
+        ConnectorSpec::new("keyed-arrow-test", "0.0.0")
+    }
+
+    async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
+        Ok(vec![
+            StreamSpec::new("metrics")
+                .structured()
+                .with_primary_key(self.key.clone()),
+        ])
+    }
+
+    async fn read(&self, mut req: ReadRequest) -> Result<(), SourceError> {
+        for batch in &self.batches {
+            if req.out.arrow(batch.clone()).await.is_err() {
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
+}
+
+fn merge_config(pipeline: &str, key: &[&str]) -> EngineConfig {
+    let mut config = EngineConfig::new(pipeline);
+    config.write_mode = rdlt_core::WriteMode::Merge {
+        key: key.iter().map(|k| (*k).to_string()).collect(),
+    };
+    config
+}
+
+/// Amended B4: structured + declared key + Merge{same key} is ACCEPTED, and
+/// re-delivered keys converge to one row per key (last wins).
+#[tokio::test]
+async fn keyed_structured_merge_accepted_and_converges() {
+    let dest = MemoryDestination::new();
+    let source = KeyedArrowSource {
+        batches: vec![batch_ab(&[1, 2], &["a", "b"])],
+        key: vec!["id".into()],
+    };
+    Engine::new(merge_config("pt-kmerge", &["id"]), source, dest.clone())
+        .run()
+        .await
+        .expect("keyed merge accepted");
+    assert_eq!(dest.committed_rows("metrics").len(), 2);
+
+    // Second load updates key 2 and adds key 3: no duplicates, updated value.
+    let source = KeyedArrowSource {
+        batches: vec![batch_ab(&[2, 3], &["b2", "c"])],
+        key: vec!["id".into()],
+    };
+    Engine::new(merge_config("pt-kmerge", &["id"]), source, dest.clone())
+        .run()
+        .await
+        .expect("merge run 2");
+    let rows = dest.committed_rows("metrics");
+    assert_eq!(rows.len(), 3, "one row per key");
+    let row2 = rows
+        .iter()
+        .find(|r| r["id"] == json!(2))
+        .expect("key 2 present");
+    assert_eq!(row2["name"], json!("b2"), "merge took the updated value");
+}
+
+/// Amended B4: the Merge key must EQUAL the declared primary_key.
+#[tokio::test]
+async fn merge_key_mismatch_rejected_at_plan_time() {
+    let dest = MemoryDestination::new();
+    let source = KeyedArrowSource {
+        batches: vec![batch_ab(&[1], &["a"])],
+        key: vec!["id".into()],
+    };
+    let err = Engine::new(merge_config("pt-kmm", &["name"]), source, dest.clone())
+        .run()
+        .await
+        .expect_err("key mismatch must be rejected");
+    let msg = err.to_string();
+    assert!(msg.contains("primary_key"), "{msg}");
+    assert_eq!(dest.opens(), 0, "rejected before the destination opened");
+}
+
+/// Write-time guard: a NULL in a merge-key column is a typed error naming the
+/// column — keys are identities.
+#[tokio::test]
+async fn null_in_merge_key_is_a_typed_write_time_error() {
+    let batch = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, true),
+            Field::new("name", DataType::Utf8, true),
+        ])),
+        vec![
+            Arc::new(Int64Array::from(vec![Some(1), None])),
+            Arc::new(StringArray::from(vec!["a", "b"])),
+        ],
+    )
+    .expect("batch");
+    let dest = MemoryDestination::new();
+    let source = KeyedArrowSource {
+        batches: vec![batch],
+        key: vec!["id".into()],
+    };
+    let err = Engine::new(merge_config("pt-knull", &["id"]), source, dest)
+        .run()
+        .await
+        .expect_err("NULL key must fail");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("id") && msg.to_lowercase().contains("null"),
+        "error names the key column: {msg}"
+    );
+}

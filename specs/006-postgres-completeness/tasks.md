@@ -147,13 +147,13 @@ converges (count == source count, newest values win) on both SQL
 destinations; keyless/non-capable rejections stand; sweep green in
 merge mode.
 
-- [ ] T013 [US3] The contract event FIRST:
+- [X] T013 [US3] The contract event FIRST:
       `specs/001-rdlt-ingestion-engine/contracts/connector-spi.md`
       (D8 + E7 redelivery note) and the feature-002 clause references
       gain pointers to
       `specs/006-postgres-completeness/contracts/merge-structured.md`
       (amendment, not rewrite); rejection-message text agreed here.
-- [ ] T014 [US3] Engine lift in `crates/rdlt-engine/src/` (locate the
+- [X] T014 [US3] Engine lift in `crates/rdlt-engine/src/` (locate the
       plan-time B4 rejection): accept Merge for structured streams
       with non-empty declared key AND `capabilities().merge`; keep
       typed rejections (keyless → message points at keyed
@@ -161,15 +161,15 @@ merge mode.
       validation (typed error naming column); pass declared key
       columns to the destination commit path; unit tests for
       accept/reject matrix + NULL keys.
-- [ ] T015 [P] [US3] DuckDB merge-by-key in
+- [X] T015 [P] [US3] DuckDB merge-by-key in
       `crates/rdlt-dest-duckdb/src/lib.rs`: generalize the keyed
       delete+insert from `_rdlt_root_id` to configured key columns
       (multi-column keys); conformance: update-heavy convergence,
       idempotent re-commit (D3).
-- [ ] T016 [P] [US3] Postgres merge-by-key in
+- [X] T016 [P] [US3] Postgres merge-by-key in
       `crates/rdlt-postgres/src/dest/mod.rs`: same generalization +
       conformance.
-- [ ] T017 [US3] Merge under fire:
+- [X] T017 [US3] Merge under fire:
       `crates/rdlt-postgres/tests/crash_sweep.rs` gains a Merge
       mode loop (keyed incremental source; armed-fire assertions
       extended); `crates/rdlt-postgres/tests/dest_crash_sweep.rs` +

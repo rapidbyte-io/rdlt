@@ -154,3 +154,98 @@ async fn end_to_end_flattened_sync_into_postgres() {
         "x/y subtree replaced; grace had no children"
     );
 }
+
+/// Feature 006 (merge-structured.md): keyed STRUCTURED merge — no `_rdlt_id`
+/// exists, the declared key drives delete+insert, update-heavy runs converge.
+#[tokio::test(flavor = "multi_thread")]
+async fn keyed_structured_merge_into_postgres() {
+    use std::sync::Arc;
+
+    use arrow_array::{Int64Array, RecordBatch, StringArray};
+    use arrow_schema::{DataType, Field, Schema};
+    use rdlt_connector::{ConnectorSpec, ReadRequest, Source, SourceError, StreamSpec};
+
+    struct KeyedArrowSource {
+        batch: RecordBatch,
+    }
+
+    #[async_trait]
+    impl Source for KeyedArrowSource {
+        fn spec(&self) -> ConnectorSpec {
+            ConnectorSpec::new("keyed-arrow-test", "0.0.0")
+        }
+
+        async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
+            Ok(vec![
+                StreamSpec::new("metrics")
+                    .structured()
+                    .with_primary_key(["id"]),
+            ])
+        }
+
+        async fn read(&self, mut req: ReadRequest) -> Result<(), SourceError> {
+            let _ = req.out.arrow(self.batch.clone()).await;
+            Ok(())
+        }
+    }
+
+    fn batch(ids: &[i64], names: &[&str]) -> RecordBatch {
+        RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("name", DataType::Utf8, true),
+            ])),
+            vec![
+                Arc::new(Int64Array::from(ids.to_vec())),
+                Arc::new(StringArray::from(names.to_vec())),
+            ],
+        )
+        .expect("batch")
+    }
+
+    let (_container, conn) = start_pg().await;
+    let dest = Postgres::connect(&conn).dataset("raw");
+    let merge_config = || {
+        let mut config = EngineConfig::new("pg-kmerge");
+        config.write_mode = rdlt_connector::WriteMode::Merge {
+            key: vec!["id".into()],
+        };
+        config
+    };
+
+    let source = KeyedArrowSource {
+        batch: batch(&[1, 2], &["a", "b"]),
+    };
+    Engine::new(merge_config(), source, dest.clone())
+        .run()
+        .await
+        .expect("keyed merge run 1");
+
+    // Run 2 updates key 2 and adds key 3.
+    let source = KeyedArrowSource {
+        batch: batch(&[2, 3], &["b2", "c"]),
+    };
+    Engine::new(merge_config(), source, dest.clone())
+        .run()
+        .await
+        .expect("keyed merge run 2");
+
+    let (client, connection) = tokio_postgres::connect(&conn, tokio_postgres::NoTls)
+        .await
+        .expect("connect");
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    let count: i64 = client
+        .query_one("SELECT count(*) FROM raw.metrics", &[])
+        .await
+        .expect("count")
+        .get(0);
+    assert_eq!(count, 3, "one row per key after update-heavy run");
+    let name: String = client
+        .query_one("SELECT name FROM raw.metrics WHERE id = 2", &[])
+        .await
+        .expect("updated row")
+        .get(0);
+    assert_eq!(name, "b2", "merge took the updated value");
+}

@@ -271,26 +271,81 @@ async fn text_cursor_mixed_case_byte_order() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn merge_mode_rejected_for_structured_streams() {
-    // Engine clause B4 (feature 002): structured streams have no per-row
-    // `_rdlt_id`, so Merge is rejected at plan time. Spec US2-AS5 cannot hold
-    // for this source without an engine-contract change — recorded deviation
-    // + backlog item (see tasks.md implementation notes).
+async fn merge_by_declared_key_converges_and_keyless_is_rejected() {
+    // Engine clause B4 as amended by feature 006 (merge-structured.md):
+    // structured streams with a declared primary_key merge BY that key —
+    // update-heavy re-runs converge to one row per key. Keyless structured
+    // streams keep the original plan-time rejection.
     let fixture = PgFixture::start().await;
     fixture.seed(BASE).await;
-    let dir = tempfile::tempdir().expect("tempdir");
-    let dest = DuckDb::open(dir.path().join("out.duckdb")).expect("open db");
-    let mut config = EngineConfig::new("inc-merge");
-    config.write_mode = rdlt_connector::core::WriteMode::Merge {
-        key: vec!["id".into()],
+    let rig = Rig::new();
+
+    let merge_config = |pipeline: &str| {
+        let mut config = EngineConfig::new(pipeline);
+        config.write_mode = rdlt_connector::core::WriteMode::Merge {
+            key: vec!["id".into()],
+        };
+        config
     };
-    let err = Engine::new(config, source(&fixture.conn_url(), ""), dest)
+    let run_merge = |src: PostgresSource| {
+        let dest = rig.dest.clone();
+        let config = merge_config("inc-merge");
+        async move {
+            Engine::new(config, src, dest)
+                .run()
+                .await
+                .expect("keyed merge accepted")
+                .total_rows()
+        }
+    };
+
+    assert_eq!(run_merge(source(&fixture.conn_url(), "")).await, 3);
+    assert_eq!(rig.count(), 3);
+
+    // Update TWO existing rows past the watermark and add one new row: the
+    // merge must overwrite in place, not append.
+    fixture
+        .seed(
+            "UPDATE ev SET v = 'a2', ts = '2026-01-05T00:00:00Z' WHERE id = 1; \
+             UPDATE ev SET v = 'b2', ts = '2026-01-05T00:00:00Z' WHERE id = 2; \
+             INSERT INTO ev VALUES (4, 'd', '2026-01-04T00:00:00Z');",
+        )
+        .await;
+    assert_eq!(run_merge(source(&fixture.conn_url(), "")).await, 3);
+    assert_eq!(rig.count(), 4, "one row per key after update-heavy run");
+    assert_eq!(rig.distinct_ids(), "4");
+    let v1 = rig
+        .dest
+        .query_string("SELECT v FROM ev WHERE id = 1")
+        .expect("v1");
+    assert_eq!(v1, "a2", "merge took the updated value");
+
+    // Idempotent re-run (nothing past the watermark): still one row per key.
+    assert_eq!(run_merge(source(&fixture.conn_url(), "")).await, 0);
+    assert_eq!(rig.count(), 4);
+
+    // Keyless structured stream: B4 rejection stands, at plan time.
+    fixture
+        .seed("CREATE TABLE nokey (x int8); INSERT INTO nokey VALUES (1);")
+        .await;
+    let keyless = PostgresSource::from_yaml(&format!(
+        "conn: \"{}\"\ntables:\n  - name: nokey\n",
+        fixture.conn_url()
+    ))
+    .expect("config");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let dest = DuckDb::open(dir.path().join("nokey.duckdb")).expect("open db");
+    let mut config = merge_config("inc-merge-nokey");
+    config.write_mode = rdlt_connector::core::WriteMode::Merge {
+        key: vec!["x".into()],
+    };
+    let err = Engine::new(config, keyless, dest)
         .run()
         .await
-        .expect_err("merge must be rejected for structured streams");
+        .expect_err("keyless structured merge must be rejected");
     let msg = err.to_string().to_lowercase();
     assert!(
-        msg.contains("merge") && (msg.contains("structured") || msg.contains("arrow")),
+        msg.contains("merge") && msg.contains("primary_key"),
         "{msg}"
     );
 }

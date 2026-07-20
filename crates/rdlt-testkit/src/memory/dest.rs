@@ -253,6 +253,34 @@ impl LoadSession for MemorySession {
                         inner.committed.entry(table).or_default().extend(rows);
                     }
                 }
+                WriteMode::Merge { key }
+                    if inner.schemas.get(&table).is_some_and(|s| {
+                        s.columns.iter().all(|c| c.name != system_columns::ID)
+                    }) =>
+                {
+                    // Keyed STRUCTURED merge (feature 006, merge-structured.md):
+                    // no per-row identity exists — delete-by-declared-key, then
+                    // last-wins within the staged batch by the same key.
+                    let key_of = |row: &Row| -> String {
+                        let tuple: Vec<&Value> = key
+                            .iter()
+                            .map(|k| row.get(k).unwrap_or(&Value::Null))
+                            .collect();
+                        serde_json::to_string(&tuple).expect("key tuple serializes")
+                    };
+                    let staged_keys: BTreeSet<String> = rows.iter().map(&key_of).collect();
+                    let committed = inner.committed.entry(table.clone()).or_default();
+                    committed.retain(|row| !staged_keys.contains(&key_of(row)));
+                    let mut seen = BTreeSet::new();
+                    let mut deduped: Vec<Row> = Vec::new();
+                    for row in rows.into_iter().rev() {
+                        if seen.insert(key_of(&row)) {
+                            deduped.push(row);
+                        }
+                    }
+                    deduped.reverse();
+                    committed.extend(deduped);
+                }
                 WriteMode::Merge { .. } => {
                     let root = root_table(&inner.schemas, &table);
                     let replaced: BTreeSet<String> =

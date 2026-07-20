@@ -173,7 +173,15 @@ async fn sweep_parquet_destination() {
 #[tokio::test(flavor = "multi_thread")]
 async fn sweep_duckdb_destination() {
     let points = engine_and(rdlt_dest_duckdb::FAIL_POINTS);
-    for mode in [WriteMode::Append, WriteMode::Replace] {
+    // Merge (feature 006 sweep extension): the shredded identity-merge
+    // DELETE+INSERT arm crosses the same staging/publish boundaries.
+    for mode in [
+        WriteMode::Append,
+        WriteMode::Replace,
+        WriteMode::Merge {
+            key: vec!["id".into()],
+        },
+    ] {
         let expected_fired = [ENGINE_POINTS, rdlt_dest_duckdb::FAIL_POINTS].concat();
         sweep(
             &points,
