@@ -16,9 +16,12 @@
 
 | Metric | pinned dlt 1.11.0 | rdlt (bundled file source, CLI) | multiple | target (design §8) | status |
 |---|---|---|---|---|---|
-| Wall time (200k records) | 19.60 s | 1.73 s | **11.3× faster** | ≥ 10× | ✅ met (product claim) |
-| Source records/s | 10,204 | 115,800 | 11.3× | — | — |
-| Peak RSS | 1,985 MB | 642 MB | **3.1× less** | ≤ 1/5th | ⚠️ missed; see caveats |
+| Wall time (200k records) | 19.60 s | 0.92 s | **21.3× faster** | ≥ 10× | ✅ met (product claim) |
+| Source records/s | 10,204 | 216,900 | 21.3× | — | — |
+| Peak RSS | 1,985 MB | 515 MB | **3.9× less** | ≤ 1/5th | ⚠️ missed; see caveats |
+
+(Re-measured 2026-07-20 after feature 003's hot-path work: tape shredder, hex
+encoder, zero-clone builds — was 1.73 s / 642 MB at feature-002 merge.)
 
 (The earlier example-binary measurement — 1.81 s / 410 MB — is retired; the product
 path is what we claim. The RSS regression vs the example is DuckDB buffering under the
@@ -55,13 +58,65 @@ The bonus row is near-parity by design: both sides reduce to "hand arrow batches
 the same DuckDB C++ library", so there is little engine work left to win on. The
 parquet→parquet cell isolates actual engine overhead and is the honest ≥2× claim.
 
+## Run: 2026-07-20 — remaining design-§8 cells (feature 003)
+
+- Same machine and pinned `dlt==1.11.0` container as every prior row; baseline
+  measured first in each cell.
+
+**mock REST → Postgres, 100k records (100 pages, page-number pagination)**
+- Both sides hit the same in-memory mock API (pre-rendered pages,
+  `crates/rdlt-source-rest/examples/mock_api.rs`) and the same Postgres 16
+  container, sequentially. dlt = `rest_api` source; rdlt = bundled REST source
+  via the release CLI. 100k source records → 300k rows (root + tags children).
+
+| Metric | pinned dlt | rdlt | multiple | target | status |
+|---|---|---|---|---|---|
+| Wall time | 7.49 s | 1.37 s | **5.5× faster** | ≥ 5× | ✅ met |
+| Peak RSS | 250 MB | 49 MB | **5.1× less** | — | — |
+
+**Shred stage only, 200k nested records (no destination I/O either side)**
+- dlt: `pipeline.normalize()` timed alone (extract pre-staged, untimed) —
+  `benches/baseline/normalize_only.py`. rdlt: full shred path (parse → shape
+  observation → schema resolution → Arrow build) over the same file in 8 MB
+  slabs — `cargo run --release -p rdlt-engine --example shred_only`. Median of 3.
+
+| Metric | pinned dlt | rdlt | multiple | target | status |
+|---|---|---|---|---|---|
+| Stage time | 7.63 s | 0.95 s | **8.1× faster** | ≥ 20× | ❌ missed (honest) |
+
+Re-measured 2026-07-20 after the US3 work (was 4.6×). The profile-driven story:
+the tape rewrite alone moved nothing — instruction counts proved the Value trees
+were never the bottleneck. The real cost was `RowId::to_hex` formatting via
+`write!("{:02x}")` (48% of ALL shred instructions), fixed with a table encoder,
+plus per-cell String clones. Shred stage: 1.094 G → 531 M instructions (2.06×),
+wall 1.66 s → 0.95 s. The remaining gap to 20× is allocator traffic + blake3 +
+arrow building — hash swap measured and REJECTED (blake3 is ~16% of the stage;
+the >30% e2e switch bar is unreachable; see design doc §5.4).
+
+**Cold start, one-row pipeline**
+- rdlt: release CLI, 10 fresh runs, median, INCLUDING full process startup.
+- dlt: in-container, timed from before `import dlt` through load (interpreter
+  boot ~30 ms still excluded — generous to the baseline); median of 5; dlt's
+  pipeline phase is bimodal (0.53 s / 1.53 s) — median shown.
+
+| Metric | pinned dlt | rdlt | multiple | target | status |
+|---|---|---|---|---|---|
+| Startup→loaded | 0.527 s | 0.023 s | **22.7× less overhead** | ≤ 1/20th | ✅ met |
+
+## Perf-regression gate (feature 003, G1)
+
+Instruction-count baselines for the hot paths live in
+`benches/perf-baselines.json` (iai-callgrind; >3% regression blocks CI —
+`TARGET=iai make bench`). Recorded 2026-07-20 post-optimization: shred (tape)
+531 M instructions / 10k nested rows; tree reference 549 M; passthrough 601 k;
+identity keyed/keyless 20.5 M / 29.3 M.
+
 ## Still pending
 
 | Benchmark | blocker |
 |---|---|
-| Shred microbench in isolation (≥20× target) | needs a dlt `normalize`-stage-only baseline for a like-for-like cut; engine-side criterion bench exists (`cargo bench -p rdlt-engine --bench shred`) |
-| mock REST → Postgres (≥5×) | harness pieces exist (wiremock, Postgres dest); dlt-side pipeline not yet written |
-| Cold start (≤1/20th) | not yet instrumented separately |
+| Shred-only ≥20× | 8.1× after the feature-003 hot-path work; next levers are allocator traffic and arrow building (documented miss) |
+| Flagship RSS ≤1/5th | 515 MB vs 397 MB target after 003; DuckDB `memory_limit` tuning still pending (T024) |
 
 Reproduce: `benches/run-e2e.sh` (dataset gen, baseline container, rdlt CLI runs —
 jsonl and parquet cells).

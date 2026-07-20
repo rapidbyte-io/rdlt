@@ -1,0 +1,21 @@
+{
+  "format_version": 1,
+  "toolchain": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+  "benches": {
+    "identity_keyed_10k": {
+      "instructions": 20538618
+    },
+    "identity_keyless_10k": {
+      "instructions": 29276639
+    },
+    "passthrough_10k": {
+      "instructions": 601449
+    },
+    "shred_nested_10k": {
+      "instructions": 530817273
+    },
+    "shred_tree_reference_10k": {
+      "instructions": 530780426
+    }
+  }
+}
