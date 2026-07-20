@@ -126,6 +126,18 @@ cross-toolchain comparisons refused — re-record deliberately). Recorded
   pg→Postgres 8.9× vs dlt's fastest documented config (43.6×/55.8× vs
   its default; 2.2× vs its connectorx Rust reader), jsonb docs 18.8×;
   bars ≥ 6× measurement-first. The matrix above.
+- 2026-07-20 (feature 006 pre-merge verification): full same-session
+  paired re-measure, no bar or baseline changes, EVERY gated row met —
+  flagship 13.1× (14.91 s / 1,967 MB vs 1.14 s / 350 MB), shred-only
+  11.8× (5.87 s vs 0.499 s), REST→PG 6.6× (5.51 s vs 0.84 s, 100k rows
+  verified in-destination), passthrough 3.7×, pg→DuckDB 8.1× (10.12 s
+  vs 1.25 s), pg→Postgres 8.7× (17.24 s vs 1.98 s), cold 23.8 ms mean
+  (21.8–26.5 ms, 20 hyperfine runs) vs ≤ 40 ms, iai gate worst drift
+  +0.67% vs 3% tolerance. Scoreboard: jsonb→DuckDB 18.9×, 2.4× vs
+  connectorx, RSS 1/5.6. All movement vs the recorded 004/005 numbers
+  is inside the documented ±2–10% session jitter band — TLS plumbing,
+  hints, query streams, and the keyed-merge engine changes cost nothing
+  measurable on the hot paths.
 
 Reproduce: `benches/run-e2e.sh` (jsonl, parquet, cold-start cells) and the
 REST→Postgres recipe in RESULTS history / `benches/baseline/pipeline_rest_pg.py`.
