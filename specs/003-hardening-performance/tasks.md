@@ -134,7 +134,37 @@ before Phase 5 changes them. All cargo commands run via
 
 - [ ] T029 Text/doc corrections: `view.rs` obj_entries doc line (said "sorted-key" against its own module contract), mutation-report baseline commit attribution (8d44055, not 852049f), `data-model.md` §6 hash threshold >10%→>30%, Makefile bench header overclaim
 - [ ] T030 [P] Gate robustness: toolchain-mismatch check in `benches/compare-iai.sh` (recorded vs current rustc — fail with a re-record instruction instead of flapping/masking on stable bumps); checked `u32` casts in `arena.rs` (typed error instead of silent wrap on >4.29e9-node documents); non-circular G2.2 (crash_sweep greps engine sources for `crash_point!` count == ENGINE_POINTS len); arena dup-key POSITION test (first-occurrence order — canonicalization is blind to it)
-- [ ] T031 Postgres crash-sweep coverage (G2.1 debt): `crash_point!` sites + `FAIL_POINTS` in `rdlt-dest-postgres` (engine-owned protocol boundaries: stage create/copy/publish/state/truncate — NOT the DB's internal tx atomicity), a `sweep_postgres_destination` gated on `DOCKER_HOST` availability, registry test updated; the deep-checks postgres service finally gets used
+- [ ] T031 Postgres crash-sweep coverage (G2.1 debt) — WRITING THIS FOUND TWO
+  CONFIRMED DATA-LOSS BUGS: the parquet Replace-recovery bug's siblings in
+  BOTH SQL destinations (in-memory truncate guards; fixed with the durable
+  receipt-log pattern + regression tests + a second-occurrence sweep pass that
+  makes the class detectable). Details in mutation-report.md. Original scope: `crash_point!` sites + `FAIL_POINTS` in `rdlt-dest-postgres` (engine-owned protocol boundaries: stage create/copy/publish/state/truncate — NOT the DB's internal tx atomicity), a `sweep_postgres_destination` gated on `DOCKER_HOST` availability, registry test updated; the deep-checks postgres service finally gets used
+
+- [ ] T032 Bump the dlt baseline pin to the current latest (1.29.0) and
+  re-measure ALL five cells baseline-first (jsonl→DuckDB, shred-only via
+  normalize_only.py, parquet→parquet + →DuckDB, REST→Postgres, cold start);
+  update every RESULTS.md row with the 1.29.0 columns and new multiples —
+  no multiple quoted across mismatched baseline versions. Blocked on podman
+  (host re-login); Dockerfile pin already bumped, policy note recorded.
+
+### Phase 7 verification handoff (builds blocked until host re-login)
+
+Everything below is WRITTEN and uncommitted, awaiting one verification pass:
+
+```
+make lint && make test && make test TARGET=sweep && make bench TARGET=iai
+cargo nextest run -p rdlt-dest-postgres --features failpoints   # recovery + pg sweep (needs podman socket env)
+```
+
+Uncommitted changeset (commit as `fix(dest): durable Replace guards …` after
+green): duckdb+postgres durable Replace guards (+dead fields removed, dep
+cleanups), duckdb/pg recovery regression tests, pg crash_sweep test + Makefile
+sweep addition, second-occurrence (`1*off->return`) sweep pass in both suites,
+grep-based non-circular G2.2 in the engine sweep, arena checked u32 casts +
+dup-key POSITION test, `empty_cursor_state_reports_fresh_resume` (from earlier),
+mutation-report/tasks doc updates describing the two new bugs. NOTE: the duckdb
+Replace guard change should also be sanity-checked by the existing crash sweep's
+new `1*off->return` cells and the parquet-style recovery test.
 
 ## Dependencies & Execution Order
 

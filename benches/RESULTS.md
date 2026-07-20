@@ -2,6 +2,12 @@
 
 > Baseline-first methodology (research.md R12): pinned dlt measured first, same
 > machine, same dataset, then rdlt. No multiple is quoted without both columns.
+>
+> **Baseline version policy**: the pin tracks the LATEST stable dlt at
+> measurement time (currently bumping 1.11.0 → 1.29.0); each row records the
+> version it was measured against, and a pin bump re-measures every cell —
+> multiples are never quoted across mismatched baseline versions. All rows
+> below are vs 1.11.0 until the queued 1.29.0 re-measure lands.
 
 ## Run: 2026-07-19 — jsonl → DuckDB, 200k nested records
 
