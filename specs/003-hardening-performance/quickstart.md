@@ -30,7 +30,7 @@ cargo +nightly fuzz run jsonl_slab -- -timeout=10 -max_total_time=3600
 ## Property tests
 
 ```bash
-cargo nextest run -p rdlt-engine -E 'test(shred_property) or test(shred_equivalence)'
+cargo nextest run -p rdlt-engine -E 'test(shred_property)'
 PROPTEST_CASES=4096 cargo nextest run ...   # extended run
 ```
 

@@ -44,4 +44,4 @@ between the repository and its contributors.
 |---|---|
 | G5.1 | Every performance-motivated change states before/after numbers from the relevant bench in its PR description (FR-012). |
 | G5.2 | A performance change with no measurable win does not merge. |
-| G5.3 | The streaming shred path merges only after the equivalence gate (data-model §7) and the full existing suite pass against it — and it is a HARD deliverable of this feature (spec clarification 2026-07-20). |
+| G5.3 | The streaming shred path merges only after the equivalence gate (data-model §7) and the full existing suite pass against it — and it is a HARD deliverable of this feature (spec clarification 2026-07-20). SATISFIED: gate passed, caught one real bug (cross-batch narrowing), then gate + reference path were retired in-feature (data-model §7). |

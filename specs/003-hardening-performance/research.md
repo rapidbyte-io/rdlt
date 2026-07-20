@@ -87,9 +87,12 @@ Numbering continues from feature 002 (R13–R19).
   resolve schemas exactly as today, then build Arrow arrays directly from tape
   slices. Canonicalization for `_rdlt_id` renders from the tape through the SAME
   `canonical_json_bytes` rules (shared function, one implementation). Rollout is
-  gated: `shred_equivalence.rs` propends old-vs-new on arbitrary documents and
-  asserts byte-identical batches, identities, and schema sequences; the old path
-  stays compiled (test-only reference) until one full feature cycle later.
+  gated: an equivalence proptest ran old-vs-new on arbitrary documents asserting
+  byte-identical batches, identities, and schema sequences. OUTCOME: passed on
+  its first run, caught a real cross-batch-narrowing bug during survivor
+  closure, and was then retired WITH the tree path in the same feature (review
+  decision — the plan's "one full cycle" was cut short deliberately; invariants
+  stay pinned by the property/hazard tests).
   Duplicate-key tie-break (last wins, matching serde_json), lone surrogates, and
   number-boundary behavior are pinned by explicit cases copied from the old
   path's observable behavior.

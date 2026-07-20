@@ -73,10 +73,14 @@ Fields: candidates, microbench numbers (keyed/keyless), flagship e2e numbers,
 threshold applied (>10% e2e), decision, date, consequence note (dev-state reset
 if switched). Written before any release tag (FR-008).
 
-## 7. Streaming-shred equivalence gate
+## 7. Streaming-shred equivalence gate (COMPLETED and retired)
 
 Not a persisted artifact but a defined relation: for any input batch sequence,
 `old_path(batches) == new_path(batches)` over (rows, `_rdlt_*` values, schema
-sequence, discard counts). Enforced by `shred_equivalence.rs` (proptest) and by
-running the ENTIRE existing engine suite against the new path. The old path is
-deleted only after one full feature cycle with the new path as default.
+sequence, discard counts). Enforced during rollout by an equivalence proptest
+plus the full engine suite against the new path — both passed, and the gate
+caught one real bug (cross-batch narrowing) before retirement. The tree path
+and the proptest were then deleted in the same feature (review decision:
+carrying the reference forward was debt); the invariants stay pinned by
+`tests/shred_property.rs` and the arena/passthrough hazard tests, and the
+semantics remain representation-independent by construction (`JsonView`).
