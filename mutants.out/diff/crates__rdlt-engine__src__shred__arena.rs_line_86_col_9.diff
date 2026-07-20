@@ -1,0 +1,23 @@
+--- crates/rdlt-engine/src/shred/arena.rs
++++ replace Arena<'s>::wrap_in_value_obj -> NodeId with Default::default()
+@@ -78,19 +78,17 @@
+                 *row = self.wrap_in_value_obj(*row);
+             }
+         }
+         Ok(rows)
+     }
+ 
+     /// `{"value": <node>}` — for bare-scalar/array rows and scalar child items.
+     pub(crate) fn wrap_in_value_obj(&mut self, node: NodeId) -> NodeId {
+-        let start = self.obj_entries.len() as u32;
+-        self.obj_entries.push((Cow::Borrowed("value"), node));
+-        self.push_node(ANode::Obj(start, start + 1))
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub(crate) fn node(&self, id: NodeId) -> Node<'_, 's> {
+         Node { arena: self, id }
+     }
+ 
+     fn push_node(&mut self, node: ANode<'s>) -> NodeId {
+         let id = self.nodes.len() as u32;

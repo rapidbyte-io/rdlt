@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/build.rs
++++ delete match arm Some(Kind::Bool(x)) in build_scalar
+@@ -198,17 +198,17 @@
+ 
+ fn build_scalar<'v, V: JsonView<'v>>(ty: LogicalType, values: &[Option<V>]) -> ArrayRef {
+     let kind_of = |v: &Option<V>| v.map(JsonView::kind);
+     match ty {
+         LogicalType::Bool => {
+             let mut b = BooleanBuilder::new();
+             for v in values {
+                 b.append_option(match kind_of(v) {
+-                    Some(Kind::Bool(x)) => Some(x),
++                     /* ~ changed by cargo-mutants ~ */
+                     _ => None,
+                 });
+             }
+             Arc::new(b.finish())
+         }
+         LogicalType::Int64 => {
+             let mut b = Int64Builder::new();
+             for v in values {

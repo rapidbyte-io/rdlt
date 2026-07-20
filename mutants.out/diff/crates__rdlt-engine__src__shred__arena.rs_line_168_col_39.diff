@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/arena.rs
++++ replace == with != in <impl JsonView<'a> for Node<'a, 's>>::obj_get
+@@ -160,17 +160,17 @@
+     }
+ 
+     fn obj_get(self, key: &str) -> Option<Self> {
+         let ANode::Obj(start, end) = self.arena.nodes[self.id as usize] else {
+             return None;
+         };
+         self.arena.obj_entries[start as usize..end as usize]
+             .iter()
+-            .find(|(k, _)| k.as_ref() == key)
++            .find(|(k, _)| k.as_ref() != /* ~ changed by cargo-mutants ~ */ key)
+             .map(|(_, id)| self.arena.node(*id))
+     }
+ }
+ 
+ pub(crate) struct ObjIter<'a, 's> {
+     arena: &'a Arena<'s>,
+     next: u32,
+     end: u32,

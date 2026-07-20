@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/build.rs
++++ replace match guard !value.is_null() with true in build_scalar
+@@ -263,17 +263,17 @@
+                 }
+             }
+             Arc::new(b.finish())
+         }
+         LogicalType::Json => {
+             let mut b = StringBuilder::new();
+             for v in values {
+                 match v {
+-                    Some(value) if !value.is_null() => {
++                    Some(value) if true /* ~ changed by cargo-mutants ~ */ => {
+                         let mut out = Vec::new();
+                         write_compact_json(*value, &mut out);
+                         b.append_value(
+                             std::str::from_utf8(&out).expect("serialized JSON is UTF-8"),
+                         );
+                     }
+                     _ => b.append_null(),
+                 }

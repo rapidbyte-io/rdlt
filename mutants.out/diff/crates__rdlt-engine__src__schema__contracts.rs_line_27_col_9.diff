@@ -1,0 +1,24 @@
+--- crates/rdlt-engine/src/schema/contracts.rs
++++ delete match arm (Kind::Array, ColumnType::ScalarList{item}) in value_fits
+@@ -19,20 +19,17 @@
+         (Kind::Object, ColumnType::Struct { fields }) => {
+             value
+                 .obj_entries()
+                 .all(|(key, item)| match fields.iter().find(|f| f.name == key) {
+                     Some(field) => value_fits(item, &field.ty),
+                     None => item.is_null(), // a new nested field forced an evolution
+                 })
+         }
+-        (Kind::Array, ColumnType::ScalarList { item }) => {
+-            let ty = ColumnType::scalar(*item);
+-            value.arr_items().all(|i| value_fits(i, &ty))
+-        }
++         /* ~ changed by cargo-mutants ~ */
+         _ => false,
+     }
+ }
+ 
+ fn scalar_fits<'a, V: JsonView<'a>>(value: V, scalar: LogicalType) -> bool {
+     let kind = value.kind();
+     match scalar {
+         LogicalType::Json => true, // Json holds anything

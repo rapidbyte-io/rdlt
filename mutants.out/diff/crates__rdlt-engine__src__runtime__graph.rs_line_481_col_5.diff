@@ -1,0 +1,24 @@
+--- crates/rdlt-engine/src/runtime/graph.rs
++++ replace classify_source_error -> RdltError with Default::default()
+@@ -473,20 +473,10 @@
+     let mut report = loader.report;
+     report.elapsed_ms = started.elapsed().as_millis() as u64;
+     Ok(report)
+ }
+ 
+ /// Map a connector-classified source error onto the embedder taxonomy, preserving
+ /// retryability for the run-level driver.
+ fn classify_source_error(stream: StreamName, e: &SourceError) -> RdltError {
+-    match e {
+-        SourceError::Transient(inner) => {
+-            RdltError::source_retryable(stream, format!("transient: {inner}"), None)
+-        }
+-        SourceError::RateLimited {
+-            retry_after,
+-            source,
+-        } => RdltError::source_retryable(stream, format!("rate limited: {source}"), *retry_after),
+-        SourceError::Fatal(inner) => RdltError::source(stream, format!("fatal: {inner}")),
+-        other => RdltError::source(stream, other.to_string()),
+-    }
++    Default::default() /* ~ changed by cargo-mutants ~ */
+ }

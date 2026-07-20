@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/build.rs
++++ replace arrow_schema -> Schema with Default::default()
+@@ -54,17 +54,17 @@
+ fn arrow_fields(columns: &[ColumnDef]) -> Fields {
+     columns
+         .iter()
+         .map(|c| Field::new(&c.name, arrow_column_type(&c.ty), c.nullable))
+         .collect()
+ }
+ 
+ pub(crate) fn arrow_schema(schema: &TableSchema) -> Schema {
+-    Schema::new(arrow_fields(&schema.columns))
++    Default::default() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Build one table's batch. `name_map` maps source keys to normalized column names
+ /// (the schema speaks normalized; the drained rows speak source).
+ pub(crate) fn build_batch<'v, V: JsonView<'v>>(
+     schema: &TableSchema,
+     name_map: &[(String, String)],
+     rows: &[DrainRow<V>],

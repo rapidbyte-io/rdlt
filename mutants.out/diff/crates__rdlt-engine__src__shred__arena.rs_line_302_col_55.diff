@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/arena.rs
++++ replace == with != in <impl Visitor<'de> for NodeVisitor<'a, 's>>::visit_map
+@@ -294,17 +294,17 @@
+     fn visit_map<A>(self, mut map: A) -> Result<NodeId, A::Error>
+     where
+         A: MapAccess<'de>,
+     {
+         // IndexMap insert semantics AT PARSE TIME: first position, last value.
+         let mut entries: Vec<(Cow<'s, str>, NodeId)> = Vec::new();
+         while let Some(key) = map.next_key_seed(KeySeed(PhantomData))? {
+             let value = map.next_value_seed(NodeSeed { arena: self.arena })?;
+-            match entries.iter_mut().find(|(k, _)| *k == key) {
++            match entries.iter_mut().find(|(k, _)| *k != /* ~ changed by cargo-mutants ~ */ key) {
+                 Some((_, slot)) => *slot = value,
+                 None => entries.push((key, value)),
+             }
+         }
+         let start = self.arena.obj_entries.len() as u32;
+         self.arena.obj_entries.extend(entries);
+         let end = self.arena.obj_entries.len() as u32;
+         Ok(self.arena.push_node(ANode::Obj(start, end)))

@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/arena.rs
++++ delete ! in Arena<'s>::parse_rows
+@@ -69,17 +69,17 @@
+                         rows.push(self.arr_items[i as usize]);
+                     }
+                 }
+                 _ => rows.push(node),
+             }
+         }
+         // Wrap AFTER parsing (arena mutation is safe on plain ids).
+         for row in &mut rows {
+-            if !matches!(self.nodes[*row as usize], ANode::Obj(..)) {
++            if  /* ~ changed by cargo-mutants ~ */matches!(self.nodes[*row as usize], ANode::Obj(..)) {
+                 *row = self.wrap_in_value_obj(*row);
+             }
+         }
+         Ok(rows)
+     }
+ 
+     /// `{"value": <node>}` — for bare-scalar/array rows and scalar child items.
+     pub(crate) fn wrap_in_value_obj(&mut self, node: NodeId) -> NodeId {

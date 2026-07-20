@@ -1,0 +1,26 @@
+--- crates/rdlt-engine/src/shred/arena.rs
++++ replace <impl Iterator for ArrIter<'a, 's>>::next -> Option<Self::Item> with Some(Default::default())
+@@ -192,22 +192,17 @@
+     arena: &'a Arena<'s>,
+     next: u32,
+     end: u32,
+ }
+ 
+ impl<'a, 's: 'a> Iterator for ArrIter<'a, 's> {
+     type Item = Node<'a, 's>;
+     fn next(&mut self) -> Option<Self::Item> {
+-        if self.next >= self.end {
+-            return None;
+-        }
+-        let id = self.arena.arr_items[self.next as usize];
+-        self.next += 1;
+-        Some(self.arena.node(id))
++        Some(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ // ---- serde construction ----
+ 
+ struct NodeSeed<'a, 's> {
+     arena: &'a mut Arena<'s>,
+ }

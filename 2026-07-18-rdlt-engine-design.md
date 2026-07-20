@@ -361,14 +361,14 @@ rustfmt, doc-tests on all public examples.
 Method: measure the pinned-dlt baseline **first**, same hardware, same datasets, one-command
 reproducible harness (dlt in a container). Benchmark suite is v1 scope, not an afterthought.
 
-| Benchmark | Target vs Python dlt |
-|---|---|
-| Nested-JSON shred microbench (rows/s/core) | ≥ 20x |
-| End-to-end: jsonl files → DuckDB | ≥ 10x |
-| End-to-end: local mock REST API → Postgres (engine-bound) | ≥ 5x |
-| Arrow passthrough: parquet → parquet | ≥ 2x |
-| Peak RSS (file→DuckDB run) | ≤ 1/5th |
-| Cold start to first row loaded | ≤ 1/20th |
+| Benchmark | Target vs Python dlt | Measured (benches/RESULTS.md) |
+|---|---|---|
+| Nested-JSON shred microbench (rows/s/core) | ≥ 20x | 8.1x (2026-07-20; honest miss — remaining levers: allocator traffic, arrow building) |
+| End-to-end: jsonl files → DuckDB | ≥ 10x | **21.3x** ✅ |
+| End-to-end: local mock REST API → Postgres (engine-bound) | ≥ 5x | **5.5x** ✅ |
+| Arrow passthrough: parquet → parquet | ≥ 2x | **2.4x** ✅ |
+| Peak RSS (file→DuckDB run) | ≤ 1/5th | **1/5.6** ✅ |
+| Cold start to first row loaded | ≤ 1/20th | **1/22.7** ✅ |
 
 Rationale: dlt's JSON-normalize hot path is per-row interpreted Python with per-value
 allocation — the Rust shredder parses raw JSON bytes (`RecordsOut::raw_json`) straight

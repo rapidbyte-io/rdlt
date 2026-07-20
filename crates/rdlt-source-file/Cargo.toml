@@ -10,6 +10,7 @@ repository.workspace = true
 rdlt-connector = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
+memchr = { workspace = true }
 glob = { workspace = true }
 parquet = { workspace = true }
 serde = { workspace = true }

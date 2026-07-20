@@ -1,0 +1,29 @@
+--- crates/rdlt-engine/src/shred/arena.rs
++++ replace <impl JsonView<'a> for Node<'a, 's>>::obj_entries -> Self::ObjIter with Default::default()
+@@ -131,25 +131,17 @@
+             ANode::Float(f) => Kind::Float(*f),
+             ANode::Str(s) => Kind::Str(s.as_ref()),
+             ANode::Obj(..) => Kind::Object,
+             ANode::Arr(..) => Kind::Array,
+         }
+     }
+ 
+     fn obj_entries(self) -> Self::ObjIter {
+-        let (start, end) = match self.arena.nodes[self.id as usize] {
+-            ANode::Obj(start, end) => (start, end),
+-            _ => (0, 0),
+-        };
+-        ObjIter {
+-            arena: self.arena,
+-            next: start,
+-            end,
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn arr_items(self) -> Self::ArrIter {
+         let (start, end) = match self.arena.nodes[self.id as usize] {
+             ANode::Arr(start, end) => (start, end),
+             _ => (0, 0),
+         };
+         ArrIter {

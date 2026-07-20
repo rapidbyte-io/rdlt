@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/build.rs
++++ replace > with == in write_compact_json
+@@ -366,17 +366,17 @@
+ /// Compact JSON serialization in NATIVE entry order — byte-identical to
+ /// `serde_json::to_string(&Value)` (preserve_order semantics, serde escaping,
+ /// itoa/ryu numbers). Used for the `Json` column type's verbatim subtrees.
+ fn write_compact_json<'v, V: JsonView<'v>>(value: V, out: &mut Vec<u8>) {
+     match value.kind() {
+         Kind::Object => {
+             out.push(b'{');
+             for (i, (key, item)) in value.obj_entries().enumerate() {
+-                if i > 0 {
++                if i == /* ~ changed by cargo-mutants ~ */ 0 {
+                     out.push(b',');
+                 }
+                 serde_json::to_writer(&mut *out, key).expect("string serialization");
+                 out.push(b':');
+                 write_compact_json(item, out);
+             }
+             out.push(b'}');
+         }

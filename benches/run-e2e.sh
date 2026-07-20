@@ -83,4 +83,30 @@ TOML
 /usr/bin/time -v "$RDLT" run "$DATA/pq-to-pq.toml" --report "$DATA/pq-pq-report.json" 2>&1 | grep -E 'Elapsed|Maximum resident'
 /usr/bin/time -v "$RDLT" run "$DATA/pq-to-duck.toml" --report "$DATA/pq-duck-report.json" 2>&1 | grep -E 'Elapsed|Maximum resident'
 
+echo "== cold start (one-row pipeline; median of 5 each) =="
+printf '{"id":1,"name":"one"}\n' > "$DATA/one.jsonl"
+cat > "$DATA/cold-files.yaml" <<YAML
+streams:
+  - name: events
+    format: jsonl
+    path: "$DATA/one.jsonl"
+YAML
+cat > "$DATA/cold.toml" <<TOML
+pipeline = "cold"
+workdir = "$DATA/.rdlt-cold"
+[source.file]
+config = "$DATA/cold-files.yaml"
+[destination.duckdb]
+path = "$DATA/cold.duckdb"
+TOML
+for i in 1 2 3 4 5; do
+  rm -rf "$DATA/.rdlt-cold" "$DATA/cold.duckdb"
+  /usr/bin/time -f "rdlt cold: %e s" "$RDLT" run "$DATA/cold.toml" >/dev/null
+done
+for i in 1 2 3 4 5; do
+  "$ENGINE" run --rm rdlt-baseline cold_start.py 2>/dev/null | tail -1
+done
+echo "(REST->Postgres cell: separate recipe — start crates/rdlt-source-rest/examples/mock_api"
+echo " + a postgres container, then benches/baseline/pipeline_rest_pg.py vs the CLI; see RESULTS.md)"
+
 echo "reports in $DATA/*-report.json (elapsed_ms is the self-timed number)"

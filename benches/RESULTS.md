@@ -18,10 +18,14 @@
 |---|---|---|---|---|---|
 | Wall time (200k records) | 19.60 s | 0.92 s | **21.3× faster** | ≥ 10× | ✅ met (product claim) |
 | Source records/s | 10,204 | 216,900 | 21.3× | — | — |
-| Peak RSS | 1,985 MB | 515 MB | **3.9× less** | ≤ 1/5th | ⚠️ missed; see caveats |
+| Peak RSS | 1,985 MB | 355 MB | **5.6× less** | ≤ 1/5th | ✅ met |
 
-(Re-measured 2026-07-20 after feature 003's hot-path work: tape shredder, hex
-encoder, zero-clone builds — was 1.73 s / 642 MB at feature-002 merge.)
+(Re-measured 2026-07-20 after feature 003: tape shredder, hex encoder,
+zero-clone builds — was 1.73 s / 642 MB at feature-002 merge. The RSS fix was
+NOT DuckDB: `memory_limit` moved nothing; the retention was glibc per-thread
+malloc arenas holding freed slab/arena/build buffers. The CLI now sets
+`mallopt(M_ARENA_MAX=2, M_TRIM_THRESHOLD=128K)` at startup — measured 642 →
+355 MB median with no wall-time cost.)
 
 (The earlier example-binary measurement — 1.81 s / 410 MB — is retired; the product
 path is what we claim. The RSS regression vs the example is DuckDB buffering under the
@@ -116,7 +120,7 @@ identity keyed/keyless 20.5 M / 29.3 M.
 | Benchmark | blocker |
 |---|---|
 | Shred-only ≥20× | 8.1× after the feature-003 hot-path work; next levers are allocator traffic and arrow building (documented miss) |
-| Flagship RSS ≤1/5th | 515 MB vs 397 MB target after 003; DuckDB `memory_limit` tuning still pending (T024) |
+
 
 Reproduce: `benches/run-e2e.sh` (dataset gen, baseline container, rdlt CLI runs —
 jsonl and parquet cells).

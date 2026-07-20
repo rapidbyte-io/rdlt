@@ -1,0 +1,25 @@
+--- crates/rdlt-engine/src/shred/build.rs
++++ delete match arm Some(Kind::Str(s)) in build_scalar
+@@ -290,21 +290,17 @@
+                 b.append_option(micros);
+             }
+             Arc::new(b.finish().with_timezone("+00:00"))
+         }
+         LogicalType::TimestampNaive => {
+             let mut b = TimestampMicrosecondBuilder::new();
+             for v in values {
+                 let micros = match kind_of(v) {
+-                    Some(Kind::Str(s)) => {
+-                        chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f")
+-                            .ok()
+-                            .map(|dt| dt.and_utc().timestamp_micros())
+-                    }
++                     /* ~ changed by cargo-mutants ~ */
+                     _ => None,
+                 };
+                 b.append_option(micros);
+             }
+             Arc::new(b.finish())
+         }
+         LogicalType::Date => {
+             let mut b = Date32Builder::new();

@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/arena.rs
++++ replace <impl Visitor<'de> for NodeVisitor<'a, 's>>::visit_bool -> Result<NodeId, E> with Ok(Default::default())
+@@ -240,17 +240,17 @@
+         f.write_str("any JSON value")
+     }
+ 
+     fn visit_unit<E>(self) -> Result<NodeId, E> {
+         Ok(self.arena.push_node(ANode::Null))
+     }
+ 
+     fn visit_bool<E>(self, b: bool) -> Result<NodeId, E> {
+-        Ok(self.arena.push_node(ANode::Bool(b)))
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn visit_i64<E>(self, i: i64) -> Result<NodeId, E> {
+         Ok(self.arena.push_node(ANode::Int(i)))
+     }
+ 
+     fn visit_u64<E>(self, u: u64) -> Result<NodeId, E> {
+         // Mirror serde_json::Number: within i64 range it IS an i64.

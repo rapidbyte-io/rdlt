@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/arena.rs
++++ replace <impl Visitor<'de> for NodeVisitor<'a, 's>>::visit_unit -> Result<NodeId, E> with Ok(Default::default())
+@@ -236,17 +236,17 @@
+ {
+     type Value = NodeId;
+ 
+     fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+         f.write_str("any JSON value")
+     }
+ 
+     fn visit_unit<E>(self) -> Result<NodeId, E> {
+-        Ok(self.arena.push_node(ANode::Null))
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn visit_bool<E>(self, b: bool) -> Result<NodeId, E> {
+         Ok(self.arena.push_node(ANode::Bool(b)))
+     }
+ 
+     fn visit_i64<E>(self, i: i64) -> Result<NodeId, E> {
+         Ok(self.arena.push_node(ANode::Int(i)))

@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/build.rs
++++ replace match guard v.is_object() with true in build_column
+@@ -152,17 +152,17 @@
+                 .map(|v| v.is_some_and(|v| v.is_object()))
+                 .collect();
+             let child_arrays: Vec<ArrayRef> = fields
+                 .iter()
+                 .map(|field| {
+                     let projected: Vec<Option<V>> = values
+                         .iter()
+                         .map(|v| match v {
+-                            Some(v) if v.is_object() => v.obj_get(&field.name),
++                            Some(v) if true /* ~ changed by cargo-mutants ~ */ => v.obj_get(&field.name),
+                             _ => None,
+                         })
+                         .collect();
+                     build_column(&field.ty, &projected)
+                 })
+                 .collect();
+             Arc::new(StructArray::new(
+                 arrow_fields(fields),

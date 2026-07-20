@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/schema/contracts.rs
++++ delete match arm Kind::Int(i) in scalar_fits
+@@ -34,17 +34,17 @@
+ 
+ fn scalar_fits<'a, V: JsonView<'a>>(value: V, scalar: LogicalType) -> bool {
+     let kind = value.kind();
+     match scalar {
+         LogicalType::Json => true, // Json holds anything
+         LogicalType::Bool => matches!(kind, Kind::Bool(_)),
+         LogicalType::Int64 => matches!(kind, Kind::Int(_)),
+         LogicalType::Float64 => match kind {
+-            Kind::Int(i) => int64_fits_in_f64(i),
++             /* ~ changed by cargo-mutants ~ */
+             Kind::Float(_) => true,
+             _ => false,
+         },
+         // Utf8 absorbs every textable scalar (canonical renderings).
+         LogicalType::Utf8 | LogicalType::Uuid => matches!(
+             kind,
+             Kind::Str(_) | Kind::Int(_) | Kind::UInt(_) | Kind::Float(_) | Kind::Bool(_)
+         ),

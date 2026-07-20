@@ -1,35 +1,37 @@
 --- crates/rdlt-engine/src/schema/contracts.rs
 +++ replace value_fits -> bool with false
-@@ -8,31 +8,17 @@
+@@ -8,33 +8,17 @@
  use rdlt_core::{ColumnType, ContractViolation, LogicalType, SchemaChange, TableName};
- use serde_json::Value;
  
  use crate::shred::canon::parse_timestamp_tz;
+ use crate::shred::view::{JsonView, Kind};
  
  /// Does `value` conform to `ty` without requiring any schema change?
  /// (`true` = storable as-is; `false` = this value is what forced the widening.)
- pub(crate) fn value_fits(value: &Value, ty: &ColumnType) -> bool {
--    match (value, ty) {
--        (Value::Null, _) => true,
+ pub(crate) fn value_fits<'a, V: JsonView<'a>>(value: V, ty: &ColumnType) -> bool {
+-    match (value.kind(), ty) {
+-        (Kind::Null, _) => true,
 -        (_, ColumnType::Scalar { scalar }) => scalar_fits(value, *scalar),
--        (Value::Object(map), ColumnType::Struct { fields }) => map.iter().all(|(key, item)| {
--            match fields.iter().find(|f| &f.name == key) {
--                Some(field) => value_fits(item, &field.ty),
--                None => item.is_null(), // a new nested field forced an evolution
--            }
--        }),
--        (Value::Array(items), ColumnType::ScalarList { item }) => {
+-        (Kind::Object, ColumnType::Struct { fields }) => {
+-            value
+-                .obj_entries()
+-                .all(|(key, item)| match fields.iter().find(|f| f.name == key) {
+-                    Some(field) => value_fits(item, &field.ty),
+-                    None => item.is_null(), // a new nested field forced an evolution
+-                })
+-        }
+-        (Kind::Array, ColumnType::ScalarList { item }) => {
 -            let ty = ColumnType::scalar(*item);
--            items.iter().all(|i| value_fits(i, &ty))
+-            value.arr_items().all(|i| value_fits(i, &ty))
 -        }
 -        _ => false,
 -    }
 +    false /* ~ changed by cargo-mutants ~ */
  }
  
- fn scalar_fits(value: &Value, scalar: LogicalType) -> bool {
+ fn scalar_fits<'a, V: JsonView<'a>>(value: V, scalar: LogicalType) -> bool {
+     let kind = value.kind();
      match scalar {
          LogicalType::Json => true, // Json holds anything
-         LogicalType::Bool => value.is_boolean(),
-         LogicalType::Int64 => value.as_i64().is_some(),
-         LogicalType::Float64 => match value {
+         LogicalType::Bool => matches!(kind, Kind::Bool(_)),
+         LogicalType::Int64 => matches!(kind, Kind::Int(_)),

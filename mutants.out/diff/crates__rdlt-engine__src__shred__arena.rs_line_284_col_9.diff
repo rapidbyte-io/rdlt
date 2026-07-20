@@ -1,0 +1,28 @@
+--- crates/rdlt-engine/src/shred/arena.rs
++++ replace <impl Visitor<'de> for NodeVisitor<'a, 's>>::visit_seq -> Result<NodeId, A::Error> with Ok(Default::default())
+@@ -276,24 +276,17 @@
+     fn visit_string<E>(self, s: String) -> Result<NodeId, E> {
+         Ok(self.arena.push_node(ANode::Str(Cow::Owned(s))))
+     }
+ 
+     fn visit_seq<A>(self, mut seq: A) -> Result<NodeId, A::Error>
+     where
+         A: SeqAccess<'de>,
+     {
+-        let mut items: Vec<NodeId> = Vec::new();
+-        while let Some(id) = seq.next_element_seed(NodeSeed { arena: self.arena })? {
+-            items.push(id);
+-        }
+-        let start = self.arena.arr_items.len() as u32;
+-        self.arena.arr_items.extend_from_slice(&items);
+-        let end = self.arena.arr_items.len() as u32;
+-        Ok(self.arena.push_node(ANode::Arr(start, end)))
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn visit_map<A>(self, mut map: A) -> Result<NodeId, A::Error>
+     where
+         A: MapAccess<'de>,
+     {
+         // IndexMap insert semantics AT PARSE TIME: first position, last value.
+         let mut entries: Vec<(Cow<'s, str>, NodeId)> = Vec::new();

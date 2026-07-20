@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/arena.rs
++++ replace <= with > in <impl Visitor<'de> for NodeVisitor<'a, 's>>::visit_u64
+@@ -249,17 +249,17 @@
+     }
+ 
+     fn visit_i64<E>(self, i: i64) -> Result<NodeId, E> {
+         Ok(self.arena.push_node(ANode::Int(i)))
+     }
+ 
+     fn visit_u64<E>(self, u: u64) -> Result<NodeId, E> {
+         // Mirror serde_json::Number: within i64 range it IS an i64.
+-        Ok(self.arena.push_node(if u <= i64::MAX as u64 {
++        Ok(self.arena.push_node(if u > /* ~ changed by cargo-mutants ~ */ i64::MAX as u64 {
+             ANode::Int(u as i64)
+         } else {
+             ANode::UInt(u)
+         }))
+     }
+ 
+     fn visit_f64<E>(self, f: f64) -> Result<NodeId, E> {
+         Ok(self.arena.push_node(ANode::Float(f)))

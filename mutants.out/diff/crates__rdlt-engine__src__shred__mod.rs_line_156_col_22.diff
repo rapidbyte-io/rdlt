@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/mod.rs
++++ replace && with || in drain_tables
+@@ -148,17 +148,17 @@
+                     values: 0,
+                 });
+             }
+         }
+ 
+         let has_rows = !rows[idx].is_empty();
+         let observed = nest::resolve_schema(&mut tables[idx]);
+         let table = observed.table.clone();
+-        if !has_rows && registry.get(&table).is_none() {
++        if !has_rows || /* ~ changed by cargo-mutants ~ */ registry.get(&table).is_none() {
+             continue;
+         }
+ 
+         let changes = registry.diff(&observed);
+ 
+         // ---- Policy resolution per change ----
+         let mut discard: Vec<(SchemaChange, PolicyAction)> = Vec::new();
+         let mut kept: Vec<SchemaChange> = Vec::new();

@@ -48,9 +48,35 @@ enum SourceSpec {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 enum DestSpec {
-    Duckdb { path: PathBuf },
-    Postgres { conn: String, dataset: String },
-    Parquet { path: PathBuf },
+    Duckdb {
+        path: PathBuf,
+        memory_limit: Option<String>,
+    },
+    Postgres {
+        conn: String,
+        dataset: String,
+    },
+    Parquet {
+        path: PathBuf,
+    },
+}
+
+/// Bound glibc's allocator retention (feature 003 T024): data movement churns
+/// large short-lived buffers (slabs, arenas, arrow builds), and glibc's default
+/// per-thread arenas retain them as RSS long after free. Two arenas + a low trim
+/// threshold returns memory to the OS with no measured wall-time cost (642 MB →
+/// ~370 MB peak on the flagship bench). CLI-only: library embedders own their
+/// allocator policy. The workspace denies unsafe; this single libc FFI call
+/// (no pointers, no invariants — two integer knobs) is the deliberate exception.
+#[allow(unsafe_code)]
+fn bound_allocator_retention() {
+    #[cfg(target_env = "gnu")]
+    // SAFETY: mallopt takes two ints, touches no memory we own, and is called
+    // before any pipeline threads exist.
+    unsafe {
+        libc::mallopt(libc::M_ARENA_MAX, 2);
+        libc::mallopt(libc::M_TRIM_THRESHOLD, 128 * 1024);
+    }
 }
 
 fn usage() -> ExitCode {
@@ -59,6 +85,8 @@ fn usage() -> ExitCode {
 }
 
 fn main() -> ExitCode {
+    bound_allocator_retention();
+
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (spec_path, report_path) = match args.as_slice() {
         [cmd, spec] if cmd == "run" => (PathBuf::from(spec), None),
@@ -130,9 +158,14 @@ async fn run(spec_path: PathBuf, report_path: Option<PathBuf>) -> Result<(), Cli
                 None => builder.workdir(".rdlt"),
             };
             let mut pipeline = match &spec.destination {
-                DestSpec::Duckdb { path } => {
-                    let dest = rdlt::duckdb::DuckDb::open(path)
+                DestSpec::Duckdb { path, memory_limit } => {
+                    let mut dest = rdlt::duckdb::DuckDb::open(path)
                         .map_err(|e| CliError::Usage(format!("opening duckdb: {e}")))?;
+                    if let Some(limit) = memory_limit {
+                        dest = dest
+                            .memory_limit(limit)
+                            .map_err(|e| CliError::Usage(format!("duckdb memory_limit: {e}")))?;
+                    }
                     builder.destination(dest).build()?
                 }
                 DestSpec::Postgres { conn, dataset } => {

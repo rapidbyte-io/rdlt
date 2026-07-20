@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/arena.rs
++++ delete match arm ANode::Arr(start, end) in <impl JsonView<'a> for Node<'a, 's>>::arr_items
+@@ -144,17 +144,17 @@
+             arena: self.arena,
+             next: start,
+             end,
+         }
+     }
+ 
+     fn arr_items(self) -> Self::ArrIter {
+         let (start, end) = match self.arena.nodes[self.id as usize] {
+-            ANode::Arr(start, end) => (start, end),
++             /* ~ changed by cargo-mutants ~ */
+             _ => (0, 0),
+         };
+         ArrIter {
+             arena: self.arena,
+             next: start,
+             end,
+         }
+     }

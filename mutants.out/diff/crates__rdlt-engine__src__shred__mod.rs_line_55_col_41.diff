@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/mod.rs
++++ replace == with != in DrainRow<V>::get_top
+@@ -47,17 +47,17 @@
+ }
+ 
+ impl<V: Copy> DrainRow<V> {
+     /// Top-level field extraction honoring the DiscardValue overlay.
+     pub(crate) fn get_top<'a>(&self, key: &str) -> Option<V>
+     where
+         V: JsonView<'a>,
+     {
+-        if self.nulled.iter().any(|k| k == key) {
++        if self.nulled.iter().any(|k| k != /* ~ changed by cargo-mutants ~ */ key) {
+             return None;
+         }
+         self.value.obj_get(key)
+     }
+ }
+ 
+ impl TreeShredder {
+     /// Finalize the current micro-batch: resolve schemas, enforce the schema policy

@@ -1,0 +1,24 @@
+--- crates/rdlt-engine/src/schema/contracts.rs
++++ replace scalar_of -> Option<LogicalType> with None
+@@ -83,20 +83,17 @@
+             change: format!("column `{name}` would widen from {from:?} to {to:?}"),
+             from: scalar_of(from),
+             to: scalar_of(to),
+         },
+     }
+ }
+ 
+ fn scalar_of(ty: &ColumnType) -> Option<LogicalType> {
+-    match ty {
+-        ColumnType::Scalar { scalar } => Some(*scalar),
+-        _ => None,
+-    }
++    None /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// The column a change concerns, for policy resolution (None = table-level).
+ pub(crate) fn change_column(change: &SchemaChange) -> Option<&str> {
+     match change {
+         SchemaChange::CreateTable { .. } => None,
+         SchemaChange::AddColumn { column } => Some(&column.name),
+         SchemaChange::WidenColumn { name, .. } => Some(name),

@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/mod.rs
++++ delete ! in drain_tables
+@@ -206,17 +206,17 @@
+                 .clone();
+             items.push(LoadItem::Delta {
+                 schema: current,
+                 delta,
+                 mode: mode.clone(),
+             });
+         }
+ 
+-        if !rows[idx].is_empty() {
++        if  /* ~ changed by cargo-mutants ~ */rows[idx].is_empty() {
+             let buffer = &tables[idx];
+             let schema = registry
+                 .get(&buffer.table)
+                 .expect("schema registered before building")
+                 .clone();
+             let batch = build::build_batch(&schema, buffer.name_map(), &rows[idx], load_id)
+                 .map_err(|e| RdltError::config(format!("arrow build: {e}")))?;
+             rows[idx].clear();

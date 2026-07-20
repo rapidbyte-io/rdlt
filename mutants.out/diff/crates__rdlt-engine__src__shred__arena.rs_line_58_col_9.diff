@@ -1,0 +1,44 @@
+--- crates/rdlt-engine/src/shred/arena.rs
++++ replace Arena<'s>::parse_rows -> Result<Vec<NodeId>, serde_json::Error> with Ok(vec![])
+@@ -50,40 +50,17 @@
+     /// their items, and non-object rows are wrapped as `{"value": …}` — the
+     /// exact semantics of `nest::parse_rows` + `push_row`'s wrapping.
+     ///
+     /// Documents are located zero-copy via `&RawValue` (serde_json's stream
+     /// iterator cannot seed), then each document slice is seed-parsed into the
+     /// arena — serde_json's parser both times, so lexical edge cases match the
+     /// tree path exactly.
+     pub(crate) fn parse_rows(&mut self, bytes: &'s [u8]) -> Result<Vec<NodeId>, serde_json::Error> {
+-        let mut rows = Vec::new();
+-        for raw in serde_json::Deserializer::from_slice(bytes)
+-            .into_iter::<&'s serde_json::value::RawValue>()
+-        {
+-            let raw = raw?;
+-            let mut de = serde_json::Deserializer::from_str(raw.get());
+-            let node = NodeSeed { arena: self }.deserialize(&mut de)?;
+-            de.end()?;
+-            match self.nodes[node as usize] {
+-                ANode::Arr(start, end) => {
+-                    for i in start..end {
+-                        rows.push(self.arr_items[i as usize]);
+-                    }
+-                }
+-                _ => rows.push(node),
+-            }
+-        }
+-        // Wrap AFTER parsing (arena mutation is safe on plain ids).
+-        for row in &mut rows {
+-            if !matches!(self.nodes[*row as usize], ANode::Obj(..)) {
+-                *row = self.wrap_in_value_obj(*row);
+-            }
+-        }
+-        Ok(rows)
++        Ok(vec![]) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// `{"value": <node>}` — for bare-scalar/array rows and scalar child items.
+     pub(crate) fn wrap_in_value_obj(&mut self, node: NodeId) -> NodeId {
+         let start = self.obj_entries.len() as u32;
+         self.obj_entries.push((Cow::Borrowed("value"), node));
+         self.push_node(ANode::Obj(start, start + 1))
+     }

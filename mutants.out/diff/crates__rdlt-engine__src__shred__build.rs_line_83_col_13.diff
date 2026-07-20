@@ -1,0 +1,29 @@
+--- crates/rdlt-engine/src/shred/build.rs
++++ delete match arm system_columns::ID in build_batch
+@@ -75,25 +75,17 @@
+         let array: ArrayRef = match column.name.as_str() {
+             system_columns::LOAD_ID => {
+                 let mut b = StringBuilder::new();
+                 for _ in rows {
+                     b.append_value(load_id.as_str());
+                 }
+                 Arc::new(b.finish())
+             }
+-            system_columns::ID => {
+-                let mut b = StringBuilder::new();
+-                let mut hex = [0u8; 64];
+-                for row in rows {
+-                    row.id.write_hex(&mut hex);
+-                    b.append_value(std::str::from_utf8(&hex).expect("hex is ASCII"));
+-                }
+-                Arc::new(b.finish())
+-            }
++             /* ~ changed by cargo-mutants ~ */
+             system_columns::PARENT_ID => {
+                 let mut b = StringBuilder::new();
+                 let mut hex = [0u8; 64];
+                 for row in rows {
+                     match &row.parent_id {
+                         Some(id) => {
+                             id.write_hex(&mut hex);
+                             b.append_value(std::str::from_utf8(&hex).expect("hex is ASCII"));

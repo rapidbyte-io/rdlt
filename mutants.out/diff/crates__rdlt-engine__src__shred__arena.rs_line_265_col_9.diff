@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/arena.rs
++++ replace <impl Visitor<'de> for NodeVisitor<'a, 's>>::visit_f64 -> Result<NodeId, E> with Ok(Default::default())
+@@ -257,17 +257,17 @@
+         Ok(self.arena.push_node(if u <= i64::MAX as u64 {
+             ANode::Int(u as i64)
+         } else {
+             ANode::UInt(u)
+         }))
+     }
+ 
+     fn visit_f64<E>(self, f: f64) -> Result<NodeId, E> {
+-        Ok(self.arena.push_node(ANode::Float(f)))
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn visit_borrowed_str<E>(self, s: &'de str) -> Result<NodeId, E> {
+         Ok(self.arena.push_node(ANode::Str(Cow::Borrowed(s))))
+     }
+ 
+     fn visit_str<E>(self, s: &str) -> Result<NodeId, E> {
+         Ok(self.arena.push_node(ANode::Str(Cow::Owned(s.to_owned()))))

@@ -1,0 +1,25 @@
+--- crates/rdlt-engine/src/shred/arena.rs
++++ delete match arm ANode::Arr(start, end) in Arena<'s>::parse_rows
+@@ -59,21 +59,17 @@
+         for raw in serde_json::Deserializer::from_slice(bytes)
+             .into_iter::<&'s serde_json::value::RawValue>()
+         {
+             let raw = raw?;
+             let mut de = serde_json::Deserializer::from_str(raw.get());
+             let node = NodeSeed { arena: self }.deserialize(&mut de)?;
+             de.end()?;
+             match self.nodes[node as usize] {
+-                ANode::Arr(start, end) => {
+-                    for i in start..end {
+-                        rows.push(self.arr_items[i as usize]);
+-                    }
+-                }
++                 /* ~ changed by cargo-mutants ~ */
+                 _ => rows.push(node),
+             }
+         }
+         // Wrap AFTER parsing (arena mutation is safe on plain ids).
+         for row in &mut rows {
+             if !matches!(self.nodes[*row as usize], ANode::Obj(..)) {
+                 *row = self.wrap_in_value_obj(*row);
+             }

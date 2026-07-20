@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/mod.rs
++++ replace > with >= in drain_tables
+@@ -136,17 +136,17 @@
+                 if doomed {
+                     discarded_ids.insert(row.id);
+                     cascade_dropped += 1;
+                 } else {
+                     kept.push(row);
+                 }
+             }
+             *table_rows = kept;
+-            if cascade_dropped > 0 {
++            if cascade_dropped >= /* ~ changed by cargo-mutants ~ */ 0 {
+                 items.push(LoadItem::Discarded {
+                     table: tables[idx].table.clone(),
+                     rows: cascade_dropped,
+                     values: 0,
+                 });
+             }
+         }
+ 

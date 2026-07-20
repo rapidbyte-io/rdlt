@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/arena.rs
++++ replace <impl Visitor<'de> for NodeVisitor<'a, 's>>::visit_string -> Result<NodeId, E> with Ok(Default::default())
+@@ -269,17 +269,17 @@
+         Ok(self.arena.push_node(ANode::Str(Cow::Borrowed(s))))
+     }
+ 
+     fn visit_str<E>(self, s: &str) -> Result<NodeId, E> {
+         Ok(self.arena.push_node(ANode::Str(Cow::Owned(s.to_owned()))))
+     }
+ 
+     fn visit_string<E>(self, s: String) -> Result<NodeId, E> {
+-        Ok(self.arena.push_node(ANode::Str(Cow::Owned(s))))
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn visit_seq<A>(self, mut seq: A) -> Result<NodeId, A::Error>
+     where
+         A: SeqAccess<'de>,
+     {
+         let mut items: Vec<NodeId> = Vec::new();
+         while let Some(id) = seq.next_element_seed(NodeSeed { arena: self.arena })? {

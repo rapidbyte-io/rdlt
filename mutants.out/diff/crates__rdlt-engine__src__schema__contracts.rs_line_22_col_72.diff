@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/schema/contracts.rs
++++ replace == with != in value_fits
+@@ -14,17 +14,17 @@
+ /// (`true` = storable as-is; `false` = this value is what forced the widening.)
+ pub(crate) fn value_fits<'a, V: JsonView<'a>>(value: V, ty: &ColumnType) -> bool {
+     match (value.kind(), ty) {
+         (Kind::Null, _) => true,
+         (_, ColumnType::Scalar { scalar }) => scalar_fits(value, *scalar),
+         (Kind::Object, ColumnType::Struct { fields }) => {
+             value
+                 .obj_entries()
+-                .all(|(key, item)| match fields.iter().find(|f| f.name == key) {
++                .all(|(key, item)| match fields.iter().find(|f| f.name != /* ~ changed by cargo-mutants ~ */ key) {
+                     Some(field) => value_fits(item, &field.ty),
+                     None => item.is_null(), // a new nested field forced an evolution
+                 })
+         }
+         (Kind::Array, ColumnType::ScalarList { item }) => {
+             let ty = ColumnType::scalar(*item);
+             value.arr_items().all(|i| value_fits(i, &ty))
+         }

@@ -1,6 +1,7 @@
 --- crates/rdlt-engine/src/runtime/graph.rs
 +++ replace += with -= in run
 @@ -78,17 +78,17 @@
+         .await;
          match result {
              Err(RdltError::Source {
                  stream,
@@ -8,9 +9,9 @@
                  retryable: true,
                  retry_after_ms,
              }) if attempt + 1 < MAX_SOURCE_ATTEMPTS && !cancel.is_cancelled() => {
-                 attempt += 1;
--                retries += 1;
-+                retries -= /* ~ changed by cargo-mutants ~ */ 1;
+-                attempt += 1;
++                attempt -= /* ~ changed by cargo-mutants ~ */ 1;
+                 retries += 1;
                  let delay = retry_after_ms
                      .map(std::time::Duration::from_millis)
                      .unwrap_or_else(|| backoff(attempt));
@@ -18,4 +19,3 @@
                      stream = %stream, attempt, %message,
                      "transient source failure; restarting run from committed state"
                  );
-                 let _ = events.send(rdlt_core::PipelineEvent::Retried {

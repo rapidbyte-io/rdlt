@@ -1,0 +1,23 @@
+--- crates/rdlt-engine/src/shred/arena.rs
++++ replace Arena<'s>::push_node -> NodeId with Default::default()
+@@ -88,19 +88,17 @@
+         self.push_node(ANode::Obj(start, start + 1))
+     }
+ 
+     pub(crate) fn node(&self, id: NodeId) -> Node<'_, 's> {
+         Node { arena: self, id }
+     }
+ 
+     fn push_node(&mut self, node: ANode<'s>) -> NodeId {
+-        let id = self.nodes.len() as u32;
+-        self.nodes.push(node);
+-        id
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// A borrowed view of one arena node — the streaming path's `JsonView`.
+ #[derive(Clone, Copy)]
+ pub(crate) struct Node<'a, 's> {
+     arena: &'a Arena<'s>,
+     id: NodeId,

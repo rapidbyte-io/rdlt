@@ -1,0 +1,26 @@
+--- crates/rdlt-engine/src/shred/arena.rs
++++ replace <impl Iterator for ObjIter<'a, 's>>::next -> Option<Self::Item> with Some(Default::default())
+@@ -174,22 +174,17 @@
+     arena: &'a Arena<'s>,
+     next: u32,
+     end: u32,
+ }
+ 
+ impl<'a, 's: 'a> Iterator for ObjIter<'a, 's> {
+     type Item = (&'a str, Node<'a, 's>);
+     fn next(&mut self) -> Option<Self::Item> {
+-        if self.next >= self.end {
+-            return None;
+-        }
+-        let (key, id) = &self.arena.obj_entries[self.next as usize];
+-        self.next += 1;
+-        Some((key.as_ref(), self.arena.node(*id)))
++        Some(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ pub(crate) struct ArrIter<'a, 's> {
+     arena: &'a Arena<'s>,
+     next: u32,
+     end: u32,
+ }

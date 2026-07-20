@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/arena.rs
++++ replace <impl fmt::Debug for Node<'_, '_>>::fmt -> fmt::Result with Ok(Default::default())
+@@ -109,17 +109,17 @@
+ impl<'a, 's> Node<'a, 's> {
+     pub(crate) fn id(&self) -> NodeId {
+         self.id
+     }
+ }
+ 
+ impl fmt::Debug for Node<'_, '_> {
+     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+-        write!(f, "Node({})", self.id)
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ impl<'a, 's: 'a> JsonView<'a> for Node<'a, 's> {
+     type ObjIter = ObjIter<'a, 's>;
+     type ArrIter = ArrIter<'a, 's>;
+ 
+     fn kind(self) -> Kind<'a> {

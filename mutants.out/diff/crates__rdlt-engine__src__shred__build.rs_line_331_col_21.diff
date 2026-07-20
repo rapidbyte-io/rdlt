@@ -1,0 +1,26 @@
+--- crates/rdlt-engine/src/shred/build.rs
++++ delete match arm Some(Kind::Str(s)) in build_scalar
+@@ -323,22 +323,17 @@
+                 b.append_option(days);
+             }
+             Arc::new(b.finish())
+         }
+         LogicalType::Time => {
+             let mut b = Time64MicrosecondBuilder::new();
+             for v in values {
+                 let micros = match kind_of(v) {
+-                    Some(Kind::Str(s)) => chrono::NaiveTime::parse_from_str(s, "%H:%M:%S%.f")
+-                        .ok()
+-                        .map(|t| {
+-                            i64::from(chrono::Timelike::num_seconds_from_midnight(&t)) * 1_000_000
+-                                + i64::from(chrono::Timelike::nanosecond(&t) / 1_000)
+-                        }),
++                     /* ~ changed by cargo-mutants ~ */
+                     _ => None,
+                 };
+                 b.append_option(micros);
+             }
+             Arc::new(b.finish())
+         }
+         LogicalType::Decimal { precision, scale } => {
+             let mut b = Decimal128Builder::new();

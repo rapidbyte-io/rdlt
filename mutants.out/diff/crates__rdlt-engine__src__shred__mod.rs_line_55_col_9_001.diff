@@ -1,0 +1,24 @@
+--- crates/rdlt-engine/src/shred/mod.rs
++++ replace DrainRow<V>::get_top -> Option<V> with Some(Default::default())
+@@ -47,20 +47,17 @@
+ }
+ 
+ impl<V: Copy> DrainRow<V> {
+     /// Top-level field extraction honoring the DiscardValue overlay.
+     pub(crate) fn get_top<'a>(&self, key: &str) -> Option<V>
+     where
+         V: JsonView<'a>,
+     {
+-        if self.nulled.iter().any(|k| k == key) {
+-            return None;
+-        }
+-        self.value.obj_get(key)
++        Some(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ impl TreeShredder {
+     /// Finalize the current micro-batch: resolve schemas, enforce the schema policy
+     /// (Freeze fails before anything is emitted; Discard* filters and counts), diff
+     /// against the registry (delta-before-batch order), build Arrow batches.
+     pub(crate) fn drain_batch(

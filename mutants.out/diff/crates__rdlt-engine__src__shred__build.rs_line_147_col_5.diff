@@ -1,0 +1,70 @@
+--- crates/rdlt-engine/src/shred/build.rs
++++ replace build_column -> ArrayRef with Default::default()
+@@ -139,66 +139,17 @@
+             }
+         };
+         arrays.push(array);
+     }
+     RecordBatch::try_new(Arc::new(arrow_schema(schema)), arrays)
+ }
+ 
+ fn build_column<'v, V: JsonView<'v>>(ty: &ColumnType, values: &[Option<V>]) -> ArrayRef {
+-    match ty {
+-        ColumnType::Scalar { scalar } => build_scalar(*scalar, values),
+-        ColumnType::Struct { fields } => {
+-            let validity: Vec<bool> = values
+-                .iter()
+-                .map(|v| v.is_some_and(|v| v.is_object()))
+-                .collect();
+-            let child_arrays: Vec<ArrayRef> = fields
+-                .iter()
+-                .map(|field| {
+-                    let projected: Vec<Option<V>> = values
+-                        .iter()
+-                        .map(|v| match v {
+-                            Some(v) if v.is_object() => v.obj_get(&field.name),
+-                            _ => None,
+-                        })
+-                        .collect();
+-                    build_column(&field.ty, &projected)
+-                })
+-                .collect();
+-            Arc::new(StructArray::new(
+-                arrow_fields(fields),
+-                child_arrays,
+-                Some(NullBuffer::from(validity)),
+-            ))
+-        }
+-        ColumnType::ScalarList { item } => {
+-            let mut offsets: Vec<i32> = Vec::with_capacity(values.len() + 1);
+-            offsets.push(0);
+-            let mut flat: Vec<Option<V>> = Vec::new();
+-            let mut validity: Vec<bool> = Vec::with_capacity(values.len());
+-            for value in values {
+-                match value {
+-                    Some(v) if v.is_array() => {
+-                        flat.extend(v.arr_items().map(Some));
+-                        validity.push(true);
+-                    }
+-                    _ => validity.push(value.is_some()),
+-                }
+-                offsets.push(flat.len() as i32);
+-            }
+-            let item_array = build_scalar(*item, &flat);
+-            Arc::new(ListArray::new(
+-                Arc::new(Field::new("item", arrow_scalar_type(*item), true)),
+-                OffsetBuffer::new(offsets.into()),
+-                item_array,
+-                Some(NullBuffer::from(validity)),
+-            ))
+-        }
+-    }
++    Default::default() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn build_scalar<'v, V: JsonView<'v>>(ty: LogicalType, values: &[Option<V>]) -> ArrayRef {
+     let kind_of = |v: &Option<V>| v.map(JsonView::kind);
+     match ty {
+         LogicalType::Bool => {
+             let mut b = BooleanBuilder::new();
+             for v in values {

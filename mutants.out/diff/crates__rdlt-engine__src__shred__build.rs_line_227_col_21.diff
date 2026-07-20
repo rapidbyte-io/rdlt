@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/build.rs
++++ delete match arm Some(Kind::Float(f)) in build_scalar
+@@ -219,17 +219,17 @@
+             }
+             Arc::new(b.finish())
+         }
+         LogicalType::Float64 => {
+             let mut b = Float64Builder::new();
+             for v in values {
+                 // Mirrors `Value::as_f64`: any JSON number converts with `as` casts.
+                 b.append_option(match kind_of(v) {
+-                    Some(Kind::Float(f)) => Some(f),
++                     /* ~ changed by cargo-mutants ~ */
+                     Some(Kind::Int(i)) => Some(i as f64),
+                     Some(Kind::UInt(u)) => Some(u as f64),
+                     _ => None,
+                 });
+             }
+             Arc::new(b.finish())
+         }
+         LogicalType::Utf8 | LogicalType::Uuid => {

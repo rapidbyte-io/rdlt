@@ -48,6 +48,19 @@ impl DuckDb {
         })
     }
 
+    /// Cap DuckDB's own buffer/cache memory (e.g. `"512MB"`). DuckDB's default
+    /// is a fraction of SYSTEM RAM, which dominates pipeline RSS on large-memory
+    /// machines; ingestion workloads rarely need it (design §8 RSS target).
+    pub fn memory_limit(self, limit: &str) -> Result<Self, DestError> {
+        {
+            let guard = self.db.lock().map_err(|_| fatal("connection poisoned"))?;
+            guard
+                .execute_batch(&format!("SET memory_limit='{}'", limit.replace('\'', "''")))
+                .map_err(fatal)?;
+        }
+        Ok(self)
+    }
+
     fn clone_conn(&self) -> Result<Connection, DestError> {
         let guard = self.db.lock().map_err(|_| fatal("connection poisoned"))?;
         guard.try_clone().map_err(fatal)

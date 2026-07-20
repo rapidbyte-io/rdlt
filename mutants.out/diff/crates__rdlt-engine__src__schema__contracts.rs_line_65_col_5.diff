@@ -1,0 +1,43 @@
+--- crates/rdlt-engine/src/schema/contracts.rs
++++ replace violation_for -> ContractViolation with Default::default()
+@@ -57,39 +57,17 @@
+         }
+         LogicalType::Decimal { .. } => matches!(kind, Kind::Int(_) | Kind::Str(_)),
+         LogicalType::Binary => false, // not producible from JSON
+     }
+ }
+ 
+ /// Build the typed violation for a frozen change.
+ pub(crate) fn violation_for(table: &TableName, change: &SchemaChange) -> ContractViolation {
+-    match change {
+-        SchemaChange::CreateTable { .. } => ContractViolation {
+-            table: table.clone(),
+-            column: None,
+-            change: "table creation".to_owned(),
+-            from: None,
+-            to: None,
+-        },
+-        SchemaChange::AddColumn { column } => ContractViolation {
+-            table: table.clone(),
+-            column: Some(column.name.clone()),
+-            change: format!("new column `{}` would be added", column.name),
+-            from: None,
+-            to: scalar_of(&column.ty),
+-        },
+-        SchemaChange::WidenColumn { name, from, to } => ContractViolation {
+-            table: table.clone(),
+-            column: Some(name.clone()),
+-            change: format!("column `{name}` would widen from {from:?} to {to:?}"),
+-            from: scalar_of(from),
+-            to: scalar_of(to),
+-        },
+-    }
++    Default::default() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn scalar_of(ty: &ColumnType) -> Option<LogicalType> {
+     match ty {
+         ColumnType::Scalar { scalar } => Some(*scalar),
+         _ => None,
+     }
+ }

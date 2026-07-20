@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/mod.rs
++++ delete match arm SchemaChange::WidenColumn{from, ..} in enforce_discards
+@@ -257,17 +257,17 @@
+             continue;
+         };
+         let source_key = buffer
+             .source_key_for(normalized)
+             .unwrap_or(normalized)
+             .to_owned();
+         buffer.revert_column(&source_key, snapshot);
+         let must_fit = match change {
+-            SchemaChange::WidenColumn { from, .. } => Some(from.clone()),
++             /* ~ changed by cargo-mutants ~ */
+             _ => None,
+         };
+         offenses.push(Offense {
+             source_key,
+             must_fit,
+             action: *action,
+         });
+     }

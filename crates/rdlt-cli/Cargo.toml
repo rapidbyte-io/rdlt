@@ -11,6 +11,7 @@ name = "rdlt"
 path = "src/main.rs"
 
 [dependencies]
+libc = "0.2"
 rdlt = { workspace = true, features = ["rest", "duckdb", "postgres", "file", "parquet"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

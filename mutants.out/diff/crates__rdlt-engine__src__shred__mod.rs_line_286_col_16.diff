@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/mod.rs
++++ delete ! in enforce_discards
+@@ -278,17 +278,17 @@
+         let mut keep = true;
+         for offense in &offenses {
+             let value = row.get_top(&offense.source_key);
+             let offends = match (&value, &offense.must_fit) {
+                 (None, _) => false,
+                 (Some(v), None) => !v.is_null(),
+                 (Some(v), Some(ty)) => !value_fits(*v, ty),
+             };
+-            if !offends {
++            if  /* ~ changed by cargo-mutants ~ */offends {
+                 continue;
+             }
+             match offense.action {
+                 PolicyAction::DiscardRow => {
+                     dropped_rows += 1;
+                     discarded_ids.insert(row.id);
+                     keep = false;
+                     break;

@@ -1,0 +1,30 @@
+--- crates/rdlt-engine/src/shred/build.rs
++++ delete match arm system_columns::POS in build_batch
+@@ -112,26 +112,17 @@
+                             id.write_hex(&mut hex);
+                             b.append_value(std::str::from_utf8(&hex).expect("hex is ASCII"));
+                         }
+                         None => b.append_null(),
+                     }
+                 }
+                 Arc::new(b.finish())
+             }
+-            system_columns::POS => {
+-                let mut b = Int64Builder::new();
+-                for row in rows {
+-                    match row.pos {
+-                        Some(pos) => b.append_value(pos as i64),
+-                        None => b.append_null(),
+-                    }
+-                }
+-                Arc::new(b.finish())
+-            }
++             /* ~ changed by cargo-mutants ~ */
+             _ => {
+                 let source_key = name_map
+                     .iter()
+                     .find(|(_, normalized)| normalized == &column.name)
+                     .map(|(source, _)| source.as_str())
+                     .unwrap_or(column.name.as_str());
+                 let values: Vec<Option<V>> =
+                     rows.iter().map(|row| row.get_top(source_key)).collect();

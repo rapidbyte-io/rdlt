@@ -2680,6 +2680,7 @@ dependencies = [
 name = "rdlt-cli"
 version = "0.2.0"
 dependencies = [
+ "libc",
  "rdlt",
  "serde",
  "serde_json",
@@ -2801,6 +2802,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "glob",
+ "memchr",
  "parquet",
  "rdlt-connector",
  "rdlt-dest-duckdb",

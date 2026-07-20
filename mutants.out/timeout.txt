@@ -1,8 +1,0 @@
-crates/rdlt-connector/src/lib.rs:171:9: replace RecordsOut::raw_json -> Result<(), ChannelClosed> with Ok(())
-crates/rdlt-connector/src/lib.rs:206:9: replace RecordsOut::send -> Result<(), ChannelClosed> with Ok(())
-crates/rdlt-connector/src/lib.rs:242:9: replace RecordsIn::close with ()
-crates/rdlt-core/src/naming.rs:127:5: replace suffixed -> String with String::new()
-crates/rdlt-core/src/naming.rs:127:5: replace suffixed -> String with "xyzzy".into()
-crates/rdlt-engine/src/runtime/channel.rs:58:9: replace ByteTx<T>::send -> Result<(), StageClosed> with Ok(())
-crates/rdlt-engine/src/runtime/graph.rs:84:19: replace match guard attempt + 1 < MAX_SOURCE_ATTEMPTS && !cancel.is_cancelled() with true in run
-crates/rdlt-engine/src/runtime/graph.rs:84:53: replace && with || in run

@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/arena.rs
++++ replace <impl DeserializeSeed<'de> for KeySeed<'s>>::deserialize::<impl Visitor<'de> for V<'s>>::visit_str -> Result<Self::Value, E> with Ok(Default::default())
+@@ -331,17 +331,17 @@
+             type Value = Cow<'s, str>;
+             fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                 f.write_str("an object key")
+             }
+             fn visit_borrowed_str<E>(self, s: &'de str) -> Result<Self::Value, E> {
+                 Ok(Cow::Borrowed(s))
+             }
+             fn visit_str<E>(self, s: &str) -> Result<Self::Value, E> {
+-                Ok(Cow::Owned(s.to_owned()))
++                Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+             }
+             fn visit_string<E>(self, s: String) -> Result<Self::Value, E> {
+                 Ok(Cow::Owned(s))
+             }
+         }
+         deserializer.deserialize_str(V(PhantomData))
+     }
+ }

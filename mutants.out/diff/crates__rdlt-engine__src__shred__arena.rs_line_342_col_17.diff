@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/arena.rs
++++ replace <impl DeserializeSeed<'de> for KeySeed<'s>>::deserialize::<impl Visitor<'de> for V<'s>>::visit_string -> Result<Self::Value, E> with Ok(Default::default())
+@@ -334,17 +334,17 @@
+             }
+             fn visit_borrowed_str<E>(self, s: &'de str) -> Result<Self::Value, E> {
+                 Ok(Cow::Borrowed(s))
+             }
+             fn visit_str<E>(self, s: &str) -> Result<Self::Value, E> {
+                 Ok(Cow::Owned(s.to_owned()))
+             }
+             fn visit_string<E>(self, s: String) -> Result<Self::Value, E> {
+-                Ok(Cow::Owned(s))
++                Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+             }
+         }
+         deserializer.deserialize_str(V(PhantomData))
+     }
+ }
+ 
+ #[cfg(test)]
+ mod tests {

@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/arena.rs
++++ replace <impl DeserializeSeed<'de> for NodeSeed<'a, 's>>::deserialize -> Result<Self::Value, D::Error> with Ok(Default::default())
+@@ -217,17 +217,17 @@
+     'de: 's,
+ {
+     type Value = NodeId;
+ 
+     fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+     where
+         D: serde::Deserializer<'de>,
+     {
+-        deserializer.deserialize_any(NodeVisitor { arena: self.arena })
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ struct NodeVisitor<'a, 's> {
+     arena: &'a mut Arena<'s>,
+ }
+ 
+ impl<'de, 's: 'de, 'a> Visitor<'de> for NodeVisitor<'a, 's>
