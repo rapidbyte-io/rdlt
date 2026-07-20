@@ -43,11 +43,14 @@ its share is known. Inventory, with mechanism:
   (003 slab splitting), so the cheap variant adds no new crates.
 - **C2 — UTF-8 validation consolidation**: establish where input bytes are
   validated more than once between slab arrival and tape strings; candidate
-  is validate-once-per-slab with an internal borrow that skips re-validation.
-  If the surviving implementation needs `unsafe` (e.g.
-  `from_utf8_unchecked`), the safety argument must be local, documented, and
-  covered by the existing fuzz targets (`jsonl_slab`, `shred_push`) — an
-  `unsafe` block the fuzzers can't reach is disqualified by the quality bar.
+  is validate-once-per-slab, restructured so later stages receive an
+  already-validated `&str` through safe APIs (the type system carries the
+  proof, not an `unchecked` conversion). The workspace denies `unsafe_code`
+  (`Cargo.toml`, one documented CLI FFI exception) and this feature adds NO
+  new exceptions: if the only winning implementation needs
+  `from_utf8_unchecked` or similar, the candidate is REJECTED on the quality
+  bar and its measured potential recorded as unreachable-by-policy in the
+  resolution record.
 - **C3 — arena/tape layout**: node width, field ordering, slab reservation
   strategy in `shred/arena.rs` + `tape.rs`. Memory-shaped: requires the
   two-lens rule (R1).

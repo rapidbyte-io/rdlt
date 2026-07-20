@@ -232,7 +232,10 @@ ambiguous gated/scoreboard status.
 - "High-quality, maintainable code" means the project's existing review and
   lint standards — matching the precedents where changes were rejected for
   cost or complexity despite being feasible (the 003 hash-swap and
-  link-time-optimization decisions).
+  link-time-optimization decisions). In particular the workspace's
+  memory-safety lint policy stands unchanged: an optimization that requires
+  exempting code from it is rejected, and that rejection is valid evidence
+  toward a measured-ceiling outcome.
 - The build/measurement environment must be restored to working order before
   profiling begins (it was degraded at session start); restoring it is a
   prerequisite, not a deliverable, of this feature.

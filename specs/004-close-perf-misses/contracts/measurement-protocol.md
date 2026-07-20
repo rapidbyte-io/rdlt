@@ -54,8 +54,12 @@ A/B record:
    instructions) — proven by the gate run in the A/B record.
 4. Correctness nets green: full nextest, doc-tests, and for any
    `shred/*` change the equivalence proptest (byte-identical rows,
-   identities, schemas). A candidate needing `unsafe` must keep the block
-   local, documented, and reachable by the existing fuzz targets.
+   identities, schemas). **Safe Rust only**: the workspace-wide
+   `unsafe_code = "deny"` lint stands, and this feature adds no
+   `#[allow(unsafe_code)]` exceptions (the single pre-existing CLI FFI
+   exception is untouched). A candidate that only wins via `unsafe` is
+   REJECTED; that rejection legitimately contributes to a measured-ceiling
+   outcome (b).
 5. Code quality consistent with existing standards — the T023/T025
    precedent: feasible-but-costly is a valid REJECT.
 
