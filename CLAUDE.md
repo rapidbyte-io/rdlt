@@ -1,11 +1,14 @@
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
-`specs/005-postgres-source/plan.md` (feature: Postgres SQL source connector —
-snapshot + cursor-column incremental streamed as typed Arrow batches via
-binary COPY decoding, postgres→duckdb/postgres benchmark cells with
-measurement-first bars, crash-sweep robustness; spec, research, data model,
-and the source-config + type-mapping contracts live alongside it). Feature
+`specs/006-postgres-completeness/plan.md` (feature: Postgres completeness —
+TLS full sslmode matrix via a shared rdlt-pg-tls crate for BOTH postgres
+connectors, per-column type hints, describe-schema query streams, merge for
+keyed structured streams via the recorded B4 amendment, lossy-mapping
+visibility, generated config schemas, test-integrity closures; contracts:
+tls-policy, type-hints, query-streams, merge-structured). Feature 005's
+connector and its contracts (`specs/005-postgres-source/`) are the base
+being extended. Feature
 004's benchmark governance (`specs/004-close-perf-misses/` — gated vs
 scoreboard rows, measurement-first bars, version-policy entries) and feature
 003's hardening nets (`specs/003-hardening-performance/` — crash sweep,
