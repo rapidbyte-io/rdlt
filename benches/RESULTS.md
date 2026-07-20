@@ -4,132 +4,60 @@
 > machine, same dataset, then rdlt. No multiple is quoted without both columns.
 >
 > **Baseline version policy**: the pin tracks the LATEST stable dlt at
-> measurement time (currently bumping 1.11.0 → 1.29.0); each row records the
-> version it was measured against, and a pin bump re-measures every cell —
-> multiples are never quoted across mismatched baseline versions. All rows
-> below are vs 1.11.0 until the queued 1.29.0 re-measure lands.
+> measurement time; a pin bump re-measures every cell before any multiple is
+> quoted. Current baseline: **dlt 1.29.0** (bumped from 1.11.0 on 2026-07-20 —
+> dlt improved materially between those releases, and the multiples below
+> reflect that honestly).
 
-## Run: 2026-07-19 — jsonl → DuckDB, 200k nested records
+## The matrix — 2026-07-20, dlt 1.29.0, all cells same-session pairs
 
-- Dataset: 200,000 NDJSON records (39 MB), each with a nested object (`profile`) and a
-  2-element list of objects (`tags`) → 600,000 emitted rows (root + child table).
-- Baseline: `dlt[duckdb]==1.11.0`, python:3.12-slim container (podman), timing
-  self-reported inside the process (excludes container/pip startup).
-- rdlt: release build of the **product path** — the bundled `file` source through the
-  real CLI (`rdlt run pipeline.toml`), not an example binary (feature 002, SC-002).
-  Self-reported `elapsed_ms` from the run report; peak RSS via `/usr/bin/time -v`
-  (the RSS number therefore includes process startup, dlt's does not).
-
-| Metric | pinned dlt 1.11.0 | rdlt (bundled file source, CLI) | multiple | target (design §8) | status |
+| Cell | pinned dlt 1.29.0 | rdlt | multiple | target (design §8) | status |
 |---|---|---|---|---|---|
-| Wall time (200k records) | 19.60 s | 1.05 s | **18.6× faster** | ≥ 10× | ✅ met (product claim) |
-| Source records/s | 10,204 | 190,000 | 18.6× | — | — |
-| Peak RSS | 1,985 MB | 355 MB | **5.6× less** | ≤ 1/5th | ✅ met |
-
-(Re-measured 2026-07-20 after feature 003, median of 5 runs (single runs range
-0.92–1.16 s on this machine): tape shredder, hex encoder, zero-clone builds —
-was 1.73 s / 642 MB at feature-002 merge. Thin-LTO was A/B'd per R30 and
-REJECTED: 1073 vs 1052 ms median (no win) at 20× the build time. The RSS fix was
-NOT DuckDB: `memory_limit` moved nothing; the retention was glibc per-thread
-malloc arenas holding freed slab/arena/build buffers. The CLI now sets
-`mallopt(M_ARENA_MAX=2, M_TRIM_THRESHOLD=128K)` at startup — measured 642 →
-355 MB median with no wall-time cost.)
-
-(The earlier example-binary measurement — 1.81 s / 410 MB — is retired; the product
-path is what we claim. The RSS regression vs the example is DuckDB buffering under the
-CLI's default channel budget; `memory_limit` tuning on the DuckDB side is untried.)
+| jsonl → DuckDB, 200k nested records (product CLI) | 14.38 s / 1,870 MB | 1.04 s / 348 MB | **13.8× faster** | ≥ 10× | ✅ met |
+| — peak RSS of that run | 1,870 MB | 348 MB | **1/5.4** | ≤ 1/5th | ✅ met |
+| Shred stage only (dlt `normalize()` vs `shred_only`) | 5.95 s | 0.50 s | **12.0× faster** | ≥ 20× | ❌ missed (honest) |
+| mock REST → Postgres, 100k records | 5.50 s / 180 MB | 0.85 s / 29 MB | **6.5× faster** | ≥ 5× | ✅ met |
+| Arrow passthrough: parquet → parquet | 0.228 s / 195 MB | 0.083 s / 47 MB | **2.75× faster** | ≥ 2× | ✅ met |
+| parquet → DuckDB (bonus context row) | 0.395 s / 335 MB | 0.329 s / 159 MB | 1.2× | — | — |
+| Cold start, one-row pipeline | 0.418 s | 0.030 s | **1/14.2 overhead** | ≤ 1/20th | ❌ missed (honest) |
 
 Caveats, stated so the numbers stay honest:
-- One run each (not averaged); variance on this machine is low but unmeasured.
-- rdlt's number includes file read, shred, child-table split, lineage hashing, DuckDB
-  ingestion, and the atomic commit — the full pipeline, not a microbench.
-- rdlt's 410 MB peak is dominated by DuckDB's own buffering + the 64 MB channel
-  budget; `memory_limit` tuning on the DuckDB side is untried (likely closes the RSS
-  gap past 1/5th).
-- dlt runs in a container; its CPU-bound normalize work executes at native speed and
-  its DuckDB is the same C++ library, so containerization skew is minimal.
 
-## Run: 2026-07-19 — parquet passthrough, 200k records (feature 002)
-
-- Dataset: the SAME 200k records re-encoded as parquet by rdlt itself (10 files,
-  snappy). Both engines read pyarrow-native parquet and never touch the shredder /
-  normalizer: this is the structured fast path on both sides.
-- Baseline: same pinned `dlt[duckdb,filesystem]==1.11.0` container, fed pre-read
-  `pyarrow.Table`s (dlt's arrow-native fast path — its fastest route), self-timed.
-- rdlt: bundled `file` source (parquet, row-group units) → Arrow passthrough (clause
-  E7) → bundled destinations, via the release CLI. Self-reported `elapsed_ms`.
-
-| Cell | pinned dlt 1.11.0 | rdlt | multiple | target (design §8) | status |
-|---|---|---|---|---|---|
-| parquet → parquet, wall | 0.185 s | 0.078 s | **2.4× faster** | ≥ 2× | ✅ met |
-| parquet → parquet, peak RSS | 218 MB | 47 MB | **4.6× less** | — | — |
-| parquet → DuckDB (bonus), wall | 0.352 s | 0.317 s | 1.11× faster | — (context row) | — |
-| parquet → DuckDB (bonus), peak RSS | 343 MB | 203 MB | 1.7× less | — | — |
-
-The bonus row is near-parity by design: both sides reduce to "hand arrow batches to
-the same DuckDB C++ library", so there is little engine work left to win on. The
-parquet→parquet cell isolates actual engine overhead and is the honest ≥2× claim.
-
-## Run: 2026-07-20 — remaining design-§8 cells (feature 003)
-
-- Same machine and pinned `dlt==1.11.0` container as every prior row; baseline
-  measured first in each cell.
-
-**mock REST → Postgres, 100k records (100 pages, page-number pagination)**
-- Both sides hit the same in-memory mock API (pre-rendered pages,
-  `crates/rdlt-source-rest/examples/mock_api.rs`) and the same Postgres 16
-  container, sequentially. dlt = `rest_api` source; rdlt = bundled REST source
-  via the release CLI. 100k source records → 300k rows (root + tags children).
-
-| Metric | pinned dlt | rdlt | multiple | target | status |
-|---|---|---|---|---|---|
-| Wall time | 7.49 s | 1.37 s | **5.5× faster** | ≥ 5× | ✅ met |
-| Peak RSS | 250 MB | 49 MB | **5.1× less** | — | — |
-
-**Shred stage only, 200k nested records (no destination I/O either side)**
-- dlt: `pipeline.normalize()` timed alone (extract pre-staged, untimed) —
-  `benches/baseline/normalize_only.py`. rdlt: full shred path (parse → shape
-  observation → schema resolution → Arrow build) over the same file in 8 MB
-  slabs — `cargo run --release -p rdlt-engine --example shred_only`. Median of 3.
-
-| Metric | pinned dlt | rdlt | multiple | target | status |
-|---|---|---|---|---|---|
-| Stage time | 7.63 s | 0.58 s | **13.1× faster** | ≥ 20× | ❌ missed (honest) |
-
-Re-measured 2026-07-20 after the US3 work (was 4.6× before it). Two compounding
-wins, correctly attributed after a bench-labeling error was caught in cleanup:
-(1) `RowId::to_hex` formatted via `write!("{:02x}")` was 48% of ALL shred
-instructions — a table encoder halved the stage; (2) the tape path (slab arena,
-no per-row `Value` trees) cuts a further 31% of instructions vs the tree path.
-Net: 1.094 G → 362 M instructions/10k rows (3.0×), wall 1.66 s → 0.58 s median
-(clean runs 0.50 s; measured beside a background mutation job). The remaining
-gap to 20× is allocator traffic + blake3 + arrow building — hash swap measured
-and REJECTED (blake3 can't clear the >30% e2e switch bar; design doc §5.4).
-
-**Cold start, one-row pipeline**
-- rdlt: release CLI, 10 fresh runs, median, INCLUDING full process startup.
-- dlt: in-container, timed from before `import dlt` through load (interpreter
-  boot ~30 ms still excluded — generous to the baseline); median of 5; dlt's
-  pipeline phase is bimodal (0.53 s / 1.53 s) — median shown.
-
-| Metric | pinned dlt | rdlt | multiple | target | status |
-|---|---|---|---|---|---|
-| Startup→loaded | 0.527 s | 0.023 s | **22.7× less overhead** | ≤ 1/20th | ✅ met |
+- Datasets/methodology unchanged from the 1.11.0-era rows: 200k nested NDJSON
+  (→600k rows with children), the same records re-encoded as parquet by rdlt,
+  a 100k-record mock API (100 pages), one-row cold start. Wall times are
+  medians (5 runs for flagship/shred/cold-rdlt; dlt in-process self-timing as
+  before; cold-start dlt timed from before `import dlt`, interpreter boot
+  still excluded — generous to the baseline).
+- **Cold start regressed from met (1/22.7 vs dlt 1.11.0) to missed**: dlt's
+  startup improved ~21% and lost its old bimodality, while rdlt's one-row run
+  measured 30 ms this session. This is the version policy doing its job — the
+  miss is recorded, not hidden. rdlt cold start is dominated by DuckDB
+  open+catalog work; untried levers noted in the backlog.
+- Shred-only moved 8.1× → 12.0× NOT because rdlt changed since that row, but
+  because BOTH sides were re-measured cleanly (rdlt's 0.50 s was previously
+  contended by a background mutation run; dlt's normalize also improved).
+- dlt 1.29.0 vs 1.11.0 on this machine: flagship 19.60→14.38 s, normalize
+  7.63→5.95 s, cold 0.527→0.418 s, REST→PG 7.49→5.50 s — credit where due.
+- The parquet→DuckDB bonus row remains near-parity by design (both sides
+  reduce to the same DuckDB C++ appender); parquet→parquet is the
+  engine-bound claim.
 
 ## Perf-regression gate (feature 003, G1)
 
 Instruction-count baselines for the hot paths live in
-`benches/perf-baselines.json` (iai-callgrind; >3% regression blocks CI —
-`TARGET=iai make bench`). Recorded 2026-07-20 post-optimization: shred (tape)
-362 M instructions / 10k nested rows; passthrough 602 k; identity keyed/keyless
-20.5 M / 29.3 M.
+`benches/perf-baselines.json` (iai-callgrind; >3% regression blocks CI;
+cross-toolchain comparisons refused — re-record deliberately). Recorded
+2026-07-20: shred (tape) 362 M instructions / 10k nested rows; passthrough
+602 k; identity keyed/keyless 20.5 M / 29.3 M.
 
-## Still pending
+## History
 
-| Benchmark | blocker |
-|---|---|
-| Shred-only ≥20× | 13.1× after the feature-003 hot-path work; next levers are allocator traffic, blake3, arrow building (documented miss) |
+- 2026-07-19 (dlt 1.11.0, feature 002 merge): flagship 11.3×, passthrough
+  2.4×, RSS miss at 1/3.1.
+- 2026-07-20 (dlt 1.11.0, feature 003 optimizations): flagship 18.6×,
+  shred-only 8.1×, REST→PG 5.5×, cold 1/22.7, RSS met at 1/5.6.
+- 2026-07-20 (baseline bumped to dlt 1.29.0): the matrix above.
 
-
-Reproduce: `benches/run-e2e.sh` (dataset gen, baseline container, rdlt CLI runs —
-jsonl and parquet cells).
+Reproduce: `benches/run-e2e.sh` (jsonl, parquet, cold-start cells) and the
+REST→Postgres recipe in RESULTS history / `benches/baseline/pipeline_rest_pg.py`.

@@ -361,14 +361,14 @@ rustfmt, doc-tests on all public examples.
 Method: measure the pinned-dlt baseline **first**, same hardware, same datasets, one-command
 reproducible harness (dlt in a container). Benchmark suite is v1 scope, not an afterthought.
 
-| Benchmark | Target vs Python dlt | Measured (benches/RESULTS.md) |
+| Benchmark | Target vs Python dlt | Measured vs dlt 1.29.0 (benches/RESULTS.md) |
 |---|---|---|
-| Nested-JSON shred microbench (rows/s/core) | ≥ 20x | 13.1x (2026-07-20; honest miss — remaining levers: allocator traffic, blake3, arrow building) |
-| End-to-end: jsonl files → DuckDB | ≥ 10x | **18.6x** ✅ |
-| End-to-end: local mock REST API → Postgres (engine-bound) | ≥ 5x | **5.5x** ✅ |
-| Arrow passthrough: parquet → parquet | ≥ 2x | **2.4x** ✅ |
-| Peak RSS (file→DuckDB run) | ≤ 1/5th | **1/5.6** ✅ |
-| Cold start to first row loaded | ≤ 1/20th | **1/22.7** ✅ |
+| Nested-JSON shred microbench (rows/s/core) | ≥ 20x | 12.0x (2026-07-20; honest miss — remaining levers: allocator traffic, blake3, arrow building) |
+| End-to-end: jsonl files → DuckDB | ≥ 10x | **13.8x** ✅ |
+| End-to-end: local mock REST API → Postgres (engine-bound) | ≥ 5x | **6.5x** ✅ |
+| Arrow passthrough: parquet → parquet | ≥ 2x | **2.75x** ✅ |
+| Peak RSS (file→DuckDB run) | ≤ 1/5th | **1/5.4** ✅ |
+| Cold start to first row loaded | ≤ 1/20th | 1/14.2 (honest miss vs dlt 1.29.0 — its startup improved; was 1/22.7 vs 1.11.0) |
 
 Rationale: dlt's JSON-normalize hot path is per-row interpreted Python with per-value
 allocation — the Rust shredder parses raw JSON bytes (`RecordsOut::raw_json`) straight
