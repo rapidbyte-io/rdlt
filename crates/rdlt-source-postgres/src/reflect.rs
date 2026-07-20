@@ -92,7 +92,10 @@ impl ReflectedTable {
 }
 
 /// One round trip: every column of every relation in `schema` matching the
-/// relkind filter, with type shape + PK membership, in attnum order. Domains
+/// relkind filter, with type shape + PK membership, in attnum order.
+/// Partition CHILDREN are excluded (`NOT relispartition`): the partitioned
+/// parent's stream already scans every leaf — reflecting leaves too would
+/// double-load every row under schema-wide discovery (005 review finding). Domains
 /// resolve one level to their base (nested domains fall to the textual
 /// fallback — documented); the domain's own typmod wins when present.
 const REFLECT_SQL: &str = r#"
@@ -118,6 +121,7 @@ LEFT JOIN (SELECT conrelid, conkey FROM pg_constraint WHERE contype = 'p') pk
        ON pk.conrelid = c.oid
 WHERE n.nspname = $1
   AND c.relkind::text = ANY($2)
+  AND NOT c.relispartition
 ORDER BY c.relname, a.attnum
 "#;
 

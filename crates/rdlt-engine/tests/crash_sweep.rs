@@ -73,13 +73,23 @@ async fn attempt<D: Destination + Clone>(
     }
 }
 
-/// The sweep core: (point × action) → crash, crash-during-recovery, recover, count.
-async fn sweep<D, F, C>(points: &[&str], mode: WriteMode, make_dest: F, count: C)
-where
+/// The sweep core: (point × action) → crash, crash-during-recovery, recover,
+/// count. `expected_fired` pins which points MUST actually fail an armed
+/// attempt under this (destination, mode) — the anti-vacuousness instrument
+/// (005 review: a sweep that tolerates dead crash points proves nothing).
+/// Points outside the pin are mode/destination-unreachable by design.
+async fn sweep<D, F, C>(
+    points: &[&str],
+    mode: WriteMode,
+    make_dest: F,
+    count: C,
+    expected_fired: &[&str],
+) where
     D: Destination + Clone,
     F: Fn(&Path) -> D,
     C: Fn(&D) -> u64,
 {
+    let mut fired: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
     for &point in points {
         // "1*off->return": SKIP the point's first occurrence, fire on the
         // second — crashes BETWEEN commits (e.g. after a Replace table's first
@@ -93,11 +103,14 @@ where
 
             fail::cfg(point, action).expect("configure fail point");
             // First run: dies at the point (or completes if the point is
-            // unreachable under this mode — vacuously fine, counts still checked).
-            let _ = attempt(&workdir, &dest, &mode).await;
+            // unreachable under this destination/mode — pinned below).
+            let armed1 = attempt(&workdir, &dest, &mode).await;
             // Second run STILL armed: a crash during recovery itself.
-            let _ = attempt(&workdir, &dest, &mode).await;
+            let armed2 = attempt(&workdir, &dest, &mode).await;
             fail::remove(point);
+            if armed1.is_err() || armed2.is_err() {
+                fired.insert(point);
+            }
 
             let recovered = attempt(&workdir, &dest, &mode).await;
             assert!(
@@ -111,6 +124,13 @@ where
             );
         }
     }
+    let expected: std::collections::BTreeSet<&str> = expected_fired.iter().copied().collect();
+    assert_eq!(
+        fired, expected,
+        "armed-fire pin diverged for {mode:?}: a missing point means its \
+         crash_point! site went dead (vacuous sweep); an extra one means a \
+         boundary became reachable — update the pin DELIBERATELY"
+    );
 }
 
 fn engine_and<'a>(dest_points: &[&'a str]) -> Vec<&'a str> {
@@ -125,6 +145,7 @@ async fn sweep_memory_destination() {
         WriteMode::Append,
         |_dir| MemoryDestination::new(),
         |dest| dest.committed_rows("s").len() as u64,
+        ENGINE_POINTS,
     )
     .await;
 }
@@ -132,12 +153,18 @@ async fn sweep_memory_destination() {
 #[tokio::test(flavor = "multi_thread")]
 async fn sweep_parquet_destination() {
     let points = engine_and(rdlt_dest_parquet::FAIL_POINTS);
+    // Measured 2026-07-20: EVERY parquet boundary fires in BOTH modes —
+    // the receipt-log and truncate guards run on every publish, not just
+    // Replace (which is why the second-occurrence pass caught the 003
+    // Replace-recovery bug class in the first place).
     for mode in [WriteMode::Append, WriteMode::Replace] {
+        let expected_fired = [ENGINE_POINTS, rdlt_dest_parquet::FAIL_POINTS].concat();
         sweep(
             &points,
             mode,
             |dir| rdlt_dest_parquet::ParquetDir::open(dir.join("out")).expect("open"),
             |dest| dest.count_rows("s").expect("count"),
+            &expected_fired,
         )
         .await;
     }
@@ -147,11 +174,13 @@ async fn sweep_parquet_destination() {
 async fn sweep_duckdb_destination() {
     let points = engine_and(rdlt_dest_duckdb::FAIL_POINTS);
     for mode in [WriteMode::Append, WriteMode::Replace] {
+        let expected_fired = [ENGINE_POINTS, rdlt_dest_duckdb::FAIL_POINTS].concat();
         sweep(
             &points,
             mode,
             |dir| rdlt_dest_duckdb::DuckDb::open(dir.join("out.duckdb")).expect("open"),
             |dest| dest.count_rows("s").expect("count"),
+            &expected_fired,
         )
         .await;
     }

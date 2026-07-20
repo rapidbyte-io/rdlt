@@ -94,10 +94,23 @@ async fn sweep_postgres_source() {
         for action in ["return", "panic", "1*off->return"] {
             let rig = Rig::new();
             fail::cfg(point, action).expect("configure fail point");
-            let _ = rig.attempt(&conn).await;
+            let armed1 = rig.attempt(&conn).await;
             // Second attempt still armed: failure during recovery itself.
-            let _ = rig.attempt(&conn).await;
+            let armed2 = rig.attempt(&conn).await;
             fail::remove(point);
+            // The instrument must FIRE (005 review): a deleted or unreachable
+            // crash_point! site would leave armed attempts green and this
+            // sweep vacuous — the exact class the fail/failpoints fix killed.
+            match action {
+                "1*off->return" => assert!(
+                    armed1.is_err() || armed2.is_err(),
+                    "[{point} / {action}] armed attempts never failed — point not firing"
+                ),
+                _ => assert!(
+                    armed1.is_err(),
+                    "[{point} / {action}] first armed attempt succeeded — point not firing"
+                ),
+            }
 
             let recovered = rig.attempt(&conn).await;
             assert!(

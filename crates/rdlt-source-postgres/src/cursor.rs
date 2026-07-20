@@ -24,8 +24,12 @@ pub(crate) enum Watermark {
         scaled: i128,
         scale: u8,
     },
-    /// text family + uuid-as-text cursors.
+    /// text family cursors.
     Text(String),
+    /// uuid cursors (canonical lowercase-hex text; byte order == PG uuid
+    /// order, and the SQL literal is `::uuid`-typed — `uuid >= text` has no
+    /// operator, the 005-review-adjacent bug).
+    Uuid(String),
     /// µs since Unix epoch, UTC.
     TimestampTz(i64),
     /// µs since Unix epoch, no zone.
@@ -46,6 +50,7 @@ impl Watermark {
                 format!("'{}'::numeric", decimal_text(*scaled, *scale))
             }
             Watermark::Text(s) => format!("'{}'::text", s.replace('\'', "''")),
+            Watermark::Uuid(s) => format!("'{}'::uuid", s.replace('\'', "''")),
             Watermark::TimestampTz(us) => {
                 format!("(TIMESTAMPTZ 'epoch' + {us}::int8 * INTERVAL '1 microsecond')")
             }
@@ -82,7 +87,8 @@ impl Watermark {
                         "cursor literal `{text}` is not a numeric(…,{scale})"
                     ))
                 }),
-            Decode::Utf8 | Decode::UuidText => Ok(Watermark::Text(text.to_owned())),
+            Decode::Utf8 => Ok(Watermark::Text(text.to_owned())),
+            Decode::UuidText => Ok(Watermark::Uuid(text.to_ascii_lowercase())),
             Decode::Timestamp { tz } => {
                 let parsed = chrono_parse_us(text).ok_or_else(|| {
                     bad(format!(
@@ -421,7 +427,10 @@ pub(crate) fn watermark_at(
             scaled: any.downcast_ref::<Decimal128Array>()?.value(row),
             scale,
         }),
-        Decode::Utf8 | Decode::UuidText => Some(Watermark::Text(
+        Decode::Utf8 => Some(Watermark::Text(
+            any.downcast_ref::<StringArray>()?.value(row).to_owned(),
+        )),
+        Decode::UuidText => Some(Watermark::Uuid(
             any.downcast_ref::<StringArray>()?.value(row).to_owned(),
         )),
         Decode::Timestamp { tz } => {

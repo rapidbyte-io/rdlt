@@ -253,6 +253,15 @@ impl PostgresSource {
         Ok(Self::new(PostgresConfig::from_yaml(yaml)?))
     }
 
+    pub fn from_json(json: &str) -> Result<Self, ConfigError> {
+        Ok(Self::new(PostgresConfig::from_json(json)?))
+    }
+
+    /// Embedder entry point (see [`PostgresConfig::from_value`]).
+    pub fn from_value(value: serde_json::Value) -> Result<Self, ConfigError> {
+        Ok(Self::new(PostgresConfig::from_value(value)?))
+    }
+
     pub fn new(config: PostgresConfig) -> Self {
         Self {
             config,
@@ -272,25 +281,30 @@ impl PostgresSource {
 
 /// Open one connection. TLS is not yet wired for the postgres connectors
 /// (matching `rdlt-dest-postgres`): a conn string demanding TLS is a Fatal
-/// config error, stated plainly. Connection-shaped failures classify
-/// Transient — the ENGINE owns the retry loop (clauses S3/E5).
+/// config error, stated plainly. The conn string is PARSED here (not
+/// string-matched): parse failure is Fatal (contract rule 1 — never the
+/// Transient/retry path), and the TLS policy reads the parsed ssl_mode, so
+/// every libpq syntax form is covered. `PostgresConfig` has pub fields, so
+/// this enforcement point holds even for configs built without `validate`.
 pub(crate) async fn connect(config: &PostgresConfig) -> Result<Client, SourceError> {
     let conn = config.conn.as_str();
-    let demands_tls = conn.split(&['?', '&', ' ']).any(|kv| {
-        matches!(
-            kv.trim(),
-            "sslmode=require" | "sslmode=verify-ca" | "sslmode=verify-full"
+    let parsed: tokio_postgres::Config = conn.parse().map_err(|e| {
+        errors::fatal(
+            Phase::Connect,
+            None,
+            format!("conn string does not parse: {e}"),
         )
-    });
-    if demands_tls {
+    })?;
+    if parsed.get_ssl_mode() == tokio_postgres::config::SslMode::Require {
         return Err(errors::fatal(
             Phase::Connect,
             None,
-            "sslmode=require/verify-* requested, but TLS is not yet wired for the \
+            "sslmode=require requested, but TLS is not yet wired for the \
              postgres connectors (recorded backlog item); use sslmode=disable/prefer",
         ));
     }
-    let (client, connection) = tokio_postgres::connect(conn, NoTls)
+    let (client, connection) = parsed
+        .connect(NoTls)
         .await
         .map_err(|e| errors::classify(Phase::Connect, None, &e))?;
     tokio::spawn(async move {
@@ -423,6 +437,7 @@ impl Source for PostgresSource {
                     lower.as_ref().map(|(w, closed)| (w, *closed)),
                     upper.as_ref(),
                     cc.nulls == config::NullPolicy::Include,
+                    matches!(cursor_decode, types::Decode::Utf8),
                 );
                 // Row keys: configured/reflected PK columns present in the
                 // selection; otherwise whole-row hashing.
@@ -601,13 +616,13 @@ mod tests {
     }
 
     #[test]
-    fn tls_demand_is_fatal_config_error() {
-        let config =
+    fn tls_demand_rejected_at_config_validation() {
+        // The from_yaml path rejects TLS demands at validate (config.rs has
+        // the full matrix incl. the spaced keyword form); the sibling test
+        // above proves connect() enforces it even when validate is bypassed.
+        let err =
             PostgresConfig::from_yaml("conn: \"postgresql://u:p@localhost/db?sslmode=require\"\n")
-                .expect("parses");
-        let err = futures::executor::block_on(connect(&config)).unwrap_err();
-        let msg = format!("{err:?}");
-        assert!(msg.contains("Fatal"), "{msg}");
-        assert!(err.to_string().contains("fatal"), "{err}");
+                .unwrap_err();
+        assert!(err.to_string().contains("TLS is not yet wired"), "{err}");
     }
 }

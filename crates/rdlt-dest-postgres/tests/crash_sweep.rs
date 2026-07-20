@@ -93,6 +93,7 @@ async fn sweep_postgres_destination() {
     let conn =
         format!("host=127.0.0.1 port={port} user=postgres password=postgres dbname=postgres");
 
+    let mut fired: std::collections::BTreeSet<(&str, &str)> = std::collections::BTreeSet::new();
     for &point in rdlt_dest_postgres::FAIL_POINTS {
         for action in ["return", "panic", "1*off->return"] {
             for mode in [WriteMode::Append, WriteMode::Replace] {
@@ -111,10 +112,19 @@ async fn sweep_postgres_destination() {
                 let dest = Postgres::connect(&conn).dataset(&dataset);
 
                 fail::cfg(point, action).expect("configure fail point");
-                let _ = attempt(&workdir, &dest, &mode).await;
+                let armed1 = attempt(&workdir, &dest, &mode).await;
                 // Second run still armed: a crash during recovery itself.
-                let _ = attempt(&workdir, &dest, &mode).await;
+                let armed2 = attempt(&workdir, &dest, &mode).await;
                 fail::remove(point);
+                if armed1.is_err() || armed2.is_err() {
+                    fired.insert((
+                        point,
+                        match mode {
+                            WriteMode::Append => "append",
+                            _ => "replace",
+                        },
+                    ));
+                }
 
                 let recovered = attempt(&workdir, &dest, &mode).await;
                 assert!(
@@ -129,4 +139,15 @@ async fn sweep_postgres_destination() {
             }
         }
     }
+    // Anti-vacuousness pin (005 review): every registered point must have
+    // failed at least one armed attempt in BOTH modes — a dead crash_point!
+    // site fails here instead of passing silently.
+    let expected: std::collections::BTreeSet<(&str, &str)> = rdlt_dest_postgres::FAIL_POINTS
+        .iter()
+        .flat_map(|&p| [(p, "append"), (p, "replace")])
+        .collect();
+    assert_eq!(
+        fired, expected,
+        "armed-fire pin diverged — a missing entry means a crash_point! site went dead"
+    );
 }

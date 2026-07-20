@@ -155,6 +155,35 @@ async fn type_matrix_round_trip() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn partitioned_tables_load_once_via_parent() {
+    // 005 review finding: without a relispartition filter, schema-wide
+    // discovery streamed BOTH the partitioned parent and every leaf,
+    // double-loading every row.
+    let fixture = PgFixture::start().await;
+    fixture
+        .seed(
+            "CREATE TABLE metrics (day date NOT NULL, v int8) PARTITION BY RANGE (day); \
+             CREATE TABLE metrics_jan PARTITION OF metrics \
+                 FOR VALUES FROM ('2026-01-01') TO ('2026-02-01'); \
+             CREATE TABLE metrics_feb PARTITION OF metrics \
+                 FOR VALUES FROM ('2026-02-01') TO ('2026-03-01'); \
+             INSERT INTO metrics VALUES ('2026-01-05', 1), ('2026-02-05', 2), ('2026-02-06', 3);",
+        )
+        .await;
+    let (dest, report) = run_to_duckdb(source_for(&fixture.conn_url(), ""), "conf-part").await;
+    assert_eq!(
+        report.total_rows(),
+        3,
+        "each partitioned row loads exactly once"
+    );
+    assert_eq!(dest.count_rows("metrics").expect("parent stream"), 3);
+    assert!(
+        dest.count_rows("metrics_jan").is_err() && dest.count_rows("metrics_feb").is_err(),
+        "leaf partitions must not become their own streams"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn schema_wide_discovery_and_views() {
     let fixture = PgFixture::start().await;
     fixture

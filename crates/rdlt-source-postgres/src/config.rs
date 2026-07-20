@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 pub enum ConfigError {
     #[error("parsing postgres source config: {0}")]
     Yaml(#[from] serde_yaml::Error),
+    #[error("parsing postgres source JSON config: {0}")]
+    Json(#[from] serde_json::Error),
     #[error("invalid postgres source config: {0}")]
     Invalid(String),
 }
@@ -125,12 +127,46 @@ impl PostgresConfig {
         Ok(config)
     }
 
+    /// JSON text form — same document shape and validation as YAML.
+    pub fn from_json(json: &str) -> Result<Self, ConfigError> {
+        let config: PostgresConfig = serde_json::from_str(json)?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// The embedder entry point: a platform holding connector configs as
+    /// JSON documents (validated against the connector's declared config
+    /// schema, `ConnectorSpec`) passes the `serde_json::Value` directly —
+    /// no string round-trip, same validation as every other entry point.
+    pub fn from_value(value: serde_json::Value) -> Result<Self, ConfigError> {
+        let config: PostgresConfig = serde_json::from_value(value)?;
+        config.validate()?;
+        Ok(config)
+    }
+
     /// Local validation (contract rules 4–6 and shape rules); rules that need
     /// the live catalog (2–3) run at open, against reflection.
     fn validate(&self) -> Result<(), ConfigError> {
         let invalid = |msg: String| Err(ConfigError::Invalid(msg));
         if self.conn.trim().is_empty() {
             return invalid("`conn` must not be empty".into());
+        }
+        // Contract rule 1: parse failure = FATAL config error, up front — a
+        // malformed conn string must never reach the Transient/retry path
+        // (005 review). The same parsed form decides the TLS policy, so the
+        // spaced keyword form (`sslmode = require`) is covered too.
+        match self.conn.parse::<tokio_postgres::Config>() {
+            Err(e) => return invalid(format!("`conn` does not parse: {e}")),
+            Ok(parsed) => {
+                if parsed.get_ssl_mode() == tokio_postgres::config::SslMode::Require {
+                    return invalid(
+                        "sslmode=require requested, but TLS is not yet wired for the \
+                         postgres connectors (recorded backlog item); use \
+                         sslmode=disable/prefer"
+                            .into(),
+                    );
+                }
+            }
         }
         if self.schema.trim().is_empty() {
             return invalid("`schema` must not be empty".into());
@@ -249,21 +285,23 @@ tables:
 
     #[test]
     fn unknown_fields_rejected() {
-        let err = PostgresConfig::from_yaml("conn: x\nfrobnicate: true\n").unwrap_err();
+        let err =
+            PostgresConfig::from_yaml("conn: host=localhost\nfrobnicate: true\n").unwrap_err();
         assert!(matches!(err, ConfigError::Yaml(_)), "{err}");
     }
 
     #[test]
     fn qualified_table_name_rejected() {
         let err =
-            PostgresConfig::from_yaml("conn: x\ntables:\n  - name: sales.orders\n").unwrap_err();
+            PostgresConfig::from_yaml("conn: host=localhost\ntables:\n  - name: sales.orders\n")
+                .unwrap_err();
         assert!(err.to_string().contains("schema-qualified"), "{err}");
     }
 
     #[test]
     fn include_exclude_mutually_exclusive() {
         let err = PostgresConfig::from_yaml(
-            "conn: x\ntables:\n  - name: t\n    included_columns: [a]\n    excluded_columns: [b]\n",
+            "conn: host=localhost\ntables:\n  - name: t\n    included_columns: [a]\n    excluded_columns: [b]\n",
         )
         .unwrap_err();
         assert!(err.to_string().contains("mutually exclusive"), "{err}");
@@ -272,11 +310,11 @@ tables:
     #[test]
     fn empty_selections_rejected() {
         for doc in [
-            "conn: x\ntables: []\n",
-            "conn: x\ntables:\n  - name: t\n    included_columns: []\n",
-            "conn: x\ntables:\n  - name: t\n    primary_key: []\n",
+            "conn: host=localhost\ntables: []\n",
+            "conn: host=localhost\ntables:\n  - name: t\n    included_columns: []\n",
+            "conn: host=localhost\ntables:\n  - name: t\n    primary_key: []\n",
             "conn: \"\"\n",
-            "conn: x\nbatch_max_rows: 0\n",
+            "conn: host=localhost\nbatch_max_rows: 0\n",
         ] {
             assert!(
                 PostgresConfig::from_yaml(doc).is_err(),
@@ -286,9 +324,52 @@ tables:
     }
 
     #[test]
+    fn json_and_value_entry_points_share_validation() {
+        let json =
+            r#"{"conn": "host=localhost", "tables": [{"name": "t", "cursor": {"column": "id"}}]}"#;
+        let from_json = PostgresConfig::from_json(json).expect("json");
+        let from_yaml = PostgresConfig::from_yaml(
+            "conn: host=localhost\ntables:\n  - name: t\n    cursor:\n      column: id\n",
+        )
+        .expect("yaml");
+        assert_eq!(from_json, from_yaml, "one document shape, two syntaxes");
+        let value: serde_json::Value = serde_json::from_str(json).expect("value");
+        assert_eq!(PostgresConfig::from_value(value).expect("value"), from_json);
+        // Validation is shared: the parse gate fires on every entry point.
+        assert!(PostgresConfig::from_json(r#"{"conn": "not a conn"}"#).is_err());
+        assert!(
+            PostgresConfig::from_value(serde_json::json!({"conn": "x", "unknown": 1})).is_err(),
+            "deny_unknown_fields holds for Value too"
+        );
+    }
+
+    #[test]
+    fn conn_parse_gate_and_tls_policy() {
+        // Contract rule 1: parse failure = typed CONFIG error, up front.
+        let err = PostgresConfig::from_yaml("conn: not-a-conn-string\n").unwrap_err();
+        assert!(err.to_string().contains("does not parse"), "{err}");
+        // TLS demand rejected at validate — including the SPACED keyword form
+        // the old string-match missed (005 review).
+        for conn in [
+            "postgresql://u:p@h/db?sslmode=require",
+            "host=h sslmode=require",
+            "host=h sslmode = require",
+        ] {
+            let err = PostgresConfig::from_yaml(&format!("conn: \"{conn}\"\n")).unwrap_err();
+            assert!(
+                err.to_string().contains("TLS is not yet wired"),
+                "{conn}: {err}"
+            );
+        }
+        // prefer/disable pass config validation.
+        assert!(PostgresConfig::from_yaml("conn: \"host=h sslmode=prefer\"\n").is_ok());
+    }
+
+    #[test]
     fn duplicate_tables_rejected() {
         let err =
-            PostgresConfig::from_yaml("conn: x\ntables:\n  - name: t\n  - name: t\n").unwrap_err();
+            PostgresConfig::from_yaml("conn: host=localhost\ntables:\n  - name: t\n  - name: t\n")
+                .unwrap_err();
         assert!(err.to_string().contains("listed twice"), "{err}");
     }
 }

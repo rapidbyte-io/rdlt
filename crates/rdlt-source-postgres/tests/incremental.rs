@@ -208,6 +208,69 @@ async fn pkless_table_dedups_via_row_hash() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn uuid_cursor_end_to_end() {
+    // Pre-fix, a uuid cursor generated `"col" >= '...'::text`, which has no
+    // uuid>=text operator — a guaranteed runtime error on the second run.
+    let fixture = PgFixture::start().await;
+    fixture
+        .seed(
+            "CREATE TABLE ev (id uuid PRIMARY KEY, v text); \
+             INSERT INTO ev VALUES \
+               ('00000000-0000-0000-0000-000000000001', 'a'), \
+               ('00000000-0000-0000-0000-000000000002', 'b');",
+        )
+        .await;
+    let rig = Rig::new();
+    let src = |conn: &str| {
+        PostgresSource::from_yaml(&format!(
+            "conn: \"{conn}\"\ntables:\n  - name: ev\n    cursor:\n      column: id\n"
+        ))
+        .expect("config")
+    };
+    assert_eq!(rig.run(src(&fixture.conn_url()), "inc-uuid").await, 2);
+    fixture
+        .seed("INSERT INTO ev VALUES ('00000000-0000-0000-0000-000000000003', 'c');")
+        .await;
+    assert_eq!(rig.run(src(&fixture.conn_url()), "inc-uuid").await, 1);
+    assert_eq!(rig.count(), 3);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn text_cursor_mixed_case_byte_order() {
+    // COLLATE "C" pins SQL ordering/filtering to the tracker's Rust byte
+    // order: 'B' < 'a' in bytes, though most locales sort 'a' < 'B'.
+    let fixture = PgFixture::start().await;
+    fixture
+        .seed(
+            "CREATE TABLE ev (id int8 PRIMARY KEY, name text); \
+             INSERT INTO ev VALUES (1, 'Alpha'), (2, 'beta'), (3, 'Gamma');",
+        )
+        .await;
+    let rig = Rig::new();
+    let src = |conn: &str| {
+        PostgresSource::from_yaml(&format!(
+            "conn: \"{conn}\"\ntables:\n  - name: ev\n    cursor:\n      column: name\n"
+        ))
+        .expect("config")
+    };
+    assert_eq!(rig.run(src(&fixture.conn_url()), "inc-text").await, 3);
+    // 'Delta' < 'beta' in byte order (uppercase D), so under a locale sort it
+    // would land inside the already-seen range; byte-order watermark 'beta'
+    // means 'Delta' is BELOW the watermark — documented cursor semantics: a
+    // non-monotonic text insert is invisible (same as the regressing clock).
+    // 'zeta' is above in byte order and must load.
+    fixture
+        .seed("INSERT INTO ev VALUES (4, 'Delta'), (5, 'zeta');")
+        .await;
+    assert_eq!(
+        rig.run(src(&fixture.conn_url()), "inc-text").await,
+        1,
+        "only the byte-order-greater row loads; ordering is consistent, no panic, no dupes"
+    );
+    assert_eq!(rig.count(), 4);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn merge_mode_rejected_for_structured_streams() {
     // Engine clause B4 (feature 002): structured streams have no per-row
     // `_rdlt_id`, so Merge is rejected at plan time. Spec US2-AS5 cannot hold

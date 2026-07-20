@@ -79,8 +79,17 @@ pub(crate) fn incremental_clauses(
     lower: Option<(&crate::cursor::Watermark, bool)>, // (value, closed?)
     upper: Option<&crate::cursor::Watermark>,
     nulls_include: bool,
+    // Text cursors force COLLATE "C": the tracker compares watermarks in
+    // Rust byte order, so the SQL ordering/filtering must use byte order
+    // too — a column collation (ICU, en_US…) would diverge (005 review).
+    collate_byte_order: bool,
 ) -> IncrementalClauses {
-    let ident = quote_ident(column);
+    let bare = quote_ident(column);
+    let ident = if collate_byte_order {
+        format!("{bare} COLLATE \"C\"")
+    } else {
+        bare
+    };
     let mut predicates: Vec<String> = Vec::new();
     if let Some((value, closed)) = lower {
         let op = match (direction_max, closed) {
@@ -171,30 +180,30 @@ mod tests {
         let w = Watermark::Int(5);
         let e = Watermark::Int(9);
         // (direction_max, closed) × operators
-        let c = incremental_clauses("ts", true, Some((&w, true)), None, false);
+        let c = incremental_clauses("ts", true, Some((&w, true)), None, false, false);
         assert_eq!(c.where_sql, r#""ts" >= 5::int8 AND "ts" IS NOT NULL"#);
         assert_eq!(c.order_sql, r#""ts" ASC NULLS FIRST"#);
-        let c = incremental_clauses("ts", true, Some((&w, false)), Some(&e), false);
+        let c = incremental_clauses("ts", true, Some((&w, false)), Some(&e), false, false);
         assert_eq!(
             c.where_sql,
             r#""ts" > 5::int8 AND "ts" < 9::int8 AND "ts" IS NOT NULL"#
         );
-        let c = incremental_clauses("ts", false, Some((&w, true)), Some(&e), false);
+        let c = incremental_clauses("ts", false, Some((&w, true)), Some(&e), false, false);
         assert_eq!(
             c.where_sql,
             r#""ts" <= 5::int8 AND "ts" > 9::int8 AND "ts" IS NOT NULL"#
         );
         assert_eq!(c.order_sql, r#""ts" DESC NULLS FIRST"#);
         // NULL policy include wraps with OR IS NULL; bare include has no filter.
-        let c = incremental_clauses("ts", true, Some((&w, true)), None, true);
+        let c = incremental_clauses("ts", true, Some((&w, true)), None, true, false);
         assert_eq!(c.where_sql, r#"(("ts" >= 5::int8) OR "ts" IS NULL)"#);
-        let c = incremental_clauses("ts", true, None, None, true);
+        let c = incremental_clauses("ts", true, None, None, true, false);
         assert_eq!(c.where_sql, "");
-        let c = incremental_clauses("ts", true, None, None, false);
+        let c = incremental_clauses("ts", true, None, None, false, false);
         assert_eq!(c.where_sql, r#""ts" IS NOT NULL"#);
         // Hostile cursor string literal stays inert.
         let hostile = Watermark::Text("x'; DROP TABLE t; --".into());
-        let c = incremental_clauses("v", true, Some((&hostile, true)), None, false);
+        let c = incremental_clauses("v", true, Some((&hostile, true)), None, false, true);
         assert!(
             c.where_sql.contains("'x''; DROP TABLE t; --'::text"),
             "{}",
