@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 2cef28d6a7e1835be1de48bcaed5e3d713dd44ba24cc279624164fef6460179d # shrinks to batch1 = [Object {"id": Bool(false)}], batch2 = [Object {"id": Array [Object {"id": Null}]}]

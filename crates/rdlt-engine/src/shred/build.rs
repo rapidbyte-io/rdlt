@@ -1,6 +1,9 @@
-//! Arrow columnar building: buffered JSON rows → `RecordBatch` per the resolved
+//! Arrow columnar building: drained rows → `RecordBatch` per the resolved
 //! schema. Values land directly in typed arrays; the `Json` column type stores the
 //! verbatim serialized subtree (never dropped, never exploded).
+//!
+//! Generic over [`JsonView`] (feature 003 R24): the tree and streaming paths
+//! build through the SAME code — identical arrays, bit for bit.
 
 use std::sync::Arc;
 
@@ -15,10 +18,10 @@ use arrow::error::ArrowError;
 use arrow::record_batch::RecordBatch;
 use rdlt_core::schema::system_columns;
 use rdlt_core::{ColumnDef, ColumnType, LoadId, LogicalType, TableSchema};
-use serde_json::Value;
 
-use super::canon::{parse_timestamp_tz, render_scalar};
-use super::nest::BufferedRow;
+use super::DrainRow;
+use super::canon::parse_timestamp_tz;
+use super::view::{JsonView, Kind};
 
 /// Arrow physical type for a logical type (design doc §5.1).
 pub(crate) fn arrow_scalar_type(ty: LogicalType) -> DataType {
@@ -60,11 +63,11 @@ pub(crate) fn arrow_schema(schema: &TableSchema) -> Schema {
 }
 
 /// Build one table's batch. `name_map` maps source keys to normalized column names
-/// (the schema speaks normalized; the buffered rows speak source).
-pub(crate) fn build_batch(
+/// (the schema speaks normalized; the drained rows speak source).
+pub(crate) fn build_batch<'v, V: JsonView<'v>>(
     schema: &TableSchema,
     name_map: &[(String, String)],
-    rows: &[BufferedRow],
+    rows: &[DrainRow<V>],
     load_id: &LoadId,
 ) -> Result<RecordBatch, ArrowError> {
     let mut arrays: Vec<ArrayRef> = Vec::with_capacity(schema.columns.len());
@@ -79,16 +82,22 @@ pub(crate) fn build_batch(
             }
             system_columns::ID => {
                 let mut b = StringBuilder::new();
+                let mut hex = [0u8; 64];
                 for row in rows {
-                    b.append_value(row.id.to_hex());
+                    row.id.write_hex(&mut hex);
+                    b.append_value(std::str::from_utf8(&hex).expect("hex is ASCII"));
                 }
                 Arc::new(b.finish())
             }
             system_columns::PARENT_ID => {
                 let mut b = StringBuilder::new();
+                let mut hex = [0u8; 64];
                 for row in rows {
                     match &row.parent_id {
-                        Some(id) => b.append_value(id.to_hex()),
+                        Some(id) => {
+                            id.write_hex(&mut hex);
+                            b.append_value(std::str::from_utf8(&hex).expect("hex is ASCII"));
+                        }
                         None => b.append_null(),
                     }
                 }
@@ -96,9 +105,13 @@ pub(crate) fn build_batch(
             }
             system_columns::ROOT_ID => {
                 let mut b = StringBuilder::new();
+                let mut hex = [0u8; 64];
                 for row in rows {
                     match &row.root_id {
-                        Some(id) => b.append_value(id.to_hex()),
+                        Some(id) => {
+                            id.write_hex(&mut hex);
+                            b.append_value(std::str::from_utf8(&hex).expect("hex is ASCII"));
+                        }
                         None => b.append_null(),
                     }
                 }
@@ -120,8 +133,8 @@ pub(crate) fn build_batch(
                     .find(|(_, normalized)| normalized == &column.name)
                     .map(|(source, _)| source.as_str())
                     .unwrap_or(column.name.as_str());
-                let values: Vec<Option<&Value>> =
-                    rows.iter().map(|row| row.value.get(source_key)).collect();
+                let values: Vec<Option<V>> =
+                    rows.iter().map(|row| row.get_top(source_key)).collect();
                 build_column(&column.ty, &values)
             }
         };
@@ -130,21 +143,21 @@ pub(crate) fn build_batch(
     RecordBatch::try_new(Arc::new(arrow_schema(schema)), arrays)
 }
 
-fn build_column(ty: &ColumnType, values: &[Option<&Value>]) -> ArrayRef {
+fn build_column<'v, V: JsonView<'v>>(ty: &ColumnType, values: &[Option<V>]) -> ArrayRef {
     match ty {
         ColumnType::Scalar { scalar } => build_scalar(*scalar, values),
         ColumnType::Struct { fields } => {
             let validity: Vec<bool> = values
                 .iter()
-                .map(|v| matches!(v, Some(Value::Object(_))))
+                .map(|v| v.is_some_and(|v| v.is_object()))
                 .collect();
             let child_arrays: Vec<ArrayRef> = fields
                 .iter()
                 .map(|field| {
-                    let projected: Vec<Option<&Value>> = values
+                    let projected: Vec<Option<V>> = values
                         .iter()
                         .map(|v| match v {
-                            Some(Value::Object(map)) => map.get(&field.name),
+                            Some(v) if v.is_object() => v.obj_get(&field.name),
                             _ => None,
                         })
                         .collect();
@@ -160,12 +173,12 @@ fn build_column(ty: &ColumnType, values: &[Option<&Value>]) -> ArrayRef {
         ColumnType::ScalarList { item } => {
             let mut offsets: Vec<i32> = Vec::with_capacity(values.len() + 1);
             offsets.push(0);
-            let mut flat: Vec<Option<&Value>> = Vec::new();
+            let mut flat: Vec<Option<V>> = Vec::new();
             let mut validity: Vec<bool> = Vec::with_capacity(values.len());
             for value in values {
                 match value {
-                    Some(Value::Array(items)) => {
-                        flat.extend(items.iter().map(Some));
+                    Some(v) if v.is_array() => {
+                        flat.extend(v.arr_items().map(Some));
                         validity.push(true);
                     }
                     _ => validity.push(value.is_some()),
@@ -183,35 +196,70 @@ fn build_column(ty: &ColumnType, values: &[Option<&Value>]) -> ArrayRef {
     }
 }
 
-fn build_scalar(ty: LogicalType, values: &[Option<&Value>]) -> ArrayRef {
+fn build_scalar<'v, V: JsonView<'v>>(ty: LogicalType, values: &[Option<V>]) -> ArrayRef {
+    let kind_of = |v: &Option<V>| v.map(JsonView::kind);
     match ty {
         LogicalType::Bool => {
             let mut b = BooleanBuilder::new();
             for v in values {
-                b.append_option(v.and_then(|v| v.as_bool()));
+                b.append_option(match kind_of(v) {
+                    Some(Kind::Bool(x)) => Some(x),
+                    _ => None,
+                });
             }
             Arc::new(b.finish())
         }
         LogicalType::Int64 => {
             let mut b = Int64Builder::new();
             for v in values {
-                b.append_option(v.and_then(|v| v.as_i64()));
+                b.append_option(match kind_of(v) {
+                    Some(Kind::Int(i)) => Some(i),
+                    _ => None,
+                });
             }
             Arc::new(b.finish())
         }
         LogicalType::Float64 => {
             let mut b = Float64Builder::new();
             for v in values {
-                b.append_option(v.and_then(|v| v.as_f64()));
+                // Mirrors `Value::as_f64`: any JSON number converts with `as` casts.
+                b.append_option(match kind_of(v) {
+                    Some(Kind::Float(f)) => Some(f),
+                    Some(Kind::Int(i)) => Some(i as f64),
+                    Some(Kind::UInt(u)) => Some(u as f64),
+                    _ => None,
+                });
             }
             Arc::new(b.finish())
         }
         LogicalType::Utf8 | LogicalType::Uuid => {
+            // Same semantics as `render_scalar`, minus the per-cell String
+            // clone for the dominant case (values that already ARE strings).
             let mut b = StringBuilder::new();
+            let mut scratch = String::new();
             for v in values {
-                match v.and_then(render_scalar) {
-                    Some(text) => b.append_value(text),
-                    None => b.append_null(),
+                match kind_of(v) {
+                    Some(Kind::Str(s)) => b.append_value(s),
+                    Some(Kind::Bool(x)) => b.append_value(if x { "true" } else { "false" }),
+                    Some(Kind::Int(i)) => {
+                        scratch.clear();
+                        std::fmt::Write::write_fmt(&mut scratch, format_args!("{i}"))
+                            .expect("write to String");
+                        b.append_value(&scratch);
+                    }
+                    Some(Kind::UInt(u)) => {
+                        scratch.clear();
+                        std::fmt::Write::write_fmt(&mut scratch, format_args!("{u}"))
+                            .expect("write to String");
+                        b.append_value(&scratch);
+                    }
+                    Some(Kind::Float(f)) => {
+                        scratch.clear();
+                        std::fmt::Write::write_fmt(&mut scratch, format_args!("{f}"))
+                            .expect("write to String");
+                        b.append_value(&scratch);
+                    }
+                    Some(Kind::Null | Kind::Object | Kind::Array) | None => b.append_null(),
                 }
             }
             Arc::new(b.finish())
@@ -221,7 +269,11 @@ fn build_scalar(ty: LogicalType, values: &[Option<&Value>]) -> ArrayRef {
             for v in values {
                 match v {
                     Some(value) if !value.is_null() => {
-                        b.append_value(serde_json::to_string(value).expect("Value serialization"))
+                        let mut out = Vec::new();
+                        write_compact_json(*value, &mut out);
+                        b.append_value(
+                            std::str::from_utf8(&out).expect("serialized JSON is UTF-8"),
+                        );
                     }
                     _ => b.append_null(),
                 }
@@ -231,10 +283,10 @@ fn build_scalar(ty: LogicalType, values: &[Option<&Value>]) -> ArrayRef {
         LogicalType::TimestampTz => {
             let mut b = TimestampMicrosecondBuilder::new();
             for v in values {
-                let micros = v
-                    .and_then(|v| v.as_str())
-                    .and_then(parse_timestamp_tz)
-                    .and_then(|dt| dt.timestamp_micros().into());
+                let micros = match kind_of(v) {
+                    Some(Kind::Str(s)) => parse_timestamp_tz(s).map(|dt| dt.timestamp_micros()),
+                    _ => None,
+                };
                 b.append_option(micros);
             }
             Arc::new(b.finish().with_timezone("+00:00"))
@@ -242,11 +294,14 @@ fn build_scalar(ty: LogicalType, values: &[Option<&Value>]) -> ArrayRef {
         LogicalType::TimestampNaive => {
             let mut b = TimestampMicrosecondBuilder::new();
             for v in values {
-                let micros = v.and_then(|v| v.as_str()).and_then(|s| {
-                    chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f")
-                        .ok()
-                        .map(|dt| dt.and_utc().timestamp_micros())
-                });
+                let micros = match kind_of(v) {
+                    Some(Kind::Str(s)) => {
+                        chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f")
+                            .ok()
+                            .map(|dt| dt.and_utc().timestamp_micros())
+                    }
+                    _ => None,
+                };
                 b.append_option(micros);
             }
             Arc::new(b.finish())
@@ -254,16 +309,17 @@ fn build_scalar(ty: LogicalType, values: &[Option<&Value>]) -> ArrayRef {
         LogicalType::Date => {
             let mut b = Date32Builder::new();
             for v in values {
-                let days = v.and_then(|v| v.as_str()).and_then(|s| {
-                    chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
+                let days = match kind_of(v) {
+                    Some(Kind::Str(s)) => chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
                         .ok()
                         .map(|d| {
                             d.signed_duration_since(
                                 chrono::NaiveDate::from_ymd_opt(1970, 1, 1).expect("epoch"),
                             )
                             .num_days() as i32
-                        })
-                });
+                        }),
+                    _ => None,
+                };
                 b.append_option(days);
             }
             Arc::new(b.finish())
@@ -271,14 +327,15 @@ fn build_scalar(ty: LogicalType, values: &[Option<&Value>]) -> ArrayRef {
         LogicalType::Time => {
             let mut b = Time64MicrosecondBuilder::new();
             for v in values {
-                let micros = v.and_then(|v| v.as_str()).and_then(|s| {
-                    chrono::NaiveTime::parse_from_str(s, "%H:%M:%S%.f")
+                let micros = match kind_of(v) {
+                    Some(Kind::Str(s)) => chrono::NaiveTime::parse_from_str(s, "%H:%M:%S%.f")
                         .ok()
                         .map(|t| {
                             i64::from(chrono::Timelike::num_seconds_from_midnight(&t)) * 1_000_000
                                 + i64::from(chrono::Timelike::nanosecond(&t) / 1_000)
-                        })
-                });
+                        }),
+                    _ => None,
+                };
                 b.append_option(micros);
             }
             Arc::new(b.finish())
@@ -306,17 +363,62 @@ fn build_scalar(ty: LogicalType, values: &[Option<&Value>]) -> ArrayRef {
     }
 }
 
+/// Compact JSON serialization in NATIVE entry order — byte-identical to
+/// `serde_json::to_string(&Value)` (preserve_order semantics, serde escaping,
+/// itoa/ryu numbers). Used for the `Json` column type's verbatim subtrees.
+fn write_compact_json<'v, V: JsonView<'v>>(value: V, out: &mut Vec<u8>) {
+    match value.kind() {
+        Kind::Object => {
+            out.push(b'{');
+            for (i, (key, item)) in value.obj_entries().enumerate() {
+                if i > 0 {
+                    out.push(b',');
+                }
+                serde_json::to_writer(&mut *out, key).expect("string serialization");
+                out.push(b':');
+                write_compact_json(item, out);
+            }
+            out.push(b'}');
+        }
+        Kind::Array => {
+            out.push(b'[');
+            for (i, item) in value.arr_items().enumerate() {
+                if i > 0 {
+                    out.push(b',');
+                }
+                write_compact_json(item, out);
+            }
+            out.push(b']');
+        }
+        Kind::Null => out.extend_from_slice(b"null"),
+        Kind::Bool(b) => out.extend_from_slice(if b { b"true" } else { b"false" }),
+        Kind::Str(s) => serde_json::to_writer(&mut *out, s).expect("string serialization"),
+        Kind::Int(i) => serde_json::to_writer(&mut *out, &serde_json::Number::from(i))
+            .expect("number serialization"),
+        Kind::UInt(u) => serde_json::to_writer(&mut *out, &serde_json::Number::from(u))
+            .expect("number serialization"),
+        Kind::Float(f) => serde_json::to_writer(
+            &mut *out,
+            &serde_json::Number::from_f64(f).expect("finite by JSON grammar"),
+        )
+        .expect("number serialization"),
+    }
+}
+
 /// Exact decimal parsing from integers or decimal strings; `None` (→ null) for
 /// anything inexact — floats are refused by design (no Float64 → Decimal edge).
-fn parse_decimal(value: &Value, scale: u8) -> Option<i128> {
-    let text = match value {
-        Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                return (i as i128).checked_mul(10i128.checked_pow(scale as u32)?);
-            }
-            return None; // floats: refused
+fn parse_decimal<'v, V: JsonView<'v>>(value: V, scale: u8) -> Option<i128> {
+    let owned;
+    let text = match value.kind() {
+        Kind::Int(i) => {
+            return (i as i128).checked_mul(10i128.checked_pow(scale as u32)?);
         }
-        Value::String(s) => s.trim(),
+        // u64 beyond i64 and floats: refused (matches Number::as_i64 semantics).
+        Kind::UInt(_) | Kind::Float(_) => return None,
+        Kind::Str(s) => {
+            owned = s;
+            owned.trim()
+        }
         _ => return None,
     };
     let (sign, digits) = match text.strip_prefix('-') {

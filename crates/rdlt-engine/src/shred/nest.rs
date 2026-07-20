@@ -1,9 +1,15 @@
-//! Stream shredding: nesting, child-table extraction, lineage stamping
-//! (design doc §§5.3–5.4).
+//! TREE shredding (the REFERENCE path): nesting, child-table extraction, lineage
+//! stamping (design doc §§5.3–5.4), backed by owned `serde_json::Value`s.
 //!
-//! One `StreamShredder` owns one stream's table family (root + children at any depth).
-//! Per micro-batch it observes shapes (infer), assigns row identities, buffers rows per
-//! table, then resolves schemas and hands `build` the final layout.
+//! Since feature 003 the production default is `tape::TapeShredder`; this path
+//! stays compiled as the equivalence-test reference (gate G5.3) for one feature
+//! cycle, then gets deleted. Both paths share `TableBuffer`, all observation/
+//! canonical/identity logic, and the `shred::drain_tables` pipeline.
+//!
+//! One `TreeShredder` owns one stream's table family (root + children at any
+//! depth). Per micro-batch it observes shapes (infer), assigns row identities,
+//! buffers rows per table, then hands the shared generic drain
+//! (`shred::drain_tables`) the final resolve/policy/build work.
 
 use std::collections::VecDeque;
 
@@ -16,10 +22,11 @@ use serde_json::Value;
 
 use super::canon::{canonical_json_bytes, render_scalar};
 use super::infer::{ColState, ScalarState};
+use super::view::JsonView;
 
-/// One buffered row awaiting Arrow building.
+/// One buffered row awaiting the drain (tree path: owned value).
 #[derive(Debug)]
-pub(crate) struct BufferedRow {
+pub(crate) struct OwnedRow {
     pub(crate) value: Value,
     pub(crate) id: RowId,
     pub(crate) parent_id: Option<RowId>,
@@ -27,6 +34,8 @@ pub(crate) struct BufferedRow {
     pub(crate) pos: Option<u64>,
 }
 
+/// One table's persistent shredding state: naming, shape observation, lineage —
+/// everything EXCEPT the buffered rows (those are per-batch and path-specific).
 #[derive(Debug)]
 pub(crate) struct TableBuffer {
     pub(crate) table: TableName,
@@ -36,11 +45,10 @@ pub(crate) struct TableBuffer {
     /// Source key → normalized column/child name mapping (collision-safe).
     namer: UniqueNamer,
     names: Vec<(String, String)>,
-    pub(crate) rows: Vec<BufferedRow>,
 }
 
 impl TableBuffer {
-    fn new(table: TableName, parent: Option<ParentLink>, rules: IdentRules) -> Self {
+    pub(crate) fn new(table: TableName, parent: Option<ParentLink>, rules: IdentRules) -> Self {
         let mut namer = UniqueNamer::new(rules);
         // System columns RESERVE their names: a source field literally named
         // `_rdlt_id` gets suffixed rather than aliasing the lineage column.
@@ -59,7 +67,6 @@ impl TableBuffer {
             columns: Vec::new(),
             namer,
             names: Vec::new(),
-            rows: Vec::new(),
         }
     }
 
@@ -108,7 +115,7 @@ impl TableBuffer {
         normalized
     }
 
-    fn state_mut(&mut self, source_key: &str) -> &mut ColState {
+    pub(crate) fn state_mut(&mut self, source_key: &str) -> &mut ColState {
         if let Some(idx) = self.columns.iter().position(|(k, _)| k == source_key) {
             &mut self.columns[idx].1
         } else {
@@ -119,17 +126,19 @@ impl TableBuffer {
     }
 }
 
-pub(crate) struct StreamShredder {
+pub(crate) struct TreeShredder {
     spec: StreamSpec,
     caps: DestCapabilities,
     /// Root first, children after, in first-seen order.
     pub(crate) tables: Vec<TableBuffer>,
+    /// Buffered rows per table, index-aligned with `tables`.
+    pub(crate) rows: Vec<Vec<OwnedRow>>,
     /// Column states per table as of the start of the current micro-batch — the
     /// rollback point for Discard* policy enforcement.
     pub(crate) pre_batch: Vec<Vec<(String, ColState)>>,
 }
 
-impl StreamShredder {
+impl TreeShredder {
     pub(crate) fn new(spec: StreamSpec, caps: DestCapabilities, root_table: TableName) -> Self {
         let mut root = TableBuffer::new(root_table, None, caps.ident_rules);
         // Hints pin root-level scalar columns (they win over inference).
@@ -140,6 +149,7 @@ impl StreamShredder {
             spec,
             caps,
             tables: vec![root],
+            rows: vec![Vec::new()],
             pre_batch: Vec::new(),
         }
     }
@@ -169,6 +179,7 @@ impl StreamShredder {
             }
         };
 
+        let mut hash_scratch = Vec::new();
         let root_id = self.row_identity(&row);
         // Breadth-first traversal; every queued entry carries the ORIGINAL root row's
         // id so `_rdlt_root_id` is correct at any nesting depth without parent-chain
@@ -227,7 +238,7 @@ impl StreamShredder {
                             Value::Object(map)
                         }
                     };
-                    let content = content_hash(&child_row);
+                    let content = content_hash_with(&child_row, &mut hash_scratch);
                     let child_id = child_row_id(&entry.id, i as u64, &content);
                     queue.push_back(Queued {
                         table_idx: child_idx,
@@ -240,7 +251,7 @@ impl StreamShredder {
                 }
             }
 
-            self.tables[entry.table_idx].rows.push(BufferedRow {
+            self.rows[entry.table_idx].push(OwnedRow {
                 value: entry.row,
                 id: entry.id,
                 parent_id: entry.parent_id,
@@ -269,39 +280,52 @@ impl StreamShredder {
             }),
             self.caps.ident_rules,
         ));
+        self.rows.push(Vec::new());
         self.tables.len() - 1
     }
 
     /// `_rdlt_id` for a root row: key hash when the stream declares a primary key,
     /// content hash otherwise (design doc §5.4).
     fn row_identity(&self, row: &Value) -> RowId {
-        match &self.spec.primary_key {
-            Some(key_fields) if !key_fields.is_empty() => {
-                let mut builder = RowIdBuilder::keyed();
-                for field in key_fields {
-                    let rendered = row.get(field).and_then(render_scalar);
-                    match &rendered {
-                        Some(text) => builder.field(field, FieldValue::Bytes(text.as_bytes())),
-                        None => builder.field(field, FieldValue::Null),
-                    };
-                }
-                builder.finish()
-            }
-            _ => content_hash(row),
-        }
+        row_identity(self.spec.primary_key.as_deref(), row)
     }
 }
 
-fn content_hash(row: &Value) -> RowId {
-    let mut canonical = Vec::new();
-    canonical_json_bytes(row, &mut canonical);
+/// `_rdlt_id` for a root row, shared by both shred paths.
+pub(crate) fn row_identity<'a, V: JsonView<'a>>(primary_key: Option<&[String]>, row: V) -> RowId {
+    match primary_key {
+        Some(key_fields) if !key_fields.is_empty() => {
+            let mut builder = RowIdBuilder::keyed();
+            for field in key_fields {
+                let rendered = row.obj_get(field).and_then(render_scalar);
+                match &rendered {
+                    Some(text) => builder.field(field, FieldValue::Bytes(text.as_bytes())),
+                    None => builder.field(field, FieldValue::Null),
+                };
+            }
+            builder.finish()
+        }
+        _ => content_hash(row),
+    }
+}
+
+pub(crate) fn content_hash<'a, V: JsonView<'a>>(row: V) -> RowId {
+    let mut scratch = Vec::new();
+    content_hash_with(row, &mut scratch)
+}
+
+/// `content_hash` with a caller-owned scratch buffer — traversals hash every
+/// row and child, and per-call Vec churn was visible in the shred profile.
+pub(crate) fn content_hash_with<'a, V: JsonView<'a>>(row: V, scratch: &mut Vec<u8>) -> RowId {
+    scratch.clear();
+    canonical_json_bytes(row, scratch);
     let mut builder = RowIdBuilder::keyless();
-    builder.field("", FieldValue::Bytes(&canonical));
+    builder.field("", FieldValue::Bytes(scratch));
     builder.finish()
 }
 
 /// Parse a raw-JSON push: NDJSON, a top-level array, or a single document.
-fn parse_rows(bytes: &[u8]) -> Result<Vec<Value>, serde_json::Error> {
+pub(crate) fn parse_rows(bytes: &[u8]) -> Result<Vec<Value>, serde_json::Error> {
     let mut rows = Vec::new();
     let stream = serde_json::Deserializer::from_slice(bytes).into_iter::<Value>();
     for doc in stream {
@@ -313,8 +337,8 @@ fn parse_rows(bytes: &[u8]) -> Result<Vec<Value>, serde_json::Error> {
     Ok(rows)
 }
 
-/// Resolve one table's buffered observation state into schema columns:
-/// system/lineage columns first, then source columns in first-seen order.
+/// Resolve one table's observation state into schema columns: system/lineage
+/// columns first, then source columns in first-seen order.
 pub(crate) fn resolve_schema(buffer: &mut TableBuffer) -> TableSchema {
     let mut columns: Vec<ColumnDef> = Vec::new();
     let system = |name: &str, ty| ColumnDef {

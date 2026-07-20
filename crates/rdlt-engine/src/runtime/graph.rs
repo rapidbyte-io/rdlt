@@ -32,7 +32,8 @@ use crate::EngineConfig;
 use crate::load::{LoadItem, Loader};
 use crate::runtime::channel::byte_channel;
 use crate::schema::registry::SchemaRegistry;
-use crate::shred::StreamShredder;
+use crate::shred::TapeShredder;
+use crate::shred::tape::PushError;
 
 static LOAD_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -251,7 +252,7 @@ async fn run_once(
             let _guard = span.enter();
 
             let arrow_table = root_table.clone();
-            let mut shredder = Some(StreamShredder::new(spec.clone(), caps, root_table));
+            let mut shredder = Some(TapeShredder::new(spec.clone(), caps, root_table));
             let mut registry = Some(SchemaRegistry::default());
 
             let (out, mut input) = records_channel(byte_budget);
@@ -271,7 +272,9 @@ async fn run_once(
                 match push.payload {
                     PushPayload::RawJson(bytes) => {
                         // CPU-bound shred on the blocking pool; state ping-pong
-                        // keeps the shredder single-owner without locks.
+                        // keeps the shredder single-owner without locks. The tape
+                        // path (feature 003 R24) parses the slab into an arena and
+                        // drains it in one call — no per-row trees.
                         let mut sh = shredder.take().expect("shredder present");
                         let mut reg = registry.take().expect("registry present");
                         let batch_load_id = load_id.clone();
@@ -281,18 +284,21 @@ async fn run_once(
                         let joined = tokio::task::spawn_blocking(move || {
                             let span = tracing::info_span!("rdlt.shred");
                             let _guard = span.enter();
-                            let items = match sh.push_bytes(&bytes) {
-                                Ok(()) => sh.drain_batch(
+                            let items = sh
+                                .push_and_drain(
+                                    &bytes,
                                     &mut reg,
                                     &batch_load_id,
                                     &batch_mode,
                                     &batch_policy,
-                                ),
-                                Err(e) => Err(RdltError::source(
-                                    stream_for_err,
-                                    format!("invalid JSON from source: {e}"),
-                                )),
-                            };
+                                )
+                                .map_err(|e| match e {
+                                    PushError::Json(e) => RdltError::source(
+                                        stream_for_err,
+                                        format!("invalid JSON from source: {e}"),
+                                    ),
+                                    PushError::Engine(e) => e,
+                                });
                             (sh, reg, items)
                         })
                         .await

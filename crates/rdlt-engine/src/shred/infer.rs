@@ -3,12 +3,15 @@
 //! Drives `rdlt_core::widen` and layers the *value* checks the pure lattice cannot
 //! know about: an `Int64` beyond ±2^53 meeting `Float64` escalates the column to
 //! `Utf8` — losslessness is enforced at runtime, never assumed.
+//!
+//! Generic over [`JsonView`] (feature 003 R24): the tree and streaming paths
+//! observe through the SAME logic — one lattice, one escalation rule.
 
 use rdlt_core::types::{LogicalType, int64_fits_in_f64, widen};
 use rdlt_core::{ColumnDef, ColumnType, Provenance};
-use serde_json::Value;
 
 use super::canon::parse_timestamp_tz;
+use super::view::{JsonView, Kind};
 
 /// Observation state for a scalar position (column, struct field, or list item).
 #[derive(Debug, Default, Clone)]
@@ -30,30 +33,30 @@ impl ScalarState {
         }
     }
 
-    pub(crate) fn observe(&mut self, value: &Value) {
+    pub(crate) fn observe<'a, V: JsonView<'a>>(&mut self, value: V) {
         if self.pinned {
             return;
         }
-        let observed = match value {
-            Value::Null => return,
-            Value::Bool(_) => LogicalType::Bool,
-            Value::Number(n) => {
-                if let Some(i) = n.as_i64() {
-                    if !int64_fits_in_f64(i) {
-                        self.saw_inexact_int = true;
-                    }
-                    LogicalType::Int64
-                } else if n.as_u64().is_some() {
-                    // u64 beyond i64::MAX: definitely not exactly representable paths
-                    // we track; treat as inexact-int territory.
+        let observed = match value.kind() {
+            Kind::Null => return,
+            Kind::Bool(_) => LogicalType::Bool,
+            Kind::Int(i) => {
+                if !int64_fits_in_f64(i) {
                     self.saw_inexact_int = true;
-                    LogicalType::Int64
-                } else {
-                    self.saw_float = true;
-                    LogicalType::Float64
                 }
+                LogicalType::Int64
             }
-            Value::String(s) => {
+            Kind::UInt(_) => {
+                // u64 beyond i64::MAX: definitely not exactly representable paths
+                // we track; treat as inexact-int territory.
+                self.saw_inexact_int = true;
+                LogicalType::Int64
+            }
+            Kind::Float(_) => {
+                self.saw_float = true;
+                LogicalType::Float64
+            }
+            Kind::Str(s) => {
                 if parse_timestamp_tz(s).is_some() {
                     LogicalType::TimestampTz
                 } else {
@@ -61,7 +64,7 @@ impl ScalarState {
                 }
             }
             // Non-scalars reaching a scalar position are a shape conflict → Json.
-            Value::Object(_) | Value::Array(_) => LogicalType::Json,
+            Kind::Object | Kind::Array => LogicalType::Json,
         };
         let joined = match self.ty {
             None => observed,
@@ -97,8 +100,8 @@ pub(crate) enum ColState {
 }
 
 impl ColState {
-    pub(crate) fn observe(&mut self, value: &Value, lists_as_columns: bool) {
-        if matches!(value, Value::Null) {
+    pub(crate) fn observe<'a, V: JsonView<'a>>(&mut self, value: V, lists_as_columns: bool) {
+        if value.is_null() {
             return;
         }
         match self {
@@ -106,32 +109,32 @@ impl ColState {
             ColState::Unknown => {
                 *self = Self::fresh(value, lists_as_columns);
             }
-            ColState::Scalar(state) => match value {
-                Value::Object(_) | Value::Array(_) => *self = ColState::Json,
-                scalar => state.observe(scalar),
+            ColState::Scalar(state) => match value.kind() {
+                Kind::Object | Kind::Array => *self = ColState::Json,
+                _ => state.observe(value),
             },
-            ColState::Struct(fields) => match value {
-                Value::Object(map) => {
-                    for (key, item) in map {
+            ColState::Struct(fields) => match value.kind() {
+                Kind::Object => {
+                    for (key, item) in value.obj_entries() {
                         match fields.iter_mut().find(|(name, _)| name == key) {
                             Some((_, state)) => state.observe(item, lists_as_columns),
                             None => {
                                 let mut state = ColState::Unknown;
                                 state.observe(item, lists_as_columns);
-                                fields.push((key.clone(), state));
+                                fields.push((key.to_owned(), state));
                             }
                         }
                     }
                 }
                 _ => *self = ColState::Json,
             },
-            ColState::ScalarList(item_state) => match value {
-                Value::Array(items) => {
-                    if items.iter().any(Value::is_object) {
+            ColState::ScalarList(item_state) => match value.kind() {
+                Kind::Array => {
+                    if value.arr_items().any(|item| item.is_object()) {
                         // scalars-then-objects in the same list position: irreconcilable
                         *self = ColState::Json;
                     } else {
-                        for item in items {
+                        for item in value.arr_items() {
                             if item.is_array() {
                                 *self = ColState::Json; // nested lists: v1 escape hatch
                                 return;
@@ -157,25 +160,25 @@ impl ColState {
         }
     }
 
-    fn fresh(value: &Value, lists_as_columns: bool) -> Self {
-        match value {
-            Value::Null => ColState::Unknown,
-            Value::Object(map) => {
-                let mut fields = Vec::with_capacity(map.len());
-                for (key, item) in map {
+    fn fresh<'a, V: JsonView<'a>>(value: V, lists_as_columns: bool) -> Self {
+        match value.kind() {
+            Kind::Null => ColState::Unknown,
+            Kind::Object => {
+                let mut fields = Vec::new();
+                for (key, item) in value.obj_entries() {
                     let mut state = ColState::Unknown;
                     state.observe(item, lists_as_columns);
-                    fields.push((key.clone(), state));
+                    fields.push((key.to_owned(), state));
                 }
                 ColState::Struct(fields)
             }
-            Value::Array(items) => match array_shape(value) {
+            Kind::Array => match array_shape(value) {
                 ArrayShape::Empty => ColState::Unknown, // decide when data arrives
                 ArrayShape::Objects => ColState::ChildTable,
                 ArrayShape::Scalars => {
                     if lists_as_columns {
                         let mut item_state = ScalarState::default();
-                        for item in items {
+                        for item in value.arr_items() {
                             item_state.observe(item);
                         }
                         ColState::ScalarList(item_state)
@@ -185,9 +188,9 @@ impl ColState {
                 }
                 ArrayShape::Mixed => ColState::Json,
             },
-            scalar => {
+            _ => {
                 let mut state = ScalarState::default();
-                state.observe(scalar);
+                state.observe(value);
                 ColState::Scalar(state)
             }
         }
@@ -230,23 +233,31 @@ impl ColState {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum ArrayShape {
+pub(crate) enum ArrayShape {
     Empty,
     Objects,
     Scalars,
     Mixed,
 }
 
-fn array_shape(value: &Value) -> ArrayShape {
-    let Value::Array(items) = value else {
+pub(crate) fn array_shape<'a, V: JsonView<'a>>(value: V) -> ArrayShape {
+    if !value.is_array() {
         return ArrayShape::Mixed;
-    };
-    let non_null: Vec<&Value> = items.iter().filter(|v| !v.is_null()).collect();
-    if non_null.is_empty() {
-        return ArrayShape::Empty;
     }
-    let objects = non_null.iter().filter(|v| v.is_object()).count();
-    if objects == non_null.len() {
+    let mut objects = 0usize;
+    let mut non_null = 0usize;
+    for item in value.arr_items() {
+        if item.is_null() {
+            continue;
+        }
+        non_null += 1;
+        if item.is_object() {
+            objects += 1;
+        }
+    }
+    if non_null == 0 {
+        ArrayShape::Empty
+    } else if objects == non_null {
         ArrayShape::Objects
     } else if objects == 0 {
         ArrayShape::Scalars
@@ -258,7 +269,7 @@ fn array_shape(value: &Value) -> ArrayShape {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     fn observe_all(values: &[Value]) -> ColState {
         let mut state = ColState::Unknown;

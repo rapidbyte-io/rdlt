@@ -195,7 +195,7 @@ fn schema_from_arrow(
     ))
 }
 
-fn column_type_from_arrow(dt: &DataType) -> Result<ColumnType, String> {
+pub(crate) fn column_type_from_arrow(dt: &DataType) -> Result<ColumnType, String> {
     use LogicalType::*;
     let scalar = |t| Ok(ColumnType::scalar(t));
     match dt {

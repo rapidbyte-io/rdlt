@@ -5,6 +5,9 @@
 //! cost. The public surface is [`Engine`]/[`EngineConfig`] plus the vocabulary
 //! re-exported from [`rdlt_core`].
 
+pub mod failpoints;
+#[doc(hidden)]
+pub mod fuzzing;
 mod load;
 mod runtime;
 mod schema;
