@@ -183,9 +183,11 @@ pub(crate) struct Tracker {
     /// True until a row strictly beyond the stored watermark is seen.
     in_boundary: bool,
     last_value: Option<Watermark>,
-    prev_distinct: Option<Watermark>,
-    last_emitted: Option<Watermark>,
+    /// Keys of rows sharing `last_value` (the current boundary run).
     run_keys: Vec<String>,
+    /// Rows-at-watermark count at the last emitted checkpoint (dedup of
+    /// identical consecutive checkpoints).
+    emitted: Option<(Watermark, usize)>,
     pub deduped_rows: u64,
 }
 
@@ -205,9 +207,8 @@ impl Tracker {
             key_columns,
             in_boundary: true,
             last_value: None,
-            prev_distinct: None,
-            last_emitted: None,
             run_keys: Vec::new(),
+            emitted: None,
             deduped_rows: 0,
         }
     }
@@ -304,7 +305,6 @@ impl Tracker {
                         self.beyond(&value, last),
                         "cursor stream not ordered — sqlgen ORDER BY violated"
                     );
-                    self.prev_distinct = self.last_value.take();
                     self.last_value = Some(value);
                     self.run_keys = vec![self.row_key(&batch, row)];
                 }
@@ -322,56 +322,62 @@ impl Tracker {
         } else {
             Some(batch)
         };
-        // Intermediate checkpoint: the last COMPLETED distinct value (a
-        // greater one has appeared), if it advances past stored state and
-        // was not already emitted. Empty keys ⇒ strict `>` resume.
-        let checkpoint = match (&self.prev_distinct, &self.stored) {
-            (Some(candidate), stored)
-                if stored
-                    .as_ref()
-                    .is_none_or(|s| self.beyond(candidate, &s.watermark))
-                    && self.last_emitted.as_ref() != Some(candidate) =>
-            {
-                self.last_emitted = Some(candidate.clone());
-                Some(CursorState {
-                    watermark: candidate.clone(),
-                    boundary_keys: Vec::new(),
-                })
+        // Intermediate checkpoint after EVERY batch: watermark = last value
+        // seen, keys = its boundary run. This COVERS every pushed row (S2):
+        // an engine commit at this checkpoint can resume `>= watermark` with
+        // key dedup and neither lose nor double-apply the boundary run.
+        // (The earlier prev-distinct design under-covered pushed rows at the
+        // current value — caught by the armed crash sweep as a duplicate.)
+        let checkpoint = self.current_state().filter(|state| {
+            let signature = (state.watermark.clone(), state.boundary_keys.len());
+            if self.emitted.as_ref() == Some(&signature) {
+                false
+            } else {
+                self.emitted = Some(signature);
+                true
             }
-            _ => None,
-        };
+        });
         (out_batch, checkpoint)
     }
 
-    /// The final checkpoint at stream end: watermark = last value seen, with
-    /// the boundary-key run under a closed boundary (`keep_keys`). `None`
-    /// when nothing advanced past the stored state (regressing-clock guard:
-    /// the watermark NEVER moves backward).
-    pub fn final_state(&self, keep_keys: bool) -> Option<CursorState> {
+    /// The current resume-safe state: watermark = last value seen, keys =
+    /// its boundary run (merged with the stored keys when the watermark has
+    /// not advanced past an equal stored one). `None` when nothing advanced
+    /// (regressing-clock guard: the watermark NEVER moves backward).
+    fn current_state(&self) -> Option<CursorState> {
         let last = self.last_value.as_ref()?;
+        let mut boundary_keys = self.run_keys.clone();
         if let Some(stored) = &self.stored {
             if !self.beyond(last, &stored.watermark) && *last != stored.watermark {
                 return None; // regressed — keep the stored watermark
             }
-            if *last == stored.watermark && self.run_keys.is_empty() {
-                return None; // nothing new at the boundary
+            if *last == stored.watermark {
+                if self.run_keys.is_empty() {
+                    return None; // nothing new at the boundary
+                }
+                // New rows at an unchanged watermark merge with its old keys
+                // (those remain committed and deduped-against).
+                boundary_keys.extend(stored.boundary_keys.iter().cloned());
+                boundary_keys.sort();
+                boundary_keys.dedup();
             }
-        }
-        let mut boundary_keys = if keep_keys { self.run_keys.clone() } else { Vec::new() };
-        // Rows equal to an UNCHANGED stored watermark merge with its old keys
-        // (they were deduped against it and remain committed).
-        if let Some(stored) = &self.stored
-            && *last == stored.watermark
-            && keep_keys
-        {
-            boundary_keys.extend(stored.boundary_keys.iter().cloned());
-            boundary_keys.sort();
-            boundary_keys.dedup();
         }
         Some(CursorState {
             watermark: last.clone(),
             boundary_keys,
         })
+    }
+
+    /// The final checkpoint at stream end. Under `boundary: open` the keys
+    /// are stripped (strictly-monotonic cursors resume `>` across runs);
+    /// intermediate checkpoints ALWAYS keep keys — in-run resume correctness
+    /// is not a user-visible semantic choice.
+    pub fn final_state(&self, keep_keys: bool) -> Option<CursorState> {
+        let mut state = self.current_state()?;
+        if !keep_keys {
+            state.boundary_keys = Vec::new();
+        }
+        Some(state)
     }
 }
 

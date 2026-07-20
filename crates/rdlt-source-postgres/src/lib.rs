@@ -28,7 +28,20 @@ pub use config::{ConfigError, PostgresConfig};
 
 use copy_decode::{CopyDecoder, FieldPlan};
 use errors::Phase;
+use rdlt_connector::core::crash_point;
 use reflect::ReflectedTable;
+
+/// Fail-point registry (003 gate G2.2, feature 005 FR-009): every
+/// `crash_point!` site in this crate — the source read/checkpoint path.
+/// The crash sweep pins and iterates exactly this list, both passes.
+#[cfg(feature = "failpoints")]
+#[doc(hidden)]
+pub const FAIL_POINTS: &[&str] = &[
+    "pg.src.after_reflect",
+    "pg.src.mid_copy",
+    "pg.src.after_batch_push",
+    "pg.src.before_checkpoint",
+];
 
 /// Test-only surface (hidden): lets integration suites drive reflection
 /// without going through a full pipeline. Not a public API.
@@ -185,6 +198,10 @@ impl Source for PostgresSource {
         })?;
         let table_config = self.config.table_config(&name);
         let columns = table.selected_columns(table_config)?;
+        crash_point!(
+            "pg.src.after_reflect",
+            Err(errors::fatal(Phase::Reflect, Some(&name), "injected: after reflect"))
+        );
         let plans: Vec<FieldPlan> = columns
             .iter()
             .map(|c| FieldPlan {
@@ -222,14 +239,15 @@ impl Source for PostgresSource {
                     Some(since) => Some(cursor::CursorState::decode(since, &name)?),
                     None => None,
                 };
-                // Lower bound: stored state (closed iff boundary keys exist —
-                // intermediate checkpoints resume strictly); else the
-                // configured initial_value under the configured boundary.
+                // Lower bound: stored state — closed (>= + dedup) iff it
+                // carries boundary keys, which every checkpoint does except
+                // an open-boundary final; else the configured initial_value
+                // under the configured boundary.
                 let closed_default = cc.boundary == config::Boundary::Closed;
                 let lower: Option<(cursor::Watermark, bool)> = match &stored {
                     Some(state) => Some((
                         state.watermark.clone(),
-                        closed_default && !state.boundary_keys.is_empty(),
+                        !state.boundary_keys.is_empty(),
                     )),
                     None => match &cc.initial_value {
                         Some(text) => Some((
@@ -298,6 +316,12 @@ impl Source for PostgresSource {
                 .await
                 .map_err(|e| errors::classify(Phase::Copy, Some(&name), &e))?;
             let Some(chunk) = chunk else { break };
+            // Simulated mid-stream connection loss: Transient — the ENGINE
+            // retries the whole read from committed state (E5/E6/S1).
+            crash_point!(
+                "pg.src.mid_copy",
+                Err(errors::transient(Phase::Copy, Some(&name), "injected: connection lost mid-COPY"))
+            );
             let batches = decoder
                 .feed(&chunk)
                 .map_err(|e| errors::fatal(Phase::Decode, Some(&name), e))?;
@@ -325,6 +349,10 @@ impl Source for PostgresSource {
                 tracing::debug!(table = %name, rows = decoder.rows_decoded(), "snapshot complete");
             }
             Some((tracker, cc)) => {
+                crash_point!(
+                    "pg.src.before_checkpoint",
+                    Err(errors::fatal(Phase::Copy, Some(&name), "injected: before final checkpoint"))
+                );
                 let keep_keys = cc.boundary == config::Boundary::Closed;
                 if let Some(state) = tracker.final_state(keep_keys)
                     && req.out.checkpoint(state.encode()).await.is_err()
@@ -364,6 +392,10 @@ async fn push_tracked(
                 if req.out.arrow(filtered).await.is_err() {
                     return Ok(false);
                 }
+                crash_point!(
+                    "pg.src.after_batch_push",
+                    Err(errors::transient(Phase::Copy, None, "injected: after batch push"))
+                );
             }
             if let Some(state) = checkpoint
                 && req.out.checkpoint(state.encode()).await.is_err()
@@ -378,6 +410,22 @@ async fn push_tracked(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "failpoints")]
+    #[test]
+    fn crash_points_actually_fire() {
+        fn site() -> Result<(), SourceError> {
+            crash_point!(
+                "pg.src.after_reflect",
+                Err(errors::fatal(Phase::Reflect, None, "probe"))
+            );
+            Ok(())
+        }
+        rdlt_connector::core::failpoint::fail::cfg("pg.src.after_reflect", "return").unwrap();
+        let fired = site().is_err();
+        rdlt_connector::core::failpoint::fail::remove("pg.src.after_reflect");
+        assert!(fired, "armed crash_point must fire");
+    }
 
     #[test]
     fn tls_demand_is_fatal_config_error() {

@@ -224,6 +224,79 @@ async fn empty_table_materializes_with_schema() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn drift_column_added_dropped_retyped() {
+    use rdlt_connector::Source as _;
+
+    // ADDED between reflect and read: this run projects the reflected
+    // columns only (discovery is once per run); the NEXT run evolves.
+    let fixture = PgFixture::start().await;
+    fixture
+        .seed("CREATE TABLE d (id int8 PRIMARY KEY, v text); INSERT INTO d VALUES (1, 'x');")
+        .await;
+    let source = source_for(&fixture.conn_url(), "tables:\n  - name: d\n");
+    source.streams().await.expect("reflect");
+    fixture.seed("ALTER TABLE d ADD COLUMN extra int4; UPDATE d SET extra = 7;").await;
+    let db = tempfile::tempdir().expect("tempdir");
+    let dest = DuckDb::open(db.path().join("out.duckdb")).expect("open db");
+    std::mem::forget(db);
+    Engine::new(EngineConfig::new("drift-add"), source, dest.clone())
+        .run()
+        .await
+        .expect("added column is invisible this run, never misaligned");
+    assert!(
+        dest.query_string("SELECT CAST(extra AS VARCHAR) FROM d").is_err(),
+        "column added after reflection must not appear this run"
+    );
+    // Next run (fresh reflection) picks it up via schema evolution.
+    let source = source_for(&fixture.conn_url(), "tables:\n  - name: d\n");
+    Engine::new(EngineConfig::new("drift-add"), source, dest.clone())
+        .run()
+        .await
+        .expect("second run evolves");
+    assert_eq!(
+        // Append-mode snapshot re-runs duplicate rows by design (run 1's
+        // copy has NULL in the evolved column) — aggregate over the copies.
+        dest.query_string("SELECT CAST(max(extra) AS VARCHAR) FROM d")
+            .expect("evolved column"),
+        "7"
+    );
+
+    // DROPPED between reflect and read: typed error, never misaligned data.
+    let fixture = PgFixture::start().await;
+    fixture
+        .seed("CREATE TABLE d (id int8 PRIMARY KEY, v text); INSERT INTO d VALUES (1, 'x');")
+        .await;
+    let source = source_for(&fixture.conn_url(), "tables:\n  - name: d\n");
+    source.streams().await.expect("reflect");
+    fixture.seed("ALTER TABLE d DROP COLUMN v;").await;
+    let db = tempfile::tempdir().expect("tempdir");
+    let dest = DuckDb::open(db.path().join("out.duckdb")).expect("open db");
+    let err = Engine::new(EngineConfig::new("drift-drop"), source, dest)
+        .run()
+        .await
+        .expect_err("dropped column must fail loudly");
+    assert!(err.to_string().contains("copy phase"), "{err}");
+
+    // RETYPED between reflect and read: the wire shape no longer matches the
+    // reflected decode plan — a typed DECODE error, never silent coercion.
+    let fixture = PgFixture::start().await;
+    fixture
+        .seed("CREATE TABLE d (id int8 PRIMARY KEY, n int4); INSERT INTO d VALUES (1, 5);")
+        .await;
+    let source = source_for(&fixture.conn_url(), "tables:\n  - name: d\n");
+    source.streams().await.expect("reflect");
+    fixture.seed("ALTER TABLE d ALTER COLUMN n TYPE int8;").await;
+    let db = tempfile::tempdir().expect("tempdir");
+    let dest = DuckDb::open(db.path().join("out.duckdb")).expect("open db");
+    let err = Engine::new(EngineConfig::new("drift-retype"), source, dest)
+        .run()
+        .await
+        .expect_err("retyped column must fail loudly");
+    let msg = err.to_string();
+    assert!(msg.contains("decode") || msg.contains("copy phase"), "{msg}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn drift_table_dropped_between_reflect_and_read() {
     let fixture = PgFixture::start().await;
     fixture

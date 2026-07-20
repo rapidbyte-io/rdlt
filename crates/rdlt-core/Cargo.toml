@@ -24,4 +24,4 @@ workspace = true
 
 [features]
 # Test infrastructure (crash sweep); never enabled in release builds.
-failpoints = ["dep:fail"]
+failpoints = ["dep:fail", "fail/failpoints"]

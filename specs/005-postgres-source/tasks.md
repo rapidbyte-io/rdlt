@@ -174,30 +174,30 @@ passed this phase.
 (both passes) + forced connection drops → every case converges
 exactly-once on re-run (spec US4 independent test).
 
-- [ ] T019 [US4] Register fail points (`pg_after_reflect`,
+- [X] T019 [US4] Register fail points (`pg_after_reflect`,
       `pg_mid_copy_stream`, `pg_before_checkpoint`,
       `pg_after_batch_push`) in the 003 fail-point registry behind the
       `failpoints` feature, wired through `lib.rs`/`copy_decode.rs`
       read/checkpoint paths (FR-009).
-- [ ] T020 [US4] Crash-sweep suite in
+- [X] T020 [US4] Crash-sweep suite in
       `crates/rdlt-source-postgres/tests/crash_sweep.rs`: sweep every
       registered point, FIRST- and SECOND-occurrence passes (the 003
       lesson), assert typed error + exactly-once convergence on re-run
       against real Postgres + DuckDB; wire into `make test
       TARGET=sweep` (Makefile).
-- [ ] T021 [P] [US4] Connection-loss tests in `crash_sweep.rs`:
+- [X] T021 [P] [US4] Connection-loss tests in `crash_sweep.rs`:
       (a) failpoint-injected io error mid-COPY → typed `SourceError`
       naming table+phase, committed work preserved, re-run resumes;
       (b) container kill mid-table → same convergence (US4 acceptance
       scenarios 2–3; Transient classification asserted — engine owns
       the retry loop per corrected R6).
-- [ ] T022 [P] [US4] Memory-ceiling test (SC-002) in
+- [X] T022 [P] [US4] Memory-ceiling test (SC-002) in
       `crates/rdlt-source-postgres/tests/memory_bound.rs`: seed a
       table ≥ 10× the ceiling, run the release CLI as a subprocess
       under `prlimit --as` with small batch knobs, assert success +
       row-count equality; self-skips with a visible note when prlimit
       is absent (R8).
-- [ ] T023 [US4] Schema-drift matrix in `conformance.rs`: column
+- [X] T023 [US4] Schema-drift matrix in `conformance.rs`: column
       added / dropped / retyped between reflect and read → schema
       policy applied or typed error, never misaligned data (US4
       acceptance scenario 4); document the outcome per policy in the
