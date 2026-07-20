@@ -107,9 +107,17 @@ before Phase 5 changes them. All cargo commands run via
   memory_limit, which measured zero effect. Three known mutation survivors
   closed with targeted tests (decimal scale guard, list mapping arms, WAL
   future-version guard).
-- Still open: T011/T012 finalization (fresh mutation run in flight → 85% +
-  dispositions), T025 decision (LTO staged; flagship A/B once cores free),
-  T026–T028 (final wall re-measures, polish, full sweep, PR).
+- Mutation run on current code was OOM-KILLED at 349/595 (a mutant broke a
+  backpressure bound; parallel runaways stacked to host OOM — it took the user
+  session and both distrobox containers down, which blocks all further builds
+  until a host re-login). Partial results dispositioned in
+  mutation-report.md: 188 caught / 79 missed / 68.4% partial, with a
+  cluster-by-cluster test plan projecting ≈94%. Makefile mutants recipe now
+  carries --iterate --jobs 2.
+- Still open (blocked on host re-login → containers): T011 finish (write the
+  planned survivor-killing tests + resume the run), T025 decision (LTO staged;
+  flagship A/B), T026–T028 (final wall re-measures on quiet cores, full
+  `make check` sweep, PR).
 
 ## Dependencies & Execution Order
 
