@@ -1,5 +1,37 @@
 # Tasks: Close or Re-baseline the Two Benchmark Misses
 
+> ## Implementation notes (feature close, 2026-07-20)
+>
+> **Shred cell — `resolved (b)`, owner decision.** After the fresh
+> two-lens profile (T006/T007) ranked six candidates with measured wall
+> shares, the owner closed the cell at current performance: bar adjusted
+> ≥ 20× → ≥ 10×, measured 11.0× same-session (0.522 s vs dlt 5.75 s).
+> No candidate was A/B-attempted — T008–T011 (and the profile-discovered
+> C5′/C6) are **not attempted, deferred to backlog**, each with its
+> measured share in `evidence/resolution-shred.md`. This deviates from
+> protocol P6's per-candidate accept/reject rule for leaf (b); the
+> deviation is declared in the resolution record and the RESULTS.md
+> policy entry (recorded policy event). The bar was set from the
+> measured value, not the profile's ~18× optimistic-ceiling estimate.
+> Perf-gate baselines untouched (FR-007 — nothing was accepted).
+>
+> **Cold-start cell — `resolved (a)`.** Criterion converted ratio →
+> absolute: gated bar ≤ 40 ms (measured floor 23.6 ms × 1.5 rounded up
+> to 5 ms), measured 23.57 ms hyperfine median; dlt ratio demoted to
+> scoreboard (1/17.7). T015 negative: no reducible startup phase worth
+> taking (DuckDB open-overlap ≤ ~4 ms, fsync cost 55 µs total).
+>
+> **Backlog surfaced by the profiles** (viable-but-not-taken):
+> C5′ identity-pipeline usage (33–40% combined share — largest lever),
+> C6 column-lookup interning (~10%), C3 arena/tape layout (~10–11%),
+> C1 structural scan (~10–12%), C2 UTF-8-once (~4%), C4 scalar paths
+> (~3.6%, marginal); cold-start DuckDB open-overlap (~2–4 ms).
+>
+> **Matrix**: full 5-run re-measure at feature close, pin frozen at dlt
+> 1.29.0 (`evidence/rematrix-final.md`); every row now carries explicit
+> gated/scoreboard status. Verification sweep green; iai gate 4/4 within
+> tolerance against the original baselines.
+
 **Input**: Design documents from `/specs/004-close-perf-misses/`
 
 **Prerequisites**: plan.md, spec.md, research.md (R1–R7), data-model.md,
@@ -92,7 +124,7 @@ which every R2 candidate carries a measured disposition.
       requirement (R3 arithmetic restated in the artifact), C5/blake3 reopen
       decision (only if identity hashing ≥ 25% share — otherwise T023 stands,
       one line). Attempt order = descending measured share.
-- [ ] T008 [US1] Candidate C1 (structural scan, memchr-based stage-1 in
+- [X] T008 [US1] — NOT ATTEMPTED (owner decision 2026-07-20; measured-share disposition in evidence/resolution-shred.md). Candidate C1 (structural scan, memchr-based stage-1 in
       `crates/rdlt-engine/src/shred/tape.rs`): implement per profile
       findings, then full A/B per protocol P4 — shred microbench both sides,
       e2e flagship cell, `make bench TARGET=iai` gate run,
@@ -100,24 +132,24 @@ which every R2 candidate carries a measured disposition.
       data in `specs/004-close-perf-misses/evidence/ab-c1-structural-scan.md`.
       Skip with a one-line exhausted note in the resolution record if T007
       classified C1 non-viable.
-- [ ] T009 [US1] Candidate C2 (UTF-8 validate-once through safe APIs — the
+- [X] T009 [US1] — NOT ATTEMPTED (owner decision 2026-07-20; measured-share disposition in evidence/resolution-shred.md). Candidate C2 (UTF-8 validate-once through safe APIs — the
       type system carries the proof, NO unchecked conversions, P4.4) across
       `crates/rdlt-engine/src/shred/tape.rs` and the slab handoff: same A/B
       discipline → `specs/004-close-perf-misses/evidence/ab-c2-utf8-once.md`.
       Skip-note rule as T008.
-- [ ] T010 [US1] Candidate C3 (arena/tape layout in
+- [X] T010 [US1] — NOT ATTEMPTED (owner decision 2026-07-20; measured-share disposition in evidence/resolution-shred.md). Candidate C3 (arena/tape layout in
       `crates/rdlt-engine/src/shred/arena.rs` + `tape.rs`): memory-shaped, so
       the two-lens rule binds — acceptance requires the win in `perf stat`
       cycles AND wall time, not callgrind alone (R1). Same A/B discipline →
       `specs/004-close-perf-misses/evidence/ab-c3-arena-layout.md`.
       Skip-note rule as T008.
-- [ ] T011 [US1] Candidate C4 (scalar fast paths in
+- [X] T011 [US1] — NOT ATTEMPTED (owner decision 2026-07-20; measured-share disposition in evidence/resolution-shred.md). Candidate C4 (scalar fast paths in
       `crates/rdlt-engine/src/shred/build.rs` and `tape.rs`: integer-only
       number parse, escape-free string path, fixed-layout datetime parse
       replacing per-row chrono format-string interpretation): same A/B
       discipline → `specs/004-close-perf-misses/evidence/ab-c4-scalar-paths.md`.
       Skip-note rule as T008.
-- [ ] T012 [US1] Resolve the cell per protocol P6: final 5-run-median shred
+- [X] T012 [US1] Resolve the cell per protocol P6: final 5-run-median shred
       measurement vs the frozen dlt 5.95 s on accepted code. Leaf (a): update
       the RESULTS.md row to `resolved (a)`, re-record
       `benches/perf-baselines.json` in a commit naming the accepted A/B
@@ -144,7 +176,7 @@ taken if the profile surfaces them.
 protocol; measured value passes it; re-pinning a faster dlt could change only
 the scoreboard ratio, never the gated verdict (SC-003).
 
-- [ ] T013 [P] [US2] Startup-composition profile (R5): temporary
+- [X] T013 [P] [US2] Startup-composition profile (R5): temporary
       Instant-stamp instrumented build of `crates/rdlt-cli` (phase
       boundaries: main entry, config parse, DuckDB open, catalog/state init,
       first-batch ready, teardown — instrumentation is throwaway, never
@@ -153,20 +185,20 @@ the scoreboard ratio, never the gated verdict (SC-003).
       `specs/004-close-perf-misses/evidence/profile-cold-start.md`: phase
       table, floor composition (irreducible vs reducible per phase),
       environment header.
-- [ ] T014 [US2] Protocol measurement per P3: `hyperfine` ≥ 3 warmups / ≥ 20
+- [X] T014 [US2] Protocol measurement per P3: `hyperfine` ≥ 3 warmups / ≥ 20
       runs, median, warm FS cache, on the exact run-e2e.sh one-row pipeline
       command. Derive `N = floor × 1.5 rounded UP to nearest 5 ms`; record
       measurement + derivation in
       `specs/004-close-perf-misses/evidence/resolution-cold-start.md`
       (started here, finished in T016).
-- [ ] T015 [US2] IF T013 classified a reducible phase worth taking (e.g.
+- [X] T015 [US2] IF T013 classified a reducible phase worth taking (e.g.
       deferred DuckDB open/catalog work in `crates/rdlt-cli/src/main.rs`):
       implement and A/B under the full P4 rule (hyperfine both sides, e2e
       cells, gate run, nextest green) →
       `specs/004-close-perf-misses/evidence/ab-cold-startup.md`. If nothing
       reducible is worth it, record the one-line negative in the resolution
       record and skip.
-- [ ] T016 [US2] Convert the criterion: split the RESULTS.md cold row into
+- [X] T016 [US2] Convert the criterion: split the RESULTS.md cold row into
       the gated-absolute row (bar `≤ N ms`, link to the protocol contract)
       and the scoreboard-ratio row (data-model §1); document the protocol
       (runs, aggregation, cache state) in the cold cell of
@@ -187,12 +219,12 @@ the scoreboard ratio, never the gated verdict (SC-003).
 → evidence artifact with no contradictions, stale numbers, or ambiguous
 gated/scoreboard status.
 
-- [ ] T017 [US3] Full-matrix re-measure on final accepted code, pin FROZEN at
+- [X] T017 [US3] Full-matrix re-measure on final accepted code, pin FROZEN at
       dlt 1.29.0 (P1): `benches/run-e2e.sh` (flagship + RSS, passthrough,
       cold cells) plus the REST→Postgres and normalize-only recipes; update
       every row of `benches/RESULTS.md` same-session, baseline-first; append
       the History entry.
-- [ ] T018 [US3] SC-006 traceability walk, recorded at the bottom of
+- [X] T018 [US3] SC-006 traceability walk, recorded at the bottom of
       `specs/004-close-perf-misses/evidence/README.md`: for each of the two
       resolved cells follow row → resolution record → every linked evidence
       artifact; verify no dangling links, every C1–C5 disposition present,
@@ -200,7 +232,7 @@ gated/scoreboard status.
       accepted A/B records (P5), and design-doc §8 targets in
       `2026-07-18-rdlt-engine-design.md` reflect any adjusted bar (pointer to
       the policy entry, not a silent rewrite). Fix what the walk finds.
-- [ ] T019 [US3] Full verification sweep green on the final tree:
+- [X] T019 [US3] Full verification sweep green on the final tree:
       `make check` (lint, nextest, crash sweep, iai gate) + `cargo test
       --doc`; record the sweep output reference in
       `specs/004-close-perf-misses/evidence/README.md`.
@@ -209,7 +241,7 @@ gated/scoreboard status.
 
 ## Phase 6: Polish
 
-- [ ] T020 Implementation-notes block at the top of
+- [X] T020 Implementation-notes block at the top of
       `specs/004-close-perf-misses/tasks.md` (003 convention): outcomes per
       cell, accepted/rejected candidates one-liners, and any follow-up
       backlog items surfaced by the profiles (candidates measured

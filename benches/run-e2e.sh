@@ -83,7 +83,13 @@ TOML
 /usr/bin/time -v "$RDLT" run "$DATA/pq-to-pq.toml" --report "$DATA/pq-pq-report.json" 2>&1 | grep -E 'Elapsed|Maximum resident'
 /usr/bin/time -v "$RDLT" run "$DATA/pq-to-duck.toml" --report "$DATA/pq-duck-report.json" 2>&1 | grep -E 'Elapsed|Maximum resident'
 
-echo "== cold start (one-row pipeline; median of 5 each) =="
+echo "== cold start (one-row pipeline) =="
+# GATED protocol (feature 004, contracts/measurement-protocol.md P3): the
+# gated statistic is the MEDIAN of >= 20 hyperfine runs after >= 3 warmups,
+# warm FS cache, fresh workdir+db per run, on the reference machine. Bar:
+# <= 40 ms ABSOLUTE (derivation: specs/004-close-perf-misses/evidence/
+# resolution-cold-start.md). The dlt cold-start comparison below is a
+# SCOREBOARD number only — it can never change the gated verdict.
 printf '{"id":1,"name":"one"}\n' > "$DATA/one.jsonl"
 cat > "$DATA/cold-files.yaml" <<YAML
 streams:
@@ -99,10 +105,17 @@ config = "$DATA/cold-files.yaml"
 [destination.duckdb]
 path = "$DATA/cold.duckdb"
 TOML
-for i in 1 2 3 4 5; do
-  rm -rf "$DATA/.rdlt-cold" "$DATA/cold.duckdb"
-  /usr/bin/time -f "rdlt cold: %e s" "$RDLT" run "$DATA/cold.toml" >/dev/null
-done
+if command -v hyperfine >/dev/null; then
+  hyperfine -N --warmup 3 --runs 20 \
+    --prepare "rm -rf $DATA/.rdlt-cold $DATA/cold.duckdb" \
+    "$RDLT run $DATA/cold.toml"
+else
+  echo "hyperfine missing — falling back to /usr/bin/time (10 ms quantized, NOT the gated protocol)"
+  for i in 1 2 3 4 5; do
+    rm -rf "$DATA/.rdlt-cold" "$DATA/cold.duckdb"
+    /usr/bin/time -f "rdlt cold: %e s" "$RDLT" run "$DATA/cold.toml" >/dev/null
+  done
+fi
 for i in 1 2 3 4 5; do
   "$ENGINE" run --rm rdlt-baseline cold_start.py 2>/dev/null | tail -1
 done

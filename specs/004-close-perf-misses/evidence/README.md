@@ -59,6 +59,53 @@ final protocol-conformant measurement, evidence links, candidates table
 (shred: every C1–C5 disposition) / bar derivation (cold start: floor
 composition + `floor × 1.5 → round up to 5 ms`), policy entry reference.
 
-## Traceability (filled by T018)
+## Traceability — SC-006 walk (T018, 2026-07-20)
 
-The SC-006 walk results are appended here at feature close.
+**Shred cell**: matrix row (`resolved (b)`, 5.75 s / 0.52 s → 11.0×, bar
+≥ 10× adjusted) → [resolution-shred.md](resolution-shred.md) → links
+resolve: [environment.md](environment.md), [profile-shred.md](profile-shred.md),
+[rematrix-final.md](rematrix-final.md). Candidates table complete —
+C5′, C6, C3, C1, C2, C4 each carry a measured share and an explicit
+disposition (viable/marginal, not attempted — owner decision, backlog);
+C5 (algorithm swap) explicitly not reopened per the T007 narrow-reopen
+scope. Policy entry present and value-consistent with the record
+(≥ 20× → ≥ 10×). Perf gate correctly NOT re-recorded (no accepted A/B;
+FR-007/P5). Note: profile-shred.md's attempt-order sentence names the
+prospective A/B files `ab-c5-identity-pipeline.md`/`ab-c6-column-interning.md`
+— those were never created because no A/B ran; the resolution record
+states this explicitly, so the walk treats it as explained, not dangling.
+**P6 deviation** (leaf (b) without per-candidate accept/reject) is
+declared in both the resolution record and the policy entry — recorded
+policy event, not a silent skip.
+
+**Cold-start cell**: matrix rows (gated absolute `resolved (a)` ≤ 40 ms
++ scoreboard ratio 1/17.7) → [resolution-cold-start.md](resolution-cold-start.md)
+→ links resolve: [profile-cold-start.md](profile-cold-start.md),
+[environment.md](environment.md), [rematrix-final.md](rematrix-final.md).
+Bar derivation present (floor 23.6 ms × 1.5 → 40 ms, flap check).
+SC-003 invariance statement present; no gated row references a
+competitor-relative quantity. T015 negative result recorded;
+`ab-cold-startup.md` intentionally absent and explained. Policy entry
+present. Protocol recorded in `benches/run-e2e.sh` cold cell and
+contract P3.
+
+**Design doc**: `2026-07-18-rdlt-engine-design.md` §8 targets updated by
+pointer to the RESULTS.md policy entries (both adjusted bars) — no
+silent rewrite.
+
+**Result: PASS** — every `resolved (…)` row reaches exactly one
+resolution record and ≥ 1 evidence artifact with no contradictions; the
+one stale cross-value found during the walk (0.418 vs 0.417 s dlt cold
+in the resolution record) was reconciled in the same session.
+
+## Verification sweep (T019, 2026-07-20)
+
+`make check` green on the final tree (exit 0): `cargo fmt --check` +
+`clippy -D warnings`, `cargo nextest run --workspace`,
+`cargo test --doc --workspace`, crash sweeps (engine + postgres,
+failpoints), and the armed iai gate — 4/4 benches within the ±3%
+tolerance against the UNTOUCHED `benches/perf-baselines.json`
+(shred_nested +0.66%, passthrough/identity ±0.00%; gate output verbatim:
+"perf gate: all benches within tolerance"). No baseline was re-recorded
+during this feature (FR-007 — no accepted optimization). SC-005
+satisfied.
