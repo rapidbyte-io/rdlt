@@ -44,6 +44,20 @@ fn tagged(phase: Phase, table: Option<&str>, detail: impl std::fmt::Display) -> 
     }
 }
 
+/// Render an error WITH its source chain — tokio-postgres's Display for db
+/// errors is just "db error"; the actual message lives in the cause.
+fn full_chain(err: &tokio_postgres::Error) -> String {
+    use std::error::Error as _;
+    let mut out = err.to_string();
+    let mut source = err.source();
+    while let Some(cause) = source {
+        out.push_str(": ");
+        out.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    out
+}
+
 pub(crate) fn fatal(
     phase: Phase,
     table: Option<&str>,
@@ -78,6 +92,7 @@ pub(crate) fn classify(
             "08" | "53" | "57" | "40"
         ),
     };
+    let err = full_chain(err);
     if transient_shaped {
         transient(phase, table, err)
     } else {

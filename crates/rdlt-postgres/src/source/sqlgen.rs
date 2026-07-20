@@ -63,6 +63,36 @@ pub(crate) fn select_sql(
     sql
 }
 
+/// The universal query wrapper (feature 006, contract query-streams.md):
+/// read-only enforcement + a stable surface for predicates and snapshots.
+pub(crate) fn wrap_query(sql: &str) -> String {
+    format!(
+        "SELECT * FROM ( {} ) AS q",
+        sql.trim().trim_end_matches(';')
+    )
+}
+
+/// A SELECT over an arbitrary FROM clause (query streams); the table form
+/// below delegates here.
+pub(crate) fn select_sql_from(
+    from: &str,
+    columns: &[&ReflectedColumn],
+    where_sql: &str,
+    order_sql: &str,
+) -> String {
+    let cols: Vec<String> = columns.iter().map(|c| projection(c)).collect();
+    let mut sql = format!("SELECT {} FROM {from}", cols.join(", "));
+    if !where_sql.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(where_sql);
+    }
+    if !order_sql.is_empty() {
+        sql.push_str(" ORDER BY ");
+        sql.push_str(order_sql);
+    }
+    sql
+}
+
 pub(crate) fn copy_sql(select: &str) -> String {
     format!("COPY ({select}) TO STDOUT (FORMAT BINARY)")
 }

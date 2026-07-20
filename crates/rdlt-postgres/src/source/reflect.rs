@@ -94,6 +94,76 @@ impl ReflectedTable {
     }
 }
 
+/// Describe-based schema for a QUERY stream (feature 006, contract
+/// query-streams.md): prepare the WRAPPED statement — enforcing read-only
+/// via the database's own subquery rules BEFORE any data moves — and map
+/// the described column types through the 005 contract. typmod is not
+/// described (numerics take the textual policy row unless hinted);
+/// nullability is unknowable (all nullable).
+pub(crate) async fn describe_query(
+    client: &Client,
+    name: &str,
+    sql: &str,
+) -> Result<ReflectedTable, SourceError> {
+    let wrapped = crate::source::sqlgen::wrap_query(sql);
+    let statement = client.prepare(&wrapped).await.map_err(|e| {
+        errors::fatal(
+            Phase::Reflect,
+            Some(name),
+            format!("query does not describe (read-only SELECT/CTE required): {e}"),
+        )
+    })?;
+    let mut columns = Vec::with_capacity(statement.columns().len());
+    for column in statement.columns() {
+        let info = type_info_from(column.type_());
+        columns.push(ReflectedColumn {
+            name: column.name().to_owned(),
+            type_name: column.type_().name().to_owned(),
+            mapped: map_type(&info),
+            type_info: info,
+            not_null: false,
+            is_pk: false,
+        });
+    }
+    if columns.is_empty() {
+        return Err(errors::fatal(
+            Phase::Reflect,
+            Some(name),
+            "query describes zero columns",
+        ));
+    }
+    Ok(ReflectedTable {
+        name: name.to_owned(),
+        columns,
+    })
+}
+
+/// Map a described `tokio_postgres::types::Type` into the same shape facts
+/// reflection extracts from pg_catalog (domains resolve one level, exactly
+/// as reflection does).
+fn type_info_from(ty: &tokio_postgres::types::Type) -> PgTypeInfo {
+    use tokio_postgres::types::Kind;
+    let mut oid = ty.oid();
+    let mut kind = ty.kind();
+    if let Kind::Domain(inner) = kind {
+        oid = inner.oid();
+        kind = inner.kind();
+    }
+    let (typtype, typcategory) = match kind {
+        Kind::Array(_) => ('b', 'A'),
+        Kind::Enum(_) => ('e', 'E'),
+        Kind::Composite(_) => ('c', 'C'),
+        Kind::Range(_) => ('r', 'R'),
+        _ => ('b', 'X'),
+    };
+    PgTypeInfo {
+        oid,
+        typtype,
+        typcategory,
+        typmod: -1,
+    }
+}
+
 /// The selected columns with type hints APPLIED (feature 006): owned
 /// clones whose `mapped` is replaced per the closed conversion table.
 /// Typed errors: hint names a non-selected column; undefined pair.

@@ -274,9 +274,33 @@ impl PostgresSource {
         self.reflected
             .get_or_try_init(|| async {
                 let client = connect(&self.config).await?;
-                reflect::reflect_schema(&client, &self.config).await
+                let mut tables = reflect::reflect_schema(&client, &self.config).await?;
+                // Query streams (006): described once per run, same cache.
+                for query in &self.config.queries {
+                    if tables.contains_key(&query.name) {
+                        return Err(errors::fatal(
+                            Phase::Reflect,
+                            Some(&query.name),
+                            "query stream name collides with a reflected table",
+                        ));
+                    }
+                    let described =
+                        reflect::describe_query(&client, &query.name, &query.sql).await?;
+                    tables.insert(query.name.clone(), described);
+                }
+                Ok(tables)
             })
             .await
+    }
+
+    /// The effective per-stream config: a listed table's, or a query's
+    /// (viewed through the table-config shape so hints/cursor machinery
+    /// applies unchanged).
+    fn stream_config(&self, name: &str) -> Option<config::TableConfig> {
+        self.config
+            .table_config(name)
+            .cloned()
+            .or_else(|| self.config.synthesized_table_config(name))
     }
 }
 
@@ -315,15 +339,22 @@ impl Source for PostgresSource {
 
     async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
         let reflected = self.reflected().await?;
-        // Listed tables in config order; otherwise every reflected relation.
-        let names: Vec<&str> = match &self.config.tables {
+        // Listed tables in config order (else every reflected relation),
+        // then query streams.
+        let mut names: Vec<&str> = match &self.config.tables {
             Some(listed) => listed.iter().map(|t| t.name.as_str()).collect(),
-            None => reflected.keys().map(String::as_str).collect(),
+            None => reflected
+                .keys()
+                .map(String::as_str)
+                .filter(|n| self.config.query_config(n).is_none())
+                .collect(),
         };
+        names.extend(self.config.queries.iter().map(|q| q.name.as_str()));
         let mut specs = Vec::with_capacity(names.len());
         for name in names {
             let table = &reflected[name];
-            let table_config = self.config.table_config(name);
+            let owned_config = self.stream_config(name);
+            let table_config = owned_config.as_ref();
             // Validate selection + hints + cursor at publish time (contract
             // rule 3 + 006 hints): fail fast, before any data moves. The
             // cursor check runs POST-hint (a hint may change capability).
@@ -376,7 +407,8 @@ impl Source for PostgresSource {
         let table = reflected.get(&name).ok_or_else(|| {
             errors::fatal(Phase::Reflect, Some(&name), "stream has no reflected table")
         })?;
-        let table_config = self.config.table_config(&name);
+        let owned_config = self.stream_config(&name);
+        let table_config = owned_config.as_ref();
         let owned_columns = reflect::hinted_columns(table, table_config)?;
         let columns: Vec<&reflect::ReflectedColumn> = owned_columns.iter().collect();
         crash_point!(
@@ -499,8 +531,18 @@ impl Source for PostgresSource {
             }
         };
 
-        let select =
-            sqlgen::select_sql(&self.config.schema, &name, &columns, &where_sql, &order_sql);
+        let select = match self.config.query_config(&name) {
+            // Query stream (006): the wrapped user SQL is the FROM clause.
+            Some(query) => sqlgen::select_sql_from(
+                &format!("( {} ) AS q", query.sql.trim().trim_end_matches(';')),
+                &columns,
+                &where_sql,
+                &order_sql,
+            ),
+            None => {
+                sqlgen::select_sql(&self.config.schema, &name, &columns, &where_sql, &order_sql)
+            }
+        };
         let copy = sqlgen::copy_sql(&select);
 
         let client = connect(&self.config).await?;

@@ -118,7 +118,7 @@ hints/queries fail typed at open.
       typed downstream, unconstrained-numeric→decimal(p,s) hint
       restores decimality, cast-failure surfaces as a typed copy-phase
       error naming the column.
-- [ ] T011 [US2] Query streams core:
+- [X] T011 [US2] Query streams core:
       `crates/rdlt-postgres/src/source/config.rs` `queries[]` (name
       uniqueness across tables+queries, cursor/primary_key/type_hints);
       describe-based schema in `src/source/reflect.rs` (prepare
@@ -126,7 +126,7 @@ hints/queries fail typed at open.
       contract, all-nullable, typmod-unknown ⇒ textual numeric policy);
       `src/source/{sqlgen,mod}.rs` read path over the wrapped FROM
       with unchanged incremental/checkpoint machinery.
-- [ ] T012 [US2] Query conformance in
+- [X] T012 [US2] Query conformance in
       `crates/rdlt-postgres/tests/query_streams.rs`: join query
       snapshot + schema assertions; incremental on a query stream
       (delta, boundary dedup via declared primary_key, mid-run

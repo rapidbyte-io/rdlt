@@ -35,6 +35,11 @@ pub struct PostgresConfig {
     /// Absent ⇒ discover ALL tables in `schema`.
     #[serde(default)]
     pub tables: Option<Vec<TableConfig>>,
+    /// Query streams (feature 006, contract query-streams.md): a stream per
+    /// SQL statement, schema DESCRIBED by the database; always executed as
+    /// `SELECT * FROM (sql) AS q` (read-only enforced by subquery rules).
+    #[serde(default)]
+    pub queries: Vec<QueryConfig>,
     /// TLS posture (feature 006): full sslmode matrix; verify-* modes are
     /// expressible only here (conn-string sslmode covers disable/prefer/
     /// require). Contradicting an explicit conn sslmode is a config error.
@@ -66,6 +71,22 @@ pub struct TableConfig {
     /// Per-column type-hint overrides (feature 006, contract
     /// type-hints.md): a CLOSED conversion table; unknown columns or
     /// undefined (source → hint) pairs are typed config errors at open.
+    #[serde(default)]
+    pub type_hints: std::collections::BTreeMap<String, crate::source::HintType>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QueryConfig {
+    /// Stream name — unique across tables AND queries.
+    pub name: String,
+    /// The SELECT/CTE statement (wrapped as a subquery at execution).
+    pub sql: String,
+    #[serde(default)]
+    pub cursor: Option<CursorConfig>,
+    /// Declared key (nothing to reflect): dedup keys + merge.
+    #[serde(default)]
+    pub primary_key: Option<Vec<String>>,
     #[serde(default)]
     pub type_hints: std::collections::BTreeMap<String, crate::source::HintType>,
 }
@@ -181,6 +202,33 @@ impl PostgresConfig {
         if self.batch_target_bytes == 0 || self.batch_max_rows == 0 {
             return invalid("batch knobs must be positive".into());
         }
+        {
+            let mut names = BTreeSet::new();
+            if let Some(tables) = &self.tables {
+                for t in tables {
+                    names.insert(t.name.as_str());
+                }
+            }
+            for q in &self.queries {
+                if q.name.trim().is_empty() {
+                    return invalid("query with empty name".into());
+                }
+                if q.sql.trim().is_empty() {
+                    return invalid(format!("query `{}`: empty sql", q.name));
+                }
+                if !names.insert(q.name.as_str()) {
+                    return invalid(format!(
+                        "stream name `{}` used by more than one table/query",
+                        q.name
+                    ));
+                }
+                if let Some(pk) = &q.primary_key
+                    && pk.is_empty()
+                {
+                    return invalid(format!("query `{}`: primary_key present but empty", q.name));
+                }
+            }
+        }
         if let Some(tables) = &self.tables {
             if tables.is_empty() {
                 return invalid("`tables` present but empty — omit it to discover all".into());
@@ -232,6 +280,24 @@ impl PostgresConfig {
     /// The per-table config for a stream name, when the user listed tables.
     pub(crate) fn table_config(&self, name: &str) -> Option<&TableConfig> {
         self.tables.as_ref()?.iter().find(|t| t.name == name)
+    }
+
+    pub(crate) fn query_config(&self, name: &str) -> Option<&QueryConfig> {
+        self.queries.iter().find(|q| q.name == name)
+    }
+
+    /// A query stream's config viewed through the table-config shape, so the
+    /// hint/selection/cursor machinery applies unchanged.
+    pub(crate) fn synthesized_table_config(&self, name: &str) -> Option<TableConfig> {
+        let q = self.query_config(name)?;
+        Some(TableConfig {
+            name: q.name.clone(),
+            cursor: q.cursor.clone(),
+            primary_key: q.primary_key.clone(),
+            included_columns: None,
+            excluded_columns: None,
+            type_hints: q.type_hints.clone(),
+        })
     }
 }
 
