@@ -312,16 +312,10 @@ impl PostgresSource {
 /// lives HERE so it holds even for configs built without `validate`
 /// (`PostgresConfig` has pub fields).
 pub(crate) async fn connect(config: &PostgresConfig) -> Result<Client, SourceError> {
-    let parsed: tokio_postgres::Config = config.conn.parse().map_err(|e| {
-        errors::fatal(
-            Phase::Connect,
-            None,
-            format!("conn string does not parse: {e}"),
-        )
-    })?;
-    let policy = crate::tls::resolve_policy(&parsed, config.tls.as_ref())
-        .map_err(|e| errors::fatal(Phase::Connect, None, e))?;
-    match crate::tls::connect(&parsed, &policy).await {
+    let crate::tls::ParsedConn { pg, policy } =
+        crate::tls::parse_conn(&config.conn, config.tls.as_ref())
+            .map_err(|e| errors::fatal(Phase::Connect, None, e))?;
+    match crate::tls::connect(&pg, &policy).await {
         Ok(client) => Ok(client),
         Err(crate::tls::ConnectResult::Config(e)) => Err(errors::fatal(Phase::Connect, None, e)),
         Err(crate::tls::ConnectResult::Connect(e)) if e.transient => {

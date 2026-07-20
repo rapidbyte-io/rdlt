@@ -77,7 +77,7 @@ US1: same file, and `sslcert=`/`sslkey=` target the US1 fields.)
 empty tls block; contradictions and unknown parameters fail typed
 naming both sides / the parameter.
 
-- [ ] T005 [US3] Conn-string front-end in
+- [X] T005 [US3] Conn-string front-end in
       `crates/rdlt-postgres/src/tls.rs` (the one shared parse gate):
       extract/strip `sslrootcert`/`sslcert`/`sslkey` from key=value
       AND URL-query forms; translate into the TlsPolicy resolution
@@ -89,7 +89,7 @@ naming both sides / the parameter.
       `application_name=rdlt` default when absent, user value wins
       (A1–A2); unit corpus over real-world URL shapes asserting zero
       bare parse errors (SC-003 unit half).
-- [ ] T006 [US3] Container proof in
+- [X] T006 [US3] Container proof in
       `crates/rdlt-postgres/tests/tls_matrix.rs`: an `sslrootcert=`
       URL (no tls block) syncs against the TLS fixture via source AND
       destination; during a sync, `pg_stat_activity.application_name`

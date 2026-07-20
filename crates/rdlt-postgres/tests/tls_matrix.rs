@@ -245,3 +245,90 @@ async fn credential_offered_but_unused_still_syncs() {
         .await
         .expect("credential offered but unused must not break the sync");
 }
+
+// ---- Feature 007 US3: conn-string portability (connstring-portability.md) ----
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sslrootcert_url_syncs_and_application_name_is_set() {
+    use rdlt_connector::core::{LoadId, PipelineId};
+    use rdlt_connector::{Destination as _, OpenCtx};
+
+    let fixture = TlsPgFixture::start().await;
+    // Write the CA where a real deployment would have it: on disk.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ca_path = dir.path().join("ca.pem");
+    std::fs::write(&ca_path, &fixture.pki.ca_pem).expect("write ca");
+
+    // A production-shaped libpq URL — verify-full + sslrootcert, NO tls block.
+    let url = format!(
+        "postgresql://postgres:postgres@localhost:{}/postgres?sslmode=verify-full&sslrootcert={}",
+        fixture.port,
+        ca_path.display()
+    );
+
+    // SOURCE: reflect over the URL (connects verified), then check that the
+    // live session carries application_name=rdlt (A1 / SC-006).
+    use rdlt_connector::Source as _;
+    let source = PostgresSource::from_yaml(&format!("conn: \"{url}\"\n")).expect("config");
+    source
+        .streams()
+        .await
+        .expect("sslrootcert URL syncs (source)");
+    let (client, connection) = tokio_postgres::connect(
+        &format!(
+            "host=localhost port={} user=postgres password=postgres dbname=postgres sslmode=require",
+            fixture.port
+        ),
+        {
+            let mut roots = rustls::RootCertStore::empty();
+            let mut cur = std::io::Cursor::new(fixture.pki.ca_pem.clone().into_bytes());
+            for c in rustls_pemfile::certs(&mut cur) {
+                roots.add(c.expect("ca cert")).expect("add ca");
+            }
+            tokio_postgres_rustls::MakeRustlsConnect::new(
+                rustls::ClientConfig::builder_with_provider(
+                    rustls::crypto::ring::default_provider().into(),
+                )
+                .with_safe_default_protocol_versions()
+                .expect("protocol versions")
+                .with_root_certificates(roots)
+                .with_no_client_auth(),
+            )
+        },
+    )
+    .await
+    .expect("probe connect");
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    // Hold a source connection open while probing: reflect() connections are
+    // short-lived, so probe our OWN default instead — a second rdlt-path
+    // connection via the same gate.
+    let held = {
+        let parsed = rdlt_postgres::tls::parse_conn(&url, None).expect("gate");
+        rdlt_postgres::tls::connect(&parsed.pg, &parsed.policy)
+            .await
+            .expect("held rdlt connection")
+    };
+    let names: Vec<String> = client
+        .query(
+            "SELECT DISTINCT application_name FROM pg_stat_activity WHERE application_name = 'rdlt'",
+            &[],
+        )
+        .await
+        .expect("pg_stat_activity")
+        .into_iter()
+        .map(|r| r.get(0))
+        .collect();
+    assert_eq!(names, vec!["rdlt"], "A1: rdlt identifies itself");
+    drop(held);
+
+    // DESTINATION: the same URL through the same gate.
+    let dest = rdlt_postgres::dest::Postgres::connect(&url).dataset("url_ok");
+    dest.open(OpenCtx::new(
+        PipelineId::new("url"),
+        LoadId::new("url-load"),
+    ))
+    .await
+    .expect("sslrootcert URL opens (destination)");
+}

@@ -190,17 +190,11 @@ impl PostgresConfig {
         }
         // Contract rule 1: parse failure = FATAL config error, up front — a
         // malformed conn string must never reach the Transient/retry path
-        // (005 review). The same parsed form decides the TLS policy, so the
-        // spaced keyword form (`sslmode = require`) is covered too.
-        match self.conn.parse::<tokio_postgres::Config>() {
-            Err(e) => return invalid(format!("`conn` does not parse: {e}")),
-            Ok(parsed) => {
-                // Feature 006: TLS is wired — validate mode consistency here
-                // (fail fast); root resolution happens at open.
-                if let Err(e) = crate::tls::resolve_policy(&parsed, self.tls.as_ref()) {
-                    return invalid(e.to_string());
-                }
-            }
+        // (005 review). Feature 007: the shared gate also translates libpq's
+        // TLS parameter trio and names every rejected parameter — no bare
+        // parse errors (contract connstring-portability.md).
+        if let Err(e) = crate::tls::parse_conn(&self.conn, self.tls.as_ref()) {
+            return invalid(e.to_string());
         }
         if self.schema.trim().is_empty() {
             return invalid("`schema` must not be empty".into());

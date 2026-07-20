@@ -56,13 +56,10 @@ impl Postgres {
     }
 
     async fn client(&self) -> Result<Client, DestError> {
-        let parsed: tokio_postgres::Config = self
-            .conn_string
-            .parse()
-            .map_err(|e| DestError::fatal(format!("conn string does not parse: {e}")))?;
-        let policy = crate::tls::resolve_policy(&parsed, self.tls.as_ref())
-            .map_err(|e| DestError::fatal(e.to_string()))?;
-        match crate::tls::connect(&parsed, &policy).await {
+        let crate::tls::ParsedConn { pg, policy } =
+            crate::tls::parse_conn(&self.conn_string, self.tls.as_ref())
+                .map_err(|e| DestError::fatal(e.to_string()))?;
+        match crate::tls::connect(&pg, &policy).await {
             Ok(client) => Ok(client),
             Err(crate::tls::ConnectResult::Config(e)) => Err(DestError::fatal(e.to_string())),
             Err(crate::tls::ConnectResult::Connect(e)) if e.transient => Err(transient(e)),
