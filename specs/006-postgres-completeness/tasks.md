@@ -103,14 +103,14 @@ streams with described schemas and full incremental semantics.
 join query lands with described schema + working incremental; invalid
 hints/queries fail typed at open.
 
-- [ ] T009 [US2] Hint vocabulary + closed conversion table in
+- [X] T009 [US2] Hint vocabulary + closed conversion table in
       `crates/rdlt-postgres/src/source/types.rs`: `HintType` (shared
       vocabulary incl. `decimal(p,s)`), `apply_hint(source_info, hint)
       -> Result<MappedType>` implementing contracts/type-hints.md
       exactly (undefined pair = typed error; [documented-lossy]
       flagged); exhaustive unit tests keyed to the contract rows incl.
       rejections.
-- [ ] T010 [US2] Table hints end-to-end:
+- [X] T010 [US2] Table hints end-to-end:
       `crates/rdlt-postgres/src/source/config.rs` `tables[].type_hints`
       + open-time validation (column exists, pair allowed, hinted
       cursor stays cursor-capable) in `src/source/{mod,reflect}.rs`;

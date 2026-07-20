@@ -155,6 +155,59 @@ async fn type_matrix_round_trip() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn type_hints_end_to_end() {
+    // 006 US2: hinted text→timestamptz lands typed; unconstrained numeric
+    // regains decimality via a hint; a failing cast is a typed copy error
+    // naming the column.
+    let fixture = PgFixture::start().await;
+    fixture
+        .seed(
+            "CREATE TABLE h (id int8 PRIMARY KEY, raw_ts text, amount numeric); \
+             INSERT INTO h VALUES (1, '2026-01-02T03:04:05Z', 12.3456);",
+        )
+        .await;
+    let (dest, _) = run_to_duckdb(
+        source_for(
+            &fixture.conn_url(),
+            "tables:\n  - name: h\n    type_hints:\n      raw_ts: timestamp_tz\n      amount: decimal(12,4)\n",
+        ),
+        "conf-hints",
+    )
+    .await;
+    let ts_type = dest
+        .query_string("SELECT CAST(typeof(raw_ts) AS VARCHAR) FROM h")
+        .expect("typeof");
+    assert!(
+        ts_type.contains("TIMESTAMP"),
+        "hinted column lands typed: {ts_type}"
+    );
+    let amount = dest
+        .query_string("SELECT CAST(amount AS VARCHAR) FROM h")
+        .expect("amount");
+    assert_eq!(amount, "12.3456", "decimal hint restores decimality");
+
+    // Cast failure: text that is not a timestamp → typed copy-phase error.
+    let fixture2 = PgFixture::start().await;
+    fixture2
+        .seed(
+            "CREATE TABLE h (id int8 PRIMARY KEY, raw_ts text); \
+             INSERT INTO h VALUES (1, 'not-a-timestamp');",
+        )
+        .await;
+    let source = source_for(
+        &fixture2.conn_url(),
+        "tables:\n  - name: h\n    type_hints:\n      raw_ts: timestamp_tz\n",
+    );
+    let db = tempfile::tempdir().expect("tempdir");
+    let dest = DuckDb::open(db.path().join("out.duckdb")).expect("open db");
+    let err = Engine::new(EngineConfig::new("conf-hint-fail"), source, dest)
+        .run()
+        .await
+        .expect_err("failing cast must be typed, never silent");
+    assert!(err.to_string().contains("copy phase"), "{err}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn partitioned_tables_load_once_via_parent() {
     // 005 review finding: without a relispartition filter, schema-wide
     // discovery streamed BOTH the partitioned parent and every leaf,

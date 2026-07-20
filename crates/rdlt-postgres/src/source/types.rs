@@ -35,7 +35,7 @@ pub(crate) mod oid {
 }
 
 /// How `sqlgen` projects the column inside `COPY (SELECT …)`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SelectPolicy {
     /// The bare quoted column — its binary wire format is decoded natively.
     Direct,
@@ -44,6 +44,9 @@ pub(crate) enum SelectPolicy {
     CastText,
     /// `to_jsonb(col)::text` — arrays / composites / ranges.
     CastJsonbText,
+    /// `(col)::<target>` — a per-column type hint's server-side cast
+    /// (feature 006, contract type-hints.md).
+    HintCast(String),
 }
 
 /// How the decoder interprets the field's wire bytes.
@@ -350,5 +353,218 @@ mod tests {
         ] {
             assert_eq!(map_type(&base(o, -1)).cursor_capable, capable, "oid {o}");
         }
+    }
+}
+
+/// Per-column hint vocabulary (feature 006, contract type-hints.md) —
+/// shared naming with the rest/file sources, plus `decimal(p,s)`. Config
+/// form is the contract's literal string vocabulary: `"timestamp_tz"`,
+/// `"decimal(12,4)"`, …
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HintType {
+    Bool,
+    Int64,
+    Float64,
+    Decimal { precision: u8, scale: u8 },
+    Utf8,
+    Binary,
+    TimestampTz,
+    TimestampNaive,
+    Date,
+    Time,
+    Uuid,
+    Json,
+}
+
+impl std::str::FromStr for HintType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let t = s.trim();
+        Ok(match t {
+            "bool" => Self::Bool,
+            "int64" => Self::Int64,
+            "float64" => Self::Float64,
+            "utf8" => Self::Utf8,
+            "binary" => Self::Binary,
+            "timestamp_tz" => Self::TimestampTz,
+            "timestamp_naive" => Self::TimestampNaive,
+            "date" => Self::Date,
+            "time" => Self::Time,
+            "uuid" => Self::Uuid,
+            "json" => Self::Json,
+            other => {
+                let inner = other
+                    .strip_prefix("decimal(")
+                    .and_then(|r| r.strip_suffix(')'))
+                    .ok_or_else(|| format!("unknown type hint `{other}`"))?;
+                let (p, s) = inner
+                    .split_once(',')
+                    .ok_or_else(|| format!("decimal hint needs `decimal(p,s)`, got `{other}`"))?;
+                Self::Decimal {
+                    precision: p
+                        .trim()
+                        .parse()
+                        .map_err(|e| format!("decimal precision: {e}"))?,
+                    scale: s
+                        .trim()
+                        .parse()
+                        .map_err(|e| format!("decimal scale: {e}"))?,
+                }
+            }
+        })
+    }
+}
+
+impl std::fmt::Display for HintType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Bool => f.write_str("bool"),
+            Self::Int64 => f.write_str("int64"),
+            Self::Float64 => f.write_str("float64"),
+            Self::Decimal { precision, scale } => write!(f, "decimal({precision},{scale})"),
+            Self::Utf8 => f.write_str("utf8"),
+            Self::Binary => f.write_str("binary"),
+            Self::TimestampTz => f.write_str("timestamp_tz"),
+            Self::TimestampNaive => f.write_str("timestamp_naive"),
+            Self::Date => f.write_str("date"),
+            Self::Time => f.write_str("time"),
+            Self::Uuid => f.write_str("uuid"),
+            Self::Json => f.write_str("json"),
+        }
+    }
+}
+
+impl serde::Serialize for HintType {
+    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        ser.collect_str(self)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for HintType {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(de)?;
+        text.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+/// The CLOSED conversion table (contract type-hints.md): every allowed
+/// (source type → hint) pair yields the server-side cast + decode; anything
+/// else is an error the caller surfaces as a typed config failure at open.
+pub(crate) fn apply_hint(info: &PgTypeInfo, hint: HintType) -> Result<MappedType, String> {
+    use SelectPolicy::CastText;
+    let text_family = matches!(info.oid, oid::TEXT | oid::VARCHAR | oid::BPCHAR | oid::NAME)
+        && info.typtype == 'b'
+        && info.typcategory != 'A';
+    let int_family = matches!(info.oid, oid::INT2 | oid::INT4 | oid::INT8)
+        && info.typtype == 'b'
+        && info.typcategory != 'A';
+    let float_family = matches!(info.oid, oid::FLOAT4 | oid::FLOAT8)
+        && info.typtype == 'b'
+        && info.typcategory != 'A';
+    let numeric = info.oid == oid::NUMERIC && info.typtype == 'b' && info.typcategory != 'A';
+    let timestampish = matches!(info.oid, oid::TIMESTAMP | oid::TIMESTAMPTZ)
+        && info.typtype == 'b'
+        && info.typcategory != 'A';
+
+    // Cast expression per target; decode matches the 005 lossless set.
+    let target =
+        |cast: &str, decode: Decode, arrow: arrow_schema::DataType, cursor: bool, lossy: bool| {
+            Ok(MappedType {
+                select: SelectPolicy::HintCast(cast.to_string()),
+                decode,
+                arrow,
+                cursor_capable: cursor,
+                documented_lossy: lossy,
+            })
+        };
+    use arrow_schema::{DataType, TimeUnit};
+    match hint {
+        // Universal row: ANY type → utf8 canonical text.
+        HintType::Utf8 => Ok(MappedType {
+            select: if matches!(map_type(info).select, SelectPolicy::CastJsonbText) {
+                SelectPolicy::CastJsonbText
+            } else {
+                CastText
+            },
+            decode: Decode::Utf8,
+            arrow: DataType::Utf8,
+            cursor_capable: true,
+            documented_lossy: true,
+        }),
+        HintType::Int64 if text_family => {
+            target("int8", Decode::Int8, DataType::Int64, true, false)
+        }
+        HintType::Float64 if text_family || int_family || numeric => target(
+            "float8",
+            Decode::Float8,
+            DataType::Float64,
+            false,
+            numeric, // numeric → float64 is [documented-lossy]
+        ),
+        HintType::Decimal { precision, scale }
+            if (text_family || int_family || float_family || numeric)
+                && (1..=38).contains(&precision)
+                && scale <= precision =>
+        {
+            target(
+                &format!("numeric({precision},{scale})"),
+                Decode::Decimal { precision, scale },
+                DataType::Decimal128(precision, scale as i8),
+                true,
+                float_family, // float rounding per SQL rules is [documented-lossy]
+            )
+        }
+        HintType::Bool if text_family || int_family => {
+            target("bool", Decode::Bool, DataType::Boolean, false, false)
+        }
+        HintType::TimestampTz if text_family || matches!(info.oid, oid::TIMESTAMP | oid::DATE) => {
+            target(
+                "timestamptz",
+                Decode::Timestamp { tz: true },
+                DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+                true,
+                info.oid == oid::TIMESTAMP, // zone semantics change
+            )
+        }
+        HintType::TimestampNaive
+            if text_family || matches!(info.oid, oid::TIMESTAMPTZ | oid::DATE) =>
+        {
+            target(
+                "timestamp",
+                Decode::Timestamp { tz: false },
+                DataType::Timestamp(TimeUnit::Microsecond, None),
+                true,
+                info.oid == oid::TIMESTAMPTZ,
+            )
+        }
+        HintType::Date if text_family || timestampish => target(
+            "date",
+            Decode::Date,
+            DataType::Date32,
+            true,
+            timestampish, // truncation to date
+        ),
+        HintType::Time if text_family => target(
+            "time",
+            Decode::Time,
+            DataType::Time64(TimeUnit::Microsecond),
+            true,
+            false,
+        ),
+        HintType::Uuid if text_family => {
+            target("uuid", Decode::UuidText, DataType::Utf8, true, false)
+        }
+        HintType::Json if text_family => {
+            target("jsonb", Decode::JsonbText, DataType::Utf8, false, false)
+        }
+        HintType::Binary if text_family => {
+            target("bytea", Decode::Bytea, DataType::Binary, false, false)
+        }
+        other => Err(format!(
+            "no defined conversion from this column's type (oid {}) to hint {:?} — \
+             the type-hints contract table is closed; `utf8` is always available",
+            info.oid, other
+        )),
     }
 }

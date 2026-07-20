@@ -25,6 +25,7 @@ use rdlt_connector::{ConnectorSpec, ReadRequest, Source, SourceError, StreamSpec
 use tokio_postgres::Client;
 
 pub use config::{ConfigError, PostgresConfig};
+pub use types::HintType;
 
 use copy_decode::{CopyDecoder, FieldPlan};
 use errors::Phase;
@@ -323,10 +324,31 @@ impl Source for PostgresSource {
         for name in names {
             let table = &reflected[name];
             let table_config = self.config.table_config(name);
-            // Validate the cursor column against reflection at publish time
-            // (contract rule 3): fail fast, before any data moves.
+            // Validate selection + hints + cursor at publish time (contract
+            // rule 3 + 006 hints): fail fast, before any data moves. The
+            // cursor check runs POST-hint (a hint may change capability).
+            let hinted = reflect::hinted_columns(table, table_config)?;
             if let Some(cursor) = table_config.and_then(|t| t.cursor.as_ref()) {
-                reflect::validate_cursor_column(table, &cursor.column)?;
+                let col = hinted
+                    .iter()
+                    .find(|c| c.name == cursor.column)
+                    .ok_or_else(|| {
+                        errors::fatal(
+                            Phase::Reflect,
+                            Some(name),
+                            format!("cursor column `{}` is not a selected column", cursor.column),
+                        )
+                    })?;
+                if !col.mapped.cursor_capable {
+                    return Err(errors::fatal(
+                        Phase::Reflect,
+                        Some(name),
+                        format!(
+                            "cursor column `{}` is not cursor-capable after type mapping/hints",
+                            cursor.column
+                        ),
+                    ));
+                }
             }
             let mut spec = StreamSpec::new(name).structured();
             let pk: Vec<String> = match table_config.and_then(|t| t.primary_key.clone()) {
@@ -355,7 +377,8 @@ impl Source for PostgresSource {
             errors::fatal(Phase::Reflect, Some(&name), "stream has no reflected table")
         })?;
         let table_config = self.config.table_config(&name);
-        let columns = table.selected_columns(table_config)?;
+        let owned_columns = reflect::hinted_columns(table, table_config)?;
+        let columns: Vec<&reflect::ReflectedColumn> = owned_columns.iter().collect();
         crash_point!(
             "pg.src.after_reflect",
             Err(errors::fatal(
@@ -381,7 +404,21 @@ impl Source for PostgresSource {
         let (where_sql, order_sql) = match cursor_config {
             None => (String::new(), String::new()),
             Some(cc) => {
-                let reflected_cursor = reflect::validate_cursor_column(table, &cc.column)?;
+                let reflected_cursor = columns
+                    .iter()
+                    .find(|c| c.name == cc.column)
+                    .filter(|c| c.mapped.cursor_capable)
+                    .ok_or_else(|| {
+                        errors::fatal(
+                            Phase::Reflect,
+                            Some(&name),
+                            format!(
+                                "cursor column `{}` missing from selection or not \
+                                 cursor-capable after type mapping/hints",
+                                cc.column
+                            ),
+                        )
+                    })?;
                 let cursor_decode = reflected_cursor.mapped.decode;
                 let cursor_idx = columns
                     .iter()

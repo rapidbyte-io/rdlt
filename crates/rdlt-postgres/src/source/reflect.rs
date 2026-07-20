@@ -17,6 +17,9 @@ pub struct ReflectedColumn {
     pub(crate) name: String,
     /// Postgres type name, diagnostics only.
     pub(crate) type_name: String,
+    /// The reflected shape facts — kept so per-column type hints (006) can
+    /// consult the closed conversion table post-reflection.
+    pub(crate) type_info: PgTypeInfo,
     pub(crate) mapped: MappedType,
     pub(crate) not_null: bool,
     pub(crate) is_pk: bool,
@@ -89,6 +92,43 @@ impl ReflectedTable {
         }
         Ok(selected)
     }
+}
+
+/// The selected columns with type hints APPLIED (feature 006): owned
+/// clones whose `mapped` is replaced per the closed conversion table.
+/// Typed errors: hint names a non-selected column; undefined pair.
+pub(crate) fn hinted_columns(
+    table: &ReflectedTable,
+    config: Option<&TableConfig>,
+) -> Result<Vec<ReflectedColumn>, SourceError> {
+    let selected = table.selected_columns(config)?;
+    let mut columns: Vec<ReflectedColumn> = selected.into_iter().cloned().collect();
+    if let Some(config) = config {
+        for (name, hint) in &config.type_hints {
+            let column = columns
+                .iter_mut()
+                .find(|c| c.name == *name)
+                .ok_or_else(|| {
+                    errors::fatal(
+                        Phase::Reflect,
+                        Some(&table.name),
+                        format!("type hint names `{name}`, which is not a selected column"),
+                    )
+                })?;
+            column.mapped =
+                crate::source::types::apply_hint(&column.type_info, *hint).map_err(|e| {
+                    errors::fatal(
+                        Phase::Reflect,
+                        Some(&table.name),
+                        format!(
+                            "type hint on `{name}` (source type `{}`): {e}",
+                            column.type_name
+                        ),
+                    )
+                })?;
+        }
+    }
+    Ok(columns)
 }
 
 /// One round trip: every column of every relation in `schema` matching the
@@ -204,6 +244,7 @@ pub(crate) async fn reflect_schema(
                 name: column_name,
                 type_name,
                 mapped: map_type(&info),
+                type_info: info,
                 not_null,
                 is_pk,
             });
@@ -227,33 +268,6 @@ pub(crate) async fn reflect_schema(
     Ok(tables)
 }
 
-/// Contract rule 3: a configured cursor column must exist and be
-/// cursor-capable. Returns the reflected column for downstream use.
-pub(crate) fn validate_cursor_column<'t>(
-    table: &'t ReflectedTable,
-    cursor_column: &str,
-) -> Result<&'t ReflectedColumn, SourceError> {
-    let column = table.column(cursor_column).ok_or_else(|| {
-        errors::fatal(
-            Phase::Reflect,
-            Some(&table.name),
-            format!("cursor column `{cursor_column}` does not exist"),
-        )
-    })?;
-    if !column.mapped.cursor_capable {
-        return Err(errors::fatal(
-            Phase::Reflect,
-            Some(&table.name),
-            format!(
-                "cursor column `{cursor_column}` has type `{}` which is not cursor-capable \
-                 (contract: type-mapping.md \"Cursor-capable types\")",
-                column.type_name
-            ),
-        ));
-    }
-    Ok(column)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,17 +278,21 @@ mod tests {
             name: "t".into(),
             columns: cols
                 .iter()
-                .map(|(name, o, pk)| ReflectedColumn {
-                    name: (*name).into(),
-                    type_name: "x".into(),
-                    mapped: map_type(&PgTypeInfo {
+                .map(|(name, o, pk)| {
+                    let info = PgTypeInfo {
                         oid: *o,
                         typtype: 'b',
                         typcategory: 'X',
                         typmod: -1,
-                    }),
-                    not_null: false,
-                    is_pk: *pk,
+                    };
+                    ReflectedColumn {
+                        name: (*name).into(),
+                        type_name: "x".into(),
+                        mapped: map_type(&info),
+                        type_info: info,
+                        not_null: false,
+                        is_pk: *pk,
+                    }
                 })
                 .collect(),
         }
@@ -296,6 +314,7 @@ mod tests {
             primary_key: None,
             included_columns: Some(vec!["a".into(), "c".into()]),
             excluded_columns: None,
+            type_hints: Default::default(),
         };
         let picked = t.selected_columns(Some(&cfg_inc)).expect("included");
         assert_eq!(
@@ -318,17 +337,39 @@ mod tests {
     }
 
     #[test]
-    fn cursor_validation() {
-        let t = table(&[("id", oid::INT8, true), ("blob", oid::BYTEA, false)]);
+    fn hinted_columns_apply_and_reject() {
+        use crate::source::HintType;
+        let t = table(&[("id", oid::INT8, true), ("v", oid::TEXT, false)]);
+        // Hint applies: text column → timestamptz (contract row).
+        let cfg = TableConfig {
+            name: "t".into(),
+            cursor: None,
+            primary_key: None,
+            included_columns: None,
+            excluded_columns: None,
+            type_hints: [("v".to_string(), HintType::TimestampTz)]
+                .into_iter()
+                .collect(),
+        };
+        let cols = hinted_columns(&t, Some(&cfg)).expect("hint applies");
         assert_eq!(
-            validate_cursor_column(&t, "id")
-                .expect("capable")
-                .mapped
-                .decode,
-            Decode::Int8
+            cols.iter().find(|c| c.name == "v").unwrap().mapped.decode,
+            Decode::Timestamp { tz: true }
         );
-        assert!(validate_cursor_column(&t, "blob").is_err());
-        assert!(validate_cursor_column(&t, "ghost").is_err());
+        // Undefined pair: int8 → uuid is not in the closed table.
+        let bad = TableConfig {
+            type_hints: [("id".to_string(), HintType::Uuid)].into_iter().collect(),
+            ..cfg.clone()
+        };
+        assert!(hinted_columns(&t, Some(&bad)).is_err());
+        // Hint on a non-selected column.
+        let ghost = TableConfig {
+            type_hints: [("ghost".to_string(), HintType::Utf8)]
+                .into_iter()
+                .collect(),
+            ..cfg
+        };
+        assert!(hinted_columns(&t, Some(&ghost)).is_err());
     }
 
     #[test]

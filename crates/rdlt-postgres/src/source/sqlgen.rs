@@ -26,10 +26,12 @@ pub(crate) fn quote_ident(ident: &str) -> String {
 /// server-side so the wire only carries the lossless decode set.
 fn projection(column: &ReflectedColumn) -> String {
     let ident = quote_ident(&column.name);
-    match column.mapped.select {
+    match &column.mapped.select {
         SelectPolicy::Direct => ident,
         SelectPolicy::CastText => format!("({ident})::text AS {ident}"),
         SelectPolicy::CastJsonbText => format!("to_jsonb({ident})::text AS {ident}"),
+        // Per-column type hint (006): strict server-side cast to the target.
+        SelectPolicy::HintCast(target) => format!("({ident})::{target} AS {ident}"),
     }
 }
 
@@ -129,15 +131,17 @@ mod tests {
     use crate::source::types::{PgTypeInfo, map_type, oid};
 
     fn col(name: &str, o: u32) -> ReflectedColumn {
+        let info = PgTypeInfo {
+            oid: o,
+            typtype: 'b',
+            typcategory: 'X',
+            typmod: -1,
+        };
         ReflectedColumn {
             name: name.into(),
             type_name: "t".into(),
-            mapped: map_type(&PgTypeInfo {
-                oid: o,
-                typtype: 'b',
-                typcategory: 'X',
-                typmod: -1,
-            }),
+            mapped: map_type(&info),
+            type_info: info,
             not_null: false,
             is_pk: false,
         }

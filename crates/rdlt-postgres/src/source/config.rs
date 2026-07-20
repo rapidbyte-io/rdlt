@@ -63,6 +63,11 @@ pub struct TableConfig {
     pub included_columns: Option<Vec<String>>,
     #[serde(default)]
     pub excluded_columns: Option<Vec<String>>,
+    /// Per-column type-hint overrides (feature 006, contract
+    /// type-hints.md): a CLOSED conversion table; unknown columns or
+    /// undefined (source → hint) pairs are typed config errors at open.
+    #[serde(default)]
+    pub type_hints: std::collections::BTreeMap<String, crate::source::HintType>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
