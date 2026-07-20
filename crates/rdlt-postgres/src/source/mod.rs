@@ -51,13 +51,13 @@ pub mod testhook {
 
     use rdlt_connector::SourceError;
 
-    pub use crate::reflect::{ReflectedColumn, ReflectedTable};
+    pub use crate::source::reflect::{ReflectedColumn, ReflectedTable};
 
     pub async fn reflect_for_tests(
-        config: &crate::PostgresConfig,
+        config: &crate::source::PostgresConfig,
     ) -> Result<BTreeMap<String, ReflectedTable>, SourceError> {
-        let client = crate::connect(config).await?;
-        crate::reflect::reflect_schema(&client, config).await
+        let client = crate::source::connect(config).await?;
+        crate::source::reflect::reflect_schema(&client, config).await
     }
 
     /// Canned binary-COPY stream for the gated decoder bench (iai_pg):
@@ -95,8 +95,8 @@ pub mod testhook {
     /// The gated decoder hot path (bench body): full stream -> Arrow batches;
     /// returns decoded rows so the work cannot be optimized away.
     pub fn bench_decode(wire: &[u8]) -> u64 {
-        use crate::copy_decode::{CopyDecoder, FieldPlan};
-        use crate::types::Decode;
+        use crate::source::copy_decode::{CopyDecoder, FieldPlan};
+        use crate::source::types::Decode;
         use arrow_schema::{DataType, TimeUnit};
 
         let plans = vec![
@@ -167,8 +167,8 @@ pub mod testhook {
     /// never a panic. The first fuzz byte splits the input into two feeds so
     /// chunk-boundary states get fuzzed too.
     pub fn fuzz_copy_decode(data: &[u8]) {
-        use crate::copy_decode::{CopyDecoder, FieldPlan};
-        use crate::types::Decode;
+        use crate::source::copy_decode::{CopyDecoder, FieldPlan};
+        use crate::source::types::Decode;
         use arrow_schema::{DataType, TimeUnit};
 
         let plans = vec![

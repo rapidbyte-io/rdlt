@@ -19,7 +19,7 @@ mutually independent after Phase 1 (US2 and US1 both touch the source
 
 ## Phase 1: Setup
 
-- [ ] T001 Crate merge (owner decision, research R1 — amends 005 R9):
+- [X] T001 Crate merge (owner decision, research R1 — amends 005 R9):
       create `crates/rdlt-postgres` with `source`/`dest` feature-gated
       modules (both default) and move `rdlt-source-postgres` →
       `src/source/`, `rdlt-dest-postgres` → `src/dest/` intact;

@@ -8,9 +8,8 @@ members = [
     "crates/rdlt-testkit",
     "crates/rdlt-source-rest",
     "crates/rdlt-dest-duckdb",
-    "crates/rdlt-dest-postgres",
     "crates/rdlt-source-file",
-    "crates/rdlt-source-postgres",
+    "crates/rdlt-postgres",
     "crates/rdlt-dest-parquet",
     "crates/rdlt-cli",
 ]
@@ -32,9 +31,8 @@ rdlt = { path = "crates/rdlt", version = "0.2.0" }
 rdlt-testkit = { path = "crates/rdlt-testkit", version = "0.2.0" }
 rdlt-source-rest = { path = "crates/rdlt-source-rest", version = "0.2.0" }
 rdlt-dest-duckdb = { path = "crates/rdlt-dest-duckdb", version = "0.2.0" }
-rdlt-dest-postgres = { path = "crates/rdlt-dest-postgres", version = "0.2.0" }
 rdlt-source-file = { path = "crates/rdlt-source-file", version = "0.2.0" }
-rdlt-source-postgres = { path = "crates/rdlt-source-postgres", version = "0.2.0" }
+rdlt-postgres = { path = "crates/rdlt-postgres", version = "0.2.0", default-features = false }
 rdlt-dest-parquet = { path = "crates/rdlt-dest-parquet", version = "0.2.0" }
 
 # arrow-rs: single workspace-wide major (research.md R10). Pinned to the major that
@@ -67,6 +65,11 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 serde_yaml = "0.9"
 duckdb = { version = "1", features = ["bundled", "appender-arrow"] }
 tokio-postgres = { version = "0.7", features = ["with-chrono-0_4"] }
+tokio-postgres-rustls = "0.13"
+rustls = "0.23"
+rustls-pemfile = "2"
+rustls-native-certs = "0.8"
+schemars = "1"
 
 # Dev / test
 proptest = "1"
@@ -75,6 +78,7 @@ wiremock = "0.6"
 testcontainers = "0.23"
 testcontainers-modules = { version = "0.11", features = ["postgres"] }
 tempfile = "3"
+rcgen = "0.13"
 toml = "0.8"
 
 [workspace.lints.rust]

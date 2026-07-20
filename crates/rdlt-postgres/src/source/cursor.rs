@@ -7,8 +7,8 @@
 use rdlt_connector::{Cursor, SourceError};
 use serde::{Deserialize, Serialize};
 
-use crate::errors::{self, Phase};
-use crate::types::Decode;
+use crate::source::errors::{self, Phase};
+use crate::source::types::Decode;
 
 /// A typed watermark value. Ordering is the cursor ordering (same-variant
 /// comparisons only — the column type is fixed per stream).
@@ -542,7 +542,7 @@ mod tests {
 
     #[test]
     fn config_literals_parse_per_type() {
-        use crate::types::Decode;
+        use crate::source::types::Decode;
         assert_eq!(
             Watermark::parse_config_literal(Decode::Int8, "17", "t").expect("int"),
             Watermark::Int(17)

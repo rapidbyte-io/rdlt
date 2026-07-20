@@ -4,8 +4,8 @@
 //! parameters, so cursor literals (Phase 4) render as typed literals with
 //! explicit casts — never raw user strings.
 
-use crate::reflect::ReflectedColumn;
-use crate::types::SelectPolicy;
+use crate::source::reflect::ReflectedColumn;
+use crate::source::types::SelectPolicy;
 
 /// PostgreSQL identifier quoting: wrap in double quotes, double any embedded
 /// quote. Total — any string becomes a safe identifier.
@@ -76,8 +76,8 @@ pub(crate) struct IncrementalClauses {
 pub(crate) fn incremental_clauses(
     column: &str,
     direction_max: bool,
-    lower: Option<(&crate::cursor::Watermark, bool)>, // (value, closed?)
-    upper: Option<&crate::cursor::Watermark>,
+    lower: Option<(&crate::source::cursor::Watermark, bool)>, // (value, closed?)
+    upper: Option<&crate::source::cursor::Watermark>,
     nulls_include: bool,
     // Text cursors force COLLATE "C": the tracker compares watermarks in
     // Rust byte order, so the SQL ordering/filtering must use byte order
@@ -125,8 +125,8 @@ pub(crate) fn incremental_clauses(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::reflect::ReflectedColumn;
-    use crate::types::{PgTypeInfo, map_type, oid};
+    use crate::source::reflect::ReflectedColumn;
+    use crate::source::types::{PgTypeInfo, map_type, oid};
 
     fn col(name: &str, o: u32) -> ReflectedColumn {
         ReflectedColumn {
@@ -176,7 +176,7 @@ mod tests {
 
     #[test]
     fn incremental_boundary_matrix() {
-        use crate::cursor::Watermark;
+        use crate::source::cursor::Watermark;
         let w = Watermark::Int(5);
         let e = Watermark::Int(9);
         // (direction_max, closed) × operators

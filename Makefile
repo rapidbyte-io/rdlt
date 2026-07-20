@@ -46,8 +46,7 @@ else ifeq ($(TARGET),e2e)
 else ifeq ($(TARGET),sweep)
 	cargo nextest run -p rdlt-engine --features failpoints -E 'binary(crash_sweep)' --no-tests=pass
 	# Postgres sweeps self-skip without a container runtime (G2.1).
-	cargo nextest run -p rdlt-dest-postgres --features failpoints -E 'binary(crash_sweep)' --no-tests=pass
-	cargo nextest run -p rdlt-source-postgres --features failpoints -E 'binary(crash_sweep)' --no-tests=pass
+	cargo nextest run -p rdlt-postgres --features failpoints -E 'binary(crash_sweep) or binary(dest_crash_sweep)' --no-tests=pass
 else ifeq ($(TARGET),prop)
 	PROPTEST_CASES=4096 cargo nextest run -p rdlt-engine -E 'test(shred_property)' --no-tests=pass
 else ifeq ($(TARGET),fuzz)
@@ -72,7 +71,7 @@ ifeq ($(TARGET),)
 	cargo bench -p rdlt-engine --bench shred
 else ifeq ($(TARGET),iai)
 	cargo bench -p rdlt-engine --bench iai_hotpath -- --save-summary=json
-	cargo bench -p rdlt-source-postgres --bench iai_pg -- --save-summary=json
+	cargo bench -p rdlt-postgres --bench iai_pg -- --save-summary=json
 	benches/compare-iai.sh
 else ifeq ($(TARGET),e2e)
 	benches/run-e2e.sh

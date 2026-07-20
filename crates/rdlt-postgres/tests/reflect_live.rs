@@ -4,8 +4,8 @@
 mod common;
 
 use common::PgFixture;
-use rdlt_source_postgres::PostgresConfig;
-use rdlt_source_postgres::testhook::reflect_for_tests;
+use rdlt_postgres::source::PostgresConfig;
+use rdlt_postgres::source::testhook::reflect_for_tests;
 
 const SEED: &str = r#"
 CREATE SCHEMA sales;

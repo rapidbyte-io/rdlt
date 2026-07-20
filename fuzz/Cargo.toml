@@ -15,7 +15,7 @@ rdlt-core = { path = "../crates/rdlt-core" }
 rdlt-connector = { path = "../crates/rdlt-connector" }
 rdlt-engine = { path = "../crates/rdlt-engine" }
 rdlt-source-file = { path = "../crates/rdlt-source-file" }
-rdlt-source-postgres = { path = "../crates/rdlt-source-postgres" }
+rdlt-postgres = { path = "../crates/rdlt-postgres" }
 
 # Standalone workspace: libFuzzer needs nightly; the main build never sees this.
 [workspace]

@@ -4,8 +4,8 @@
 //! Requires a container runtime; each test spins up postgres:16-alpine.
 
 use async_trait::async_trait;
-use rdlt_dest_postgres::Postgres;
 use rdlt_engine::{Engine, EngineConfig};
+use rdlt_postgres::dest::Postgres;
 use rdlt_testkit::conformance::dest::verify_destination;
 use rdlt_testkit::{MemorySource, TableProbe, assert_conformant};
 use serde_json::json;

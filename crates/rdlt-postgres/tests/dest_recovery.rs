@@ -14,7 +14,7 @@ use rdlt_connector::core::{
     StateDoc, TableName, TableSchema, WriteMode,
 };
 use rdlt_connector::{Destination, OpenCtx};
-use rdlt_dest_postgres::Postgres;
+use rdlt_postgres::dest::Postgres;
 use testcontainers_modules::postgres::Postgres as PostgresImage;
 use testcontainers_modules::testcontainers::ImageExt;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;

@@ -1,10 +1,16 @@
 [package]
-name = "rdlt-source-postgres"
-description = "rdlt PostgreSQL source: catalog reflection, binary-COPY-to-Arrow extraction, cursor-column incremental"
+name = "rdlt-postgres"
+description = "rdlt PostgreSQL connectors: binary-COPY-to-Arrow source and binary-COPY destination, one shared TLS/config home"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+
+[features]
+default = ["source", "dest"]
+source = []
+dest = []
+failpoints = ["rdlt-connector/failpoints"]
 
 [dependencies]
 rdlt-connector = { workspace = true }
@@ -12,8 +18,8 @@ arrow-array = { workspace = true }
 arrow-cast = { workspace = true }
 arrow-schema = { workspace = true }
 arrow-select = { workspace = true }
-blake3 = { workspace = true }
 async-trait = { workspace = true }
+blake3 = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 futures = { workspace = true }
@@ -27,12 +33,12 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 iai-callgrind = "0.16"
+proptest = { workspace = true }
+rdlt-dest-duckdb = { workspace = true }
 rdlt-engine = { workspace = true }
 rdlt-testkit = { workspace = true }
-rdlt-dest-duckdb = { workspace = true }
-proptest = { workspace = true }
-testcontainers-modules = { workspace = true }
 tempfile = { workspace = true }
+testcontainers-modules = { workspace = true }
 
 [lints]
 workspace = true
@@ -40,6 +46,3 @@ workspace = true
 [[bench]]
 name = "iai_pg"
 harness = false
-
-[features]
-failpoints = ["rdlt-connector/failpoints"]

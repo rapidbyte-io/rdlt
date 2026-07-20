@@ -2666,10 +2666,9 @@ dependencies = [
  "rdlt-core",
  "rdlt-dest-duckdb",
  "rdlt-dest-parquet",
- "rdlt-dest-postgres",
  "rdlt-engine",
+ "rdlt-postgres",
  "rdlt-source-file",
- "rdlt-source-postgres",
  "rdlt-source-rest",
  "rdlt-testkit",
  "serde_json",
@@ -2751,25 +2750,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rdlt-dest-postgres"
-version = "0.2.0"
-dependencies = [
- "arrow-array",
- "arrow-schema",
- "async-trait",
- "chrono",
- "futures",
- "rdlt-connector",
- "rdlt-engine",
- "rdlt-testkit",
- "serde_json",
- "tempfile",
- "testcontainers-modules",
- "tokio",
- "tokio-postgres",
-]
-
-[[package]]
 name = "rdlt-engine"
 version = "0.2.0"
 dependencies = [
@@ -2798,29 +2778,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rdlt-source-file"
-version = "0.2.0"
-dependencies = [
- "arrow",
- "async-trait",
- "bytes",
- "glob",
- "memchr",
- "parquet",
- "rdlt-connector",
- "rdlt-dest-duckdb",
- "rdlt-engine",
- "rdlt-testkit",
- "serde",
- "serde_json",
- "serde_yaml",
- "tempfile",
- "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "rdlt-source-postgres"
+name = "rdlt-postgres"
 version = "0.2.0"
 dependencies = [
  "arrow-array",
@@ -2847,6 +2805,28 @@ dependencies = [
  "tokio",
  "tokio-postgres",
  "tracing",
+]
+
+[[package]]
+name = "rdlt-source-file"
+version = "0.2.0"
+dependencies = [
+ "arrow",
+ "async-trait",
+ "bytes",
+ "glob",
+ "memchr",
+ "parquet",
+ "rdlt-connector",
+ "rdlt-dest-duckdb",
+ "rdlt-engine",
+ "rdlt-testkit",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]

@@ -14,7 +14,7 @@ use common::PgFixture;
 use rdlt_connector::core::failpoint::fail;
 use rdlt_dest_duckdb::DuckDb;
 use rdlt_engine::{Engine, EngineConfig};
-use rdlt_source_postgres::PostgresSource;
+use rdlt_postgres::source::PostgresSource;
 
 const TOTAL_ROWS: u64 = 100;
 
@@ -69,7 +69,7 @@ impl Rig {
 /// pinned here, and the sweep below iterates exactly it.
 #[test]
 fn registry_is_pinned() {
-    let mut registry: Vec<&str> = rdlt_source_postgres::FAIL_POINTS.to_vec();
+    let mut registry: Vec<&str> = rdlt_postgres::source::FAIL_POINTS.to_vec();
     registry.sort_unstable();
     let mut expected = vec![
         "pg.src.after_reflect",
@@ -88,7 +88,7 @@ async fn sweep_postgres_source() {
     fixture.seed(SEED).await;
     let conn = fixture.conn_url();
 
-    for &point in rdlt_source_postgres::FAIL_POINTS {
+    for &point in rdlt_postgres::source::FAIL_POINTS {
         // First-occurrence, panic, and SECOND-occurrence passes (003 lesson:
         // sweeps that only fire a point's first occurrence missed real bugs).
         for action in ["return", "panic", "1*off->return"] {

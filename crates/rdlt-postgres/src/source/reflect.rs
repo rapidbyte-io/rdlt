@@ -8,9 +8,9 @@ use std::collections::BTreeMap;
 use rdlt_connector::SourceError;
 use tokio_postgres::Client;
 
-use crate::config::{PostgresConfig, TableConfig};
-use crate::errors::{self, Phase};
-use crate::types::{MappedType, PgTypeInfo, map_type};
+use crate::source::config::{PostgresConfig, TableConfig};
+use crate::source::errors::{self, Phase};
+use crate::source::types::{MappedType, PgTypeInfo, map_type};
 
 #[derive(Debug, Clone)]
 pub struct ReflectedColumn {
@@ -257,7 +257,7 @@ pub(crate) fn validate_cursor_column<'t>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Decode, oid};
+    use crate::source::types::{Decode, oid};
 
     fn table(cols: &[(&str, u32, bool)]) -> ReflectedTable {
         ReflectedTable {

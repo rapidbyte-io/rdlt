@@ -35,7 +35,7 @@ pub use rdlt_source_rest as rest;
 pub use rdlt_dest_duckdb as duckdb;
 
 #[cfg(feature = "postgres")]
-pub use rdlt_dest_postgres as postgres;
+pub use rdlt_postgres::dest as postgres;
 
 #[cfg(feature = "file")]
 pub use rdlt_source_file as file;
@@ -44,7 +44,7 @@ pub use rdlt_source_file as file;
 pub use rdlt_dest_parquet as parquet;
 
 #[cfg(feature = "postgres-source")]
-pub use rdlt_source_postgres as postgres_source;
+pub use rdlt_postgres::source as postgres_source;
 
 pub mod prelude {
     pub use crate::{

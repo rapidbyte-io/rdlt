@@ -18,7 +18,7 @@ use chrono::{DateTime, Utc};
 use common::PgFixture;
 use proptest::prelude::*;
 use rdlt_connector::{PushPayload, ReadRequest, Source as _, records_channel};
-use rdlt_source_postgres::PostgresSource;
+use rdlt_postgres::source::PostgresSource;
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]

@@ -8,7 +8,7 @@ mod common;
 use common::PgFixture;
 use rdlt_dest_duckdb::DuckDb;
 use rdlt_engine::{Engine, EngineConfig};
-use rdlt_source_postgres::PostgresSource;
+use rdlt_postgres::source::PostgresSource;
 
 const BASE: &str = r#"
 CREATE TABLE ev (id int8 PRIMARY KEY, v text, ts timestamptz);

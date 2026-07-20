@@ -11,8 +11,8 @@
 use rdlt_connector::StreamSpec;
 use rdlt_connector::core::WriteMode;
 use rdlt_connector::core::failpoint::fail;
-use rdlt_dest_postgres::Postgres;
 use rdlt_engine::{Engine, EngineConfig};
+use rdlt_postgres::dest::Postgres;
 use rdlt_testkit::{MemoryBatch, MemorySource, MemoryStream};
 use serde_json::json;
 use testcontainers_modules::postgres::Postgres as PostgresImage;
@@ -73,7 +73,7 @@ async fn attempt(
 /// pinned here, and the sweep below iterates exactly it.
 #[test]
 fn registry_is_pinned() {
-    let mut registry: Vec<&str> = rdlt_dest_postgres::FAIL_POINTS.to_vec();
+    let mut registry: Vec<&str> = rdlt_postgres::dest::FAIL_POINTS.to_vec();
     registry.sort_unstable();
     let mut expected = vec!["pg.stage.copy", "pg.publish.begin", "pg.tx.commit"];
     expected.sort_unstable();
@@ -94,7 +94,7 @@ async fn sweep_postgres_destination() {
         format!("host=127.0.0.1 port={port} user=postgres password=postgres dbname=postgres");
 
     let mut fired: std::collections::BTreeSet<(&str, &str)> = std::collections::BTreeSet::new();
-    for &point in rdlt_dest_postgres::FAIL_POINTS {
+    for &point in rdlt_postgres::dest::FAIL_POINTS {
         for action in ["return", "panic", "1*off->return"] {
             for mode in [WriteMode::Append, WriteMode::Replace] {
                 // Fresh dataset per cell isolates state on the one container.
@@ -142,7 +142,7 @@ async fn sweep_postgres_destination() {
     // Anti-vacuousness pin (005 review): every registered point must have
     // failed at least one armed attempt in BOTH modes — a dead crash_point!
     // site fails here instead of passing silently.
-    let expected: std::collections::BTreeSet<(&str, &str)> = rdlt_dest_postgres::FAIL_POINTS
+    let expected: std::collections::BTreeSet<(&str, &str)> = rdlt_postgres::dest::FAIL_POINTS
         .iter()
         .flat_map(|&p| [(p, "append"), (p, "replace")])
         .collect();
