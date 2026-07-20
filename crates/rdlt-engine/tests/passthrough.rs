@@ -305,3 +305,48 @@ async fn input_column_named_like_system_column_is_suffixed() {
     );
     assert_eq!(row[suffixed[0].as_str()], json!("upstream-value"));
 }
+
+/// Mutation-report closure: cross-batch NARROWING (Utf8 batch then Int64 batch)
+/// must not narrow the registry schema — the column stays Utf8 and later
+/// batches cast losslessly upward (clause E7). Kills the registry
+/// widening-guard mutants at the observable level.
+#[tokio::test]
+async fn cross_batch_narrowing_keeps_the_wide_type() {
+    use arrow::array::{Int64Array, StringArray};
+    let batch1 = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![Field::new("v", DataType::Utf8, true)])),
+        vec![Arc::new(StringArray::from(vec!["ten"]))],
+    )
+    .expect("batch1");
+    let batch2 = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![Field::new("v", DataType::Int64, true)])),
+        vec![Arc::new(Int64Array::from(vec![11]))],
+    )
+    .expect("batch2");
+    let dest = MemoryDestination::new();
+    let source = ArrowSource {
+        batches: vec![batch1, batch2],
+        declare_structured: true,
+    };
+    Engine::new(EngineConfig::new("pt-narrow"), source, dest.clone())
+        .run()
+        .await
+        .expect("run");
+    let schema = dest.schema("metrics").expect("schema");
+    let v = schema
+        .columns
+        .iter()
+        .find(|c| c.name == "v")
+        .expect("v column");
+    assert_eq!(
+        v.ty,
+        rdlt_core::ColumnType::scalar(rdlt_core::LogicalType::Utf8),
+        "narrowing must not shrink the registry type"
+    );
+    let rows = dest.committed_rows("metrics");
+    assert_eq!(
+        rows[1]["v"],
+        serde_json::json!("11"),
+        "int cast losslessly to text"
+    );
+}

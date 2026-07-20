@@ -163,3 +163,16 @@ mod tests {
         assert_ne!(base, renamed.content_hash());
     }
 }
+
+#[cfg(test)]
+mod system_tests {
+    use super::*;
+
+    #[test]
+    fn is_system_recognizes_exactly_the_reserved_prefix() {
+        assert!(system_columns::is_system(system_columns::ID));
+        assert!(system_columns::is_system(system_columns::LOAD_ID));
+        assert!(!system_columns::is_system("id"));
+        assert!(!system_columns::is_system("rdlt_id"));
+    }
+}

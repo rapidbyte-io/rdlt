@@ -16,12 +16,14 @@
 
 | Metric | pinned dlt 1.11.0 | rdlt (bundled file source, CLI) | multiple | target (design §8) | status |
 |---|---|---|---|---|---|
-| Wall time (200k records) | 19.60 s | 0.92 s | **21.3× faster** | ≥ 10× | ✅ met (product claim) |
-| Source records/s | 10,204 | 216,900 | 21.3× | — | — |
+| Wall time (200k records) | 19.60 s | 1.05 s | **18.6× faster** | ≥ 10× | ✅ met (product claim) |
+| Source records/s | 10,204 | 190,000 | 18.6× | — | — |
 | Peak RSS | 1,985 MB | 355 MB | **5.6× less** | ≤ 1/5th | ✅ met |
 
-(Re-measured 2026-07-20 after feature 003: tape shredder, hex encoder,
-zero-clone builds — was 1.73 s / 642 MB at feature-002 merge. The RSS fix was
+(Re-measured 2026-07-20 after feature 003, median of 5 runs (single runs range
+0.92–1.16 s on this machine): tape shredder, hex encoder, zero-clone builds —
+was 1.73 s / 642 MB at feature-002 merge. Thin-LTO was A/B'd per R30 and
+REJECTED: 1073 vs 1052 ms median (no win) at 20× the build time. The RSS fix was
 NOT DuckDB: `memory_limit` moved nothing; the retention was glibc per-thread
 malloc arenas holding freed slab/arena/build buffers. The CLI now sets
 `mallopt(M_ARENA_MAX=2, M_TRIM_THRESHOLD=128K)` at startup — measured 642 →

@@ -163,6 +163,30 @@ mod tests {
         let first = namer.name_for("User Name");
         let again = namer.name_for("User Name");
         assert_eq!(first, again);
+        // Mutation-report closure: assert the VALUE, not just stability —
+        // uppercase must lowercase (not fall through to `_`).
+        assert_eq!(first, "user_name");
+    }
+
+    #[test]
+    fn truncation_boundary_is_exact_max_len() {
+        // Mutation-report closure: exactly max_len stays untouched; one over
+        // truncates with a hash suffix.
+        let rules = IdentRules { max_len: 10 };
+        assert_eq!(normalize_ident("abcdefghij", rules), "abcdefghij");
+        let over = normalize_ident("abcdefghijk", rules);
+        assert_ne!(over, "abcdefghijk");
+        assert!(over.len() <= 10);
+    }
+
+    #[test]
+    fn flattened_column_name_joins_path() {
+        // Mutation-report closure: the function body was untested (its only
+        // caller is the capability-lowering seam).
+        assert_eq!(
+            flattened_column_name(&["profile", "geo", "lat"], IdentRules::default()),
+            "profile__geo__lat"
+        );
     }
 
     #[test]

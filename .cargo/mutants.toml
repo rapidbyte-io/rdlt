@@ -20,6 +20,8 @@ exclude_globs = [
 exclude_re = [
     "impl (std::fmt::)?Display",
     "fn fmt\\(",
+    # Debug impl bodies (the fn-name form cargo-mutants actually reports).
+    "::fmt -> (std::)?fmt::Result",
 ]
 
 # Whole-suite runs can legitimately take a while (crash matrix, proptests).

@@ -490,3 +490,17 @@ fn classify_source_error(stream: StreamName, e: &SourceError) -> RdltError {
         other => RdltError::source(stream, other.to_string()),
     }
 }
+
+#[cfg(test)]
+mod backoff_tests {
+    // Mutation-report closure: the retry backoff curve, by value.
+    #[test]
+    fn backoff_doubles_and_saturates() {
+        use std::time::Duration;
+        assert_eq!(super::backoff(0), Duration::from_millis(100));
+        assert_eq!(super::backoff(1), Duration::from_millis(200));
+        assert_eq!(super::backoff(3), Duration::from_millis(800));
+        assert_eq!(super::backoff(6), Duration::from_millis(6400));
+        assert_eq!(super::backoff(60), Duration::from_millis(6400), "capped");
+    }
+}

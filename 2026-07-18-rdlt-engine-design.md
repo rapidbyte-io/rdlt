@@ -364,7 +364,7 @@ reproducible harness (dlt in a container). Benchmark suite is v1 scope, not an a
 | Benchmark | Target vs Python dlt | Measured (benches/RESULTS.md) |
 |---|---|---|
 | Nested-JSON shred microbench (rows/s/core) | ≥ 20x | 8.1x (2026-07-20; honest miss — remaining levers: allocator traffic, arrow building) |
-| End-to-end: jsonl files → DuckDB | ≥ 10x | **21.3x** ✅ |
+| End-to-end: jsonl files → DuckDB | ≥ 10x | **18.6x** ✅ |
 | End-to-end: local mock REST API → Postgres (engine-bound) | ≥ 5x | **5.5x** ✅ |
 | Arrow passthrough: parquet → parquet | ≥ 2x | **2.4x** ✅ |
 | Peak RSS (file→DuckDB run) | ≤ 1/5th | **1/5.6** ✅ |

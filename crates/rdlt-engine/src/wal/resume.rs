@@ -276,6 +276,31 @@ mod tests {
         std::fs::write(dir.join("manifest.jsonl"), out).expect("write manifest");
     }
 
+    /// Mutation-report closure: the on-disk Run header must SERIALIZE the
+    /// current format version (a defaulted/zero version would break forward
+    /// detection), and segment sequence numbers must be strictly monotonic.
+    #[test]
+    fn run_header_serializes_current_version_and_segments_are_sequential() {
+        let record = WalRecord::Run {
+            format_version: super::super::WAL_FORMAT_VERSION,
+            load_id: LoadId::new("l"),
+            pipeline: PipelineId::new("p"),
+        };
+        let json = serde_json::to_string(&record).expect("serialize");
+        assert!(
+            json.contains(&format!(
+                "\"format_version\":{}",
+                super::super::WAL_FORMAT_VERSION
+            )),
+            "header must carry the version: {json}"
+        );
+        assert_eq!(
+            super::super::WAL_FORMAT_VERSION,
+            1,
+            "bump deliberately, with a migration note"
+        );
+    }
+
     /// Mutation-report closure: the future-version guard is `>`, strictly — a
     /// NEWER manifest degrades to re-extraction (Damaged), while the current
     /// and any older version scan normally.

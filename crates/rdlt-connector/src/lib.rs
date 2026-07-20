@@ -259,3 +259,31 @@ pub fn records_channel(byte_budget: usize) -> (RecordsOut, RecordsIn) {
         RecordsIn { rx, budget },
     )
 }
+
+#[cfg(test)]
+mod budget_tests {
+    // Mutation-report closure: same boundary at the SPI layer.
+    use super::*;
+
+    #[tokio::test]
+    async fn exact_budget_passes_and_next_push_waits() {
+        let (mut out, mut input) = records_channel(100);
+        out.raw_json(bytes::Bytes::from(vec![b'1'; 100]))
+            .await
+            .expect("exactly the budget");
+        let pending = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            out.raw_json(bytes::Bytes::from_static(b"2")),
+        )
+        .await;
+        assert!(
+            pending.is_err(),
+            "budget exhausted: the next push must wait"
+        );
+        let push = input.recv().await.expect("push");
+        drop(push);
+        out.raw_json(bytes::Bytes::from_static(b"2"))
+            .await
+            .expect("freed budget");
+    }
+}

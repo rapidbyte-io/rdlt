@@ -105,6 +105,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn binary_meets_anything_at_json_and_order_is_strict() {
+        // Mutation-report closure: the Binary arm and is_widening_of's negative
+        // case were untested.
+        use LogicalType::*;
+        assert_eq!(widen(Binary, Int64), Json);
+        assert_eq!(widen(Utf8, Binary), Json);
+        assert!(is_widening_of(Int64, Float64));
+        assert!(!is_widening_of(Float64, Int64), "narrowing is NOT widening");
+    }
+
+    #[test]
     fn no_float_to_decimal_edge() {
         // The silent-corruption edge must not exist: Float64 ⊔ Decimal = Utf8.
         assert_eq!(

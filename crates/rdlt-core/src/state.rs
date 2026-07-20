@@ -66,3 +66,19 @@ pub struct UnsupportedStateVersion {
     pub found: u32,
     pub supported: u32,
 }
+
+#[cfg(test)]
+mod version_tests {
+    // Mutation-report closure: the future-version guard (same shape as the
+    // WAL manifest guard).
+    use super::*;
+
+    #[test]
+    fn future_state_version_is_a_typed_error_current_is_fine() {
+        let mut doc = StateDoc::new(PipelineId::new("p"));
+        assert!(doc.check_readable().is_ok());
+        doc.format_version = STATE_FORMAT_VERSION + 1;
+        let err = doc.check_readable().expect_err("future version");
+        assert_eq!(err.found, STATE_FORMAT_VERSION + 1);
+    }
+}

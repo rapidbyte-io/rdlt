@@ -41,10 +41,20 @@ Every planned test below lands before this feature's PR merges; the scheduled
 | `connector/lib.rs` `RecordsOut::send` `>`→`>=` | 1 | **new-test**: byte-budget boundary at exactly the budget. |
 | timeouts | 8 | **waived**: loop-bound mutants whose infinite loops ARE the detected outcome — the timeout mechanism is the designed kill. |
 
+## Bug found while closing survivors
+
+The registry-widening closure test (`cross_batch_narrowing_keeps_the_wide_type`)
+found a REAL passthrough bug, not just a coverage gap: a structured batch whose
+column type NARROWED across batches (Utf8 then Int64) pushed a narrowing delta
+into the registry — guarded only by a `debug_assert`, so release builds would
+have shrunk the destination schema. Fixed: passthrough now JOINS observed types
+with the registry's current types on the widening lattice before diffing
+(scalars via `widen`, lists item-wise, structs field-wise, shape conflicts →
+Json) — the same outcomes the shredder's observation states produce implicitly.
+
 ## Remaining work
 
-- 246 of 595 mutants untested (the run OOM-killed the user session; containers
-  need a host re-login to restart). Resume with `TARGET=mutants make test`
-  (the recipe now carries `--iterate --jobs 2`) and extend the dispositions.
-- With the planned tests landed, the projected kill rate on the tested set is
-  ≈94% — over the 85% bar; the next scheduled `deep` run verifies.
+- All planned survivor tests have LANDED (28 new tests across 13 files plus
+  `tests/mutation_closures.rs`); the fmt-impl mutant class is excluded via
+  `exclude_re`. A clean full run on the final tree gives the authoritative
+  post-closure kill rate; the scheduled `deep` job repeats it weekly.

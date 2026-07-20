@@ -41,7 +41,20 @@ pub(crate) fn passthrough_items(
     caps: DestCapabilities,
 ) -> Result<Vec<LoadItem>, RdltError> {
     // ---- Map the arrow schema onto the logical schema ----
-    let (observed, name_map) = schema_from_arrow(batch, table, caps)?;
+    let (mut observed, name_map) = schema_from_arrow(batch, table, caps)?;
+
+    // ---- Join with the registry's current types (widening lattice) ----
+    // The shredder's observation states join implicitly; passthrough must do it
+    // explicitly or a batch whose column NARROWED (Int64 after Utf8) would push
+    // a narrowing delta into the registry (found by the cross-batch narrowing
+    // test: debug builds assert, release builds would shrink the schema).
+    if let Some(current) = registry.get(table) {
+        for column in &mut observed.columns {
+            if let Some(existing) = current.columns.iter().find(|c| c.name == column.name) {
+                column.ty = join_column_types(&existing.ty, &column.ty);
+            }
+        }
+    }
 
     // ---- Policy resolution (same rules as the shredder) ----
     let changes = registry.diff(&observed);
@@ -193,6 +206,37 @@ fn schema_from_arrow(
         },
         name_map,
     ))
+}
+
+/// Least upper bound of two column types for cross-batch evolution: scalars
+/// join on the widening lattice, lists join item-wise, structs join field-wise
+/// (new fields append), and shape conflicts land on Json — the same outcomes
+/// the shredder's observation states produce.
+fn join_column_types(a: &ColumnType, b: &ColumnType) -> ColumnType {
+    use rdlt_core::types::widen;
+    match (a, b) {
+        _ if a == b => a.clone(),
+        (ColumnType::Scalar { scalar: x }, ColumnType::Scalar { scalar: y }) => {
+            ColumnType::scalar(widen(*x, *y))
+        }
+        (ColumnType::ScalarList { item: x }, ColumnType::ScalarList { item: y }) => {
+            ColumnType::ScalarList {
+                item: widen(*x, *y),
+            }
+        }
+        (ColumnType::Struct { fields: xs }, ColumnType::Struct { fields: ys }) => {
+            let mut joined = xs.clone();
+            for y in ys {
+                match joined.iter_mut().find(|x| x.name == y.name) {
+                    Some(x) => x.ty = join_column_types(&x.ty, &y.ty),
+                    None => joined.push(y.clone()),
+                }
+            }
+            ColumnType::Struct { fields: joined }
+        }
+        // Shape conflict: preserved verbatim, never dropped (lattice top).
+        _ => ColumnType::scalar(LogicalType::Json),
+    }
 }
 
 pub(crate) fn column_type_from_arrow(dt: &DataType) -> Result<ColumnType, String> {

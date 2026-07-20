@@ -80,9 +80,3 @@ missing_debug_implementations = "warn"
 [workspace.lints.clippy]
 dbg_macro = "warn"
 todo = "warn"
-
-# Feature 003 T025: thin LTO measured on the flagship e2e before adoption
-# (FR-012/G5 — kept only with a demonstrated win; numbers in the PR).
-[profile.release]
-lto = "thin"
-codegen-units = 4

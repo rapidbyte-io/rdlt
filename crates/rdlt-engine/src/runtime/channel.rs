@@ -145,3 +145,33 @@ mod tests {
         assert_eq!(rx.recv().await.unwrap().0, 1_000_000);
     }
 }
+
+#[cfg(test)]
+mod budget_tests {
+    // Mutation-report closure: the byte-budget boundary — a send of exactly
+    // the budget must pass; holding it, the NEXT send must wait.
+    use super::*;
+
+    #[derive(Debug)]
+    struct Sized(usize);
+    impl ByteSized for Sized {
+        fn byte_size(&self) -> usize {
+            self.0
+        }
+    }
+
+    #[tokio::test]
+    async fn exact_budget_passes_and_next_send_waits() {
+        let (tx, mut rx) = byte_channel::<Sized>(100);
+        tx.send(Sized(100)).await.expect("exactly the budget");
+        let pending =
+            tokio::time::timeout(std::time::Duration::from_millis(50), tx.send(Sized(1))).await;
+        assert!(
+            pending.is_err(),
+            "budget exhausted: the next send must wait"
+        );
+        // Receiving (and letting the item fall out of scope) releases its permit.
+        let _item = rx.recv().await.expect("item");
+        tx.send(Sized(1)).await.expect("freed budget");
+    }
+}

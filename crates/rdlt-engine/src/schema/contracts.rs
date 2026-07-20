@@ -102,3 +102,84 @@ pub(crate) fn change_column(change: &SchemaChange) -> Option<&str> {
         SchemaChange::WidenColumn { name, .. } => Some(name),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    // Mutation-report closure: value_fits arms were only reachable through
+    // Discard policies, which few tests exercise. Direct table.
+    use super::*;
+    use serde_json::json;
+
+    fn fits(value: &serde_json::Value, ty: LogicalType) -> bool {
+        value_fits(value, &ColumnType::scalar(ty))
+    }
+
+    #[test]
+    fn value_fits_scalar_table() {
+        use LogicalType::*;
+        assert!(fits(&json!(null), Bool));
+        assert!(fits(&json!(true), Bool) && !fits(&json!(1), Bool));
+        assert!(fits(&json!(5), Int64) && !fits(&json!(5.5), Int64));
+        assert!(fits(&json!(5.5), Float64) && fits(&json!(5), Float64));
+        assert!(!fits(&json!(9007199254740993i64), Float64), "beyond 2^53");
+        assert!(fits(&json!("x"), Utf8) && fits(&json!(5), Utf8) && fits(&json!(true), Utf8));
+        assert!(!fits(&json!({"a": 1}), Utf8));
+        assert!(fits(&json!("2026-07-19T10:00:00Z"), TimestampTz));
+        assert!(!fits(&json!("not a time"), TimestampTz));
+        assert!(fits(&json!("anything"), TimestampNaive) && !fits(&json!(5), TimestampNaive));
+        assert!(fits(
+            &json!(5),
+            Decimal {
+                precision: 10,
+                scale: 2
+            }
+        ));
+        assert!(fits(
+            &json!("5.10"),
+            Decimal {
+                precision: 10,
+                scale: 2
+            }
+        ));
+        assert!(!fits(
+            &json!(5.1),
+            Decimal {
+                precision: 10,
+                scale: 2
+            }
+        ));
+        assert!(!fits(&json!("x"), Binary), "Binary unproducible from JSON");
+        assert!(fits(&json!({"free": ["form"]}), Json));
+    }
+
+    #[test]
+    fn value_fits_struct_and_list() {
+        let struct_ty = ColumnType::Struct {
+            fields: vec![rdlt_core::ColumnDef {
+                name: "a".into(),
+                ty: ColumnType::scalar(LogicalType::Int64),
+                nullable: true,
+                provenance: rdlt_core::Provenance::Inferred,
+            }],
+        };
+        assert!(value_fits(&json!({"a": 1}), &struct_ty));
+        assert!(
+            !value_fits(&json!({"a": "text"}), &struct_ty),
+            "field type mismatch"
+        );
+        assert!(
+            !value_fits(&json!({"a": 1, "new": 2}), &struct_ty),
+            "new field forced evolution"
+        );
+        assert!(
+            value_fits(&json!({"a": 1, "new": null}), &struct_ty),
+            "null new field is fine"
+        );
+
+        let list_ty = ColumnType::ScalarList {
+            item: LogicalType::Int64,
+        };
+        assert!(value_fits(&json!([1, 2, null]), &list_ty));
+        assert!(!value_fits(&json!([1, "x"]), &list_ty));
+    }
+}

@@ -181,3 +181,175 @@ fn render_decimal(raw: i128, scale: u8) -> String {
     let (int_part, frac_part) = padded.split_at(padded.len() - scale);
     format!("{}{int_part}.{frac_part}", if negative { "-" } else { "" })
 }
+
+#[cfg(test)]
+mod tests {
+    // Mutation-report closure (feature 003 T011): the whole lowering seam ran
+    // assertion-free — the suite only ever used full-capability destinations.
+    use super::*;
+    use arrow::array::Int64Array;
+    use arrow::datatypes::{DataType, Field, Schema};
+    use rdlt_core::{Provenance, TableName};
+
+    fn caps(structs: bool, decimal: bool) -> DestCapabilities {
+        DestCapabilities {
+            structs,
+            decimal,
+            ..DestCapabilities::default()
+        }
+    }
+
+    fn col(name: &str, ty: ColumnType) -> ColumnDef {
+        ColumnDef {
+            name: name.into(),
+            ty,
+            nullable: false,
+            provenance: Provenance::Inferred,
+        }
+    }
+
+    fn schema_with_struct_and_decimal() -> TableSchema {
+        TableSchema {
+            table: TableName::new("t"),
+            parent: None,
+            columns: vec![
+                col("id", ColumnType::scalar(LogicalType::Int64)),
+                col(
+                    "profile",
+                    ColumnType::Struct {
+                        fields: vec![
+                            col("city", ColumnType::scalar(LogicalType::Utf8)),
+                            col(
+                                "geo",
+                                ColumnType::Struct {
+                                    fields: vec![col(
+                                        "lat",
+                                        ColumnType::scalar(LogicalType::Float64),
+                                    )],
+                                },
+                            ),
+                        ],
+                    },
+                ),
+                col(
+                    "price",
+                    ColumnType::scalar(LogicalType::Decimal {
+                        precision: 10,
+                        scale: 2,
+                    }),
+                ),
+            ],
+        }
+    }
+
+    #[test]
+    fn needs_lowering_tracks_each_capability() {
+        assert!(!needs_lowering(&caps(true, true)));
+        assert!(needs_lowering(&caps(false, true)));
+        assert!(needs_lowering(&caps(true, false)));
+    }
+
+    #[test]
+    fn full_capabilities_lower_to_identity() {
+        let schema = schema_with_struct_and_decimal();
+        assert_eq!(lower_schema(&schema, &caps(true, true)), schema);
+    }
+
+    #[test]
+    fn structs_off_flattens_recursively_and_children_go_nullable() {
+        let lowered = lower_schema(&schema_with_struct_and_decimal(), &caps(false, true));
+        let names: Vec<&str> = lowered.columns.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["id", "profile__city", "profile__geo__lat", "price"]
+        );
+        let city = &lowered.columns[1];
+        assert_eq!(city.ty, ColumnType::scalar(LogicalType::Utf8));
+        assert!(city.nullable, "flattened children must be nullable");
+        // Decimal untouched: only structs were lowered.
+        assert_eq!(
+            lowered.columns[3].ty,
+            ColumnType::scalar(LogicalType::Decimal {
+                precision: 10,
+                scale: 2
+            })
+        );
+    }
+
+    #[test]
+    fn decimal_off_lowers_to_utf8_leaving_structs() {
+        let lowered = lower_schema(&schema_with_struct_and_decimal(), &caps(true, false));
+        assert_eq!(lowered.columns[2].ty, ColumnType::scalar(LogicalType::Utf8));
+        assert!(matches!(lowered.columns[1].ty, ColumnType::Struct { .. }));
+    }
+
+    #[test]
+    fn batch_lowering_flattens_structs_and_propagates_parent_nulls() {
+        use arrow::array::StructArray;
+        use arrow::buffer::NullBuffer;
+        use std::sync::Arc;
+        let inner = Int64Array::from(vec![Some(1), Some(2), Some(3)]);
+        let struct_array = StructArray::new(
+            vec![Field::new("lat", DataType::Int64, true)].into(),
+            vec![Arc::new(inner) as ArrayRef],
+            Some(NullBuffer::from(vec![true, false, true])), // row 1 struct-null
+        );
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "geo",
+                struct_array.data_type().clone(),
+                true,
+            )])),
+            vec![Arc::new(struct_array)],
+        )
+        .expect("batch");
+
+        let lowered = lower_batch(&batch, &caps(false, true)).expect("lower");
+        assert_eq!(lowered.schema().field(0).name(), "geo__lat");
+        let column = lowered
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("int column");
+        assert_eq!(column.value(0), 1);
+        assert!(column.is_null(1), "parent struct-null must null the child");
+        assert_eq!(column.value(2), 3);
+    }
+
+    #[test]
+    fn batch_lowering_renders_decimals_as_canonical_text() {
+        use arrow::array::Decimal128Array;
+        use std::sync::Arc;
+        let decimals = Decimal128Array::from(vec![Some(1234i128), Some(-50i128), None])
+            .with_precision_and_scale(10, 2)
+            .expect("decimal array");
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "price",
+                decimals.data_type().clone(),
+                true,
+            )])),
+            vec![Arc::new(decimals)],
+        )
+        .expect("batch");
+        let lowered = lower_batch(&batch, &caps(true, false)).expect("lower");
+        let strings = lowered
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("utf8 column");
+        assert_eq!(strings.value(0), "12.34");
+        assert_eq!(strings.value(1), "-0.50");
+        assert!(strings.is_null(2));
+        // Full capabilities: the batch passes through unchanged.
+        let same = lower_batch(&batch, &caps(true, true)).expect("identity");
+        assert_eq!(same, batch);
+    }
+
+    #[test]
+    fn render_decimal_scale_zero_and_padding() {
+        assert_eq!(render_decimal(42, 0), "42");
+        assert_eq!(render_decimal(-42, 0), "-42");
+        assert_eq!(render_decimal(7, 3), "0.007");
+    }
+}

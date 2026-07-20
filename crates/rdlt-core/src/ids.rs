@@ -172,3 +172,32 @@ mod tests {
         assert_eq!(serde_json::to_string(&table).unwrap(), "\"users\"");
     }
 }
+
+#[cfg(test)]
+mod hex_tests {
+    // Mutation-report closure: hex ENCODING is used everywhere; DECODING
+    // (hex_nibble arms) had no direct tests.
+    use super::*;
+
+    #[test]
+    fn hex_round_trips_and_accepts_uppercase() {
+        let id = RowId::from_bytes([0xAB; 32]);
+        let hex = id.to_hex();
+        assert_eq!(hex, "ab".repeat(32));
+        assert_eq!(RowId::from_hex(&hex).expect("lowercase"), id);
+        assert_eq!(RowId::from_hex(&hex.to_uppercase()).expect("uppercase"), id);
+        // Every nibble value survives the round trip exactly.
+        let mut bytes = [0u8; 32];
+        for (i, b) in bytes.iter_mut().enumerate() {
+            *b = (i as u8).wrapping_mul(17).wrapping_add(9);
+        }
+        let id = RowId::from_bytes(bytes);
+        assert_eq!(RowId::from_hex(&id.to_hex()).expect("round trip"), id);
+    }
+
+    #[test]
+    fn invalid_hex_is_rejected() {
+        assert!(RowId::from_hex(&"g".repeat(64)).is_err(), "non-hex digit");
+        assert!(RowId::from_hex("ab").is_err(), "wrong length");
+    }
+}

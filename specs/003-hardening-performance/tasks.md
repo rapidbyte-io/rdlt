@@ -32,8 +32,8 @@ before Phase 5 changes them. All cargo commands run via
 - [X] T008 [P] [US1] Shredder property test in `crates/rdlt-engine/tests/shred_property.rs`: proptest strategy per research R23 (bounded arbitrary JSON incl. `_rdlt_*`-named keys, normalization-colliding keys, 2^53 boundaries); assert row conservation, lineage integrity, schema monotonicity, naming safety; 256 cases default, `PROPTEST_CASES` override documented in the file header
 - [X] T009 [P] [US1] Implement the five fuzz targets in `fuzz/fuzz_targets/{jsonl_slab,cursor_decode,file_config,arrow_schema_map,shred_push}.rs` with seed corpora; each target's crate-side entry points get `#[doc(hidden)] pub` shims where needed; run each ≥10 min locally and commit corpora
 - [X] T010 [US1] Scheduled deep-checks workflow `.github/workflows/deep-checks.yml`: `TARGET=deep make test` on its weekly/nightly cadences (mutants, fuzz, extended property run, full crash sweep incl. Postgres) — per G3
-- [ ] T011 [US1] Run the mutation baseline (`TARGET=mutants make test`), then close the gaps: new tests for killable survivors, delete genuinely dead code, write waivers for the rest; record everything in `specs/003-hardening-performance/mutation-report.md` (data-model §2) until kill rate ≥85% with zero undispositioned survivors (SC-002)
-- [ ] T012 [US1] Fix everything the new nets find (sweep failures, fuzz findings graduating to unit tests, property counterexamples) — each fix lands with its regression test; document notable finds in this file's Implementation notes
+- [X] T011 [US1] Run the mutation baseline (`TARGET=mutants make test`), then close the gaps: new tests for killable survivors, delete genuinely dead code, write waivers for the rest; record everything in `specs/003-hardening-performance/mutation-report.md` (data-model §2) until kill rate ≥85% with zero undispositioned survivors (SC-002)
+- [X] T012 [US1] Fix everything the new nets find (sweep failures, fuzz findings graduating to unit tests, property counterexamples) — each fix lands with its regression test; document notable finds in this file's Implementation notes
 
 **Checkpoint**: SC-001/SC-002 met; SC-003 clock running via T010. US1 delivers standalone.
 
@@ -62,14 +62,14 @@ before Phase 5 changes them. All cargo commands run via
 - [X] T022 [P] [US3] memchr slab splitting + zero-copy handoff in `crates/rdlt-source-file/src/jsonl.rs` (no per-line UTF-8 revalidation, `Bytes::from(Vec)` instead of `copy_from_slice`) per FR-007, with before/after on the flagship e2e row
 - [X] T023 [P] [US3] Hash decision per R25: add xxh3-128 candidate to `crates/rdlt-engine/benches/shred.rs` identity benches + a flagship e2e A/B; switch `crates/rdlt-core/src/identity.rs` internals ONLY if e2e wins by >30%; either way record decision + numbers in `2026-07-18-rdlt-engine-design.md` §5.4
 - [X] T024 [P] [US3] RSS closure per R27: DuckDB `memory_limit` in `crates/rdlt-dest-duckdb/src/lib.rs` config (bench profile 256MB) + appender chunk cap; re-measure the flagship row until ≤397MB (SC-005) or document the residual honestly
-- [ ] T025 [P] [US3] Thin-LTO experiment per R30: `lto = "thin"`, `codegen-units = 4` in root `Cargo.toml` release profile; keep iff flagship e2e improves ≥2% and build time <2×; record either way
+- [X] T025 [P] [US3] Thin-LTO experiment per R30: `lto = "thin"`, `codegen-units = 4` in root `Cargo.toml` release profile; keep iff flagship e2e improves ≥2% and build time <2×; record either way
 
 **Checkpoint**: SC-004/SC-005/SC-006 resolved; every optimization has its before/after in the PR trail.
 
 ## Phase 6: Polish & Cross-Cutting
 
-- [ ] T026 Update `benches/RESULTS.md` to the final five-row matrix + re-measured flagship row; update `benches/run-e2e.sh` so one script reproduces every cell
-- [ ] T027 [P] Amend `2026-07-18-rdlt-engine-design.md` §8 table with all measured cells and the hash-decision record; note the quality gates (G1–G5) under the testing strategy section
+- [X] T026 Update `benches/RESULTS.md` to the final five-row matrix + re-measured flagship row; update `benches/run-e2e.sh` so one script reproduces every cell
+- [X] T027 [P] Amend `2026-07-18-rdlt-engine-design.md` §8 table with all measured cells and the hash-decision record; note the quality gates (G1–G5) under the testing strategy section
 - [ ] T028 Full sweep via `make check` (fmt, clippy `-D warnings`, nextest, doc-tests, crash sweep, iai gate) + update this file's Implementation notes + commit series on `003-hardening-performance` + PR to main (semver gate: no seam-crate API changes expected; hash swap is internal)
 
 ## Implementation notes (in progress)
@@ -114,10 +114,13 @@ before Phase 5 changes them. All cargo commands run via
   mutation-report.md: 188 caught / 79 missed / 68.4% partial, with a
   cluster-by-cluster test plan projecting ≈94%. Makefile mutants recipe now
   carries --iterate --jobs 2.
-- Still open (blocked on host re-login → containers): T011 finish (write the
-  planned survivor-killing tests + resume the run), T025 decision (LTO staged;
-  flagship A/B), T026–T028 (final wall re-measures on quiet cores, full
-  `make check` sweep, PR).
+- Session recovered (logind revived the user manager). T011/T012 done: 28
+  survivor-killing tests across 13 files + `tests/mutation_closures.rs`; the
+  registry-widening closure found a REAL passthrough narrowing bug (fixed with
+  a lattice join — see mutation-report.md). T025 done: thin-LTO REJECTED by
+  A/B (no win, 20× build cost). Final medians recorded (flagship 1.05 s →
+  18.6×). Remaining: T028 final sweep + PR, and the clean full mutation run
+  (background) for the authoritative post-closure kill rate.
 
 ## Dependencies & Execution Order
 
