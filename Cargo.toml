@@ -10,6 +10,7 @@ members = [
     "crates/rdlt-dest-duckdb",
     "crates/rdlt-dest-postgres",
     "crates/rdlt-source-file",
+    "crates/rdlt-source-postgres",
     "crates/rdlt-dest-parquet",
     "crates/rdlt-cli",
 ]
@@ -33,6 +34,7 @@ rdlt-source-rest = { path = "crates/rdlt-source-rest", version = "0.2.0" }
 rdlt-dest-duckdb = { path = "crates/rdlt-dest-duckdb", version = "0.2.0" }
 rdlt-dest-postgres = { path = "crates/rdlt-dest-postgres", version = "0.2.0" }
 rdlt-source-file = { path = "crates/rdlt-source-file", version = "0.2.0" }
+rdlt-source-postgres = { path = "crates/rdlt-source-postgres", version = "0.2.0" }
 rdlt-dest-parquet = { path = "crates/rdlt-dest-parquet", version = "0.2.0" }
 
 # arrow-rs: single workspace-wide major (research.md R10). Pinned to the major that

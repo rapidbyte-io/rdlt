@@ -2819,6 +2819,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "rdlt-source-postgres"
+version = "0.2.0"
+dependencies = [
+ "arrow-array",
+ "arrow-schema",
+ "async-trait",
+ "bytes",
+ "futures",
+ "proptest",
+ "rdlt-connector",
+ "rdlt-dest-duckdb",
+ "rdlt-engine",
+ "rdlt-testkit",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "testcontainers-modules",
+ "thiserror",
+ "tokio",
+ "tokio-postgres",
+ "tracing",
+]
+
+[[package]]
 name = "rdlt-source-rest"
 version = "0.2.0"
 dependencies = [

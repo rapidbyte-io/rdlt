@@ -16,9 +16,9 @@ schema: public
 include_views: false
 batch_target_bytes: 8388608     # 8 MiB
 batch_max_rows: 65536
-retry:
-  max_attempts: 3
-  base_ms: 250
+# NOTE: there is deliberately no retry configuration — retry policy is
+# engine-owned (SPI clauses S3/E5). The source classifies errors as
+# Transient (engine retries with backoff) or Fatal.
 
 # absent => discover ALL tables in `schema`
 tables:
@@ -37,8 +37,9 @@ tables:
 
 ## Validation rules (typed config errors at open — never silent)
 
-1. `conn` must parse; connection failure after the bounded retry policy
-   is a typed connect error.
+1. `conn` must parse (parse failure = Fatal config error); connection
+   failures classify as Transient — the ENGINE retries with backoff
+   (clauses S3/E5), the source never loops.
 2. `tables[].name` must exist in the reflected `schema` (with
    `include_views` honored); schema-qualified names in `name` are
    rejected.
@@ -60,5 +61,9 @@ tables:
   delivery at the boundary. `boundary: open` skips dedup and is only
   safe for strictly monotonic cursors (documented).
 - Watermark advances only on committed loads and never regresses.
-- Mid-stream failures are never auto-retried; connect/table-boundary
-  retries follow `retry`.
+- Incremental reads are cursor-ordered and checkpoint mid-stream on
+  cursor-value completion — a retried/resumed read continues from the
+  last committed mid-table checkpoint, never the table start.
+- Failures classify per SPI S3 (Transient/Fatal); the engine owns all
+  retry loops, and resume-from-committed-cursor (E6/S1) makes retried
+  reads double-apply-safe.

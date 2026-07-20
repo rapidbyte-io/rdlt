@@ -45,10 +45,13 @@ version probe) = ordinary parameterized queries on the same client.
   trips, text or per-row binary decode, no snapshot advantage over a
   single COPY. Rejected for data path.
 
-**TLS**: `tokio-postgres` + `rustls` via `tokio-postgres-rustls`
-(pure-Rust, no unsafe FFI, workspace-friendly). `sslmode=disable|
-prefer|require` honored from the connection string; client certs out
-of scope (spec Assumptions).
+**TLS** (corrected at implement time): the workspace's Postgres
+DESTINATION connects `NoTls` — that is the current house posture for
+the driver, and the source follows it rather than growing a one-sided
+`rustls` dependency. `sslmode=require`/`verify-*` in the conn string →
+typed Fatal config error stating TLS is not yet wired. TLS for BOTH
+postgres connectors is a recorded backlog item (an ops requirement for
+the platform, best added once, symmetrically).
 
 ## R2 — Type mapping: OID → LogicalType, lossy rules explicit
 
@@ -69,10 +72,10 @@ in `contracts/type-mapping.md`. Headline rules:
 | timestamp | TimestampNaive | µs |
 | date | Date | |
 | time | Time | timetz → Utf8 (no tz-time type) |
-| uuid | Uuid | |
-| json/jsonb | Json | opaque escape hatch — NOT shredded (R5 of spec edge cases: consistency with typed-source behavior; shred-on-ingest stays a file/REST-source behavior) |
+| uuid | Utf8 | canonical text (structured-path constraint, see contract) |
+| json/jsonb | Utf8 (canonical JSON text) | opaque, NOT shredded; structured path derives logical from arrow, so the Json label is unreachable (see contract note) |
 | enum types | Utf8 | label text |
-| arrays, composites, ranges | Json | canonical JSON rendering, documented |
+| arrays, composites, ranges | Utf8 (canonical JSON text) | server-side to_jsonb()::text, documented |
 | domains | base type's mapping | |
 | inet/cidr/macaddr/money/interval/other | Utf8 | canonical text; explicit "textual fallback" list |
 | ±infinity timestamps/dates | saturate to the type's min/max representable instant, documented | never NULL-ed, never an error — value survives visibly |
@@ -142,10 +145,24 @@ budget (engine-owned), independent of table size (spec SC-002).
   default, re-fetched boundary rows whose key is in the set are
   dropped source-side — exactly dlt's dedup guarantee without engine
   changes. Open boundary skips the set entirely.
+- **Cursor-ordered reads + mid-table resume** (decided at implement
+  time, upgrading the original R5): incremental queries emit
+  `ORDER BY <cursor> ASC|DESC` (direction-aligned). Ordering makes
+  clause S2 checkpoints legal MID-STREAM: whenever the cursor value
+  changes, every row of the previous value is complete, so the source
+  emits `Checkpoint({watermark: prev_value, boundary_keys: []})` at
+  batch boundaries (empty keys ⇒ strict `>` resume — no dedup needed).
+  The FINAL checkpoint carries `boundary_keys` for watermark-equal
+  rows (closed-boundary next-run dedup). Result: a crash or transient
+  retry resumes from the last committed mid-table checkpoint instead
+  of the table start — the "no mid-table resume" dlt gap, closed. The
+  unindexed-cursor ORDER BY cost is the documented caveat the spec
+  already carries. Snapshot (cursor-less) streams stay unordered and
+  never checkpoint — each run is a full read by definition.
 - Watermark advances only through `PushPayload::Checkpoint` after the
-  rows it covers are pushed; the engine already persists it only on
-  destination commit (clause E6) — crash convergence (FR-007) rides
-  the existing machinery. A candidate watermark lower than the stored
+  rows it covers are pushed (S2); the engine persists it only on
+  destination commit (E6) — crash convergence (FR-007) rides the
+  existing machinery. A candidate watermark lower than the stored
   one is never emitted (monotonicity guard; regressing clocks test).
 
 **Alternatives**: engine-side dedup (rejected: SPI/engine change for a
@@ -154,21 +171,35 @@ for PK-less tables — ADOPTED in reduced form: PK if reflected, else
 canonical row hash; hashing already exists in the engine's identity
 vocabulary.
 
-## R6 — Failure policy: retry connects, never mid-stream
+## R6 — Failure policy: classify, never retry (SPI clause S3) — CORRECTED at implement time
 
-**Decision**: connection establishment (and per-table re-connect at
-table boundaries) retries with bounded exponential backoff
-(`retry: { max_attempts: 3, base_ms: 250 }` defaults). Mid-COPY
-failures abort the stream with a typed `SourceError` naming table +
-phase (connect / reflect / copy / decode / checkpoint); no automatic
-mid-stream retry (a re-issued COPY sees a new snapshot — silent
-double-apply risk; the engine's checkpoint/resume is the correct
-retry). Cancellation: `ChannelClosed` on push → stop reading, drop the
-connection (Postgres aborts the COPY server-side).
+**Correction (2026-07-20, before any code)**: the original R6 proposed
+source-side bounded connect retries. That contradicts SPI clause S3
+("never retry internally — classify and return; retries are
+engine-owned", `connector-spi.md`). The corrected decision:
 
-**Rationale**: spec FR-008 verbatim; beats dlt (no retry at all) while
-refusing the unsafe half (dlt's own docs tell users to subclass a
-loader to add retries — with no double-apply guard).
+- The source classifies every failure as a typed `SourceError` naming
+  table + phase (connect / reflect / copy / decode / checkpoint):
+  network and connection errors → `Transient` (engine retries with
+  backoff + jitter, clause E5, counts surfaced in `RunReport`);
+  auth/config/unknown-table/cursor-type errors → `Fatal`; decode/drift
+  errors → `Fatal` (data problems must not be retried into).
+- Mid-stream double-apply is impossible BY the engine contract, not by
+  refusing retry: a retried `read` receives only the last
+  destination-committed cursor (E6), sources must not re-emit covered
+  rows (S1), and staging keeps uncommitted pushes invisible (D1–D4).
+  Engine-owned retry is therefore SAFE mid-stream — strictly better
+  than the plan's original "fail hard, never retry".
+- Cancellation unchanged: `ChannelClosed` on push → return promptly
+  (S4); dropping the connection aborts the server-side COPY.
+- The config `retry` block is REMOVED (contract updated) — retry
+  policy is not a source concern in this architecture.
+
+**Rationale**: seams sacred — the engine already owns retry/backoff and
+the crash model that makes it safe; duplicating it source-side was the
+one place the plan drifted from the house architecture. Still beats
+dlt (which has no retry at all and documents DIY subclassing with no
+double-apply guard).
 
 ## R7 — Benchmark design: two cells, dlt fastest-config gated, measurement-first bars
 

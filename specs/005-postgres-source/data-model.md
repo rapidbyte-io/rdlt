@@ -16,7 +16,9 @@ cursor state, and the benchmark records.
 | `tables` | list of TableConfig, or absent | absent ⇒ discover all in schema |
 | `batch_target_bytes` | int, default 8 MiB | decoder batch cut (R4) |
 | `batch_max_rows` | int, default 65 536 | secondary cut |
-| `retry` | `{max_attempts: 3, base_ms: 250}` | connect/boundary retries only (R6) |
+
+(No retry field: retry policy is engine-owned per SPI S3/E5 — R6 as
+corrected; the source only classifies Transient vs Fatal.)
 
 **TableConfig**: `name` (required; schema-qualified names rejected —
 `schema` field owns that), optional `cursor` (CursorConfig), optional
@@ -54,10 +56,15 @@ or schema-policy application (spec US4-AS4) — never misaligned columns.
   dedup closed-boundary re-fetch (R5). Empty under `boundary: open`.
 
 **Transitions**: advances only via `Checkpoint` after covered rows are
-pushed, persisted only on destination commit (engine clause E6);
-monotonicity guard — a candidate ≤ stored watermark never overwrites it
-(regressing-clock rule). Crash at any point ⇒ next run resumes from the
-last committed value (003 guarantee).
+pushed (S2 — legal mid-stream because incremental reads are
+cursor-ordered: a value is complete when a greater one appears);
+intermediate checkpoints carry empty `boundary_keys` (strict `>`
+resume), the final checkpoint carries the watermark-equal keys;
+persisted only on destination commit (E6); monotonicity guard — a
+candidate ≤ stored watermark never overwrites it (regressing-clock
+rule). Crash or engine-retried Transient at any point ⇒ resume from
+the last committed mid-table checkpoint (003 guarantee + the dlt
+mid-table-resume gap, closed).
 
 ## 4. Record batches (runtime)
 

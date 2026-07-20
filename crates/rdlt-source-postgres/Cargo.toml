@@ -1,0 +1,36 @@
+[package]
+name = "rdlt-source-postgres"
+description = "rdlt PostgreSQL source: catalog reflection, binary-COPY-to-Arrow extraction, cursor-column incremental"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rdlt-connector = { workspace = true }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-postgres = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+rdlt-engine = { workspace = true }
+rdlt-testkit = { workspace = true }
+rdlt-dest-duckdb = { workspace = true }
+proptest = { workspace = true }
+testcontainers-modules = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
+
+[features]
+failpoints = ["rdlt-connector/failpoints"]

@@ -16,9 +16,10 @@ normalizer while extraction stays row-by-row in Python — rdlt instead
 decodes Postgres's **binary COPY stream directly into Arrow columns**
 (`COPY (SELECT …) TO STDOUT (FORMAT BINARY)`), the lever dlt can only
 reach by delegating to a Rust library (connectorx) with documented
-correctness debt. Robustness beats dlt's recorded gaps: bounded
-connect-retry, checkpointed resume, per-table statement-level snapshot
-consistency, crash-sweep coverage to the 003 standard. Two benchmark
+correctness debt. Robustness beats dlt's recorded gaps: engine-owned retry via S3 error
+classification, cursor-ordered mid-table checkpointed resume, per-table
+statement-level snapshot consistency, crash-sweep coverage to the 003
+standard. Two benchmark
 cells (postgres→DuckDB, postgres→Postgres) land baseline-first with
 bars set measurement-first per the 004 version-policy protocol.
 

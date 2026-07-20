@@ -9,6 +9,20 @@ representation, never value content, and are called out in user docs.
 Silent coercion is forbidden — any type not covered below falls to the
 **textual fallback** rule, never to inference.
 
+> **Structured-path constraint (discovered against the engine at
+> implement time)**: structured streams derive logical types purely
+> from Arrow `DataType`s (engine clause E7; `passthrough.rs::
+> column_type_from_arrow`) — Arrow carries no uuid/json types, so a
+> structured source CANNOT produce `LogicalType::Uuid`/`Json`. The
+> rows below therefore land those values as `Utf8` carrying their
+> canonical text (uuid: 36-char lowercase; json/jsonb/arrays/
+> composites/ranges: canonical JSON text) — the "opaque, never
+> shredded" semantics hold; only the logical label differs from the
+> original draft of this contract. Logical-type fidelity for
+> structured sources (e.g. Arrow field metadata honored by the
+> passthrough) is a recorded backlog item — an engine-contract change
+> this feature does not make (FR-012).
+
 ## Scalar mappings (lossless)
 
 | Postgres | LogicalType | Wire decode note |
@@ -23,8 +37,8 @@ Silent coercion is forbidden — any type not covered below falls to the
 | `timestamp` | `TimestampNaive` | µs, rebased |
 | `date` | `Date` | days, rebased |
 | `time` | `Time` | µs |
-| `uuid` | `Uuid` | 16 bytes |
-| `json`, `jsonb` | `Json` | jsonb: version byte stripped; NOT shredded (typed escape hatch) |
+| `uuid` | `Utf8` | 36-char lowercase canonical text (structured-path constraint above) |
+| `json`, `jsonb` | `Utf8` (canonical JSON text) | jsonb: version byte stripped; NOT shredded (structured-path constraint above) |
 
 ## Policy mappings [documented-lossy: representation changes, values survive]
 
@@ -32,9 +46,9 @@ Silent coercion is forbidden — any type not covered below falls to the
 |---|---|---|
 | `numeric` unconstrained or p > 38 | `Utf8` | canonical text — no precision loss ever |
 | enum types | `Utf8` | label text |
-| arrays (any element) | `Json` | canonical JSON array rendering |
-| composite / row types | `Json` | canonical JSON object |
-| range / multirange | `Json` | `{lower, upper, bounds}` rendering |
+| arrays (any element) | `Utf8` (canonical JSON text) | server-side `to_jsonb(col)::text` rendering |
+| composite / row types | `Utf8` (canonical JSON text) | server-side `to_jsonb(col)::text` |
+| range / multirange | `Utf8` (canonical JSON text) | server-side `to_jsonb(col)::text` |
 | `timetz` | `Utf8` | no tz-aware time type in the lattice |
 | `interval` | `Utf8` | ISO-8601 duration text |
 | `inet`, `cidr`, `macaddr(8)` | `Utf8` | canonical text |
@@ -55,11 +69,11 @@ Silent coercion is forbidden — any type not covered below falls to the
 
 ## Cursor-capable types
 
-`Int64`, `Decimal`, `Utf8`, `TimestampTz`, `TimestampNaive`, `Date`,
-`Time`, `Uuid` — the set the source-config contract accepts for
-`cursor.column`. Cursor JSON rendering (state round-trip): Int64 as
-number; Decimal/Uuid/temporal as canonical strings; property-tested
-`decode(encode(v)) == v`.
+`Int64`, `Decimal`, `Utf8` (incl. uuid-as-text), `TimestampTz`,
+`TimestampNaive`, `Date`, `Time` — the set the source-config contract
+accepts for `cursor.column`. Cursor JSON rendering (state round-trip):
+Int64 as number; Decimal/uuid/temporal as canonical strings;
+property-tested `decode(encode(v)) == v`.
 
 ## Conformance obligations
 

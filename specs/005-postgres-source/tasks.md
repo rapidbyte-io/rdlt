@@ -19,14 +19,14 @@ BEFORE US3 (benchmarks) per plan.md.
 
 ## Phase 1: Setup
 
-- [ ] T001 Create crate `crates/rdlt-source-postgres` (Cargo.toml:
+- [X] T001 Create crate `crates/rdlt-source-postgres` (Cargo.toml:
       tokio-postgres + rustls connector, arrow, serde/serde_yaml,
       thiserror, tracing, rdlt-core/rdlt-connector; dev: testcontainers
       postgres, proptest) with module stubs per plan structure
       (`lib.rs`, `config.rs`, `reflect.rs`, `types.rs`,
       `copy_decode.rs`, `sqlgen.rs`, `cursor.rs`); add to workspace
       members + `rdlt` facade dependency; `cargo clippy` clean.
-- [ ] T002 [P] Shared test fixture in
+- [X] T002 [P] Shared test fixture in
       `crates/rdlt-source-postgres/tests/common/mod.rs`: testcontainers
       postgres:16 helper (start, psql-exec seed, conn string) mirroring
       the rdlt-dest-postgres test conventions, so every suite below
@@ -36,25 +36,25 @@ BEFORE US3 (benchmarks) per plan.md.
 
 **⚠️ CRITICAL**: no user-story work before this phase completes.
 
-- [ ] T003 Config model in `crates/rdlt-source-postgres/src/config.rs`
+- [X] T003 Config model in `crates/rdlt-source-postgres/src/config.rs`
       per contracts/source-config.md: full document (conn, schema,
       include_views, tables[], cursor{column, initial_value, boundary,
       direction, end_value, nulls}, primary_key, included/excluded
-      columns, batch knobs, retry), `deny_unknown_fields`, `from_yaml`,
+      columns, batch knobs), `deny_unknown_fields`, `from_yaml`,
       validation rules 4–6 (local checks) with typed errors; unit tests
       for every rejection rule in the contract.
-- [ ] T004 Connection establishment in
+- [X] T004 Connection establishment in
       `crates/rdlt-source-postgres/src/lib.rs`: tokio-postgres client
-      with rustls TLS honoring `sslmode` (R1), bounded exponential
-      connect retry per config (R6), typed `SourceError` mapping
-      (connect phase); unit-testable backoff (no live DB needed) + one
-      testcontainers smoke test.
-- [ ] T005 Type mapping in `crates/rdlt-source-postgres/src/types.rs`
+      with rustls TLS honoring `sslmode` (R1); error CLASSIFICATION per
+      corrected R6 (connect io -> Transient for engine-owned retry,
+      config/auth -> Fatal), typed `SourceError` naming table+phase;
+      classification unit tests + one testcontainers smoke test.
+- [X] T005 Type mapping in `crates/rdlt-source-postgres/src/types.rs`
       per contracts/type-mapping.md: OID(+typmod) → `LogicalType` for
       every contract row (lossless + policy tables), cursor-capable
       predicate, textual-fallback rule; exhaustive unit tests keyed to
       the contract tables (each row cited).
-- [ ] T006 Catalog reflection in
+- [X] T006 Catalog reflection in
       `crates/rdlt-source-postgres/src/reflect.rs` (R3): one-round-trip
       pg_catalog query → `ReflectedTable` (column order/name/OID/typmod,
       NOT NULL, PK), schema + relkind filtering incl. `include_views`,
@@ -189,7 +189,8 @@ exactly-once on re-run (spec US4 independent test).
       (a) failpoint-injected io error mid-COPY → typed `SourceError`
       naming table+phase, committed work preserved, re-run resumes;
       (b) container kill mid-table → same convergence (US4 acceptance
-      scenarios 2–3; retry policy asserted connect-only).
+      scenarios 2–3; Transient classification asserted — engine owns
+      the retry loop per corrected R6).
 - [ ] T022 [P] [US4] Memory-ceiling test (SC-002) in
       `crates/rdlt-source-postgres/tests/memory_bound.rs`: seed a
       table ≥ 10× the ceiling, run the release CLI as a subprocess
