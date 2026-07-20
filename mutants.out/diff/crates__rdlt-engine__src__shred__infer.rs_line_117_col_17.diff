@@ -1,0 +1,32 @@
+--- crates/rdlt-engine/src/shred/infer.rs
++++ delete match arm Kind::Object in ColState::observe
+@@ -109,28 +109,17 @@
+             ColState::Unknown => {
+                 *self = Self::fresh(value, lists_as_columns);
+             }
+             ColState::Scalar(state) => match value.kind() {
+                 Kind::Object | Kind::Array => *self = ColState::Json,
+                 _ => state.observe(value),
+             },
+             ColState::Struct(fields) => match value.kind() {
+-                Kind::Object => {
+-                    for (key, item) in value.obj_entries() {
+-                        match fields.iter_mut().find(|(name, _)| name == key) {
+-                            Some((_, state)) => state.observe(item, lists_as_columns),
+-                            None => {
+-                                let mut state = ColState::Unknown;
+-                                state.observe(item, lists_as_columns);
+-                                fields.push((key.to_owned(), state));
+-                            }
+-                        }
+-                    }
+-                }
++                 /* ~ changed by cargo-mutants ~ */
+                 _ => *self = ColState::Json,
+             },
+             ColState::ScalarList(item_state) => match value.kind() {
+                 Kind::Array => {
+                     if value.arr_items().any(|item| item.is_object()) {
+                         // scalars-then-objects in the same list position: irreconcilable
+                         *self = ColState::Json;
+                     } else {

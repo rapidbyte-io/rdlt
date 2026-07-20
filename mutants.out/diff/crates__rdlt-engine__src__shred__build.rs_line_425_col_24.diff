@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/build.rs
++++ delete - in parse_decimal
+@@ -417,17 +417,17 @@
+         Kind::UInt(_) | Kind::Float(_) => return None,
+         Kind::Str(s) => {
+             owned = s;
+             owned.trim()
+         }
+         _ => return None,
+     };
+     let (sign, digits) = match text.strip_prefix('-') {
+-        Some(rest) => (-1i128, rest),
++        Some(rest) => ( /* ~ changed by cargo-mutants ~ */1i128, rest),
+         None => (1i128, text),
+     };
+     let (int_part, frac_part) = match digits.split_once('.') {
+         Some((i, f)) => (i, f),
+         None => (digits, ""),
+     };
+     if frac_part.len() > scale as usize {
+         return None; // would truncate — inexact

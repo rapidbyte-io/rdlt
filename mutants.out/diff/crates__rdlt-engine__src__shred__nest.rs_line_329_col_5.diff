@@ -1,0 +1,29 @@
+--- crates/rdlt-engine/src/shred/nest.rs
++++ replace parse_rows -> Result<Vec<Value>, serde_json::Error> with Ok(vec![])
+@@ -321,25 +321,17 @@
+     canonical_json_bytes(row, scratch);
+     let mut builder = RowIdBuilder::keyless();
+     builder.field("", FieldValue::Bytes(scratch));
+     builder.finish()
+ }
+ 
+ /// Parse a raw-JSON push: NDJSON, a top-level array, or a single document.
+ pub(crate) fn parse_rows(bytes: &[u8]) -> Result<Vec<Value>, serde_json::Error> {
+-    let mut rows = Vec::new();
+-    let stream = serde_json::Deserializer::from_slice(bytes).into_iter::<Value>();
+-    for doc in stream {
+-        match doc? {
+-            Value::Array(items) => rows.extend(items),
+-            value => rows.push(value),
+-        }
+-    }
+-    Ok(rows)
++    Ok(vec![]) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Resolve one table's observation state into schema columns: system/lineage
+ /// columns first, then source columns in first-seen order.
+ pub(crate) fn resolve_schema(buffer: &mut TableBuffer) -> TableSchema {
+     let mut columns: Vec<ColumnDef> = Vec::new();
+     let system = |name: &str, ty| ColumnDef {
+         name: name.to_owned(),

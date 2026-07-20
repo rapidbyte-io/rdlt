@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/nest.rs
++++ replace + with - in TreeShredder::child_table_idx
+@@ -271,17 +271,17 @@
+         let table = TableName::new(name);
+         if let Some(idx) = self.tables.iter().position(|t| t.table == table) {
+             return idx;
+         }
+         self.tables.push(TableBuffer::new(
+             table,
+             Some(ParentLink {
+                 parent: parent_table,
+-                depth: parent_depth + 1,
++                depth: parent_depth - /* ~ changed by cargo-mutants ~ */ 1,
+             }),
+             self.caps.ident_rules,
+         ));
+         self.rows.push(Vec::new());
+         self.tables.len() - 1
+     }
+ 
+     /// `_rdlt_id` for a root row: key hash when the stream declares a primary key,

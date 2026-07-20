@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/infer.rs
++++ delete match arm Kind::Null in ColState::fresh
+@@ -157,17 +157,17 @@
+                     *self = ColState::Json;
+                 }
+             }
+         }
+     }
+ 
+     fn fresh<'a, V: JsonView<'a>>(value: V, lists_as_columns: bool) -> Self {
+         match value.kind() {
+-            Kind::Null => ColState::Unknown,
++             /* ~ changed by cargo-mutants ~ */
+             Kind::Object => {
+                 let mut fields = Vec::new();
+                 for (key, item) in value.obj_entries() {
+                     let mut state = ColState::Unknown;
+                     state.observe(item, lists_as_columns);
+                     fields.push((key.to_owned(), state));
+                 }
+                 ColState::Struct(fields)

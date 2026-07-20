@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/nest.rs
++++ replace && with || in TreeShredder::push_row
+@@ -211,17 +211,17 @@
+                 .row
+                 .as_object()
+                 .expect("rows are objects by construction");
+             let mut child_lists: Vec<(String, Vec<Value>)> = Vec::new();
+             for (key, value) in obj {
+                 let state = self.tables[entry.table_idx].state_mut(key);
+                 state.observe(value, lists_as_columns);
+                 if state.is_child_table()
+-                    && let Value::Array(items) = value
++                    || /* ~ changed by cargo-mutants ~ */ let Value::Array(items) = value
+                 {
+                     child_lists.push((key.clone(), items.clone()));
+                 }
+             }
+ 
+             // Enqueue child rows.
+             for (key, items) in child_lists {
+                 let child_idx = self.child_table_idx(entry.table_idx, &key);

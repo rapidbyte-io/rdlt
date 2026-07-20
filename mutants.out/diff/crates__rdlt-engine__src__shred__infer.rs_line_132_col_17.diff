@@ -1,0 +1,34 @@
+--- crates/rdlt-engine/src/shred/infer.rs
++++ delete match arm Kind::Array in ColState::observe
+@@ -124,30 +124,17 @@
+                                 fields.push((key.to_owned(), state));
+                             }
+                         }
+                     }
+                 }
+                 _ => *self = ColState::Json,
+             },
+             ColState::ScalarList(item_state) => match value.kind() {
+-                Kind::Array => {
+-                    if value.arr_items().any(|item| item.is_object()) {
+-                        // scalars-then-objects in the same list position: irreconcilable
+-                        *self = ColState::Json;
+-                    } else {
+-                        for item in value.arr_items() {
+-                            if item.is_array() {
+-                                *self = ColState::Json; // nested lists: v1 escape hatch
+-                                return;
+-                            }
+-                            item_state.observe(item);
+-                        }
+-                    }
+-                }
++                 /* ~ changed by cargo-mutants ~ */
+                 _ => *self = ColState::Json,
+             },
+             ColState::ChildTable => {
+                 // Empty lists and further lists (of objects or scalars — scalar items
+                 // become {"value": …} child rows) are fine. A non-array or a mixed
+                 // list is a shape conflict: the column becomes Json for conflicting
+                 // values; the child table stops growing.
+                 if !matches!(

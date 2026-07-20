@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/canon.rs
++++ delete ! in parse_timestamp_tz
+@@ -89,17 +89,17 @@
+ /// chrono parse attempt (feature 003: this ran on EVERY observed string and
+ /// dominated the shred profile).
+ pub(crate) fn parse_timestamp_tz(s: &str) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+     let b = s.as_bytes();
+     if b.len() < 20
+         || !b[0].is_ascii_digit()
+         || !b[1].is_ascii_digit()
+         || !b[2].is_ascii_digit()
+-        || !b[3].is_ascii_digit()
++        ||  /* ~ changed by cargo-mutants ~ */b[3].is_ascii_digit()
+         || b[4] != b'-'
+         || b[7] != b'-'
+     {
+         return None;
+     }
+     chrono::DateTime::parse_from_rfc3339(s).ok()
+ }
+ 

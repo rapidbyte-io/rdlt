@@ -1,0 +1,24 @@
+--- crates/rdlt-engine/src/shred/build.rs
++++ delete match arm Kind::Str(s) in parse_decimal
+@@ -410,20 +410,17 @@
+ fn parse_decimal<'v, V: JsonView<'v>>(value: V, scale: u8) -> Option<i128> {
+     let owned;
+     let text = match value.kind() {
+         Kind::Int(i) => {
+             return (i as i128).checked_mul(10i128.checked_pow(scale as u32)?);
+         }
+         // u64 beyond i64 and floats: refused (matches Number::as_i64 semantics).
+         Kind::UInt(_) | Kind::Float(_) => return None,
+-        Kind::Str(s) => {
+-            owned = s;
+-            owned.trim()
+-        }
++         /* ~ changed by cargo-mutants ~ */
+         _ => return None,
+     };
+     let (sign, digits) = match text.strip_prefix('-') {
+         Some(rest) => (-1i128, rest),
+         None => (1i128, text),
+     };
+     let (int_part, frac_part) = match digits.split_once('.') {
+         Some((i, f)) => (i, f),

@@ -1,0 +1,19 @@
+--- crates/rdlt-engine/src/shred/passthrough.rs
++++ delete match arm ColumnType::Scalar{scalar} in column_type_from_arrow
+@@ -232,15 +232,15 @@
+                         provenance: Provenance::Inferred,
+                     })
+                 })
+                 .collect();
+             Ok(ColumnType::Struct { fields: mapped? })
+         }
+         DataType::List(item) | DataType::LargeList(item) => {
+             match column_type_from_arrow(item.data_type())? {
+-                ColumnType::Scalar { scalar } => Ok(ColumnType::ScalarList { item: scalar }),
++                 /* ~ changed by cargo-mutants ~ */
+                 _ => Err("nested lists / lists of structs are not supported in v1".into()),
+             }
+         }
+         other => Err(format!("no logical mapping for {other}")),
+     }
+ }

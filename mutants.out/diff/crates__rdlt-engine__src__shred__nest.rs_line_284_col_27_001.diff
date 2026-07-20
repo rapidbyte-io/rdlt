@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/nest.rs
++++ replace - with / in TreeShredder::child_table_idx
+@@ -276,17 +276,17 @@
+             table,
+             Some(ParentLink {
+                 parent: parent_table,
+                 depth: parent_depth + 1,
+             }),
+             self.caps.ident_rules,
+         ));
+         self.rows.push(Vec::new());
+-        self.tables.len() - 1
++        self.tables.len() / /* ~ changed by cargo-mutants ~ */ 1
+     }
+ 
+     /// `_rdlt_id` for a root row: key hash when the stream declares a primary key,
+     /// content hash otherwise (design doc §5.4).
+     fn row_identity(&self, row: &Value) -> RowId {
+         row_identity(self.spec.primary_key.as_deref(), row)
+     }
+ }

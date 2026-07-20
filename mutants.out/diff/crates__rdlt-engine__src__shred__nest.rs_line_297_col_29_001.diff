@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/nest.rs
++++ replace match guard !key_fields.is_empty() with false in row_identity
+@@ -289,17 +289,17 @@
+     fn row_identity(&self, row: &Value) -> RowId {
+         row_identity(self.spec.primary_key.as_deref(), row)
+     }
+ }
+ 
+ /// `_rdlt_id` for a root row, shared by both shred paths.
+ pub(crate) fn row_identity<'a, V: JsonView<'a>>(primary_key: Option<&[String]>, row: V) -> RowId {
+     match primary_key {
+-        Some(key_fields) if !key_fields.is_empty() => {
++        Some(key_fields) if false /* ~ changed by cargo-mutants ~ */ => {
+             let mut builder = RowIdBuilder::keyed();
+             for field in key_fields {
+                 let rendered = row.obj_get(field).and_then(render_scalar);
+                 match &rendered {
+                     Some(text) => builder.field(field, FieldValue::Bytes(text.as_bytes())),
+                     None => builder.field(field, FieldValue::Null),
+                 };
+             }

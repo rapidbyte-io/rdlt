@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/tape.rs
++++ replace == with != in TapeShredder::push_and_drain
+@@ -103,17 +103,17 @@
+                 node: root,
+                 id: root_id,
+                 parent_id: None,
+                 root_id,
+                 pos: None,
+             });
+ 
+             while let Some(entry) = queue.pop_front() {
+-                let is_root = entry.table_idx == 0;
++                let is_root = entry.table_idx != /* ~ changed by cargo-mutants ~ */ 0;
+ 
+                 // Observe every field; discover child tables. Keys borrow the
+                 // arena; table state is disjoint, so both borrows coexist.
+                 let mut child_lists: Vec<(String, Vec<NodeId>)> = Vec::new();
+                 for (key, value) in arena.node(entry.node).obj_entries() {
+                     let state = self.tables[entry.table_idx].state_mut(key);
+                     state.observe(value, lists_as_columns);
+                     if state.is_child_table() && value.is_array() {

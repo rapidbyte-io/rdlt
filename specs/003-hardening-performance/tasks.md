@@ -59,9 +59,9 @@ before Phase 5 changes them. All cargo commands run via
 - [X] T019 [US3] Streaming tape parser in `crates/rdlt-engine/src/shred/stream.rs`: slab → borrowed token tape (no per-row `Value`), shape observation over the tape, canonical `_rdlt_id` bytes rendered from the tape through the SHARED `canonical_json_bytes` rules per R24; duplicate-key/lone-surrogate/number-boundary tie-breaks pinned by explicit tests copied from old-path behavior
 - [X] T020 [US3] Equivalence gate in `crates/rdlt-engine/tests/shred_equivalence.rs`: proptest old-path ≡ new-path over (rows, `_rdlt_*` values, schema sequence, discard counts) per data-model §7; then switch the default in `crates/rdlt-engine/src/shred/mod.rs` keeping the old path compiled as the test reference (G5.3)
 - [X] T021 [US3] Run the ENTIRE suite (`make check` + equivalence + property) against the new default path; record shred-bench before/after and update the ≥20× RESULTS.md row and `benches/perf-baselines.json` in the same change (G1.3)
-- [ ] T022 [P] [US3] memchr slab splitting + zero-copy handoff in `crates/rdlt-source-file/src/jsonl.rs` (no per-line UTF-8 revalidation, `Bytes::from(Vec)` instead of `copy_from_slice`) per FR-007, with before/after on the flagship e2e row
+- [X] T022 [P] [US3] memchr slab splitting + zero-copy handoff in `crates/rdlt-source-file/src/jsonl.rs` (no per-line UTF-8 revalidation, `Bytes::from(Vec)` instead of `copy_from_slice`) per FR-007, with before/after on the flagship e2e row
 - [X] T023 [P] [US3] Hash decision per R25: add xxh3-128 candidate to `crates/rdlt-engine/benches/shred.rs` identity benches + a flagship e2e A/B; switch `crates/rdlt-core/src/identity.rs` internals ONLY if e2e wins by >30%; either way record decision + numbers in `2026-07-18-rdlt-engine-design.md` §5.4
-- [ ] T024 [P] [US3] RSS closure per R27: DuckDB `memory_limit` in `crates/rdlt-dest-duckdb/src/lib.rs` config (bench profile 256MB) + appender chunk cap; re-measure the flagship row until ≤397MB (SC-005) or document the residual honestly
+- [X] T024 [P] [US3] RSS closure per R27: DuckDB `memory_limit` in `crates/rdlt-dest-duckdb/src/lib.rs` config (bench profile 256MB) + appender chunk cap; re-measure the flagship row until ≤397MB (SC-005) or document the residual honestly
 - [ ] T025 [P] [US3] Thin-LTO experiment per R30: `lto = "thin"`, `codegen-units = 4` in root `Cargo.toml` release profile; keep iff flagship e2e improves ≥2% and build time <2×; record either way
 
 **Checkpoint**: SC-004/SC-005/SC-006 resolved; every optimization has its before/after in the PR trail.
@@ -101,9 +101,15 @@ before Phase 5 changes them. All cargo commands run via
   dlt normalize), flagship e2e 1.73 s → **0.92 s (21.3× vs dlt)**, RSS 642 →
   515 MB. Hash decision (T023): blake3 KEPT — measured bound ~16% of stage,
   cannot clear the 30% e2e bar; recorded in design doc §5.4.
-- Still open: T011/T012 (mutation gap to 85% + dispositions file), T022
-  (memchr jsonl), T024 (RSS to ≤397 MB), T025 (LTO), T026–T028 (polish, final
-  sweep, PR).
+- T022 done (memchr slab reader — landed as FR-007 required behavior; e2e
+  neutral within noise). T024 done: RSS 642 → 355 MB (SC-005 met at 1/5.6) —
+  the fix was glibc arena retention (mallopt in the CLI), NOT DuckDB
+  memory_limit, which measured zero effect. Three known mutation survivors
+  closed with targeted tests (decimal scale guard, list mapping arms, WAL
+  future-version guard).
+- Still open: T011/T012 finalization (fresh mutation run in flight → 85% +
+  dispositions), T025 decision (LTO staged; flagship A/B once cores free),
+  T026–T028 (final wall re-measures, polish, full sweep, PR).
 
 ## Dependencies & Execution Order
 

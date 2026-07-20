@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/infer.rs
++++ replace ColState::is_child_table -> bool with false
+@@ -223,17 +223,17 @@
+                 } else {
+                     Some(ColumnType::Struct { fields: resolved })
+                 }
+             }
+         }
+     }
+ 
+     pub(crate) fn is_child_table(&self) -> bool {
+-        matches!(self, ColState::ChildTable)
++        false /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ #[derive(Debug, PartialEq, Eq)]
+ pub(crate) enum ArrayShape {
+     Empty,
+     Objects,
+     Scalars,

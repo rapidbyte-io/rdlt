@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/wal/resume.rs
++++ replace + with * in scan
+@@ -127,17 +127,17 @@
+     let last_checkpoint = span
+         .iter()
+         .rposition(|r| matches!(r, WalRecord::Checkpoint { .. }));
+     match (load_id, last_checkpoint) {
+         (Some(load_id), Some(idx)) => {
+             span.truncate(idx + 1);
+             Scan::Recover(RecoverySpan {
+                 load_id,
+-                next_commit_seq: max_committed_seq + 1,
++                next_commit_seq: max_committed_seq * /* ~ changed by cargo-mutants ~ */ 1,
+                 records: span,
+                 schemas: schemas.into_values().collect(),
+             })
+         }
+         _ => Scan::Nothing,
+     }
+ }
+ 

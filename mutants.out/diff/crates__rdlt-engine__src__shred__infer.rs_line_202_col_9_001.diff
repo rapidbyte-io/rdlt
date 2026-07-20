@@ -1,0 +1,46 @@
+--- crates/rdlt-engine/src/shred/infer.rs
++++ replace ColState::resolve -> Option<ColumnType> with Some(Default::default())
+@@ -194,42 +194,17 @@
+                 ColState::Scalar(state)
+             }
+         }
+     }
+ 
+     /// Resolve to a schema column type; `None` for positions that are not columns
+     /// (child tables) or never got data.
+     pub(crate) fn resolve(&self) -> Option<ColumnType> {
+-        match self {
+-            ColState::Unknown | ColState::ChildTable => None,
+-            ColState::Json => Some(ColumnType::scalar(LogicalType::Json)),
+-            ColState::Scalar(s) => Some(ColumnType::scalar(s.resolve())),
+-            ColState::ScalarList(item) => Some(ColumnType::ScalarList {
+-                item: item.resolve(),
+-            }),
+-            ColState::Struct(fields) => {
+-                let resolved: Vec<ColumnDef> = fields
+-                    .iter()
+-                    .filter_map(|(name, state)| {
+-                        state.resolve().map(|ty| ColumnDef {
+-                            name: name.clone(),
+-                            ty,
+-                            nullable: true,
+-                            provenance: Provenance::Inferred,
+-                        })
+-                    })
+-                    .collect();
+-                if resolved.is_empty() {
+-                    None // an object whose every field is still unknown
+-                } else {
+-                    Some(ColumnType::Struct { fields: resolved })
+-                }
+-            }
+-        }
++        Some(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub(crate) fn is_child_table(&self) -> bool {
+         matches!(self, ColState::ChildTable)
+     }
+ }
+ 
+ #[derive(Debug, PartialEq, Eq)]

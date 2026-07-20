@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/infer.rs
++++ delete ! in ColState::observe
+@@ -145,17 +145,17 @@
+                 }
+                 _ => *self = ColState::Json,
+             },
+             ColState::ChildTable => {
+                 // Empty lists and further lists (of objects or scalars — scalar items
+                 // become {"value": …} child rows) are fine. A non-array or a mixed
+                 // list is a shape conflict: the column becomes Json for conflicting
+                 // values; the child table stops growing.
+-                if !matches!(
++                if  /* ~ changed by cargo-mutants ~ */matches!(
+                     array_shape(value),
+                     ArrayShape::Objects | ArrayShape::Scalars | ArrayShape::Empty
+                 ) {
+                     *self = ColState::Json;
+                 }
+             }
+         }
+     }

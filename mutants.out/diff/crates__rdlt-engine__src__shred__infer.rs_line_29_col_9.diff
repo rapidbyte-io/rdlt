@@ -1,0 +1,25 @@
+--- crates/rdlt-engine/src/shred/infer.rs
++++ replace ScalarState::pinned -> Self with Default::default()
+@@ -21,21 +21,17 @@
+     /// Fixed by a per-column hint: inference must not widen it.
+     pinned: bool,
+     saw_inexact_int: bool,
+     saw_float: bool,
+ }
+ 
+ impl ScalarState {
+     pub(crate) fn pinned(ty: LogicalType) -> Self {
+-        Self {
+-            ty: Some(ty),
+-            pinned: true,
+-            ..Self::default()
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub(crate) fn observe<'a, V: JsonView<'a>>(&mut self, value: V) {
+         if self.pinned {
+             return;
+         }
+         let observed = match value.kind() {
+             Kind::Null => return,

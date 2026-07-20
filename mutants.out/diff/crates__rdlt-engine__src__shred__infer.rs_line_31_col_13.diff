@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/infer.rs
++++ delete field pinned from struct Self expression in ScalarState::pinned
+@@ -23,17 +23,17 @@
+     saw_inexact_int: bool,
+     saw_float: bool,
+ }
+ 
+ impl ScalarState {
+     pub(crate) fn pinned(ty: LogicalType) -> Self {
+         Self {
+             ty: Some(ty),
+-            pinned: true,
++             /* ~ changed by cargo-mutants ~ */
+             ..Self::default()
+         }
+     }
+ 
+     pub(crate) fn observe<'a, V: JsonView<'a>>(&mut self, value: V) {
+         if self.pinned {
+             return;
+         }

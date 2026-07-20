@@ -261,3 +261,46 @@ pub(crate) async fn replay(
         .map_err(RdltError::destination)?;
     Ok(Some(batches))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rdlt_core::{LoadId, PipelineId};
+
+    fn write_manifest(dir: &std::path::Path, records: &[WalRecord]) {
+        let mut out = String::new();
+        for record in records {
+            out.push_str(&serde_json::to_string(record).expect("record json"));
+            out.push('\n');
+        }
+        std::fs::write(dir.join("manifest.jsonl"), out).expect("write manifest");
+    }
+
+    /// Mutation-report closure: the future-version guard is `>`, strictly — a
+    /// NEWER manifest degrades to re-extraction (Damaged), while the current
+    /// and any older version scan normally.
+    #[test]
+    fn future_manifest_version_degrades_older_scans_fine() {
+        let run = |version: u32| {
+            let dir = tempfile::tempdir().expect("tempdir");
+            write_manifest(
+                dir.path(),
+                &[WalRecord::Run {
+                    format_version: version,
+                    load_id: LoadId::new("l"),
+                    pipeline: PipelineId::new("p"),
+                }],
+            );
+            scan(dir.path())
+        };
+        assert!(
+            matches!(run(super::super::WAL_FORMAT_VERSION + 1), Scan::Damaged(_)),
+            "future version must degrade"
+        );
+        // Current version: an empty span (no checkpoint) scans to Nothing, not Damaged.
+        assert!(matches!(
+            run(super::super::WAL_FORMAT_VERSION),
+            Scan::Nothing
+        ));
+    }
+}

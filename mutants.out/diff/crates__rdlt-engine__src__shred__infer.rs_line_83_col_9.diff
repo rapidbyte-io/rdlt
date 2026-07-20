@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/infer.rs
++++ replace ScalarState::resolve -> LogicalType with Default::default()
+@@ -75,17 +75,17 @@
+             LogicalType::Utf8
+         } else {
+             joined
+         });
+     }
+ 
+     /// Resolved type; `Utf8` for never-observed (all-null) positions.
+     pub(crate) fn resolve(&self) -> LogicalType {
+-        self.ty.unwrap_or(LogicalType::Utf8)
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// Observation state for one column position, tracking shape as well as type.
+ #[derive(Debug, Clone)]
+ pub(crate) enum ColState {
+     /// Only nulls seen so far.
+     Unknown,

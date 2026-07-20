@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/passthrough.rs
++++ replace * with / in passthrough_items
+@@ -76,17 +76,17 @@
+ 
+     let mut items = Vec::new();
+     let observed = if dropped_columns.is_empty() {
+         observed
+     } else {
+         items.push(LoadItem::Discarded {
+             table: table.clone(),
+             rows: 0,
+-            values: batch.num_rows() as u64 * dropped_columns.len() as u64,
++            values: batch.num_rows() as u64 / /* ~ changed by cargo-mutants ~ */ dropped_columns.len() as u64,
+         });
+         let mut projected = observed;
+         projected
+             .columns
+             .retain(|c| !dropped_columns.contains(&c.name));
+         projected
+     };
+     let changes = if dropped_columns.is_empty() {

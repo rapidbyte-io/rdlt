@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/infer.rs
++++ delete match arm Kind::Object | Kind::Array in ColState::observe
+@@ -105,17 +105,17 @@
+             return;
+         }
+         match self {
+             ColState::Json => {}
+             ColState::Unknown => {
+                 *self = Self::fresh(value, lists_as_columns);
+             }
+             ColState::Scalar(state) => match value.kind() {
+-                Kind::Object | Kind::Array => *self = ColState::Json,
++                 /* ~ changed by cargo-mutants ~ */
+                 _ => state.observe(value),
+             },
+             ColState::Struct(fields) => match value.kind() {
+                 Kind::Object => {
+                     for (key, item) in value.obj_entries() {
+                         match fields.iter_mut().find(|(name, _)| name == key) {
+                             Some((_, state)) => state.observe(item, lists_as_columns),
+                             None => {

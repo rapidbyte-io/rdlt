@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/view.rs
++++ replace JsonView::is_array -> bool with false
+@@ -51,17 +51,17 @@
+ 
+     fn is_null(self) -> bool {
+         matches!(self.kind(), Kind::Null)
+     }
+     fn is_object(self) -> bool {
+         matches!(self.kind(), Kind::Object)
+     }
+     fn is_array(self) -> bool {
+-        matches!(self.kind(), Kind::Array)
++        false /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ // ---- the tree view: `&serde_json::Value` ----
+ 
+ impl<'a> JsonView<'a> for &'a Value {
+     type ObjIter = ValueObjIter<'a>;
+     type ArrIter = std::slice::Iter<'a, Value>;

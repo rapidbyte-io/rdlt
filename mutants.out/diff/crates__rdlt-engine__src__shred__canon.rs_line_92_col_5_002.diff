@@ -1,0 +1,32 @@
+--- crates/rdlt-engine/src/shred/canon.rs
++++ replace parse_timestamp_tz -> Option<chrono::DateTime<chrono::FixedOffset>> with Some(DateTime::from_iter([Default::default()]))
+@@ -84,28 +84,17 @@
+ ///
+ /// The pre-filter encodes only what the RFC 3339 grammar REQUIRES (a
+ /// `YYYY-MM-DD` prefix and the minimum 20-byte length with an offset), so it
+ /// rejects nothing chrono would accept — it just makes the overwhelmingly
+ /// common "ordinary string" case cost a few instructions instead of a full
+ /// chrono parse attempt (feature 003: this ran on EVERY observed string and
+ /// dominated the shred profile).
+ pub(crate) fn parse_timestamp_tz(s: &str) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+-    let b = s.as_bytes();
+-    if b.len() < 20
+-        || !b[0].is_ascii_digit()
+-        || !b[1].is_ascii_digit()
+-        || !b[2].is_ascii_digit()
+-        || !b[3].is_ascii_digit()
+-        || b[4] != b'-'
+-        || b[7] != b'-'
+-    {
+-        return None;
+-    }
+-    chrono::DateTime::parse_from_rfc3339(s).ok()
++    Some(DateTime::from_iter([Default::default()])) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+     use serde_json::json;
+ 
+     #[test]

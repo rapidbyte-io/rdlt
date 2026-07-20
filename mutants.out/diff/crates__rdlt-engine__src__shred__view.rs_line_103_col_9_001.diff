@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/view.rs
++++ replace <impl JsonView<'a> for &'a Value>::obj_get -> Option<Self> with Some(Default::default())
+@@ -95,17 +95,17 @@
+     fn arr_items(self) -> Self::ArrIter {
+         match self {
+             Value::Array(items) => items.iter(),
+             _ => [].iter(),
+         }
+     }
+ 
+     fn obj_get(self, key: &str) -> Option<Self> {
+-        self.get(key)
++        Some(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ static EMPTY_MAP: std::sync::LazyLock<serde_json::Map<String, Value>> =
+     std::sync::LazyLock::new(serde_json::Map::new);
+ 
+ pub(crate) struct ValueObjIter<'a>(serde_json::map::Iter<'a>);
+ 

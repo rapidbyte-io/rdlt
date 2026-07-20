@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/view.rs
++++ delete match arm Value::Object(map) in <impl JsonView<'a> for &'a Value>::obj_entries
+@@ -82,17 +82,17 @@
+             Value::String(s) => Kind::Str(s),
+             Value::Object(_) => Kind::Object,
+             Value::Array(_) => Kind::Array,
+         }
+     }
+ 
+     fn obj_entries(self) -> Self::ObjIter {
+         match self {
+-            Value::Object(map) => ValueObjIter(map.iter()),
++             /* ~ changed by cargo-mutants ~ */
+             _ => ValueObjIter(EMPTY_MAP.iter()),
+         }
+     }
+ 
+     fn arr_items(self) -> Self::ArrIter {
+         match self {
+             Value::Array(items) => items.iter(),
+             _ => [].iter(),

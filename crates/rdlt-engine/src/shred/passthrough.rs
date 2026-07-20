@@ -244,3 +244,42 @@ pub(crate) fn column_type_from_arrow(dt: &DataType) -> Result<ColumnType, String
         other => Err(format!("no logical mapping for {other}")),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Mutation-report closure: `Decimal128 { scale >= 0 }` guard — a negative
+    /// scale must be a typed error, never a silent mapping.
+    #[test]
+    fn negative_decimal_scale_is_a_typed_error() {
+        assert!(column_type_from_arrow(&DataType::Decimal128(10, 2)).is_ok());
+        let err = column_type_from_arrow(&DataType::Decimal128(10, -2))
+            .expect_err("negative scale must not map");
+        assert!(err.contains("no logical mapping"), "got: {err}");
+    }
+
+    /// Mutation-report closure: the List arm's inner-scalar match — a list of
+    /// scalars maps to ScalarList; lists of structs/lists are typed errors.
+    #[test]
+    fn list_mapping_accepts_scalars_rejects_nesting() {
+        use arrow::datatypes::Field;
+        use std::sync::Arc;
+        let list_of = |dt| DataType::List(Arc::new(Field::new("item", dt, true)));
+
+        assert_eq!(
+            column_type_from_arrow(&list_of(DataType::Int64)).expect("scalar list"),
+            ColumnType::ScalarList {
+                item: LogicalType::Int64
+            }
+        );
+        let err = column_type_from_arrow(&list_of(list_of(DataType::Int64)))
+            .expect_err("nested lists are v1-unsupported");
+        assert!(err.contains("not supported"), "got: {err}");
+        let err = column_type_from_arrow(&list_of(DataType::Struct(
+            vec![Field::new("f", DataType::Int64, true)].into(),
+        )))
+        .expect_err("lists of structs are v1-unsupported");
+        assert!(err.contains("not supported"), "got: {err}");
+    }
+}

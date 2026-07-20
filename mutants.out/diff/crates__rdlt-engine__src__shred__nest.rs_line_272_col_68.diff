@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/nest.rs
++++ replace == with != in TreeShredder::child_table_idx
+@@ -264,17 +264,17 @@
+     fn child_table_idx(&mut self, parent_idx: usize, source_key: &str) -> usize {
+         let parent_table = self.tables[parent_idx].table.clone();
+         let parent_depth = self.tables[parent_idx]
+             .parent
+             .as_ref()
+             .map_or(0, |p| p.depth);
+         let name = child_table_name(parent_table.as_str(), source_key, self.caps.ident_rules);
+         let table = TableName::new(name);
+-        if let Some(idx) = self.tables.iter().position(|t| t.table == table) {
++        if let Some(idx) = self.tables.iter().position(|t| t.table != /* ~ changed by cargo-mutants ~ */ table) {
+             return idx;
+         }
+         self.tables.push(TableBuffer::new(
+             table,
+             Some(ParentLink {
+                 parent: parent_table,
+                 depth: parent_depth + 1,
+             }),

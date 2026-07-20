@@ -1,0 +1,21 @@
+--- crates/rdlt-engine/src/shred/passthrough.rs
++++ delete ! in passthrough_items
+@@ -81,17 +81,17 @@
+         items.push(LoadItem::Discarded {
+             table: table.clone(),
+             rows: 0,
+             values: batch.num_rows() as u64 * dropped_columns.len() as u64,
+         });
+         let mut projected = observed;
+         projected
+             .columns
+-            .retain(|c| !dropped_columns.contains(&c.name));
++            .retain(|c|  /* ~ changed by cargo-mutants ~ */dropped_columns.contains(&c.name));
+         projected
+     };
+     let changes = if dropped_columns.is_empty() {
+         kept
+     } else {
+         registry.diff(&observed)
+     };
+ 

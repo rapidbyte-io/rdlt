@@ -1,0 +1,36 @@
+--- crates/rdlt-engine/src/shred/view.rs
++++ replace <impl JsonView<'a> for &'a Value>::kind -> Kind<'a> with Default::default()
+@@ -62,32 +62,17 @@
+ 
+ // ---- the tree view: `&serde_json::Value` ----
+ 
+ impl<'a> JsonView<'a> for &'a Value {
+     type ObjIter = ValueObjIter<'a>;
+     type ArrIter = std::slice::Iter<'a, Value>;
+ 
+     fn kind(self) -> Kind<'a> {
+-        match self {
+-            Value::Null => Kind::Null,
+-            Value::Bool(b) => Kind::Bool(*b),
+-            Value::Number(n) => {
+-                if let Some(i) = n.as_i64() {
+-                    Kind::Int(i)
+-                } else if let Some(u) = n.as_u64() {
+-                    Kind::UInt(u)
+-                } else {
+-                    Kind::Float(n.as_f64().expect("JSON numbers are i64/u64/f64"))
+-                }
+-            }
+-            Value::String(s) => Kind::Str(s),
+-            Value::Object(_) => Kind::Object,
+-            Value::Array(_) => Kind::Array,
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn obj_entries(self) -> Self::ObjIter {
+         match self {
+             Value::Object(map) => ValueObjIter(map.iter()),
+             _ => ValueObjIter(EMPTY_MAP.iter()),
+         }
+     }

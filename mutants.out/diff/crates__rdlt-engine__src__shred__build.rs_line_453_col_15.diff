@@ -1,0 +1,14 @@
+--- crates/rdlt-engine/src/shred/build.rs
++++ replace * with + in parse_decimal
+@@ -445,10 +445,10 @@
+     };
+     result = result.checked_mul(10i128.checked_pow(scale as u32)?)?;
+     if !frac_part.is_empty() {
+         let frac: i128 = frac_part.parse().ok()?;
+         result = result.checked_add(
+             frac.checked_mul(10i128.checked_pow((scale as usize - frac_part.len()) as u32)?)?,
+         )?;
+     }
+-    Some(sign * result)
++    Some(sign + /* ~ changed by cargo-mutants ~ */ result)
+ }
