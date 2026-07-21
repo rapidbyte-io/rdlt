@@ -306,3 +306,182 @@ async fn sweep_postgres_destination_keyed_structured_merge() {
          that arm never crossed that boundary"
     );
 }
+
+// ---- Feature 010 T007: the refined-merge arm (dedup_sort + merge_key)
+// crosses every registered boundary — receipts must survive crash/replay
+// without double-deleting a scope (contract merge-refinements.md MR5). ----
+
+/// Keyed structured stream with scope + ordering columns: ONE checkpointed
+/// unit (the MR5 single-unit rule), 100 ids each delivered TWICE (stale
+/// seq=1 first, surviving seq=2 second — wrong-arrival order is exercised
+/// under every crash), `day = id % 3` as the scope.
+struct RefinedArrowSource;
+
+#[async_trait]
+impl Source for RefinedArrowSource {
+    fn spec(&self) -> ConnectorSpec {
+        ConnectorSpec::new("refined-arrow-sweep", "0.0.0")
+    }
+
+    async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
+        Ok(vec![
+            StreamSpec::new("s").structured().with_primary_key(["id"]),
+        ])
+    }
+
+    async fn read(&self, mut req: ReadRequest) -> Result<(), SourceError> {
+        if req.since.is_some() {
+            return Ok(()); // the single unit committed — nothing to resume
+        }
+        {
+            let ids: Vec<i64> = (0..100).flat_map(|id| [id as i64, id as i64]).collect();
+            let days: Vec<i64> = ids.iter().map(|id| id % 3).collect();
+            let seqs: Vec<i64> = (0..ids.len() as i64).map(|n| 1 + (n % 2)).collect();
+            let names: Vec<String> = ids
+                .iter()
+                .zip(&seqs)
+                .map(|(id, seq)| {
+                    if *seq == 2 {
+                        format!("row-{id}")
+                    } else {
+                        "stale".to_string()
+                    }
+                })
+                .collect();
+            let batch = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![
+                    Field::new("id", DataType::Int64, false),
+                    Field::new("day", DataType::Int64, true),
+                    Field::new("seq", DataType::Int64, true),
+                    Field::new("name", DataType::Utf8, true),
+                ])),
+                vec![
+                    Arc::new(Int64Array::from(ids)),
+                    Arc::new(Int64Array::from(days)),
+                    Arc::new(Int64Array::from(seqs)),
+                    Arc::new(StringArray::from(
+                        names.iter().map(String::as_str).collect::<Vec<_>>(),
+                    )),
+                ],
+            )
+            .expect("batch");
+            if req.out.arrow(batch).await.is_err() {
+                return Ok(());
+            }
+            if req.out.checkpoint(Cursor::new(1u64)).await.is_err() {
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
+}
+
+async fn attempt_refined(workdir: &std::path::Path, dest: &Postgres) -> Result<(), String> {
+    let mut config = EngineConfig::new("pg-sweep-refined");
+    config.workdir = Some(workdir.to_path_buf());
+    config.write_mode = WriteMode::Merge {
+        key: vec!["id".into()],
+    };
+    let engine = Engine::new(config, RefinedArrowSource, dest.clone());
+    match tokio::spawn(engine.run()).await {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(join) => Err(format!("panicked: {join}")),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sweep_postgres_destination_refined_merge() {
+    let Ok(container) = PostgresImage::default().with_tag("16-alpine").start().await else {
+        eprintln!("skipping refined merge sweep: no container runtime available");
+        return;
+    };
+    let port = container
+        .get_host_port_ipv4(5432)
+        .await
+        .expect("mapped port");
+    let conn =
+        format!("host=127.0.0.1 port={port} user=postgres password=postgres dbname=postgres");
+    let (client, connection) = tokio_postgres::connect(&conn, tokio_postgres::NoTls)
+        .await
+        .expect("probe connect");
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+
+    let mut fired: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    for &point in rdlt_postgres::dest::FAIL_POINTS {
+        for action in ["return", "panic", "1*off->return"] {
+            let dataset = format!(
+                "sweepr_{}_{}",
+                point.replace('.', "_"),
+                action.replace(['*', '-', '>'], "_"),
+            );
+            let dir = tempfile::tempdir().expect("tempdir");
+            let workdir = dir.path().join("wal");
+            let dest = Postgres::connect(&conn)
+                .dataset(&dataset)
+                .options(rdlt_postgres::dest::PgDestOptions {
+                    tables: [(
+                        "s".to_string(),
+                        rdlt_postgres::dest::PgTableOptions {
+                            dedup_sort: Some(rdlt_postgres::dest::DedupSort {
+                                column: "seq".into(),
+                                order: rdlt_postgres::dest::SortOrder::Desc,
+                            }),
+                            merge_key: Some(vec!["day".into()]),
+                            ..Default::default()
+                        },
+                    )]
+                    .into_iter()
+                    .collect(),
+                    ..Default::default()
+                })
+                .expect("valid options");
+
+            fail::cfg(point, action).expect("configure fail point");
+            let armed1 = attempt_refined(&workdir, &dest).await;
+            let armed2 = attempt_refined(&workdir, &dest).await;
+            fail::remove(point);
+            if armed1.is_err() || armed2.is_err() {
+                fired.insert(point);
+            }
+
+            let recovered = attempt_refined(&workdir, &dest).await;
+            assert!(
+                recovered.is_ok(),
+                "[{point} / {action} / refined] recovery failed: {recovered:?}"
+            );
+            // Exactly-once under scope replacement + ordered dedup: every id
+            // once, no stale survivor — a replayed or resumed load never
+            // half-replaces a scope (MR5 single-unit rule).
+            let counts = client
+                .query_one(
+                    &format!(
+                        "SELECT count(*), count(DISTINCT id),
+                                count(*) FILTER (WHERE name = 'stale')
+                         FROM \"{dataset}\".s"
+                    ),
+                    &[],
+                )
+                .await
+                .expect("probe");
+            assert_eq!(
+                (
+                    counts.get::<_, i64>(0),
+                    counts.get::<_, i64>(1),
+                    counts.get::<_, i64>(2)
+                ),
+                (100, 100, 0),
+                "[{point} / {action} / refined] exactly-once or survivor violated"
+            );
+        }
+    }
+    let expected: std::collections::BTreeSet<&str> =
+        rdlt_postgres::dest::FAIL_POINTS.iter().copied().collect();
+    assert_eq!(
+        fired, expected,
+        "refined-merge armed-fire pin diverged — a missing point means the \
+         refined arm never crossed that boundary"
+    );
+}

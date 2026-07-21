@@ -455,18 +455,33 @@ impl LoadSession for PgSession {
                     // destination config; the engine's mode stays frozen.
                     let strategy = self.options.strategy_for(table.as_str());
                     // Feature 010 (MR3–MR5): scope replacement runs BEFORE
-                    // the strategy arm, first-touch-per-load.
+                    // the strategy arm, in the load's FIRST commit unit only.
+                    // The spec's premise — "the batch is the complete truth
+                    // for its scope" — only holds when the scope's truth
+                    // arrives atomically: a crash-RESUMED load is a NEW load
+                    // delivering a PARTIAL feed, and no destination-side
+                    // bookkeeping can distinguish it from a fresh load (the
+                    // refined-merge crash sweep proved a receipts scheme
+                    // deletes resumed rows). Same rule and remedy as scd2
+                    // absent:retire (S6).
                     if let Some(scope) = self.options.merge_key_for(table.as_str()) {
-                        scope_replace(
-                            &tx,
-                            meta.load_id.as_str(),
-                            table.as_str(),
-                            &target,
-                            &stage,
-                            scope,
-                            !load_committed_before,
-                        )
-                        .await?;
+                        if load_committed_before {
+                            let staged: bool = tx
+                                .query_one(&format!("SELECT EXISTS (SELECT 1 FROM {stage})"), &[])
+                                .await
+                                .map_err(transient)?
+                                .get(0);
+                            if staged {
+                                return Err(fatal(format!(
+                                    "table `{table}`: merge_key scope replacement requires \
+                                     the table's full feed in a SINGLE commit unit \
+                                     (contract merge-refinements.md MR5) — raise the \
+                                     engine commit thresholds"
+                                )));
+                            }
+                        } else {
+                            scope_replace(&tx, &target, &stage, scope).await?;
+                        }
                     }
                     let plan = MergePlan {
                         target: &target,
@@ -695,23 +710,18 @@ impl MergePlan<'_> {
 }
 
 /// Scope replacement (feature 010, contract merge-refinements.md MR3–MR5):
-/// delete every target row whose scope matches a DELIVERED, UNRECEIPTED
-/// stage scope, then receipt the delivered scopes — all inside the publish
-/// transaction. Receipts make multi-commit-unit loads sound (each scope
-/// replaced at most ONCE per load; later units never destroy earlier
-/// units' rows — the 008 S6/F2 bug class, designed out). NULL is not a
-/// scope: stage rows with any NULL scope column are excluded explicitly,
-/// and target-side row comparison is never TRUE against NULL (MR4).
-/// Committed-unit redelivery exits before merge SQL (D3), so a receipt
-/// can never double-fire.
+/// delete every target row whose scope matches a DELIVERED stage scope,
+/// inside the publish transaction, in the load's FIRST commit unit only
+/// (the caller enforces the single-unit rule — see the call site). NULL
+/// is not a scope: stage rows with any NULL scope column are excluded
+/// explicitly, and target-side row comparison is never TRUE against NULL
+/// (MR4). Committed-unit redelivery exits before merge SQL (D3), so the
+/// delete can never double-fire.
 async fn scope_replace(
     tx: &tokio_postgres::Transaction<'_>,
-    load_id: &str,
-    table_name: &str,
     target: &str,
     stage: &str,
     scope: &[String],
-    first_unit: bool,
 ) -> Result<(), DestError> {
     let cols = scope
         .iter()
@@ -723,38 +733,10 @@ async fn scope_replace(
         .map(|c| format!("{} IS NOT NULL", quote(c)))
         .collect::<Vec<_>>()
         .join(" AND ");
-    if first_unit {
-        // Hygiene (MR5): other loads' receipts for this table are stale the
-        // moment a new load first touches it — same moment replace's
-        // truncate-once guard uses.
-        tx.execute(
-            "DELETE FROM _rdlt_scope_receipts WHERE table_name = $1 AND load_id <> $2",
-            &[&table_name, &load_id],
-        )
-        .await
-        .map_err(transient)?;
-    }
-    tx.execute(
-        &format!(
-            "DELETE FROM {target} WHERE ({cols}) IN (
-                 SELECT {cols} FROM {stage}
-                 WHERE {not_null}
-                   AND ROW({cols})::text NOT IN (
-                       SELECT scope FROM _rdlt_scope_receipts
-                       WHERE load_id = $1 AND table_name = $2))"
-        ),
-        &[&load_id, &table_name],
-    )
-    .await
-    .map_err(transient)?;
-    tx.execute(
-        &format!(
-            "INSERT INTO _rdlt_scope_receipts
-             SELECT DISTINCT $1, $2, ROW({cols})::text FROM {stage} WHERE {not_null}
-             ON CONFLICT DO NOTHING"
-        ),
-        &[&load_id, &table_name],
-    )
+    tx.batch_execute(&format!(
+        "DELETE FROM {target} WHERE ({cols}) IN (
+             SELECT {cols} FROM {stage} WHERE {not_null})"
+    ))
     .await
     .map_err(transient)?;
     Ok(())

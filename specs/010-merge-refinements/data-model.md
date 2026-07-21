@@ -27,18 +27,17 @@ hard-delete flag, upsert content, SCD2 change detection (FR-003).
 | Item | Semantics |
 |---|---|
 | Scope value | tuple of the merge_key columns; any NULL ⇒ "not a scope" (matches nothing, both sides) |
-| Delete set | target rows whose scope equals a stage scope NOT yet receipted for this load |
+| Delete set | target rows whose scope equals a delivered stage scope (first commit unit of the load) |
 | Untouched | every scope absent from the load's stages (FR-005) |
 | Composition | scope delete runs first; the strategy arm (identity delete-insert / upsert, hard_delete) runs unchanged after |
 
-## New auxiliary table
+## Commit-unit rule (amended per research R2)
 
-`_rdlt_scope_receipts (load_id TEXT, table_name TEXT, scope TEXT,
-PRIMARY KEY (load_id, table_name, scope))` — written inside the publish
-transaction; a scope is deleted at most once per load (multi-commit-unit
-loads are sound); other loads' receipts pruned at a load's first touch.
-Redelivery of a committed unit never reaches merge SQL (D3), so receipts
-never double-fire.
+NO auxiliary table. Scope replacement runs in the load's FIRST commit
+unit only; a later unit with staged rows for a scoped table is a typed
+error advising the engine commit thresholds (scd2 S6 precedent); later
+empty units are tolerated. Redelivery of a committed unit never reaches
+merge SQL (D3).
 
 ## Error taxonomy additions (each its own typed error, names table + column)
 
@@ -48,4 +47,5 @@ never double-fire.
 | collision with hard_delete flag or scd2 validity column | open |
 | dedup_sort or merge_key on a shredded (identity) stream | open |
 | merge_key with `merge_strategy: scd2` | open |
+| scoped table staged rows in a later commit unit | publish (typed, advises thresholds) |
 | empty/duplicate merge_key list, empty column, bad order token | config parse |

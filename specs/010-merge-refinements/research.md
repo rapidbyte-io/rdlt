@@ -91,6 +91,23 @@ one delete (`sql_jobs.py:217-234, 597-663`) and silently falls back to
 append when both are absent. rdlt keeps identity mandatory (engine B4
 frozen) and rejects the undefined shapes typed.
 
+### R2 amendment (implementation-discovered, 2026-07-21)
+
+The receipts design was WRONG, and this feature's own crash sweep proved
+it before it shipped: a crash-RESUMED load is a NEW load (fresh load_id)
+delivering a PARTIAL feed — its scope delete destroyed rows the previous
+attempt committed and never re-delivered (75/100 rows survived the
+sweep's recovery cell). No destination-side bookkeeping can distinguish
+resume-of-partial-load from fresh-load; the spec's premise — "the batch
+is the complete truth for its scope" — only holds when the scope's truth
+arrives ATOMICALLY. Scope replacement therefore requires the scoped
+table's full feed in a SINGLE commit unit: it runs in the load's first
+unit only, and a later unit with staged rows for a scoped table is a
+typed error advising the commit thresholds — exactly the scd2
+absent:retire rule and remedy (008 S6). The receipts table is deleted;
+multi-unit pipelines remain fine when the scoped table's feed fits its
+first unit (later empty units are tolerated, conformance-pinned).
+
 ## R3 — Validation surface
 
 **Decision**: two layers, matching 008:

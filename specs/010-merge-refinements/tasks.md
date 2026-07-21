@@ -123,7 +123,7 @@ round-trips.
 
 ## Phase 6: Polish & close-out
 
-- [ ] T007 Crash-sweep arms in
+- [X] T007 Crash-sweep arms in
       `crates/rdlt-postgres/tests/dest_crash_sweep.rs`: the existing
       registered dest fail points swept with dedup_sort AND merge_key
       armed (both occurrence passes, armed-fire pins), post-recovery

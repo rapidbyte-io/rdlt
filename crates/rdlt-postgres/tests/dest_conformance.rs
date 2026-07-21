@@ -1251,16 +1251,19 @@ mod refinements {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn merge_key_multi_commit_unit_load_replaces_each_scope_once() {
-        // The NON-OPTIONAL cell (plan rule; the 008 S6/F2 lesson): one load
-        // split across commit units must not let a later unit destroy an
-        // earlier unit's rows for the same scope.
+    async fn merge_key_requires_a_single_commit_unit() {
+        // The NON-OPTIONAL cell (plan rule; the 008 S6/F2 lesson, sharpened
+        // by this feature's own crash sweep): "the batch is the complete
+        // truth for its scope" only holds when the scope's truth arrives in
+        // ONE commit unit — a crash-resumed load is a NEW load delivering a
+        // PARTIAL feed, indistinguishable destination-side from a fresh one.
+        // Multi-unit scoped loads are therefore a TYPED error, never silent
+        // partial replacement.
         let (_c, conn) = start_pg().await;
         let opts = Opts {
             merge_key: Some(&["day"]),
             ..Opts::default()
         };
-        // Seed day 1 with a row the next load will NOT re-deliver.
         run(
             &conn,
             "mr_units",
@@ -1268,21 +1271,30 @@ mod refinements {
             vec![vec![(99, Some(1), None, "stale", None)]],
         )
         .await;
-        // One load, THREE commit units, all touching day 1 (plus day 2 in
-        // unit 2): the stale row dies exactly once; every delivered row
-        // survives to the end of the load.
-        run(
+        let err = run_expect_err(
             &conn,
             "mr_units",
             opts,
             vec![
                 vec![(1, Some(1), None, "u1-a", None)],
-                vec![
-                    (2, Some(1), None, "u2-a", None),
-                    (4, Some(2), None, "u2-d2", None),
-                ],
-                vec![(3, Some(1), None, "u3-a", None)],
+                vec![(2, Some(1), None, "u2-a", None)],
             ],
+        )
+        .await;
+        assert!(
+            err.contains("SINGLE commit unit") && err.contains("commit thresholds"),
+            "{err}"
+        );
+
+        // Recovery: the same feed in one unit converges.
+        run(
+            &conn,
+            "mr_units",
+            opts,
+            vec![vec![
+                (1, Some(1), None, "u1-a", None),
+                (2, Some(1), None, "u2-a", None),
+            ]],
         )
         .await;
         assert_eq!(
@@ -1290,10 +1302,31 @@ mod refinements {
             vec![
                 (1, Some(1), None, "u1-a".into()),
                 (2, Some(1), None, "u2-a".into()),
-                (3, Some(1), None, "u3-a".into()),
-                (4, Some(2), None, "u2-d2".into()),
             ],
-            "later units never destroy earlier units' rows; stale row gone once"
+            "stale row gone exactly once; the full-feed retry converges"
+        );
+
+        // A later unit with NOTHING staged for the scoped table is fine —
+        // multi-unit pipelines where the scoped table fits unit 1 work.
+        run(
+            &conn,
+            "mr_units",
+            opts,
+            vec![
+                vec![
+                    (1, Some(1), None, "v2", None),
+                    (2, Some(1), None, "u2-a", None),
+                ],
+                vec![],
+            ],
+        )
+        .await;
+        assert_eq!(
+            rows(&conn, "mr_units").await,
+            vec![
+                (1, Some(1), None, "v2".into()),
+                (2, Some(1), None, "u2-a".into()),
+            ]
         );
     }
 
