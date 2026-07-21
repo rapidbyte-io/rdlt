@@ -45,6 +45,12 @@ pub struct PostgresConfig {
     /// require). Contradicting an explicit conn sslmode is a config error.
     #[serde(default)]
     pub tls: Option<crate::tls::TlsPolicy>,
+    /// CDC via logical replication (feature 009, contract cdc-config.md):
+    /// when present, EVERY configured table is captured through the
+    /// replication slot instead of cursor-column incremental (the two are
+    /// mutually exclusive per table). Query streams are unaffected.
+    #[serde(default)]
+    pub cdc: Option<CdcConfig>,
     /// Decoder cuts a RecordBatch at this many buffered bytes (R4).
     #[serde(default = "default_batch_target_bytes")]
     pub batch_target_bytes: usize,
@@ -298,6 +304,123 @@ pub enum NullPolicy {
     Error,
 }
 
+/// CDC block (feature 009, contract cdc-config.md): slot + publication are
+/// USER-OWNED server resources — rdlt creates them only under
+/// `create_if_missing` (idempotently) and NEVER drops either. The
+/// flag-column collision check (C2) needs reflection and runs at open.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CdcConfig {
+    /// Replication slot name; single consumer (concurrent use is a typed
+    /// error naming the holding pid).
+    pub slot: String,
+    /// Publication; must cover every CDC table (preflighted at open).
+    pub publication: String,
+    /// Create slot and publication when absent. rdlt never drops them.
+    #[serde(default)]
+    pub create_if_missing: bool,
+    #[serde(default)]
+    pub mode: CdcMode,
+    /// Tail-mode quiet wait between chunks (duration forms only: "1s",
+    /// "5m", "2h", "1d").
+    #[serde(default = "default_idle_wait")]
+    pub idle_wait: Wait,
+    /// Deletion-flag column emitted on every CDC stream: NULL for
+    /// insert/update rows, TRUE for deletes (feature-008 `hard_delete`
+    /// turns it into real deletions on postgres destinations).
+    #[serde(default = "default_flag_column")]
+    pub flag_column: String,
+    /// `off` = never advance the slot's acknowledged position (debugging /
+    /// fan-in staging) — the server retains WAL indefinitely; documented.
+    #[serde(default)]
+    pub ack: AckMode,
+}
+
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum CdcMode {
+    /// Consume the backlog to the run-start WAL position, then finish
+    /// (cron-able).
+    #[default]
+    Catchup,
+    /// Chunked catch-up loop until cancelled, `idle_wait` between quiet
+    /// chunks (recorded refinement 2).
+    Tail,
+}
+
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum AckMode {
+    /// Advance the slot once per run, after every stream committed.
+    #[default]
+    Auto,
+    Off,
+}
+
+/// A wait interval: the 007 duration vocabulary ("1s", "5m", "2h", "1d")
+/// WITHOUT the magnitude forms. Config form is the literal string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Wait {
+    pub seconds: u64,
+}
+
+impl std::str::FromStr for Wait {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.parse::<Lag>() {
+            Ok(Lag::Duration { seconds }) => Ok(Self { seconds }),
+            _ => Err(format!(
+                "wait `{s}` must be a duration (\"1s\", \"5m\", \"2h\", \"1d\")"
+            )),
+        }
+    }
+}
+
+impl std::fmt::Display for Wait {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}s", self.seconds)
+    }
+}
+
+impl serde::Serialize for Wait {
+    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        ser.collect_str(self)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Wait {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(de)?;
+        text.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+impl schemars::JsonSchema for Wait {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Wait".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "description": "A wait interval: \"1s\", \"5m\", \"2h\", \"1d\"",
+            "pattern": "^[0-9]+[smhd]$"
+        })
+    }
+}
+
+fn default_idle_wait() -> Wait {
+    Wait { seconds: 1 }
+}
+fn default_flag_column() -> String {
+    "_rdlt_deleted".into()
+}
+
 fn default_schema() -> String {
     "public".into()
 }
@@ -364,6 +487,27 @@ impl PostgresConfig {
         }
         if self.schema.trim().is_empty() {
             return invalid("`schema` must not be empty".into());
+        }
+        if let Some(cdc) = &self.cdc {
+            for (field, value) in [
+                ("cdc.slot", &cdc.slot),
+                ("cdc.publication", &cdc.publication),
+                ("cdc.flag_column", &cdc.flag_column),
+            ] {
+                if value.trim().is_empty() {
+                    return invalid(format!("`{field}` must not be empty"));
+                }
+            }
+            // C1: CDC covers every configured table; a cursor block on any
+            // of them is a contradiction, not an override.
+            if let Some(table) = self.tables.iter().flatten().find(|t| t.cursor.is_some()) {
+                return invalid(format!(
+                    "table `{}`: `cursor` and `cdc` are mutually exclusive — with a \
+                     `cdc:` block every configured table is captured through the \
+                     replication slot",
+                    table.name
+                ));
+            }
         }
         if self.batch_target_bytes == 0 || self.batch_max_rows == 0 {
             return invalid("batch knobs must be positive".into());
@@ -560,6 +704,60 @@ tables:
                 "should reject: {doc}"
             );
         }
+    }
+
+    #[test]
+    fn cdc_block_parses_with_defaults() {
+        let c = PostgresConfig::from_yaml(
+            "conn: host=localhost\ncdc:\n  slot: s1\n  publication: p1\ntables:\n  - name: orders\n",
+        )
+        .expect("cdc config");
+        let cdc = c.cdc.expect("cdc");
+        assert_eq!(cdc.slot, "s1");
+        assert_eq!(cdc.publication, "p1");
+        assert!(!cdc.create_if_missing);
+        assert_eq!(cdc.mode, CdcMode::Catchup);
+        assert_eq!(cdc.idle_wait, Wait { seconds: 1 });
+        assert_eq!(cdc.flag_column, "_rdlt_deleted");
+        assert_eq!(cdc.ack, AckMode::Auto);
+    }
+
+    #[test]
+    fn cdc_validation_matrix() {
+        // C1: cursor + cdc on the same table — typed, names the table.
+        let err = PostgresConfig::from_yaml(
+            "conn: host=localhost\ncdc:\n  slot: s\n  publication: p\n\
+             tables:\n  - name: orders\n    cursor:\n      column: id\n",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("`orders`"), "{err}");
+        assert!(err.to_string().contains("mutually exclusive"), "{err}");
+        // Required + non-empty names.
+        for doc in [
+            "conn: host=localhost\ncdc:\n  publication: p\n",
+            "conn: host=localhost\ncdc:\n  slot: s\n",
+            "conn: host=localhost\ncdc:\n  slot: \"\"\n  publication: p\n",
+            "conn: host=localhost\ncdc:\n  slot: s\n  publication: p\n  flag_column: \"\"\n",
+            // C4: unknown fields fail; idle_wait rejects magnitudes.
+            "conn: host=localhost\ncdc:\n  slot: s\n  publication: p\n  drop_slot: true\n",
+            "conn: host=localhost\ncdc:\n  slot: s\n  publication: p\n  idle_wait: \"5\"\n",
+            "conn: host=localhost\ncdc:\n  slot: s\n  publication: p\n  mode: streaming\n",
+        ] {
+            assert!(
+                PostgresConfig::from_yaml(doc).is_err(),
+                "should reject: {doc}"
+            );
+        }
+        // Tail mode + duration idle_wait + ack off parse.
+        let c = PostgresConfig::from_yaml(
+            "conn: host=localhost\ncdc:\n  slot: s\n  publication: p\n\
+             \x20 mode: tail\n  idle_wait: \"5m\"\n  ack: off\n",
+        )
+        .expect("tail config");
+        let cdc = c.cdc.expect("cdc");
+        assert_eq!(cdc.mode, CdcMode::Tail);
+        assert_eq!(cdc.idle_wait, Wait { seconds: 300 });
+        assert_eq!(cdc.ack, AckMode::Off);
     }
 
     #[test]

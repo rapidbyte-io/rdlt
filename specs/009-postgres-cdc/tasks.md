@@ -40,7 +40,7 @@ Technical Context).
       property test; NEW fuzz target
       `fuzz/fuzz_targets/pg_pgoutput_decode.rs` registered in
       `fuzz/Cargo.toml` + the Makefile FUZZ_TARGETS list.
-- [ ] T003 [P] Config surface in
+- [X] T003 [P] Config surface in
       `crates/rdlt-postgres/src/source/config.rs`: `CdcConfig` block
       (slot, publication, create_if_missing, mode catchup|tail,
       idle_wait — 007 duration vocabulary, flag_column default
