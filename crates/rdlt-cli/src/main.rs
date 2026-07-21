@@ -244,15 +244,81 @@ async fn run(spec_path: PathBuf, report_path: Option<PathBuf>) -> Result<(), Cli
         SourceSpec::Postgres { config } => {
             let text = std::fs::read_to_string(config)
                 .map_err(|e| CliError::Usage(format!("reading {}: {e}", config.display())))?;
-            let source = if is_json(config) {
-                rdlt::postgres_source::PostgresSource::from_json(&text)
+            let parsed = if is_json(config) {
+                rdlt::postgres_source::PostgresConfig::from_json(&text)
             } else {
-                rdlt::postgres_source::PostgresSource::from_yaml(&text)
+                rdlt::postgres_source::PostgresConfig::from_yaml(&text)
             }
             .map_err(|e| CliError::Usage(e.to_string()))?;
+            for warning in cdc_composition_warnings(&spec, &parsed) {
+                eprintln!("warning: {warning}");
+            }
+            let source = rdlt::postgres_source::PostgresSource::new(parsed);
             run_with!(source)
         }
     }
+}
+
+/// C3 (feature 009, contract cdc-config.md): the exactly-once-outcome CDC
+/// composition is `write_mode = merge{key}` + destination
+/// `merge_strategy = upsert` + `hard_delete = <flag column>`. Its absence
+/// WARNS, never blocks — other shapes are documented at-least-once /
+/// soft-delete.
+fn cdc_composition_warnings(
+    spec: &Spec,
+    config: &rdlt::postgres_source::PostgresConfig,
+) -> Vec<String> {
+    let Some(cdc) = &config.cdc else {
+        return Vec::new();
+    };
+    let mut warnings = Vec::new();
+    if !matches!(spec.write_mode, Some(WriteModeSpec::Merge { .. })) {
+        warnings.push(
+            "cdc: write_mode is not merge — changed rows will append instead of \
+             converging; set write_mode = { merge = { key = [...] } } (contract C3)"
+                .to_string(),
+        );
+    }
+    match &spec.destination {
+        DestSpec::Postgres {
+            merge_strategy,
+            tables,
+            ..
+        } => {
+            if !matches!(merge_strategy, Some(rdlt::postgres::MergeStrategy::Upsert)) {
+                warnings.push(
+                    "cdc: destination merge_strategy is not upsert — the \
+                     recommended composition is merge_strategy = \"upsert\" \
+                     (contract C3)"
+                        .to_string(),
+                );
+            }
+            for table in config.tables.iter().flatten() {
+                let has_flag = tables
+                    .as_ref()
+                    .and_then(|t| t.get(&table.name))
+                    .and_then(|t| t.hard_delete.as_deref())
+                    == Some(cdc.flag_column.as_str());
+                if !has_flag {
+                    warnings.push(format!(
+                        "cdc: table `{}` has no hard_delete = \"{}\" — deletes \
+                         will land as flagged rows (soft delete) instead of \
+                         removals (contract C3)",
+                        table.name, cdc.flag_column
+                    ));
+                }
+            }
+        }
+        DestSpec::Duckdb { .. } | DestSpec::Parquet { .. } => {
+            warnings.push(format!(
+                "cdc: this destination has no hard-delete support — the \
+                 deletion flag `{}` lands as data (documented soft delete, \
+                 contract C3/P8)",
+                cdc.flag_column
+            ));
+        }
+    }
+    warnings
 }
 
 /// Event feed + run + report emission (shared tail after the pipeline is built).
@@ -308,4 +374,66 @@ async fn drive(
         None => println!("{json}"),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn spec(toml_text: &str) -> Spec {
+        toml::from_str(toml_text).expect("spec parses")
+    }
+
+    fn cdc_config() -> rdlt::postgres_source::PostgresConfig {
+        rdlt::postgres_source::PostgresConfig::from_yaml(
+            "conn: host=localhost\ncdc:\n  slot: s\n  publication: p\n\
+             tables:\n  - name: orders\n",
+        )
+        .expect("config")
+    }
+
+    /// C3 capture matrix: the recommended composition is silent; every
+    /// missing leg warns with the fix; non-merge destinations warn soft
+    /// delete.
+    #[test]
+    fn cdc_composition_warning_matrix() {
+        let recommended = spec(
+            "pipeline = \"p\"\n\
+             [write_mode.merge]\nkey = [\"id\"]\n\
+             [source.postgres]\nconfig = \"src.yaml\"\n\
+             [destination.postgres]\nconn = \"host=x\"\ndataset = \"d\"\n\
+             merge_strategy = \"upsert\"\n\
+             [destination.postgres.tables.orders]\nhard_delete = \"_rdlt_deleted\"\n",
+        );
+        assert!(cdc_composition_warnings(&recommended, &cdc_config()).is_empty());
+
+        let append = spec(
+            "pipeline = \"p\"\n\
+             [source.postgres]\nconfig = \"src.yaml\"\n\
+             [destination.postgres]\nconn = \"host=x\"\ndataset = \"d\"\n",
+        );
+        let warnings = cdc_composition_warnings(&append, &cdc_config());
+        assert_eq!(warnings.len(), 3, "{warnings:?}");
+        assert!(warnings[0].contains("write_mode"), "{warnings:?}");
+        assert!(warnings[1].contains("upsert"), "{warnings:?}");
+        assert!(
+            warnings[2].contains("`orders`") && warnings[2].contains("hard_delete"),
+            "{warnings:?}"
+        );
+
+        let duckdb = spec(
+            "pipeline = \"p\"\n\
+             [write_mode.merge]\nkey = [\"id\"]\n\
+             [source.postgres]\nconfig = \"src.yaml\"\n\
+             [destination.duckdb]\npath = \"out.db\"\n",
+        );
+        let warnings = cdc_composition_warnings(&duckdb, &cdc_config());
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("soft delete"), "{warnings:?}");
+
+        // No cdc block: silent regardless of shape.
+        let plain = rdlt::postgres_source::PostgresConfig::from_yaml("conn: host=localhost\n")
+            .expect("config");
+        assert!(cdc_composition_warnings(&append, &plain).is_empty());
+    }
 }

@@ -44,7 +44,10 @@ set `mode: tail` to keep applying continuously until cancelled.
 
 ## Operations
 
-- The run report shows replication lag after every run.
+- Every completed run emits replication lag (`lag_bytes`, plus
+  `lag_seconds` when the server has `track_commit_timestamp = on`) as a
+  structured event on the `rdlt::cdc` tracing target — embedders
+  subscribe, no log-scraping (same seam as `rdlt::lossy`).
 - rdlt never drops your slot or publication. If the server discarded
   the slot's backlog (WAL retention), the typed error says exactly
   that and prescribes a fresh snapshot.

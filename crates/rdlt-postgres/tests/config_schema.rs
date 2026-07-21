@@ -96,6 +96,49 @@ fn schema_valid_corpus_parses() {
     PostgresConfig::from_value(new_fields).expect("new fields parse");
 }
 
+// ---- Feature 009: the cdc block (SC-007) ----
+
+#[test]
+fn cdc_block_round_trips_the_schema() {
+    let validator = validator_for(&config_schema()).expect("schema compiles");
+    // The documented example (quickstart shape) validates AND parses.
+    let example = json!({"conn": "postgres://u@h/d",
+        "cdc": {"slot": "my_slot", "publication": "my_pub",
+                "create_if_missing": true, "mode": "tail",
+                "idle_wait": "5s", "flag_column": "_rdlt_deleted", "ack": "auto"},
+        "tables": [{"name": "orders"}]});
+    assert!(
+        validator.is_valid(&example),
+        "cdc example must validate: {:?}",
+        validator.iter_errors(&example).next()
+    );
+    PostgresConfig::from_value(example).expect("cdc example parses");
+    // Unknown fields fail BOTH layers (C4).
+    let unknown = json!({"conn": "postgres://u@h/d",
+        "cdc": {"slot": "s", "publication": "p", "drop_slot": true}});
+    assert!(!validator.is_valid(&unknown));
+    assert!(PostgresConfig::from_value(unknown).is_err());
+    // idle_wait keeps the duration vocabulary at the schema layer too (C4):
+    // a magnitude fails the pattern, same as FromStr.
+    let bad_wait = json!({"conn": "postgres://u@h/d",
+        "cdc": {"slot": "s", "publication": "p", "idle_wait": "5"}});
+    assert!(!validator.is_valid(&bad_wait));
+    assert!(PostgresConfig::from_value(bad_wait).is_err());
+    // cdc + cursor exclusivity (C1) is a VALIDATION rule: schema-valid by
+    // shape, rejected by the parser naming the table.
+    let exclusive = json!({"conn": "postgres://u@h/d",
+        "cdc": {"slot": "s", "publication": "p"},
+        "tables": [{"name": "t", "cursor": {"column": "id"}}]});
+    assert!(validator.is_valid(&exclusive), "shape-valid");
+    let err = PostgresConfig::from_value(exclusive)
+        .expect_err("C1")
+        .to_string();
+    assert!(
+        err.contains("`t`") && err.contains("mutually exclusive"),
+        "{err}"
+    );
+}
+
 // ---- Feature 008: destination options schema (SC-008) ----
 
 mod dest_options {

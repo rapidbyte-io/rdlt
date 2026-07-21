@@ -181,7 +181,7 @@ typed error in a test; lag appears per run.
 
 ## Phase 7: Polish & close-out
 
-- [ ] T013 [P] Config/CLI/schemas: cdc block in
+- [X] T013 [P] Config/CLI/schemas: cdc block in
       `crates/rdlt-postgres/tests/config_schema.rs` round-trips
       (examples validate, unknown fields fail both, exclusivity
       cell); CLI passthrough verified (source yaml already carries

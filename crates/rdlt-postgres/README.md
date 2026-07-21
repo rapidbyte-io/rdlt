@@ -142,6 +142,20 @@ conn string sets its own.
   structured streams still reject Merge at plan time.
 - **Lossy mappings announce themselves**: every [documented-lossy] column
   emits one `tracing::warn!` on the `rdlt::lossy` target per read.
+- **CDC** (feature 009): a `cdc:` block (slot, publication,
+  create-if-missing, catchup|tail) captures inserts, updates, and DELETES
+  through logical replication — snapshot first (all tables under ONE
+  consistent view), then per-table passes over a peeked WAL range with
+  checkpoints only at transaction-commit positions. Deletes ride a flag
+  column (`_rdlt_deleted` by default); the recommended composition is
+  `merge{key}` + destination `upsert` + `hard_delete` (the CLI warns when
+  absent) — rows then actually disappear. The slot's acknowledged position
+  only ever advances to destination-committed cursors (one run behind —
+  hygiene, never correctness) and rdlt NEVER drops slots or publications.
+  Tables need a usable replica identity (typed error naming the fix);
+  unchanged-TOAST values substitute under REPLICA IDENTITY FULL and fail
+  typed without it; replication lag lands per completed run on the
+  `rdlt::cdc` tracing target.
 
 ## Verification
 
@@ -151,7 +165,8 @@ type-matrix round-trip against real Postgres), incremental boundary
 semantics, differential property test (decoder ≡ an independent driver
 reference, single- AND multi-batch), drift matrix, TLS matrix (five
 sslmode levels × cert scenarios, both directions), query streams, config
-schema round-trips. `--features failpoints` adds the crash sweeps
+schema round-trips, CDC (equality cycle, boundary overlap, ack pin,
+tail, TOAST + identity matrix, lag capture). `--features failpoints` adds the crash sweeps
 (exactly-once under kill/panic at every registered fail point, both
 occurrence passes, Append + Merge modes) and the memory-ceiling test (a
 6.9 GB table through a 256 MiB process ceiling; `RDLT_HEAVY=1` makes
