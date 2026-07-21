@@ -51,6 +51,16 @@ set `mode: tail` to keep applying continuously until cancelled.
 - rdlt never drops your slot or publication. If the server discarded
   the slot's backlog (WAL retention), the typed error says exactly
   that and prescribes a fresh snapshot.
+- The slot's acknowledged position advances once per run, to positions
+  the destination durably committed — so it trails one run behind. A
+  LONG-LIVED tail therefore accumulates WAL retention for its whole
+  life (a warning fires on the `rdlt::cdc` target past 256 MiB): cycle
+  tail runs periodically, or use catch-up mode on a cron for durable
+  long-lived pipelines — every completed run reclaims retention.
+- `TRUNCATE` on a published table is a typed error (truncation does not
+  replicate as row deletes). Recovery: reset the stream's pipeline
+  state AND re-initialize the destination table — the fresh snapshot
+  starts past the truncation.
 - A table without a usable replica identity fails loudly at enable
   time, naming the table and the fix.
 

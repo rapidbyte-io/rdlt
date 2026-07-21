@@ -87,11 +87,22 @@ impl std::fmt::Debug for Runtime {
 #[derive(Default)]
 struct RunState {
     /// Lifecycle client, lazily opened; also carries peeks and the ack.
-    control: Option<Client>,
+    /// Arc so passes run WITHOUT the state lock held (a stream blocked on
+    /// destination backpressure must never stall the other streams), and
+    /// dropped on any error (the engine's transient in-run retries re-enter
+    /// with this same state — a dead connection must not be reused).
+    control: Option<std::sync::Arc<Client>>,
     ensured: Option<slot::EnsureOutcome>,
     /// Open REPEATABLE READ snapshot transaction (first run) — ONE view
-    /// for every CDC table (P2).
-    snapshot: Option<Client>,
+    /// for every CDC table (P2). Arc + drop-on-error like `control`.
+    snapshot: Option<std::sync::Arc<Client>>,
+    /// The shared snapshot's cursor start point for a PRE-EXISTING slot:
+    /// the WAL position read BEFORE the transaction began (its visibility
+    /// horizon) — every commit ≤ it is IN the snapshot; commits after it
+    /// replay and converge. (Starting at confirmed_flush instead would
+    /// replay a window that can contain unappliable records — TRUNCATE,
+    /// TOAST without an old image — and permanently wedge recovery.)
+    snapshot_start: Option<u64>,
     /// `target_lsn`, pinned once per run at the first CDC read (P3).
     target: Option<u64>,
     /// Per-stream ack floors: destination-committed `since`, or the fresh
@@ -211,18 +222,30 @@ async fn preflight(
                      FULL` / `USING INDEX …` (contract O1)",
                 ));
             }
-            // Explicit index: the identity columns come from that index.
-            "i" => TableIdentity {
+            // Explicit index: the identity columns come from that index. A
+            // dropped identity index leaves relreplident = 'i' with NO
+            // indisreplident row — an empty key would merge on nothing and
+            // corrupt deletes, so it is a typed error, never accepted.
+            "i" if !ident_cols.is_empty() => TableIdentity {
                 key: ident_cols.clone(),
                 full: false,
             },
-            // FULL: old tuples carry everything; the merge key is still the
-            // PK (reflected or declared) — merging needs a key.
-            "f" if !pk.is_empty() => TableIdentity {
-                key: pk,
-                full: true,
-            },
-            "f" => match declared.clone() {
+            "i" => {
+                return Err(errors::fatal(
+                    Phase::Slot,
+                    Some(table),
+                    "REPLICA IDENTITY USING INDEX but no replica-identity \
+                     index exists (was it dropped?) — recreate the index or \
+                     `ALTER TABLE … REPLICA IDENTITY DEFAULT`/`FULL` \
+                     (contract O1)",
+                ));
+            }
+            // FULL: old tuples carry everything, so ANY declared key has its
+            // values — a declared primary_key override wins; else the PK.
+            "f" => match declared
+                .clone()
+                .or_else(|| (!pk.is_empty()).then(|| pk.clone()))
+            {
                 Some(key) => TableIdentity { key, full: true },
                 None => {
                     return Err(errors::fatal(
@@ -265,12 +288,18 @@ async fn preflight(
                 ),
             ));
         }
+        // Defense in depth: every arm above guarantees a non-empty key; an
+        // empty one would pass every downstream guard vacuously.
+        assert!(!identity.key.is_empty(), "preflight resolved an empty key");
         identities.insert(table.clone(), identity);
     }
     Ok(identities)
 }
 
-/// The CDC read dispatch: snapshot pass (no cursor) or change pass.
+/// The CDC read dispatch: snapshot pass (no cursor) or change pass. Any
+/// error drops the run's cached connections — the engine's TRANSIENT
+/// in-run retries re-enter with this same `Runtime`, and a dead snapshot
+/// or control client must never be reused across attempts.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn read_stream(
     runtime: &Runtime,
@@ -280,15 +309,49 @@ pub(crate) async fn read_stream(
     cdc_tables: &[String],
     plans: Vec<FieldPlan>,
     columns: &[&crate::source::reflect::ReflectedColumn],
+    req: ReadRequest,
+) -> Result<(), SourceError> {
+    let result = read_stream_inner(
+        runtime, config, cdc, identity, cdc_tables, plans, columns, req,
+    )
+    .await;
+    if result.is_err() {
+        let mut state = runtime.state.lock().await;
+        state.control = None;
+        state.snapshot = None;
+        state.snapshot_start = None;
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn read_stream_inner(
+    runtime: &Runtime,
+    config: &PostgresConfig,
+    cdc: &CdcConfig,
+    identity: &TableIdentity,
+    cdc_tables: &[String],
+    plans: Vec<FieldPlan>,
+    columns: &[&crate::source::reflect::ReflectedColumn],
     mut req: ReadRequest,
 ) -> Result<(), SourceError> {
+    use std::sync::Arc;
     let name = req.stream.name.as_str().to_owned();
     let mut state = runtime.state.lock().await;
     if state.pending.is_none() {
         state.pending = Some(cdc_tables.iter().cloned().collect());
     }
     if state.control.is_none() {
-        state.control = Some(connect(config).await?);
+        let client = connect(config).await?;
+        // The logical-decoding SQL functions render tuple TEXT with the
+        // calling session's GUCs; pin exactly the forms values.rs parses —
+        // a database/role with DateStyle 'SQL, DMY' or bytea_output
+        // 'escape' must not change what the feed looks like.
+        client
+            .batch_execute("SET datestyle = 'ISO'; SET bytea_output = 'hex'")
+            .await
+            .map_err(|e| errors::classify(Phase::Slot, Some(&name), &e))?;
+        state.control = Some(Arc::new(client));
     }
     if state.ensured.is_none() {
         crash_point!(
@@ -308,34 +371,63 @@ pub(crate) async fn read_stream(
         .await?;
         state.ensured = Some(outcome);
     }
+    let ensured = state.ensured.expect("ensured");
 
     let since = match &req.since {
         Some(cursor) => Some(CdcCursor::decode(cursor, &name)?.cdc_lsn),
         None => None,
     };
+    // A slot created THIS run starts at its consistent point — it cannot
+    // cover a resuming stream's history. Peeking would silently skip every
+    // change in (since, consistent_point): typed error, never a gap.
+    if let Some(since) = since
+        && ensured.created_slot
+        && let Some(point) = ensured.consistent_point
+        && since < point
+    {
+        return Err(errors::fatal(
+            Phase::Slot,
+            Some(&name),
+            format!(
+                "replication slot `{}` was created THIS run at {} but this \
+                 stream resumes from {} — the feed cannot cover that gap; \
+                 reset the pipeline state so the stream takes a fresh \
+                 snapshot instead of resuming past a recreated slot",
+                cdc.slot,
+                slot::fmt_lsn(point),
+                slot::fmt_lsn(since)
+            ),
+        ));
+    }
+
     let cursor = match since {
         None => {
             // ---- snapshot pass (P2) ----
-            // Start point: the consistent point when THIS run created the
-            // slot; otherwise the pre-existing slot's confirmed position
-            // (the feed replays from there; overlap converges).
-            let start = match state.ensured.expect("ensured").consistent_point {
+            // Cursor start: the consistent point when THIS run created the
+            // slot; otherwise the shared snapshot's visibility horizon —
+            // the WAL position read BEFORE its transaction began (see
+            // `RunState::snapshot_start`). Either way: no gap, and the
+            // overlap window applies twice and converges.
+            let start = match ensured.consistent_point {
                 Some(point) => point,
-                None => {
-                    slot::confirmed_flush_lsn(
-                        state.control.as_ref().expect("control client"),
-                        &cdc.slot,
-                    )
-                    .await?
-                }
+                None => match state.snapshot_start {
+                    Some(horizon) => horizon,
+                    None => {
+                        slot::current_wal_lsn(state.control.as_ref().expect("control client"))
+                            .await?
+                    }
+                },
             };
             if state.snapshot.is_none() {
                 let snap = connect(config).await?;
                 snap.batch_execute("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ")
                     .await
                     .map_err(|e| errors::classify(Phase::Copy, Some(&name), &e))?;
-                state.snapshot = Some(snap);
+                state.snapshot = Some(Arc::new(snap));
+                state.snapshot_start = Some(start);
             }
+            let snap = Arc::clone(state.snapshot.as_ref().expect("snapshot client"));
+            drop(state); // COPY + pushes run WITHOUT the state lock
             let select = sqlgen::select_sql(&config.schema, &name, columns, "", "");
             let copy = sqlgen::copy_sql(&select);
             let mut decoder = CopyDecoder::new(
@@ -345,10 +437,7 @@ pub(crate) async fn read_stream(
             );
             let mut pushed_any = false;
             {
-                let stream = state
-                    .snapshot
-                    .as_ref()
-                    .expect("snapshot client")
+                let stream = snap
                     .copy_out(copy.as_str())
                     .await
                     .map_err(|e| errors::classify(Phase::Copy, Some(&name), &e))?;
@@ -413,6 +502,7 @@ pub(crate) async fn read_stream(
             {
                 return Ok(());
             }
+            state = runtime.state.lock().await;
             state.ack_floor.insert(name.clone(), start);
             start
         }
@@ -429,9 +519,11 @@ pub(crate) async fn read_stream(
                 }
             };
             state.ack_floor.insert(name.clone(), since);
+            let control = Arc::clone(state.control.as_ref().expect("control client"));
+            drop(state); // the pass pushes batches WITHOUT the state lock
             if target > since {
                 let outcome = change_pass(
-                    state.control.as_ref().expect("control client"),
+                    &control,
                     cdc,
                     &config.schema,
                     &name,
@@ -447,6 +539,7 @@ pub(crate) async fn read_stream(
                     return Ok(());
                 }
             }
+            state = runtime.state.lock().await;
             target.max(since)
         }
     };
@@ -502,23 +595,32 @@ pub(crate) async fn read_stream(
         }
     }
     if cdc.mode == CdcMode::Tail {
+        let control = std::sync::Arc::clone(state.control.as_ref().expect("control client"));
         drop(state);
-        return tail_loop(runtime, config, cdc, identity, &plans, &name, cursor, req).await;
+        return tail_loop(control, config, cdc, identity, &plans, &name, cursor, req).await;
     }
     Ok(())
 }
+
+/// A tail acks nothing beyond its first pass: acking is safe only up to
+/// DESTINATION-COMMITTED positions, and no such feedback exists in-run
+/// (the engine's own WAL is best-effort — its damage path re-extracts from
+/// cursors, so acking pushed-but-uncommitted positions would turn "slower,
+/// never wrong" into data loss). The server therefore retains WAL for the
+/// tail's whole life; warn once past this span so operators cycle the tail
+/// (the next run's ack reclaims retention). Documented in the quickstart.
+const TAIL_UNACKED_WARN_BYTES: u64 = 256 << 20;
 
 /// Continuous tail (P7, recorded refinement 2): a chunked loop of bounded
 /// catch-ups — each chunk pins ITS OWN current position, checkpoints flow
 /// per chunk, and a quiet chunk idles `idle_wait`. Cancellation is observed
 /// at commit boundaries: the per-chunk checkpoint probe (always a
 /// commit/target position, P4) fails the moment the engine closes the
-/// channel — no new SPI surface needed. The run-completion ack already
-/// happened after this stream's FIRST pass; a tail acks nothing further
-/// (retention hygiene resumes on the next run, never correctness).
+/// channel — no new SPI surface needed. Chunks never hold the run-state
+/// lock: concurrent tail streams share the control connection via Arc.
 #[allow(clippy::too_many_arguments)]
 async fn tail_loop(
-    runtime: &Runtime,
+    control: std::sync::Arc<Client>,
     config: &PostgresConfig,
     cdc: &CdcConfig,
     identity: &TableIdentity,
@@ -527,6 +629,8 @@ async fn tail_loop(
     mut cursor: u64,
     mut req: ReadRequest,
 ) -> Result<(), SourceError> {
+    let confirmed = slot::confirmed_flush_lsn(&control, &cdc.slot).await?;
+    let mut retention_warned = false;
     loop {
         if req
             .out
@@ -536,33 +640,41 @@ async fn tail_loop(
         {
             return Ok(()); // cancellation, at a commit boundary (S4/P7)
         }
-        let quiet = {
-            let state = runtime.state.lock().await;
-            let control = state.control.as_ref().expect("control client");
-            let target = slot::current_wal_lsn(control).await?;
-            if target > cursor {
-                let outcome = change_pass(
-                    control,
-                    cdc,
-                    &config.schema,
-                    name,
-                    identity,
-                    plans,
-                    config.batch_max_rows,
-                    cursor,
-                    target,
-                    &mut req,
-                )
-                .await?;
-                if outcome == PassOutcome::Cancelled {
-                    return Ok(());
-                }
-                cursor = target;
-                false
-            } else {
-                true
+        let target = slot::current_wal_lsn(&control).await?;
+        let quiet = if target > cursor {
+            let outcome = change_pass(
+                &control,
+                cdc,
+                &config.schema,
+                name,
+                identity,
+                plans,
+                config.batch_max_rows,
+                cursor,
+                target,
+                &mut req,
+            )
+            .await?;
+            if outcome == PassOutcome::Cancelled {
+                return Ok(());
             }
+            cursor = target;
+            false
+        } else {
+            true
         };
+        let unacked = cursor.saturating_sub(confirmed);
+        if !retention_warned && unacked > TAIL_UNACKED_WARN_BYTES {
+            retention_warned = true;
+            tracing::warn!(
+                target: "rdlt::cdc",
+                unacked_bytes = unacked,
+                "tail mode: the slot's acknowledged position is fixed for the \
+                 life of this run and the server retains WAL behind it — cycle \
+                 the tail (restart the run) so the next run's ack reclaims \
+                 retention"
+            );
+        }
         if quiet {
             tokio::time::sleep(std::time::Duration::from_secs(cdc.idle_wait.seconds)).await;
         }
@@ -719,6 +831,13 @@ struct Apply<'a> {
     /// Commit position covering every row in `ready_rows` (and everything
     /// pushed before) — the only value checkpoints may carry (P4).
     last_commit: Option<u64>,
+    /// First unappliable record of the CURRENT transaction (unchanged
+    /// TOAST without an image, TRUNCATE, keyless delete, drift). Raised at
+    /// the COMMIT boundary — and only when the transaction is not already
+    /// applied (commit ≤ cursor). Raising eagerly would make such records
+    /// replay-fatal forever: the whole point of the fresh-snapshot recovery
+    /// is that a new snapshot's cursor moves PAST them.
+    tx_error: Option<SourceError>,
     in_tx: bool,
 }
 
@@ -751,12 +870,21 @@ impl<'a> Apply<'a> {
             tx_rows: Vec::new(),
             ready_rows: Vec::new(),
             last_commit: None,
+            tx_error: None,
             in_tx: false,
         }
     }
 
     fn fatal(&self, detail: impl std::fmt::Display) -> SourceError {
         errors::fatal(Phase::Decode, Some(self.name), detail)
+    }
+
+    /// Record the current transaction's first unappliable record; decided
+    /// at the commit boundary (see `tx_error`).
+    fn defer(&mut self, error: SourceError) {
+        if self.tx_error.is_none() {
+            self.tx_error = Some(error);
+        }
     }
 
     fn on_message(&mut self, lsn: u64, message: Message) -> Result<Vec<Emit>, SourceError> {
@@ -777,8 +905,10 @@ impl<'a> Apply<'a> {
             }
             Message::Insert { rel, new } => {
                 if let Some(map) = self.our_map(rel) {
-                    let row = self.tuple_row(&map, &new, None)?;
-                    self.tx_rows.push((row, false));
+                    match self.tuple_row(&map, &new, None) {
+                        Ok(row) => self.tx_rows.push((row, false)),
+                        Err(e) => self.defer(e),
+                    }
                 }
                 Ok(Vec::new())
             }
@@ -786,34 +916,44 @@ impl<'a> Apply<'a> {
                 if let Some(map) = self.our_map(rel) {
                     // PK-changing update: delete(old key) then insert(new),
                     // in order, same transaction (P5).
-                    let old_key = old.as_ref().map(|o| self.key_cells(&map, o)).transpose()?;
-                    let new_row = self.tuple_row(&map, &new, old.as_ref())?;
-                    let new_key: Vec<&Cell> =
-                        self.key_plan_idx.iter().map(|&i| &new_row[i]).collect();
-                    if let Some(old_key) = old_key {
-                        let changed = old_key
-                            .iter()
-                            .zip(&new_key)
-                            .any(|(o, n)| !matches!(o, Cell::Null) && &o != n);
-                        if changed {
-                            self.tx_rows.push((self.delete_row(old_key), true));
+                    let built = (|| {
+                        let mut rows = Vec::new();
+                        let old_key = old.as_ref().map(|o| self.key_cells(&map, o)).transpose()?;
+                        let new_row = self.tuple_row(&map, &new, old.as_ref())?;
+                        let new_key: Vec<&Cell> =
+                            self.key_plan_idx.iter().map(|&i| &new_row[i]).collect();
+                        if let Some(old_key) = old_key {
+                            let changed = old_key
+                                .iter()
+                                .zip(&new_key)
+                                .any(|(o, n)| !matches!(o, Cell::Null) && &o != n);
+                            if changed {
+                                rows.push((self.delete_row(old_key), true));
+                            }
                         }
+                        rows.push((new_row, false));
+                        Ok::<_, SourceError>(rows)
+                    })();
+                    match built {
+                        Ok(rows) => self.tx_rows.extend(rows),
+                        Err(e) => self.defer(e),
                     }
-                    self.tx_rows.push((new_row, false));
                 }
                 Ok(Vec::new())
             }
             Message::Delete { rel, old } => {
                 if let Some(map) = self.our_map(rel) {
-                    let key = self.key_cells(&map, &old)?;
-                    if key.iter().any(|c| matches!(c, Cell::Null)) {
-                        return Err(self.fatal(
-                            "delete record carries no usable key data — the \
-                             table's replica identity was weakened mid-stream; \
-                             restore it (contract O4)",
-                        ));
+                    match self.key_cells(&map, &old) {
+                        Ok(key) if key.iter().any(|c| matches!(c, Cell::Null)) => {
+                            self.defer(self.fatal(
+                                "delete record carries no usable key data — the \
+                                 table's replica identity was weakened \
+                                 mid-stream; restore it (contract O4)",
+                            ));
+                        }
+                        Ok(key) => self.tx_rows.push((self.delete_row(key), true)),
+                        Err(e) => self.defer(e),
                     }
-                    self.tx_rows.push((self.delete_row(key), true));
                 }
                 Ok(Vec::new())
             }
@@ -822,10 +962,12 @@ impl<'a> Apply<'a> {
                     .iter()
                     .any(|id| matches!(self.rel_maps.get(id), Some(Some(_))))
                 {
-                    return Err(self.fatal(
+                    self.defer(self.fatal(
                         "TRUNCATE arrived on this table — truncation does not \
-                         replicate as row deletes; reset the stream (clear its \
-                         cursor for a fresh snapshot) or stop truncating \
+                         replicate as row deletes; reset the stream's pipeline \
+                         state AND re-initialize the destination table (a fresh \
+                         snapshot starts PAST the truncation but cannot remove \
+                         rows the truncation deleted), or stop truncating \
                          published tables",
                     ));
                 }
@@ -834,11 +976,16 @@ impl<'a> Apply<'a> {
             Message::Commit { .. } => {
                 self.in_tx = false;
                 // Already-applied transaction (commit position ≤ cursor):
-                // discard. Otherwise the buffered rows become ready and this
-                // commit position becomes checkpointable.
+                // discard rows AND any unappliable-record error — replaying
+                // past an applied fault must not re-raise it. Otherwise the
+                // fault (if any) surfaces HERE, at its commit position.
                 let rows = std::mem::take(&mut self.tx_rows);
+                let error = self.tx_error.take();
                 if lsn <= self.since {
                     return Ok(Vec::new());
+                }
+                if let Some(error) = error {
+                    return Err(error);
                 }
                 self.ready_rows.extend(rows);
                 self.last_commit = Some(lsn);
@@ -857,6 +1004,7 @@ impl<'a> Apply<'a> {
     /// it is the whole-transaction discipline (the next pass replays it).
     fn finish(&mut self, target: u64) -> Result<Vec<Emit>, SourceError> {
         self.tx_rows.clear();
+        self.tx_error = None;
         let mut out = self.flush(false)?;
         out.push(Emit::Checkpoint(target.max(self.since)));
         Ok(out)

@@ -33,6 +33,27 @@
   (≈72k changes/s end-to-end, upsert+hard_delete composition); quiet
   catch-up latency 50 ms steady state. Confirmed-position walk behavior
   recorded honestly in RESULTS.md. Existing gated bars untouched.
+- **Review round (workflow-backed, 27 agents, 2026-07-21)**: 10 verified
+  findings, all fixed with regression cells: (1) recreated-slot WAL gap →
+  typed error + recovery cell; (2) replident 'i' with dropped index →
+  typed, never an empty merge key; (3+4) TRUNCATE / unchanged-TOAST
+  wedges → unappliable records now DEFER to the commit boundary (skipped
+  when commit ≤ cursor) and the pre-existing-slot snapshot cursor starts
+  at the snapshot's visibility horizon (read before BEGIN), so the
+  documented fresh-snapshot recovery actually clears them (TRUNCATE
+  advice also says re-initialize the destination — merge snapshots can't
+  remove truncated rows); (5) tail WAL retention → warned past 256 MiB +
+  documented (a safe in-run ack needs commit feedback the SPI doesn't
+  expose; engine-WAL damage falls back to cursor re-extraction, so
+  acking pushed-but-uncommitted positions would be data loss); (6) peek
+  session pins datestyle=ISO + bytea_output=hex (GUC cell); (7) run
+  state drops its connections on any error — engine in-run transient
+  retries get fresh clients (pinned by transient_mid_snapshot cell);
+  (8) control/snapshot clients are Arc'd and passes run WITHOUT the
+  run-state lock — no cross-stream serialization behind a slow sink;
+  (9) C3 warning covers schema-wide discovery; (10) primary_key override
+  honored under REPLICA IDENTITY FULL (streams()-level cell). Six
+  below-cap cleanup notes acknowledged, not blocking.
 - **Deviations from plan shape**: `values.rs` added inside `source/cdc/`
   (text-form tuple → Arrow, same shapes as the COPY decoder); the C3
   composition warning lives in the CLI (the only component that sees

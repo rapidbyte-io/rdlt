@@ -293,19 +293,32 @@ fn cdc_composition_warnings(
                         .to_string(),
                 );
             }
-            for table in config.tables.iter().flatten() {
-                let has_flag = tables
-                    .as_ref()
-                    .and_then(|t| t.get(&table.name))
-                    .and_then(|t| t.hard_delete.as_deref())
-                    == Some(cdc.flag_column.as_str());
-                if !has_flag {
-                    warnings.push(format!(
-                        "cdc: table `{}` has no hard_delete = \"{}\" — deletes \
-                         will land as flagged rows (soft delete) instead of \
-                         removals (contract C3)",
-                        table.name, cdc.flag_column
-                    ));
+            match &config.tables {
+                // Schema-wide discovery: the table set is unknown here, but
+                // the C3 warning must not go silent — one generic notice.
+                None => warnings.push(format!(
+                    "cdc: schema-wide discovery (no `tables:` list) — give every \
+                     CDC table hard_delete = \"{}\" in the destination options, \
+                     or deletes land as flagged rows (soft delete) instead of \
+                     removals (contract C3)",
+                    cdc.flag_column
+                )),
+                Some(listed) => {
+                    for table in listed {
+                        let has_flag = tables
+                            .as_ref()
+                            .and_then(|t| t.get(&table.name))
+                            .and_then(|t| t.hard_delete.as_deref())
+                            == Some(cdc.flag_column.as_str());
+                        if !has_flag {
+                            warnings.push(format!(
+                                "cdc: table `{}` has no hard_delete = \"{}\" — \
+                                 deletes will land as flagged rows (soft delete) \
+                                 instead of removals (contract C3)",
+                                table.name, cdc.flag_column
+                            ));
+                        }
+                    }
                 }
             }
         }
@@ -430,6 +443,26 @@ mod tests {
         let warnings = cdc_composition_warnings(&duckdb, &cdc_config());
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(warnings[0].contains("soft delete"), "{warnings:?}");
+
+        // Schema-wide discovery (no tables list): the hard_delete leg still
+        // warns — once, generically (review F9).
+        let schema_wide = rdlt::postgres_source::PostgresConfig::from_yaml(
+            "conn: host=localhost\ncdc:\n  slot: s\n  publication: p\n",
+        )
+        .expect("config");
+        let recommended_no_tables = spec(
+            "pipeline = \"p\"\n\
+             [write_mode.merge]\nkey = [\"id\"]\n\
+             [source.postgres]\nconfig = \"src.yaml\"\n\
+             [destination.postgres]\nconn = \"host=x\"\ndataset = \"d\"\n\
+             merge_strategy = \"upsert\"\n",
+        );
+        let warnings = cdc_composition_warnings(&recommended_no_tables, &schema_wide);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].contains("schema-wide") && warnings[0].contains("hard_delete"),
+            "{warnings:?}"
+        );
 
         // No cdc block: silent regardless of shape.
         let plain = rdlt::postgres_source::PostgresConfig::from_yaml("conn: host=localhost\n")

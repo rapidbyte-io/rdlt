@@ -337,6 +337,15 @@ impl CdcRig {
         }
     }
 
+    /// A fresh pipeline identity (new workdir + name): the documented
+    /// recovery for wedged streams — cursors gone, next run snapshots.
+    fn reset_state(&mut self, pipeline: &str) {
+        let dir = tempfile::tempdir().expect("workdir");
+        self.workdir = dir.path().to_path_buf();
+        std::mem::forget(dir);
+        self.pipeline = pipeline.to_string();
+    }
+
     fn source(&self, tables: &[&str]) -> PostgresSource {
         let list = tables
             .iter()
@@ -899,5 +908,212 @@ async fn replication_lag_lands_on_the_dedicated_target() {
     assert!(
         events.len() >= 2,
         "one lag event per completed run (SC-006): {events:?}"
+    );
+}
+
+// ──────────────── review round: regression cells for the fixes ────────────────
+
+#[tokio::test(flavor = "multi_thread")]
+async fn recreated_slot_with_resuming_cursor_is_typed_never_a_gap() {
+    // Review F1: a slot recreated THIS run cannot cover a resuming stream's
+    // history — that must be a typed error, never a silent WAL gap.
+    let rig = CdcRig::start("cdc-slot-gap").await;
+    rig.fixture
+        .seed(
+            "CREATE TABLE public.orders (id int8 PRIMARY KEY, total int4);\
+             INSERT INTO public.orders VALUES (1, 10);",
+        )
+        .await;
+    rig.run(&["orders"], "id").await;
+    rig.fixture
+        .seed("INSERT INTO public.orders VALUES (2, 20);")
+        .await;
+    rig.run(&["orders"], "id").await; // cursor now exists
+
+    // Simulate the retention-overrun recovery a user would perform.
+    let client = rig.fixture.client().await;
+    client
+        .query_one("SELECT pg_drop_replication_slot('s1')", &[])
+        .await
+        .expect("drop slot");
+    rig.fixture
+        .seed("INSERT INTO public.orders VALUES (3, 30);")
+        .await;
+
+    let err = rig.run_expect_err(&["orders"], "id").await;
+    assert!(err.contains("created THIS run"), "{err}");
+    assert!(err.contains("reset the pipeline state"), "{err}");
+    // Nothing skipped silently: row 3 must NOT be missing while the run
+    // claims success — the run failed instead.
+    assert_eq!(
+        rig.scalar("SELECT count(*) FROM mirror.orders WHERE id = 3")
+            .await,
+        0
+    );
+
+    // The documented recovery converges: fresh state → fresh snapshot.
+    let mut rig = rig;
+    rig.reset_state("cdc-slot-gap-2");
+    rig.run(&["orders"], "id").await;
+    rig.assert_mirror_equals("orders", "id, total").await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dropped_identity_index_is_typed_not_an_empty_key() {
+    // Review F2: relreplident stays 'i' after the identity index is
+    // dropped; the empty column set must be a typed error, never an empty
+    // merge key.
+    let rig = CdcRig::start("cdc-ident-index").await;
+    rig.fixture
+        .seed(
+            "CREATE TABLE public.ev (id int8 NOT NULL, v int4);\
+             CREATE UNIQUE INDEX ev_ident ON public.ev (id);\
+             ALTER TABLE public.ev ALTER COLUMN id SET NOT NULL;\
+             ALTER TABLE public.ev REPLICA IDENTITY USING INDEX ev_ident;\
+             DROP INDEX public.ev_ident;\
+             INSERT INTO public.ev VALUES (1, 1);",
+        )
+        .await;
+    let err = rig.run_expect_err(&["ev"], "id").await;
+    assert!(err.contains("`ev`"), "{err}");
+    assert!(err.contains("index"), "{err}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn truncate_wedge_recovers_via_fresh_snapshot() {
+    // Review F3: the TRUNCATE fatal must respect the already-applied filter
+    // and the fresh-snapshot recovery must start PAST the truncation —
+    // otherwise the error's own remedy can never clear it.
+    let mut rig = CdcRig::start("cdc-truncate").await;
+    rig.fixture
+        .seed(
+            "CREATE TABLE public.orders (id int8 PRIMARY KEY, total int4);\
+             INSERT INTO public.orders VALUES (1, 10), (2, 20);",
+        )
+        .await;
+    rig.run(&["orders"], "id").await;
+
+    rig.fixture
+        .seed("TRUNCATE public.orders; INSERT INTO public.orders VALUES (5, 50);")
+        .await;
+    let err = rig.run_expect_err(&["orders"], "id").await;
+    assert!(err.contains("TRUNCATE"), "{err}");
+    assert!(err.contains("fresh snapshot"), "{err}");
+    assert!(err.contains("re-initialize the destination"), "{err}");
+
+    // The prescribed recovery: reset pipeline state AND the destination
+    // table (a merge snapshot cannot remove truncated rows), then snapshot.
+    // The replayed WAL still contains the TRUNCATE record; it must now be
+    // subsumed, not fatal.
+    rig.fixture.seed("DROP TABLE mirror.orders;").await;
+    rig.reset_state("cdc-truncate-2");
+    rig.run(&["orders"], "id").await;
+    rig.assert_mirror_equals("orders", "id, total").await;
+    rig.fixture
+        .seed("INSERT INTO public.orders VALUES (6, 60); DELETE FROM public.orders WHERE id = 5;")
+        .await;
+    rig.run(&["orders"], "id").await;
+    rig.assert_mirror_equals("orders", "id, total").await;
+    assert_eq!(rig.scalar("SELECT count(*) FROM mirror.orders").await, 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn toast_wedge_recovers_after_alter_and_reset() {
+    // Review F4: the unchanged-TOAST fatal's advised fix (ALTER … FULL)
+    // plus a state reset must actually recover the stream — the old WAL
+    // record must not replay-fatal forever.
+    let mut rig = CdcRig::start("cdc-toast-wedge").await;
+    rig.fixture
+        .seed(
+            "CREATE TABLE public.docs (id int8 PRIMARY KEY, blob text, counter int4);\
+             INSERT INTO public.docs \
+             SELECT 1, (SELECT string_agg(md5(g::text), '') FROM generate_series(1, 4000) g), 1;",
+        )
+        .await;
+    rig.run(&["docs"], "id").await;
+    rig.fixture
+        .seed("UPDATE public.docs SET counter = 2 WHERE id = 1;")
+        .await;
+    let err = rig.run_expect_err(&["docs"], "id").await;
+    assert!(err.contains("REPLICA IDENTITY FULL"), "{err}");
+
+    // Follow the error's advice, then reset state: snapshot restarts past
+    // the unappliable record and later TOAST updates substitute.
+    rig.fixture
+        .seed("ALTER TABLE public.docs REPLICA IDENTITY FULL;")
+        .await;
+    rig.reset_state("cdc-toast-wedge-2");
+    rig.run(&["docs"], "id").await;
+    rig.assert_mirror_equals("docs", "id, blob, counter").await;
+    rig.fixture
+        .seed("UPDATE public.docs SET counter = 3 WHERE id = 1;")
+        .await;
+    rig.run(&["docs"], "id").await;
+    assert_eq!(
+        rig.scalar("SELECT counter::int8 FROM mirror.docs WHERE id = 1")
+            .await,
+        3
+    );
+    rig.assert_mirror_equals("docs", "id, blob, counter").await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn session_gucs_do_not_break_change_decoding() {
+    // Review F6: the peek session pins DateStyle/bytea_output — a database
+    // with legacy settings must decode identically.
+    let rig = CdcRig::start("cdc-gucs").await;
+    let client = rig.fixture.client().await;
+    client
+        .batch_execute("ALTER DATABASE postgres SET datestyle = 'SQL, DMY'")
+        .await
+        .unwrap();
+    client
+        .batch_execute("ALTER DATABASE postgres SET bytea_output = 'escape'")
+        .await
+        .unwrap();
+    rig.fixture
+        .seed(
+            "CREATE TABLE public.ev (id int8 PRIMARY KEY, at timestamptz, d date, raw bytea);\
+             INSERT INTO public.ev VALUES \
+             (1, '2026-07-21T10:11:12.123456Z', '2026-07-21', '\\x0aff10');",
+        )
+        .await;
+    rig.run(&["ev"], "id").await;
+    rig.fixture
+        .seed(
+            "UPDATE public.ev SET at = '2026-07-22T01:02:03Z', d = '2026-07-22', \
+             raw = '\\xdeadbeef' WHERE id = 1;\
+             INSERT INTO public.ev VALUES (2, '2025-01-31T23:59:59Z', '2025-01-31', '\\x00');",
+        )
+        .await;
+    rig.run(&["ev"], "id").await;
+    rig.assert_mirror_equals("ev", "id, at, d, raw").await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn declared_primary_key_override_keys_the_stream_under_full() {
+    // Review F10: under REPLICA IDENTITY FULL a declared primary_key
+    // override must win over the catalog PK (any key has values in the
+    // full old image) — not be silently ignored.
+    use rdlt_connector::Source;
+    let rig = CdcRig::start("cdc-key-override").await;
+    rig.fixture
+        .seed(
+            "CREATE TABLE public.orders (id int8 PRIMARY KEY, code text NOT NULL);\
+             ALTER TABLE public.orders REPLICA IDENTITY FULL;\
+             INSERT INTO public.orders VALUES (1, 'a');",
+        )
+        .await;
+    let source = PostgresSource::from_yaml(&format!(
+        "conn: \"{}\"\ncdc:\n  slot: s1\n  publication: p1\n  create_if_missing: true\n\
+         tables:\n  - name: orders\n    primary_key: [code]\n",
+        rig.fixture.conn_url()
+    ))
+    .expect("config");
+    let specs = source.streams().await.expect("streams");
+    assert_eq!(
+        specs[0].primary_key.as_deref(),
+        Some(&["code".to_string()][..]),
+        "the declared business key wins under FULL"
     );
 }

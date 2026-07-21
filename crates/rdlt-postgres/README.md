@@ -151,7 +151,9 @@ conn string sets its own.
   `merge{key}` + destination `upsert` + `hard_delete` (the CLI warns when
   absent) — rows then actually disappear. The slot's acknowledged position
   only ever advances to destination-committed cursors (one run behind —
-  hygiene, never correctness) and rdlt NEVER drops slots or publications.
+  hygiene, never correctness; long-lived tails therefore accumulate WAL
+  retention and warn past 256 MiB — cycle them, or cron catch-up runs)
+  and rdlt NEVER drops slots or publications.
   Tables need a usable replica identity (typed error naming the fix);
   unchanged-TOAST values substitute under REPLICA IDENTITY FULL and fail
   typed without it; replication lag lands per completed run on the

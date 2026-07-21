@@ -300,3 +300,29 @@ async fn container_kill_mid_catch_up_is_typed_and_preserves_commits() {
         .expect("distinct");
     assert_eq!(distinct, count.to_string(), "no double-applied rows");
 }
+
+/// Review F7: a TRANSIENT mid-snapshot failure is retried by the ENGINE
+/// within one run — the retry must get FRESH connections (a cached dead
+/// snapshot/control client would fail every attempt after the fault
+/// cleared) and converge exactly-once.
+#[tokio::test(flavor = "multi_thread")]
+async fn transient_mid_snapshot_resumes_within_one_run() {
+    let _guard = FAIL_POINT_LOCK.lock().await;
+    let fixture = CdcPgFixture::start().await;
+    fixture.seed(SEED).await;
+    let rig = Rig::new();
+
+    // Fail the first two snapshot chunk polls, then heal: one run() call
+    // recovers by itself.
+    fail::cfg("cdc.snapshot.copy", "2*return->off").expect("configure");
+    let report = rig
+        .attempt(&fixture.conn_url())
+        .await
+        .expect("run recovers in-run");
+    fail::remove("cdc.snapshot.copy");
+
+    assert!(report.retries > 0, "the engine's retry counter surfaces");
+    assert_mirror_equals(&fixture, "in-run retry").await;
+    let stable = rig.attempt(&fixture.conn_url()).await.expect("stable");
+    assert_eq!(stable.total_rows(), 0, "convergent after in-run retries");
+}
