@@ -5,9 +5,10 @@ shell commands, and other important information, read the current plan:
 the postgres destination — `dedup_sort` ordered survivor selection (ONE
 ORDER BY rewrite in the shared dedup shape; values beat NULL; ties keep
 deterministic last-wins) and `merge_key` scope replacement (scope delete
-before the strategy arm, first-touch-per-load via the durable
-`_rdlt_scope_receipts` guard in the publish tx — multi-commit-unit
-sound, the 008 S6/F2 lesson designed out up front). Both options are
+before the strategy arm; PER-TABLE single-commit-unit rule shared with
+scd2 absent-retire — the receipts design was killed by this feature's
+own crash sweep, research R2 amendment; a mid-feed-checkpointing scoped
+stream's crash window is the recorded residual). Both options are
 keyed-structured-only, two-layer validated (parse shape + open-time
 existence/collisions, each its own typed error), behavior-unchanged when
 absent, dlt-1.29.0 parity with three recorded deviations; contract:

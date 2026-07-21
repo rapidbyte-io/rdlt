@@ -1031,6 +1031,7 @@ mod refinements {
         dedup: Option<(&'static str, SortOrder)>,
         merge_key: Option<&'static [&'static str]>,
         hard_delete: bool,
+        scd2_retire: bool,
     }
 
     fn dest(conn: &str, dataset: &str, opts: Opts) -> Postgres {
@@ -1049,6 +1050,10 @@ mod refinements {
                         merge_key: opts
                             .merge_key
                             .map(|c| c.iter().map(|s| s.to_string()).collect()),
+                        scd2: opts.scd2_retire.then(|| rdlt_postgres::dest::Scd2Options {
+                            absent: rdlt_postgres::dest::AbsentPolicy::Retire,
+                            ..rdlt_postgres::dest::Scd2Options::default()
+                        }),
                         ..PgTableOptions::default()
                     },
                 )]
@@ -1068,6 +1073,26 @@ mod refinements {
             .run()
             .await
             .expect("merge run");
+    }
+
+    async fn scalar(conn: &str, sql: &str) -> i64 {
+        let (client, connection) = tokio_postgres::connect(conn, tokio_postgres::NoTls)
+            .await
+            .expect("connect");
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        client.query_one(sql, &[]).await.expect("scalar").get(0)
+    }
+
+    async fn text(conn: &str, sql: &str) -> String {
+        let (client, connection) = tokio_postgres::connect(conn, tokio_postgres::NoTls)
+            .await
+            .expect("connect");
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        client.query_one(sql, &[]).await.expect("text").get(0)
     }
 
     /// `(id, day, seq, name)` rows of `<dataset>.events`, id-ordered.
@@ -1194,6 +1219,20 @@ mod refinements {
                 (3, Some(2), None, "d2-a".into()),
             ],
             "undelivered row in the delivered scope is GONE; day 2 intact (US2-AS1)"
+        );
+
+        // Review F8: the scope columns get a supporting index automatically
+        // (the scope delete must never seq-scan the target).
+        assert_eq!(
+            scalar(
+                &conn,
+                "SELECT count(*) FROM pg_indexes WHERE schemaname = 'mr_scope' \
+                 AND tablename = 'events' AND indexname LIKE 'rdlt_ix%' \
+                 AND indexdef LIKE '%(day)%'",
+            )
+            .await,
+            1,
+            "merge_key scope index auto-ensured"
         );
 
         // An unseen scope simply lands (US2-AS2); replay is idempotent
@@ -1330,6 +1369,136 @@ mod refinements {
         );
     }
 
+    // ---- Review round: per-table single-unit rule + composition pins ----
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn scoped_feed_in_a_later_unit_of_a_multi_unit_load_is_fine() {
+        // Review F2: the single-unit rule is PER TABLE — other streams'
+        // checkpoints split the LOAD without splitting this table's feed. A
+        // leading empty unit (another stream committed first) must not
+        // reject the scoped table.
+        let (_c, conn) = start_pg().await;
+        let opts = Opts {
+            merge_key: Some(&["day"]),
+            ..Opts::default()
+        };
+        run(
+            &conn,
+            "mr_lead_empty",
+            opts,
+            vec![vec![(99, Some(1), None, "stale", None)]],
+        )
+        .await;
+        run(
+            &conn,
+            "mr_lead_empty",
+            opts,
+            vec![vec![], vec![(1, Some(1), None, "fresh", None)]],
+        )
+        .await;
+        assert_eq!(
+            rows(&conn, "mr_lead_empty").await,
+            vec![(1, Some(1), None, "fresh".into())],
+            "scope replaced from the table's FIRST STAGED unit, wherever it lands"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn scd2_retire_shares_the_per_table_single_unit_rule() {
+        // Review F10: one rule, both consumers. Retire tolerates units where
+        // the table stages nothing (an empty stage must not read as "every
+        // key absent" = mass retirement), and rejects a split feed typed.
+        let (_c, conn) = start_pg().await;
+        let opts = Opts {
+            strategy: Some(MergeStrategy::Scd2),
+            scd2_retire: true,
+            ..Opts::default()
+        };
+        let full: Vec<Vec<Row>> = vec![vec![
+            (1, None, None, "a", None),
+            (2, None, None, "b", None),
+        ]];
+        run(&conn, "mr_scd2_units", opts, full.clone()).await;
+        // Trailing empty unit: fine — and it retires NOTHING.
+        run(
+            &conn,
+            "mr_scd2_units",
+            opts,
+            vec![full[0].clone(), vec![]],
+        )
+        .await;
+        assert_eq!(
+            scalar(
+                &conn,
+                "SELECT count(*) FROM mr_scd2_units.events WHERE _rdlt_valid_to IS NULL",
+            )
+            .await,
+            2,
+            "empty unit retired nothing"
+        );
+        // Split feed: typed, names the S6 contract.
+        let err = run_expect_err(
+            &conn,
+            "mr_scd2_units",
+            opts,
+            vec![
+                vec![(1, None, None, "a2", None)],
+                vec![(2, None, None, "b2", None)],
+            ],
+        )
+        .await;
+        assert!(
+            err.contains("scd2.md S6") && err.contains("SINGLE commit unit"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dedup_sort_survivor_drives_scd2_change_detection() {
+        // Review F9 / MR2: the scd2 arm consumes the SAME deduped shape —
+        // the ordered survivor decides the active version.
+        let (_c, conn) = start_pg().await;
+        let opts = Opts {
+            strategy: Some(MergeStrategy::Scd2),
+            dedup: Some(("seq", SortOrder::Desc)),
+            ..Opts::default()
+        };
+        // Wrong arrival order: the survivor (seq=5) becomes the active row.
+        run(
+            &conn,
+            "mr_scd2_dedup",
+            opts,
+            vec![vec![
+                (1, None, Some(5), "newest", None),
+                (1, None, Some(3), "older", None),
+            ]],
+        )
+        .await;
+        assert_eq!(
+            text(
+                &conn,
+                "SELECT name FROM mr_scd2_dedup.events WHERE _rdlt_valid_to IS NULL",
+            )
+            .await,
+            "newest",
+            "the ordered survivor is the active version"
+        );
+        // A later load creates history; the stale-arrival version never
+        // polluted it.
+        run(
+            &conn,
+            "mr_scd2_dedup",
+            opts,
+            vec![vec![(1, None, Some(9), "newer-still", None)]],
+        )
+        .await;
+        assert_eq!(
+            scalar(&conn, "SELECT count(*) FROM mr_scd2_dedup.events").await,
+            2,
+            "exactly two versions ever existed"
+        );
+    }
+
     // ---- US3: open-time validation matrix (MR6, SC-004) ----
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1387,10 +1556,47 @@ mod refinements {
                 hard_delete: true,
                 ..Opts::default()
             },
-            one_row,
+            one_row.clone(),
         )
         .await;
         assert!(err.contains("not a scope"), "{err}");
+
+        // Review F4: a merge-key column is constant per identity group — the
+        // ordering could never pick a survivor; silent no-op forbidden.
+        let err = run_expect_err(
+            &conn,
+            "mr_key_dedup",
+            Opts {
+                dedup: Some(("id", SortOrder::Desc)),
+                ..Opts::default()
+            },
+            one_row.clone(),
+        )
+        .await;
+        assert!(err.contains("part of the merge key"), "{err}");
+
+        // Review F5: the options under a non-merge write mode are rejected,
+        // never silently inert (the 008 F6 lesson).
+        let mut config = EngineConfig::new("mr-inert");
+        config.write_mode = rdlt_connector::WriteMode::Append;
+        let units = one_row.iter().map(|u| batch(u)).collect();
+        let err = Engine::new(
+            config,
+            UnitsSource { units },
+            dest(
+                &conn,
+                "mr_inert",
+                Opts {
+                    merge_key: Some(&["day"]),
+                    ..Opts::default()
+                },
+            ),
+        )
+        .run()
+        .await
+        .expect_err("inert option must be rejected")
+        .to_string();
+        assert!(err.contains("requires the merge write mode"), "{err}");
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1452,6 +1658,7 @@ mod refinements {
             dedup: Some(("seq", SortOrder::Desc)),
             merge_key: Some(&["day"]),
             hard_delete: true,
+            ..Opts::default()
         };
         run(
             &conn,

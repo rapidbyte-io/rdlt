@@ -55,6 +55,14 @@ pub(super) struct PgSession {
     pub(super) pipeline: PipelineId,
     pub(super) tables: BTreeMap<TableName, (TableSchema, WriteMode)>,
     pub(super) options: super::config::PgDestOptions,
+    /// Single-unit discipline, PER TABLE (MR5 / scd2 S6, 010 review round):
+    /// tables whose stage has already published non-empty in an earlier
+    /// commit unit of THIS load. Session-scoped is load-scoped: a session
+    /// spans one engine run = one load; a crash starts both afresh. Marked
+    /// only AFTER the unit's transaction commits (a rolled-back unit never
+    /// counts), and re-marked on the D3 replay branch (a committed unit
+    /// whose outcome the client never learned still counts).
+    pub(super) single_unit_done: std::collections::BTreeSet<TableName>,
 }
 
 impl PgSession {
@@ -133,6 +141,24 @@ impl LoadSession for PgSession {
                 }
             }
         }
+        // Feature 010 review (the 008 F6 lesson applied to the new options):
+        // dedup_sort/merge_key under Append or Replace would be silently
+        // inert — reject typed instead.
+        if !matches!(mode, WriteMode::Merge { .. }) {
+            let table = schema.table.as_str();
+            for (declared, name) in [
+                (self.options.dedup_sort_for(table).is_some(), "dedup_sort"),
+                (self.options.merge_key_for(table).is_some(), "merge_key"),
+            ] {
+                if declared {
+                    return Err(fatal(format!(
+                        "table `{table}`: {name} requires the merge write mode \
+                         (contract merge-refinements.md MR6) — under \
+                         append/replace it would be silently inert"
+                    )));
+                }
+            }
+        }
         // Feature 008 US2 (merge-strategies.md): strategy validation + the
         // supporting/unique indexes, ensured WITH the table (M3/M5).
         if let WriteMode::Merge { key } = mode {
@@ -182,6 +208,17 @@ impl LoadSession for PgSession {
                         "table `{table}`: dedup_sort column `{}` is the hard_delete \
                          flag — use a distinct ordering column (contract \
                          merge-refinements.md MR6)",
+                        dedup.column
+                    )));
+                }
+                // Review: a merge-key column is CONSTANT within each identity
+                // group — the ordering could never choose a survivor, silently
+                // reverting to arrival order.
+                if key.contains(&dedup.column) {
+                    return Err(fatal(format!(
+                        "table `{table}`: dedup_sort column `{}` is part of the \
+                         merge key — constant within each identity group, it can \
+                         never order survivors (contract merge-refinements.md MR6)",
                         dedup.column
                     )));
                 }
@@ -282,6 +319,12 @@ impl LoadSession for PgSession {
                         cols.push(scd2.valid_to.clone());
                         indexes.push((false, cols));
                     }
+                }
+                // Feature 010 review: the scope delete probes by the scope
+                // columns — without this index it seq-scans the whole target
+                // every load (the scoreboard number was measured WITH it).
+                if let Some(scope) = self.options.merge_key_for(table) {
+                    indexes.push((false, scope.to_vec()));
                 }
             }
             for (unique, columns) in indexes {
@@ -409,6 +452,30 @@ impl LoadSession for PgSession {
             .get::<_, i64>(0)
             > 0;
         if already > 0 {
+            // D3 replay of a unit that DID commit server-side: the merge SQL
+            // never re-runs, but the single-unit discipline must still count
+            // this unit — the redelivered stage carries the same rows the
+            // committed one did.
+            for (table, (_, mode)) in &self.tables {
+                if !matches!(mode, WriteMode::Merge { .. }) {
+                    continue;
+                }
+                let scoped = self.options.merge_key_for(table.as_str()).is_some();
+                let retire = self.options.strategy_for(table.as_str()) == MergeStrategy::Scd2
+                    && self.options.scd2_for(table.as_str()).absent
+                        == super::config::AbsentPolicy::Retire;
+                if (scoped || retire) && !self.single_unit_done.contains(table) {
+                    let stage = quote(&stage_name(&self.pipeline, table));
+                    let staged: bool = tx
+                        .query_one(&format!("SELECT EXISTS (SELECT 1 FROM {stage})"), &[])
+                        .await
+                        .map_err(transient)?
+                        .get(0);
+                    if staged {
+                        self.single_unit_done.insert(table.clone());
+                    }
+                }
+            }
             for table in self.tables.keys() {
                 tx.batch_execute(&format!(
                     "TRUNCATE TABLE {}",
@@ -420,6 +487,9 @@ impl LoadSession for PgSession {
             tx.commit().await.map_err(transient)?;
             return Ok(receipt);
         }
+        // Applied only after THIS unit's transaction commits (see
+        // `single_unit_done`).
+        let mut single_unit_marks: Vec<TableName> = Vec::new();
 
         for (table, (schema, mode)) in &self.tables {
             // Feature 006: a schema without the per-row identity column is a
@@ -454,34 +524,57 @@ impl LoadSession for PgSession {
                     // Feature 008 (merge-strategies.md): the strategy is
                     // destination config; the engine's mode stays frozen.
                     let strategy = self.options.strategy_for(table.as_str());
-                    // Feature 010 (MR3–MR5): scope replacement runs BEFORE
-                    // the strategy arm, in the load's FIRST commit unit only.
-                    // The spec's premise — "the batch is the complete truth
-                    // for its scope" — only holds when the scope's truth
-                    // arrives atomically: a crash-RESUMED load is a NEW load
-                    // delivering a PARTIAL feed, and no destination-side
-                    // bookkeeping can distinguish it from a fresh load (the
-                    // refined-merge crash sweep proved a receipts scheme
-                    // deletes resumed rows). Same rule and remedy as scd2
-                    // absent:retire (S6).
-                    if let Some(scope) = self.options.merge_key_for(table.as_str()) {
-                        if load_committed_before {
-                            let staged: bool = tx
-                                .query_one(&format!("SELECT EXISTS (SELECT 1 FROM {stage})"), &[])
-                                .await
-                                .map_err(transient)?
-                                .get(0);
-                            if staged {
-                                return Err(fatal(format!(
-                                    "table `{table}`: merge_key scope replacement requires \
-                                     the table's full feed in a SINGLE commit unit \
-                                     (contract merge-refinements.md MR5) — raise the \
-                                     engine commit thresholds"
-                                )));
-                            }
-                        } else {
-                            scope_replace(&tx, &target, &stage, scope).await?;
+                    let scoped = self.options.merge_key_for(table.as_str());
+                    let scd2 = (strategy == MergeStrategy::Scd2)
+                        .then(|| self.options.scd2_for(table.as_str()));
+                    let retire = scd2
+                        .as_ref()
+                        .is_some_and(|s| s.absent == super::config::AbsentPolicy::Retire);
+                    // Single-unit discipline, PER TABLE (MR5 + scd2 S6, one
+                    // shared rule): scope replacement and absent-retire each
+                    // interpret the stage as "the complete truth" — sound only
+                    // when THIS TABLE's full feed arrives in one commit unit.
+                    // Per-table tracking (not `load_committed_before`): other
+                    // streams' checkpoints legitimately split the LOAD into
+                    // units without splitting this table's feed. A unit where
+                    // this table stages NOTHING is skipped outright — which
+                    // also stops an empty stage from reading as "every key
+                    // absent" (retire = mass retirement). The crash residual
+                    // is recorded in MR5: a scoped/retire stream that
+                    // checkpoints MID-feed and crashes in the window resumes
+                    // as a new load with a partial feed, which no
+                    // destination-side bookkeeping can distinguish from a
+                    // fresh load (this feature's own sweep killed the receipts
+                    // scheme that tried).
+                    if scoped.is_some() || retire {
+                        let staged: bool = tx
+                            .query_one(&format!("SELECT EXISTS (SELECT 1 FROM {stage})"), &[])
+                            .await
+                            .map_err(transient)?
+                            .get(0);
+                        if !staged {
+                            continue; // nothing delivered for THIS table this unit
                         }
+                        if self.single_unit_done.contains(table) {
+                            let (what, contract) = if scoped.is_some() {
+                                ("merge_key scope replacement", "merge-refinements.md MR5")
+                            } else {
+                                ("scd2 `absent: retire`", "scd2.md S6")
+                            };
+                            return Err(fatal(format!(
+                                "table `{table}`: {what} requires the table's full \
+                                 feed in a SINGLE commit unit (contract {contract}) — \
+                                 raise the engine commit thresholds and re-run; the \
+                                 fixed configuration re-delivers the full feed and \
+                                 converges"
+                            )));
+                        }
+                        single_unit_marks.push(table.clone());
+                    }
+                    // Feature 010 (MR3/MR4): scope replacement runs BEFORE
+                    // the strategy arm, inside the same transaction.
+                    if let Some(scope) = scoped {
+                        scope_replace(&tx, &target, &stage, scope).await?;
                     }
                     let plan = MergePlan {
                         target: &target,
@@ -515,22 +608,10 @@ impl LoadSession for PgSession {
                             )));
                         }
                         (false, MergeStrategy::Scd2) => {
-                            let scd2 = self.options.scd2_for(table.as_str());
-                            // Review F2: absent-retire compares against ONE
-                            // commit unit's stage; a load split across units
-                            // would mass-retire keys published by earlier
-                            // units. Sound without an end-of-load hook (SPI
-                            // frozen): retire only in a load's FIRST unit,
-                            // and fail typed if a later unit arrives.
-                            if scd2.absent == super::config::AbsentPolicy::Retire
-                                && load_committed_before
-                            {
-                                return Err(fatal(format!(
-                                    "table `{table}`: scd2 `absent: retire` requires the \
-                                     load's full feed in a SINGLE commit unit (contract \
-                                     scd2.md S6) — raise the engine commit thresholds"
-                                )));
-                            }
+                            // 008 review F2's single-unit guard for
+                            // absent-retire now lives in the shared per-table
+                            // discipline above (010 review round).
+                            let scd2 = scd2.expect("scd2 options resolved with the strategy");
                             scd2_merge(&tx, &plan, &scd2).await?
                         }
                         (true, MergeStrategy::Scd2) => {
@@ -578,6 +659,7 @@ impl LoadSession for PgSession {
             Err(DestError::fatal("injected crash at pg.tx.commit"))
         );
         tx.commit().await.map_err(transient)?;
+        self.single_unit_done.extend(single_unit_marks);
         Ok(receipt)
     }
 

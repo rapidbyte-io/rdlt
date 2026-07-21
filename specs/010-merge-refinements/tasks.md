@@ -104,7 +104,7 @@ across multi-commit-unit loads via durable per-load receipts.
 row missing: the row is gone, the untouched scope intact, identity
 merging still applies inside the delivered scope.
 
-- [X] T003 [US2] Receipts substrate in
+- [X] T003 [US2] [SUPERSEDED by the R2 amendment — receipts removed; see close-out notes] Receipts substrate in
       `crates/rdlt-postgres/src/dest/ddl.rs` +
       `crates/rdlt-postgres/src/dest/commit.rs`: create
       `_rdlt_scope_receipts (load_id, table_name, scope, PRIMARY KEY
@@ -112,7 +112,7 @@ merging still applies inside the delivered scope.
       other loads' receipts for a table at the load's FIRST unit
       (`load_committed_before == false`, mirroring replace-truncate-once,
       R2/MR5).
-- [X] T004 [US2] Scope delete in
+- [X] T004 [US2] [AS AMENDED — first-staged-unit rule, no receipts; see close-out notes] Scope delete in
       `crates/rdlt-postgres/src/dest/commit.rs`: before the strategy
       arm, inside the publish tx — delete target rows whose scope
       matches an UNRECEIPTED stage scope (NULL-in-any-column excluded

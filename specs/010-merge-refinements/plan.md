@@ -4,6 +4,14 @@
 
 **Input**: Feature specification from `/specs/010-merge-refinements/spec.md`
 
+> **AMENDED during implementation** (research.md "R2 amendment"): the
+> receipts-based multi-commit-unit scope replacement this plan originally
+> specified was DISPROVEN by the feature's own crash sweep and is NOT the
+> shipped design. Shipped: a PER-TABLE single-commit-unit rule shared
+> with scd2 absent-retire (contract MR5 as amended); no
+> `_rdlt_scope_receipts` table exists. Receipts mentions below are
+> retained as history — read them with this banner in mind.
+
 ## Summary
 
 Two per-table destination options on the 008 surface, both landing in
@@ -13,11 +21,9 @@ every in-load survivor decision flows through `MergePlan::deduped()`
 `<column> <dir> NULLS LAST` ahead of the arrival tie-breaker gives
 ordered survivors to delete-insert, upsert, hard-delete, and SCD2 change
 detection simultaneously (R1). `merge_key` is a scope delete BEFORE the
-strategy arm, made multi-commit-unit-sound the same way replace-truncate
-and D3 idempotence already are: a durable per-load guard in the publish
-transaction — `_rdlt_scope_receipts (load_id, table, scope)` ensures
-each scope is replaced at most once per load, and committed-unit
-redelivery never reaches merge SQL at all (R2). NULL policies are
+strategy arm at the table's FIRST STAGED unit [as amended — the
+receipts scheme originally described here was killed by the crash
+sweep; see the banner and research R2 amendment] (R2). NULL policies are
 defined, not inherited (values beat NULL; NULL is not a scope). Both
 options are keyed-structured-only with the full two-layer validation
 matrix (R3), ride the generated schemas + CLI passthrough with zero CLI
@@ -31,9 +37,8 @@ recorded (no append-fallback, no arbitrary survivor, defined NULLs).
 
 **Primary Dependencies**: none new
 
-**Storage**: one new destination auxiliary table
-(`_rdlt_scope_receipts`), managed like `_rdlt_commits`; no engine state
-changes
+**Storage**: none new [as amended — the planned `_rdlt_scope_receipts`
+table was removed with the receipts design]; no engine state changes
 
 **Testing**: dest_conformance MR matrices (US1/US2/US3 cells against a
 real server); dest_crash_sweep coverage of the scope-delete and ordered-

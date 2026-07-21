@@ -148,6 +148,7 @@ impl Destination for Postgres {
             pipeline: _ctx.pipeline,
             tables: std::collections::BTreeMap::new(),
             options: self.options.clone(),
+            single_unit_done: std::collections::BTreeSet::new(),
         }))
     }
 }
