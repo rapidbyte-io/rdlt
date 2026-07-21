@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use crate::artifact::{Artifact, CpuStats, RdltSide, RssStats, VerifyOutcome};
 use crate::cells::{Cell, Mode, Timing};
-use crate::protocol::{self, QuietVerdict, Sample};
+use crate::protocol::{self, Sample};
 use crate::sample::{ResourceUsage, Sampler};
 use crate::{BenchError, Result};
 
@@ -89,6 +89,10 @@ fn report_table_rows(report: &serde_json::Value, table: &str) -> u64 {
 pub struct RunDetail {
     pub report: Option<serde_json::Value>,
     pub usage: Option<ResourceUsage>,
+    /// Harness wall clock around the child — the window the sampler ran
+    /// over. For self-timed cells this differs from `wall_ms` (the reported
+    /// measurement), and CPU utilization must divide by THIS (finding 7).
+    pub clock_ms: f64,
 }
 
 fn run_once_subprocess(
@@ -96,10 +100,14 @@ fn run_once_subprocess(
     subs: &BTreeMap<String, String>,
     paths: &Paths,
     run_dir: &Path,
+    seq: u32,
     counted: bool,
 ) -> Result<Sample<RunDetail>> {
     let mut subs = subs.clone();
     subs.insert("workdir".into(), run_dir.display().to_string());
+    // Per-run sequence for prepare scripts that need run-unique mutations
+    // (the merge-strategy 50%-changed regime, finding 1).
+    subs.insert("run".into(), seq.to_string());
 
     // Template renders BEFORE prepare_sh so untimed setup (snapshot loads,
     // seed refreshes) can run the very pipeline via `{{spec}}`.
@@ -218,12 +226,18 @@ fn run_once_subprocess(
         .and_then(|raw| serde_json::from_str(&raw).ok());
     Ok(Sample {
         wall_ms,
-        detail: RunDetail { report, usage },
+        detail: RunDetail {
+            report,
+            usage,
+            clock_ms,
+        },
     })
 }
 
-/// CPU stats from the (last counted run's) sampler series + wall time.
-fn cpu_stats(usage: Option<&ResourceUsage>, wall_ms: f64) -> CpuStats {
+/// CPU stats from the (last counted run's) sampler series. The denominator
+/// is the SAMPLER window (process wall clock), never a self-reported
+/// measurement window (finding 7).
+fn cpu_stats(usage: Option<&ResourceUsage>, sampled_window_ms: f64) -> CpuStats {
     let Some(usage) = usage else {
         return CpuStats {
             note: Some("no sampler ran".into()),
@@ -236,7 +250,7 @@ fn cpu_stats(usage: Option<&ResourceUsage>, wall_ms: f64) -> CpuStats {
             ..CpuStats::default()
         };
     };
-    let mean = (cpu_ms as f64 / wall_ms).max(0.0);
+    let mean = (cpu_ms as f64 / sampled_window_ms).max(0.0);
     let peak = usage
         .series
         .windows(2)
@@ -287,7 +301,7 @@ pub fn rdlt_side(samples: &[Sample<RunDetail>]) -> RdltSide {
         bytes,
         rows_per_s: rows.map(|r| r as f64 / secs),
         mb_per_s: bytes.map(|b| b as f64 / (1024.0 * 1024.0) / secs),
-        cpu: cpu_stats(last.detail.usage.as_ref(), last.wall_ms),
+        cpu: cpu_stats(last.detail.usage.as_ref(), last.detail.clock_ms),
         rss: rss_stats(last.detail.usage.as_ref()),
         streams: vec![],
         runs_ms,
@@ -389,15 +403,10 @@ pub fn run_cell(
     fixture: &crate::fixtures::Started,
     competitor_pin: Option<String>,
     competitors: BTreeMap<String, crate::artifact::CompetitorSide>,
+    // Quiet-guard verdict, obtained by the CALLER before any competitor ran
+    // (finding 2: the baseline side must be guarded too).
+    quiet_note: Option<String>,
 ) -> Result<Artifact> {
-    let quiet_note = match protocol::quiet_guard_now(cell.class)? {
-        QuietVerdict::Quiet => None,
-        QuietVerdict::Annotated(note) => {
-            eprintln!("[{}] {note}", cell.id);
-            Some(note)
-        }
-    };
-
     let mut subs: BTreeMap<String, String> = BTreeMap::new();
     subs.insert("repo".into(), paths.repo.display().to_string());
     subs.insert("benches".into(), paths.benches.display().to_string());
@@ -426,7 +435,8 @@ pub fn run_cell(
                 let run_dir = invocation.path().join(format!("run-{run_seq}"));
                 run_seq += 1;
                 std::fs::create_dir_all(&run_dir)?;
-                run_once_subprocess(cell, &subs, paths, &run_dir, counted)
+                let seq = run_seq - 1;
+                run_once_subprocess(cell, &subs, paths, &run_dir, seq, counted)
             })?;
             let mut side = rdlt_side(&samples);
             let verify = verify_outcome(cell, &samples)?;

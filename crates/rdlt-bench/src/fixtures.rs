@@ -123,15 +123,49 @@ impl Started {
     }
 }
 
+fn teardown(
+    container: &mut Option<(String, String)>,
+    service: &mut Option<std::process::Child>,
+    ready_port: Option<u16>,
+) {
+    if let Some((engine, name)) = container.take() {
+        let _ = Command::new(&engine).args(["rm", "-f", &name]).output();
+    }
+    if let Some(mut child) = service.take() {
+        let _ = child.kill();
+        let _ = child.wait();
+        // `sh -c "… && cargo run …"` wrappers orphan the real service
+        // (finding 5): also kill whatever still holds the ready port.
+        if let Some(port) = ready_port {
+            let _ = Command::new("sh")
+                .args([
+                    "-c",
+                    &format!("fuser -k {port}/tcp 2>/dev/null || pkill -f 'mock_api' || true"),
+                ])
+                .status();
+        }
+    }
+}
+
 impl Drop for Started {
     fn drop(&mut self) {
-        if let Some((engine, name)) = &self.container {
-            let _ = Command::new(engine).args(["rm", "-f", name]).output();
-        }
-        if let Some(child) = &mut self.service {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
+        teardown(&mut self.container, &mut self.service, self.def.ready_port);
+    }
+}
+
+/// Error-path teardown (finding 8): everything `start()` brings up is held
+/// here first; on success the guard is disarmed into `Started`, on any `?`
+/// its Drop removes the container and kills the service.
+#[derive(Debug, Default)]
+struct CleanupGuard {
+    container: Option<(String, String)>,
+    service: Option<std::process::Child>,
+    ready_port: Option<u16>,
+}
+
+impl Drop for CleanupGuard {
+    fn drop(&mut self) {
+        teardown(&mut self.container, &mut self.service, self.ready_port);
     }
 }
 
@@ -169,8 +203,11 @@ pub fn start(def: &FixtureDef, subs: &BTreeMap<String, String>) -> Result<Starte
     let sub = |s: &str| crate::runner::substitute(s, &subs);
 
     let mut hashes = BTreeMap::new();
-    let mut container = None;
-    let mut service = None;
+    let mut guard = CleanupGuard {
+        container: None,
+        service: None,
+        ready_port: def.ready_port,
+    };
 
     match def.kind {
         FixtureKind::None | FixtureKind::GeneratedFiles => {}
@@ -202,7 +239,7 @@ pub fn start(def: &FixtureDef, subs: &BTreeMap<String, String>) -> Result<Starte
             if !status.success() {
                 return Err(BenchError(format!("starting container {name} failed")));
             }
-            container = Some((engine.clone(), name.clone()));
+            guard.container = Some((engine.clone(), name.clone()));
             // pg_isready inside the container, then the host-published port.
             let deadline = Instant::now() + Duration::from_secs(30);
             loop {
@@ -262,14 +299,7 @@ pub fn start(def: &FixtureDef, subs: &BTreeMap<String, String>) -> Result<Starte
             // Sidecar service beside the container (the REST→PG cell needs
             // both the mock API and a Postgres destination).
             if let Some(script) = &def.service_sh {
-                let child = Command::new("sh")
-                    .args(["-c", &sub(script)])
-                    .current_dir(data.path())
-                    .spawn()?;
-                service = Some(child);
-                if let Some(ready) = def.ready_port {
-                    wait_tcp(ready, &def.id)?;
-                }
+                spawn_service(def, &sub(script), data.path(), &mut guard)?;
             }
         }
         FixtureKind::Service => {
@@ -277,14 +307,7 @@ pub fn start(def: &FixtureDef, subs: &BTreeMap<String, String>) -> Result<Starte
                 .service_sh
                 .as_deref()
                 .ok_or_else(|| BenchError(format!("fixture `{}`: missing service_sh", def.id)))?;
-            let child = Command::new("sh")
-                .args(["-c", &sub(script)])
-                .current_dir(data.path())
-                .spawn()?;
-            service = Some(child);
-            if let Some(port) = def.ready_port {
-                wait_tcp(port, &def.id)?;
-            }
+            spawn_service(def, &sub(script), data.path(), &mut guard)?;
         }
     }
 
@@ -300,6 +323,9 @@ pub fn start(def: &FixtureDef, subs: &BTreeMap<String, String>) -> Result<Starte
         hashes.insert(path, blake3::hash(&bytes).to_hex().to_string());
     }
 
+    // Success: disarm the guard into the Started (whose Drop owns teardown).
+    let container = guard.container.take();
+    let service = guard.service.take();
     Ok(Started {
         def: def.clone(),
         data,
@@ -307,6 +333,35 @@ pub fn start(def: &FixtureDef, subs: &BTreeMap<String, String>) -> Result<Starte
         container,
         service,
     })
+}
+
+/// Spawn a service sidecar into the guard. REFUSES if the ready port is
+/// already bound: a stale orphan from a previous session would otherwise be
+/// measured in place of the fresh service (finding 5).
+fn spawn_service(
+    def: &FixtureDef,
+    script: &str,
+    cwd: &Path,
+    guard: &mut CleanupGuard,
+) -> Result<()> {
+    if let Some(port) = def.ready_port
+        && std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
+    {
+        return Err(BenchError(format!(
+            "fixture `{}`: port {port} is ALREADY bound before the service started — \
+             a stale service from a previous session? kill it (fuser -k {port}/tcp) and retry",
+            def.id
+        )));
+    }
+    let child = Command::new("sh")
+        .args(["-c", script])
+        .current_dir(cwd)
+        .spawn()?;
+    guard.service = Some(child);
+    if let Some(port) = def.ready_port {
+        wait_tcp(port, &def.id)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

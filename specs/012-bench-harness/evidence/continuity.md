@@ -89,6 +89,48 @@ below. Both pass the ≥6× bar.)
    `normalize_seconds` (harness convention); the measured window is
    unchanged.
 
+## Review round (post-T018 workflow review — 10 findings, all fixed)
+
+The high-effort review found 10 measurement-integrity defects; every fix
+landed with the affected cells RE-MEASURED. Deltas that touch recorded
+numbers:
+
+- **Strategy cells** (finding 1): the migrated prepare had lost the
+  per-run-unique update suffix, so runs 2–5 measured a 0%-changed
+  redelivery mislabeled "50% changed". Fixed via a `{{run}}`
+  substitution; re-measured with the true regime: delete-insert
+  5.170 s, upsert 5.295 s (vs the mislabeled 5.153/5.232 — timing
+  impact negligible, the label was the defect). The
+  "indistinguishable" conclusion stands.
+- **dlt RSS statistic** (findings 3/4): the harness had gated against
+  cgroup `memory.peak` (charges page cache) while the 1/5 bar was
+  derived from ru_maxrss. Now ru_maxrss is PRIMARY (the recorded
+  statistic); `memory.peak` is a labeled fallback; `memory.current`
+  is never reported as a peak. jsonl-duckdb re-measured: 339 MB vs
+  dlt 1,920 MB ru_maxrss = **1/5.7**, bar ≤ 1/5 met on the same
+  statistic the derivation used (recorded 1/5.4).
+- **Process-tree sampler** (finding 10): `command` cells (shred-only)
+  previously sampled the sh/cargo wrapper; the sampler now walks the
+  /proc process tree (children's RSS summed, reaped children's CPU via
+  the root's cutime/cstime). shred-only re-measured: 490.4 ms median
+  (in-band), resource columns now describe the workload.
+- **Guard ordering** (finding 2): baselines now run AFTER the
+  quiet-machine guard. This session's baselines were measured on a
+  quiet machine (in-band vs history), so no re-derivation was needed.
+- Remaining fixes (no number impact): gated cells refuse to overwrite
+  committed artifacts when a baseline image is missing (+ `TARGET=e2e`
+  builds the image); CPU utilization divides by the sampler window,
+  not self-reported measurement windows; fixture error paths tear down
+  containers/services (guard), service fixtures refuse an
+  already-bound ready port and teardown kills the port holder;
+  `report` fails loudly on unreadable artifacts instead of keeping
+  stale tables.
+
+One process note: the review's verifier agents re-ran several gated
+cells while reproducing findings, leaving uncontrolled artifacts on
+disk; those were restored to the committed session values — only cells
+re-measured deliberately under the fixed harness were re-recorded.
+
 ## Method deltas vs the shell harnesses (recorded, none affect verdicts)
 
 - Wall clock is `Instant` around the release-CLI subprocess (previously

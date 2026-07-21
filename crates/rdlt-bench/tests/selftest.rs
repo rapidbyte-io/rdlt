@@ -51,7 +51,7 @@ fn selftest_cell_runs_the_full_protocol() {
         .expect("fixture registered");
     let started = fixtures::start(def, &BTreeMap::new()).expect("none fixture starts");
 
-    let result = runner::run_cell(cell, &paths, &started, None, BTreeMap::new())
+    let result = runner::run_cell(cell, &paths, &started, None, BTreeMap::new(), None)
         .expect("protocol runs end to end");
 
     assert_eq!(result.cell_id, "selftest-protocol");

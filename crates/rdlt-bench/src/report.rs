@@ -149,11 +149,17 @@ pub fn regenerate(
         if suite == "selftest" {
             continue; // the harness's own protocol test, never a product row
         }
-        let artifacts: Vec<Artifact> = cells
-            .iter()
-            .filter(|c| c.suite == suite)
-            .filter_map(|c| crate::artifact::read(results_dir, &c.id).ok())
-            .collect();
+        // A cell without an artifact file is simply not-yet-measured; an
+        // artifact that EXISTS but cannot be read (corrupt, format-version
+        // mismatch) must fail loudly — silently keeping stale tables is the
+        // BH7 violation this function exists to prevent (review finding 9).
+        let mut artifacts: Vec<Artifact> = Vec::new();
+        for cell in cells.iter().filter(|c| c.suite == suite) {
+            if !results_dir.join(format!("{}.json", cell.id)).is_file() {
+                continue;
+            }
+            artifacts.push(crate::artifact::read(results_dir, &cell.id)?);
+        }
         if artifacts.is_empty() {
             continue;
         }

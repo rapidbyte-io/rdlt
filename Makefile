@@ -18,6 +18,9 @@
 #     TARGET=matrix make bench   the FULL cell matrix incl. scoreboards (long)
 #     TARGET=gate make bench     evaluate benches/bars.toml vs committed artifacts
 #     TARGET=report make bench   regenerate RESULTS.md tables from artifacts
+#     TARGET=<cell-or-glob> make bench   one cell or a slice, e.g.
+#                                TARGET=pg-wide-pg-1m or TARGET='pg-*'
+#                                (cells: cargo run -p rdlt-bench -- list)
 #   make check                 everything a PR must pass (lint + test + sweep + perf gate)
 #
 # Suites are selected by TARGET; the tools behind them are implementation details.
@@ -82,16 +85,22 @@ else ifeq ($(TARGET),iai)
 	benches/compare-iai.sh
 else ifeq ($(TARGET),e2e)
 	$(MAKE) release
+	sh -c 'E=$$(command -v podman || command -v docker); "$$E" build -q -t rdlt-baseline benches/competitors/dlt/'
 	cargo run -q -p rdlt-bench -- run --class gated
 else ifeq ($(TARGET),matrix)
 	$(MAKE) release
+	sh -c 'E=$$(command -v podman || command -v docker); "$$E" build -q -t rdlt-baseline benches/competitors/dlt/'
 	cargo run -q -p rdlt-bench -- run
 else ifeq ($(TARGET),gate)
 	cargo run -q -p rdlt-bench -- gate
 else ifeq ($(TARGET),report)
 	cargo run -q -p rdlt-bench -- report
 else
-	$(error unknown bench TARGET '$(TARGET)' — see header comment)
+	# Anything else is a cell id or glob: TARGET=pg-wide-pg-1m, TARGET='pg-*'.
+	# The harness errors loudly when nothing matches (typos stay visible);
+	# `cargo run -p rdlt-bench -- list` shows the matrix.
+	$(MAKE) release
+	cargo run -q -p rdlt-bench -- run --filter '$(TARGET)'
 endif
 
 # Feature 011 (contract PM5): measured line coverage for the connector

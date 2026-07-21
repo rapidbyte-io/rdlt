@@ -13,7 +13,7 @@
     "dataset_hashes": {
       "seed_output": "dataset  |  rows   |           content_md5 | ----------+---------+---------------------------------- | pg_jsonb |  200000 | 33c1c5186af078733e77b845fce458c2 | pg_wide  | 1000000 | e840f51738a6b4b15f9f085ea85e3df8 | (2 rows)"
     },
-    "loadavg_at_start": 1.85,
+    "loadavg_at_start": 1.93,
     "quiet_note": null
   },
   "workload": {
@@ -22,27 +22,27 @@
   },
   "rdlt": {
     "runs_ms": [
-      5467.60819,
-      5050.089771999999,
-      5071.212133999999,
-      5206.702127,
-      5152.992961
+      5583.952972,
+      5170.445667,
+      5216.911971,
+      5119.841955,
+      5094.358191
     ],
-    "median_ms": 5152.992961,
-    "p95_ms": 5467.60819,
+    "median_ms": 5170.445667,
+    "p95_ms": 5583.952972,
     "rows": 1000000,
-    "bytes": 196756832,
-    "rows_per_s": 194061.97671303205,
-    "mb_per_s": 36.4141652581348,
+    "bytes": 200267296,
+    "rows_per_s": 193406.92551561436,
+    "mb_per_s": 36.93874549931096,
     "cpu": {
-      "mean_util": 0.2852711057681571,
-      "peak_util": 2.0,
-      "user_sys_ms": 1470,
-      "note": "cpu from last /proc poll — undercounts up to 50ms"
+      "mean_util": 0.2924804154196153,
+      "peak_util": 2.0338983050847457,
+      "user_sys_ms": 1490,
+      "note": "process TREE sampled at 50ms (root VmHWM exact; tree spikes between polls can be missed; cpu undercounts up to one interval)"
     },
     "rss": {
-      "peak_bytes": 126840832,
-      "note": "cpu from last /proc poll — undercounts up to 50ms"
+      "peak_bytes": 135917568,
+      "note": "process TREE sampled at 50ms (root VmHWM exact; tree spikes between polls can be missed; cpu undercounts up to one interval)"
     },
     "streams": []
   },

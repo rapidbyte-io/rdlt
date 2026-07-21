@@ -72,11 +72,18 @@ struct CgroupReading {
 /// with a private cgroup namespace the container sees its own controllers at
 /// `/sys/fs/cgroup`, which works regardless of where the harness itself runs
 /// (host paths are unreachable from e.g. a distrobox shell).
+///
+/// ONLY `memory.peak` (a kernel high-water mark) is accepted as a peak;
+/// there is deliberately NO `memory.current` fallback — an instantaneous
+/// reading labeled "peak" is fabrication (review finding 4).
 fn read_cgroup_via_exec(engine: &str, name: &str) -> CgroupReading {
     let out = Command::new(engine)
         .args([
-            "exec", name, "sh", "-c",
-            "cat /sys/fs/cgroup/memory.peak 2>/dev/null || cat /sys/fs/cgroup/memory.current; cat /sys/fs/cgroup/cpu.stat",
+            "exec",
+            name,
+            "sh",
+            "-c",
+            "cat /sys/fs/cgroup/memory.peak 2>/dev/null; cat /sys/fs/cgroup/cpu.stat",
         ])
         .output();
     let Ok(out) = out else {
@@ -100,9 +107,11 @@ fn read_cgroup_via_exec(engine: &str, name: &str) -> CgroupReading {
     reading
 }
 
-/// Fallback RSS: the baseline scripts self-report `peak_rss_kb` (getrusage
-/// ru_maxrss) on the same JSON line — the statistic every recorded dlt RSS
-/// figure has always used.
+/// The PRIMARY RSS statistic: the baseline scripts self-report `peak_rss_kb`
+/// (getrusage ru_maxrss) on the same JSON line — the statistic every recorded
+/// dlt RSS multiple and the 1/5 bar derivation used. cgroup `memory.peak` is
+/// the fallback only, and is labeled as the different statistic it is (it
+/// additionally charges page cache — review finding 3).
 fn self_reported_rss(stdout: &str) -> Option<u64> {
     stdout.lines().rev().find_map(|line| {
         serde_json::from_str::<serde_json::Value>(line.trim())
@@ -212,11 +221,17 @@ fn run_container_once(
             "competitor {name}: no self-timed `seconds` JSON on stdout: {stdout}"
         ))
     })?;
-    let (peak_rss, rss_source) = match last.memory_peak {
-        Some(peak) => (Some(peak), "cgroup v2 memory.peak (in-container read)"),
+    // ru_maxrss FIRST — it is the statistic the recorded multiples and the
+    // gated 1/5 bar were derived from; memory.peak also counts page cache
+    // and would silently change what the bar enforces (review finding 3).
+    let (peak_rss, rss_source) = match self_reported_rss(&stdout) {
+        Some(peak) => (
+            Some(peak),
+            "self-reported ru_maxrss — the recorded statistic (bar derivation)",
+        ),
         None => (
-            self_reported_rss(&stdout),
-            "self-reported ru_maxrss (cgroup unreachable) — the statistic all recorded dlt RSS rows used",
+            last.memory_peak,
+            "cgroup v2 memory.peak (in-container read) — NOTE: includes page cache, a different statistic than the recorded ru_maxrss",
         ),
     };
     Ok(ContainerRun {

@@ -25,9 +25,10 @@ make release                                  # gated cells measure the release 
 podman build -t rdlt-baseline benches/competitors/dlt/   # once per dlt pin
 
 cargo run -p rdlt-bench -- list               # the matrix
-cargo run -p rdlt-bench -- run pg-wide-duckdb-1m
 TARGET=e2e    make bench                      # the gated set (quiet machine!)
 TARGET=matrix make bench                      # everything, incl. scoreboards
+TARGET=pg-wide-pg-1m make bench               # one cell…
+TARGET='pg-*' make bench                      # …or a slice (any cell id/glob)
 TARGET=gate   make bench                      # bars.toml vs committed artifacts
 TARGET=report make bench                      # regenerate RESULTS.md tables
 ```

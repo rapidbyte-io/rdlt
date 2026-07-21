@@ -6,8 +6,11 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand, ValueEnum};
 
 use rdlt_bench::cells::{Cell, Class};
+use rdlt_bench::protocol::QuietVerdict;
 use rdlt_bench::runner::Paths;
-use rdlt_bench::{BenchError, artifact, cells, competitors, fixtures, gate, report, runner};
+use rdlt_bench::{
+    BenchError, artifact, cells, competitors, fixtures, gate, protocol, report, runner,
+};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -171,6 +174,17 @@ fn cmd_run(paths: &Paths, selection: &SelectionArgs) -> rdlt_bench::Result<()> {
         }
         let fixture = &started[&cell.fixture];
 
+        // Quiet guard BEFORE anything is measured — the baselines feed gated
+        // ratios, so they need the quiet machine as much as the rdlt side
+        // (review finding 2).
+        let quiet_note = match protocol::quiet_guard_now(cell.class)? {
+            QuietVerdict::Quiet => None,
+            QuietVerdict::Annotated(note) => {
+                eprintln!("[{}] {note}", cell.id);
+                Some(note)
+            }
+        };
+
         // Baseline FIRST (R12) — competitors run before the rdlt side.
         let mut competitor_sides = BTreeMap::new();
         let mut pin = None;
@@ -193,12 +207,22 @@ fn cmd_run(paths: &Paths, selection: &SelectionArgs) -> rdlt_bench::Result<()> {
             eprintln!("   baseline {} ...", variant.id);
             let side = competitors::run_competitor(variant, reference, cell.runs, &subs, fixture);
             if let artifact::CompetitorSide::Missing { reason } = &side {
+                // Scoreboard cells record the MISSING loudly; a GATED cell
+                // refuses instead — writing a baseline-less artifact would
+                // overwrite the committed competitor medians and only fail
+                // later at `gate` (review finding 6).
+                if cell.class == Class::Gated {
+                    return Err(BenchError(format!(
+                        "gated cell `{}`: baseline `{}` MISSING ({reason}) — refusing to run                          and overwrite the committed artifact",
+                        cell.id, variant.id
+                    )));
+                }
                 eprintln!("   baseline {} MISSING: {reason}", variant.id);
             }
             competitor_sides.insert(variant.id.clone(), side);
         }
 
-        let result = runner::run_cell(cell, paths, fixture, pin, competitor_sides)?;
+        let result = runner::run_cell(cell, paths, fixture, pin, competitor_sides, quiet_note)?;
         let path = artifact::write(&paths.results, &result)?;
         eprintln!(
             "   median {:.1} ms  (artifact: {})",

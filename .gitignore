@@ -12,3 +12,4 @@ mutants.out/
 mutants.out.old/
 toolbox/
 benches/results/raw/
+benches/results/selftest-protocol.json

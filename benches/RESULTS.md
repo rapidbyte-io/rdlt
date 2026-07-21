@@ -64,8 +64,8 @@
 <!-- rdlt-bench:BEGIN e2e -->
 | Cell | Class | rdlt median | vs baseline | Target | rows/s | MB/s | peak CPU | peak RSS |
 |---|---|---|---|---|---|---|---|---|
-| jsonl-duckdb-200k | gated | 1.09 s | **13.7×** (dlt: 14.92 s) | ≥ 10× | 549808 | 131.1 | 280% | 340 MB |
-| shred-only-200k | gated | 491.0 ms | **12.1×** (dlt: 5.93 s) | ≥ 10× | — | — | 100% | 160 MB |
+| jsonl-duckdb-200k | gated | 1.11 s | **13.5×** (dlt: 14.94 s) | ≥ 10× | 540493 | 128.8 | 246% | 339 MB |
+| shred-only-200k | gated | 490.4 ms | **12.0×** (dlt: 5.90 s) | ≥ 10× | — | — | 105% | 160 MB |
 | rest-pg-100k | gated | 771.6 ms | **7.6×** (dlt: 5.84 s) | ≥ 5× | 388789 | 84.0 | 260% | 56 MB |
 | parquet-passthrough | gated | 89.3 ms | **3.7×** (dlt: 331.8 ms) | ≥ 2× | 2239554 | 382.5 | 100% | 46 MB |
 | parquet-duckdb | scoreboard | 370.0 ms | **1.6×** (dlt: 582.1 ms) | — | 540494 | 92.3 | 160% | 158 MB |
@@ -135,8 +135,8 @@ shipped CLI end to end.
 <!-- rdlt-bench:BEGIN merge -->
 | Cell | Class | rdlt median | vs baseline | Target | rows/s | MB/s | peak CPU | peak RSS |
 |---|---|---|---|---|---|---|---|---|
-| strategy-delete-insert-1m | scoreboard | 5.15 s | — | — | 194062 | 36.4 | 200% | 120 MB |
-| strategy-upsert-1m | scoreboard | 5.23 s | — | — | 191128 | 35.9 | 200% | 131 MB |
+| strategy-delete-insert-1m | scoreboard | 5.17 s | — | — | 193407 | 36.9 | 203% | 129 MB |
+| strategy-upsert-1m | scoreboard | 5.30 s | — | — | 188853 | 36.1 | 224% | 137 MB |
 | merge-index-incremental-unindexed | scoreboard | 583.6 ms | — | — | — | — | 0% | 3 MB |
 | merge-index-incremental-indexed | scoreboard | 26.8 ms | — | — | — | — | 0% | 3 MB |
 | merge-index-half-indexed | scoreboard | 27.21 s | — | — | — | — | 0% | 3 MB |
