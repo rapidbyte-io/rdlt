@@ -1,0 +1,10 @@
+//! Feature 009 T002: the pgoutput parser is total — arbitrary bytes may
+//! only produce typed parse errors, never a panic or runaway allocation.
+
+#![no_main]
+
+use libfuzzer_sys::fuzz_target;
+
+fuzz_target!(|data: &[u8]| {
+    rdlt_postgres::source::testhook::fuzz_pgoutput_decode(data);
+});

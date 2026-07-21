@@ -59,3 +59,10 @@ path = "fuzz_targets/pg_copy_decode.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "pg_pgoutput_decode"
+path = "fuzz_targets/pg_pgoutput_decode.rs"
+test = false
+doc = false
+bench = false

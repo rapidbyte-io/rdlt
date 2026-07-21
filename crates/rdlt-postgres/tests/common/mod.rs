@@ -234,3 +234,65 @@ HBA
         )
     }
 }
+
+/// Feature 009 (research R10): a postgres with logical replication enabled —
+/// the CDC fixture. Same image, three server flags.
+#[allow(dead_code)]
+pub struct CdcPgFixture {
+    _container: ContainerAsync<PostgresImage>,
+    conn: String,
+}
+
+#[allow(dead_code)]
+impl CdcPgFixture {
+    pub async fn start() -> Self {
+        let container = PostgresImage::default()
+            .with_tag("16-alpine")
+            .with_cmd([
+                "postgres",
+                "-c",
+                "wal_level=logical",
+                "-c",
+                "max_replication_slots=8",
+                "-c",
+                "max_wal_senders=8",
+            ])
+            .start()
+            .await
+            .expect("start CDC postgres (needs docker/podman)");
+        let port = container
+            .get_host_port_ipv4(5432)
+            .await
+            .expect("mapped port");
+        let conn =
+            format!("host=127.0.0.1 port={port} user=postgres password=postgres dbname=postgres");
+        Self {
+            _container: container,
+            conn,
+        }
+    }
+
+    pub fn conn_url(&self) -> String {
+        self.conn.clone()
+    }
+
+    /// A raw client for seeding/mutating/asserting, independent of the
+    /// source under test.
+    pub async fn client(&self) -> Client {
+        let (client, connection) = tokio_postgres::connect(&self.conn, NoTls)
+            .await
+            .expect("connect to CDC fixture");
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        client
+    }
+
+    pub async fn seed(&self, sql: &str) {
+        self.client()
+            .await
+            .batch_execute(sql)
+            .await
+            .expect("seed SQL");
+    }
+}

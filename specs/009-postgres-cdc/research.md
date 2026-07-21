@@ -34,6 +34,19 @@ path); hand-rolling the wire-level replication session — rejected
 
 ## R2 — pgoutput binary parsing: hand-rolled, fuzzed, in-crate
 
+**Crate survey (owner question, 2026-07-21)**: no mature alternative
+exists. Upstream rust-postgres merged replication support but never
+released it (tokio-postgres 0.7.18 AND postgres-protocol 0.6.12 — both
+verified in registry sources — have none). Standalone parsers are
+pre-release (`pgoutput` 0.0.7, `postgres-replication-types` 0.1.1,
+`pg_replicate` 0.1.0) — auditing a 0.0.x crate line-by-line costs more
+than owning the ~250 lines with our own fuzz target. Full clients
+(`pgwire-replication` 0.4.0) carry their OWN TLS/connection stacks,
+which would fork the single parse_conn/mTLS gate 006/007 built. The
+format is 9 message types, documented, unchanged since PG10. If
+upstream ever releases its replication support, swapping the parser is
+a contained refactor.
+
 **Decision**: `src/source/cdc/pgoutput.rs` parses the documented
 logical-replication message set (Begin, Commit, Relation, Type, Insert,
 Update, Delete, Truncate, Origin; TupleData with text/binary/null/

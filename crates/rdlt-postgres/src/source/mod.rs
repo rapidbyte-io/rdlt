@@ -9,6 +9,7 @@
 //! Contracts: `specs/005-postgres-source/contracts/{source-config,type-mapping}.md`.
 //! Error policy (SPI clause S3): classify Transient/Fatal, never retry here.
 
+pub(crate) mod cdc;
 pub mod config;
 pub(crate) mod copy_decode;
 mod cursor;
@@ -161,6 +162,12 @@ pub mod testhook {
             rows += tail.num_rows() as u64;
         }
         rows
+    }
+
+    /// Fuzz entry (targets/pg_pgoutput_decode): arbitrary bytes through the
+    /// logical-replication message parser — typed errors only, never a panic.
+    pub fn fuzz_pgoutput_decode(data: &[u8]) {
+        let _ = crate::source::cdc::pgoutput::parse(data);
     }
 
     /// Fuzz entry (targets/pg_copy_decode): arbitrary bytes through the

@@ -25,13 +25,13 @@ Technical Context).
 
 ## Phase 2: Foundational (BLOCKING)
 
-- [ ] T001 [P] CDC test fixture in
+- [X] T001 [P] CDC test fixture in
       `crates/rdlt-postgres/tests/common/mod.rs`: `CdcPgFixture` — the
       existing container with `-c wal_level=logical
       -c max_replication_slots=8 -c max_wal_senders=8` command args
       (R10); helper for seeding + mutating tables and reading
       `pg_replication_slots` state.
-- [ ] T002 [P] pgoutput parser in
+- [X] T002 [P] pgoutput parser in
       `crates/rdlt-postgres/src/source/cdc/pgoutput.rs`: hand-rolled
       decode of Begin/Commit/Relation/Type/Insert/Update/Delete/
       Truncate/Origin + TupleData (text/binary/null/unchanged-TOAST
