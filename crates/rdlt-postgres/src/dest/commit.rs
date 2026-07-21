@@ -13,6 +13,7 @@ use tokio_postgres::Client;
 use tokio_postgres::binary_copy::BinaryCopyInWriter;
 use tokio_postgres::types::{ToSql, Type};
 
+use super::config::MergeStrategy;
 use super::{encode, fatal, quote, transient};
 
 /// Arrival-order column on STAGE tables only: makes merge dedup deterministic
@@ -53,6 +54,7 @@ pub(super) struct PgSession {
     pub(super) client: Client,
     pub(super) pipeline: PipelineId,
     pub(super) tables: BTreeMap<TableName, (TableSchema, WriteMode)>,
+    pub(super) options: super::config::PgDestOptions,
 }
 
 impl PgSession {
@@ -128,6 +130,63 @@ impl LoadSession for PgSession {
                         ))
                         .await
                         .map_err(transient)?;
+                }
+            }
+        }
+        // Feature 008 US2 (merge-strategies.md): strategy validation + the
+        // supporting/unique indexes, ensured WITH the table (M3/M5).
+        if let WriteMode::Merge { key } = mode {
+            let table = schema.table.as_str();
+            let strategy = self.options.strategy_for(table);
+            let has_identity = schema.columns.iter().any(|c| c.name == system_columns::ID);
+            let is_child = schema.parent.is_some();
+            if let Some(col) = self.options.hard_delete_for(table) {
+                // M4: the flag column must exist on THIS table's schema.
+                if schema.column(col).is_none() && !is_child {
+                    return Err(fatal(format!(
+                        "hard_delete column `{col}` is not a column of table `{table}`"
+                    )));
+                }
+            }
+            if strategy == MergeStrategy::Scd2 && has_identity {
+                return Err(fatal(format!(
+                    "table `{table}`: scd2 requires a KEYED structured stream \
+                     (contract scd2.md S1) — shredded streams have no declared key"
+                )));
+            }
+            // Index plan (data-model.md): identity per table kind.
+            let mut indexes: Vec<(bool, Vec<String>)> = Vec::new();
+            if has_identity {
+                let unique = strategy == MergeStrategy::Upsert;
+                indexes.push((unique, vec![system_columns::ID.to_string()]));
+                if is_child {
+                    indexes.push((false, vec![system_columns::ROOT_ID.to_string()]));
+                }
+            } else {
+                match strategy {
+                    MergeStrategy::Upsert => indexes.push((true, key.clone())),
+                    MergeStrategy::DeleteInsert => indexes.push((false, key.clone())),
+                    MergeStrategy::Scd2 => {} // scd2 index lands with its arm (T010)
+                }
+            }
+            for (unique, columns) in indexes {
+                let sql = super::ddl::create_index_sql(unique, table, &columns);
+                if let Err(e) = self.client.batch_execute(&sql).await {
+                    // M3: pre-existing duplicate keys under upsert — typed,
+                    // naming the key columns.
+                    if unique
+                        && e.as_db_error()
+                            .is_some_and(|db| db.code().code() == "23505")
+                    {
+                        return Err(fatal(format!(
+                            "table `{table}`: cannot create the unique index the upsert \
+                             strategy requires — existing rows duplicate the merge key \
+                             ({}); deduplicate the table or use delete_insert: {}",
+                            columns.join(", "),
+                            super::describe(&e)
+                        )));
+                    }
+                    return Err(transient(e));
                 }
             }
         }
@@ -276,55 +335,46 @@ impl LoadSession for PgSession {
                     .await
                     .map_err(transient)?;
                 }
-                WriteMode::Merge { key } if !schema_has_identity => {
-                    // Keyed STRUCTURED merge (feature 006, merge-structured.md):
-                    // delete-by-declared-key, then insert with deterministic
-                    // last-wins in-batch dedup by the same key.
-                    let key_list = key.iter().map(|k| quote(k)).collect::<Vec<_>>().join(", ");
-                    tx.batch_execute(&format!(
-                        "DELETE FROM {target} WHERE ({key_list}) IN (SELECT {key_list} FROM {stage})"
-                    ))
-                    .await
-                    .map_err(transient)?;
-                    tx.batch_execute(&format!(
-                        "INSERT INTO {target} ({cols}) \
-                         SELECT {cols} FROM ( \
-                             SELECT DISTINCT ON ({key_list}) * FROM {stage} \
-                             ORDER BY {key_list}, {arrival} DESC \
-                         ) deduped",
-                        arrival = quote(ARRIVAL_COL),
-                    ))
-                    .await
-                    .map_err(transient)?;
-                }
-                WriteMode::Merge { .. } => {
-                    let root = &roots[table];
-                    let root_stage = quote(&stage_name(&self.pipeline, root));
-                    let id_col = if table == root {
-                        system_columns::ID
-                    } else {
-                        system_columns::ROOT_ID
+                WriteMode::Merge { key } => {
+                    // Feature 008 (merge-strategies.md): the strategy is
+                    // destination config; the engine's mode stays frozen.
+                    let strategy = self.options.strategy_for(table.as_str());
+                    let plan = MergePlan {
+                        target: &target,
+                        stage: &stage,
+                        cols: &cols,
+                        schema,
+                        key,
+                        root_table: &roots[table],
+                        root_stage: quote(&stage_name(&self.pipeline, &roots[table])),
+                        is_child: table != &roots[table],
+                        hard_delete: self
+                            .options
+                            .hard_delete_for(roots[table].as_str())
+                            .and_then(|col| {
+                                let root_schema = self.tables.get(&roots[table]).map(|(s, _)| s)?;
+                                Some(HardDelete::new(col, root_schema))
+                            }),
                     };
-                    // Subtree replacement by root id + DETERMINISTIC in-batch dedup:
-                    // arrival order breaks ties, so "last wins" is real (finding #7).
-                    tx.batch_execute(&format!(
-                        "DELETE FROM {target} WHERE {} IN (SELECT {} FROM {root_stage})",
-                        quote(id_col),
-                        quote(system_columns::ID),
-                    ))
-                    .await
-                    .map_err(transient)?;
-                    tx.batch_execute(&format!(
-                        "INSERT INTO {target} ({cols}) \
-                         SELECT {cols} FROM ( \
-                             SELECT DISTINCT ON ({id}) * FROM {stage} \
-                             ORDER BY {id}, {arrival} DESC \
-                         ) deduped",
-                        id = quote(system_columns::ID),
-                        arrival = quote(ARRIVAL_COL),
-                    ))
-                    .await
-                    .map_err(transient)?;
+                    match (schema_has_identity, strategy) {
+                        (false, MergeStrategy::DeleteInsert) => {
+                            keyed_delete_insert(&tx, &plan).await?
+                        }
+                        (false, MergeStrategy::Upsert) => keyed_upsert(&tx, &plan).await?,
+                        (true, MergeStrategy::DeleteInsert) => {
+                            identity_delete_insert(&tx, &plan).await?
+                        }
+                        (true, MergeStrategy::Upsert) => identity_upsert(&tx, &plan).await?,
+                        (_, MergeStrategy::Scd2) => {
+                            // Arm lands with T010 (contract scd2.md); the
+                            // ensure-time validation already rejected the
+                            // shredded case (S1).
+                            return Err(fatal(format!(
+                                "table `{table}`: scd2 strategy not yet available \
+                                 in this build"
+                            )));
+                        }
+                    }
                 }
             }
         }
@@ -383,4 +433,248 @@ impl LoadSession for PgSession {
             None => Ok(None),
         }
     }
+}
+
+// ---- Feature 008 US2: merge-strategy SQL (contract merge-strategies.md) ----
+
+/// Hard-delete flag semantics (M4): boolean columns compare `IS TRUE`,
+/// other types `IS NOT NULL` — both NULL-safe on the KEEP side.
+struct HardDelete {
+    flagged: String,
+    keep: String,
+}
+
+impl HardDelete {
+    fn new(column: &str, root_schema: &TableSchema) -> Self {
+        use rdlt_connector::core::{ColumnType, LogicalType};
+        let is_bool = matches!(
+            root_schema.column(column).map(|c| &c.ty),
+            Some(ColumnType::Scalar {
+                scalar: LogicalType::Bool
+            })
+        );
+        let col = quote(column);
+        if is_bool {
+            Self {
+                flagged: format!("{col} IS TRUE"),
+                keep: format!("{col} IS NOT TRUE"),
+            }
+        } else {
+            Self {
+                flagged: format!("{col} IS NOT NULL"),
+                keep: format!("{col} IS NULL"),
+            }
+        }
+    }
+}
+
+/// Everything a strategy arm needs about one table's publish.
+struct MergePlan<'a> {
+    target: &'a str,
+    stage: &'a str,
+    cols: &'a str,
+    schema: &'a TableSchema,
+    key: &'a [String],
+    root_table: &'a TableName,
+    root_stage: String,
+    is_child: bool,
+    hard_delete: Option<HardDelete>,
+}
+
+impl MergePlan<'_> {
+    fn key_list(&self) -> String {
+        self.key
+            .iter()
+            .map(|k| quote(k))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// Last-wins in-batch dedup over the stage (finding #7).
+    fn deduped(&self, identity: &str) -> String {
+        format!(
+            "(SELECT DISTINCT ON ({identity}) * FROM {} ORDER BY {identity}, {} DESC)",
+            self.stage,
+            quote(ARRIVAL_COL)
+        )
+    }
+
+    /// `SET c = EXCLUDED.c, …` over the non-identity columns.
+    fn update_set(&self, identity: &[String]) -> String {
+        self.schema
+            .columns
+            .iter()
+            .filter(|c| !identity.contains(&c.name))
+            .map(|c| format!("{q} = EXCLUDED.{q}", q = quote(&c.name)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// Roots flagged for hard deletion in THIS load's root stage.
+    fn flagged_roots(&self) -> Option<String> {
+        self.hard_delete.as_ref().map(|hd| {
+            format!(
+                "(SELECT {} FROM {} WHERE {})",
+                quote(system_columns::ID),
+                self.root_stage,
+                hd.flagged
+            )
+        })
+    }
+}
+
+/// Keyed structured delete-insert (the 006 arm + M4 hard delete).
+async fn keyed_delete_insert(
+    tx: &tokio_postgres::Transaction<'_>,
+    plan: &MergePlan<'_>,
+) -> Result<(), DestError> {
+    let (target, stage, cols) = (plan.target, plan.stage, plan.cols);
+    let key_list = plan.key_list();
+    tx.batch_execute(&format!(
+        "DELETE FROM {target} WHERE ({key_list}) IN (SELECT {key_list} FROM {stage})"
+    ))
+    .await
+    .map_err(transient)?;
+    let keep = plan
+        .hard_delete
+        .as_ref()
+        .map(|hd| format!(" WHERE {}", hd.keep))
+        .unwrap_or_default();
+    tx.batch_execute(&format!(
+        "INSERT INTO {target} ({cols}) SELECT {cols} FROM {} deduped{keep}",
+        plan.deduped(&key_list),
+    ))
+    .await
+    .map_err(transient)?;
+    Ok(())
+}
+
+/// Keyed structured upsert (M2): conflict-update on the merge key.
+async fn keyed_upsert(
+    tx: &tokio_postgres::Transaction<'_>,
+    plan: &MergePlan<'_>,
+) -> Result<(), DestError> {
+    let (target, cols) = (plan.target, plan.cols);
+    let key_list = plan.key_list();
+    if let Some(hd) = &plan.hard_delete {
+        tx.batch_execute(&format!(
+            "DELETE FROM {target} WHERE ({key_list}) IN \
+             (SELECT {key_list} FROM {} d WHERE {})",
+            plan.deduped(&key_list),
+            hd.flagged
+        ))
+        .await
+        .map_err(transient)?;
+    }
+    let keep = plan
+        .hard_delete
+        .as_ref()
+        .map(|hd| format!(" WHERE {}", hd.keep))
+        .unwrap_or_default();
+    let set = plan.update_set(plan.key);
+    let action = if set.is_empty() {
+        "DO NOTHING".to_string()
+    } else {
+        format!("DO UPDATE SET {set}")
+    };
+    tx.batch_execute(&format!(
+        "INSERT INTO {target} ({cols}) SELECT {cols} FROM {} deduped{keep} \
+         ON CONFLICT ({key_list}) {action}",
+        plan.deduped(&key_list),
+    ))
+    .await
+    .map_err(transient)?;
+    Ok(())
+}
+
+/// Shredded identity delete-insert (the original arm + M4 hard delete).
+async fn identity_delete_insert(
+    tx: &tokio_postgres::Transaction<'_>,
+    plan: &MergePlan<'_>,
+) -> Result<(), DestError> {
+    let (target, cols) = (plan.target, plan.cols);
+    let id = quote(system_columns::ID);
+    let id_col = if plan.is_child {
+        quote(system_columns::ROOT_ID)
+    } else {
+        id.clone()
+    };
+    // Subtree replacement by root id + DETERMINISTIC in-batch dedup:
+    // arrival order breaks ties, so "last wins" is real (finding #7).
+    tx.batch_execute(&format!(
+        "DELETE FROM {target} WHERE {id_col} IN (SELECT {id} FROM {})",
+        plan.root_stage
+    ))
+    .await
+    .map_err(transient)?;
+    // Hard delete (M4): flagged ROOTS drop from the root insert; their
+    // children drop by root-id membership.
+    let keep = match (&plan.hard_delete, plan.is_child) {
+        (Some(hd), false) => format!(" WHERE {}", hd.keep),
+        (Some(_), true) => format!(
+            " WHERE {} NOT IN {}",
+            quote(system_columns::ROOT_ID),
+            plan.flagged_roots().expect("hard_delete present")
+        ),
+        (None, _) => String::new(),
+    };
+    tx.batch_execute(&format!(
+        "INSERT INTO {target} ({cols}) SELECT {cols} FROM {} deduped{keep}",
+        plan.deduped(&id),
+    ))
+    .await
+    .map_err(transient)?;
+    Ok(())
+}
+
+/// Shredded identity upsert (M2): per-row conflict-update on `_rdlt_id`,
+/// plus subtree hygiene — orphaned children of staged roots are removed
+/// (a re-shredded root may carry fewer children than before).
+async fn identity_upsert(
+    tx: &tokio_postgres::Transaction<'_>,
+    plan: &MergePlan<'_>,
+) -> Result<(), DestError> {
+    let (target, cols) = (plan.target, plan.cols);
+    let id = quote(system_columns::ID);
+    if plan.is_child {
+        // Orphan + hard-delete hygiene: children of staged roots that are
+        // not re-staged disappear (flagged roots re-stage nothing).
+        tx.batch_execute(&format!(
+            "DELETE FROM {target} WHERE {root_id} IN (SELECT {id} FROM {root_stage}) \
+             AND {id} NOT IN (SELECT {id} FROM {stage})",
+            root_id = quote(system_columns::ROOT_ID),
+            root_stage = plan.root_stage,
+            stage = plan.stage,
+        ))
+        .await
+        .map_err(transient)?;
+    } else if let Some(flagged) = plan.flagged_roots() {
+        tx.batch_execute(&format!("DELETE FROM {target} WHERE {id} IN {flagged}"))
+            .await
+            .map_err(transient)?;
+    }
+    let keep = match (&plan.hard_delete, plan.is_child) {
+        (Some(hd), false) => format!(" WHERE {}", hd.keep),
+        (Some(_), true) => format!(
+            " WHERE {} NOT IN {}",
+            quote(system_columns::ROOT_ID),
+            plan.flagged_roots().expect("hard_delete present")
+        ),
+        (None, _) => String::new(),
+    };
+    let identity = vec![system_columns::ID.to_string()];
+    let set = plan.update_set(&identity);
+    let action = if set.is_empty() {
+        "DO NOTHING".to_string()
+    } else {
+        format!("DO UPDATE SET {set}")
+    };
+    tx.batch_execute(&format!(
+        "INSERT INTO {target} ({cols}) SELECT {cols} FROM {} deduped{keep} \
+         ON CONFLICT ({id}) {action}",
+        plan.deduped(&id),
+    ))
+    .await
+    .map_err(transient)?;
+    Ok(())
 }

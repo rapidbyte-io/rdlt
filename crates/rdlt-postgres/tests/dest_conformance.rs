@@ -533,3 +533,282 @@ mod native_types {
         );
     }
 }
+
+// ---- Feature 008 US2: merge strategies (contract merge-strategies.md) ----
+
+mod strategies {
+    use std::sync::Arc;
+
+    use arrow_array::{BooleanArray, Int64Array, RecordBatch, StringArray};
+    use arrow_schema::{DataType, Field, Schema};
+    use async_trait::async_trait;
+    use rdlt_connector::core::{LoadId, PipelineId};
+    use rdlt_connector::{
+        ConnectorSpec, Cursor, Destination as _, OpenCtx, ReadRequest, Source, SourceError,
+        StreamSpec,
+    };
+    use rdlt_engine::{Engine, EngineConfig};
+    use rdlt_postgres::dest::{MergeStrategy, PgDestOptions, PgTableOptions, Postgres};
+
+    use super::start_pg;
+
+    /// Keyed structured stream with a bool `deleted` flag column.
+    struct FlaggedSource {
+        batch: RecordBatch,
+    }
+
+    #[async_trait]
+    impl Source for FlaggedSource {
+        fn spec(&self) -> ConnectorSpec {
+            ConnectorSpec::new("flagged-test", "0.0.0")
+        }
+
+        async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
+            Ok(vec![
+                StreamSpec::new("events")
+                    .structured()
+                    .with_primary_key(["id"]),
+            ])
+        }
+
+        async fn read(&self, mut req: ReadRequest) -> Result<(), SourceError> {
+            let _ = req.out.arrow(self.batch.clone()).await;
+            let _ = req.out.checkpoint(Cursor::new(1u64)).await;
+            Ok(())
+        }
+    }
+
+    fn batch(rows: &[(i64, &str, Option<bool>)]) -> RecordBatch {
+        RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("name", DataType::Utf8, true),
+                Field::new("deleted", DataType::Boolean, true),
+            ])),
+            vec![
+                Arc::new(Int64Array::from(
+                    rows.iter().map(|r| r.0).collect::<Vec<_>>(),
+                )),
+                Arc::new(StringArray::from(
+                    rows.iter().map(|r| r.1).collect::<Vec<_>>(),
+                )),
+                Arc::new(BooleanArray::from(
+                    rows.iter().map(|r| r.2).collect::<Vec<_>>(),
+                )),
+            ],
+        )
+        .expect("batch")
+    }
+
+    fn upsert_dest(conn: &str, dataset: &str) -> Postgres {
+        Postgres::connect(conn)
+            .dataset(dataset)
+            .options(PgDestOptions {
+                merge_strategy: MergeStrategy::Upsert,
+                tables: [(
+                    "events".to_string(),
+                    PgTableOptions {
+                        hard_delete: Some("deleted".into()),
+                        ..PgTableOptions::default()
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            })
+            .expect("valid options")
+    }
+
+    async fn run_merge(dest: Postgres, rows: &[(i64, &str, Option<bool>)]) {
+        let mut config = EngineConfig::new("strat");
+        config.write_mode = rdlt_connector::WriteMode::Merge {
+            key: vec!["id".into()],
+        };
+        Engine::new(config, FlaggedSource { batch: batch(rows) }, dest)
+            .run()
+            .await
+            .expect("merge run");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn upsert_converges_and_hard_delete_removes_keys() {
+        let (_container, conn) = start_pg().await;
+
+        // Run 1: three live rows.
+        run_merge(
+            upsert_dest(&conn, "strat"),
+            &[(1, "a", Some(false)), (2, "b", None), (3, "c", Some(false))],
+        )
+        .await;
+
+        // Run 2 (SC-002/003): key 2 updates in place, key 4 is new, key 1 is
+        // FLAGGED deleted, and key 9 is a never-loaded flagged key (no-op).
+        let round2: &[(i64, &str, Option<bool>)] = &[
+            (1, "gone", Some(true)),
+            (2, "b2", None),
+            (4, "d", Some(false)),
+            (9, "ghost", Some(true)),
+        ];
+        run_merge(upsert_dest(&conn, "strat"), round2).await;
+
+        let (client, connection) = tokio_postgres::connect(&conn, tokio_postgres::NoTls)
+            .await
+            .expect("connect");
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        let rows: Vec<(i64, String)> = client
+            .query("SELECT id, name FROM strat.events ORDER BY id", &[])
+            .await
+            .expect("rows")
+            .into_iter()
+            .map(|r| (r.get(0), r.get(1)))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                (2, "b2".to_string()),
+                (3, "c".to_string()),
+                (4, "d".to_string())
+            ],
+            "updated in place, inserted new, deleted flagged, ghost no-op"
+        );
+
+        // Three further re-runs: totals never move (idempotent conflict-update).
+        for _ in 0..3 {
+            run_merge(upsert_dest(&conn, "strat"), round2).await;
+            let n: i64 = client
+                .query_one("SELECT count(*) FROM strat.events", &[])
+                .await
+                .expect("count")
+                .get(0);
+            assert_eq!(n, 3, "SC-002: totals exactly stable");
+        }
+
+        // M3/M5: the unique index the strategy required exists.
+        let indexes: i64 = client
+            .query_one(
+                "SELECT count(*) FROM pg_indexes
+                 WHERE schemaname = 'strat' AND tablename = 'events'
+                   AND indexname LIKE 'rdlt_ux%'",
+                &[],
+            )
+            .await
+            .expect("indexes")
+            .get(0);
+        assert_eq!(indexes, 1, "unique index auto-ensured");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn duplicate_keys_under_upsert_fail_typed_naming_the_key() {
+        let (_container, conn) = start_pg().await;
+        // A table that already violates key uniqueness.
+        {
+            let (client, connection) = tokio_postgres::connect(&conn, tokio_postgres::NoTls)
+                .await
+                .expect("connect");
+            tokio::spawn(async move {
+                let _ = connection.await;
+            });
+            client
+                .batch_execute(
+                    "CREATE SCHEMA IF NOT EXISTS dup;
+                     CREATE TABLE dup.events (
+                         id BIGINT NOT NULL, name TEXT, deleted BOOLEAN);
+                     INSERT INTO dup.events VALUES (1, 'x', NULL), (1, 'x-again', NULL);",
+                )
+                .await
+                .expect("dup table");
+        }
+        let mut config = EngineConfig::new("dup");
+        config.write_mode = rdlt_connector::WriteMode::Merge {
+            key: vec!["id".into()],
+        };
+        let err = Engine::new(
+            config,
+            FlaggedSource {
+                batch: batch(&[(1, "a", None)]),
+            },
+            upsert_dest(&conn, "dup"),
+        )
+        .run()
+        .await
+        .expect_err("duplicate keys must block upsert");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unique index") && msg.contains("id") && msg.contains("23505"),
+            "M3 typed, names the key: {msg}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn shredded_upsert_converges_with_subtree_hygiene() {
+        use rdlt_testkit::MemorySource;
+        use serde_json::json;
+
+        let (_container, conn) = start_pg().await;
+        let dest = Postgres::connect(&conn)
+            .dataset("shup")
+            .options(PgDestOptions {
+                merge_strategy: MergeStrategy::Upsert,
+                ..PgDestOptions::default()
+            })
+            .expect("options");
+        let run = |rows: Vec<serde_json::Value>, dest: Postgres| async move {
+            let mut config = EngineConfig::new("shup");
+            config.write_mode = rdlt_connector::WriteMode::Merge {
+                key: vec!["id".into()],
+            };
+            let source = MemorySource::single_stream(
+                rdlt_connector::StreamSpec::new("users").with_primary_key(["id"]),
+                rows,
+            );
+            Engine::new(config, source, dest).run().await.expect("run");
+        };
+        run(
+            vec![
+                json!({"id": 1, "name": "ada", "tags": [{"label": "x"}, {"label": "y"}]}),
+                json!({"id": 2, "name": "grace", "tags": [{"label": "z"}]}),
+            ],
+            dest.clone(),
+        )
+        .await;
+        // User 1 re-arrives with ONE tag: the vanished child must disappear
+        // (subtree hygiene under upsert).
+        run(
+            vec![json!({"id": 1, "name": "ada lovelace", "tags": [{"label": "w"}]})],
+            dest,
+        )
+        .await;
+
+        let (client, connection) = tokio_postgres::connect(&conn, tokio_postgres::NoTls)
+            .await
+            .expect("connect");
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        let users: i64 = client
+            .query_one("SELECT count(*) FROM shup.users", &[])
+            .await
+            .expect("users")
+            .get(0);
+        assert_eq!(users, 2, "one row per user");
+        let name: String = client
+            .query_one("SELECT name FROM shup.users WHERE id = 1", &[])
+            .await
+            .expect("name")
+            .get(0);
+        assert_eq!(name, "ada lovelace", "updated in place");
+        let labels: Vec<String> = client
+            .query("SELECT label FROM shup.users__tags ORDER BY label", &[])
+            .await
+            .expect("labels")
+            .into_iter()
+            .map(|r| r.get(0))
+            .collect();
+        assert_eq!(
+            labels,
+            vec!["w", "z"],
+            "x/y orphans removed, grace's z kept"
+        );
+    }
+}

@@ -47,3 +47,50 @@ pub(super) fn column_def(column: &ColumnDef, target: bool) -> String {
         not_null
     )
 }
+
+// ---- Feature 008 US2: supporting indexes (contract merge-strategies.md M5) ----
+
+/// Deterministic index name: idempotent `IF NOT EXISTS` across sessions.
+pub(super) fn index_name(unique: bool, table: &str, columns: &[String]) -> String {
+    let prefix = if unique { "rdlt_ux" } else { "rdlt_ix" };
+    format!(
+        "{prefix}_{}",
+        rdlt_connector::core::naming::ident_hash(&format!("{table}:{}", columns.join(",")), 16)
+    )
+}
+
+pub(super) fn create_index_sql(unique: bool, table: &str, columns: &[String]) -> String {
+    let cols = columns
+        .iter()
+        .map(|c| super::quote(c))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "CREATE {}INDEX IF NOT EXISTS {} ON {} ({cols})",
+        if unique { "UNIQUE " } else { "" },
+        super::quote(&index_name(unique, table, columns)),
+        super::quote(table),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn index_names_are_deterministic_and_distinct() {
+        let a = index_name(false, "orders", &["id".into()]);
+        let b = index_name(false, "orders", &["id".into()]);
+        assert_eq!(a, b, "same inputs, same name (idempotency)");
+        assert_ne!(
+            a,
+            index_name(true, "orders", &["id".into()]),
+            "unique differs"
+        );
+        assert_ne!(a, index_name(false, "orders", &["other".into()]));
+        assert_ne!(a, index_name(false, "other", &["id".into()]));
+        assert!(a.len() <= 63, "under the identifier limit");
+        assert!(a.starts_with("rdlt_ix_"));
+        assert!(index_name(true, "t", &["k".into()]).starts_with("rdlt_ux_"));
+    }
+}

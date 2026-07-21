@@ -219,6 +219,14 @@ impl Source for KeyedArrowSource {
     }
 }
 
+fn with_strategy(dest: Postgres, strategy: rdlt_postgres::dest::MergeStrategy) -> Postgres {
+    dest.options(rdlt_postgres::dest::PgDestOptions {
+        merge_strategy: strategy,
+        ..Default::default()
+    })
+    .expect("valid options")
+}
+
 async fn attempt_keyed(workdir: &std::path::Path, dest: &Postgres) -> Result<(), String> {
     let mut config = EngineConfig::new("pg-sweep-keyed");
     config.workdir = Some(workdir.to_path_buf());
@@ -246,44 +254,55 @@ async fn sweep_postgres_destination_keyed_structured_merge() {
     let conn =
         format!("host=127.0.0.1 port={port} user=postgres password=postgres dbname=postgres");
 
-    let mut fired: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    // Feature 008 T008: BOTH strategies cross every boundary (M2) — the
+    // upsert arm's conflict-update runs inside the same publish transaction.
+    let strategies = [
+        ("di", rdlt_postgres::dest::MergeStrategy::DeleteInsert),
+        ("up", rdlt_postgres::dest::MergeStrategy::Upsert),
+    ];
+    let mut fired: std::collections::BTreeSet<(&str, &str)> = std::collections::BTreeSet::new();
     for &point in rdlt_postgres::dest::FAIL_POINTS {
         for action in ["return", "panic", "1*off->return"] {
-            let dataset = format!(
-                "sweepk_{}_{}",
-                point.replace('.', "_"),
-                action.replace(['*', '-', '>'], "_"),
-            );
-            let dir = tempfile::tempdir().expect("tempdir");
-            let workdir = dir.path().join("wal");
-            let dest = Postgres::connect(&conn).dataset(&dataset);
+            for (label, strategy) in strategies {
+                let dataset = format!(
+                    "sweepk_{}_{}_{}",
+                    point.replace('.', "_"),
+                    action.replace(['*', '-', '>'], "_"),
+                    label,
+                );
+                let dir = tempfile::tempdir().expect("tempdir");
+                let workdir = dir.path().join("wal");
+                let dest = with_strategy(Postgres::connect(&conn).dataset(&dataset), strategy);
 
-            fail::cfg(point, action).expect("configure fail point");
-            let armed1 = attempt_keyed(&workdir, &dest).await;
-            let armed2 = attempt_keyed(&workdir, &dest).await;
-            fail::remove(point);
-            if armed1.is_err() || armed2.is_err() {
-                fired.insert(point);
+                fail::cfg(point, action).expect("configure fail point");
+                let armed1 = attempt_keyed(&workdir, &dest).await;
+                let armed2 = attempt_keyed(&workdir, &dest).await;
+                fail::remove(point);
+                if armed1.is_err() || armed2.is_err() {
+                    fired.insert((point, label));
+                }
+
+                let recovered = attempt_keyed(&workdir, &dest).await;
+                assert!(
+                    recovered.is_ok(),
+                    "[{point} / {action} / keyed-{label}] recovery failed: {recovered:?}"
+                );
+                assert_eq!(
+                    count_rows(&conn, &dataset).await,
+                    TOTAL_ROWS,
+                    "[{point} / {action} / keyed-{label}] exactly-once violated"
+                );
             }
-
-            let recovered = attempt_keyed(&workdir, &dest).await;
-            assert!(
-                recovered.is_ok(),
-                "[{point} / {action} / keyed] recovery failed: {recovered:?}"
-            );
-            assert_eq!(
-                count_rows(&conn, &dataset).await,
-                TOTAL_ROWS,
-                "[{point} / {action} / keyed] exactly-once violated"
-            );
         }
     }
-    // Anti-vacuousness: every registered point fires under the keyed arm too.
-    let expected: std::collections::BTreeSet<&str> =
-        rdlt_postgres::dest::FAIL_POINTS.iter().copied().collect();
+    // Anti-vacuousness: every registered point fires under BOTH strategy arms.
+    let expected: std::collections::BTreeSet<(&str, &str)> = rdlt_postgres::dest::FAIL_POINTS
+        .iter()
+        .flat_map(|&p| [(p, "di"), (p, "up")])
+        .collect();
     assert_eq!(
         fired, expected,
-        "keyed-merge armed-fire pin diverged — a missing point means the keyed \
-         arm never crossed that boundary"
+        "keyed-merge armed-fire pin diverged — a missing (point, strategy) means \
+         that arm never crossed that boundary"
     );
 }

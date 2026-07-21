@@ -89,7 +89,7 @@ byte-identical.
 exact totals; flagged rows disappear; duplicate-key upsert fails
 naming the key; sweep green; index measurement recorded.
 
-- [ ] T005 [US2] Options surface in
+- [X] T005 [US2] Options surface in
       `crates/rdlt-postgres/src/dest/config.rs`: `PgDestOptions`
       {merge_strategy (delete_insert default), tables:
       map<table, PgTableOptions {merge_strategy, hard_delete,
@@ -99,7 +99,7 @@ naming the key; sweep green; index measurement recorded.
       (scd2+hard_delete contradiction S8, unknown strategy, empty
       column names); unit tests for the validation matrix (FR-004,
       FR-012 config half).
-- [ ] T006 [US2] Index ensure in `crates/rdlt-postgres/src/dest/ddl.rs`:
+- [X] T006 [US2] Index ensure in `crates/rdlt-postgres/src/dest/ddl.rs`:
       deterministic names (`rdlt_ix_/rdlt_ux_<table>_<hash>`),
       `IF NOT EXISTS`, identity-appropriate columns (`_rdlt_id`/
       `_rdlt_root_id`/key columns; upsert = UNIQUE; scd2 = (key…,
@@ -107,7 +107,7 @@ naming the key; sweep green; index measurement recorded.
       typed error naming the key columns (M3); unit tests for name
       determinism + conformance cell for the duplicate-key rejection
       in `tests/dest_conformance.rs` (M5, M6, M7).
-- [ ] T007 [US2] Strategy SQL in
+- [X] T007 [US2] Strategy SQL in
       `crates/rdlt-postgres/src/dest/commit.rs`: upsert arm (DISTINCT
       ON dedup + ON CONFLICT DO UPDATE, shredded identity AND keyed
       structured — R4) + hard-delete composition (flagged-key DELETE +
@@ -117,7 +117,7 @@ naming the key; sweep green; index measurement recorded.
       hard-delete exact totals + never-loaded no-op + redelivery
       no-op, default-config byte-identical pin (M1) (SC-002 first
       half, SC-003).
-- [ ] T008 [US2] Upsert under fire in
+- [X] T008 [US2] Upsert under fire in
       `crates/rdlt-postgres/tests/dest_crash_sweep.rs`: plumb strategy
       into the keyed sweep harness; upsert cells across every
       registered fail point × three actions with armed-fire pins

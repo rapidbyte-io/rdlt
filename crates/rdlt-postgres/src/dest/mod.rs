@@ -20,7 +20,9 @@ use rdlt_connector::{
     core::naming::IdentRules,
 };
 
-pub use config::Postgres;
+pub use config::{
+    AbsentPolicy, MergeStrategy, PgDestOptions, PgTableOptions, Postgres, Scd2Options,
+};
 
 /// Fail-point registry (gate G2.2): every `crash_point!` site in this crate —
 /// the ENGINE-OWNED protocol boundaries (stage writes, the publish transaction
@@ -125,6 +127,7 @@ impl Destination for Postgres {
             client,
             pipeline: _ctx.pipeline,
             tables: std::collections::BTreeMap::new(),
+            options: self.options.clone(),
         }))
     }
 }
