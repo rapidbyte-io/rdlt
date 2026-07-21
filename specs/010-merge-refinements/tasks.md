@@ -26,7 +26,7 @@ Technical Context).
 
 ## Phase 2: Foundational (BLOCKING)
 
-- [ ] T001 Config surface in `crates/rdlt-postgres/src/dest/config.rs`:
+- [X] T001 Config surface in `crates/rdlt-postgres/src/dest/config.rs`:
       `SortOrder { Asc, Desc }` + `DedupSort { column, order }` (order
       REQUIRED, R1) and `PgTableOptions.{dedup_sort: Option<DedupSort>,
       merge_key: Option<Vec<String>>}`; parse-time shape validation in

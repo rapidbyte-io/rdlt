@@ -21,7 +21,8 @@ use rdlt_connector::{
 };
 
 pub use config::{
-    AbsentPolicy, MergeStrategy, PgDestOptions, PgTableOptions, Postgres, Scd2Options,
+    AbsentPolicy, DedupSort, MergeStrategy, PgDestOptions, PgTableOptions, Postgres, Scd2Options,
+    SortOrder,
 };
 
 /// Fail-point registry (gate G2.2): every `crash_point!` site in this crate —

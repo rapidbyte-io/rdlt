@@ -121,6 +121,27 @@ pub enum AbsentPolicy {
     Retire,
 }
 
+/// Ordered in-load survivor selection (feature 010, contract
+/// merge-refinements.md MR1): among same-identity rows within one load,
+/// the row this column ranks first survives. Values beat NULL; ties keep
+/// the deterministic arrival-order last-wins. `order` is REQUIRED —
+/// survivor selection is too important for an implicit default.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DedupSort {
+    pub column: String,
+    pub order: SortOrder,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SortOrder {
+    /// Least value survives.
+    Asc,
+    /// Greatest value survives.
+    Desc,
+}
+
 /// Per-table overrides.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -134,6 +155,16 @@ pub struct PgTableOptions {
     pub hard_delete: Option<String>,
     #[serde(default)]
     pub scd2: Option<Scd2Options>,
+    /// Ordered survivor selection within one load (feature 010, MR1/MR2).
+    #[serde(default)]
+    pub dedup_sort: Option<DedupSort>,
+    /// Scope replacement (feature 010, MR3–MR5): a non-unique column set;
+    /// a merge load replaces every scope present in its delivered rows
+    /// (undelivered rows in those scopes disappear), leaving other scopes
+    /// untouched. NULL is not a scope. Keyed structured tables only; not
+    /// valid with scd2.
+    #[serde(default)]
+    pub merge_key: Option<Vec<String>>,
 }
 
 /// Destination-wide defaults + per-table overrides.
@@ -166,6 +197,32 @@ impl PgDestOptions {
                     return Err(format!(
                         "tables.{table}.hard_delete: not valid with merge_strategy scd2 \
                          (contract scd2.md S8 — deletion-as-retirement is future work)"
+                    ));
+                }
+            }
+            if let Some(dedup) = &opts.dedup_sort
+                && dedup.column.trim().is_empty()
+            {
+                return Err(format!("tables.{table}.dedup_sort: empty column name"));
+            }
+            if let Some(scope) = &opts.merge_key {
+                if scope.is_empty() {
+                    return Err(format!("tables.{table}.merge_key: empty column list"));
+                }
+                if scope.iter().any(|c| c.trim().is_empty()) {
+                    return Err(format!("tables.{table}.merge_key: empty column name"));
+                }
+                let mut seen = std::collections::BTreeSet::new();
+                if let Some(dup) = scope.iter().find(|c| !seen.insert(c.as_str())) {
+                    return Err(format!(
+                        "tables.{table}.merge_key: column `{dup}` listed twice"
+                    ));
+                }
+                if strategy == MergeStrategy::Scd2 {
+                    return Err(format!(
+                        "tables.{table}.merge_key: not valid with merge_strategy scd2 \
+                         (contract merge-refinements.md MR6 — scd2 retirement has its \
+                         own absence policy)"
                     ));
                 }
             }
@@ -209,6 +266,16 @@ impl PgDestOptions {
             .get(table)
             .and_then(|t| t.scd2.clone())
             .unwrap_or_default()
+    }
+
+    pub(super) fn dedup_sort_for(&self, table: &str) -> Option<&DedupSort> {
+        self.tables.get(table).and_then(|t| t.dedup_sort.as_ref())
+    }
+
+    pub(super) fn merge_key_for(&self, table: &str) -> Option<&[String]> {
+        self.tables
+            .get(table)
+            .and_then(|t| t.merge_key.as_deref())
     }
 }
 
@@ -269,12 +336,47 @@ mod tests {
         );
         assert!(PgDestOptions::from_value(serde_json::json!({"nope": 1})).is_err());
 
+        // Feature 010 shape matrix (MR6 parse layer).
+        let bad = PgDestOptions::from_value(serde_json::json!({
+            "tables": {"t": {"dedup_sort": {"column": " ", "order": "desc"}}}
+        }))
+        .unwrap_err();
+        assert!(bad.contains("tables.t.dedup_sort"), "{bad}");
+        // order is REQUIRED — no implicit survivor direction.
+        assert!(
+            PgDestOptions::from_value(serde_json::json!({
+                "tables": {"t": {"dedup_sort": {"column": "seq"}}}
+            }))
+            .is_err()
+        );
+        for (scope, needle) in [
+            (serde_json::json!([]), "empty column list"),
+            (serde_json::json!([" "]), "empty column name"),
+            (serde_json::json!(["day", "day"]), "listed twice"),
+        ] {
+            let bad = PgDestOptions::from_value(serde_json::json!({
+                "tables": {"t": {"merge_key": scope}}
+            }))
+            .unwrap_err();
+            assert!(bad.contains(needle), "{bad}");
+        }
+        let bad = PgDestOptions::from_value(serde_json::json!({
+            "tables": {"t": {"merge_strategy": "scd2", "merge_key": ["day"]}}
+        }))
+        .unwrap_err();
+        assert!(
+            bad.contains("tables.t.merge_key") && bad.contains("scd2"),
+            "{bad}"
+        );
+
         // Valid: destination default upsert + per-table scd2.
         let ok = PgDestOptions::from_value(serde_json::json!({
             "merge_strategy": "upsert",
             "tables": {
                 "dims": {"merge_strategy": "scd2", "scd2": {"absent": "retire"}},
-                "facts": {"hard_delete": "is_deleted"}
+                "facts": {"hard_delete": "is_deleted",
+                           "dedup_sort": {"column": "seq", "order": "desc"},
+                           "merge_key": ["day", "tenant"]}
             }
         }))
         .expect("valid options");
@@ -283,5 +385,12 @@ mod tests {
         assert_eq!(ok.strategy_for("other"), MergeStrategy::Upsert);
         assert_eq!(ok.hard_delete_for("facts"), Some("is_deleted"));
         assert_eq!(ok.scd2_for("dims").absent, AbsentPolicy::Retire);
+        let dedup = ok.dedup_sort_for("facts").expect("dedup_sort");
+        assert_eq!((dedup.column.as_str(), dedup.order), ("seq", SortOrder::Desc));
+        assert_eq!(
+            ok.merge_key_for("facts"),
+            Some(&["day".to_string(), "tenant".to_string()][..])
+        );
+        assert_eq!(ok.dedup_sort_for("other"), None);
     }
 }
