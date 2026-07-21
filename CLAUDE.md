@@ -1,7 +1,18 @@
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
-`specs/010-merge-refinements/plan.md` (feature: merge refinements for
+`specs/011-connector-verification/plan.md` (feature: postgres connector
+verification — every config parameter of source/dest/CLI proven by
+behavioral cells via the traceability matrix (contracts/
+parameter-matrix.md PM1-PM8; matrix.md is the worklist), ≥80% measured
+line coverage for rdlt-postgres via cargo-llvm-cov (`make coverage`,
+baseline BEFORE new cells, exclusions classified), every mismatch
+resolved incl. the R5 fix: EXPLICIT merge_strategy under append/replace
+becomes a typed error while the unconfigured default never rejects.
+Audit-first: cite existing suites, write cells only for genuine gaps,
+never coverage-only tests. Zero SPI change; dev-tooling deps only).
+Previous feature 010 for reference: `specs/010-merge-refinements/plan.md`
+(merge refinements for
 the postgres destination — `dedup_sort` ordered survivor selection (ONE
 ORDER BY rewrite in the shared dedup shape; values beat NULL; ties keep
 deterministic last-wins) and `merge_key` scope replacement (scope delete
