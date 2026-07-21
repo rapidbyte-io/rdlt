@@ -405,6 +405,31 @@ mod tests {
         .expect("config")
     }
 
+    /// Feature 010 (MR7): the per-table destination options carry the
+    /// refinement fields through the toml passthrough with zero CLI code.
+    #[test]
+    fn refinement_options_pass_through_the_toml() {
+        let spec = spec(
+            "pipeline = \"p\"\n\
+             [source.postgres]\nconfig = \"src.yaml\"\n\
+             [destination.postgres]\nconn = \"host=x\"\ndataset = \"d\"\n\
+             [destination.postgres.tables.events]\nhard_delete = \"deleted\"\n\
+             dedup_sort = { column = \"seq\", order = \"desc\" }\n\
+             merge_key = [\"day\", \"tenant\"]\n",
+        );
+        let DestSpec::Postgres { tables, .. } = &spec.destination else {
+            panic!("postgres dest");
+        };
+        let events = tables.as_ref().expect("tables")["events"].clone();
+        let dedup = events.dedup_sort.expect("dedup_sort");
+        assert_eq!(dedup.column, "seq");
+        assert_eq!(dedup.order, rdlt::postgres::SortOrder::Desc);
+        assert_eq!(
+            events.merge_key.as_deref(),
+            Some(&["day".to_string(), "tenant".to_string()][..])
+        );
+    }
+
     /// C3 capture matrix: the recommended composition is silent; every
     /// missing leg warns with the fix; non-merge destinations warn soft
     /// delete.

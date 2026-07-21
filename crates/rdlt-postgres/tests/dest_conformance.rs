@@ -1092,6 +1092,19 @@ mod refinements {
             .collect()
     }
 
+    async fn run_expect_err(conn: &str, dataset: &str, opts: Opts, units: Vec<Vec<Row>>) -> String {
+        let mut config = EngineConfig::new(format!("mr-{dataset}"));
+        config.write_mode = rdlt_connector::WriteMode::Merge {
+            key: vec!["id".into()],
+        };
+        let units = units.iter().map(|u| batch(u)).collect();
+        Engine::new(config, UnitsSource { units }, dest(conn, dataset, opts))
+            .run()
+            .await
+            .expect_err("run should fail")
+            .to_string()
+    }
+
     // ---- US1: ordered survivor selection (MR1/MR2, SC-001) ----
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1282,6 +1295,120 @@ mod refinements {
             ],
             "later units never destroy earlier units' rows; stale row gone once"
         );
+    }
+
+    // ---- US3: open-time validation matrix (MR6, SC-004) ----
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn refinement_options_validate_typed_at_open() {
+        let (_c, conn) = start_pg().await;
+        let one_row: Vec<Vec<Row>> = vec![vec![(1, Some(1), Some(1), "x", None)]];
+
+        // Nonexistent columns: table AND column named, before any data moves.
+        let err = run_expect_err(
+            &conn,
+            "mr_bad_dedup",
+            Opts {
+                dedup: Some(("nope", SortOrder::Desc)),
+                ..Opts::default()
+            },
+            one_row.clone(),
+        )
+        .await;
+        assert!(err.contains("`nope`") && err.contains("`events`"), "{err}");
+
+        let err = run_expect_err(
+            &conn,
+            "mr_bad_scope",
+            Opts {
+                merge_key: Some(&["ghost"]),
+                ..Opts::default()
+            },
+            one_row.clone(),
+        )
+        .await;
+        assert!(err.contains("`ghost`") && err.contains("`events`"), "{err}");
+
+        // The hard_delete flag is neither an ordering column nor a scope.
+        let err = run_expect_err(
+            &conn,
+            "mr_flag_dedup",
+            Opts {
+                dedup: Some(("deleted", SortOrder::Desc)),
+                hard_delete: true,
+                ..Opts::default()
+            },
+            one_row.clone(),
+        )
+        .await;
+        assert!(
+            err.contains("hard_delete") && err.contains("`deleted`"),
+            "{err}"
+        );
+
+        let err = run_expect_err(
+            &conn,
+            "mr_flag_scope",
+            Opts {
+                merge_key: Some(&["deleted"]),
+                hard_delete: true,
+                ..Opts::default()
+            },
+            one_row,
+        )
+        .await;
+        assert!(err.contains("not a scope"), "{err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn refinement_options_reject_shredded_streams() {
+        use rdlt_testkit::MemorySource;
+        use serde_json::json;
+
+        let (_c, conn) = start_pg().await;
+        for (dataset, table_opts, needle) in [
+            (
+                "mr_sh_dedup",
+                PgTableOptions {
+                    dedup_sort: Some(DedupSort {
+                        column: "seq".into(),
+                        order: SortOrder::Desc,
+                    }),
+                    ..PgTableOptions::default()
+                },
+                "dedup_sort requires a KEYED structured",
+            ),
+            (
+                "mr_sh_scope",
+                PgTableOptions {
+                    merge_key: Some(vec!["day".into()]),
+                    ..PgTableOptions::default()
+                },
+                "merge_key requires a KEYED structured",
+            ),
+        ] {
+            let dest = Postgres::connect(&conn)
+                .dataset(dataset)
+                .options(PgDestOptions {
+                    tables: [("users".to_string(), table_opts)].into_iter().collect(),
+                    ..PgDestOptions::default()
+                })
+                .expect("options");
+            let mut config = EngineConfig::new(dataset);
+            config.write_mode = rdlt_connector::WriteMode::Merge {
+                key: vec!["id".into()],
+            };
+            let source = MemorySource::single_stream(
+                rdlt_connector::StreamSpec::new("users").with_primary_key(["id"]),
+                vec![json!({"id": 1, "seq": 2, "day": 3})],
+            );
+            let err = Engine::new(config, source, dest)
+                .run()
+                .await
+                .expect_err("shredded stream must reject the option")
+                .to_string();
+            assert!(err.contains(needle), "{err}");
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]

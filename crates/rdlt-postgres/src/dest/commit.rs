@@ -157,6 +157,66 @@ impl LoadSession for PgSession {
                     )));
                 }
             }
+            // Feature 010 (MR6): both refinement options are keyed-structured
+            // only, their columns must exist, and they may not repurpose the
+            // hard_delete flag. (A collision with scd2 validity columns is
+            // unreachable: validity names may not be stream columns [S1] while
+            // these options' columns MUST be — S1 fires first.)
+            if let Some(dedup) = self.options.dedup_sort_for(table) {
+                if has_identity {
+                    return Err(fatal(format!(
+                        "table `{table}`: dedup_sort requires a KEYED structured \
+                         stream (contract merge-refinements.md MR6) — a shredded \
+                         stream's identity is a content hash, ordered survivors \
+                         are meaningless there"
+                    )));
+                }
+                if schema.column(&dedup.column).is_none() {
+                    return Err(fatal(format!(
+                        "dedup_sort column `{}` is not a column of table `{table}`",
+                        dedup.column
+                    )));
+                }
+                if self.options.hard_delete_for(table) == Some(dedup.column.as_str()) {
+                    return Err(fatal(format!(
+                        "table `{table}`: dedup_sort column `{}` is the hard_delete \
+                         flag — use a distinct ordering column (contract \
+                         merge-refinements.md MR6)",
+                        dedup.column
+                    )));
+                }
+            }
+            if let Some(scope) = self.options.merge_key_for(table) {
+                if has_identity {
+                    return Err(fatal(format!(
+                        "table `{table}`: merge_key requires a KEYED structured \
+                         stream (contract merge-refinements.md MR6) — shredded \
+                         streams replace by root subtree"
+                    )));
+                }
+                if strategy == MergeStrategy::Scd2 {
+                    // Belt: parse-time validation already rejects this; direct
+                    // struct construction must not slip past it.
+                    return Err(fatal(format!(
+                        "table `{table}`: merge_key is not valid with scd2 \
+                         (contract merge-refinements.md MR6)"
+                    )));
+                }
+                for col in scope {
+                    if schema.column(col).is_none() {
+                        return Err(fatal(format!(
+                            "merge_key column `{col}` is not a column of table `{table}`"
+                        )));
+                    }
+                    if self.options.hard_delete_for(table) == Some(col.as_str()) {
+                        return Err(fatal(format!(
+                            "table `{table}`: merge_key column `{col}` is the \
+                             hard_delete flag — a deletion flag is not a scope \
+                             (contract merge-refinements.md MR6)"
+                        )));
+                    }
+                }
+            }
             if strategy == MergeStrategy::Upsert && has_identity {
                 // Review F4 / contract M7 (amended): a shredded stream's
                 // _rdlt_id is a CONTENT hash for keyless streams — updates

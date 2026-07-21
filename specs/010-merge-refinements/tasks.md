@@ -105,7 +105,7 @@ both options ride schemas and the CLI.
 **Independent Test**: spec US3 — the validation matrix plus schema/CLI
 round-trips.
 
-- [ ] T005 [US3] Open-time validation in
+- [X] T005 [US3] Open-time validation in
       `crates/rdlt-postgres/src/dest/ddl.rs` (`ensure_table`, next to
       M7/S1): nonexistent dedup_sort/merge_key columns (typed, names
       table + column); collisions with the hard_delete flag and scd2
@@ -113,7 +113,7 @@ round-trips.
       streams; `merge_key` + scd2 rejected (R3/MR6); conformance error
       cells for EVERY row of the data-model error taxonomy in
       `crates/rdlt-postgres/tests/dest_conformance.rs` (SC-004).
-- [ ] T006 [P] [US3] Schemas + CLI in
+- [X] T006 [P] [US3] Schemas + CLI in
       `crates/rdlt-postgres/tests/config_schema.rs` (dest-options cells:
       documented example with both fields validates AND parses; unknown
       fields and bad `order` tokens fail both layers) and a

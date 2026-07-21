@@ -160,7 +160,9 @@ mod dest_options {
                                "scd2": {"absent": "retire",
                                         "valid_from": "_rdlt_valid_from",
                                         "valid_to": "_rdlt_valid_to"}},
-                "orders": {"hard_delete": "is_deleted"}
+                "orders": {"hard_delete": "is_deleted",
+                            "dedup_sort": {"column": "seq", "order": "desc"},
+                            "merge_key": ["day", "tenant"]}
             }
         });
         assert!(
@@ -169,6 +171,26 @@ mod dest_options {
             validator.iter_errors(&example).next()
         );
         PgDestOptions::from_value(example).expect("schema-valid example parses");
+    }
+
+    #[test]
+    fn refinement_options_round_trip_the_schema() {
+        // Feature 010 (MR7): both options in the generated schema; bad
+        // `order` tokens and unknown sub-fields fail schema AND parser.
+        let validator = validator_for(&schema()).expect("schema compiles");
+        for bad in [
+            json!({"tables": {"t": {"dedup_sort": {"column": "seq", "order": "downwards"}}}}),
+            json!({"tables": {"t": {"dedup_sort": {"column": "seq"}}}}),
+            json!({"tables": {"t": {"dedup_sort": {"column": "seq", "order": "desc",
+                                                     "nulls": "first"}}}}),
+            json!({"tables": {"t": {"merge_key": "day"}}}),
+        ] {
+            assert!(!validator.is_valid(&bad), "schema must reject: {bad}");
+            assert!(
+                PgDestOptions::from_value(bad.clone()).is_err(),
+                "parser agrees: {bad}"
+            );
+        }
     }
 
     #[test]
