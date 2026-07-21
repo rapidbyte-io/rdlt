@@ -596,3 +596,95 @@ async fn lossy_mappings_announce_once_per_read_on_dedicated_target() {
         "exactly one event per lossy column, none for lossless columns or the clean table"
     );
 }
+
+// ---- Feature 011 (contract PM1/PM2): parameter-matrix gap cells ----
+
+/// Every remaining documented hint pair lands TYPED end to end (the
+/// closed conversion table, contracts/type-hints.md): text → each hint;
+/// int → bool/float64/decimal; numeric → float64; timestamp → date;
+/// date → timestamp_tz. (`timestamp_tz` and `decimal` from text were
+/// already pinned by `type_hints_end_to_end`.)
+#[tokio::test(flavor = "multi_thread")]
+async fn hint_matrix_covers_every_documented_pair() {
+    let fixture = PgFixture::start().await;
+    fixture
+        .seed(
+            "CREATE TABLE h (
+                 id int8 PRIMARY KEY,
+                 t_bool text, t_int text, t_float text, t_naive text,
+                 t_date text, t_time text, t_uuid text, t_json text, t_bin text,
+                 i_bool int4, i_float int8, n_float numeric,
+                 ts_date timestamp, d_tz date);
+             INSERT INTO h VALUES (1,
+                 'true', '42', '2.5', '2026-01-02 03:04:05',
+                 '2026-01-02', '03:04:05', '6a1de5f1-97fe-4f19-b2f2-4e3a7cbe75f3',
+                 '{\"k\":1}', '\\x0aff',
+                 1, 7, 12.25,
+                 '2026-01-02 03:04:05', '2026-01-02');",
+        )
+        .await;
+    let hints = "tables:\n  - name: h\n    type_hints:\n      t_bool: bool\n      t_int: int64\n      t_float: float64\n      t_naive: timestamp_naive\n      t_date: date\n      t_time: time\n      t_uuid: uuid\n      t_json: json\n      t_bin: binary\n      i_bool: bool\n      i_float: float64\n      n_float: float64\n      ts_date: date\n      d_tz: timestamp_tz\n";
+    let (db, report) =
+        run_to_duckdb(source_for(&fixture.conn_url(), hints), "conf-hint-matrix").await;
+    assert_eq!(report.total_rows(), 1);
+    // Server-side casts landed TYPED — duckdb's typeof() is the witness.
+    for (col, want) in [
+        ("t_bool", "BOOLEAN"),
+        ("t_int", "BIGINT"),
+        ("t_float", "DOUBLE"),
+        ("t_naive", "TIMESTAMP"),
+        ("t_date", "DATE"),
+        ("t_time", "TIME"),
+        ("i_bool", "BOOLEAN"),
+        ("i_float", "DOUBLE"),
+        ("n_float", "DOUBLE"),
+        ("ts_date", "DATE"),
+        ("t_bin", "BLOB"),
+    ] {
+        let ty = db
+            .query_string(&format!("SELECT typeof({col}) FROM h"))
+            .expect(col);
+        assert_eq!(ty, want, "hint target type for {col}");
+    }
+    // Values, not just types.
+    assert_eq!(
+        db.query_string("SELECT CAST(t_int AS VARCHAR) FROM h")
+            .unwrap(),
+        "42"
+    );
+    assert_eq!(
+        db.query_string("SELECT CAST(i_bool AS VARCHAR) FROM h")
+            .unwrap(),
+        "true"
+    );
+    assert_eq!(
+        db.query_string("SELECT t_uuid FROM h").unwrap(),
+        "6a1de5f1-97fe-4f19-b2f2-4e3a7cbe75f3",
+        "uuid hint canonicalizes via the server"
+    );
+    assert_eq!(
+        db.query_string("SELECT t_json FROM h").unwrap(),
+        "{\"k\": 1}"
+    );
+    // An UNDEFINED pair stays a typed open-time error (closed table).
+    let err = run_to_duckdb_err(
+        source_for(
+            &fixture.conn_url(),
+            "tables:\n  - name: h\n    type_hints:\n      i_bool: uuid\n",
+        ),
+        "conf-hint-bad",
+    )
+    .await;
+    assert!(err.contains("no defined conversion"), "{err}");
+}
+
+async fn run_to_duckdb_err(source: PostgresSource, pipeline: &str) -> String {
+    let db = tempfile::tempdir().expect("tempdir");
+    let dest = DuckDb::open(db.path().join("out.duckdb")).expect("open db");
+    std::mem::forget(db);
+    Engine::new(EngineConfig::new(pipeline), source, dest)
+        .run()
+        .await
+        .expect_err("run should fail")
+        .to_string()
+}

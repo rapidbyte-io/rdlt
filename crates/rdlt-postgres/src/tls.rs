@@ -1106,6 +1106,23 @@ mod tests {
     }
 
     #[test]
+    fn sslrootcert_system_selects_the_platform_store() {
+        // libpq 16+ `sslrootcert=system` = platform trust store: the policy
+        // resolves to a verifying mode with NO explicit root (feature 011,
+        // PM1 — previously only the code comment claimed it).
+        let parsed = parse_conn(
+            "postgresql://u@h/d?sslmode=verify-full&sslrootcert=system",
+            None,
+        )
+        .expect("system root parses");
+        assert_eq!(parsed.policy.mode, TlsMode::VerifyFull);
+        assert!(
+            parsed.policy.root_cert.is_none(),
+            "system = platform store = no explicit root in the policy"
+        );
+    }
+
+    #[test]
     fn rejected_parameters_are_named_never_bare() {
         // Every unsupported parameter is NAMED, with a hint where one exists.
         for (conn, param, hint_word) in [

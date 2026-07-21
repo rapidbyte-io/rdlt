@@ -603,3 +603,156 @@ async fn inclusive_end_bound_loads_boundary_rows_exactly_once() {
     assert_eq!(rig.count(), 3);
     assert_eq!(rig.distinct_ids(), "3");
 }
+
+// ---- Feature 011 (contract PM1/PM2): parameter-matrix gap cells ----
+
+/// `direction: min` — descending cursors: the watermark is the MINIMUM
+/// seen, and later runs load rows BELOW it.
+#[tokio::test(flavor = "multi_thread")]
+async fn direction_min_descends_and_resumes() {
+    let fixture = PgFixture::start().await;
+    fixture
+        .seed(
+            "CREATE TABLE ev (id int8 PRIMARY KEY, v text, ts timestamptz);\
+             INSERT INTO ev VALUES (5, 'e', now()), (6, 'f', now());",
+        )
+        .await;
+    let rig = Rig::new();
+    let source = |conn: &str| {
+        PostgresSource::from_yaml(&format!(
+            "conn: \"{conn}\"\ntables:\n  - name: ev\n    cursor:\n      column: id\n      direction: min\n"
+        ))
+        .expect("config")
+    };
+    assert_eq!(rig.run(source(&fixture.conn_url()), "inc-min").await, 2);
+
+    // Rows BELOW the min watermark arrive later (a descending feed).
+    fixture
+        .seed("INSERT INTO ev VALUES (3, 'c', now()), (4, 'd', now());")
+        .await;
+    assert_eq!(
+        rig.run(source(&fixture.conn_url()), "inc-min").await,
+        2,
+        "descending resume loads exactly the rows below the watermark"
+    );
+    assert_eq!(rig.count(), 4);
+}
+
+/// `lag` magnitude family — integer cursors take plain magnitudes: a
+/// resumed run re-scans `watermark - N` and captures late rows, with
+/// exact totals under merge.
+#[tokio::test(flavor = "multi_thread")]
+async fn magnitude_lag_for_integer_cursors() {
+    let fixture = PgFixture::start().await;
+    fixture
+        .seed(
+            "CREATE TABLE ev (id int8 PRIMARY KEY, v text, ts timestamptz);\
+             INSERT INTO ev VALUES (1,'a',now()),(2,'b',now()),(3,'c',now()),(7,'g',now());",
+        )
+        .await;
+    let rig = Rig::new();
+    let source = |conn: &str| {
+        PostgresSource::from_yaml(&format!(
+            "conn: \"{conn}\"\ntables:\n  - name: ev\n    cursor:\n      column: id\n      lag: \"2\"\n"
+        ))
+        .expect("config")
+    };
+    let merge = "int-lag";
+    let run = |src| {
+        let mut config = EngineConfig::new(merge);
+        config.write_mode = rdlt_connector::WriteMode::Merge {
+            key: vec!["id".into()],
+        };
+        Engine::new(config, src, rig.dest.clone())
+    };
+    run(source(&fixture.conn_url())).run().await.expect("run 1");
+    // A LATE row lands inside the magnitude window (id 6 ≥ 7 - 2).
+    fixture
+        .seed("INSERT INTO ev VALUES (6, 'late', now());")
+        .await;
+    let report = run(source(&fixture.conn_url())).run().await.expect("run 2");
+    assert_eq!(
+        report.total_rows(),
+        1,
+        "the window re-reads [5,7], but boundary-key dedup drops the replayed \
+         watermark row SOURCE-side — exactly the late row moves"
+    );
+    assert_eq!(
+        rig.count(),
+        5,
+        "exact totals under merge (no dupes, late row present)"
+    );
+    assert_eq!(rig.distinct_ids(), "5");
+}
+
+/// `cursor.column` must survive the column selection — excluding it is a
+/// typed error naming the column, before any data moves.
+#[tokio::test(flavor = "multi_thread")]
+async fn cursor_column_must_survive_selection() {
+    let fixture = PgFixture::start().await;
+    fixture
+        .seed("CREATE TABLE ev (id int8 PRIMARY KEY, v text, ts timestamptz);")
+        .await;
+    let source = PostgresSource::from_yaml(&format!(
+        "conn: \"{}\"\ntables:\n  - name: ev\n    excluded_columns: [ts]\n    cursor:\n      column: ts\n",
+        fixture.conn_url()
+    ))
+    .expect("config parses — the check needs reflection");
+    let rig = Rig::new();
+    let config = EngineConfig::new("inc-cursor-sel");
+    let err = Engine::new(config, source, rig.dest.clone())
+        .run()
+        .await
+        .expect_err("excluded cursor column must fail typed")
+        .to_string();
+    assert!(err.contains("`ts`"), "{err}");
+    assert!(err.contains("selected"), "{err}");
+}
+
+/// `batch_target_bytes` / `batch_max_rows` — the knobs OBSERVABLY cut
+/// batches: tiny knobs produce many commit units, huge knobs one.
+#[tokio::test(flavor = "multi_thread")]
+async fn batch_knobs_cut_batches_observably() {
+    let fixture = PgFixture::start().await;
+    fixture
+        .seed(
+            "CREATE TABLE ev (id int8 PRIMARY KEY, v text, ts timestamptz);\
+             INSERT INTO ev SELECT i, repeat('x', 500), now() FROM generate_series(1, 40) i;",
+        )
+        .await;
+    let commits_with = |extra: &str| {
+        let conn = fixture.conn_url();
+        let extra = extra.to_string();
+        async move {
+            let rig = Rig::new();
+            let source = PostgresSource::from_yaml(&format!(
+                "conn: \"{conn}\"\n{extra}tables:\n  - name: ev\n    cursor:\n      column: id\n"
+            ))
+            .expect("config");
+            let config = EngineConfig::new("inc-knobs");
+            let report = Engine::new(config, source, rig.dest.clone())
+                .run()
+                .await
+                .expect("run");
+            report.commits
+        }
+    };
+    let one = commits_with("").await;
+    let by_rows = commits_with("batch_max_rows: 5\n").await;
+    let by_bytes = commits_with("batch_target_bytes: 2048\n").await;
+    // Incremental streams commit per checkpoint: one batch = one mid-stream
+    // checkpoint + the final-state checkpoint = 2 commits at the default
+    // knobs; the knobs multiply that observably.
+    assert_eq!(
+        one, 2,
+        "default knobs: 40 small rows = one batch (+ final state)"
+    );
+    assert!(
+        by_rows >= 8,
+        "batch_max_rows=5 over 40 rows cuts many batches: {by_rows}"
+    );
+    assert!(
+        by_bytes >= 4,
+        "a 2 KiB byte target over ~20 KiB cuts many batches: {by_bytes}"
+    );
+}

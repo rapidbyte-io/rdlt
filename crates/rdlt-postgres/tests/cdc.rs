@@ -433,6 +433,16 @@ impl CdcRig {
             .expect("scalar")
             .get(0)
     }
+
+    async fn scalar_text(&self, sql: &str) -> String {
+        self.fixture
+            .client()
+            .await
+            .query_one(sql, &[])
+            .await
+            .expect("scalar text")
+            .get(0)
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1116,4 +1126,164 @@ async fn declared_primary_key_override_keys_the_stream_under_full() {
         Some(&["code".to_string()][..]),
         "the declared business key wins under FULL"
     );
+}
+
+// ---- Feature 011 (contract PM1/PM2): parameter-matrix gap cells ----
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ack_off_never_advances_the_slot() {
+    // `ack: off` — data flows, but the slot's confirmed position never
+    // moves (debugging / fan-in staging; WAL retention documented).
+    let rig = CdcRig::start("cdc-ack-off").await;
+    rig.fixture
+        .seed(
+            "CREATE TABLE public.orders (id int8 PRIMARY KEY, total int4);\
+             INSERT INTO public.orders VALUES (1, 10);",
+        )
+        .await;
+    let source = |conn: &str| {
+        PostgresSource::from_yaml(&format!(
+            "conn: \"{conn}\"\ncdc:\n  slot: s1\n  publication: p1\n  create_if_missing: true\n\
+             \x20 ack: off\ntables:\n  - name: orders\n"
+        ))
+        .expect("config")
+    };
+    let run = || async {
+        let mut config = EngineConfig::new("cdc-ack-off");
+        config.workdir = Some(rig.workdir.clone());
+        config.write_mode = rdlt_connector::WriteMode::Merge {
+            key: vec!["id".into()],
+        };
+        Engine::new(
+            config,
+            source(&rig.fixture.conn_url()),
+            rig.dest(&["orders"]),
+        )
+        .run()
+        .await
+        .expect("run")
+    };
+    run().await;
+    let confirmed_after_snapshot = rig
+        .scalar_text(
+            "SELECT confirmed_flush_lsn::text FROM pg_replication_slots WHERE slot_name = 's1'",
+        )
+        .await;
+    rig.fixture
+        .seed("INSERT INTO public.orders VALUES (2, 20);")
+        .await;
+    run().await;
+    run().await;
+    assert_eq!(
+        rig.scalar("SELECT count(*) FROM mirror.orders").await,
+        2,
+        "data flows normally under ack: off"
+    );
+    assert_eq!(
+        rig.scalar_text(
+            "SELECT confirmed_flush_lsn::text FROM pg_replication_slots WHERE slot_name = 's1'",
+        )
+        .await,
+        confirmed_after_snapshot,
+        "the slot's acknowledged position never advances under ack: off"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn custom_flag_column_flows_end_to_end() {
+    // `flag_column` — a custom name rides the whole composition: the CDC
+    // stream emits it, the destination hard-deletes by it.
+    let rig = CdcRig::start("cdc-flag-name").await;
+    rig.fixture
+        .seed(
+            "CREATE TABLE public.orders (id int8 PRIMARY KEY, total int4);\
+             INSERT INTO public.orders VALUES (1, 10), (2, 20);",
+        )
+        .await;
+    let source = |conn: &str| {
+        PostgresSource::from_yaml(&format!(
+            "conn: \"{conn}\"\ncdc:\n  slot: s1\n  publication: p1\n  create_if_missing: true\n\
+             \x20 flag_column: gone\ntables:\n  - name: orders\n"
+        ))
+        .expect("config")
+    };
+    let dest = || {
+        Postgres::connect(rig.fixture.conn_url())
+            .dataset("mirror")
+            .options(PgDestOptions {
+                merge_strategy: MergeStrategy::Upsert,
+                tables: [(
+                    "orders".to_string(),
+                    PgTableOptions {
+                        hard_delete: Some("gone".into()),
+                        ..PgTableOptions::default()
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            })
+            .expect("options")
+    };
+    let run = || async {
+        let mut config = EngineConfig::new("cdc-flag-name");
+        config.workdir = Some(rig.workdir.clone());
+        config.write_mode = rdlt_connector::WriteMode::Merge {
+            key: vec!["id".into()],
+        };
+        Engine::new(config, source(&rig.fixture.conn_url()), dest())
+            .run()
+            .await
+            .expect("run")
+    };
+    run().await;
+    rig.fixture
+        .seed("DELETE FROM public.orders WHERE id = 2;")
+        .await;
+    run().await;
+    assert_eq!(
+        rig.scalar("SELECT count(*) FROM mirror.orders").await,
+        1,
+        "the delete hard-applied via the CUSTOM flag column"
+    );
+    assert_eq!(
+        rig.scalar(
+            "SELECT count(*) FROM information_schema.columns \
+             WHERE table_schema = 'mirror' AND table_name = 'orders' AND column_name = 'gone'"
+        )
+        .await,
+        1,
+        "the custom flag column exists at the destination"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn declared_key_mismatch_under_default_identity_is_typed() {
+    // `primary_key` override × CDC: under DEFAULT replica identity the
+    // delete records only carry the identity columns — a mismatching
+    // override is a typed error, never silent mis-keying.
+    let rig = CdcRig::start("cdc-key-mismatch").await;
+    rig.fixture
+        .seed(
+            "CREATE TABLE public.orders (id int8 PRIMARY KEY, code text NOT NULL);\
+             INSERT INTO public.orders VALUES (1, 'a');",
+        )
+        .await;
+    let source = PostgresSource::from_yaml(&format!(
+        "conn: \"{}\"\ncdc:\n  slot: s1\n  publication: p1\n  create_if_missing: true\n\
+         tables:\n  - name: orders\n    primary_key: [code]\n",
+        rig.fixture.conn_url()
+    ))
+    .expect("config");
+    let mut config = EngineConfig::new("cdc-key-mismatch");
+    config.workdir = Some(rig.workdir.clone());
+    config.write_mode = rdlt_connector::WriteMode::Merge {
+        key: vec!["code".into()],
+    };
+    let err = Engine::new(config, source, rig.dest(&["orders"]))
+        .run()
+        .await
+        .expect_err("mismatching override must fail typed")
+        .to_string();
+    assert!(err.contains("differs from the replica identity"), "{err}");
+    assert!(err.contains("`orders`"), "{err}");
 }

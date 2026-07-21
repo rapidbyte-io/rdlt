@@ -562,6 +562,47 @@ destination:
         ));
     }
 
+    /// Feature 011 (PM1): every pipeline-spec form parses — write_mode's
+    /// three shapes, all destination kinds, workdir default vs custom.
+    #[test]
+    fn pipeline_spec_forms_parse() {
+        for (mode, want_merge) in [
+            ("write_mode: append\n", false),
+            ("write_mode: replace\n", false),
+            ("write_mode: {merge: {key: [id]}}\n", true),
+            ("", false), // absent = append default
+        ] {
+            let parsed = spec(&format!(
+                "pipeline: p\n{mode}source:\n  postgres: {{config: s.yaml}}\n\
+                 destination:\n  duckdb: {{path: out.db}}\n"
+            ));
+            assert_eq!(
+                matches!(parsed.write_mode, Some(WriteModeSpec::Merge { .. })),
+                want_merge,
+                "{mode}"
+            );
+        }
+        // Destination kinds + workdir.
+        let parquet = spec(
+            "pipeline: p\nworkdir: /tmp/x\nsource:\n  postgres: {config: s.yaml}\n\
+             destination:\n  parquet: {path: out}\n",
+        );
+        assert!(matches!(parquet.destination, DestSpec::Parquet { .. }));
+        assert_eq!(
+            parquet.workdir.as_deref(),
+            Some(std::path::Path::new("/tmp/x"))
+        );
+        let duck = spec(
+            "pipeline: p\nsource:\n  postgres: {config: s.yaml}\n\
+             destination:\n  duckdb: {path: out.db, memory_limit: \"1GB\"}\n",
+        );
+        assert!(matches!(duck.destination, DestSpec::Duckdb { .. }));
+        assert!(
+            duck.workdir.is_none(),
+            "workdir defaults downstream to .rdlt"
+        );
+    }
+
     /// C3 capture matrix: the recommended composition is silent; every
     /// missing leg warns with the fix; non-merge destinations warn soft
     /// delete.

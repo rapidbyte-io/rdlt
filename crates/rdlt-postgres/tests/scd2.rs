@@ -460,3 +460,60 @@ async fn absent_retire_rejects_multi_unit_loads() {
         "{msg}"
     );
 }
+
+/// Feature 011 (PM1/PM3): CUSTOM validity column names flow end to end —
+/// the configured names appear on the target and carry the history.
+#[tokio::test(flavor = "multi_thread")]
+async fn custom_validity_column_names_flow_end_to_end() {
+    use rdlt_postgres::dest::{MergeStrategy, PgDestOptions, PgTableOptions, Scd2Options};
+
+    let (_container, conn) = start_pg().await;
+    let dest = Postgres::connect(&conn)
+        .dataset("scd2c")
+        .options(PgDestOptions {
+            merge_strategy: MergeStrategy::Scd2,
+            tables: [(
+                "dims".to_string(),
+                PgTableOptions {
+                    merge_strategy: Some(MergeStrategy::Scd2),
+                    scd2: Some(Scd2Options {
+                        valid_from: "row_since".into(),
+                        valid_to: "row_until".into(),
+                        ..Scd2Options::default()
+                    }),
+                    ..PgTableOptions::default()
+                },
+            )]
+            .into_iter()
+            .collect(),
+        })
+        .expect("options");
+    run(dest.clone(), &[(1, "v1")]).await;
+    run(dest, &[(1, "v2")]).await;
+
+    let (client, connection) = tokio_postgres::connect(&conn, tokio_postgres::NoTls)
+        .await
+        .expect("connect");
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    let versions: i64 = client
+        .query_one("SELECT count(*) FROM scd2c.dims", &[])
+        .await
+        .expect("count")
+        .get(0);
+    let active: String = client
+        .query_one("SELECT name FROM scd2c.dims WHERE row_until IS NULL", &[])
+        .await
+        .expect("one active row via the CUSTOM column")
+        .get(0);
+    let retired: i64 = client
+        .query_one(
+            "SELECT count(*) FROM scd2c.dims WHERE row_until IS NOT NULL AND row_since IS NOT NULL",
+            &[],
+        )
+        .await
+        .expect("retired")
+        .get(0);
+    assert_eq!((versions, active.as_str(), retired), (2, "v2", 1));
+}
