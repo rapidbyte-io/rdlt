@@ -139,7 +139,7 @@ absence policy; exactly-once under redelivery.
 versions, ranges, single-active invariant, point-in-time answers;
 redelivery adds zero versions.
 
-- [ ] T010 [US3] SCD2 implementation:
+- [X] T010 [US3] SCD2 implementation:
       `crates/rdlt-postgres/src/dest/ddl.rs` creates validity columns
       (configured names; collision + keyless typed errors at ensure —
       S1) and the scd2 index; `dest/commit.rs` scd2 arm inside the
@@ -149,7 +149,7 @@ redelivery adds zero versions.
       first execution; D3 receipts make redelivery a no-op — S5),
       skip-unchanged (S3), absence policy keep/retire (S6);
       scd2+hard_delete rejected (S8) (R6).
-- [ ] T011 [US3] SCD2 conformance in
+- [X] T011 [US3] SCD2 conformance in
       `crates/rdlt-postgres/tests/scd2.rs` (new): three-round history
       — version counts, non-overlapping contiguous ranges, exactly one
       active per key, point-in-time queries (S7); both absence

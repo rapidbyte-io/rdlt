@@ -148,11 +148,38 @@ impl LoadSession for PgSession {
                     )));
                 }
             }
-            if strategy == MergeStrategy::Scd2 && has_identity {
-                return Err(fatal(format!(
-                    "table `{table}`: scd2 requires a KEYED structured stream \
-                     (contract scd2.md S1) — shredded streams have no declared key"
-                )));
+            if strategy == MergeStrategy::Scd2 {
+                if has_identity {
+                    return Err(fatal(format!(
+                        "table `{table}`: scd2 requires a KEYED structured stream \
+                         (contract scd2.md S1) — shredded streams have no declared key"
+                    )));
+                }
+                let scd2 = self.options.scd2_for(table);
+                for name in [&scd2.valid_from, &scd2.valid_to] {
+                    if schema.column(name).is_some() {
+                        return Err(fatal(format!(
+                            "table `{table}`: scd2 validity column `{name}` collides \
+                             with a stream column (contract scd2.md S1) — configure \
+                             different names"
+                        )));
+                    }
+                }
+                // Validity columns on the TARGET only (the stage carries the
+                // stream's shape); additive for pre-existing scd2 tables.
+                for (col, extra) in [
+                    (&scd2.valid_from, "TIMESTAMPTZ NOT NULL DEFAULT now()"),
+                    (&scd2.valid_to, "TIMESTAMPTZ"),
+                ] {
+                    self.client
+                        .batch_execute(&format!(
+                            "ALTER TABLE {} ADD COLUMN IF NOT EXISTS {} {extra}",
+                            quote(table),
+                            quote(col)
+                        ))
+                        .await
+                        .map_err(transient)?;
+                }
             }
             // Index plan (data-model.md): identity per table kind.
             let mut indexes: Vec<(bool, Vec<String>)> = Vec::new();
@@ -166,7 +193,13 @@ impl LoadSession for PgSession {
                 match strategy {
                     MergeStrategy::Upsert => indexes.push((true, key.clone())),
                     MergeStrategy::DeleteInsert => indexes.push((false, key.clone())),
-                    MergeStrategy::Scd2 => {} // scd2 index lands with its arm (T010)
+                    MergeStrategy::Scd2 => {
+                        // (key…, valid_to): active-version lookups + retire.
+                        let scd2 = self.options.scd2_for(table);
+                        let mut cols = key.clone();
+                        cols.push(scd2.valid_to.clone());
+                        indexes.push((false, cols));
+                    }
                 }
             }
             for (unique, columns) in indexes {
@@ -365,13 +398,14 @@ impl LoadSession for PgSession {
                             identity_delete_insert(&tx, &plan).await?
                         }
                         (true, MergeStrategy::Upsert) => identity_upsert(&tx, &plan).await?,
-                        (_, MergeStrategy::Scd2) => {
-                            // Arm lands with T010 (contract scd2.md); the
-                            // ensure-time validation already rejected the
-                            // shredded case (S1).
+                        (false, MergeStrategy::Scd2) => {
+                            let scd2 = self.options.scd2_for(table.as_str());
+                            scd2_merge(&tx, &plan, &scd2).await?
+                        }
+                        (true, MergeStrategy::Scd2) => {
+                            // Unreachable: ensure_table rejected it (S1).
                             return Err(fatal(format!(
-                                "table `{table}`: scd2 strategy not yet available \
-                                 in this build"
+                                "table `{table}`: scd2 on a shredded stream"
                             )));
                         }
                     }
@@ -676,5 +710,72 @@ async fn identity_upsert(
     ))
     .await
     .map_err(transient)?;
+    Ok(())
+}
+
+// ---- Feature 008 US3: SCD2 (contract scd2.md) ----
+
+/// Retire-changed-then-insert with NULL-safe column-wise change detection.
+/// One boundary per commit unit: `now()` is the TRANSACTION timestamp, so
+/// every statement in this publish sees the same instant (S5); redelivery
+/// re-executes nothing (D3 receipts).
+async fn scd2_merge(
+    tx: &tokio_postgres::Transaction<'_>,
+    plan: &MergePlan<'_>,
+    scd2: &super::config::Scd2Options,
+) -> Result<(), DestError> {
+    let (target, cols) = (plan.target, plan.cols);
+    let key_list = plan.key_list();
+    let deduped = plan.deduped(&key_list);
+    let vf = quote(&scd2.valid_from);
+    let vt = quote(&scd2.valid_to);
+    let key_match = plan
+        .key
+        .iter()
+        .map(|k| format!("t.{q} = d.{q}", q = quote(k)))
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    // Change detection (S3): NULL-safe, over the DATA columns — the key is
+    // the identity and the load-id changes every load by construction.
+    let changed = plan
+        .schema
+        .columns
+        .iter()
+        .filter(|c| !plan.key.contains(&c.name) && c.name != system_columns::LOAD_ID)
+        .map(|c| format!("t.{q} IS DISTINCT FROM d.{q}", q = quote(&c.name)))
+        .collect::<Vec<_>>()
+        .join(" OR ");
+
+    // S3 retire: active versions whose key arrives with DIFFERENT values.
+    if !changed.is_empty() {
+        tx.batch_execute(&format!(
+            "UPDATE {target} t SET {vt} = now() \
+             FROM {deduped} d WHERE t.{vt} IS NULL AND {key_match} AND ({changed})"
+        ))
+        .await
+        .map_err(transient)?;
+    }
+    // S2/S3 insert: staged rows with NO remaining active version (changed
+    // keys were just retired; unchanged keys still hold their identical
+    // active version and are SKIPPED — no churn).
+    tx.batch_execute(&format!(
+        "INSERT INTO {target} ({cols}, {vf}, {vt}) \
+         SELECT {cols}, now(), NULL FROM {deduped} d \
+         WHERE NOT EXISTS ( \
+             SELECT 1 FROM {target} t WHERE t.{vt} IS NULL AND {key_match})"
+    ))
+    .await
+    .map_err(transient)?;
+    // S6: full-feed absence semantics on request.
+    if scd2.absent == super::config::AbsentPolicy::Retire {
+        tx.batch_execute(&format!(
+            "UPDATE {target} t SET {vt} = now() \
+             WHERE t.{vt} IS NULL AND ({key_list}) NOT IN \
+                   (SELECT {key_list} FROM {} d)",
+            plan.deduped(&key_list),
+        ))
+        .await
+        .map_err(transient)?;
+    }
     Ok(())
 }
