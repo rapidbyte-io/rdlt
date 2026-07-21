@@ -32,26 +32,26 @@ streams:
     format: jsonl
     path: "$DATA/rows.jsonl"
 YAML
-cat > "$DATA/jsonl.toml" <<TOML
-pipeline = "bench-jsonl"
-workdir = "$DATA/.rdlt-jsonl"
-[source.file]
-config = "$DATA/jsonl-files.yaml"
-[destination.duckdb]
-path = "$DATA/out.duckdb"
-TOML
-/usr/bin/time -v "$RDLT" run "$DATA/jsonl.toml" --report "$DATA/jsonl-report.json" 2>&1 | grep -E 'Elapsed|Maximum resident'
+cat > "$DATA/jsonl.yaml" <<YAML
+pipeline: bench-jsonl
+workdir: $DATA/.rdlt-jsonl
+source:
+  file: {config: $DATA/jsonl-files.yaml}
+destination:
+  duckdb: {path: $DATA/out.duckdb}
+YAML
+/usr/bin/time -v "$RDLT" run "$DATA/jsonl.yaml" --report "$DATA/jsonl-report.json" 2>&1 | grep -E 'Elapsed|Maximum resident'
 
 echo "== rdlt: re-encode dataset as parquet (rdlt itself is the generator) =="
-cat > "$DATA/to-parquet.toml" <<TOML
-pipeline = "bench-genpq"
-workdir = "$DATA/.rdlt-genpq"
-[source.file]
-config = "$DATA/jsonl-files.yaml"
-[destination.parquet]
-path = "$DATA/pq"
-TOML
-"$RDLT" run "$DATA/to-parquet.toml" >/dev/null
+cat > "$DATA/to-parquet.yaml" <<YAML
+pipeline: bench-genpq
+workdir: $DATA/.rdlt-genpq
+source:
+  file: {config: $DATA/jsonl-files.yaml}
+destination:
+  parquet: {path: $DATA/pq}
+YAML
+"$RDLT" run "$DATA/to-parquet.yaml" >/dev/null
 
 echo "== baseline 2: dlt parquet -> parquet / duckdb (arrow-native fast path) =="
 "$ENGINE" run --rm -v "$DATA/pq":/data/pq:ro,z rdlt-baseline pipeline_parquet.py '/data/pq/events/*.parquet' parquet
@@ -64,24 +64,24 @@ streams:
     format: parquet
     path: "$DATA/pq/events/*.parquet"
 YAML
-cat > "$DATA/pq-to-pq.toml" <<TOML
-pipeline = "bench-pq-pq"
-workdir = "$DATA/.rdlt-pq-pq"
-[source.file]
-config = "$DATA/pq-files.yaml"
-[destination.parquet]
-path = "$DATA/pq-out"
-TOML
-cat > "$DATA/pq-to-duck.toml" <<TOML
-pipeline = "bench-pq-duck"
-workdir = "$DATA/.rdlt-pq-duck"
-[source.file]
-config = "$DATA/pq-files.yaml"
-[destination.duckdb]
-path = "$DATA/pq-out.duckdb"
-TOML
-/usr/bin/time -v "$RDLT" run "$DATA/pq-to-pq.toml" --report "$DATA/pq-pq-report.json" 2>&1 | grep -E 'Elapsed|Maximum resident'
-/usr/bin/time -v "$RDLT" run "$DATA/pq-to-duck.toml" --report "$DATA/pq-duck-report.json" 2>&1 | grep -E 'Elapsed|Maximum resident'
+cat > "$DATA/pq-to-pq.yaml" <<YAML
+pipeline: bench-pq-pq
+workdir: $DATA/.rdlt-pq-pq
+source:
+  file: {config: $DATA/pq-files.yaml}
+destination:
+  parquet: {path: $DATA/pq-out}
+YAML
+cat > "$DATA/pq-to-duck.yaml" <<YAML
+pipeline: bench-pq-duck
+workdir: $DATA/.rdlt-pq-duck
+source:
+  file: {config: $DATA/pq-files.yaml}
+destination:
+  duckdb: {path: $DATA/pq-out.duckdb}
+YAML
+/usr/bin/time -v "$RDLT" run "$DATA/pq-to-pq.yaml" --report "$DATA/pq-pq-report.json" 2>&1 | grep -E 'Elapsed|Maximum resident'
+/usr/bin/time -v "$RDLT" run "$DATA/pq-to-duck.yaml" --report "$DATA/pq-duck-report.json" 2>&1 | grep -E 'Elapsed|Maximum resident'
 
 echo "== cold start (one-row pipeline) =="
 # GATED protocol (feature 004, contracts/measurement-protocol.md P3): the
@@ -97,23 +97,23 @@ streams:
     format: jsonl
     path: "$DATA/one.jsonl"
 YAML
-cat > "$DATA/cold.toml" <<TOML
-pipeline = "cold"
-workdir = "$DATA/.rdlt-cold"
-[source.file]
-config = "$DATA/cold-files.yaml"
-[destination.duckdb]
-path = "$DATA/cold.duckdb"
-TOML
+cat > "$DATA/cold.yaml" <<YAML
+pipeline: cold
+workdir: $DATA/.rdlt-cold
+source:
+  file: {config: $DATA/cold-files.yaml}
+destination:
+  duckdb: {path: $DATA/cold.duckdb}
+YAML
 if command -v hyperfine >/dev/null; then
   hyperfine -N --warmup 3 --runs 20 \
     --prepare "rm -rf $DATA/.rdlt-cold $DATA/cold.duckdb" \
-    "$RDLT run $DATA/cold.toml"
+    "$RDLT run $DATA/cold.yaml"
 else
   echo "hyperfine missing — falling back to /usr/bin/time (10 ms quantized, NOT the gated protocol)"
   for i in 1 2 3 4 5; do
     rm -rf "$DATA/.rdlt-cold" "$DATA/cold.duckdb"
-    /usr/bin/time -f "rdlt cold: %e s" "$RDLT" run "$DATA/cold.toml" >/dev/null
+    /usr/bin/time -f "rdlt cold: %e s" "$RDLT" run "$DATA/cold.yaml" >/dev/null
   done
 fi
 for i in 1 2 3 4 5; do

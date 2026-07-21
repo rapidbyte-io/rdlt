@@ -5,10 +5,13 @@ MR-rules). Postgres destination only.
 
 ## The options
 
-```toml
-[destination.postgres.tables.events]
-dedup_sort = { column = "seq", order = "desc" }   # ordered survivor
-merge_key = ["day"]                                # scope replacement
+```yaml
+destination:
+  postgres:
+    tables:
+      events:
+        dedup_sort: {column: seq, order: desc}   # ordered survivor
+        merge_key: [day]                          # scope replacement
 ```
 
 ## Rules

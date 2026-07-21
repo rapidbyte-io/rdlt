@@ -47,13 +47,17 @@
   CLAUDE.md/plan.md/tasks.md purged of the killed receipts design;
   scd2+dedup_sort composition cell added (MR2 for scd2 pinned); the two
   divergent single-unit guards unified.
-- **Post-review addition (owner request)**: the CLI gained INLINE
-  postgres source config — `[source.postgres.inline]` carries the same
-  document as `config = "path"` (mutually exclusive, validated through
-  the shared from_value gate; unit-tested). README rewritten as the full
-  connector reference: pipeline-spec table, source/destination parameter
-  tables (every field: type, default, semantics, typed-error
-  conditions), consistent inline-TOML quick start.
+- **Post-review additions (owner requests)**: (1) README rewritten as
+  the full connector reference — pipeline-spec table, source/destination
+  parameter tables (every field: type, default, semantics, typed-error
+  conditions). (2) The CLI pipeline spec moved from TOML to a SINGLE
+  YAML document (`rdlt run pipeline.yaml`): source inline under
+  `source: postgres:` (or `{config: path}` for a reusable file, strict —
+  mixing forms is a loud error), destination inline, one format end to
+  end; serde_yaml singleton_map for the enum fields; inline documents
+  validated through the shared from_value gate; bench scripts +
+  memory_bound test converted; proven end-to-end against a live server
+  through the release binary (upsert + dedup_sort + merge_key).
 - **Deviations**: the open-time validation site is
   `dest/commit.rs::ensure_table` (tasks text said ddl.rs — followed the
   code, where M7/S1 live). Also hardened the 009 container-kill cell

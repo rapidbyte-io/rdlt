@@ -24,17 +24,17 @@ tables:
   - name: customers
 ```
 
-```toml
-# pipeline TOML — the recommended composition (validation warns if absent)
-write_mode = { merge = { key = ["id"] } }
-[destination.postgres]
-conn = "…"
-dataset = "mirror"
-merge_strategy = "upsert"
-[destination.postgres.tables.orders]
-hard_delete = "_rdlt_deleted"
-[destination.postgres.tables.customers]
-hard_delete = "_rdlt_deleted"
+```yaml
+# pipeline.yaml — the recommended composition (validation warns if absent)
+write_mode: {merge: {key: [id]}}
+destination:
+  postgres:
+    conn: "…"
+    dataset: mirror
+    merge_strategy: upsert
+    tables:
+      orders: {hard_delete: _rdlt_deleted}
+      customers: {hard_delete: _rdlt_deleted}
 ```
 
 Run 1 snapshots every CDC table under one consistent view and starts

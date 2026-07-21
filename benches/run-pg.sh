@@ -64,42 +64,43 @@ conn: "$CONN_HOST"
 tables:
   - name: pg_jsonb
 YAML
-cat > "$DATA/wide-duck.toml" <<TOML
-pipeline = "bench-pg-duck"
-workdir = "$DATA/.rdlt-wd"
-[source.postgres]
-config = "$DATA/wide.yaml"
-[destination.duckdb]
-path = "$DATA/wide.duckdb"
-TOML
-cat > "$DATA/jsonb-duck.toml" <<TOML
-pipeline = "bench-pgj-duck"
-workdir = "$DATA/.rdlt-jd"
-[source.postgres]
-config = "$DATA/jsonb.yaml"
-[destination.duckdb]
-path = "$DATA/jsonb.duckdb"
-TOML
-cat > "$DATA/wide-pg.toml" <<TOML
-pipeline = "bench-pg-pg"
-workdir = "$DATA/.rdlt-wp"
-[source.postgres]
-config = "$DATA/wide.yaml"
-[destination.postgres]
-conn = "host=127.0.0.1 port=5439 user=postgres password=postgres dbname=postgres"
-dataset = "raw_rdlt"
-TOML
+cat > "$DATA/wide-duck.yaml" <<YAML
+pipeline: bench-pg-duck
+workdir: $DATA/.rdlt-wd
+source:
+  postgres: {config: $DATA/wide.yaml}
+destination:
+  duckdb: {path: $DATA/wide.duckdb}
+YAML
+cat > "$DATA/jsonb-duck.yaml" <<YAML
+pipeline: bench-pgj-duck
+workdir: $DATA/.rdlt-jd
+source:
+  postgres: {config: $DATA/jsonb.yaml}
+destination:
+  duckdb: {path: $DATA/jsonb.duckdb}
+YAML
+cat > "$DATA/wide-pg.yaml" <<YAML
+pipeline: bench-pg-pg
+workdir: $DATA/.rdlt-wp
+source:
+  postgres: {config: $DATA/wide.yaml}
+destination:
+  postgres:
+    conn: "host=127.0.0.1 port=5439 user=postgres password=postgres dbname=postgres"
+    dataset: raw_rdlt
+YAML
 for i in $(seq 1 "$RUNS"); do
   rm -rf "$DATA/.rdlt-wd" "$DATA/wide.duckdb"
-  /usr/bin/time -v "$RDLT" run "$DATA/wide-duck.toml" 2>&1 >/dev/null | grep -E 'Elapsed|Maximum resident'
+  /usr/bin/time -v "$RDLT" run "$DATA/wide-duck.yaml" 2>&1 >/dev/null | grep -E 'Elapsed|Maximum resident'
 done
 for i in $(seq 1 "$RUNS"); do
   rm -rf "$DATA/.rdlt-jd" "$DATA/jsonb.duckdb"
-  /usr/bin/time -v "$RDLT" run "$DATA/jsonb-duck.toml" 2>&1 >/dev/null | grep -E 'Elapsed|Maximum resident'
+  /usr/bin/time -v "$RDLT" run "$DATA/jsonb-duck.yaml" 2>&1 >/dev/null | grep -E 'Elapsed|Maximum resident'
 done
 for i in $(seq 1 "$RUNS"); do
   drop_dest_schemas
   rm -rf "$DATA/.rdlt-wp"
-  /usr/bin/time -v "$RDLT" run "$DATA/wide-pg.toml" 2>&1 >/dev/null | grep -E 'Elapsed|Maximum resident'
+  /usr/bin/time -v "$RDLT" run "$DATA/wide-pg.yaml" 2>&1 >/dev/null | grep -E 'Elapsed|Maximum resident'
 done
 echo "medians go to benches/RESULTS.md; identity + raw runs to specs/005-postgres-source/evidence/"

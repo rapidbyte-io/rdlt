@@ -1,6 +1,10 @@
 //! # rdlt — thin development CLI
 //!
-//! `rdlt run <pipeline.toml> [--report <path>]`
+//! `rdlt run <pipeline.yaml> [--report <path>]`
+//!
+//! ONE YAML document describes the whole pipeline: pipeline-wide settings,
+//! the source (inline, or `config: path` to a reusable document), and the
+//! destination — one file, one format, end to end.
 //!
 //! Everything the CLI does, the library does (contract: embedder-api.md — the CLI
 //! adds zero engine capability). Events stream to stderr (human-readable); the
@@ -22,9 +26,14 @@ struct Spec {
     pipeline: String,
     #[serde(default)]
     workdir: Option<PathBuf>,
-    #[serde(default)]
+    // singleton_map: YAML's natural `write_mode: {merge: {key: […]}}` /
+    // `source: postgres: …` singleton-map form for externally-tagged
+    // enums (serde_yaml 0.9 otherwise wants `!tag` syntax).
+    #[serde(default, with = "serde_yaml::with::singleton_map")]
     write_mode: Option<WriteModeSpec>,
+    #[serde(with = "serde_yaml::with::singleton_map")]
     source: SourceSpec,
+    #[serde(with = "serde_yaml::with::singleton_map")]
     destination: DestSpec,
 }
 
@@ -43,16 +52,27 @@ enum SourceSpec {
     Rest { config: PathBuf },
     /// Path to the file source YAML (jsonl/parquet streams).
     File { config: PathBuf },
-    /// Postgres source: either `config` (path to the YAML/JSON document) or
-    /// the same document INLINE under `[source.postgres.inline]` — exactly
-    /// one of the two (parity with the inline destination block). Boxed:
-    /// the inline document dwarfs the path-only variants.
-    Postgres {
-        #[serde(default)]
-        config: Option<PathBuf>,
-        #[serde(default)]
-        inline: Option<Box<rdlt::postgres_source::PostgresConfig>>,
-    },
+    /// Postgres source: the config document INLINE (the natural form — the
+    /// pipeline is one YAML document), or `config: path` referencing a
+    /// reusable YAML/JSON file with the identical shape.
+    Postgres(PgSourceSpec),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum PgSourceSpec {
+    /// `source: postgres: {config: source.yaml}` — tried first; strict
+    /// (`deny_unknown_fields`), so `config` mixed with inline fields is a
+    /// loud error, never a silently-ignored document.
+    File(PgSourceFile),
+    /// The full source document inline (boxed — it dwarfs the path form).
+    Inline(Box<rdlt::postgres_source::PostgresConfig>),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PgSourceFile {
+    config: PathBuf,
 }
 
 #[derive(Debug, Deserialize)]
@@ -65,14 +85,14 @@ enum DestSpec {
     Postgres {
         conn: String,
         dataset: String,
-        /// Optional TLS block: `tls = { mode = "verify_full", root_cert = "/ca.pem" }`.
+        /// Optional TLS block: `tls: {mode: verify_full, root_cert: /ca.pem}`.
         tls: Option<rdlt::postgres_tls::TlsPolicy>,
         /// Feature 008: destination-wide merge strategy
         /// ("delete_insert" | "upsert" | "scd2").
         merge_strategy: Option<rdlt::postgres::MergeStrategy>,
-        /// Feature 008: per-table options —
-        /// `[destination.postgres.tables.<name>]` with `merge_strategy`,
-        /// `hard_delete`, and `[….scd2]` `{valid_from, valid_to, absent}`.
+        /// Feature 008/010: per-table options — `tables: <name>: {…}` with
+        /// `merge_strategy`, `hard_delete`, `dedup_sort`, `merge_key`, and
+        /// `scd2: {valid_from, valid_to, absent}`.
         tables: Option<std::collections::BTreeMap<String, rdlt::postgres::PgTableOptions>>,
     },
     Parquet {
@@ -99,7 +119,7 @@ fn bound_allocator_retention() {
 }
 
 fn usage() -> ExitCode {
-    eprintln!("usage: rdlt run <pipeline.toml> [--report <path>]");
+    eprintln!("usage: rdlt run <pipeline.yaml> [--report <path>]");
     ExitCode::from(64)
 }
 
@@ -158,7 +178,7 @@ async fn run(spec_path: PathBuf, report_path: Option<PathBuf>) -> Result<(), Cli
     let raw = std::fs::read_to_string(&spec_path)
         .map_err(|e| CliError::Usage(format!("reading {}: {e}", spec_path.display())))?;
     let spec: Spec =
-        toml::from_str(&raw).map_err(|e| CliError::Usage(format!("parsing spec: {e}")))?;
+        serde_yaml::from_str(&raw).map_err(|e| CliError::Usage(format!("parsing spec: {e}")))?;
 
     // The source and destination arms each fix the builder's generic type, so the
     // whole tail expands per combination via a macro (typestate-friendly).
@@ -249,9 +269,10 @@ async fn run(spec_path: PathBuf, report_path: Option<PathBuf>) -> Result<(), Cli
             .map_err(|e| CliError::Usage(e.to_string()))?;
             run_with!(source)
         }
-        SourceSpec::Postgres { config, inline } => {
-            let parsed = match (config, inline) {
-                (Some(path), None) => {
+        SourceSpec::Postgres(pg) => {
+            let parsed = match pg {
+                PgSourceSpec::File(file) => {
+                    let path = &file.config;
                     let text = std::fs::read_to_string(path)
                         .map_err(|e| CliError::Usage(format!("reading {}: {e}", path.display())))?;
                     if is_json(path) {
@@ -261,28 +282,14 @@ async fn run(spec_path: PathBuf, report_path: Option<PathBuf>) -> Result<(), Cli
                     }
                     .map_err(|e| CliError::Usage(e.to_string()))?
                 }
-                (None, Some(inline)) => {
-                    // TOML deserialization bypassed the document validation;
-                    // route through the shared from_value gate so inline and
-                    // file configs are held to identical rules.
+                PgSourceSpec::Inline(inline) => {
+                    // Untagged deserialization bypassed the document
+                    // validation; route through the shared from_value gate
+                    // so inline and file configs are held to identical rules.
                     let value =
                         serde_json::to_value(inline).map_err(|e| CliError::Usage(e.to_string()))?;
                     rdlt::postgres_source::PostgresConfig::from_value(value)
                         .map_err(|e| CliError::Usage(e.to_string()))?
-                }
-                (Some(_), Some(_)) => {
-                    return Err(CliError::Usage(
-                        "source.postgres: `config` and `inline` are mutually \
-                         exclusive — provide one"
-                            .into(),
-                    ));
-                }
-                (None, None) => {
-                    return Err(CliError::Usage(
-                        "source.postgres: provide `config` (path to the YAML/JSON \
-                         document) or `inline` (the same document inline)"
-                            .into(),
-                    ));
                 }
             };
             for warning in cdc_composition_warnings(&spec, &parsed) {
@@ -310,7 +317,7 @@ fn cdc_composition_warnings(
     if !matches!(spec.write_mode, Some(WriteModeSpec::Merge { .. })) {
         warnings.push(
             "cdc: write_mode is not merge — changed rows will append instead of \
-             converging; set write_mode = { merge = { key = [...] } } (contract C3)"
+             converging; set write_mode: {merge: {key: [...]}} (contract C3)"
                 .to_string(),
         );
     }
@@ -428,8 +435,8 @@ async fn drive(
 mod tests {
     use super::*;
 
-    fn spec(toml_text: &str) -> Spec {
-        toml::from_str(toml_text).expect("spec parses")
+    fn spec(yaml: &str) -> Spec {
+        serde_yaml::from_str(yaml).expect("spec parses")
     }
 
     fn cdc_config() -> rdlt::postgres_source::PostgresConfig {
@@ -440,19 +447,27 @@ mod tests {
         .expect("config")
     }
 
-    /// Feature 010 (MR7): the per-table destination options carry the
-    /// refinement fields through the toml passthrough with zero CLI code.
+    /// Feature 010 (MR7): the per-table destination options ride the
+    /// pipeline YAML with zero CLI code.
     #[test]
-    fn refinement_options_pass_through_the_toml() {
-        let spec = spec(
-            "pipeline = \"p\"\n\
-             [source.postgres]\nconfig = \"src.yaml\"\n\
-             [destination.postgres]\nconn = \"host=x\"\ndataset = \"d\"\n\
-             [destination.postgres.tables.events]\nhard_delete = \"deleted\"\n\
-             dedup_sort = { column = \"seq\", order = \"desc\" }\n\
-             merge_key = [\"day\", \"tenant\"]\n",
+    fn refinement_options_pass_through_the_yaml() {
+        let parsed = spec(
+            r#"
+pipeline: p
+source:
+  postgres: {config: src.yaml}
+destination:
+  postgres:
+    conn: host=x
+    dataset: d
+    tables:
+      events:
+        hard_delete: deleted
+        dedup_sort: {column: seq, order: desc}
+        merge_key: [day, tenant]
+"#,
         );
-        let DestSpec::Postgres { tables, .. } = &spec.destination else {
+        let DestSpec::Postgres { tables, .. } = &parsed.destination else {
             panic!("postgres dest");
         };
         let events = tables.as_ref().expect("tables")["events"].clone();
@@ -465,25 +480,27 @@ mod tests {
         );
     }
 
-    /// Inline source config (parity with the inline destination): the full
-    /// document rides the pipeline TOML and is held to the SAME validation
-    /// as file configs (the from_value gate).
+    /// ONE pipeline YAML: the source document inline is the natural form
+    /// and is held to the SAME validation as file configs (from_value).
     #[test]
     fn inline_postgres_source_parses_and_validates() {
         let parsed = spec(
-            "pipeline = \"p\"\n\
-             [write_mode.merge]\nkey = [\"id\"]\n\
-             [source.postgres.inline]\nconn = \"host=localhost\"\n\
-             [[source.postgres.inline.tables]]\nname = \"orders\"\n\
-             [source.postgres.inline.tables.cursor]\ncolumn = \"updated_at\"\n\
-             lag = \"5m\"\n\
-             [destination.postgres]\nconn = \"host=x\"\ndataset = \"d\"\n",
+            r#"
+pipeline: p
+write_mode: {merge: {key: [id]}}
+source:
+  postgres:
+    conn: host=localhost
+    tables:
+      - name: orders
+        cursor: {column: updated_at, lag: "5m"}
+destination:
+  postgres: {conn: host=x, dataset: d}
+"#,
         );
-        let SourceSpec::Postgres { config, inline } = &parsed.source else {
-            panic!("postgres source");
+        let SourceSpec::Postgres(PgSourceSpec::Inline(inline)) = &parsed.source else {
+            panic!("inline postgres source");
         };
-        assert!(config.is_none());
-        let inline = inline.as_ref().expect("inline config");
         let table = &inline.tables.as_ref().expect("tables")[0];
         assert_eq!(table.name, "orders");
         assert_eq!(table.cursor.as_ref().expect("cursor").column, "updated_at");
@@ -494,21 +511,55 @@ mod tests {
 
         // …and rejects invalid shapes identically (cdc + cursor, C1).
         let bad = spec(
-            "pipeline = \"p\"\n\
-             [source.postgres.inline]\nconn = \"host=localhost\"\n\
-             [source.postgres.inline.cdc]\nslot = \"s\"\npublication = \"p\"\n\
-             [[source.postgres.inline.tables]]\nname = \"t\"\n\
-             [source.postgres.inline.tables.cursor]\ncolumn = \"id\"\n\
-             [destination.postgres]\nconn = \"host=x\"\ndataset = \"d\"\n",
+            r#"
+pipeline: p
+source:
+  postgres:
+    conn: host=localhost
+    cdc: {slot: s, publication: p}
+    tables:
+      - name: t
+        cursor: {column: id}
+destination:
+  postgres: {conn: host=x, dataset: d}
+"#,
         );
-        let SourceSpec::Postgres { inline, .. } = &bad.source else {
-            panic!("postgres source");
+        let SourceSpec::Postgres(PgSourceSpec::Inline(inline)) = &bad.source else {
+            panic!("inline postgres source");
         };
-        let value = serde_json::to_value(inline.as_ref().unwrap()).expect("serialize");
+        let value = serde_json::to_value(inline).expect("serialize");
         let err = rdlt::postgres_source::PostgresConfig::from_value(value)
             .expect_err("C1 holds inline")
             .to_string();
         assert!(err.contains("mutually exclusive"), "{err}");
+
+        // `config:` mixed with inline fields is a LOUD error, not a
+        // silently-ignored document.
+        let mixed: Result<Spec, _> = serde_yaml::from_str(
+            r#"
+pipeline: p
+source:
+  postgres: {config: src.yaml, conn: host=localhost}
+destination:
+  postgres: {conn: host=x, dataset: d}
+"#,
+        );
+        assert!(mixed.is_err(), "config + inline fields must not parse");
+
+        // The file form still parses.
+        let file = spec(
+            r#"
+pipeline: p
+source:
+  postgres: {config: src.yaml}
+destination:
+  postgres: {conn: host=x, dataset: d}
+"#,
+        );
+        assert!(matches!(
+            file.source,
+            SourceSpec::Postgres(PgSourceSpec::File(_))
+        ));
     }
 
     /// C3 capture matrix: the recommended composition is silent; every
@@ -517,19 +568,30 @@ mod tests {
     #[test]
     fn cdc_composition_warning_matrix() {
         let recommended = spec(
-            "pipeline = \"p\"\n\
-             [write_mode.merge]\nkey = [\"id\"]\n\
-             [source.postgres]\nconfig = \"src.yaml\"\n\
-             [destination.postgres]\nconn = \"host=x\"\ndataset = \"d\"\n\
-             merge_strategy = \"upsert\"\n\
-             [destination.postgres.tables.orders]\nhard_delete = \"_rdlt_deleted\"\n",
+            r#"
+pipeline: p
+write_mode: {merge: {key: [id]}}
+source:
+  postgres: {config: src.yaml}
+destination:
+  postgres:
+    conn: host=x
+    dataset: d
+    merge_strategy: upsert
+    tables:
+      orders: {hard_delete: _rdlt_deleted}
+"#,
         );
         assert!(cdc_composition_warnings(&recommended, &cdc_config()).is_empty());
 
         let append = spec(
-            "pipeline = \"p\"\n\
-             [source.postgres]\nconfig = \"src.yaml\"\n\
-             [destination.postgres]\nconn = \"host=x\"\ndataset = \"d\"\n",
+            r#"
+pipeline: p
+source:
+  postgres: {config: src.yaml}
+destination:
+  postgres: {conn: host=x, dataset: d}
+"#,
         );
         let warnings = cdc_composition_warnings(&append, &cdc_config());
         assert_eq!(warnings.len(), 3, "{warnings:?}");
@@ -541,10 +603,14 @@ mod tests {
         );
 
         let duckdb = spec(
-            "pipeline = \"p\"\n\
-             [write_mode.merge]\nkey = [\"id\"]\n\
-             [source.postgres]\nconfig = \"src.yaml\"\n\
-             [destination.duckdb]\npath = \"out.db\"\n",
+            r#"
+pipeline: p
+write_mode: {merge: {key: [id]}}
+source:
+  postgres: {config: src.yaml}
+destination:
+  duckdb: {path: out.db}
+"#,
         );
         let warnings = cdc_composition_warnings(&duckdb, &cdc_config());
         assert_eq!(warnings.len(), 1, "{warnings:?}");
@@ -557,11 +623,14 @@ mod tests {
         )
         .expect("config");
         let recommended_no_tables = spec(
-            "pipeline = \"p\"\n\
-             [write_mode.merge]\nkey = [\"id\"]\n\
-             [source.postgres]\nconfig = \"src.yaml\"\n\
-             [destination.postgres]\nconn = \"host=x\"\ndataset = \"d\"\n\
-             merge_strategy = \"upsert\"\n",
+            r#"
+pipeline: p
+write_mode: {merge: {key: [id]}}
+source:
+  postgres: {config: src.yaml}
+destination:
+  postgres: {conn: host=x, dataset: d, merge_strategy: upsert}
+"#,
         );
         let warnings = cdc_composition_warnings(&recommended_no_tables, &schema_wide);
         assert_eq!(warnings.len(), 1, "{warnings:?}");

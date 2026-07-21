@@ -34,19 +34,20 @@ cdc:
 tables:
   - name: pg_wide
 YAML
-  cat > "$DATA/$1.toml" <<TOML
-pipeline = "cdc-$1"
-workdir = "$DATA/.rdlt-$1"
-write_mode = { merge = { key = ["id"] } }
-[source.postgres]
-config = "$DATA/src-$1.yaml"
-[destination.postgres]
-conn = "host=127.0.0.1 port=$PORT user=postgres password=postgres dbname=postgres"
-dataset = "cdc_$1"
-merge_strategy = "upsert"
-[destination.postgres.tables.pg_wide]
-hard_delete = "_rdlt_deleted"
-TOML
+  cat > "$DATA/$1.yaml" <<YAML
+pipeline: cdc-$1
+workdir: $DATA/.rdlt-$1
+write_mode: {merge: {key: [id]}}
+source:
+  postgres: {config: $DATA/src-$1.yaml}
+destination:
+  postgres:
+    conn: "host=127.0.0.1 port=$PORT user=postgres password=postgres dbname=postgres"
+    dataset: cdc_$1
+    merge_strategy: upsert
+    tables:
+      pg_wide: {hard_delete: _rdlt_deleted}
+YAML
 }
 make_pipeline tp
 make_pipeline lat
@@ -58,13 +59,13 @@ for i in $(seq 1 "$RUNS"); do
   PSQL "DROP SCHEMA IF EXISTS cdc_tp CASCADE"
   rm -rf "$DATA/.rdlt-tp"
   "$ENGINE" exec -i "$NAME" psql -q -U postgres < baseline/seed_pg.sql >/dev/null
-  "$RDLT" run "$DATA/tp.toml" >/dev/null 2>&1                     # snapshot (untimed)
+  "$RDLT" run "$DATA/tp.yaml" >/dev/null 2>&1                     # snapshot (untimed)
   PSQL "UPDATE pg_wide SET name = 'upd-' || id, small = small + 1 WHERE id % 10 < 4"
   PSQL "DELETE FROM pg_wide WHERE id % 20 = 19"
   PSQL "INSERT INTO pg_wide SELECT id + 1000000, small, big, ratio, amount,
         'new-' || id, code, active, created_at, birthday, token, note
         FROM pg_wide WHERE id % 20 = 7 AND id <= 1000000"
-  /usr/bin/time -f "%e" "$RDLT" run "$DATA/tp.toml" 2>&1 >/dev/null | tail -1
+  /usr/bin/time -f "%e" "$RDLT" run "$DATA/tp.yaml" 2>&1 >/dev/null | tail -1
 done
 
 echo "== catch-up latency: quiet-to-caught-up on a 1k-update delta ($RUNS runs) =="
@@ -73,13 +74,13 @@ PSQL "DROP PUBLICATION IF EXISTS cdc_lat_pub"
 PSQL "DROP SCHEMA IF EXISTS cdc_lat CASCADE"
 rm -rf "$DATA/.rdlt-lat"
 "$ENGINE" exec -i "$NAME" psql -q -U postgres < baseline/seed_pg.sql >/dev/null
-"$RDLT" run "$DATA/lat.toml" >/dev/null 2>&1                      # snapshot (untimed)
+"$RDLT" run "$DATA/lat.yaml" >/dev/null 2>&1                      # snapshot (untimed)
 # Settle to steady state: the peek walks WAL from the slot's CONFIRMED
 # position, which trails one run behind (ack design) — the first runs after
 # a snapshot re-walk the engine's own 1M-row mirror writes (same database).
 # Steady state is reached once acks pass that backlog.
-for i in 1 2 3 4 5; do "$RDLT" run "$DATA/lat.toml" >/dev/null 2>&1; done
+for i in 1 2 3 4 5; do "$RDLT" run "$DATA/lat.yaml" >/dev/null 2>&1; done
 for i in $(seq 1 "$RUNS"); do
   PSQL "UPDATE pg_wide SET small = small + 1 WHERE id <= 1000"
-  /usr/bin/time -f "%e" "$RDLT" run "$DATA/lat.toml" 2>&1 >/dev/null | tail -1
+  /usr/bin/time -f "%e" "$RDLT" run "$DATA/lat.yaml" 2>&1 >/dev/null | tail -1
 done

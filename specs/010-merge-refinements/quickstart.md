@@ -5,9 +5,12 @@
 Your feed can deliver several versions of one row in a single load, and
 arrival order isn't trustworthy? Name the column that is:
 
-```toml
-[destination.postgres.tables.events]
-dedup_sort = { column = "updated_at", order = "desc" }
+```yaml
+destination:
+  postgres:
+    tables:
+      events:
+        dedup_sort: {column: updated_at, order: desc}
 ```
 
 The newest `updated_at` wins — including the hard-delete decision (a
@@ -21,9 +24,12 @@ option nothing changes.
 Re-delivering a window ("all of yesterday", "this tenant") where the
 batch is the complete truth for its scope:
 
-```toml
-[destination.postgres.tables.events]
-merge_key = ["day"]
+```yaml
+destination:
+  postgres:
+    tables:
+      events:
+        merge_key: [day]
 ```
 
 Every `day` present in the batch is replaced wholesale — rows the batch

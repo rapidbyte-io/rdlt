@@ -23,21 +23,22 @@ tables:
   - name: pg_wide
 YAML
 
-make_toml() { # $1 strategy
-  cat > "$DATA/$1.toml" <<TOML
-pipeline = "strat-$1"
-workdir = "$DATA/.rdlt-$1"
-write_mode = { merge = { key = ["id"] } }
-[source.postgres]
-config = "$DATA/src.yaml"
-[destination.postgres]
-conn = "host=127.0.0.1 port=5441 user=postgres password=postgres dbname=postgres"
-dataset = "strat_$1"
-merge_strategy = "$1"
-TOML
+make_spec() { # $1 strategy
+  cat > "$DATA/$1.yaml" <<YAML
+pipeline: strat-$1
+workdir: $DATA/.rdlt-$1
+write_mode: {merge: {key: [id]}}
+source:
+  postgres: {config: $DATA/src.yaml}
+destination:
+  postgres:
+    conn: "host=127.0.0.1 port=5441 user=postgres password=postgres dbname=postgres"
+    dataset: strat_$1
+    merge_strategy: $1
+YAML
 }
-make_toml delete_insert
-make_toml upsert
+make_spec delete_insert
+make_spec upsert
 
 for strategy in delete_insert upsert; do
   echo "== $strategy: load-2 wall time ($RUNS runs) =="
@@ -45,9 +46,9 @@ for strategy in delete_insert upsert; do
     "$ENGINE" exec "$NAME" psql -q -U postgres -c \
       "DROP SCHEMA IF EXISTS strat_$strategy CASCADE" >/dev/null
     rm -rf "$DATA/.rdlt-$strategy"
-    "$RDLT" run "$DATA/$strategy.toml" >/dev/null       # load 1 (untimed)
+    "$RDLT" run "$DATA/$strategy.yaml" >/dev/null       # load 1 (untimed)
     "$ENGINE" exec "$NAME" psql -q -U postgres -c \
       "UPDATE pg_wide SET name = 'upd-$i-' || id WHERE id % 2 = 0" >/dev/null
-    /usr/bin/time -f "%e" "$RDLT" run "$DATA/$strategy.toml" 2>&1 >/dev/null | tail -1
+    /usr/bin/time -f "%e" "$RDLT" run "$DATA/$strategy.yaml" 2>&1 >/dev/null | tail -1
   done
 done

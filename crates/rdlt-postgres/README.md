@@ -27,35 +27,33 @@ cdc-config, cdc-operability), `010-merge-refinements`
 
 ## Quick start
 
-One pipeline TOML, source and destination both inline (via the `rdlt`
-CLI — `rdlt run pipeline.toml`):
+ONE YAML document describes the whole pipeline — pipeline-wide settings,
+source, and destination (via the `rdlt` CLI — `rdlt run pipeline.yaml`):
 
-```toml
-# pipeline.toml — mirror two tables, incremental on one
-pipeline = "app-mirror"
-write_mode = { merge = { key = ["id"] } }
+```yaml
+# pipeline.yaml — mirror two tables, incremental on one
+pipeline: app-mirror
+write_mode: {merge: {key: [id]}}
 
-[source.postgres.inline]
-conn = "postgresql://etl@db.internal/app?sslmode=verify-full&sslrootcert=/etc/ca.pem"
+source:
+  postgres:
+    conn: "postgresql://etl@db.internal/app?sslmode=verify-full&sslrootcert=/etc/ca.pem"
+    tables:
+      - name: orders
+        cursor: {column: updated_at}
+      - name: customers
 
-[[source.postgres.inline.tables]]
-name = "orders"
-cursor = { column = "updated_at" }
-
-[[source.postgres.inline.tables]]
-name = "customers"
-
-[destination.postgres]
-conn = "host=warehouse user=loader password=… dbname=analytics"
-dataset = "mirror"
-merge_strategy = "upsert"
+destination:
+  postgres:
+    conn: "host=warehouse user=loader password=… dbname=analytics"
+    dataset: mirror
+    merge_strategy: upsert
 ```
 
 The source document can also live in its own reusable YAML/JSON file —
-`[source.postgres] config = "source.yaml"` — with the **same fields and
-identical validation**; `config` and `inline` are mutually exclusive.
-This README shows source examples in YAML (the file form); every field
-maps 1:1 to the inline TOML shape above.
+`source: postgres: {config: source.yaml}` — with the **same fields and
+identical validation** (mixing `config` with inline fields is a loud
+error). Every source example below drops into either place unchanged.
 
 Library embedders build the same objects directly:
 `PostgresSource::from_yaml / from_json / from_value` and
@@ -68,14 +66,14 @@ platform-side validation and the parser cannot drift.
 
 ## Pipeline spec (CLI)
 
-The `rdlt` CLI runs one pipeline per TOML file. Top-level fields:
+The `rdlt` CLI runs one pipeline per YAML file. Top-level fields:
 
 | Field | Type / values | Default | Description |
 |---|---|---|---|
 | `pipeline` | string | required | Pipeline id — names engine state; keep it stable across runs (cursors and resume state key on it). |
 | `workdir` | path | `.rdlt` | Engine working directory (WAL, state). |
-| `write_mode` | `"append"` \| `"replace"` \| `{ merge = { key = [...] } }` | `append` | Write disposition for every stream. `append` adds rows; `replace` truncates once per load then loads; `merge` converges to one row per key — required for the upsert/scd2 strategies, cursor-lag exact totals, and the CDC composition. |
-| `source.postgres` | `config` (path) XOR `inline` (document) | required | The source document — see the full reference below. |
+| `write_mode` | `append` \| `replace` \| `{merge: {key: [...]}}` | `append` | Write disposition for every stream. `append` adds rows; `replace` truncates once per load then loads; `merge` converges to one row per key — required for the upsert/scd2 strategies, cursor-lag exact totals, and the CDC composition. |
+| `source.postgres` | inline document, or `{config: path}` | required | The source document — see the full reference below. |
 | `destination.postgres` | inline fields | required | Connection + options — see the full reference below. |
 
 (Other connectors — `source.rest`, `source.file`, `destination.duckdb`,
@@ -86,11 +84,11 @@ postgres.)
 
 ## Source configuration — full reference
 
-One document, three carriers with identical fields and identical
-validation: a YAML file, a JSON file (both via `config = "path"`), or
-inline TOML under `[source.postgres.inline]`. Unknown fields are errors
-everywhere (schema AND parser). Validation failures name the offending
-field/table/column.
+One YAML document, two carriers with identical fields and identical
+validation: inline under `source: postgres:` in the pipeline file, or a
+standalone YAML/JSON file via `source: postgres: {config: path}`.
+Unknown fields are errors everywhere (schema AND parser). Validation
+failures name the offending field/table/column.
 
 ### Top level
 
@@ -200,8 +198,8 @@ Semantics and requirements, briefly:
   (naming column + the `ALTER`) without it. `TRUNCATE` on a published
   table is a typed error with the recovery spelled out.
 - **Recommended composition** (the CLI warns when absent):
-  `write_mode = merge{key}` + destination `merge_strategy = "upsert"` +
-  `hard_delete = "<flag_column>"` — deleted rows then actually disappear
+  `write_mode: {merge: {key: […]}}` + destination `merge_strategy: upsert`
+  + `hard_delete: <flag_column>` — deleted rows then actually disappear
   at the destination. Without hard-delete support the flag lands as data
   (documented soft delete).
 - **Observability**: replication lag (`lag_bytes`, plus `lag_seconds`
@@ -261,10 +259,10 @@ log-scraping.
 ## Destination configuration — full reference
 
 Builder: `Postgres::connect(conn).dataset(schema).tls(policy).options(options)`.
-CLI TOML: `[destination.postgres]` with the connection fields below,
-plus `merge_strategy` and `[destination.postgres.tables.<name>]` blocks.
-Options are validated at construction (`options()` returns the error) —
-and again at open against the live stream schema.
+CLI YAML: `destination: postgres:` with the connection fields below,
+plus `merge_strategy` and per-table blocks under `tables:`. Options are
+validated at construction (`options()` returns the error) — and again at
+open against the live stream schema.
 
 ### Connection
 
@@ -272,7 +270,7 @@ and again at open against the live stream schema.
 |---|---|---|---|
 | `conn` | string | required | libpq-style connection string or URL — same parsing, portability rules, and typed rejections as the source (`application_name = rdlt` unless the string sets its own). |
 | `dataset` | string | `public` | Target schema; created if missing. Engine bookkeeping tables (`_rdlt_state`, `_rdlt_commits`) and per-pipeline staging tables live here too. |
-| `tls` | TLS block | absent (= `prefer`) | The SAME policy type and code path as the source — see **TLS** in the source reference. TOML: `tls = { mode = "verify_full", root_cert = "/ca.pem" }`. |
+| `tls` | TLS block | absent (= `prefer`) | The SAME policy type and code path as the source — see **TLS** in the source reference. `tls: {mode: verify_full, root_cert: /ca.pem}`. |
 
 Native types need **zero configuration**: decimals land as
 `numeric(p,s)`, JSON as `jsonb`, UUIDs as `uuid`, required columns
@@ -313,6 +311,24 @@ write mode; append/replace are engine dispositions, not strategies):
 | `dedup_sort` | `{ column, order: asc\|desc }` | absent (= last-wins) | **Ordered in-load survivor selection**: when one load carries several versions of the same key, the version this column ranks first survives — `desc` = greatest wins, `asc` = least wins — instead of arrival order. Values beat NULL; ties (and all-NULL groups) keep the deterministic arrival-order last-wins. The survivor drives every downstream decision (hard-delete flag, upsert content, SCD2 change detection). `order` is required. Typed errors: nonexistent column, the hard_delete flag, a merge-key column (constant per group — could never order), shredded streams, non-merge write modes. |
 | `merge_key` | [column] | absent | **Scope replacement**: a non-unique column set, independent of the row identity. A merge load deletes every target row whose scope appears among the delivered rows, then applies the batch — undelivered rows in delivered scopes disappear; untouched scopes stay. NULL is not a scope (matches nothing, both sides). Scope columns are auto-indexed. The scoped **table's** feed must arrive in one commit unit — per-table, so other streams' checkpoints never trigger it; a split feed is a typed error advising the engine commit thresholds (recovery converges on re-run). One recorded caveat: scoped streams should checkpoint only at feed end (a mid-feed checkpoint plus a crash in the window resumes as a partial feed the destination cannot distinguish from a fresh load). Typed errors: nonexistent columns, the hard_delete flag, shredded streams, scd2, non-merge write modes. |
 | `scd2` | scd2 block | defaults | See below; only valid with `merge_strategy: scd2` (typed both ways). |
+
+Worked example:
+
+```yaml
+destination:
+  postgres:
+    conn: "host=warehouse user=loader password=… dbname=analytics"
+    dataset: mirror
+    merge_strategy: upsert
+    tables:
+      orders:
+        hard_delete: _rdlt_deleted
+        dedup_sort: {column: seq, order: desc}
+        merge_key: [day]
+      customers:
+        merge_strategy: scd2
+        scd2: {absent: retire}
+```
 
 ### SCD2 block (`tables.<name>.scd2`)
 

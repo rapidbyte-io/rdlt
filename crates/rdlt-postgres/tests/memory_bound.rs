@@ -87,26 +87,26 @@ async fn snapshot_ten_times_larger_than_memory_ceiling() {
         format!("conn: \"{}\"\ntables:\n  - name: big\n", fixture.conn_url()),
     )
     .expect("yaml");
-    let toml = dir.path().join("pg.toml");
+    let spec = dir.path().join("pipeline.yaml");
     let report_path = dir.path().join("report.json");
     std::fs::write(
-        &toml,
+        &spec,
         format!(
-            "pipeline = \"membound\"\nworkdir = \"{}\"\n[source.postgres]\nconfig = \"{}\"\n\
-             [destination.parquet]\npath = \"{}\"\n",
+            "pipeline: membound\nworkdir: {}\nsource:\n  postgres: {{config: {}}}\n\
+             destination:\n  parquet: {{path: {}}}\n",
             dir.path().join(".rdlt").display(),
             yaml.display(),
             dir.path().join("pq-out").display()
         ),
     )
-    .expect("toml");
+    .expect("spec");
 
     let output = std::process::Command::new("prlimit")
         .arg(format!("--data={CEILING_BYTES}"))
         .arg("--")
         .arg(&cli)
         .arg("run")
-        .arg(&toml)
+        .arg(&spec)
         .arg("--report")
         .arg(&report_path)
         .output()
