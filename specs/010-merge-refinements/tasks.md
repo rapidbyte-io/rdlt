@@ -27,6 +27,26 @@
   same keys (one scope-index probe vs 100k key lookups); ordered dedup
   278.4 ms vs 334.6 ms last-wins on a 2×-duplicated 1M-row stage. No
   new gates; existing bars untouched by construction.
+- **Review round (workflow-backed, 23 agents, 2026-07-21)**: 10 findings,
+  all fixed. The big three were in MY single-commit-unit guard: (1) it
+  keyed on `load_committed_before` so a crash-resume bypassed it (new
+  load_id) and silently destroyed the previous attempt's scope rows;
+  (2) load-global keying made any multi-stream pipeline fatal spuriously;
+  (3) the split-feed error left a half-replaced scope with no recovery
+  prescription. Fix: ONE per-table discipline shared with scd2
+  absent-retire — first-STAGED-unit execution, typed error on a split
+  feed (recovery prescribed), empty units skipped (also closing scd2
+  retire's mass-retirement-on-empty-stage edge AND its own multi-stream
+  false positive), marks applied post-commit + on the D3 replay branch.
+  The irreducible crash-resume residual (mid-feed-checkpointing scoped
+  stream + crash in the window) is RECORDED in MR5/quickstart — scoped
+  streams must checkpoint only at feed end. Also fixed: dedup_sort on a
+  merge-key column typed (silent no-op); both options typed-rejected
+  under Append/Replace (008 F6 class); merge_key columns join the auto
+  index plan (pinned — the scoreboard number is now honest);
+  CLAUDE.md/plan.md/tasks.md purged of the killed receipts design;
+  scd2+dedup_sort composition cell added (MR2 for scd2 pinned); the two
+  divergent single-unit guards unified.
 - **Deviations**: the open-time validation site is
   `dest/commit.rs::ensure_table` (tasks text said ddl.rs — followed the
   code, where M7/S1 live). Also hardened the 009 container-kill cell

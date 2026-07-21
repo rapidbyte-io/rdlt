@@ -98,9 +98,12 @@ absent = "keep"                     # keep (default) | retire
 (values beat NULL; ties keep deterministic last-wins; the survivor
 drives hard-delete/SCD2/upsert alike); `merge_key` replaces every
 DELIVERED scope wholesale — undelivered rows in delivered scopes
-disappear, untouched scopes stay; NULL is not a scope, and the scoped
-table's feed must fit ONE commit unit (typed error advising the commit
-thresholds otherwise — contract merge-refinements.md).
+disappear, untouched scopes stay; NULL is not a scope; the scope
+columns are auto-indexed; and the scoped TABLE's feed must fit ONE
+commit unit — per-table: other streams' checkpoints never trigger it;
+a split feed is a typed error advising the commit thresholds (contract
+merge-refinements.md MR5, incl. the recorded mid-feed-checkpoint crash
+residual).
 Merge identities get supporting indexes automatically (unique for
 upsert — pre-existing duplicate keys fail typed naming the columns);
 the incremental-regime measurement is in `benches/RESULTS.md` (20.4×

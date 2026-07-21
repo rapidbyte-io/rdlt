@@ -29,11 +29,19 @@ merge_key = ["day"]
 Every `day` present in the batch is replaced wholesale — rows the batch
 no longer carries disappear; days the batch doesn't mention are
 untouched. Rows with a NULL scope only merge by identity. The scoped
-table's feed must arrive in ONE commit unit (the batch is "the complete
-truth for its scope" only if it lands atomically — a later unit with
-scoped rows is a typed error advising the engine commit thresholds,
-same rule as scd2 retire). Composes with `hard_delete`, `dedup_sort`,
-and both delete-insert/upsert strategies.
+TABLE's feed must arrive in ONE commit unit (the batch is "the complete
+truth for its scope" only if it lands atomically — a later unit staging
+scoped rows is a typed error advising the engine commit thresholds;
+units where the table stages nothing are fine, so other streams'
+checkpoints never trigger it — same rule as scd2 retire). The scope
+columns get a supporting index automatically. Composes with
+`hard_delete`, `dedup_sort`, and both delete-insert/upsert strategies.
+
+One recorded caveat: a scoped stream should checkpoint only at feed
+end. A stream that checkpoints MID-feed and crashes in the window
+between a committed partial unit and the split-detection error resumes
+as a new load with a partial feed — which the destination cannot
+distinguish from a fresh one (contract MR5, recorded residual).
 
 ## Verify
 

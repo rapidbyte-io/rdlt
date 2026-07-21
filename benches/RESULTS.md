@@ -131,7 +131,7 @@ construction):
 
 | Cell | Median | Notes |
 |---|---|---|
-| Scope-replace delete | 1,559.9 ms | 100k-row scope out of a 10M-row scoped target (scope indexed); the identity-only delete of the SAME keys costs 1,933.5 ms — the scope route is ~19% FASTER (one index probe vs 100k key lookups) |
+| Scope-replace delete | 1,559.9 ms | 100k-row scope out of a 10M-row scoped target; the scope index the harness creates mirrors the one the destination AUTO-ENSURES for merge_key tables (review F8 — the plan provisions it, the bench does not cheat); the identity-only delete of the SAME keys costs 1,933.5 ms — the scope route is ~19% FASTER |
 | Ordered dedup | 278.4 ms | `DISTINCT ON` with `seq DESC NULLS LAST` over a 2×-duplicated 1M-row stage; plain last-wins costs 334.6 ms on the same stage — the extra sort key costs nothing here |
 
 CDC cells (`benches/run-cdc.sh`, feature 009, 5-run medians, 2026-07-21;

@@ -1414,19 +1414,11 @@ mod refinements {
             scd2_retire: true,
             ..Opts::default()
         };
-        let full: Vec<Vec<Row>> = vec![vec![
-            (1, None, None, "a", None),
-            (2, None, None, "b", None),
-        ]];
+        let full: Vec<Vec<Row>> =
+            vec![vec![(1, None, None, "a", None), (2, None, None, "b", None)]];
         run(&conn, "mr_scd2_units", opts, full.clone()).await;
         // Trailing empty unit: fine — and it retires NOTHING.
-        run(
-            &conn,
-            "mr_scd2_units",
-            opts,
-            vec![full[0].clone(), vec![]],
-        )
-        .await;
+        run(&conn, "mr_scd2_units", opts, vec![full[0].clone(), vec![]]).await;
         assert_eq!(
             scalar(
                 &conn,

@@ -22,6 +22,7 @@ echo "== seeding: 10M-row scoped target (100 days x 100k), 2x-duplicated 1M-row 
 psql <<'SQL'
 CREATE TABLE target (id BIGINT, day BIGINT, v TEXT);
 INSERT INTO target SELECT i, i % 100, 'row-'||i FROM generate_series(1, 10000000) i;
+-- mirrors the rdlt_ix_ index ensure_table auto-provisions for merge_key
 CREATE INDEX rdlt_ix_target_day ON target (day);
 CREATE INDEX rdlt_ix_target_id ON target (id);
 CREATE TABLE stage_scope (id BIGINT, day BIGINT);
