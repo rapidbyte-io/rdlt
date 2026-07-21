@@ -62,8 +62,9 @@ changes moves nothing.
    with respect to the pipeline's commit units — never a torn transaction
    visible across a completed run.
 5. **Given** the snapshot-to-stream boundary, **Then** no change is
-   applied twice and none is skipped: a row modified DURING the snapshot
-   run appears exactly once with its correct final state.
+   skipped, and any change applied twice in the boundary window
+   converges: a row modified DURING the snapshot run appears exactly
+   once with its correct final state *(refined per research R4)*.
 
 ---
 
@@ -109,9 +110,10 @@ boundary actually fired.
 ### User Story 3 - Continuous tail mode (Priority: P3)
 
 For latency-sensitive mirrors, the same pipeline runs in continuous mode:
-it stays attached to the change feed, applying and checkpointing changes
-as they arrive, until deliberately cancelled. Freshness is bounded by the
-apply path, not by a schedule.
+it keeps consuming the change feed, applying and checkpointing changes
+as they arrive, until deliberately cancelled. Freshness is bounded by
+the apply cadence (v1: a chunked catch-up loop with a short idle wait —
+research R6), not by an external schedule.
 
 **Why this priority**: the near-real-time story; operationally heavier
 (long-lived process), so it layers on the proven bounded mode.
@@ -204,11 +206,13 @@ what makes the feature operable.
   deletes from the database's built-in logical change feed
   (publication-based; no third-party decoder plugins required on the
   server).
-- **FR-002**: The initial snapshot and the change stream MUST join with
-  no gap and no overlap: the snapshot corresponds to an exact feed
-  position; changes from precisely that position onward apply after it.
-  A row's final state is correct regardless of concurrent writes during
-  the snapshot.
+- **FR-002** *(refined per research R4)*: The initial snapshot and the
+  change stream MUST join with NO GAP: the stream replays from a feed
+  position at or before the snapshot's point, so no change is ever
+  lost. The window between the two points applies twice and MUST
+  CONVERGE (upsert-by-key + idempotent deletes) — a row's final state
+  is correct and it appears once, regardless of concurrent writes
+  during the snapshot.
 - **FR-003**: Changes MUST apply in transaction-commit order, and a
   completed run MUST never expose a torn source transaction.
 - **FR-004**: Resume positions MUST ride the existing engine
