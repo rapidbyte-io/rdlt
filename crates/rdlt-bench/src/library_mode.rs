@@ -119,7 +119,13 @@ async fn drive(spec: Spec) -> Result<RunOutcome> {
                     }
                     builder.destination(dest).build().map_err(err)?
                 }
-                DestSpec::Postgres { conn, dataset, tls, merge_strategy, tables } => {
+                DestSpec::Postgres {
+                    conn,
+                    dataset,
+                    tls,
+                    merge_strategy,
+                    tables,
+                } => {
                     let mut dest = rdlt::postgres::Postgres::connect(conn).dataset(dataset);
                     if let Some(policy) = tls {
                         dest = dest.tls(policy.clone());
@@ -157,8 +163,10 @@ async fn drive(spec: Spec) -> Result<RunOutcome> {
         }};
     }
 
-    let is_json =
-        |path: &PathBuf| path.extension().is_some_and(|e| e.eq_ignore_ascii_case("json"));
+    let is_json = |path: &PathBuf| {
+        path.extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("json"))
+    };
     match &spec.source {
         SourceSpec::Rest { config } => {
             let text = std::fs::read_to_string(config).map_err(err)?;
@@ -218,7 +226,11 @@ pub fn run_once(
     let mut subs = subs.clone();
     subs.insert("workdir".into(), run_dir.display().to_string());
     let raw = std::fs::read_to_string(paths.benches.join(template)).map_err(|e| {
-        BenchError(format!("cell `{}`: reading {}: {e}", cell.id, template.display()))
+        BenchError(format!(
+            "cell `{}`: reading {}: {e}",
+            cell.id,
+            template.display()
+        ))
     })?;
     let spec: Spec = serde_yaml::from_str(&substitute(&raw, &subs))
         .map_err(|e| BenchError(format!("cell `{}`: parsing pipeline spec: {e}", cell.id)))?;
@@ -227,7 +239,10 @@ pub fn run_once(
     let started = Instant::now();
     let outcome = runtime.block_on(drive(spec))?;
     let wall_ms = started.elapsed().as_secs_f64() * 1000.0;
-    Ok(Sample { wall_ms, detail: outcome })
+    Ok(Sample {
+        wall_ms,
+        detail: outcome,
+    })
 }
 
 /// Attribution: BatchLoaded rows/bytes roll up to the stream whose name
@@ -287,16 +302,28 @@ pub fn side_from(samples: &[Sample<RunOutcome>]) -> RdltSide {
         bytes: Some(bytes),
         rows_per_s: Some(rows as f64 / secs),
         mb_per_s: Some(bytes as f64 / (1024.0 * 1024.0) / secs),
-        cpu: CpuStats { note: Some(note.into()), ..CpuStats::default() },
-        rss: RssStats { peak_bytes: None, note: Some(note.into()) },
+        cpu: CpuStats {
+            note: Some(note.into()),
+            ..CpuStats::default()
+        },
+        rss: RssStats {
+            peak_bytes: None,
+            note: Some(note.into()),
+        },
         streams: attribute(&last.detail.events),
         runs_ms,
     }
 }
 
 pub fn verify_from(cell: &Cell, samples: &[Sample<RunOutcome>]) -> Result<Option<VerifyOutcome>> {
-    let Some(verify) = &cell.verify else { return Ok(None) };
-    let report = &samples.last().expect("protocol guarantees >= 1 run").detail.report;
+    let Some(verify) = &cell.verify else {
+        return Ok(None);
+    };
+    let report = &samples
+        .last()
+        .expect("protocol guarantees >= 1 run")
+        .detail
+        .report;
     let actual = report
         .tables
         .iter()
@@ -362,7 +389,10 @@ mod tests {
             warmups: 0,
             runs: 2,
             competitors: vec![],
-            verify: Some(crate::cells::Verify { table: "events".into(), expected_rows: 2 }),
+            verify: Some(crate::cells::Verify {
+                table: "events".into(),
+                expected_rows: 2,
+            }),
             suite: "test".into(),
         };
         // benches dir join with an absolute template path stays absolute.
@@ -393,7 +423,11 @@ mod tests {
         assert!(side.cpu.mean_util.is_none());
         assert!(side.rss.peak_bytes.is_none());
         // attribution: the events stream saw batches, then finished
-        let events = side.streams.iter().find(|s| s.stream == "events").expect("attributed");
+        let events = side
+            .streams
+            .iter()
+            .find(|s| s.stream == "events")
+            .expect("attributed");
         assert_eq!(events.rows, 5);
         assert!(events.first_batch_ms.is_some());
         assert!(events.finished_ms.is_some());

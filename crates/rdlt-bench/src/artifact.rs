@@ -167,8 +167,12 @@ pub fn write(results_dir: &Path, artifact: &Artifact) -> Result<std::path::PathB
 
 pub fn read(results_dir: &Path, cell_id: &str) -> Result<Artifact> {
     let path = results_dir.join(format!("{cell_id}.json"));
-    let raw = std::fs::read_to_string(&path)
-        .map_err(|e| BenchError(format!("no artifact for `{cell_id}` ({}): {e}", path.display())))?;
+    let raw = std::fs::read_to_string(&path).map_err(|e| {
+        BenchError(format!(
+            "no artifact for `{cell_id}` ({}): {e}",
+            path.display()
+        ))
+    })?;
     let artifact: Artifact = serde_json::from_str(&raw)
         .map_err(|e| BenchError(format!("parsing {}: {e}", path.display())))?;
     if artifact.format_version != ARTIFACT_FORMAT_VERSION {
@@ -227,7 +231,9 @@ pub(crate) mod tests {
         let mut art = minimal("rt-cell", Class::Scoreboard);
         art.competitors.insert(
             "dlt-pyarrow".into(),
-            CompetitorSide::Missing { reason: "image not built".into() },
+            CompetitorSide::Missing {
+                reason: "image not built".into(),
+            },
         );
         write(dir.path(), &art).unwrap();
         let back = read(dir.path(), "rt-cell").unwrap();

@@ -79,7 +79,9 @@ fn read_cgroup_via_exec(engine: &str, name: &str) -> CgroupReading {
             "cat /sys/fs/cgroup/memory.peak 2>/dev/null || cat /sys/fs/cgroup/memory.current; cat /sys/fs/cgroup/cpu.stat",
         ])
         .output();
-    let Ok(out) = out else { return CgroupReading::default() };
+    let Ok(out) = out else {
+        return CgroupReading::default();
+    };
     if !out.status.success() {
         return CgroupReading::default();
     }
@@ -147,7 +149,12 @@ fn run_container_once(
         argv.push(crate::runner::substitute(mount, subs));
     }
     argv.push(variant.image.clone());
-    argv.extend(reference.args.iter().map(|a| crate::runner::substitute(a, subs)));
+    argv.extend(
+        reference
+            .args
+            .iter()
+            .map(|a| crate::runner::substitute(a, subs)),
+    );
 
     let started = Instant::now();
     let out = Command::new(engine).args(&argv).output()?;
@@ -182,7 +189,12 @@ fn run_container_once(
         .args(["inspect", "--format", "{{.State.ExitCode}}", &name])
         .output()
         .ok()
-        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<i64>().ok())
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .trim()
+                .parse::<i64>()
+                .ok()
+        })
         .unwrap_or(-1);
     let logs = Command::new(engine).args(["logs", &name]).output()?;
     let _ = Command::new(engine).args(["rm", "-f", &name]).output();
@@ -196,7 +208,9 @@ fn run_container_once(
         )));
     }
     let seconds = self_timed_seconds(&stdout).ok_or_else(|| {
-        BenchError(format!("competitor {name}: no self-timed `seconds` JSON on stdout: {stdout}"))
+        BenchError(format!(
+            "competitor {name}: no self-timed `seconds` JSON on stdout: {stdout}"
+        ))
     })?;
     let (peak_rss, rss_source) = match last.memory_peak {
         Some(peak) => (Some(peak), "cgroup v2 memory.peak (in-container read)"),
@@ -227,7 +241,11 @@ pub fn run_competitor(
 ) -> CompetitorSide {
     let engine = match crate::fixtures::container_engine() {
         Ok(e) => e,
-        Err(e) => return CompetitorSide::Missing { reason: e.to_string() },
+        Err(e) => {
+            return CompetitorSide::Missing {
+                reason: e.to_string(),
+            };
+        }
     };
     if !image_exists(&engine, &variant.image) {
         return CompetitorSide::Missing {
@@ -245,14 +263,20 @@ pub fn run_competitor(
         // Same discipline as the rdlt side: destination state reset between
         // runs (the shell harnesses dropped dest schemas per baseline run).
         if let Err(e) = fixture.reset() {
-            return CompetitorSide::Missing { reason: format!("fixture reset failed: {e}") };
+            return CompetitorSide::Missing {
+                reason: format!("fixture reset failed: {e}"),
+            };
         }
         match run_container_once(&engine, variant, reference, subs, seq) {
             Ok(run) => {
                 self_timed_ms.push(run.seconds * 1000.0);
                 last = Some(run);
             }
-            Err(e) => return CompetitorSide::Missing { reason: e.to_string() },
+            Err(e) => {
+                return CompetitorSide::Missing {
+                    reason: e.to_string(),
+                };
+            }
         }
     }
     let median_ms = protocol::median(&self_timed_ms);
@@ -268,7 +292,8 @@ pub fn run_competitor(
         note: Some(if last.peak_rss.is_some() {
             last.rss_source.into()
         } else {
-            "no RSS reading (cgroup unreachable, nothing self-reported) — null, not fabricated".into()
+            "no RSS reading (cgroup unreachable, nothing self-reported) — null, not fabricated"
+                .into()
         }),
     };
     CompetitorSide::Ok {
@@ -297,15 +322,19 @@ mod tests {
         let variants = load_variants(&p).unwrap();
         assert_eq!(variants[0].role, Role::Baseline);
 
-        std::fs::write(&p, "[[variant]]\nid='x'\npin='p'\nimage='i'\nrole='baseline'\nnope=1\n")
-            .unwrap();
+        std::fs::write(
+            &p,
+            "[[variant]]\nid='x'\npin='p'\nimage='i'\nrole='baseline'\nnope=1\n",
+        )
+        .unwrap();
         let err = load_variants(&p).unwrap_err().to_string();
         assert!(err.contains("nope"), "{err}");
     }
 
     #[test]
     fn self_timed_seconds_takes_the_last_json_line() {
-        let stdout = "noise\n{\"rows\": 10, \"seconds\": 1.5}\n{\"seconds\": 2.5, \"rows_per_s\": 4}\n";
+        let stdout =
+            "noise\n{\"rows\": 10, \"seconds\": 1.5}\n{\"seconds\": 2.5, \"rows_per_s\": 4}\n";
         assert_eq!(self_timed_seconds(stdout), Some(2.5));
         assert_eq!(self_timed_seconds("no json here"), None);
     }

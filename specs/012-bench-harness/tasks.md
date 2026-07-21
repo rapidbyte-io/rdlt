@@ -170,7 +170,7 @@ entry); no run-*.sh remain.
 
 ## Phase 6: Polish & close-out
 
-- [ ] T018 Close-out: insert RESULTS.md generated-section markers +
+- [X] T018 Close-out: insert RESULTS.md generated-section markers +
   regenerate tables via `rdlt-bench report` (narrative + History
   preserved, add the 012 history entry); full green sweep — `make
   check`, `cargo nextest run`, `cargo test --doc`, semver-checks ("no

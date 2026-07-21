@@ -83,7 +83,9 @@ pub fn container_engine() -> Result<String> {
             return Ok(candidate.to_owned());
         }
     }
-    Err(BenchError("no container engine (podman or docker) found".into()))
+    Err(BenchError(
+        "no container engine (podman or docker) found".into(),
+    ))
 }
 
 /// A started fixture. Teardown on drop: containers removed, services killed;
@@ -142,13 +144,20 @@ fn wait_tcp(port: u16, what: &str) -> Result<()> {
         }
         std::thread::sleep(Duration::from_millis(200));
     }
-    Err(BenchError(format!("{what}: port {port} never became ready")))
+    Err(BenchError(format!(
+        "{what}: port {port} never became ready"
+    )))
 }
 
 fn run_sh(script: &str, cwd: &Path) -> Result<()> {
-    let status = Command::new("sh").args(["-c", script]).current_dir(cwd).status()?;
+    let status = Command::new("sh")
+        .args(["-c", script])
+        .current_dir(cwd)
+        .status()?;
     if !status.success() {
-        return Err(BenchError(format!("generate_sh failed ({status}): {script}")));
+        return Err(BenchError(format!(
+            "generate_sh failed ({status}): {script}"
+        )));
     }
     Ok(())
 }
@@ -178,9 +187,14 @@ pub fn start(def: &FixtureDef, subs: &BTreeMap<String, String>) -> Result<Starte
             let _ = Command::new(&engine).args(["rm", "-f", &name]).output();
             let status = Command::new(&engine)
                 .args([
-                    "run", "-d", "--name", &name,
-                    "-e", "POSTGRES_PASSWORD=postgres",
-                    "-p", &format!("{port}:5432"),
+                    "run",
+                    "-d",
+                    "--name",
+                    &name,
+                    "-e",
+                    "POSTGRES_PASSWORD=postgres",
+                    "-p",
+                    &format!("{port}:5432"),
                     image,
                 ])
                 .args(&def.container_args)
@@ -236,8 +250,11 @@ pub fn start(def: &FixtureDef, subs: &BTreeMap<String, String>) -> Result<Starte
                 }
                 // Seed scripts print their own dataset identity — capture it.
                 let stdout = String::from_utf8_lossy(&out.stdout);
-                let identity: Vec<&str> =
-                    stdout.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+                let identity: Vec<&str> = stdout
+                    .lines()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                    .collect();
                 if !identity.is_empty() {
                     hashes.insert("seed_output".into(), identity.join(" | "));
                 }
@@ -279,12 +296,17 @@ pub fn start(def: &FixtureDef, subs: &BTreeMap<String, String>) -> Result<Starte
 
     for pattern in &def.hash {
         let path = sub(pattern);
-        let bytes = std::fs::read(&path)
-            .map_err(|e| BenchError(format!("hashing {path}: {e}")))?;
+        let bytes = std::fs::read(&path).map_err(|e| BenchError(format!("hashing {path}: {e}")))?;
         hashes.insert(path, blake3::hash(&bytes).to_hex().to_string());
     }
 
-    Ok(Started { def: def.clone(), data, hashes, container, service })
+    Ok(Started {
+        def: def.clone(),
+        data,
+        hashes,
+        container,
+        service,
+    })
 }
 
 #[cfg(test)]

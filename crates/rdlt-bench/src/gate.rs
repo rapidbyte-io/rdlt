@@ -5,9 +5,9 @@
 
 use std::path::Path;
 
+use crate::Result;
 use crate::artifact::{self, Artifact, CompetitorSide};
 use crate::cells::{Bar, BarKind};
-use crate::Result;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Verdict {
@@ -32,7 +32,9 @@ fn competitor_median(artifact: &Artifact, competitor: &str) -> std::result::Resu
         Some(CompetitorSide::Missing { reason }) => {
             Err(format!("baseline `{competitor}` MISSING ({reason})"))
         }
-        None => Err(format!("baseline `{competitor}` not present in the artifact")),
+        None => Err(format!(
+            "baseline `{competitor}` not present in the artifact"
+        )),
     }
 }
 
@@ -44,7 +46,9 @@ fn competitor_rss(artifact: &Artifact, competitor: &str) -> std::result::Result<
         Some(CompetitorSide::Missing { reason }) => {
             Err(format!("baseline `{competitor}` MISSING ({reason})"))
         }
-        None => Err(format!("baseline `{competitor}` not present in the artifact")),
+        None => Err(format!(
+            "baseline `{competitor}` not present in the artifact"
+        )),
     }
 }
 
@@ -53,8 +57,10 @@ pub fn evaluate(bar: &Bar, artifact: &Artifact) -> Verdict {
     let tol = bar.tolerance_pct / 100.0;
     let cell = &bar.cell;
     match &bar.kind {
-        BarKind::RatioVs { competitor, min_ratio } => match competitor_median(artifact, competitor)
-        {
+        BarKind::RatioVs {
+            competitor,
+            min_ratio,
+        } => match competitor_median(artifact, competitor) {
             Err(reason) => Verdict::Fail {
                 detail: format!("{cell}: ratio bar >= {min_ratio}x vs {competitor} — {reason}"),
             },
@@ -65,7 +71,11 @@ pub fn evaluate(bar: &Bar, artifact: &Artifact) -> Verdict {
                     "{cell}: {ratio:.1}x vs {competitor} ({comp_ms:.0} ms / {:.0} ms), bar >= {min_ratio}x (tol {}%)",
                     artifact.rdlt.median_ms, bar.tolerance_pct
                 );
-                if ratio >= floor { Verdict::Pass { detail } } else { Verdict::Fail { detail } }
+                if ratio >= floor {
+                    Verdict::Pass { detail }
+                } else {
+                    Verdict::Fail { detail }
+                }
             }
         },
         BarKind::AbsoluteMs { max_ms } => {
@@ -75,9 +85,16 @@ pub fn evaluate(bar: &Bar, artifact: &Artifact) -> Verdict {
                 "{cell}: {measured:.1} ms, bar <= {max_ms} ms absolute (tol {}%)",
                 bar.tolerance_pct
             );
-            if measured <= ceiling { Verdict::Pass { detail } } else { Verdict::Fail { detail } }
+            if measured <= ceiling {
+                Verdict::Pass { detail }
+            } else {
+                Verdict::Fail { detail }
+            }
         }
-        BarKind::RssRatioVs { competitor, max_rss_ratio } => {
+        BarKind::RssRatioVs {
+            competitor,
+            max_rss_ratio,
+        } => {
             let Some(rdlt_rss) = artifact.rdlt.rss.peak_bytes else {
                 return Verdict::Fail {
                     detail: format!("{cell}: RSS bar but the rdlt side has no peak-RSS reading"),
@@ -85,7 +102,10 @@ pub fn evaluate(bar: &Bar, artifact: &Artifact) -> Verdict {
             };
             match competitor_rss(artifact, competitor) {
                 Err(reason) => Verdict::Fail {
-                    detail: format!("{cell}: RSS bar <= 1/{:.0} vs {competitor} — {reason}", 1.0 / max_rss_ratio),
+                    detail: format!(
+                        "{cell}: RSS bar <= 1/{:.0} vs {competitor} — {reason}",
+                        1.0 / max_rss_ratio
+                    ),
                 },
                 Ok(comp_rss) => {
                     let ratio = rdlt_rss as f64 / comp_rss as f64;
@@ -98,7 +118,11 @@ pub fn evaluate(bar: &Bar, artifact: &Artifact) -> Verdict {
                         1.0 / max_rss_ratio,
                         bar.tolerance_pct
                     );
-                    if ratio <= ceiling { Verdict::Pass { detail } } else { Verdict::Fail { detail } }
+                    if ratio <= ceiling {
+                        Verdict::Pass { detail }
+                    } else {
+                        Verdict::Fail { detail }
+                    }
                 }
             }
         }
@@ -113,7 +137,9 @@ pub fn run_gate(bars: &[Bar], results_dir: &Path) -> Result<(Vec<Verdict>, bool)
     for bar in bars {
         let verdict = match artifact::read(results_dir, &bar.cell) {
             Ok(artifact) => evaluate(bar, &artifact),
-            Err(e) => Verdict::Fail { detail: format!("{}: no artifact — {e}", bar.cell) },
+            Err(e) => Verdict::Fail {
+                detail: format!("{}: no artifact — {e}", bar.cell),
+            },
         };
         all_pass &= verdict.passed();
         verdicts.push(verdict);
@@ -138,7 +164,10 @@ mod tests {
                     median_ms: comp,
                     self_timed: true,
                     cpu: CpuStats::default(),
-                    rss: RssStats { peak_bytes: Some(1000 << 20), note: None },
+                    rss: RssStats {
+                        peak_bytes: Some(1000 << 20),
+                        note: None,
+                    },
                     ratio_vs_rdlt: None,
                 },
             );
@@ -149,7 +178,10 @@ mod tests {
     fn ratio_bar(min_ratio: f64, tolerance_pct: f64) -> Bar {
         Bar {
             cell: "cell-x".into(),
-            kind: BarKind::RatioVs { competitor: "dlt-pyarrow".into(), min_ratio },
+            kind: BarKind::RatioVs {
+                competitor: "dlt-pyarrow".into(),
+                min_ratio,
+            },
             tolerance_pct,
             policy: "test".into(),
         }
@@ -179,12 +211,19 @@ mod tests {
         let artifact = artifact_with(1000.0, None);
         let verdict = evaluate(&ratio_bar(10.0, 0.0), &artifact);
         assert!(!verdict.passed());
-        assert!(verdict.detail().contains("not present"), "{}", verdict.detail());
+        assert!(
+            verdict.detail().contains("not present"),
+            "{}",
+            verdict.detail()
+        );
 
         let mut with_missing = artifact.clone();
-        with_missing
-            .competitors
-            .insert("dlt-pyarrow".into(), CompetitorSide::Missing { reason: "no image".into() });
+        with_missing.competitors.insert(
+            "dlt-pyarrow".into(),
+            CompetitorSide::Missing {
+                reason: "no image".into(),
+            },
+        );
         let verdict = evaluate(&ratio_bar(10.0, 0.0), &with_missing);
         assert!(!verdict.passed());
         assert!(verdict.detail().contains("MISSING"), "{}", verdict.detail());
@@ -209,7 +248,10 @@ mod tests {
         let mut artifact = artifact_with(1000.0, Some(10_000.0));
         let bar = Bar {
             cell: "cell-x".into(),
-            kind: BarKind::RssRatioVs { competitor: "dlt-pyarrow".into(), max_rss_ratio: 0.2 },
+            kind: BarKind::RssRatioVs {
+                competitor: "dlt-pyarrow".into(),
+                max_rss_ratio: 0.2,
+            },
             tolerance_pct: 0.0,
             policy: "test".into(),
         };
@@ -230,6 +272,10 @@ mod tests {
         let bars = vec![ratio_bar(10.0, 0.0)];
         let (verdicts, all_pass) = run_gate(&bars, dir.path()).unwrap();
         assert!(!all_pass);
-        assert!(verdicts[0].detail().contains("no artifact"), "{}", verdicts[0].detail());
+        assert!(
+            verdicts[0].detail().contains("no artifact"),
+            "{}",
+            verdicts[0].detail()
+        );
     }
 }

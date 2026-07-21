@@ -199,7 +199,10 @@ pub enum BarKind {
     /// form — competitor releases can never flip it).
     AbsoluteMs { max_ms: f64 },
     /// rdlt peak RSS must be at most `max_rss_ratio` of the competitor's.
-    RssRatioVs { competitor: String, max_rss_ratio: f64 },
+    RssRatioVs {
+        competitor: String,
+        max_rss_ratio: f64,
+    },
 }
 
 // No `deny_unknown_fields` here: serde cannot combine it with `flatten` (the
@@ -362,9 +365,13 @@ policy = "specs/012-bench-harness/plan.md"
         );
         let bars = load_bars(&p).unwrap();
         assert_eq!(bars.len(), 3);
-        assert!(matches!(bars[0].kind, BarKind::RatioVs { ref competitor, min_ratio } if competitor == "dlt-pyarrow" && min_ratio == 10.0));
+        assert!(
+            matches!(bars[0].kind, BarKind::RatioVs { ref competitor, min_ratio } if competitor == "dlt-pyarrow" && min_ratio == 10.0)
+        );
         assert!(matches!(bars[1].kind, BarKind::AbsoluteMs { max_ms } if max_ms == 40.0));
-        assert!(matches!(bars[2].kind, BarKind::RssRatioVs { max_rss_ratio, .. } if max_rss_ratio == 0.2));
+        assert!(
+            matches!(bars[2].kind, BarKind::RssRatioVs { max_rss_ratio, .. } if max_rss_ratio == 0.2)
+        );
     }
 
     #[test]

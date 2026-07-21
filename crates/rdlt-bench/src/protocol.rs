@@ -144,7 +144,9 @@ mod tests {
 
     #[test]
     fn gated_refuses_on_loaded_machine_unless_forced() {
-        let err = quiet_guard(Class::Gated, 6.0, 8, false).unwrap_err().to_string();
+        let err = quiet_guard(Class::Gated, 6.0, 8, false)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("refusing gated run"), "{err}");
         assert!(err.contains(FORCE_ENV), "{err}");
         let forced = quiet_guard(Class::Gated, 6.0, 8, true).unwrap();
@@ -153,7 +155,10 @@ mod tests {
 
     #[test]
     fn scoreboard_annotates_and_quiet_passes() {
-        assert_eq!(quiet_guard(Class::Gated, 0.5, 8, false).unwrap(), QuietVerdict::Quiet);
+        assert_eq!(
+            quiet_guard(Class::Gated, 0.5, 8, false).unwrap(),
+            QuietVerdict::Quiet
+        );
         let v = quiet_guard(Class::Scoreboard, 6.0, 8, false).unwrap();
         assert!(matches!(v, QuietVerdict::Annotated(_)));
     }
@@ -163,11 +168,20 @@ mod tests {
         let mut calls = Vec::new();
         let samples = run_protocol(2, 3, |counted| {
             calls.push(counted);
-            Ok(Sample { wall_ms: 1.0, detail: () })
+            Ok(Sample {
+                wall_ms: 1.0,
+                detail: (),
+            })
         })
         .unwrap();
         assert_eq!(samples.len(), 3);
         assert_eq!(calls, vec![false, false, true, true, true]);
-        assert!(run_protocol(0, 0, |_| Ok(Sample { wall_ms: 0.0, detail: () })).is_err());
+        assert!(
+            run_protocol(0, 0, |_| Ok(Sample {
+                wall_ms: 0.0,
+                detail: ()
+            }))
+            .is_err()
+        );
     }
 }

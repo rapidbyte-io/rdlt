@@ -65,7 +65,10 @@ impl SelectionArgs {
         });
         self.cell.as_deref().is_none_or(|id| id == cell.id)
             && class.is_none_or(|c| c == cell.class)
-            && self.filter.as_deref().is_none_or(|g| glob_match(g, &cell.id))
+            && self
+                .filter
+                .as_deref()
+                .is_none_or(|g| glob_match(g, &cell.id))
     }
 }
 
@@ -84,8 +87,11 @@ fn glob_match(pattern: &str, id: &str) -> bool {
 
 fn load_all(paths: &Paths) -> rdlt_bench::Result<(Vec<Cell>, Vec<cells::Bar>)> {
     let all_cells = cells::load_cells(&paths.cells_dir)?;
-    let bars =
-        if paths.bars_toml.is_file() { cells::load_bars(&paths.bars_toml)? } else { Vec::new() };
+    let bars = if paths.bars_toml.is_file() {
+        cells::load_bars(&paths.bars_toml)?
+    } else {
+        Vec::new()
+    };
     cells::cross_validate(&all_cells, &bars)?;
     Ok((all_cells, bars))
 }
@@ -97,8 +103,11 @@ fn cmd_list(paths: &Paths, selection: &SelectionArgs) -> rdlt_bench::Result<()> 
         "CELL", "CLASS", "MODE", "SUITE", "FIXTURE", "RUNS"
     );
     for cell in all_cells.iter().filter(|c| selection.selects(c)) {
-        let competitors: Vec<&str> =
-            cell.competitors.iter().map(|c| c.variant.as_str()).collect();
+        let competitors: Vec<&str> = cell
+            .competitors
+            .iter()
+            .map(|c| c.variant.as_str())
+            .collect();
         let barred = bars.iter().any(|b| b.cell == cell.id);
         println!(
             "{:<34} {:<10} {:<11} {:<9} {:<16} {:<5} {}{}",
@@ -128,7 +137,11 @@ fn cmd_run(paths: &Paths, selection: &SelectionArgs) -> rdlt_bench::Result<()> {
     };
     let variants = {
         let path = paths.benches.join("competitors/dlt/variants.toml");
-        if path.is_file() { competitors::load_variants(&path)? } else { Vec::new() }
+        if path.is_file() {
+            competitors::load_variants(&path)?
+        } else {
+            Vec::new()
+        }
     };
 
     // Fixtures shared across cells within this invocation (BH2).
@@ -140,13 +153,19 @@ fn cmd_run(paths: &Paths, selection: &SelectionArgs) -> rdlt_bench::Result<()> {
     ]);
 
     for cell in selected {
-        eprintln!("== {} ({} {:?}, {} runs) ==", cell.id, cell.class, cell.mode, cell.runs);
+        eprintln!(
+            "== {} ({} {:?}, {} runs) ==",
+            cell.id, cell.class, cell.mode, cell.runs
+        );
         if !started.contains_key(&cell.fixture) {
             let def = fixture_defs
                 .iter()
                 .find(|f| f.id == cell.fixture)
                 .ok_or_else(|| {
-                    BenchError(format!("cell `{}`: unknown fixture `{}`", cell.id, cell.fixture))
+                    BenchError(format!(
+                        "cell `{}`: unknown fixture `{}`",
+                        cell.id, cell.fixture
+                    ))
                 })?;
             started.insert(cell.fixture.clone(), fixtures::start(def, &base_subs)?);
         }
@@ -193,14 +212,23 @@ fn cmd_run(paths: &Paths, selection: &SelectionArgs) -> rdlt_bench::Result<()> {
 fn cmd_gate(paths: &Paths) -> rdlt_bench::Result<bool> {
     let (_cells, bars) = load_all(paths)?;
     if bars.is_empty() {
-        return Err(BenchError("bars.toml is missing or empty — nothing to gate".into()));
+        return Err(BenchError(
+            "bars.toml is missing or empty — nothing to gate".into(),
+        ));
     }
     let (verdicts, all_pass) = gate::run_gate(&bars, &paths.results)?;
     for verdict in &verdicts {
         let tag = if verdict.passed() { "PASS" } else { "FAIL" };
         println!("[{tag}] {}", verdict.detail());
     }
-    println!("{}", if all_pass { "gate: all bars met" } else { "gate: VIOLATIONS above" });
+    println!(
+        "{}",
+        if all_pass {
+            "gate: all bars met"
+        } else {
+            "gate: VIOLATIONS above"
+        }
+    );
     Ok(all_pass)
 }
 

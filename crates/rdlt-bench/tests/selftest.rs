@@ -45,14 +45,21 @@ fn selftest_cell_runs_the_full_protocol() {
     assert_eq!(cell.runs, 3);
 
     let defs = fixtures::load_fixtures(&paths.fixtures_toml).expect("fixtures load");
-    let def = defs.iter().find(|f| f.id == cell.fixture).expect("fixture registered");
+    let def = defs
+        .iter()
+        .find(|f| f.id == cell.fixture)
+        .expect("fixture registered");
     let started = fixtures::start(def, &BTreeMap::new()).expect("none fixture starts");
 
     let result = runner::run_cell(cell, &paths, &started, None, BTreeMap::new())
         .expect("protocol runs end to end");
 
     assert_eq!(result.cell_id, "selftest-protocol");
-    assert_eq!(result.rdlt.runs_ms.len(), 3, "3 counted runs (warmup uncounted)");
+    assert_eq!(
+        result.rdlt.runs_ms.len(),
+        3,
+        "3 counted runs (warmup uncounted)"
+    );
     assert!(
         result.rdlt.median_ms >= 15.0,
         "sleep 0.02 medians ~20ms+, got {}",

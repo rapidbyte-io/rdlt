@@ -16,7 +16,11 @@ pub fn end_marker(section: &str) -> String {
 }
 
 fn fmt_ms(ms: f64) -> String {
-    if ms >= 1000.0 { format!("{:.2} s", ms / 1000.0) } else { format!("{ms:.1} ms") }
+    if ms >= 1000.0 {
+        format!("{:.2} s", ms / 1000.0)
+    } else {
+        format!("{ms:.1} ms")
+    }
 }
 
 fn fmt_opt<T>(v: Option<T>, f: impl Fn(T) -> String) -> String {
@@ -27,7 +31,9 @@ fn bar_target(bar: Option<&Bar>) -> String {
     match bar.map(|b| &b.kind) {
         Some(BarKind::RatioVs { min_ratio, .. }) => format!("≥ {min_ratio}×"),
         Some(BarKind::AbsoluteMs { max_ms }) => format!("≤ {max_ms} ms abs"),
-        Some(BarKind::RssRatioVs { max_rss_ratio, .. }) => format!("≤ 1/{:.0}", 1.0 / max_rss_ratio),
+        Some(BarKind::RssRatioVs { max_rss_ratio, .. }) => {
+            format!("≤ 1/{:.0}", 1.0 / max_rss_ratio)
+        }
         None => "—".into(),
     }
 }
@@ -53,7 +59,11 @@ fn table_for(artifacts: &[&Artifact], bars: &[Bar]) -> String {
             .and_then(|id| artifact.competitors.get_key_value(id))
             .or_else(|| artifact.competitors.iter().next());
         let baseline = baseline_entry.map(|(id, side)| match side {
-            CompetitorSide::Ok { median_ms, ratio_vs_rdlt, .. } => format!(
+            CompetitorSide::Ok {
+                median_ms,
+                ratio_vs_rdlt,
+                ..
+            } => format!(
                 "**{:.1}×** ({id}: {})",
                 ratio_vs_rdlt.unwrap_or(median_ms / artifact.rdlt.median_ms),
                 fmt_ms(*median_ms)
@@ -69,7 +79,10 @@ fn table_for(artifacts: &[&Artifact], bars: &[Bar]) -> String {
             bar_target(bar),
             fmt_opt(artifact.rdlt.rows_per_s, |v| format!("{:.0}", v)),
             fmt_opt(artifact.rdlt.mb_per_s, |v| format!("{v:.1}")),
-            fmt_opt(artifact.rdlt.cpu.peak_util, |v| format!("{:.0}%", v * 100.0)),
+            fmt_opt(artifact.rdlt.cpu.peak_util, |v| format!(
+                "{:.0}%",
+                v * 100.0
+            )),
             fmt_opt(artifact.rdlt.rss.peak_bytes, |v| format!("{} MB", v >> 20)),
         ));
     }
@@ -182,28 +195,39 @@ mod tests {
         let out = splice(DOC, "e2e", "X").unwrap();
         let begin = begin_marker("e2e");
         let end = end_marker("e2e");
-        let (before_in, after_in) =
-            (DOC.split(&begin).next().unwrap(), DOC.split(&end).nth(1).unwrap());
-        let (before_out, after_out) =
-            (out.split(&begin).next().unwrap(), out.split(&end).nth(1).unwrap());
+        let (before_in, after_in) = (
+            DOC.split(&begin).next().unwrap(),
+            DOC.split(&end).nth(1).unwrap(),
+        );
+        let (before_out, after_out) = (
+            out.split(&begin).next().unwrap(),
+            out.split(&end).nth(1).unwrap(),
+        );
         assert_eq!(before_in, before_out);
         assert_eq!(after_in, after_out);
     }
 
     #[test]
     fn missing_markers_are_a_refusal_not_a_guess() {
-        let err = splice("no markers here", "e2e", "X").unwrap_err().to_string();
+        let err = splice("no markers here", "e2e", "X")
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("BEGIN e2e"), "{err}");
-        let err2 = splice("<!-- rdlt-bench:BEGIN e2e -->", "e2e", "X").unwrap_err().to_string();
+        let err2 = splice("<!-- rdlt-bench:BEGIN e2e -->", "e2e", "X")
+            .unwrap_err()
+            .to_string();
         assert!(err2.contains("no `<!-- rdlt-bench:END e2e -->`"), "{err2}");
     }
 
     #[test]
     fn table_includes_missing_baselines_loudly() {
         let mut artifact = crate::artifact::tests::minimal("loud-cell", Class::Scoreboard);
-        artifact
-            .competitors
-            .insert("dlt-pyarrow".into(), CompetitorSide::Missing { reason: "image not built".into() });
+        artifact.competitors.insert(
+            "dlt-pyarrow".into(),
+            CompetitorSide::Missing {
+                reason: "image not built".into(),
+            },
+        );
         let table = table_for(&[&artifact], &[]);
         assert!(table.contains("MISSING (image not built)"), "{table}");
         assert!(table.contains("loud-cell"), "{table}");

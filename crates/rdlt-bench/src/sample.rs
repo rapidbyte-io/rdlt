@@ -133,7 +133,10 @@ mod tests {
     fn samples_a_real_child_and_reports_peak_rss() {
         // Python holds 50MB in the sampled process, then sleeps across polls.
         let mut child = std::process::Command::new("python3")
-            .args(["-c", "import time; x = bytearray(50_000_000); time.sleep(0.4)"])
+            .args([
+                "-c",
+                "import time; x = bytearray(50_000_000); time.sleep(0.4)",
+            ])
             .stdout(std::process::Stdio::null())
             .spawn()
             .expect("spawn");

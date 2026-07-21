@@ -7,9 +7,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use crate::artifact::{
-    Artifact, CpuStats, RdltSide, RssStats, VerifyOutcome,
-};
+use crate::artifact::{Artifact, CpuStats, RdltSide, RssStats, VerifyOutcome};
 use crate::cells::{Cell, Mode, Timing};
 use crate::protocol::{self, QuietVerdict, Sample};
 use crate::sample::{ResourceUsage, Sampler};
@@ -109,7 +107,11 @@ fn run_once_subprocess(
     let spec_path = match &cell.pipeline {
         Some(template) => {
             let raw = std::fs::read_to_string(paths.benches.join(template)).map_err(|e| {
-                BenchError(format!("cell `{}`: reading template {}: {e}", cell.id, template.display()))
+                BenchError(format!(
+                    "cell `{}`: reading template {}: {e}",
+                    cell.id,
+                    template.display()
+                ))
             })?;
             let spec = run_dir.join("pipeline.yaml");
             std::fs::write(&spec, substitute(&raw, &subs))?;
@@ -123,7 +125,9 @@ fn run_once_subprocess(
 
     if let Some(prepare) = &cell.prepare_sh {
         let script = substitute(prepare, &subs);
-        let status = std::process::Command::new("sh").args(["-c", &script]).status()?;
+        let status = std::process::Command::new("sh")
+            .args(["-c", &script])
+            .status()?;
         if !status.success() {
             return Err(BenchError(format!("cell `{}`: prepare_sh failed", cell.id)));
         }
@@ -132,7 +136,9 @@ fn run_once_subprocess(
     let argv: Vec<String> = match &cell.command {
         Some(custom) => custom.iter().map(|a| substitute(a, &subs)).collect(),
         None => {
-            let spec = spec_path.as_ref().expect("checked at load: pipeline or command");
+            let spec = spec_path
+                .as_ref()
+                .expect("checked at load: pipeline or command");
             vec![
                 paths.cli.display().to_string(),
                 "run".into(),
@@ -210,16 +216,25 @@ fn run_once_subprocess(
         .then(|| std::fs::read_to_string(&report_path).ok())
         .flatten()
         .and_then(|raw| serde_json::from_str(&raw).ok());
-    Ok(Sample { wall_ms, detail: RunDetail { report, usage } })
+    Ok(Sample {
+        wall_ms,
+        detail: RunDetail { report, usage },
+    })
 }
 
 /// CPU stats from the (last counted run's) sampler series + wall time.
 fn cpu_stats(usage: Option<&ResourceUsage>, wall_ms: f64) -> CpuStats {
     let Some(usage) = usage else {
-        return CpuStats { note: Some("no sampler ran".into()), ..CpuStats::default() };
+        return CpuStats {
+            note: Some("no sampler ran".into()),
+            ..CpuStats::default()
+        };
     };
     let Some(cpu_ms) = usage.cpu_ms else {
-        return CpuStats { note: usage.note.clone(), ..CpuStats::default() };
+        return CpuStats {
+            note: usage.note.clone(),
+            ..CpuStats::default()
+        };
     };
     let mean = (cpu_ms as f64 / wall_ms).max(0.0);
     let peak = usage
@@ -241,8 +256,14 @@ fn cpu_stats(usage: Option<&ResourceUsage>, wall_ms: f64) -> CpuStats {
 
 fn rss_stats(usage: Option<&ResourceUsage>) -> RssStats {
     match usage {
-        Some(u) => RssStats { peak_bytes: u.peak_rss_bytes, note: u.note.clone() },
-        None => RssStats { peak_bytes: None, note: Some("no sampler ran".into()) },
+        Some(u) => RssStats {
+            peak_bytes: u.peak_rss_bytes,
+            note: u.note.clone(),
+        },
+        None => RssStats {
+            peak_bytes: None,
+            note: Some("no sampler ran".into()),
+        },
     }
 }
 
@@ -274,12 +295,17 @@ pub fn rdlt_side(samples: &[Sample<RunDetail>]) -> RdltSide {
 }
 
 fn verify_outcome(cell: &Cell, samples: &[Sample<RunDetail>]) -> Result<Option<VerifyOutcome>> {
-    let Some(verify) = &cell.verify else { return Ok(None) };
+    let Some(verify) = &cell.verify else {
+        return Ok(None);
+    };
     let report = samples
         .last()
         .and_then(|s| s.detail.report.as_ref())
         .ok_or_else(|| {
-            BenchError(format!("cell `{}`: verify declared but no RunReport captured", cell.id))
+            BenchError(format!(
+                "cell `{}`: verify declared but no RunReport captured",
+                cell.id
+            ))
         })?;
     let actual = report_table_rows(report, &verify.table);
     let ok = actual == verify.expected_rows;
@@ -329,16 +355,30 @@ fn run_hyperfine(cell: &Cell, subs: &BTreeMap<String, String>, run_dir: &Path) -
         .args(&argv[1..])
         .current_dir(run_dir)
         .status()
-        .map_err(|e| BenchError(format!("cell `{}`: hyperfine: {e} (is it installed?)", cell.id)))?;
+        .map_err(|e| {
+            BenchError(format!(
+                "cell `{}`: hyperfine: {e} (is it installed?)",
+                cell.id
+            ))
+        })?;
     if !status.success() {
-        return Err(BenchError(format!("cell `{}`: hyperfine failed ({status})", cell.id)));
+        return Err(BenchError(format!(
+            "cell `{}`: hyperfine failed ({status})",
+            cell.id
+        )));
     }
     let raw = std::fs::read_to_string(&export)?;
     let parsed: serde_json::Value =
         serde_json::from_str(&raw).map_err(|e| BenchError(format!("hyperfine export: {e}")))?;
     parsed["results"][0]["times"]
         .as_array()
-        .map(|times| times.iter().filter_map(|t| t.as_f64()).map(|s| s * 1000.0).collect())
+        .map(|times| {
+            times
+                .iter()
+                .filter_map(|t| t.as_f64())
+                .map(|s| s * 1000.0)
+                .collect()
+        })
         .ok_or_else(|| BenchError("hyperfine export missing results[0].times".into()))
 }
 
@@ -390,10 +430,18 @@ pub fn run_cell(
             })?;
             let mut side = rdlt_side(&samples);
             let verify = verify_outcome(cell, &samples)?;
-            return_side(cell, paths, fixture, competitor_pin, competitors, quiet_note, {
-                side.streams = vec![];
-                (side, verify)
-            })
+            return_side(
+                cell,
+                paths,
+                fixture,
+                competitor_pin,
+                competitors,
+                quiet_note,
+                {
+                    side.streams = vec![];
+                    (side, verify)
+                },
+            )
         }
         Mode::Library => {
             let samples = protocol::run_protocol(cell.warmups, cell.runs, |_counted| {
@@ -405,7 +453,15 @@ pub fn run_cell(
             })?;
             let side = crate::library_mode::side_from(&samples);
             let verify = crate::library_mode::verify_from(cell, &samples)?;
-            return_side(cell, paths, fixture, competitor_pin, competitors, quiet_note, (side, verify))
+            return_side(
+                cell,
+                paths,
+                fixture,
+                competitor_pin,
+                competitors,
+                quiet_note,
+                (side, verify),
+            )
         }
         Mode::Hyperfine => {
             fixture.reset()?;
@@ -433,18 +489,34 @@ pub fn run_cell(
                     note: Some("hyperfine protocol — wall only (R8)".into()),
                     ..CpuStats::default()
                 },
-                rss: RssStats { peak_bytes: None, note: Some("hyperfine protocol".into()) },
+                rss: RssStats {
+                    peak_bytes: None,
+                    note: Some("hyperfine protocol".into()),
+                },
                 streams: vec![],
                 runs_ms,
             };
-            return_side(cell, paths, fixture, competitor_pin, competitors, quiet_note, (side, None))
+            return_side(
+                cell,
+                paths,
+                fixture,
+                competitor_pin,
+                competitors,
+                quiet_note,
+                (side, None),
+            )
         }
     }?;
 
     // Fill competitor→rdlt ratios now that the rdlt median exists.
     let rdlt_median = rdlt.rdlt.median_ms;
     for side in rdlt.competitors.values_mut() {
-        if let crate::artifact::CompetitorSide::Ok { median_ms, ratio_vs_rdlt, .. } = side {
+        if let crate::artifact::CompetitorSide::Ok {
+            median_ms,
+            ratio_vs_rdlt,
+            ..
+        } = side
+        {
             *ratio_vs_rdlt = Some(*median_ms / rdlt_median);
         }
     }
@@ -488,7 +560,10 @@ mod tests {
     fn substitution_replaces_known_and_keeps_unknown() {
         let mut subs = BTreeMap::new();
         subs.insert("conn".to_owned(), "pg://x".to_owned());
-        assert_eq!(substitute("a {{conn}} b {{typo}}", &subs), "a pg://x b {{typo}}");
+        assert_eq!(
+            substitute("a {{conn}} b {{typo}}", &subs),
+            "a pg://x b {{typo}}"
+        );
     }
 
     #[test]
