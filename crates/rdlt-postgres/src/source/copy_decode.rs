@@ -136,7 +136,7 @@ fn exact<const N: usize>(field: &[u8], what: &str) -> Result<[u8; N], DecodeErro
 
 /// PG binary numeric → i128 at the declared scale (contract: NBASE-10000
 /// digits; NaN/±Inf are decode errors under `Decimal`).
-fn decode_numeric(field: &[u8], scale: u8) -> Result<i128, DecodeError> {
+pub(crate) fn decode_numeric(field: &[u8], scale: u8) -> Result<i128, DecodeError> {
     if field.len() < 8 {
         return err("numeric: header short");
     }

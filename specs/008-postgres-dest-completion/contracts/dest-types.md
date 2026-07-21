@@ -15,7 +15,7 @@ values land.
 | T4 | Columns with `nullable: false` create `NOT NULL` — at CREATE time only. Migrations remain additive: NOT NULL is never added to existing columns. |
 | T5 | All native values ride the SAME binary bulk path as before (no per-row fallback); the wire encoders are exact mirrors of the source's decoders, proven by encode→decode round-trip property tests over the full value range incl. NULLs and precision edges. |
 | T6 | Column-type decisions come from the table SCHEMA's logical types, never from raw arrow types — a plain text column and a json/uuid-logical column (same arrow representation) can never confuse. |
-| T7 | Pre-008 tables with text columns where a native type would now be chosen: the column is NEVER silently retyped; values continue landing as text exactly as before; ONE `tracing::warn!` on the `rdlt::lossy` target per column per session names the table, column, wanted type, and the documented migration paths (fresh table via a new name + Replace, or manual `ALTER … USING`). |
+| T7 | *(amended, owner decision 2026-07-21: rdlt is GREENFIELD — no pre-008 installed base exists, so no automatic text fallback ships.)* Existing columns are never silently retyped (the additive-only migration rule stands). A hand-created table whose column types mismatch the stream's native types fails LOUDLY at publish with the server's typed error (message + SQLSTATE, e.g. 42804) — the user aligns their table or lets rdlt create it. |
 | T8 | The type matrix conformance suite extends to the native types against a real server: catalog type assertions + value round-trips incl. NULL rows and boundary values. |
 
 ## Non-rules (explicitly out)

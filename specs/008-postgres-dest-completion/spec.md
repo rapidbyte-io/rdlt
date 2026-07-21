@@ -61,12 +61,11 @@ catalog and aggregating loaded values.
    type and equality joins against uuid literals work.
 4. **Given** a source column declared non-nullable, **Then** the created
    destination column is NOT NULL; nullable columns stay nullable.
-5. **Given** a table created by an EARLIER rdlt version with text columns
-   where native types would now be chosen, **When** new loads arrive,
-   **Then** behavior follows the documented additive-only migration rule —
-   existing columns are never silently retyped, the situation is visible,
-   and the documented path to native types (fresh table or explicit
-   migration) works.
+5. *(amended, owner decision — greenfield, no installed base)* **Given** a
+   hand-created table whose column types mismatch the stream's native
+   types, **When** a load publishes, **Then** it fails loudly with the
+   server's typed error naming the mismatch — existing columns are never
+   silently retyped, and no automatic fallback exists.
 6. **Given** values at the edges (decimal precision limits, deeply nested
    JSON, NULLs in every new type), **Then** round-trip equality holds — the
    full type matrix conformance extends to the new native types.
@@ -226,10 +225,11 @@ server's message and SQLSTATE in the pipeline error.
   through the same bulk wire path used today (no per-row fallback, no
   throughput regression beyond the stated tolerance) — the destination's
   encoding mirrors the source's existing decoding of the same wire formats.
-- **FR-003**: Migration stays ADDITIVE-ONLY: existing columns are never
-  silently retyped. Tables created before this feature keep working; the
-  situation where a text column would now be native MUST be visible (not
-  silent) and the documented paths to native types MUST work.
+- **FR-003** *(amended, owner decision 2026-07-21)*: Migration stays
+  ADDITIVE-ONLY: existing columns are never silently retyped. rdlt is
+  greenfield — no pre-feature installed base exists, so NO automatic
+  text fallback ships; a mismatched hand-created table fails loudly at
+  publish with the server's typed error.
 - **FR-004**: Merge strategy MUST be selectable per destination (and
   overridable per table) among: delete-insert (default, unchanged), upsert,
   and SCD2. No strategy configured = today's behavior exactly. Strategy

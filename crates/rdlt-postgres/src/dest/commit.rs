@@ -87,7 +87,7 @@ impl LoadSession for PgSession {
             let mut columns = schema
                 .columns
                 .iter()
-                .map(|c| format!("{} {}", quote(&c.name), super::ddl::sql_type(&c.ty)))
+                .map(|c| super::ddl::column_def(c, !is_stage))
                 .collect::<Vec<_>>()
                 .join(", ");
             if is_stage {
@@ -149,11 +149,18 @@ impl LoadSession for PgSession {
             .map(|f| quote(f.name()))
             .collect::<Vec<_>>()
             .join(", ");
-        let types: Vec<Type> = arrow_schema
+        // Wire decisions come from the ENSURED schema's logical types (T6);
+        // arrow representation only fills in where the schema is silent.
+        let table_schema = self.tables.get(table).map(|(s, _)| s);
+        let wires: Vec<encode::ColumnWire> = arrow_schema
             .fields()
             .iter()
-            .map(|f| encode::copy_type(f.data_type()))
+            .map(|f| {
+                let logical = table_schema.and_then(|s| s.column(f.name())).map(|c| &c.ty);
+                encode::column_wire(logical, f.data_type())
+            })
             .collect::<Result<_, _>>()?;
+        let types: Vec<Type> = wires.iter().map(|w| encode::wire_type(*w)).collect();
 
         let sink = self
             .client
@@ -172,9 +179,10 @@ impl LoadSession for PgSession {
             for (col_idx, field) in arrow_schema.fields().iter().enumerate() {
                 let array = batch.column(col_idx);
                 owned.push(encode::cell_value(
-                    field.data_type(),
+                    wires[col_idx],
                     array.as_ref(),
                     row_idx,
+                    field.name(),
                 )?);
             }
             let refs: Vec<&(dyn ToSql + Sync)> = owned

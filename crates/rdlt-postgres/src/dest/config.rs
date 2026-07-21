@@ -4,8 +4,6 @@
 use rdlt_connector::DestError;
 use tokio_postgres::Client;
 
-use super::transient;
-
 #[derive(Debug, Clone)]
 pub struct Postgres {
     pub(super) conn_string: String,
@@ -43,7 +41,9 @@ impl Postgres {
         match crate::tls::connect(&pg, &policy).await {
             Ok(client) => Ok(client),
             Err(crate::tls::ConnectResult::Config(e)) => Err(DestError::fatal(e.to_string())),
-            Err(crate::tls::ConnectResult::Connect(e)) if e.transient => Err(transient(e)),
+            Err(crate::tls::ConnectResult::Connect(e)) if e.transient => {
+                Err(DestError::transient(e.to_string()))
+            }
             Err(crate::tls::ConnectResult::Connect(e)) => Err(DestError::fatal(e.to_string())),
         }
     }

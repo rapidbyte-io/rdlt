@@ -10,7 +10,7 @@
 //! Error policy (SPI clause S3): classify Transient/Fatal, never retry here.
 
 pub mod config;
-mod copy_decode;
+pub(crate) mod copy_decode;
 mod cursor;
 mod errors;
 mod reflect;

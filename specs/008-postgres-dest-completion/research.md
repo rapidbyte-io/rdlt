@@ -54,21 +54,19 @@ round trip carries `numeric(p,s)` end to end (source produces
 Decimal128 for constrained numerics); shredded JSON documents land as
 `jsonb`; SUM equality proves no float detour.
 
-## R3 — Migration visibility for pre-existing text columns
+## R3 — Pre-existing text columns: NO fallback (owner decision, greenfield)
 
-**Decision**: ensure_table's drift check compares wanted vs existing
-column types via the catalog; when the wanted type is a NEW native type
-but the existing column is text (a pre-008 table), the destination emits
-ONE `tracing::warn!` on the existing `rdlt::lossy` target naming table,
-column, and the documented paths (fresh table via Replace into a new
-name, or manual `ALTER ... USING`), and continues loading as text
-(values render exactly as before — the encoder falls back per-column to
-the text encoding when the EXISTING column is text). Never a silent
-retype, never a hard failure on old tables.
-
-**Rationale**: FR-003 additive-only is a standing contract; the lossy
-tracing target is the established suppression-proof visibility channel
-(006 US4).
+**Decision (amended during implementation, 2026-07-21)**: the originally
+planned catalog-detection + per-column text-fallback + `rdlt::lossy`
+visibility machinery was IMPLEMENTED, then REMOVED on owner decision:
+rdlt is greenfield — there is no pre-008 installed base whose tables
+need protecting, and the fallback added a wire variant, a session map,
+stage-recreation logic, and a conformance test for a population of
+zero. What remains: the additive-only rule (existing columns are never
+silently retyped — unchanged, enforced by the existing D5 migration
+path), and hand-created mismatched tables fail LOUDLY at publish with
+the server's typed error (SQLSTATE 42804 class) through `describe()`.
+Contract dest-types.md T7 amended to match.
 
 ## R4 — Upsert strategy: conflict-update from the stage, index ensured first
 

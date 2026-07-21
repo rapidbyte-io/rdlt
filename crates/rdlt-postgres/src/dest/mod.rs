@@ -31,8 +31,27 @@ pub use config::Postgres;
 #[doc(hidden)]
 pub const FAIL_POINTS: &[&str] = &["pg.stage.copy", "pg.publish.begin", "pg.tx.commit"];
 
-pub(crate) fn transient(e: impl std::fmt::Display) -> DestError {
-    DestError::transient(e.to_string())
+/// Review-F6 closure (feature 008, FR-010): every db-originated error
+/// carries the server's message + SQLSTATE — tokio-postgres's Display for
+/// db errors is just "db error" (the recurring 006 opacity). Non-db errors
+/// render their full source chain.
+pub(crate) fn describe(e: &tokio_postgres::Error) -> String {
+    use std::error::Error as _;
+    if let Some(db) = e.as_db_error() {
+        return format!("{e}: {} (SQLSTATE {})", db.message(), db.code().code());
+    }
+    let mut rendered = e.to_string();
+    let mut source = e.source();
+    while let Some(cause) = source {
+        rendered.push_str(": ");
+        rendered.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    rendered
+}
+
+pub(crate) fn transient(e: tokio_postgres::Error) -> DestError {
+    DestError::transient(describe(&e))
 }
 
 pub(crate) fn fatal(e: impl std::fmt::Display) -> DestError {
@@ -54,8 +73,11 @@ impl Destination for Postgres {
             merge: true,
             structs: false,      // → engine flattens collision-safely at the seam
             scalar_lists: false, // → scalar lists become child tables at shred planning
-            json_type: false,
-            decimal: false, // → engine lowers decimals to canonical text
+            // Feature 008 US1 (dest-types.md): native JSONB + NUMERIC(p,s) —
+            // engine lowering passes Json/Decimal128 through untouched. These
+            // are CODE-LEVEL declarations; no user configuration exists (R2).
+            json_type: true,
+            decimal: true,
             ident_rules: IdentRules { max_len: 63 },
         }
     }

@@ -49,7 +49,7 @@ catalog types; SUM over decimals equals the source exactly; JSON-path
 and uuid-literal queries work; NOT NULL created; old-table behavior
 documented and visible.
 
-- [ ] T002 [US1] Wire encoders in
+- [X] T002 [US1] Wire encoders in
       `crates/rdlt-postgres/src/dest/encode.rs`: `NumericWire(i128,
       scale)` (base-10000 groups — mirror of the source decoder),
       `JsonbWire` (version byte 1 + UTF-8), `UuidWire` (16 bytes from
@@ -57,7 +57,7 @@ documented and visible.
       as `ToSql` impls (R1); property tests round-tripping encode →
       `source/copy_decode.rs` decode over the full range incl. NULLs,
       precision edges, negative/zero/fractional decimals (T5).
-- [ ] T003 [US1] Native DDL + capability flip + conformance (WELDED —
+- [X] T003 [US1] Native DDL + capability flip + conformance (WELDED —
       plan rule: a flipped capability without its round-trip proof is
       a silent-corruption risk): `dest/ddl.rs` `sql_type` gains
       `NUMERIC(p,s)`/`JSONB`/`UUID` + NOT NULL from
@@ -69,13 +69,13 @@ documented and visible.
       assertions, decimal SUM equality, JSON-path query, uuid-literal
       join, NULL rows, boundary values, JSONB-rejected document =
       typed error naming the column (SC-001, T1–T3, T8).
-- [ ] T004 [US1] Pre-008 text-column visibility in
-      `crates/rdlt-postgres/src/dest/ddl.rs`: drift check detects
-      existing-text-vs-wanted-native, falls back per-column to text
-      encoding (values byte-identical to pre-008), emits ONE
-      `rdlt::lossy` warn per column per session naming table, column,
-      wanted type, and the documented migration paths (R3, T7);
-      capture-subscriber test + README migration note (FR-003).
+- [X] T004 [US1] ~~Pre-008 text-column visibility~~ RESOLVED BY OWNER
+      DECISION (greenfield): the fallback was implemented, then removed —
+      no installed base exists to protect. Additive-only rule unchanged;
+      mismatched hand-created tables fail loudly at publish (server
+      message + SQLSTATE via describe()). Contract dest-types.md T7,
+      spec FR-003/US1-AS5, and research R3 all amended in the same
+      change.
 
 **Checkpoint**: warehouse consumers get real types — shippable MVP.
 
@@ -166,7 +166,7 @@ T001.)
 **Independent Test**: spec US4 — a forced database failure surfaces
 the server message and SQLSTATE in the pipeline error.
 
-- [ ] T012 [US4] `describe()` in
+- [X] T012 [US4] `describe()` in
       `crates/rdlt-postgres/src/dest/commit.rs`: prefer
       `as_db_error()` (message + SQLSTATE), else source-chain walk;
       `transient()`/`fatal()` route through it, SQLSTATE transient
