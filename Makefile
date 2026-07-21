@@ -87,7 +87,7 @@ endif
 # crate — the recorded floor is 80%. NOT part of `check` (no CI gate;
 # 004 governance). Numbers + exclusions live in benches/RESULTS.md.
 coverage:
-	cargo llvm-cov nextest -p rdlt-postgres --features failpoints
+	cargo llvm-cov nextest --features failpoints
 
 check: lint
 	$(MAKE) test
