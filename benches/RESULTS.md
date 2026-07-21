@@ -124,9 +124,13 @@ in place with no delete-visibility window, and it composes with
 hard-delete — not raw throughput. Recorded so nobody re-runs this
 expecting a speedup that was never the point.
 
-Connector-crate coverage (feature 011, contract PM5; `make coverage` =
-`cargo llvm-cov nextest -p rdlt-postgres --features failpoints`,
-cargo-llvm-cov 0.8.7; floor: 80% lines; NOT a CI gate):
+Connector-crate coverage (feature 011, contract PM5; recorded numbers
+measured with `cargo llvm-cov nextest -p rdlt-postgres --features
+failpoints`, cargo-llvm-cov 0.8.7; floor: 80% lines for the CONNECTOR
+crate; NOT a CI gate. Note: `make coverage` was widened post-merge by
+the owner to the whole workspace — its total is a DIFFERENT, lower
+number; re-run with `-p rdlt-postgres` to reproduce the recorded
+figures):
 
 | Measurement | Lines | Functions | Date |
 |---|---|---|---|
