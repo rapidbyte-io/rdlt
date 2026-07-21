@@ -38,15 +38,23 @@ fn bar_target(bar: Option<&Bar>) -> String {
     }
 }
 
-/// One table row per artifact: the full BH3 metric set + baseline ratio.
-/// Public as [`summary_table`]: `run` prints the SAME rendering to stdout —
-/// one table path, so the run summary can never drift from RESULTS.md.
-fn table_for(artifacts: &[&Artifact], bars: &[Bar]) -> String {
-    let mut out = String::new();
-    out.push_str(
-        "| Cell | Class | rdlt median | vs baseline | Target | rows/s | MB/s | peak CPU | peak RSS |\n",
-    );
-    out.push_str("|---|---|---|---|---|---|---|---|---|\n");
+const HEADERS: [&str; 9] = [
+    "Cell",
+    "Class",
+    "rdlt median",
+    "vs baseline",
+    "Target",
+    "rows/s",
+    "MB/s",
+    "peak CPU",
+    "peak RSS",
+];
+
+/// The shared ROW builder — both renderers (markdown for RESULTS.md, aligned
+/// text for the run summary) consume these cells, so the two views can never
+/// drift. Emphasis (`**`) is markdown-layer decoration, added there only.
+fn rows_for(artifacts: &[&Artifact], bars: &[Bar]) -> Vec<[String; 9]> {
+    let mut rows = Vec::with_capacity(artifacts.len());
     for artifact in artifacts {
         let bar = bars.iter().find(|b| b.cell == artifact.cell_id);
         // "vs baseline" = the bar's competitor when one exists (the gated
@@ -66,27 +74,84 @@ fn table_for(artifacts: &[&Artifact], bars: &[Bar]) -> String {
                 ratio_vs_rdlt,
                 ..
             } => format!(
-                "**{:.1}×** ({id}: {})",
+                "{:.1}× ({id}: {})",
                 ratio_vs_rdlt.unwrap_or(median_ms / artifact.rdlt.median_ms),
                 fmt_ms(*median_ms)
             ),
             CompetitorSide::Missing { reason } => format!("MISSING ({reason})"),
         });
-        out.push_str(&format!(
-            "| {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
-            artifact.cell_id,
-            artifact.class,
+        rows.push([
+            artifact.cell_id.clone(),
+            artifact.class.to_string(),
             fmt_ms(artifact.rdlt.median_ms),
             baseline.unwrap_or_else(|| "—".into()),
             bar_target(bar),
             fmt_opt(artifact.rdlt.rows_per_s, |v| format!("{:.0}", v)),
             fmt_opt(artifact.rdlt.mb_per_s, |v| format!("{v:.1}")),
-            fmt_opt(artifact.rdlt.cpu.peak_util, |v| format!(
-                "{:.0}%",
-                v * 100.0
-            )),
+            fmt_opt(artifact.rdlt.cpu.peak_util, |v| {
+                format!("{:.0}%", v * 100.0)
+            }),
             fmt_opt(artifact.rdlt.rss.peak_bytes, |v| format!("{} MB", v >> 20)),
-        ));
+        ]);
+    }
+    rows
+}
+
+/// Markdown rendering for the RESULTS.md generated sections.
+fn table_for(artifacts: &[&Artifact], bars: &[Bar]) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("| {} |\n", HEADERS.join(" | ")));
+    out.push_str("|---|---|---|---|---|---|---|---|---|\n");
+    for row in rows_for(artifacts, bars) {
+        let mut cells = row;
+        // Bold the headline ratio, exactly as the hand tables always did.
+        if !cells[3].starts_with("MISSING") && cells[3] != "—" {
+            if let Some(space) = cells[3].find(' ') {
+                cells[3] = format!("**{}** {}", &cells[3][..space], &cells[3][space + 1..]);
+            }
+        }
+        out.push_str(&format!("| {} |\n", cells.join(" | ")));
+    }
+    out
+}
+
+/// Aligned text rendering for the terminal (stdout run summary). Widths are
+/// char-counted — the table stays a table even with ×/≥/— in the cells.
+fn terminal_table(artifacts: &[&Artifact], bars: &[Bar]) -> String {
+    let rows = rows_for(artifacts, bars);
+    let mut widths: [usize; 9] = HEADERS.map(str::len);
+    for row in &rows {
+        for (w, cell) in widths.iter_mut().zip(row.iter()) {
+            *w = (*w).max(cell.chars().count());
+        }
+    }
+    let pad = |cell: &str, width: usize, right: bool| {
+        let fill = width - cell.chars().count();
+        if right {
+            format!("{}{}", " ".repeat(fill), cell)
+        } else {
+            format!("{}{}", cell, " ".repeat(fill))
+        }
+    };
+    // Numeric columns read best right-aligned.
+    const RIGHT: [bool; 9] = [false, false, true, false, false, true, true, true, true];
+    let render = |cells: &[String; 9]| -> String {
+        let mut line = String::new();
+        for i in 0..9 {
+            if i > 0 {
+                line.push_str("  ");
+            }
+            line.push_str(&pad(&cells[i], widths[i], RIGHT[i]));
+        }
+        format!("{}\n", line.trim_end())
+    };
+    let mut out = render(&HEADERS.map(str::to_owned));
+    out.push_str(&format!(
+        "{}\n",
+        "─".repeat(widths.iter().sum::<usize>() + 2 * 8)
+    ));
+    for row in &rows {
+        out.push_str(&render(row));
     }
     out
 }
@@ -112,12 +177,14 @@ fn provenance(artifacts: &[&Artifact], source: &str) -> String {
     )
 }
 
-/// The run-summary rendering (same table as the RESULTS.md sections).
+/// The run-summary rendering: the same rows as the RESULTS.md sections,
+/// aligned for a terminal instead of markdown.
 pub fn summary_table(artifacts: &[&Artifact], bars: &[Bar]) -> String {
+    let footer = provenance(artifacts, "Measured by this invocation");
     format!(
         "{}{}",
-        table_for(artifacts, bars),
-        provenance(artifacts, "Measured by this invocation")
+        terminal_table(artifacts, bars),
+        footer.replace('_', "") // no markdown italics on a terminal
     )
 }
 
