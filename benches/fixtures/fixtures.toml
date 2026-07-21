@@ -1,0 +1,6 @@
+# Fixture registry (data-model.md §2). Container/dataset lifecycle is owned by
+# the harness; cells reference fixtures by id.
+
+[[fixture]]
+id = "selftest-none"
+kind = "none"

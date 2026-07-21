@@ -1,0 +1,28 @@
+[package]
+name = "rdlt-bench"
+description = "rdlt dev benchmark harness: declarative cells -> run -> gate -> report"
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "rdlt-bench"
+path = "src/main.rs"
+
+# Contract BH8: every dependency below already exists in the workspace tree —
+# this crate may never add a NEW workspace dependency.
+[dependencies]
+rdlt = { workspace = true, features = ["rest", "duckdb", "postgres", "file", "parquet", "postgres-source"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+toml = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+blake3 = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

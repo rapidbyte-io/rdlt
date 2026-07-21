@@ -12,6 +12,7 @@ members = [
     "crates/rdlt-postgres",
     "crates/rdlt-dest-parquet",
     "crates/rdlt-cli",
+    "crates/rdlt-bench",
 ]
 
 [workspace.package]
