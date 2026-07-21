@@ -1,3 +1,3 @@
 {
-  "feature_directory": "specs/008-postgres-dest-completion"
+  "feature_directory": "specs/009-postgres-cdc"
 }
