@@ -127,8 +127,8 @@ fn cmd_list(paths: &Paths, selection: &SelectionArgs) -> rdlt_bench::Result<()> 
     Ok(())
 }
 
-fn cmd_run(paths: &Paths, selection: &SelectionArgs) -> rdlt_bench::Result<()> {
-    let (all_cells, _bars) = load_all(paths)?;
+fn cmd_run(paths: &Paths, selection: &SelectionArgs) -> rdlt_bench::Result<bool> {
+    let (all_cells, bars) = load_all(paths)?;
     let selected: Vec<&Cell> = all_cells.iter().filter(|c| selection.selects(c)).collect();
     if selected.is_empty() {
         return Err(BenchError("no cells match the selection".into()));
@@ -155,6 +155,7 @@ fn cmd_run(paths: &Paths, selection: &SelectionArgs) -> rdlt_bench::Result<()> {
         ("cli".to_owned(), paths.cli.display().to_string()),
     ]);
 
+    let mut measured: Vec<artifact::Artifact> = Vec::new();
     for cell in selected {
         eprintln!(
             "== {} ({} {:?}, {} runs) ==",
@@ -229,8 +230,48 @@ fn cmd_run(paths: &Paths, selection: &SelectionArgs) -> rdlt_bench::Result<()> {
             result.rdlt.median_ms,
             path.strip_prefix(&paths.repo).unwrap_or(&path).display()
         );
+        measured.push(result);
     }
-    Ok(())
+
+    // The invocation's PRODUCT goes to stdout (progress stayed on stderr):
+    // the same table renderer RESULTS.md uses — one rendering path, no
+    // drift — plus immediate bar verdicts for the gated cells just
+    // measured. A fresh gated measurement below its bar exits nonzero.
+    println!(
+        "\n## run summary ({} cell{})\n",
+        measured.len(),
+        if measured.len() == 1 { "" } else { "s" }
+    );
+    let refs: Vec<&artifact::Artifact> = measured.iter().collect();
+    print!("{}", report::summary_table(&refs, &bars));
+    let mut all_pass = true;
+    let mut any_bar = false;
+    for artifact in &measured {
+        if let Some(note) = &artifact.fingerprint.quiet_note {
+            println!("[WARN] {}: {note}", artifact.cell_id);
+        }
+        for bar in bars.iter().filter(|b| b.cell == artifact.cell_id) {
+            any_bar = true;
+            let verdict = gate::evaluate(bar, artifact);
+            let tag = if verdict.passed() { "PASS" } else { "FAIL" };
+            all_pass &= verdict.passed();
+            println!("[{tag}] {}", verdict.detail());
+        }
+    }
+    if any_bar {
+        println!(
+            "{}",
+            if all_pass {
+                "bars: all met for this run"
+            } else {
+                "bars: VIOLATIONS above — artifact written, exit 1"
+            }
+        );
+    }
+    println!(
+        "artifacts: benches/results/  ·  full gate: `rdlt-bench gate`  ·  tables: `rdlt-bench report`"
+    );
+    Ok(all_pass)
 }
 
 fn cmd_gate(paths: &Paths) -> rdlt_bench::Result<bool> {
@@ -279,7 +320,7 @@ fn main() -> ExitCode {
     };
     let outcome = match &cli.command {
         Cmd::List { selection } => cmd_list(&paths, selection).map(|()| true),
-        Cmd::Run { selection } => cmd_run(&paths, selection).map(|()| true),
+        Cmd::Run { selection } => cmd_run(&paths, selection),
         Cmd::Gate => cmd_gate(&paths),
         Cmd::Report => cmd_report(&paths).map(|()| true),
     };
