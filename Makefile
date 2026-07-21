@@ -46,7 +46,7 @@ else ifeq ($(TARGET),e2e)
 else ifeq ($(TARGET),sweep)
 	cargo nextest run -p rdlt-engine --features failpoints -E 'binary(crash_sweep)' --no-tests=pass
 	# Postgres sweeps self-skip without a container runtime (G2.1).
-	cargo nextest run -p rdlt-postgres --features failpoints -E 'binary(crash_sweep) or binary(dest_crash_sweep)' --no-tests=pass
+	cargo nextest run -p rdlt-postgres --features failpoints -E 'binary(crash_sweep) or binary(dest_crash_sweep) or binary(cdc_crash_sweep)' --no-tests=pass
 else ifeq ($(TARGET),prop)
 	PROPTEST_CASES=4096 cargo nextest run -p rdlt-engine -E 'test(shred_property)' --no-tests=pass
 else ifeq ($(TARGET),fuzz)

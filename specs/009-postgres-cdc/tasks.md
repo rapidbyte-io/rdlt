@@ -121,7 +121,7 @@ no-change run moves nothing.
 point, both passes, armed-fire pins; container-kill mid-catch-up;
 destination converges to source-equal state.
 
-- [ ] T009 [US2] Crash sweep in
+- [X] T009 [US2] Crash sweep in
       `crates/rdlt-postgres/tests/cdc_crash_sweep.rs` (new):
       register `cdc.slot.create`, `cdc.snapshot.copy`,
       `cdc.stream.peek`, `cdc.ack.advance` crash points in the cdc

@@ -32,6 +32,7 @@ use crate::source::errors::{self, Phase};
 use crate::source::reflect::ReflectedTable;
 use crate::source::{connect, sqlgen};
 use pgoutput::{Message, TupleData, TupleValue};
+use rdlt_connector::core::crash_point;
 use values::Cell;
 
 /// The engine cursor for a CDC stream: one LSN, distinct JSON shape from
@@ -288,6 +289,14 @@ pub(crate) async fn read_stream(
         state.control = Some(connect(config).await?);
     }
     if state.ensured.is_none() {
+        crash_point!(
+            "cdc.slot.create",
+            Err(errors::fatal(
+                Phase::Slot,
+                Some(&name),
+                "injected: before slot ensure"
+            ))
+        );
         let outcome = slot::ensure(
             state.control.as_ref().expect("control client"),
             cdc,
@@ -348,6 +357,14 @@ pub(crate) async fn read_stream(
                         .await
                         .map_err(|e| errors::classify(Phase::Copy, Some(&name), &e))?;
                     let Some(chunk) = chunk else { break };
+                    crash_point!(
+                        "cdc.snapshot.copy",
+                        Err(errors::transient(
+                            Phase::Copy,
+                            Some(&name),
+                            "injected: connection lost mid-snapshot"
+                        ))
+                    );
                     let batches = decoder
                         .feed(&chunk)
                         .map_err(|e| errors::fatal(Phase::Decode, Some(&name), e))?;
@@ -441,6 +458,14 @@ pub(crate) async fn read_stream(
         if cdc.ack == AckMode::Auto
             && let Some(&floor) = state.ack_floor.values().min()
         {
+            crash_point!(
+                "cdc.ack.advance",
+                Err(errors::fatal(
+                    Phase::Slot,
+                    Some(&name),
+                    "injected: before slot advance"
+                ))
+            );
             let control = state.control.as_ref().expect("control client");
             let confirmed = slot::confirmed_flush_lsn(control, &cdc.slot).await?;
             if floor > confirmed {
@@ -473,6 +498,14 @@ async fn change_pass(
     target: u64,
     req: &mut ReadRequest,
 ) -> Result<PassOutcome, SourceError> {
+    crash_point!(
+        "cdc.stream.peek",
+        Err(errors::transient(
+            Phase::Slot,
+            Some(name),
+            "injected: peek connection lost"
+        ))
+    );
     let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = vec![&cdc.slot, &cdc.publication];
     let upto = slot::fmt_lsn(target);
     let sql = format!(

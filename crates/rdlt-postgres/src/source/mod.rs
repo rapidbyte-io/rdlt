@@ -45,6 +45,17 @@ pub const FAIL_POINTS: &[&str] = &[
     "pg.src.before_checkpoint",
 ];
 
+/// CDC fail-point registry (feature 009, contract O6) — the CDC sweep pins
+/// and iterates exactly this list, both passes.
+#[cfg(feature = "failpoints")]
+#[doc(hidden)]
+pub const CDC_FAIL_POINTS: &[&str] = &[
+    "cdc.slot.create",
+    "cdc.snapshot.copy",
+    "cdc.stream.peek",
+    "cdc.ack.advance",
+];
+
 /// Test-only surface (hidden): lets integration suites drive reflection
 /// without going through a full pipeline. Not a public API.
 #[doc(hidden)]
