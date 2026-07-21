@@ -141,7 +141,7 @@ cancelled, checkpoint per chunk, cancel cleanly.
 cancel at a commit boundary; resume without loss/duplication; quiet
 idle.
 
-- [ ] T010 [US3] Tail mode in
+- [X] T010 [US3] Tail mode in
       `crates/rdlt-postgres/src/source/cdc/mod.rs`: `mode: tail`
       loops bounded catch-up chunks, waits `idle_wait` when quiet,
       honors the engine cancel token between chunks (P7);

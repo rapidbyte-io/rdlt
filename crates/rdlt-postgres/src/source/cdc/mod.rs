@@ -26,7 +26,7 @@ use rdlt_connector::{Cursor, ReadRequest, SourceError};
 use serde::{Deserialize, Serialize};
 use tokio_postgres::Client;
 
-use crate::source::config::{AckMode, CdcConfig, PostgresConfig};
+use crate::source::config::{AckMode, CdcConfig, CdcMode, PostgresConfig};
 use crate::source::copy_decode::{CopyDecoder, FieldPlan};
 use crate::source::errors::{self, Phase};
 use crate::source::reflect::ReflectedTable;
@@ -311,7 +311,7 @@ pub(crate) async fn read_stream(
         Some(cursor) => Some(CdcCursor::decode(cursor, &name)?.cdc_lsn),
         None => None,
     };
-    match since {
+    let cursor = match since {
         None => {
             // ---- snapshot pass (P2) ----
             // Start point: the consistent point when THIS run created the
@@ -412,6 +412,7 @@ pub(crate) async fn read_stream(
                 return Ok(());
             }
             state.ack_floor.insert(name.clone(), start);
+            start
         }
         Some(since) => {
             // ---- change pass (P3/P4/P5) ----
@@ -444,8 +445,9 @@ pub(crate) async fn read_stream(
                     return Ok(());
                 }
             }
+            target.max(since)
         }
-    }
+    };
 
     // ---- run completion + ack (P6) ----
     let drained = {
@@ -473,7 +475,72 @@ pub(crate) async fn read_stream(
             }
         }
     }
+    if cdc.mode == CdcMode::Tail {
+        drop(state);
+        return tail_loop(runtime, config, cdc, identity, &plans, &name, cursor, req).await;
+    }
     Ok(())
+}
+
+/// Continuous tail (P7, recorded refinement 2): a chunked loop of bounded
+/// catch-ups — each chunk pins ITS OWN current position, checkpoints flow
+/// per chunk, and a quiet chunk idles `idle_wait`. Cancellation is observed
+/// at commit boundaries: the per-chunk checkpoint probe (always a
+/// commit/target position, P4) fails the moment the engine closes the
+/// channel — no new SPI surface needed. The run-completion ack already
+/// happened after this stream's FIRST pass; a tail acks nothing further
+/// (retention hygiene resumes on the next run, never correctness).
+#[allow(clippy::too_many_arguments)]
+async fn tail_loop(
+    runtime: &Runtime,
+    config: &PostgresConfig,
+    cdc: &CdcConfig,
+    identity: &TableIdentity,
+    plans: &[FieldPlan],
+    name: &str,
+    mut cursor: u64,
+    mut req: ReadRequest,
+) -> Result<(), SourceError> {
+    loop {
+        if req
+            .out
+            .checkpoint(CdcCursor { cdc_lsn: cursor }.encode())
+            .await
+            .is_err()
+        {
+            return Ok(()); // cancellation, at a commit boundary (S4/P7)
+        }
+        let quiet = {
+            let state = runtime.state.lock().await;
+            let control = state.control.as_ref().expect("control client");
+            let target = slot::current_wal_lsn(control).await?;
+            if target > cursor {
+                let outcome = change_pass(
+                    control,
+                    cdc,
+                    &config.schema,
+                    name,
+                    identity,
+                    plans,
+                    config.batch_max_rows,
+                    cursor,
+                    target,
+                    &mut req,
+                )
+                .await?;
+                if outcome == PassOutcome::Cancelled {
+                    return Ok(());
+                }
+                cursor = target;
+                false
+            } else {
+                true
+            }
+        };
+        if quiet {
+            tokio::time::sleep(std::time::Duration::from_secs(cdc.idle_wait.seconds)).await;
+        }
+    }
 }
 
 #[derive(PartialEq)]

@@ -632,3 +632,89 @@ async fn ack_never_exceeds_the_least_committed_cursor() {
         "acks advance once commits are proven"
     );
 }
+
+// ───────────────────────── US3: continuous tail ─────────────────────────
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tail_applies_bursts_cancels_cleanly_and_resumes() {
+    let rig = CdcRig::start("cdc-tail").await;
+    rig.fixture
+        .seed(
+            "CREATE TABLE public.orders (id int8 PRIMARY KEY, total int4);\
+             INSERT INTO public.orders VALUES (1, 10);",
+        )
+        .await;
+
+    // A tail-mode source (idle_wait 1s), run in the background.
+    let source = PostgresSource::from_yaml(&format!(
+        "conn: \"{}\"\ncdc:\n  slot: s1\n  publication: p1\n  create_if_missing: true\n\
+         \x20 mode: tail\n  idle_wait: \"1s\"\ntables:\n  - name: orders\n",
+        rig.fixture.conn_url()
+    ))
+    .expect("tail config");
+    let mut config = EngineConfig::new("cdc-tail");
+    config.workdir = Some(rig.workdir.clone());
+    config.write_mode = rdlt_connector::WriteMode::Merge {
+        key: vec!["id".into()],
+    };
+    let engine = Engine::new(config, source, rig.dest(&["orders"]));
+    let cancel = engine.cancellation_token();
+    let tail = tokio::spawn(engine.run());
+
+    let wait_for = |sql: String, expect: i64| {
+        let rig = &rig;
+        async move {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            loop {
+                let client = rig.fixture.client().await;
+                if let Ok(row) = client.query_one(&sql, &[]).await
+                    && row.get::<_, i64>(0) == expect
+                {
+                    return;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "timed out waiting for `{sql}` == {expect}"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }
+    };
+
+    // Snapshot lands, then a first burst applies WITHOUT restart.
+    wait_for("SELECT count(*) FROM mirror.orders".into(), 1).await;
+    rig.fixture
+        .seed("INSERT INTO public.orders VALUES (2, 20), (3, 30); UPDATE public.orders SET total = 11 WHERE id = 1;")
+        .await;
+    wait_for("SELECT count(*) FROM mirror.orders".into(), 3).await;
+    wait_for(
+        "SELECT total::int8 FROM mirror.orders WHERE id = 1".into(),
+        11,
+    )
+    .await;
+
+    // Quiet idle (≥ two idle_waits), then a SECOND burst still applies —
+    // the loop wakes from idle rather than busy-spinning or wedging.
+    tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+    rig.fixture
+        .seed("DELETE FROM public.orders WHERE id = 2;")
+        .await;
+    wait_for("SELECT count(*) FROM mirror.orders".into(), 2).await;
+
+    // Clean cancellation at a commit boundary.
+    cancel.cancel();
+    let outcome = tail.await.expect("tail task");
+    let err = outcome.expect_err("cancelled run reports cancellation");
+    assert!(err.to_string().to_lowercase().contains("cancel"), "{err}");
+    rig.assert_mirror_equals("orders", "id, total").await;
+
+    // A subsequent run (catch-up mode) resumes exactly: only the new delta
+    // moves, nothing is lost or duplicated.
+    rig.fixture
+        .seed("INSERT INTO public.orders VALUES (4, 40);")
+        .await;
+    rig.run(&["orders"], "id").await;
+    rig.assert_mirror_equals("orders", "id, total").await;
+    let stable = rig.run(&["orders"], "id").await;
+    assert_eq!(stable, 0, "quiet catch-up after the tail moves nothing");
+}
