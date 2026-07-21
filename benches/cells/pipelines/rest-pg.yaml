@@ -1,0 +1,8 @@
+pipeline: bench-rest-pg
+workdir: {{workdir}}/.rdlt
+source:
+  rest: {config: {{data}}/rest.yaml}
+destination:
+  postgres:
+    conn: "host=127.0.0.1 port=5440 user=postgres password=postgres dbname=postgres"
+    dataset: raw_rdlt

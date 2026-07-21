@@ -1,0 +1,6 @@
+pipeline: cold
+workdir: {{workdir}}/.rdlt-cold
+source:
+  file: {config: {{data}}/cold-files.yaml}
+destination:
+  duckdb: {path: {{workdir}}/cold.duckdb}

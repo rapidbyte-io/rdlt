@@ -39,6 +39,9 @@ pub struct FixtureDef {
     pub hash: Vec<String>,
     #[serde(default)]
     pub image: Option<String>,
+    /// Extra args after the image (e.g. `-c wal_level=logical`).
+    #[serde(default)]
+    pub container_args: Vec<String>,
     #[serde(default)]
     pub port: Option<u16>,
     #[serde(default)]
@@ -131,7 +134,8 @@ impl Drop for Started {
 }
 
 fn wait_tcp(port: u16, what: &str) -> Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(30);
+    // Generous: `cargo run --release --example …` services may build first.
+    let deadline = Instant::now() + Duration::from_secs(180);
     while Instant::now() < deadline {
         if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
             return Ok(());
@@ -160,12 +164,7 @@ pub fn start(def: &FixtureDef, subs: &BTreeMap<String, String>) -> Result<Starte
     let mut service = None;
 
     match def.kind {
-        FixtureKind::None => {}
-        FixtureKind::GeneratedFiles => {
-            if let Some(script) = &def.generate_sh {
-                run_sh(&sub(script), data.path())?;
-            }
-        }
+        FixtureKind::None | FixtureKind::GeneratedFiles => {}
         FixtureKind::PostgresContainer => {
             let engine = container_engine()?;
             let image = def
@@ -184,6 +183,7 @@ pub fn start(def: &FixtureDef, subs: &BTreeMap<String, String>) -> Result<Starte
                     "-p", &format!("{port}:5432"),
                     image,
                 ])
+                .args(&def.container_args)
                 .status()?;
             if !status.success() {
                 return Err(BenchError(format!("starting container {name} failed")));
@@ -227,6 +227,18 @@ pub fn start(def: &FixtureDef, subs: &BTreeMap<String, String>) -> Result<Starte
                     hashes.insert("seed_output".into(), identity.join(" | "));
                 }
             }
+            // Sidecar service beside the container (the REST→PG cell needs
+            // both the mock API and a Postgres destination).
+            if let Some(script) = &def.service_sh {
+                let child = Command::new("sh")
+                    .args(["-c", &sub(script)])
+                    .current_dir(data.path())
+                    .spawn()?;
+                service = Some(child);
+                if let Some(ready) = def.ready_port {
+                    wait_tcp(ready, &def.id)?;
+                }
+            }
         }
         FixtureKind::Service => {
             let script = def
@@ -242,6 +254,12 @@ pub fn start(def: &FixtureDef, subs: &BTreeMap<String, String>) -> Result<Starte
                 wait_tcp(port, &def.id)?;
             }
         }
+    }
+
+    // Any kind may generate files (datasets, source-config documents) — for
+    // container kinds this runs after the service is up.
+    if let Some(script) = &def.generate_sh {
+        run_sh(&sub(script), data.path())?;
     }
 
     for pattern in &def.hash {
@@ -264,6 +282,7 @@ mod tests {
             id: "none".into(),
             kind: FixtureKind::None,
             generate_sh: None,
+            container_args: vec![],
             hash: vec![],
             image: None,
             port: None,
@@ -285,6 +304,7 @@ mod tests {
             id: "gen".into(),
             kind: FixtureKind::GeneratedFiles,
             generate_sh: Some("printf 'hello' > {{data}}/f.txt".into()),
+            container_args: vec![],
             hash: vec!["{{data}}/f.txt".into()],
             image: None,
             port: None,

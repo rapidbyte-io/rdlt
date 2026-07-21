@@ -1,0 +1,28 @@
+# The dlt competitor module (research R4, contract BH4). One pinned image
+# (Dockerfile here), several variants. `baseline` variants feed gated ratio
+# bars; `context` variants are scoreboard-only. Bump the pin → re-measure
+# every cell before quoting a multiple (the RESULTS.md version policy).
+
+[[variant]]
+id = "dlt"
+pin = "dlt 1.29.0"
+image = "rdlt-baseline"
+role = "baseline"
+
+[[variant]]
+id = "dlt-pyarrow"
+pin = "dlt 1.29.0"
+image = "rdlt-baseline"
+role = "baseline"
+
+[[variant]]
+id = "dlt-sqlalchemy"
+pin = "dlt 1.29.0"
+image = "rdlt-baseline"
+role = "context"
+
+[[variant]]
+id = "dlt-connectorx"
+pin = "dlt 1.29.0"
+image = "rdlt-baseline"
+role = "context"

@@ -357,6 +357,7 @@ mod tests {
             pipeline: Some(template.clone()),
             command: None,
             prepare_sh: None,
+            timing: crate::cells::Timing::Wall,
             workload: BTreeMap::new(),
             warmups: 0,
             runs: 2,

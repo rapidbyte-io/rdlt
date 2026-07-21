@@ -27,6 +27,21 @@ impl std::fmt::Display for Class {
     }
 }
 
+/// Where a run's measured statistic comes from (subprocess mode).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Timing {
+    /// Harness wall clock around the child (the gated default).
+    #[default]
+    Wall,
+    /// The child prints its measurement in ms as the last stdout line
+    /// (SQL-level cells: EXPLAIN ANALYZE Execution Time).
+    StdoutMs,
+    /// The child self-times and prints `{"seconds": …}` JSON (the shred_only
+    /// example — same convention as the dlt baselines).
+    SelfJsonSeconds,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Mode {
@@ -80,9 +95,12 @@ pub struct Cell {
     #[serde(default)]
     pub command: Option<Vec<String>>,
     /// Shell line run before every run (hyperfine `--prepare`, subprocess
-    /// pre-run cleanup) — e.g. removing the cold-start workdir.
+    /// pre-run cleanup/setup) — `{{spec}}` is available: templates render
+    /// BEFORE prepare so untimed setup loads can run the same pipeline.
     #[serde(default)]
     pub prepare_sh: Option<String>,
+    #[serde(default)]
+    pub timing: Timing,
     /// Free-form knobs recorded verbatim into the artifact.
     #[serde(default)]
     pub workload: BTreeMap<String, toml::Value>,

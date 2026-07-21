@@ -10,7 +10,7 @@ use std::time::Instant;
 use crate::artifact::{
     Artifact, CpuStats, RdltSide, RssStats, VerifyOutcome,
 };
-use crate::cells::{Cell, Mode};
+use crate::cells::{Cell, Mode, Timing};
 use crate::protocol::{self, QuietVerdict, Sample};
 use crate::sample::{ResourceUsage, Sampler};
 use crate::{BenchError, Result};
@@ -103,14 +103,8 @@ fn run_once_subprocess(
     let mut subs = subs.clone();
     subs.insert("workdir".into(), run_dir.display().to_string());
 
-    if let Some(prepare) = &cell.prepare_sh {
-        let script = substitute(prepare, &subs);
-        let status = std::process::Command::new("sh").args(["-c", &script]).status()?;
-        if !status.success() {
-            return Err(BenchError(format!("cell `{}`: prepare_sh failed", cell.id)));
-        }
-    }
-
+    // Template renders BEFORE prepare_sh so untimed setup (snapshot loads,
+    // seed refreshes) can run the very pipeline via `{{spec}}`.
     let report_path = run_dir.join("report.json");
     let spec_path = match &cell.pipeline {
         Some(template) => {
@@ -127,6 +121,14 @@ fn run_once_subprocess(
         subs.insert("spec".into(), spec.display().to_string());
     }
 
+    if let Some(prepare) = &cell.prepare_sh {
+        let script = substitute(prepare, &subs);
+        let status = std::process::Command::new("sh").args(["-c", &script]).status()?;
+        if !status.success() {
+            return Err(BenchError(format!("cell `{}`: prepare_sh failed", cell.id)));
+        }
+    }
+
     let argv: Vec<String> = match &cell.command {
         Some(custom) => custom.iter().map(|a| substitute(a, &subs)).collect(),
         None => {
@@ -141,17 +143,22 @@ fn run_once_subprocess(
         }
     };
 
+    let capture_stdout = cell.timing != Timing::Wall;
     let started = Instant::now();
     let child = std::process::Command::new(&argv[0])
         .args(&argv[1..])
         .current_dir(run_dir)
-        .stdout(std::process::Stdio::null())
+        .stdout(if capture_stdout {
+            std::process::Stdio::piped()
+        } else {
+            std::process::Stdio::null()
+        })
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| BenchError(format!("cell `{}`: spawning {}: {e}", cell.id, argv[0])))?;
     let sampler = counted.then(|| Sampler::spawn(child.id()));
     let output = child.wait_with_output()?;
-    let wall_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let clock_ms = started.elapsed().as_secs_f64() * 1000.0;
     let usage = sampler.map(Sampler::stop);
 
     if !output.status.success() {
@@ -162,6 +169,41 @@ fn run_once_subprocess(
             String::from_utf8_lossy(&output.stderr)
         )));
     }
+
+    let wall_ms = match cell.timing {
+        Timing::Wall => clock_ms,
+        Timing::StdoutMs => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            stdout
+                .lines()
+                .rev()
+                .find_map(|l| l.trim().parse::<f64>().ok())
+                .ok_or_else(|| {
+                    BenchError(format!(
+                        "cell `{}`: timing=stdout_ms but no numeric line on stdout: {stdout}",
+                        cell.id
+                    ))
+                })?
+        }
+        Timing::SelfJsonSeconds => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            stdout
+                .lines()
+                .rev()
+                .find_map(|line| {
+                    serde_json::from_str::<serde_json::Value>(line.trim())
+                        .ok()
+                        .and_then(|v| v.get("seconds").and_then(|s| s.as_f64()))
+                })
+                .map(|s| s * 1000.0)
+                .ok_or_else(|| {
+                    BenchError(format!(
+                        "cell `{}`: timing=self_json_seconds but no `seconds` JSON on stdout: {stdout}",
+                        cell.id
+                    ))
+                })?
+        }
+    };
 
     let report = report_path
         .exists()

@@ -1,0 +1,6 @@
+pipeline: bench-jsonl
+workdir: {{workdir}}/.rdlt
+source:
+  file: {config: {{data}}/files.yaml}
+destination:
+  duckdb: {path: {{workdir}}/out.duckdb}

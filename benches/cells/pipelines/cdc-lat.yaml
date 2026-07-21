@@ -1,0 +1,19 @@
+pipeline: cdc-lat
+workdir: {{workdir}}/.rdlt
+write_mode: {merge: {key: [id]}}
+source:
+  postgres:
+    conn: "{{conn}}"
+    cdc:
+      slot: cdc_lat
+      publication: cdc_lat_pub
+      create_if_missing: true
+    tables:
+      - name: pg_wide
+destination:
+  postgres:
+    conn: "host=127.0.0.1 port=5443 user=postgres password=postgres dbname=postgres"
+    dataset: cdc_lat
+    merge_strategy: upsert
+    tables:
+      pg_wide: {hard_delete: _rdlt_deleted}

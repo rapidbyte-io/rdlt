@@ -36,4 +36,5 @@ if __name__ == "__main__":
         source_rows = sum(1 for _ in f)
     peak_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     print(json.dumps({"rows": source_rows, "normalize_seconds": elapsed,
+                      "seconds": elapsed,  # harness convention: the self-timed statistic
                       "rows_per_s": source_rows / elapsed, "peak_rss_kb": peak_kb}))

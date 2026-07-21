@@ -1,0 +1,13 @@
+pipeline: strat-upsert
+workdir: {{workdir}}/.rdlt
+write_mode: {merge: {key: [id]}}
+source:
+  postgres:
+    conn: "{{conn}}"
+    tables:
+      - name: pg_wide
+destination:
+  postgres:
+    conn: "host=127.0.0.1 port=5441 user=postgres password=postgres dbname=postgres"
+    dataset: strat_upsert
+    merge_strategy: upsert

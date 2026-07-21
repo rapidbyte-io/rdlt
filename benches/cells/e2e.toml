@@ -1,0 +1,108 @@
+# End-to-end flagship cells (features 002–004 lineage). Gated cells bind to
+# the release-CLI subprocess (FR-011); baselines run FIRST (R12).
+
+[[cell]]
+id = "jsonl-duckdb-200k"
+class = "gated"
+mode = "subprocess"
+fixture = "jsonl-200k"
+pipeline = "cells/pipelines/jsonl-duckdb.yaml"
+warmups = 1
+runs = 5
+verify = { table = "events", expected_rows = 200000 }
+[cell.workload]
+rows = 200000
+shape = "nested flagship record (children: profile inline, tags shredded)"
+[[cell.competitor]]
+variant = "dlt"
+args = ["pipeline_jsonl_duckdb.py", "/data/rows.jsonl"]
+mounts = ["{{data}}:/data:z"]
+
+# Shred stage only — the engine example self-times (same JSON convention as
+# the baselines); the cargo wrapper is excluded from the measurement.
+[[cell]]
+id = "shred-only-200k"
+class = "gated"
+mode = "subprocess"
+fixture = "jsonl-200k"
+command = ["sh", "-c", "cd {{repo}} && cargo run -q --release -p rdlt-engine --example shred_only -- {{data}}/rows.jsonl"]
+timing = "self_json_seconds"
+warmups = 1
+runs = 5
+[cell.workload]
+rows = 200000
+stage = "shred only (mirror of dlt normalize; no destination I/O either side)"
+[[cell.competitor]]
+variant = "dlt"
+args = ["normalize_only.py", "/data/rows.jsonl"]
+mounts = ["{{data}}:/data:z"]
+
+[[cell]]
+id = "rest-pg-100k"
+class = "gated"
+mode = "subprocess"
+fixture = "rest-pg"
+pipeline = "cells/pipelines/rest-pg.yaml"
+warmups = 1
+runs = 5
+verify = { table = "events", expected_rows = 100000 }
+[cell.workload]
+rows = 100000
+pages = 100
+note = "mock API pre-renders pages — measures the clients, engine-bound"
+[[cell.competitor]]
+variant = "dlt"
+args = ["pipeline_rest_pg.py", "http://127.0.0.1:8642", "{{conn}}"]
+network = "host"
+
+[[cell]]
+id = "parquet-passthrough"
+class = "gated"
+mode = "subprocess"
+fixture = "parquet-200k"
+pipeline = "cells/pipelines/pq-to-pq.yaml"
+warmups = 1
+runs = 5
+verify = { table = "events", expected_rows = 200000 }
+[cell.workload]
+rows = 200000
+note = "Arrow passthrough: parquet -> parquet, the engine-bound claim"
+[[cell.competitor]]
+variant = "dlt"
+args = ["pipeline_parquet.py", "/data/pq/events/*.parquet", "parquet"]
+mounts = ["{{data}}/pq:/data/pq:ro,z"]
+
+[[cell]]
+id = "parquet-duckdb"
+class = "scoreboard"
+mode = "subprocess"
+fixture = "parquet-200k"
+pipeline = "cells/pipelines/pq-to-duckdb.yaml"
+warmups = 1
+runs = 5
+verify = { table = "events", expected_rows = 200000 }
+[cell.workload]
+note = "bonus context row — both sides reduce to the DuckDB C++ appender, near-parity by design"
+[[cell.competitor]]
+variant = "dlt"
+args = ["pipeline_parquet.py", "/data/pq/events/*.parquet", "duckdb"]
+mounts = ["{{data}}/pq:/data/pq:ro,z"]
+
+# Cold start: the recorded hyperfine protocol (feature 004 P3) — instrument
+# unchanged, governance unified. The gated bar is ABSOLUTE; dlt is context.
+[[cell]]
+id = "cold-start"
+class = "gated"
+mode = "hyperfine"
+fixture = "cold-one-row"
+pipeline = "cells/pipelines/cold.yaml"
+command = ["{{cli}}", "run", "{{spec}}"]
+prepare_sh = "rm -rf {{workdir}}/.rdlt-cold {{workdir}}/cold.duckdb"
+warmups = 3
+runs = 20
+[cell.workload]
+note = "one-row pipeline, fresh workdir+db per run, warm FS cache (protocol P3)"
+[[cell.competitor]]
+variant = "dlt"
+args = ["cold_start.py"]
+runs = 5

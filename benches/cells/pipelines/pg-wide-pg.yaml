@@ -1,0 +1,11 @@
+pipeline: bench-pg-pg
+workdir: {{workdir}}/.rdlt
+source:
+  postgres:
+    conn: "{{conn}}"
+    tables:
+      - name: pg_wide
+destination:
+  postgres:
+    conn: "host=127.0.0.1 port=5439 user=postgres password=postgres dbname=postgres"
+    dataset: raw_rdlt
