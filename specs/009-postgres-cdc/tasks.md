@@ -71,7 +71,7 @@ cadence; the convergent-overlap boundary proven.
 (inserts/updates/deletes) → run 2 equals the source row-for-row → a
 no-change run moves nothing.
 
-- [ ] T005 [US1] Stream declaration + snapshot pass in
+- [X] T005 [US1] Stream declaration + snapshot pass in
       `crates/rdlt-postgres/src/source/mod.rs` +
       `src/source/cdc/mod.rs`: CDC tables declare keyed structured
       streams with the key from the replica-identity preflight
@@ -84,7 +84,7 @@ no-change run moves nothing.
       a row mutated between slot creation and snapshot end appears
       exactly once with its final state (P2 — the recorded
       refinement's NON-OPTIONAL proof).
-- [ ] T006 [US1] Change pass in
+- [X] T006 [US1] Change pass in
       `crates/rdlt-postgres/src/source/cdc/mod.rs`: pin `target_lsn`
       at run start; per-stream peek over `(cursor, target_lsn]`
       filtered to the stream's table; decode via pgoutput into
@@ -93,7 +93,7 @@ no-change run moves nothing.
       emits delete(old)+insert(new) in order (P5); checkpoints ONLY
       at transaction-commit LSNs (P4); batches bounded by the
       existing batch knobs (memory bounded regardless of tx size).
-- [ ] T007 [US1] Acknowledgement in
+- [X] T007 [US1] Acknowledgement in
       `crates/rdlt-postgres/src/source/cdc/mod.rs`: accumulate each
       stream's resume cursor; after the LAST stream's pass, advance
       the slot to min(committed cursors); `ack: off` skips; dying
@@ -102,7 +102,7 @@ no-change run moves nothing.
       `tests/cdc.rs` — the slot's confirmed position never exceeds
       the least committed stream cursor, verified across a partial
       run.
-- [ ] T008 [US1] Equality-cycle conformance in
+- [X] T008 [US1] Equality-cycle conformance in
       `crates/rdlt-postgres/tests/cdc.rs` (new): full US1 cycle with
       the recommended composition (merge{key} + upsert +
       hard_delete): snapshot → mutate (inserts, updates, DELETES) →

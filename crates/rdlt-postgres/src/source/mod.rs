@@ -257,6 +257,9 @@ pub struct PostgresSource {
     /// Reflection runs once per run (research R3): `streams()` fills it, every
     /// `read()` reuses it. Drift after this point surfaces as typed errors.
     reflected: tokio::sync::OnceCell<BTreeMap<String, ReflectedTable>>,
+    /// CDC run state (feature 009): slot lifecycle, the shared snapshot
+    /// transaction, the run's target-LSN pin, and ack accumulation.
+    cdc_runtime: cdc::Runtime,
 }
 
 impl PostgresSource {
@@ -277,6 +280,20 @@ impl PostgresSource {
         Self {
             config,
             reflected: tokio::sync::OnceCell::new(),
+            cdc_runtime: cdc::Runtime::new(),
+        }
+    }
+
+    /// The CDC-covered stream set: every TABLE stream (query streams are
+    /// never CDC), in declaration order.
+    fn cdc_tables(&self, reflected: &BTreeMap<String, ReflectedTable>) -> Vec<String> {
+        match &self.config.tables {
+            Some(listed) => listed.iter().map(|t| t.name.clone()).collect(),
+            None => reflected
+                .keys()
+                .filter(|n| self.config.query_config(n).is_none())
+                .cloned()
+                .collect(),
         }
     }
 
@@ -356,11 +373,50 @@ impl Source for PostgresSource {
                 .collect(),
         };
         names.extend(self.config.queries.iter().map(|q| q.name.as_str()));
+        let cdc_names = self.cdc_tables(reflected);
         let mut specs = Vec::with_capacity(names.len());
         for name in names {
             let table = &reflected[name];
             let owned_config = self.stream_config(name);
             let table_config = owned_config.as_ref();
+            // CDC table streams (feature 009): keyed structured streams, the
+            // key from the replica-identity preflight (O1); cursor config is
+            // impossible here (C1, validated at parse). Query streams stay on
+            // their own machinery.
+            if let Some(cdc_config) = &self.config.cdc
+                && self.config.query_config(name).is_none()
+            {
+                let hinted = reflect::hinted_columns(table, table_config)?;
+                let identities = self
+                    .cdc_runtime
+                    .identities(&self.config, cdc_config, reflected, &cdc_names)
+                    .await?;
+                let identity = &identities[name];
+                // The merge key must survive the column selection — delete
+                // records are key-only, so an excluded key column would strand
+                // them.
+                if let Some(missing) = identity
+                    .key
+                    .iter()
+                    .find(|k| !hinted.iter().any(|c| &&c.name == k))
+                {
+                    return Err(errors::fatal(
+                        Phase::Reflect,
+                        Some(name),
+                        format!(
+                            "replica-identity key column `{missing}` is excluded \
+                             by the column selection — CDC delete records carry \
+                             only key columns"
+                        ),
+                    ));
+                }
+                specs.push(
+                    StreamSpec::new(name)
+                        .structured()
+                        .with_primary_key(identity.key.clone()),
+                );
+                continue;
+            }
             // Validate selection + hints + cursor at publish time (contract
             // rule 3 + 006 hints): fail fast, before any data moves. The
             // cursor check runs POST-hint (a hint may change capability).
@@ -484,6 +540,33 @@ impl Source for PostgresSource {
                 not_null: c.not_null,
             })
             .collect();
+
+        // CDC dispatch (feature 009): table streams read through the
+        // snapshot/change-pass machinery; everything below (cursor columns,
+        // COPY-per-read) is the non-CDC path.
+        if let Some(cdc_config) = &self.config.cdc
+            && self.config.query_config(&name).is_none()
+        {
+            let cdc_names = self.cdc_tables(reflected);
+            let identities = self
+                .cdc_runtime
+                .identities(&self.config, cdc_config, reflected, &cdc_names)
+                .await?;
+            let identity = identities.get(&name).ok_or_else(|| {
+                errors::fatal(Phase::Reflect, Some(&name), "stream is not a CDC table")
+            })?;
+            return cdc::read_stream(
+                &self.cdc_runtime,
+                &self.config,
+                cdc_config,
+                identity,
+                &cdc_names,
+                plans,
+                &columns,
+                req,
+            )
+            .await;
+        }
 
         // Incremental setup (research R5): resume state, boundary matrix,
         // ordered read + tracker. Snapshot streams skip all of it.
