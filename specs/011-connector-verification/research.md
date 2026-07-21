@@ -2,11 +2,8 @@
 
 Decisions for branch `011-connector-verification` (main @ 66c3003). The
 parameter inventory below was verified against the config structs during
-the 010 README rewrite (same session lineage); the coverage baseline is
-a MEASUREMENT and lands as the first implementation task (T001) under
-the recorded protocol — a transient tooling outage at planning time
-made running it here impossible, and this feature's own rules forbid
-asserting a number nobody measured.
+the 010 README rewrite (same session lineage); the coverage baseline was
+MEASURED during planning (see R2).
 
 ## R1 — Coverage tool: cargo-llvm-cov over nextest
 
@@ -38,12 +35,24 @@ matrix (US1) and genuine dark-corner tests — never coverage-only tests
 that assert nothing (a cell that cannot state its behavioral claim in
 one sentence does not get written; FR-007).
 
-**Expectation set honestly**: the crate already carries deep suites
-(conformance, differential, TLS matrix, CDC, sweeps run under
-`--features failpoints`), so the baseline may already be near the floor;
-the VALUE of this feature is the traceability matrix + closed gaps +
-classified remainder, with 80% as the enforcement backstop — not a
-rewrite.
+**Measured baseline (2026-07-21, `cargo llvm-cov nextest -p
+rdlt-postgres --features failpoints`, cargo-llvm-cov 0.8.7)**: crate
+total **87.69% lines** (87.34% regions, 83.17% functions) — the floor is
+already met; the feature's value is confirmed as the matrix + gaps +
+mismatches + classification, with 80% as the backstop. Per-file
+outliers to investigate first:
+
+| File | Lines | Working hypothesis (verify in audit) |
+|---|---|---|
+| source/mod.rs | 43.63% | the `testhook` module (bench_wire/bench_decode/fuzz entries) runs only under benches/fuzz — likely the dominant exclusion class; must verify no REAL `streams()`/`read()` branches hide behind it |
+| dest/mod.rs | 74.51% | capability/open error arms |
+| source/types.rs | 76.88% | hint-conversion arms + unusual oid branches — genuine matrix territory (12-hint closed table) |
+| tls_verify.rs | 79.75% | verifier error branches |
+| encode.rs | 84.82% | wire-encoder edge arms |
+| cursor.rs | 85.16% | watermark/tracker branches |
+
+Everything else ≥ 86%. T001 re-runs the same command to confirm
+stability and records this table as the official baseline.
 
 ## R3 — The traceability matrix artifact
 
