@@ -3042,13 +3042,13 @@ name = "rdlt"
 version = "0.2.0"
 dependencies = [
  "rdlt-connector",
+ "rdlt-connector-duckdb",
+ "rdlt-connector-file",
+ "rdlt-connector-parquet",
+ "rdlt-connector-postgres",
+ "rdlt-connector-rest",
  "rdlt-core",
- "rdlt-dest-duckdb",
- "rdlt-dest-parquet",
  "rdlt-engine",
- "rdlt-postgres",
- "rdlt-source-file",
- "rdlt-source-rest",
  "rdlt-testkit",
  "serde_json",
  "tokio",
@@ -3099,20 +3099,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rdlt-core"
-version = "0.2.0"
-dependencies = [
- "arrow-schema",
- "blake3",
- "fail",
- "proptest",
- "serde",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
-name = "rdlt-dest-duckdb"
+name = "rdlt-connector-duckdb"
 version = "0.2.0"
 dependencies = [
  "arrow",
@@ -3128,52 +3115,48 @@ dependencies = [
 ]
 
 [[package]]
-name = "rdlt-dest-parquet"
-version = "0.2.0"
-dependencies = [
- "arrow",
- "async-trait",
- "parquet",
- "rdlt-connector",
- "rdlt-engine",
- "rdlt-source-file",
- "rdlt-testkit",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
-]
-
-[[package]]
-name = "rdlt-engine"
+name = "rdlt-connector-file"
 version = "0.2.0"
 dependencies = [
  "arrow",
  "async-trait",
  "bytes",
- "chrono",
- "criterion",
- "fs4",
- "futures",
- "iai-callgrind",
+ "glob",
+ "jsonschema",
+ "memchr",
  "parquet",
- "proptest",
  "rdlt-connector",
- "rdlt-core",
- "rdlt-dest-duckdb",
- "rdlt-dest-parquet",
+ "rdlt-connector-duckdb",
+ "rdlt-engine",
+ "rdlt-testkit",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "rdlt-connector-parquet"
+version = "0.2.0"
+dependencies = [
+ "arrow",
+ "async-trait",
+ "parquet",
+ "rdlt-connector",
+ "rdlt-connector-file",
+ "rdlt-engine",
  "rdlt-testkit",
  "serde",
  "serde_json",
  "tempfile",
- "thiserror",
  "tokio",
- "tokio-util",
- "tracing",
 ]
 
 [[package]]
-name = "rdlt-postgres"
+name = "rdlt-connector-postgres"
 version = "0.2.0"
 dependencies = [
  "arrow-array",
@@ -3190,7 +3173,7 @@ dependencies = [
  "proptest",
  "rcgen",
  "rdlt-connector",
- "rdlt-dest-duckdb",
+ "rdlt-connector-duckdb",
  "rdlt-engine",
  "rdlt-testkit",
  "rustls",
@@ -3210,31 +3193,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rdlt-source-file"
-version = "0.2.0"
-dependencies = [
- "arrow",
- "async-trait",
- "bytes",
- "glob",
- "jsonschema",
- "memchr",
- "parquet",
- "rdlt-connector",
- "rdlt-dest-duckdb",
- "rdlt-engine",
- "rdlt-testkit",
- "schemars 1.2.1",
- "serde",
- "serde_json",
- "serde_yaml",
- "tempfile",
- "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "rdlt-source-rest"
+name = "rdlt-connector-rest"
 version = "0.2.0"
 dependencies = [
  "async-trait",
@@ -3250,6 +3209,47 @@ dependencies = [
  "thiserror",
  "tokio",
  "wiremock",
+]
+
+[[package]]
+name = "rdlt-core"
+version = "0.2.0"
+dependencies = [
+ "arrow-schema",
+ "blake3",
+ "fail",
+ "proptest",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "rdlt-engine"
+version = "0.2.0"
+dependencies = [
+ "arrow",
+ "async-trait",
+ "bytes",
+ "chrono",
+ "criterion",
+ "fs4",
+ "futures",
+ "iai-callgrind",
+ "parquet",
+ "proptest",
+ "rdlt-connector",
+ "rdlt-connector-duckdb",
+ "rdlt-connector-parquet",
+ "rdlt-core",
+ "rdlt-testkit",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]

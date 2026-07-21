@@ -8,22 +8,22 @@ repository.workspace = true
 
 [features]
 default = []
-rest = ["dep:rdlt-source-rest"]
-duckdb = ["dep:rdlt-dest-duckdb"]
-postgres = ["dep:rdlt-postgres", "rdlt-postgres/dest"]
-file = ["dep:rdlt-source-file"]
-postgres-source = ["dep:rdlt-postgres", "rdlt-postgres/source"]
-parquet = ["dep:rdlt-dest-parquet"]
+rest = ["dep:rdlt-connector-rest"]
+duckdb = ["dep:rdlt-connector-duckdb"]
+postgres = ["dep:rdlt-connector-postgres", "rdlt-connector-postgres/dest"]
+file = ["dep:rdlt-connector-file"]
+postgres-source = ["dep:rdlt-connector-postgres", "rdlt-connector-postgres/source"]
+parquet = ["dep:rdlt-connector-parquet"]
 
 [dependencies]
 rdlt-core = { workspace = true }
 rdlt-connector = { workspace = true }
 rdlt-engine = { workspace = true }
-rdlt-source-rest = { workspace = true, optional = true }
-rdlt-dest-duckdb = { workspace = true, optional = true }
-rdlt-source-file = { workspace = true, optional = true }
-rdlt-postgres = { workspace = true, optional = true }
-rdlt-dest-parquet = { workspace = true, optional = true }
+rdlt-connector-rest = { workspace = true, optional = true }
+rdlt-connector-duckdb = { workspace = true, optional = true }
+rdlt-connector-file = { workspace = true, optional = true }
+rdlt-connector-postgres = { workspace = true, optional = true }
+rdlt-connector-parquet = { workspace = true, optional = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 

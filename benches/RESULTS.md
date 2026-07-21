@@ -162,11 +162,11 @@ by ~19% (1,559.9 ms vs 1,933.5 ms recorded); ordered dedup's extra sort
 key cost nothing (278.4 ms vs 334.6 ms plain last-wins).
 
 Connector-crate coverage (feature 011, contract PM5; recorded numbers
-measured with `cargo llvm-cov nextest -p rdlt-postgres --features
+measured with `cargo llvm-cov nextest -p rdlt-connector-postgres --features
 failpoints`, cargo-llvm-cov 0.8.7; floor: 80% lines for the CONNECTOR
 crate; NOT a CI gate. Note: `make coverage` was widened post-merge by
 the owner to the whole workspace — its total is a DIFFERENT, lower
-number; re-run with `-p rdlt-postgres` to reproduce the recorded
+number; re-run with `-p rdlt-connector-postgres` to reproduce the recorded
 figures):
 
 | Measurement | Lines | Functions | Date |

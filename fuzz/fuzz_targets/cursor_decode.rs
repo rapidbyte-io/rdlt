@@ -8,7 +8,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use rdlt_connector::Cursor;
-use rdlt_source_file::cursor::FileCursor;
+use rdlt_connector_file::cursor::FileCursor;
 
 fuzz_target!(|data: &[u8]| {
     let Ok(value) = serde_json::from_slice::<serde_json::Value>(data) else {

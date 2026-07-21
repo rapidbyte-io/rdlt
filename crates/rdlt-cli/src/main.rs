@@ -66,7 +66,7 @@ enum PgSourceSpec {
     /// loud error, never a silently-ignored document.
     File(PgSourceFile),
     /// The full source document inline (boxed — it dwarfs the path form).
-    Inline(Box<rdlt::postgres_source::PostgresConfig>),
+    Inline(Box<rdlt::connector::postgres::source::PostgresConfig>),
 }
 
 #[derive(Debug, Deserialize)]
@@ -86,14 +86,16 @@ enum DestSpec {
         conn: String,
         dataset: String,
         /// Optional TLS block: `tls: {mode: verify_full, root_cert: /ca.pem}`.
-        tls: Option<rdlt::postgres_tls::TlsPolicy>,
+        tls: Option<rdlt::connector::postgres::tls::TlsPolicy>,
         /// Feature 008: destination-wide merge strategy
         /// ("delete_insert" | "upsert" | "scd2").
-        merge_strategy: Option<rdlt::postgres::MergeStrategy>,
+        merge_strategy: Option<rdlt::connector::postgres::dest::MergeStrategy>,
         /// Feature 008/010: per-table options — `tables: <name>: {…}` with
         /// `merge_strategy`, `hard_delete`, `dedup_sort`, `merge_key`, and
         /// `scd2: {valid_from, valid_to, absent}`.
-        tables: Option<std::collections::BTreeMap<String, rdlt::postgres::PgTableOptions>>,
+        tables: Option<
+            std::collections::BTreeMap<String, rdlt::connector::postgres::dest::PgTableOptions>,
+        >,
     },
     Parquet {
         path: PathBuf,
@@ -198,7 +200,7 @@ async fn run(spec_path: PathBuf, report_path: Option<PathBuf>) -> Result<(), Cli
             };
             let mut pipeline = match &spec.destination {
                 DestSpec::Duckdb { path, memory_limit } => {
-                    let mut dest = rdlt::duckdb::DuckDb::open(path)
+                    let mut dest = rdlt::connector::duckdb::DuckDb::open(path)
                         .map_err(|e| CliError::Usage(format!("opening duckdb: {e}")))?;
                     if let Some(limit) = memory_limit {
                         dest = dest
@@ -214,12 +216,13 @@ async fn run(spec_path: PathBuf, report_path: Option<PathBuf>) -> Result<(), Cli
                     merge_strategy,
                     tables,
                 } => {
-                    let mut dest = rdlt::postgres::Postgres::connect(conn).dataset(dataset);
+                    let mut dest =
+                        rdlt::connector::postgres::dest::Postgres::connect(conn).dataset(dataset);
                     if let Some(policy) = tls {
                         dest = dest.tls(policy.clone());
                     }
                     if merge_strategy.is_some() || tables.is_some() {
-                        let options = rdlt::postgres::PgDestOptions {
+                        let options = rdlt::connector::postgres::dest::PgDestOptions {
                             merge_strategy: *merge_strategy,
                             tables: tables.clone().unwrap_or_default(),
                         };
@@ -230,7 +233,7 @@ async fn run(spec_path: PathBuf, report_path: Option<PathBuf>) -> Result<(), Cli
                     builder.destination(dest).build()?
                 }
                 DestSpec::Parquet { path } => {
-                    let dest = rdlt::parquet::ParquetDir::open(path)
+                    let dest = rdlt::connector::parquet::ParquetDir::open(path)
                         .map_err(|e| CliError::Usage(format!("opening parquet dir: {e}")))?;
                     builder.destination(dest).build()?
                 }
@@ -251,9 +254,9 @@ async fn run(spec_path: PathBuf, report_path: Option<PathBuf>) -> Result<(), Cli
             let text = std::fs::read_to_string(config)
                 .map_err(|e| CliError::Usage(format!("reading {}: {e}", config.display())))?;
             let source = if is_json(config) {
-                rdlt::rest::RestSource::from_json(&text)
+                rdlt::connector::rest::RestSource::from_json(&text)
             } else {
-                rdlt::rest::RestSource::from_yaml(&text)
+                rdlt::connector::rest::RestSource::from_yaml(&text)
             }
             .map_err(|e| CliError::Usage(e.to_string()))?;
             run_with!(source)
@@ -262,9 +265,9 @@ async fn run(spec_path: PathBuf, report_path: Option<PathBuf>) -> Result<(), Cli
             let text = std::fs::read_to_string(config)
                 .map_err(|e| CliError::Usage(format!("reading {}: {e}", config.display())))?;
             let source = if is_json(config) {
-                rdlt::file::FileSource::from_json(&text)
+                rdlt::connector::file::FileSource::from_json(&text)
             } else {
-                rdlt::file::FileSource::from_yaml(&text)
+                rdlt::connector::file::FileSource::from_yaml(&text)
             }
             .map_err(|e| CliError::Usage(e.to_string()))?;
             run_with!(source)
@@ -276,9 +279,9 @@ async fn run(spec_path: PathBuf, report_path: Option<PathBuf>) -> Result<(), Cli
                     let text = std::fs::read_to_string(path)
                         .map_err(|e| CliError::Usage(format!("reading {}: {e}", path.display())))?;
                     if is_json(path) {
-                        rdlt::postgres_source::PostgresConfig::from_json(&text)
+                        rdlt::connector::postgres::source::PostgresConfig::from_json(&text)
                     } else {
-                        rdlt::postgres_source::PostgresConfig::from_yaml(&text)
+                        rdlt::connector::postgres::source::PostgresConfig::from_yaml(&text)
                     }
                     .map_err(|e| CliError::Usage(e.to_string()))?
                 }
@@ -288,14 +291,14 @@ async fn run(spec_path: PathBuf, report_path: Option<PathBuf>) -> Result<(), Cli
                     // so inline and file configs are held to identical rules.
                     let value =
                         serde_json::to_value(inline).map_err(|e| CliError::Usage(e.to_string()))?;
-                    rdlt::postgres_source::PostgresConfig::from_value(value)
+                    rdlt::connector::postgres::source::PostgresConfig::from_value(value)
                         .map_err(|e| CliError::Usage(e.to_string()))?
                 }
             };
             for warning in cdc_composition_warnings(&spec, &parsed) {
                 eprintln!("warning: {warning}");
             }
-            let source = rdlt::postgres_source::PostgresSource::new(parsed);
+            let source = rdlt::connector::postgres::source::PostgresSource::new(parsed);
             run_with!(source)
         }
     }
@@ -308,7 +311,7 @@ async fn run(spec_path: PathBuf, report_path: Option<PathBuf>) -> Result<(), Cli
 /// soft-delete.
 fn cdc_composition_warnings(
     spec: &Spec,
-    config: &rdlt::postgres_source::PostgresConfig,
+    config: &rdlt::connector::postgres::source::PostgresConfig,
 ) -> Vec<String> {
     let Some(cdc) = &config.cdc else {
         return Vec::new();
@@ -327,7 +330,10 @@ fn cdc_composition_warnings(
             tables,
             ..
         } => {
-            if !matches!(merge_strategy, Some(rdlt::postgres::MergeStrategy::Upsert)) {
+            if !matches!(
+                merge_strategy,
+                Some(rdlt::connector::postgres::dest::MergeStrategy::Upsert)
+            ) {
                 warnings.push(
                     "cdc: destination merge_strategy is not upsert — the \
                      recommended composition is merge_strategy = \"upsert\" \
@@ -439,8 +445,8 @@ mod tests {
         serde_yaml::from_str(yaml).expect("spec parses")
     }
 
-    fn cdc_config() -> rdlt::postgres_source::PostgresConfig {
-        rdlt::postgres_source::PostgresConfig::from_yaml(
+    fn cdc_config() -> rdlt::connector::postgres::source::PostgresConfig {
+        rdlt::connector::postgres::source::PostgresConfig::from_yaml(
             "conn: host=localhost\ncdc:\n  slot: s\n  publication: p\n\
              tables:\n  - name: orders\n",
         )
@@ -473,7 +479,10 @@ destination:
         let events = tables.as_ref().expect("tables")["events"].clone();
         let dedup = events.dedup_sort.expect("dedup_sort");
         assert_eq!(dedup.column, "seq");
-        assert_eq!(dedup.order, rdlt::postgres::SortOrder::Desc);
+        assert_eq!(
+            dedup.order,
+            rdlt::connector::postgres::dest::SortOrder::Desc
+        );
         assert_eq!(
             events.merge_key.as_deref(),
             Some(&["day".to_string(), "tenant".to_string()][..])
@@ -507,7 +516,7 @@ destination:
         // The run() path re-validates through from_value — prove the gate
         // holds for inline documents too.
         let value = serde_json::to_value(inline).expect("serialize");
-        rdlt::postgres_source::PostgresConfig::from_value(value).expect("valid inline");
+        rdlt::connector::postgres::source::PostgresConfig::from_value(value).expect("valid inline");
 
         // …and rejects invalid shapes identically (cdc + cursor, C1).
         let bad = spec(
@@ -528,7 +537,7 @@ destination:
             panic!("inline postgres source");
         };
         let value = serde_json::to_value(inline).expect("serialize");
-        let err = rdlt::postgres_source::PostgresConfig::from_value(value)
+        let err = rdlt::connector::postgres::source::PostgresConfig::from_value(value)
             .expect_err("C1 holds inline")
             .to_string();
         assert!(err.contains("mutually exclusive"), "{err}");
@@ -659,7 +668,7 @@ destination:
 
         // Schema-wide discovery (no tables list): the hard_delete leg still
         // warns — once, generically (review F9).
-        let schema_wide = rdlt::postgres_source::PostgresConfig::from_yaml(
+        let schema_wide = rdlt::connector::postgres::source::PostgresConfig::from_yaml(
             "conn: host=localhost\ncdc:\n  slot: s\n  publication: p\n",
         )
         .expect("config");
@@ -681,8 +690,9 @@ destination:
         );
 
         // No cdc block: silent regardless of shape.
-        let plain = rdlt::postgres_source::PostgresConfig::from_yaml("conn: host=localhost\n")
-            .expect("config");
+        let plain =
+            rdlt::connector::postgres::source::PostgresConfig::from_yaml("conn: host=localhost\n")
+                .expect("config");
         assert!(cdc_composition_warnings(&append, &plain).is_empty());
     }
 }

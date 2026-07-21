@@ -35,7 +35,7 @@ image = "postgres:16"
 port = 5440
 conn = "postgresql://postgres:postgres@127.0.0.1:5440/postgres"
 reset_sql = "DO $$ DECLARE s text; BEGIN FOR s IN SELECT schema_name FROM information_schema.schemata WHERE schema_name LIKE 'raw%' LOOP EXECUTE 'DROP SCHEMA ' || quote_ident(s) || ' CASCADE'; END LOOP; END $$;"
-service_sh = "cd {{repo}} && cargo run -q --release -p rdlt-source-rest --example mock_api"
+service_sh = "cd {{repo}} && cargo run -q --release -p rdlt-connector-rest --example mock_api"
 ready_port = 8642
 generate_sh = "printf 'base_url: http://127.0.0.1:8642\nstreams:\n  - name: events\n    path: /events\n    pagination: {type: page, page_param: page, start: 1}\n' > {{data}}/rest.yaml"
 

@@ -6,7 +6,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use rdlt_source_file::FileSource;
+use rdlt_connector_file::FileSource;
 
 fuzz_target!(|data: &[u8]| {
     let Ok(text) = std::str::from_utf8(data) else {

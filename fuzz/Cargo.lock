@@ -1354,6 +1354,52 @@ dependencies = [
 ]
 
 [[package]]
+name = "rdlt-connector-file"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "glob",
+ "memchr",
+ "parquet",
+ "rdlt-connector",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "rdlt-connector-postgres"
+version = "0.2.0"
+dependencies = [
+ "arrow-array",
+ "arrow-cast",
+ "arrow-schema",
+ "arrow-select",
+ "async-trait",
+ "blake3",
+ "bytes",
+ "chrono",
+ "futures",
+ "rdlt-connector",
+ "rustls",
+ "rustls-native-certs",
+ "rustls-pemfile",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror",
+ "tokio",
+ "tokio-postgres",
+ "tokio-postgres-rustls",
+ "tracing",
+]
+
+[[package]]
 name = "rdlt-core"
 version = "0.2.0"
 dependencies = [
@@ -1391,57 +1437,11 @@ dependencies = [
  "arrow",
  "libfuzzer-sys",
  "rdlt-connector",
+ "rdlt-connector-file",
+ "rdlt-connector-postgres",
  "rdlt-core",
  "rdlt-engine",
- "rdlt-postgres",
- "rdlt-source-file",
  "serde_json",
-]
-
-[[package]]
-name = "rdlt-postgres"
-version = "0.2.0"
-dependencies = [
- "arrow-array",
- "arrow-cast",
- "arrow-schema",
- "arrow-select",
- "async-trait",
- "blake3",
- "bytes",
- "chrono",
- "futures",
- "rdlt-connector",
- "rustls",
- "rustls-native-certs",
- "rustls-pemfile",
- "schemars",
- "serde",
- "serde_json",
- "serde_yaml",
- "thiserror",
- "tokio",
- "tokio-postgres",
- "tokio-postgres-rustls",
- "tracing",
-]
-
-[[package]]
-name = "rdlt-source-file"
-version = "0.2.0"
-dependencies = [
- "async-trait",
- "bytes",
- "glob",
- "memchr",
- "parquet",
- "rdlt-connector",
- "schemars",
- "serde",
- "serde_json",
- "serde_yaml",
- "thiserror",
- "tokio",
 ]
 
 [[package]]

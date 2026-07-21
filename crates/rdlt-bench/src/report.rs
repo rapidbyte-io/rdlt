@@ -105,10 +105,11 @@ fn table_for(artifacts: &[&Artifact], bars: &[Bar]) -> String {
     for row in rows_for(artifacts, bars) {
         let mut cells = row;
         // Bold the headline ratio, exactly as the hand tables always did.
-        if !cells[3].starts_with("MISSING") && cells[3] != "—" {
-            if let Some(space) = cells[3].find(' ') {
-                cells[3] = format!("**{}** {}", &cells[3][..space], &cells[3][space + 1..]);
-            }
+        if !cells[3].starts_with("MISSING")
+            && cells[3] != "—"
+            && let Some(space) = cells[3].find(' ')
+        {
+            cells[3] = format!("**{}** {}", &cells[3][..space], &cells[3][space + 1..]);
         }
         out.push_str(&format!("| {} |\n", cells.join(" | ")));
     }

@@ -1,0 +1,28 @@
+[package]
+name = "rdlt-connector-parquet"
+description = "rdlt minimal parquet-file destination: temp-dir staging, atomic rename publication"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rdlt-connector = { workspace = true }
+async-trait = { workspace = true }
+parquet = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+rdlt-testkit = { workspace = true }
+rdlt-engine = { workspace = true }
+rdlt-connector-file = { workspace = true }
+arrow = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
+
+[features]
+failpoints = ["rdlt-connector/failpoints"]

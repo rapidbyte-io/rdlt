@@ -24,7 +24,7 @@ SPI change, zero runtime-crate manifest changes).
 Previous feature 011 for reference:
 `specs/011-connector-verification/plan.md` (postgres connector
 verification — traceability matrix PM1-PM8, 88.98% measured line
-coverage for rdlt-postgres, R5 typed rejection of explicit
+coverage for rdlt-connector-postgres, R5 typed rejection of explicit
 merge_strategy under non-merge modes). Features 005-010
 (`specs/0{05,06,07,08,09,10}-*/`) are the merged base being composed;
 004's benchmark governance and 003's hardening nets remain in force. The established architecture is feature

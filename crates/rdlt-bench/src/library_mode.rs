@@ -57,7 +57,7 @@ enum SourceSpec {
 #[serde(untagged)]
 enum PgSourceSpec {
     File(PgSourceFile),
-    Inline(Box<rdlt::postgres_source::PostgresConfig>),
+    Inline(Box<rdlt::connector::postgres::source::PostgresConfig>),
 }
 
 #[derive(Debug, Deserialize)]
@@ -76,9 +76,9 @@ enum DestSpec {
     Postgres {
         conn: String,
         dataset: String,
-        tls: Option<rdlt::postgres_tls::TlsPolicy>,
-        merge_strategy: Option<rdlt::postgres::MergeStrategy>,
-        tables: Option<BTreeMap<String, rdlt::postgres::PgTableOptions>>,
+        tls: Option<rdlt::connector::postgres::tls::TlsPolicy>,
+        merge_strategy: Option<rdlt::connector::postgres::dest::MergeStrategy>,
+        tables: Option<BTreeMap<String, rdlt::connector::postgres::dest::PgTableOptions>>,
     },
     Parquet {
         path: PathBuf,
@@ -113,7 +113,7 @@ async fn drive(spec: Spec) -> Result<RunOutcome> {
             };
             let mut pipeline = match &spec.destination {
                 DestSpec::Duckdb { path, memory_limit } => {
-                    let mut dest = rdlt::duckdb::DuckDb::open(path).map_err(err)?;
+                    let mut dest = rdlt::connector::duckdb::DuckDb::open(path).map_err(err)?;
                     if let Some(limit) = memory_limit {
                         dest = dest.memory_limit(limit).map_err(err)?;
                     }
@@ -126,12 +126,13 @@ async fn drive(spec: Spec) -> Result<RunOutcome> {
                     merge_strategy,
                     tables,
                 } => {
-                    let mut dest = rdlt::postgres::Postgres::connect(conn).dataset(dataset);
+                    let mut dest =
+                        rdlt::connector::postgres::dest::Postgres::connect(conn).dataset(dataset);
                     if let Some(policy) = tls {
                         dest = dest.tls(policy.clone());
                     }
                     if merge_strategy.is_some() || tables.is_some() {
-                        let options = rdlt::postgres::PgDestOptions {
+                        let options = rdlt::connector::postgres::dest::PgDestOptions {
                             merge_strategy: *merge_strategy,
                             tables: tables.clone().unwrap_or_default(),
                         };
@@ -140,7 +141,7 @@ async fn drive(spec: Spec) -> Result<RunOutcome> {
                     builder.destination(dest).build().map_err(err)?
                 }
                 DestSpec::Parquet { path } => {
-                    let dest = rdlt::parquet::ParquetDir::open(path).map_err(err)?;
+                    let dest = rdlt::connector::parquet::ParquetDir::open(path).map_err(err)?;
                     builder.destination(dest).build().map_err(err)?
                 }
             };
@@ -171,9 +172,9 @@ async fn drive(spec: Spec) -> Result<RunOutcome> {
         SourceSpec::Rest { config } => {
             let text = std::fs::read_to_string(config).map_err(err)?;
             let source = if is_json(config) {
-                rdlt::rest::RestSource::from_json(&text)
+                rdlt::connector::rest::RestSource::from_json(&text)
             } else {
-                rdlt::rest::RestSource::from_yaml(&text)
+                rdlt::connector::rest::RestSource::from_yaml(&text)
             }
             .map_err(err)?;
             run_with!(source)
@@ -181,9 +182,9 @@ async fn drive(spec: Spec) -> Result<RunOutcome> {
         SourceSpec::File { config } => {
             let text = std::fs::read_to_string(config).map_err(err)?;
             let source = if is_json(config) {
-                rdlt::file::FileSource::from_json(&text)
+                rdlt::connector::file::FileSource::from_json(&text)
             } else {
-                rdlt::file::FileSource::from_yaml(&text)
+                rdlt::connector::file::FileSource::from_yaml(&text)
             }
             .map_err(err)?;
             run_with!(source)
@@ -193,9 +194,9 @@ async fn drive(spec: Spec) -> Result<RunOutcome> {
                 PgSourceSpec::File(f) => {
                     let text = std::fs::read_to_string(&f.config).map_err(err)?;
                     if is_json(&f.config) {
-                        rdlt::postgres_source::PostgresConfig::from_json(&text)
+                        rdlt::connector::postgres::source::PostgresConfig::from_json(&text)
                     } else {
-                        rdlt::postgres_source::PostgresConfig::from_yaml(&text)
+                        rdlt::connector::postgres::source::PostgresConfig::from_yaml(&text)
                     }
                     .map_err(err)?
                 }
@@ -203,10 +204,11 @@ async fn drive(spec: Spec) -> Result<RunOutcome> {
                 // validation, so route through the shared from_value gate.
                 PgSourceSpec::Inline(inline) => {
                     let value = serde_json::to_value(inline).map_err(err)?;
-                    rdlt::postgres_source::PostgresConfig::from_value(value).map_err(err)?
+                    rdlt::connector::postgres::source::PostgresConfig::from_value(value)
+                        .map_err(err)?
                 }
             };
-            let source = rdlt::postgres_source::PostgresSource::new(parsed);
+            let source = rdlt::connector::postgres::source::PostgresSource::new(parsed);
             run_with!(source)
         }
     }

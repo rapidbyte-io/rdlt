@@ -152,17 +152,17 @@ async fn sweep_memory_destination() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn sweep_parquet_destination() {
-    let points = engine_and(rdlt_dest_parquet::FAIL_POINTS);
+    let points = engine_and(rdlt_connector_parquet::FAIL_POINTS);
     // Measured 2026-07-20: EVERY parquet boundary fires in BOTH modes —
     // the receipt-log and truncate guards run on every publish, not just
     // Replace (which is why the second-occurrence pass caught the 003
     // Replace-recovery bug class in the first place).
     for mode in [WriteMode::Append, WriteMode::Replace] {
-        let expected_fired = [ENGINE_POINTS, rdlt_dest_parquet::FAIL_POINTS].concat();
+        let expected_fired = [ENGINE_POINTS, rdlt_connector_parquet::FAIL_POINTS].concat();
         sweep(
             &points,
             mode,
-            |dir| rdlt_dest_parquet::ParquetDir::open(dir.join("out")).expect("open"),
+            |dir| rdlt_connector_parquet::ParquetDir::open(dir.join("out")).expect("open"),
             |dest| dest.count_rows("s").expect("count"),
             &expected_fired,
         )
@@ -172,7 +172,7 @@ async fn sweep_parquet_destination() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn sweep_duckdb_destination() {
-    let points = engine_and(rdlt_dest_duckdb::FAIL_POINTS);
+    let points = engine_and(rdlt_connector_duckdb::FAIL_POINTS);
     // Merge (feature 006 sweep extension): the shredded identity-merge
     // DELETE+INSERT arm crosses the same staging/publish boundaries.
     for mode in [
@@ -182,11 +182,11 @@ async fn sweep_duckdb_destination() {
             key: vec!["id".into()],
         },
     ] {
-        let expected_fired = [ENGINE_POINTS, rdlt_dest_duckdb::FAIL_POINTS].concat();
+        let expected_fired = [ENGINE_POINTS, rdlt_connector_duckdb::FAIL_POINTS].concat();
         sweep(
             &points,
             mode,
-            |dir| rdlt_dest_duckdb::DuckDb::open(dir.join("out.duckdb")).expect("open"),
+            |dir| rdlt_connector_duckdb::DuckDb::open(dir.join("out.duckdb")).expect("open"),
             |dest| dest.count_rows("s").expect("count"),
             &expected_fired,
         )
@@ -235,9 +235,9 @@ fn sweep_covers_entire_registry() {
     // Destination side: the exported registries, pinned against this list.
     // (The Postgres registry is pinned in ITS crate's crash_sweep test — the
     // engine's test tree does not depend on the postgres stack.)
-    let mut registry: Vec<&str> = rdlt_dest_parquet::FAIL_POINTS
+    let mut registry: Vec<&str> = rdlt_connector_parquet::FAIL_POINTS
         .iter()
-        .chain(rdlt_dest_duckdb::FAIL_POINTS)
+        .chain(rdlt_connector_duckdb::FAIL_POINTS)
         .copied()
         .collect();
     registry.sort_unstable();
@@ -324,7 +324,7 @@ impl rdlt_connector::Source for KeyedArrowSource {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn sweep_duckdb_keyed_structured_merge() {
-    let points = engine_and(rdlt_dest_duckdb::FAIL_POINTS);
+    let points = engine_and(rdlt_connector_duckdb::FAIL_POINTS);
     let mode = WriteMode::Merge {
         key: vec!["id".into()],
     };
@@ -333,10 +333,10 @@ async fn sweep_duckdb_keyed_structured_merge() {
         for action in ["return", "panic", "1*off->return"] {
             let dir = tempfile::tempdir().expect("tempdir");
             let workdir = dir.path().join("wal");
-            let dest =
-                rdlt_dest_duckdb::DuckDb::open(dir.path().join("out.duckdb")).expect("open duckdb");
+            let dest = rdlt_connector_duckdb::DuckDb::open(dir.path().join("out.duckdb"))
+                .expect("open duckdb");
             async fn run(
-                dest: rdlt_dest_duckdb::DuckDb,
+                dest: rdlt_connector_duckdb::DuckDb,
                 workdir: &Path,
                 mode: &WriteMode,
             ) -> Result<(), String> {

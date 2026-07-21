@@ -6,11 +6,11 @@ members = [
     "crates/rdlt-engine",
     "crates/rdlt",
     "crates/rdlt-testkit",
-    "crates/rdlt-source-rest",
-    "crates/rdlt-dest-duckdb",
-    "crates/rdlt-source-file",
-    "crates/rdlt-postgres",
-    "crates/rdlt-dest-parquet",
+    "crates/rdlt-connector-rest",
+    "crates/rdlt-connector-duckdb",
+    "crates/rdlt-connector-file",
+    "crates/rdlt-connector-postgres",
+    "crates/rdlt-connector-parquet",
     "crates/rdlt-cli",
     "crates/rdlt-bench",
 ]
@@ -30,11 +30,11 @@ rdlt-connector = { path = "crates/rdlt-connector", version = "0.2.0" }
 rdlt-engine = { path = "crates/rdlt-engine", version = "0.2.0" }
 rdlt = { path = "crates/rdlt", version = "0.2.0" }
 rdlt-testkit = { path = "crates/rdlt-testkit", version = "0.2.0" }
-rdlt-source-rest = { path = "crates/rdlt-source-rest", version = "0.2.0" }
-rdlt-dest-duckdb = { path = "crates/rdlt-dest-duckdb", version = "0.2.0" }
-rdlt-source-file = { path = "crates/rdlt-source-file", version = "0.2.0" }
-rdlt-postgres = { path = "crates/rdlt-postgres", version = "0.2.0", default-features = false }
-rdlt-dest-parquet = { path = "crates/rdlt-dest-parquet", version = "0.2.0" }
+rdlt-connector-rest = { path = "crates/rdlt-connector-rest", version = "0.2.0" }
+rdlt-connector-duckdb = { path = "crates/rdlt-connector-duckdb", version = "0.2.0" }
+rdlt-connector-file = { path = "crates/rdlt-connector-file", version = "0.2.0" }
+rdlt-connector-postgres = { path = "crates/rdlt-connector-postgres", version = "0.2.0", default-features = false }
+rdlt-connector-parquet = { path = "crates/rdlt-connector-parquet", version = "0.2.0" }
 
 # arrow-rs: single workspace-wide major (research.md R10). Pinned to the major that
 # duckdb-rs links — connectors receive `RecordBatch` through the rdlt-connector
