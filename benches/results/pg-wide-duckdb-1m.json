@@ -13,7 +13,7 @@
     "dataset_hashes": {
       "seed_output": "dataset  |  rows   |           content_md5 | ----------+---------+---------------------------------- | pg_jsonb |  200000 | 33c1c5186af078733e77b845fce458c2 | pg_wide  | 1000000 | e840f51738a6b4b15f9f085ea85e3df8 | (2 rows)"
     },
-    "loadavg_at_start": 1.75,
+    "loadavg_at_start": 2.08,
     "quiet_note": null
   },
   "workload": {
@@ -23,27 +23,27 @@
   },
   "rdlt": {
     "runs_ms": [
-      1457.626676,
-      1292.184233,
-      1238.373807,
-      1244.729521,
-      1241.062523
+      1193.2215820000001,
+      1336.300319,
+      1356.108308,
+      1228.127915,
+      1305.846656
     ],
-    "median_ms": 1244.729521,
-    "p95_ms": 1457.626676,
+    "median_ms": 1305.846656,
+    "p95_ms": 1356.108308,
     "rows": 1000000,
     "bytes": 199720864,
-    "rows_per_s": 803387.3890904528,
-    "mb_per_s": 153.02011821350996,
+    "rows_per_s": 765786.6989246247,
+    "mb_per_s": 145.85836520093338,
     "cpu": {
-      "mean_util": 2.5784357683001278,
-      "peak_util": 6.4,
-      "user_sys_ms": 3200,
-      "note": "cpu from last /proc poll — undercounts up to 50ms"
+      "mean_util": 2.7262006481716643,
+      "peak_util": 6.379310344827586,
+      "user_sys_ms": 3560,
+      "note": "process TREE sampled at 50ms (root VmHWM exact; tree spikes between polls can be missed; cpu undercounts up to one interval)"
     },
     "rss": {
-      "peak_bytes": 469606400,
-      "note": "cpu from last /proc poll — undercounts up to 50ms"
+      "peak_bytes": 473059328,
+      "note": "process TREE sampled at 50ms (root VmHWM exact; tree spikes between polls can be missed; cpu undercounts up to one interval)"
     },
     "streams": []
   },
@@ -51,66 +51,66 @@
     "dlt-connectorx": {
       "status": "ok",
       "runs_ms": [
-        3061.703954997938,
-        3000.642709987005,
-        3016.439369006548
+        2987.326889997348,
+        2989.3163640226703,
+        2970.7060139917303
       ],
-      "median_ms": 3016.439369006548,
+      "median_ms": 2987.326889997348,
       "self_timed": true,
       "cpu": {
-        "mean_util": 1.5368569324949535,
+        "mean_util": 1.5793648347794589,
         "peak_util": null,
-        "user_sys_ms": 5879,
+        "user_sys_ms": 5989,
         "note": "cgroup v2 cpu.stat, last poll before exit"
       },
       "rss": {
-        "peak_bytes": 474169344,
-        "note": "cgroup v2 memory.peak (in-container read)"
+        "peak_bytes": 491393024,
+        "note": "self-reported ru_maxrss — the recorded statistic (bar derivation)"
       },
-      "ratio_vs_rdlt": 2.423369349015824
+      "ratio_vs_rdlt": 2.2876551976998347
     },
     "dlt-pyarrow": {
       "status": "ok",
       "runs_ms": [
-        10245.21269701654,
-        10540.812608000124,
-        10502.40771600511,
-        10442.968165996715,
-        10284.003416018097
+        10400.839475012615,
+        10207.584568008317,
+        10207.43543599383,
+        10243.288072000723,
+        10392.153057997348
       ],
-      "median_ms": 10442.968165996715,
+      "median_ms": 10243.288072000723,
       "self_timed": true,
       "cpu": {
-        "mean_util": 1.2238347307202726,
+        "mean_util": 1.1858535340077971,
         "peak_util": null,
-        "user_sys_ms": 13641,
+        "user_sys_ms": 13403,
         "note": "cgroup v2 cpu.stat, last poll before exit"
       },
       "rss": {
-        "peak_bytes": 891219968,
-        "note": "cgroup v2 memory.peak (in-container read)"
+        "peak_bytes": 833052672,
+        "note": "self-reported ru_maxrss — the recorded statistic (bar derivation)"
       },
-      "ratio_vs_rdlt": 8.389748929234816
+      "ratio_vs_rdlt": 7.844173758791418
     },
     "dlt-sqlalchemy": {
       "status": "ok",
       "runs_ms": [
-        109194.16996501968,
-        108901.41630600556
+        108625.12496500858,
+        108519.64266499272
       ],
-      "median_ms": 109047.79313551262,
+      "median_ms": 108572.38381500065,
       "self_timed": true,
       "cpu": {
-        "mean_util": 1.0203977047187796,
+        "mean_util": 1.0201727449011744,
         "peak_util": null,
-        "user_sys_ms": 112090,
+        "user_sys_ms": 111758,
         "note": "cgroup v2 cpu.stat, last poll before exit"
       },
       "rss": {
-        "peak_bytes": 1314398208,
-        "note": "cgroup v2 memory.peak (in-container read)"
+        "peak_bytes": 1294229504,
+        "note": "self-reported ru_maxrss — the recorded statistic (bar derivation)"
       },
-      "ratio_vs_rdlt": 87.60762181321529
+      "ratio_vs_rdlt": 83.14328739606671
     }
   },
   "verify": {
