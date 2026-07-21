@@ -23,3 +23,12 @@ Update-heavy convergence per strategy (one row per key, newest wins,
 three stable re-runs); hard-delete exact totals + redelivery no-op;
 23505 typed error cell; upsert crash sweep with armed-fire pins;
 scoreboard measurements recorded in benches/RESULTS.md.
+
+## Amendment (feature 010)
+
+`specs/010-merge-refinements/contracts/merge-refinements.md` (MR1–MR8)
+adds two per-table options to this surface: `dedup_sort` (ordered
+in-load survivor selection through the shared dedup shape — the
+"last wins" wording above becomes "last wins UNLESS dedup_sort is
+declared") and `merge_key` (scope replacement before the strategy arm,
+single-commit-unit rule mirroring S6). The M-rules stand unchanged.

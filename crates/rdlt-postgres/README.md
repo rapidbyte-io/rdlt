@@ -86,12 +86,21 @@ destination config (`Postgres::options(...)` / CLI):
 merge_strategy = "upsert"          # delete_insert (default) | upsert | scd2
 [destination.postgres.tables.orders]
 hard_delete = "is_deleted"          # flagged rows delete instead of merging
+dedup_sort = { column = "seq", order = "desc" }   # ordered in-load survivor
+merge_key = ["day"]                 # scope replacement (feature 010)
 [destination.postgres.tables.customers]
 merge_strategy = "scd2"
 [destination.postgres.tables.customers.scd2]
 absent = "keep"                     # keep (default) | retire
 ```
 
+`dedup_sort` picks the surviving in-load version by a column + direction
+(values beat NULL; ties keep deterministic last-wins; the survivor
+drives hard-delete/SCD2/upsert alike); `merge_key` replaces every
+DELIVERED scope wholesale — undelivered rows in delivered scopes
+disappear, untouched scopes stay; NULL is not a scope, and the scoped
+table's feed must fit ONE commit unit (typed error advising the commit
+thresholds otherwise — contract merge-refinements.md).
 Merge identities get supporting indexes automatically (unique for
 upsert — pre-existing duplicate keys fail typed naming the columns);
 the incremental-regime measurement is in `benches/RESULTS.md` (20.4×

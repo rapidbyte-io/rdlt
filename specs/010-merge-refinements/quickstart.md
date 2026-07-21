@@ -28,9 +28,12 @@ merge_key = ["day"]
 
 Every `day` present in the batch is replaced wholesale — rows the batch
 no longer carries disappear; days the batch doesn't mention are
-untouched. Rows with a NULL scope only merge by identity. Works with
-multi-unit loads (each scope replaced exactly once per load) and
-composes with `hard_delete` and both delete-insert/upsert strategies.
+untouched. Rows with a NULL scope only merge by identity. The scoped
+table's feed must arrive in ONE commit unit (the batch is "the complete
+truth for its scope" only if it lands atomically — a later unit with
+scoped rows is a typed error advising the engine commit thresholds,
+same rule as scd2 retire). Composes with `hard_delete`, `dedup_sort`,
+and both delete-insert/upsert strategies.
 
 ## Verify
 

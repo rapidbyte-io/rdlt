@@ -1,5 +1,39 @@
 # Tasks: Merge Refinements — Ordered Dedup + Scope Keys
 
+## Implementation notes (close-out, 2026-07-21)
+
+- **All 9 tasks complete.** `make check` green (322 workspace tests incl.
+  9 refinement conformance cells + all sweeps, iai gate within
+  tolerance); `cargo test --doc` green; semver-checks: rdlt-core AND
+  rdlt-connector "no semver update required"; zero new dependencies.
+- **The headline finding — MR5 corrected by this feature's own sweep**:
+  the planned receipts design (multi-commit-unit scope replacement) was
+  WRONG. The refined-merge crash sweep proved it before it shipped: a
+  crash-RESUMED load is a NEW load delivering a PARTIAL feed, and its
+  scope delete destroyed the previous attempt's committed rows (75/100
+  survived the recovery cell). Resume-vs-fresh is undecidable
+  destination-side, so the spec's "complete truth for its scope" premise
+  must arrive atomically: scope replacement runs in the load's FIRST
+  commit unit only; a later unit with staged scoped rows is a typed
+  error advising the commit thresholds (scd2 S6 rule + remedy); later
+  EMPTY units tolerated (conformance-pinned). Receipts table deleted.
+  Research R2 amendment, contract MR5, and data-model record it.
+- **dedup_sort** landed as planned: one ORDER BY rewrite in the shared
+  dedup shape; survivor drives hard-delete/upsert/SCD2 by construction;
+  matrix proves desc/asc under wrong arrival, FR-002 unchanged-absent,
+  survivor's-flag hard-delete both directions, NULL/tie/replay policy.
+- **Scoreboard**: scope-replace of a 100k-row scope on 10M rows =
+  1,559.9 ms median — 19% FASTER than the identity-only delete of the
+  same keys (one scope-index probe vs 100k key lookups); ordered dedup
+  278.4 ms vs 334.6 ms last-wins on a 2×-duplicated 1M-row stage. No
+  new gates; existing bars untouched by construction.
+- **Deviations**: the open-time validation site is
+  `dest/commit.rs::ensure_table` (tasks text said ddl.rs — followed the
+  code, where M7/S1 live). Also hardened the 009 container-kill cell
+  (pre-existing race: a fast catch-up could FINISH before the container
+  teardown landed under parallel load — backlog widened 400k×120B →
+  1M×300B).
+
 **Input**: Design documents from `/specs/010-merge-refinements/`
 
 **Prerequisites**: plan.md, spec.md, research.md (R1–R5 + recorded dlt
@@ -135,7 +169,7 @@ round-trips.
       1M-row stage vs last-wins; 5-run medians recorded in
       `benches/RESULTS.md` (scoreboard, no gate; existing gated bars
       within tolerance — R4/SC-007).
-- [ ] T009 Close-out: `make check` + `cargo test --doc` +
+- [X] T009 Close-out: `make check` + `cargo test --doc` +
       `cargo semver-checks check-release --baseline-rev origin/main
       -p rdlt-core -p rdlt-connector` ("no update required");
       README + 008 `merge-strategies.md` cross-reference +

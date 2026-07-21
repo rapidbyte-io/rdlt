@@ -246,17 +246,20 @@ async fn container_kill_mid_catch_up_is_typed_and_preserves_commits() {
     };
 
     // Snapshot first (tiny), then a large backlog across MANY transactions
-    // so the catch-up has many commit boundaries to die between.
+    // so the catch-up has many commit boundaries to die between. The
+    // backlog must dwarf container-teardown time: a 010 make-check run
+    // caught the 400k/120-byte version FINISHING (3.5 s) before the kill
+    // landed under parallel load — expect_err saw a successful run.
     run(conn.clone(), dest.clone(), workdir.clone())
         .await
         .expect("snapshot run");
     let client = fixture.client().await;
-    for chunk in 0..40 {
+    for chunk in 0..100i64 {
         client
             .execute(
                 &format!(
                     "INSERT INTO public.ev \
-                     SELECT g, repeat('x', 120) FROM \
+                     SELECT g, repeat('x', 300) FROM \
                      generate_series({}, {}) g",
                     chunk * 10_000 + 1,
                     (chunk + 1) * 10_000
