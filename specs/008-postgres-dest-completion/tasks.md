@@ -26,7 +26,7 @@ Technical Context).
 
 ## Phase 2: Foundational (BLOCKING)
 
-- [ ] T001 Pure relocation of `crates/rdlt-postgres/src/dest/mod.rs`
+- [X] T001 Pure relocation of `crates/rdlt-postgres/src/dest/mod.rs`
       (613 lines) into `dest/{mod.rs, config.rs, ddl.rs, encode.rs,
       commit.rs}` per the plan's layout — MOVES ONLY, zero behavior
       change, own commit stating the rule; `config.rs` starts as the
