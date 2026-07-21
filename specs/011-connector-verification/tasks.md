@@ -1,5 +1,45 @@
 # Tasks: Postgres Connector Verification — Every Parameter Proven
 
+## Implementation notes (close-out, 2026-07-21)
+
+- **All 13 tasks complete.** `make check` green (340 workspace tests +
+  engine/pg sweeps + iai gate within tolerance); doc-tests green;
+  semver-checks "no update required" for rdlt-core AND rdlt-connector;
+  zero new runtime dependencies (cargo-llvm-cov is dev tooling, already
+  installed).
+- **The matrix (SC-001)**: `matrix.md` — every parameter row cited,
+  ZERO GAP rows. 13 new behavioral gap cells landed: direction:min,
+  magnitude-family lag, cursor-column-must-survive-selection, batch
+  knobs observable cutting, the full hint matrix (every remaining
+  documented pair + closed-table rejection), CDC ack:off / custom
+  flag_column / declared-key-mismatch-under-default-identity, default
+  dataset = public observed, non-bool hard_delete (IS NOT NULL arm),
+  scd2 custom validity names, CLI spec forms, sslrootcert=system.
+- **Coverage (SC-003)**: baseline 87.69% → final **88.98% lines**
+  (88.27% regions, 83.23% functions) — floor 80% comfortably met.
+  Exclusions verified via --show-missing-lines and classified in
+  RESULTS.md: testhook bench/fuzz module (source/mod.rs 82–262),
+  defensive engine-contract guards + thin delegators, capability edge
+  arms, TLS-1.2 verifier methods a TLS-1.3 stack never calls. types.rs
+  jumped 76.88% → 91.59% from the hint matrix.
+- **Mismatch list (SC-004/PM6)**: exactly ONE real mismatch — the
+  recorded merge_strategy-silently-unused footnote, resolved by R5:
+  `PgDestOptions.merge_strategy` is now `Option` (explicit vs defaulted
+  is load-bearing); explicit configuration under append/replace is a
+  typed error naming table+mode; the unconfigured default never
+  rejects; welded cells + README + 008-contract amendment. Two
+  test-expectation errors made during cell writing (lag-window replay
+  is source-side deduped; incremental streams emit ≥2 commits) were
+  corrected in the cells — the PRODUCT behaved as documented.
+- **Spot-audit (SC-002)**: three sampled rows re-run end-to-end
+  (cursor end_bound inclusive; CDC TOAST-under-FULL; non-bool
+  hard_delete) — all exercise the documented behavior, recorded here.
+- **Discovery worth noting**: the R5 field change surfaced one
+  un-migrated construction site only visible under --features
+  failpoints — caught by the instrumented coverage build, which
+  compiles ALL feature-gated test binaries; `make coverage` therefore
+  doubles as a full-feature compile check.
+
 **Input**: Design documents from `/specs/011-connector-verification/`
 
 **Prerequisites**: plan.md, spec.md, research.md (R1–R6 incl. the
@@ -142,7 +182,7 @@ exclusion list short with reasons.
 
 ## Phase 6: Polish & close-out
 
-- [ ] T013 Close-out: `make check` + `cargo test --doc` +
+- [X] T013 Close-out: `make check` + `cargo test --doc` +
       `cargo semver-checks check-release --baseline-rev origin/main
       -p rdlt-core -p rdlt-connector` ("no update required"); spot-audit
       three random matrix rows end-to-end (SC-002, recorded);

@@ -131,7 +131,7 @@ cargo-llvm-cov 0.8.7; floor: 80% lines; NOT a CI gate):
 | Measurement | Lines | Functions | Date |
 |---|---|---|---|
 | Baseline (before feature-011 cells) | 87.69% / 87.71% (two runs, stable) | 83.17% | 2026-07-21 |
-| Final (feature 011 close) | **88.98%** | 84.13%* | 2026-07-21 |
+| Final (feature 011 close) | **88.98%** | 83.23% | 2026-07-21 |
 
 Feature-011 delta: types.rs 76.88% → 91.59% (the hint-matrix cell),
 encode.rs → 87.46%, cursor.rs → 85.42%; 13 new behavioral cells + the
@@ -145,7 +145,7 @@ each a REAL uncovered cluster with a stated reason — contract PM5):
 | dest/mod.rs (51–59, 75, 89–91) | 13 | capability/edge helper arms |
 | tls_verify.rs (52–59, 116–123) | 16 | verifier trait methods for protocol variants the TLS matrix's handshakes never negotiate (TLS 1.2 signature arms under a TLS 1.3 stack) |
 
-(*function coverage; region 88.??% — see `make coverage` output.)
+(Region coverage at close: 88.27%.)
 
 Merge-refinement cells (`benches/run-merge-refinements.sh`, feature 010,
 5-run medians, 2026-07-21; scoreboard, no gate — the new SQL runs only
