@@ -23,7 +23,7 @@ TARGET ?=
 FUZZ_SECONDS ?= 600
 FUZZ_TARGETS := jsonl_slab cursor_decode file_config arrow_schema_map shred_push pg_copy_decode pg_pgoutput_decode
 
-.PHONY: build release lint test bench check
+.PHONY: build release lint test bench check coverage
 
 build:
 	cargo build --workspace
@@ -82,6 +82,12 @@ else ifeq ($(TARGET),e2e)
 else
 	$(error unknown bench TARGET '$(TARGET)' — see header comment)
 endif
+
+# Feature 011 (contract PM5): measured line coverage for the connector
+# crate — the recorded floor is 80%. NOT part of `check` (no CI gate;
+# 004 governance). Numbers + exclusions live in benches/RESULTS.md.
+coverage:
+	cargo llvm-cov nextest -p rdlt-postgres --features failpoints
 
 check: lint
 	$(MAKE) test

@@ -24,7 +24,7 @@ No setup tasks beyond T001 (tooling is part of the measurement weld).
 
 ## Phase 2: Foundational (BLOCKING)
 
-- [ ] T001 Coverage tooling + official baseline: add the `coverage`
+- [X] T001 Coverage tooling + official baseline: add the `coverage`
       target to `Makefile` (R6: `cargo llvm-cov nextest -p rdlt-postgres
       --features failpoints`, total + per-file table; NOT part of
       `check`); verify cargo-llvm-cov + llvm-tools-preview; run TWICE to

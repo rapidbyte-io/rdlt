@@ -124,6 +124,20 @@ in place with no delete-visibility window, and it composes with
 hard-delete — not raw throughput. Recorded so nobody re-runs this
 expecting a speedup that was never the point.
 
+Connector-crate coverage (feature 011, contract PM5; `make coverage` =
+`cargo llvm-cov nextest -p rdlt-postgres --features failpoints`,
+cargo-llvm-cov 0.8.7; floor: 80% lines; NOT a CI gate):
+
+| Measurement | Lines | Functions | Date |
+|---|---|---|---|
+| Baseline (before feature-011 cells) | 87.69% / 87.71% (two runs, stable) | 83.17% | 2026-07-21 |
+| Final | recorded at feature close | | |
+
+Baseline per-file outliers (hypotheses verified during the audit —
+research R2): source/mod.rs 43.63% (testhook bench/fuzz entries),
+dest/mod.rs 74.51%, source/types.rs 76.88%, tls_verify.rs 79.75%,
+encode.rs 84.82%, cursor.rs 85.16%; all else ≥ 86%.
+
 Merge-refinement cells (`benches/run-merge-refinements.sh`, feature 010,
 5-run medians, 2026-07-21; scoreboard, no gate — the new SQL runs only
 when the options are declared, so every existing bar is untouched by
