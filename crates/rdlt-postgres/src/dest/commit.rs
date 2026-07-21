@@ -378,7 +378,6 @@ impl LoadSession for PgSession {
                         cols: &cols,
                         schema,
                         key,
-                        root_table: &roots[table],
                         root_stage: quote(&stage_name(&self.pipeline, &roots[table])),
                         is_child: table != &roots[table],
                         hard_delete: self
@@ -509,7 +508,6 @@ struct MergePlan<'a> {
     cols: &'a str,
     schema: &'a TableSchema,
     key: &'a [String],
-    root_table: &'a TableName,
     root_stage: String,
     is_child: bool,
     hard_delete: Option<HardDelete>,

@@ -295,7 +295,9 @@ mod native_types {
         }
     }
 
-    fn fidelity_batch(rows: &[(i64, Option<i128>, Option<&str>, Option<&str>)]) -> RecordBatch {
+    type FidelityRow<'a> = (i64, Option<i128>, Option<&'a str>, Option<&'a str>);
+
+    fn fidelity_batch(rows: &[FidelityRow<'_>]) -> RecordBatch {
         RecordBatch::try_new(
             Arc::new(Schema::new(vec![
                 Field::new("id", DataType::Int64, false),
@@ -542,11 +544,7 @@ mod strategies {
     use arrow_array::{BooleanArray, Int64Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema};
     use async_trait::async_trait;
-    use rdlt_connector::core::{LoadId, PipelineId};
-    use rdlt_connector::{
-        ConnectorSpec, Cursor, Destination as _, OpenCtx, ReadRequest, Source, SourceError,
-        StreamSpec,
-    };
+    use rdlt_connector::{ConnectorSpec, Cursor, ReadRequest, Source, SourceError, StreamSpec};
     use rdlt_engine::{Engine, EngineConfig};
     use rdlt_postgres::dest::{MergeStrategy, PgDestOptions, PgTableOptions, Postgres};
 

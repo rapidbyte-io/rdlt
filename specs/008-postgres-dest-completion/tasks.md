@@ -17,6 +17,40 @@ dependencies; zero SPI changes; WriteMode frozen.
 next; US3 SCD2 builds on US2's config/strategy machinery; US4 is the
 F6 error-chain closure (its relocation half lives in T001).
 
+## Implementation notes (close-out, 2026-07-21)
+
+All 15 tasks done (T004 resolved by owner decision). Discoveries:
+
+- **Greenfield beats machinery (T004)**: the pre-008 text-column fallback
+  (catalog detection, fallback wire, stage recreation, lossy warns) was
+  implemented, tested, and then REMOVED on owner decision — rdlt has no
+  installed base, so the fallback protected a population of zero.
+  Mismatched hand-created tables now fail loudly (42804-class server
+  errors through describe()). Contract T7 / spec FR-003 / research R3
+  amended together.
+- **The index measurement needed two regimes (T009)**: the first attempt
+  (500k-key delta vs 1M rows) showed the index NOT helping — the planner
+  correctly hash-joins when half the table matches. The honest scoreboard
+  measures both: 20.4× in the incremental regime (5k keys vs 10M rows),
+  no penalty in the half-table regime. A single-regime measurement would
+  have recorded a lie in either direction.
+- **Strategy speeds are a wash in full-redelivery (T014)**: delete-insert
+  4.84s vs upsert 4.97s medians — upsert is a SEMANTIC choice (no
+  delete-visibility window, hard-delete composability), recorded so
+  nobody chases a phantom speedup.
+- **serde flatten + deny_unknown_fields don't compose** (T013): the CLI
+  uses explicit merge_strategy/tables fields instead.
+- **NUMERIC(12,4) rejects 13 significant digits** — the first fidelity
+  test value exceeded declared precision; the typed server error (22003,
+  via the new describe()) made the test bug obvious in seconds, which is
+  the F6 fix demonstrating its own value.
+- **SCD2 change detection must exclude `_rdlt_load_id`** — it differs
+  every load by construction; including it would version every row every
+  run. The IS-DISTINCT-FROM set is data columns minus key minus load-id.
+- **rustfmt-reflow patch hazard struck again** (write-path fallback wiring
+  silently no-opped; caught by the failing test's 0x00 wire bytes) — the
+  Read+Edit discipline stays mandatory for previously-formatted regions.
+
 ## Format: `[ID] [P?] [Story] Description`
 
 ## Phase 1: Setup
@@ -186,7 +220,7 @@ the server message and SQLSTATE in the pipeline error.
       updates: delete-insert vs upsert) in `benches/run-pg.sh`;
       medians recorded as scoreboard entries in `benches/RESULTS.md`
       with a history line (FR-013; measurement-first, no gate moves).
-- [ ] T015 Close-out: `make check` + `cargo test --doc` +
+- [X] T015 Close-out: `make check` + `cargo test --doc` +
       `cargo semver-checks check-release --baseline-rev origin/main
       -p rdlt-core -p rdlt-connector` ("no update required" — zero SPI
       promise); gated bars within tolerance (SC-006); README +

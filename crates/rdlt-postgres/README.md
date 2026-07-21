@@ -73,6 +73,33 @@ through the same code path. Server rejection of the client credential is
 the distinguished `ClientCert` failure, separate from our verification of
 the server.
 
+### Destination (feature 008)
+
+Native types, automatically — zero configuration: decimals land as
+`numeric(p,s)`, JSON as `jsonb`, UUIDs as `uuid`, required columns
+`NOT NULL`; values ride the same binary COPY path (wire encoders mirror
+the source's decoders, round-trip proven). Merge strategies are
+destination config (`Postgres::options(...)` / CLI):
+
+```toml
+[destination.postgres]
+merge_strategy = "upsert"          # delete_insert (default) | upsert | scd2
+[destination.postgres.tables.orders]
+hard_delete = "is_deleted"          # flagged rows delete instead of merging
+[destination.postgres.tables.customers]
+merge_strategy = "scd2"
+[destination.postgres.tables.customers.scd2]
+absent = "keep"                     # keep (default) | retire
+```
+
+Merge identities get supporting indexes automatically (unique for
+upsert — pre-existing duplicate keys fail typed naming the columns);
+the incremental-regime measurement is in `benches/RESULTS.md` (20.4×
+on the merge DELETE). SCD2 keeps full version history with validity
+columns (defaults `_rdlt_valid_from`/`_rdlt_valid_to`), one boundary
+per commit unit, redelivery-stable. Every destination error carries
+the server's message + SQLSTATE.
+
 Existing libpq URLs just work (feature 007): `sslmode=verify-ca|verify-full`,
 `sslrootcert=` (`system` = platform store), `sslcert=`/`sslkey=` translate
 into the policy; a conn parameter and a block field that disagree fail
@@ -118,7 +145,8 @@ conn string sets its own.
 
 ## Verification
 
-`cargo nextest run -p rdlt-postgres` — conformance (full
+`cargo nextest run -p rdlt-postgres` — dest: native-type fidelity,
+strategy conformance, SCD2 history; source: conformance (full
 type-matrix round-trip against real Postgres), incremental boundary
 semantics, differential property test (decoder ≡ an independent driver
 reference, single- AND multi-batch), drift matrix, TLS matrix (five
