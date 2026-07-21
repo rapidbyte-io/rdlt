@@ -362,7 +362,7 @@ impl CdcRig {
         Postgres::connect(self.fixture.conn_url())
             .dataset("mirror")
             .options(PgDestOptions {
-                merge_strategy: MergeStrategy::Upsert,
+                merge_strategy: Some(MergeStrategy::Upsert),
                 tables: tables
                     .iter()
                     .map(|t| {
@@ -1211,7 +1211,7 @@ async fn custom_flag_column_flows_end_to_end() {
         Postgres::connect(rig.fixture.conn_url())
             .dataset("mirror")
             .options(PgDestOptions {
-                merge_strategy: MergeStrategy::Upsert,
+                merge_strategy: Some(MergeStrategy::Upsert),
                 tables: [(
                     "orders".to_string(),
                     PgTableOptions {

@@ -83,7 +83,7 @@ fn scd2_dest(conn: &str, dataset: &str, absent: AbsentPolicy) -> Postgres {
     Postgres::connect(conn)
         .dataset(dataset)
         .options(PgDestOptions {
-            merge_strategy: MergeStrategy::DeleteInsert,
+            merge_strategy: Some(MergeStrategy::DeleteInsert),
             tables: [(
                 "dims".to_string(),
                 PgTableOptions {
@@ -373,7 +373,7 @@ async fn rejections_are_typed_at_ensure() {
     let dest = Postgres::connect(&conn)
         .dataset("badsh")
         .options(PgDestOptions {
-            merge_strategy: MergeStrategy::Scd2,
+            merge_strategy: Some(MergeStrategy::Scd2),
             ..PgDestOptions::default()
         })
         .expect("options parse");
@@ -471,7 +471,7 @@ async fn custom_validity_column_names_flow_end_to_end() {
     let dest = Postgres::connect(&conn)
         .dataset("scd2c")
         .options(PgDestOptions {
-            merge_strategy: MergeStrategy::Scd2,
+            merge_strategy: Some(MergeStrategy::Scd2),
             tables: [(
                 "dims".to_string(),
                 PgTableOptions {

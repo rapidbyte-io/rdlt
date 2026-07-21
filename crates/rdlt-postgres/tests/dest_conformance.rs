@@ -675,7 +675,7 @@ mod strategies {
         Postgres::connect(conn)
             .dataset(dataset)
             .options(PgDestOptions {
-                merge_strategy: MergeStrategy::Upsert,
+                merge_strategy: Some(MergeStrategy::Upsert),
                 tables: [(
                     "events".to_string(),
                     PgTableOptions {
@@ -823,7 +823,7 @@ mod strategies {
         let dest = Postgres::connect(&conn)
             .dataset("shup")
             .options(PgDestOptions {
-                merge_strategy: MergeStrategy::Upsert,
+                merge_strategy: Some(MergeStrategy::Upsert),
                 ..PgDestOptions::default()
             })
             .expect("options");
@@ -1038,7 +1038,7 @@ mod refinements {
         Postgres::connect(conn)
             .dataset(dataset)
             .options(PgDestOptions {
-                merge_strategy: opts.strategy.unwrap_or_default(),
+                merge_strategy: opts.strategy,
                 tables: [(
                     "events".to_string(),
                     PgTableOptions {
@@ -1841,6 +1841,69 @@ mod param_matrix {
         assert_eq!(n, 1, "omitted dataset lands in the `public` schema");
     }
 
+    /// Feature 011 R5 (PM7): an EXPLICITLY configured merge_strategy under
+    /// append/replace is a typed error; the unconfigured default never
+    /// rejects.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn explicit_strategy_under_non_merge_mode_is_typed() {
+        let (_c, conn) = start_pg().await;
+        let source = || {
+            MemorySource::single_stream(
+                rdlt_connector::StreamSpec::new("things").with_primary_key(["id"]),
+                vec![json!({"id": 1, "v": "a"})],
+            )
+        };
+        let run = |mode: rdlt_connector::WriteMode, options: PgDestOptions| {
+            let dest = Postgres::connect(&conn)
+                .dataset("r5")
+                .options(options)
+                .expect("options");
+            let mut config = EngineConfig::new("r5");
+            config.write_mode = mode;
+            Engine::new(config, source(), dest).run()
+        };
+
+        // Destination-wide explicit strategy under APPEND: typed.
+        let err = run(
+            rdlt_connector::WriteMode::Append,
+            PgDestOptions {
+                merge_strategy: Some(MergeStrategy::Upsert),
+                ..PgDestOptions::default()
+            },
+        )
+        .await
+        .expect_err("explicit strategy under append")
+        .to_string();
+        assert!(err.contains("merge_strategy"), "{err}");
+        assert!(err.contains("requires the merge write mode"), "{err}");
+
+        // Per-table explicit strategy under REPLACE: typed too.
+        let err = run(
+            rdlt_connector::WriteMode::Replace,
+            PgDestOptions {
+                tables: [(
+                    "things".to_string(),
+                    PgTableOptions {
+                        merge_strategy: Some(MergeStrategy::DeleteInsert),
+                        ..PgTableOptions::default()
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                ..PgDestOptions::default()
+            },
+        )
+        .await
+        .expect_err("per-table explicit strategy under replace")
+        .to_string();
+        assert!(err.contains("`things`"), "{err}");
+
+        // UNCONFIGURED default: append works exactly as before.
+        run(rdlt_connector::WriteMode::Append, PgDestOptions::default())
+            .await
+            .expect("default options never reject append");
+    }
+
     /// `hard_delete` on a NON-boolean column — M4's other arm: the flag
     /// fires on `IS NOT NULL` (any value), keeps on NULL.
     #[tokio::test(flavor = "multi_thread")]
@@ -1902,7 +1965,7 @@ mod param_matrix {
         let dest = Postgres::connect(&conn)
             .dataset("nbhd")
             .options(PgDestOptions {
-                merge_strategy: MergeStrategy::Upsert,
+                merge_strategy: Some(MergeStrategy::Upsert),
                 tables: [(
                     "ev".to_string(),
                     PgTableOptions {

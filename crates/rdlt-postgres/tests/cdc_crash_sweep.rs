@@ -49,7 +49,7 @@ impl Rig {
         Postgres::connect(conn)
             .dataset("mirror")
             .options(PgDestOptions {
-                merge_strategy: MergeStrategy::Upsert,
+                merge_strategy: Some(MergeStrategy::Upsert),
                 tables: [(
                     "ev".to_string(),
                     PgTableOptions {

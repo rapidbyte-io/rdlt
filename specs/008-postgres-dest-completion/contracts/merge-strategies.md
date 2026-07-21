@@ -32,3 +32,12 @@ in-load survivor selection through the shared dedup shape — the
 "last wins" wording above becomes "last wins UNLESS dedup_sort is
 declared") and `merge_key` (scope replacement before the strategy arm,
 single-commit-unit rule mirroring S6). The M-rules stand unchanged.
+
+## Amendment (feature 011, R5)
+
+An EXPLICITLY configured `merge_strategy` (destination-wide or
+per-table) under an append/replace write mode is a typed error at open
+naming table + mode — closing the recorded silent-inert footnote. The
+unconfigured default (`delete_insert`) never rejects; merge pipelines
+are unaffected. `PgDestOptions.merge_strategy` is `Option` to carry the
+explicit-vs-default distinction.

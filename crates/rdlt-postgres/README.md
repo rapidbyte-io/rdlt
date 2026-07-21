@@ -283,7 +283,7 @@ COPY data errors name the failing column.
 
 | Field | Type / values | Default | Description |
 |---|---|---|---|
-| `merge_strategy` | `delete_insert` \| `upsert` \| `scd2` | `delete_insert` | How the merge write mode executes, for every table unless overridden. |
+| `merge_strategy` | `delete_insert` \| `upsert` \| `scd2` | `delete_insert` | How the merge write mode executes, for every table unless overridden. EXPLICITLY configuring it (destination-wide or per-table) under an append/replace write mode is a typed error — the unconfigured default never rejects. |
 | `tables` | map table → per-table options | `{}` | Per-table overrides below. |
 
 The three strategies (they only apply under the pipeline's **merge**

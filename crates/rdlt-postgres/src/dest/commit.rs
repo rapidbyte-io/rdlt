@@ -147,6 +147,10 @@ impl LoadSession for PgSession {
         if !matches!(mode, WriteMode::Merge { .. }) {
             let table = schema.table.as_str();
             for (declared, name) in [
+                (
+                    self.options.explicit_strategy_for(table).is_some(),
+                    "merge_strategy",
+                ),
                 (self.options.dedup_sort_for(table).is_some(), "dedup_sort"),
                 (self.options.merge_key_for(table).is_some(), "merge_key"),
             ] {

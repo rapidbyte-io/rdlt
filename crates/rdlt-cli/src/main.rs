@@ -220,7 +220,7 @@ async fn run(spec_path: PathBuf, report_path: Option<PathBuf>) -> Result<(), Cli
                     }
                     if merge_strategy.is_some() || tables.is_some() {
                         let options = rdlt::postgres::PgDestOptions {
-                            merge_strategy: merge_strategy.unwrap_or_default(),
+                            merge_strategy: *merge_strategy,
                             tables: tables.clone().unwrap_or_default(),
                         };
                         dest = dest

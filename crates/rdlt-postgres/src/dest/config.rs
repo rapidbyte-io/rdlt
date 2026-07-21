@@ -171,8 +171,12 @@ pub struct PgTableOptions {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PgDestOptions {
+    /// Destination-wide strategy. `None` = the `delete_insert` default —
+    /// and the distinction is LOAD-BEARING (feature 011 R5): an EXPLICIT
+    /// strategy under an append/replace write mode is a typed error at
+    /// open, while the unconfigured default never rejects.
     #[serde(default)]
-    pub merge_strategy: MergeStrategy,
+    pub merge_strategy: Option<MergeStrategy>,
     #[serde(default)]
     pub tables: BTreeMap<String, PgTableOptions>,
 }
@@ -188,7 +192,10 @@ impl PgDestOptions {
     /// Validation errors NAME the offending field (FR-012).
     pub fn validate(&self) -> Result<(), String> {
         for (table, opts) in &self.tables {
-            let strategy = opts.merge_strategy.unwrap_or(self.merge_strategy);
+            let strategy = opts
+                .merge_strategy
+                .or(self.merge_strategy)
+                .unwrap_or_default();
             if let Some(col) = &opts.hard_delete {
                 if col.trim().is_empty() {
                     return Err(format!("tables.{table}.hard_delete: empty column name"));
@@ -249,10 +256,17 @@ impl PgDestOptions {
     }
 
     pub(super) fn strategy_for(&self, table: &str) -> MergeStrategy {
+        self.explicit_strategy_for(table).unwrap_or_default()
+    }
+
+    /// The strategy the user EXPLICITLY configured for this table (per-table
+    /// override, else the destination-wide setting), or `None` when both are
+    /// unconfigured (feature 011 R5).
+    pub(super) fn explicit_strategy_for(&self, table: &str) -> Option<MergeStrategy> {
         self.tables
             .get(table)
             .and_then(|t| t.merge_strategy)
-            .unwrap_or(self.merge_strategy)
+            .or(self.merge_strategy)
     }
 
     pub(super) fn hard_delete_for(&self, table: &str) -> Option<&str> {

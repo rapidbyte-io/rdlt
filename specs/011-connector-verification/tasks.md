@@ -109,7 +109,7 @@ dies here.
 **Independent Test**: close-out mismatch list complete; every entry
 fixed+pinned or doc-corrected.
 
-- [ ] T011 [US3] R5 fix in `crates/rdlt-postgres/src/dest/config.rs` +
+- [X] T011 [US3] R5 fix in `crates/rdlt-postgres/src/dest/config.rs` +
       `crates/rdlt-postgres/src/dest/commit.rs`: distinguish explicit
       from defaulted `merge_strategy` (parse-compatible shape);
       `ensure_table` rejects EXPLICIT configuration (destination-wide or
