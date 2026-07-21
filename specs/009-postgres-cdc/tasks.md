@@ -188,7 +188,7 @@ typed error in a test; lag appears per run.
       cdc:); the C3 composition WARNING (merge+upsert+hard_delete
       recommended) emitted when absent, with a capture test; README
       + quickstart truthful (SC-007).
-- [ ] T014 [P] Scoreboard in `benches/run-cdc.sh` (new): change-apply
+- [X] T014 [P] Scoreboard in `benches/run-cdc.sh` (new): change-apply
       throughput (1M-row table, 500k-change backlog → catch-up wall
       time) and quiet catch-up latency; 5-run medians; recorded as
       scoreboard entries + history line in `benches/RESULTS.md`

@@ -124,6 +124,21 @@ in place with no delete-visibility window, and it composes with
 hard-delete — not raw throughput. Recorded so nobody re-runs this
 expecting a speedup that was never the point.
 
+CDC cells (`benches/run-cdc.sh`, feature 009, 5-run medians, 2026-07-21;
+scoreboard, no gate — the snapshot itself rides the existing gated COPY
+path unchanged):
+
+| Cell | Median | Notes |
+|---|---|---|
+| Change-apply throughput | 6.96 s | 1M-row `pg_wide`, 500k-change backlog (400k updates / 50k deletes / 50k inserts) → source-equal catch-up ≈ 72k changes/s end-to-end (SQL-peek decode + upsert + hard-delete, pg→pg) |
+| Catch-up latency | 0.05 s | quiet-to-caught-up on a 1k-update delta, steady state |
+
+Measurement note (recorded honestly): the peek decodes WAL from the
+slot's CONFIRMED position, which trails one run behind by the ack
+design — the first runs after a snapshot re-walk the engine's own
+mirror writes when source and destination share a database, then
+converge to the steady state above (the script settles before timing).
+
 ## Perf-regression gate (feature 003, G1)
 
 Instruction-count baselines for the hot paths live in
@@ -161,6 +176,12 @@ cross-toolchain comparisons refused — re-record deliberately). Recorded
   is inside the documented ±2–10% session jitter band — TLS plumbing,
   hints, query streams, and the keyed-merge engine changes cost nothing
   measurable on the hot paths.
+
+- 2026-07-21 (feature 009): Postgres CDC lands — change-apply 6.96 s
+  median for a 500k-change catch-up on 1M rows (≈72k changes/s, full
+  pg→pg upsert+hard-delete composition), quiet catch-up latency 50 ms
+  steady state; scoreboard cells, no new gates; existing gated bars
+  untouched (snapshot rides the unchanged COPY path).
 
 Reproduce: `benches/run-e2e.sh` (jsonl, parquet, cold-start cells) and the
 REST→Postgres recipe in RESULTS history / `benches/baseline/pipeline_rest_pg.py`.
