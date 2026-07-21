@@ -12,7 +12,7 @@ binary stream still carries only the 005 lossless decode set.
 | Source type (reflected/described) | Allowed hints | Cast rule |
 |---|---|---|
 | ANY | `utf8` | `(col)::text` — canonical text, always available |
-| text family (text/varchar/bpchar/name/citext) | `int64`, `float64`, `decimal(p,s)`, `timestamp_tz`, `timestamp_naive`, `date`, `time`, `uuid`, `bool`, `json` | strict server cast to the target (`::int8`, `::timestamptz`, `::jsonb`…) |
+| text family (text/varchar/bpchar/name/citext) | `int64`, `float64`, `decimal(p,s)`, `timestamp_tz`, `timestamp_naive`, `date`, `time`, `uuid`, `bool`, `json`, `binary` | strict server cast to the target (`::int8`, `::timestamptz`, `::jsonb`, `::bytea` — binary parses the text as bytea input, e.g. `\\x…` hex) |
 | int2/int4/int8 | `float64`, `decimal(p,s)`, `bool` (0/1 only), `utf8` | numeric widening casts; bool via `<>0` is NOT implied — `::bool` strictness applies |
 | float4/float8 | `decimal(p,s)`, `utf8` | `::numeric(p,s)` (server rounds per SQL rules — [documented-lossy]) |
 | numeric (any) | `float64` ([documented-lossy]), `decimal(p,s)` re-shape, `utf8` | explicit casts |

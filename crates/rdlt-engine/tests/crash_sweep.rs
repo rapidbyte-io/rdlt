@@ -258,3 +258,118 @@ fn sweep_covers_entire_registry() {
          BOTH the registry const and this list — gate G2.2)"
     );
 }
+
+// ---- Review F11: the DuckDB KEYED structured-merge arm under the engine's
+// and DuckDB's own fail points — the shredded sweeps above exercise only the
+// identity-merge branch (contract merge-structured.md conformance). ----
+
+/// Structured stream with a declared key, resumable by batch index.
+struct KeyedArrowSource;
+
+#[async_trait::async_trait]
+impl rdlt_connector::Source for KeyedArrowSource {
+    fn spec(&self) -> rdlt_connector::ConnectorSpec {
+        rdlt_connector::ConnectorSpec::new("keyed-arrow-sweep", "0.0.0")
+    }
+
+    async fn streams(&self) -> Result<Vec<StreamSpec>, rdlt_connector::SourceError> {
+        Ok(vec![
+            StreamSpec::new("s").structured().with_primary_key(["id"]),
+        ])
+    }
+
+    async fn read(
+        &self,
+        mut req: rdlt_connector::ReadRequest,
+    ) -> Result<(), rdlt_connector::SourceError> {
+        use std::sync::Arc;
+
+        use arrow::array::{Int64Array, StringArray};
+        use arrow::datatypes::{DataType, Field, Schema};
+        let start = match &req.since {
+            None => 0usize,
+            Some(c) => c.as_value().as_u64().unwrap_or(0) as usize,
+        };
+        for b in start..4 {
+            let ids: Vec<i64> = (0..25).map(|i| (b * 25 + i) as i64).collect();
+            let names: Vec<String> = ids.iter().map(|i| format!("row-{i}")).collect();
+            let batch = rdlt_connector::RecordBatch::try_new(
+                Arc::new(Schema::new(vec![
+                    Field::new("id", DataType::Int64, false),
+                    Field::new("name", DataType::Utf8, true),
+                ])),
+                vec![
+                    Arc::new(Int64Array::from(ids)),
+                    Arc::new(StringArray::from(
+                        names.iter().map(String::as_str).collect::<Vec<_>>(),
+                    )),
+                ],
+            )
+            .expect("batch");
+            if req.out.arrow(batch).await.is_err() {
+                return Ok(());
+            }
+            if req
+                .out
+                .checkpoint(rdlt_connector::Cursor::new((b + 1) as u64))
+                .await
+                .is_err()
+            {
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sweep_duckdb_keyed_structured_merge() {
+    let points = engine_and(rdlt_dest_duckdb::FAIL_POINTS);
+    let mode = WriteMode::Merge {
+        key: vec!["id".into()],
+    };
+    let mut fired: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    for &point in &points {
+        for action in ["return", "panic", "1*off->return"] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let workdir = dir.path().join("wal");
+            let dest =
+                rdlt_dest_duckdb::DuckDb::open(dir.path().join("out.duckdb")).expect("open duckdb");
+            async fn run(
+                dest: rdlt_dest_duckdb::DuckDb,
+                workdir: &Path,
+                mode: &WriteMode,
+            ) -> Result<(), String> {
+                let engine = Engine::new(config(workdir, mode), KeyedArrowSource, dest);
+                match tokio::spawn(engine.run()).await {
+                    Ok(Ok(_)) => Ok(()),
+                    Ok(Err(e)) => Err(e.to_string()),
+                    Err(join) => Err(format!("panicked: {join}")),
+                }
+            }
+            fail::cfg(point, action).expect("configure fail point");
+            let armed1 = run(dest.clone(), &workdir, &mode).await;
+            let armed2 = run(dest.clone(), &workdir, &mode).await;
+            fail::remove(point);
+            if armed1.is_err() || armed2.is_err() {
+                fired.insert(point);
+            }
+            let recovered = run(dest.clone(), &workdir, &mode).await;
+            assert!(
+                recovered.is_ok(),
+                "[{point} / {action} / keyed] recovery failed: {recovered:?}"
+            );
+            assert_eq!(
+                dest.count_rows("s").expect("count"),
+                TOTAL_ROWS,
+                "[{point} / {action} / keyed] exactly-once violated"
+            );
+        }
+    }
+    let expected: std::collections::BTreeSet<&str> = points.iter().copied().collect();
+    assert_eq!(
+        fired, expected,
+        "keyed-merge armed-fire pin diverged — a missing point means the keyed \
+         arm never crossed that boundary"
+    );
+}

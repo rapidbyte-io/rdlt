@@ -24,7 +24,11 @@ batch_max_rows: 65536
 # engine-owned (SPI clauses S3/E5). The source classifies errors as
 # Transient (engine retries with backoff) or Fatal.
 
-# absent => discover ALL tables in `schema`
+# absent => discover all tables in `schema` (hierarchy children —
+# partition leaves and INHERITS children — are EXCLUDED: their rows
+# arrive via the parent; list a child explicitly to read it alone.
+# Feature 007 amendment, see specs/007-postgres-source-completion/
+# research.md R7)
 tables:
   - name: orders                # bare name; `schema` owns qualification
     cursor:
@@ -33,7 +37,9 @@ tables:
       boundary: closed          # closed (>=, default, deduped) | open (>)
       direction: max            # max (default) | min
       end_value: null           # optional upper bound
-      nulls: exclude            # exclude (default) | include
+      nulls: exclude            # exclude (default) | include | error (007)
+      # lag + end_bound (feature 007): see specs/007-postgres-source-
+      # completion/contracts/cursor-lag.md
     primary_key: [id]           # optional override of reflected PK
     included_columns: []        # mutually exclusive with excluded_columns
   - name: customers             # snapshot-only stream (no cursor)

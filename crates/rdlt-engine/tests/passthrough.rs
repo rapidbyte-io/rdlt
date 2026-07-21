@@ -425,6 +425,26 @@ async fn keyed_structured_merge_accepted_and_converges() {
     assert_eq!(row2["name"], json!("b2"), "merge took the updated value");
 }
 
+/// Review F10: the key is a SET — a reordered composite key is the same key
+/// (reflection returns attnum order, users write DDL order).
+#[tokio::test]
+async fn reordered_composite_merge_key_is_accepted() {
+    let dest = MemoryDestination::new();
+    let source = KeyedArrowSource {
+        batches: vec![batch_ab(&[1], &["a"])],
+        key: vec!["id".into(), "name".into()],
+    };
+    Engine::new(
+        merge_config("pt-kreorder", &["name", "id"]),
+        source,
+        dest.clone(),
+    )
+    .run()
+    .await
+    .expect("reordered composite key accepted");
+    assert_eq!(dest.committed_rows("metrics").len(), 1);
+}
+
 /// Amended B4: the Merge key must EQUAL the declared primary_key.
 #[tokio::test]
 async fn merge_key_mismatch_rejected_at_plan_time() {

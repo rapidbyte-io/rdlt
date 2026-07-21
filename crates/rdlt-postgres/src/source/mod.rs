@@ -413,7 +413,7 @@ impl Source for PostgresSource {
                             format!(
                                 "cursor `{}`: lag requires a primary key (reflected or \
                                  declared) — window rows re-deliver and dedup by key \
-                                 under Merge (contract cursor-lag.md L3)",
+                                 under Merge (contract cursor-lag.md L2)",
                                 cursor.column
                             ),
                         ));

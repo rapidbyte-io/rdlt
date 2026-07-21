@@ -158,10 +158,17 @@ async fn run_once(
                     spec.name
                 )));
             }
-            if key != declared {
+            // Order-insensitive: the key is a SET (reflection returns
+            // attnum order, users write DDL order — review F10).
+            let mut key_set = key.clone();
+            key_set.sort_unstable();
+            let mut declared_set = declared.clone();
+            declared_set.sort_unstable();
+            if key_set != declared_set {
                 return Err(RdltError::config(format!(
-                    "stream `{}`: Merge key {:?} must equal the stream's declared \
-                     primary_key {:?} (feature-006 keyed structured merge)",
+                    "stream `{}`: Merge key {:?} must name exactly the stream's \
+                     declared primary_key columns {:?} (feature-006 keyed \
+                     structured merge; order does not matter)",
                     spec.name, key, declared
                 )));
             }

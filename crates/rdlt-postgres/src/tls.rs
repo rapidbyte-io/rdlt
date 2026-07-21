@@ -143,6 +143,11 @@ pub struct ParsedConn {
 /// a bare parse error.
 pub fn parse_conn(conn: &str, block: Option<&TlsPolicy>) -> Result<ParsedConn, TlsConfigError> {
     let extracted = extract_tls_params(conn);
+    if let Some((param, value)) = &extracted.bad_escape {
+        return Err(TlsConfigError::ConnSyntax(format!(
+            "malformed percent-escape in `{param}` value `{value}`"
+        )));
+    }
     let mut pg: tokio_postgres::Config = extracted.remainder.parse().map_err(|e| {
         // P4: a driver rejection must name the parameter when one is the
         // cause — scan OUR key list for anything outside the driver's set.
@@ -291,6 +296,9 @@ fn param_hint(param: &str) -> String {
 /// every key seen (for named rejections).
 struct ExtractedConn {
     remainder: String,
+    /// First malformed percent-escape seen in an EXTRACTED value:
+    /// (param, raw value) — surfaced as a typed error (review F4).
+    bad_escape: Option<(String, String)>,
     /// Keys seen and KEPT for the driver (extracted ones are excluded —
     /// they cannot be the cause of a driver rejection).
     seen_keys: Vec<String>,
@@ -305,6 +313,7 @@ struct ExtractedConn {
 fn extract_tls_params(conn: &str) -> ExtractedConn {
     let mut out = ExtractedConn {
         remainder: String::new(),
+        bad_escape: None,
         seen_keys: Vec::new(),
         sslrootcert: None,
         sslcert: None,
@@ -331,7 +340,16 @@ fn extract_tls_params(conn: &str) -> ExtractedConn {
         let mut kept: Vec<&str> = Vec::new();
         for pair in query.split('&').filter(|p| !p.is_empty()) {
             let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
-            if !capture(key, percent_decode(value), &mut out) {
+            let decoded = match percent_decode(value) {
+                Ok(v) => v,
+                Err(()) => {
+                    if out.bad_escape.is_none() {
+                        out.bad_escape = Some((key.to_string(), value.to_string()));
+                    }
+                    value.to_string()
+                }
+            };
+            if !capture(key, decoded, &mut out) {
                 out.seen_keys.push(key.to_string());
                 kept.push(pair);
             }
@@ -401,17 +419,20 @@ fn extract_tls_params(conn: &str) -> ExtractedConn {
     out
 }
 
-fn percent_decode(value: &str) -> String {
+/// Strict: a `%` not followed by two hex digits is an error, never a silent
+/// literal passthrough (review F4).
+fn percent_decode(value: &str) -> Result<String, ()> {
     let bytes = value.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%'
-            && let (Some(h), Some(l)) = (
+        if bytes[i] == b'%' {
+            let (Some(h), Some(l)) = (
                 bytes.get(i + 1).and_then(|b| (*b as char).to_digit(16)),
                 bytes.get(i + 2).and_then(|b| (*b as char).to_digit(16)),
-            )
-        {
+            ) else {
+                return Err(());
+            };
             out.push((h * 16 + l) as u8);
             i += 3;
             continue;
@@ -419,7 +440,7 @@ fn percent_decode(value: &str) -> String {
         out.push(bytes[i]);
         i += 1;
     }
-    String::from_utf8_lossy(&out).into_owned()
+    Ok(String::from_utf8_lossy(&out).into_owned())
 }
 
 /// Resolve the effective policy from the parsed conn string and the optional
@@ -442,8 +463,13 @@ pub fn resolve_policy(
         });
     };
     let contradiction = match conn_mode {
-        // Explicit plaintext vs a block demanding encryption.
-        SslMode::Disable => block.mode.wants_encryption(),
+        // Explicit plaintext vs a block DEMANDING encryption. `prefer`
+        // tolerates plaintext by its own semantics (review F9: a block
+        // whose mode defaulted to prefer must compose with disable).
+        SslMode::Disable => matches!(
+            block.mode,
+            TlsMode::Require | TlsMode::VerifyCa | TlsMode::VerifyFull
+        ),
         // Explicit encryption vs a block demanding plaintext.
         SslMode::Require => block.mode == TlsMode::Disable,
         // Prefer (the unsignaled default) composes with anything.
@@ -660,7 +686,13 @@ fn client_config(policy: &TlsPolicy) -> Result<Option<rustls::ClientConfig>, Tls
 /// classify `Other` with the full detail preserved.
 pub fn classify_connect_error(err: &tokio_postgres::Error) -> ConnectError {
     use std::error::Error as _;
-    let detail = format!("{err}");
+    // tokio-postgres Display for db errors is just "db error" (006 finding);
+    // ALWAYS carry the real server message + SQLSTATE (review F3 — bad
+    // password / unknown database are the most common connect failures).
+    let detail = match err.as_db_error() {
+        Some(db) => format!("{err}: {} (SQLSTATE {})", db.message(), db.code().code()),
+        None => format!("{err}"),
+    };
     let mut source: Option<&(dyn std::error::Error + 'static)> = err.source();
     while let Some(cause) = source {
         // io::Error::source() skips its own inner error (it delegates to the
@@ -698,7 +730,7 @@ pub fn classify_connect_error(err: &tokio_postgres::Error) -> ConnectError {
     {
         return ConnectError {
             failure: TlsFailure::ClientCert,
-            detail: format!("{detail}: {}", db.message()),
+            detail,
             transient: false,
         };
     }
@@ -830,6 +862,31 @@ mod tests {
         assert!(resolve_policy(&conn("host=h sslmode=require"), Some(&disable)).is_err());
         // Prefer composes with anything.
         assert!(resolve_policy(&conn("host=h sslmode=prefer"), Some(&block)).is_ok());
+        // Review F9: a block whose mode is prefer (the DEFAULT — e.g. a
+        // block that only sets root_cert) tolerates plaintext by its own
+        // semantics and must compose with conn sslmode=disable.
+        let prefer_block = TlsPolicy {
+            root_cert: Some(RootCert("/some/ca.pem".into())),
+            ..TlsPolicy::default()
+        };
+        let resolved = resolve_policy(&conn("host=h sslmode=disable"), Some(&prefer_block))
+            .expect("prefer block composes with disable");
+        assert_eq!(resolved.mode, TlsMode::Prefer);
+    }
+
+    #[test]
+    fn malformed_percent_escapes_are_typed_errors() {
+        // Review F4: never a silent literal passthrough.
+        for bad in [
+            "postgresql://u@h/db?sslrootcert=%2",
+            "postgresql://u@h/db?sslkey=bad%zz&sslcert=/c.pem",
+        ] {
+            let err = parse_conn(bad, None).unwrap_err();
+            let msg = err.to_string();
+            assert!(msg.contains("percent-escape"), "{bad}: {msg}");
+        }
+        // Valid escapes still decode.
+        parse_conn("postgresql://u@h/db?sslrootcert=%2Fca.pem", None).expect("valid escape");
     }
 
     #[test]

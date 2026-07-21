@@ -437,12 +437,28 @@ mod tests {
             cols.iter().find(|c| c.name == "v").unwrap().mapped.decode,
             Decode::Timestamp { tz: true }
         );
-        // Undefined pair: int8 → uuid is not in the closed table.
+        // text → binary (contract row added with review F1): the text is
+        // parsed as bytea input server-side; decode becomes Bytea.
+        let bin = TableConfig {
+            type_hints: [("v".to_string(), HintType::Binary)].into_iter().collect(),
+            ..cfg.clone()
+        };
+        let cols = hinted_columns(&t, Some(&bin)).expect("binary hint applies");
+        assert_eq!(
+            cols.iter().find(|c| c.name == "v").unwrap().mapped.decode,
+            Decode::Bytea
+        );
+        // Undefined pairs stay closed: int8 → uuid and int8 → binary.
         let bad = TableConfig {
             type_hints: [("id".to_string(), HintType::Uuid)].into_iter().collect(),
             ..cfg.clone()
         };
         assert!(hinted_columns(&t, Some(&bad)).is_err());
+        let bad_bin = TableConfig {
+            type_hints: [("id".to_string(), HintType::Binary)].into_iter().collect(),
+            ..cfg.clone()
+        };
+        assert!(hinted_columns(&t, Some(&bad_bin)).is_err());
         // Hint on a non-selected column.
         let ghost = TableConfig {
             type_hints: [("ghost".to_string(), HintType::Utf8)]

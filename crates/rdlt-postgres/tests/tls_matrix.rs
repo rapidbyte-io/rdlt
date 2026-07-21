@@ -332,3 +332,20 @@ async fn sslrootcert_url_syncs_and_application_name_is_set() {
     .await
     .expect("sslrootcert URL opens (destination)");
 }
+
+/// Review F3: EVERY connect-phase db error carries the real server message —
+/// not just the cert-28000 shape. Unknown database is the everyday case.
+#[tokio::test(flavor = "multi_thread")]
+async fn common_connect_failures_carry_the_server_message() {
+    let plain = PgFixture::start().await;
+    let bad_db = plain
+        .conn_url()
+        .replace("dbname=postgres", "dbname=doesnotexist");
+    let err = probe_source(&bad_db, "")
+        .await
+        .expect_err("unknown database must fail");
+    assert!(
+        err.contains("doesnotexist") && err.contains("SQLSTATE"),
+        "server message + SQLSTATE surfaced, not bare 'db error': {err}"
+    );
+}
