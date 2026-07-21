@@ -273,9 +273,7 @@ impl PgDestOptions {
     }
 
     pub(super) fn merge_key_for(&self, table: &str) -> Option<&[String]> {
-        self.tables
-            .get(table)
-            .and_then(|t| t.merge_key.as_deref())
+        self.tables.get(table).and_then(|t| t.merge_key.as_deref())
     }
 }
 
@@ -386,7 +384,10 @@ mod tests {
         assert_eq!(ok.hard_delete_for("facts"), Some("is_deleted"));
         assert_eq!(ok.scd2_for("dims").absent, AbsentPolicy::Retire);
         let dedup = ok.dedup_sort_for("facts").expect("dedup_sort");
-        assert_eq!((dedup.column.as_str(), dedup.order), ("seq", SortOrder::Desc));
+        assert_eq!(
+            (dedup.column.as_str(), dedup.order),
+            ("seq", SortOrder::Desc)
+        );
         assert_eq!(
             ok.merge_key_for("facts"),
             Some(&["day".to_string(), "tenant".to_string()][..])

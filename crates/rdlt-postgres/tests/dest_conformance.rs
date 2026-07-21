@@ -944,3 +944,323 @@ mod strategies {
         assert!(msg.contains("ROOT table"), "{msg}");
     }
 }
+
+// ---- Feature 010: merge refinements (contract merge-refinements.md) ----
+
+mod refinements {
+    use std::sync::Arc;
+
+    use arrow_array::{BooleanArray, Int64Array, RecordBatch, StringArray};
+    use arrow_schema::{DataType, Field, Schema};
+    use async_trait::async_trait;
+    use rdlt_connector::{ConnectorSpec, Cursor, ReadRequest, Source, SourceError, StreamSpec};
+    use rdlt_engine::{Engine, EngineConfig};
+    use rdlt_postgres::dest::{
+        DedupSort, MergeStrategy, PgDestOptions, PgTableOptions, Postgres, SortOrder,
+    };
+
+    use super::start_pg;
+
+    /// (id, day, seq, name, deleted) — id is the identity key, day the
+    /// scope column, seq the dedup-sort column.
+    type Row = (i64, Option<i64>, Option<i64>, &'static str, Option<bool>);
+
+    fn batch(rows: &[Row]) -> RecordBatch {
+        RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("day", DataType::Int64, true),
+                Field::new("seq", DataType::Int64, true),
+                Field::new("name", DataType::Utf8, true),
+                Field::new("deleted", DataType::Boolean, true),
+            ])),
+            vec![
+                Arc::new(Int64Array::from(
+                    rows.iter().map(|r| r.0).collect::<Vec<_>>(),
+                )),
+                Arc::new(Int64Array::from(
+                    rows.iter().map(|r| r.1).collect::<Vec<_>>(),
+                )),
+                Arc::new(Int64Array::from(
+                    rows.iter().map(|r| r.2).collect::<Vec<_>>(),
+                )),
+                Arc::new(StringArray::from(
+                    rows.iter().map(|r| r.3).collect::<Vec<_>>(),
+                )),
+                Arc::new(BooleanArray::from(
+                    rows.iter().map(|r| r.4).collect::<Vec<_>>(),
+                )),
+            ],
+        )
+        .expect("batch")
+    }
+
+    /// Pushes each batch with its own checkpoint — under the default
+    /// commit policy every batch is its OWN COMMIT UNIT (the multi-unit
+    /// cells depend on this).
+    struct UnitsSource {
+        units: Vec<RecordBatch>,
+    }
+
+    #[async_trait]
+    impl Source for UnitsSource {
+        fn spec(&self) -> ConnectorSpec {
+            ConnectorSpec::new("refinements-test", "0.0.0")
+        }
+
+        async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
+            Ok(vec![
+                StreamSpec::new("events")
+                    .structured()
+                    .with_primary_key(["id"]),
+            ])
+        }
+
+        async fn read(&self, mut req: ReadRequest) -> Result<(), SourceError> {
+            for (i, unit) in self.units.iter().enumerate() {
+                let _ = req.out.arrow(unit.clone()).await;
+                let _ = req.out.checkpoint(Cursor::new(i as u64 + 1)).await;
+            }
+            Ok(())
+        }
+    }
+
+    #[derive(Clone, Copy, Default)]
+    struct Opts {
+        strategy: Option<MergeStrategy>,
+        dedup: Option<(&'static str, SortOrder)>,
+        merge_key: Option<&'static [&'static str]>,
+        hard_delete: bool,
+    }
+
+    fn dest(conn: &str, dataset: &str, opts: Opts) -> Postgres {
+        Postgres::connect(conn)
+            .dataset(dataset)
+            .options(PgDestOptions {
+                merge_strategy: opts.strategy.unwrap_or_default(),
+                tables: [(
+                    "events".to_string(),
+                    PgTableOptions {
+                        hard_delete: opts.hard_delete.then(|| "deleted".into()),
+                        dedup_sort: opts.dedup.map(|(column, order)| DedupSort {
+                            column: column.into(),
+                            order,
+                        }),
+                        merge_key: opts
+                            .merge_key
+                            .map(|c| c.iter().map(|s| s.to_string()).collect()),
+                        ..PgTableOptions::default()
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            })
+            .expect("valid options")
+    }
+
+    async fn run(conn: &str, dataset: &str, opts: Opts, units: Vec<Vec<Row>>) {
+        let mut config = EngineConfig::new(format!("mr-{dataset}"));
+        config.write_mode = rdlt_connector::WriteMode::Merge {
+            key: vec!["id".into()],
+        };
+        let units = units.iter().map(|u| batch(u)).collect();
+        Engine::new(config, UnitsSource { units }, dest(conn, dataset, opts))
+            .run()
+            .await
+            .expect("merge run");
+    }
+
+    /// `(id, day, seq, name)` rows of `<dataset>.events`, id-ordered.
+    async fn rows(conn: &str, dataset: &str) -> Vec<(i64, Option<i64>, Option<i64>, String)> {
+        let (client, connection) = tokio_postgres::connect(conn, tokio_postgres::NoTls)
+            .await
+            .expect("connect");
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        client
+            .query(
+                &format!(
+                    "SELECT id, day, seq, name FROM \"{dataset}\".events ORDER BY id, day, seq"
+                ),
+                &[],
+            )
+            .await
+            .expect("rows")
+            .into_iter()
+            .map(|r| (r.get(0), r.get(1), r.get(2), r.get::<_, String>(3)))
+            .collect()
+    }
+
+    // ---- US1: ordered survivor selection (MR1/MR2, SC-001) ----
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dedup_sort_orders_survivors_not_arrival() {
+        let (_c, conn) = start_pg().await;
+        // Wrong arrival order: the newest version arrives FIRST.
+        let load: Vec<Vec<Row>> = vec![vec![
+            (1, None, Some(5), "newest", None),
+            (1, None, Some(3), "older", None),
+        ]];
+
+        // desc: greatest seq survives, despite arriving first.
+        let desc = Opts {
+            dedup: Some(("seq", SortOrder::Desc)),
+            ..Opts::default()
+        };
+        run(&conn, "mr_desc", desc, load.clone()).await;
+        assert_eq!(
+            rows(&conn, "mr_desc").await,
+            vec![(1, None, Some(5), "newest".into())]
+        );
+
+        // asc: least seq survives.
+        let asc = Opts {
+            dedup: Some(("seq", SortOrder::Asc)),
+            ..Opts::default()
+        };
+        run(&conn, "mr_asc", asc, load.clone()).await;
+        assert_eq!(
+            rows(&conn, "mr_asc").await,
+            vec![(1, None, Some(3), "older".into())]
+        );
+
+        // FR-002: absent the option, arrival-order last-wins is UNCHANGED.
+        run(&conn, "mr_absent", Opts::default(), load.clone()).await;
+        assert_eq!(
+            rows(&conn, "mr_absent").await,
+            vec![(1, None, Some(3), "older".into())]
+        );
+
+        // The same desc rule under the UPSERT arm (MR2 — one shared shape).
+        let upsert = Opts {
+            strategy: Some(MergeStrategy::Upsert),
+            dedup: Some(("seq", SortOrder::Desc)),
+            ..Opts::default()
+        };
+        run(&conn, "mr_upsert", upsert, load).await;
+        assert_eq!(
+            rows(&conn, "mr_upsert").await,
+            vec![(1, None, Some(5), "newest".into())]
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dedup_sort_survivor_drives_hard_delete() {
+        let (_c, conn) = start_pg().await;
+        let opts = Opts {
+            dedup: Some(("seq", SortOrder::Desc)),
+            hard_delete: true,
+            ..Opts::default()
+        };
+        // Seed the key, then a load where the NEWEST version is flagged
+        // deleted but an OLDER unflagged version arrives after it.
+        run(
+            &conn,
+            "mr_flag",
+            opts,
+            vec![vec![(1, None, Some(1), "seed", None)]],
+        )
+        .await;
+        run(
+            &conn,
+            "mr_flag",
+            opts,
+            vec![vec![
+                (1, None, Some(5), "kill", Some(true)),
+                (1, None, Some(3), "stale", None),
+            ]],
+        )
+        .await;
+        assert_eq!(
+            rows(&conn, "mr_flag").await,
+            vec![],
+            "the SURVIVOR's flag decides (US1-AS3) — the row is gone"
+        );
+
+        // Under asc the unflagged older version survives instead.
+        let asc = Opts {
+            dedup: Some(("seq", SortOrder::Asc)),
+            hard_delete: true,
+            ..Opts::default()
+        };
+        run(
+            &conn,
+            "mr_flag_asc",
+            asc,
+            vec![vec![(1, None, Some(1), "seed", None)]],
+        )
+        .await;
+        run(
+            &conn,
+            "mr_flag_asc",
+            asc,
+            vec![vec![
+                (1, None, Some(5), "kill", Some(true)),
+                (1, None, Some(3), "stale", None),
+            ]],
+        )
+        .await;
+        assert_eq!(
+            rows(&conn, "mr_flag_asc").await,
+            vec![(1, None, Some(3), "stale".into())]
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dedup_sort_null_and_tie_policy_is_deterministic() {
+        let (_c, conn) = start_pg().await;
+        let opts = Opts {
+            dedup: Some(("seq", SortOrder::Desc)),
+            ..Opts::default()
+        };
+        // NULL loses to a value in EITHER direction (US1-AS4).
+        run(
+            &conn,
+            "mr_null",
+            opts,
+            vec![vec![
+                (1, None, None, "null-seq", None),
+                (1, None, Some(3), "valued", None),
+            ]],
+        )
+        .await;
+        assert_eq!(
+            rows(&conn, "mr_null").await,
+            vec![(1, None, Some(3), "valued".into())]
+        );
+
+        // All NULL: deterministic last-wins.
+        run(
+            &conn,
+            "mr_all_null",
+            opts,
+            vec![vec![
+                (1, None, None, "first", None),
+                (1, None, None, "last", None),
+            ]],
+        )
+        .await;
+        assert_eq!(
+            rows(&conn, "mr_all_null").await,
+            vec![(1, None, None, "last".into())]
+        );
+
+        // Tie: arrival breaks it, replay converges to the same survivor
+        // (US1-AS5) — a second identical run moves the state nowhere.
+        let tie: Vec<Vec<Row>> = vec![vec![
+            (1, None, Some(5), "first", None),
+            (1, None, Some(5), "last", None),
+        ]];
+        run(&conn, "mr_tie", opts, tie.clone()).await;
+        assert_eq!(
+            rows(&conn, "mr_tie").await,
+            vec![(1, None, Some(5), "last".into())]
+        );
+        run(&conn, "mr_tie", opts, tie).await;
+        assert_eq!(
+            rows(&conn, "mr_tie").await,
+            vec![(1, None, Some(5), "last".into())]
+        );
+    }
+}

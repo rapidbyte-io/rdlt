@@ -409,6 +409,7 @@ impl LoadSession for PgSession {
                                 let root_schema = self.tables.get(&roots[table]).map(|(s, _)| s)?;
                                 Some(HardDelete::new(col, root_schema))
                             }),
+                        dedup_sort: self.options.dedup_sort_for(table.as_str()),
                     };
                     match (schema_has_identity, strategy) {
                         (false, MergeStrategy::DeleteInsert) => {
@@ -553,6 +554,9 @@ struct MergePlan<'a> {
     root_stage: String,
     is_child: bool,
     hard_delete: Option<HardDelete>,
+    /// Feature 010 (MR1): ordered in-load survivor selection; None keeps
+    /// arrival-order last-wins.
+    dedup_sort: Option<&'a super::config::DedupSort>,
 }
 
 impl MergePlan<'_> {
@@ -564,10 +568,25 @@ impl MergePlan<'_> {
             .join(", ")
     }
 
-    /// Last-wins in-batch dedup over the stage (finding #7).
+    /// In-batch dedup over the stage: arrival-order last-wins (finding #7),
+    /// or — feature 010 MR1 — ordered survivor selection when `dedup_sort`
+    /// is declared. Values beat NULL (`NULLS LAST` both directions); the
+    /// arrival column stays as the trailing tie-breaker, so ties and
+    /// all-NULL groups keep the deterministic last-wins. EVERY strategy's
+    /// survivor decision flows through here (MR2).
     fn deduped(&self, identity: &str) -> String {
+        let sort = match self.dedup_sort {
+            Some(d) => {
+                let dir = match d.order {
+                    super::config::SortOrder::Asc => "ASC",
+                    super::config::SortOrder::Desc => "DESC",
+                };
+                format!("{} {dir} NULLS LAST, ", quote(&d.column))
+            }
+            None => String::new(),
+        };
         format!(
-            "(SELECT DISTINCT ON ({identity}) * FROM {} ORDER BY {identity}, {} DESC)",
+            "(SELECT DISTINCT ON ({identity}) * FROM {} ORDER BY {identity}, {sort}{} DESC)",
             self.stage,
             quote(ARRIVAL_COL)
         )

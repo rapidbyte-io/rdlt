@@ -45,7 +45,7 @@ direction through the ONE shared dedup shape; absent = unchanged.
 wrong arrival order: `desc` keeps the newest, `asc` the oldest, absent
 keeps last-arriving; the survivor's flag drives hard-delete.
 
-- [ ] T002 [US1] `MergePlan::deduped()` ordering rewrite in
+- [X] T002 [US1] `MergePlan::deduped()` ordering rewrite in
       `crates/rdlt-postgres/src/dest/commit.rs`: `ORDER BY {key},
       {column} {DESC|ASC} NULLS LAST, __rdlt_arrival DESC` when
       dedup_sort is declared (R1/MR1) — `flagged_roots()` untouched
