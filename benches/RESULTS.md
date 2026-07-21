@@ -115,6 +115,15 @@ Scoreboard entries (no gate): the auto-ensured merge-identity indexes
 (feature 008 M5) eliminate the unindexed scan exactly where incremental
 merges live, and cost nothing where they don't apply.
 
+Strategy comparison (`benches/run-merge-strategies.sh`, 1M-row pg→pg,
+load 2 re-delivers everything with 50% changed, 5-run medians,
+2026-07-21): delete-insert 4.84 s vs upsert 4.97 s — statistically
+indistinguishable in the full-redelivery regime (both inside the
+session jitter band). Upsert's value is SEMANTIC: matched keys update
+in place with no delete-visibility window, and it composes with
+hard-delete — not raw throughput. Recorded so nobody re-runs this
+expecting a speedup that was never the point.
+
 ## Perf-regression gate (feature 003, G1)
 
 Instruction-count baselines for the hot paths live in

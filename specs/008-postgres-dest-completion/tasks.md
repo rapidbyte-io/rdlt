@@ -177,12 +177,12 @@ the server message and SQLSTATE in the pipeline error.
 
 ## Phase 7: Polish & close-out
 
-- [ ] T013 [P] CLI + schemas: `crates/rdlt-cli/src/main.rs`
+- [X] T013 [P] CLI + schemas: `crates/rdlt-cli/src/main.rs`
       `[destination.postgres]` gains merge_strategy/tables/hard_delete/
       scd2 (same serde types); `crates/rdlt-postgres/tests/config_schema.rs`
       grows PgDestOptions round-trips — examples validate, unknown
       fields fail both, contradiction cells (SC-008, FR-012).
-- [ ] T014 [P] Strategy scoreboard: merge-heavy cells (1M rows, ~50%
+- [X] T014 [P] Strategy scoreboard: merge-heavy cells (1M rows, ~50%
       updates: delete-insert vs upsert) in `benches/run-pg.sh`;
       medians recorded as scoreboard entries in `benches/RESULTS.md`
       with a history line (FR-013; measurement-first, no gate moves).

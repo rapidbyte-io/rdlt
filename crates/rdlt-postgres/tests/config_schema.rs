@@ -95,3 +95,57 @@ fn schema_valid_corpus_parses() {
     assert!(validator.is_valid(&new_fields), "new fields validate");
     PostgresConfig::from_value(new_fields).expect("new fields parse");
 }
+
+// ---- Feature 008: destination options schema (SC-008) ----
+
+mod dest_options {
+    use jsonschema::validator_for;
+    use rdlt_postgres::dest::PgDestOptions;
+    use serde_json::json;
+
+    fn schema() -> serde_json::Value {
+        serde_json::to_value(schemars::schema_for!(PgDestOptions)).expect("schema serializes")
+    }
+
+    #[test]
+    fn documented_example_validates_and_parses() {
+        let validator = validator_for(&schema()).expect("generated schema compiles");
+        let example = json!({
+            "merge_strategy": "upsert",
+            "tables": {
+                "customers": {"merge_strategy": "scd2",
+                               "scd2": {"absent": "retire",
+                                        "valid_from": "_rdlt_valid_from",
+                                        "valid_to": "_rdlt_valid_to"}},
+                "orders": {"hard_delete": "is_deleted"}
+            }
+        });
+        assert!(
+            validator.is_valid(&example),
+            "example must validate: {:?}",
+            validator.iter_errors(&example).next()
+        );
+        PgDestOptions::from_value(example).expect("schema-valid example parses");
+    }
+
+    #[test]
+    fn unknown_fields_and_contradictions_fail_both_layers() {
+        let validator = validator_for(&schema()).expect("schema compiles");
+        // Unknown field: schema AND parser agree.
+        let bad = json!({"merge_stratgy": "upsert"});
+        assert!(!validator.is_valid(&bad));
+        assert!(PgDestOptions::from_value(bad).is_err());
+        // Unknown strategy value.
+        let bad = json!({"merge_strategy": "replace"});
+        assert!(!validator.is_valid(&bad));
+        assert!(PgDestOptions::from_value(bad).is_err());
+        // Schema-valid but semantically contradictory (S8): the VALIDATOR
+        // accepts the shape; the parser's validate() names the field.
+        let contradiction = json!({
+            "tables": {"t": {"merge_strategy": "scd2", "hard_delete": "gone"}}
+        });
+        assert!(validator.is_valid(&contradiction), "shape is legal");
+        let err = PgDestOptions::from_value(contradiction).unwrap_err();
+        assert!(err.contains("tables.t.hard_delete"), "{err}");
+    }
+}

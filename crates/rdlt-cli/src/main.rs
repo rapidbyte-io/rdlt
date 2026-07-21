@@ -59,6 +59,13 @@ enum DestSpec {
         dataset: String,
         /// Optional TLS block: `tls = { mode = "verify_full", root_cert = "/ca.pem" }`.
         tls: Option<rdlt::postgres_tls::TlsPolicy>,
+        /// Feature 008: destination-wide merge strategy
+        /// ("delete_insert" | "upsert" | "scd2").
+        merge_strategy: Option<rdlt::postgres::MergeStrategy>,
+        /// Feature 008: per-table options —
+        /// `[destination.postgres.tables.<name>]` with `merge_strategy`,
+        /// `hard_delete`, and `[….scd2]` `{valid_from, valid_to, absent}`.
+        tables: Option<std::collections::BTreeMap<String, rdlt::postgres::PgTableOptions>>,
     },
     Parquet {
         path: PathBuf,
@@ -172,10 +179,25 @@ async fn run(spec_path: PathBuf, report_path: Option<PathBuf>) -> Result<(), Cli
                     }
                     builder.destination(dest).build()?
                 }
-                DestSpec::Postgres { conn, dataset, tls } => {
+                DestSpec::Postgres {
+                    conn,
+                    dataset,
+                    tls,
+                    merge_strategy,
+                    tables,
+                } => {
                     let mut dest = rdlt::postgres::Postgres::connect(conn).dataset(dataset);
                     if let Some(policy) = tls {
                         dest = dest.tls(policy.clone());
+                    }
+                    if merge_strategy.is_some() || tables.is_some() {
+                        let options = rdlt::postgres::PgDestOptions {
+                            merge_strategy: merge_strategy.unwrap_or_default(),
+                            tables: tables.clone().unwrap_or_default(),
+                        };
+                        dest = dest
+                            .options(options)
+                            .map_err(|e| CliError::Usage(format!("destination options: {e}")))?;
                     }
                     builder.destination(dest).build()?
                 }
