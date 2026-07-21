@@ -122,7 +122,7 @@ naming the key; sweep green; index measurement recorded.
       into the keyed sweep harness; upsert cells across every
       registered fail point × three actions with armed-fire pins
       (M2, SC-002 second half).
-- [ ] T009 [US2] Index measurement (FR-009, SC-005): recipe in
+- [X] T009 [US2] Index measurement (FR-009, SC-005): recipe in
       `benches/run-pg.sh` (or a sibling script) — large keyed merge,
       drop-index baseline vs indexed, same session, 5-run medians;
       record BOTH numbers as a scoreboard entry in

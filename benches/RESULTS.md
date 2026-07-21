@@ -101,6 +101,20 @@ Caveats, stated so the numbers stay honest:
   reduce to the same DuckDB C++ appender); parquet→parquet is the
   engine-bound claim.
 
+## Merge-path index scoreboard (feature 008, FR-009 — measured 2026-07-21)
+
+`benches/run-merge-index.sh`, the EXACT DELETE shape the delete-insert
+strategy emits, 10M-row target, BEGIN/ROLLBACK isolation, 5-run medians:
+
+| Regime | Unindexed | Indexed (`rdlt_ix_*`) | Effect |
+|---|---|---|---|
+| Incremental delta (5k keys vs 10M rows) | 583.9 ms | 28.6 ms | **20.4× faster** — the common production merge |
+| Half-table delta (5M keys) | 24,209 ms | 23,322 ms | planner ignores the index; no penalty |
+
+Scoreboard entries (no gate): the auto-ensured merge-identity indexes
+(feature 008 M5) eliminate the unindexed scan exactly where incremental
+merges live, and cost nothing where they don't apply.
+
 ## Perf-regression gate (feature 003, G1)
 
 Instruction-count baselines for the hot paths live in
