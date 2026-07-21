@@ -43,8 +43,16 @@ enum SourceSpec {
     Rest { config: PathBuf },
     /// Path to the file source YAML (jsonl/parquet streams).
     File { config: PathBuf },
-    /// Path to the Postgres source YAML (tables, cursors, batching).
-    Postgres { config: PathBuf },
+    /// Postgres source: either `config` (path to the YAML/JSON document) or
+    /// the same document INLINE under `[source.postgres.inline]` — exactly
+    /// one of the two (parity with the inline destination block). Boxed:
+    /// the inline document dwarfs the path-only variants.
+    Postgres {
+        #[serde(default)]
+        config: Option<PathBuf>,
+        #[serde(default)]
+        inline: Option<Box<rdlt::postgres_source::PostgresConfig>>,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -241,15 +249,42 @@ async fn run(spec_path: PathBuf, report_path: Option<PathBuf>) -> Result<(), Cli
             .map_err(|e| CliError::Usage(e.to_string()))?;
             run_with!(source)
         }
-        SourceSpec::Postgres { config } => {
-            let text = std::fs::read_to_string(config)
-                .map_err(|e| CliError::Usage(format!("reading {}: {e}", config.display())))?;
-            let parsed = if is_json(config) {
-                rdlt::postgres_source::PostgresConfig::from_json(&text)
-            } else {
-                rdlt::postgres_source::PostgresConfig::from_yaml(&text)
-            }
-            .map_err(|e| CliError::Usage(e.to_string()))?;
+        SourceSpec::Postgres { config, inline } => {
+            let parsed = match (config, inline) {
+                (Some(path), None) => {
+                    let text = std::fs::read_to_string(path)
+                        .map_err(|e| CliError::Usage(format!("reading {}: {e}", path.display())))?;
+                    if is_json(path) {
+                        rdlt::postgres_source::PostgresConfig::from_json(&text)
+                    } else {
+                        rdlt::postgres_source::PostgresConfig::from_yaml(&text)
+                    }
+                    .map_err(|e| CliError::Usage(e.to_string()))?
+                }
+                (None, Some(inline)) => {
+                    // TOML deserialization bypassed the document validation;
+                    // route through the shared from_value gate so inline and
+                    // file configs are held to identical rules.
+                    let value =
+                        serde_json::to_value(inline).map_err(|e| CliError::Usage(e.to_string()))?;
+                    rdlt::postgres_source::PostgresConfig::from_value(value)
+                        .map_err(|e| CliError::Usage(e.to_string()))?
+                }
+                (Some(_), Some(_)) => {
+                    return Err(CliError::Usage(
+                        "source.postgres: `config` and `inline` are mutually \
+                         exclusive — provide one"
+                            .into(),
+                    ));
+                }
+                (None, None) => {
+                    return Err(CliError::Usage(
+                        "source.postgres: provide `config` (path to the YAML/JSON \
+                         document) or `inline` (the same document inline)"
+                            .into(),
+                    ));
+                }
+            };
             for warning in cdc_composition_warnings(&spec, &parsed) {
                 eprintln!("warning: {warning}");
             }
@@ -428,6 +463,52 @@ mod tests {
             events.merge_key.as_deref(),
             Some(&["day".to_string(), "tenant".to_string()][..])
         );
+    }
+
+    /// Inline source config (parity with the inline destination): the full
+    /// document rides the pipeline TOML and is held to the SAME validation
+    /// as file configs (the from_value gate).
+    #[test]
+    fn inline_postgres_source_parses_and_validates() {
+        let parsed = spec(
+            "pipeline = \"p\"\n\
+             [write_mode.merge]\nkey = [\"id\"]\n\
+             [source.postgres.inline]\nconn = \"host=localhost\"\n\
+             [[source.postgres.inline.tables]]\nname = \"orders\"\n\
+             [source.postgres.inline.tables.cursor]\ncolumn = \"updated_at\"\n\
+             lag = \"5m\"\n\
+             [destination.postgres]\nconn = \"host=x\"\ndataset = \"d\"\n",
+        );
+        let SourceSpec::Postgres { config, inline } = &parsed.source else {
+            panic!("postgres source");
+        };
+        assert!(config.is_none());
+        let inline = inline.as_ref().expect("inline config");
+        let table = &inline.tables.as_ref().expect("tables")[0];
+        assert_eq!(table.name, "orders");
+        assert_eq!(table.cursor.as_ref().expect("cursor").column, "updated_at");
+        // The run() path re-validates through from_value — prove the gate
+        // holds for inline documents too.
+        let value = serde_json::to_value(inline).expect("serialize");
+        rdlt::postgres_source::PostgresConfig::from_value(value).expect("valid inline");
+
+        // …and rejects invalid shapes identically (cdc + cursor, C1).
+        let bad = spec(
+            "pipeline = \"p\"\n\
+             [source.postgres.inline]\nconn = \"host=localhost\"\n\
+             [source.postgres.inline.cdc]\nslot = \"s\"\npublication = \"p\"\n\
+             [[source.postgres.inline.tables]]\nname = \"t\"\n\
+             [source.postgres.inline.tables.cursor]\ncolumn = \"id\"\n\
+             [destination.postgres]\nconn = \"host=x\"\ndataset = \"d\"\n",
+        );
+        let SourceSpec::Postgres { inline, .. } = &bad.source else {
+            panic!("postgres source");
+        };
+        let value = serde_json::to_value(inline.as_ref().unwrap()).expect("serialize");
+        let err = rdlt::postgres_source::PostgresConfig::from_value(value)
+            .expect_err("C1 holds inline")
+            .to_string();
+        assert!(err.contains("mutually exclusive"), "{err}");
     }
 
     /// C3 capture matrix: the recommended composition is silent; every

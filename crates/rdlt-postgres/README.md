@@ -27,28 +27,35 @@ cdc-config, cdc-operability), `010-merge-refinements`
 
 ## Quick start
 
-Source config (YAML), pipeline spec (TOML, via the `rdlt` CLI):
-
-```yaml
-# source.yaml — mirror two tables, incremental on one
-conn: "postgresql://etl@db.internal/app?sslmode=verify-full&sslrootcert=/etc/ca.pem"
-tables:
-  - name: orders
-    cursor: { column: updated_at }
-  - name: customers
-```
+One pipeline TOML, source and destination both inline (via the `rdlt`
+CLI — `rdlt run pipeline.toml`):
 
 ```toml
-# pipeline.toml
+# pipeline.toml — mirror two tables, incremental on one
 pipeline = "app-mirror"
 write_mode = { merge = { key = ["id"] } }
-[source.postgres]
-config = "source.yaml"
+
+[source.postgres.inline]
+conn = "postgresql://etl@db.internal/app?sslmode=verify-full&sslrootcert=/etc/ca.pem"
+
+[[source.postgres.inline.tables]]
+name = "orders"
+cursor = { column = "updated_at" }
+
+[[source.postgres.inline.tables]]
+name = "customers"
+
 [destination.postgres]
 conn = "host=warehouse user=loader password=… dbname=analytics"
 dataset = "mirror"
 merge_strategy = "upsert"
 ```
+
+The source document can also live in its own reusable YAML/JSON file —
+`[source.postgres] config = "source.yaml"` — with the **same fields and
+identical validation**; `config` and `inline` are mutually exclusive.
+This README shows source examples in YAML (the file form); every field
+maps 1:1 to the inline TOML shape above.
 
 Library embedders build the same objects directly:
 `PostgresSource::from_yaml / from_json / from_value` and
@@ -59,10 +66,31 @@ platform-side validation and the parser cannot drift.
 
 ---
 
+## Pipeline spec (CLI)
+
+The `rdlt` CLI runs one pipeline per TOML file. Top-level fields:
+
+| Field | Type / values | Default | Description |
+|---|---|---|---|
+| `pipeline` | string | required | Pipeline id — names engine state; keep it stable across runs (cursors and resume state key on it). |
+| `workdir` | path | `.rdlt` | Engine working directory (WAL, state). |
+| `write_mode` | `"append"` \| `"replace"` \| `{ merge = { key = [...] } }` | `append` | Write disposition for every stream. `append` adds rows; `replace` truncates once per load then loads; `merge` converges to one row per key — required for the upsert/scd2 strategies, cursor-lag exact totals, and the CDC composition. |
+| `source.postgres` | `config` (path) XOR `inline` (document) | required | The source document — see the full reference below. |
+| `destination.postgres` | inline fields | required | Connection + options — see the full reference below. |
+
+(Other connectors — `source.rest`, `source.file`, `destination.duckdb`,
+`destination.parquet` — take their own blocks; this README covers
+postgres.)
+
+---
+
 ## Source configuration — full reference
 
-One YAML/JSON document. Unknown fields are errors everywhere (schema
-AND parser). Validation failures name the offending field/table/column.
+One document, three carriers with identical fields and identical
+validation: a YAML file, a JSON file (both via `config = "path"`), or
+inline TOML under `[source.postgres.inline]`. Unknown fields are errors
+everywhere (schema AND parser). Validation failures name the offending
+field/table/column.
 
 ### Top level
 
@@ -233,10 +261,18 @@ log-scraping.
 ## Destination configuration — full reference
 
 Builder: `Postgres::connect(conn).dataset(schema).tls(policy).options(options)`.
-CLI TOML: `[destination.postgres]` with `conn`, `dataset`, `tls`,
-`merge_strategy`, and `[destination.postgres.tables.<name>]` blocks.
+CLI TOML: `[destination.postgres]` with the connection fields below,
+plus `merge_strategy` and `[destination.postgres.tables.<name>]` blocks.
 Options are validated at construction (`options()` returns the error) —
 and again at open against the live stream schema.
+
+### Connection
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `conn` | string | required | libpq-style connection string or URL — same parsing, portability rules, and typed rejections as the source (`application_name = rdlt` unless the string sets its own). |
+| `dataset` | string | `public` | Target schema; created if missing. Engine bookkeeping tables (`_rdlt_state`, `_rdlt_commits`) and per-pipeline staging tables live here too. |
+| `tls` | TLS block | absent (= `prefer`) | The SAME policy type and code path as the source — see **TLS** in the source reference. TOML: `tls = { mode = "verify_full", root_cert = "/ca.pem" }`. |
 
 Native types need **zero configuration**: decimals land as
 `numeric(p,s)`, JSON as `jsonb`, UUIDs as `uuid`, required columns
