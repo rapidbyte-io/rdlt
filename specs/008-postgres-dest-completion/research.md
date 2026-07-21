@@ -32,10 +32,14 @@ conversion adds its own edge cases). Text-format COPY fallback for the
 new types — rejected (two code paths, and CSV/text COPY is the slower
 path we deliberately avoid).
 
-## R2 — Capability flips: data-only, engine untouched
+## R2 — Capability flips: data-only, engine untouched, ZERO user configuration
 
 **Decision**: `DestCapabilities { decimal: true, json_type: true }` for
-the postgres destination. Verified: engine lowering is entirely
+the postgres destination. These are CODE-LEVEL declarations inside the
+connector's own `capabilities()` method (the struct that already says
+`merge: true`) — not configuration. No config key exists or will exist
+for them; users of the connector sync a decimal/JSON/UUID column and
+get the native type, full stop (owner clarification, 2026-07-21). Verified: engine lowering is entirely
 capability-driven (`crates/rdlt-engine/src/load/lowering.rs:59,125` —
 `if !caps.decimal` lowers Decimal128 to rendered text; with the flag on,
 Decimal128 passes through untouched). `LogicalType::Uuid` needs no
