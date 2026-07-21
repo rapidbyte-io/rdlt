@@ -129,7 +129,7 @@ round-trips.
       armed (both occurrence passes, armed-fire pins), post-recovery
       equality incl. a receipts-consistency check — a replayed unit
       never double-deletes a scope (SC-003, MR5).
-- [ ] T008 [P] Scoreboard in `benches/run-merge-refinements.sh` (new):
+- [X] T008 [P] Scoreboard in `benches/run-merge-refinements.sh` (new):
       (a) scope-replace of one 100k-row scope in the 10M-row harness vs
       identity-only delete-insert; (b) ordered dedup on a 2×-duplicated
       1M-row stage vs last-wins; 5-run medians recorded in

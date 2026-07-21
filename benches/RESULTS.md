@@ -124,6 +124,16 @@ in place with no delete-visibility window, and it composes with
 hard-delete — not raw throughput. Recorded so nobody re-runs this
 expecting a speedup that was never the point.
 
+Merge-refinement cells (`benches/run-merge-refinements.sh`, feature 010,
+5-run medians, 2026-07-21; scoreboard, no gate — the new SQL runs only
+when the options are declared, so every existing bar is untouched by
+construction):
+
+| Cell | Median | Notes |
+|---|---|---|
+| Scope-replace delete | 1,559.9 ms | 100k-row scope out of a 10M-row scoped target (scope indexed); the identity-only delete of the SAME keys costs 1,933.5 ms — the scope route is ~19% FASTER (one index probe vs 100k key lookups) |
+| Ordered dedup | 278.4 ms | `DISTINCT ON` with `seq DESC NULLS LAST` over a 2×-duplicated 1M-row stage; plain last-wins costs 334.6 ms on the same stage — the extra sort key costs nothing here |
+
 CDC cells (`benches/run-cdc.sh`, feature 009, 5-run medians, 2026-07-21;
 scoreboard, no gate — the snapshot itself rides the existing gated COPY
 path unchanged):
@@ -177,6 +187,10 @@ cross-toolchain comparisons refused — re-record deliberately). Recorded
   hints, query streams, and the keyed-merge engine changes cost nothing
   measurable on the hot paths.
 
+- 2026-07-21 (feature 010): merge refinements (dedup_sort + merge_key)
+  land as scoreboard cells — scope-replace 1.56 s for a 100k-row scope
+  on 10M rows (faster than the identity route), ordered dedup 278 ms on
+  a 2M-row stage; no new gates, existing bars untouched.
 - 2026-07-21 (feature 009): Postgres CDC lands — change-apply 6.96 s
   median for a 500k-change catch-up on 1M rows (≈72k changes/s, full
   pg→pg upsert+hard-delete composition), quiet catch-up latency 50 ms
