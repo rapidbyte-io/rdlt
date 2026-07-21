@@ -130,7 +130,7 @@ fixed+pinned or doc-corrected.
 **Independent Test**: `make coverage` reproduces the recorded number;
 exclusion list short with reasons.
 
-- [ ] T012 [US2] Final coverage + classification: re-run
+- [X] T012 [US2] Final coverage + classification: re-run
       `make coverage`; record final total + per-file table in
       `benches/RESULTS.md` next to the T001 baseline; classify EVERY
       remaining uncovered cluster (research R2 hypotheses verified —

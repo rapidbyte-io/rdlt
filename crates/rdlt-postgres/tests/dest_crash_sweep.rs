@@ -221,7 +221,7 @@ impl Source for KeyedArrowSource {
 
 fn with_strategy(dest: Postgres, strategy: rdlt_postgres::dest::MergeStrategy) -> Postgres {
     dest.options(rdlt_postgres::dest::PgDestOptions {
-        merge_strategy: strategy,
+        merge_strategy: Some(strategy),
         ..Default::default()
     })
     .expect("valid options")

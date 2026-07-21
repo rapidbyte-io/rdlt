@@ -131,12 +131,21 @@ cargo-llvm-cov 0.8.7; floor: 80% lines; NOT a CI gate):
 | Measurement | Lines | Functions | Date |
 |---|---|---|---|
 | Baseline (before feature-011 cells) | 87.69% / 87.71% (two runs, stable) | 83.17% | 2026-07-21 |
-| Final | recorded at feature close | | |
+| Final (feature 011 close) | **88.98%** | 84.13%* | 2026-07-21 |
 
-Baseline per-file outliers (hypotheses verified during the audit —
-research R2): source/mod.rs 43.63% (testhook bench/fuzz entries),
-dest/mod.rs 74.51%, source/types.rs 76.88%, tls_verify.rs 79.75%,
-encode.rs 84.82%, cursor.rs 85.16%; all else ≥ 86%.
+Feature-011 delta: types.rs 76.88% → 91.59% (the hint-matrix cell),
+encode.rs → 87.46%, cursor.rs → 85.42%; 13 new behavioral cells + the
+R5 fix. Classified exclusions (verified via `--show-missing-lines`,
+each a REAL uncovered cluster with a stated reason — contract PM5):
+
+| Cluster | Lines | Reason |
+|---|---|---|
+| source/mod.rs 82–262 | ~168 | the `testhook` module (bench_wire/bench_decode/fuzz entries) executes only under benches and fuzz targets, outside nextest — instrumentation surface, not product paths |
+| source/mod.rs scattered (368–372, 515–517, 566–568, 593–617, 652–658, …) | ~30 | defensive engine-contract guards (e.g. stream-without-reflected-table) unreachable through the engine, plus thin `PostgresSource::from_json/from_value` delegators whose shared validation path is covered at the config layer |
+| dest/mod.rs (51–59, 75, 89–91) | 13 | capability/edge helper arms |
+| tls_verify.rs (52–59, 116–123) | 16 | verifier trait methods for protocol variants the TLS matrix's handshakes never negotiate (TLS 1.2 signature arms under a TLS 1.3 stack) |
+
+(*function coverage; region 88.??% — see `make coverage` output.)
 
 Merge-refinement cells (`benches/run-merge-refinements.sh`, feature 010,
 5-run medians, 2026-07-21; scoreboard, no gate — the new SQL runs only
