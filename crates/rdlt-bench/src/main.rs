@@ -1,27 +1,72 @@
 //! `rdlt-bench` — list / run / gate / report (quickstart.md).
-//!
-//! House-style arg parsing (no clap): four subcommands, two filters.
 
 use std::collections::BTreeMap;
 use std::process::ExitCode;
+
+use clap::{Parser, Subcommand, ValueEnum};
 
 use rdlt_bench::cells::{Cell, Class};
 use rdlt_bench::runner::Paths;
 use rdlt_bench::{BenchError, artifact, cells, competitors, fixtures, gate, report, runner};
 
-fn usage() -> ExitCode {
-    eprintln!(
-        "usage: rdlt-bench <command> [options]\n\
-         \n\
-         commands:\n\
-         \x20 list   [--class gated|scoreboard] [--filter GLOB]   show the cell matrix\n\
-         \x20 run    [CELL-ID] [--class ...] [--filter GLOB]      run cells, write artifacts\n\
-         \x20 gate                                                 evaluate bars.toml, exit 1 on violation\n\
-         \x20 report                                               regenerate RESULTS.md tables\n\
-         \n\
-         Run from the repo root; gated runs need `make release` and a quiet machine."
-    );
-    ExitCode::from(64)
+#[derive(Debug, Parser)]
+#[command(
+    name = "rdlt-bench",
+    about = "rdlt declarative benchmark harness: cells as data -> run -> gate -> report",
+    after_help = "Run from the repo root; gated runs need `make release` and a quiet machine.\n\
+                  Cells: benches/cells/*.toml · bars: benches/bars.toml · artifacts: benches/results/"
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Cmd,
+}
+
+#[derive(Debug, Subcommand)]
+enum Cmd {
+    /// Show the cell matrix (coordinates, class, competitors, bars)
+    List {
+        #[command(flatten)]
+        selection: SelectionArgs,
+    },
+    /// Run cells and write artifacts to benches/results/
+    Run {
+        #[command(flatten)]
+        selection: SelectionArgs,
+    },
+    /// Evaluate benches/bars.toml against the latest artifacts (exit 1 on violation)
+    Gate,
+    /// Regenerate RESULTS.md tables from artifacts (narrative preserved)
+    Report,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ClassArg {
+    Gated,
+    Scoreboard,
+}
+
+#[derive(Debug, clap::Args)]
+struct SelectionArgs {
+    /// A single cell id
+    cell: Option<String>,
+    /// Only cells of this class
+    #[arg(long, value_enum)]
+    class: Option<ClassArg>,
+    /// Glob over cell ids (`*` wildcards, e.g. 'pg-*')
+    #[arg(long)]
+    filter: Option<String>,
+}
+
+impl SelectionArgs {
+    fn selects(&self, cell: &Cell) -> bool {
+        let class = self.class.map(|c| match c {
+            ClassArg::Gated => Class::Gated,
+            ClassArg::Scoreboard => Class::Scoreboard,
+        });
+        self.cell.as_deref().is_none_or(|id| id == cell.id)
+            && class.is_none_or(|c| c == cell.class)
+            && self.filter.as_deref().is_none_or(|g| glob_match(g, &cell.id))
+    }
 }
 
 /// `*`-only glob (the ids are kebab-case; anything fancier is YAGNI).
@@ -37,46 +82,6 @@ fn glob_match(pattern: &str, id: &str) -> bool {
     inner(pattern.as_bytes(), id.as_bytes())
 }
 
-#[derive(Debug, Default)]
-struct Selection {
-    id: Option<String>,
-    class: Option<Class>,
-    filter: Option<String>,
-}
-
-impl Selection {
-    fn parse(args: &[String]) -> Result<Self, String> {
-        let mut selection = Selection::default();
-        let mut it = args.iter();
-        while let Some(arg) = it.next() {
-            match arg.as_str() {
-                "--class" => {
-                    selection.class = Some(match it.next().map(String::as_str) {
-                        Some("gated") => Class::Gated,
-                        Some("scoreboard") => Class::Scoreboard,
-                        other => return Err(format!("--class gated|scoreboard, got {other:?}")),
-                    })
-                }
-                "--filter" => {
-                    selection.filter =
-                        Some(it.next().ok_or("--filter needs a glob")?.to_owned());
-                }
-                id if !id.starts_with('-') && selection.id.is_none() => {
-                    selection.id = Some(id.to_owned());
-                }
-                other => return Err(format!("unknown argument `{other}`")),
-            }
-        }
-        Ok(selection)
-    }
-
-    fn selects(&self, cell: &Cell) -> bool {
-        self.id.as_deref().is_none_or(|id| id == cell.id)
-            && self.class.is_none_or(|c| c == cell.class)
-            && self.filter.as_deref().is_none_or(|g| glob_match(g, &cell.id))
-    }
-}
-
 fn load_all(paths: &Paths) -> rdlt_bench::Result<(Vec<Cell>, Vec<cells::Bar>)> {
     let all_cells = cells::load_cells(&paths.cells_dir)?;
     let bars =
@@ -85,10 +90,10 @@ fn load_all(paths: &Paths) -> rdlt_bench::Result<(Vec<Cell>, Vec<cells::Bar>)> {
     Ok((all_cells, bars))
 }
 
-fn cmd_list(paths: &Paths, selection: &Selection) -> rdlt_bench::Result<()> {
+fn cmd_list(paths: &Paths, selection: &SelectionArgs) -> rdlt_bench::Result<()> {
     let (all_cells, bars) = load_all(paths)?;
     println!(
-        "{:<28} {:<10} {:<11} {:<7} {:<16} {:<5} competitors",
+        "{:<34} {:<10} {:<11} {:<9} {:<16} {:<5} competitors",
         "CELL", "CLASS", "MODE", "SUITE", "FIXTURE", "RUNS"
     );
     for cell in all_cells.iter().filter(|c| selection.selects(c)) {
@@ -96,7 +101,7 @@ fn cmd_list(paths: &Paths, selection: &Selection) -> rdlt_bench::Result<()> {
             cell.competitors.iter().map(|c| c.variant.as_str()).collect();
         let barred = bars.iter().any(|b| b.cell == cell.id);
         println!(
-            "{:<28} {:<10} {:<11} {:<7} {:<16} {:<5} {}{}",
+            "{:<34} {:<10} {:<11} {:<9} {:<16} {:<5} {}{}",
             cell.id,
             cell.class.to_string(),
             format!("{:?}", cell.mode).to_lowercase(),
@@ -110,7 +115,7 @@ fn cmd_list(paths: &Paths, selection: &Selection) -> rdlt_bench::Result<()> {
     Ok(())
 }
 
-fn cmd_run(paths: &Paths, selection: &Selection) -> rdlt_bench::Result<()> {
+fn cmd_run(paths: &Paths, selection: &SelectionArgs) -> rdlt_bench::Result<()> {
     let (all_cells, _bars) = load_all(paths)?;
     let selected: Vec<&Cell> = all_cells.iter().filter(|c| selection.selects(c)).collect();
     if selected.is_empty() {
@@ -167,7 +172,7 @@ fn cmd_run(paths: &Paths, selection: &Selection) -> rdlt_bench::Result<()> {
                 subs.insert("conn".into(), conn.to_owned());
             }
             eprintln!("   baseline {} ...", variant.id);
-            let side = competitors::run_competitor(variant, reference, cell.runs, &subs);
+            let side = competitors::run_competitor(variant, reference, cell.runs, &subs, fixture);
             if let artifact::CompetitorSide::Missing { reason } = &side {
                 eprintln!("   baseline {} MISSING: {reason}", variant.id);
             }
@@ -212,15 +217,7 @@ fn cmd_report(paths: &Paths) -> rdlt_bench::Result<()> {
 }
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let Some((command, rest)) = args.split_first() else { return usage() };
-    let selection = match Selection::parse(rest) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return usage();
-        }
-    };
+    let cli = Cli::parse();
     let paths = match Paths::resolve() {
         Ok(p) => p,
         Err(e) => {
@@ -228,12 +225,11 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let outcome = match command.as_str() {
-        "list" => cmd_list(&paths, &selection).map(|()| true),
-        "run" => cmd_run(&paths, &selection).map(|()| true),
-        "gate" => cmd_gate(&paths),
-        "report" => cmd_report(&paths).map(|()| true),
-        _ => return usage(),
+    let outcome = match &cli.command {
+        Cmd::List { selection } => cmd_list(&paths, selection).map(|()| true),
+        Cmd::Run { selection } => cmd_run(&paths, selection).map(|()| true),
+        Cmd::Gate => cmd_gate(&paths),
+        Cmd::Report => cmd_report(&paths).map(|()| true),
     };
     match outcome {
         Ok(true) => ExitCode::SUCCESS,

@@ -1,0 +1,89 @@
+{
+  "format_version": 1,
+  "cell_id": "cold-start",
+  "class": "gated",
+  "mode": "hyperfine",
+  "suite": "e2e",
+  "recorded_at": "2026-07-21",
+  "fingerprint": {
+    "cpu_model": "AMD RYZEN AI MAX+ 395 w/ Radeon 8060S",
+    "kernel": "7.0.12-201.fc44.x86_64",
+    "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+    "competitor_pin": "dlt 1.29.0",
+    "dataset_hashes": {
+      "/tmp/.tmpUXXYEL/one.jsonl": "f250890fc0e42e982781309aa465f01321b0ec113d8070a6ae8aa47a4d50ac01"
+    },
+    "loadavg_at_start": 3.3,
+    "quiet_note": null
+  },
+  "workload": {
+    "note": "one-row pipeline, fresh workdir+db per run, warm FS cache (protocol P3)"
+  },
+  "rdlt": {
+    "runs_ms": [
+      22.73938,
+      24.137644,
+      23.195819000000004,
+      24.360023,
+      24.627987,
+      23.583099000000004,
+      25.405262,
+      25.085189,
+      24.582973000000003,
+      25.438104000000003,
+      23.117763000000004,
+      23.499461999999998,
+      24.610434,
+      22.728339000000002,
+      23.749442000000002,
+      25.030296,
+      24.037095,
+      23.555417,
+      24.345495000000003,
+      25.354516
+    ],
+    "median_ms": 24.241569500000004,
+    "p95_ms": 25.405262,
+    "rows": null,
+    "bytes": null,
+    "rows_per_s": null,
+    "mb_per_s": null,
+    "cpu": {
+      "mean_util": null,
+      "peak_util": null,
+      "user_sys_ms": null,
+      "note": "hyperfine protocol — wall only (R8)"
+    },
+    "rss": {
+      "peak_bytes": null,
+      "note": "hyperfine protocol"
+    },
+    "streams": []
+  },
+  "competitors": {
+    "dlt": {
+      "status": "ok",
+      "runs_ms": [
+        719.421263987897,
+        693.7332089873962,
+        698.2580839830916,
+        711.8514920002781,
+        696.5134469792247
+      ],
+      "median_ms": 698.2580839830916,
+      "self_timed": true,
+      "cpu": {
+        "mean_util": 3.1849573311172676,
+        "peak_util": null,
+        "user_sys_ms": 3400,
+        "note": "cgroup v2 cpu.stat, last poll before exit"
+      },
+      "rss": {
+        "peak_bytes": 123547648,
+        "note": "cgroup v2 memory.peak (in-container read)"
+      },
+      "ratio_vs_rdlt": 28.8041615450308
+    }
+  },
+  "verify": null
+}

@@ -5,7 +5,7 @@
 //! container's cgroup v2, polled while it runs. Missing baselines are LOUD.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -62,50 +62,52 @@ fn image_exists(engine: &str, image: &str) -> bool {
             .is_ok_and(|o| o.status.success())
 }
 
-/// The container's cgroup v2 dir, resolved through its init PID's
-/// `/proc/<pid>/cgroup` (`0::<path>` line) — works for rootless podman.
-fn cgroup_dir(engine: &str, name: &str) -> Option<PathBuf> {
-    let out = Command::new(engine)
-        .args(["inspect", "--format", "{{.State.Pid}}", name])
-        .output()
-        .ok()?;
-    let pid: u64 = String::from_utf8_lossy(&out.stdout).trim().parse().ok()?;
-    let cgroup = std::fs::read_to_string(format!("/proc/{pid}/cgroup")).ok()?;
-    let path = cgroup.lines().find_map(|l| l.strip_prefix("0::"))?.trim();
-    Some(PathBuf::from(format!("/sys/fs/cgroup{path}")))
-}
-
 #[derive(Debug, Default, Clone)]
 struct CgroupReading {
     memory_peak: Option<u64>,
     cpu_usec: Option<u64>,
-    user_usec: Option<u64>,
-    system_usec: Option<u64>,
 }
 
-fn read_cgroup(dir: &Path) -> CgroupReading {
-    let memory_peak = std::fs::read_to_string(dir.join("memory.peak"))
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
-        .or_else(|| {
-            // memory.peak needs kernel 6.5+; fall back to current (sampled).
-            std::fs::read_to_string(dir.join("memory.current"))
-                .ok()
-                .and_then(|s| s.trim().parse().ok())
-        });
-    let mut reading = CgroupReading { memory_peak, ..CgroupReading::default() };
-    if let Ok(stat) = std::fs::read_to_string(dir.join("cpu.stat")) {
-        for line in stat.lines() {
-            let mut parts = line.split_whitespace();
-            match (parts.next(), parts.next().and_then(|v| v.parse::<u64>().ok())) {
-                (Some("usage_usec"), Some(v)) => reading.cpu_usec = Some(v),
-                (Some("user_usec"), Some(v)) => reading.user_usec = Some(v),
-                (Some("system_usec"), Some(v)) => reading.system_usec = Some(v),
-                _ => {}
+/// Read the container's cgroup v2 accounting from INSIDE it (`podman exec`):
+/// with a private cgroup namespace the container sees its own controllers at
+/// `/sys/fs/cgroup`, which works regardless of where the harness itself runs
+/// (host paths are unreachable from e.g. a distrobox shell).
+fn read_cgroup_via_exec(engine: &str, name: &str) -> CgroupReading {
+    let out = Command::new(engine)
+        .args([
+            "exec", name, "sh", "-c",
+            "cat /sys/fs/cgroup/memory.peak 2>/dev/null || cat /sys/fs/cgroup/memory.current; cat /sys/fs/cgroup/cpu.stat",
+        ])
+        .output();
+    let Ok(out) = out else { return CgroupReading::default() };
+    if !out.status.success() {
+        return CgroupReading::default();
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut reading = CgroupReading::default();
+    for line in text.lines() {
+        let mut parts = line.split_whitespace();
+        match (parts.next(), parts.next()) {
+            (Some("usage_usec"), Some(v)) => reading.cpu_usec = v.parse().ok(),
+            (Some(first), None) if reading.memory_peak.is_none() => {
+                reading.memory_peak = first.parse().ok();
             }
+            _ => {}
         }
     }
     reading
+}
+
+/// Fallback RSS: the baseline scripts self-report `peak_rss_kb` (getrusage
+/// ru_maxrss) on the same JSON line — the statistic every recorded dlt RSS
+/// figure has always used.
+fn self_reported_rss(stdout: &str) -> Option<u64> {
+    stdout.lines().rev().find_map(|line| {
+        serde_json::from_str::<serde_json::Value>(line.trim())
+            .ok()
+            .and_then(|v| v.get("peak_rss_kb").and_then(|s| s.as_u64()))
+            .map(|kb| kb * 1024)
+    })
 }
 
 /// The baseline scripts' convention: one JSON line on stdout whose `seconds`
@@ -121,6 +123,7 @@ fn self_timed_seconds(stdout: &str) -> Option<f64> {
 struct ContainerRun {
     seconds: f64,
     peak_rss: Option<u64>,
+    rss_source: &'static str,
     cpu_ms: Option<u64>,
     wall_ms: f64,
 }
@@ -156,15 +159,13 @@ fn run_container_once(
     }
 
     // Poll the container's cgroup while it runs; last reading ≈ final usage
-    // (memory.peak is monotonic; cpu counters only grow).
-    let cgroup = cgroup_dir(engine, &name);
+    // (memory.peak is monotonic; cpu counters only grow). Sparse polling is
+    // fine for exactly that reason.
     let mut last = CgroupReading::default();
     loop {
-        if let Some(dir) = &cgroup {
-            let reading = read_cgroup(dir);
-            if reading.memory_peak.is_some() || reading.cpu_usec.is_some() {
-                last = reading;
-            }
+        let reading = read_cgroup_via_exec(engine, &name);
+        if reading.memory_peak.is_some() || reading.cpu_usec.is_some() {
+            last = reading;
         }
         let running = Command::new(engine)
             .args(["inspect", "--format", "{{.State.Running}}", &name])
@@ -173,7 +174,7 @@ fn run_container_once(
         if !running {
             break;
         }
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(Duration::from_millis(250));
     }
     let wall_ms = started.elapsed().as_secs_f64() * 1000.0;
 
@@ -197,9 +198,17 @@ fn run_container_once(
     let seconds = self_timed_seconds(&stdout).ok_or_else(|| {
         BenchError(format!("competitor {name}: no self-timed `seconds` JSON on stdout: {stdout}"))
     })?;
+    let (peak_rss, rss_source) = match last.memory_peak {
+        Some(peak) => (Some(peak), "cgroup v2 memory.peak (in-container read)"),
+        None => (
+            self_reported_rss(&stdout),
+            "self-reported ru_maxrss (cgroup unreachable) — the statistic all recorded dlt RSS rows used",
+        ),
+    };
     Ok(ContainerRun {
         seconds,
-        peak_rss: last.memory_peak,
+        peak_rss,
+        rss_source,
         cpu_ms: last.cpu_usec.map(|u| u / 1000),
         wall_ms,
     })
@@ -214,6 +223,7 @@ pub fn run_competitor(
     reference: &CompetitorRef,
     runs: u32,
     subs: &BTreeMap<String, String>,
+    fixture: &crate::fixtures::Started,
 ) -> CompetitorSide {
     let engine = match crate::fixtures::container_engine() {
         Ok(e) => e,
@@ -232,6 +242,11 @@ pub fn run_competitor(
     let mut self_timed_ms = Vec::with_capacity(runs as usize);
     let mut last: Option<ContainerRun> = None;
     for seq in 0..runs {
+        // Same discipline as the rdlt side: destination state reset between
+        // runs (the shell harnesses dropped dest schemas per baseline run).
+        if let Err(e) = fixture.reset() {
+            return CompetitorSide::Missing { reason: format!("fixture reset failed: {e}") };
+        }
         match run_container_once(&engine, variant, reference, subs, seq) {
             Ok(run) => {
                 self_timed_ms.push(run.seconds * 1000.0);
@@ -250,10 +265,11 @@ pub fn run_competitor(
     };
     let rss = RssStats {
         peak_bytes: last.peak_rss,
-        note: last.peak_rss.map_or_else(
-            || Some("cgroup unreadable — reported null, not fabricated".into()),
-            |_| Some("cgroup v2 memory.peak".into()),
-        ),
+        note: Some(if last.peak_rss.is_some() {
+            last.rss_source.into()
+        } else {
+            "no RSS reading (cgroup unreachable, nothing self-reported) — null, not fabricated".into()
+        }),
     };
     CompetitorSide::Ok {
         runs_ms: self_timed_ms,
@@ -310,7 +326,25 @@ mod tests {
             runs: None,
         };
         // With no engine OR no image, both paths must produce Missing{reason}.
-        let side = run_competitor(&variant, &reference, 1, &BTreeMap::new());
+        let fixture = crate::fixtures::start(
+            &crate::fixtures::FixtureDef {
+                id: "none".into(),
+                kind: crate::fixtures::FixtureKind::None,
+                generate_sh: None,
+                container_args: vec![],
+                hash: vec![],
+                image: None,
+                port: None,
+                seed_sql: None,
+                reset_sql: None,
+                conn: None,
+                service_sh: None,
+                ready_port: None,
+            },
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let side = run_competitor(&variant, &reference, 1, &BTreeMap::new(), &fixture);
         match side {
             CompetitorSide::Missing { reason } => {
                 assert!(!reason.is_empty());
@@ -320,17 +354,9 @@ mod tests {
     }
 
     #[test]
-    fn cgroup_parser_reads_cpu_stat_shape() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("memory.peak"), "123456\n").unwrap();
-        std::fs::write(
-            dir.path().join("cpu.stat"),
-            "usage_usec 5000000\nuser_usec 4000000\nsystem_usec 1000000\n",
-        )
-        .unwrap();
-        let r = read_cgroup(dir.path());
-        assert_eq!(r.memory_peak, Some(123456));
-        assert_eq!(r.cpu_usec, Some(5_000_000));
-        assert_eq!(r.system_usec, Some(1_000_000));
+    fn self_reported_rss_reads_the_baseline_convention() {
+        let stdout = "{\"rows\": 10, \"seconds\": 1.5, \"peak_rss_kb\": 2048}\n";
+        assert_eq!(self_reported_rss(stdout), Some(2048 * 1024));
+        assert_eq!(self_reported_rss("{\"seconds\": 1.0}"), None);
     }
 }

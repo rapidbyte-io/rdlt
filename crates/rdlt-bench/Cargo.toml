@@ -11,9 +11,11 @@ repository.workspace = true
 name = "rdlt-bench"
 path = "src/main.rs"
 
-# Contract BH8: every dependency below already exists in the workspace tree —
-# this crate may never add a NEW workspace dependency.
+# Contract BH8: runtime crates gain nothing from this manifest. clap is the
+# harness's one dev-only dependency beyond the existing tree (owner decision,
+# 2026-07-21); everything else ships in the workspace already.
 [dependencies]
+clap = { workspace = true }
 rdlt = { workspace = true, features = ["rest", "duckdb", "postgres", "file", "parquet", "postgres-source"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -132,27 +132,27 @@ numbers proven continuous (in-band) or version-policy re-derived.
 continuity record showing every cell in-band (or an explicit policy
 entry); no run-*.sh remain.
 
-- [ ] T012 [P] [US3] Migrate e2e cells → `benches/cells/e2e.toml` +
+- [X] T012 [P] [US3] Migrate e2e cells → `benches/cells/e2e.toml` +
   `benches/cells/pipelines/` templates: jsonl→DuckDB (+ its gated
   peak-RSS bar), parquet→parquet, parquet→DuckDB context row,
   mock-REST→Postgres, shred-only, and cold-start as `mode =
   "hyperfine"` shelling the recorded 20-run/3-warmup protocol
   (R8) — replacing `benches/run-e2e.sh`'s coverage (script deleted in
   T017, not here).
-- [ ] T013 [P] [US3] Migrate Postgres-source cells →
+- [X] T013 [P] [US3] Migrate Postgres-source cells →
   `benches/cells/pg.toml` (pg-wide→DuckDB gated, pg-wide→PG gated,
   jsonb→DuckDB scoreboard; dlt-pyarrow baseline + sqlalchemy/connectorx
   context variants) with the `benches/fixtures/` seed carried from
   `baseline/seed_pg.sql` — replacing `benches/run-pg.sh`.
-- [ ] T014 [P] [US3] Migrate CDC cells → `benches/cells/cdc.toml`
+- [X] T014 [P] [US3] Migrate CDC cells → `benches/cells/cdc.toml`
   (change-apply throughput 500k-backlog, catch-up latency; the
   settle-before-timing note preserved in cell workload config) —
   replacing `benches/run-cdc.sh`.
-- [ ] T015 [P] [US3] Migrate merge cells → `benches/cells/merge.toml`
+- [X] T015 [P] [US3] Migrate merge cells → `benches/cells/merge.toml`
   (merge-index two regimes, delete-insert vs upsert, scope-replace,
   ordered-dedup) — replacing `benches/run-merge-index.sh`,
   `run-merge-strategies.sh`, `run-merge-refinements.sh`.
-- [ ] T016 [US3] The paired re-measure session (reference machine,
+- [X] T016 [US3] The paired re-measure session (reference machine,
   quiet, release build, dlt image built): run the full gated set
   same-session paired via `rdlt-bench run --class gated`; write the
   continuity record `specs/012-bench-harness/evidence/continuity.md`
@@ -160,7 +160,7 @@ entry); no run-*.sh remain.
   out-of-band cells get diagnosis and, only if accepted, a
   version-policy entry); commit the artifacts under `benches/results/`;
   `rdlt-bench gate` green.
-- [ ] T017 [US3] Retire the scripts + rewire entry points: delete the
+- [X] T017 [US3] Retire the scripts + rewire entry points: delete the
   six `benches/run-*.sh`; rewrite `benches/README.md` for the new
   layout (quickstart-aligned); Makefile bench verbs delegate to
   rdlt-bench (`TARGET=e2e` → gated run, new `TARGET=matrix` → full

@@ -14,7 +14,10 @@
 #     TARGET=deep make test      everything scheduled CI runs (prop+sweep+mutants+fuzz)
 #   make bench                 shred microbench (criterion)
 #     TARGET=iai make bench      instruction-count benches + baseline comparison (perf gate)
-#     TARGET=e2e make bench      full end-to-end benchmark script
+#     TARGET=e2e make bench      gated benchmark cells (rdlt-bench; quiet machine!)
+#     TARGET=matrix make bench   the FULL cell matrix incl. scoreboards (long)
+#     TARGET=gate make bench     evaluate benches/bars.toml vs committed artifacts
+#     TARGET=report make bench   regenerate RESULTS.md tables from artifacts
 #   make check                 everything a PR must pass (lint + test + sweep + perf gate)
 #
 # Suites are selected by TARGET; the tools behind them are implementation details.
@@ -78,7 +81,15 @@ else ifeq ($(TARGET),iai)
 	cargo bench -p rdlt-postgres --bench iai_pg -- --save-summary=json
 	benches/compare-iai.sh
 else ifeq ($(TARGET),e2e)
-	benches/run-e2e.sh
+	$(MAKE) release
+	cargo run -q -p rdlt-bench -- run --class gated
+else ifeq ($(TARGET),matrix)
+	$(MAKE) release
+	cargo run -q -p rdlt-bench -- run
+else ifeq ($(TARGET),gate)
+	cargo run -q -p rdlt-bench -- gate
+else ifeq ($(TARGET),report)
+	cargo run -q -p rdlt-bench -- report
 else
 	$(error unknown bench TARGET '$(TARGET)' — see header comment)
 endif

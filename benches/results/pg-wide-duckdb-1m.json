@@ -1,0 +1,122 @@
+{
+  "format_version": 1,
+  "cell_id": "pg-wide-duckdb-1m",
+  "class": "gated",
+  "mode": "subprocess",
+  "suite": "pg",
+  "recorded_at": "2026-07-21",
+  "fingerprint": {
+    "cpu_model": "AMD RYZEN AI MAX+ 395 w/ Radeon 8060S",
+    "kernel": "7.0.12-201.fc44.x86_64",
+    "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+    "competitor_pin": "dlt 1.29.0",
+    "dataset_hashes": {
+      "seed_output": "dataset  |  rows   |           content_md5 | ----------+---------+---------------------------------- | pg_jsonb |  200000 | 33c1c5186af078733e77b845fce458c2 | pg_wide  | 1000000 | e840f51738a6b4b15f9f085ea85e3df8 | (2 rows)"
+    },
+    "loadavg_at_start": 1.75,
+    "quiet_note": null
+  },
+  "workload": {
+    "columns": 12,
+    "note": "COPY-binary decode -> Arrow -> DuckDB",
+    "rows": 1000000
+  },
+  "rdlt": {
+    "runs_ms": [
+      1457.626676,
+      1292.184233,
+      1238.373807,
+      1244.729521,
+      1241.062523
+    ],
+    "median_ms": 1244.729521,
+    "p95_ms": 1457.626676,
+    "rows": 1000000,
+    "bytes": 199720864,
+    "rows_per_s": 803387.3890904528,
+    "mb_per_s": 153.02011821350996,
+    "cpu": {
+      "mean_util": 2.5784357683001278,
+      "peak_util": 6.4,
+      "user_sys_ms": 3200,
+      "note": "cpu from last /proc poll — undercounts up to 50ms"
+    },
+    "rss": {
+      "peak_bytes": 469606400,
+      "note": "cpu from last /proc poll — undercounts up to 50ms"
+    },
+    "streams": []
+  },
+  "competitors": {
+    "dlt-connectorx": {
+      "status": "ok",
+      "runs_ms": [
+        3061.703954997938,
+        3000.642709987005,
+        3016.439369006548
+      ],
+      "median_ms": 3016.439369006548,
+      "self_timed": true,
+      "cpu": {
+        "mean_util": 1.5368569324949535,
+        "peak_util": null,
+        "user_sys_ms": 5879,
+        "note": "cgroup v2 cpu.stat, last poll before exit"
+      },
+      "rss": {
+        "peak_bytes": 474169344,
+        "note": "cgroup v2 memory.peak (in-container read)"
+      },
+      "ratio_vs_rdlt": 2.423369349015824
+    },
+    "dlt-pyarrow": {
+      "status": "ok",
+      "runs_ms": [
+        10245.21269701654,
+        10540.812608000124,
+        10502.40771600511,
+        10442.968165996715,
+        10284.003416018097
+      ],
+      "median_ms": 10442.968165996715,
+      "self_timed": true,
+      "cpu": {
+        "mean_util": 1.2238347307202726,
+        "peak_util": null,
+        "user_sys_ms": 13641,
+        "note": "cgroup v2 cpu.stat, last poll before exit"
+      },
+      "rss": {
+        "peak_bytes": 891219968,
+        "note": "cgroup v2 memory.peak (in-container read)"
+      },
+      "ratio_vs_rdlt": 8.389748929234816
+    },
+    "dlt-sqlalchemy": {
+      "status": "ok",
+      "runs_ms": [
+        109194.16996501968,
+        108901.41630600556
+      ],
+      "median_ms": 109047.79313551262,
+      "self_timed": true,
+      "cpu": {
+        "mean_util": 1.0203977047187796,
+        "peak_util": null,
+        "user_sys_ms": 112090,
+        "note": "cgroup v2 cpu.stat, last poll before exit"
+      },
+      "rss": {
+        "peak_bytes": 1314398208,
+        "note": "cgroup v2 memory.peak (in-container read)"
+      },
+      "ratio_vs_rdlt": 87.60762181321529
+    }
+  },
+  "verify": {
+    "table": "pg_wide",
+    "expected_rows": 1000000,
+    "actual_rows": 1000000,
+    "ok": true
+  }
+}

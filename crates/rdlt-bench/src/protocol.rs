@@ -50,9 +50,27 @@ pub fn quiet_guard(class: Class, load1: f64, ncores: usize, forced: bool) -> Res
     }
 }
 
-/// Guard using the live machine state.
+/// Guard using the live machine state. Gated runs WAIT for the machine to
+/// settle first (container spin-up and fixture builds from earlier cells
+/// linger in the 1-minute loadavg) — refusal is for load that never decays,
+/// i.e. something ELSE is running.
 pub fn quiet_guard_now(class: Class) -> Result<QuietVerdict> {
     let forced = std::env::var(FORCE_ENV).is_ok_and(|v| v == "1");
+    let ncores = cores();
+    if class == Class::Gated && !forced {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+        loop {
+            let load1 = loadavg_1min()?;
+            if load1 <= QUIET_LOAD_PER_CORE * ncores as f64 {
+                return Ok(QuietVerdict::Quiet);
+            }
+            if std::time::Instant::now() >= deadline {
+                return quiet_guard(class, load1, ncores, forced);
+            }
+            eprintln!("   waiting for quiet machine (loadavg {load1:.2}) ...");
+            std::thread::sleep(std::time::Duration::from_secs(15));
+        }
+    }
     quiet_guard(class, loadavg_1min()?, cores(), forced)
 }
 

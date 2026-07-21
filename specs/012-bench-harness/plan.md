@@ -27,9 +27,10 @@ runtime-crate changes, SPI frozen.
 
 **Language/Version**: Rust stable (2024 edition), workspace v0.2.0
 
-**Primary Dependencies**: NONE new — rdlt-bench uses existing workspace
-deps only (`rdlt` full-featured, `serde`, `serde_json`, `toml`,
-`tokio`); verified against Cargo.toml (R1)
+**Primary Dependencies**: rdlt-bench uses existing workspace deps
+(`rdlt` full-featured, `serde`, `serde_json`, `toml`, `tokio`) plus
+clap (derive) for its CLI — dev-only, owner-approved during
+implementation (R1 amendment); runtime crates gain nothing
 
 **Storage**: TOML inputs (`benches/cells/`, `benches/bars.toml`,
 competitor variants); committed JSON artifacts (`benches/results/`)

@@ -10,11 +10,13 @@ dependencies: `rdlt` (all connector features, like the CLI), `serde`,
 — verified: `toml 0.8` is already a workspace dep (config_schema
 tooling), everything else ships today.
 
-**Rationale**: FR-010 requires dev-only + conservative deps; it turns
-out "conservative" collapses to "none new". No clap (the house CLI
-hand-rolls args; the harness has four subcommands and a filter flag —
-same treatment). No sysinfo/procfs crates: /proc and cgroup v2 are
-line-oriented text files; parsing them is ~40 lines of safe std.
+**Rationale**: FR-010 requires dev-only + conservative deps.
+**Amendment (owner decision, 2026-07-21, during implementation)**: clap
+(derive) added for the harness CLI — one dev-only dependency, runtime
+crates untouched; FR-010's "harness-crate dependencies chosen
+conservatively (planning decides)" explicitly left this an owner call.
+No sysinfo/procfs crates: /proc and cgroup v2 are line-oriented text
+files; parsing them is ~40 lines of safe std.
 
 **Alternatives considered**: cargo-bench/criterion integration for e2e
 cells (rejected in 004 already — criterion's model fits micro, not

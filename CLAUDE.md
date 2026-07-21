@@ -3,7 +3,8 @@ For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
 `specs/012-bench-harness/plan.md` (feature: unified benchmark framework
 — one dev-only crate `crates/rdlt-bench` (binary: list/run/gate/report,
-ZERO new dependencies, publish=false) replacing the six run-*.sh
+clap CLI; sole new dep is clap, dev-only, owner-approved; publish=false)
+replacing the six run-*.sh
 scripts with declarative TOML cells (benches/cells/, source×dest×
 workload matrix, gated|scoreboard classes); metrics from existing seams
 only: RunReport rows/bytes → rows/s + MB/s, engine events() →

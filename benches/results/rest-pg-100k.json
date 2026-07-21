@@ -1,0 +1,79 @@
+{
+  "format_version": 1,
+  "cell_id": "rest-pg-100k",
+  "class": "gated",
+  "mode": "subprocess",
+  "suite": "e2e",
+  "recorded_at": "2026-07-21",
+  "fingerprint": {
+    "cpu_model": "AMD RYZEN AI MAX+ 395 w/ Radeon 8060S",
+    "kernel": "7.0.12-201.fc44.x86_64",
+    "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+    "competitor_pin": "dlt 1.29.0",
+    "dataset_hashes": {},
+    "loadavg_at_start": 4.25,
+    "quiet_note": null
+  },
+  "workload": {
+    "note": "mock API pre-renders pages — measures the clients, engine-bound",
+    "pages": 100,
+    "rows": 100000
+  },
+  "rdlt": {
+    "runs_ms": [
+      761.179764,
+      783.508621,
+      742.10047,
+      835.981305,
+      771.6259640000001
+    ],
+    "median_ms": 771.6259640000001,
+    "p95_ms": 835.981305,
+    "rows": 300000,
+    "bytes": 67943008,
+    "rows_per_s": 388789.40574373933,
+    "mb_per_s": 83.97268201434493,
+    "cpu": {
+      "mean_util": 0.907175280068725,
+      "peak_util": 2.6,
+      "user_sys_ms": 700,
+      "note": "cpu from last /proc poll — undercounts up to 50ms"
+    },
+    "rss": {
+      "peak_bytes": 59072512,
+      "note": "cpu from last /proc poll — undercounts up to 50ms"
+    },
+    "streams": []
+  },
+  "competitors": {
+    "dlt": {
+      "status": "ok",
+      "runs_ms": [
+        5641.470048984047,
+        5714.463634998538,
+        5838.689517986495,
+        5874.239241005853,
+        5932.391346985241
+      ],
+      "median_ms": 5838.689517986495,
+      "self_timed": true,
+      "cpu": {
+        "mean_util": 0.792198650495788,
+        "peak_util": null,
+        "user_sys_ms": 5248,
+        "note": "cgroup v2 cpu.stat, last poll before exit"
+      },
+      "rss": {
+        "peak_bytes": 171417600,
+        "note": "cgroup v2 memory.peak (in-container read)"
+      },
+      "ratio_vs_rdlt": 7.566735426733897
+    }
+  },
+  "verify": {
+    "table": "events",
+    "expected_rows": 100000,
+    "actual_rows": 100000,
+    "ok": true
+  }
+}

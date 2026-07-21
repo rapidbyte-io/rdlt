@@ -41,7 +41,18 @@ fn table_for(artifacts: &[&Artifact], bars: &[Bar]) -> String {
     out.push_str("|---|---|---|---|---|---|---|---|---|\n");
     for artifact in artifacts {
         let bar = bars.iter().find(|b| b.cell == artifact.cell_id);
-        let baseline = artifact.competitors.iter().next().map(|(id, side)| match side {
+        // "vs baseline" = the bar's competitor when one exists (the gated
+        // pairing), otherwise the first recorded competitor.
+        let bar_competitor = bar.and_then(|b| match &b.kind {
+            BarKind::RatioVs { competitor, .. } | BarKind::RssRatioVs { competitor, .. } => {
+                Some(competitor.as_str())
+            }
+            BarKind::AbsoluteMs { .. } => None,
+        });
+        let baseline_entry = bar_competitor
+            .and_then(|id| artifact.competitors.get_key_value(id))
+            .or_else(|| artifact.competitors.iter().next());
+        let baseline = baseline_entry.map(|(id, side)| match side {
             CompetitorSide::Ok { median_ms, ratio_vs_rdlt, .. } => format!(
                 "**{:.1}×** ({id}: {})",
                 ratio_vs_rdlt.unwrap_or(median_ms / artifact.rdlt.median_ms),
@@ -122,6 +133,9 @@ pub fn regenerate(
 
     let mut updated = Vec::new();
     for suite in suites {
+        if suite == "selftest" {
+            continue; // the harness's own protocol test, never a product row
+        }
         let artifacts: Vec<Artifact> = cells
             .iter()
             .filter(|c| c.suite == suite)

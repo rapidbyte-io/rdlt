@@ -1,0 +1,75 @@
+{
+  "format_version": 1,
+  "cell_id": "shred-only-200k",
+  "class": "gated",
+  "mode": "subprocess",
+  "suite": "e2e",
+  "recorded_at": "2026-07-21",
+  "fingerprint": {
+    "cpu_model": "AMD RYZEN AI MAX+ 395 w/ Radeon 8060S",
+    "kernel": "7.0.12-201.fc44.x86_64",
+    "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+    "competitor_pin": "dlt 1.29.0",
+    "dataset_hashes": {
+      "/tmp/.tmpElz3mp/rows.jsonl": "34e4e3d045b4f35e9c8ac8f1c8bba9af3711c341b21f2a8e72c58a401b27b747"
+    },
+    "loadavg_at_start": 14.46,
+    "quiet_note": null
+  },
+  "workload": {
+    "rows": 200000,
+    "stage": "shred only (mirror of dlt normalize; no destination I/O either side)"
+  },
+  "rdlt": {
+    "runs_ms": [
+      491.20000000000005,
+      494.59999999999997,
+      490.09999999999997,
+      491.0,
+      490.20000000000005
+    ],
+    "median_ms": 491.0,
+    "p95_ms": 494.59999999999997,
+    "rows": null,
+    "bytes": null,
+    "rows_per_s": null,
+    "mb_per_s": null,
+    "cpu": {
+      "mean_util": 1.2035903712770297,
+      "peak_util": 1.0,
+      "user_sys_ms": 590,
+      "note": "cpu from last /proc poll — undercounts up to 50ms"
+    },
+    "rss": {
+      "peak_bytes": 168652800,
+      "note": "cpu from last /proc poll — undercounts up to 50ms"
+    },
+    "streams": []
+  },
+  "competitors": {
+    "dlt": {
+      "status": "ok",
+      "runs_ms": [
+        5932.259536988568,
+        5929.833546979353,
+        5915.689214016311,
+        5954.1248549940065,
+        5905.677884002216
+      ],
+      "median_ms": 5929.833546979353,
+      "self_timed": true,
+      "cpu": {
+        "mean_util": 0.9752518404907212,
+        "peak_util": null,
+        "user_sys_ms": 8227,
+        "note": "cgroup v2 cpu.stat, last poll before exit"
+      },
+      "rss": {
+        "peak_bytes": 86310912,
+        "note": "cgroup v2 memory.peak (in-container read)"
+      },
+      "ratio_vs_rdlt": 12.077054067167724
+    }
+  },
+  "verify": null
+}

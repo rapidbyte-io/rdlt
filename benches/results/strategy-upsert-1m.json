@@ -1,0 +1,57 @@
+{
+  "format_version": 1,
+  "cell_id": "strategy-upsert-1m",
+  "class": "scoreboard",
+  "mode": "subprocess",
+  "suite": "merge",
+  "recorded_at": "2026-07-21",
+  "fingerprint": {
+    "cpu_model": "AMD RYZEN AI MAX+ 395 w/ Radeon 8060S",
+    "kernel": "7.0.12-201.fc44.x86_64",
+    "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+    "competitor_pin": null,
+    "dataset_hashes": {
+      "seed_output": "dataset  |  rows   |           content_md5 | ----------+---------+---------------------------------- | pg_jsonb |  200000 | 33c1c5186af078733e77b845fce458c2 | pg_wide  | 1000000 | e840f51738a6b4b15f9f085ea85e3df8 | (2 rows)"
+    },
+    "loadavg_at_start": 1.81,
+    "quiet_note": null
+  },
+  "workload": {
+    "note": "upsert's value is SEMANTIC (no delete-visibility window, hard-delete composition), not throughput",
+    "regime": "full redelivery, 50% changed — load-2 wall time",
+    "rows": 1000000
+  },
+  "rdlt": {
+    "runs_ms": [
+      5436.202208,
+      4802.901673,
+      5232.09482,
+      4832.777830999999,
+      5321.55633
+    ],
+    "median_ms": 5232.09482,
+    "p95_ms": 5436.202208,
+    "rows": 1000000,
+    "bytes": 196756768,
+    "rows_per_s": 191128.03464062602,
+    "mb_per_s": 35.86362301834261,
+    "cpu": {
+      "mean_util": 0.3138179691128065,
+      "peak_util": 2.0,
+      "user_sys_ms": 1670,
+      "note": "cpu from last /proc poll — undercounts up to 50ms"
+    },
+    "rss": {
+      "peak_bytes": 138240000,
+      "note": "cpu from last /proc poll — undercounts up to 50ms"
+    },
+    "streams": []
+  },
+  "competitors": {},
+  "verify": {
+    "table": "pg_wide",
+    "expected_rows": 1000000,
+    "actual_rows": 1000000,
+    "ok": true
+  }
+}

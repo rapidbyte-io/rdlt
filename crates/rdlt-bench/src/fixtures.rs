@@ -206,15 +206,30 @@ pub fn start(def: &FixtureDef, subs: &BTreeMap<String, String>) -> Result<Starte
             }
             if let Some(seed) = &def.seed_sql {
                 let seed_path = sub(&seed.display().to_string());
-                let seed_file = std::fs::File::open(&seed_path)
-                    .map_err(|e| BenchError(format!("opening seed {seed_path}: {e}")))?;
-                let out = Command::new(&engine)
-                    .args(["exec", "-i", &name, "psql", "-q", "-U", "postgres"])
-                    .stdin(seed_file)
-                    .output()?;
+                // The postgres image restarts once after initdb: pg_isready
+                // can pass against the init-phase temporary server, so retry
+                // seeding across the restart gap.
+                let mut out = None;
+                for attempt in 0..5 {
+                    if attempt > 0 {
+                        std::thread::sleep(Duration::from_secs(2));
+                    }
+                    let seed_file = std::fs::File::open(&seed_path)
+                        .map_err(|e| BenchError(format!("opening seed {seed_path}: {e}")))?;
+                    let result = Command::new(&engine)
+                        .args(["exec", "-i", &name, "psql", "-q", "-U", "postgres"])
+                        .stdin(seed_file)
+                        .output()?;
+                    let ok = result.status.success();
+                    out = Some(result);
+                    if ok {
+                        break;
+                    }
+                }
+                let out = out.expect("at least one attempt ran");
                 if !out.status.success() {
                     return Err(BenchError(format!(
-                        "seeding `{}` failed: {}",
+                        "seeding `{}` failed after retries: {}",
                         def.id,
                         String::from_utf8_lossy(&out.stderr)
                     )));
