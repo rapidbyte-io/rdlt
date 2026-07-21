@@ -81,7 +81,7 @@ the suites that own them.
 **Independent Test**: sample any README parameter → matrix row → run the
 cited cells → the documented behavior is exercised (SC-002).
 
-- [ ] T002 [US1] Matrix skeleton + citation audit in
+- [X] T002 [US1] Matrix skeleton + citation audit in
       `specs/011-connector-verification/matrix.md`: create every table
       per data-model schema with ALL R4 inventory rows + FR-003
       interaction rows; audit the EXISTING suites
@@ -92,47 +92,47 @@ cited cells → the documented behavior is exercised (SC-002).
       `MISMATCH`. Output: the gap/mismatch worklist that drives
       T003–T010. The matrix commits WITH gap-closing tasks, never ahead
       of them (plan rule) — this task may land with T003.
-- [ ] T003 [P] [US1] Source top-level + table-entry + selection rows in
+- [X] T003 [P] [US1] Source top-level + table-entry + selection rows in
       `crates/rdlt-postgres/tests/conformance.rs` (+ `reflect_live.rs`
       where reflection-owned): close the T002 gaps for `schema`,
       `include_views`, `tables` discover-all vs listed, `primary_key`
       override, included/excluded columns (incl. hostile identifiers),
       `batch_target_bytes`/`batch_max_rows` observable batch cutting;
       fill matrix citations.
-- [ ] T004 [P] [US1] Cursor-block rows in
+- [X] T004 [P] [US1] Cursor-block rows in
       `crates/rdlt-postgres/tests/incremental.rs`: close gaps across
       `column`, `initial_value`, `boundary`×`lag`, `direction: min`,
       `end_value`×`end_bound`, all three `nulls` policies under resume,
       `lag` families (duration/magnitude/date whole-days) × write mode;
       fill matrix citations.
-- [ ] T005 [P] [US1] Type-hint rows (all 12 values + closed-table
+- [X] T005 [P] [US1] Type-hint rows (all 12 values + closed-table
       rejections + hint×cursor-capability) in
       `crates/rdlt-postgres/tests/conformance.rs`; fill matrix
       citations.
-- [ ] T006 [P] [US1] Query-stream rows in
+- [X] T006 [P] [US1] Query-stream rows in
       `crates/rdlt-postgres/tests/query_streams.rs`: `name`
       uniqueness, `sql` read-only enforcement + describe, query cursor
       parity, declared `primary_key`, query `type_hints`; fill matrix
       citations.
-- [ ] T007 [P] [US1] CDC-block rows in
+- [X] T007 [P] [US1] CDC-block rows in
       `crates/rdlt-postgres/tests/cdc.rs`: close gaps across all 7
       params (incl. `idle_wait` observable pacing class, `ack: off`
       retention behavior, `flag_column` custom name end-to-end) + the
       CDC interaction rows; fill matrix citations.
-- [ ] T008 [P] [US1] TLS + conn-string rows in
+- [X] T008 [P] [US1] TLS + conn-string rows in
       `crates/rdlt-postgres/tests/tls_matrix.rs`: close gaps across the
       5 modes × both directions, root_cert forms (path/inline/system),
       client-cert both-or-neither, conn-string translation/precedence/
       contradiction/rejected-by-name/percent-escape/application_name
       rows; fill matrix citations.
-- [ ] T009 [P] [US1] Destination rows in
+- [X] T009 [P] [US1] Destination rows in
       `crates/rdlt-postgres/tests/dest_conformance.rs` (+
       `scd2.rs`): close gaps across `dataset`, destination `tls`
       passthrough, strategy values, `hard_delete` bool vs non-bool
       flags, `dedup_sort`, `merge_key`, scd2 block (`valid_from`/
       `valid_to` custom names, `absent` both values); fill matrix
       citations.
-- [ ] T010 [P] [US1] CLI pipeline-spec rows in
+- [X] T010 [P] [US1] CLI pipeline-spec rows in
       `crates/rdlt-cli/src/main.rs` tests: `pipeline`, `workdir`
       default+custom, `write_mode` three forms, postgres source inline
       XOR `{config: path}` + mixing rejection, destination kinds parse
