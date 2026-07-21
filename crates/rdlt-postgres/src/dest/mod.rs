@@ -113,7 +113,10 @@ impl Destination for Postgres {
                  SET search_path TO {schema};
                  CREATE TABLE IF NOT EXISTS _rdlt_state (pipeline TEXT PRIMARY KEY, doc TEXT);
                  CREATE TABLE IF NOT EXISTS _rdlt_commits (
-                     load_id TEXT, commit_seq BIGINT, PRIMARY KEY (load_id, commit_seq));"
+                     load_id TEXT, commit_seq BIGINT, PRIMARY KEY (load_id, commit_seq));
+                 CREATE TABLE IF NOT EXISTS _rdlt_scope_receipts (
+                     load_id TEXT, table_name TEXT, scope TEXT,
+                     PRIMARY KEY (load_id, table_name, scope));"
             ))
             .await
             .map_err(transient)?;

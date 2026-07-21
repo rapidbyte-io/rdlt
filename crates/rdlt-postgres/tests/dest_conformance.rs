@@ -1145,6 +1145,185 @@ mod refinements {
         );
     }
 
+    // ---- US2: scope-key replacement (MR3–MR5, SC-002) ----
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn merge_key_replaces_delivered_scopes_only() {
+        let (_c, conn) = start_pg().await;
+        let opts = Opts {
+            merge_key: Some(&["day"]),
+            ..Opts::default()
+        };
+        // Seed two scopes.
+        run(
+            &conn,
+            "mr_scope",
+            opts,
+            vec![vec![
+                (1, Some(1), None, "d1-a", None),
+                (2, Some(1), None, "d1-b", None),
+                (3, Some(2), None, "d2-a", None),
+            ]],
+        )
+        .await;
+        // Re-deliver day 1 WITHOUT id 2, with id 1 updated; day 2 untouched.
+        run(
+            &conn,
+            "mr_scope",
+            opts,
+            vec![vec![(1, Some(1), None, "d1-a2", None)]],
+        )
+        .await;
+        assert_eq!(
+            rows(&conn, "mr_scope").await,
+            vec![
+                (1, Some(1), None, "d1-a2".into()),
+                (3, Some(2), None, "d2-a".into()),
+            ],
+            "undelivered row in the delivered scope is GONE; day 2 intact (US2-AS1)"
+        );
+
+        // An unseen scope simply lands (US2-AS2); replay is idempotent
+        // (US2-AS5).
+        let unseen: Vec<Vec<Row>> = vec![vec![(9, Some(9), None, "d9", None)]];
+        run(&conn, "mr_scope", opts, unseen.clone()).await;
+        run(&conn, "mr_scope", opts, unseen).await;
+        assert_eq!(
+            rows(&conn, "mr_scope").await,
+            vec![
+                (1, Some(1), None, "d1-a2".into()),
+                (3, Some(2), None, "d2-a".into()),
+                (9, Some(9), None, "d9".into()),
+            ]
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn merge_key_scope_moves_and_null_scopes() {
+        let (_c, conn) = start_pg().await;
+        let opts = Opts {
+            merge_key: Some(&["day"]),
+            ..Opts::default()
+        };
+        run(
+            &conn,
+            "mr_move",
+            opts,
+            vec![vec![
+                (1, Some(1), None, "in-d1", None),
+                (2, None, None, "no-scope", None),
+            ]],
+        )
+        .await;
+        // id 1 MOVES from day 1 to day 2 — held once, in its new scope
+        // (US2-AS3); the NULL-scope row is untouched by scope deletion and
+        // still merges by identity (US2-AS4).
+        run(
+            &conn,
+            "mr_move",
+            opts,
+            vec![vec![
+                (1, Some(2), None, "in-d2", None),
+                (2, None, None, "no-scope-v2", None),
+            ]],
+        )
+        .await;
+        assert_eq!(
+            rows(&conn, "mr_move").await,
+            vec![
+                (1, Some(2), None, "in-d2".into()),
+                (2, None, None, "no-scope-v2".into()),
+            ]
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn merge_key_multi_commit_unit_load_replaces_each_scope_once() {
+        // The NON-OPTIONAL cell (plan rule; the 008 S6/F2 lesson): one load
+        // split across commit units must not let a later unit destroy an
+        // earlier unit's rows for the same scope.
+        let (_c, conn) = start_pg().await;
+        let opts = Opts {
+            merge_key: Some(&["day"]),
+            ..Opts::default()
+        };
+        // Seed day 1 with a row the next load will NOT re-deliver.
+        run(
+            &conn,
+            "mr_units",
+            opts,
+            vec![vec![(99, Some(1), None, "stale", None)]],
+        )
+        .await;
+        // One load, THREE commit units, all touching day 1 (plus day 2 in
+        // unit 2): the stale row dies exactly once; every delivered row
+        // survives to the end of the load.
+        run(
+            &conn,
+            "mr_units",
+            opts,
+            vec![
+                vec![(1, Some(1), None, "u1-a", None)],
+                vec![
+                    (2, Some(1), None, "u2-a", None),
+                    (4, Some(2), None, "u2-d2", None),
+                ],
+                vec![(3, Some(1), None, "u3-a", None)],
+            ],
+        )
+        .await;
+        assert_eq!(
+            rows(&conn, "mr_units").await,
+            vec![
+                (1, Some(1), None, "u1-a".into()),
+                (2, Some(1), None, "u2-a".into()),
+                (3, Some(1), None, "u3-a".into()),
+                (4, Some(2), None, "u2-d2".into()),
+            ],
+            "later units never destroy earlier units' rows; stale row gone once"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn merge_key_composes_with_upsert_hard_delete_and_dedup_sort() {
+        let (_c, conn) = start_pg().await;
+        let opts = Opts {
+            strategy: Some(MergeStrategy::Upsert),
+            dedup: Some(("seq", SortOrder::Desc)),
+            merge_key: Some(&["day"]),
+            hard_delete: true,
+        };
+        run(
+            &conn,
+            "mr_compose",
+            opts,
+            vec![vec![
+                (1, Some(1), Some(1), "keep-old", None),
+                (2, Some(1), Some(1), "stale", None),
+            ]],
+        )
+        .await;
+        // Day 1 re-delivered: id 2 not re-delivered (scope-dies), id 1
+        // arrives twice in wrong order (survivor by seq), id 3 arrives
+        // flagged (hard-delete wins over insert).
+        run(
+            &conn,
+            "mr_compose",
+            opts,
+            vec![vec![
+                (1, Some(1), Some(9), "newest", None),
+                (1, Some(1), Some(5), "older", None),
+                (3, Some(1), Some(1), "kill", Some(true)),
+            ]],
+        )
+        .await;
+        assert_eq!(
+            rows(&conn, "mr_compose").await,
+            vec![(1, Some(1), Some(9), "newest".into())],
+            "scope delete + ordered survivor + hard delete compose (MR3/MR1/MR2)"
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn dedup_sort_survivor_drives_hard_delete() {
         let (_c, conn) = start_pg().await;
