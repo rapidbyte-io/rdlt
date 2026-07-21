@@ -458,6 +458,75 @@ mod native_types {
         assert_eq!(nulls, 1);
     }
 
+    /// Review F1 live proof: a 38-digit NUMERIC at a pad-requiring scale —
+    /// the exact shape whose encoding overflowed pre-review — round-trips
+    /// exactly through a real server.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn extreme_decimal_round_trips_through_the_server() {
+        use rdlt_connector::core::TableName;
+        let (_container, conn) = start_pg().await;
+        let dest = rdlt_postgres::dest::Postgres::connect(&conn).dataset("wide");
+        let pipeline = PipelineId::new("wide");
+        let mut session = dest
+            .open(OpenCtx::new(pipeline.clone(), LoadId::new("w-load")))
+            .await
+            .expect("open");
+        let schema = TableSchema {
+            table: TableName::new("wide"),
+            parent: None,
+            columns: vec![
+                col("id", LogicalType::Int64, false),
+                col(
+                    "amount",
+                    LogicalType::Decimal {
+                        precision: 38,
+                        scale: 3,
+                    },
+                    true,
+                ),
+            ],
+        };
+        session
+            .ensure_table(&schema, &WriteMode::Append)
+            .await
+            .expect("ensure");
+        // 38 nines at scale 3 (pad = 1 in base-10000 alignment).
+        let value: i128 = 10i128.pow(38) - 1;
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("amount", DataType::Decimal128(38, 3), true),
+            ])),
+            vec![
+                Arc::new(Int64Array::from(vec![1i64])),
+                Arc::new(
+                    Decimal128Array::from(vec![Some(value)])
+                        .with_precision_and_scale(38, 3)
+                        .expect("decimal shape"),
+                ),
+            ],
+        )
+        .expect("batch");
+        session.write(&schema.table, batch).await.expect("write");
+        session.commit(meta(&pipeline, 0)).await.expect("commit");
+
+        let (client, connection) = tokio_postgres::connect(&conn, tokio_postgres::NoTls)
+            .await
+            .expect("connect");
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        let text: String = client
+            .query_one("SELECT amount::text FROM wide.wide WHERE id = 1", &[])
+            .await
+            .expect("value")
+            .get(0);
+        assert_eq!(
+            text, "99999999999999999999999999999999999.999",
+            "38-digit value at scale 3 lands exactly"
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn rejected_documents_and_uuids_fail_typed_naming_the_column() {
         let (_container, conn) = start_pg().await;
@@ -494,10 +563,14 @@ mod native_types {
             )
             .await
             .expect_err("NUL escape must be rejected by jsonb");
+        // Review F5: a poisoned document is PERMANENT (never retried) and
+        // the server's CONTEXT line names the column.
+        let dbg = format!("{err:?}");
+        assert!(dbg.starts_with("Fatal"), "data error must be fatal: {dbg}");
         let msg = err.to_string();
         assert!(
-            msg.contains("Unicode escape") && msg.contains("SQLSTATE"),
-            "server message + SQLSTATE surfaced: {msg}"
+            msg.contains("Unicode escape") && msg.contains("SQLSTATE") && msg.contains("doc"),
+            "server message + SQLSTATE + column context: {msg}"
         );
     }
 
@@ -739,7 +812,10 @@ mod strategies {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn shredded_upsert_converges_with_subtree_hygiene() {
+    async fn shredded_upsert_is_rejected_typed_at_ensure() {
+        // Review F4 / contract M7 (amended): a keyless shredded stream's
+        // _rdlt_id is a content hash — conflict-update can never match an
+        // updated row, so upsert on shredded streams is rejected outright.
         use rdlt_testkit::MemorySource;
         use serde_json::json;
 
@@ -751,32 +827,64 @@ mod strategies {
                 ..PgDestOptions::default()
             })
             .expect("options");
-        let run = |rows: Vec<serde_json::Value>, dest: Postgres| async move {
-            let mut config = EngineConfig::new("shup");
-            config.write_mode = rdlt_connector::WriteMode::Merge {
-                key: vec!["id".into()],
-            };
-            let source = MemorySource::single_stream(
-                rdlt_connector::StreamSpec::new("users").with_primary_key(["id"]),
-                rows,
-            );
-            Engine::new(config, source, dest).run().await.expect("run");
+        let mut config = EngineConfig::new("shup");
+        config.write_mode = rdlt_connector::WriteMode::Merge {
+            key: vec!["id".into()],
         };
-        run(
+        let source = MemorySource::single_stream(
+            rdlt_connector::StreamSpec::new("users").with_primary_key(["id"]),
+            vec![json!({"id": 1, "name": "ada"})],
+        );
+        let err = Engine::new(config, source, dest)
+            .run()
+            .await
+            .expect_err("shredded upsert must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("KEYED structured") && msg.contains("delete_insert"),
+            "{msg}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn flagged_then_recreated_root_keeps_its_subtree() {
+        // Review F3: the hard-delete flag decision must come from the
+        // DEDUPED last-wins row — a root flagged then re-created in the
+        // SAME load keeps its row AND its children.
+        use rdlt_testkit::MemorySource;
+        use serde_json::json;
+
+        let (_container, conn) = start_pg().await;
+        let dest = Postgres::connect(&conn)
+            .dataset("recreate")
+            .options(PgDestOptions {
+                tables: [(
+                    "users".to_string(),
+                    PgTableOptions {
+                        hard_delete: Some("deleted".into()),
+                        ..PgTableOptions::default()
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                ..PgDestOptions::default()
+            })
+            .expect("options");
+        let mut config = EngineConfig::new("recreate");
+        config.write_mode = rdlt_connector::WriteMode::Merge {
+            key: vec!["id".into()],
+        };
+        // One load, same key twice: flagged first, re-created after (arrival
+        // order matters — last wins).
+        let source = MemorySource::single_stream(
+            rdlt_connector::StreamSpec::new("users").with_primary_key(["id"]),
             vec![
-                json!({"id": 1, "name": "ada", "tags": [{"label": "x"}, {"label": "y"}]}),
-                json!({"id": 2, "name": "grace", "tags": [{"label": "z"}]}),
+                json!({"id": 1, "name": "ada", "deleted": true, "tags": []}),
+                json!({"id": 1, "name": "ada-again", "deleted": null,
+                       "tags": [{"label": "back"}]}),
             ],
-            dest.clone(),
-        )
-        .await;
-        // User 1 re-arrives with ONE tag: the vanished child must disappear
-        // (subtree hygiene under upsert).
-        run(
-            vec![json!({"id": 1, "name": "ada lovelace", "tags": [{"label": "w"}]})],
-            dest,
-        )
-        .await;
+        );
+        Engine::new(config, source, dest).run().await.expect("run");
 
         let (client, connection) = tokio_postgres::connect(&conn, tokio_postgres::NoTls)
             .await
@@ -784,29 +892,55 @@ mod strategies {
         tokio::spawn(async move {
             let _ = connection.await;
         });
-        let users: i64 = client
-            .query_one("SELECT count(*) FROM shup.users", &[])
-            .await
-            .expect("users")
-            .get(0);
-        assert_eq!(users, 2, "one row per user");
         let name: String = client
-            .query_one("SELECT name FROM shup.users WHERE id = 1", &[])
+            .query_one("SELECT name FROM recreate.users WHERE id = 1", &[])
             .await
-            .expect("name")
+            .expect("root survives")
             .get(0);
-        assert_eq!(name, "ada lovelace", "updated in place");
-        let labels: Vec<String> = client
-            .query("SELECT label FROM shup.users__tags ORDER BY label", &[])
+        assert_eq!(name, "ada-again", "last-wins row survives the flag");
+        let tags: i64 = client
+            .query_one("SELECT count(*) FROM recreate.users__tags", &[])
             .await
-            .expect("labels")
-            .into_iter()
-            .map(|r| r.get(0))
-            .collect();
-        assert_eq!(
-            labels,
-            vec!["w", "z"],
-            "x/y orphans removed, grace's z kept"
+            .expect("children")
+            .get(0);
+        assert_eq!(tags, 1, "the re-created root keeps its subtree");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn child_hard_delete_is_rejected_typed() {
+        // Review F6: hard_delete on a child table was silently inert.
+        use rdlt_testkit::MemorySource;
+        use serde_json::json;
+
+        let (_container, conn) = start_pg().await;
+        let dest = Postgres::connect(&conn)
+            .dataset("childhd")
+            .options(PgDestOptions {
+                tables: [(
+                    "users__tags".to_string(),
+                    PgTableOptions {
+                        hard_delete: Some("deleted".into()),
+                        ..PgTableOptions::default()
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                ..PgDestOptions::default()
+            })
+            .expect("options");
+        let mut config = EngineConfig::new("childhd");
+        config.write_mode = rdlt_connector::WriteMode::Merge {
+            key: vec!["id".into()],
+        };
+        let source = MemorySource::single_stream(
+            rdlt_connector::StreamSpec::new("users").with_primary_key(["id"]),
+            vec![json!({"id": 1, "tags": [{"label": "x"}]})],
         );
+        let err = Engine::new(config, source, dest)
+            .run()
+            .await
+            .expect_err("child hard_delete must be rejected");
+        let msg = err.to_string();
+        assert!(msg.contains("ROOT table"), "{msg}");
     }
 }

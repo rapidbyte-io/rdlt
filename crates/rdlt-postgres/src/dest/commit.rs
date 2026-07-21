@@ -14,7 +14,7 @@ use tokio_postgres::binary_copy::BinaryCopyInWriter;
 use tokio_postgres::types::{ToSql, Type};
 
 use super::config::MergeStrategy;
-use super::{encode, fatal, quote, transient};
+use super::{copy_error, encode, fatal, quote, transient};
 
 /// Arrival-order column on STAGE tables only: makes merge dedup deterministic
 /// ("last wins" for real — finding #7). Excluded from publish column lists because it
@@ -141,12 +141,35 @@ impl LoadSession for PgSession {
             let has_identity = schema.columns.iter().any(|c| c.name == system_columns::ID);
             let is_child = schema.parent.is_some();
             if let Some(col) = self.options.hard_delete_for(table) {
+                // Review F6: configuring hard_delete on a CHILD table was
+                // silently inert — reject typed instead (M4: flags live on
+                // the ROOT row of a shredded stream).
+                if is_child {
+                    return Err(fatal(format!(
+                        "table `{table}`: hard_delete applies to the ROOT table of a \
+                         shredded stream — configure it on the root, not the child"
+                    )));
+                }
                 // M4: the flag column must exist on THIS table's schema.
-                if schema.column(col).is_none() && !is_child {
+                if schema.column(col).is_none() {
                     return Err(fatal(format!(
                         "hard_delete column `{col}` is not a column of table `{table}`"
                     )));
                 }
+            }
+            if strategy == MergeStrategy::Upsert && has_identity {
+                // Review F4 / contract M7 (amended): a shredded stream's
+                // _rdlt_id is a CONTENT hash for keyless streams — updates
+                // mint new ids and ON CONFLICT never fires, silently
+                // duplicating. The destination cannot distinguish keyed from
+                // keyless shredded streams, so upsert is keyed-structured
+                // only; shredded streams keep delete_insert (subtree
+                // replacement).
+                return Err(fatal(format!(
+                    "table `{table}`: the upsert strategy requires a KEYED \
+                     structured stream (contract merge-strategies.md M2/M7) — \
+                     shredded streams use delete_insert"
+                )));
             }
             if strategy == MergeStrategy::Scd2 {
                 if has_identity {
@@ -184,8 +207,7 @@ impl LoadSession for PgSession {
             // Index plan (data-model.md): identity per table kind.
             let mut indexes: Vec<(bool, Vec<String>)> = Vec::new();
             if has_identity {
-                let unique = strategy == MergeStrategy::Upsert;
-                indexes.push((unique, vec![system_columns::ID.to_string()]));
+                indexes.push((false, vec![system_columns::ID.to_string()]));
                 if is_child {
                     indexes.push((false, vec![system_columns::ROOT_ID.to_string()]));
                 }
@@ -261,7 +283,7 @@ impl LoadSession for PgSession {
                 quote(&stage)
             ))
             .await
-            .map_err(transient)?;
+            .map_err(copy_error)?;
         let writer = BinaryCopyInWriter::new(sink, &types);
         futures::pin_mut!(writer);
 
@@ -281,9 +303,9 @@ impl LoadSession for PgSession {
                 .iter()
                 .map(|b| b.as_ref() as &(dyn ToSql + Sync))
                 .collect();
-            writer.as_mut().write(&refs).await.map_err(transient)?;
+            writer.as_mut().write(&refs).await.map_err(copy_error)?;
         }
-        writer.finish().await.map_err(transient)?;
+        writer.finish().await.map_err(copy_error)?;
         Ok(())
     }
 
@@ -396,9 +418,29 @@ impl LoadSession for PgSession {
                         (true, MergeStrategy::DeleteInsert) => {
                             identity_delete_insert(&tx, &plan).await?
                         }
-                        (true, MergeStrategy::Upsert) => identity_upsert(&tx, &plan).await?,
+                        (true, MergeStrategy::Upsert) => {
+                            // Unreachable: ensure_table rejected it (M7).
+                            return Err(fatal(format!(
+                                "table `{table}`: upsert on a shredded stream"
+                            )));
+                        }
                         (false, MergeStrategy::Scd2) => {
                             let scd2 = self.options.scd2_for(table.as_str());
+                            // Review F2: absent-retire compares against ONE
+                            // commit unit's stage; a load split across units
+                            // would mass-retire keys published by earlier
+                            // units. Sound without an end-of-load hook (SPI
+                            // frozen): retire only in a load's FIRST unit,
+                            // and fail typed if a later unit arrives.
+                            if scd2.absent == super::config::AbsentPolicy::Retire
+                                && load_committed_before
+                            {
+                                return Err(fatal(format!(
+                                    "table `{table}`: scd2 `absent: retire` requires the \
+                                     load's full feed in a SINGLE commit unit (contract \
+                                     scd2.md S6) — raise the engine commit thresholds"
+                                )));
+                            }
                             scd2_merge(&tx, &plan, &scd2).await?
                         }
                         (true, MergeStrategy::Scd2) => {
@@ -542,13 +584,17 @@ impl MergePlan<'_> {
             .join(", ")
     }
 
-    /// Roots flagged for hard deletion in THIS load's root stage.
+    /// Roots flagged for hard deletion — decided from the DEDUPED last-wins
+    /// root row (review F3: reading the RAW stage disagreed with survival
+    /// when a root was flagged then re-created in the same load).
     fn flagged_roots(&self) -> Option<String> {
         self.hard_delete.as_ref().map(|hd| {
+            let id = quote(system_columns::ID);
             format!(
-                "(SELECT {} FROM {} WHERE {})",
-                quote(system_columns::ID),
+                "(SELECT {id} FROM (SELECT DISTINCT ON ({id}) * FROM {} \
+                 ORDER BY {id}, {} DESC) d WHERE {})",
                 self.root_stage,
+                quote(ARRIVAL_COL),
                 hd.flagged
             )
         })
@@ -556,6 +602,12 @@ impl MergePlan<'_> {
 }
 
 /// Keyed structured delete-insert (the 006 arm + M4 hard delete).
+///
+/// NULL keys: the `(key) IN (...)` predicate is NULL-blind by SQL semantics,
+/// but NULL merge-key VALUES cannot reach this code — the engine rejects
+/// them typed at write time (feature 006, `rdlt-engine/src/load/mod.rs`
+/// structured_merge_keys guard, conformance-pinned). Direct SPI drivers
+/// bypassing the engine inherit that contract obligation.
 async fn keyed_delete_insert(
     tx: &tokio_postgres::Transaction<'_>,
     plan: &MergePlan<'_>,
@@ -652,58 +704,6 @@ async fn identity_delete_insert(
     };
     tx.batch_execute(&format!(
         "INSERT INTO {target} ({cols}) SELECT {cols} FROM {} deduped{keep}",
-        plan.deduped(&id),
-    ))
-    .await
-    .map_err(transient)?;
-    Ok(())
-}
-
-/// Shredded identity upsert (M2): per-row conflict-update on `_rdlt_id`,
-/// plus subtree hygiene — orphaned children of staged roots are removed
-/// (a re-shredded root may carry fewer children than before).
-async fn identity_upsert(
-    tx: &tokio_postgres::Transaction<'_>,
-    plan: &MergePlan<'_>,
-) -> Result<(), DestError> {
-    let (target, cols) = (plan.target, plan.cols);
-    let id = quote(system_columns::ID);
-    if plan.is_child {
-        // Orphan + hard-delete hygiene: children of staged roots that are
-        // not re-staged disappear (flagged roots re-stage nothing).
-        tx.batch_execute(&format!(
-            "DELETE FROM {target} WHERE {root_id} IN (SELECT {id} FROM {root_stage}) \
-             AND {id} NOT IN (SELECT {id} FROM {stage})",
-            root_id = quote(system_columns::ROOT_ID),
-            root_stage = plan.root_stage,
-            stage = plan.stage,
-        ))
-        .await
-        .map_err(transient)?;
-    } else if let Some(flagged) = plan.flagged_roots() {
-        tx.batch_execute(&format!("DELETE FROM {target} WHERE {id} IN {flagged}"))
-            .await
-            .map_err(transient)?;
-    }
-    let keep = match (&plan.hard_delete, plan.is_child) {
-        (Some(hd), false) => format!(" WHERE {}", hd.keep),
-        (Some(_), true) => format!(
-            " WHERE {} NOT IN {}",
-            quote(system_columns::ROOT_ID),
-            plan.flagged_roots().expect("hard_delete present")
-        ),
-        (None, _) => String::new(),
-    };
-    let identity = vec![system_columns::ID.to_string()];
-    let set = plan.update_set(&identity);
-    let action = if set.is_empty() {
-        "DO NOTHING".to_string()
-    } else {
-        format!("DO UPDATE SET {set}")
-    };
-    tx.batch_execute(&format!(
-        "INSERT INTO {target} ({cols}) SELECT {cols} FROM {} deduped{keep} \
-         ON CONFLICT ({id}) {action}",
         plan.deduped(&id),
     ))
     .await

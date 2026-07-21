@@ -196,17 +196,29 @@ pub(super) struct NumericWire {
 
 pub(super) fn numeric_wire_bytes(value: i128, scale: u8) -> Vec<u8> {
     let negative = value < 0;
-    let abs = value.unsigned_abs();
-    // Align the fractional part to whole base-10000 groups.
-    let pad = (4 - (scale as u32 % 4)) % 4;
-    let mut scaled = abs;
-    for _ in 0..pad {
-        scaled *= 10; // fits: |i128 decimal| ≤ 39 digits, pad ≤ 3 → u128 ok
+    // Overflow-free (review F1): a 38-digit i128 times 10^pad exceeds
+    // u128::MAX, so grouping happens in the DECIMAL-STRING domain — append
+    // the pad zeros textually, then read base-10000 groups off the digits.
+    let pad = (4 - (scale as usize % 4)) % 4;
+    let mut text = value.unsigned_abs().to_string();
+    text.extend(std::iter::repeat_n('0', pad));
+    let frac_groups = (scale as usize + pad) / 4;
+    // Left-pad to a whole number of 4-digit groups.
+    let rem = text.len() % 4;
+    if rem != 0 {
+        text.insert_str(0, &"0".repeat(4 - rem));
     }
-    let frac_groups = (scale as i32 + pad as i32) / 4;
-    // Base-10000 digits, most significant first.
-    let mut digits: Vec<u16> = Vec::new();
-    if scaled == 0 {
+    let mut digits: Vec<u16> = text
+        .as_bytes()
+        .chunks(4)
+        .map(|group| {
+            std::str::from_utf8(group)
+                .expect("decimal digits are ASCII")
+                .parse::<u16>()
+                .expect("4 decimal digits fit u16")
+        })
+        .collect();
+    if digits.iter().all(|d| *d == 0) {
         // Canonical zero: no digits, weight 0.
         let mut out = Vec::with_capacity(8);
         out.extend_from_slice(&0i16.to_be_bytes()); // ndigits
@@ -215,14 +227,9 @@ pub(super) fn numeric_wire_bytes(value: i128, scale: u8) -> Vec<u8> {
         out.extend_from_slice(&(scale as i16).to_be_bytes()); // dscale
         return out;
     }
-    while scaled > 0 {
-        digits.push((scaled % 10_000) as u16);
-        scaled /= 10_000;
-    }
-    digits.reverse();
     // weight = index of the most significant group relative to the decimal
     // point (units group = 0).
-    let mut weight = digits.len() as i32 - 1 - frac_groups;
+    let mut weight = digits.len() as i32 - 1 - frac_groups as i32;
     // Canonical form: strip trailing zero groups…
     while digits.last() == Some(&0) {
         digits.pop();
@@ -289,17 +296,31 @@ impl ToSql for JsonbWire {
 pub(super) struct UuidWire(pub [u8; 16]);
 
 pub(super) fn parse_uuid_text(text: &str) -> Option<[u8; 16]> {
+    // Accept the same textual forms the SERVER's uuid input accepts
+    // (review F7): optional urn:uuid: prefix, optional braces, hyphenated
+    // or bare hex.
+    let text = text
+        .strip_prefix("urn:uuid:")
+        .or_else(|| text.strip_prefix("URN:UUID:"))
+        .unwrap_or(text);
+    let text = text
+        .strip_prefix('{')
+        .and_then(|t| t.strip_suffix('}'))
+        .unwrap_or(text);
     let mut bytes = [0u8; 16];
     let mut idx = 0;
     let mut hi: Option<u8> = None;
-    for (pos, ch) in text.bytes().enumerate() {
+    let mut hex_seen = 0usize;
+    for ch in text.bytes() {
         if ch == b'-' {
-            // Hyphens only at the canonical positions.
-            if !matches!(pos, 8 | 13 | 18 | 23) {
+            // Hyphens only at group boundaries (8-4-4-4-12), matching the
+            // server's grouping rule.
+            if !matches!(hex_seen, 8 | 12 | 16 | 20) {
                 return None;
             }
             continue;
         }
+        hex_seen += 1;
         let nibble = (ch as char).to_digit(16)? as u8;
         match hi {
             None => hi = Some(nibble),
@@ -373,23 +394,66 @@ mod tests {
     proptest! {
         #![proptest_config(ProptestConfig { cases: 2048, ..ProptestConfig::default() })]
 
-        /// T5: encode → (source) decode is the identity over the full range.
+        /// T5: encode → (source) decode is the identity everywhere the
+        /// DECODER can represent the padded accumulation (its own documented
+        /// boundary: it accumulates wire digits into i128 before rescaling,
+        /// so |v|·10^pad must fit — a pre-existing 005 source limit). The
+        /// encoder itself is verified beyond that range structurally below
+        /// and against a live server in dest_conformance.
         #[test]
-        fn numeric_round_trips(value in any::<i64>().prop_map(i128::from), scale in 0u8..=18) {
+        fn numeric_round_trips(value in any::<i128>(), scale in 0u8..=38) {
+            let pad = (4 - (scale as u32 % 4)) % 4;
+            let limit = i128::MAX / 10i128.pow(pad);
+            let value = value.clamp(-limit, limit);
             let wire = numeric_wire_bytes(value, scale);
             prop_assert_eq!(decode_numeric(&wire, scale).unwrap(), value);
         }
+    }
 
-        /// Wide values near the decimal128 limits.
-        #[test]
-        fn numeric_round_trips_wide(
-            value in prop_oneof![
-                any::<i128>().prop_map(|v| v % 100_000_000_000_000_000_000_000_000_000_000i128),
-            ],
-            scale in 0u8..=30,
-        ) {
+    /// F1 regression: the exact overflow shape — 39-digit magnitudes at
+    /// pad-requiring scales. Verified STRUCTURALLY (group-by-group against
+    /// the decimal string), since the decoder's own i128 accumulation
+    /// cannot represent these.
+    #[test]
+    fn numeric_wire_is_exact_at_i128_extremes() {
+        for &(value, scale) in &[
+            (i128::MAX, 3u8),
+            (i128::MIN, 3),
+            (i128::MAX, 37),
+            (i128::MIN + 1, 1),
+        ] {
             let wire = numeric_wire_bytes(value, scale);
-            prop_assert_eq!(decode_numeric(&wire, scale).unwrap(), value);
+            let ndigits = i16::from_be_bytes([wire[0], wire[1]]) as usize;
+            let weight = i16::from_be_bytes([wire[2], wire[3]]) as i32;
+            let sign = u16::from_be_bytes([wire[4], wire[5]]);
+            assert_eq!(sign, if value < 0 { 0x4000 } else { 0x0000 });
+            // Reconstruct the decimal string from the digit groups and
+            // compare against the ground truth rendering of value/10^scale.
+            let mut digits = String::new();
+            for i in 0..ndigits {
+                let d = u16::from_be_bytes([wire[8 + i * 2], wire[9 + i * 2]]);
+                digits.push_str(&format!("{d:04}"));
+            }
+            // The wire value is digits × 10000^(weight − ndigits + 1);
+            // rescale to `scale` and compare with the input integer.
+            // Decoder identity: value = wire_digits × 10^exp10 (its rescale
+            // step) ⇒ compare digits·10^exp10 against |value| as strings.
+            let exp10 = 4 * (weight - ndigits as i32 + 1) + scale as i32;
+            let mut expected = value.unsigned_abs().to_string();
+            match exp10.cmp(&0) {
+                std::cmp::Ordering::Greater => {
+                    // wire × 10^exp10 == value ⇒ pad the WIRE side.
+                    digits.push_str(&"0".repeat(exp10 as usize));
+                }
+                std::cmp::Ordering::Less => {
+                    // value × 10^-exp10 == wire ⇒ pad the VALUE side.
+                    expected.push_str(&"0".repeat((-exp10) as usize));
+                }
+                std::cmp::Ordering::Equal => {}
+            }
+            let digits_trimmed = digits.trim_start_matches('0');
+            let expected_trimmed = expected.trim_start_matches('0');
+            assert_eq!(digits_trimmed, expected_trimmed, "({value}, {scale})");
         }
     }
 
@@ -413,5 +477,11 @@ mod tests {
         // Hyphen-less form: also canonical-rejected? PG accepts it, our engine
         // ships hyphenated canonical text — but accept it anyway (32 hex).
         assert!(parse_uuid_text("550e8400e29b41d4a716446655440000").is_some());
+        // Server-accepted forms (review F7): urn prefix and braces.
+        assert!(parse_uuid_text("urn:uuid:550e8400-e29b-41d4-a716-446655440000").is_some());
+        assert!(parse_uuid_text("{550e8400-e29b-41d4-a716-446655440000}").is_some());
+        assert!(parse_uuid_text("{550e8400e29b41d4a716446655440000}").is_some());
+        assert!(parse_uuid_text("urn:uuid:{nope}").is_none());
+        assert!(parse_uuid_text("{550e8400-e29b-41d4-a716-446655440000").is_none());
     }
 }

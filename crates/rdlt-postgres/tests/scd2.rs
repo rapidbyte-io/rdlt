@@ -392,3 +392,71 @@ async fn rejections_are_typed_at_ensure() {
     let msg = err.to_string();
     assert!(msg.contains("KEYED structured"), "{msg}");
 }
+
+/// Review F2 (contract S6 as amended): `absent: retire` compares against ONE
+/// commit unit's stage — a load split across units would mass-retire earlier
+/// units' keys, so a second unit under retire fails typed instead.
+#[tokio::test(flavor = "multi_thread")]
+async fn absent_retire_rejects_multi_unit_loads() {
+    use rdlt_connector::core::{CommitCounters, StateDoc};
+    use rdlt_connector::{CommitMeta, WriteMode};
+
+    let (_container, conn) = start_pg().await;
+    let dest = scd2_dest(&conn, "multiunit", AbsentPolicy::Retire);
+    let pipeline = PipelineId::new("multiunit");
+    let mut session = dest
+        .open(OpenCtx::new(pipeline.clone(), LoadId::new("mu-load")))
+        .await
+        .expect("open");
+    let schema = rdlt_connector::core::TableSchema {
+        table: rdlt_connector::core::TableName::new("dims"),
+        parent: None,
+        columns: vec![
+            rdlt_connector::core::ColumnDef {
+                name: "id".into(),
+                ty: rdlt_connector::core::ColumnType::scalar(
+                    rdlt_connector::core::LogicalType::Int64,
+                ),
+                nullable: false,
+                provenance: rdlt_connector::core::Provenance::Hinted,
+            },
+            rdlt_connector::core::ColumnDef {
+                name: "name".into(),
+                ty: rdlt_connector::core::ColumnType::scalar(
+                    rdlt_connector::core::LogicalType::Utf8,
+                ),
+                nullable: true,
+                provenance: rdlt_connector::core::Provenance::Hinted,
+            },
+        ],
+    };
+    let mode = WriteMode::Merge {
+        key: vec!["id".into()],
+    };
+    let meta = |seq: u64| CommitMeta {
+        load_id: LoadId::new("mu-load"),
+        commit_seq: seq,
+        state: StateDoc::new(pipeline.clone()),
+        counters: CommitCounters::default(),
+    };
+    session.ensure_table(&schema, &mode).await.expect("ensure");
+    session
+        .write(&schema.table, batch(&[(1, "a")]))
+        .await
+        .expect("write unit 0");
+    session.commit(meta(0)).await.expect("first unit commits");
+    // Unit 1 of the SAME load: must fail typed, not corrupt history.
+    session
+        .write(&schema.table, batch(&[(2, "b")]))
+        .await
+        .expect("write unit 1");
+    let err = session
+        .commit(meta(1))
+        .await
+        .expect_err("second unit under absent: retire must be rejected");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("SINGLE commit unit") && msg.contains("commit thresholds"),
+        "{msg}"
+    );
+}

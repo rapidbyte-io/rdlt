@@ -40,7 +40,13 @@ pub const FAIL_POINTS: &[&str] = &["pg.stage.copy", "pg.publish.begin", "pg.tx.c
 pub(crate) fn describe(e: &tokio_postgres::Error) -> String {
     use std::error::Error as _;
     if let Some(db) = e.as_db_error() {
-        return format!("{e}: {} (SQLSTATE {})", db.message(), db.code().code());
+        // The CONTEXT line names the COPY column for data errors (review F5).
+        let context = db.where_().map(|w| format!(" [{w}]")).unwrap_or_default();
+        return format!(
+            "{e}: {} (SQLSTATE {}){context}",
+            db.message(),
+            db.code().code()
+        );
     }
     let mut rendered = e.to_string();
     let mut source = e.source();
@@ -54,6 +60,19 @@ pub(crate) fn describe(e: &tokio_postgres::Error) -> String {
 
 pub(crate) fn transient(e: tokio_postgres::Error) -> DestError {
     DestError::transient(describe(&e))
+}
+
+/// Write-path (COPY) error mapping (review F5): data-shaped SQLSTATE classes
+/// (22 data exception, 23 integrity, 42 syntax/access) are PERMANENT — a
+/// poisoned batch must not burn the engine's retry budget on unwinnable
+/// retries. Everything else stays transient (connection-shaped).
+pub(crate) fn copy_error(e: tokio_postgres::Error) -> DestError {
+    match e.as_db_error() {
+        Some(db) if matches!(&db.code().code()[..2], "22" | "23" | "42") => {
+            DestError::fatal(describe(&e))
+        }
+        _ => DestError::transient(describe(&e)),
+    }
 }
 
 pub(crate) fn fatal(e: impl std::fmt::Display) -> DestError {
