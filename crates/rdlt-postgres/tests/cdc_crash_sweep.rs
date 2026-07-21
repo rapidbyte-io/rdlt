@@ -222,6 +222,9 @@ async fn redelivered_changes_converge() {
 /// with it).
 #[tokio::test(flavor = "multi_thread")]
 async fn container_kill_mid_catch_up_is_typed_and_preserves_commits() {
+    // Arms nothing, but fail points are PROCESS-GLOBAL: without the lock,
+    // the sweep's armed points fire inside THIS test's runs.
+    let _guard = FAIL_POINT_LOCK.lock().await;
     let fixture = CdcPgFixture::start().await;
     fixture
         .seed("CREATE TABLE public.ev (id int8 PRIMARY KEY, v text);")

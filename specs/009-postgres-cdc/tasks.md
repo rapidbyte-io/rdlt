@@ -1,5 +1,43 @@
 # Tasks: Postgres CDC via Logical Replication
 
+## Implementation notes (close-out, 2026-07-21)
+
+- **All 15 tasks complete.** `make check` green (lint, 154 workspace
+  tests incl. 16 CDC conformance cells + the sweeps, iai gate worst
+  +0.67% vs 3%); `cargo test --doc` green; semver-checks: rdlt-core AND
+  rdlt-connector "no semver update required" (the zero-SPI promise held —
+  LSN cursors are ordinary Cursors, CDC streams ordinary keyed structured
+  streams).
+- **Recorded refinement 1 (boundary convergence) proof**:
+  `cdc.rs::boundary_overlap_row_appears_exactly_once_with_final_state` —
+  slot created first, mutation injected inside the slot-to-snapshot
+  window, run 1 + replaying run 2 both leave the row exactly once with
+  its final state.
+- **Recorded refinement 2 (chunked tail) proof**:
+  `cdc.rs::tail_applies_bursts_cancels_cleanly_and_resumes` — burst
+  applies without restart, quiet idle then a second burst (wakes from
+  idle), engine-token cancellation at a commit boundary, exact resume by
+  a later catch-up run. Cancellation is observed via the per-chunk
+  checkpoint probe (a commit-boundary value) — zero new SPI surface.
+- **Ack semantics (P6, sharpened at implementation)**: ack floors are
+  DESTINATION-COMMITTED positions only — each stream's `since` (E6) or
+  its fresh-snapshot start point; the current run's own checkpoints are
+  not yet known-committed, so the ack trails one run behind (hygiene,
+  never correctness). Pinned incl. a partial-run cell:
+  `cdc.rs::ack_never_exceeds_the_least_committed_cursor`.
+- **Crate survey (owner question)**: recorded in research R2 — no mature
+  ecosystem crate for pgoutput; hand-rolled parser per the 005 COPY
+  precedent; fuzz target `pg_pgoutput_decode` registered (Makefile +
+  fuzz/Cargo.toml), smoke-run 10.3M execs/30s clean.
+- **Scoreboard (T014)**: 500k-change catch-up on 1M rows = 6.96 s median
+  (≈72k changes/s end-to-end, upsert+hard_delete composition); quiet
+  catch-up latency 50 ms steady state. Confirmed-position walk behavior
+  recorded honestly in RESULTS.md. Existing gated bars untouched.
+- **Deviations from plan shape**: `values.rs` added inside `source/cdc/`
+  (text-form tuple → Arrow, same shapes as the COPY decoder); the C3
+  composition warning lives in the CLI (the only component that sees
+  source + write_mode + destination together), unit-matrix tested.
+
 **Input**: Design documents from `/specs/009-postgres-cdc/`
 
 **Prerequisites**: plan.md, spec.md (as refined per research R4/R6),
@@ -194,7 +232,7 @@ typed error in a test; lag appears per run.
       scoreboard entries + history line in `benches/RESULTS.md`
       (SC-005; existing gated bars must stay within tolerance — no
       new gates).
-- [ ] T015 Close-out: `make check` + `cargo test --doc` +
+- [X] T015 Close-out: `make check` + `cargo test --doc` +
       `cargo semver-checks check-release --baseline-rev origin/main
       -p rdlt-core -p rdlt-connector` ("no update required");
       fuzz target listed and smoke-run; implementation-notes block at
