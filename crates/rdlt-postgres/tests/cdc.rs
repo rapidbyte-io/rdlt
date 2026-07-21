@@ -718,3 +718,186 @@ async fn tail_applies_bursts_cancels_cleanly_and_resumes() {
     let stable = rig.run(&["orders"], "id").await;
     assert_eq!(stable, 0, "quiet catch-up after the tail moves nothing");
 }
+
+// ─────────────────── US4: TOAST policy + error matrix + lag ───────────────────
+
+#[tokio::test(flavor = "multi_thread")]
+async fn toast_full_identity_substitutes_from_the_old_image() {
+    // O3, retain semantics: an unchanged out-of-line value rides through an
+    // unrelated update because REPLICA IDENTITY FULL carries the old image.
+    let rig = CdcRig::start("cdc-toast-full").await;
+    rig.fixture
+        .seed(
+            "CREATE TABLE public.docs (id int8 PRIMARY KEY, blob text, counter int4);\
+             ALTER TABLE public.docs REPLICA IDENTITY FULL;\
+             INSERT INTO public.docs \
+             SELECT 1, (SELECT string_agg(md5(g::text), '') FROM generate_series(1, 4000) g), 1;",
+        )
+        .await;
+
+    rig.run(&["docs"], "id").await;
+    rig.assert_mirror_equals("docs", "id, blob, counter").await;
+
+    // Unrelated update: blob untouched (arrives as an unchanged-TOAST marker).
+    rig.fixture
+        .seed("UPDATE public.docs SET counter = 2 WHERE id = 1;")
+        .await;
+    rig.run(&["docs"], "id").await;
+    assert_eq!(
+        rig.scalar("SELECT counter::int8 FROM mirror.docs WHERE id = 1")
+            .await,
+        2
+    );
+    assert_eq!(
+        rig.scalar(
+            "SELECT count(*) FROM mirror.docs m JOIN public.docs p USING (id) \
+             WHERE m.blob = p.blob AND length(m.blob) > 100000"
+        )
+        .await,
+        1,
+        "the TOAST value survived the unrelated update intact"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn toast_without_full_identity_fails_typed_never_nulls() {
+    // O3, the other half: same shape under DEFAULT identity — no old image
+    // to substitute from; typed error naming table + column + the ALTER.
+    let rig = CdcRig::start("cdc-toast-default").await;
+    rig.fixture
+        .seed(
+            "CREATE TABLE public.docs (id int8 PRIMARY KEY, blob text, counter int4);\
+             INSERT INTO public.docs \
+             SELECT 1, (SELECT string_agg(md5(g::text), '') FROM generate_series(1, 4000) g), 1;",
+        )
+        .await;
+    rig.run(&["docs"], "id").await;
+    rig.fixture
+        .seed("UPDATE public.docs SET counter = 2 WHERE id = 1;")
+        .await;
+    let err = rig.run_expect_err(&["docs"], "id").await;
+    assert!(err.contains("`blob`"), "{err}");
+    assert!(err.contains("REPLICA IDENTITY FULL"), "{err}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn identity_preflight_matrix_is_typed_per_table() {
+    let rig = CdcRig::start("cdc-identity").await;
+    rig.fixture
+        .seed(
+            "CREATE TABLE public.nopk (v int4);\
+             CREATE TABLE public.nothing (id int8 PRIMARY KEY, v int4);\
+             ALTER TABLE public.nothing REPLICA IDENTITY NOTHING;\
+             CREATE TABLE public.collides (id int8 PRIMARY KEY, _rdlt_deleted bool);",
+        )
+        .await;
+
+    // PK-less default identity: named table + the fix (O1).
+    let err = rig.run_expect_err(&["nopk"], "v").await;
+    assert!(err.contains("`nopk`"), "{err}");
+    assert!(err.contains("REPLICA IDENTITY"), "{err}");
+
+    // REPLICA IDENTITY NOTHING: unusable even with a PK (O1).
+    let err = rig.run_expect_err(&["nothing"], "id").await;
+    assert!(err.contains("`nothing`"), "{err}");
+    assert!(err.contains("replica identity"), "{err}");
+
+    // Flag-column collision: named table + column (C2).
+    let err = rig.run_expect_err(&["collides"], "id").await;
+    assert!(err.contains("`collides`"), "{err}");
+    assert!(err.contains("_rdlt_deleted"), "{err}");
+
+    // cdc + cursor exclusivity is a CONFIG-parse error (C1) — no server
+    // round-trip, named table.
+    let err = PostgresSource::from_yaml(
+        "conn: host=localhost\ncdc:\n  slot: s\n  publication: p\n\
+         tables:\n  - name: t\n    cursor:\n      column: id\n",
+    )
+    .expect_err("exclusivity")
+    .to_string();
+    assert!(
+        err.contains("`t`") && err.contains("mutually exclusive"),
+        "{err}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn identity_dropped_mid_stream_never_misapplies() {
+    // O4: the identity weakens AFTER the pipeline is established — the next
+    // run refuses at preflight, before any change could be mis-applied.
+    let rig = CdcRig::start("cdc-identity-drop").await;
+    rig.fixture
+        .seed(
+            "CREATE TABLE public.ev (id int8, v int4, CONSTRAINT ev_pk PRIMARY KEY (id));\
+             INSERT INTO public.ev VALUES (1, 1);",
+        )
+        .await;
+    rig.run(&["ev"], "id").await;
+
+    rig.fixture
+        .seed("ALTER TABLE public.ev DROP CONSTRAINT ev_pk; INSERT INTO public.ev VALUES (2, 2);")
+        .await;
+    let err = rig.run_expect_err(&["ev"], "id").await;
+    assert!(err.contains("`ev`"), "{err}");
+    assert!(err.contains("REPLICA IDENTITY"), "{err}");
+    // Nothing moved: the mirror still holds exactly the pre-drop state.
+    assert_eq!(rig.scalar("SELECT count(*) FROM mirror.ev").await, 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn replication_lag_lands_on_the_dedicated_target() {
+    use std::sync::{Mutex, OnceLock};
+
+    /// Minimal collector for `rdlt::cdc` lag events.
+    struct LagCollector;
+    static EVENTS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+
+    impl tracing::Subscriber for LagCollector {
+        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+            metadata.target() == "rdlt::cdc"
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            struct Fields(Option<u64>);
+            impl tracing::field::Visit for Fields {
+                fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+                    if field.name() == "lag_bytes" {
+                        self.0 = Some(value);
+                    }
+                }
+                fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {}
+            }
+            let mut fields = Fields(None);
+            event.record(&mut fields);
+            if let Some(bytes) = fields.0 {
+                EVENTS
+                    .get_or_init(Mutex::default)
+                    .lock()
+                    .expect("collector lock")
+                    .push(format!("lag_bytes={bytes}"));
+            }
+        }
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    let _ = tracing::subscriber::set_global_default(LagCollector);
+
+    let rig = CdcRig::start("cdc-lag").await;
+    rig.fixture
+        .seed("CREATE TABLE public.ev (id int8 PRIMARY KEY, v int4); INSERT INTO public.ev VALUES (1, 1);")
+        .await;
+    rig.run(&["ev"], "id").await;
+    rig.fixture.seed("UPDATE public.ev SET v = 2;").await;
+    rig.run(&["ev"], "id").await;
+
+    let events = EVENTS.get_or_init(Mutex::default).lock().expect("lock");
+    assert!(
+        events.len() >= 2,
+        "one lag event per completed run (SC-006): {events:?}"
+    );
+}

@@ -159,7 +159,7 @@ lag visible; TOAST deterministic.
 **Independent Test**: spec US4 — each failure mode produces its own
 typed error in a test; lag appears per run.
 
-- [ ] T011 [US4] TOAST policy in
+- [X] T011 [US4] TOAST policy in
       `crates/rdlt-postgres/src/source/cdc/mod.rs` + `pgoutput.rs`:
       unchanged-TOAST marker + REPLICA IDENTITY FULL → substitute
       the value from the old tuple image (deterministic retain);
@@ -167,7 +167,7 @@ typed error in a test; lag appears per run.
       advice (O3, R7); conformance matrix in `tests/cdc.rs`: FULL
       table round-trips a large TOAST value through an unrelated
       update; default-identity table fails typed on the same shape.
-- [ ] T012 [US4] Error matrix + lag in `tests/cdc.rs` +
+- [X] T012 [US4] Error matrix + lag in `tests/cdc.rs` +
       `src/source/cdc/{mod,slot}.rs`: conformance cells for EVERY
       distinguished error (identity unusable; identity dropped
       mid-stream never mis-applies; missing slot without

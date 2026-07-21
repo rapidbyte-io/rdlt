@@ -100,6 +100,8 @@ struct RunState {
     /// CDC streams that have not completed their pass this run; `None`
     /// until the first CDC read initializes it.
     pending: Option<BTreeSet<String>>,
+    /// Each stream's final cursor this run — the lag report's baseline.
+    final_cursor: BTreeMap<String, u64>,
 }
 
 impl Runtime {
@@ -450,6 +452,7 @@ pub(crate) async fn read_stream(
     };
 
     // ---- run completion + ack (P6) ----
+    state.final_cursor.insert(name.clone(), cursor);
     let drained = {
         let pending = state.pending.as_mut().expect("pending initialized");
         pending.remove(&name);
@@ -472,6 +475,29 @@ pub(crate) async fn read_stream(
             let confirmed = slot::confirmed_flush_lsn(control, &cdc.slot).await?;
             if floor > confirmed {
                 slot::advance(control, &cdc.slot, floor).await?;
+            }
+        }
+        // Replication lag (contract O5, FR-011): how far the live feed is
+        // ahead of the least-advanced stream at run completion — LSN delta
+        // in bytes on the dedicated `rdlt::cdc` target (embedders subscribe,
+        // no log-scraping), plus a wall-clock delta when the server tracks
+        // commit timestamps.
+        let control = state.control.as_ref().expect("control client");
+        let head = slot::current_wal_lsn(control).await?;
+        if let Some(&committed) = state.final_cursor.values().min() {
+            let lag_bytes = head.saturating_sub(committed);
+            match commit_time_lag_seconds(control).await {
+                Some(lag_seconds) => tracing::info!(
+                    target: "rdlt::cdc",
+                    lag_bytes,
+                    lag_seconds,
+                    "replication lag at run completion"
+                ),
+                None => tracing::info!(
+                    target: "rdlt::cdc",
+                    lag_bytes,
+                    "replication lag at run completion"
+                ),
             }
         }
     }
@@ -541,6 +567,28 @@ async fn tail_loop(
             tokio::time::sleep(std::time::Duration::from_secs(cdc.idle_wait.seconds)).await;
         }
     }
+}
+
+/// Wall-clock replication lag, only when the server exposes it
+/// (`track_commit_timestamp = on`); `None` — never a guess — otherwise.
+async fn commit_time_lag_seconds(client: &Client) -> Option<f64> {
+    let tracked: String = client
+        .query_one("SHOW track_commit_timestamp", &[])
+        .await
+        .ok()?
+        .get(0);
+    if tracked != "on" {
+        return None;
+    }
+    client
+        .query_one(
+            "SELECT extract(epoch FROM clock_timestamp() - \
+             (pg_last_committed_xact()).timestamp)::float8",
+            &[],
+        )
+        .await
+        .ok()?
+        .get::<_, Option<f64>>(0)
 }
 
 #[derive(PartialEq)]
