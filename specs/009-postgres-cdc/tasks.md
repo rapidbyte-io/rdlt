@@ -49,7 +49,7 @@ Technical Context).
       names the table), flag-column collision check deferred to open
       (needs reflection), empty names rejected; unit validation
       matrix (C1/C2/C4).
-- [ ] T004 Slot lifecycle in
+- [X] T004 Slot lifecycle in
       `crates/rdlt-postgres/src/source/cdc/slot.rs`: SQL-interface
       wrappers — create-if-missing (idempotent via catalog checks;
       NEVER drop), `pg_logical_slot_peek_binary_changes` range peek,

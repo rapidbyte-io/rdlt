@@ -3,3 +3,4 @@
 //! interface. Contracts: `specs/009-postgres-cdc/contracts/`.
 
 pub(crate) mod pgoutput;
+pub mod slot;

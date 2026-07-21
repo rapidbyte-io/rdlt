@@ -15,6 +15,8 @@ pub(crate) enum Phase {
     Reflect,
     Copy,
     Decode,
+    /// CDC slot/publication lifecycle + feed access (feature 009, R9).
+    Slot,
 }
 
 impl std::fmt::Display for Phase {
@@ -24,6 +26,7 @@ impl std::fmt::Display for Phase {
             Phase::Reflect => "reflect",
             Phase::Copy => "copy",
             Phase::Decode => "decode",
+            Phase::Slot => "cdc-slot",
         })
     }
 }

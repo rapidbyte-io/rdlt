@@ -55,6 +55,9 @@ pub mod testhook {
 
     pub use crate::source::reflect::{ReflectedColumn, ReflectedTable};
 
+    /// CDC lifecycle surface for the integration suites (feature 009).
+    pub use crate::source::cdc::slot as cdc_slot;
+
     pub async fn reflect_for_tests(
         config: &crate::source::PostgresConfig,
     ) -> Result<BTreeMap<String, ReflectedTable>, SourceError> {
