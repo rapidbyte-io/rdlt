@@ -1,27 +1,34 @@
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
-`specs/013-duckdb-completeness/plan.md` (feature: duckdb destination
-completeness — extract the postgres dest's merge layer into a NEW
-internal crate `rdlt-connector-sqlcore` (options vocabulary +
-validation + MergePlan shapes + single-unit rules) behind a
-MergeDialect trait that owns SQL TEXT ONLY; extraction proven by
-golden-SQL pins captured BEFORE the refactor (byte-identical after) +
-untouched postgres suites/sweeps/gated bars (contract SM4). DuckDB
-gets the full 008/010 options vocabulary (merge_strategy delete_insert/
-upsert/scd2, hard_delete, dedup_sort, merge_key, scd2 block) with
-identical typed errors; probe-first dialect arms (DISTINCT ON,
-ON CONFLICT vs auto unique index, tx-stable now() scd2 boundary,
-bundled JSON extension) — a failed probe becomes a TYPED capability
-gap, never an approximation (SM3). json_type flips to native JSON via
-the stage→target SQL seam. Verification to the 011 standard: matrix.md
-zero uncited rows, ≥80% measured coverage baseline-first, armed crash
-sweeps over new arms, dlt-1.29.0 parity record, PLUS the
-cross-destination differential oracle in crates/rdlt/tests/
-(identical feeds → equivalent outcomes both dests). Two scoreboard
-bench cells via the 012 harness; zero SPI change, zero new external
-runtime deps, WriteMode frozen. Contract:
-contracts/shared-merge-core.md SM1-SM8).
+`specs/014-rest-completeness/plan.md` (feature: REST source
+completeness — restructure rdlt-connector-rest into three PUBLIC
+layers: client/ (auth incl. OAuth2 client-credentials w/ single-flight
+refresh + Secret-redacted fields, classify, bounded Retry-After,
+pacing), read/ (Paginator trait + 7 config families page/offset/
+cursor/header_cursor/next_url/link_header/none with same-request +
+max_pages loop guards — NO auto-detection, deliberate anti-guessing;
+JSONPath-subset extraction dot+[*]+[N] hand-rolled; incremental
+{cursor_field,start_param,end_param}; parent-child placeholder
+resolution), config.rs (ADDITIVE — old spellings frozen as aliases).
+Response actions = declared allow-lists {status/content_contains ->
+ignore|end_stream|error} over the unchanged S3 typed-error posture
+(engine owns retries). ZERO new external deps (OAuth2 = one POST,
+hand-rolled Link-header/JSONPath subsets per 009 survey rule). Crash
+points rest.request/decode/checkpoint join the engine sweep with
+armed-fire pins. Existing conformance cells must stay green through
+the rewrite (behavior-preservation net). Verification: matrix.md, ≥80%
+coverage baseline-first, wiremock conformance per pagination×auth×
+action, dlt-parity record, RDLT_NET=1-gated PokeAPI live cell
+(structural asserts, 100ms pacing), gated REST→PG ≥5x bar re-measured;
+composed example connector in-crate proves the US3 seam (public pieces
+only, no raw reqwest). Contract: contracts/rest-source.md RS1-RS8).
+Previous feature 013 for reference:
+`specs/013-duckdb-completeness/plan.md` (duckdb completeness —
+rdlt-connector-sqlcore shared merge core behind golden-SQL pins,
+MergeDialect owns SQL text only, duckdb at full dlt parity incl. scoped
+scd2 retirement + markers + extensions/settings; contract
+shared-merge-core.md SM1-SM8).
 Previous feature 012 for reference: `specs/012-bench-harness/plan.md`
 (benchmark framework — `crates/rdlt-bench` clap CLI runs declarative
 TOML cells (benches/cells/), bars.toml enforced by `rdlt-bench gate`,
