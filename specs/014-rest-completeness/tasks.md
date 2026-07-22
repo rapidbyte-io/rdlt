@@ -16,7 +16,7 @@ No big-bang rewrite commit — every task leaves the whole suite green.
 
 ## Phase 1: Setup
 
-- [ ] T001 The weld: measure the crate coverage BASELINE
+- [X] T001 The weld: measure the crate coverage BASELINE
   (`cargo llvm-cov nextest -p rdlt-connector-rest`, recorded — 011 R2
   rule) and pin the existing behavior: run
   `cargo nextest run -p rdlt-connector-rest` + the engine e2e cells
@@ -165,7 +165,7 @@ RDLT_NET=1.
 
 ## Phase 6: Polish & close-out
 
-- [ ] T014 [P] Traceability matrix
+- [X] T014 [P] Traceability matrix
   `specs/014-rest-completeness/matrix.md`: every config row (source,
   auth, stream, pagination, incremental, actions, parent) → cells,
   zero uncited (011 rules; gap cells land WITH this task); dlt parity

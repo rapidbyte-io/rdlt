@@ -48,6 +48,30 @@ async fn api_key_attaches_header_and_query() {
     assert_eq!(read_ok(&yaml, "items").await.len(), 1);
 }
 
+/// basic and arbitrary-header schemes attach their exact values.
+#[tokio::test]
+async fn basic_and_header_auth_attach() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/items"))
+        .and(header("authorization", "Basic dTpwdw==")) // "u:pw"
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"id": 1}])))
+        .mount(&server)
+        .await;
+    let yaml = one_item_stream(&server, "auth: {basic: {username: u, password: pw}}");
+    assert_eq!(read_ok(&yaml, "items").await.len(), 1);
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/items"))
+        .and(header("x-auth", "v-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"id": 1}])))
+        .mount(&server)
+        .await;
+    let yaml = one_item_stream(&server, "auth: {header: {name: x-auth, value: v-1}}");
+    assert_eq!(read_ok(&yaml, "items").await.len(), 1);
+}
+
 /// OAuth2: lazy fetch, cache across pages, bearer attachment.
 #[tokio::test]
 async fn oauth2_fetches_once_and_caches() {

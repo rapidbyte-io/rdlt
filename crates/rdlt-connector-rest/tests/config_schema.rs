@@ -52,6 +52,47 @@ fn schema_valid_corpus_parses() {
         json!({"base_url": "https://x", "auth": "none",
                "streams": [{"name": "s", "path": "/s",
                             "pagination": {"type": "offset", "page_size": 50}}]}),
+        // The full 014 surface in one document: api_key auth, source
+        // defaults, pacing knobs, POST body, selector, link_header, the
+        // incremental block, response actions, parent-child.
+        json!({"base_url": "https://x",
+               "auth": {"api_key": {"name": "k", "key": "v", "location": "query"}},
+               "headers": {"x-a": "1"}, "params": {"b": "2"},
+               "max_concurrency": 4, "min_request_interval_ms": 100,
+               "retry_after_cap_secs": 60, "max_pages": 50,
+               "streams": [
+                   {"name": "parents", "path": "/p",
+                    "pagination": {"type": "cursor", "cursor_path": "next",
+                                    "cursor_param": "c"}},
+                   {"name": "kids", "path": "/p/{id}/kids",
+                    "method": "post", "body": {"q": "{id}"},
+                    "records_path": "data.items[*]",
+                    "pagination": {"type": "link_header"},
+                    "incremental": {"cursor_field": "seq", "start_param": "since",
+                                     "end_param": "until", "end_value": "9",
+                                     "initial_value": "0"},
+                    "response_actions": [{"status": 404, "action": "end_stream"}],
+                    "parent": {"stream": "parents",
+                                "placeholders": {"id": "id"}, "include": ["id"]}}
+               ]}),
+        // The remaining families and schemes.
+        json!({"base_url": "https://x",
+               "auth": {"oauth2_client_credentials": {
+                   "token_url": "https://x/token", "client_id": "c",
+                   "client_secret": "s", "scopes": ["read"],
+                   "audience": "aud", "expiry_margin_secs": 30}},
+               "streams": [
+                   {"name": "a", "path": "/a",
+                    "pagination": {"type": "header_cursor", "header": "x-next",
+                                    "cursor_param": "c"}},
+                   {"name": "b", "path": "/b",
+                    "pagination": {"type": "next_url", "next_url_path": "next"}},
+                   {"name": "c", "path": "/c",
+                    "pagination": {"type": "page", "total_pages_path": "meta.pages"}},
+                   {"name": "d", "path": "/d",
+                    "pagination": {"type": "offset", "page_size": 10,
+                                    "total_count_path": "meta.total"}}
+               ]}),
     ];
     for config in corpus {
         assert!(
@@ -61,4 +102,12 @@ fn schema_valid_corpus_parses() {
         RestConfig::from_value(config.clone())
             .unwrap_or_else(|e| panic!("schema-valid config failed to parse: {config}: {e}"));
     }
+}
+
+#[test]
+fn empty_streams_rejected() {
+    let err = RestConfig::from_value(json!({"base_url": "https://x", "streams": []}))
+        .expect_err("no streams")
+        .to_string();
+    assert!(err.contains("at least one stream"), "{err}");
 }
