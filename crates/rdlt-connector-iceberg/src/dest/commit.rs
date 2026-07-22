@@ -488,6 +488,8 @@ fn check_partition_spec(
                 PartitionTransform::Month => iceberg::spec::Transform::Month,
                 PartitionTransform::Day => iceberg::spec::Transform::Day,
                 PartitionTransform::Hour => iceberg::spec::Transform::Hour,
+                PartitionTransform::Bucket(n) => iceberg::spec::Transform::Bucket(n),
+                PartitionTransform::Truncate(w) => iceberg::spec::Transform::Truncate(w),
             };
             (f.column.clone(), transform)
         })

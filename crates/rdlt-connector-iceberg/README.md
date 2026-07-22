@@ -61,7 +61,7 @@ they never appear in any error or log line.
 | `create_namespace` | `false` | create the namespace iff missing; with `false` a missing namespace is a typed error naming the remedy |
 | `storage.s3` | absent | absent = **credential delegation**: the catalog's `/v1/config` defaults carry the S3 endpoint/credentials (the recommended posture — no storage keys in the dest config). Set `{endpoint?, region?, access_key, secret_key, path_style}` to override explicitly; the override genuinely wins (a wrong override fails typed — it is never silently ignored) |
 | `tables.<stream>.name` | stream name | rename a stream's table |
-| `tables.<stream>.partition_by` | `[]` | list of `{column, transform}`; transforms: `identity`, `year`, `month`, `day`, `hour` |
+| `tables.<stream>.partition_by` | `[]` | list of `{column, transform}`; transforms: `identity`, `year`, `month`, `day`, `hour`, `{bucket: N}`, `{truncate: W}` (N/W >= 1) |
 
 Partition specs are applied at table **creation** and are fixed: a
 config that disagrees with a live table's spec is a typed error (drop

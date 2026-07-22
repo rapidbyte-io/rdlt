@@ -96,12 +96,14 @@ fn validation_matrix() {
     assert!(err.contains("names no column"), "{err}");
     // Unknown transform spelling rejected at parse (closed enum).
     let err = with(&|v| {
+        v["tables"] = json!({"a": {"partition_by": [{"column": "x", "transform": "zorp"}]}});
+    });
+    assert!(err.contains("unknown variant"), "{err}");
+    // Parameterized transforms need their parameter (`{bucket: N}`).
+    let err = with(&|v| {
         v["tables"] = json!({"a": {"partition_by": [{"column": "x", "transform": "bucket"}]}});
     });
-    assert!(
-        err.contains("bucket") || err.contains("unknown variant"),
-        "{err}"
-    );
+    assert!(err.contains("newtype variant"), "{err}");
 }
 
 /// ID6 grep-proof: no credential value ever renders from Debug.
@@ -147,6 +149,59 @@ fn helper_lookups() {
     assert_eq!(config.table_name("other"), "other");
     assert_eq!(config.partition_fields("orders").len(), 2);
     assert!(config.partition_fields("other").is_empty());
+}
+
+/// Parameterized transforms (parity D2 closed): the map spellings
+/// round-trip schema AND parser; zero parameters are typed eagerly.
+#[test]
+fn bucket_and_truncate_spellings_and_validation() {
+    let config = IcebergConfig::from_value(json!({
+        "catalog": {
+            "uri": "http://x:8181/api/catalog",
+            "warehouse": "w",
+            "auth": {"bearer": {"token": "t"}}
+        },
+        "namespace": "raw",
+        "tables": {"events": {"partition_by": [
+            {"column": "id", "transform": {"bucket": 16}},
+            {"column": "region", "transform": {"truncate": 2}},
+            {"column": "created_at", "transform": "day"}
+        ]}}
+    }))
+    .expect("parses");
+    let fields = config.partition_fields("events");
+    assert_eq!(fields.len(), 3);
+    assert_eq!(
+        fields[0].transform,
+        rdlt_connector_iceberg::PartitionTransform::Bucket(16)
+    );
+    assert_eq!(
+        fields[1].transform,
+        rdlt_connector_iceberg::PartitionTransform::Truncate(2)
+    );
+    // The generated schema accepts what the parser accepts.
+    let schema = jsonschema::validator_for(&config_schema()).expect("schema compiles");
+    let doc = serde_json::to_value(&config).expect("serializes");
+    assert!(schema.is_valid(&doc), "round-trips the generated schema");
+
+    for (transform, subject) in [
+        (json!({"bucket": 0}), "bucket"),
+        (json!({"truncate": 0}), "truncate"),
+    ] {
+        let err = IcebergConfig::from_value(json!({
+            "catalog": {
+                "uri": "http://x:8181/api/catalog",
+                "warehouse": "w",
+                "auth": {"bearer": {"token": "t"}}
+            },
+            "namespace": "raw",
+            "tables": {"events": {"partition_by": [
+                {"column": "id", "transform": transform}
+            ]}}
+        }))
+        .expect_err("zero parameter must be typed");
+        assert!(format!("{err}").contains(subject), "{err}");
+    }
 }
 
 /// Destination construction surface (T017): from_yaml/from_config

@@ -195,8 +195,9 @@ same in the deep tier.
   publishing (the D3 discipline, Iceberg-native). State docs ride the
   same mechanism the SPI expects. Commit conflicts retry bounded
   against refreshed metadata; exhaustion is typed.
-- **FR-007 (partitioning)**: per-table partition spec with identity
-  and temporal transforms (year/month/day/hour) on declared columns;
+- **FR-007 (partitioning)**: per-table partition spec with identity,
+  temporal (year/month/day/hour), and parameterized bucket(N)/
+  truncate(W) transforms on declared columns (N/W >= 1, typed eagerly);
   unknown columns/transform spellings typed at parse; the spec is
   visible to readers (US3 asserts it).
 - **FR-008 (write modes)**: Append appends snapshots. Replace is a
@@ -291,8 +292,9 @@ same in the deep tier.
 - Row-level deletes / merge-on-read / equality deletes (the merge
   write mode stays with the SQL destinations for now).
 - Branching, tagging, WAP (write-audit-publish) flows.
-- Bucket/truncate partition transforms (identity + temporal only in
-  v1).
+- ~~Bucket/truncate partition transforms~~ CLOSED before review (owner
+  request): `{bucket: N}` / `{truncate: W}` landed as the additive
+  closed-enum growth FR-007 anticipated.
 - Table maintenance: compaction, snapshot expiration, orphan-file
   cleanup (recorded as operator guidance in the README).
 - Reading Iceberg tables (a future source feature).

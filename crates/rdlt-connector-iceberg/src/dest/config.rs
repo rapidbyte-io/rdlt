@@ -214,6 +214,11 @@ impl S3Override {
 
 // ---- Tables & partitioning ----------------------------------------------
 
+/// Partition transforms. Unit variants spell as plain strings
+/// (`transform: day`); parameterized ones as single-key maps
+/// (`transform: {bucket: 16}` / `transform: {truncate: 8}`) — the
+/// standard externally-tagged shape, additive per the closed-enum
+/// growth rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -223,6 +228,10 @@ pub enum PartitionTransform {
     Month,
     Day,
     Hour,
+    /// Hash-bucket into N shards (N >= 1).
+    Bucket(u32),
+    /// Truncate to width W (W >= 1): string prefix / integer floor.
+    Truncate(u32),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -393,6 +402,21 @@ impl IcebergConfig {
                     return invalid(format!(
                         "tables.{stream}.partition_by: a field names no column"
                     ));
+                }
+                match field.transform {
+                    PartitionTransform::Bucket(0) => {
+                        return invalid(format!(
+                            "tables.{stream}.partition_by.{}: bucket count must be >= 1",
+                            field.column
+                        ));
+                    }
+                    PartitionTransform::Truncate(0) => {
+                        return invalid(format!(
+                            "tables.{stream}.partition_by.{}: truncate width must be >= 1",
+                            field.column
+                        ));
+                    }
+                    _ => {}
                 }
             }
         }

@@ -27,7 +27,7 @@ TableOptions = {
 }
 
 PartitionField = { column: String,
-                   transform: identity|year|month|day|hour }
+                   transform: identity|year|month|day|hour|{bucket: N}|{truncate: W} }
 ```
 
 Validation (eager, typed): uri http(s); warehouse/namespace non-empty;

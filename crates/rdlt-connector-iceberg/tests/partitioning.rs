@@ -119,3 +119,91 @@ async fn partition_spec_mismatch_is_typed() {
         "names the mismatch: {text}"
     );
 }
+
+/// Parameterized transforms live (parity D2 closed): truncate(1) fans
+/// out by string prefix, bucket(4) hashes into at most 4 shards; both
+/// specs land at create and are visible in raw metadata.
+#[tokio::test(flavor = "multi_thread")]
+async fn bucket_and_truncate_partition_live() {
+    let Some(fixture) = CatalogFixture::start().await else {
+        return;
+    };
+    let config = fixture
+        .config("part_param")
+        .with_table(
+            "events",
+            TableOptions::new().with_partition(PartitionField::new(
+                "region",
+                PartitionTransform::Truncate(1),
+            )),
+        )
+        .with_table(
+            "clicks",
+            TableOptions::new()
+                .with_partition(PartitionField::new("id", PartitionTransform::Bucket(4))),
+        );
+    let source = MemorySource::new(vec![
+        MemoryStream::new(
+            StreamSpec::new("events"),
+            vec![
+                MemoryBatch::new(vec![
+                    json!({"id": 1, "region": "eu-west"}),
+                    json!({"id": 2, "region": "eu-north"}),
+                    json!({"id": 3, "region": "us-east"}),
+                    json!({"id": 4, "region": "ap-south"}),
+                ])
+                .with_checkpoint(4),
+            ],
+        ),
+        MemoryStream::new(
+            StreamSpec::new("clicks"),
+            vec![
+                MemoryBatch::new((1..=32).map(|i| json!({"id": i})).collect()).with_checkpoint(32),
+            ],
+        ),
+    ]);
+    let dest = IcebergDest::from_config(config).expect("dest");
+    let report = Engine::new(EngineConfig::new("ice-part-param"), source, dest)
+        .run()
+        .await
+        .expect("run");
+    assert_eq!(report.total_rows(), 36);
+
+    // truncate(1): eu/eu/us/ap → exactly 3 prefix partitions.
+    let snapshots = fixture.snapshot_summaries("part_param", "events").await;
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(snapshots[0]["added-records"], "4");
+    assert_eq!(
+        snapshots[0]["added-data-files"], "3",
+        "one data file per truncated prefix (eu/us/ap)"
+    );
+
+    // bucket(4): 32 ids hash into AT MOST 4 shards (>1 in practice).
+    let snapshots = fixture.snapshot_summaries("part_param", "clicks").await;
+    assert_eq!(snapshots[0]["added-records"], "32");
+    let files: u64 = snapshots[0]["added-data-files"].parse().expect("count");
+    assert!(
+        (1..=4).contains(&files),
+        "bucket(4) bounds the fanout: {files}"
+    );
+
+    // Both specs visible in raw metadata with their parameters.
+    for (table, name, transform) in [
+        ("events", "region_trunc", "truncate[1]"),
+        ("clicks", "id_bucket", "bucket[4]"),
+    ] {
+        let metadata = fixture.table_metadata("part_param", table).await;
+        let fields: Vec<serde_json::Value> = metadata["metadata"]["partition-specs"]
+            .as_array()
+            .expect("specs")
+            .iter()
+            .flat_map(|s| s["fields"].as_array().cloned().unwrap_or_default())
+            .collect();
+        assert!(
+            fields
+                .iter()
+                .any(|f| f["name"] == name && f["transform"] == transform),
+            "{table}: {name}/{transform} visible: {fields:?}"
+        );
+    }
+}

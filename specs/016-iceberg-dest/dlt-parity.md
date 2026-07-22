@@ -20,7 +20,7 @@ recorded individually.
 | exactly-once | load-package model; no snapshot-native commit identity | rdlt.pipeline/load-id/commit-seq IN snapshot summaries — exactly-once readable from table history alone; replay publishes nothing (ID2) | **rdlt ahead** |
 | state | dlt state tables in the destination dataset | state doc as a property of the `_rdlt_state` marker table, written state-last; resume proven live | parity by different mechanism (both keep state in the destination) |
 | concurrent writers | pyiceberg optimistic retry | bounded refresh→rebuild→commit ×4 with jitter; exhaustion typed; no foreign snapshot lost (live hammer cell) | parity |
-| partitioning | column hints → identity partitions; pyiceberg transforms available | `partition_by` with identity + year/month/day/hour transforms at CREATE; fanout writer; spec mismatch typed | parity (identity+temporal; bucket/truncate transforms absent — D2) |
+| partitioning | column hints → identity partitions; pyiceberg transforms available | `partition_by` with identity, year/month/day/hour, bucket(N), truncate(W) transforms at CREATE; fanout writer; spec mismatch typed | parity (**D2 CLOSED** pre-review) |
 | schema evolution | additive via pyiceberg | additive nullable columns via UpdateSchema in one transaction; type conflicts typed | parity |
 | nested data | pyarrow structs | struct/scalar-list via the closed mapping, unique field ids | parity |
 | interop proof | — (dlt IS python/pyiceberg) | pyiceberg AND Spark read-back cells over three shapes | **rdlt ahead** (adversarial cross-implementation proof) |
@@ -36,9 +36,11 @@ recorded individually.
   Snowflake Open Catalog, UC, Lakekeeper…) and the one with a single
   wire contract to conformance-test against. Filesystem catalogs would
   bypass the catalog's commit arbitration entirely.
-- **D2 — transform vocabulary**: identity + temporal transforms only;
-  `bucket(N)`/`truncate(W)` are additive future spellings (closed enum
-  grows without breakage).
+- **D2 — CLOSED (pre-review, owner request)**: `bucket(N)` /
+  `truncate(W)` landed as the additive closed-enum growth the design
+  anticipated — map spellings `{bucket: 16}`/`{truncate: 8}`, zero
+  parameters typed eagerly, Java-convention field names
+  (`col_bucket`/`col_trunc`), live fanout + metadata-visibility cells.
 - **G1 — Replace**: RECORDED narrowing, not a design choice to keep:
   revisit when iceberg-rust grows an overwrite/replace transaction
   (FR-008 states the trigger). No emulation — a non-atomic

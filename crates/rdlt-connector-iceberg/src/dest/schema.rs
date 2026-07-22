@@ -138,6 +138,15 @@ pub(crate) fn to_partition_spec(
                 format!("{}_hour", field.column),
                 iceberg::spec::Transform::Hour,
             ),
+            // Java-convention names: `col_bucket` / `col_trunc`.
+            PartitionTransform::Bucket(n) => (
+                format!("{}_bucket", field.column),
+                iceberg::spec::Transform::Bucket(n),
+            ),
+            PartitionTransform::Truncate(w) => (
+                format!("{}_trunc", field.column),
+                iceberg::spec::Transform::Truncate(w),
+            ),
         };
         let unbound = iceberg::spec::UnboundPartitionField::builder()
             .source_id(source.id)
@@ -209,6 +218,26 @@ mod partition_tests {
                 .expect("ok")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn bucket_and_truncate_transforms_build() {
+        let spec = to_partition_spec(
+            "t",
+            &schema(),
+            &[
+                PartitionField::new("region", PartitionTransform::Truncate(2)),
+                PartitionField::new("region", PartitionTransform::Bucket(16)),
+            ],
+        )
+        .expect("builds")
+        .expect("present");
+        let fields = spec.fields();
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fields[0].name, "region_trunc");
+        assert_eq!(fields[0].transform, iceberg::spec::Transform::Truncate(2));
+        assert_eq!(fields[1].name, "region_bucket");
+        assert_eq!(fields[1].transform, iceberg::spec::Transform::Bucket(16));
     }
 
     #[test]
