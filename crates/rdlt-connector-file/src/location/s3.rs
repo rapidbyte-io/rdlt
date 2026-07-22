@@ -94,23 +94,29 @@ pub struct S3Location {
     bucket: String,
 }
 
+/// Build the raw client (shared by the source Location and the dest
+/// store). Secrets are revealed HERE only.
+pub(crate) fn build_store(options: &S3Options) -> Result<AmazonS3, String> {
+    AmazonS3Builder::new()
+        .with_endpoint(&options.endpoint)
+        .with_bucket_name(&options.bucket)
+        .with_region(options.region.as_deref().unwrap_or("us-east-1"))
+        .with_access_key_id(options.access_key.reveal())
+        .with_secret_access_key(options.secret_key.reveal())
+        .with_virtual_hosted_style_request(!options.path_style)
+        .with_allow_http(true)
+        .build()
+        .map_err(|e| {
+            format!(
+                "s3 location `{}` bucket `{}`: {e}",
+                options.endpoint, options.bucket
+            )
+        })
+}
+
 impl S3Location {
     pub fn connect(options: &S3Options) -> Result<Self, SourceError> {
-        let store = AmazonS3Builder::new()
-            .with_endpoint(&options.endpoint)
-            .with_bucket_name(&options.bucket)
-            .with_region(options.region.as_deref().unwrap_or("us-east-1"))
-            .with_access_key_id(options.access_key.reveal())
-            .with_secret_access_key(options.secret_key.reveal())
-            .with_virtual_hosted_style_request(!options.path_style)
-            .with_allow_http(true)
-            .build()
-            .map_err(|e| {
-                SourceError::fatal(format!(
-                    "s3 location `{}` bucket `{}`: {e}",
-                    options.endpoint, options.bucket
-                ))
-            })?;
+        let store = build_store(options).map_err(SourceError::fatal)?;
         Ok(Self {
             store,
             endpoint: options.endpoint.clone(),

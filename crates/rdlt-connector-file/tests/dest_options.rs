@@ -1,0 +1,166 @@
+//! Feature 015 US3 (T011/T012): the file destination's new vocabulary on
+//! LOCAL storage — jsonl format, partition_by, config validation. (The
+//! object-store legs ride s3_live.rs.)
+
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use arrow::array::{Int64Array, StringArray};
+use arrow::datatypes::{DataType, Field, Schema};
+use arrow::record_batch::RecordBatch;
+use rdlt_connector::core::{
+    ColumnDef, ColumnType, CommitCounters, CommitMeta, LoadId, LogicalType, PipelineId, Provenance,
+    StateDoc, TableName, TableSchema, WriteMode,
+};
+use rdlt_connector::{Destination, OpenCtx};
+use rdlt_connector_file::dest::{DestFormat, FileDest, FileDestConfig};
+
+fn schema_for(table: &str) -> TableSchema {
+    TableSchema {
+        table: TableName::new(table),
+        parent: None,
+        columns: vec![
+            ColumnDef {
+                name: "id".into(),
+                ty: ColumnType::scalar(LogicalType::Int64),
+                nullable: false,
+                provenance: Provenance::Inferred,
+            },
+            ColumnDef {
+                name: "day".into(),
+                ty: ColumnType::scalar(LogicalType::Utf8),
+                nullable: true,
+                provenance: Provenance::Inferred,
+            },
+        ],
+    }
+}
+
+fn batch(ids: &[i64], days: &[Option<&str>]) -> RecordBatch {
+    RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("day", DataType::Utf8, true),
+        ])),
+        vec![
+            Arc::new(Int64Array::from(ids.to_vec())),
+            Arc::new(StringArray::from(days.to_vec())),
+        ],
+    )
+    .expect("batch")
+}
+
+fn meta_for(pipeline: &PipelineId, load: &LoadId, seq: u64) -> CommitMeta {
+    CommitMeta {
+        load_id: load.clone(),
+        commit_seq: seq,
+        state: StateDoc {
+            format_version: 1,
+            pipeline: pipeline.clone(),
+            cursors: BTreeMap::new(),
+            schema_hashes: BTreeMap::new(),
+            last_commit: None,
+            engine_version: "test".into(),
+        },
+        counters: CommitCounters::default(),
+    }
+}
+
+async fn run_load(dest: &FileDest, rows: RecordBatch) {
+    let pipeline = PipelineId::new("p");
+    let load = LoadId::new("load-a");
+    let mut s = dest
+        .open(OpenCtx::new(pipeline.clone(), load.clone()))
+        .await
+        .expect("open");
+    s.ensure_table(&schema_for("events"), &WriteMode::Append)
+        .await
+        .expect("ensure");
+    s.write(&TableName::new("events"), rows)
+        .await
+        .expect("write");
+    s.commit(meta_for(&pipeline, &load, 1))
+        .await
+        .expect("commit");
+}
+
+/// jsonl output: same staging/rename protocol, line-count totals, valid
+/// NDJSON content.
+#[tokio::test]
+async fn jsonl_format_writes_ndjson_parts() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let dest = FileDest::from_config(
+        FileDestConfig::new(dir.path().to_string_lossy()).with_format(DestFormat::Jsonl),
+    )
+    .expect("open");
+    run_load(&dest, batch(&[1, 2], &[Some("d1"), Some("d2")])).await;
+    assert_eq!(dest.count_rows("events").expect("count"), 2);
+    let part = dir.path().join("events/part-load-a-1-0.jsonl");
+    let body = std::fs::read_to_string(&part).expect("part exists");
+    let first: serde_json::Value =
+        serde_json::from_str(body.lines().next().expect("line")).expect("valid NDJSON");
+    assert_eq!(first["id"], 1);
+}
+
+/// partition_by: one prefix per value, rows in exactly one partition set,
+/// NULLs under __null__.
+#[tokio::test]
+async fn partition_by_splits_rows() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let dest = FileDest::from_config(
+        FileDestConfig::new(dir.path().to_string_lossy()).with_partition_by("day"),
+    )
+    .expect("open");
+    run_load(
+        &dest,
+        batch(&[1, 2, 3, 4], &[Some("d1"), Some("d2"), Some("d1"), None]),
+    )
+    .await;
+    assert_eq!(dest.count_rows("events").expect("count"), 4);
+    let count = |sub: &str| {
+        std::fs::read_dir(dir.path().join("events").join(sub))
+            .map(|entries| entries.count())
+            .unwrap_or(0)
+    };
+    assert_eq!(count("d1"), 1, "one part file for d1 (2 rows)");
+    assert_eq!(count("d2"), 1);
+    assert_eq!(count("__null__"), 1, "NULLs land under __null__");
+}
+
+/// A partition column absent from the schema is typed, naming the column.
+#[tokio::test]
+async fn missing_partition_column_is_typed() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let dest = FileDest::from_config(
+        FileDestConfig::new(dir.path().to_string_lossy()).with_partition_by("ghost"),
+    )
+    .expect("open");
+    let pipeline = PipelineId::new("p");
+    let load = LoadId::new("load-a");
+    let mut s = dest
+        .open(OpenCtx::new(pipeline.clone(), load.clone()))
+        .await
+        .expect("open");
+    s.ensure_table(&schema_for("events"), &WriteMode::Append)
+        .await
+        .expect("ensure");
+    let err = s
+        .write(&TableName::new("events"), batch(&[1], &[Some("d1")]))
+        .await
+        .expect_err("missing column")
+        .to_string();
+    assert!(
+        err.contains("ghost") && err.contains("partition_by"),
+        "{err}"
+    );
+}
+
+/// Config validation: empty path / empty partition column typed.
+#[test]
+fn dest_config_validation_is_typed() {
+    let err = FileDest::from_config(FileDestConfig::new("")).expect_err("empty path");
+    assert!(err.to_string().contains("path"), "{err}");
+    let err = FileDest::from_config(FileDestConfig::new("out").with_partition_by(""))
+        .expect_err("empty partition");
+    assert!(err.to_string().contains("partition_by"), "{err}");
+}

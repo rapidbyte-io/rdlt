@@ -195,10 +195,10 @@ impl Source for FileSource {
         // Object-store csv/compressed-jsonl read through a LOCAL decode:
         // fetch the (post-plan, non-skipped) tasks to temp files.
         if is_s3 && stream.format != Format::Parquet {
-            for i in 0..tasks.len() {
+            for (i, task) in tasks.iter_mut().enumerate() {
                 let needs_local = stream.format == Format::Csv
-                    || !crate::formats::codec_of(&tasks[i].path).is_plain();
-                if needs_local && tasks[i].read_path.is_none() {
+                    || !crate::formats::codec_of(&task.path).is_plain();
+                if needs_local && task.read_path.is_none() {
                     let dir = match &fetched_dir {
                         Some(dir) => dir.clone(),
                         None => {
@@ -207,8 +207,8 @@ impl Source for FileSource {
                             dir
                         }
                     };
-                    let local = fetch_to_temp(&location, &tasks[i].path, &dir, i).await?;
-                    tasks[i].read_path = Some(local.to_string_lossy().into_owned());
+                    let local = fetch_to_temp(&location, &task.path, &dir, i).await?;
+                    task.read_path = Some(local.to_string_lossy().into_owned());
                 }
             }
         }

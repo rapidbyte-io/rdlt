@@ -108,6 +108,15 @@ enum DestSpec {
     Parquet {
         path: PathBuf,
     },
+    /// Feature 015: the full file-destination vocabulary — format
+    /// (parquet|jsonl), location (local | s3), partition_by. The
+    /// `parquet:` spelling above stays frozen (≡ file: local parquet).
+    File {
+        path: String,
+        format: Option<rdlt::connector::file::dest::DestFormat>,
+        location: Option<rdlt::connector::file::location::LocationOptions>,
+        partition_by: Option<String>,
+    },
 }
 
 /// Bound glibc's allocator retention (feature 003 T024): data movement churns
@@ -271,6 +280,26 @@ async fn run(spec_path: PathBuf, report_path: Option<PathBuf>) -> Result<(), Cli
                         .map_err(|e| CliError::Usage(format!("opening parquet dir: {e}")))?;
                     builder.destination(dest).build()?
                 }
+                DestSpec::File {
+                    path,
+                    format,
+                    location,
+                    partition_by,
+                } => {
+                    let mut config = rdlt::connector::file::dest::FileDestConfig::new(path.clone());
+                    if let Some(format) = format {
+                        config = config.with_format(*format);
+                    }
+                    if let Some(location) = location {
+                        config = config.with_location(location.clone());
+                    }
+                    if let Some(column) = partition_by {
+                        config = config.with_partition_by(column.clone());
+                    }
+                    let dest = rdlt::connector::file::dest::FileDest::from_config(config)
+                        .map_err(|e| CliError::Usage(format!("file destination: {e}")))?;
+                    builder.destination(dest).build()?
+                }
             };
             drive(&mut pipeline, report_path).await
         }};
@@ -404,7 +433,7 @@ fn cdc_composition_warnings(
                 }
             }
         }
-        DestSpec::Duckdb { .. } | DestSpec::Parquet { .. } => {
+        DestSpec::Duckdb { .. } | DestSpec::Parquet { .. } | DestSpec::File { .. } => {
             warnings.push(format!(
                 "cdc: this destination has no hard-delete support — the \
                  deletion flag `{}` lands as data (documented soft delete, \

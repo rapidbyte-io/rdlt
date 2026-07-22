@@ -63,3 +63,27 @@ fn schema_valid_corpus_parses() {
             .unwrap_or_else(|e| panic!("schema-valid config failed to parse: {config}: {e}"));
     }
 }
+
+/// 015: the DEST config document round-trips its generated schema.
+#[test]
+fn dest_schema_valid_corpus_parses() {
+    use rdlt_connector_file::dest::{FileDestConfig, dest_config_schema};
+    let validator = jsonschema::validator_for(&dest_config_schema()).expect("schema compiles");
+    let corpus = [
+        serde_json::json!({"path": "out"}),
+        serde_json::json!({"path": "warehouse/events", "format": "jsonl",
+                            "partition_by": "day",
+                            "location": {"s3": {"endpoint": "http://127.0.0.1:9000",
+                                                  "bucket": "lake",
+                                                  "access_key": "k", "secret_key": "s"}}}),
+    ];
+    for config in corpus {
+        assert!(
+            validator.is_valid(&config),
+            "corpus entry invalid: {config}"
+        );
+        let parsed: FileDestConfig =
+            serde_json::from_value(config.clone()).expect("schema-valid config parses");
+        parsed.validate().expect("validates");
+    }
+}

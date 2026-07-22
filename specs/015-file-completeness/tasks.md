@@ -145,7 +145,7 @@ visibility on both location kinds.
 produce exactly-once file sets; partition layout splits correctly;
 readers never observe final-name partials.
 
-- [ ] T011 [US3] Dest config evolution
+- [X] T011 [US3] Dest config evolution
   (`crates/rdlt-connector-file/src/dest/config.rs`, data-model §6):
   `location:` (shared vocabulary), `format: parquet|jsonl` (default
   parquet — frozen), `partition_by:` (column must exist at write time,
@@ -154,7 +154,7 @@ readers never observe final-name partials.
   `DestSpec::Parquet` in `crates/rdlt-cli/src/main.rs`; schema
   round-trips extended in
   `crates/rdlt-connector-file/tests/config_schema.rs`.
-- [ ] T012 [US3] Dest over Location: staged-put + COPY+DELETE finalize
+- [X] T012 [US3] Dest over Location: staged-put + COPY+DELETE finalize
   for S3 (R6: deterministic final names per (load, commit, table, n),
   idempotent re-finalize, state/receipt documents written LAST, same
   order as local); jsonl writer in `src/formats/jsonl.rs` (write side);

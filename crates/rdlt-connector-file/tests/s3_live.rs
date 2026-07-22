@@ -389,3 +389,122 @@ async fn quickstart_shape_csv_gz_with_hints_and_delta() {
         "no duplicates"
     );
 }
+
+/// US3: the dest writes to the object store with commit-atomic visibility
+/// (FF5). A concurrent lister polls the table prefix THROUGHOUT the run:
+/// every key it ever observes must be a FINAL part name — staged names
+/// never leak outside `.rdlt-staging/`, and after the run staging is empty.
+#[tokio::test(flavor = "multi_thread")]
+async fn dest_publishes_atomically_to_the_bucket() {
+    use rdlt_connector_file::FileSource;
+    use rdlt_connector_file::dest::{FileDest, FileDestConfig};
+    use rdlt_engine::{Engine, EngineConfig};
+
+    let Some(fixture) = S3Fixture::start().await else {
+        return;
+    };
+
+    // Source: local jsonl (plenty of rows so the run has real duration).
+    let data = tempfile::tempdir().expect("tempdir");
+    let mut body = String::new();
+    for i in 0..20_000 {
+        body.push_str(&format!("{{\"id\":{i}}}\n"));
+    }
+    std::fs::write(data.path().join("a.jsonl"), body).expect("seed");
+    let source = FileSource::from_yaml(&format!(
+        "streams:\n  - name: events\n    format: jsonl\n    path: \"{}/*.jsonl\"\n",
+        data.path().display()
+    ))
+    .expect("config");
+
+    let dest = FileDest::from_config(
+        FileDestConfig::new("lake/out").with_location(fixture.location_options()),
+    )
+    .expect("connect");
+
+    // The probe: poll the final table prefix during the run.
+    let probe_location = fixture.location();
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let probe_stop = stop.clone();
+    let probe = tokio::spawn(async move {
+        let mut offenders = Vec::new();
+        while !probe_stop.load(std::sync::atomic::Ordering::Relaxed) {
+            if let Ok(files) = probe_location.list("lake/out/events/*").await {
+                for f in files {
+                    let name = f.path.rsplit('/').next().unwrap_or("").to_owned();
+                    if !(name.starts_with("part-") && name.ends_with(".parquet")) {
+                        offenders.push(f.path);
+                    }
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        offenders
+    });
+
+    let report = Engine::new(EngineConfig::new("s3-dest"), source, dest.clone())
+        .run()
+        .await
+        .expect("run");
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let offenders = probe.await.expect("probe");
+    assert!(
+        offenders.is_empty(),
+        "non-final names observed under the table prefix: {offenders:?}"
+    );
+    assert_eq!(report.total_rows(), 20_000);
+    assert_eq!(
+        dest.count_rows_async("events").await.expect("count"),
+        20_000,
+        "exact totals in the bucket"
+    );
+    // Staging fully consumed after commit.
+    let staged = fixture
+        .location()
+        .list("lake/out/.rdlt-staging/*")
+        .await
+        .expect("list staging");
+    assert!(staged.is_empty(), "staged leftovers: {staged:?}");
+}
+
+/// US3: partitioned jsonl output to the bucket — one prefix per value,
+/// exact totals, format parity with parquet.
+#[tokio::test(flavor = "multi_thread")]
+async fn dest_partitions_jsonl_in_the_bucket() {
+    use rdlt_connector_file::FileSource;
+    use rdlt_connector_file::dest::{DestFormat, FileDest, FileDestConfig};
+    use rdlt_engine::{Engine, EngineConfig};
+
+    let Some(fixture) = S3Fixture::start().await else {
+        return;
+    };
+    let data = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        data.path().join("a.jsonl"),
+        "{\"id\":1,\"day\":\"d1\"}\n{\"id\":2,\"day\":\"d2\"}\n{\"id\":3,\"day\":\"d1\"}\n",
+    )
+    .expect("seed");
+    let source = FileSource::from_yaml(&format!(
+        "streams:\n  - name: events\n    format: jsonl\n    path: \"{}/*.jsonl\"\n",
+        data.path().display()
+    ))
+    .expect("config");
+    let dest = FileDest::from_config(
+        FileDestConfig::new("lake/part")
+            .with_location(fixture.location_options())
+            .with_format(DestFormat::Jsonl)
+            .with_partition_by("day"),
+    )
+    .expect("connect");
+    Engine::new(EngineConfig::new("s3-part"), source, dest.clone())
+        .run()
+        .await
+        .expect("run");
+    assert_eq!(dest.count_rows_async("events").await.expect("count"), 3);
+    let d1 = fixture
+        .location()
+        .list("lake/part/events/d1/*.jsonl")
+        .await
+        .expect("list");
+    assert_eq!(d1.len(), 1, "one part under d1");
+}
