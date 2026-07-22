@@ -15,7 +15,7 @@ one corpus) ride `config_schema.rs::schema_valid_corpus_parses` and
 | parameter | default | behaviors proven | validation proven | cells | class |
 |---|---|---|---|---|---|
 | `base_url` | required | joined with stream paths; relative `next_url` pages resolve against it | missing typed (serde) | every mock cell; pagination.rs::next_url_follows_absolute_and_relative | mock |
-| `auth` | `none` | six schemes attach (see Auth) | YAML singleton-map + JSON forms parse | auth.rs (all); config_schema.rs::schema_valid_corpus_parses | mock+unit |
+| `auth` | `none` | six schemes attach (see Auth) | YAML singleton-map + JSON forms parse; the pre-014 YAML tagged spelling (`!bearer`/`!basic`/`!header`) parses AND attaches unchanged (RS6) | auth.rs (all); auth.rs::pre_014_tagged_auth_spelling_parses_and_attaches; config_schema.rs::schema_valid_corpus_parses | mock+unit |
 | `headers` | `{}` | ride every request, merged UNDER stream headers (same name → stream wins, sent once) | invalid header name/value typed at send | auth.rs::headers_and_params_merge_stream_over_source | mock |
 | `params` | `{}` | ride every request, merged UNDER stream params | — | auth.rs::headers_and_params_merge_stream_over_source | mock |
 | `max_concurrency` | `1` | child fan-out overlaps up to the limit (3×400ms children ≪ sequential floor, exact totals); 1 = strictly sequential | `0` typed at parse | children.rs::children_fan_out_concurrently_within_the_limit; children.rs::zero_max_concurrency_rejected_at_parse | mock |
@@ -50,7 +50,7 @@ auth.rs::secrets_never_render_anywhere; unit redaction/transparency:
 | `body` | absent | JSON template; `{token}` substitution under `parent` | requires `method: post`, typed | actions.rs::post_body_with_cursor_pagination; actions.rs::body_requires_post | mock |
 | `params` | `{}` | ride every request of the stream; merged OVER source params | — | pokeapi_live.rs::pokeapi_list_and_details_through_the_engine (`limit`); auth.rs::headers_and_params_merge_stream_over_source | live+mock |
 | `headers` | `{}` | merged OVER source headers | — | auth.rs::headers_and_params_merge_stream_over_source | mock |
-| `records_path` | absent | absent = body streams through BYTE-IDENTICAL (perf path); dot + `[*]` + `[N]` selection; single-array-match unwraps; wildcard matches are records | unsupported syntax typed AT PARSE naming the subset; no-match typed naming path + response top-level keys | src/source/read/extract.rs::tests::passthrough_is_byte_identical + selector_subset_parses_and_rejects + selection_flattens_wildcards + index_segments_select_and_non_array_shapes_are_typed + no_match_names_path_and_shape; actions.rs::wildcard_selector_extracts_nested; actions.rs::selector_no_match_is_typed; actions.rs::invalid_selector_fails_at_parse | unit+mock |
+| `records_path` | absent | absent = body streams through BYTE-IDENTICAL (perf path); dot + `[*]` + `[N]` selection; single-array-match unwraps; wildcard matches are records | unsupported syntax typed AT PARSE naming the subset; no-match typed naming path + response top-level keys — EXCEPT a wildcard over an existing empty array = a legitimately empty page (terminal-page termination) | actions.rs::wildcard_selector_terminates_on_empty_page; src/source/read/extract.rs::tests::passthrough_is_byte_identical + selector_subset_parses_and_rejects + selection_flattens_wildcards + index_segments_select_and_non_array_shapes_are_typed + no_match_names_path_and_shape; actions.rs::wildcard_selector_extracts_nested; actions.rs::selector_no_match_is_typed; actions.rs::invalid_selector_fails_at_parse | unit+mock |
 | `pagination` | `none` | see Pagination | eager selector validation on all `*_path` fields | actions.rs::invalid_selector_fails_at_parse (records_path arm; same validate loop covers pagination paths) | mock |
 | `incremental` | absent | see Incremental | — | — | — |
 | `cursor_field` / `cursor_param` | absent | FROZEN pre-014 aliases; identical behavior to the block | set together; never mixed with the block — typed | conformance.rs::paginates_and_checkpoints_max_cursor + resume_sends_cursor_param_and_skips_completed_ranges (alias spellings, unchanged pre-014 cells); actions.rs::incremental_block_and_aliases_are_exclusive; actions.rs::validation_matrix_covers_remaining_arms (one alias half alone) | mock |
@@ -74,7 +74,7 @@ spellings parse unchanged — pagination.rs::pre_014_pagination_spellings_parse.
 | `cursor` | `cursor_path`, `cursor_param` | absent/null cursor ends; value chains into the param (query for GET, body for POST) | pagination.rs::body_cursor_chains_and_terminates; actions.rs::post_body_with_cursor_pagination | mock |
 | `header_cursor` | `header`, `cursor_param` | absent header ends; header value chains | pagination.rs::header_cursor_chains_and_terminates | mock |
 | `next_url` | `next_url_path` | absent/null ends; absolute followed verbatim, relative resolved against `base_url`; live chain terminates naturally | pagination.rs::next_url_follows_absolute_and_relative; pokeapi_live.rs::pokeapi_next_url_chain_terminates | mock+live |
-| `link_header` | — | RFC5988 `rel="next"` followed; no next link ends | pagination.rs::link_header_follows_rel_next; unit parse: src/source/read/paginate.rs::tests | mock+unit |
+| `link_header` | — | RFC5988 `rel="next"` followed; no next link ends; URLs containing commas and malformed members never truncate the scan | pagination.rs::link_header_follows_rel_next; src/source/read/paginate.rs::tests::link_header_subset + link_header_survives_commas_and_junk_members | mock+unit |
 
 ## Incremental block
 
@@ -87,10 +87,16 @@ spellings parse unchanged — pagination.rs::pre_014_pagination_spellings_parse.
 
 ## Response actions
 
+Matching is TYPED (the actual response status + the first 64KiB of the
+body, success and error responses alike; an entry declaring both
+`status` and `content_contains` requires both).
+
 | parameter | behaviors proven | validation proven | cells | class |
 |---|---|---|---|---|
-| `status` → `end_stream` | declared 404 ends cleanly, totals = rows so far; UNDECLARED 4xx stays typed (allow-list posture) | — | actions.rs::action_404_end_stream; actions.rs::undeclared_4xx_stays_typed | mock |
-| `content_contains` → `ignore` | matching page contributes nothing; pagination still terminates; 64KiB match bound (in-code constant) | — | actions.rs::action_content_ignore | mock |
+| `status` → `end_stream` | declared 404 ends cleanly, totals = rows so far; declared 429 matches the TYPED status (its classified error never renders it); UNDECLARED 4xx stays typed (allow-list posture) | status outside 100–599 typed at parse | actions.rs::action_404_end_stream; actions.rs::action_429_end_stream; actions.rs::undeclared_4xx_stays_typed; actions.rs::action_status_out_of_range_rejected_at_parse | mock |
+| `content_contains` → `ignore` | matching page contributes nothing; body-driven pagination still works — a mid-chain ignored page carries its cursor forward, a final one ends the chain | — | actions.rs::action_content_ignore; actions.rs::action_ignore_rides_cursor_pagination | mock |
+| `content_contains` → `error` | FATAL typed failure, never a silent clean end | — | actions.rs::action_content_error_is_fatal | mock |
+| `status` + `content_contains` combined | both must hold (error bodies are read for the match); non-matching body keeps the typed error | — | actions.rs::action_status_and_content_combined | mock |
 | matcher-less action | — | rejected at parse (would swallow everything) | actions.rs::unconditional_action_rejected_at_parse | mock |
 | all three actions × all three crash points | crash/rerun exactly-once totals through a real destination | — | sweep.rs::rest_read_path_survives_crash_sweep (3 points × 3 actions, armed-fire pin exact) | sweep |
 

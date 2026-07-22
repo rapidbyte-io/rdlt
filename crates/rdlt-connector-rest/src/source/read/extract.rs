@@ -83,7 +83,15 @@ impl Selector {
 
     /// Select all matches (wildcards flatten).
     pub fn select<'v>(&self, root: &'v Value) -> Vec<&'v Value> {
+        self.select_tracking(root).0
+    }
+
+    /// Select, also reporting whether a wildcard traversed an EXISTING but
+    /// empty array — zero matches then means "the page is legitimately
+    /// empty", not "the path is wrong" (the terminal-page case).
+    fn select_tracking<'v>(&self, root: &'v Value) -> (Vec<&'v Value>, bool) {
         let mut current = vec![root];
+        let mut wildcard_saw_empty = false;
         for segment in &self.segments {
             let mut next = Vec::new();
             for node in current {
@@ -100,6 +108,9 @@ impl Selector {
                     }
                     Segment::Wildcard => {
                         if let Value::Array(items) = node {
+                            if items.is_empty() {
+                                wildcard_saw_empty = true;
+                            }
                             next.extend(items.iter());
                         }
                     }
@@ -107,7 +118,7 @@ impl Selector {
             }
             current = next;
         }
-        current
+        (current, wildcard_saw_empty)
     }
 
     /// Select exactly one scalar-ish value (for cursors/next-urls/totals).
@@ -117,29 +128,51 @@ impl Selector {
     }
 }
 
-/// Extracted records: the array bytes + the record count.
+/// Extracted records: the array bytes, the record count, and — when the
+/// caller declared it needs them (incremental cursors, parent-child) — the
+/// parsed record values, so downstream never reparses the page (one parse
+/// per page, total).
 #[derive(Debug)]
 pub struct Extracted {
     pub records: Bytes,
     pub count: usize,
+    pub values: Option<Vec<Value>>,
+}
+
+impl Extracted {
+    /// An empty page (the `ignore` response action).
+    pub fn empty() -> Self {
+        Self {
+            records: Bytes::from_static(b"[]"),
+            count: 0,
+            values: Some(Vec::new()),
+        }
+    }
 }
 
 /// Extract records per the stream's selector. Without one, the body must BE
 /// a JSON array and streams through untouched (the perf path); with one,
 /// one parse + reserialize. No-match is a typed error naming the path and
-/// the response's top-level keys (US1-AS3).
+/// the response's top-level keys (US1-AS3) — EXCEPT when a wildcard
+/// traversed an existing empty array: that's a legitimately empty page (the
+/// standard terminal-page shape), never an error. `need_values` keeps the
+/// parsed records on the result for downstream consumers.
 pub fn extract_records(
     body: &Bytes,
     selector: Option<&Selector>,
+    need_values: bool,
 ) -> Result<Extracted, SourceError> {
     match selector {
         None => {
             let value: Value = serde_json::from_slice(body)
                 .map_err(|e| SourceError::fatal(format!("response is not valid JSON: {e}")))?;
             match value {
+                // The parse already happened for the count — keep the values
+                // for free; the forwarded BYTES stay untouched (RS5).
                 Value::Array(items) => Ok(Extracted {
                     records: body.clone(),
                     count: items.len(),
+                    values: Some(items),
                 }),
                 _ => Err(SourceError::fatal(
                     "response body is not a JSON array; set records_path",
@@ -149,8 +182,11 @@ pub fn extract_records(
         Some(selector) => {
             let value: Value = serde_json::from_slice(body)
                 .map_err(|e| SourceError::fatal(format!("response is not valid JSON: {e}")))?;
-            let matches = selector.select(&value);
+            let (matches, wildcard_saw_empty) = selector.select_tracking(&value);
             if matches.is_empty() {
+                if wildcard_saw_empty {
+                    return Ok(Extracted::empty());
+                }
                 let top = top_level_keys(&value);
                 return Err(SourceError::fatal(format!(
                     "records_path `{}` matched nothing in the response (top-level: {top})",
@@ -176,9 +212,11 @@ pub fn extract_records(
             let count = items.len();
             let records =
                 serde_json::to_vec(&items).map_err(|e| SourceError::fatal(e.to_string()))?;
+            let values = need_values.then(|| items.into_iter().cloned().collect());
             Ok(Extracted {
                 records: records.into(),
                 count,
+                values,
             })
         }
     }
@@ -241,7 +279,7 @@ mod tests {
     #[test]
     fn passthrough_is_byte_identical() {
         let body = Bytes::from_static(b"[{\"a\":1},{\"a\":2}]");
-        let out = extract_records(&body, None).unwrap();
+        let out = extract_records(&body, None, false).unwrap();
         assert_eq!(out.count, 2);
         assert!(std::ptr::eq(
             out.records.as_ref().as_ptr(),
@@ -256,11 +294,13 @@ mod tests {
         assert_eq!(sel.select_one(&doc), Some(&json!(2)));
         // No selector + non-array body: typed with the records_path hint.
         let body = Bytes::from(serde_json::to_vec(&json!({"a": 1})).unwrap());
-        let err = extract_records(&body, None).unwrap_err().to_string();
+        let err = extract_records(&body, None, false).unwrap_err().to_string();
         assert!(err.contains("records_path"), "{err}");
         // Selector landing on a scalar: typed with the [*] hint.
         let sel = Selector::parse("a").unwrap();
-        let err = extract_records(&body, Some(&sel)).unwrap_err().to_string();
+        let err = extract_records(&body, Some(&sel), false)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("non-array") && err.contains("[*]"), "{err}");
     }
 
@@ -268,7 +308,9 @@ mod tests {
     fn no_match_names_path_and_shape() {
         let body = Bytes::from(serde_json::to_vec(&json!({"meta": 1, "rows": []})).unwrap());
         let sel = Selector::parse("data.items").unwrap();
-        let err = extract_records(&body, Some(&sel)).unwrap_err().to_string();
+        let err = extract_records(&body, Some(&sel), false)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("data.items") && err.contains("meta"), "{err}");
     }
 }

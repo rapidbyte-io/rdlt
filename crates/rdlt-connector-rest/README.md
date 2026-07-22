@@ -66,7 +66,8 @@ network.
 ## Auth schemes
 
 Externally tagged: `auth: {bearer: {token: …}}` (YAML singleton-map and
-JSON alike). Every credential field is a `Secret` — `Debug`/`Display`
+JSON alike; the pre-014 YAML tagged spelling `auth: !bearer` also still
+parses — frozen, RS6). Every credential field is a `Secret` — `Debug`/`Display`
 render `***`, and the test suite grep-proves that no config/source/error
 rendering ever contains a secret substring.
 
@@ -89,7 +90,7 @@ rendering ever contains a secret substring.
 | `body` | JSON value | absent | POST body template (`body` without `method: post` is a typed error). `{placeholder}` substitution applies inside strings under a `parent`. |
 | `params` | map | `{}` | Per-stream query params (merged OVER source `params`); `{placeholder}` substitution applies. |
 | `headers` | map | `{}` | Per-stream headers (merged OVER source `headers`). |
-| `records_path` | selector | absent | Where the records array lives: dot paths + `[*]` wildcards + `[N]` indices (`data.items[*].payload`). **Absent = the body IS the records array, streamed byte-identical (the perf path).** Unsupported syntax is a typed error at parse naming the subset; a non-matching path is a typed error naming the path and the response's top-level keys. |
+| `records_path` | selector | absent | Where the records array lives: dot paths + `[*]` wildcards + `[N]` indices (`data.items[*].payload`). **Absent = the body IS the records array, streamed byte-identical (the perf path).** Unsupported syntax is a typed error at parse naming the subset; a non-matching path is a typed error naming the path and the response's top-level keys — except a wildcard over an existing EMPTY array, which is a legitimately empty page (the standard terminal-page shape). |
 | `pagination` | family block | `none` | See Pagination families. |
 | `incremental` | block | absent | See Incremental. |
 | `cursor_field`, `cursor_param` | strings | absent | FROZEN pre-014 aliases for `incremental.cursor_field`/`start_param` — old documents parse unchanged. Set together; mixing them with the block is a typed error. |
@@ -147,12 +148,18 @@ typed-error posture:
 response_actions:
   - {status: 404, action: end_stream}          # end cleanly, keep rows so far
   - {content_contains: quota_warn, action: ignore}  # page contributes nothing
-  - {status: 410, action: error}               # explicit typed failure
+  - {status: 403, content_contains: expired, action: error}  # both must hold
 ```
 
-Each entry needs `status` and/or `content_contains` (an unconditional
-action would swallow everything — typed at parse). `content_contains`
-matches within the first 64KiB of the body.
+Matching is TYPED: `status` compares against the actual response status
+(success and error responses alike), `content_contains` searches the
+first 64KiB of the body — including error bodies — and an entry
+declaring both requires both. Each entry needs at least one matcher, and
+`status` must be a real HTTP status (100–599); both are typed at parse.
+`action: error` is a fatal typed failure; `ignore` treats the page as
+empty while body-driven paginators (`cursor`/`next_url`) still read the
+ignored body's cursor — a mid-chain ignored page continues the chain, a
+final one ends it.
 
 ## Parent-child
 

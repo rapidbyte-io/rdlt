@@ -20,16 +20,14 @@ pub struct ParentValues {
     pub include: Vec<(String, Value)>,
 }
 
-/// Extract every parent record's values from one parent PAGE (the records
-/// array bytes the read loop already has).
+/// Extract every parent record's values from one parent PAGE (the parsed
+/// records the read loop already holds — never a reparse).
 pub fn collect_parent_values(
-    records: &bytes::Bytes,
+    items: &[Value],
     parent: &Parent,
 ) -> Result<Vec<ParentValues>, SourceError> {
-    let items: Vec<Value> = serde_json::from_slice(records)
-        .map_err(|e| SourceError::fatal(format!("parent records reparse: {e}")))?;
     let mut out = Vec::with_capacity(items.len());
-    for item in &items {
+    for item in items {
         let mut placeholders = BTreeMap::new();
         for (token, field_path) in &parent.placeholders {
             let selector = Selector::parse(field_path)
@@ -90,17 +88,13 @@ pub fn describe(values: &BTreeMap<String, String>) -> String {
         .join(", ")
 }
 
-/// Embed `_parent_<field>` values into each child record of a page.
+/// Embed `_parent_<field>` values into each child record of a page (the
+/// parsed values, consumed — no reparse) and serialize once.
 /// Collision with an existing child field is a typed error.
 pub fn embed_parent_fields(
-    records: bytes::Bytes,
+    mut items: Vec<Value>,
     include: &[(String, Value)],
 ) -> Result<bytes::Bytes, SourceError> {
-    if include.is_empty() {
-        return Ok(records);
-    }
-    let mut items: Vec<Value> = serde_json::from_slice(&records)
-        .map_err(|e| SourceError::fatal(format!("child records reparse: {e}")))?;
     for item in &mut items {
         let Value::Object(map) = item else {
             return Err(SourceError::fatal(
@@ -139,12 +133,7 @@ mod tests {
 
     #[test]
     fn collects_and_substitutes() {
-        let records = bytes::Bytes::from(
-            serde_json::to_vec(&json!([
-                {"id": 7, "name": "ada", "org": {"slug": "acme"}},
-            ]))
-            .unwrap(),
-        );
+        let records = [json!({"id": 7, "name": "ada", "org": {"slug": "acme"}})];
         let values = collect_parent_values(
             &records,
             &parent(&[("id", "id"), ("org", "org.slug")], &["name"]),
@@ -160,13 +149,11 @@ mod tests {
 
     #[test]
     fn missing_field_and_non_scalar_are_typed() {
-        let records = bytes::Bytes::from(serde_json::to_vec(&json!([{"id": [1, 2]}])).unwrap());
-        let err = collect_parent_values(&records, &parent(&[("id", "id")], &[]))
+        let err = collect_parent_values(&[json!({"id": [1, 2]})], &parent(&[("id", "id")], &[]))
             .unwrap_err()
             .to_string();
         assert!(err.contains("an array"), "{err}");
-        let records = bytes::Bytes::from(serde_json::to_vec(&json!([{"x": 1}])).unwrap());
-        let err = collect_parent_values(&records, &parent(&[("id", "id")], &[]))
+        let err = collect_parent_values(&[json!({"x": 1})], &parent(&[("id", "id")], &[]))
             .unwrap_err()
             .to_string();
         assert!(err.contains("lacks field `id`"), "{err}");
@@ -174,16 +161,17 @@ mod tests {
 
     #[test]
     fn embeds_parent_fields_and_detects_collisions() {
-        let records = bytes::Bytes::from(serde_json::to_vec(&json!([{"a": 1}])).unwrap());
-        let out = embed_parent_fields(records.clone(), &[("name".into(), json!("ada"))]).unwrap();
+        let out =
+            embed_parent_fields(vec![json!({"a": 1})], &[("name".into(), json!("ada"))]).unwrap();
         let items: Vec<Value> = serde_json::from_slice(&out).unwrap();
         assert_eq!(items[0]["_parent_name"], "ada");
 
-        let colliding =
-            bytes::Bytes::from(serde_json::to_vec(&json!([{"_parent_name": 1}])).unwrap());
-        let err = embed_parent_fields(colliding, &[("name".into(), json!("x"))])
-            .unwrap_err()
-            .to_string();
+        let err = embed_parent_fields(
+            vec![json!({"_parent_name": 1})],
+            &[("name".into(), json!("x"))],
+        )
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("collides"), "{err}");
     }
 }

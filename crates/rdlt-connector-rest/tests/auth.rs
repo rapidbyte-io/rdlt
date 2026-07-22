@@ -48,6 +48,32 @@ async fn api_key_attaches_header_and_query() {
     assert_eq!(read_ok(&yaml, "items").await.len(), 1);
 }
 
+/// RS6: the pre-014 YAML tagged spelling (`auth: !bearer` — the only YAML
+/// form the pre-014 crate accepted) still parses, and still attaches.
+#[tokio::test]
+async fn pre_014_tagged_auth_spelling_parses_and_attaches() {
+    for yaml in [
+        "base_url: http://x\nauth: !bearer\n  token: t\nstreams:\n  - name: a\n    path: /a\n",
+        "base_url: http://x\nauth: !basic\n  username: u\n  password: p\nstreams:\n  - name: a\n    path: /a\n",
+        "base_url: http://x\nauth: !header\n  name: x-k\n  value: v\nstreams:\n  - name: a\n    path: /a\n",
+    ] {
+        rdlt_connector_rest::RestConfig::from_yaml(yaml)
+            .unwrap_or_else(|e| panic!("pre-014 tagged spelling must parse: {e}\n{yaml}"));
+    }
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/items"))
+        .and(header("authorization", "Bearer tok-old"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"id": 1}])))
+        .mount(&server)
+        .await;
+    let yaml = format!(
+        "base_url: \"{}\"\nauth: !bearer\n  token: tok-old\nstreams:\n  - name: items\n    path: /items\n",
+        server.uri()
+    );
+    assert_eq!(read_ok(&yaml, "items").await.len(), 1);
+}
+
 /// basic and arbitrary-header schemes attach their exact values.
 #[tokio::test]
 async fn basic_and_header_auth_attach() {

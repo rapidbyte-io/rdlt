@@ -6,8 +6,8 @@ pub mod extract;
 pub mod paginate;
 pub mod resolve;
 
-use std::collections::BTreeMap;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, HashSet};
+use std::hash::{DefaultHasher, Hash, Hasher};
 
 use bytes::Bytes;
 use rdlt_connector::core::crash_point;
@@ -15,18 +15,10 @@ use rdlt_connector::{Cursor, RecordsOut, SourceError};
 use serde_json::Value;
 
 use super::client::RestClient;
-use super::config::{ActionKind, HttpMethod, Incremental, RestConfig, RestStream};
+use super::config::{ActionKind, HttpMethod, Incremental, ResponseAction, RestConfig, RestStream};
 use extract::{Extracted, Selector, extract_records};
 use paginate::{PageContext, PageDecision, Paginator};
 use resolve::ParentValues;
-
-/// What a matched response action decided.
-enum Handled {
-    /// Proceed as an EMPTY page (the `ignore` action).
-    EmptyPage,
-    /// Stop the stream cleanly.
-    EndStream,
-}
 
 /// Read one stream (with parent fan-out when declared) into `out`.
 pub async fn read_stream(
@@ -120,11 +112,12 @@ async fn collect_parents(
     let selector = parse_selector(parent_stream)?;
     let mut paginator = paginate::from_config(&parent_stream.pagination);
     let mut driver = SequenceDriver::new(config, parent_stream, client, &mut *paginator);
+    driver.need_values = true;
     loop {
         let page = driver.fetch_page(&selector, None).await?;
         let Some(extracted) = page else { break };
         into.extend(resolve::collect_parent_values(
-            &extracted.records,
+            extracted.values.as_deref().unwrap_or_default(),
             parent_config,
         )?);
         if !driver.advance(&extracted)? {
@@ -147,6 +140,7 @@ async fn read_sequence(
     let selector = parse_selector(stream)?;
     let mut paginator = paginate::from_config(&stream.pagination);
     let mut driver = SequenceDriver::new(config, stream, client, &mut *paginator);
+    driver.need_values = incremental.is_some();
     bind_incremental_params(
         &mut driver,
         incremental,
@@ -160,7 +154,8 @@ async fn read_sequence(
             // Cursor update BEFORE pushing, so the checkpoint that follows
             // the rows covers exactly them (clause S2).
             if let Some(inc) = incremental {
-                update_max_cursor(&extracted.records, &inc.cursor_field, max_cursor);
+                let values = extracted.values.as_deref().unwrap_or_default();
+                update_max_cursor(values, &inc.cursor_field, max_cursor);
             }
             if out.raw_json(extracted.records.clone()).await.is_err() {
                 return Ok(()); // clause S4: closed channel = cancellation
@@ -293,16 +288,25 @@ async fn read_child_pages(
     let mut paginator = paginate::from_config(&stream.pagination);
     let mut driver = SequenceDriver::new(config, stream, client, &mut *paginator);
     driver.parent = Some(values);
+    driver.need_values = incremental.is_some() || !values.include.is_empty();
     bind_incremental_params(&mut driver, incremental, start_value);
     let mut local_max = start_value.clone();
     loop {
         let page = driver.fetch_page(selector, Some(values)).await?;
-        let Some(extracted) = page else { break };
+        let Some(mut extracted) = page else { break };
         if extracted.count > 0 {
             if let Some(inc) = incremental {
-                update_max_cursor(&extracted.records, &inc.cursor_field, &mut local_max);
+                let page_values = extracted.values.as_deref().unwrap_or_default();
+                update_max_cursor(page_values, &inc.cursor_field, &mut local_max);
             }
-            let records = resolve::embed_parent_fields(extracted.records.clone(), &values.include)?;
+            // Parent-field embedding reuses the already-parsed values —
+            // no reparse; without `include` the page bytes pass through.
+            let records = if values.include.is_empty() {
+                extracted.records.clone()
+            } else {
+                let page_values = extracted.values.take().unwrap_or_default();
+                resolve::embed_parent_fields(page_values, &values.include)?
+            };
             if tx.send(records).await.is_err() {
                 break; // forwarder ended = cancellation
             }
@@ -329,13 +333,16 @@ struct SequenceDriver<'a> {
     client: &'a RestClient,
     paginator: &'a mut dyn Paginator,
     parent: Option<&'a ParentValues>,
+    /// Whether extraction should keep parsed record values on the page
+    /// (incremental cursors / parent-child embedding — one parse per page).
+    need_values: bool,
     /// Params merged into every request (incremental bindings).
     extra_params: Vec<(String, String)>,
     /// Current page params from the paginator (or a full URL override).
     page_params: Vec<(String, String)>,
     url_override: Option<String>,
-    /// Loop guards (RS2).
-    seen_requests: BTreeSet<String>,
+    /// Loop guards (RS2): request fingerprints, stored as u64 hashes.
+    seen_requests: HashSet<u64>,
     pages: u64,
     total_records: u64,
     /// Body of the LAST response (for body-driven paginators).
@@ -360,10 +367,11 @@ impl<'a> SequenceDriver<'a> {
             client,
             paginator,
             parent: None,
+            need_values: false,
             extra_params: Vec::new(),
             page_params,
             url_override: None,
-            seen_requests: BTreeSet::new(),
+            seen_requests: HashSet::new(),
             pages: 0,
             total_records: 0,
             last_body: None,
@@ -399,11 +407,16 @@ impl<'a> SequenceDriver<'a> {
         self.started = true;
         let url = self.url_override.clone().unwrap_or_else(|| self.base_url());
 
-        // The same-request guard (RS2): fingerprint URL + all params + body.
-        let fingerprint = format!(
-            "{url}|{:?}|{:?}|{:?}",
-            self.page_params, self.extra_params, self.stream.body
-        );
+        // The same-request guard (RS2): fingerprint URL + all params + body,
+        // kept as a u64 hash — O(8 bytes) per page, not the rendered string.
+        let fingerprint = {
+            let mut hasher = DefaultHasher::new();
+            url.hash(&mut hasher);
+            self.page_params.hash(&mut hasher);
+            self.extra_params.hash(&mut hasher);
+            format!("{:?}", self.stream.body).hash(&mut hasher);
+            hasher.finish()
+        };
         if !self.seen_requests.insert(fingerprint) {
             return Err(SourceError::fatal(format!(
                 "stream `{}`: paginator produced the SAME request twice (page {}, \
@@ -482,16 +495,9 @@ impl<'a> SequenceDriver<'a> {
             })
             .await;
 
-        let response = match response {
-            Ok(response) => response,
-            Err(e) => {
-                // Response actions on error statuses (declared allow-list).
-                if let Some(handled) = self.match_action_on_error(&e).await? {
-                    return self.apply_handled(handled).await;
-                }
-                return Err(e);
-            }
-        };
+        let response = response?; // Err = transport-level (no status to match)
+        let status = response.status();
+        let retry_after = super::client::retry_after(&response);
         let headers = response.headers().clone();
         let body = response
             .bytes()
@@ -501,13 +507,19 @@ impl<'a> SequenceDriver<'a> {
             "rest.decode",
             Err(SourceError::fatal("injected crash at rest.decode"))
         );
-        // Content-based actions on success bodies.
-        if let Some(handled) = self.match_action_on_content(&body) {
+        // Declared response actions match the TYPED status and the body,
+        // success and error responses alike — first match wins (RS3: the
+        // allow-list posture; anything undeclared stays classified).
+        if let Some(action) = match_action(&self.stream.response_actions, status.as_u16(), &body) {
+            let kind = action.action;
             self.last_headers = headers;
-            return self.apply_handled(handled).await;
+            return self.apply_action(kind, status, &body);
+        }
+        if !status.is_success() {
+            return Err(super::client::classify_status(status, retry_after));
         }
 
-        let extracted = extract_records(&body, selector.as_ref())?;
+        let extracted = extract_records(&body, selector.as_ref(), self.need_values)?;
         self.total_records += extracted.count as u64;
         self.last_count = extracted.count;
         self.last_headers = headers;
@@ -522,79 +534,34 @@ impl<'a> SequenceDriver<'a> {
         Ok(Some(extracted))
     }
 
-    async fn apply_handled(&mut self, handled: Handled) -> Result<Option<Extracted>, SourceError> {
-        match handled {
-            Handled::EndStream => {
+    fn apply_action(
+        &mut self,
+        kind: ActionKind,
+        status: reqwest::StatusCode,
+        body: &Bytes,
+    ) -> Result<Option<Extracted>, SourceError> {
+        match kind {
+            ActionKind::Error => Err(SourceError::fatal(format!(
+                "stream `{}`: declared error action matched (HTTP {status})",
+                self.stream.name
+            ))),
+            ActionKind::EndStream => {
                 self.done = true;
                 Ok(None)
             }
-            Handled::EmptyPage => {
+            ActionKind::Ignore => {
+                // An empty page — but a body-driven paginator still gets the
+                // body: an ignored page may carry the cursor that continues
+                // the chain; an unparseable one ends it cleanly.
                 self.last_count = 0;
-                self.last_body = None;
-                Ok(Some(Extracted {
-                    records: Bytes::from_static(b"[]"),
-                    count: 0,
-                }))
+                self.last_body = if self.paginator.needs_body() {
+                    serde_json::from_slice(body).ok()
+                } else {
+                    None
+                };
+                Ok(Some(Extracted::empty()))
             }
         }
-    }
-
-    /// Response actions for HTTP-status errors: the classified error carries
-    /// the status in its message; declared statuses take their action.
-    async fn match_action_on_error(
-        &self,
-        error: &SourceError,
-    ) -> Result<Option<Handled>, SourceError> {
-        let rendered = error.to_string();
-        for action in &self.stream.response_actions {
-            let Some(status) = action.status else {
-                continue;
-            };
-            if !rendered.contains(&format!("HTTP {status}"))
-                && !rendered.contains(&format!("HTTP {status} "))
-            {
-                continue;
-            }
-            // content_contains cannot match here (the body was consumed into
-            // the classification) — status-only actions apply.
-            if action.content_contains.is_some() {
-                continue;
-            }
-            return Ok(Some(match action.action {
-                ActionKind::Ignore => Handled::EmptyPage,
-                ActionKind::EndStream => Handled::EndStream,
-                ActionKind::Error => {
-                    return Err(SourceError::fatal(format!(
-                        "stream `{}`: declared error action matched: {rendered}",
-                        self.stream.name
-                    )));
-                }
-            }));
-        }
-        Ok(None)
-    }
-
-    /// Content-based actions over successful responses (bounded match).
-    fn match_action_on_content(&self, body: &Bytes) -> Option<Handled> {
-        const BOUND: usize = 64 * 1024;
-        for action in &self.stream.response_actions {
-            let Some(needle) = &action.content_contains else {
-                continue;
-            };
-            if action.status.is_some() {
-                continue; // status actions handled on the error path
-            }
-            let window = &body[..body.len().min(BOUND)];
-            if !String::from_utf8_lossy(window).contains(needle.as_str()) {
-                continue;
-            }
-            return Some(match action.action {
-                ActionKind::Ignore => Handled::EmptyPage,
-                ActionKind::EndStream => Handled::EndStream,
-                ActionKind::Error => Handled::EndStream, // caller surfaces below
-            });
-        }
-        None
     }
 
     /// Ask the paginator for the next move. Returns false when done.
@@ -655,11 +622,27 @@ fn substitute_body(body: &Value, values: &BTreeMap<String, String>) -> Value {
     }
 }
 
-fn update_max_cursor(records: &Bytes, field: &str, max: &mut Option<String>) {
-    let Ok(Value::Array(items)) = serde_json::from_slice::<Value>(records) else {
-        return;
-    };
-    for item in items {
+/// First action whose declared conditions ALL hold: `status` (typed
+/// equality against the actual response status) and/or `content_contains`
+/// (within the first 64KiB of the body — success and error bodies alike).
+fn match_action<'a>(
+    actions: &'a [ResponseAction],
+    status: u16,
+    body: &Bytes,
+) -> Option<&'a ResponseAction> {
+    const BOUND: usize = 64 * 1024;
+    actions.iter().find(|action| {
+        let status_matches = action.status.is_none_or(|declared| declared == status);
+        let content_matches = action.content_contains.as_deref().is_none_or(|needle| {
+            let window = &body[..body.len().min(BOUND)];
+            String::from_utf8_lossy(window).contains(needle)
+        });
+        status_matches && content_matches
+    })
+}
+
+fn update_max_cursor(records: &[Value], field: &str, max: &mut Option<String>) {
+    for item in records {
         let Some(value) = item.get(field) else {
             continue;
         };

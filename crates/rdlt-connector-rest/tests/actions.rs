@@ -246,6 +246,202 @@ streams:
     assert!(err.contains("not both"), "{err}");
 }
 
+/// A wildcard records_path over a terminal EMPTY page ends cleanly — the
+/// standard page-family termination, never a "matched nothing" error.
+#[tokio::test]
+async fn wildcard_selector_terminates_on_empty_page() {
+    use wiremock::matchers::query_param;
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/items"))
+        .and(query_param("page", "1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {"items": [{"payload": {"id": 1}}, {"payload": {"id": 2}}]}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/items"))
+        .and(query_param("page", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {"items": []}
+        })))
+        .mount(&server)
+        .await;
+    let yaml = format!(
+        r#"
+base_url: "{}"
+streams:
+  - name: items
+    path: /items
+    records_path: data.items[*].payload
+    pagination: {{type: page}}
+"#,
+        server.uri()
+    );
+    let rows = read_ok(&yaml, "items").await;
+    assert_eq!(rows.len(), 2, "clean end at the empty terminal page");
+}
+
+/// content_contains + `action: error` is FATAL — never a silent clean end.
+#[tokio::test]
+async fn action_content_error_is_fatal() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/items"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "error": "internal_error", "data": []
+        })))
+        .mount(&server)
+        .await;
+    let yaml = format!(
+        r#"
+base_url: "{}"
+streams:
+  - name: items
+    path: /items
+    records_path: data
+    response_actions:
+      - {{content_contains: internal_error, action: error}}
+"#,
+        server.uri()
+    );
+    let err = read_err(&yaml, "items").await;
+    assert!(err.contains("declared error action matched"), "{err}");
+}
+
+/// `ignore` composes with body-driven pagination: an ignored mid-chain page
+/// still carries the cursor forward; an ignored final page ends the chain.
+#[tokio::test]
+async fn action_ignore_rides_cursor_pagination() {
+    use wiremock::matchers::query_param;
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/items"))
+        .and(query_param("c", "c3"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{"id": 3}], "next": null
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/items"))
+        .and(query_param("c", "c2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "warning": "maintenance_window", "data": [{"id": 99}], "next": "c3"
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/items"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{"id": 1}], "next": "c2"
+        })))
+        .mount(&server)
+        .await;
+    let yaml = format!(
+        r#"
+base_url: "{}"
+streams:
+  - name: items
+    path: /items
+    records_path: data
+    pagination: {{type: cursor, cursor_path: next, cursor_param: c}}
+    response_actions:
+      - {{content_contains: maintenance_window, action: ignore}}
+"#,
+        server.uri()
+    );
+    let rows = read_ok(&yaml, "items").await;
+    assert_eq!(
+        rows.len(),
+        2,
+        "pages 1 and 3; the ignored page 2 contributes nothing"
+    );
+}
+
+/// A declared status action matches the TYPED status — including 429, whose
+/// classified error does not render the status text.
+#[tokio::test]
+async fn action_429_end_stream() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/items"))
+        .respond_with(ResponseTemplate::new(429))
+        .mount(&server)
+        .await;
+    let yaml = format!(
+        r#"
+base_url: "{}"
+streams:
+  - name: items
+    path: /items
+    response_actions:
+      - {{status: 429, action: end_stream}}
+"#,
+        server.uri()
+    );
+    let rows = read_ok(&yaml, "items").await;
+    assert!(rows.is_empty(), "declared 429 ends cleanly");
+}
+
+/// status AND content_contains on one action: both must hold (the error
+/// body is read for the match); a non-matching body keeps the typed error.
+#[tokio::test]
+async fn action_status_and_content_combined() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/items"))
+        .respond_with(ResponseTemplate::new(404).set_body_string("resource gone"))
+        .mount(&server)
+        .await;
+    let yaml_for = |server: &MockServer| {
+        format!(
+            r#"
+base_url: "{}"
+streams:
+  - name: items
+    path: /items
+    response_actions:
+      - {{status: 404, content_contains: gone, action: end_stream}}
+"#,
+            server.uri()
+        )
+    };
+    let rows = read_ok(&yaml_for(&server), "items").await;
+    assert!(rows.is_empty(), "404 + matching body ends cleanly");
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/items"))
+        .respond_with(ResponseTemplate::new(404).set_body_string("something else"))
+        .mount(&server)
+        .await;
+    let err = read_err(&yaml_for(&server), "items").await;
+    assert!(
+        err.contains("404"),
+        "non-matching body keeps the typed 404: {err}"
+    );
+}
+
+/// Declared statuses must be real HTTP statuses (typo net).
+#[tokio::test]
+async fn action_status_out_of_range_rejected_at_parse() {
+    let err = rdlt_connector_rest::RestConfig::from_yaml(
+        r#"
+base_url: http://x
+streams:
+  - name: a
+    path: /a
+    response_actions:
+      - {status: 42, action: end_stream}
+"#,
+    )
+    .expect_err("status 42")
+    .to_string();
+    assert!(err.contains("not an HTTP status"), "{err}");
+}
+
 /// The remaining validation arms, and the JSON text entry point rides the
 /// same validation: alias halves set together, empty incremental
 /// cursor_field, both total stops declared.

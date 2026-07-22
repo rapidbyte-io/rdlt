@@ -19,10 +19,10 @@ use super::client::secret::Secret;
 pub struct RestConfig {
     /// e.g. `https://api.example.com`
     pub base_url: String,
-    // singleton_map: YAML's natural `auth: {bearer: {token: …}}` form for
-    // externally-tagged enums (serde_yaml 0.9 otherwise wants `!bearer`);
-    // works identically for JSON documents.
-    #[serde(default, with = "serde_yaml::with::singleton_map")]
+    // auth_compat: accepts BOTH the natural `auth: {bearer: {token: …}}`
+    // singleton-map form (YAML and JSON) AND the pre-014 YAML tagged form
+    // `auth: !bearer` — RS6, old spellings parse unchanged.
+    #[serde(default, with = "auth_compat")]
     #[schemars(with = "Auth")]
     pub auth: Auth,
     /// Source-level default headers, merged UNDER per-stream headers.
@@ -49,6 +49,31 @@ pub struct RestConfig {
 
 fn default_max_concurrency() -> u32 {
     1
+}
+
+/// Auth field (de)serialization: singleton-map form in and out, PLUS the
+/// pre-014 YAML tagged spelling (`auth: !bearer`) on the way in — the only
+/// YAML form the pre-014 plain externally-tagged enum accepted (RS6).
+mod auth_compat {
+    use serde::de::Error as _;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    use super::Auth;
+
+    pub fn serialize<S: Serializer>(auth: &Auth, serializer: S) -> Result<S::Ok, S::Error> {
+        serde_yaml::with::singleton_map::serialize(auth, serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Auth, D::Error> {
+        // Buffer into a format-agnostic value first: YAML keeps `!tags` as
+        // Value::Tagged; JSON and singleton-map YAML land as mappings.
+        let value = serde_yaml::Value::deserialize(deserializer)?;
+        if matches!(value, serde_yaml::Value::Tagged(_)) {
+            Auth::deserialize(value).map_err(D::Error::custom)
+        } else {
+            serde_yaml::with::singleton_map::deserialize(value).map_err(D::Error::custom)
+        }
+    }
 }
 fn default_retry_after_cap() -> u64 {
     300
@@ -475,13 +500,23 @@ impl RestConfig {
                      total_count_path — pick one stop condition"
                 ));
             }
-            // Response actions: at least one matcher each.
+            // Response actions: at least one matcher each; declared statuses
+            // must be real HTTP statuses (a typo like `42` would otherwise
+            // just be silently dead).
             for (i, action) in stream.response_actions.iter().enumerate() {
                 if action.status.is_none() && action.content_contains.is_none() {
                     return invalid(format!(
                         "stream `{name}`: response_actions[{i}] needs `status` and/or \
                          `content_contains` — an unconditional action would swallow \
                          every response"
+                    ));
+                }
+                if let Some(status) = action.status
+                    && !(100..=599).contains(&status)
+                {
+                    return invalid(format!(
+                        "stream `{name}`: response_actions[{i}]: status {status} is not \
+                         an HTTP status (100–599)"
                     ));
                 }
             }

@@ -65,10 +65,12 @@ impl RestClient {
         *last = Some(Instant::now());
     }
 
-    /// Send with auth + defaults + pacing; classify the outcome. Retry-After
-    /// on 429/503 is honored IN-SOURCE up to the cap (one wait, one retry per
-    /// occurrence); beyond the cap the classified error surfaces to the
-    /// engine's budget.
+    /// Send with auth + defaults + pacing. `Err` is TRANSPORT-level only
+    /// (connection failures, classified transient); an HTTP error status
+    /// comes back as `Ok(response)` after the bounded in-source handling
+    /// below, so the caller can match declared response actions on the
+    /// TYPED status before classifying. Retry-After on 429/503 is honored
+    /// IN-SOURCE up to the cap (one wait, one retry per occurrence).
     pub async fn send(
         &self,
         build: impl Fn(&reqwest::Client) -> reqwest::RequestBuilder,
@@ -113,7 +115,7 @@ impl RestClient {
                 tokio::time::sleep(wait).await;
                 continue;
             }
-            return Err(classify_status(status, &response));
+            return Ok(response);
         }
     }
 
@@ -152,7 +154,7 @@ impl RestClient {
     }
 }
 
-fn retry_after(response: &reqwest::Response) -> Option<Duration> {
+pub(crate) fn retry_after(response: &reqwest::Response) -> Option<Duration> {
     response
         .headers()
         .get(reqwest::header::RETRY_AFTER)
@@ -166,13 +168,15 @@ pub(crate) fn classify_reqwest(error: reqwest::Error) -> SourceError {
     SourceError::transient(error)
 }
 
+/// The S3 classification, from parts (the response body may already be
+/// consumed by the time an undeclared error status is classified).
 pub(crate) fn classify_status(
     status: reqwest::StatusCode,
-    response: &reqwest::Response,
+    retry_after: Option<Duration>,
 ) -> SourceError {
     if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
         return SourceError::RateLimited {
-            retry_after: retry_after(response),
+            retry_after,
             source: "HTTP 429 from API".into(),
         };
     }

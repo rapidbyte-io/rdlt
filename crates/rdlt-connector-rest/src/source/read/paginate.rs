@@ -207,8 +207,10 @@ impl Paginator for BodyCursor {
         vec![]
     }
     fn next(&mut self, ctx: &PageContext<'_>) -> Result<PageDecision, String> {
+        // No parsed body (an `ignore`d page whose body wasn't JSON): no
+        // cursor to follow — the sequence ends cleanly.
         let Some(body) = ctx.body else {
-            return Err("cursor pagination needs the response body".into());
+            return Ok(PageDecision::Done);
         };
         match self.path.select_one(body) {
             None | Some(Value::Null) => Ok(PageDecision::Done),
@@ -269,7 +271,7 @@ impl Paginator for NextUrl {
     }
     fn next(&mut self, ctx: &PageContext<'_>) -> Result<PageDecision, String> {
         let Some(body) = ctx.body else {
-            return Err("next_url pagination needs the response body".into());
+            return Ok(PageDecision::Done); // ignored non-JSON page: no next URL
         };
         match self.path.select_one(body) {
             None | Some(Value::Null) => Ok(PageDecision::Done),
@@ -304,14 +306,22 @@ impl Paginator for LinkHeader {
     }
 }
 
-/// RFC5988 subset: `<https://…>; rel="next"` among comma-separated members.
+/// RFC5988 subset: find the `<url>; rel="next"` member. Members are walked
+/// by locating each `<…>` PAIR first (URLs may legally contain commas, so
+/// naive `split(',')` breaks them), and a malformed member never aborts the
+/// scan of later ones.
 pub(crate) fn parse_link_next(header: &str) -> Option<String> {
-    for member in header.split(',') {
-        let member = member.trim();
-        let url = member
-            .strip_prefix('<')
-            .and_then(|rest| rest.split_once('>'))?;
-        let (url, params) = url;
+    let mut rest = header;
+    loop {
+        let start = rest.find('<')?;
+        let end = start + rest[start..].find('>')?;
+        let url = &rest[start + 1..end];
+        let after = &rest[end + 1..];
+        // Params run to the comma that separates this member from the next.
+        let (params, next) = match after.find(',') {
+            Some(comma) => (&after[..comma], &after[comma + 1..]),
+            None => (after, ""),
+        };
         let is_next = params.split(';').any(|p| {
             let p = p.trim();
             p.eq_ignore_ascii_case("rel=next") || p.eq_ignore_ascii_case("rel=\"next\"")
@@ -319,8 +329,11 @@ pub(crate) fn parse_link_next(header: &str) -> Option<String> {
         if is_next {
             return Some(url.to_owned());
         }
+        if next.is_empty() {
+            return None;
+        }
+        rest = next;
     }
-    None
 }
 
 #[cfg(test)]
@@ -336,5 +349,26 @@ mod tests {
         );
         assert_eq!(parse_link_next("<https://x>; rel=\"prev\""), None);
         assert_eq!(parse_link_next("junk"), None);
+    }
+
+    /// Commas INSIDE a member's URL, and non-`<…>` members before the next
+    /// link, must not truncate the scan (the silent-stop bug).
+    #[test]
+    fn link_header_survives_commas_and_junk_members() {
+        let comma_url = "<https://api.example.com/x?ids=1,2&page=2>; rel=\"next\"";
+        assert_eq!(
+            parse_link_next(comma_url).as_deref(),
+            Some("https://api.example.com/x?ids=1,2&page=2")
+        );
+        let junk_first = "malformed, <https://api.example.com/x?page=3>; rel=next";
+        assert_eq!(
+            parse_link_next(junk_first).as_deref(),
+            Some("https://api.example.com/x?page=3")
+        );
+        let prev_with_comma = "<https://x/a?ids=1,2>; rel=\"prev\", <https://x/b>; rel=\"next\"";
+        assert_eq!(
+            parse_link_next(prev_with_comma).as_deref(),
+            Some("https://x/b")
+        );
     }
 }

@@ -224,10 +224,10 @@ in stage DDL) — defensive/administrative surface, no product path.
 Feature-014 coverage record (011 protocol, `cargo llvm-cov nextest -p
 rdlt-connector-rest`, default features — the live PokeAPI and
 failpoints-sweep cells run separately and add on top): baseline BEFORE
-the feature 53.92% lines; final **89.53% lines** across the rebuilt
-crate (config.rs 92.89%, client/auth.rs 91.82%, client/mod.rs 91.73%,
-read/resolve.rs 90.98%, read/paginate.rs 90.20%, read/mod.rs 89.20%,
-read/extract.rs ~85%, source/mod.rs 75.86%) — floor ≥80% met.
+the feature 53.92% lines; final **90.54% lines** across the rebuilt
+crate (after the post-review hardening pass: typed action matching,
+link-header rewrite, empty-wildcard termination, tagged-auth compat)
+— floor ≥80% met.
 Classified exclusions (verified via `--show-missing-lines`, each a
 real uncovered cluster with a stated reason): source/mod.rs thin
 `RestSource::from_json`/`from_value` delegators (the shared validation
