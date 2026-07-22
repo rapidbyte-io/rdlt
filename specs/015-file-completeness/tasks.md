@@ -17,7 +17,7 @@ No big-bang commit — every task leaves the whole suite green.
 
 ## Phase 1: Setup
 
-- [ ] T001 Environment gate + baselines: verify the podman shim
+- [X] T001 Environment gate + baselines: verify the podman shim
   (`~/.local/bin/podman` → distrobox-host-exec — recreate if the
   container was rebuilt); pull and verify the RUSTFS image (confirm
   image/tag, port, access/secret-key env-var names by starting it once
@@ -29,6 +29,13 @@ No big-bang commit — every task leaves the whole suite green.
   and the two touched gated bench bars (`TARGET=parquet-passthrough
   make bench`, `TARGET=jsonl-duckdb-200k make bench`, release build,
   quiet machine) recording the pre-weld medians in the task notes.
+  **T001 recorded (2026-07-22)**: podman shim present+working; RUSTFS
+  verified (see research R8 addendum — image/env/port assumptions all
+  held). Coverage baselines: rdlt-connector-file **73.25%** lines,
+  rdlt-connector-parquet **90.80%** lines. Suites: 27/27 green (both
+  crates). Pre-weld gated medians: parquet-passthrough **92.3 ms**
+  (3.6x vs dlt, bar >=2x PASS); jsonl-duckdb-200k **1083.2 ms**
+  (13.7x vs dlt, bar >=10x PASS; RSS 1/5.5 vs bar <=1/5 PASS).
 
 ## Phase 2: Foundational — the weld (blocking all stories)
 

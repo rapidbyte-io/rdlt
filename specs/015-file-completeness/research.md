@@ -136,6 +136,14 @@ convention. Cells skip-not-fail without a container runtime. The
 pagination-complete cell seeds >1000 keys (S3 default page size) to
 force continuation-token traversal.
 
+**VERIFIED at the T001 environment gate (2026-07-22)**: image
+`docker.io/rustfs/rustfs:latest` — S3 API on container port 9000
+(console on 9001), credentials via `RUSTFS_ACCESS_KEY` /
+`RUSTFS_SECRET_KEY` env vars (honored: a SigV4-signed ListBuckets with
+gate-chosen keys succeeded; anonymous requests get S3-style XML
+`AccessDenied`), data volume `/data` (`RUSTFS_VOLUMES`), entrypoint
+needs no arguments. Startup to ready ≈ 3s.
+
 ## R9 — Crash points
 
 **Decision**: preserved: `pq.replace.truncate`, `pq.staged.sync`,
