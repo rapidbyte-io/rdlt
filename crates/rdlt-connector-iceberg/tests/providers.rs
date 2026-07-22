@@ -93,3 +93,32 @@ async fn wrong_storage_override_fails_not_silently_ignored() {
     let snapshots = fixture.snapshot_summaries("wrongkeys", "events").await;
     assert!(snapshots.is_empty(), "nothing may land under wrong keys");
 }
+
+/// T011: the bearer auth arm live — a static token attached as
+/// `Authorization: Bearer` (the same header path Snowflake Open
+/// Catalog / any bearer catalog sees; UC OSS write leg recorded
+/// read-only at T001). The fixture's admin token doubles as the PAT.
+#[tokio::test(flavor = "multi_thread")]
+async fn bearer_auth_against_live_catalog() {
+    use rdlt_connector_iceberg::{AuthOptions, IcebergConfig};
+
+    let Some(fixture) = CatalogFixture::start().await else {
+        return;
+    };
+    let config = IcebergConfig::new(
+        fixture.catalog_uri.clone(),
+        common::WAREHOUSE,
+        AuthOptions::bearer(fixture.admin_token.clone()),
+        "bearer_ns",
+    )
+    .with_create_namespace(true);
+    let dest = IcebergDest::from_config(config).expect("dest");
+    let report = Engine::new(EngineConfig::new("ice-bearer"), source(), dest)
+        .run()
+        .await
+        .expect("bearer run");
+    assert_eq!(report.total_rows(), 2);
+    let snapshots = fixture.snapshot_summaries("bearer_ns", "events").await;
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(snapshots[0]["added-records"], "2");
+}

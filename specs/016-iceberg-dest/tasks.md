@@ -142,7 +142,7 @@ for every auth spelling.
   cell (transient) if the fixture permits simulating it — else the
   classification unit cell in errors.rs stands and the live gap is
   recorded in the matrix.
-- [ ] T011 [P] [US2] Bearer leg per the T001 verdict: if UC OSS was
+- [X] T011 [P] [US2] Bearer leg per the T001 verdict: if UC OSS was
   verified — a `tests/catalog_live.rs` bearer arm against the UC
   container (append + read-back); else the bearer scheme is proven at
   the config/attachment level (schema round-trip + grep-proof + a

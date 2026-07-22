@@ -123,6 +123,19 @@ fn secrets_never_render() {
         assert!(!rendered.contains(secret), "leaked `{secret}`: {rendered}");
     }
     assert!(rendered.contains("***"));
+
+    // The bearer arm redacts too (T011).
+    let bearer = IcebergConfig::from_value(json!({
+        "catalog": {
+            "uri": "http://x:8181/api/catalog",
+            "warehouse": "w",
+            "auth": {"bearer": {"token": "hunter2-bearer"}}
+        },
+        "namespace": "raw"
+    }))
+    .expect("parses");
+    let rendered = format!("{bearer:?}");
+    assert!(!rendered.contains("hunter2-bearer"), "leaked: {rendered}");
 }
 
 /// Helper surface: names/levels/partition lookups.

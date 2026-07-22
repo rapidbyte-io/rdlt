@@ -152,6 +152,11 @@ testcontainers, skip-not-fail, images/env VERIFIED at T001 (the 015
 RUSTFS-gate pattern — assumptions corrected from reality). UC OSS
 (`unitycatalog/unitycatalog`) is the CANDIDATE bearer leg — T001
 verifies its Iceberg REST surface is usable; else recorded deferred.
+**T011 addendum**: T001 verified UC OSS's Iceberg REST surface is
+READ-ONLY — no write leg, live UC arm DEFERRED (recorded). The bearer
+scheme is instead proven live against Polaris (its OAuth access token
+attached as a static bearer — same header path any bearer catalog
+sees) plus schema round-trip and redaction proofs at the config level.
 pyiceberg read-back: a pinned venv (the benches/competitors pattern)
 + `tools/interop/pyiceberg_readback.py` asserting counts/schema/
 partitions through the same catalog — runs in the standard

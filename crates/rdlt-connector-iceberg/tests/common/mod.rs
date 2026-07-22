@@ -22,7 +22,7 @@ pub struct CatalogFixture {
     _polaris: ContainerGuard,
     pub catalog_uri: String,
     pub s3_endpoint: String,
-    admin_token: String,
+    pub admin_token: String,
     http: reqwest::Client,
 }
 
