@@ -80,15 +80,12 @@ impl RestClient {
         let mut auth_retried = false;
         loop {
             self.pace().await;
-            let mut request = build(&self.http);
-            for (name, value) in &self.default_headers {
-                request = request.header(name, value);
-            }
-            if !self.default_params.is_empty() {
-                request = request.query(&self.default_params);
-            }
-            let request = self.auth.attach(request).await?;
-            let response = request.send().await.map_err(classify_reqwest)?;
+            let request = self.auth.attach(build(&self.http)).await?;
+            let mut request = request
+                .build()
+                .map_err(|e| SourceError::fatal(format!("request build: {e}")))?;
+            self.apply_defaults(&mut request)?;
+            let response = self.http.execute(request).await.map_err(classify_reqwest)?;
             let status = response.status();
             if status.is_success() {
                 return Ok(response);
@@ -118,6 +115,40 @@ impl RestClient {
             }
             return Err(classify_status(status, &response));
         }
+    }
+
+    /// Source-level defaults merge UNDER what the request already carries:
+    /// a header or query param the stream (or auth) set wins over the
+    /// source-level default of the same name.
+    fn apply_defaults(&self, request: &mut reqwest::Request) -> Result<(), SourceError> {
+        for (name, value) in &self.default_headers {
+            let name: reqwest::header::HeaderName = name
+                .parse()
+                .map_err(|e| SourceError::fatal(format!("header `{name}`: {e}")))?;
+            if !request.headers().contains_key(&name) {
+                let value = value
+                    .parse()
+                    .map_err(|e| SourceError::fatal(format!("header `{name}` value: {e}")))?;
+                request.headers_mut().insert(name, value);
+            }
+        }
+        if !self.default_params.is_empty() {
+            let url = request.url_mut();
+            let existing: std::collections::BTreeSet<String> =
+                url.query_pairs().map(|(k, _)| k.into_owned()).collect();
+            let missing: Vec<&(String, String)> = self
+                .default_params
+                .iter()
+                .filter(|(k, _)| !existing.contains(k))
+                .collect();
+            if !missing.is_empty() {
+                let mut pairs = url.query_pairs_mut();
+                for (k, v) in missing {
+                    pairs.append_pair(k, v);
+                }
+            }
+        }
+        Ok(())
     }
 }
 

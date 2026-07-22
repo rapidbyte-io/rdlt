@@ -15,7 +15,7 @@ use rdlt_connector::{Cursor, RecordsOut, SourceError};
 use serde_json::Value;
 
 use super::client::RestClient;
-use super::config::{ActionKind, HttpMethod, Incremental, Pagination, RestConfig, RestStream};
+use super::config::{ActionKind, HttpMethod, Incremental, RestConfig, RestStream};
 use extract::{Extracted, Selector, extract_records};
 use paginate::{PageContext, PageDecision, Paginator};
 use resolve::ParentValues;
@@ -53,7 +53,6 @@ pub async fn read_stream(
                 &incremental,
                 &since_value,
                 &mut max_cursor,
-                None,
                 out,
             )
             .await?;
@@ -77,26 +76,21 @@ pub async fn read_stream(
                 &mut parent_values,
             )
             .await?;
-            for values in parent_values {
-                read_sequence(
-                    config,
-                    client,
-                    stream,
-                    &incremental,
-                    &since_value,
-                    &mut max_cursor,
-                    Some(&values),
-                    out,
-                )
-                .await
-                .map_err(|e| {
-                    SourceError::fatal(format!(
-                        "child stream `{}` failed for parent ({}): {e}",
-                        stream.name,
-                        resolve::describe(&values.placeholders)
-                    ))
-                })?;
-            }
+            // Every child window starts at the SAME resume point (the
+            // committed cursor / initial_value already seeded into
+            // max_cursor) — never at a sibling's in-flight progress.
+            let start_value = max_cursor.clone();
+            read_children(
+                config,
+                client,
+                stream,
+                &incremental,
+                &start_value,
+                &mut max_cursor,
+                parent_values,
+                out,
+            )
+            .await?;
         }
     }
     // Child streams and cursor streams checkpoint at FEED END (the 010-shape
@@ -148,28 +142,19 @@ async fn read_sequence(
     incremental: &Option<Incremental>,
     since_value: &Option<String>,
     max_cursor: &mut Option<String>,
-    parent: Option<&ParentValues>,
     out: &mut RecordsOut,
 ) -> Result<(), SourceError> {
     let selector = parse_selector(stream)?;
     let mut paginator = paginate::from_config(&stream.pagination);
     let mut driver = SequenceDriver::new(config, stream, client, &mut *paginator);
-    driver.parent = parent;
-    // Incremental params ride every request of the sequence.
-    if let Some(inc) = incremental {
-        if let (Some(param), Some(value)) = (
-            &inc.start_param,
-            max_cursor.as_ref().or(since_value.as_ref()),
-        ) {
-            driver.extra_params.push((param.clone(), value.clone()));
-        }
-        if let (Some(param), Some(value)) = (&inc.end_param, &inc.end_value) {
-            driver.extra_params.push((param.clone(), value.clone()));
-        }
-    }
+    bind_incremental_params(
+        &mut driver,
+        incremental,
+        &max_cursor.clone().or_else(|| since_value.clone()),
+    );
 
     loop {
-        let page = driver.fetch_page(&selector, parent).await?;
+        let page = driver.fetch_page(&selector, None).await?;
         let Some(extracted) = page else { break };
         if extracted.count > 0 {
             // Cursor update BEFORE pushing, so the checkpoint that follows
@@ -177,19 +162,12 @@ async fn read_sequence(
             if let Some(inc) = incremental {
                 update_max_cursor(&extracted.records, &inc.cursor_field, max_cursor);
             }
-            let records = match parent {
-                Some(values) => {
-                    resolve::embed_parent_fields(extracted.records.clone(), &values.include)?
-                }
-                None => extracted.records.clone(),
-            };
-            if out.raw_json(records).await.is_err() {
+            if out.raw_json(extracted.records.clone()).await.is_err() {
                 return Ok(()); // clause S4: closed channel = cancellation
             }
             // Parentless streams checkpoint per page (unchanged behavior);
-            // children checkpoint at feed end (caller).
-            if parent.is_none()
-                && incremental.is_some()
+            // children checkpoint at feed end (read_stream).
+            if incremental.is_some()
                 && let Some(max) = &*max_cursor
             {
                 crash_point!(
@@ -206,6 +184,134 @@ async fn read_sequence(
         }
     }
     Ok(())
+}
+
+fn bind_incremental_params(
+    driver: &mut SequenceDriver<'_>,
+    incremental: &Option<Incremental>,
+    start_value: &Option<String>,
+) {
+    if let Some(inc) = incremental {
+        if let (Some(param), Some(value)) = (&inc.start_param, start_value.as_ref()) {
+            driver.extra_params.push((param.clone(), value.clone()));
+        }
+        if let (Some(param), Some(value)) = (&inc.end_param, &inc.end_value) {
+            driver.extra_params.push((param.clone(), value.clone()));
+        }
+    }
+}
+
+/// Child fan-out: up to `max_concurrency` child sequences in flight (R5),
+/// records forwarded to `out` through one bounded channel (order across
+/// children is not meaningful — each child is an independent sequence and
+/// checkpointing happens once, at feed end). `max_concurrency: 1` (the
+/// default) reads children strictly one at a time.
+#[allow(clippy::too_many_arguments)]
+async fn read_children(
+    config: &RestConfig,
+    client: &RestClient,
+    stream: &RestStream,
+    incremental: &Option<Incremental>,
+    start_value: &Option<String>,
+    max_cursor: &mut Option<String>,
+    parents: Vec<ParentValues>,
+    out: &mut RecordsOut,
+) -> Result<(), SourceError> {
+    use futures::StreamExt;
+    let selector = parse_selector(stream)?;
+    let limit = config.max_concurrency.max(1) as usize;
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Bytes>(limit * 2);
+
+    let forward = async {
+        while let Some(records) = rx.recv().await {
+            if out.raw_json(records).await.is_err() {
+                break; // clause S4: closed channel = cancellation
+            }
+        }
+    };
+    let drive = async {
+        // Collected EAGERLY: the map closure runs here, not lazily inside
+        // the stream (a lazy map trips higher-ranked lifetime inference).
+        let child_futures: Vec<_> = parents
+            .iter()
+            .map(|values| {
+                let tx = tx.clone();
+                let selector = &selector;
+                async move {
+                    read_child_pages(
+                        config,
+                        client,
+                        stream,
+                        selector,
+                        incremental,
+                        start_value,
+                        values,
+                        &tx,
+                    )
+                    .await
+                    .map_err(|e| {
+                        SourceError::fatal(format!(
+                            "child stream `{}` failed for parent ({}): {e}",
+                            stream.name,
+                            resolve::describe(&values.placeholders)
+                        ))
+                    })
+                }
+            })
+            .collect();
+        let mut children = futures::stream::iter(child_futures).buffer_unordered(limit);
+        let mut maxes: Vec<Option<String>> = Vec::new();
+        while let Some(result) = children.next().await {
+            maxes.push(result?);
+        }
+        drop(children);
+        drop(tx); // last sender gone → the forwarder drains and ends
+        Ok::<_, SourceError>(maxes)
+    };
+    let (maxes, ()) = tokio::join!(drive, forward);
+    for max in maxes?.into_iter().flatten() {
+        if max_cursor.as_ref().is_none_or(|current| max > *current) {
+            *max_cursor = Some(max);
+        }
+    }
+    Ok(())
+}
+
+/// One child's paginated sequence, pushing record pages into the fan-out
+/// channel and returning the child's own max-observed cursor.
+#[allow(clippy::too_many_arguments)]
+async fn read_child_pages(
+    config: &RestConfig,
+    client: &RestClient,
+    stream: &RestStream,
+    selector: &Option<Selector>,
+    incremental: &Option<Incremental>,
+    start_value: &Option<String>,
+    values: &ParentValues,
+    tx: &tokio::sync::mpsc::Sender<Bytes>,
+) -> Result<Option<String>, SourceError> {
+    let mut paginator = paginate::from_config(&stream.pagination);
+    let mut driver = SequenceDriver::new(config, stream, client, &mut *paginator);
+    driver.parent = Some(values);
+    bind_incremental_params(&mut driver, incremental, start_value);
+    let mut local_max = start_value.clone();
+    loop {
+        let page = driver.fetch_page(selector, Some(values)).await?;
+        let Some(extracted) = page else { break };
+        if extracted.count > 0 {
+            if let Some(inc) = incremental {
+                update_max_cursor(&extracted.records, &inc.cursor_field, &mut local_max);
+            }
+            let records = resolve::embed_parent_fields(extracted.records.clone(), &values.include)?;
+            if tx.send(records).await.is_err() {
+                break; // forwarder ended = cancellation
+            }
+        }
+        if !driver.advance(&extracted)? {
+            break;
+        }
+    }
+    Ok(local_max)
 }
 
 fn parse_selector(stream: &RestStream) -> Result<Option<Selector>, SourceError> {

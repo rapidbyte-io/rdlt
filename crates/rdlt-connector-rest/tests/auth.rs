@@ -163,6 +163,37 @@ streams:
     }
 }
 
+/// Source-level headers and params ride every request, merged UNDER the
+/// stream's own (same name → the stream's value wins, exactly once).
+#[tokio::test]
+async fn headers_and_params_merge_stream_over_source() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/items"))
+        .and(header("x-source", "from-source"))
+        .and(header("x-stream", "from-stream"))
+        .and(header("x-shared", "stream-wins"))
+        .and(query_param("api_version", "2024"))
+        .and(query_param("scope", "narrow"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"id": 1}])))
+        .mount(&server)
+        .await;
+    let yaml = format!(
+        r#"
+base_url: "{}"
+headers: {{x-source: from-source, x-shared: source-loses}}
+params: {{api_version: "2024", scope: broad}}
+streams:
+  - name: items
+    path: /items
+    headers: {{x-stream: from-stream, x-shared: stream-wins}}
+    params: {{scope: narrow}}
+"#,
+        server.uri()
+    );
+    assert_eq!(read_ok(&yaml, "items").await.len(), 1);
+}
+
 /// RS4 grep-proof: secrets never render — config Debug, source Debug, and
 /// every error path from a failing authenticated read.
 #[tokio::test]

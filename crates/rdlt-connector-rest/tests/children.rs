@@ -176,6 +176,67 @@ async fn composed_example_runs_through_the_engine() {
     assert_eq!(dest.count_rows("issues").unwrap(), 3);
 }
 
+/// `max_concurrency` observably overlaps child sequences (R5): three
+/// children whose responses each take 400ms complete well under the
+/// sequential floor of 1200ms — with exact totals and embedding intact.
+#[tokio::test(flavor = "multi_thread")]
+async fn children_fan_out_concurrently_within_the_limit() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"name": "one"}, {"name": "two"}, {"name": "three"}
+        ])))
+        .mount(&server)
+        .await;
+    for repo in ["one", "two", "three"] {
+        Mock::given(method("GET"))
+            .and(path(format!("/repos/{repo}/issues")))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!([{"id": repo}]))
+                    .set_delay(std::time::Duration::from_millis(400)),
+            )
+            .mount(&server)
+            .await;
+    }
+    let yaml = format!(
+        r#"
+base_url: "{}"
+max_concurrency: 3
+streams:
+  - name: repos
+    path: /repos
+  - name: issues
+    path: /repos/{{repo}}/issues
+    parent:
+      stream: repos
+      placeholders: {{repo: name}}
+"#,
+        server.uri()
+    );
+    let started = std::time::Instant::now();
+    let rows = common::read_ok(&yaml, "issues").await;
+    let elapsed = started.elapsed();
+    assert_eq!(rows.len(), 3);
+    assert!(
+        elapsed < std::time::Duration::from_millis(1100),
+        "three 400ms children under max_concurrency=3 must overlap \
+         (sequential floor is 1200ms), took {elapsed:?}"
+    );
+}
+
+/// `max_concurrency: 0` is rejected at parse.
+#[tokio::test]
+async fn zero_max_concurrency_rejected_at_parse() {
+    let err = rdlt_connector_rest::RestConfig::from_yaml(
+        "base_url: http://x\nmax_concurrency: 0\nstreams:\n  - name: a\n    path: /a\n",
+    )
+    .expect_err("zero concurrency")
+    .to_string();
+    assert!(err.contains("max_concurrency"), "{err}");
+}
+
 /// The example "named API connector": a config GENERATOR over the public
 /// surface — the shape a Google-Search-Console-style wrapper takes. No raw
 /// HTTP anywhere; auth/pagination/extraction/engine wiring all inherited.

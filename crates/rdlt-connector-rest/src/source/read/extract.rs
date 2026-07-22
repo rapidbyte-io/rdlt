@@ -191,7 +191,7 @@ fn top_level_keys(value: &Value) -> String {
             format!("object with keys [{}]", keys.join(", "))
         }
         Value::Array(items) => format!("array of {} items", items.len()),
-        other => format!("{}", value_kind(other)),
+        other => value_kind(other).to_owned(),
     }
 }
 

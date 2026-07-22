@@ -3205,6 +3205,7 @@ version = "0.2.0"
 dependencies = [
  "async-trait",
  "bytes",
+ "futures",
  "jsonschema",
  "rdlt-connector",
  "rdlt-connector-duckdb",

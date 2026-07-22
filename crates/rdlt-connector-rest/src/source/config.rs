@@ -372,6 +372,9 @@ impl RestConfig {
         if self.streams.is_empty() {
             return invalid("at least one stream is required".into());
         }
+        if self.max_concurrency == 0 {
+            return invalid("max_concurrency must be at least 1".into());
+        }
         let names: Vec<&str> = self.streams.iter().map(|s| s.name.as_str()).collect();
         for stream in &self.streams {
             let name = &stream.name;
