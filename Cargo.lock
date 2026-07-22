@@ -4027,6 +4027,7 @@ dependencies = [
  "rdlt-connector",
  "rdlt-connector-duckdb",
  "rdlt-connector-file",
+ "rdlt-connector-iceberg",
  "rdlt-connector-postgres",
  "rdlt-connector-rest",
  "rdlt-core",

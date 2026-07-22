@@ -72,6 +72,8 @@ else ifeq ($(TARGET),deep)
 	# (prlimit, release CLI) hard-fail instead of silently skipping. Not on
 	# sweep: sweep is part of the PR gate, which stays container-optional.
 	RDLT_HEAVY=1 cargo nextest run -p rdlt-connector-postgres -E 'binary(memory_bound)'
+	# Spark read-back (016): heavyweight JVM leg, deep tier only.
+	RDLT_DEEP=1 cargo nextest run -p rdlt-connector-iceberg -E 'binary(spark_deep)' --no-tests=pass
 	$(MAKE) test TARGET=prop
 	$(MAKE) test TARGET=sweep
 	$(MAKE) test TARGET=mutants

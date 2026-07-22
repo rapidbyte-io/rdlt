@@ -14,6 +14,7 @@ duckdb = ["dep:rdlt-connector-duckdb"]
 # -source/-dest narrowings exist for build-size-conscious consumers.
 postgres = ["postgres-source", "postgres-dest"]
 file = ["dep:rdlt-connector-file"]
+iceberg = ["dep:rdlt-connector-iceberg"]
 postgres-source = ["dep:rdlt-connector-postgres", "rdlt-connector-postgres/source"]
 postgres-dest = ["dep:rdlt-connector-postgres", "rdlt-connector-postgres/dest"]
 # The parquet FEATURE spelling stays (frozen for build scripts): the
@@ -27,6 +28,7 @@ rdlt-engine = { workspace = true }
 rdlt-connector-rest = { workspace = true, optional = true }
 rdlt-connector-duckdb = { workspace = true, optional = true }
 rdlt-connector-file = { workspace = true, optional = true }
+rdlt-connector-iceberg = { workspace = true, optional = true }
 rdlt-connector-postgres = { workspace = true, optional = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }

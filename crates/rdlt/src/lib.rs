@@ -42,6 +42,9 @@ pub mod connector {
     #[cfg(feature = "file")]
     pub use rdlt_connector_file as file;
 
+    #[cfg(feature = "iceberg")]
+    pub use rdlt_connector_iceberg as iceberg;
+
     /// Frozen alias (015): the parquet destination lives in the file
     /// family; `rdlt::connector::parquet::ParquetDir` keeps resolving for
     /// consumers of the frozen `parquet` feature spelling.

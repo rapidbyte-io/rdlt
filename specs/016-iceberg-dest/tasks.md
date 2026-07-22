@@ -173,12 +173,21 @@ read every table shape the cells write.
   (container-gated, skip-not-fail; also SKIPS visibly if the venv is
   absent) over three shapes: plain append ×2 commits, partitioned,
   post-additive-drift.
-- [ ] T014 [US3] Spark read-back (deep tier):
+- [X] T014 [US3] Spark read-back (deep tier):
   `tools/interop/spark_readback.sh` + job (Spark container with the
   Iceberg runtime jar, REST catalog config) asserting the same over
   the same shapes; wired into `make test TARGET=deep` ONLY; a
   RECORDED first-run result in the task notes (image/tag verified at
   run time, the 015 posture).
+  **First-run record (2026-07-22)**: image `docker.io/apache/spark:3.5.3`
+  + `org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.7.1` +
+  `iceberg-aws-bundle:1.7.1` resolved from Maven Central into the
+  `rdlt-spark-ivy` named-volume ivy cache. All three shapes read back
+  green (counts 3/3/2; drifted column visible; bigint/string types).
+  Two facts corrected at run time: `SELECT … FROM (DESCRIBE …)` is not
+  valid Spark 3.5 SQL (plain DESCRIBE + tab-parsing instead), and the
+  delegation header must be blanked exactly as with pyiceberg. Warm
+  runtime ≈23s; cold adds the image pull + jar resolve.
 
 **Checkpoint**: rdlt's Iceberg output is provably nobody's private
 format.
