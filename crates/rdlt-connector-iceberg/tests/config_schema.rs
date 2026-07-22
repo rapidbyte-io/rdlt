@@ -1,0 +1,137 @@
+//! Feature 016 T002: the generated config schema and the parser cannot
+//! drift — round-trip corpus, unknown-field rejection, the validation
+//! matrix, and the Secret grep-proof (ID6).
+
+use jsonschema::validator_for;
+use rdlt_connector_iceberg::{IcebergConfig, config_schema};
+use serde_json::json;
+
+fn corpus() -> Vec<serde_json::Value> {
+    vec![
+        // Minimal oauth2 (the Polaris/Snowflake shape).
+        json!({
+            "catalog": {
+                "uri": "http://127.0.0.1:8181/api/catalog",
+                "warehouse": "rdlt",
+                "auth": {"oauth2_client_credentials": {
+                    "client_id": "root", "client_secret": "s3cr3t",
+                    "scopes": ["PRINCIPAL_ROLE:ALL"]}}
+            },
+            "namespace": "raw"
+        }),
+        // Bearer + create_namespace + storage override + tables/partitions.
+        json!({
+            "catalog": {
+                "uri": "https://uc.example.com/api/2.1/unity-catalog/iceberg",
+                "warehouse": "unity",
+                "auth": {"bearer": {"token": "pat-123"}},
+                "props": {"io-impl": "whatever"}
+            },
+            "namespace": "raw.orders",
+            "create_namespace": true,
+            "storage": {"s3": {"endpoint": "http://127.0.0.1:9000",
+                                 "region": "us-east-1",
+                                 "access_key": "k", "secret_key": "s"}},
+            "tables": {
+                "orders": {"name": "orders_v2",
+                            "partition_by": [
+                                {"column": "created_at", "transform": "day"},
+                                {"column": "region", "transform": "identity"}]}
+            }
+        }),
+    ]
+}
+
+#[test]
+fn schema_valid_corpus_parses() {
+    let validator = validator_for(&config_schema()).expect("schema compiles");
+    for config in corpus() {
+        assert!(
+            validator.is_valid(&config),
+            "corpus entry invalid: {config}"
+        );
+        IcebergConfig::from_value(config.clone())
+            .unwrap_or_else(|e| panic!("schema-valid config failed to parse: {config}: {e}"));
+    }
+}
+
+#[test]
+fn unknown_fields_fail_schema_and_parser_identically() {
+    let validator = validator_for(&config_schema()).expect("schema compiles");
+    let mut bad = corpus().remove(0);
+    bad["catalog"]["warehous"] = json!("typo"); // typo for warehouse
+    assert!(!validator.is_valid(&bad));
+    assert!(IcebergConfig::from_value(bad).is_err());
+}
+
+#[test]
+fn validation_matrix() {
+    let base = corpus().remove(0);
+    let with = |mutate: &dyn Fn(&mut serde_json::Value)| {
+        let mut v = base.clone();
+        mutate(&mut v);
+        IcebergConfig::from_value(v)
+            .expect_err("invalid")
+            .to_string()
+    };
+    let err = with(&|v| v["catalog"]["uri"] = json!("not-a-url"));
+    assert!(err.contains("http(s)"), "{err}");
+    let err = with(&|v| v["catalog"]["warehouse"] = json!(""));
+    assert!(err.contains("warehouse"), "{err}");
+    let err = with(&|v| {
+        v["catalog"]["auth"] = json!({});
+    });
+    assert!(err.contains("no scheme"), "{err}");
+    let err = with(&|v| {
+        v["catalog"]["auth"]["bearer"] = json!({"token": "t"});
+    });
+    assert!(err.contains("BOTH"), "{err}");
+    let err = with(&|v| v["namespace"] = json!("raw..orders"));
+    assert!(err.contains("namespace"), "{err}");
+    let err = with(&|v| v["storage"] = json!({}));
+    assert!(err.contains("no kind"), "{err}");
+    let err = with(&|v| {
+        v["tables"] = json!({"a": {"partition_by": [{"column": "", "transform": "day"}]}});
+    });
+    assert!(err.contains("names no column"), "{err}");
+    // Unknown transform spelling rejected at parse (closed enum).
+    let err = with(&|v| {
+        v["tables"] = json!({"a": {"partition_by": [{"column": "x", "transform": "bucket"}]}});
+    });
+    assert!(
+        err.contains("bucket") || err.contains("unknown variant"),
+        "{err}"
+    );
+}
+
+/// ID6 grep-proof: no credential value ever renders from Debug.
+#[test]
+fn secrets_never_render() {
+    let config = IcebergConfig::from_value(json!({
+        "catalog": {
+            "uri": "http://x:8181/api/catalog",
+            "warehouse": "w",
+            "auth": {"oauth2_client_credentials": {
+                "client_id": "cid", "client_secret": "hunter2-oauth"}}
+        },
+        "namespace": "raw",
+        "storage": {"s3": {"access_key": "hunter2-ak", "secret_key": "hunter2-sk"}}
+    }))
+    .expect("parses");
+    let rendered = format!("{config:?}");
+    for secret in ["hunter2-oauth", "hunter2-ak", "hunter2-sk"] {
+        assert!(!rendered.contains(secret), "leaked `{secret}`: {rendered}");
+    }
+    assert!(rendered.contains("***"));
+}
+
+/// Helper surface: names/levels/partition lookups.
+#[test]
+fn helper_lookups() {
+    let config = IcebergConfig::from_value(corpus().remove(1)).expect("parses");
+    assert_eq!(config.namespace_levels(), vec!["raw", "orders"]);
+    assert_eq!(config.table_name("orders"), "orders_v2");
+    assert_eq!(config.table_name("other"), "other");
+    assert_eq!(config.partition_fields("orders").len(), 2);
+    assert!(config.partition_fields("other").is_empty());
+}

@@ -39,7 +39,7 @@ order. Every task leaves the whole suite green.
 
 ## Phase 2: Foundational (blocking all stories)
 
-- [ ] T002 Crate skeleton + config vocabulary:
+- [X] T002 Crate skeleton + config vocabulary:
   `crates/rdlt-connector-iceberg/` (workspace member; deps per R1:
   iceberg/iceberg-catalog-rest/iceberg-storage-opendal pinned 0.10,
   `[features] failpoints`), `src/lib.rs` thin façade;

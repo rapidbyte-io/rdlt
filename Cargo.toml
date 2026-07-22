@@ -9,6 +9,7 @@ members = [
     "crates/rdlt-connector-rest",
     "crates/rdlt-connector-duckdb",
     "crates/rdlt-connector-file",
+    "crates/rdlt-connector-iceberg",
     "crates/rdlt-connector-postgres",
     "crates/rdlt-cli",
     "crates/rdlt-bench",
@@ -33,6 +34,7 @@ rdlt-testkit = { path = "crates/rdlt-testkit", version = "0.2.0" }
 rdlt-connector-rest = { path = "crates/rdlt-connector-rest", version = "0.2.0" }
 rdlt-connector-duckdb = { path = "crates/rdlt-connector-duckdb", version = "0.2.0" }
 rdlt-connector-file = { path = "crates/rdlt-connector-file", version = "0.2.0" }
+rdlt-connector-iceberg = { path = "crates/rdlt-connector-iceberg", version = "0.2.0" }
 rdlt-connector-postgres = { path = "crates/rdlt-connector-postgres", version = "0.2.0", default-features = false }
 rdlt-connector-sqlcore = { path = "crates/rdlt-connector-sqlcore", version = "0.2.0" }
 
@@ -66,6 +68,9 @@ fs4 = "0.13"
 
 # Connectors
 object_store = { version = "0.12", features = ["aws"] }
+iceberg = "=0.10.0"
+iceberg-catalog-rest = "=0.10.0"
+iceberg-storage-opendal = { version = "=0.10.0", features = ["opendal-s3"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "gzip"] }
 serde_yaml = "0.9"
 duckdb = { version = "1", features = ["bundled", "appender-arrow"] }
