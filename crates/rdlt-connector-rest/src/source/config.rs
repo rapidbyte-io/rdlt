@@ -15,6 +15,7 @@ use super::client::secret::Secret;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct RestConfig {
     /// e.g. `https://api.example.com`
     pub base_url: String,
@@ -58,6 +59,7 @@ fn default_max_pages() -> u64 {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum Auth {
     #[default]
     None,
@@ -104,6 +106,7 @@ fn default_expiry_margin() -> u64 {
     Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ApiKeyLocation {
     #[default]
     Header,
@@ -114,6 +117,7 @@ pub enum ApiKeyLocation {
     Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum HttpMethod {
     #[default]
     Get,
@@ -122,6 +126,7 @@ pub enum HttpMethod {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct RestStream {
     /// Stream name (becomes the root table name).
     pub name: String,
@@ -173,6 +178,7 @@ pub struct RestStream {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case", tag = "type")]
+#[non_exhaustive]
 pub enum Pagination {
     /// Single request.
     #[default]
@@ -239,6 +245,7 @@ fn default_limit_param() -> String {
 /// checkpoint after rows, resume via the engine's committed cursor).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct Incremental {
     /// Record field carrying the cursor value.
     pub cursor_field: String,
@@ -260,6 +267,7 @@ pub struct Incremental {
 /// Declared response handling — an ALLOW-list over the typed-error default.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct ResponseAction {
     /// HTTP status this action matches (absent = any status).
     #[serde(default)]
@@ -272,6 +280,7 @@ pub struct ResponseAction {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ActionKind {
     /// Treat as an empty page (pagination still terminates per its family).
     Ignore,
@@ -285,6 +294,7 @@ pub enum ActionKind {
 /// from each parent record.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct Parent {
     /// The parent stream's name (must be a declared stream).
     pub stream: String,
@@ -298,6 +308,7 @@ pub struct Parent {
 /// Human-friendly hint names in YAML, mapped onto the engine's logical types.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum HintType {
     Bool,
     Int64,

@@ -250,6 +250,21 @@ mod tests {
     }
 
     #[test]
+    fn index_segments_select_and_non_array_shapes_are_typed() {
+        let doc = json!({"items": [{"id": 1}, {"id": 2}]});
+        let sel = Selector::parse("items[1].id").unwrap();
+        assert_eq!(sel.select_one(&doc), Some(&json!(2)));
+        // No selector + non-array body: typed with the records_path hint.
+        let body = Bytes::from(serde_json::to_vec(&json!({"a": 1})).unwrap());
+        let err = extract_records(&body, None).unwrap_err().to_string();
+        assert!(err.contains("records_path"), "{err}");
+        // Selector landing on a scalar: typed with the [*] hint.
+        let sel = Selector::parse("a").unwrap();
+        let err = extract_records(&body, Some(&sel)).unwrap_err().to_string();
+        assert!(err.contains("non-array") && err.contains("[*]"), "{err}");
+    }
+
+    #[test]
     fn no_match_names_path_and_shape() {
         let body = Bytes::from(serde_json::to_vec(&json!({"meta": 1, "rows": []})).unwrap());
         let sel = Selector::parse("data.items").unwrap();

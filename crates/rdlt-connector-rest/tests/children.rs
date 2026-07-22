@@ -149,6 +149,14 @@ async fn parent_validation_matrix() {
             "never used",
         ),
         ("  - name: c\n    path: /c/{x}\n", "no `parent` block"),
+        (
+            "  - name: b\n    path: /b/{y}\n    parent: {stream: a, placeholders: {y: id}}\n  - name: c\n    path: /c/{x}\n    parent: {stream: b, placeholders: {x: id}}\n",
+            "itself a child",
+        ),
+        (
+            "  - name: c\n    path: /c\n    parent: {stream: a, placeholders: {}}\n",
+            "placeholders must not be empty",
+        ),
     ] {
         let yaml = format!("base_url: http://x\nstreams:\n  - name: a\n    path: /a\n{yaml_frag}");
         let err = rdlt_connector_rest::RestConfig::from_yaml(&yaml)

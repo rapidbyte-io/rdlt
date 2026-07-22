@@ -213,6 +213,25 @@ exclusions: mod.rs helper error arms (connection-poisoned paths,
 memory_limit error mapping) and rarely-hit sql_type arms (Time/Binary
 in stage DDL) — defensive/administrative surface, no product path.
 
+Feature-014 coverage record (011 protocol, `cargo llvm-cov nextest -p
+rdlt-connector-rest`, default features — the live PokeAPI and
+failpoints-sweep cells run separately and add on top): baseline BEFORE
+the feature 53.92% lines; final **89.53% lines** across the rebuilt
+crate (config.rs 92.89%, client/auth.rs 91.82%, client/mod.rs 91.73%,
+read/resolve.rs 90.98%, read/paginate.rs 90.20%, read/mod.rs 89.20%,
+read/extract.rs ~85%, source/mod.rs 75.86%) — floor ≥80% met.
+Classified exclusions (verified via `--show-missing-lines`, each a
+real uncovered cluster with a stated reason): source/mod.rs thin
+`RestSource::from_json`/`from_value` delegators (the shared validation
+path is covered at the config layer) and spec/type-hint wiring arms
+that run only under engine discovery; config.rs 314–326 — the
+`HintType → LogicalType` administrative mapping table (one arm per
+variant, timestamp_tz arm covered); client/auth.rs concurrent-401
+guard, an `unreachable!`, and rare token-response arms (audience push,
+missing `access_token`); read/* per-family defensive error arms
+(malformed header values, non-object child records, scalar rendering
+variants); client/secret.rs `From` convenience conversions.
+
 ## CDC cells (feature 009 — suite `cdc`)
 
 Scoreboard, no gate — the snapshot itself rides the existing gated COPY

@@ -50,10 +50,10 @@ auth.rs::secrets_never_render_anywhere; unit redaction/transparency:
 | `body` | absent | JSON template; `{token}` substitution under `parent` | requires `method: post`, typed | actions.rs::post_body_with_cursor_pagination; actions.rs::body_requires_post | mock |
 | `params` | `{}` | ride every request of the stream; merged OVER source params | — | pokeapi_live.rs::pokeapi_list_and_details_through_the_engine (`limit`); auth.rs::headers_and_params_merge_stream_over_source | live+mock |
 | `headers` | `{}` | merged OVER source headers | — | auth.rs::headers_and_params_merge_stream_over_source | mock |
-| `records_path` | absent | absent = body streams through BYTE-IDENTICAL (perf path); dot + `[*]` + `[N]` selection; single-array-match unwraps; wildcard matches are records | unsupported syntax typed AT PARSE naming the subset; no-match typed naming path + response top-level keys | src/source/read/extract.rs::tests::passthrough_is_byte_identical + selector_subset_parses_and_rejects + selection_flattens_wildcards + no_match_names_path_and_shape; actions.rs::wildcard_selector_extracts_nested; actions.rs::selector_no_match_is_typed; actions.rs::invalid_selector_fails_at_parse | unit+mock |
+| `records_path` | absent | absent = body streams through BYTE-IDENTICAL (perf path); dot + `[*]` + `[N]` selection; single-array-match unwraps; wildcard matches are records | unsupported syntax typed AT PARSE naming the subset; no-match typed naming path + response top-level keys | src/source/read/extract.rs::tests::passthrough_is_byte_identical + selector_subset_parses_and_rejects + selection_flattens_wildcards + index_segments_select_and_non_array_shapes_are_typed + no_match_names_path_and_shape; actions.rs::wildcard_selector_extracts_nested; actions.rs::selector_no_match_is_typed; actions.rs::invalid_selector_fails_at_parse | unit+mock |
 | `pagination` | `none` | see Pagination | eager selector validation on all `*_path` fields | actions.rs::invalid_selector_fails_at_parse (records_path arm; same validate loop covers pagination paths) | mock |
 | `incremental` | absent | see Incremental | — | — | — |
-| `cursor_field` / `cursor_param` | absent | FROZEN pre-014 aliases; identical behavior to the block | set together; never mixed with the block — typed | conformance.rs::paginates_and_checkpoints_max_cursor + resume_sends_cursor_param_and_skips_completed_ranges (alias spellings, unchanged pre-014 cells); actions.rs::incremental_block_and_aliases_are_exclusive | mock |
+| `cursor_field` / `cursor_param` | absent | FROZEN pre-014 aliases; identical behavior to the block | set together; never mixed with the block — typed | conformance.rs::paginates_and_checkpoints_max_cursor + resume_sends_cursor_param_and_skips_completed_ranges (alias spellings, unchanged pre-014 cells); actions.rs::incremental_block_and_aliases_are_exclusive; actions.rs::validation_matrix_covers_remaining_arms (one alias half alone) | mock |
 | `response_actions` | `[]` | see Response actions | — | — | — |
 | `parent` | absent | see Parent-child | — | — | — |
 | `primary_key` | absent | declared key rides `StreamSpec` into the engine (merge identity) | — | conformance.rs::rest_source_is_conformant (spec carries it); sweep.rs::rest_read_path_survives_crash_sweep (exactly-once convergence keyed on it) | mock+sweep |
@@ -69,7 +69,7 @@ spellings parse unchanged — pagination.rs::pre_014_pagination_spellings_parse.
 | family | fields (defaults) | termination proven | cells | class |
 |---|---|---|---|---|
 | `none` (default) | — | single request | auth.rs::api_key_attaches_header_and_query (and every single-page cell) | mock |
-| `page` | `page_param` (page), `start` (1), `total_pages_path` / `total_count_path` (absent, mutually exclusive) | empty page; declared total reached WITHOUT an extra request (`expect(1)`) | children.rs::parent_child_reads_through_the_engine (empty-page stop); pagination.rs::page_with_total_pages_stops_at_total | mock |
+| `page` | `page_param` (page), `start` (1), `total_pages_path` / `total_count_path` (absent, mutually exclusive — declaring both typed) | empty page; declared total reached WITHOUT an extra request (`expect(1)`) | children.rs::parent_child_reads_through_the_engine (empty-page stop); pagination.rs::page_with_total_pages_stops_at_total; actions.rs::validation_matrix_covers_remaining_arms (both-stops rejection) | mock |
 | `offset` | `offset_param` (offset), `limit_param` (limit), `page_size` (required), `total_count_path` (absent) | short page; declared count reached | pagination.rs::offset_with_total_count_stops_at_total | mock |
 | `cursor` | `cursor_path`, `cursor_param` | absent/null cursor ends; value chains into the param (query for GET, body for POST) | pagination.rs::body_cursor_chains_and_terminates; actions.rs::post_body_with_cursor_pagination | mock |
 | `header_cursor` | `header`, `cursor_param` | absent header ends; header value chains | pagination.rs::header_cursor_chains_and_terminates | mock |
@@ -80,7 +80,7 @@ spellings parse unchanged — pagination.rs::pre_014_pagination_spellings_parse.
 
 | parameter | default | behaviors proven | validation proven | cells | class |
 |---|---|---|---|---|---|
-| `cursor_field` | required | max-observed value checkpointed AFTER its rows (S2); resume skips completed ranges | empty typed; exclusivity with aliases typed | conformance.rs::paginates_and_checkpoints_max_cursor; conformance.rs::resume_sends_cursor_param_and_skips_completed_ranges; actions.rs::incremental_block_and_aliases_are_exclusive | mock |
+| `cursor_field` | required | max-observed value checkpointed AFTER its rows (S2); resume skips completed ranges | empty typed; exclusivity with aliases typed | conformance.rs::paginates_and_checkpoints_max_cursor; conformance.rs::resume_sends_cursor_param_and_skips_completed_ranges; actions.rs::incremental_block_and_aliases_are_exclusive; actions.rs::validation_matrix_covers_remaining_arms (empty cursor_field) | mock |
 | `start_param` | absent | resume cursor bound onto every request | — | actions.rs::incremental_start_and_end_params_bind (resume `5` → `since=5`) | mock |
 | `end_param` + `end_value` | absent | closed window bound onto every request; checkpoint still max-observed | `end_param` without `end_value` typed | actions.rs::incremental_start_and_end_params_bind (`until=9`, checkpoint `7`); actions.rs::end_param_requires_end_value | mock |
 | `initial_value` | absent | first-run lower bound (seeds the cursor; an empty page never lowers it) | — | sweep.rs::rest_read_path_survives_crash_sweep (`since` honored across crash/rerun) | sweep |
@@ -99,7 +99,7 @@ spellings parse unchanged — pagination.rs::pre_014_pagination_spellings_parse.
 | parameter | behaviors proven | validation proven | cells | class |
 |---|---|---|---|---|
 | `stream` | parent read first (fresh pass), one child sequence per parent record, engine-landed totals exact | undeclared parent, self-parent, nested (2-level) child — typed | children.rs::parent_child_reads_through_the_engine; children.rs::parent_validation_matrix | mock |
-| `placeholders` | `{token}` substituted into path (scalars only; dot-path parent fields); child FAILURES name the resolved values | unused placeholder typed; non-scalar/missing parent field typed | children.rs::child_failure_names_resolved_values; src/source/read/resolve.rs::tests::collects_and_substitutes + missing_field_and_non_scalar_are_typed; children.rs::parent_validation_matrix | mock+unit |
+| `placeholders` | `{token}` substituted into path (scalars only; dot-path parent fields); child FAILURES name the resolved values | unused placeholder typed; empty map typed; non-scalar/missing parent field typed | children.rs::child_failure_names_resolved_values; src/source/read/resolve.rs::tests::collects_and_substitutes + missing_field_and_non_scalar_are_typed; children.rs::parent_validation_matrix | mock+unit |
 | `include` | `_parent_<field>` embedded on every child record | collision with an existing child field typed | children.rs::parent_child_reads_through_the_engine (`_parent_name`, `_parent_stars`); src/source/read/resolve.rs::tests::embeds_parent_fields_and_detects_collisions | mock+unit |
 | (composition seam) | a named-API wrapper built ONLY from public pieces reads through the engine; live list+detail fan-out | — | children.rs::composed_example_runs_through_the_engine; pokeapi_live.rs::pokeapi_list_and_details_through_the_engine | mock+live |
 
@@ -108,6 +108,7 @@ spellings parse unchanged — pagination.rs::pre_014_pagination_spellings_parse.
 | concern | proven | cells | class |
 |---|---|---|---|
 | SPI conformance | source passes the shared conformance harness | conformance.rs::rest_source_is_conformant | mock |
+| config entry points | `from_yaml` / `from_json` / `from_value` share one validation path | actions.rs::validation_matrix_covers_remaining_arms (from_json); config_schema.rs (from_value, all cells); every YAML cell | mock+unit |
 | error classification | network/5xx transient, 429 `RateLimited` (+`Retry-After` value), 4xx fatal | conformance.rs::error_classification_matches_the_contract | mock |
 | crash points | `rest.request` / `rest.decode` / `rest.checkpoint` armed-fire, exactly-once totals | sweep.rs::rest_read_path_survives_crash_sweep | sweep |
 | live proof | PokeAPI: bounded engine run + natural termination, structural asserts, 100ms pacing | pokeapi_live.rs (both cells; skip-not-fail without `RDLT_NET=1`) | live |

@@ -29,7 +29,7 @@ streams:
 
 ```bash
 cargo nextest run -p rdlt-connector-rest              # conformance (wiremock mocks)
-cargo nextest run -p rdlt-engine --features failpoints -E 'binary(crash_sweep)'  # incl. rest points
+cargo nextest run -p rdlt-connector-rest --features failpoints -E 'binary(sweep)'  # rest crash points
 RDLT_NET=1 cargo nextest run -p rdlt-connector-rest -E 'test(pokeapi)'  # live PokeAPI cell
 cargo llvm-cov nextest -p rdlt-connector-rest         # coverage floor ≥80%
 TARGET=rest-pg-100k make bench                        # gated bar stays ≥5×

@@ -246,6 +246,40 @@ streams:
     assert!(err.contains("not both"), "{err}");
 }
 
+/// The remaining validation arms, and the JSON text entry point rides the
+/// same validation: alias halves set together, empty incremental
+/// cursor_field, both total stops declared.
+#[tokio::test]
+async fn validation_matrix_covers_remaining_arms() {
+    for (frag, needle) in [
+        ("    cursor_field: seq\n", "set together"),
+        (
+            "    incremental: {cursor_field: \" \"}\n",
+            "must not be empty",
+        ),
+        (
+            "    pagination: {type: page, total_pages_path: meta.pages, total_count_path: meta.total}\n",
+            "pick one stop condition",
+        ),
+    ] {
+        let yaml = format!("base_url: http://x\nstreams:\n  - name: a\n    path: /a\n{frag}");
+        let err = rdlt_connector_rest::RestConfig::from_yaml(&yaml)
+            .expect_err(needle)
+            .to_string();
+        assert!(err.contains(needle), "expected `{needle}` in: {err}");
+    }
+    // from_json: same document shape, same validation.
+    rdlt_connector_rest::RestConfig::from_json(
+        r#"{"base_url": "http://x", "streams": [{"name": "a", "path": "/a"}]}"#,
+    )
+    .expect("valid JSON document parses");
+    let err =
+        rdlt_connector_rest::RestConfig::from_json(r#"{"base_url": "http://x", "streams": []}"#)
+            .expect_err("empty streams via JSON")
+            .to_string();
+    assert!(err.contains("at least one stream"), "{err}");
+}
+
 /// end_param requires end_value (closed windows are explicit).
 #[tokio::test]
 async fn end_param_requires_end_value() {
