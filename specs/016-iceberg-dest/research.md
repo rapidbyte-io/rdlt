@@ -159,3 +159,78 @@ kind from 015; never gated (the floor measures the catalog/store
 containers, not rdlt). No dlt baseline pair initially (dlt's iceberg
 support runs through pyiceberg — a pair is possible later; recorded).
 Existing gated bars untouched.
+
+
+## T001 addendum — VERIFIED verdicts (2026-07-22, all live)
+
+**(a) Append path: GREEN, proven end-to-end.** A scratch probe against
+Polaris+RUSTFS: RestCatalogBuilder (0.10 API: `CatalogBuilder::load`
+with props uri/warehouse/credential/scope +
+`with_storage_factory(Arc::new(OpenDalResolvingStorageFactory::new()))`)
+→ create_table → arrow batch through
+ParquetWriterBuilder→RollingFileWriterBuilder→DataFileWriterBuilder
+(arrow schema from `iceberg::arrow::schema_to_arrow_schema` — field-id
+metadata built in) → `tx.fast_append().add_data_files(..)
+.set_snapshot_properties(..)` → commit. Snapshot summary carried
+`rdlt.load-id`/`rdlt.commit-seq` — the R3 receipt design works as
+specified.
+
+**(b) Overwrite: RED — v1 NARROWS (the R7 fallback fires).** iceberg
+0.10.0's transaction actions (source inspection): fast_append,
+update_schema, update_table_properties, replace_sort_order (sort
+metadata only), update_location, update_statistics, expire_snapshots,
+upgrade_table_version — NO overwrite/rewrite/delete action. FR-008:
+v1 ships Append; Replace = typed "not supported by this release" at
+ensure_table; recorded here + parity + README; revisit on the next
+iceberg-rust release.
+
+**(c) Vending: config-level YES, per-table STS NO (local leg).**
+iceberg-catalog-rest 0.10 has no `X-Iceberg-Access-Delegation`
+support (source grep) and SENDS NO delegation header — storage creds
+flow via /v1/config defaults, which Polaris populates from catalog
+properties. VERIFIED: the probe wrote to RUSTFS with zero client-side
+storage config. Two recorded facts: the catalog properties MUST
+include `s3.region` (opendal requires it; "region is missing" error
+otherwise) alongside s3.endpoint/s3.path-style-access/
+s3.access-key-id/s3.secret-access-key; and clients that DO send the
+delegation header (pyiceberg) get a 400 from an stsUnavailable
+catalog — the interop harness sets
+`header.X-Iceberg-Access-Delegation: ""`.
+
+**(d) Signing hook: NONE adequate — Glue phase-2 CONFIRMED.**
+RestCatalogBuilder exposes only `with_client(reqwest::Client)`; no
+per-request signing seam. Doors recorded: upstream middleware
+contribution or the native iceberg-catalog-glue (aws-sdk tree), each
+its own survey.
+
+**(e) UC OSS bearer leg: NOT VIABLE — READ-ONLY.** unitycatalog/
+unitycatalog:latest starts (port 8080, `./bin/start-uc-server`, UC API
++ Iceberg REST at /api/2.1/unity-catalog/iceberg); its /v1/config
+endpoint list contains ONLY GET/HEAD + metrics POST — no namespace/
+table creation, no commit endpoint. Bearer is proven at config/
+attachment level; the managed-UC write leg stays opt-in gated-live.
+
+**(f) pyiceberg: pin 0.11.1.** 0.11.0's ConfigResponse rejects
+Polaris's PUT endpoints (pydantic validation); 0.11.1 parses. Python
+3.14 has no prebuilt wheel — the venv build needs python3-devel
+(installed in the distrobox; recorded as an environment prerequisite).
+Read-back of the probe table: 3 rows, schema [id], rdlt.* props
+visible — the interop oracle works.
+
+**(g) Polaris fixture facts (VERIFIED)**: image
+`docker.io/apache/polaris:latest` — Quarkus; API port 8181, health
+8182 (`/q/health`), also exposes 8080/8443; bootstrap env
+`POLARIS_BOOTSTRAP_CREDENTIALS=<REALM>,<client-id>,<client-secret>` +
+`polaris.realm-context.realms=<REALM>`; server-side S3 access via
+standard AWS_* env (AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/
+AWS_REGION). OAuth: POST /api/catalog/v1/oauth/tokens
+(client_credentials, scope PRINCIPAL_ROLE:ALL). Catalog create: POST
+/api/management/v1/catalogs with storageConfigInfo {storageType: S3,
+endpoint, pathStyleAccess: true, stsUnavailable: true,
+allowedLocations} and properties {default-base-location, s3.endpoint,
+s3.path-style-access, s3.access-key-id, s3.secret-access-key,
+s3.region}. Grants: PUT catalog-roles/catalog_admin/grants
+{CATALOG_MANAGE_CONTENT} + PUT principal-roles/service_admin/
+catalog-roles/rdlt. Iceberg REST config:
+GET /api/catalog/v1/config?warehouse=<name>. Startup to healthy
+≈ 15–25 s.

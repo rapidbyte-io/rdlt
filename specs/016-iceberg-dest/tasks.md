@@ -18,7 +18,7 @@ order. Every task leaves the whole suite green.
 
 ## Phase 1: Setup
 
-- [ ] T001 Environment gate + capability probes (the recorded
+- [X] T001 Environment gate + capability probes (the recorded
   go/narrow decisions): verify the podman shim and socket; pull and
   verify the Polaris image (confirm image/tag, ports, bootstrap
   credential env, in-memory mode flags by starting it against the 015
