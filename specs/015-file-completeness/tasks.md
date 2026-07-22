@@ -81,7 +81,7 @@ proven against the RUSTFS container.
 engine; delta runs read only the delta; CSV/codec/error cells pass;
 everything skips (not fails) without a container runtime.
 
-- [ ] T005 [US2] Dependencies + Location layer: add `object_store`
+- [X] T005 [US2] Dependencies + Location layer: add `object_store`
   (workspace dep, `aws` feature only) and promote `csv`, `flate2`,
   `zstd` to direct workspace deps (already in the lock — R1 survey
   verdicts recorded);

@@ -104,6 +104,7 @@ pub(crate) async fn read_task(
                 size: total_size.max(offset),
                 eol: ended_on_newline,
                 mtime_ms: task.mtime_ms,
+                etag: task.etag.clone(),
             },
         );
         if out.checkpoint(cursor.encode()).await.is_err() {
@@ -122,6 +123,7 @@ pub(crate) async fn read_task(
             size: offset.max(task.start),
             eol: ended_on_newline,
             mtime_ms: task.mtime_ms,
+            etag: task.etag.clone(),
         },
     );
     if out.checkpoint(cursor.encode()).await.is_err() {

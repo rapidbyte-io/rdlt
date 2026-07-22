@@ -88,6 +88,7 @@ pub(crate) fn resolve_files(pattern: &str) -> Result<Vec<FileMeta>, SourceError>
                 path,
                 size: meta.len(),
                 mtime_ms,
+                etag: None,
             })
         })
         .collect()

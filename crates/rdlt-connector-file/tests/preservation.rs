@@ -36,6 +36,7 @@ fn meta(path: &str, size: u64, mtime_ms: u64) -> FileMeta {
         path: path.into(),
         size,
         mtime_ms: Some(mtime_ms),
+        etag: None,
     }
 }
 

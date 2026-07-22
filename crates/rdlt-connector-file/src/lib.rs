@@ -8,6 +8,7 @@
 
 pub mod dest;
 pub mod formats;
+pub mod location;
 pub mod source;
 
 pub use dest::ParquetDir;

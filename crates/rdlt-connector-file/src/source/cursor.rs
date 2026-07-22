@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 pub const CURSOR_FORMAT_VERSION: u32 = 1;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileProgress {
     /// Bytes consumed (jsonl) / row groups consumed (parquet).
     pub done: u64,
@@ -29,6 +29,10 @@ pub struct FileProgress {
     /// see that, so this is the loud-failure tripwire for it.
     #[serde(default)]
     pub mtime_ms: Option<u64>,
+    /// Object-store content identity (015, additive): the etag observed when
+    /// this progress was recorded — the object-side rewrite tripwire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub etag: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -53,6 +57,8 @@ pub struct FileMeta {
     /// Bytes (jsonl) / row groups (parquet).
     pub size: u64,
     pub mtime_ms: Option<u64>,
+    /// Object-store content identity (None for local files).
+    pub etag: Option<String>,
 }
 
 /// What to do with one matched file this run.
@@ -63,6 +69,8 @@ pub struct FileTask {
     pub start: u64,
     /// The mtime observed at planning time, recorded with this file's progress.
     pub mtime_ms: Option<u64>,
+    /// The object etag observed at planning time (object-store files).
+    pub etag: Option<String>,
 }
 
 impl FileCursor {
@@ -91,6 +99,7 @@ impl FileCursor {
                     path: meta.path.clone(),
                     start: 0,
                     mtime_ms: meta.mtime_ms,
+                    etag: meta.etag.clone(),
                 }),
                 Some(progress) => {
                     if meta.size < progress.size || progress.done > meta.size {
@@ -125,6 +134,7 @@ impl FileCursor {
                             path: meta.path.clone(),
                             start: progress.done,
                             mtime_ms: meta.mtime_ms,
+                            etag: meta.etag.clone(),
                         });
                     }
                     // done == size (+ same mtime): complete and unchanged → skip.
@@ -148,6 +158,7 @@ mod tests {
             path: path.into(),
             size,
             mtime_ms: None,
+            etag: None,
         }
     }
 
@@ -157,6 +168,7 @@ mod tests {
             size,
             eol: true,
             mtime_ms: None,
+            etag: None,
         }
     }
 
@@ -174,6 +186,7 @@ mod tests {
                 path: "b".into(),
                 start: 10,
                 mtime_ms: None,
+                etag: None,
             }]
         );
 
@@ -191,6 +204,7 @@ mod tests {
                 size: 10,
                 eol: true,
                 mtime_ms: Some(1_000),
+                etag: None,
             },
         );
         // Same size, same mtime: skip.
@@ -199,6 +213,7 @@ mod tests {
                 path: "a".into(),
                 size: 10,
                 mtime_ms: Some(1_000),
+                etag: None,
             }])
             .expect("unchanged");
         assert!(plan.is_empty());
@@ -208,6 +223,7 @@ mod tests {
                 path: "a".into(),
                 size: 10,
                 mtime_ms: Some(2_000),
+                etag: None,
             }])
             .expect_err("rewritten");
         assert!(err.to_string().contains("rewritten in place"));
@@ -223,6 +239,7 @@ mod tests {
                 size: 10,
                 eol: false, // previous run swallowed an unterminated final line
                 mtime_ms: None,
+                etag: None,
             },
         );
         let err = cursor.plan(&[meta("a", 20)]).expect_err("mid-record");

@@ -1,0 +1,230 @@
+//! S3-compatible object storage via `object_store` (research R1: the one
+//! surveyed new dependency, `aws` feature only). Listings drain every
+//! continuation page or fail — a partial listing must never pass as a
+//! complete one (FF2). Errors classify per the S3 posture (FF6) and name
+//! endpoint/bucket/key.
+
+use futures::StreamExt;
+use object_store::ObjectStore;
+use object_store::aws::{AmazonS3, AmazonS3Builder};
+use rdlt_connector::SourceError;
+use serde::{Deserialize, Serialize};
+
+use super::Secret;
+use crate::source::cursor::FileMeta;
+
+/// `location: {s3: {…}}` (data-model §1).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct S3Options {
+    /// e.g. `http://127.0.0.1:9000` or `https://s3.amazonaws.com`
+    pub endpoint: String,
+    pub bucket: String,
+    /// Default `us-east-1` (S3-compatible servers commonly ignore it).
+    #[serde(default)]
+    pub region: Option<String>,
+    pub access_key: Secret,
+    pub secret_key: Secret,
+    /// Path-style addressing (default true — the test-server form; AWS
+    /// itself accepts it for most operations).
+    #[serde(default = "default_path_style")]
+    pub path_style: bool,
+}
+
+pub(crate) fn default_path_style() -> bool {
+    true
+}
+
+impl S3Options {
+    pub fn validate(&self, context: &str) -> Result<(), String> {
+        let rest = self
+            .endpoint
+            .strip_prefix("http://")
+            .or_else(|| self.endpoint.strip_prefix("https://"));
+        match rest {
+            Some(host) if !host.is_empty() => {}
+            _ => {
+                return Err(format!(
+                    "{context}: location.s3.endpoint `{}` must be an http(s) URL",
+                    self.endpoint
+                ));
+            }
+        }
+        if self.bucket.is_empty() {
+            return Err(format!("{context}: location.s3.bucket must not be empty"));
+        }
+        Ok(())
+    }
+}
+
+/// A connected S3-compatible location.
+#[derive(Debug)]
+pub struct S3Location {
+    store: AmazonS3,
+    endpoint: String,
+    bucket: String,
+}
+
+impl S3Location {
+    pub fn connect(options: &S3Options) -> Result<Self, SourceError> {
+        let store = AmazonS3Builder::new()
+            .with_endpoint(&options.endpoint)
+            .with_bucket_name(&options.bucket)
+            .with_region(options.region.as_deref().unwrap_or("us-east-1"))
+            .with_access_key_id(options.access_key.reveal())
+            .with_secret_access_key(options.secret_key.reveal())
+            .with_virtual_hosted_style_request(!options.path_style)
+            .with_allow_http(true)
+            .build()
+            .map_err(|e| {
+                SourceError::fatal(format!(
+                    "s3 location `{}` bucket `{}`: {e}",
+                    options.endpoint, options.bucket
+                ))
+            })?;
+        Ok(Self {
+            store,
+            endpoint: options.endpoint.clone(),
+            bucket: options.bucket.clone(),
+        })
+    }
+
+    fn classify(&self, action: &str, subject: &str, error: object_store::Error) -> SourceError {
+        let name = format!(
+            "{action} `{subject}` (s3 `{}` bucket `{}`)",
+            self.endpoint, self.bucket
+        );
+        match &error {
+            object_store::Error::NotFound { .. } => {
+                SourceError::fatal(format!("{name}: not found"))
+            }
+            // Auth/permission failures are configuration problems: fatal,
+            // named — never a silent empty load (FF2).
+            object_store::Error::Unauthenticated { .. }
+            | object_store::Error::PermissionDenied { .. } => {
+                SourceError::fatal(format!("{name}: unauthorized — check credentials/bucket"))
+            }
+            // Everything else at the transport/store level is the engine
+            // budget's business.
+            _ => SourceError::transient(format!("{name}: {error}")),
+        }
+    }
+
+    /// Split a `path` pattern into the fixed prefix and an optional glob
+    /// remainder (`landed/2026/*.jsonl` → prefix `landed/2026/`, glob over
+    /// the full key).
+    fn prefix_of(pattern: &str) -> &str {
+        match pattern.find(['*', '?', '[']) {
+            Some(at) => &pattern[..pattern[..at].rfind('/').map(|s| s + 1).unwrap_or(0)],
+            None => pattern,
+        }
+    }
+
+    /// COMPLETE listing (continuation pages fully drained or typed
+    /// failure), deterministic order, glob-filtered. Semantics mirror the
+    /// local rules: a glob with zero matches is success; a pattern WITHOUT
+    /// glob metacharacters names one object — missing is a typed error.
+    pub async fn list(&self, pattern: &str) -> Result<Vec<FileMeta>, SourceError> {
+        let has_glob = pattern.contains(['*', '?', '[']);
+        if !has_glob {
+            // One named object: HEAD it; absent = typed (parity with the
+            // local "file does not exist" rule).
+            let path = object_store::path::Path::from(pattern);
+            let head = self
+                .store
+                .head(&path)
+                .await
+                .map_err(|e| self.classify("object", pattern, e))?;
+            return Ok(vec![FileMeta {
+                path: pattern.to_owned(),
+                size: head.size,
+                mtime_ms: None,
+                etag: head.e_tag,
+            }]);
+        }
+        let matcher = glob::Pattern::new(pattern)
+            .map_err(|e| SourceError::fatal(format!("invalid glob `{pattern}`: {e}")))?;
+        let prefix = Self::prefix_of(pattern);
+        let prefix_path = (!prefix.is_empty()).then(|| object_store::path::Path::from(prefix));
+        let mut listing = self.store.list(prefix_path.as_ref());
+        let mut matched = Vec::new();
+        while let Some(entry) = listing.next().await {
+            let entry = entry.map_err(|e| self.classify("listing", pattern, e))?;
+            let key = entry.location.to_string();
+            if matcher.matches(&key) {
+                matched.push(FileMeta {
+                    path: key,
+                    size: entry.size,
+                    mtime_ms: None,
+                    etag: entry.e_tag,
+                });
+            }
+        }
+        matched.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(matched)
+    }
+
+    /// Streaming GET from `start` (range read for resumed tails).
+    pub async fn open_from(
+        &self,
+        name: &str,
+        start: u64,
+    ) -> Result<super::ByteReader, SourceError> {
+        let path = object_store::path::Path::from(name);
+        let options = object_store::GetOptions {
+            range: (start > 0).then_some(object_store::GetRange::Offset(start)),
+            ..Default::default()
+        };
+        let result = self
+            .store
+            .get_opts(&path, options)
+            .await
+            .map_err(|e| self.classify("reading", name, e))?;
+        Ok(super::ByteReader::S3(S3Reader {
+            stream: result.into_stream().boxed(),
+            pending: bytes::Bytes::new(),
+            subject: format!("{name} (s3 `{}` bucket `{}`)", self.endpoint, self.bucket),
+        }))
+    }
+}
+
+/// Sequential reader draining a streaming GET.
+pub struct S3Reader {
+    stream: futures::stream::BoxStream<'static, object_store::Result<bytes::Bytes>>,
+    pending: bytes::Bytes,
+    subject: String,
+}
+
+impl std::fmt::Debug for S3Reader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("S3Reader")
+            .field("subject", &self.subject)
+            .finish_non_exhaustive()
+    }
+}
+
+impl S3Reader {
+    pub async fn read_full(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let mut filled = 0;
+        while filled < buf.len() {
+            if self.pending.is_empty() {
+                match self.stream.next().await {
+                    None => break,
+                    Some(Ok(chunk)) => self.pending = chunk,
+                    Some(Err(e)) => {
+                        return Err(std::io::Error::other(format!(
+                            "reading {}: {e}",
+                            self.subject
+                        )));
+                    }
+                }
+            }
+            let take = self.pending.len().min(buf.len() - filled);
+            buf[filled..filled + take].copy_from_slice(&self.pending[..take]);
+            bytes::Buf::advance(&mut self.pending, take);
+            filled += take;
+        }
+        Ok(filled)
+    }
+}

@@ -64,6 +64,7 @@ pub(crate) async fn read_task(
                 size: total_groups,
                 eol: true, // row groups are whole records by construction
                 mtime_ms: task.mtime_ms,
+                etag: task.etag.clone(),
             },
         );
         if out.checkpoint(cursor.encode()).await.is_err() {
