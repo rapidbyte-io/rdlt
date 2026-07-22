@@ -102,7 +102,7 @@ history.
   NOTHING (snapshot count unchanged), a two-run incremental pipeline
   resumes from the state property, receipts visible via raw snapshot
   summaries.
-- [ ] T007 [US1] Bounded conflict retry (ID3): refresh→rebuild→commit
+- [X] T007 [US1] Bounded conflict retry (ID3): refresh→rebuild→commit
   ×4 with jitter in `src/commit.rs`; exhaustion typed naming table +
   competing snapshot; cell: a competing writer (second session)
   commits between rdlt's table load and commit — rdlt retries and

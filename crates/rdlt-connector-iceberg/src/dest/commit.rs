@@ -464,3 +464,230 @@ async fn reconcile(
         .await
         .map_err(|e| classify(&context, e))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use async_trait::async_trait;
+    use iceberg::spec::{
+        DataContentType, DataFileBuilder, DataFileFormat, NestedField, PrimitiveType, Schema,
+        Struct, TableMetadata, Type,
+    };
+    use iceberg::table::Table;
+    use iceberg::{Namespace, TableCommit, TableCreation, TableRequirement, TableUpdate};
+
+    use super::*;
+
+    fn test_table() -> Table {
+        let schema = Schema::builder()
+            .with_fields(vec![std::sync::Arc::new(NestedField::required(
+                1,
+                "id",
+                Type::Primitive(PrimitiveType::Long),
+            ))])
+            .build()
+            .expect("schema");
+        let creation = TableCreation::builder()
+            .name("events".to_string())
+            .location("memory://wh/ns/events".to_string())
+            .schema(schema)
+            .build();
+        let metadata: TableMetadata =
+            iceberg::spec::TableMetadataBuilder::from_table_creation(creation)
+                .expect("metadata builder")
+                .build()
+                .expect("metadata")
+                .metadata;
+        Table::builder()
+            .metadata(metadata)
+            .identifier(TableIdent::new(
+                NamespaceIdent::new("ns".into()),
+                "events".into(),
+            ))
+            .file_io(iceberg::io::FileIO::new_with_memory())
+            .metadata_location("memory://wh/ns/events/metadata/v0.json")
+            .runtime(iceberg::Runtime::current())
+            .build()
+            .expect("table")
+    }
+
+    fn data_file() -> iceberg::spec::DataFile {
+        DataFileBuilder::default()
+            .content(DataContentType::Data)
+            .file_path("memory://wh/ns/events/data/f.parquet".to_string())
+            .file_format(DataFileFormat::Parquet)
+            .partition(Struct::empty())
+            .partition_spec_id(0)
+            .record_count(1)
+            .file_size_in_bytes(1)
+            .build()
+            .expect("data file")
+    }
+
+    fn conflict_error() -> iceberg::Error {
+        iceberg::Error::new(
+            iceberg::ErrorKind::CatalogCommitConflicts,
+            "injected CAS conflict",
+        )
+    }
+
+    /// A catalog whose `update_table` conflicts a configured number of
+    /// times before succeeding — the deterministic harness for the
+    /// bounded-retry loop (a live competitor cannot be timed reliably).
+    #[derive(Debug)]
+    struct ConflictCatalog {
+        table: Mutex<Table>,
+        conflicts_remaining: AtomicU32,
+        commits: AtomicU32,
+    }
+
+    impl ConflictCatalog {
+        fn failing(conflicts: u32) -> Arc<Self> {
+            Arc::new(Self {
+                table: Mutex::new(test_table()),
+                conflicts_remaining: AtomicU32::new(conflicts),
+                commits: AtomicU32::new(0),
+            })
+        }
+    }
+
+    #[async_trait]
+    impl Catalog for ConflictCatalog {
+        async fn list_namespaces(
+            &self,
+            _parent: Option<&NamespaceIdent>,
+        ) -> iceberg::Result<Vec<NamespaceIdent>> {
+            unimplemented!()
+        }
+        async fn create_namespace(
+            &self,
+            _namespace: &NamespaceIdent,
+            _properties: HashMap<String, String>,
+        ) -> iceberg::Result<Namespace> {
+            unimplemented!()
+        }
+        async fn get_namespace(&self, _namespace: &NamespaceIdent) -> iceberg::Result<Namespace> {
+            unimplemented!()
+        }
+        async fn namespace_exists(&self, _namespace: &NamespaceIdent) -> iceberg::Result<bool> {
+            unimplemented!()
+        }
+        async fn update_namespace(
+            &self,
+            _namespace: &NamespaceIdent,
+            _properties: HashMap<String, String>,
+        ) -> iceberg::Result<()> {
+            unimplemented!()
+        }
+        async fn drop_namespace(&self, _namespace: &NamespaceIdent) -> iceberg::Result<()> {
+            unimplemented!()
+        }
+        async fn list_tables(
+            &self,
+            _namespace: &NamespaceIdent,
+        ) -> iceberg::Result<Vec<TableIdent>> {
+            unimplemented!()
+        }
+        async fn create_table(
+            &self,
+            _namespace: &NamespaceIdent,
+            _creation: TableCreation,
+        ) -> iceberg::Result<Table> {
+            unimplemented!()
+        }
+        async fn load_table(&self, _table: &TableIdent) -> iceberg::Result<Table> {
+            Ok(self.table.lock().expect("table lock").clone())
+        }
+        async fn drop_table(&self, _table: &TableIdent) -> iceberg::Result<()> {
+            unimplemented!()
+        }
+        async fn purge_table(&self, _table: &TableIdent) -> iceberg::Result<()> {
+            unimplemented!()
+        }
+        async fn table_exists(&self, _table: &TableIdent) -> iceberg::Result<bool> {
+            unimplemented!()
+        }
+        async fn rename_table(&self, _src: &TableIdent, _dest: &TableIdent) -> iceberg::Result<()> {
+            unimplemented!()
+        }
+        async fn register_table(
+            &self,
+            _table: &TableIdent,
+            _metadata_location: String,
+        ) -> iceberg::Result<Table> {
+            unimplemented!()
+        }
+        async fn update_table(&self, _commit: TableCommit) -> iceberg::Result<Table> {
+            self.commits.fetch_add(1, Ordering::SeqCst);
+            let remaining = self.conflicts_remaining.load(Ordering::SeqCst);
+            if remaining > 0 {
+                self.conflicts_remaining
+                    .store(remaining - 1, Ordering::SeqCst);
+                return Err(conflict_error());
+            }
+            Ok(self.table.lock().expect("table lock").clone())
+        }
+    }
+
+    // Silence unused-import lint pathways for trait items the mock ignores.
+    #[allow(dead_code)]
+    fn _uses(_: Option<(TableRequirement, TableUpdate)>) {}
+
+    fn identity() -> CommitIdentity {
+        CommitIdentity {
+            scope: "abc123".into(),
+            load_id: "load-a".into(),
+            commit_seq: 1,
+        }
+    }
+
+    /// ID3: conflicts within the bound are retried (refresh → rebuild →
+    /// commit) and the commit lands.
+    #[tokio::test]
+    async fn commit_retries_through_transient_conflicts() {
+        let catalog = ConflictCatalog::failing(COMMIT_ATTEMPTS - 1);
+        let table = catalog
+            .load_table(&TableIdent::new(
+                NamespaceIdent::new("ns".into()),
+                "events".into(),
+            ))
+            .await
+            .expect("load");
+        let arc: Arc<dyn Catalog> = catalog.clone();
+        append_commit(&arc, table, vec![data_file()], &identity())
+            .await
+            .expect("lands within the bound");
+        assert_eq!(
+            catalog.commits.load(Ordering::SeqCst),
+            COMMIT_ATTEMPTS,
+            "3 conflicts + the landing attempt"
+        );
+    }
+
+    /// ID3: exhaustion is a TYPED error naming the table and the
+    /// attempt bound — never an unbounded loop.
+    #[tokio::test]
+    async fn commit_exhaustion_is_typed() {
+        let catalog = ConflictCatalog::failing(u32::MAX);
+        let table = catalog
+            .load_table(&TableIdent::new(
+                NamespaceIdent::new("ns".into()),
+                "events".into(),
+            ))
+            .await
+            .expect("load");
+        let arc: Arc<dyn Catalog> = catalog.clone();
+        let err = append_commit(&arc, table, vec![data_file()], &identity())
+            .await
+            .expect_err("must exhaust");
+        let text = format!("{err}");
+        assert!(text.contains("events"), "names the table: {text}");
+        assert!(
+            text.contains(&format!("attempt {COMMIT_ATTEMPTS}/{COMMIT_ATTEMPTS}")),
+            "names the exhausted bound: {text}"
+        );
+        assert_eq!(catalog.commits.load(Ordering::SeqCst), COMMIT_ATTEMPTS);
+    }
+}
