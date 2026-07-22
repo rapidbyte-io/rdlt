@@ -93,7 +93,7 @@ everything skips (not fails) without a container runtime.
   endpoint/bucket for unreachable/unauthorized (empty prefix stays
   success); unit cells in-file for config validation + error taxonomy
   (data-model §8).
-- [ ] T006 [US2] RUSTFS fixture + first live cells:
+- [X] T006 [US2] RUSTFS fixture + first live cells:
   `crates/rdlt-connector-file/tests/common/s3.rs` — container
   start/health/seed/teardown helpers (seeding through the Location
   layer itself; skip-not-fail without podman, postgres-cell pattern);

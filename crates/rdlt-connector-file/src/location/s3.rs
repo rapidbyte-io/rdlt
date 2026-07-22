@@ -37,6 +37,34 @@ pub(crate) fn default_path_style() -> bool {
 }
 
 impl S3Options {
+    /// Programmatic construction seam (config documents are the primary
+    /// path; fixtures and embedders build options directly).
+    pub fn new(
+        endpoint: impl Into<String>,
+        bucket: impl Into<String>,
+        access_key: impl Into<Secret>,
+        secret_key: impl Into<Secret>,
+    ) -> Self {
+        Self {
+            endpoint: endpoint.into(),
+            bucket: bucket.into(),
+            region: None,
+            access_key: access_key.into(),
+            secret_key: secret_key.into(),
+            path_style: true,
+        }
+    }
+
+    pub fn with_region(mut self, region: impl Into<String>) -> Self {
+        self.region = Some(region.into());
+        self
+    }
+
+    pub fn with_path_style(mut self, path_style: bool) -> Self {
+        self.path_style = path_style;
+        self
+    }
+
     pub fn validate(&self, context: &str) -> Result<(), String> {
         let rest = self
             .endpoint

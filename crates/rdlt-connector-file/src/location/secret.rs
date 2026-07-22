@@ -39,6 +39,12 @@ impl From<&str> for Secret {
     }
 }
 
+impl From<String> for Secret {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
 impl schemars::JsonSchema for Secret {
     fn schema_name() -> Cow<'static, str> {
         Cow::Borrowed("Secret")

@@ -26,6 +26,11 @@ pub struct LocationOptions {
 }
 
 impl LocationOptions {
+    /// Programmatic construction seam for an S3-compatible location.
+    pub fn s3(options: s3::S3Options) -> Self {
+        Self { s3: Some(options) }
+    }
+
     /// Eager, typed (FF2 tail): a `location:` block must name exactly one
     /// kind.
     pub fn validate(&self, context: &str) -> Result<(), String> {
