@@ -1,6 +1,7 @@
 //! Shared structured-Arrow source for the feature-013 cells: keyed STRUCTURED
 //! streams (no `_rdlt_id`) — the shape the 008/010 options apply to, same as
-//! the postgres cells' driver.
+//! the postgres cells' driver. Not every test binary uses every helper.
+#![allow(dead_code)]
 
 use std::sync::Arc;
 
@@ -61,6 +62,18 @@ pub struct StructuredSource {
     pub stream: &'static str,
     pub key: &'static [&'static str],
     pub units: Vec<RecordBatch>,
+    /// Cursor offset: this extraction's units sit at `base+1 ..= base+n`.
+    /// A SECOND engine run redelivering fresh data must advance its base past
+    /// the first run's cursors, exactly like a real incremental source.
+    pub base: u64,
+}
+
+impl StructuredSource {
+    /// The same feed positioned after `base` committed checkpoints.
+    pub fn at(mut self, base: u64) -> Self {
+        self.base = base;
+        self
+    }
 }
 
 #[async_trait]
@@ -78,9 +91,22 @@ impl Source for StructuredSource {
     }
 
     async fn read(&self, mut req: ReadRequest) -> Result<(), SourceError> {
+        // Honor the resume cursor like a real source (clause E6): a crash-
+        // recovered run re-reads AFTER the last committed checkpoint —
+        // re-emitting committed units would (correctly) trip the single-unit
+        // rules for scoped/retire tables.
+        let resume: u64 = req
+            .since
+            .as_ref()
+            .and_then(|c| c.as_value().as_u64())
+            .unwrap_or(0);
         for (i, unit) in self.units.iter().enumerate() {
+            let seq = self.base + i as u64 + 1;
+            if seq <= resume {
+                continue;
+            }
             let _ = req.out.arrow(unit.clone()).await;
-            let _ = req.out.checkpoint(Cursor::new(i as u64 + 1)).await;
+            let _ = req.out.checkpoint(Cursor::new(seq)).await;
         }
         Ok(())
     }
@@ -95,5 +121,6 @@ pub fn one_unit(
         stream,
         key,
         units: vec![rows],
+        base: 0,
     }
 }

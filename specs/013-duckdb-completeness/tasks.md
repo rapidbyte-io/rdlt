@@ -129,14 +129,14 @@ parity record.
 **Independent test**: matrix zero uncited rows; differential green;
 sweeps armed; coverage ≥80% recorded.
 
-- [ ] T011 [US3] Cross-destination differential oracle in
+- [X] T011 [US3] Cross-destination differential oracle in
   `crates/rdlt/tests/dest_differential.rs` (R7): shared feed scripts
   (append/replace/keyed merge × 3 strategies, duplicates + dedup_sort,
   hard_delete flags, scoped loads, rejection cases) through postgres
   (testcontainers) and DuckDB (temp file); equivalence = canonical
   per-table rows + typed-error-class parity, modulo the documented
   type-affinity table written alongside the suite.
-- [ ] T012 [US3] Crash sweeps for the new arms:
+- [X] T012 [US3] Crash sweeps for the new arms:
   extend the duckdb failpoints and
   `crates/rdlt-connector-duckdb/tests/recovery.rs` (or a new
   `tests/sweep.rs`) — armed-fire pins per strategy, crash/rerun

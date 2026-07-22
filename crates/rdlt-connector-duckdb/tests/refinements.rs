@@ -118,7 +118,7 @@ async fn merge_key_scope_replacement() {
     // Redeliver ONLY day 1, smaller: k=2 disappears (scope truth), day 2 and
     // the NULL-scope row stay.
     let second = kday(&[(Some(1), Some(1), Some("d1-a2"))]);
-    run(merge_config("scope", &["k"]), second, dest.clone())
+    run(merge_config("scope", &["k"]), second.at(1), dest.clone())
         .await
         .unwrap();
 
@@ -173,6 +173,7 @@ async fn merge_key_split_feed_is_typed_on_the_second_unit() {
                 ("v", strs(&[Some("b")])),
             ]),
         ],
+        base: 0,
     };
     let err = run(merge_config("unit", &["k"]), source, dest)
         .await
@@ -275,7 +276,7 @@ async fn non_bool_hard_delete_flag_uses_is_not_null() {
             ("deleted_at", strs(&[Some("2026-07-22")])),
         ]),
     );
-    run(merge_config("flag", &["k"]), second, dest.clone())
+    run(merge_config("flag", &["k"]), second.at(1), dest.clone())
         .await
         .unwrap();
 

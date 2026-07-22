@@ -65,7 +65,7 @@ async fn delete_insert_replaces_matched_keys() {
         .unwrap();
 
     let second = kv(&[(Some(2), Some("two-changed")), (Some(3), Some("three"))]);
-    run(merge_config("di", &["k"]), second, dest.clone())
+    run(merge_config("di", &["k"]), second.at(1), dest.clone())
         .await
         .unwrap();
 
@@ -102,7 +102,7 @@ async fn upsert_updates_in_place_and_composes_with_hard_delete() {
         (Some(1), Some("one-updated"), Some(false)),
         (Some(2), Some("ignored"), Some(true)), // flagged → key deleted
     ]);
-    run(merge_config("ups", &["k"]), second, dest.clone())
+    run(merge_config("ups", &["k"]), second.at(1), dest.clone())
         .await
         .unwrap();
 
@@ -194,7 +194,7 @@ async fn scd2_history_closes_and_opens() {
         (Some(1), Some("one-v2")), // changed → close + open
         (Some(2), Some("two")),    // unchanged → skipped
     ]);
-    run(merge_config("scd2", &["k"]), second, dest.clone())
+    run(merge_config("scd2", &["k"]), second.at(1), dest.clone())
         .await
         .unwrap();
 
@@ -275,7 +275,7 @@ async fn scd2_absent_retire_full_feed() {
         .unwrap();
 
     let second = kv(&[(Some(1), Some("one"))]); // k=2 absent
-    run(merge_config("retire", &["k"]), second, dest.clone())
+    run(merge_config("retire", &["k"]), second.at(1), dest.clone())
         .await
         .unwrap();
 

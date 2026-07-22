@@ -12,6 +12,7 @@ use crate::options::{DedupSort, DestOptions, MergeStrategy, Scd2Options, SortOrd
 
 /// Hard-delete flag semantics (M4): boolean columns compare `IS TRUE`,
 /// other types `IS NOT NULL` — both NULL-safe on the KEEP side.
+#[derive(Debug)]
 pub struct HardDelete {
     pub(crate) flagged: String,
     pub(crate) keep: String,
@@ -55,6 +56,14 @@ pub struct MergePlan<'a> {
     /// Feature 010 (MR1): ordered in-load survivor selection; None keeps
     /// arrival-order last-wins.
     pub dedup_sort: Option<&'a DedupSort>,
+}
+
+impl std::fmt::Debug for MergePlan<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MergePlan")
+            .field("target", &self.target)
+            .finish_non_exhaustive()
+    }
 }
 
 impl MergePlan<'_> {
@@ -301,6 +310,7 @@ pub fn scd2_merge_sql(plan: &MergePlan<'_>, scd2: &Scd2Options) -> Vec<String> {
 // ---- Open-time validation (SM1/SM5: one rule set, identical typed errors) ----
 
 /// Table facts a destination resolves before validation.
+#[derive(Debug)]
 pub struct TableFacts<'a> {
     pub schema: &'a TableSchema,
     pub has_identity: bool,
