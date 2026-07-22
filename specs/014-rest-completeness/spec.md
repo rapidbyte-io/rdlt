@@ -171,6 +171,14 @@ params and includes parent fields.
 - **Config compatibility**: existing configs (current pagination/auth
   spellings) keep parsing unchanged — additions are additive; the
   generated JSON schema and round-trip tests extend accordingly.
+- **Live-API reality check**: mocks prove the contract; ONE real public
+  API proves the world. An end-to-end cell reads the Pokémon public API
+  (pokeapi.co — no auth, next-URL + offset pagination, nested detail
+  endpoints; the same API dlt documents against) through the engine.
+  Network tests are opt-in (env-gated like the heavy/container cells,
+  never part of the default gate) and assert STRUCTURE (pagination
+  chains terminate, parent-child resolves, records extract), not
+  exact counts — public data drifts.
 
 ## Requirements *(mandatory)*
 
@@ -226,6 +234,13 @@ params and includes parent fields.
   matrix for the full option surface, ≥80% measured line coverage for
   the crate (baseline first), conformance through the engine against
   mock APIs for every pagination/auth/action row.
+- **FR-013**: A live end-to-end cell MUST read the Pokémon public API
+  (pokeapi.co) through the engine using ONLY declarative config: the
+  paginated list endpoint (next-URL chain) plus a parent-child detail
+  stream — env-gated (opt-in, like RDLT_HEAVY cells), asserting
+  structural correctness rather than exact public-data counts, with a
+  conservative pacing configuration (good-citizen defaults proven
+  against a real host).
 
 ### Key Entities
 
@@ -253,6 +268,10 @@ params and includes parent fields.
 - **SC-004**: Incremental start/end param binding proven through the
   engine (resume re-requests only the tail); Retry-After honored in a
   live-mock cell; pacing observable.
+- **SC-004b**: The PokeAPI live cell passes when enabled: next-URL
+  pagination terminates, the parent-child detail stream resolves per
+  parent record, records land through the engine — a real-API smoke
+  the mocks cannot fake.
 - **SC-005**: Crash sweep green with every fail point pinned firing;
   conformance suite passes; coverage ≥80% recorded with classified
   exclusions; matrix zero uncited rows.
