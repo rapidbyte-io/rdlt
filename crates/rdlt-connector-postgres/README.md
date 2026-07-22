@@ -264,6 +264,13 @@ plus `merge_strategy` and per-table blocks under `tables:`. Options are
 validated at construction (`options()` returns the error) — and again at
 open against the live stream schema.
 
+> **One vocabulary, every SQL destination** (feature 013): the options
+> below — `merge_strategy`, `hard_delete`, `dedup_sort`, `merge_key`,
+> the `scd2` block — are the SHARED merge core
+> (`rdlt-connector-sqlcore`) and work identically under
+> `destination: duckdb:`, same YAML shape, same validation, same typed
+> errors. DuckDB-specific notes: `crates/rdlt-connector-duckdb/README.md`.
+
 ### Connection
 
 | Field | Type | Default | Description |

@@ -172,7 +172,7 @@ async fn sweep_parquet_destination() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn sweep_duckdb_destination() {
-    let points = engine_and(rdlt_connector_duckdb::FAIL_POINTS);
+    let points = engine_and(rdlt_connector_duckdb::dest::FAIL_POINTS);
     // Merge (feature 006 sweep extension): the shredded identity-merge
     // DELETE+INSERT arm crosses the same staging/publish boundaries.
     for mode in [
@@ -182,7 +182,7 @@ async fn sweep_duckdb_destination() {
             key: vec!["id".into()],
         },
     ] {
-        let expected_fired = [ENGINE_POINTS, rdlt_connector_duckdb::FAIL_POINTS].concat();
+        let expected_fired = [ENGINE_POINTS, rdlt_connector_duckdb::dest::FAIL_POINTS].concat();
         sweep(
             &points,
             mode,
@@ -237,7 +237,7 @@ fn sweep_covers_entire_registry() {
     // engine's test tree does not depend on the postgres stack.)
     let mut registry: Vec<&str> = rdlt_connector_parquet::FAIL_POINTS
         .iter()
-        .chain(rdlt_connector_duckdb::FAIL_POINTS)
+        .chain(rdlt_connector_duckdb::dest::FAIL_POINTS)
         .copied()
         .collect();
     registry.sort_unstable();
@@ -324,7 +324,7 @@ impl rdlt_connector::Source for KeyedArrowSource {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn sweep_duckdb_keyed_structured_merge() {
-    let points = engine_and(rdlt_connector_duckdb::FAIL_POINTS);
+    let points = engine_and(rdlt_connector_duckdb::dest::FAIL_POINTS);
     let mode = WriteMode::Merge {
         key: vec!["id".into()],
     };

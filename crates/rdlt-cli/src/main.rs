@@ -81,6 +81,11 @@ enum DestSpec {
     Duckdb {
         path: PathBuf,
         memory_limit: Option<String>,
+        /// Feature 013: the SAME destination-options vocabulary as postgres
+        /// (shared sqlcore types — one YAML shape, contract SM5).
+        merge_strategy: Option<rdlt::connector::duckdb::dest::MergeStrategy>,
+        tables:
+            Option<std::collections::BTreeMap<String, rdlt::connector::duckdb::dest::TableOptions>>,
     },
     Postgres {
         conn: String,
@@ -199,13 +204,27 @@ async fn run(spec_path: PathBuf, report_path: Option<PathBuf>) -> Result<(), Cli
                 None => builder.workdir(".rdlt"),
             };
             let mut pipeline = match &spec.destination {
-                DestSpec::Duckdb { path, memory_limit } => {
+                DestSpec::Duckdb {
+                    path,
+                    memory_limit,
+                    merge_strategy,
+                    tables,
+                } => {
                     let mut dest = rdlt::connector::duckdb::dest::DuckDb::open(path)
                         .map_err(|e| CliError::Usage(format!("opening duckdb: {e}")))?;
                     if let Some(limit) = memory_limit {
                         dest = dest
                             .memory_limit(limit)
                             .map_err(|e| CliError::Usage(format!("duckdb memory_limit: {e}")))?;
+                    }
+                    if merge_strategy.is_some() || tables.is_some() {
+                        let options = rdlt::connector::duckdb::dest::DestOptions {
+                            merge_strategy: *merge_strategy,
+                            tables: tables.clone().unwrap_or_default(),
+                        };
+                        dest = dest
+                            .options(options)
+                            .map_err(|e| CliError::Usage(format!("destination options: {e}")))?;
                     }
                     builder.destination(dest).build()?
                 }
@@ -455,6 +474,42 @@ mod tests {
 
     /// Feature 010 (MR7): the per-table destination options ride the
     /// pipeline YAML with zero CLI code.
+    /// Feature 013 (SM5): the duckdb destination block accepts the SAME
+    /// options vocabulary as postgres — one YAML shape.
+    #[test]
+    fn duckdb_options_pass_through_the_yaml() {
+        let parsed = spec(
+            r#"
+pipeline: p
+source:
+  postgres: {config: src.yaml}
+destination:
+  duckdb:
+    path: out.duckdb
+    merge_strategy: upsert
+    tables:
+      events:
+        hard_delete: deleted
+        dedup_sort: {column: seq, order: desc}
+"#,
+        );
+        let DestSpec::Duckdb {
+            merge_strategy,
+            tables,
+            ..
+        } = &parsed.destination
+        else {
+            panic!("duckdb dest");
+        };
+        assert_eq!(
+            *merge_strategy,
+            Some(rdlt::connector::duckdb::dest::MergeStrategy::Upsert)
+        );
+        let events = tables.as_ref().expect("tables")["events"].clone();
+        assert_eq!(events.hard_delete.as_deref(), Some("deleted"));
+        assert!(events.dedup_sort.is_some());
+    }
+
     #[test]
     fn refinement_options_pass_through_the_yaml() {
         let parsed = spec(

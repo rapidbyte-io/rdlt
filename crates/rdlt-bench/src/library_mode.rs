@@ -72,6 +72,11 @@ enum DestSpec {
     Duckdb {
         path: PathBuf,
         memory_limit: Option<String>,
+        /// Feature 013: the SAME destination-options vocabulary as postgres
+        /// (shared sqlcore types — one YAML shape, contract SM5).
+        merge_strategy: Option<rdlt::connector::duckdb::dest::MergeStrategy>,
+        tables:
+            Option<std::collections::BTreeMap<String, rdlt::connector::duckdb::dest::TableOptions>>,
     },
     Postgres {
         conn: String,
@@ -112,11 +117,23 @@ async fn drive(spec: Spec) -> Result<RunOutcome> {
                 None => builder.workdir(".rdlt"),
             };
             let mut pipeline = match &spec.destination {
-                DestSpec::Duckdb { path, memory_limit } => {
+                DestSpec::Duckdb {
+                    path,
+                    memory_limit,
+                    merge_strategy,
+                    tables,
+                } => {
                     let mut dest =
                         rdlt::connector::duckdb::dest::DuckDb::open(path).map_err(err)?;
                     if let Some(limit) = memory_limit {
                         dest = dest.memory_limit(limit).map_err(err)?;
+                    }
+                    if merge_strategy.is_some() || tables.is_some() {
+                        let options = rdlt::connector::duckdb::dest::DestOptions {
+                            merge_strategy: *merge_strategy,
+                            tables: tables.clone().unwrap_or_default(),
+                        };
+                        dest = dest.options(options).map_err(err)?;
                     }
                     builder.destination(dest).build().map_err(err)?
                 }

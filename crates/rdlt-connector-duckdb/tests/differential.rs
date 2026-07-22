@@ -277,9 +277,11 @@ async fn differential_delete_insert_redelivery() {
     assert_equivalent("delete_insert", pg, duck);
 }
 
+type UpsertRow<'a> = (Option<i64>, Option<i64>, Option<&'a str>, Option<bool>);
+
 #[tokio::test(flavor = "multi_thread")]
 async fn differential_upsert_with_hard_delete_and_dedup() {
-    let feed = |rows: &[(Option<i64>, Option<i64>, Option<&str>, Option<bool>)]| {
+    let feed = |rows: &[UpsertRow<'_>]| {
         let ks: Vec<_> = rows.iter().map(|r| r.0).collect();
         let seqs: Vec<_> = rows.iter().map(|r| r.1).collect();
         let vs: Vec<_> = rows.iter().map(|r| r.2).collect();

@@ -1,0 +1,12 @@
+pipeline: strat-duck-upsert
+workdir: {{workdir}}/.rdlt
+write_mode: {merge: {key: [id]}}
+source:
+  postgres:
+    conn: "{{conn}}"
+    tables:
+      - name: pg_wide
+destination:
+  duckdb:
+    path: {{workdir}}/strat.duckdb
+    merge_strategy: upsert

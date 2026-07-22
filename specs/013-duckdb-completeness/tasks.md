@@ -116,7 +116,7 @@ JSON type and `json_extract` works on it.
   `json_extract` in `crates/rdlt-connector-duckdb/tests/json.rs`;
   on fail, record the finding and keep the capability false —
   either way the matrix row cites proof.
-- [ ] T010 [P] [US2] Capability audit: every `DestCapabilities` field
+- [X] T010 [P] [US2] Capability audit: every `DestCapabilities` field
   for DuckDB verified true-and-proven (cells cited) or
   false-and-documented, recorded as matrix rows; README capability
   matrix row updated.
@@ -142,17 +142,17 @@ sweeps armed; coverage ≥80% recorded.
   `tests/sweep.rs`) — armed-fire pins per strategy, crash/rerun
   convergence, single-unit rules under crash-resume (the 010 lesson:
   sweep the scoped-stream crash window explicitly).
-- [ ] T013 [US3] The traceability matrix
+- [X] T013 [US3] The traceability matrix
   `specs/013-duckdb-completeness/matrix.md`: every duckdb destination
   option/value/validation row cited (011 rules — citations to
   006/008/010/013 suites first, gap cells written WITH this task where
   the audit finds holes), zero uncited rows; probe outcomes and
   capability gaps recorded as rows.
-- [ ] T014 [US3] Coverage close-out: re-measure
+- [X] T014 [US3] Coverage close-out: re-measure
   `cargo llvm-cov nextest -p rdlt-connector-duckdb`, reach the ≥80%
   floor, classify exclusions, record baseline→final in
   `benches/RESULTS.md` beside the 011 record.
-- [ ] T015 [US3] dlt parity record in
+- [X] T015 [US3] dlt parity record in
   `specs/013-duckdb-completeness/dlt-parity.md`: per-option behavior
   vs pinned dlt 1.29.0's duckdb destination (010 format), deviations
   documented individually; out-of-scope-everywhere features listed as
@@ -160,13 +160,13 @@ sweeps armed; coverage ≥80% recorded.
 
 ## Phase 6: Polish & close-out
 
-- [ ] T016 Scoreboard bench cells: add `duckdb-strategy-delete-insert-1m`
+- [X] T016 Scoreboard bench cells: add `duckdb-strategy-delete-insert-1m`
   and `duckdb-strategy-upsert-1m` to `benches/cells/merge.toml`
   (pg-src fixture → DuckDB file dest, load-2 timed, `{{run}}`-unique
   50% updates, verify 1M rows) + pipeline templates in
   `benches/cells/pipelines/`; run them, commit artifacts,
   `TARGET=report make bench` regenerates the merge table.
-- [ ] T017 README destination-options section goes destination-neutral
+- [X] T017 README destination-options section goes destination-neutral
   (one options reference, per-destination capability notes) in
   `README.md`; close-out sweep — `make check`, `cargo test --doc`,
   semver-checks "no update required", every gated bar within
