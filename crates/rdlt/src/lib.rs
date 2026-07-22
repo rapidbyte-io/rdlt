@@ -42,7 +42,11 @@ pub mod connector {
     #[cfg(feature = "file")]
     pub use rdlt_connector_file as file;
 
-    #[cfg(any(feature = "postgres", feature = "postgres-source"))]
+    #[cfg(any(
+        feature = "postgres",
+        feature = "postgres-source",
+        feature = "postgres-dest"
+    ))]
     pub use rdlt_connector_postgres as postgres;
 
     #[cfg(feature = "rest")]

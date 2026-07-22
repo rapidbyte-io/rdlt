@@ -10,9 +10,12 @@ repository.workspace = true
 default = []
 rest = ["dep:rdlt-connector-rest"]
 duckdb = ["dep:rdlt-connector-duckdb"]
-postgres = ["dep:rdlt-connector-postgres", "rdlt-connector-postgres/dest"]
+# Family features mean the WHOLE system (source + dest where both exist);
+# -source/-dest narrowings exist for build-size-conscious consumers.
+postgres = ["postgres-source", "postgres-dest"]
 file = ["dep:rdlt-connector-file"]
 postgres-source = ["dep:rdlt-connector-postgres", "rdlt-connector-postgres/source"]
+postgres-dest = ["dep:rdlt-connector-postgres", "rdlt-connector-postgres/dest"]
 # The parquet FEATURE spelling stays (frozen for build scripts): the
 # parquet destination now lives in the file family (015 FF1).
 parquet = ["file"]
