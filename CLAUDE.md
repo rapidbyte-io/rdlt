@@ -2,8 +2,9 @@
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
 `specs/014-rest-completeness/plan.md` (feature: REST source
-completeness — restructure rdlt-connector-rest into three PUBLIC
-layers: client/ (auth incl. OAuth2 client-credentials w/ single-flight
+completeness — restructure rdlt-connector-rest to the family layout
+(src/source/ + thin lib.rs façade w/ root re-exports, like postgres/
+duckdb) holding three PUBLIC layers: client/ (auth incl. OAuth2 client-credentials w/ single-flight
 refresh + Secret-redacted fields, classify, bounded Retry-After,
 pacing), read/ (Paginator trait + 7 config families page/offset/
 cursor/header_cursor/next_url/link_header/none with same-request +

@@ -42,8 +42,10 @@ PokeAPI live cell (`RDLT_NET=1`), composed-example build as CI proof
 
 **Target Platform**: Linux (dev/CI); network only in the gated live cell
 
-**Project Type**: existing crate restructure — `src/{config.rs,
-client/, read/}` + `lib.rs` façade; no new crates (R1)
+**Project Type**: existing crate restructure — `src/source/{config.rs,
+client/, read/}` with `lib.rs` as a thin family façade (`pub mod
+source`, root re-exports kept — the postgres/duckdb layout convention);
+no new crates (R1)
 
 **Performance Goals**: gated REST→PG bar ≥5× stays green (the
 no-selector passthrough is preserved byte-for-byte in behavior, RS5);
@@ -93,17 +95,20 @@ specs/014-rest-completeness/
 ```text
 crates/rdlt-connector-rest/
 ├── src/
-│   ├── lib.rs               # RestSource façade (Source impl, wiring)
-│   ├── config.rs            # document (additive; aliases for old spellings)
-│   ├── client/
-│   │   ├── mod.rs           # RestClient: send + classify + pacing + Retry-After
-│   │   ├── auth.rs          # schemes incl. OAuth2 lifecycle; Secret newtype
-│   │   └── secret.rs        # Secret(String), redacted Debug/Display
-│   └── read/
-│       ├── mod.rs           # per-stream read loop (fail points live here)
-│       ├── paginate.rs      # Paginator trait + 7 config-backed impls + guards
-│       ├── extract.rs       # JSONPath-subset Selector + records extraction
-│       └── resolve.rs       # parent-child placeholder resolution
+│   ├── lib.rs               # thin family façade: `pub mod source` + root
+│   │                        #   re-exports (postgres/duckdb layout convention)
+│   └── source/
+│       ├── mod.rs           # RestSource (Source impl, wiring)
+│       ├── config.rs        # document (additive; aliases for old spellings)
+│       ├── client/
+│       │   ├── mod.rs       # RestClient: send + classify + pacing + Retry-After
+│       │   ├── auth.rs      # schemes incl. OAuth2 lifecycle; Secret newtype
+│       │   └── secret.rs    # Secret(String), redacted Debug/Display
+│       └── read/
+│           ├── mod.rs       # per-stream read loop (fail points live here)
+│           ├── paginate.rs  # Paginator trait + 7 config-backed impls + guards
+│           ├── extract.rs   # JSONPath-subset Selector + records extraction
+│           └── resolve.rs   # parent-child placeholder resolution
 ├── examples/
 │   └── composed_api.rs      # US3 proof: public-pieces-only mini connector
 └── tests/
@@ -151,7 +156,9 @@ crates/rdlt-engine/tests/crash_sweep.rs   # + rest source sweep arm
 ## Phase 2 note for /speckit-tasks
 
 Order: T001 coverage baseline + existing-cell green-pin (the weld) →
-client layer (secret newtype + classify extraction, no behavior
+src/source/ restructure (moves only, root re-exports keep every import
+path working — facade `rdlt::connector::rest` gains `::source` like
+its siblings) → client layer (secret newtype + classify extraction, no behavior
 change) → paginator trait + the frozen three families rewired (old
 conformance cells must stay green) → new families + guards → auth
 additions (OAuth2 + api_key) → selectors + actions + POST → incremental
