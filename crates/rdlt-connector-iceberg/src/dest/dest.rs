@@ -198,13 +198,22 @@ impl LoadSession for IcebergSession {
             iceberg::arrow::schema_to_arrow_schema(table.metadata().current_schema())
                 .map_err(|e| fatal(format!("table `{name}`: arrow schema conversion: {e}")))?,
         );
+        // The engine may re-ensure mid-session (clause E1 — e.g. after a
+        // WAL replay). The window counter MUST survive: resetting it
+        // regenerates window 1's exact file path (same load, window,
+        // nonce), overwriting a committed data file. Found by the T009
+        // sweep. A staged writer survives for the same reason.
+        let (windows, writer) = match self.tables.remove(&schema.table) {
+            Some(prev) => (prev.windows, prev.writer),
+            None => (0, None),
+        };
         self.tables.insert(
             schema.table.clone(),
             TableState {
                 table,
                 arrow_target,
-                writer: None,
-                windows: 0,
+                writer,
+                windows,
             },
         );
         Ok(())

@@ -115,7 +115,7 @@ history.
   load replaces again); if probed RED — Replace = typed
   "not supported by this release" at ensure_table (cell), the
   narrowing recorded in spec/FR-008 + parity + README.
-- [ ] T009 [US1] Crash discipline (ID7): `ice.files.write`,
+- [X] T009 [US1] Crash discipline (ID7): `ice.files.write`,
   `ice.commit`, `ice.receipt.visible` points in commit.rs +
   `ICE_FAIL_POINTS` registry; `tests/sweep.rs` sweeping ×3 actions
   against the LIVE fixture (skip-not-fail), asserting exactly-once
