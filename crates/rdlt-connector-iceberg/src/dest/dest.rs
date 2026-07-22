@@ -83,6 +83,7 @@ impl Destination for IcebergDest {
             namespace,
             scope: ident_hash(ctx.pipeline.as_str(), 12),
             load_id: ctx.load_id,
+            nonce: session_nonce(),
             tables: BTreeMap::new(),
         }))
     }
@@ -105,7 +106,21 @@ struct IcebergSession {
     namespace: NamespaceIdent,
     scope: String,
     load_id: LoadId,
+    /// Unique per session — see [`TableWriter::open`]'s nonce contract.
+    nonce: String,
     tables: BTreeMap<TableName, TableState>,
+}
+
+/// A recovery session replaying (load, window) must never reuse a prior
+/// session's data-file names: wall clock + a process-wide counter.
+fn session_nonce() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    format!("{:x}-{}", nanos, SEQ.fetch_add(1, Ordering::Relaxed))
 }
 
 impl IcebergSession {
@@ -206,7 +221,7 @@ impl LoadSession for IcebergSession {
         if state.writer.is_none() {
             state.windows += 1;
             let prefix = format!("{}-{}", self.load_id, state.windows);
-            state.writer = Some(TableWriter::open(&state.table, &prefix).await?);
+            state.writer = Some(TableWriter::open(&state.table, &prefix, &self.nonce).await?);
         }
         state
             .writer

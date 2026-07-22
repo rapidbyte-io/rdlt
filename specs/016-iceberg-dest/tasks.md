@@ -93,7 +93,7 @@ history.
   through the ENGINE into a Polaris-cataloged table, one snapshot per
   non-empty commit, empty commit publishes nothing, typed
   unreachable/unauthorized/missing-warehouse cells.
-- [ ] T006 [US1] Exactly-once + state (ID2): commit identity
+- [X] T006 [US1] Exactly-once + state (ID2): commit identity
   properties (rdlt.pipeline/load-id/commit-seq) on every snapshot;
   replay detection walking snapshot history BEFORE building the
   transaction (discard staged, return prior receipt); StateDoc in

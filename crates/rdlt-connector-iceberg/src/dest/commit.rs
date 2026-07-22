@@ -129,16 +129,24 @@ pub(crate) struct TableWriter {
 }
 
 impl TableWriter {
-    /// Open a writer against the CURRENT table metadata.
+    /// Open a writer against the CURRENT table metadata. `session_nonce`
+    /// makes file names unique ACROSS sessions: a recovery session
+    /// re-staging the same (load, window) must never overwrite a file a
+    /// prior session already committed (its own files stay orphaned and
+    /// invisible when the replay check discards them).
     pub(crate) async fn open(
         table: &iceberg::table::Table,
         file_prefix: &str,
+        session_nonce: &str,
     ) -> Result<Self, DestError> {
         let context = || format!("table `{}`", table.identifier());
         let location =
             DefaultLocationGenerator::new(table.metadata()).map_err(|e| classify(&context(), e))?;
-        let names =
-            DefaultFileNameGenerator::new(file_prefix.to_owned(), None, DataFileFormat::Parquet);
+        let names = DefaultFileNameGenerator::new(
+            file_prefix.to_owned(),
+            Some(session_nonce.to_owned()),
+            DataFileFormat::Parquet,
+        );
         let parquet = ParquetWriterBuilder::new(
             parquet::file::properties::WriterProperties::default(),
             table.metadata().current_schema().clone(),
