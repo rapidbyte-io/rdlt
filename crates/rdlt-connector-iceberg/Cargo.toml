@@ -25,9 +25,10 @@ tokio = { workspace = true }
 
 [dev-dependencies]
 jsonschema = { workspace = true }
+reqwest = { workspace = true }
+rdlt-connector-duckdb = { workspace = true }
 rdlt-engine = { workspace = true }
 rdlt-testkit = { workspace = true }
-testcontainers = { workspace = true }
 tempfile = { workspace = true }
 
 [lints]

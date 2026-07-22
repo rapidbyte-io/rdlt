@@ -61,7 +61,7 @@ order. Every task leaves the whole suite green.
   credential-expiry; fatal: auth/missing-warehouse/schema-conflict/
   retry-exhaustion; every message names catalog/namespace/table/
   column; unit cells over constructed errors).
-- [ ] T004 Polaris+RUSTFS fixture:
+- [X] T004 Polaris+RUSTFS fixture:
   `crates/rdlt-connector-iceberg/tests/common/mod.rs` — testcontainers
   fixture starting RUSTFS (reuse the 015 pattern) + Polaris wired to
   it (T001-verified image/env), catalog health = /v1/config with the
