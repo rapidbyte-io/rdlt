@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 rdlt-connector = { workspace = true }
 arrow = { workspace = true }
+blake3 = { workspace = true }
 schemars = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }

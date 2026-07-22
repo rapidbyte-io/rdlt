@@ -3236,6 +3236,7 @@ version = "0.2.0"
 dependencies = [
  "arrow",
  "async-trait",
+ "blake3",
  "bytes",
  "csv",
  "flate2",

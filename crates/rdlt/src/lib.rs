@@ -42,6 +42,12 @@ pub mod connector {
     #[cfg(feature = "file")]
     pub use rdlt_connector_file as file;
 
+    /// Frozen alias (015): the parquet destination lives in the file
+    /// family; `rdlt::connector::parquet::ParquetDir` keeps resolving for
+    /// consumers of the frozen `parquet` feature spelling.
+    #[cfg(feature = "parquet")]
+    pub use rdlt_connector_file as parquet;
+
     #[cfg(any(
         feature = "postgres",
         feature = "postgres-source",

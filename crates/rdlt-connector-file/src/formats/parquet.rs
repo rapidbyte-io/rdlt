@@ -66,6 +66,7 @@ pub(crate) async fn read_task(
                 eol: true, // row groups are whole records by construction
                 mtime_ms: task.mtime_ms,
                 etag: task.etag.clone(),
+                tail_hash: None, // row-group units: etag/mtime identity governs
             },
         );
         if out.checkpoint(cursor.encode()).await.is_err() {

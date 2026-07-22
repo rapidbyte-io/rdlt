@@ -204,3 +204,31 @@ async fn compressed_parquet_rejected_at_parse() {
         "{err}"
     );
 }
+
+/// 015 review finding 3: bool×numeric columns are DISJOINT in the lattice —
+/// the join is utf8, never a panic.
+#[tokio::test]
+async fn bool_and_numeric_column_widens_to_text() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.csv"), "flag\ntrue\n42\n1.5\n").unwrap();
+    let rows = read_rows(&yaml_for(dir.path(), ""), "t").await.unwrap();
+    assert_eq!(rows[0]["flag"], serde_json::json!("true"));
+    assert_eq!(rows[1]["flag"], serde_json::json!("42"));
+    assert_eq!(rows[2]["flag"], serde_json::json!("1.5"));
+}
+
+/// 015 review finding 10: non-finite floats under INFERRED float typing are
+/// a typed error naming file/row/column (parity with the declared hint) —
+/// never silently nulled.
+#[tokio::test]
+async fn non_finite_inferred_float_is_typed() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.csv"), "v\n1.5\nNaN\n").unwrap();
+    let err = read_rows(&yaml_for(dir.path(), ""), "t")
+        .await
+        .expect_err("NaN has no JSON representation");
+    assert!(
+        err.contains("a.csv") && err.contains("row 3") && err.contains("non-finite"),
+        "{err}"
+    );
+}

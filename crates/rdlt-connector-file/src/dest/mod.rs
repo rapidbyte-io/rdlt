@@ -213,10 +213,17 @@ pub type ParquetDir = FileDest;
 
 impl FileDest {
     /// Open (creating if needed) a LOCAL output directory as a parquet
-    /// destination — the pre-015 constructor, byte-identical behavior.
+    /// destination — the pre-015 constructor, byte-identical behavior. The
+    /// PathBuf is used AS-IS (no lossy string round-trip: non-UTF-8 paths
+    /// keep their bytes); the config mirror is informational only.
     pub fn open(out: impl Into<PathBuf>) -> Result<Self, DestError> {
         let out = out.into();
-        Self::from_config(FileDestConfig::new(out.to_string_lossy().into_owned()))
+        std::fs::create_dir_all(&out).map_err(fatal)?;
+        let config = FileDestConfig::new(out.to_string_lossy().into_owned());
+        Ok(Self {
+            config,
+            store: Store::Local { out },
+        })
     }
 
     /// The full 015 vocabulary: format, location, partitioning.
@@ -615,12 +622,47 @@ impl LoadSession for FileSession {
                 if matches!(mode, WriteMode::Replace) {
                     match &self.store {
                         Store::Local { out } => {
-                            remove_data_files(&out.join(table.as_str()))?;
+                            let dir = out.join(table.as_str());
+                            if self.format == DestFormat::Parquet && self.partition_by.is_none() {
+                                // The FROZEN pre-015 rule, exactly: top-level
+                                // `*.parquet` in the table dir — nothing
+                                // recursive, nothing of other extensions.
+                                remove_top_level_parquet(&dir)?;
+                            } else {
+                                // New configs truncate ONLY files this
+                                // destination writes: `part-*.<ext>` at the
+                                // top level, plus one level into partition
+                                // dirs when partitioning is declared. User
+                                // files are never ours to delete.
+                                remove_owned_parts(
+                                    &dir,
+                                    self.format.extension(),
+                                    self.partition_by.is_some(),
+                                )?;
+                            }
                         }
                         Store::S3 { store, .. } => {
+                            let ext = self.format.extension();
+                            let table_prefix = format!("{table}/");
                             for key in self.store.s3_list(&table.to_string()).await? {
                                 let name = key.to_string();
-                                if name.ends_with(".parquet") || name.ends_with(".jsonl") {
+                                let Some(tail_at) = name.rfind(&table_prefix) else {
+                                    continue;
+                                };
+                                let tail = &name[tail_at + table_prefix.len()..];
+                                let segments: Vec<&str> = tail.split('/').collect();
+                                let owned = match segments.as_slice() {
+                                    [file] => {
+                                        file.starts_with("part-")
+                                            && file.ends_with(&format!(".{ext}"))
+                                    }
+                                    [_partition, file] if self.partition_by.is_some() => {
+                                        file.starts_with("part-")
+                                            && file.ends_with(&format!(".{ext}"))
+                                    }
+                                    _ => false,
+                                };
+                                if owned {
                                     store.delete(&key).await.map_err(fatal)?;
                                 }
                             }
@@ -701,12 +743,17 @@ impl LoadSession for FileSession {
         if let Store::Local { out } = &self.store {
             let mut synced = std::collections::BTreeSet::new();
             for part in &self.staged {
-                let dir = match &part.partition {
-                    Some(value) => out.join(part.table.as_str()).join(value),
-                    None => out.join(part.table.as_str()),
-                };
-                if synced.insert(dir.clone()) {
-                    fsync_dir(&dir)?;
+                let table_dir = out.join(part.table.as_str());
+                if let Some(value) = &part.partition {
+                    // The rename's dir AND the table dir whose (possibly
+                    // new) partition dirent must survive power loss (D2).
+                    let leaf = table_dir.join(value);
+                    if synced.insert(leaf.clone()) {
+                        fsync_dir(&leaf)?;
+                    }
+                }
+                if synced.insert(table_dir.clone()) {
+                    fsync_dir(&table_dir)?;
                 }
             }
         }
@@ -740,9 +787,8 @@ impl LoadSession for FileSession {
     }
 }
 
-/// Remove data files (both extensions) under a table dir, recursively
-/// (partition subdirectories included).
-fn remove_data_files(dir: &Path) -> Result<(), DestError> {
+/// The frozen pre-015 Replace truncation: TOP-LEVEL `*.parquet` only.
+fn remove_top_level_parquet(dir: &Path) -> Result<(), DestError> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -750,13 +796,38 @@ fn remove_data_files(dir: &Path) -> Result<(), DestError> {
     };
     for entry in entries {
         let path = entry.map_err(fatal)?.path();
-        if path.is_dir() {
-            remove_data_files(&path)?;
-        } else if path
-            .extension()
-            .is_some_and(|e| e == "parquet" || e == "jsonl")
-        {
+        if path.extension().is_some_and(|e| e == "parquet") && path.is_file() {
             std::fs::remove_file(path).map_err(fatal)?;
+        }
+    }
+    Ok(())
+}
+
+/// Ownership-precise truncation for the NEW configs: only `part-*.<ext>`
+/// files this destination writes — top level, plus one level into
+/// partition dirs when partitioning is declared. User files survive.
+fn remove_owned_parts(dir: &Path, ext: &str, partitioned: bool) -> Result<(), DestError> {
+    let owned = |path: &Path| {
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with("part-") && n.ends_with(&format!(".{ext}")))
+    };
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(fatal(e)),
+    };
+    for entry in entries {
+        let path = entry.map_err(fatal)?.path();
+        if path.is_file() && owned(&path) {
+            std::fs::remove_file(&path).map_err(fatal)?;
+        } else if partitioned && path.is_dir() {
+            for sub in std::fs::read_dir(&path).map_err(fatal)? {
+                let sub = sub.map_err(fatal)?.path();
+                if sub.is_file() && owned(&sub) {
+                    std::fs::remove_file(&sub).map_err(fatal)?;
+                }
+            }
         }
     }
     Ok(())

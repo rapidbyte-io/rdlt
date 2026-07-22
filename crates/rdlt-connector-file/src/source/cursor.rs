@@ -12,6 +12,13 @@ use serde::{Deserialize, Serialize};
 
 pub const CURSOR_FORMAT_VERSION: u32 = 1;
 
+/// Tail-verification window (015 review finding 2): the cursor records a
+/// blake3 hash of the last `min(done, TAIL_WINDOW)` consumed bytes; a
+/// resumed read re-fetches exactly that window and compares BEFORE
+/// trusting the offset — a grown REWRITE (changed prefix) fails loudly on
+/// both location kinds, while a genuine append (identical prefix) resumes.
+pub const TAIL_WINDOW: u64 = 4096;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileProgress {
     /// Bytes consumed (jsonl) / row groups consumed (parquet).
@@ -33,6 +40,10 @@ pub struct FileProgress {
     /// this progress was recorded — the object-side rewrite tripwire.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub etag: Option<String>,
+    /// blake3 of the last `min(done, TAIL_WINDOW)` consumed bytes (015,
+    /// additive; jsonl only — the resume-offset integrity check).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tail_hash: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -76,6 +87,10 @@ pub struct FileTask {
     /// Read from THIS local path instead of `path` (object-store parquet
     /// is fetched to a temp file first; the cursor stays keyed by `path`).
     pub read_path: Option<String>,
+    /// Resume-offset integrity check: (window bytes, expected blake3 hex)
+    /// over `[start - window, start)` — present only for resumed tails
+    /// whose progress recorded a tail hash.
+    pub tail_check: Option<(u64, String)>,
 }
 
 impl FileCursor {
@@ -107,6 +122,7 @@ impl FileCursor {
                     etag: meta.etag.clone(),
                     size: meta.size,
                     read_path: None,
+                    tail_check: None,
                 }),
                 Some(progress) => {
                     if meta.size < progress.size || progress.done > meta.size {
@@ -156,6 +172,10 @@ impl FileCursor {
                             etag: meta.etag.clone(),
                             size: meta.size,
                             read_path: None,
+                            tail_check: progress
+                                .tail_hash
+                                .clone()
+                                .map(|hash| (progress.done.min(TAIL_WINDOW), hash)),
                         });
                     }
                     // done == size (+ same mtime): complete and unchanged → skip.
@@ -181,6 +201,7 @@ impl FileCursor {
                     etag: meta.etag.clone(),
                     size: meta.size,
                     read_path: None,
+                    tail_check: None,
                 }),
                 Some(progress) => {
                     if meta.size != progress.size {
@@ -220,6 +241,7 @@ impl FileCursor {
                             etag: meta.etag.clone(),
                             size: meta.size,
                             read_path: None,
+                            tail_check: None,
                         });
                     }
                     // done == size: complete → skip.
@@ -254,6 +276,7 @@ mod tests {
             eol: true,
             mtime_ms: None,
             etag: None,
+            tail_hash: None,
         }
     }
 
@@ -274,6 +297,7 @@ mod tests {
                 etag: None,
                 size: 15,
                 read_path: None,
+                tail_check: None,
             }]
         );
 
@@ -292,6 +316,7 @@ mod tests {
                 eol: true,
                 mtime_ms: Some(1_000),
                 etag: None,
+                tail_hash: None,
             },
         );
         // Same size, same mtime: skip.
@@ -327,6 +352,7 @@ mod tests {
                 eol: false, // previous run swallowed an unterminated final line
                 mtime_ms: None,
                 etag: None,
+                tail_hash: None,
             },
         );
         let err = cursor.plan(&[meta("a", 20)]).expect_err("mid-record");

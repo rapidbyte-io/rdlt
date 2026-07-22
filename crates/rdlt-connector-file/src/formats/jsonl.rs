@@ -9,7 +9,21 @@ use bytes::Bytes;
 use rdlt_connector::{RecordsOut, SourceError};
 
 use crate::location::{ByteReader, Location};
-use crate::source::cursor::{FileCursor, FileProgress, FileTask};
+use crate::source::cursor::{FileCursor, FileProgress, FileTask, TAIL_WINDOW};
+
+/// Keep `tail` = the last `TAIL_WINDOW` bytes of everything consumed.
+fn roll_tail(tail: &mut Vec<u8>, slab: &[u8]) {
+    let window = TAIL_WINDOW as usize;
+    if slab.len() >= window {
+        tail.clear();
+        tail.extend_from_slice(&slab[slab.len() - window..]);
+    } else {
+        tail.extend_from_slice(slab);
+        if tail.len() > window {
+            tail.drain(..tail.len() - window);
+        }
+    }
+}
 
 const SLAB_BYTES: usize = 8 << 20;
 
@@ -22,7 +36,36 @@ pub(crate) async fn read_task(
     cursor: &mut FileCursor,
     out: &mut RecordsOut,
 ) -> Result<bool, SourceError> {
-    let mut file: ByteReader = location.open_from(&task.path, task.start).await?;
+    // Resume-offset integrity (015): re-read the recorded tail window and
+    // compare BEFORE trusting the offset — a rewritten prefix fails loudly;
+    // a genuine append verifies and continues from the same open reader.
+    let verify = task.tail_check.as_ref().filter(|_| task.start > 0);
+    let open_at = match verify {
+        Some((window, _)) => task.start - window,
+        None => task.start,
+    };
+    let mut file: ByteReader = location.open_from(&task.path, open_at).await?;
+    // Rolling buffer of the last consumed bytes (hash goes into progress).
+    let mut tail: Vec<u8> = Vec::new();
+    if let Some((window, expected)) = verify {
+        let mut got = vec![0u8; *window as usize];
+        let n = file
+            .read_full(&mut got)
+            .await
+            .map_err(|e| SourceError::fatal(format!("reading `{}`: {e}", task.path)))?;
+        got.truncate(n);
+        let matches = n as u64 == *window && blake3::hash(&got).to_hex().to_string() == *expected;
+        if !matches {
+            return Err(SourceError::fatal(format!(
+                "file `{}` was rewritten before the resume offset (the content \
+                 preceding byte {} changed since the last run); refusing to \
+                 read a stale tail — clear it from the pipeline state or \
+                 restore the file",
+                task.path, task.start
+            )));
+        }
+        tail = got;
+    }
     // Snapshot size from the listing; the loop reads to end-of-stream, so a
     // file that grew since listing still loads whole (progress caps at the
     // observed end).
@@ -87,6 +130,7 @@ pub(crate) async fn read_task(
         }
         ended_on_newline = slab.last() == Some(&b'\n');
         offset += slab.len() as u64;
+        roll_tail(&mut tail, &slab);
 
         // Zero-copy handoff: the Vec becomes the pushed Bytes.
         if out.raw_json(Bytes::from(slab)).await.is_err() {
@@ -102,6 +146,7 @@ pub(crate) async fn read_task(
                 eol: ended_on_newline,
                 mtime_ms: task.mtime_ms,
                 etag: task.etag.clone(),
+                tail_hash: Some(blake3::hash(&tail).to_hex().to_string()),
             },
         );
         if out.checkpoint(cursor.encode()).await.is_err() {
@@ -121,6 +166,7 @@ pub(crate) async fn read_task(
             eol: ended_on_newline,
             mtime_ms: task.mtime_ms,
             etag: task.etag.clone(),
+            tail_hash: Some(blake3::hash(&tail).to_hex().to_string()),
         },
     );
     if out.checkpoint(cursor.encode()).await.is_err() {
@@ -230,6 +276,7 @@ pub(crate) async fn read_task_whole(
             eol: true,
             mtime_ms: task.mtime_ms,
             etag: task.etag.clone(),
+            tail_hash: None, // whole-file units never tail-resume
         },
     );
     if out.checkpoint(cursor.encode()).await.is_err() {

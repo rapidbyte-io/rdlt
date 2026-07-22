@@ -272,9 +272,13 @@ pub fn config_schema() -> serde_json::Value {
     serde_json::to_value(schemars::schema_for!(config::FileConfig)).expect("schema serializes")
 }
 
-/// Per-stream temp dir for object fetches.
+/// Per-READ temp dir for object fetches: unique per call (pid + a
+/// process-wide counter), so concurrent in-process pipelines with
+/// same-named streams can never share or clobber fetch files.
 fn temp_fetch_dir(stream: &str) -> Result<std::path::PathBuf, SourceError> {
-    let dir = std::env::temp_dir().join(format!("rdlt-file-{}-{stream}", std::process::id()));
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("rdlt-file-{}-{seq}-{stream}", std::process::id()));
     std::fs::create_dir_all(&dir)
         .map_err(|e| SourceError::fatal(format!("temp dir for object fetch: {e}")))?;
     Ok(dir)
@@ -305,4 +309,16 @@ async fn fetch_to_temp(
             .map_err(|e| SourceError::fatal(format!("writing temp for `{key}`: {e}")))?;
     }
     Ok(path)
+}
+
+#[cfg(test)]
+mod temp_dir_tests {
+    #[test]
+    fn temp_fetch_dirs_are_unique_per_call() {
+        let a = super::temp_fetch_dir("events").unwrap();
+        let b = super::temp_fetch_dir("events").unwrap();
+        assert_ne!(a, b, "concurrent pipelines must never share fetch dirs");
+        let _ = std::fs::remove_dir_all(a);
+        let _ = std::fs::remove_dir_all(b);
+    }
 }

@@ -508,3 +508,90 @@ async fn dest_partitions_jsonl_in_the_bucket() {
         .expect("list");
     assert_eq!(d1.len(), 1, "one part under d1");
 }
+
+/// 015 review finding 2 (object leg): a grown object whose pre-resume
+/// bytes CHANGED fails via the tail hash — the size-gated etag check
+/// alone would have resumed from a stale offset.
+#[tokio::test(flavor = "multi_thread")]
+async fn grown_object_rewrite_is_typed_by_tail_hash() {
+    use rdlt_connector_duckdb::dest::DuckDb;
+    use rdlt_connector_file::FileSource;
+    use rdlt_engine::{Engine, EngineConfig};
+
+    let Some(fixture) = S3Fixture::start().await else {
+        return;
+    };
+    fixture
+        .put("tailhash/x.jsonl", b"{\"id\":1}\n{\"id\":2}\n")
+        .await;
+    let yaml = format!(
+        "streams:\n  - name: events\n    format: jsonl\n    path: \"tailhash/*.jsonl\"\n    {}",
+        fixture.location_yaml().replace('\n', "\n    ")
+    );
+    let db = tempfile::tempdir().expect("tempdir");
+    let dest = DuckDb::open(db.path().join("out.duckdb")).expect("open db");
+    Engine::new(
+        EngineConfig::new("s3-tailhash"),
+        FileSource::from_yaml(&yaml).expect("config"),
+        dest.clone(),
+    )
+    .run()
+    .await
+    .expect("run 1");
+
+    // Grown AND rewritten: same length prefix, different bytes, plus a tail.
+    fixture
+        .put("tailhash/x.jsonl", b"{\"id\":9}\n{\"id\":2}\n{\"id\":3}\n")
+        .await;
+    let err = Engine::new(
+        EngineConfig::new("s3-tailhash"),
+        FileSource::from_yaml(&yaml).expect("config"),
+        dest.clone(),
+    )
+    .run()
+    .await
+    .expect_err("rewritten prefix")
+    .to_string();
+    assert!(
+        err.contains("tailhash/x.jsonl") && err.contains("rewritten before the resume offset"),
+        "{err}"
+    );
+}
+
+/// 015 review finding 5: `*` never crosses `/` in object keys — nested
+/// keys and staged parts stay out of a flat glob.
+#[tokio::test]
+async fn glob_does_not_cross_key_separators() {
+    let Some(fixture) = S3Fixture::start().await else {
+        return;
+    };
+    fixture.put("flat/a.jsonl", b"{\"id\":1}\n").await;
+    fixture.put("flat/nested/b.jsonl", b"{\"id\":2}\n").await;
+    fixture
+        .put(
+            "flat/.rdlt-staging/scope/load/staged.jsonl",
+            b"{\"id\":3}\n",
+        )
+        .await;
+    let files = fixture.location().list("flat/*.jsonl").await.expect("list");
+    assert_eq!(files.len(), 1, "only the direct child: {files:?}");
+    assert_eq!(files[0].path, "flat/a.jsonl");
+}
+
+/// 015 review finding 6: a literal key containing glob metacharacters is
+/// taken literally when it EXISTS (the local rule) — never a silent empty
+/// load.
+#[tokio::test]
+async fn literal_key_with_metacharacters_reads() {
+    let Some(fixture) = S3Fixture::start().await else {
+        return;
+    };
+    fixture.put("lit/events[v1].jsonl", b"{\"id\":1}\n").await;
+    let files = fixture
+        .location()
+        .list("lit/events[v1].jsonl")
+        .await
+        .expect("literal key wins");
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].path, "lit/events[v1].jsonl");
+}

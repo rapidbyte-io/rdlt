@@ -161,24 +161,37 @@ impl S3Location {
     /// glob metacharacters names one object — missing is a typed error.
     pub async fn list(&self, pattern: &str) -> Result<Vec<FileMeta>, SourceError> {
         let has_glob = pattern.contains(['*', '?', '[']);
-        if !has_glob {
-            // One named object: HEAD it; absent = typed (parity with the
-            // local "file does not exist" rule).
-            let path = object_store::path::Path::from(pattern);
-            let head = self
-                .store
-                .head(&path)
-                .await
-                .map_err(|e| self.classify("object", pattern, e))?;
-            return Ok(vec![FileMeta {
-                path: pattern.to_owned(),
-                size: head.size,
-                mtime_ms: None,
-                etag: head.e_tag,
-            }]);
+        // The LOCAL rule holds here too: a pattern naming an EXISTING object
+        // is taken literally, even when it contains glob metacharacters
+        // (`events[v1].jsonl` is a key, not a character class). One HEAD
+        // decides; only then does glob interpretation apply.
+        let literal = object_store::path::Path::from(pattern);
+        match self.store.head(&literal).await {
+            Ok(head) => {
+                return Ok(vec![FileMeta {
+                    path: pattern.to_owned(),
+                    size: head.size,
+                    mtime_ms: None,
+                    etag: head.e_tag,
+                }]);
+            }
+            Err(object_store::Error::NotFound { .. }) if has_glob => {}
+            Err(object_store::Error::NotFound { .. }) => {
+                return Err(SourceError::fatal(format!(
+                    "object `{pattern}` (s3 `{}` bucket `{}`): not found",
+                    self.endpoint, self.bucket
+                )));
+            }
+            Err(e) => return Err(self.classify("object", pattern, e)),
         }
         let matcher = glob::Pattern::new(pattern)
             .map_err(|e| SourceError::fatal(format!("invalid glob `{pattern}`: {e}")))?;
+        // `*`/`?` must NOT cross `/` — the local glob walks per component,
+        // and staged keys under .rdlt-staging/ must never match a data glob.
+        let match_options = glob::MatchOptions {
+            require_literal_separator: true,
+            ..Default::default()
+        };
         let prefix = Self::prefix_of(pattern);
         let prefix_path = (!prefix.is_empty()).then(|| object_store::path::Path::from(prefix));
         let mut listing = self.store.list(prefix_path.as_ref());
@@ -186,7 +199,7 @@ impl S3Location {
         while let Some(entry) = listing.next().await {
             let entry = entry.map_err(|e| self.classify("listing", pattern, e))?;
             let key = entry.location.to_string();
-            if matcher.matches(&key) {
+            if matcher.matches_with(&key, match_options) {
                 matched.push(FileMeta {
                     path: key,
                     size: entry.size,

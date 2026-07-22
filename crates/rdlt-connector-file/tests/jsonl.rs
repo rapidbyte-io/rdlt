@@ -283,3 +283,31 @@ async fn unreadable_directory_in_glob_is_an_error_not_a_partial_list() {
         ),
     }
 }
+
+/// 015 review finding 2: a file that GREW but whose pre-resume content
+/// changed (rewrite, not append) fails via the tail-hash check — never a
+/// stale-offset read. A genuine append (identical prefix) still resumes
+/// (proven by `resume_reads_only_appended_tail_and_new_files`).
+#[tokio::test]
+async fn grown_rewrite_fails_via_tail_hash() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_file(dir.path(), "a.jsonl", &[r#"{"id":1}"#, r#"{"id":2}"#]);
+    let source = source_for(&format!("{}/a.jsonl", dir.path().display()));
+    let (rows, cursor) = read_all(&source, None).await.expect("run 1");
+    assert_eq!(rows.len(), 2);
+
+    // Same-length prefix REWRITTEN (id 1 → id 9) + a grown tail: size and
+    // mtime move forward like a legit append, but the content lies.
+    write_file(
+        dir.path(),
+        "a.jsonl",
+        &[r#"{"id":9}"#, r#"{"id":2}"#, r#"{"id":3}"#],
+    );
+    let err = read_all(&source, cursor)
+        .await
+        .expect_err("rewritten prefix");
+    assert!(
+        err.contains("a.jsonl") && err.contains("rewritten before the resume offset"),
+        "{err}"
+    );
+}

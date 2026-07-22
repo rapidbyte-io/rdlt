@@ -164,3 +164,82 @@ fn dest_config_validation_is_typed() {
         .expect_err("empty partition");
     assert!(err.to_string().contains("partition_by"), "{err}");
 }
+
+/// 015 review finding 1: Replace truncation never deletes files this
+/// destination does not own. The FROZEN local-parquet config keeps the
+/// exact pre-015 rule (top-level *.parquet, any name); new configs delete
+/// only their own `part-*.<ext>` files.
+#[tokio::test]
+async fn replace_truncation_spares_user_files() {
+    use rdlt_connector::core::WriteMode;
+    use rdlt_connector::{Destination, OpenCtx};
+
+    // Frozen config: top-level *.parquet goes (old rule), user jsonl and
+    // nested dirs SURVIVE.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let table_dir = dir.path().join("events");
+    std::fs::create_dir_all(table_dir.join("user-subdir")).expect("mkdir");
+    std::fs::write(table_dir.join("stray.parquet"), b"not-ours-but-old-rule").expect("seed");
+    std::fs::write(table_dir.join("user.jsonl"), b"{\"keep\":true}\n").expect("seed");
+    std::fs::write(
+        table_dir.join("user-subdir/data.parquet"),
+        b"nested-user-file",
+    )
+    .expect("seed");
+    let dest =
+        FileDest::from_config(FileDestConfig::new(dir.path().to_string_lossy())).expect("open");
+    let pipeline = PipelineId::new("p");
+    let load = LoadId::new("load-r");
+    let mut s = dest
+        .open(OpenCtx::new(pipeline.clone(), load.clone()))
+        .await
+        .expect("open");
+    s.ensure_table(&schema_for("events"), &WriteMode::Replace)
+        .await
+        .expect("ensure");
+    s.write(&TableName::new("events"), batch(&[1], &[Some("d1")]))
+        .await
+        .expect("write");
+    s.commit(meta_for(&pipeline, &load, 1))
+        .await
+        .expect("commit");
+    assert!(
+        !table_dir.join("stray.parquet").exists(),
+        "frozen rule: top-level *.parquet is truncated"
+    );
+    assert!(table_dir.join("user.jsonl").exists(), "user jsonl survives");
+    assert!(
+        table_dir.join("user-subdir/data.parquet").exists(),
+        "nested user files survive"
+    );
+
+    // New config (jsonl format): ONLY part-*.jsonl is ours.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let table_dir = dir.path().join("events");
+    std::fs::create_dir_all(&table_dir).expect("mkdir");
+    std::fs::write(table_dir.join("user.jsonl"), b"{\"keep\":true}\n").expect("seed");
+    std::fs::write(table_dir.join("part-old-1-0.jsonl"), b"{\"old\":true}\n").expect("seed");
+    let dest = FileDest::from_config(
+        FileDestConfig::new(dir.path().to_string_lossy()).with_format(DestFormat::Jsonl),
+    )
+    .expect("open");
+    let load = LoadId::new("load-r2");
+    let mut s = dest
+        .open(OpenCtx::new(pipeline.clone(), load.clone()))
+        .await
+        .expect("open");
+    s.ensure_table(&schema_for("events"), &WriteMode::Replace)
+        .await
+        .expect("ensure");
+    s.write(&TableName::new("events"), batch(&[2], &[Some("d1")]))
+        .await
+        .expect("write");
+    s.commit(meta_for(&pipeline, &load, 1))
+        .await
+        .expect("commit");
+    assert!(
+        !table_dir.join("part-old-1-0.jsonl").exists(),
+        "our part files are truncated"
+    );
+    assert!(table_dir.join("user.jsonl").exists(), "user jsonl survives");
+}

@@ -19,9 +19,12 @@ use crate::source::cursor::{FileCursor, FileProgress, FileTask};
 
 const SLAB_BYTES: usize = 8 << 20;
 
-/// The lattice (narrowest → widest).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// The lattice: `Empty` is bottom (a column that never saw a value);
+/// int widens to float; bool is DISJOINT from the numeric chain — any
+/// mix involving bool (or anything else) joins to text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CellKind {
+    Empty,
     Bool,
     Int,
     Float,
@@ -34,6 +37,17 @@ fn kind_of(value: &str) -> CellKind {
         _ if value.parse::<i64>().is_ok() => CellKind::Int,
         _ if value.parse::<f64>().is_ok() => CellKind::Float,
         _ => CellKind::Text,
+    }
+}
+
+/// The JOIN — total and commutative; never trusts ordering tricks.
+fn join(a: CellKind, b: CellKind) -> CellKind {
+    use CellKind::*;
+    match (a, b) {
+        (Empty, x) | (x, Empty) => x,
+        (x, y) if x == y => x,
+        (Int, Float) | (Float, Int) => Float,
+        _ => Text, // bool×numeric, anything×text
     }
 }
 
@@ -91,11 +105,11 @@ pub(crate) async fn read_task(
             Ok(true) => {
                 row += 1;
                 if kinds.len() < record.len() {
-                    kinds.resize(record.len(), CellKind::Bool);
+                    kinds.resize(record.len(), CellKind::Empty);
                 }
                 for (i, cell) in record.iter().enumerate() {
                     if !cell.is_empty() {
-                        kinds[i] = kinds[i].max(kind_of(cell));
+                        kinds[i] = join(kinds[i], kind_of(cell));
                     }
                 }
             }
@@ -118,7 +132,10 @@ pub(crate) async fn read_task(
         .enumerate()
         .map(|(i, name)| match hints.get(name) {
             Some(hint) => Conversion::Declared(*hint),
-            None => Conversion::Inferred(kinds.get(i).copied().unwrap_or(CellKind::Text)),
+            None => Conversion::Inferred(match kinds.get(i).copied() {
+                Some(CellKind::Empty) | None => CellKind::Text,
+                Some(kind) => kind,
+            }),
         })
         .collect();
 
@@ -161,6 +178,7 @@ pub(crate) async fn read_task(
             eol: true,
             mtime_ms: task.mtime_ms,
             etag: task.etag.clone(),
+            tail_hash: None, // whole-file units never tail-resume
         },
     );
     if out.checkpoint(cursor.encode()).await.is_err() {
@@ -215,17 +233,35 @@ fn convert_cell(
              declared {expected} hint"
         ))
     };
+    // Pass-2 parse failures are TYPED: the two passes read the file twice,
+    // and a file modified in between must fail loudly, never panic.
+    let two_pass = |expected: &str| {
+        SourceError::fatal(format!(
+            "`{path}` row {row} column `{column}`: value no longer parses as the \
+             inferred {expected} — the file changed between the inference and \
+             conversion passes; retry the run"
+        ))
+    };
     Ok(match conversion {
         Conversion::Inferred(CellKind::Bool) => serde_json::Value::Bool(cell == "true"),
         Conversion::Inferred(CellKind::Int) => {
-            serde_json::Value::Number(cell.parse::<i64>().expect("lattice-checked").into())
+            serde_json::Value::Number(cell.parse::<i64>().map_err(|_| two_pass("int64"))?.into())
         }
         Conversion::Inferred(CellKind::Float) => {
-            serde_json::Number::from_f64(cell.parse::<f64>().expect("lattice-checked"))
+            let parsed = cell.parse::<f64>().map_err(|_| two_pass("float64"))?;
+            serde_json::Number::from_f64(parsed)
                 .map(serde_json::Value::Number)
-                .unwrap_or(serde_json::Value::Null)
+                .ok_or_else(|| {
+                    SourceError::fatal(format!(
+                        "`{path}` row {row} column `{column}`: non-finite value \
+                         `{cell}` has no JSON representation — declare a utf8 \
+                         type hint to load it as a string"
+                    ))
+                })?
         }
-        Conversion::Inferred(CellKind::Text) => serde_json::Value::String(cell.to_owned()),
+        Conversion::Inferred(CellKind::Empty | CellKind::Text) => {
+            serde_json::Value::String(cell.to_owned())
+        }
         Conversion::Declared(HintType::Bool) => match cell {
             "true" => serde_json::Value::Bool(true),
             "false" => serde_json::Value::Bool(false),
