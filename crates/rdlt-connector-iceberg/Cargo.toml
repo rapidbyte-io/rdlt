@@ -13,6 +13,7 @@ iceberg-catalog-rest = { workspace = true }
 iceberg-storage-opendal = { workspace = true }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
+arrow-cast = { workspace = true }
 parquet = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }

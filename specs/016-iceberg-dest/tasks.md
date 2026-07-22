@@ -83,7 +83,7 @@ totals with one snapshot per non-empty commit; replayed commits
 publish nothing; crash sweep converges with a duplicate-free snapshot
 history.
 
-- [ ] T005 [US1] Append path: `src/dest.rs` (Destination +
+- [X] T005 [US1] Append path: `src/dest.rs` (Destination +
   LoadSession: capabilities merge:false, open/ensure_table/write/
   commit skeleton) + `src/commit.rs` (batch staging → data-file write
   via the library writer, fast-append transaction per commit) +

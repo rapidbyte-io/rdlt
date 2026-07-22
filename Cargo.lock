@@ -4138,6 +4138,7 @@ name = "rdlt-connector-iceberg"
 version = "0.2.0"
 dependencies = [
  "arrow-array",
+ "arrow-cast",
  "arrow-schema",
  "async-trait",
  "futures",

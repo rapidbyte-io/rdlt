@@ -13,6 +13,7 @@
 
 pub mod dest;
 
+pub use dest::IcebergDest;
 pub use dest::config::{
     AuthOptions, IcebergConfig, PartitionField, PartitionTransform, S3Override, Secret,
     TableOptions, config_schema,

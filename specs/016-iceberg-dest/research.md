@@ -74,6 +74,24 @@ atomic); catalog namespace properties (not transactional with the
 data commit); external state store (violates the "state rides the
 destination" SPI posture).
 
+**T005 addendum — state home revised TWICE by live evidence**: the
+original per-stream-table property design fails recovery — `read_state`
+receives only the dest config + pipeline id and cannot enumerate which
+stream tables exist, so it cannot find the freshest `rdlt.state`. First
+revision (namespace property `rdlt.state.<scope>`) failed LIVE:
+iceberg-catalog-rest 0.10's `update_namespace` returns
+`FeatureUnsupported` ("Updating namespace not supported yet!"). Final
+design: the state doc lives as a property `rdlt.state.<scope>` on a
+dedicated, forever-empty marker table `_rdlt_state` in the destination
+namespace (fixed name ⇒ enumerable from config alone; property commits
+go through the standard supported commit endpoint via
+`update_table_properties`, with the same bounded conflict retry). The
+state write happens AFTER the per-table data commits (parquet-dest
+state-last ordering); it is therefore NOT atomic with them — the
+per-table snapshot receipts make replays converge across a crash in
+between, same honesty class as multi-table commits themselves. Stream
+tables named `_rdlt_state` are rejected typed (reserved name).
+
 ## R4 — Auth vocabulary and the Glue deferral
 
 **Decision**: v1 auth = `oauth2_client_credentials` {token_url?
