@@ -108,7 +108,7 @@ history.
   commits between rdlt's table load and commit — rdlt retries and
   lands WITHOUT losing the foreign snapshot; exhaustion cell with a
   hammering competitor asserts the typed error.
-- [ ] T008 [US1] Replace per the T001 verdict (ID5): if overwrite
+- [X] T008 [US1] Replace per the T001 verdict (ID5): if overwrite
   probed GREEN — Iceberg overwrite once-per-load with the durable
   guard read from snapshot history (cells: replace replaces exactly
   once per load, crash-recovery session does not re-truncate, new

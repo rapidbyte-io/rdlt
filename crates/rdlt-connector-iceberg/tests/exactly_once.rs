@@ -181,3 +181,38 @@ async fn incremental_run_resumes_from_catalog_state() {
         "an all-caught-up run publishes no snapshot"
     );
 }
+
+/// T008 (ID5): Replace is the RECORDED narrowing — a typed
+/// "not supported by this release" error at ensure_table, not silent
+/// Append degradation, not a non-atomic delete+append emulation.
+/// Merge is likewise typed-rejected, through a real catalog session.
+#[tokio::test(flavor = "multi_thread")]
+async fn replace_rejected_against_live_catalog() {
+    let Some(fixture) = CatalogFixture::start().await else {
+        return;
+    };
+    let dest = IcebergDest::from_config(fixture.config("replace_reject")).expect("dest");
+    let mut session = dest
+        .open(OpenCtx::new(PipelineId::new("p"), LoadId::new("l")))
+        .await
+        .expect("open");
+    let err = session
+        .ensure_table(&schema_for("events"), &WriteMode::Replace)
+        .await
+        .expect_err("Replace must be typed-unsupported");
+    let text = format!("{err}");
+    assert!(
+        text.contains("not supported by this release") && text.contains("overwrite"),
+        "the narrowing names its reason: {text}"
+    );
+    let err = session
+        .ensure_table(
+            &schema_for("events"),
+            &WriteMode::Merge {
+                key: vec!["id".into()],
+            },
+        )
+        .await
+        .expect_err("Merge must be capability-rejected");
+    assert!(format!("{err}").contains("does not support Merge"));
+}

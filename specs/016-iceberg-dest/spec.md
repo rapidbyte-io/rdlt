@@ -199,9 +199,13 @@ same in the deep tier.
   and temporal transforms (year/month/day/hour) on declared columns;
   unknown columns/transform spellings typed at parse; the spec is
   visible to readers (US3 asserts it).
-- **FR-008 (write modes)**: Append appends snapshots; Replace
-  performs Iceberg overwrite semantics ONCE per load with the durable
-  guard read from snapshot history (never session memory).
+- **FR-008 (write modes)**: Append appends snapshots. Replace is a
+  typed "not supported by this release" error at `ensure_table` —
+  the RECORDED T001/T008 narrowing: iceberg-rust 0.10 exposes no
+  overwrite transaction, and ID5 forbids emulating one (delete-all +
+  append is not atomic replace). Revisit when the library grows an
+  overwrite action. Merge stays rejected by capability
+  (`merge: false`).
 - **FR-009 (typed errors)**: every failure names its subject
   (catalog/namespace/table/column); classification per the standing
   posture — network/5xx/throttle/credential-expiry transient,
