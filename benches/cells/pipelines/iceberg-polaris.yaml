@@ -1,0 +1,16 @@
+pipeline: bench-iceberg
+workdir: {{workdir}}/.rdlt
+source:
+  file: {config: {{data}}/files.yaml}
+destination:
+  iceberg:
+    catalog:
+      uri: http://127.0.0.1:8191/api/catalog
+      warehouse: rdlt
+      auth:
+        oauth2_client_credentials:
+          client_id: root
+          client_secret: s3cr3t
+          scopes: ["PRINCIPAL_ROLE:ALL"]
+    namespace: bench
+    create_namespace: true

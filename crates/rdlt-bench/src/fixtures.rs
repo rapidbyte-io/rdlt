@@ -67,6 +67,15 @@ pub struct FixtureDef {
     pub service_sh: Option<String>,
     #[serde(default)]
     pub ready_port: Option<u16>,
+    /// Shell run between runs (like `reset_sql`, but a script — 016: drop
+    /// the Iceberg namespace so every run loads fresh). Substituted.
+    #[serde(default)]
+    pub reset_sh: Option<String>,
+    /// Shell run at teardown BEFORE container removal — for fixtures whose
+    /// `generate_sh` brings up sidecar resources (e.g. a second container)
+    /// the harness does not manage directly (016: RUSTFS beside Polaris).
+    #[serde(default)]
+    pub teardown_sh: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -108,6 +117,8 @@ pub struct Started {
     pub hashes: BTreeMap<String, String>,
     container: Option<(String, String)>, // (engine, name)
     service: Option<std::process::Child>,
+    teardown_sh: Option<String>, // substituted
+    reset_sh: Option<String>,    // substituted
 }
 
 impl Started {
@@ -115,8 +126,18 @@ impl Started {
         self.def.conn.as_deref()
     }
 
-    /// Run `reset_sql` (if declared) — called before every warmup/counted run.
+    /// Run `reset_sql`/`reset_sh` (if declared) — called before every
+    /// warmup/counted run.
     pub fn reset(&self) -> Result<()> {
+        if let Some(script) = &self.reset_sh {
+            let status = Command::new("sh").args(["-c", script]).status()?;
+            if !status.success() {
+                return Err(BenchError(format!(
+                    "fixture `{}` reset_sh failed ({status})",
+                    self.def.id
+                )));
+            }
+        }
         let (Some((engine, name)), Some(sql)) = (&self.container, &self.def.reset_sql) else {
             return Ok(());
         };
@@ -138,7 +159,11 @@ fn teardown(
     container: &mut Option<(String, String)>,
     service: &mut Option<std::process::Child>,
     ready_port: Option<u16>,
+    teardown_sh: &mut Option<String>,
 ) {
+    if let Some(script) = teardown_sh.take() {
+        let _ = Command::new("sh").args(["-c", &script]).status();
+    }
     if let Some((engine, name)) = container.take() {
         let _ = Command::new(&engine).args(["rm", "-f", &name]).output();
     }
@@ -160,7 +185,12 @@ fn teardown(
 
 impl Drop for Started {
     fn drop(&mut self) {
-        teardown(&mut self.container, &mut self.service, self.def.ready_port);
+        teardown(
+            &mut self.container,
+            &mut self.service,
+            self.def.ready_port,
+            &mut self.teardown_sh,
+        );
     }
 }
 
@@ -172,11 +202,17 @@ struct CleanupGuard {
     container: Option<(String, String)>,
     service: Option<std::process::Child>,
     ready_port: Option<u16>,
+    teardown_sh: Option<String>,
 }
 
 impl Drop for CleanupGuard {
     fn drop(&mut self) {
-        teardown(&mut self.container, &mut self.service, self.ready_port);
+        teardown(
+            &mut self.container,
+            &mut self.service,
+            self.ready_port,
+            &mut self.teardown_sh,
+        );
     }
 }
 
@@ -218,6 +254,7 @@ pub fn start(def: &FixtureDef, subs: &BTreeMap<String, String>) -> Result<Starte
         container: None,
         service: None,
         ready_port: def.ready_port,
+        teardown_sh: def.teardown_sh.as_deref().map(&sub),
     };
 
     match def.kind {
@@ -370,12 +407,16 @@ pub fn start(def: &FixtureDef, subs: &BTreeMap<String, String>) -> Result<Starte
     // Success: disarm the guard into the Started (whose Drop owns teardown).
     let container = guard.container.take();
     let service = guard.service.take();
+    let teardown_sh = guard.teardown_sh.take();
+    let reset_sh = def.reset_sh.as_deref().map(&sub);
     Ok(Started {
         def: def.clone(),
         data,
         hashes,
         container,
         service,
+        teardown_sh,
+        reset_sh,
     })
 }
 
@@ -429,6 +470,8 @@ mod tests {
             run_args: Vec::new(),
             container_port: None,
             ready_port: None,
+            reset_sh: None,
+            teardown_sh: None,
         };
         let started = start(&def, &BTreeMap::new()).unwrap();
         assert!(started.hashes.is_empty());
@@ -453,6 +496,8 @@ mod tests {
             ready_port: None,
             run_args: Vec::new(),
             container_port: None,
+            reset_sh: None,
+            teardown_sh: None,
         };
         let started = start(&def, &BTreeMap::new()).unwrap();
         let (_, hash) = started.hashes.iter().next().unwrap();

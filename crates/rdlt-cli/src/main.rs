@@ -117,6 +117,10 @@ enum DestSpec {
         location: Option<rdlt::connector::file::location::LocationOptions>,
         partition_by: Option<String>,
     },
+    /// Feature 016: the Iceberg destination — the crate's full config
+    /// vocabulary inline (catalog/auth, namespace, storage override,
+    /// per-stream tables with partition_by).
+    Iceberg(Box<rdlt::connector::iceberg::IcebergConfig>),
 }
 
 /// Bound glibc's allocator retention (feature 003 T024): data movement churns
@@ -300,6 +304,12 @@ async fn run(spec_path: PathBuf, report_path: Option<PathBuf>) -> Result<(), Cli
                         .map_err(|e| CliError::Usage(format!("file destination: {e}")))?;
                     builder.destination(dest).build()?
                 }
+                DestSpec::Iceberg(config) => {
+                    let dest =
+                        rdlt::connector::iceberg::IcebergDest::from_config((**config).clone())
+                            .map_err(|e| CliError::Usage(format!("iceberg destination: {e}")))?;
+                    builder.destination(dest).build()?
+                }
             };
             drive(&mut pipeline, report_path).await
         }};
@@ -433,7 +443,10 @@ fn cdc_composition_warnings(
                 }
             }
         }
-        DestSpec::Duckdb { .. } | DestSpec::Parquet { .. } | DestSpec::File { .. } => {
+        DestSpec::Duckdb { .. }
+        | DestSpec::Parquet { .. }
+        | DestSpec::File { .. }
+        | DestSpec::Iceberg(_) => {
             warnings.push(format!(
                 "cdc: this destination has no hard-delete support — the \
                  deletion flag `{}` lands as data (documented soft delete, \
@@ -514,6 +527,42 @@ mod tests {
              tables:\n  - name: orders\n",
         )
         .expect("config")
+    }
+
+    /// Feature 016: the iceberg destination block parses the crate's
+    /// full vocabulary from the pipeline YAML with zero CLI code —
+    /// and validation errors are typed at spec load.
+    #[test]
+    fn iceberg_spec_parses_from_the_yaml() {
+        let parsed = spec(
+            r#"
+pipeline: p
+source:
+  postgres: {config: src.yaml}
+destination:
+  iceberg:
+    catalog:
+      uri: https://polaris.example/api/catalog
+      warehouse: rdlt
+      auth:
+        oauth2_client_credentials: {client_id: cid, client_secret: hunter2-cli}
+    namespace: raw.orders
+    create_namespace: true
+    tables:
+      events:
+        partition_by: [{column: region, transform: identity}]
+"#,
+        );
+        let DestSpec::Iceberg(config) = parsed.destination else {
+            panic!("expected iceberg dest");
+        };
+        assert_eq!(config.namespace_levels(), vec!["raw", "orders"]);
+        assert_eq!(config.partition_fields("events").len(), 1);
+        assert!(config.validate().is_ok());
+        assert!(
+            !format!("{config:?}").contains("hunter2-cli"),
+            "secret redacted"
+        );
     }
 
     /// Feature 010 (MR7): the per-table destination options ride the

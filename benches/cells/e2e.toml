@@ -123,3 +123,16 @@ verify = { table = "events", expected_rows = 200000 }
 [cell.workload]
 rows = 200000
 shape = "nested flagship record, jsonl in an S3-compatible bucket"
+[[cell]]
+id = "iceberg-polaris-200k"
+class = "scoreboard"
+mode = "subprocess"
+fixture = "iceberg-polaris"
+pipeline = "cells/pipelines/iceberg-polaris.yaml"
+warmups = 1
+runs = 3
+verify = { table = "events", expected_rows = 200000 }
+[cell.workload]
+rows = 200000
+shape = "nested flagship record, local jsonl -> Polaris-cataloged Iceberg table on RUSTFS"
+

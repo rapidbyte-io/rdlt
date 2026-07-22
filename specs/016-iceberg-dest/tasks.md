@@ -194,14 +194,14 @@ format.
 
 ## Phase 6: Polish & close-out
 
-- [ ] T015 Facade + CLI + bench: `crates/rdlt/` feature `iceberg` +
+- [X] T015 Facade + CLI + bench: `crates/rdlt/` feature `iceberg` +
   `rdlt::connector::iceberg` re-export; CLI `DestSpec::Iceberg` block
   (spec-parse cell in `crates/rdlt-cli/src/main.rs`); scoreboard cell
   `iceberg-polaris-200k` in `benches/cells/e2e.toml` + polaris
   fixture in `benches/fixtures/fixtures.toml` (Container kind from
   015; rustfs fixture reused) + pipeline yaml, recorded
   baseline-first (no dlt pair — recorded).
-- [ ] T016 [P] Traceability matrix
+- [X] T016 [P] Traceability matrix
   `specs/016-iceberg-dest/matrix.md` (every config row → cells, zero
   uncited; gap cells land WITH this task) + parity record
   `specs/016-iceberg-dest/dlt-parity.md` (vs dlt's Iceberg support;

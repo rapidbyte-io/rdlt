@@ -386,6 +386,8 @@ mod tests {
                 run_args: Vec::new(),
                 container_port: None,
                 ready_port: None,
+                reset_sh: None,
+                teardown_sh: None,
             },
             &BTreeMap::new(),
         )
