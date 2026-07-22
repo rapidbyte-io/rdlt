@@ -108,14 +108,10 @@ async fn file_dest_s3_path_survives_crash_sweep() {
     seed_local(data.path());
     let yaml = source_yaml(data.path());
 
-    const DEST_POINTS: [&str; 3] = [
-        "file.stage.put",
-        "file.finalize.copy",
-        "file.finalize.delete",
-    ];
+    let dest_points = rdlt_connector_file::dest::S3_FAIL_POINTS;
 
     let mut fired = std::collections::BTreeSet::new();
-    for (i, &point) in DEST_POINTS.iter().enumerate() {
+    for (i, &point) in dest_points.iter().enumerate() {
         for action in ACTIONS {
             let dir = tempfile::tempdir().expect("tempdir");
             let workdir = dir.path().join("wal");
@@ -165,7 +161,7 @@ async fn file_dest_s3_path_survives_crash_sweep() {
             );
         }
     }
-    let expected: std::collections::BTreeSet<_> = DEST_POINTS
+    let expected: std::collections::BTreeSet<_> = dest_points
         .iter()
         .flat_map(|p| ACTIONS.iter().map(move |a| (*p, *a)))
         .collect();

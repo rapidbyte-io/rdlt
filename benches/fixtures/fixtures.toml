@@ -94,3 +94,16 @@ kind = "postgres_container"
 image = "postgres:16"
 port = 5445
 seed_sql = "{{benches}}/fixtures/seed_refine.sql"
+
+# 015: RUSTFS object store for the file-s3 scoreboard cell. The flagship
+# 200k jsonl dataset is seeded INTO the bucket; the pipeline reads it via
+# the s3 location into duckdb.
+[[fixture]]
+id = "file-s3"
+kind = "container"
+image = "docker.io/rustfs/rustfs:latest"
+port = 19110
+container_port = 9000
+run_args = ["-e", "RUSTFS_ACCESS_KEY=rdlt-bench", "-e", "RUSTFS_SECRET_KEY=rdlt-bench-secret"]
+generate_sh = "python3 {{benches}}/fixtures/gen_jsonl.py 200000 {{data}}/rows.jsonl && python3 {{benches}}/fixtures/seed_s3.py http://127.0.0.1:19110 rdlt-bench rdlt-bench-secret raw landed/rows.jsonl {{data}}/rows.jsonl && printf 'streams:\n  - name: events\n    format: jsonl\n    path: \"landed/*.jsonl\"\n    location:\n      s3:\n        endpoint: \"http://127.0.0.1:19110\"\n        bucket: raw\n        access_key: rdlt-bench\n        secret_key: rdlt-bench-secret\n' > {{data}}/files.yaml"
+hash = ["{{data}}/rows.jsonl"]

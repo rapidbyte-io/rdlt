@@ -9,6 +9,7 @@ pub use crate::formats::{CsvOptions, Format};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct FileConfig {
     /// At least one stream (mirrors `validate()`).
     #[schemars(length(min = 1))]
@@ -17,6 +18,7 @@ pub struct FileConfig {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct FileStream {
     pub name: String,
     /// Explicit — no extension magic (research R13).
@@ -51,6 +53,7 @@ fn default_validate() -> bool {
 /// Same human-friendly hint names as the REST source.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum HintType {
     Bool,
     Int64,

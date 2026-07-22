@@ -24,6 +24,11 @@ pub enum FixtureKind {
     /// Long-running background process (killed at teardown); readiness = TCP
     /// connect on `ready_port`.
     Service,
+    /// Generic podman/docker container (015: the RUSTFS object store):
+    /// `image` + `port:container_port` mapping + `run_args` (before the
+    /// image: -e etc.); readiness = TCP connect on the host `port`;
+    /// teardown = `rm -f` like the postgres kind.
+    Container,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -52,6 +57,12 @@ pub struct FixtureDef {
     /// Connection string exposed to pipeline templates as `{{conn}}`.
     #[serde(default)]
     pub conn: Option<String>,
+    /// Container kind: args BEFORE the image (`-e KEY=V`, extra mounts…).
+    #[serde(default)]
+    pub run_args: Vec<String>,
+    /// Container kind: the container-side port `port` maps to.
+    #[serde(default)]
+    pub container_port: Option<u16>,
     #[serde(default)]
     pub service_sh: Option<String>,
     #[serde(default)]
@@ -302,6 +313,39 @@ pub fn start(def: &FixtureDef, subs: &BTreeMap<String, String>) -> Result<Starte
                 spawn_service(def, &sub(script), data.path(), &mut guard)?;
             }
         }
+        FixtureKind::Container => {
+            let engine = container_engine()?;
+            let image = def
+                .image
+                .as_deref()
+                .ok_or_else(|| BenchError(format!("fixture `{}`: missing image", def.id)))?;
+            let port = def
+                .port
+                .ok_or_else(|| BenchError(format!("fixture `{}`: missing port", def.id)))?;
+            let container_port = def.container_port.ok_or_else(|| {
+                BenchError(format!("fixture `{}`: missing container_port", def.id))
+            })?;
+            let name = format!("rdlt-bench-{}", def.id);
+            let _ = Command::new(&engine).args(["rm", "-f", &name]).output();
+            let status = Command::new(&engine)
+                .args([
+                    "run",
+                    "-d",
+                    "--name",
+                    &name,
+                    "-p",
+                    &format!("{port}:{container_port}"),
+                ])
+                .args(&def.run_args)
+                .arg(image)
+                .args(&def.container_args)
+                .status()?;
+            if !status.success() {
+                return Err(BenchError(format!("starting container {name} failed")));
+            }
+            guard.container = Some((engine.clone(), name.clone()));
+            wait_tcp(port, &def.id)?;
+        }
         FixtureKind::Service => {
             let script = def
                 .service_sh
@@ -382,6 +426,8 @@ mod tests {
             reset_sql: None,
             conn: None,
             service_sh: None,
+            run_args: Vec::new(),
+            container_port: None,
             ready_port: None,
         };
         let started = start(&def, &BTreeMap::new()).unwrap();
@@ -405,6 +451,8 @@ mod tests {
             conn: None,
             service_sh: None,
             ready_port: None,
+            run_args: Vec::new(),
+            container_port: None,
         };
         let started = start(&def, &BTreeMap::new()).unwrap();
         let (_, hash) = started.hashes.iter().next().unwrap();

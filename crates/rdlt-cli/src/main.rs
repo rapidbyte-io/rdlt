@@ -721,6 +721,41 @@ destination:
             duck.workdir.is_none(),
             "workdir defaults downstream to .rdlt"
         );
+        // 015: the file destination's full vocabulary.
+        let file = spec(
+            r#"
+pipeline: p
+source:
+  postgres: {config: s.yaml}
+destination:
+  file:
+    path: warehouse
+    format: jsonl
+    partition_by: day
+    location:
+      s3:
+        endpoint: "http://x:9000"
+        bucket: lake
+        access_key: k
+        secret_key: s
+"#,
+        );
+        match &file.destination {
+            DestSpec::File {
+                format,
+                location,
+                partition_by,
+                ..
+            } => {
+                assert!(matches!(
+                    format,
+                    Some(rdlt::connector::file::dest::DestFormat::Jsonl)
+                ));
+                assert!(location.is_some());
+                assert_eq!(partition_by.as_deref(), Some("day"));
+            }
+            other => panic!("expected file destination, got {other:?}"),
+        }
     }
 
     /// C3 capture matrix: the recommended composition is silent; every

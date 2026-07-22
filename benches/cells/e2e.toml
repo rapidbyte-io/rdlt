@@ -106,3 +106,20 @@ note = "one-row pipeline, fresh workdir+db per run, warm FS cache (protocol P3)"
 variant = "dlt"
 args = ["cold_start.py"]
 runs = 5
+
+# 015 scoreboard (research R10): the flagship dataset read FROM the object
+# store. Never gated — a bar here would measure the test server (RUSTFS),
+# not rdlt. No dlt baseline pair yet (s3fs deps in the competitor venv are
+# deferred; recorded in RESULTS.md).
+[[cell]]
+id = "file-s3-duckdb-200k"
+class = "scoreboard"
+mode = "subprocess"
+fixture = "file-s3"
+pipeline = "cells/pipelines/file-s3-duckdb.yaml"
+warmups = 1
+runs = 3
+verify = { table = "events", expected_rows = 200000 }
+[cell.workload]
+rows = 200000
+shape = "nested flagship record, jsonl in an S3-compatible bucket"

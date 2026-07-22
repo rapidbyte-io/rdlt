@@ -47,9 +47,13 @@ fn fatal(e: impl std::fmt::Display) -> DestError {
 }
 use rdlt_connector::core::crash_point;
 
-/// Fail-point registry (gate G2.2): every `crash_point!` site in this
-/// module. The `pq.*` names are the PRESERVED pre-015 set (sweep tooling);
-/// the `file.*` points are the object-store finalize boundaries (015 R9).
+/// Fail-point registries (gate G2.2): every `crash_point!` site in this
+/// module appears in exactly one, pinned by the sweep that can FIRE it.
+/// `FAIL_POINTS` keeps its pre-015 meaning — the LOCAL protocol points the
+/// engine's crash_sweep drives against `ParquetDir` (FF1: sweep tooling
+/// names frozen). The object-store finalize boundaries live in
+/// `S3_FAIL_POINTS`, swept by this crate's container-gated sweep (they
+/// cannot fire on a local store).
 #[cfg(feature = "failpoints")]
 #[doc(hidden)]
 pub const FAIL_POINTS: &[&str] = &[
@@ -59,6 +63,11 @@ pub const FAIL_POINTS: &[&str] = &[
     "pq.dir.fsync",
     "pq.state.write",
     "pq.receipt.write",
+];
+
+#[cfg(feature = "failpoints")]
+#[doc(hidden)]
+pub const S3_FAIL_POINTS: &[&str] = &[
     "file.stage.put",
     "file.finalize.copy",
     "file.finalize.delete",

@@ -383,6 +383,8 @@ mod tests {
                 reset_sql: None,
                 conn: None,
                 service_sh: None,
+                run_args: Vec::new(),
+                container_port: None,
                 ready_port: None,
             },
             &BTreeMap::new(),

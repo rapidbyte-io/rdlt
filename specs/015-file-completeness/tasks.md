@@ -185,7 +185,7 @@ readers never observe final-name partials.
   source + filesystem destination: mapping per capability, deliberate
   deviations named — provider-native auth deferred, no delta/iceberg,
   scoreboard-not-gated posture recorded).
-- [ ] T015 Close-out: coverage re-measure to the ≥80% floor for the
+- [X] T015 Close-out: coverage re-measure to the ≥80% floor for the
   unified crate with classified exclusions recorded in
   `benches/RESULTS.md`; new bench cell `file-s3-duckdb-200k`
   (SCOREBOARD, R10) declared in `benches/cells/` with the rustfs
