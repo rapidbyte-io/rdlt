@@ -129,7 +129,7 @@ everything skips (not fails) without a container runtime.
   rewrite = loud, R5); cells in tests/csv.rs +
   tests/preservation.rs-adjacent local jsonl.gz/zst cells (exact
   totals, mismatch typed, completed-skip across runs).
-- [ ] T010 [US2] US2 integration cell: the quickstart shape live —
+- [X] T010 [US2] US2 integration cell: the quickstart shape live —
   csv.gz files in RUSTFS with hints + primary_key → engine → duckdb,
   exact totals + a second delta run (SC-002/SC-003 closing cells in
   tests/s3_live.rs).
