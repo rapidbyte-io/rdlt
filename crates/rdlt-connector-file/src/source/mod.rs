@@ -12,7 +12,7 @@ pub mod cursor;
 use async_trait::async_trait;
 use rdlt_connector::{ConnectorSpec, ReadRequest, Source, SourceError, StreamSpec};
 
-use crate::formats::{jsonl, parquet};
+use crate::formats::{csv, jsonl, parquet};
 pub use config::{FileConfig, FileStream, Format};
 use cursor::{FileCursor, FileMeta};
 
@@ -110,7 +110,8 @@ impl Source for FileSource {
             .map(|stream| {
                 let mut spec = StreamSpec::new(stream.name.as_str());
                 match stream.format {
-                    Format::Jsonl => {
+                    // Record streams: jsonl and csv alike (R4).
+                    Format::Jsonl | Format::Csv => {
                         if let Some(key) = &stream.primary_key {
                             spec = spec.with_primary_key(key.iter().cloned());
                         }
@@ -139,25 +140,20 @@ impl Source for FileSource {
         // fetched to temp files first (correctness-first, research R10) with
         // the cursor still keyed by the object.
         let mut fetched_dir: Option<std::path::PathBuf> = None;
+        let is_s3 = matches!(location, crate::location::Location::S3(_));
         let (matched, read_paths) = match (&location, stream.format) {
-            (crate::location::Location::Local, Format::Jsonl) => {
+            (crate::location::Location::Local, Format::Jsonl | Format::Csv) => {
                 (resolve_files(&stream.path)?, None)
             }
             (crate::location::Location::Local, Format::Parquet) => {
                 (parquet::resolve_with_row_groups(&stream.path)?, None)
             }
-            (crate::location::Location::S3(_), Format::Jsonl) => {
+            (crate::location::Location::S3(_), Format::Jsonl | Format::Csv) => {
                 (location.list(&stream.path).await?, None)
             }
             (crate::location::Location::S3(_), Format::Parquet) => {
                 let listed = location.list(&stream.path).await?;
-                let dir = std::env::temp_dir().join(format!(
-                    "rdlt-file-{}-{}",
-                    std::process::id(),
-                    stream.name
-                ));
-                std::fs::create_dir_all(&dir)
-                    .map_err(|e| SourceError::fatal(format!("temp dir for parquet fetch: {e}")))?;
+                let dir = temp_fetch_dir(&stream.name)?;
                 let mut metas = Vec::with_capacity(listed.len());
                 let mut paths = std::collections::BTreeMap::new();
                 for (i, meta) in listed.into_iter().enumerate() {
@@ -174,19 +170,69 @@ impl Source for FileSource {
                 (metas, Some(paths))
             }
         };
-        let mut tasks = cursor.plan(&matched)?;
+        // Plan per the format's incremental unit: parquet = row groups
+        // (tail), csv and COMPRESSED jsonl = whole-file (R5), plain jsonl =
+        // byte tails. A jsonl glob may match both plain and compressed
+        // files — each follows its own rule.
+        let mut tasks = match stream.format {
+            Format::Parquet => cursor.plan(&matched)?,
+            Format::Csv => cursor.plan_whole(&matched)?,
+            Format::Jsonl => {
+                let (tail, whole): (Vec<_>, Vec<_>) = matched
+                    .into_iter()
+                    .partition(|m| crate::formats::codec_of(&m.path).is_plain());
+                let mut tasks = cursor.plan(&tail)?;
+                tasks.extend(cursor.plan_whole(&whole)?);
+                tasks.sort_by(|a, b| a.path.cmp(&b.path));
+                tasks
+            }
+        };
         if let Some(paths) = &read_paths {
             for task in &mut tasks {
                 task.read_path = paths.get(&task.path).cloned();
             }
         }
+        // Object-store csv/compressed-jsonl read through a LOCAL decode:
+        // fetch the (post-plan, non-skipped) tasks to temp files.
+        if is_s3 && stream.format != Format::Parquet {
+            for i in 0..tasks.len() {
+                let needs_local = stream.format == Format::Csv
+                    || !crate::formats::codec_of(&tasks[i].path).is_plain();
+                if needs_local && tasks[i].read_path.is_none() {
+                    let dir = match &fetched_dir {
+                        Some(dir) => dir.clone(),
+                        None => {
+                            let dir = temp_fetch_dir(&stream.name)?;
+                            fetched_dir = Some(dir.clone());
+                            dir
+                        }
+                    };
+                    let local = fetch_to_temp(&location, &tasks[i].path, &dir, i).await?;
+                    tasks[i].read_path = Some(local.to_string_lossy().into_owned());
+                }
+            }
+        }
 
+        let csv_options = stream.csv.clone().unwrap_or_default();
         let mut outcome = Ok(());
         for task in &tasks {
             let proceeded = match stream.format {
-                Format::Jsonl => {
+                Format::Jsonl if crate::formats::codec_of(&task.path).is_plain() => {
                     jsonl::read_task(&location, task, stream.validate, &mut cursor, &mut req.out)
                         .await
+                }
+                Format::Jsonl => {
+                    jsonl::read_task_whole(task, stream.validate, &mut cursor, &mut req.out).await
+                }
+                Format::Csv => {
+                    csv::read_task(
+                        task,
+                        &csv_options,
+                        &stream.type_hints,
+                        &mut cursor,
+                        &mut req.out,
+                    )
+                    .await
                 }
                 Format::Parquet => parquet::read_task(task, &mut cursor, &mut req.out).await,
             };
@@ -212,6 +258,14 @@ pub fn config_schema() -> serde_json::Value {
     serde_json::to_value(schemars::schema_for!(config::FileConfig)).expect("schema serializes")
 }
 
+/// Per-stream temp dir for object fetches.
+fn temp_fetch_dir(stream: &str) -> Result<std::path::PathBuf, SourceError> {
+    let dir = std::env::temp_dir().join(format!("rdlt-file-{}-{stream}", std::process::id()));
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| SourceError::fatal(format!("temp dir for object fetch: {e}")))?;
+    Ok(dir)
+}
+
 /// Drain one object into a temp file (bounded buffer).
 async fn fetch_to_temp(
     location: &crate::location::Location,
@@ -221,7 +275,7 @@ async fn fetch_to_temp(
 ) -> Result<std::path::PathBuf, SourceError> {
     use std::io::Write;
     let mut reader = location.open_from(key, 0).await?;
-    let path = dir.join(format!("obj-{i}.parquet"));
+    let path = dir.join(format!("obj-{i}"));
     let mut file = std::fs::File::create(&path)
         .map_err(|e| SourceError::fatal(format!("temp file for `{key}`: {e}")))?;
     let mut buf = vec![0u8; 8 << 20];

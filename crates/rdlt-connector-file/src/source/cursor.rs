@@ -165,6 +165,70 @@ impl FileCursor {
         Ok(tasks)
     }
 
+    /// Plan for WHOLE-FILE formats (csv, compressed files): no tail
+    /// resume — complete+unchanged skips, a size change is a typed error
+    /// (these formats never grow in place; new data arrives as new
+    /// files), an incomplete file re-reads whole (crash re-delivery,
+    /// exactly-once under keyed merge/dedup — documented).
+    pub fn plan_whole(&self, matched: &[FileMeta]) -> Result<Vec<FileTask>, SourceError> {
+        let mut tasks = Vec::new();
+        for meta in matched {
+            match self.files.get(&meta.path) {
+                None => tasks.push(FileTask {
+                    path: meta.path.clone(),
+                    start: 0,
+                    mtime_ms: meta.mtime_ms,
+                    etag: meta.etag.clone(),
+                    size: meta.size,
+                    read_path: None,
+                }),
+                Some(progress) => {
+                    if meta.size != progress.size {
+                        return Err(SourceError::fatal(format!(
+                            "file `{}` changed size ({} → {}) — whole-file formats \
+                             (csv, compressed) never grow in place; deliver new data \
+                             as a new file, or clear this file from the pipeline state",
+                            meta.path, progress.size, meta.size
+                        )));
+                    }
+                    if let (Some(then), Some(now)) =
+                        (progress.etag.as_deref(), meta.etag.as_deref())
+                        && then != now
+                    {
+                        return Err(SourceError::fatal(format!(
+                            "file `{}` was rewritten in place (same size, different etag); \
+                             clear it from the pipeline state or restore the object",
+                            meta.path
+                        )));
+                    }
+                    if let (Some(then), Some(now)) = (progress.mtime_ms, meta.mtime_ms)
+                        && then != now
+                    {
+                        return Err(SourceError::fatal(format!(
+                            "file `{}` was rewritten in place (same size, but modified \
+                             since the last run); clear it from the pipeline state or \
+                             restore the file",
+                            meta.path
+                        )));
+                    }
+                    if progress.done < progress.size {
+                        // Crash mid-file: re-read whole (re-delivery documented).
+                        tasks.push(FileTask {
+                            path: meta.path.clone(),
+                            start: 0,
+                            mtime_ms: meta.mtime_ms,
+                            etag: meta.etag.clone(),
+                            size: meta.size,
+                            read_path: None,
+                        });
+                    }
+                    // done == size: complete → skip.
+                }
+            }
+        }
+        Ok(tasks)
+    }
+
     pub fn record(&mut self, path: &str, progress: FileProgress) {
         self.files.insert(path.to_owned(), progress);
     }

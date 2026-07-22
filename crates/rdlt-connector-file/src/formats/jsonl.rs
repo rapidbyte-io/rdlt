@@ -152,3 +152,88 @@ fn validate_lines(slab: &[u8], slab_start: u64, path: &str) -> Result<(), Source
     }
     Ok(())
 }
+
+/// Whole-file jsonl (compressed codecs, R5): decode through the codec,
+/// same slab/line discipline, ONE completion checkpoint (no tail resume —
+/// compressed streams are not seekable; a mid-file crash re-delivers the
+/// file, exactly-once under keyed merge/dedup).
+pub(crate) async fn read_task_whole(
+    task: &FileTask,
+    validate: bool,
+    cursor: &mut FileCursor,
+    out: &mut RecordsOut,
+) -> Result<bool, SourceError> {
+    use std::io::Read;
+    let read_path = task.read_path.as_deref().unwrap_or(&task.path);
+    let mut reader = super::open_decoded(read_path, super::codec_of(&task.path))?;
+    let mut offset = 0u64; // decompressed bytes, for error context only
+    let mut carry: Vec<u8> = Vec::new();
+    loop {
+        let mut slab = std::mem::take(&mut carry);
+        slab.reserve(SLAB_BYTES);
+        let mut eof = false;
+        loop {
+            let filled = slab.len();
+            slab.resize(filled + SLAB_BYTES, 0);
+            let mut n = 0;
+            while n < SLAB_BYTES {
+                match reader.read(&mut slab[filled + n..]) {
+                    Ok(0) => break,
+                    Ok(read) => n += read,
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(e) => {
+                        return Err(SourceError::fatal(format!("reading `{}`: {e}", task.path)));
+                    }
+                }
+            }
+            slab.truncate(filled + n);
+            if n == 0 {
+                eof = true;
+                break;
+            }
+            if memchr::memrchr(b'\n', &slab).is_some() {
+                break;
+            }
+        }
+        let split = match memchr::memrchr(b'\n', &slab) {
+            Some(nl) => nl + 1,
+            None => slab.len(),
+        };
+        carry = slab.split_off(split);
+        if slab.is_empty() {
+            if eof && carry.is_empty() {
+                break;
+            }
+            if eof {
+                slab = std::mem::take(&mut carry);
+            }
+        }
+        if slab.is_empty() {
+            break;
+        }
+        if validate {
+            validate_lines(&slab, offset, &task.path)?;
+        }
+        offset += slab.len() as u64;
+        if out.raw_json(Bytes::from(slab)).await.is_err() {
+            return Ok(false); // clause S4
+        }
+        if eof && carry.is_empty() {
+            break;
+        }
+    }
+    cursor.record(
+        &task.path,
+        FileProgress {
+            done: task.size,
+            size: task.size,
+            eol: true,
+            mtime_ms: task.mtime_ms,
+            etag: task.etag.clone(),
+        },
+    );
+    if out.checkpoint(cursor.encode()).await.is_err() {
+        return Ok(false);
+    }
+    Ok(true)
+}

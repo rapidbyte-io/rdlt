@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use rdlt_connector::core::LogicalType;
 use serde::{Deserialize, Serialize};
 
-pub use crate::formats::Format;
+pub use crate::formats::{CsvOptions, Format};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -25,6 +25,9 @@ pub struct FileStream {
     /// semantics, unchanged); `{s3: {…}}` = S3-compatible object storage.
     #[serde(default)]
     pub location: Option<crate::location::LocationOptions>,
+    /// CSV reader options (only with `format: csv`; typed otherwise).
+    #[serde(default)]
+    pub csv: Option<CsvOptions>,
     /// Explicit file path or glob pattern. An explicitly named missing file is an
     /// error; an empty glob is an empty stream.
     pub path: String,
@@ -112,10 +115,29 @@ impl FileConfig {
                     .validate(&format!("stream `{}`", stream.name))
                     .map_err(ConfigError::Invalid)?;
             }
+            if let Some(csv) = &stream.csv {
+                if stream.format != Format::Csv {
+                    return Err(ConfigError::Invalid(format!(
+                        "stream `{}`: a `csv` options block requires `format: csv`",
+                        stream.name
+                    )));
+                }
+                csv.validate(&format!("stream `{}`", stream.name))
+                    .map_err(ConfigError::Invalid)?;
+            }
             if stream.format == Format::Parquet && stream.primary_key.is_some() {
                 return Err(ConfigError::Invalid(format!(
                     "stream `{}`: parquet streams are structured and cannot declare \
                      primary_key (no per-row identity; contract clause S7)",
+                    stream.name
+                )));
+            }
+            if stream.format == Format::Parquet
+                && (stream.path.ends_with(".gz") || stream.path.ends_with(".zst"))
+            {
+                return Err(ConfigError::Invalid(format!(
+                    "stream `{}`: parquet carries its own internal codecs — a \
+                     compression extension on a parquet path is not supported",
                     stream.name
                 )));
             }

@@ -112,7 +112,7 @@ everything skips (not fails) without a container runtime.
   s3_live.rs: delta run (two files added + one grown → exactly the
   delta, proven by read accounting), etag-tripwire cell (overwrite an
   object same-size → typed error naming the key).
-- [ ] T008 [P] [US2] CSV format:
+- [X] T008 [P] [US2] CSV format:
   `crates/rdlt-connector-file/src/formats/csv.rs` — record-stream
   reader via NDJSON conversion (R4): options {delimiter, header,
   quote}, inference lattice bool→int64→float64→utf8 (empty = null,
@@ -121,7 +121,7 @@ everything skips (not fails) without a container runtime.
   cells in-file + local cells in
   `crates/rdlt-connector-file/tests/csv.rs` (options matrix, hints,
   empty-data-rows file, inference documentation cell).
-- [ ] T009 [P] [US2] Codecs:
+- [X] T009 [P] [US2] Codecs:
   gzip/zstd wrapping in `src/formats/mod.rs` by extension for
   jsonl/csv (magic-byte check → codec/extension mismatch typed naming
   the file; compressed-parquet spelling rejected typed at parse);
