@@ -375,8 +375,12 @@ impl LoadSession for DuckDbSession {
                         }
                         // Feature 010 (MR3/MR4): scope replacement runs
                         // BEFORE the strategy arm, inside the same
-                        // transaction.
-                        if let Some(scope) = scoped {
+                        // transaction. NOT for scd2 (013 G1): there the
+                        // merge_key scopes RETIREMENT inside the arm —
+                        // deleting scope rows would destroy history.
+                        if let Some(scope) = scoped
+                            && strategy != MergeStrategy::Scd2
+                        {
                             tx.execute_batch(&scope_replace_sql(
                                 &DuckDialect,
                                 &target,
@@ -400,6 +404,7 @@ impl LoadSession for DuckDbSession {
                                 Some(HardDelete::new(col, root_schema, &DuckDialect))
                             }),
                             dedup_sort: options.dedup_sort_for(table.as_str()),
+                            merge_scope: scoped,
                         };
                         let stmts = match (schema_has_identity, strategy) {
                             (false, MergeStrategy::DeleteInsert) => keyed_delete_insert_sql(&plan),

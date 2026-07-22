@@ -10,6 +10,8 @@ destination:
   duckdb:
     path: analytics.duckdb
     memory_limit: 512MB          # optional: cap DuckDB's buffer memory
+    extensions: [httpfs]         # optional: LOAD extensions at open (G3)
+    settings: {threads: "4"}     # optional: SET key='value' at open (G3)
     merge_strategy: upsert       # delete_insert (default) | upsert | scd2
     tables:
       events: {hard_delete: _deleted, dedup_sort: {column: seq, order: desc}}

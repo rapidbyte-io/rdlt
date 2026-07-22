@@ -32,12 +32,24 @@ pub struct Scd2Options {
     /// Validity-start column added to the target table.
     #[serde(default = "default_valid_from")]
     pub valid_from: String,
-    /// Validity-end column; NULL = the active version.
+    /// Validity-end column; the ACTIVE version carries
+    /// `active_record_timestamp` (default: NULL).
     #[serde(default = "default_valid_to")]
     pub valid_to: String,
     /// What happens to active keys ABSENT from a load (S6).
     #[serde(default)]
     pub absent: AbsentPolicy,
+    /// Feature 013 G2 (dlt parity): the OPEN-version marker written to
+    /// `valid_to` instead of NULL — a timestamp literal like
+    /// `9999-12-31T00:00:00Z` (some BI tools cannot range-query NULLs).
+    /// Validated as RFC3339 or `YYYY-MM-DD`.
+    #[serde(default)]
+    pub active_record_timestamp: Option<String>,
+    /// Feature 013 G2 (dlt parity): a CALLER-SUPPLIED boundary timestamp
+    /// used instead of the transaction timestamp for close/open/retire.
+    /// Validated as RFC3339 or `YYYY-MM-DD`.
+    #[serde(default)]
+    pub boundary_timestamp: Option<String>,
 }
 
 impl Default for Scd2Options {
@@ -46,8 +58,20 @@ impl Default for Scd2Options {
             valid_from: default_valid_from(),
             valid_to: default_valid_to(),
             absent: AbsentPolicy::default(),
+            active_record_timestamp: None,
+            boundary_timestamp: None,
         }
     }
+}
+
+/// A timestamp OPTION value must be a real timestamp before it may appear as
+/// a SQL literal (validated here, quoted at generation — never raw user
+/// text in a statement). Accepted: RFC3339, `YYYY-MM-DD HH:MM:SS`, or
+/// `YYYY-MM-DD`.
+pub(crate) fn validate_timestamp_literal(value: &str) -> bool {
+    chrono::DateTime::parse_from_rfc3339(value).is_ok()
+        || chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S").is_ok()
+        || chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").is_ok()
 }
 
 fn default_valid_from() -> String {
@@ -174,12 +198,21 @@ impl DestOptions {
                         "tables.{table}.merge_key: column `{dup}` listed twice"
                     ));
                 }
+                // Feature 013 G1 (MR6 amended): merge_key COMPOSES with scd2
+                // as SCOPED RETIREMENT — absent keys retire only within
+                // delivered scopes. That reading requires `absent: retire`;
+                // under `keep` the option would be silently inert (F6 rule).
                 if strategy == MergeStrategy::Scd2 {
-                    return Err(format!(
-                        "tables.{table}.merge_key: not valid with merge_strategy scd2 \
-                         (contract merge-refinements.md MR6 — scd2 retirement has its \
-                         own absence policy)"
-                    ));
+                    let retire = opts.scd2.as_ref().map(|s| s.absent).unwrap_or_default()
+                        == AbsentPolicy::Retire;
+                    if !retire {
+                        return Err(format!(
+                            "tables.{table}.merge_key: with merge_strategy scd2 this \
+                             scopes RETIREMENT and requires scd2 {{absent: retire}} \
+                             (contract merge-refinements.md MR6, amended by feature \
+                             013) — under `keep` it would be silently inert"
+                        ));
+                    }
                 }
             }
             if let Some(scd2) = &opts.scd2 {
@@ -198,6 +231,23 @@ impl DestOptions {
                     return Err(format!(
                         "tables.{table}.scd2: valid_from and valid_to must differ"
                     ));
+                }
+                for (field, value) in [
+                    (
+                        "active_record_timestamp",
+                        scd2.active_record_timestamp.as_deref(),
+                    ),
+                    ("boundary_timestamp", scd2.boundary_timestamp.as_deref()),
+                ] {
+                    if let Some(value) = value
+                        && !validate_timestamp_literal(value)
+                    {
+                        return Err(format!(
+                            "tables.{table}.scd2.{field}: `{value}` is not a \
+                             timestamp (RFC3339, `YYYY-MM-DD HH:MM:SS`, or \
+                             `YYYY-MM-DD`)"
+                        ));
+                    }
                 }
             }
         }
@@ -309,14 +359,38 @@ mod tests {
             .unwrap_err();
             assert!(bad.contains(needle), "{bad}");
         }
+        // 013 G1 (MR6 amended): merge_key+scd2 under KEEP is the inert-option
+        // rejection; under RETIRE it is VALID (scoped retirement).
         let bad = DestOptions::from_value(serde_json::json!({
             "tables": {"t": {"merge_strategy": "scd2", "merge_key": ["day"]}}
         }))
         .unwrap_err();
         assert!(
-            bad.contains("tables.t.merge_key") && bad.contains("scd2"),
+            bad.contains("tables.t.merge_key") && bad.contains("absent: retire"),
             "{bad}"
         );
+        DestOptions::from_value(serde_json::json!({
+            "tables": {"t": {"merge_strategy": "scd2", "merge_key": ["day"],
+                              "scd2": {"absent": "retire"}}}
+        }))
+        .expect("scoped retirement is valid (013 G1)");
+
+        // 013 G2: marker/boundary must be real timestamps — injection shapes
+        // are typed errors, never SQL.
+        for field in ["active_record_timestamp", "boundary_timestamp"] {
+            let bad = DestOptions::from_value(serde_json::json!({
+                "tables": {"t": {"merge_strategy": "scd2",
+                                  "scd2": {field: "'); DROP TABLE t; --"}}}
+            }))
+            .unwrap_err();
+            assert!(bad.contains(field) && bad.contains("not a"), "{bad}");
+        }
+        DestOptions::from_value(serde_json::json!({
+            "tables": {"t": {"merge_strategy": "scd2",
+                              "scd2": {"active_record_timestamp": "9999-12-31",
+                                       "boundary_timestamp": "2026-07-22 00:00:00"}}}
+        }))
+        .expect("valid marker + boundary literals");
 
         // Valid: destination default upsert + per-table scd2.
         let ok = DestOptions::from_value(serde_json::json!({

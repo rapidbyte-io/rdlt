@@ -321,3 +321,136 @@ async fn upsert_over_preexisting_duplicates_is_typed() {
         "{err}"
     );
 }
+
+/// 013 G1 (MR6 amended): with a merge_key, scd2 retirement is SCOPED —
+/// absent keys retire only within delivered scopes; other scopes keep their
+/// active versions untouched.
+#[tokio::test(flavor = "multi_thread")]
+async fn scd2_scoped_retirement_by_merge_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let dest = DuckDb::open(dir.path().join("scoped.duckdb"))
+        .unwrap()
+        .options(options(json!({
+            "merge_strategy": "scd2",
+            "tables": {"kv": {"scd2": {"absent": "retire"}, "merge_key": ["day"]}}
+        })))
+        .unwrap();
+
+    // day 1: k1,k2 · day 2: k3 — all active.
+    let first = one_unit(
+        "kv",
+        &["k"],
+        batch(&[
+            ("k", i64s(&[Some(1), Some(2), Some(3)])),
+            ("day", i64s(&[Some(1), Some(1), Some(2)])),
+            ("v", strs(&[Some("k1"), Some("k2"), Some("k3")])),
+        ]),
+    );
+    run(merge_config("scoped", &["k"]), first, dest.clone())
+        .await
+        .unwrap();
+
+    // Redeliver ONLY day 1, without k2: k2 retires (absent in a delivered
+    // scope); day 2's k3 stays ACTIVE (its scope was not delivered).
+    let second = one_unit(
+        "kv",
+        &["k"],
+        batch(&[
+            ("k", i64s(&[Some(1)])),
+            ("day", i64s(&[Some(1)])),
+            ("v", strs(&[Some("k1")])),
+        ]),
+    );
+    run(merge_config("scoped", &["k"]), second.at(1), dest.clone())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        dest.query_string("SELECT k::VARCHAR FROM kv WHERE _rdlt_valid_to IS NOT NULL")
+            .unwrap(),
+        "2",
+        "only the absent key IN the delivered scope retires"
+    );
+    assert_eq!(
+        dest.query_string(
+            "SELECT string_agg(k::VARCHAR, ',' ORDER BY k) FROM kv WHERE _rdlt_valid_to IS NULL"
+        )
+        .unwrap(),
+        "1,3",
+        "k3's undelivered scope keeps its active version — history intact"
+    );
+    // History preserved: no scope DELETE ran (scd2 never destroys rows).
+    assert_eq!(dest.count_rows("kv").unwrap(), 3);
+}
+
+/// 013 G1 typed matrix: merge_key with scd2 under `absent: keep` would be
+/// silently inert — rejected naming the requirement.
+#[tokio::test(flavor = "multi_thread")]
+async fn scd2_merge_key_requires_retire() {
+    let err = DestOptions::from_value(json!({
+        "merge_strategy": "scd2",
+        "tables": {"kv": {"scd2": {}, "merge_key": ["day"]}}
+    }))
+    .unwrap_err();
+    assert!(
+        err.contains("tables.kv.merge_key") && err.contains("absent: retire"),
+        "{err}"
+    );
+}
+
+/// 013 G2: `active_record_timestamp` replaces NULL as the open marker, and
+/// `boundary_timestamp` replaces the transaction timestamp.
+#[tokio::test(flavor = "multi_thread")]
+async fn scd2_active_marker_and_boundary_override() {
+    let dir = tempfile::tempdir().unwrap();
+    let dest = DuckDb::open(dir.path().join("marker.duckdb"))
+        .unwrap()
+        .options(options(json!({
+            "merge_strategy": "scd2",
+            "tables": {"kv": {"scd2": {
+                "active_record_timestamp": "9999-12-31",
+                "boundary_timestamp": "2026-07-22 00:00:00"
+            }}}
+        })))
+        .unwrap();
+
+    let first = kv(&[(Some(1), Some("one"))]);
+    run(merge_config("marker", &["k"]), first, dest.clone())
+        .await
+        .unwrap();
+    let second = kv(&[(Some(1), Some("one-v2"))]);
+    run(merge_config("marker", &["k"]), second.at(1), dest.clone())
+        .await
+        .unwrap();
+
+    // Active row carries the MARKER, not NULL.
+    assert_eq!(
+        dest.query_string("SELECT v FROM kv WHERE _rdlt_valid_to = TIMESTAMPTZ '9999-12-31'")
+            .unwrap(),
+        "one-v2"
+    );
+    assert_eq!(
+        dest.query_string("SELECT count(*)::VARCHAR FROM kv WHERE _rdlt_valid_to IS NULL")
+            .unwrap(),
+        "0",
+        "no NULL markers when active_record_timestamp is set"
+    );
+    // Closed row closed AT the caller-supplied boundary.
+    assert_eq!(
+        dest.query_string(
+            "SELECT v FROM kv WHERE _rdlt_valid_to = TIMESTAMPTZ '2026-07-22 00:00:00'"
+        )
+        .unwrap(),
+        "one"
+    );
+    // Typed: garbage timestamps never reach SQL.
+    let err = DestOptions::from_value(json!({
+        "tables": {"kv": {"merge_strategy": "scd2",
+                           "scd2": {"boundary_timestamp": "'); DROP TABLE kv; --"}}}
+    }))
+    .unwrap_err();
+    assert!(
+        err.contains("boundary_timestamp") && err.contains("not a"),
+        "{err}"
+    );
+}

@@ -166,3 +166,42 @@ fn probe_update_from_and_not_exists() {
         .unwrap();
     assert_eq!(n, 3, "changed key re-opens; unchanged key skipped");
 }
+
+/// 013 G3: the settings/extension passthrough — applied, queryable, and
+/// injection-shaped keys refused typed.
+#[test]
+fn g3_settings_and_extensions_passthrough() {
+    use rdlt_connector_duckdb::dest::DuckDb;
+    let dir = tempfile::tempdir().unwrap();
+    let dest = DuckDb::open(dir.path().join("g3.duckdb"))
+        .unwrap()
+        .setting("threads", "2")
+        .unwrap()
+        .extension("json")
+        .unwrap();
+    assert_eq!(
+        dest.query_string("SELECT current_setting('threads')::VARCHAR")
+            .unwrap(),
+        "2"
+    );
+    // Typed refusals: identifiers only — injection shapes never interpolate.
+    let err = DuckDb::open(dir.path().join("g3b.duckdb"))
+        .unwrap()
+        .setting("threads='1'; DROP TABLE x; --", "2")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("bare identifiers"), "{err}");
+    let err = DuckDb::open(dir.path().join("g3c.duckdb"))
+        .unwrap()
+        .extension("json; DROP TABLE x")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("bare identifiers"), "{err}");
+    // Unknown settings/extensions surface DuckDB's own error, typed.
+    let err = DuckDb::open(dir.path().join("g3d.duckdb"))
+        .unwrap()
+        .setting("no_such_setting_xyz", "1")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("no_such_setting_xyz"), "{err}");
+}

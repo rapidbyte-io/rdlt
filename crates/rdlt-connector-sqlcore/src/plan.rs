@@ -56,6 +56,11 @@ pub struct MergePlan<'a> {
     /// Feature 010 (MR1): ordered in-load survivor selection; None keeps
     /// arrival-order last-wins.
     pub dedup_sort: Option<&'a DedupSort>,
+    /// Feature 013 G1 (MR6 amended): the table's merge_key columns. For
+    /// non-scd2 strategies the caller runs scope REPLACEMENT before the arm;
+    /// for scd2 this SCOPES RETIREMENT instead (retire absent keys only
+    /// within delivered scopes).
+    pub merge_scope: Option<&'a [String]>,
 }
 
 impl std::fmt::Debug for MergePlan<'_> {
@@ -256,11 +261,26 @@ pub fn identity_delete_insert_sql(plan: &MergePlan<'_>) -> Vec<String> {
 /// publish sees the same instant (S5); redelivery re-executes nothing (D3).
 pub fn scd2_merge_sql(plan: &MergePlan<'_>, scd2: &Scd2Options) -> Vec<String> {
     let (target, cols) = (plan.target, plan.cols);
-    let now = plan.dialect.tx_timestamp();
+    // G2: caller-supplied boundary beats the transaction timestamp. The
+    // value was VALIDATED as a timestamp at the options layer — the quoted
+    // literal here can never carry raw user SQL.
+    let now = match &scd2.boundary_timestamp {
+        Some(boundary) => format!("'{}'", boundary.replace('\'', "''")),
+        None => plan.dialect.tx_timestamp().to_string(),
+    };
     let key_list = plan.key_list();
     let deduped = plan.deduped(&key_list);
     let vf = plan.quote(&scd2.valid_from);
     let vt = plan.quote(&scd2.valid_to);
+    // G2: the OPEN-version marker — NULL by default, a validated timestamp
+    // literal when `active_record_timestamp` is set.
+    let (open_value, is_active) = match &scd2.active_record_timestamp {
+        Some(marker) => {
+            let lit = format!("'{}'", marker.replace('\'', "''"));
+            (lit.clone(), format!("t.{vt} = {lit}"))
+        }
+        None => ("NULL".to_string(), format!("t.{vt} IS NULL")),
+    };
     let key_match = plan
         .key
         .iter()
@@ -283,7 +303,7 @@ pub fn scd2_merge_sql(plan: &MergePlan<'_>, scd2: &Scd2Options) -> Vec<String> {
     if !changed.is_empty() {
         out.push(format!(
             "UPDATE {target} t SET {vt} = {now} \
-             FROM {deduped} d WHERE t.{vt} IS NULL AND {key_match} AND ({changed})"
+             FROM {deduped} d WHERE {is_active} AND {key_match} AND ({changed})"
         ));
     }
     // S2/S3 insert: staged rows with NO remaining active version (changed
@@ -291,16 +311,37 @@ pub fn scd2_merge_sql(plan: &MergePlan<'_>, scd2: &Scd2Options) -> Vec<String> {
     // active version and are SKIPPED — no churn).
     out.push(format!(
         "INSERT INTO {target} ({cols}, {vf}, {vt}) \
-         SELECT {cols}, {now}, NULL FROM {deduped} d \
+         SELECT {cols}, {now}, {open_value} FROM {deduped} d \
          WHERE NOT EXISTS ( \
-             SELECT 1 FROM {target} t WHERE t.{vt} IS NULL AND {key_match})"
+             SELECT 1 FROM {target} t WHERE {is_active} AND {key_match})"
     ));
-    // S6: full-feed absence semantics on request.
+    // S6: full-feed absence semantics on request — G1 (MR6 amended): with a
+    // merge_key, retirement is SCOPED to the delivered scopes (NULL is not a
+    // scope, MR4); without one, every absent active key retires.
     if scd2.absent == crate::options::AbsentPolicy::Retire {
+        let scope_clause = match plan.merge_scope {
+            Some(scope) if !scope.is_empty() => {
+                let cols = scope
+                    .iter()
+                    .map(|c| plan.quote(c))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let not_null = scope
+                    .iter()
+                    .map(|c| format!("{} IS NOT NULL", plan.quote(c)))
+                    .collect::<Vec<_>>()
+                    .join(" AND ");
+                format!(
+                    " AND ({cols}) IN (SELECT {cols} FROM {} WHERE {not_null})",
+                    plan.stage
+                )
+            }
+            _ => String::new(),
+        };
         out.push(format!(
             "UPDATE {target} t SET {vt} = {now} \
-             WHERE t.{vt} IS NULL AND ({key_list}) NOT IN \
-                   (SELECT {key_list} FROM {} d)",
+             WHERE {is_active} AND ({key_list}) NOT IN \
+                   (SELECT {key_list} FROM {} d){scope_clause}",
             plan.deduped(&key_list),
         ));
     }
@@ -416,12 +457,16 @@ pub fn validate_merge(
                  streams replace by root subtree"
             ));
         }
-        if strategy == MergeStrategy::Scd2 {
+        if strategy == MergeStrategy::Scd2
+            && options.scd2_for(table).absent != crate::options::AbsentPolicy::Retire
+        {
             // Belt: parse-time validation already rejects this; direct
-            // struct construction must not slip past it.
+            // struct construction must not slip past it (013 G1: the
+            // composition is scoped retirement and requires retire).
             return Err(format!(
-                "table `{table}`: merge_key is not valid with scd2 \
-                 (contract merge-refinements.md MR6)"
+                "table `{table}`: merge_key with scd2 scopes RETIREMENT and \
+                 requires scd2 {{absent: retire}} (contract \
+                 merge-refinements.md MR6, amended by feature 013)"
             ));
         }
         for col in scope {

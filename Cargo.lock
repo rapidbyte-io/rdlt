@@ -3222,6 +3222,7 @@ dependencies = [
 name = "rdlt-connector-sqlcore"
 version = "0.2.0"
 dependencies = [
+ "chrono",
  "rdlt-connector",
  "schemars 1.2.1",
  "serde",

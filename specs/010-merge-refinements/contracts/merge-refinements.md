@@ -26,3 +26,15 @@ destination:
 | MR6 | Both options are KEYED-STRUCTURED-only and validated at open: nonexistent columns, flag/validity collisions, shredded streams, and `merge_key` + scd2 are DISTINCT typed errors naming table + column. Parse-time shape errors (empty/duplicate lists, bad order token) fail before any connection. |
 | MR7 | Both options ride the generated dest-options schema (examples validate; unknown fields fail both layers) and the CLI per-table passthrough. |
 | MR8 | Sanctioned dlt deviations: no append-fallback without keys; no arbitrary survivor without dedup_sort; NULL semantics defined here, not inherited (research, "Sanctioned deviations"). |
+
+## Amendment (feature 013 G1, 2026-07-22)
+
+MR6's "merge_key not valid with scd2" rejection is AMENDED: the
+composition is now defined as SCOPED RETIREMENT — under
+`merge_strategy: scd2` + `absent: retire`, absent active keys retire
+only within delivered scopes (NULL is not a scope, MR4; the per-table
+single-unit rule applies unchanged). Under `absent: keep` the option
+remains a typed rejection (it would be silently inert). No scope
+DELETE runs for scd2 — history is never destroyed. Proof:
+`specs/013-duckdb-completeness/matrix.md` scd2 rows, both destinations
++ the differential cell.

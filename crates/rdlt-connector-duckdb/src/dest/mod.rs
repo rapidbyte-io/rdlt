@@ -69,11 +69,42 @@ impl DuckDb {
     /// is a fraction of SYSTEM RAM, which dominates pipeline RSS on large-memory
     /// machines; ingestion workloads rarely need it (design §8 RSS target).
     pub fn memory_limit(self, limit: &str) -> Result<Self, DestError> {
+        self.setting("memory_limit", limit)
+    }
+
+    /// Apply one DuckDB setting (`SET key = 'value'`) on the shared database
+    /// instance — the dlt-parity G3 passthrough (threads, temp_directory, …).
+    /// The key must be a bare identifier; the value is escaped as a literal.
+    pub fn setting(self, key: &str, value: &str) -> Result<Self, DestError> {
+        if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return Err(fatal(format!(
+                "duckdb setting `{key}`: keys must be bare identifiers \
+                 ([A-Za-z0-9_]) — refusing to interpolate"
+            )));
+        }
         {
             let guard = self.db.lock().map_err(|_| fatal("connection poisoned"))?;
             guard
-                .execute_batch(&format!("SET memory_limit='{}'", limit.replace('\'', "''")))
-                .map_err(fatal)?;
+                .execute_batch(&format!("SET {key}='{}'", value.replace('\'', "''")))
+                .map_err(|e| fatal(format!("duckdb setting `{key}`: {e}")))?;
+        }
+        Ok(self)
+    }
+
+    /// LOAD a DuckDB extension by name (G3 passthrough; bundled builds carry
+    /// the core extensions statically — LOAD activates, no network install).
+    pub fn extension(self, name: &str) -> Result<Self, DestError> {
+        if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return Err(fatal(format!(
+                "duckdb extension `{name}`: names must be bare identifiers \
+                 ([A-Za-z0-9_]) — refusing to interpolate"
+            )));
+        }
+        {
+            let guard = self.db.lock().map_err(|_| fatal("connection poisoned"))?;
+            guard
+                .execute_batch(&format!("LOAD {name}"))
+                .map_err(|e| fatal(format!("duckdb extension `{name}`: {e}")))?;
         }
         Ok(self)
     }

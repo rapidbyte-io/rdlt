@@ -409,3 +409,45 @@ async fn differential_rejections_are_class_identical() {
         "identical typed text after the destination prefix"
     );
 }
+
+/// 013 G1: scoped scd2 retirement produces IDENTICAL history shape on both
+/// destinations (retire only within delivered scopes).
+#[tokio::test(flavor = "multi_thread")]
+async fn differential_scd2_scoped_retirement() {
+    let feed = |rows: &[(Option<i64>, Option<i64>, Option<&str>)]| {
+        let ks: Vec<_> = rows.iter().map(|r| r.0).collect();
+        let days: Vec<_> = rows.iter().map(|r| r.1).collect();
+        let vs: Vec<_> = rows.iter().map(|r| r.2).collect();
+        Feed {
+            stream: "kv",
+            key: &["k"],
+            units: vec![batch(&[("k", ks), ("day", days)], &[("v", vs)], &[])],
+        }
+    };
+    let (pg, duck) = both(
+        "scd2scope",
+        vec![
+            feed(&[
+                (Some(1), Some(1), Some("k1")),
+                (Some(2), Some(1), Some("k2")),
+                (Some(3), Some(2), Some("k3")),
+            ]),
+            feed(&[(Some(1), Some(1), Some("k1"))]), // day 1 only, k2 absent
+        ],
+        serde_json::json!({
+            "merge_strategy": "scd2",
+            "tables": {"kv": {"scd2": {"absent": "retire",
+                                        "active_record_timestamp": "9999-12-31"},
+                               "merge_key": ["day"]}}
+        }),
+        WriteMode::Merge {
+            key: vec!["k".into()],
+        },
+        "kv",
+        // history SHAPE: key, value, open-or-closed (marker makes "open"
+        // comparable across engines without comparing wall-clock instants)
+        &["k", "v"],
+    )
+    .await;
+    assert_equivalent("scd2_scoped_retirement", pg, duck);
+}

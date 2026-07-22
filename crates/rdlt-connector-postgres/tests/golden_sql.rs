@@ -59,6 +59,7 @@ fn plan<'a>(
         is_child: false,
         hard_delete: hard_delete.map(|c| HardDelete::new(c, schema, &PgDialect)),
         dedup_sort: dedup,
+        merge_scope: None,
     }
 }
 
@@ -147,3 +148,65 @@ fn pin_scd2_keep_and_retire() {
         "UPDATE \"events\" t SET \"_rdlt_valid_to\" = now() WHERE t.\"_rdlt_valid_to\" IS NULL AND (\"id\") NOT IN (SELECT \"id\" FROM (SELECT DISTINCT ON (\"id\") * FROM \"_rdlt_stage_feedcafe\" ORDER BY \"id\", \"__rdlt_arrival\" DESC) d)"
     );
 }
+
+/// Feature 013 G1/G2 additions — new pins; the pre-013 pins above are
+/// UNTOUCHED (default scd2 output stayed byte-identical).
+#[test]
+fn pin_scd2_markers_and_boundary() {
+    let schema = keyed_schema();
+    let key = vec!["id".to_string()];
+    let scd2 = Scd2Options {
+        absent: rdlt_connector_postgres::dest::AbsentPolicy::Retire,
+        active_record_timestamp: Some("9999-12-31".into()),
+        boundary_timestamp: Some("2026-07-22 00:00:00".into()),
+        ..Scd2Options::default()
+    };
+    let mut markers_plan = plan(&schema, &key, None, None);
+    markers_plan.cols = "\"id\", \"day\", \"name\", \"_rdlt_load_id\"";
+    let markers_schema = TableSchema {
+        table: TableName::from("events"),
+        parent: None,
+        columns: vec![
+            col("id", LogicalType::Int64),
+            col("day", LogicalType::Int64),
+            col("name", LogicalType::Utf8),
+            col("_rdlt_load_id", LogicalType::Utf8),
+        ],
+    };
+    markers_plan.schema = &markers_schema;
+    let stmts = scd2_merge_sql(&markers_plan, &scd2);
+    assert_eq!(
+        stmts,
+        vec![PIN_M0.to_string(), PIN_M1.to_string(), PIN_M2.to_string(),]
+    );
+}
+
+#[test]
+fn pin_scd2_scoped_retirement() {
+    let schema = TableSchema {
+        table: TableName::from("events"),
+        parent: None,
+        columns: vec![
+            col("id", LogicalType::Int64),
+            col("day", LogicalType::Int64),
+            col("name", LogicalType::Utf8),
+            col("_rdlt_load_id", LogicalType::Utf8),
+        ],
+    };
+    let key = vec!["id".to_string()];
+    let scope = vec!["day".to_string()];
+    let mut scoped_plan = plan(&schema, &key, None, None);
+    scoped_plan.cols = "\"id\", \"day\", \"name\", \"_rdlt_load_id\"";
+    scoped_plan.merge_scope = Some(&scope);
+    let scd2 = Scd2Options {
+        absent: rdlt_connector_postgres::dest::AbsentPolicy::Retire,
+        ..Scd2Options::default()
+    };
+    let stmts = scd2_merge_sql(&scoped_plan, &scd2);
+    assert_eq!(stmts.last().unwrap(), PIN_SCOPED);
+}
+
+const PIN_M0: &str = "UPDATE \"events\" t SET \"_rdlt_valid_to\" = '2026-07-22 00:00:00' FROM (SELECT DISTINCT ON (\"id\") * FROM \"_rdlt_stage_feedcafe\" ORDER BY \"id\", \"__rdlt_arrival\" DESC) d WHERE t.\"_rdlt_valid_to\" = '9999-12-31' AND t.\"id\" = d.\"id\" AND (t.\"day\" IS DISTINCT FROM d.\"day\" OR t.\"name\" IS DISTINCT FROM d.\"name\")";
+const PIN_M1: &str = "INSERT INTO \"events\" (\"id\", \"day\", \"name\", \"_rdlt_load_id\", \"_rdlt_valid_from\", \"_rdlt_valid_to\") SELECT \"id\", \"day\", \"name\", \"_rdlt_load_id\", '2026-07-22 00:00:00', '9999-12-31' FROM (SELECT DISTINCT ON (\"id\") * FROM \"_rdlt_stage_feedcafe\" ORDER BY \"id\", \"__rdlt_arrival\" DESC) d WHERE NOT EXISTS ( SELECT 1 FROM \"events\" t WHERE t.\"_rdlt_valid_to\" = '9999-12-31' AND t.\"id\" = d.\"id\")";
+const PIN_M2: &str = "UPDATE \"events\" t SET \"_rdlt_valid_to\" = '2026-07-22 00:00:00' WHERE t.\"_rdlt_valid_to\" = '9999-12-31' AND (\"id\") NOT IN (SELECT \"id\" FROM (SELECT DISTINCT ON (\"id\") * FROM \"_rdlt_stage_feedcafe\" ORDER BY \"id\", \"__rdlt_arrival\" DESC) d)";
+const PIN_SCOPED: &str = "UPDATE \"events\" t SET \"_rdlt_valid_to\" = now() WHERE t.\"_rdlt_valid_to\" IS NULL AND (\"id\") NOT IN (SELECT \"id\" FROM (SELECT DISTINCT ON (\"id\") * FROM \"_rdlt_stage_feedcafe\" ORDER BY \"id\", \"__rdlt_arrival\" DESC) d) AND (\"day\") IN (SELECT \"day\" FROM \"_rdlt_stage_feedcafe\" WHERE \"day\" IS NOT NULL)";

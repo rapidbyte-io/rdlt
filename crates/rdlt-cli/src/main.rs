@@ -86,6 +86,9 @@ enum DestSpec {
         merge_strategy: Option<rdlt::connector::duckdb::dest::MergeStrategy>,
         tables:
             Option<std::collections::BTreeMap<String, rdlt::connector::duckdb::dest::TableOptions>>,
+        /// G3 dlt-parity passthrough: extensions to LOAD and `SET` settings.
+        extensions: Option<Vec<String>>,
+        settings: Option<std::collections::BTreeMap<String, String>>,
     },
     Postgres {
         conn: String,
@@ -209,9 +212,21 @@ async fn run(spec_path: PathBuf, report_path: Option<PathBuf>) -> Result<(), Cli
                     memory_limit,
                     merge_strategy,
                     tables,
+                    extensions,
+                    settings,
                 } => {
                     let mut dest = rdlt::connector::duckdb::dest::DuckDb::open(path)
                         .map_err(|e| CliError::Usage(format!("opening duckdb: {e}")))?;
+                    for ext in extensions.iter().flatten() {
+                        dest = dest
+                            .extension(ext)
+                            .map_err(|e| CliError::Usage(e.to_string()))?;
+                    }
+                    for (key, value) in settings.iter().flatten() {
+                        dest = dest
+                            .setting(key, value)
+                            .map_err(|e| CliError::Usage(e.to_string()))?;
+                    }
                     if let Some(limit) = memory_limit {
                         dest = dest
                             .memory_limit(limit)
@@ -487,6 +502,8 @@ destination:
   duckdb:
     path: out.duckdb
     merge_strategy: upsert
+    extensions: [httpfs]
+    settings: {threads: "4"}
     tables:
       events:
         hard_delete: deleted
@@ -496,11 +513,21 @@ destination:
         let DestSpec::Duckdb {
             merge_strategy,
             tables,
+            extensions,
+            settings,
             ..
         } = &parsed.destination
         else {
             panic!("duckdb dest");
         };
+        assert_eq!(extensions.as_deref(), Some(&["httpfs".to_string()][..]));
+        assert_eq!(
+            settings
+                .as_ref()
+                .and_then(|s| s.get("threads"))
+                .map(String::as_str),
+            Some("4")
+        );
         assert_eq!(
             *merge_strategy,
             Some(rdlt::connector::duckdb::dest::MergeStrategy::Upsert)

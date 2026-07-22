@@ -439,8 +439,13 @@ impl LoadSession for PgSession {
                         single_unit_marks.push(table.clone());
                     }
                     // Feature 010 (MR3/MR4): scope replacement runs BEFORE
-                    // the strategy arm, inside the same transaction.
-                    if let Some(scope) = scoped {
+                    // the strategy arm, inside the same transaction. NOT for
+                    // scd2 (013 G1): there the merge_key scopes RETIREMENT
+                    // inside the strategy arm — deleting scope rows would
+                    // destroy history.
+                    if let Some(scope) = scoped
+                        && strategy != MergeStrategy::Scd2
+                    {
                         tx.batch_execute(&scope_replace_sql(&PgDialect, &target, &stage, scope))
                             .await
                             .map_err(transient)?;
@@ -462,6 +467,7 @@ impl LoadSession for PgSession {
                                 Some(HardDelete::new(col, root_schema, &PgDialect))
                             }),
                         dedup_sort: self.options.dedup_sort_for(table.as_str()),
+                        merge_scope: scoped,
                     };
                     match (schema_has_identity, strategy) {
                         (false, MergeStrategy::DeleteInsert) => {

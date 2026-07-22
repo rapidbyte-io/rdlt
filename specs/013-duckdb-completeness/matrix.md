@@ -61,6 +61,9 @@ citation source; rows below cite the DUCKDB proof.
 | `absent: keep` (default) | absent keys keep their active version | `differential::differential_scd2_history` (k=2 untouched) | diff |
 | `absent: retire` | absent keys retire at the boundary; single-unit rule | `strategies::scd2_absent_retire_full_feed`; `sweep` (scd2_retire arm) | duck, sweep |
 | validity-name collision / equal names / scd2 opts without strategy | typed (shared validator) | sqlcore `validation_matrix_names_the_field` | unit |
+| `active_record_timestamp` + `boundary_timestamp` (013 G2) | validated timestamp literals replace NULL marker / tx boundary; injection shapes typed | `strategies::scd2_active_marker_and_boundary_override`; sqlcore validation matrix; golden pins `pin_scd2_markers_and_boundary` | duck, unit |
+| merge_key × scd2 = scoped retirement (013 G1, MR6 amended) | absent keys retire only within delivered scopes; requires `absent: retire` (typed under keep); history never deleted | `strategies::scd2_scoped_retirement_by_merge_key`; `scd2_merge_key_requires_retire`; `differential::differential_scd2_scoped_retirement`; pin `pin_scd2_scoped_retirement` | duck, diff, unit |
+| `extensions` / `settings` passthrough (013 G3) | LOAD + SET applied at open; identifier-validated, typed refusals | `probes::g3_settings_and_extensions_passthrough`; CLI `duckdb_options_pass_through_the_yaml` | duck, unit |
 
 ## Probe outcomes (R4/R5/R6 — all PASS; zero capability gaps)
 

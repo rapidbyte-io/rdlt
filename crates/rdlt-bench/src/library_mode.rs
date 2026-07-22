@@ -77,6 +77,9 @@ enum DestSpec {
         merge_strategy: Option<rdlt::connector::duckdb::dest::MergeStrategy>,
         tables:
             Option<std::collections::BTreeMap<String, rdlt::connector::duckdb::dest::TableOptions>>,
+        /// G3 dlt-parity passthrough: extensions to LOAD and `SET` settings.
+        extensions: Option<Vec<String>>,
+        settings: Option<std::collections::BTreeMap<String, String>>,
     },
     Postgres {
         conn: String,
@@ -122,9 +125,17 @@ async fn drive(spec: Spec) -> Result<RunOutcome> {
                     memory_limit,
                     merge_strategy,
                     tables,
+                    extensions,
+                    settings,
                 } => {
                     let mut dest =
                         rdlt::connector::duckdb::dest::DuckDb::open(path).map_err(err)?;
+                    for ext in extensions.iter().flatten() {
+                        dest = dest.extension(ext).map_err(err)?;
+                    }
+                    for (key, value) in settings.iter().flatten() {
+                        dest = dest.setting(key, value).map_err(err)?;
+                    }
                     if let Some(limit) = memory_limit {
                         dest = dest.memory_limit(limit).map_err(err)?;
                     }
