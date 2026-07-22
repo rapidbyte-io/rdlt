@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use iceberg::arrow::RecordBatchPartitionSplitter;
 use iceberg::spec::DataFileFormat;
 use iceberg::transaction::{ApplyTransactionAction, Transaction};
 use iceberg::writer::base_writer::data_file_writer::DataFileWriterBuilder;
@@ -14,6 +15,8 @@ use iceberg::writer::file_writer::location_generator::{
     DefaultFileNameGenerator, DefaultLocationGenerator,
 };
 use iceberg::writer::file_writer::rolling_writer::RollingFileWriterBuilder;
+use iceberg::writer::partitioning::PartitioningWriter;
+use iceberg::writer::partitioning::fanout_writer::FanoutWriter;
 use iceberg::writer::{IcebergWriter, IcebergWriterBuilder};
 use iceberg::{Catalog, CatalogBuilder, NamespaceIdent, TableIdent};
 use iceberg_catalog_rest::RestCatalogBuilder;
@@ -123,9 +126,20 @@ impl CommitIdentity {
     }
 }
 
-/// One table's writer for the current commit window.
-pub(crate) struct TableWriter {
-    inner: Box<dyn IcebergWriter>,
+type RdltDataFileWriterBuilder =
+    DataFileWriterBuilder<ParquetWriterBuilder, DefaultLocationGenerator, DefaultFileNameGenerator>;
+
+/// One table's writer for the current commit window: plain for
+/// unpartitioned tables, library fanout (splitter computes the
+/// partition values from source columns) for partitioned ones.
+pub(crate) enum TableWriter {
+    Plain(Box<dyn IcebergWriter>),
+    Fanout(Box<FanoutParts>),
+}
+
+pub(crate) struct FanoutParts {
+    writer: FanoutWriter<RdltDataFileWriterBuilder>,
+    splitter: RecordBatchPartitionSplitter,
 }
 
 impl TableWriter {
@@ -161,13 +175,25 @@ impl TableWriter {
             "ice.files.write",
             Err(DestError::fatal("injected crash at ice.files.write"))
         );
-        let inner = DataFileWriterBuilder::new(rolling)
-            .build(None)
-            .await
+        let builder = DataFileWriterBuilder::new(rolling);
+        let spec = table.metadata().default_partition_spec().clone();
+        if spec.fields().is_empty() {
+            let inner = builder
+                .build(None)
+                .await
+                .map_err(|e| classify(&context(), e))?;
+            Ok(Self::Plain(Box::new(inner)))
+        } else {
+            let splitter = RecordBatchPartitionSplitter::try_new_with_computed_values(
+                table.metadata().current_schema().clone(),
+                spec,
+            )
             .map_err(|e| classify(&context(), e))?;
-        Ok(Self {
-            inner: Box::new(inner),
-        })
+            Ok(Self::Fanout(Box::new(FanoutParts {
+                writer: FanoutWriter::new(builder),
+                splitter,
+            })))
+        }
     }
 
     pub(crate) async fn write(
@@ -175,17 +201,37 @@ impl TableWriter {
         context: &str,
         batch: arrow_array::RecordBatch,
     ) -> Result<(), DestError> {
-        self.inner
-            .write(batch)
-            .await
-            .map_err(|e| classify(context, e))
+        match self {
+            Self::Plain(inner) => inner.write(batch).await.map_err(|e| classify(context, e)),
+            Self::Fanout(fanout) => {
+                let parts = fanout
+                    .splitter
+                    .split(&batch)
+                    .map_err(|e| classify(context, e))?;
+                for (key, part) in parts {
+                    fanout
+                        .writer
+                        .write(key, part)
+                        .await
+                        .map_err(|e| classify(context, e))?;
+                }
+                Ok(())
+            }
+        }
     }
 
     pub(crate) async fn close(
-        mut self,
+        self,
         context: &str,
     ) -> Result<Vec<iceberg::spec::DataFile>, DestError> {
-        self.inner.close().await.map_err(|e| classify(context, e))
+        match self {
+            Self::Plain(mut inner) => inner.close().await.map_err(|e| classify(context, e)),
+            Self::Fanout(fanout) => fanout
+                .writer
+                .close()
+                .await
+                .map_err(|e| classify(context, e)),
+        }
     }
 }
 
@@ -384,6 +430,7 @@ pub(crate) async fn ensure_table(
     namespace: &NamespaceIdent,
     name: &str,
     wanted: &iceberg::spec::Schema,
+    partition: &[super::config::PartitionField],
 ) -> Result<iceberg::table::Table, DestError> {
     let ident = TableIdent::new(namespace.clone(), name.to_owned());
     let context = format!("table `{ident}`");
@@ -392,20 +439,67 @@ pub(crate) async fn ensure_table(
         .await
         .map_err(|e| classify(&context, e))?;
     if !exists {
+        let spec = super::schema::to_partition_spec(&context, wanted, partition)?;
         let creation = iceberg::TableCreation::builder()
             .name(name.to_owned())
             .schema(wanted.clone())
+            .partition_spec_opt(spec)
             .build();
         return match catalog.create_table(namespace, creation).await {
             Ok(table) => Ok(table),
             // Concurrent creator: fall through to load + reconcile.
             Err(e) if matches!(e.kind(), iceberg::ErrorKind::TableAlreadyExists) => {
-                reconcile(catalog, &ident, wanted).await
+                reconcile(catalog, &ident, wanted, partition).await
             }
             Err(e) => Err(classify(&context, e)),
         };
     }
-    reconcile(catalog, &ident, wanted).await
+    reconcile(catalog, &ident, wanted, partition).await
+}
+
+/// The partition spec is fixed at table creation; a config that
+/// disagrees with the live table is a typed error, never a silent
+/// re-spec (Iceberg spec evolution is out of scope this release).
+fn check_partition_spec(
+    context: &str,
+    table: &iceberg::table::Table,
+    partition: &[super::config::PartitionField],
+) -> Result<(), DestError> {
+    use super::config::PartitionTransform;
+    let live = table.metadata().default_partition_spec();
+    let schema = table.metadata().current_schema();
+    let live_fields: Vec<(String, iceberg::spec::Transform)> = live
+        .fields()
+        .iter()
+        .map(|f| {
+            let column = schema
+                .field_by_id(f.source_id)
+                .map(|s| s.name.clone())
+                .unwrap_or_else(|| format!("#{}", f.source_id));
+            (column, f.transform)
+        })
+        .collect();
+    let wanted_fields: Vec<(String, iceberg::spec::Transform)> = partition
+        .iter()
+        .map(|f| {
+            let transform = match f.transform {
+                PartitionTransform::Identity => iceberg::spec::Transform::Identity,
+                PartitionTransform::Year => iceberg::spec::Transform::Year,
+                PartitionTransform::Month => iceberg::spec::Transform::Month,
+                PartitionTransform::Day => iceberg::spec::Transform::Day,
+                PartitionTransform::Hour => iceberg::spec::Transform::Hour,
+            };
+            (f.column.clone(), transform)
+        })
+        .collect();
+    if live_fields != wanted_fields {
+        return Err(fatal(format!(
+            "{context}: configured partition_by {wanted_fields:?} does not match the live \
+             table's partition spec {live_fields:?} — partition specs are fixed at \
+             creation (drop the table or align the config)"
+        )));
+    }
+    Ok(())
 }
 
 /// Compare the wanted schema against the live table by NAME: identical
@@ -415,6 +509,7 @@ async fn reconcile(
     catalog: &Arc<dyn Catalog>,
     ident: &TableIdent,
     wanted: &iceberg::spec::Schema,
+    partition: &[super::config::PartitionField],
 ) -> Result<iceberg::table::Table, DestError> {
     use iceberg::transaction::AddColumn;
     let context = format!("table `{ident}`");
@@ -422,6 +517,7 @@ async fn reconcile(
         .load_table(ident)
         .await
         .map_err(|e| classify(&context, e))?;
+    check_partition_spec(&context, &table, partition)?;
     let existing = table.metadata().current_schema();
     let mut additions: Vec<AddColumn> = Vec::new();
     for field in wanted.as_struct().fields() {

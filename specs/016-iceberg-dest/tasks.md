@@ -160,7 +160,7 @@ keys required on vending catalogs.
 **Independent test**: pyiceberg (standard gate) and Spark (deep tier)
 read every table shape the cells write.
 
-- [ ] T012 [US3] Partitioning: partition_by → Iceberg partition spec
+- [X] T012 [US3] Partitioning: partition_by → Iceberg partition spec
   (identity + temporal transforms) at table create in
   `src/dest.rs`/`src/schema.rs`; unknown column/transform typed at
   parse (config cells); live cells: partitioned writes land, the

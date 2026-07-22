@@ -94,6 +94,139 @@ pub(crate) fn to_iceberg_schema(schema: &TableSchema) -> Result<Schema, DestErro
         .map_err(|e| fatal(format!("table `{table}`: building iceberg schema: {e}")))
 }
 
+/// Map the config partition vocabulary onto an Iceberg partition spec
+/// against the MAPPED schema (unknown columns typed — never guessed).
+/// Identity fields keep the column name; temporal transforms get the
+/// `{column}_{transform}` convention.
+pub(crate) fn to_partition_spec(
+    context: &str,
+    schema: &Schema,
+    fields: &[super::config::PartitionField],
+) -> Result<Option<iceberg::spec::UnboundPartitionSpec>, DestError> {
+    use super::config::PartitionTransform;
+    if fields.is_empty() {
+        return Ok(None);
+    }
+    // Polaris parses the create payload STRICTLY: spec-id and per-field
+    // field-id must be present (probed live — omitting them is a 400).
+    // Partition field ids follow the Iceberg convention, starting at 1000.
+    let mut builder = iceberg::spec::UnboundPartitionSpec::builder().with_spec_id(0);
+    for (next_field_id, field) in (1000..).zip(fields.iter()) {
+        let source = schema.field_by_name(&field.column).ok_or_else(|| {
+            DestError::fatal(format!(
+                "{context}: partition_by names unknown column `{}`",
+                field.column
+            ))
+        })?;
+        let (name, transform) = match field.transform {
+            PartitionTransform::Identity => {
+                (field.column.clone(), iceberg::spec::Transform::Identity)
+            }
+            PartitionTransform::Year => (
+                format!("{}_year", field.column),
+                iceberg::spec::Transform::Year,
+            ),
+            PartitionTransform::Month => (
+                format!("{}_month", field.column),
+                iceberg::spec::Transform::Month,
+            ),
+            PartitionTransform::Day => (
+                format!("{}_day", field.column),
+                iceberg::spec::Transform::Day,
+            ),
+            PartitionTransform::Hour => (
+                format!("{}_hour", field.column),
+                iceberg::spec::Transform::Hour,
+            ),
+        };
+        let unbound = iceberg::spec::UnboundPartitionField::builder()
+            .source_id(source.id)
+            .field_id(next_field_id)
+            .name(name)
+            .transform(transform)
+            .build();
+        builder = builder.add_partition_fields([unbound]).map_err(|e| {
+            DestError::fatal(format!(
+                "{context}: partition field `{}` ({:?}): {e}",
+                field.column, field.transform
+            ))
+        })?;
+    }
+    Ok(Some(builder.build()))
+}
+
+#[cfg(test)]
+mod partition_tests {
+    use super::super::config::{PartitionField, PartitionTransform};
+    use super::*;
+
+    fn schema() -> Schema {
+        to_iceberg_schema(&TableSchema {
+            table: rdlt_connector::core::TableName::new("t"),
+            parent: None,
+            columns: vec![
+                ColumnDef {
+                    name: "region".into(),
+                    ty: ColumnType::scalar(LogicalType::Utf8),
+                    nullable: false,
+                    provenance: rdlt_connector::core::Provenance::Inferred,
+                },
+                ColumnDef {
+                    name: "ts".into(),
+                    ty: ColumnType::scalar(LogicalType::TimestampTz),
+                    nullable: false,
+                    provenance: rdlt_connector::core::Provenance::Inferred,
+                },
+            ],
+        })
+        .expect("schema")
+    }
+
+    #[test]
+    fn identity_and_temporal_transforms_build() {
+        let spec = to_partition_spec(
+            "t",
+            &schema(),
+            &[
+                PartitionField::new("region", PartitionTransform::Identity),
+                PartitionField::new("ts", PartitionTransform::Day),
+            ],
+        )
+        .expect("builds")
+        .expect("present");
+        let fields = spec.fields();
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fields[0].name, "region");
+        assert_eq!(fields[0].transform, iceberg::spec::Transform::Identity);
+        assert_eq!(fields[1].name, "ts_day");
+        assert_eq!(fields[1].transform, iceberg::spec::Transform::Day);
+    }
+
+    #[test]
+    fn empty_partition_by_is_none() {
+        assert!(
+            to_partition_spec("t", &schema(), &[])
+                .expect("ok")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn unknown_partition_column_is_typed() {
+        let err = to_partition_spec(
+            "table `x`",
+            &schema(),
+            &[PartitionField::new("nope", PartitionTransform::Identity)],
+        )
+        .expect_err("must fail");
+        let text = format!("{err}");
+        assert!(
+            text.contains("nope") && text.contains("unknown column"),
+            "{text}"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

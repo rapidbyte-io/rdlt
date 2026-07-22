@@ -233,6 +233,15 @@ pub struct PartitionField {
     pub transform: PartitionTransform,
 }
 
+impl PartitionField {
+    pub fn new(column: impl Into<String>, transform: PartitionTransform) -> Self {
+        Self {
+            column: column.into(),
+            transform,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -242,6 +251,24 @@ pub struct TableOptions {
     pub name: Option<String>,
     #[serde(default)]
     pub partition_by: Vec<PartitionField>,
+}
+
+impl TableOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_partition(mut self, field: PartitionField) -> Self {
+        self.partition_by.push(field);
+        self
+    }
 }
 
 // ---- The document --------------------------------------------------------

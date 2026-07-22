@@ -193,7 +193,8 @@ impl LoadSession for IcebergSession {
                 "table name `{name}` is reserved for the rdlt state marker table"
             )));
         }
-        let table = ensure_table(&self.catalog, &self.namespace, &name, &wanted).await?;
+        let partition = self.config.partition_fields(stream);
+        let table = ensure_table(&self.catalog, &self.namespace, &name, &wanted, partition).await?;
         let arrow_target = Arc::new(
             iceberg::arrow::schema_to_arrow_schema(table.metadata().current_schema())
                 .map_err(|e| fatal(format!("table `{name}`: arrow schema conversion: {e}")))?,

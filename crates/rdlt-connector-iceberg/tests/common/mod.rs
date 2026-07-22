@@ -259,6 +259,23 @@ impl CatalogFixture {
         .with_create_namespace(true)
     }
 
+    /// Raw table metadata JSON straight from the catalog (independent
+    /// oracle for partition specs and layout assertions).
+    pub async fn table_metadata(&self, namespace: &str, table: &str) -> serde_json::Value {
+        self.http
+            .get(format!(
+                "{}/v1/{WAREHOUSE}/namespaces/{namespace}/tables/{table}",
+                self.catalog_uri
+            ))
+            .bearer_auth(&self.admin_token)
+            .send()
+            .await
+            .expect("load table")
+            .json()
+            .await
+            .expect("table json")
+    }
+
     /// Raw snapshot summaries for a table, newest-last — the receipt
     /// oracle (reads the catalog directly, independent of the crate).
     pub async fn snapshot_summaries(
