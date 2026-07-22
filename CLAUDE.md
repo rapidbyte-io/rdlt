@@ -1,26 +1,34 @@
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
-`specs/012-bench-harness/plan.md` (feature: unified benchmark framework
-— one dev-only crate `crates/rdlt-bench` (binary: list/run/gate/report,
-clap CLI; sole new dep is clap, dev-only, owner-approved; publish=false)
-replacing the six run-*.sh
-scripts with declarative TOML cells (benches/cells/, source×dest×
-workload matrix, gated|scoreboard classes); metrics from existing seams
-only: RunReport rows/bytes → rows/s + MB/s, engine events() →
-per-stream attribution (library mode = scoreboard detail; GATED numbers
-bind to CLI-subprocess wall time), safe-Rust procfs sampler
-(VmHWM/utime — getrusage FFI rejected), cgroup v2 for the dlt
-competitor module (self-timed wall kept for continuity); committed
-versioned JSON artifacts with environment fingerprint under
-benches/results/; the 8 gated bars move to benches/bars.toml enforced
-by `rdlt-bench gate`; RESULTS.md tables generated between markers,
-narrative preserved; migration must prove continuity — medians in the
-±2–10% band of recorded numbers or an explicit version-policy entry,
-run-*.sh deleted only after in-band re-measure; iai gate + criterion
-shred + hyperfine cold-start protocol retained unchanged; CPU/RSS
-recorded NOT gated. Contract: contracts/bench-harness.md BH1-BH8. Zero
-SPI change, zero runtime-crate manifest changes).
+`specs/013-duckdb-completeness/plan.md` (feature: duckdb destination
+completeness — extract the postgres dest's merge layer into a NEW
+internal crate `rdlt-connector-sqlcore` (options vocabulary +
+validation + MergePlan shapes + single-unit rules) behind a
+MergeDialect trait that owns SQL TEXT ONLY; extraction proven by
+golden-SQL pins captured BEFORE the refactor (byte-identical after) +
+untouched postgres suites/sweeps/gated bars (contract SM4). DuckDB
+gets the full 008/010 options vocabulary (merge_strategy delete_insert/
+upsert/scd2, hard_delete, dedup_sort, merge_key, scd2 block) with
+identical typed errors; probe-first dialect arms (DISTINCT ON,
+ON CONFLICT vs auto unique index, tx-stable now() scd2 boundary,
+bundled JSON extension) — a failed probe becomes a TYPED capability
+gap, never an approximation (SM3). json_type flips to native JSON via
+the stage→target SQL seam. Verification to the 011 standard: matrix.md
+zero uncited rows, ≥80% measured coverage baseline-first, armed crash
+sweeps over new arms, dlt-1.29.0 parity record, PLUS the
+cross-destination differential oracle in crates/rdlt/tests/
+(identical feeds → equivalent outcomes both dests). Two scoreboard
+bench cells via the 012 harness; zero SPI change, zero new external
+runtime deps, WriteMode frozen. Contract:
+contracts/shared-merge-core.md SM1-SM8).
+Previous feature 012 for reference: `specs/012-bench-harness/plan.md`
+(benchmark framework — `crates/rdlt-bench` clap CLI runs declarative
+TOML cells (benches/cells/), bars.toml enforced by `rdlt-bench gate`,
+committed fingerprinted artifacts, RESULTS.md tables generated between
+markers; new bench cells are declared as data, scoreboard unless the
+004 governance grants a bar; contract: contracts/bench-harness.md
+BH1-BH8).
 Previous feature 011 for reference:
 `specs/011-connector-verification/plan.md` (postgres connector
 verification — traceability matrix PM1-PM8, 88.98% measured line
