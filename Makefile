@@ -55,6 +55,7 @@ else ifeq ($(TARGET),sweep)
 	cargo nextest run -p rdlt-connector-postgres --features failpoints -E 'binary(crash_sweep) or binary(dest_crash_sweep) or binary(cdc_crash_sweep)' --no-tests=pass
 	cargo nextest run -p rdlt-connector-duckdb --features failpoints -E 'binary(sweep)' --no-tests=pass
 	cargo nextest run -p rdlt-connector-rest --features failpoints -E 'binary(sweep)' --no-tests=pass
+	cargo nextest run -p rdlt-connector-file --features failpoints -E 'binary(sweep)' --no-tests=pass
 else ifeq ($(TARGET),prop)
 	PROPTEST_CASES=4096 cargo nextest run -p rdlt-engine -E 'test(shred_property)' --no-tests=pass
 else ifeq ($(TARGET),fuzz)

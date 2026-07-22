@@ -164,7 +164,7 @@ readers never observe final-name partials.
   tests/s3_live.rs: commit-atomicity probe (a concurrent lister during
   the run observes staged names only, never final-name partials),
   partition-split totals, jsonl-output parity, replace-mode cell.
-- [ ] T013 [US3] Crash points both kinds: new points `file.list`,
+- [X] T013 [US3] Crash points both kinds: new points `file.list`,
   `file.read` (source), `file.stage.put`, `file.finalize.copy`,
   `file.finalize.delete` (dest) in the respective modules + FAIL_POINTS
   registries; `crates/rdlt-connector-file/tests/sweep.rs` — the local

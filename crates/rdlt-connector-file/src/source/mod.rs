@@ -13,6 +13,12 @@ use async_trait::async_trait;
 use rdlt_connector::{ConnectorSpec, ReadRequest, Source, SourceError, StreamSpec};
 
 use crate::formats::{csv, jsonl, parquet};
+
+/// Fail-point registry (gate G2.2): the SOURCE-side crash points (015 R9;
+/// the dest points live in `crate::dest::FAIL_POINTS`).
+#[cfg(feature = "failpoints")]
+#[doc(hidden)]
+pub const FAIL_POINTS: &[&str] = &["file.list", "file.read"];
 pub use config::{FileConfig, FileStream, Format};
 use cursor::{FileCursor, FileMeta};
 
@@ -170,6 +176,10 @@ impl Source for FileSource {
                 (metas, Some(paths))
             }
         };
+        rdlt_connector::core::crash_point!(
+            "file.list",
+            Err(SourceError::fatal("injected crash at file.list"))
+        );
         // Plan per the format's incremental unit: parquet = row groups
         // (tail), csv and COMPRESSED jsonl = whole-file (R5), plain jsonl =
         // byte tails. A jsonl glob may match both plain and compressed
@@ -216,6 +226,10 @@ impl Source for FileSource {
         let csv_options = stream.csv.clone().unwrap_or_default();
         let mut outcome = Ok(());
         for task in &tasks {
+            rdlt_connector::core::crash_point!(
+                "file.read",
+                Err(SourceError::fatal("injected crash at file.read"))
+            );
             let proceeded = match stream.format {
                 Format::Jsonl if crate::formats::codec_of(&task.path).is_plain() => {
                     jsonl::read_task(&location, task, stream.validate, &mut cursor, &mut req.out)
