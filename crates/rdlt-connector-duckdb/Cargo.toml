@@ -8,12 +8,15 @@ repository.workspace = true
 
 [dependencies]
 rdlt-connector = { workspace = true }
+rdlt-connector-sqlcore = { workspace = true }
 async-trait = { workspace = true }
 duckdb = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
 rdlt-testkit = { workspace = true }
 rdlt-engine = { workspace = true }
 tempfile = { workspace = true }

@@ -15,7 +15,7 @@ use rdlt_connector::core::{
     StateDoc, TableName, TableSchema, WriteMode,
 };
 use rdlt_connector::{Destination, OpenCtx};
-use rdlt_connector_duckdb::DuckDb;
+use rdlt_connector_duckdb::dest::DuckDb;
 
 fn schema_for(table: &str) -> TableSchema {
     TableSchema {

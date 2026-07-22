@@ -200,7 +200,7 @@ async fn run(spec_path: PathBuf, report_path: Option<PathBuf>) -> Result<(), Cli
             };
             let mut pipeline = match &spec.destination {
                 DestSpec::Duckdb { path, memory_limit } => {
-                    let mut dest = rdlt::connector::duckdb::DuckDb::open(path)
+                    let mut dest = rdlt::connector::duckdb::dest::DuckDb::open(path)
                         .map_err(|e| CliError::Usage(format!("opening duckdb: {e}")))?;
                     if let Some(limit) = memory_limit {
                         dest = dest

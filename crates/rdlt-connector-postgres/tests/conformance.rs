@@ -5,7 +5,7 @@
 mod common;
 
 use common::PgFixture;
-use rdlt_connector_duckdb::DuckDb;
+use rdlt_connector_duckdb::dest::DuckDb;
 use rdlt_connector_postgres::source::PostgresSource;
 use rdlt_engine::{Engine, EngineConfig};
 

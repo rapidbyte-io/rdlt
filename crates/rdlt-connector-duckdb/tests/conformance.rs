@@ -2,7 +2,7 @@
 //! plus the public destination conformance suite (the certification gate).
 
 use async_trait::async_trait;
-use rdlt_connector_duckdb::DuckDb;
+use rdlt_connector_duckdb::dest::DuckDb;
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::conformance::dest::verify_destination;
 use rdlt_testkit::{MemorySource, TableProbe, assert_conformant};

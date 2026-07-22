@@ -65,13 +65,13 @@ DuckDB via the shared core + a DuckDB dialect.
 option docs — every option behaves as documented or fails with the same
 typed error.
 
-- [ ] T005 [US1] Probe cells FIRST (R4/R5, one test per assumption) in
+- [X] T005 [US1] Probe cells FIRST (R4/R5, one test per assumption) in
   `crates/rdlt-connector-duckdb/tests/probes.rs`: DISTINCT ON ordering
   semantics, ON CONFLICT DO UPDATE against a CREATE UNIQUE INDEX
   target, tx-stable now() inside one transaction, IS DISTINCT FROM —
   each probe documents pass/fail; a fail converts the dependent arm to
   a typed capability gap (SM3) and is recorded for the matrix.
-- [ ] T006 [US1] Options hook + validation on the DuckDB dest: split
+- [X] T006 [US1] Options hook + validation on the DuckDB dest: split
   `crates/rdlt-connector-duckdb/src/lib.rs` into
   `src/{config,commit}.rs` (the 008 split-when-code-arrives rule),
   add `.options(DestOptions)` consuming sqlcore's shared parse layer,
@@ -79,7 +79,7 @@ typed error.
   with the SAME typed-error posture — incl. explicit merge_strategy
   under append/replace rejection (011 R5) and NULL-in-key; identical
   typed-error cells beside the postgres wording.
-- [ ] T007 [US1] The DuckDB dialect + strategy arms in
+- [X] T007 [US1] The DuckDB dialect + strategy arms in
   `crates/rdlt-connector-duckdb/src/dialect.rs` + `src/commit.rs`:
   delete_insert (default — today's keyed merge routed through the
   shared plan), upsert (ON CONFLICT + auto-ensured unique
@@ -89,7 +89,7 @@ typed error.
   `crates/rdlt-connector-duckdb/tests/strategies.rs` proving
   destination-visible outcomes (totals, in-place update, history
   close/open) per the 008 contract.
-- [ ] T008 [US1] The 010 refinements on DuckDB: dedup_sort (ordered
+- [X] T008 [US1] The 010 refinements on DuckDB: dedup_sort (ordered
   survivor via the shared dedup shape; values beat NULL, deterministic
   ties) and merge_key (scope delete before the strategy arm,
   single-unit rule shared with scd2 absent-retire) + hard_delete
@@ -108,7 +108,7 @@ true-and-proven or false-and-documented.
 **Independent test**: a Json-typed column round-trips through DuckDB's
 JSON type and `json_extract` works on it.
 
-- [ ] T009 [US2] JSON probe + flip: probe the bundled JSON extension
+- [X] T009 [US2] JSON probe + flip: probe the bundled JSON extension
   (R6) in `crates/rdlt-connector-duckdb/tests/probes.rs`; on pass,
   create Json columns as JSON with the stage→target CAST in
   `src/commit.rs`, flip `json_type: true` in capabilities, and prove

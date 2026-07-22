@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use bytes::Bytes;
 use rdlt_connector::{ConnectorSpec, ReadRequest, Source, SourceError, StreamSpec};
-use rdlt_connector_duckdb::DuckDb;
+use rdlt_connector_duckdb::dest::DuckDb;
 use rdlt_engine::{Engine, EngineConfig};
 
 struct JsonlSource {

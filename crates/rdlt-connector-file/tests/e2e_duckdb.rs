@@ -1,7 +1,7 @@
 //! T009: end-to-end jsonl → DuckDB through the ENGINE, incremental across two runs —
 //! the flagship benchmark path as a supported connector (spec US1 / SC-003 path).
 
-use rdlt_connector_duckdb::DuckDb;
+use rdlt_connector_duckdb::dest::DuckDb;
 use rdlt_connector_file::FileSource;
 use rdlt_engine::{Engine, EngineConfig};
 

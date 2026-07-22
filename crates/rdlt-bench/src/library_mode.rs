@@ -113,7 +113,8 @@ async fn drive(spec: Spec) -> Result<RunOutcome> {
             };
             let mut pipeline = match &spec.destination {
                 DestSpec::Duckdb { path, memory_limit } => {
-                    let mut dest = rdlt::connector::duckdb::DuckDb::open(path).map_err(err)?;
+                    let mut dest =
+                        rdlt::connector::duckdb::dest::DuckDb::open(path).map_err(err)?;
                     if let Some(limit) = memory_limit {
                         dest = dest.memory_limit(limit).map_err(err)?;
                     }

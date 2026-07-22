@@ -3103,10 +3103,13 @@ name = "rdlt-connector-duckdb"
 version = "0.2.0"
 dependencies = [
  "arrow",
+ "arrow-array",
+ "arrow-schema",
  "async-trait",
  "bytes",
  "duckdb",
  "rdlt-connector",
+ "rdlt-connector-sqlcore",
  "rdlt-engine",
  "rdlt-testkit",
  "serde_json",

@@ -186,7 +186,7 @@ async fn sweep_duckdb_destination() {
         sweep(
             &points,
             mode,
-            |dir| rdlt_connector_duckdb::DuckDb::open(dir.join("out.duckdb")).expect("open"),
+            |dir| rdlt_connector_duckdb::dest::DuckDb::open(dir.join("out.duckdb")).expect("open"),
             |dest| dest.count_rows("s").expect("count"),
             &expected_fired,
         )
@@ -333,10 +333,10 @@ async fn sweep_duckdb_keyed_structured_merge() {
         for action in ["return", "panic", "1*off->return"] {
             let dir = tempfile::tempdir().expect("tempdir");
             let workdir = dir.path().join("wal");
-            let dest = rdlt_connector_duckdb::DuckDb::open(dir.path().join("out.duckdb"))
+            let dest = rdlt_connector_duckdb::dest::DuckDb::open(dir.path().join("out.duckdb"))
                 .expect("open duckdb");
             async fn run(
-                dest: rdlt_connector_duckdb::DuckDb,
+                dest: rdlt_connector_duckdb::dest::DuckDb,
                 workdir: &Path,
                 mode: &WriteMode,
             ) -> Result<(), String> {

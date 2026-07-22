@@ -232,11 +232,12 @@ async fn container_kill_mid_catch_up_is_typed_and_preserves_commits() {
     let conn = fixture.conn_url();
 
     let dir = tempfile::tempdir().expect("tempdir");
-    let dest = rdlt_connector_duckdb::DuckDb::open(dir.path().join("out.duckdb")).expect("open db");
+    let dest =
+        rdlt_connector_duckdb::dest::DuckDb::open(dir.path().join("out.duckdb")).expect("open db");
     let workdir = dir.path().join("wal");
     std::mem::forget(dir);
     let run = |src_conn: String,
-               dest: rdlt_connector_duckdb::DuckDb,
+               dest: rdlt_connector_duckdb::dest::DuckDb,
                workdir: std::path::PathBuf| async move {
         let mut config = EngineConfig::new("cdc-kill");
         config.workdir = Some(workdir);
