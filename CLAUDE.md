@@ -1,60 +1,68 @@
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
-`specs/015-file-completeness/plan.md` (feature: filesystem/object-store
-completeness — MERGE rdlt-connector-parquet INTO rdlt-connector-file
-(parquet is a FORMAT; crates are named by system) with the family
-layout: src/{source,dest}/ + shared crate-root location/ and formats/
-modules, thin lib.rs façade (rdlt::connector::file). The weld is
-moves-only behind the behavior-preservation net: ALL pre-015 cells
-green unchanged, gated parquet-passthrough + jsonl-duckdb-200k bars
-in-band same-session, pipeline-YAML spellings frozen (`file:` source,
-`parquet:` destination), persisted cursor/staging/receipt formats
-(CURSOR_FORMAT_VERSION 1, LAYOUT_FORMAT_VERSION 1, pq.* fail-point
-names) byte-compatible. Then completeness: Location = Local |
-S3-compatible (object_store crate `aws` feature — the ONE new external
-dep, surveyed R1; csv/flate2/zstd already in-tree, promoted to direct
-deps); discovery deterministic + COMPLETE across listing pagination
-(complete-or-fail); per-file cursors extend to (size, etag) identity
-with the same loud-failure rules; CSV = RECORD format via NDJSON
-conversion (inference lattice bool→int64→float64→utf8, type_hints
-override, typed errors naming file+row+column); gzip/zstd by extension
-(whole-file incremental units, magic-byte mismatch typed); dest writes
-parquet AND jsonl to either location kind, optional partition_by,
-staged-key → COPY+DELETE finalize at commit (readers never observe a
-partial object; local rename protocol byte-identical). Live cells:
-RUSTFS container (Apache-2.0 S3 server; image/env verified at the
-environment-gate task) via podman shim, skip-not-fail; pagination cell
-seeds >1000 keys. Crash points: pq.* preserved + file.list/read/
-stage.put/finalize.copy/finalize.delete, swept both location kinds.
-Verification: matrix.md zero uncited, dlt-parity vs dlt filesystem
-source/dest, ≥80% coverage baseline-first, file-s3-duckdb-200k
-SCOREBOARD cell (never gated — that floor measures the test server),
-comprehensive README, quickstart walked. Contract:
-contracts/file-family.md FF1-FF8).
+`specs/016-iceberg-dest/plan.md` (feature: provider-agnostic Iceberg
+REST-catalog DESTINATION — new THIN crate rdlt-connector-iceberg
+(facade rdlt::connector::iceberg, CLI destination: iceberg:) wrapping
+Apache iceberg-rust at ONE boundary (errors.rs + commit.rs — library
+types never cross the public surface; duckdb-rs wrapping precedent).
+SURVEY RESOLVED AT PLAN TIME with registry facts: iceberg 0.10.0 +
+iceberg-catalog-rest 0.10.0 + iceberg-storage-opendal 0.10.0
+(opendal-s3) — arrow ^58/parquet ^58 match the workspace pin (single
+arrow 58.4 tree proven by live cargo-tree probe); rustc floor 1.94 ok.
+NOT taken: iceberg-catalog-glue (aws-sdk smithy tree; Glue/SigV4 is
+PHASE-2, recorded); rdlt-connector-rest NOT a dep; file-crate
+location/ NOT extracted (config VOCABULARY shared — family S3
+spelling + Secret — plumbing not). Exactly-once = snapshot-native D3:
+commit identity (rdlt.pipeline/load-id/commit-seq) in snapshot
+SUMMARY properties, replay detected from snapshot history, StateDoc
+in table property rdlt.state updated in the same atomic commit;
+bounded conflict retry (4 attempts, refresh->rebuild->commit,
+exhaustion typed naming table+competing snapshot). Closed type
+mapping (Json->string documented; field IDs library-assigned only);
+additive drift = UpdateSchema add-nullable-column. Write modes:
+Append (fast-append) + Replace (overwrite once-per-load, durable
+guard from snapshot history); T001 PROBES overwrite support in 0.10 —
+fallback DESIGNED: v1 narrows to Append with Replace
+typed-unsupported, recorded never silent (ID5). Auth v1:
+oauth2_client_credentials + bearer (Secret-wrapped, grep-proof);
+credential VENDING default (X-Iceberg-Access-Delegation, session
+tokens; expiry = transient), family-S3 storage override explicit.
+Tests: Polaris container + 015 RUSTFS container canonical leg
+(testcontainers skip-not-fail, images/env VERIFIED at T001 like 015);
+UC OSS candidate bearer leg gate-verified; pyiceberg read-back venv in
+the standard gate (competitors-harness pattern), Spark read-back DEEP
+tier only. Crash points ice.files.write/ice.commit/
+ice.receipt.visible swept live x3 actions with duplicate-free
+snapshot-history pins. Bench: iceberg-polaris-200k SCOREBOARD (never
+gated). Verification: matrix zero uncited, parity vs dlt iceberg w/
+deferrals named, >=80% coverage baseline-first, README, quickstart.
+Contract: contracts/iceberg-dest.md ID1-ID8).
+Previous feature 015 for reference:
+`specs/015-file-completeness/plan.md` (file family unified —
+rdlt-connector-parquet absorbed into rdlt-connector-file
+(src/{source,dest}/ + shared location/ + formats/; ParquetDir frozen
+alias); Location = Local | S3 via object_store; one cursor rulebook
+incl. TAIL-HASH resume integrity; CSV record format w/ JOIN lattice;
+gzip/zstd whole-file units; dest parquet+jsonl both kinds w/
+partition_by + ownership-precise Replace truncation; RUSTFS container
+cells; contract file-family.md FF1-FF8).
 Previous feature 014 for reference:
 `specs/014-rest-completeness/plan.md` (REST source completeness —
-family layout, client/ (auth incl. OAuth2 single-flight, Secret
-redaction, bounded Retry-After), read/ (Paginator trait + 7 families
-w/ loop guards, JSONPath-subset extraction, TYPED response-action
-matching status+content over the S3 posture, incremental block,
-parent-child w/ max_concurrency fan-out), additive config incl. the
-pre-014 `auth: !bearer` tagged-YAML compat; contract rest-source.md
-RS1-RS8; NOTE: 014 recorded the one-time semver MAJOR — config enums
-are #[non_exhaustive]; 0.2→0.3 at next publish covers 015's crate
-removal too).
+client/ (OAuth2 single-flight, Secret, bounded Retry-After), read/
+(Paginator trait + 7 families, TYPED response-action matching,
+parent-child fan-out), additive config incl. tagged-YAML compat;
+contract rest-source.md RS1-RS8; 014 recorded the one-time semver
+MAJOR — 0.2→0.3 at next publish, config enums #[non_exhaustive]).
 Previous feature 013 for reference:
-`specs/013-duckdb-completeness/plan.md` (duckdb completeness —
-rdlt-connector-sqlcore shared merge core behind golden-SQL pins,
-MergeDialect owns SQL text only, duckdb at full dlt parity; contract
+`specs/013-duckdb-completeness/plan.md` (rdlt-connector-sqlcore shared
+merge core behind golden-SQL pins; duckdb full dlt parity; contract
 shared-merge-core.md SM1-SM8).
 Previous feature 012 for reference: `specs/012-bench-harness/plan.md`
-(benchmark framework — `crates/rdlt-bench` clap CLI runs declarative
-TOML cells (benches/cells/), bars.toml enforced by `rdlt-bench gate`,
-committed fingerprinted artifacts, RESULTS.md tables generated between
-markers; new bench cells are declared as data, scoreboard unless the
-004 governance grants a bar; contract: contracts/bench-harness.md
-BH1-BH8).
+(crates/rdlt-bench declarative TOML cells, bars.toml enforced by
+rdlt-bench gate, generated RESULTS.md tables; new cells are scoreboard
+unless 004 governance grants a bar; contract bench-harness.md
+BH1-BH8; 015 added the generic Container fixture kind).
 Features 005-011 (`specs/0{05,06,07,08,09,10,11}-*/`) are the merged
 base being composed; 004's benchmark governance and 003's hardening
 nets remain in force. The established architecture is feature 001:
