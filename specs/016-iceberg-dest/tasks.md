@@ -53,7 +53,7 @@ order. Every task leaves the whole suite green.
   cells in `crates/rdlt-connector-iceberg/tests/config_schema.rs`
   (round-trip corpus, unknown-field rejection, validation matrix,
   Secret grep-proof).
-- [ ] T003 [P] Closed type mapping + error boundary:
+- [X] T003 [P] Closed type mapping + error boundary:
   `src/schema.rs` — the data-model §2 table (engine LogicalType +
   arrow nested shapes → iceberg types; unmappable typed naming the
   column; unit cells in-file); `src/errors.rs` — `iceberg::Error` →
