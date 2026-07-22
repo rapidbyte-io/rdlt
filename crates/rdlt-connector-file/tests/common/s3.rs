@@ -103,15 +103,28 @@ impl S3Fixture {
         s3_put_bucket(&self.endpoint, bucket).await;
     }
 
-    /// Seed one object.
+    /// Seed one object (retried: many fixtures start containers
+    /// concurrently under the full suite, and one transient hiccup must
+    /// not kill a cell).
     pub async fn put(&self, key: &str, body: &[u8]) {
-        self.store_for(BUCKET)
-            .put(
-                &object_store::path::Path::from(key),
-                bytes::Bytes::copy_from_slice(body).into(),
-            )
-            .await
-            .expect("seed put");
+        let store = self.store_for(BUCKET);
+        let mut last = None;
+        for attempt in 0..3 {
+            match store
+                .put(
+                    &object_store::path::Path::from(key),
+                    bytes::Bytes::copy_from_slice(body).into(),
+                )
+                .await
+            {
+                Ok(_) => return,
+                Err(e) => {
+                    last = Some(e);
+                    tokio::time::sleep(std::time::Duration::from_millis(200 * (attempt + 1))).await;
+                }
+            }
+        }
+        panic!("seed put `{key}` failed after retries: {last:?}");
     }
 
     /// The stream-config location block for this fixture.
