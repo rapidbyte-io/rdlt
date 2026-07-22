@@ -344,8 +344,8 @@ destination:
 | `valid_from` | column name | `_rdlt_valid_from` | Validity-start column added to the target (`TIMESTAMPTZ NOT NULL`). |
 | `valid_to` | column name | `_rdlt_valid_to` | Validity-end column; `NULL` marks the active version. Must differ from `valid_from`; neither may collide with a stream column. |
 | `absent` | `keep` \| `retire` | `keep` | Active keys **absent** from a load: `keep` leaves them active (incremental feeds are partial); `retire` closes them at the boundary (full-feed semantics). Retire requires the table's full feed in a single commit unit — same per-table rule as `merge_key`, same typed error, same thresholds remedy. With a `merge_key` on the table, retirement is **scoped**: absent keys retire only within delivered scopes (feature 013; requires `retire` — under `keep` the merge_key would be inert, typed error). |
-| `active_record_timestamp` | timestamp literal | absent (= NULL marker) | The OPEN-version marker written to `valid_to` instead of NULL (e.g. `9999-12-31` — some BI tools cannot range-query NULLs). Validated as RFC3339 / `YYYY-MM-DD [HH:MM:SS]`; anything else is a typed error, never SQL. |
-| `boundary_timestamp` | timestamp literal | absent (= transaction timestamp) | Caller-supplied boundary used for close/open/retire instead of the transaction timestamp. Same validation. |
+| `active_record_timestamp` | RFC3339 timestamp | absent (= NULL marker) | The OPEN-version marker written to `valid_to` instead of NULL (e.g. `9999-12-31T00:00:00Z` — some BI tools cannot range-query NULLs). Must be zone-explicit RFC3339 (zone-less literals resolve per session TimeZone — typed error) and must differ from `boundary_timestamp` (typed error). Active-version predicates treat NULL **and** the marker as open, so a table whose history predates the option keeps working. |
+| `boundary_timestamp` | RFC3339 timestamp | absent (= transaction timestamp) | Caller-supplied boundary used for close/open/retire instead of the transaction timestamp. Same zone-explicit validation; never interpolated unvalidated. |
 
 ### Indexes
 
