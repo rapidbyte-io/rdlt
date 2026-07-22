@@ -60,7 +60,7 @@ No big-bang commit — every task leaves the whole suite green.
   (`crates/rdlt-cli/src/main.rs`: `DestSpec::Parquet { path }` parses
   UNCHANGED, constructs the unified dest), bench harness references,
   and `Makefile` sweep lines. Full workspace suite + doc-tests green.
-- [ ] T004 The net, pinned: persisted-format fixture cells in
+- [X] T004 The net, pinned: persisted-format fixture cells in
   `crates/rdlt-connector-file/tests/preservation.rs` — a committed
   pre-015 cursor document parses and drives resume decisions
   identically; a committed pre-015 staging layout + receipt/state file
