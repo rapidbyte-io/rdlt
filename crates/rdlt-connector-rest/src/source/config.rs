@@ -1,20 +1,59 @@
-//! Declarative REST source configuration (spec FR-018): base URL, auth, pagination
-//! strategy, incremental cursor, per-column type hints — everything in one YAML/JSON
-//! document a platform can render and validate.
+//! Declarative REST source configuration: base URL, auth, pagination
+//! strategy, incremental cursors, response actions, parent-child linkage,
+//! per-column type hints — everything in one YAML/JSON document a platform
+//! can render and validate (contract RS1: configs are DATA, no callbacks).
+//!
+//! Evolution is ADDITIVE (RS6): every pre-014 spelling parses unchanged;
+//! superseded fields remain as documented aliases.
 
 use std::collections::BTreeMap;
 
 use rdlt_connector::core::LogicalType;
 use serde::{Deserialize, Serialize};
 
+use super::client::secret::Secret;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RestConfig {
     /// e.g. `https://api.example.com`
     pub base_url: String,
-    #[serde(default)]
+    // singleton_map: YAML's natural `auth: {bearer: {token: …}}` form for
+    // externally-tagged enums (serde_yaml 0.9 otherwise wants `!bearer`);
+    // works identically for JSON documents.
+    #[serde(default, with = "serde_yaml::with::singleton_map")]
+    #[schemars(with = "Auth")]
     pub auth: Auth,
+    /// Source-level default headers, merged UNDER per-stream headers.
+    #[serde(default)]
+    pub headers: BTreeMap<String, String>,
+    /// Source-level default query params, merged UNDER per-stream params.
+    #[serde(default)]
+    pub params: BTreeMap<String, String>,
+    /// Parent-child fan-out cap (streams themselves read sequentially).
+    #[serde(default = "default_max_concurrency")]
+    pub max_concurrency: u32,
+    /// Pacing floor between request sends, milliseconds.
+    #[serde(default)]
+    pub min_request_interval_ms: u64,
+    /// Max in-source Retry-After wait; beyond it the rate-limit error
+    /// surfaces to the engine's retry budget.
+    #[serde(default = "default_retry_after_cap")]
+    pub retry_after_cap_secs: u64,
+    /// Loop guard: a stream exceeding this many pages is a typed error.
+    #[serde(default = "default_max_pages")]
+    pub max_pages: u64,
     pub streams: Vec<RestStream>,
+}
+
+fn default_max_concurrency() -> u32 {
+    1
+}
+fn default_retry_after_cap() -> u64 {
+    300
+}
+fn default_max_pages() -> u64 {
+    10_000
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -24,17 +63,61 @@ pub enum Auth {
     None,
     /// `Authorization: Bearer <token>`
     Bearer {
-        token: String,
+        token: Secret,
     },
     /// Arbitrary header.
     Header {
         name: String,
-        value: String,
+        value: Secret,
     },
     Basic {
         username: String,
-        password: String,
+        password: Secret,
     },
+    /// A named credential in a header or query parameter.
+    ApiKey {
+        name: String,
+        key: Secret,
+        #[serde(default)]
+        location: ApiKeyLocation,
+    },
+    /// OAuth2 client-credentials grant: lazy token fetch, cached with an
+    /// expiry margin, single-flight refresh, ONE 401 re-fetch then fatal.
+    Oauth2ClientCredentials {
+        token_url: String,
+        client_id: String,
+        client_secret: Secret,
+        #[serde(default)]
+        scopes: Vec<String>,
+        #[serde(default)]
+        audience: Option<String>,
+        #[serde(default = "default_expiry_margin")]
+        expiry_margin_secs: u64,
+    },
+}
+
+fn default_expiry_margin() -> u64 {
+    60
+}
+
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ApiKeyLocation {
+    #[default]
+    Header,
+    Query,
+}
+
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum HttpMethod {
+    #[default]
+    Get,
+    Post,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -42,24 +125,45 @@ pub enum Auth {
 pub struct RestStream {
     /// Stream name (becomes the root table name).
     pub name: String,
-    /// Path joined onto `base_url`, e.g. `/issues`.
+    /// Path joined onto `base_url`, e.g. `/issues`. May carry `{placeholder}`
+    /// tokens when a `parent` block declares them.
     pub path: String,
+    /// HTTP method; `post` requires/permits `body`.
+    #[serde(default)]
+    pub method: HttpMethod,
+    /// JSON body template (POST only). Pagination params for POST-cursor
+    /// APIs are set INTO this body under their declared names.
+    #[serde(default)]
+    pub body: Option<serde_json::Value>,
     /// Extra query parameters sent with every request.
     #[serde(default)]
     pub params: BTreeMap<String, String>,
-    /// Dot-separated path to the records array in the response body; omitted = the
-    /// body IS the array (that case streams bytes straight to the shredder).
+    /// Per-stream headers, merged OVER source-level headers.
+    #[serde(default)]
+    pub headers: BTreeMap<String, String>,
+    /// Selector for the records array: dot paths + `[*]` wildcards + `[N]`
+    /// indices (e.g. `data.items[*]`). Omitted = the body IS the array
+    /// (that case streams bytes straight to the shredder — the perf path).
     #[serde(default)]
     pub records_path: Option<String>,
     #[serde(default)]
     pub pagination: Pagination,
-    /// Field carrying the incremental cursor; its max observed value checkpoints the
-    /// stream and resumes it via `cursor_param`.
+    /// Incremental block (supersedes the flat aliases below).
+    #[serde(default)]
+    pub incremental: Option<Incremental>,
+    /// ALIAS (pre-014): `incremental.cursor_field`.
     #[serde(default)]
     pub cursor_field: Option<String>,
-    /// Query parameter the API accepts for "only records after this cursor".
+    /// ALIAS (pre-014): `incremental.start_param`.
     #[serde(default)]
     pub cursor_param: Option<String>,
+    /// Declared handling for specific responses; anything undeclared keeps
+    /// the typed-error posture (RS3). First match wins.
+    #[serde(default)]
+    pub response_actions: Vec<ResponseAction>,
+    /// Parent-child linkage: this stream fans out per parent record.
+    #[serde(default)]
+    pub parent: Option<Parent>,
     #[serde(default)]
     pub primary_key: Option<Vec<String>>,
     /// Per-column logical types overriding inference, e.g. `created_at: timestamp_tz`.
@@ -73,21 +177,49 @@ pub enum Pagination {
     /// Single request.
     #[default]
     None,
-    /// `?<page_param>=N`, starting at `start`, until a page returns no records.
+    /// `?<page_param>=N`, starting at `start`, until a page returns no
+    /// records (or the declared total is reached).
     Page {
         #[serde(default = "default_page_param")]
         page_param: String,
         #[serde(default = "default_page_start")]
         start: u64,
+        /// Optional stop: selector to the total-page count in the response.
+        #[serde(default)]
+        total_pages_path: Option<String>,
+        /// Optional stop: selector to the total-record count.
+        #[serde(default)]
+        total_count_path: Option<String>,
     },
-    /// `?<offset_param>=N&<limit_param>=page_size` until a short page.
+    /// `?<offset_param>=N&<limit_param>=page_size` until a short page (or
+    /// the declared total is reached).
     Offset {
         #[serde(default = "default_offset_param")]
         offset_param: String,
         #[serde(default = "default_limit_param")]
         limit_param: String,
         page_size: u64,
+        #[serde(default)]
+        total_count_path: Option<String>,
     },
+    /// A cursor in the response body feeds the next request's param;
+    /// terminates when the cursor is absent or null.
+    Cursor {
+        /// Selector to the cursor value in the response body.
+        cursor_path: String,
+        cursor_param: String,
+    },
+    /// A cursor in a response HEADER feeds the next request's param;
+    /// terminates when the header is absent.
+    HeaderCursor {
+        header: String,
+        cursor_param: String,
+    },
+    /// The response body carries the next page's URL (absolute or relative);
+    /// terminates when absent or null.
+    NextUrl { next_url_path: String },
+    /// RFC5988 `Link: <url>; rel="next"`; terminates when no next link.
+    LinkHeader,
 }
 
 fn default_page_param() -> String {
@@ -101,6 +233,66 @@ fn default_offset_param() -> String {
 }
 fn default_limit_param() -> String {
     "limit".into()
+}
+
+/// Incremental cursor binding (S2 mechanics unchanged: max-observed value,
+/// checkpoint after rows, resume via the engine's committed cursor).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Incremental {
+    /// Record field carrying the cursor value.
+    pub cursor_field: String,
+    /// Request parameter carrying the resume value ("only records after").
+    #[serde(default)]
+    pub start_param: Option<String>,
+    /// Optional closed-window upper bound parameter. Requires `end_value`.
+    #[serde(default)]
+    pub end_param: Option<String>,
+    /// Explicit value for `end_param` (closed windows take explicit values;
+    /// "now" is never synthesized).
+    #[serde(default)]
+    pub end_value: Option<String>,
+    /// First-run lower bound when no cursor is committed yet.
+    #[serde(default)]
+    pub initial_value: Option<String>,
+}
+
+/// Declared response handling — an ALLOW-list over the typed-error default.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ResponseAction {
+    /// HTTP status this action matches (absent = any status).
+    #[serde(default)]
+    pub status: Option<u16>,
+    /// Substring match over the first 64KiB of the body (absent = any body).
+    #[serde(default)]
+    pub content_contains: Option<String>,
+    pub action: ActionKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionKind {
+    /// Treat as an empty page (pagination still terminates per its family).
+    Ignore,
+    /// Clean end of the stream.
+    EndStream,
+    /// Explicit fatal (documents intent).
+    Error,
+}
+
+/// Parent-child linkage: `{placeholder}` tokens in path/params/body resolve
+/// from each parent record.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Parent {
+    /// The parent stream's name (must be a declared stream).
+    pub stream: String,
+    /// placeholder token → parent record field (dot path).
+    pub placeholders: BTreeMap<String, String>,
+    /// Parent fields embedded into child records as `_parent_<name>`.
+    #[serde(default)]
+    pub include: Vec<String>,
 }
 
 /// Human-friendly hint names in YAML, mapped onto the engine's logical types.
@@ -134,6 +326,23 @@ impl From<HintType> for LogicalType {
     }
 }
 
+impl RestStream {
+    /// The effective incremental configuration: the block, or the pre-014
+    /// aliases assembled into one (validation forbids mixing them).
+    pub fn effective_incremental(&self) -> Option<Incremental> {
+        if let Some(inc) = &self.incremental {
+            return Some(inc.clone());
+        }
+        self.cursor_field.as_ref().map(|field| Incremental {
+            cursor_field: field.clone(),
+            start_param: self.cursor_param.clone(),
+            end_param: None,
+            end_value: None,
+            initial_value: None,
+        })
+    }
+}
+
 impl RestConfig {
     pub fn from_yaml(yaml: &str) -> Result<Self, ConfigError> {
         let config: RestConfig = serde_yaml::from_str(yaml)?;
@@ -159,17 +368,162 @@ impl RestConfig {
     }
 
     fn validate(&self) -> Result<(), ConfigError> {
+        let invalid = |msg: String| Err(ConfigError::Invalid(msg));
         if self.streams.is_empty() {
-            return Err(ConfigError::Invalid(
-                "at least one stream is required".into(),
-            ));
+            return invalid("at least one stream is required".into());
         }
+        let names: Vec<&str> = self.streams.iter().map(|s| s.name.as_str()).collect();
         for stream in &self.streams {
+            let name = &stream.name;
+            // Pre-014 aliases: set together, and never mixed with the block.
             if stream.cursor_field.is_some() != stream.cursor_param.is_some() {
-                return Err(ConfigError::Invalid(format!(
-                    "stream `{}`: cursor_field and cursor_param must be set together",
-                    stream.name
-                )));
+                return invalid(format!(
+                    "stream `{name}`: cursor_field and cursor_param must be set together"
+                ));
+            }
+            if stream.incremental.is_some() && stream.cursor_field.is_some() {
+                return invalid(format!(
+                    "stream `{name}`: use either the `incremental` block or the \
+                     legacy cursor_field/cursor_param aliases, not both"
+                ));
+            }
+            if let Some(inc) = &stream.incremental {
+                if inc.end_param.is_some() != inc.end_value.is_some() {
+                    return invalid(format!(
+                        "stream `{name}`: incremental.end_param and end_value must be \
+                         set together (closed windows take explicit values)"
+                    ));
+                }
+                if inc.cursor_field.trim().is_empty() {
+                    return invalid(format!(
+                        "stream `{name}`: incremental.cursor_field must not be empty"
+                    ));
+                }
+            }
+            // Body only for POST.
+            if stream.body.is_some() && stream.method != HttpMethod::Post {
+                return invalid(format!("stream `{name}`: `body` requires `method: post`"));
+            }
+            // Selector syntax is validated eagerly (typed at parse, RS1).
+            for (label, selector) in [
+                ("records_path", stream.records_path.as_deref()),
+                (
+                    "pagination.cursor_path",
+                    match &stream.pagination {
+                        Pagination::Cursor { cursor_path, .. } => Some(cursor_path.as_str()),
+                        _ => None,
+                    },
+                ),
+                (
+                    "pagination.next_url_path",
+                    match &stream.pagination {
+                        Pagination::NextUrl { next_url_path } => Some(next_url_path.as_str()),
+                        _ => None,
+                    },
+                ),
+                (
+                    "pagination.total_pages_path",
+                    match &stream.pagination {
+                        Pagination::Page {
+                            total_pages_path, ..
+                        } => total_pages_path.as_deref(),
+                        _ => None,
+                    },
+                ),
+                (
+                    "pagination.total_count_path",
+                    match &stream.pagination {
+                        Pagination::Page {
+                            total_count_path, ..
+                        } => total_count_path.as_deref(),
+                        Pagination::Offset {
+                            total_count_path, ..
+                        } => total_count_path.as_deref(),
+                        _ => None,
+                    },
+                ),
+            ] {
+                if let Some(selector) = selector
+                    && let Err(e) = super::read::extract::Selector::parse(selector)
+                {
+                    return invalid(format!("stream `{name}`: {label}: {e}"));
+                }
+            }
+            // Page: the two total stops are mutually exclusive.
+            if let Pagination::Page {
+                total_pages_path: Some(_),
+                total_count_path: Some(_),
+                ..
+            } = &stream.pagination
+            {
+                return invalid(format!(
+                    "stream `{name}`: pagination declares both total_pages_path and \
+                     total_count_path — pick one stop condition"
+                ));
+            }
+            // Response actions: at least one matcher each.
+            for (i, action) in stream.response_actions.iter().enumerate() {
+                if action.status.is_none() && action.content_contains.is_none() {
+                    return invalid(format!(
+                        "stream `{name}`: response_actions[{i}] needs `status` and/or \
+                         `content_contains` — an unconditional action would swallow \
+                         every response"
+                    ));
+                }
+            }
+            // Parent linkage.
+            if let Some(parent) = &stream.parent {
+                if parent.stream == *name {
+                    return invalid(format!("stream `{name}`: parent.stream is itself"));
+                }
+                if !names.contains(&parent.stream.as_str()) {
+                    return invalid(format!(
+                        "stream `{name}`: parent.stream `{}` is not a declared stream",
+                        parent.stream
+                    ));
+                }
+                let parent_decl = self
+                    .streams
+                    .iter()
+                    .find(|s| s.name == parent.stream)
+                    .expect("checked above");
+                if parent_decl.parent.is_some() {
+                    return invalid(format!(
+                        "stream `{name}`: parent.stream `{}` is itself a child — \
+                         one level of nesting is supported",
+                        parent.stream
+                    ));
+                }
+                if parent.placeholders.is_empty() {
+                    return invalid(format!(
+                        "stream `{name}`: parent.placeholders must not be empty"
+                    ));
+                }
+                for token in parent.placeholders.keys() {
+                    let referenced = stream.path.contains(&format!("{{{token}}}"))
+                        || stream
+                            .params
+                            .values()
+                            .any(|v| v.contains(&format!("{{{token}}}")))
+                        || stream
+                            .body
+                            .as_ref()
+                            .is_some_and(|b| b.to_string().contains(&format!("{{{token}}}")));
+                    if !referenced {
+                        return invalid(format!(
+                            "stream `{name}`: placeholder `{{{token}}}` is declared but \
+                             never used in path, params, or body"
+                        ));
+                    }
+                }
+            } else {
+                // Placeholders in the path REQUIRE a parent block.
+                if stream.path.contains('{') && stream.path.contains('}') {
+                    return invalid(format!(
+                        "stream `{name}`: path contains `{{placeholder}}` tokens but no \
+                         `parent` block declares them"
+                    ));
+                }
             }
         }
         Ok(())

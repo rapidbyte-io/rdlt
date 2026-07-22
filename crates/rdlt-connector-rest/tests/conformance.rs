@@ -180,3 +180,80 @@ async fn rest_source_is_conformant() {
     let source = RestSource::from_yaml(&config_yaml(&server.uri())).expect("config");
     assert_conformant(verify_source(&source).await);
 }
+
+/// Feature 014 US2 (T009): a 429 with Retry-After within the cap waits
+/// in-source and then SUCCEEDS — the wait is real (elapsed proves it).
+#[tokio::test]
+async fn retry_after_within_cap_waits_and_succeeds() {
+    let server = MockServer::start().await;
+    // First call 429 (retry-after 1s), afterwards 200.
+    Mock::given(method("GET"))
+        .and(path("/flaky"))
+        .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "1"))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/flaky"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"id": 1}])))
+        .mount(&server)
+        .await;
+    let yaml = format!(
+        "base_url: \"{}\"\nstreams:\n  - name: flaky\n    path: /flaky\n",
+        server.uri()
+    );
+    let source = RestSource::from_yaml(&yaml).expect("config");
+    let (out, mut input) = records_channel(1 << 20);
+    let spec = source.streams().await.expect("streams")[0].clone();
+    let started = std::time::Instant::now();
+    let read = tokio::spawn(async move { source.read(ReadRequest::new(spec, None, out)).await });
+    let mut rows = 0usize;
+    while let Some(push) = input.recv().await {
+        if let rdlt_connector::PushPayload::RawJson(bytes) = push.payload {
+            let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            rows += v.as_array().unwrap().len();
+        }
+    }
+    read.await.unwrap().expect("read succeeds after the wait");
+    assert_eq!(rows, 1);
+    assert!(
+        started.elapsed() >= std::time::Duration::from_secs(1),
+        "the Retry-After wait was honored"
+    );
+}
+
+/// T009: pacing — requests respect min_request_interval_ms (observed via
+/// total elapsed across a 3-request page chain).
+#[tokio::test]
+async fn pacing_floor_is_observed() {
+    let server = MockServer::start().await;
+    for (page, rows) in [
+        ("1", json!([{"id": 1}])),
+        ("2", json!([{"id": 2}])),
+        ("3", json!([])),
+    ] {
+        Mock::given(method("GET"))
+            .and(path("/paced"))
+            .and(query_param("page", page))
+            .respond_with(ResponseTemplate::new(200).set_body_json(rows))
+            .mount(&server)
+            .await;
+    }
+    let yaml = format!(
+        "base_url: \"{}\"\nmin_request_interval_ms: 200\nstreams:\n  - name: paced\n    path: /paced\n    pagination: {{type: page}}\n",
+        server.uri()
+    );
+    let source = RestSource::from_yaml(&yaml).expect("config");
+    let (out, mut input) = records_channel(1 << 20);
+    let spec = source.streams().await.expect("streams")[0].clone();
+    let started = std::time::Instant::now();
+    let read = tokio::spawn(async move { source.read(ReadRequest::new(spec, None, out)).await });
+    while input.recv().await.is_some() {}
+    read.await.unwrap().expect("read ok");
+    // 3 requests with a 200ms floor: >= 400ms between first and last sends.
+    assert!(
+        started.elapsed() >= std::time::Duration::from_millis(400),
+        "pacing floor not observed: {:?}",
+        started.elapsed()
+    );
+}

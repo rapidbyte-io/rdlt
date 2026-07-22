@@ -1,0 +1,340 @@
+//! The paginator vocabulary (contract RS2): seven config-backed families
+//! behind the public [`Paginator`] trait — the composition seam wrappers may
+//! implement for API quirks. Every family runs under the same loop guards
+//! (same-request detection + `max_pages`), owned by the read loop.
+
+use serde_json::Value;
+
+use crate::source::config::Pagination;
+use crate::source::read::extract::Selector;
+
+/// What the paginator saw of one response — bounded on purpose: never the
+/// whole body a second time.
+#[derive(Debug)]
+pub struct PageContext<'a> {
+    /// Parsed response body (present for body-driven paginators).
+    pub body: Option<&'a Value>,
+    /// Response headers the paginator may need.
+    pub headers: &'a reqwest::header::HeaderMap,
+    /// Records extracted from this page.
+    pub record_count: usize,
+    /// Cumulative records across the stream so far.
+    pub total_records: u64,
+}
+
+/// Where the next request goes.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PageDecision {
+    /// Stop: the stream is complete.
+    Done,
+    /// Fetch again with these query params merged in.
+    NextParams(Vec<(String, String)>),
+    /// Fetch this URL next (absolute, or relative to the current URL).
+    NextUrl(String),
+}
+
+/// The pagination contract (public seam, RS6). Implementations are
+/// per-stream-read state machines: `first()` yields the initial extra
+/// params; `next()` decides after each page.
+pub trait Paginator: Send + Sync {
+    /// Extra query params for the FIRST request (e.g. `page=1`).
+    fn first(&self) -> Vec<(String, String)>;
+    /// Decide after a page. `ctx.body` is `Some` iff [`Paginator::needs_body`].
+    fn next(&mut self, ctx: &PageContext<'_>) -> Result<PageDecision, String>;
+    /// Whether this paginator needs the parsed response body.
+    fn needs_body(&self) -> bool {
+        false
+    }
+}
+
+/// Build the config-backed paginator for a stream.
+pub fn from_config(pagination: &Pagination) -> Box<dyn Paginator> {
+    match pagination {
+        Pagination::None => Box::new(SinglePage),
+        Pagination::Page {
+            page_param,
+            start,
+            total_pages_path,
+            total_count_path,
+        } => Box::new(PageNumber {
+            param: page_param.clone(),
+            next: *start,
+            start: *start,
+            total_pages: total_pages_path
+                .as_deref()
+                .map(|p| Selector::parse(p).expect("validated at config parse")),
+            total_count: total_count_path
+                .as_deref()
+                .map(|p| Selector::parse(p).expect("validated at config parse")),
+        }),
+        Pagination::Offset {
+            offset_param,
+            limit_param,
+            page_size,
+            total_count_path,
+        } => Box::new(OffsetLimit {
+            offset_param: offset_param.clone(),
+            limit_param: limit_param.clone(),
+            page_size: *page_size,
+            offset: 0,
+            total_count: total_count_path
+                .as_deref()
+                .map(|p| Selector::parse(p).expect("validated at config parse")),
+        }),
+        Pagination::Cursor {
+            cursor_path,
+            cursor_param,
+        } => Box::new(BodyCursor {
+            path: Selector::parse(cursor_path).expect("validated at config parse"),
+            param: cursor_param.clone(),
+        }),
+        Pagination::HeaderCursor {
+            header,
+            cursor_param,
+        } => Box::new(HeaderCursor {
+            header: header.clone(),
+            param: cursor_param.clone(),
+        }),
+        Pagination::NextUrl { next_url_path } => Box::new(NextUrl {
+            path: Selector::parse(next_url_path).expect("validated at config parse"),
+        }),
+        Pagination::LinkHeader => Box::new(LinkHeader),
+    }
+}
+
+// ---- the seven families ----------------------------------------------------
+
+struct SinglePage;
+
+impl Paginator for SinglePage {
+    fn first(&self) -> Vec<(String, String)> {
+        vec![]
+    }
+    fn next(&mut self, _ctx: &PageContext<'_>) -> Result<PageDecision, String> {
+        Ok(PageDecision::Done)
+    }
+}
+
+struct PageNumber {
+    param: String,
+    next: u64,
+    start: u64,
+    total_pages: Option<Selector>,
+    total_count: Option<Selector>,
+}
+
+impl Paginator for PageNumber {
+    fn first(&self) -> Vec<(String, String)> {
+        vec![(self.param.clone(), self.next.to_string())]
+    }
+    fn next(&mut self, ctx: &PageContext<'_>) -> Result<PageDecision, String> {
+        if ctx.record_count == 0 {
+            return Ok(PageDecision::Done);
+        }
+        let current = self.next;
+        // Declared totals stop BEFORE an extra empty-page request.
+        if let (Some(sel), Some(body)) = (&self.total_pages, ctx.body)
+            && let Some(total) = sel.select_one(body).and_then(Value::as_u64)
+        {
+            let pages_done = current - self.start + 1;
+            if pages_done >= total {
+                return Ok(PageDecision::Done);
+            }
+        }
+        if let (Some(sel), Some(body)) = (&self.total_count, ctx.body)
+            && let Some(total) = sel.select_one(body).and_then(Value::as_u64)
+            && ctx.total_records >= total
+        {
+            return Ok(PageDecision::Done);
+        }
+        self.next = current + 1;
+        Ok(PageDecision::NextParams(vec![(
+            self.param.clone(),
+            self.next.to_string(),
+        )]))
+    }
+    fn needs_body(&self) -> bool {
+        self.total_pages.is_some() || self.total_count.is_some()
+    }
+}
+
+struct OffsetLimit {
+    offset_param: String,
+    limit_param: String,
+    page_size: u64,
+    offset: u64,
+    total_count: Option<Selector>,
+}
+
+impl OffsetLimit {
+    fn params(&self) -> Vec<(String, String)> {
+        vec![
+            (self.offset_param.clone(), self.offset.to_string()),
+            (self.limit_param.clone(), self.page_size.to_string()),
+        ]
+    }
+}
+
+impl Paginator for OffsetLimit {
+    fn first(&self) -> Vec<(String, String)> {
+        self.params()
+    }
+    fn next(&mut self, ctx: &PageContext<'_>) -> Result<PageDecision, String> {
+        if ctx.record_count < self.page_size as usize {
+            return Ok(PageDecision::Done); // short page = last page
+        }
+        if let (Some(sel), Some(body)) = (&self.total_count, ctx.body)
+            && let Some(total) = sel.select_one(body).and_then(Value::as_u64)
+            && ctx.total_records >= total
+        {
+            return Ok(PageDecision::Done);
+        }
+        self.offset += self.page_size;
+        Ok(PageDecision::NextParams(self.params()))
+    }
+    fn needs_body(&self) -> bool {
+        self.total_count.is_some()
+    }
+}
+
+struct BodyCursor {
+    path: Selector,
+    param: String,
+}
+
+impl Paginator for BodyCursor {
+    fn first(&self) -> Vec<(String, String)> {
+        vec![]
+    }
+    fn next(&mut self, ctx: &PageContext<'_>) -> Result<PageDecision, String> {
+        let Some(body) = ctx.body else {
+            return Err("cursor pagination needs the response body".into());
+        };
+        match self.path.select_one(body) {
+            None | Some(Value::Null) => Ok(PageDecision::Done),
+            Some(Value::String(s)) if s.is_empty() => Ok(PageDecision::Done),
+            Some(Value::String(s)) => Ok(PageDecision::NextParams(vec![(
+                self.param.clone(),
+                s.clone(),
+            )])),
+            Some(Value::Number(n)) => Ok(PageDecision::NextParams(vec![(
+                self.param.clone(),
+                n.to_string(),
+            )])),
+            Some(other) => Err(format!(
+                "cursor at `{}` is {} — expected string or number",
+                self.path.raw(),
+                match other {
+                    Value::Array(_) => "an array",
+                    Value::Object(_) => "an object",
+                    Value::Bool(_) => "a bool",
+                    _ => "unsupported",
+                }
+            )),
+        }
+    }
+    fn needs_body(&self) -> bool {
+        true
+    }
+}
+
+struct HeaderCursor {
+    header: String,
+    param: String,
+}
+
+impl Paginator for HeaderCursor {
+    fn first(&self) -> Vec<(String, String)> {
+        vec![]
+    }
+    fn next(&mut self, ctx: &PageContext<'_>) -> Result<PageDecision, String> {
+        match ctx.headers.get(&self.header).and_then(|v| v.to_str().ok()) {
+            None => Ok(PageDecision::Done),
+            Some("") => Ok(PageDecision::Done),
+            Some(value) => Ok(PageDecision::NextParams(vec![(
+                self.param.clone(),
+                value.to_owned(),
+            )])),
+        }
+    }
+}
+
+struct NextUrl {
+    path: Selector,
+}
+
+impl Paginator for NextUrl {
+    fn first(&self) -> Vec<(String, String)> {
+        vec![]
+    }
+    fn next(&mut self, ctx: &PageContext<'_>) -> Result<PageDecision, String> {
+        let Some(body) = ctx.body else {
+            return Err("next_url pagination needs the response body".into());
+        };
+        match self.path.select_one(body) {
+            None | Some(Value::Null) => Ok(PageDecision::Done),
+            Some(Value::String(url)) if url.is_empty() => Ok(PageDecision::Done),
+            Some(Value::String(url)) => Ok(PageDecision::NextUrl(url.clone())),
+            Some(_) => Err(format!("next url at `{}` is not a string", self.path.raw())),
+        }
+    }
+    fn needs_body(&self) -> bool {
+        true
+    }
+}
+
+struct LinkHeader;
+
+impl Paginator for LinkHeader {
+    fn first(&self) -> Vec<(String, String)> {
+        vec![]
+    }
+    fn next(&mut self, ctx: &PageContext<'_>) -> Result<PageDecision, String> {
+        let Some(link) = ctx
+            .headers
+            .get(reqwest::header::LINK)
+            .and_then(|v| v.to_str().ok())
+        else {
+            return Ok(PageDecision::Done);
+        };
+        match parse_link_next(link) {
+            Some(url) => Ok(PageDecision::NextUrl(url)),
+            None => Ok(PageDecision::Done),
+        }
+    }
+}
+
+/// RFC5988 subset: `<https://…>; rel="next"` among comma-separated members.
+pub(crate) fn parse_link_next(header: &str) -> Option<String> {
+    for member in header.split(',') {
+        let member = member.trim();
+        let url = member
+            .strip_prefix('<')
+            .and_then(|rest| rest.split_once('>'))?;
+        let (url, params) = url;
+        let is_next = params.split(';').any(|p| {
+            let p = p.trim();
+            p.eq_ignore_ascii_case("rel=next") || p.eq_ignore_ascii_case("rel=\"next\"")
+        });
+        if is_next {
+            return Some(url.to_owned());
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn link_header_subset() {
+        let h = "<https://api.example.com/x?page=2>; rel=\"next\", <https://api.example.com/x?page=9>; rel=\"last\"";
+        assert_eq!(
+            parse_link_next(h).as_deref(),
+            Some("https://api.example.com/x?page=2")
+        );
+        assert_eq!(parse_link_next("<https://x>; rel=\"prev\""), None);
+        assert_eq!(parse_link_next("junk"), None);
+    }
+}

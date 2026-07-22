@@ -30,7 +30,7 @@ No big-bang rewrite commit — every task leaves the whole suite green.
 
 ## Phase 2: Foundational (blocking all stories)
 
-- [ ] T002 Secret hygiene + client extraction:
+- [X] T002 Secret hygiene + client extraction:
   `crates/rdlt-connector-rest/src/source/client/secret.rs`
   (`Secret(String)`: serde-transparent, Debug/Display `***`,
   schemars placeholder) applied to existing auth fields (bearer token,
@@ -43,7 +43,7 @@ No big-bang rewrite commit — every task leaves the whole suite green.
   cell in `crates/rdlt-connector-rest/tests/auth.rs` (Debug + error
   renderings contain no secret substring); existing conformance cells
   green.
-- [ ] T003 Paginator seam:
+- [X] T003 Paginator seam:
   `crates/rdlt-connector-rest/src/source/read/paginate.rs` — public
   `Paginator` trait (bounded response summary → `PageDecision`),
   the frozen three families (none/page/offset) rewired through it with
@@ -64,7 +64,7 @@ validated typed, proven against wiremock.
 action reads to exact totals through the engine; invalid configs fail
 typed at parse.
 
-- [ ] T004 [US1] New pagination families in
+- [X] T004 [US1] New pagination families in
   `crates/rdlt-connector-rest/src/source/read/paginate.rs` +
   `config.rs`: `cursor` (body selector → param), `header_cursor`,
   `next_url` (body selector → absolute/relative URL), `link_header`
@@ -73,14 +73,14 @@ typed at parse.
   family (empty page / absent cursor / absent link / count reached) in
   `crates/rdlt-connector-rest/tests/pagination.rs` (wiremock,
   engine-driven totals).
-- [ ] T005 [P] [US1] JSONPath-subset selector in
+- [X] T005 [P] [US1] JSONPath-subset selector in
   `crates/rdlt-connector-rest/src/source/read/extract.rs`: dot paths +
   `[*]` + `[N]` parsed into a typed `Selector` at config validation
   (typed error naming the supported subset); records extraction keeps
   the no-selector passthrough byte-identical (RS5); no-match errors
   name path + response top-level keys; unit cells in-file + wiremock
   cells in `crates/rdlt-connector-rest/tests/actions.rs`.
-- [ ] T006 [P] [US1] Auth additions in
+- [X] T006 [P] [US1] Auth additions in
   `crates/rdlt-connector-rest/src/source/client/auth.rs`: `api_key`
   (header/query) and `oauth2_client_credentials` (token URL POST via
   the same classify path, lazy single-flight cache, expiry margin, ONE
@@ -88,7 +88,7 @@ typed at parse.
   `crates/rdlt-connector-rest/tests/auth.rs` (fetch, cache-hit,
   expiry refresh, 401-refetch-then-fatal, 5xx-token-fetch transient);
   Secret applied to key/client_secret/token.
-- [ ] T007 [US1] Request shape + response actions:
+- [X] T007 [US1] Request shape + response actions:
   `method: get|post` + `body` templates (pagination params into query
   for GET / declared body params for POST-cursor, R5) in
   `crates/rdlt-connector-rest/src/source/{config.rs,read/mod.rs}`;
@@ -110,7 +110,7 @@ fail points swept.
 **Independent test**: resume re-requests only the tail; 429 waits and
 succeeds; sweep pins fire.
 
-- [ ] T008 [US2] Incremental block
+- [X] T008 [US2] Incremental block
   (`{cursor_field, start_param, end_param?, initial_value?}`) in
   `crates/rdlt-connector-rest/src/source/config.rs` +
   `read/mod.rs`, with old `cursor_field`/`cursor_param` as frozen
@@ -118,12 +118,12 @@ succeeds; sweep pins fire.
   `crates/rdlt-connector-rest/tests/conformance.rs` (tail-only
   re-request asserted via wiremock request logs; end_param closes the
   window; alias round-trip).
-- [ ] T009 [P] [US2] Politeness cells: Retry-After honored within
+- [X] T009 [P] [US2] Politeness cells: Retry-After honored within
   `retry_after_cap_secs` (wiremock 429→success sequence, wait
   observed), beyond-cap surfaces RateLimited to the engine budget;
   pacing observable (request-timestamp spacing ≥ declared interval) —
   `crates/rdlt-connector-rest/tests/conformance.rs`.
-- [ ] T010 [US2] Crash points: `rest.request`, `rest.decode`,
+- [X] T010 [US2] Crash points: `rest.request`, `rest.decode`,
   `rest.checkpoint` in
   `crates/rdlt-connector-rest/src/source/read/mod.rs` + `FAIL_POINTS`
   registry in `src/source/mod.rs`; extend
@@ -139,7 +139,7 @@ PokeAPI live proof.
 nested mock API through the engine; PokeAPI cell passes under
 RDLT_NET=1.
 
-- [ ] T011 [US3] Parent-child resolution in
+- [X] T011 [US3] Parent-child resolution in
   `crates/rdlt-connector-rest/src/source/read/resolve.rs` +
   `config.rs`: `parent: {stream, placeholders, include}` — validated
   (declared parent, collision-typed `_parent_*` fields), parent read
@@ -148,14 +148,14 @@ RDLT_NET=1.
   feed end only; cells in
   `crates/rdlt-connector-rest/tests/children.rs` (wiremock nested API,
   engine totals, include fields, failure naming).
-- [ ] T012 [P] [US3] The composed example
+- [X] T012 [P] [US3] The composed example
   `crates/rdlt-connector-rest/examples/composed_api.rs`: a mini named-
   API connector built ONLY from public pieces (config generator + a
   custom `Paginator` impl for an API quirk + the standard client) —
   compiles in CI as the seam proof; a test in
   `crates/rdlt-connector-rest/tests/children.rs` runs it against
   wiremock through the engine.
-- [ ] T013 [US3] PokeAPI live cell
+- [X] T013 [US3] PokeAPI live cell
   `crates/rdlt-connector-rest/tests/pokeapi_live.rs` (FR-013):
   `RDLT_NET=1`-gated (skip, not fail, without it); declarative config
   only — `/api/v2/pokemon?limit=100` via next_url pagination + a

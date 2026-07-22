@@ -1,0 +1,212 @@
+//! Feature 014 US1 (T006): auth schemes — attachment, the OAuth2 token
+//! lifecycle, and the secret grep-proof (contracts RS3/RS4).
+
+mod common;
+
+use common::{read_ok, read_stream};
+use serde_json::json;
+use wiremock::matchers::{body_string_contains, header, method, path, query_param};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+fn one_item_stream(server: &MockServer, extra: &str) -> String {
+    format!(
+        r#"
+base_url: "{}"
+{extra}
+streams:
+  - name: items
+    path: /items
+"#,
+        server.uri()
+    )
+}
+
+/// api_key in a header and in a query param.
+#[tokio::test]
+async fn api_key_attaches_header_and_query() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/items"))
+        .and(header("x-api-key", "k-123"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"id": 1}])))
+        .mount(&server)
+        .await;
+    let yaml = one_item_stream(&server, "auth: {api_key: {name: x-api-key, key: k-123}}");
+    assert_eq!(read_ok(&yaml, "items").await.len(), 1);
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/items"))
+        .and(query_param("api_key", "k-456"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"id": 1}])))
+        .mount(&server)
+        .await;
+    let yaml = one_item_stream(
+        &server,
+        "auth: {api_key: {name: api_key, key: k-456, location: query}}",
+    );
+    assert_eq!(read_ok(&yaml, "items").await.len(), 1);
+}
+
+/// OAuth2: lazy fetch, cache across pages, bearer attachment.
+#[tokio::test]
+async fn oauth2_fetches_once_and_caches() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .and(body_string_contains("grant_type=client_credentials"))
+        .and(body_string_contains("client_id=cid"))
+        .and(body_string_contains("scope=read+write"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "tok-oauth", "expires_in": 3600
+        })))
+        .expect(1) // cache proof: ONE fetch for two data requests
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/items"))
+        .and(header("authorization", "Bearer tok-oauth"))
+        .and(query_param("page", "1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"id": 1}])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/items"))
+        .and(header("authorization", "Bearer tok-oauth"))
+        .and(query_param("page", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+    let yaml = format!(
+        r#"
+base_url: "{0}"
+auth:
+  oauth2_client_credentials:
+    token_url: "{0}/token"
+    client_id: cid
+    client_secret: shh-secret
+    scopes: [read, write]
+streams:
+  - name: items
+    path: /items
+    pagination: {{type: page}}
+"#,
+        server.uri()
+    );
+    assert_eq!(read_ok(&yaml, "items").await.len(), 1);
+}
+
+/// OAuth2: a 401 on the data request drops the cache, re-fetches ONCE, and a
+/// second 401 is fatal (never a loop).
+#[tokio::test]
+async fn oauth2_refreshes_once_on_401_then_fatal() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "tok", "expires_in": 3600
+        })))
+        .expect(2) // initial + the one 401-triggered re-fetch
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/items"))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&server)
+        .await;
+    let yaml = format!(
+        r#"
+base_url: "{0}"
+auth:
+  oauth2_client_credentials:
+    token_url: "{0}/token"
+    client_id: cid
+    client_secret: shh
+streams:
+  - name: items
+    path: /items
+"#,
+        server.uri()
+    );
+    let outcome = read_stream(&yaml, "items", None).await;
+    let err = outcome.result.expect_err("second 401 is fatal").to_string();
+    assert!(err.contains("401"), "{err}");
+}
+
+/// OAuth2: a 5xx from the token endpoint is TRANSIENT (engine budget).
+#[tokio::test]
+async fn oauth2_token_endpoint_5xx_is_transient() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+    let yaml = format!(
+        r#"
+base_url: "{0}"
+auth:
+  oauth2_client_credentials:
+    token_url: "{0}/token"
+    client_id: cid
+    client_secret: shh
+streams:
+  - name: items
+    path: /items
+"#,
+        server.uri()
+    );
+    let outcome = read_stream(&yaml, "items", None).await;
+    match outcome.result {
+        Err(rdlt_connector::SourceError::Transient { .. }) => {}
+        other => panic!("expected Transient, got {other:?}"),
+    }
+}
+
+/// RS4 grep-proof: secrets never render — config Debug, source Debug, and
+/// every error path from a failing authenticated read.
+#[tokio::test]
+async fn secrets_never_render_anywhere() {
+    const SECRETS: &[&str] = &[
+        "hunter2-token",
+        "hunter2-pass",
+        "hunter2-key",
+        "hunter2-client",
+    ];
+    let server = MockServer::start().await;
+    // Everything 500s: error paths render, and must not leak.
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+    for auth in [
+        "auth: {bearer: {token: hunter2-token}}",
+        "auth: {basic: {username: u, password: hunter2-pass}}",
+        "auth: {header: {name: x-auth, value: hunter2-key}}",
+        "auth: {api_key: {name: k, key: hunter2-key}}",
+        &format!(
+            "auth: {{oauth2_client_credentials: {{token_url: \"{}/token\", client_id: cid, client_secret: hunter2-client}}}}",
+            server.uri()
+        ),
+    ] {
+        let yaml = one_item_stream(&server, auth);
+        let config = rdlt_connector_rest::RestConfig::from_yaml(&yaml).expect("parses");
+        let rendered_config = format!("{config:?}");
+        let source = rdlt_connector_rest::RestSource::new(config);
+        let rendered_source = format!("{source:?}");
+        let outcome = read_stream(&yaml, "items", None).await;
+        let rendered_err = outcome.result.expect_err("500s fail").to_string();
+        for secret in SECRETS {
+            for (what, rendering) in [
+                ("config Debug", &rendered_config),
+                ("source Debug", &rendered_source),
+                ("error", &rendered_err),
+            ] {
+                assert!(
+                    !rendering.contains(secret),
+                    "{what} leaked `{secret}` under {auth}: {rendering}"
+                );
+            }
+        }
+    }
+}

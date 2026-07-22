@@ -7,4 +7,7 @@
 
 pub mod source;
 
-pub use source::{Auth, Pagination, RestConfig, RestSource, RestStream, config, config_schema};
+pub use source::{
+    Auth, PageContext, PageDecision, Pagination, Paginator, RestClient, RestConfig, RestSource,
+    RestStream, Secret, config, config_schema,
+};
