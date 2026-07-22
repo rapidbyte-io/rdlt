@@ -25,6 +25,17 @@ pub use config::{
     SortOrder,
 };
 
+/// SQL-generation seam, exposed ONLY for the golden-SQL pin suite
+/// (feature 013 SM4): the pins bind the exact statement text across the
+/// sqlcore extraction. Not a public API.
+#[doc(hidden)]
+pub mod sqlgen {
+    pub use super::commit::{
+        ARRIVAL_COL, HardDelete, MergePlan, identity_delete_insert_sql, keyed_delete_insert_sql,
+        keyed_upsert_sql, scd2_merge_sql, scope_replace_sql,
+    };
+}
+
 /// Fail-point registry (gate G2.2): every `crash_point!` site in this crate —
 /// the ENGINE-OWNED protocol boundaries (stage writes, the publish transaction
 /// edges, the D3 redelivery window). Postgres' internal transaction atomicity

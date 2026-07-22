@@ -19,7 +19,7 @@ use super::{copy_error, encode, fatal, quote, transient};
 /// Arrival-order column on STAGE tables only: makes merge dedup deterministic
 /// ("last wins" for real — finding #7). Excluded from publish column lists because it
 /// is not part of the logical schema.
-pub(super) const ARRIVAL_COL: &str = "__rdlt_arrival";
+pub const ARRIVAL_COL: &str = "__rdlt_arrival";
 
 /// Stage names are pipeline-scoped and hashed: scoping stops one pipeline's `open`
 /// from truncating another's live staged rows in a shared schema (finding #3), and
@@ -690,13 +690,13 @@ impl LoadSession for PgSession {
 
 /// Hard-delete flag semantics (M4): boolean columns compare `IS TRUE`,
 /// other types `IS NOT NULL` — both NULL-safe on the KEEP side.
-struct HardDelete {
+pub struct HardDelete {
     flagged: String,
     keep: String,
 }
 
 impl HardDelete {
-    fn new(column: &str, root_schema: &TableSchema) -> Self {
+    pub fn new(column: &str, root_schema: &TableSchema) -> Self {
         use rdlt_connector::core::{ColumnType, LogicalType};
         let is_bool = matches!(
             root_schema.column(column).map(|c| &c.ty),
@@ -720,18 +720,18 @@ impl HardDelete {
 }
 
 /// Everything a strategy arm needs about one table's publish.
-struct MergePlan<'a> {
-    target: &'a str,
-    stage: &'a str,
-    cols: &'a str,
-    schema: &'a TableSchema,
-    key: &'a [String],
-    root_stage: String,
-    is_child: bool,
-    hard_delete: Option<HardDelete>,
+pub struct MergePlan<'a> {
+    pub target: &'a str,
+    pub stage: &'a str,
+    pub cols: &'a str,
+    pub schema: &'a TableSchema,
+    pub key: &'a [String],
+    pub root_stage: String,
+    pub is_child: bool,
+    pub hard_delete: Option<HardDelete>,
     /// Feature 010 (MR1): ordered in-load survivor selection; None keeps
     /// arrival-order last-wins.
-    dedup_sort: Option<&'a super::config::DedupSort>,
+    pub dedup_sort: Option<&'a super::config::DedupSort>,
 }
 
 impl MergePlan<'_> {
@@ -803,12 +803,7 @@ impl MergePlan<'_> {
 /// explicitly, and target-side row comparison is never TRUE against NULL
 /// (MR4). Committed-unit redelivery exits before merge SQL (D3), so the
 /// delete can never double-fire.
-async fn scope_replace(
-    tx: &tokio_postgres::Transaction<'_>,
-    target: &str,
-    stage: &str,
-    scope: &[String],
-) -> Result<(), DestError> {
+pub fn scope_replace_sql(target: &str, stage: &str, scope: &[String]) -> String {
     let cols = scope
         .iter()
         .map(|c| quote(c))
@@ -819,12 +814,21 @@ async fn scope_replace(
         .map(|c| format!("{} IS NOT NULL", quote(c)))
         .collect::<Vec<_>>()
         .join(" AND ");
-    tx.batch_execute(&format!(
+    format!(
         "DELETE FROM {target} WHERE ({cols}) IN (
              SELECT {cols} FROM {stage} WHERE {not_null})"
-    ))
-    .await
-    .map_err(transient)?;
+    )
+}
+
+async fn scope_replace(
+    tx: &tokio_postgres::Transaction<'_>,
+    target: &str,
+    stage: &str,
+    scope: &[String],
+) -> Result<(), DestError> {
+    tx.batch_execute(&scope_replace_sql(target, stage, scope))
+        .await
+        .map_err(transient)?;
     Ok(())
 }
 
@@ -835,47 +839,45 @@ async fn scope_replace(
 /// them typed at write time (feature 006, `rdlt-engine/src/load/mod.rs`
 /// structured_merge_keys guard, conformance-pinned). Direct SPI drivers
 /// bypassing the engine inherit that contract obligation.
-async fn keyed_delete_insert(
-    tx: &tokio_postgres::Transaction<'_>,
-    plan: &MergePlan<'_>,
-) -> Result<(), DestError> {
+pub fn keyed_delete_insert_sql(plan: &MergePlan<'_>) -> Vec<String> {
     let (target, stage, cols) = (plan.target, plan.stage, plan.cols);
     let key_list = plan.key_list();
-    tx.batch_execute(&format!(
-        "DELETE FROM {target} WHERE ({key_list}) IN (SELECT {key_list} FROM {stage})"
-    ))
-    .await
-    .map_err(transient)?;
     let keep = plan
         .hard_delete
         .as_ref()
         .map(|hd| format!(" WHERE {}", hd.keep))
         .unwrap_or_default();
-    tx.batch_execute(&format!(
-        "INSERT INTO {target} ({cols}) SELECT {cols} FROM {} deduped{keep}",
-        plan.deduped(&key_list),
-    ))
-    .await
-    .map_err(transient)?;
+    vec![
+        format!("DELETE FROM {target} WHERE ({key_list}) IN (SELECT {key_list} FROM {stage})"),
+        format!(
+            "INSERT INTO {target} ({cols}) SELECT {cols} FROM {} deduped{keep}",
+            plan.deduped(&key_list),
+        ),
+    ]
+}
+
+async fn keyed_delete_insert(
+    tx: &tokio_postgres::Transaction<'_>,
+    plan: &MergePlan<'_>,
+) -> Result<(), DestError> {
+    for sql in keyed_delete_insert_sql(plan) {
+        tx.batch_execute(&sql).await.map_err(transient)?;
+    }
     Ok(())
 }
 
 /// Keyed structured upsert (M2): conflict-update on the merge key.
-async fn keyed_upsert(
-    tx: &tokio_postgres::Transaction<'_>,
-    plan: &MergePlan<'_>,
-) -> Result<(), DestError> {
+pub fn keyed_upsert_sql(plan: &MergePlan<'_>) -> Vec<String> {
     let (target, cols) = (plan.target, plan.cols);
     let key_list = plan.key_list();
+    let mut out = Vec::new();
     if let Some(hd) = &plan.hard_delete {
-        tx.batch_execute(&format!(
+        out.push(format!(
             "DELETE FROM {target} WHERE ({key_list}) IN \
              (SELECT {key_list} FROM {} d WHERE {})",
             plan.deduped(&key_list),
             hd.flagged
-        ))
-        .await
-        .map_err(transient)?;
+        ));
     }
     let keep = plan
         .hard_delete
@@ -888,21 +890,26 @@ async fn keyed_upsert(
     } else {
         format!("DO UPDATE SET {set}")
     };
-    tx.batch_execute(&format!(
+    out.push(format!(
         "INSERT INTO {target} ({cols}) SELECT {cols} FROM {} deduped{keep} \
          ON CONFLICT ({key_list}) {action}",
         plan.deduped(&key_list),
-    ))
-    .await
-    .map_err(transient)?;
+    ));
+    out
+}
+
+async fn keyed_upsert(
+    tx: &tokio_postgres::Transaction<'_>,
+    plan: &MergePlan<'_>,
+) -> Result<(), DestError> {
+    for sql in keyed_upsert_sql(plan) {
+        tx.batch_execute(&sql).await.map_err(transient)?;
+    }
     Ok(())
 }
 
 /// Shredded identity delete-insert (the original arm + M4 hard delete).
-async fn identity_delete_insert(
-    tx: &tokio_postgres::Transaction<'_>,
-    plan: &MergePlan<'_>,
-) -> Result<(), DestError> {
+pub fn identity_delete_insert_sql(plan: &MergePlan<'_>) -> Vec<String> {
     let (target, cols) = (plan.target, plan.cols);
     let id = quote(system_columns::ID);
     let id_col = if plan.is_child {
@@ -910,14 +917,6 @@ async fn identity_delete_insert(
     } else {
         id.clone()
     };
-    // Subtree replacement by root id + DETERMINISTIC in-batch dedup:
-    // arrival order breaks ties, so "last wins" is real (finding #7).
-    tx.batch_execute(&format!(
-        "DELETE FROM {target} WHERE {id_col} IN (SELECT {id} FROM {})",
-        plan.root_stage
-    ))
-    .await
-    .map_err(transient)?;
     // Hard delete (M4): flagged ROOTS drop from the root insert; their
     // children drop by root-id membership.
     let keep = match (&plan.hard_delete, plan.is_child) {
@@ -929,12 +928,27 @@ async fn identity_delete_insert(
         ),
         (None, _) => String::new(),
     };
-    tx.batch_execute(&format!(
-        "INSERT INTO {target} ({cols}) SELECT {cols} FROM {} deduped{keep}",
-        plan.deduped(&id),
-    ))
-    .await
-    .map_err(transient)?;
+    vec![
+        // Subtree replacement by root id + DETERMINISTIC in-batch dedup:
+        // arrival order breaks ties, so "last wins" is real (finding #7).
+        format!(
+            "DELETE FROM {target} WHERE {id_col} IN (SELECT {id} FROM {})",
+            plan.root_stage
+        ),
+        format!(
+            "INSERT INTO {target} ({cols}) SELECT {cols} FROM {} deduped{keep}",
+            plan.deduped(&id),
+        ),
+    ]
+}
+
+async fn identity_delete_insert(
+    tx: &tokio_postgres::Transaction<'_>,
+    plan: &MergePlan<'_>,
+) -> Result<(), DestError> {
+    for sql in identity_delete_insert_sql(plan) {
+        tx.batch_execute(&sql).await.map_err(transient)?;
+    }
     Ok(())
 }
 
@@ -944,11 +958,7 @@ async fn identity_delete_insert(
 /// One boundary per commit unit: `now()` is the TRANSACTION timestamp, so
 /// every statement in this publish sees the same instant (S5); redelivery
 /// re-executes nothing (D3 receipts).
-async fn scd2_merge(
-    tx: &tokio_postgres::Transaction<'_>,
-    plan: &MergePlan<'_>,
-    scd2: &super::config::Scd2Options,
-) -> Result<(), DestError> {
+pub fn scd2_merge_sql(plan: &MergePlan<'_>, scd2: &super::config::Scd2Options) -> Vec<String> {
     let (target, cols) = (plan.target, plan.cols);
     let key_list = plan.key_list();
     let deduped = plan.deduped(&key_list);
@@ -971,36 +981,42 @@ async fn scd2_merge(
         .collect::<Vec<_>>()
         .join(" OR ");
 
+    let mut out = Vec::new();
     // S3 retire: active versions whose key arrives with DIFFERENT values.
     if !changed.is_empty() {
-        tx.batch_execute(&format!(
+        out.push(format!(
             "UPDATE {target} t SET {vt} = now() \
              FROM {deduped} d WHERE t.{vt} IS NULL AND {key_match} AND ({changed})"
-        ))
-        .await
-        .map_err(transient)?;
+        ));
     }
     // S2/S3 insert: staged rows with NO remaining active version (changed
     // keys were just retired; unchanged keys still hold their identical
     // active version and are SKIPPED — no churn).
-    tx.batch_execute(&format!(
+    out.push(format!(
         "INSERT INTO {target} ({cols}, {vf}, {vt}) \
          SELECT {cols}, now(), NULL FROM {deduped} d \
          WHERE NOT EXISTS ( \
              SELECT 1 FROM {target} t WHERE t.{vt} IS NULL AND {key_match})"
-    ))
-    .await
-    .map_err(transient)?;
+    ));
     // S6: full-feed absence semantics on request.
     if scd2.absent == super::config::AbsentPolicy::Retire {
-        tx.batch_execute(&format!(
+        out.push(format!(
             "UPDATE {target} t SET {vt} = now() \
              WHERE t.{vt} IS NULL AND ({key_list}) NOT IN \
                    (SELECT {key_list} FROM {} d)",
             plan.deduped(&key_list),
-        ))
-        .await
-        .map_err(transient)?;
+        ));
+    }
+    out
+}
+
+async fn scd2_merge(
+    tx: &tokio_postgres::Transaction<'_>,
+    plan: &MergePlan<'_>,
+    scd2: &super::config::Scd2Options,
+) -> Result<(), DestError> {
+    for sql in scd2_merge_sql(plan, scd2) {
+        tx.batch_execute(&sql).await.map_err(transient)?;
     }
     Ok(())
 }

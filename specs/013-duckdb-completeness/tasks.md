@@ -16,7 +16,7 @@ commits — SM4 reviewability.
 
 ## Phase 1: Setup
 
-- [ ] T001 The weld: measure the duckdb-crate coverage BASELINE
+- [X] T001 The weld: measure the duckdb-crate coverage BASELINE
   (`cargo llvm-cov nextest -p rdlt-connector-duckdb`, recorded before
   any new cell — 011 R2 rule) and write the golden-SQL pin suite
   `crates/rdlt-connector-postgres/tests/golden_sql.rs` against TODAY'S
