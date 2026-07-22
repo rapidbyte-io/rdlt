@@ -161,11 +161,16 @@ fn teardown(
     ready_port: Option<u16>,
     teardown_sh: &mut Option<String>,
 ) {
-    if let Some(script) = teardown_sh.take() {
-        let _ = Command::new("sh").args(["-c", &script]).status();
-    }
+    // The FIRST act stays force-removing the fixture container (the
+    // pre-016 invariant); the sidecar script runs after, bounded — a
+    // wedged script must not hang the bench process in Drop forever.
     if let Some((engine, name)) = container.take() {
         let _ = Command::new(&engine).args(["rm", "-f", &name]).output();
+    }
+    if let Some(script) = teardown_sh.take() {
+        let _ = Command::new("timeout")
+            .args(["30", "sh", "-c", &script])
+            .status();
     }
     if let Some(mut child) = service.take() {
         let _ = child.kill();

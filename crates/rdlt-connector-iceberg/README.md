@@ -101,7 +101,11 @@ config alone.
 **Schema**: closed mapping from engine logical types (Json lands as
 string — documented), structs and scalar lists recurse with unique
 field IDs. Additive drift (new nullable columns) evolves the table in
-one transaction; type conflicts are typed naming the column.
+one transaction (conflict-retried like any commit); type conflicts are
+typed naming the column. Narrowing is tolerated: a nullable table
+column the stream stopped providing is null-filled (a required one is
+a typed error naming the table). A rejected credential (401/403) fails
+fast — it never rides the transient retry budget.
 
 ## Provider notes
 

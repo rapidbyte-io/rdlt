@@ -96,6 +96,9 @@ struct TableState {
     arrow_target: Arc<arrow_schema::Schema>,
     /// The writer for the current commit window (opened on first write).
     writer: Option<TableWriter>,
+    /// Data files closed early (a mid-window schema change retires the
+    /// writer — see ensure_table); committed with the window's files.
+    pending_files: Vec<iceberg::spec::DataFile>,
     /// Sequence for unique data-file name prefixes.
     windows: u64,
 }
@@ -126,7 +129,10 @@ fn session_nonce() -> String {
 impl IcebergSession {
     /// Align an engine batch to the table's field-id-annotated arrow
     /// schema: columns matched BY NAME, cast where representations differ
-    /// (e.g. timestamp units); a missing column is typed.
+    /// (e.g. timestamp units). A table column the batch lacks is
+    /// NULL-FILLED when nullable (schema narrowing / concurrent additive
+    /// evolution — the SQL destinations' tolerance) and typed when
+    /// required, attributed to the TABLE, not the stream.
     fn align(
         context: &str,
         target: &Arc<arrow_schema::Schema>,
@@ -134,24 +140,32 @@ impl IcebergSession {
     ) -> Result<RecordBatch, DestError> {
         let mut columns = Vec::with_capacity(target.fields().len());
         for field in target.fields() {
-            let index = batch.schema().index_of(field.name()).map_err(|_| {
-                fatal(format!(
-                    "{context}: batch is missing column `{}` declared by the stream schema",
-                    field.name()
-                ))
-            })?;
-            let column = batch.column(index);
-            let column = if column.data_type() == field.data_type() {
-                column.clone()
-            } else {
-                arrow_cast::cast(column, field.data_type()).map_err(|e| {
-                    fatal(format!(
-                        "{context}: column `{}` cannot cast {} -> {}: {e}",
-                        field.name(),
-                        column.data_type(),
-                        field.data_type()
-                    ))
-                })?
+            let column = match batch.schema().index_of(field.name()) {
+                Ok(index) => {
+                    let column = batch.column(index);
+                    if column.data_type() == field.data_type() {
+                        column.clone()
+                    } else {
+                        arrow_cast::cast(column, field.data_type()).map_err(|e| {
+                            fatal(format!(
+                                "{context}: column `{}` cannot cast {} -> {}: {e}",
+                                field.name(),
+                                column.data_type(),
+                                field.data_type()
+                            ))
+                        })?
+                    }
+                }
+                Err(_) if field.is_nullable() => {
+                    arrow_array::new_null_array(field.data_type(), batch.num_rows())
+                }
+                Err(_) => {
+                    return Err(fatal(format!(
+                        "{context}: the live table requires column `{}` but the \
+                         stream no longer provides it",
+                        field.name()
+                    )));
+                }
             };
             columns.push(column);
         }
@@ -203,10 +217,29 @@ impl LoadSession for IcebergSession {
         // WAL replay). The window counter MUST survive: resetting it
         // regenerates window 1's exact file path (same load, window,
         // nonce), overwriting a committed data file. Found by the T009
-        // sweep. A staged writer survives for the same reason.
-        let (windows, writer) = match self.tables.remove(&schema.table) {
-            Some(prev) => (prev.windows, prev.writer),
-            None => (0, None),
+        // sweep. A staged writer survives ONLY while the write schema is
+        // unchanged: a re-ensure carrying drift retires it — its closed
+        // files (valid under the prior schema; Iceberg reads absent
+        // columns as null after additive evolution) join the window's
+        // commit via pending_files — so the next writer opens against
+        // the evolved table.
+        let (windows, prev_writer, prev_target, mut pending_files) =
+            match self.tables.remove(&schema.table) {
+                Some(prev) => (
+                    prev.windows,
+                    prev.writer,
+                    Some(prev.arrow_target),
+                    prev.pending_files,
+                ),
+                None => (0, None, None, Vec::new()),
+            };
+        let writer = match prev_writer {
+            Some(writer) if prev_target.as_deref() != Some(arrow_target.as_ref()) => {
+                let context = format!("table `{name}` (schema-change writer retirement)");
+                pending_files.extend(writer.close(&context).await?);
+                None
+            }
+            other => other,
         };
         self.tables.insert(
             schema.table.clone(),
@@ -214,6 +247,7 @@ impl LoadSession for IcebergSession {
                 table,
                 arrow_target,
                 writer,
+                pending_files,
                 windows,
             },
         );
@@ -253,10 +287,10 @@ impl LoadSession for IcebergSession {
         };
         for (table_name, state) in self.tables.iter_mut() {
             let context = format!("table `{}`", self.config.table_name(table_name.as_str()));
-            let files = match state.writer.take() {
-                Some(writer) => writer.close(&context).await?,
-                None => Vec::new(),
-            };
+            let mut files = std::mem::take(&mut state.pending_files);
+            if let Some(writer) = state.writer.take() {
+                files.extend(writer.close(&context).await?);
+            }
             if files.is_empty() {
                 continue; // empty window: no snapshot (ID2)
             }
@@ -270,9 +304,16 @@ impl LoadSession for IcebergSession {
                 .map_err(|e| super::errors::classify(&context, e))?;
             if identity.already_committed(&fresh) {
                 state.table = fresh;
-                continue;
+            } else {
+                state.table = append_commit(&self.catalog, fresh, files, &identity).await?;
             }
-            state.table = append_commit(&self.catalog, fresh, files, &identity).await?;
+            // The refresh may carry a CONCURRENT writer's schema evolution:
+            // realign the target so the next window's writer and batches
+            // agree with the evolved table (nullable additions null-fill).
+            state.arrow_target = Arc::new(
+                iceberg::arrow::schema_to_arrow_schema(state.table.metadata().current_schema())
+                    .map_err(|e| fatal(format!("{context}: arrow schema conversion: {e}")))?,
+            );
         }
         crash_point!(
             "ice.receipt.visible",
@@ -294,5 +335,72 @@ impl LoadSession for IcebergSession {
         let state: StateDoc =
             serde_json::from_str(&raw).map_err(|e| fatal(format!("state doc parse: {e}")))?;
         Ok(Some(state).filter(|s| &s.pipeline == pipeline))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow_array::{Int64Array, RecordBatch, StringArray};
+    use arrow_schema::{DataType, Field, Schema};
+
+    use super::IcebergSession;
+
+    fn target(fields: Vec<Field>) -> Arc<Schema> {
+        Arc::new(Schema::new(fields))
+    }
+
+    /// Review F5: a nullable table column absent from the batch is
+    /// null-filled (schema narrowing / concurrent additive evolution).
+    #[test]
+    fn align_null_fills_missing_nullable_column() {
+        let target = target(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("email", DataType::Utf8, true),
+        ]);
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)])),
+            vec![Arc::new(Int64Array::from(vec![1, 2]))],
+        )
+        .expect("batch");
+        let aligned = IcebergSession::align("table `t`", &target, &batch).expect("aligns");
+        assert_eq!(aligned.num_columns(), 2);
+        assert_eq!(aligned.column(1).null_count(), 2, "null-filled");
+    }
+
+    /// Review F5: a REQUIRED table column the stream stopped providing
+    /// is typed and attributed to the TABLE, not the stream.
+    #[test]
+    fn align_missing_required_column_is_typed_naming_the_table() {
+        let target = target(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("must", DataType::Utf8, false),
+        ]);
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)])),
+            vec![Arc::new(Int64Array::from(vec![1]))],
+        )
+        .expect("batch");
+        let err = IcebergSession::align("table `t`", &target, &batch).expect_err("typed");
+        let text = format!("{err}");
+        assert!(
+            text.contains("live table requires column `must`")
+                && text.contains("stream no longer provides"),
+            "{text}"
+        );
+    }
+
+    /// Casting still applies for present columns.
+    #[test]
+    fn align_casts_present_columns() {
+        let target = target(vec![Field::new("name", DataType::LargeUtf8, true)]);
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("name", DataType::Utf8, true)])),
+            vec![Arc::new(StringArray::from(vec!["a"]))],
+        )
+        .expect("batch");
+        let aligned = IcebergSession::align("table `t`", &target, &batch).expect("casts");
+        assert_eq!(aligned.column(0).data_type(), &DataType::LargeUtf8);
     }
 }

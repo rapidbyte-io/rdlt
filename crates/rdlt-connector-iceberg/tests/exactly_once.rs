@@ -216,3 +216,43 @@ async fn replace_rejected_against_live_catalog() {
         .expect_err("Merge must be capability-rejected");
     assert!(format!("{err}").contains("does not support Merge"));
 }
+
+/// Review F5 live: a stream that DROPS a nullable column keeps loading —
+/// the dropped column null-fills (the SQL destinations' tolerance)
+/// instead of failing every subsequent run with a misleading error.
+#[tokio::test(flavor = "multi_thread")]
+async fn narrowed_stream_null_fills_dropped_nullable_column() {
+    use rdlt_connector::StreamSpec;
+    use rdlt_engine::{Engine, EngineConfig};
+    use rdlt_testkit::{MemoryBatch, MemorySource, MemoryStream};
+
+    let Some(fixture) = CatalogFixture::start().await else {
+        return;
+    };
+    let dest = IcebergDest::from_config(fixture.config("narrow")).expect("dest");
+    // Run 1: the stream carries `email`.
+    let run1 = MemorySource::new(vec![MemoryStream::new(
+        StreamSpec::new("events"),
+        vec![MemoryBatch::new(vec![json!({"id": 1, "email": "a@x"})]).with_checkpoint(1)],
+    )]);
+    Engine::new(EngineConfig::new("ice-narrow"), run1, dest.clone())
+        .run()
+        .await
+        .expect("run 1");
+    // Run 2: the source dropped the column — must still load.
+    let run2 = MemorySource::new(vec![MemoryStream::new(
+        StreamSpec::new("events"),
+        vec![
+            MemoryBatch::new(vec![json!({"id": 1, "email": "a@x"})]).with_checkpoint(1),
+            MemoryBatch::new(vec![json!({"id": 2})]).with_checkpoint(2),
+        ],
+    )]);
+    let report = Engine::new(EngineConfig::new("ice-narrow"), run2, dest)
+        .run()
+        .await
+        .expect("narrowed run loads");
+    assert_eq!(report.total_rows(), 1, "only the new row");
+    let snapshots = fixture.snapshot_summaries("narrow", "events").await;
+    assert_eq!(snapshots.len(), 2);
+    assert_eq!(snapshots[1]["added-records"], "1");
+}

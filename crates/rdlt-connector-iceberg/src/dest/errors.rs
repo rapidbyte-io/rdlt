@@ -13,8 +13,22 @@ pub(crate) fn classify(context: &str, error: iceberg::Error) -> DestError {
     match error.kind() {
         // The system said "not now": service hiccups and unexpected
         // internal errors ride the engine's retry budget. The library
-        // surfaces network failures and 5xx as Unexpected.
-        ErrorKind::Unexpected => DestError::transient(format!("{context}: {error}")),
+        // surfaces network failures and 5xx as Unexpected — but ALSO
+        // 401/403 (its fallback for unmatched status codes), and a
+        // rejected credential never heals by retrying. The status rides
+        // the error's context (`status: 401 Unauthorized`), the only
+        // seam the library exposes for it.
+        ErrorKind::Unexpected => {
+            let rendered = error.to_string();
+            if rendered.contains("401 Unauthorized") || rendered.contains("403 Forbidden") {
+                DestError::fatal(format!(
+                    "{context}: authentication/authorization rejected — fix the \
+                     credential or its grants: {rendered}"
+                ))
+            } else {
+                DestError::transient(format!("{context}: {rendered}"))
+            }
+        }
         // Optimistic-concurrency conflicts are RETRIED by the commit loop;
         // reaching classification means the loop exhausted its budget —
         // fatal with the conflict context (ID3).
@@ -68,6 +82,37 @@ mod tests {
             iceberg::Error::new(ErrorKind::NamespaceNotFound, "raw"),
         );
         assert!(missing.to_string().contains("warehouse `w`"));
+    }
+
+    /// Review F1: the REST client surfaces 401/403 as Unexpected (its
+    /// fallback kind) — a rejected credential must FAIL FAST, not ride
+    /// the retry budget.
+    #[test]
+    fn auth_rejection_is_fatal_not_transient() {
+        for status in ["401 Unauthorized", "403 Forbidden"] {
+            let error = iceberg::Error::new(
+                ErrorKind::Unexpected,
+                "Received response with unexpected status code",
+            )
+            .with_context("status", status.to_string());
+            let classified = classify("catalog `c`", error);
+            let rendered = classified.to_string();
+            assert!(
+                matches!(classified, DestError::Fatal { .. })
+                    && rendered.contains("authorization rejected"),
+                "{status}: {rendered}"
+            );
+        }
+        // 5xx stays transient.
+        let error = iceberg::Error::new(
+            ErrorKind::Unexpected,
+            "Received response with unexpected status code",
+        )
+        .with_context("status", "503 Service Unavailable".to_string());
+        assert!(matches!(
+            classify("catalog `c`", error),
+            DestError::Transient { .. }
+        ));
     }
 
     #[test]

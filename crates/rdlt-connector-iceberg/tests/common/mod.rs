@@ -118,8 +118,9 @@ impl CatalogFixture {
             ],
         );
         let s3_endpoint = format!("http://127.0.0.1:{s3_port}");
-        wait_http_answers(&format!("{s3_endpoint}/"), 100).await;
-        create_bucket(&s3_endpoint, BUCKET).await;
+        // Any HTTP answer means RUSTFS is listening (anonymous requests
+        // get S3-style error XML — never 2xx).
+        wait_http_answers(&format!("{s3_endpoint}/"), 100, false).await;
 
         // Polaris (T001 facts): bootstrap credentials REALM,id,secret;
         // quarkus ports remapped; server-side S3 access via AWS_* env.
@@ -140,7 +141,20 @@ impl CatalogFixture {
             ],
         );
         let base = format!("http://127.0.0.1:{api_port}");
-        wait_http_answers(&format!("http://127.0.0.1:{health_port}/q/health"), 400).await;
+        // Health must be 2xx: Quarkus answers 503 DOWN while Polaris is
+        // still initializing (review F7) — any-answer is not readiness.
+        wait_http_answers(
+            &format!("http://127.0.0.1:{health_port}/q/health"),
+            400,
+            true,
+        )
+        .await;
+
+        // Bucket + catalog + grants via the ONE bootstrap implementation
+        // shared with the bench fixture (review F10 — the Rust copy had
+        // already diverged from benches/fixtures/polaris_bootstrap.py).
+        // Host networking: the client and Polaris see the same endpoint.
+        bootstrap_catalog(&base, &s3_endpoint);
 
         let http = reqwest::Client::new();
         // OAuth (T001): client_credentials at /api/catalog/v1/oauth/tokens.
@@ -163,87 +177,14 @@ impl CatalogFixture {
             .expect("access_token present")
             .to_owned();
 
-        let fixture = Self {
+        Some(Self {
             _rustfs: rustfs,
             _polaris: polaris,
             catalog_uri: format!("{base}/api/catalog"),
             s3_endpoint,
             admin_token,
             http,
-        };
-        fixture.create_catalog().await;
-        Some(fixture)
-    }
-
-    /// The T001-verified catalog payload: S3-compatible storage with
-    /// stsUnavailable + pathStyle, credentials AND s3.region in the
-    /// properties (opendal requires the region; Polaris vends all of it
-    /// through /v1/config defaults — the config-level delegation path).
-    async fn create_catalog(&self) {
-        let payload = serde_json::json!({
-            "catalog": {
-                "name": WAREHOUSE,
-                "type": "INTERNAL",
-                "properties": {
-                    "default-base-location": format!("s3://{BUCKET}/warehouse"),
-                    "s3.endpoint": self.s3_endpoint,
-                    "s3.path-style-access": "true",
-                    "s3.access-key-id": S3_KEY,
-                    "s3.secret-access-key": S3_SECRET,
-                    "s3.region": "us-east-1"
-                },
-                "storageConfigInfo": {
-                    "storageType": "S3",
-                    "allowedLocations": [format!("s3://{BUCKET}/warehouse")],
-                    "endpoint": self.s3_endpoint,
-                    "pathStyleAccess": true,
-                    "stsUnavailable": true
-                }
-            }
-        });
-        let response = self
-            .http
-            .post(format!(
-                "{}/api/management/v1/catalogs",
-                self.catalog_uri.trim_end_matches("/api/catalog").to_owned() + ""
-            ))
-            .bearer_auth(&self.admin_token)
-            .json(&payload)
-            .send()
-            .await
-            .expect("create catalog");
-        assert!(
-            response.status().is_success() || response.status().as_u16() == 409,
-            "create catalog: {}",
-            response.status()
-        );
-        // Grants (T001): catalog_admin gets CATALOG_MANAGE_CONTENT and is
-        // assigned to the service_admin principal role.
-        let management = self.management_base();
-        for (url, body) in [
-            (
-                format!("{management}/catalogs/{WAREHOUSE}/catalog-roles/catalog_admin/grants"),
-                serde_json::json!({"grant": {"type": "catalog", "privilege": "CATALOG_MANAGE_CONTENT"}}),
-            ),
-            (
-                format!("{management}/principal-roles/service_admin/catalog-roles/{WAREHOUSE}"),
-                serde_json::json!({"catalogRole": {"name": "catalog_admin"}}),
-            ),
-        ] {
-            let response = self
-                .http
-                .put(&url)
-                .bearer_auth(&self.admin_token)
-                .json(&body)
-                .send()
-                .await
-                .expect("grant call");
-            assert!(
-                response.status().is_success(),
-                "grant {url}: {}",
-                response.status()
-            );
-        }
+        })
     }
 
     fn management_base(&self) -> String {
@@ -325,7 +266,7 @@ impl CatalogFixture {
     }
 }
 
-async fn wait_http_answers(url: &str, attempts: u32) {
+async fn wait_http_answers(url: &str, attempts: u32, require_success: bool) {
     let client = reqwest::Client::new();
     for _ in 0..attempts {
         if let Ok(response) = client
@@ -333,58 +274,46 @@ async fn wait_http_answers(url: &str, attempts: u32) {
             .timeout(std::time::Duration::from_secs(2))
             .send()
             .await
+            && (!require_success || response.status().is_success())
         {
-            let _ = response;
             return;
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
-    panic!("{url} never answered");
+    panic!(
+        "{url} never answered{}",
+        if require_success { " 2xx" } else { "" }
+    );
 }
 
-/// Fixture-only SigV4 PUT-bucket via python3 stdlib (the 015 pattern —
-/// never product code).
-async fn create_bucket(endpoint: &str, bucket: &str) {
-    let script = format!(
-        r#"
-import datetime, hashlib, hmac, urllib.request, sys
-ak, sk, region = "{S3_KEY}", "{S3_SECRET}", "us-east-1"
-endpoint = "{endpoint}"
-host = endpoint.split("://", 1)[1]
-t = datetime.datetime.now(datetime.timezone.utc)
-amz, ds = t.strftime("%Y%m%dT%H%M%SZ"), t.strftime("%Y%m%d")
-payload = hashlib.sha256(b"").hexdigest()
-creq = f"PUT\n/{bucket}\n\nhost:{{host}}\nx-amz-content-sha256:{{payload}}\nx-amz-date:{{amz}}\n\nhost;x-amz-content-sha256;x-amz-date\n{{payload}}"
-scope = f"{{ds}}/{{region}}/s3/aws4_request"
-sts = "AWS4-HMAC-SHA256\n" + amz + "\n" + scope + "\n" + hashlib.sha256(creq.encode()).hexdigest()
-def sign(k, m): return hmac.new(k, m.encode(), hashlib.sha256).digest()
-sig = hmac.new(sign(sign(sign(sign(("AWS4"+sk).encode(), ds), region), "s3"), "aws4_request"), sts.encode(), hashlib.sha256).hexdigest()
-req = urllib.request.Request(endpoint + "/{bucket}", method="PUT", headers={{
-    "x-amz-date": amz, "x-amz-content-sha256": payload,
-    "Authorization": f"AWS4-HMAC-SHA256 Credential={{ak}}/{{scope}}, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature={{sig}}"}})
-try:
-    urllib.request.urlopen(req, timeout=10)
-except urllib.error.HTTPError as e:
-    if e.code not in (200, 409):
-        sys.exit(f"create bucket: HTTP {{e.code}}: {{e.read()[:200]}}")
-except urllib.error.URLError as e:
-    sys.exit(f"create bucket: {{e.reason}}")
-"#
+/// One bootstrap implementation for bucket + catalog + grants — the
+/// SAME script the bench fixture runs (benches/fixtures/
+/// polaris_bootstrap.py); under host networking the client-side and
+/// Polaris-side S3 endpoints are identical.
+fn bootstrap_catalog(polaris_base: &str, s3_endpoint: &str) {
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("repo root")
+        .join("benches/fixtures/polaris_bootstrap.py");
+    let output = std::process::Command::new("python3")
+        .arg(script)
+        .args([
+            polaris_base,
+            s3_endpoint,
+            s3_endpoint,
+            S3_KEY,
+            S3_SECRET,
+            CLIENT_ID,
+            CLIENT_SECRET,
+            WAREHOUSE,
+            BUCKET,
+        ])
+        .output()
+        .expect("python3 for the catalog bootstrap");
+    assert!(
+        output.status.success(),
+        "polaris bootstrap failed: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
-    // RUSTFS answers HTTP before it accepts authenticated PUTs during
-    // startup — retry (the 015 seed-put pattern; observed live).
-    let mut last = String::new();
-    for _ in 0..8 {
-        let out = std::process::Command::new("python3")
-            .arg("-c")
-            .arg(&script)
-            .output()
-            .expect("python3 for the fixture bucket-create");
-        if out.status.success() {
-            return;
-        }
-        last = String::from_utf8_lossy(&out.stderr).into_owned();
-        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-    }
-    panic!("create bucket failed after retries: {last}");
 }

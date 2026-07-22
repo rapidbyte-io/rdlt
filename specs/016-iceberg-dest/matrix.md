@@ -59,6 +59,7 @@ cannot drift; unknown fields rejected identically).
 | rule | proven | cells | class |
 |---|---|---|---|
 | bounded refresh→rebuild→commit | 3 injected conflicts land on attempt 4 (exactly COMMIT_ATTEMPTS update_table calls) | src/dest/commit.rs::tests::commit_retries_through_transient_conflicts | unit |
+| schema commits retried too | reconcile's UpdateSchema commit rides the SAME bound, recomputing additions per attempt (review F2); state-write exhaustion diagnostic reachable and typed (review F6) | src/dest/commit.rs::tests::reconcile_retries_schema_commit_conflicts + write_state_exhaustion_is_typed | unit |
 | exhaustion typed | names table + attempt bound, never an unbounded loop | src/dest/commit.rs::tests::commit_exhaustion_is_typed | unit |
 | no foreign snapshot lost | two live writers hammering one table: every commit is a snapshot, both identity sets complete, exact totals | conflict.rs::competing_writers_lose_no_snapshots | live |
 | state-property commits conflict-retried | same bounded loop around update_table_properties | src/dest/commit.rs::write_state (construction); exercised by every multi-run live cell | live |
@@ -71,13 +72,14 @@ cannot drift; unknown fields rejected identically).
 | nested shapes | struct/scalar-list recursion, unique gapless field ids | src/dest/schema.rs::tests::nested_shapes_map_recursively_with_unique_ids | unit |
 | additive drift | new nullable column added via UpdateSchema in one transaction; evolved schema + full count readable by pyiceberg and Spark | interop.rs::pyiceberg_reads_after_additive_drift; spark_deep.rs::spark_reads_all_three_shapes | live+deep |
 | type conflicts | typed naming the column (reconcile) | src/dest/commit.rs::reconcile (construction); classification pinned by errors unit cells | unit |
-| batch alignment | by-name column matching, arrow-cast where representations differ, missing column typed | src/dest/dest.rs::align (every live engine cell drives it) | live |
+| batch alignment | by-name column matching, arrow-cast where representations differ; a nullable table column the batch lacks NULL-FILLS (narrowing / concurrent additive evolution — review F4/F5), a required one is typed naming the TABLE; arrow_target realigned after every commit and a drift-carrying re-ensure retires the staged writer into pending files (review F3) | src/dest/dest.rs::tests::align_null_fills_missing_nullable_column + align_missing_required_column_is_typed_naming_the_table + align_casts_present_columns; exactly_once.rs::narrowed_stream_null_fills_dropped_nullable_column | unit+live |
 
 ## Errors (typed, FR-009)
 
 | rule | proven | cells | class |
 |---|---|---|---|
 | classification matrix | Unexpected→transient, CatalogCommitConflicts→fatal-with-context, config/data fatal naming subject, unknown kinds LOUD fatal | src/dest/errors.rs::tests::classification_matrix + conflict_detection | unit |
+| auth rejection fails fast | 401/403 (surfaced as Unexpected by the REST client) classified FATAL naming the credential remedy — never rides the retry budget; 5xx stays transient (review F1) | src/dest/errors.rs::tests::auth_rejection_is_fatal_not_transient | unit |
 | unreachable / unauthorized / missing-warehouse | typed naming endpoint / subject / warehouse | catalog_live.rs::open_unreachable_catalog_is_typed + open_failures_are_typed_against_live_catalog | live |
 | credential expiry mid-run | GAP (recorded): the fixture cannot simulate token expiry; the classification unit cells stand for the transient posture | src/dest/errors.rs::tests::classification_matrix | unit |
 

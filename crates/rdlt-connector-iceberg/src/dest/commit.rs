@@ -343,7 +343,6 @@ pub(crate) async fn write_state(
         Err(e) => return Err(classify(&context, e)),
     };
     let key = format!("{PROP_STATE_PREFIX}{scope}");
-    let mut last = None;
     for attempt in 0..COMMIT_ATTEMPTS {
         let tx = Transaction::new(&table);
         let action = tx
@@ -352,8 +351,14 @@ pub(crate) async fn write_state(
         let tx = action.apply(tx).map_err(|e| classify(&context, e))?;
         match tx.commit(catalog.as_ref()).await {
             Ok(_) => return Ok(()),
-            Err(e) if is_commit_conflict(&e) && attempt + 1 < COMMIT_ATTEMPTS => {
-                last = Some(e);
+            Err(e) if is_commit_conflict(&e) => {
+                // The FINAL attempt's conflict is the typed exhaustion.
+                if attempt + 1 == COMMIT_ATTEMPTS {
+                    return Err(classify(
+                        &format!("{context}: {COMMIT_ATTEMPTS} property-commit attempts exhausted"),
+                        e,
+                    ));
+                }
                 backoff(attempt).await;
                 table = catalog
                     .load_table(&ident)
@@ -363,10 +368,7 @@ pub(crate) async fn write_state(
             Err(e) => return Err(classify(&context, e)),
         }
     }
-    Err(classify(
-        &format!("{context}: {COMMIT_ATTEMPTS} property-commit attempts exhausted"),
-        last.expect("loop stores the error before retrying"),
-    ))
+    unreachable!("the final attempt returns through the match above")
 }
 
 /// Read the pipeline-scoped state document back from the marker table.
@@ -515,52 +517,71 @@ async fn reconcile(
 ) -> Result<iceberg::table::Table, DestError> {
     use iceberg::transaction::AddColumn;
     let context = format!("table `{ident}`");
-    let table = catalog
-        .load_table(ident)
-        .await
-        .map_err(|e| classify(&context, e))?;
-    check_partition_spec(&context, &table, partition)?;
-    let existing = table.metadata().current_schema();
-    let mut additions: Vec<AddColumn> = Vec::new();
-    for field in wanted.as_struct().fields() {
-        match existing
-            .as_struct()
-            .fields()
-            .iter()
-            .find(|f| f.name == field.name)
-        {
-            Some(current) => {
-                if current.field_type != field.field_type {
-                    return Err(fatal(format!(
-                        "{context} column `{}`: stream type {} conflicts with the \
-                         table's {} — contradictory drift is never applied",
-                        field.name, field.field_type, current.field_type
-                    )));
+    // Schema commits conflict like any other commit: the bounded retry
+    // (ID3) reloads and RECOMPUTES the additions each attempt — a
+    // competitor may have added the same column, which converges to
+    // an empty addition set.
+    for attempt in 0..COMMIT_ATTEMPTS {
+        let table = catalog
+            .load_table(ident)
+            .await
+            .map_err(|e| classify(&context, e))?;
+        check_partition_spec(&context, &table, partition)?;
+        let existing = table.metadata().current_schema();
+        let mut additions: Vec<AddColumn> = Vec::new();
+        for field in wanted.as_struct().fields() {
+            match existing
+                .as_struct()
+                .fields()
+                .iter()
+                .find(|f| f.name == field.name)
+            {
+                Some(current) => {
+                    if current.field_type != field.field_type {
+                        return Err(fatal(format!(
+                            "{context} column `{}`: stream type {} conflicts with the \
+                             table's {} — contradictory drift is never applied",
+                            field.name, field.field_type, current.field_type
+                        )));
+                    }
+                }
+                None => {
+                    // New column: ADDITIVE only (nullable in the table even if
+                    // the stream declares it required — existing rows have no
+                    // value for it; the drift rules' documented posture).
+                    additions.push(AddColumn::optional(
+                        &field.name,
+                        field.field_type.as_ref().clone(),
+                    ));
                 }
             }
-            None => {
-                // New column: ADDITIVE only (nullable in the table even if
-                // the stream declares it required — existing rows have no
-                // value for it; the drift rules' documented posture).
-                additions.push(AddColumn::optional(
-                    &field.name,
-                    field.field_type.as_ref().clone(),
+        }
+        if additions.is_empty() {
+            return Ok(table);
+        }
+        let tx = Transaction::new(&table);
+        let mut action = tx.update_schema();
+        for addition in additions {
+            action = action.add_column(addition);
+        }
+        let tx = action.apply(tx).map_err(|e| classify(&context, e))?;
+        match tx.commit(catalog.as_ref()).await {
+            Ok(table) => return Ok(table),
+            Err(e) if is_commit_conflict(&e) && attempt + 1 < COMMIT_ATTEMPTS => {
+                backoff(attempt).await;
+            }
+            Err(e) => {
+                return Err(classify(
+                    &format!(
+                        "{context} (schema commit attempt {}/{COMMIT_ATTEMPTS})",
+                        attempt + 1
+                    ),
+                    e,
                 ));
             }
         }
     }
-    if additions.is_empty() {
-        return Ok(table);
-    }
-    let tx = Transaction::new(&table);
-    let mut action = tx.update_schema();
-    for addition in additions {
-        action = action.add_column(addition);
-    }
-    let tx = action.apply(tx).map_err(|e| classify(&context, e))?;
-    tx.commit(catalog.as_ref())
-        .await
-        .map_err(|e| classify(&context, e))
+    unreachable!("the final attempt returns through the match above")
 }
 
 #[cfg(test)]
@@ -762,6 +783,57 @@ mod tests {
             COMMIT_ATTEMPTS,
             "3 conflicts + the landing attempt"
         );
+    }
+
+    /// Review F2: reconcile's schema commit rides the SAME bounded
+    /// retry as data commits — one conflict must not fail the load.
+    #[tokio::test]
+    async fn reconcile_retries_schema_commit_conflicts() {
+        use iceberg::spec::{NestedField, PrimitiveType, Type};
+        let catalog = ConflictCatalog::failing(COMMIT_ATTEMPTS - 1);
+        let arc: Arc<dyn Catalog> = catalog.clone();
+        let wanted = iceberg::spec::Schema::builder()
+            .with_fields(vec![
+                Arc::new(NestedField::required(
+                    1,
+                    "id",
+                    Type::Primitive(PrimitiveType::Long),
+                )),
+                Arc::new(NestedField::optional(
+                    2,
+                    "note",
+                    Type::Primitive(PrimitiveType::String),
+                )),
+            ])
+            .build()
+            .expect("schema");
+        let ident = TableIdent::new(NamespaceIdent::new("ns".into()), "events".into());
+        reconcile(&arc, &ident, &wanted, &[])
+            .await
+            .expect("lands within the bound");
+        assert_eq!(
+            catalog.commits.load(Ordering::SeqCst),
+            COMMIT_ATTEMPTS,
+            "3 conflicts + the landing attempt"
+        );
+    }
+
+    /// Review F6: the state-write exhaustion diagnostic is REACHABLE —
+    /// the final conflict returns the typed attempts-exhausted error.
+    #[tokio::test]
+    async fn write_state_exhaustion_is_typed() {
+        let catalog = ConflictCatalog::failing(u32::MAX);
+        let arc: Arc<dyn Catalog> = catalog.clone();
+        let namespace = NamespaceIdent::new("ns".into());
+        let err = write_state(&arc, &namespace, "abc123", "{}".into())
+            .await
+            .expect_err("must exhaust");
+        let text = format!("{err}");
+        assert!(
+            text.contains("property-commit attempts exhausted"),
+            "the dedicated diagnostic fires: {text}"
+        );
+        assert_eq!(catalog.commits.load(Ordering::SeqCst), COMMIT_ATTEMPTS);
     }
 
     /// ID3: exhaustion is a TYPED error naming the table and the
