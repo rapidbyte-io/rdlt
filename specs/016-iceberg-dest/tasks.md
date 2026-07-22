@@ -166,7 +166,7 @@ read every table shape the cells write.
   parse (config cells); live cells: partitioned writes land, the
   spec is visible in table metadata, per-partition file layout
   observable in the bucket.
-- [ ] T013 [US3] pyiceberg read-back:
+- [X] T013 [US3] pyiceberg read-back:
   `tools/interop/pyiceberg_readback.py` (pinned venv from T001;
   reads via the SAME REST catalog: counts, column names/types,
   partition spec, snapshot count) + `tests/interop.rs` invoking it
