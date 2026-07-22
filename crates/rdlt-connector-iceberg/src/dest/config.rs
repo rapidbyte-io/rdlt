@@ -188,6 +188,30 @@ fn default_path_style() -> bool {
     true
 }
 
+impl S3Override {
+    pub fn new(access_key: impl Into<String>, secret_key: impl Into<String>) -> Self {
+        Self {
+            endpoint: None,
+            region: None,
+            access_key: Secret::new(access_key),
+            secret_key: Secret::new(secret_key),
+            path_style: true,
+        }
+    }
+
+    #[must_use]
+    pub fn with_endpoint(mut self, endpoint: impl Into<String>) -> Self {
+        self.endpoint = Some(endpoint.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_region(mut self, region: impl Into<String>) -> Self {
+        self.region = Some(region.into());
+        self
+    }
+}
+
 // ---- Tables & partitioning ----------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

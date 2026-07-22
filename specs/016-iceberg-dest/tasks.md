@@ -134,7 +134,7 @@ UC bearer leg if the gate verified it.
 user storage keys; bearer leg per gate verdict; schema round-trips
 for every auth spelling.
 
-- [ ] T010 [US2] Vending + storage override: vended-credentials
+- [X] T010 [US2] Vending + storage override: vended-credentials
   catalog props as the DEFAULT storage path (no user keys), the
   family-S3 storage override as the explicit alternative; cells:
   a full engine run with NO storage block against Polaris (vended),

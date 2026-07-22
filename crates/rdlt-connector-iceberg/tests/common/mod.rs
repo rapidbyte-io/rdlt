@@ -70,12 +70,25 @@ fn runtime_available() -> bool {
         .is_ok_and(|o| o.status.success())
 }
 
+/// A free port from a PID-disjoint range. `bind(:0)` alone races: nextest
+/// runs each test in its own process, two fixtures can be handed the same
+/// ephemeral port in the release-then-reuse window, and the second test
+/// then talks to the FIRST test's containers (observed as create-catalog
+/// flakes). Spreading candidate ranges by PID makes cross-process
+/// collisions structurally unlikely; the bind probe still verifies each
+/// candidate is actually free.
 fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .expect("bind :0")
-        .local_addr()
-        .expect("addr")
-        .port()
+    use std::sync::atomic::{AtomicU16, Ordering};
+    static NEXT: AtomicU16 = AtomicU16::new(0);
+    let pid = std::process::id();
+    for _ in 0..2000 {
+        let slot = NEXT.fetch_add(1, Ordering::Relaxed) as u32;
+        let candidate = 21000 + ((pid.wrapping_mul(641) + slot * 7) % 40000) as u16;
+        if std::net::TcpListener::bind(("127.0.0.1", candidate)).is_ok() {
+            return candidate;
+        }
+    }
+    panic!("no free port found in the PID-derived range");
 }
 
 impl CatalogFixture {
