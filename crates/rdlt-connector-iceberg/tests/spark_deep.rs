@@ -50,12 +50,13 @@ fn spark_readback(
         }
         // DESCRIBE rows print as name<TAB>type[<TAB>comment]; the
         // partition-info section starts with `#` markers — skip those.
-        if !line.starts_with('#') && !line.starts_with("COUNT=") {
-            if let Some((name, rest)) = line.split_once('\t') {
-                let ty = rest.split('\t').next().unwrap_or_default();
-                if !name.trim().is_empty() && !ty.trim().is_empty() {
-                    columns.push((name.trim().to_owned(), ty.trim().to_owned()));
-                }
+        if !line.starts_with('#')
+            && !line.starts_with("COUNT=")
+            && let Some((name, rest)) = line.split_once('\t')
+        {
+            let ty = rest.split('\t').next().unwrap_or_default();
+            if !name.trim().is_empty() && !ty.trim().is_empty() {
+                columns.push((name.trim().to_owned(), ty.trim().to_owned()));
             }
         }
     }
@@ -106,10 +107,8 @@ async fn spark_reads_all_three_shapes() {
     )]);
     let config = fixture.config("spark_part").with_table(
         "events",
-        TableOptions::new().with_partition(PartitionField::new(
-            "region",
-            PartitionTransform::Identity,
-        )),
+        TableOptions::new()
+            .with_partition(PartitionField::new("region", PartitionTransform::Identity)),
     );
     let dest = IcebergDest::from_config(config).expect("dest");
     Engine::new(EngineConfig::new("ice-spark-p"), source, dest)

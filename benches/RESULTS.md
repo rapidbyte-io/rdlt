@@ -234,6 +234,23 @@ touched gated bars re-verified same-session after the family merge +
 completeness work: parquet-passthrough 93.3 ms (3.5x, bar >=2x),
 jsonl-duckdb-200k 1105.2 ms (13.5x, bar >=10x; RSS 1/5.4 vs <=1/5).
 
+Feature-016 coverage record (011 protocol, `cargo llvm-cov nextest -p
+rdlt-connector-iceberg --features failpoints`, container cells running):
+new crate — no prior baseline; final **85.08% lines** (config 89.47%,
+schema 90.42%, errors 97.37%, commit 81.85%, dest 73.49%) — floor >=80%
+met. Classified exclusions: dest.rs align/cast defensive arms and the
+write-before-ensure + reserved-name guards (typed error paths whose
+triggers need a hostile embedder, not the engine); commit.rs
+classify-context formatting arms and the conflict-retry branches beyond
+the mocked counts; connect() catalog-props escape-hatch permutations —
+defensive/administrative surface, no product path.
+Semver (016): rdlt-connector-iceberg is NEW this feature (no baseline);
+`cargo semver-checks -p rdlt --baseline-rev main` on the facade reports
+"no semver update required" (the `iceberg` feature + re-export are
+additive). Bench-harness fixture fields (`reset_sh`, `teardown_sh`) are
+additive serde-defaulted TOML surface. The standing 014 major
+(0.2 → 0.3 at next publish) is unaffected.
+
 Feature-015 coverage record (011 protocol, `cargo llvm-cov nextest -p
 rdlt-connector-file`, container cells running): baselines BEFORE the
 feature 73.25% lines (rdlt-connector-file) / 90.80%

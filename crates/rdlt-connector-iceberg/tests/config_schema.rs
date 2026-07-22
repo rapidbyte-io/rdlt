@@ -148,3 +148,40 @@ fn helper_lookups() {
     assert_eq!(config.partition_fields("orders").len(), 2);
     assert!(config.partition_fields("other").is_empty());
 }
+
+/// Destination construction surface (T017): from_yaml/from_config
+/// validation, spec, capabilities — the container-free dest.rs paths.
+#[test]
+fn dest_construction_spec_and_capabilities() {
+    use rdlt_connector::Destination;
+    use rdlt_connector_iceberg::IcebergDest;
+
+    let yaml = r#"
+catalog:
+  uri: https://polaris.example/api/catalog
+  warehouse: rdlt
+  auth:
+    bearer: {token: t}
+namespace: raw
+"#;
+    let dest = IcebergDest::from_yaml(yaml).expect("valid yaml");
+    let spec = dest.spec();
+    assert_eq!(spec.name, "iceberg");
+    assert!(spec.config_schema.is_some());
+    let caps = dest.capabilities();
+    assert!(!caps.merge, "append-only this release");
+    assert!(caps.structs && caps.scalar_lists && caps.decimal);
+    assert!(!caps.json_type, "Json lands as string (closed table)");
+
+    assert!(
+        IcebergDest::from_yaml("namespace: x\n").is_err(),
+        "missing catalog typed"
+    );
+    let invalid = IcebergDest::from_config(IcebergConfig::new(
+        "ftp://nope",
+        "w",
+        rdlt_connector_iceberg::AuthOptions::bearer("t"),
+        "raw",
+    ));
+    assert!(invalid.is_err(), "validation runs at construction");
+}

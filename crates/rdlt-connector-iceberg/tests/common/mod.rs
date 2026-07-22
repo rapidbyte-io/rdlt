@@ -83,7 +83,10 @@ fn free_port() -> u16 {
     let pid = std::process::id();
     for _ in 0..2000 {
         let slot = NEXT.fetch_add(1, Ordering::Relaxed) as u32;
-        let candidate = 21000 + ((pid.wrapping_mul(641) + slot * 7) % 40000) as u16;
+        // Stay BELOW the kernel ephemeral range (32768+): testcontainers
+        // and other suites bind random ephemeral ports concurrently, and a
+        // fixture squatting there collides with them (observed live).
+        let candidate = 21000 + ((pid.wrapping_mul(641) + slot * 7) % 11000) as u16;
         if std::net::TcpListener::bind(("127.0.0.1", candidate)).is_ok() {
             return candidate;
         }

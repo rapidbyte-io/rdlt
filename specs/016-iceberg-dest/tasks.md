@@ -207,7 +207,7 @@ format.
   `specs/016-iceberg-dest/dlt-parity.md` (vs dlt's Iceberg support;
   deferrals named: Glue/SigV4 phase-2, merge-on-read, maintenance,
   the T001-verdict narrowings if any).
-- [ ] T017 Close-out: coverage ≥80% baseline-first with classified
+- [X] T017 Close-out: coverage ≥80% baseline-first with classified
   exclusions in `benches/RESULTS.md`; comprehensive
   `crates/rdlt-connector-iceberg/README.md` (013/014/015 standard —
   full options reference incl. provider notes and maintenance
