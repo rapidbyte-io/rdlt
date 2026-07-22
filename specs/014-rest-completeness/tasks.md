@@ -172,7 +172,7 @@ RDLT_NET=1.
   record `specs/014-rest-completeness/dlt-parity.md` (paginator/auth
   mapping from R2/R3; deliberate deviations: no auto-detection, no
   OAuth JWT yet, callables→seam).
-- [ ] T015 Close-out: coverage re-measure to the ≥80% floor with
+- [X] T015 Close-out: coverage re-measure to the ≥80% floor with
   classified exclusions recorded in `benches/RESULTS.md`; gated
   REST→PG bar re-measured (`TARGET=rest-pg-100k make bench`, in-band);
   README (`crates/rdlt-connector-rest/README.md` — comprehensive
