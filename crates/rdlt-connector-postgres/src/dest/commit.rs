@@ -34,7 +34,8 @@ pub const ARRIVAL_COL: &str = "__rdlt_arrival";
 /// truncation used to cut off exactly the disambiguation suffix (finding #8).
 pub(super) fn stage_prefix(pipeline: &PipelineId) -> String {
     format!(
-        "_rdlt_stage_{}_",
+        "{}{}_",
+        rdlt_connector_sqlcore::names::STAGE_PREFIX,
         rdlt_connector::core::naming::ident_hash(pipeline.as_str(), 8)
     )
 }
@@ -299,7 +300,10 @@ impl LoadSession for PgSession {
         // Clause D3: idempotence by (load_id, commit_seq).
         let already = tx
             .query_one(
-                "SELECT count(*) FROM _rdlt_commits WHERE load_id = $1 AND commit_seq = $2",
+                &format!(
+                    "SELECT count(*) FROM {} WHERE load_id = $1 AND commit_seq = $2",
+                    rdlt_connector_sqlcore::names::COMMITS_TABLE
+                ),
                 &[&meta.load_id.as_str(), &(meta.commit_seq as i64)],
             )
             .await
@@ -312,7 +316,10 @@ impl LoadSession for PgSession {
         // data-loss finding; same fix, same reasoning).
         let load_committed_before = tx
             .query_one(
-                "SELECT count(*) FROM _rdlt_commits WHERE load_id = $1",
+                &format!(
+                    "SELECT count(*) FROM {} WHERE load_id = $1",
+                    rdlt_connector_sqlcore::names::COMMITS_TABLE
+                ),
                 &[&meta.load_id.as_str()],
             )
             .await
@@ -501,14 +508,20 @@ impl LoadSession for PgSession {
         // Clause D2: state travels in the SAME transaction as the data.
         let doc = serde_json::to_string(&meta.state).map_err(fatal)?;
         tx.execute(
-            "INSERT INTO _rdlt_state VALUES ($1, $2)
+            &format!(
+                "INSERT INTO {} VALUES ($1, $2)
              ON CONFLICT (pipeline) DO UPDATE SET doc = EXCLUDED.doc",
+                rdlt_connector_sqlcore::names::STATE_TABLE
+            ),
             &[&meta.state.pipeline.as_str(), &doc],
         )
         .await
         .map_err(transient)?;
         tx.execute(
-            "INSERT INTO _rdlt_commits VALUES ($1, $2)",
+            &format!(
+                "INSERT INTO {} VALUES ($1, $2)",
+                rdlt_connector_sqlcore::names::COMMITS_TABLE
+            ),
             &[&meta.load_id.as_str(), &(meta.commit_seq as i64)],
         )
         .await
@@ -530,7 +543,10 @@ impl LoadSession for PgSession {
         let row = self
             .client
             .query_opt(
-                "SELECT doc FROM _rdlt_state WHERE pipeline = $1",
+                &format!(
+                    "SELECT doc FROM {} WHERE pipeline = $1",
+                    rdlt_connector_sqlcore::names::STATE_TABLE
+                ),
                 &[&pipeline.as_str()],
             )
             .await

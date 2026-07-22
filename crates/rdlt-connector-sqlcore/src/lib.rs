@@ -11,6 +11,7 @@
 //! golden-SQL suite (SM4). The DuckDB destination is the second consumer.
 
 pub mod dialect;
+pub mod names;
 pub mod options;
 pub mod plan;
 

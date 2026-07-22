@@ -52,7 +52,11 @@ pub(super) fn column_def(column: &ColumnDef, target: bool) -> String {
 
 /// Deterministic index name: idempotent `IF NOT EXISTS` across sessions.
 pub(super) fn index_name(unique: bool, table: &str, columns: &[String]) -> String {
-    let prefix = if unique { "rdlt_ux" } else { "rdlt_ix" };
+    let prefix = if unique {
+        rdlt_connector_sqlcore::names::UNIQUE_INDEX_PREFIX
+    } else {
+        rdlt_connector_sqlcore::names::INDEX_PREFIX
+    };
     format!(
         "{prefix}_{}",
         rdlt_connector::core::naming::ident_hash(&format!("{table}:{}", columns.join(",")), 16)

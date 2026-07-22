@@ -55,12 +55,19 @@ fn pipeline_scope(pipeline: &PipelineId) -> String {
     ident_hash(pipeline.as_str(), 12)
 }
 
+/// Persisted-format identity (persisted-formats contract) — named constants
+/// so a product-wide rename is a one-line decision, never a config option.
+/// (Format-family destination: deliberately NOT a sqlcore consumer — the SQL
+/// naming vocabulary lives there; this crate owns its file-name spellings.)
+const STATE_FILE_PREFIX: &str = "_rdlt_state";
+const COMMITS_FILE_PREFIX: &str = "_rdlt_commits";
+
 fn state_file(scope: &str) -> String {
-    format!("_rdlt_state.{scope}.json")
+    format!("{STATE_FILE_PREFIX}.{scope}.json")
 }
 
 fn commits_file(scope: &str) -> String {
-    format!("_rdlt_commits.{scope}.json")
+    format!("{COMMITS_FILE_PREFIX}.{scope}.json")
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

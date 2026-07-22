@@ -67,8 +67,13 @@ impl DuckDbSession {
 /// `CREATE [UNIQUE] INDEX IF NOT EXISTS` with the same `rdlt_ix_` naming
 /// convention as postgres (M5).
 fn create_index_sql(unique: bool, table: &str, columns: &[String]) -> String {
+    let prefix = if unique {
+        rdlt_connector_sqlcore::names::UNIQUE_INDEX_PREFIX
+    } else {
+        rdlt_connector_sqlcore::names::INDEX_PREFIX
+    };
     let name = format!(
-        "rdlt_ix_{}",
+        "{prefix}_{}",
         rdlt_connector::core::naming::ident_hash(&format!("{table}:{}", columns.join(",")), 16)
     );
     let unique = if unique { "UNIQUE " } else { "" };
@@ -251,7 +256,10 @@ impl LoadSession for DuckDbSession {
             // Clause D3: idempotence by (load_id, commit_seq).
             let already: u64 = tx
                 .query_row(
-                    "SELECT count(*) FROM _rdlt_commits WHERE load_id = ? AND commit_seq = ?",
+                    &format!(
+                        "SELECT count(*) FROM {} WHERE load_id = ? AND commit_seq = ?",
+                        rdlt_connector_sqlcore::names::COMMITS_TABLE
+                    ),
                     duckdb::params![meta.load_id.as_str(), meta.commit_seq as i64],
                     |row| row.get(0),
                 )
@@ -262,7 +270,10 @@ impl LoadSession for DuckDbSession {
             // published.
             let load_committed_before: u64 = tx
                 .query_row(
-                    "SELECT count(*) FROM _rdlt_commits WHERE load_id = ?",
+                    &format!(
+                        "SELECT count(*) FROM {} WHERE load_id = ?",
+                        rdlt_connector_sqlcore::names::COMMITS_TABLE
+                    ),
                     duckdb::params![meta.load_id.as_str()],
                     |row| row.get(0),
                 )
@@ -431,12 +442,18 @@ impl LoadSession for DuckDbSession {
 
             // Clause D2: state persists in the SAME transaction as the data.
             tx.execute(
-                "INSERT OR REPLACE INTO _rdlt_state VALUES (?, ?)",
+                &format!(
+                    "INSERT OR REPLACE INTO {} VALUES (?, ?)",
+                    rdlt_connector_sqlcore::names::STATE_TABLE
+                ),
                 duckdb::params![meta.state.pipeline.as_str(), state_json],
             )
             .map_err(fatal)?;
             tx.execute(
-                "INSERT INTO _rdlt_commits VALUES (?, ?)",
+                &format!(
+                    "INSERT INTO {} VALUES (?, ?)",
+                    rdlt_connector_sqlcore::names::COMMITS_TABLE
+                ),
                 duckdb::params![meta.load_id.as_str(), meta.commit_seq as i64],
             )
             .map_err(fatal)?;
@@ -455,7 +472,10 @@ impl LoadSession for DuckDbSession {
         self.with_conn(move |conn| {
             let doc: Option<String> = conn
                 .query_row(
-                    "SELECT doc FROM _rdlt_state WHERE pipeline = ?",
+                    &format!(
+                        "SELECT doc FROM {} WHERE pipeline = ?",
+                        rdlt_connector_sqlcore::names::STATE_TABLE
+                    ),
                     duckdb::params![pipeline],
                     |row| row.get(0),
                 )

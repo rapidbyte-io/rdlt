@@ -126,9 +126,11 @@ impl Destination for Postgres {
             .batch_execute(&format!(
                 "CREATE SCHEMA IF NOT EXISTS {schema};
                  SET search_path TO {schema};
-                 CREATE TABLE IF NOT EXISTS _rdlt_state (pipeline TEXT PRIMARY KEY, doc TEXT);
-                 CREATE TABLE IF NOT EXISTS _rdlt_commits (
-                     load_id TEXT, commit_seq BIGINT, PRIMARY KEY (load_id, commit_seq));"
+                 CREATE TABLE IF NOT EXISTS {state} (pipeline TEXT PRIMARY KEY, doc TEXT);
+                 CREATE TABLE IF NOT EXISTS {commits} (
+                     load_id TEXT, commit_seq BIGINT, PRIMARY KEY (load_id, commit_seq));",
+                state = rdlt_connector_sqlcore::names::STATE_TABLE,
+                commits = rdlt_connector_sqlcore::names::COMMITS_TABLE
             ))
             .await
             .map_err(transient)?;

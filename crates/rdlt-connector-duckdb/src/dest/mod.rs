@@ -121,7 +121,8 @@ pub(crate) fn quote(ident: &str) -> String {
 pub(crate) fn stage_name(table: &TableName) -> String {
     // Hashed: bounded length regardless of table-name length, collision-safe.
     format!(
-        "_rdlt_stage_{}",
+        "{}{}",
+        rdlt_connector_sqlcore::names::STAGE_PREFIX,
         rdlt_connector::core::naming::ident_hash(table.as_str(), 16)
     )
 }
@@ -213,11 +214,13 @@ impl Destination for DuckDb {
         // catalog — a dead session's staged temp tables are unreachable (clause D4).
         let conn = self.clone_conn()?;
         // Meta tables carry the correctness protocol (contracts/persisted-formats §1).
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS _rdlt_state (pipeline VARCHAR PRIMARY KEY, doc VARCHAR);
-             CREATE TABLE IF NOT EXISTS _rdlt_commits (
+        conn.execute_batch(&format!(
+            "CREATE TABLE IF NOT EXISTS {state} (pipeline VARCHAR PRIMARY KEY, doc VARCHAR);
+             CREATE TABLE IF NOT EXISTS {commits} (
                  load_id VARCHAR, commit_seq BIGINT, PRIMARY KEY (load_id, commit_seq));",
-        )
+            state = rdlt_connector_sqlcore::names::STATE_TABLE,
+            commits = rdlt_connector_sqlcore::names::COMMITS_TABLE
+        ))
         .map_err(fatal)?;
         Ok(Box::new(commit::DuckDbSession {
             conn: Mutex::new(conn),
