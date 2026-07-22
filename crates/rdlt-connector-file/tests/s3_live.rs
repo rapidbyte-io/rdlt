@@ -148,3 +148,171 @@ async fn range_read_returns_the_tail() {
     let n = reader.read_full(&mut buf).await.expect("read");
     assert_eq!(&buf[..n], b"6789");
 }
+
+/// US2 through the ENGINE: seeded jsonl bucket → duckdb exact totals, then
+/// a DELTA run (two new objects + one grown) transfers exactly the delta —
+/// report.total_rows() is the read accounting (SC-003).
+#[tokio::test(flavor = "multi_thread")]
+async fn seeded_bucket_loads_and_delta_runs_through_the_engine() {
+    use rdlt_connector_duckdb::dest::DuckDb;
+    use rdlt_connector_file::FileSource;
+    use rdlt_engine::{Engine, EngineConfig};
+
+    let Some(fixture) = S3Fixture::start().await else {
+        return;
+    };
+    fixture
+        .put("eng/a.jsonl", b"{\"id\":1}\n{\"id\":2}\n")
+        .await;
+    fixture.put("eng/b.jsonl", b"{\"id\":3}\n").await;
+
+    let yaml = format!(
+        "streams:\n  - name: events\n    format: jsonl\n    path: \"eng/*.jsonl\"\n    {}",
+        fixture.location_yaml().replace('\n', "\n    ")
+    );
+    let db = tempfile::tempdir().expect("tempdir");
+    let dest = DuckDb::open(db.path().join("out.duckdb")).expect("open db");
+    let report = Engine::new(
+        EngineConfig::new("s3-files"),
+        FileSource::from_yaml(&yaml).expect("config"),
+        dest.clone(),
+    )
+    .run()
+    .await
+    .expect("run 1");
+    assert_eq!(report.total_rows(), 3);
+    assert_eq!(dest.count_rows("events").expect("count"), 3);
+
+    // Delta: two new objects + one GROWN (re-upload old content + a tail).
+    fixture
+        .put("eng/a.jsonl", b"{\"id\":1}\n{\"id\":2}\n{\"id\":5}\n")
+        .await;
+    fixture.put("eng/c.jsonl", b"{\"id\":6}\n").await;
+    fixture.put("eng/d.jsonl", b"{\"id\":7}\n").await;
+
+    let report = Engine::new(
+        EngineConfig::new("s3-files"),
+        FileSource::from_yaml(&yaml).expect("config"),
+        dest.clone(),
+    )
+    .run()
+    .await
+    .expect("run 2");
+    assert_eq!(
+        report.total_rows(),
+        3,
+        "exactly the delta: the grown tail (id 5) + the two new objects"
+    );
+    assert_eq!(
+        dest.count_rows("events").expect("count"),
+        6,
+        "no duplicates"
+    );
+}
+
+/// FF3 on objects: same-size different-etag = rewritten in place — typed,
+/// naming the key, never a stale-offset read.
+#[tokio::test(flavor = "multi_thread")]
+async fn same_size_rewrite_is_typed_by_etag() {
+    use rdlt_connector_duckdb::dest::DuckDb;
+    use rdlt_connector_file::FileSource;
+    use rdlt_engine::{Engine, EngineConfig};
+
+    let Some(fixture) = S3Fixture::start().await else {
+        return;
+    };
+    fixture.put("trip/x.jsonl", b"{\"id\":1}\n").await;
+    let yaml = format!(
+        "streams:\n  - name: events\n    format: jsonl\n    path: \"trip/*.jsonl\"\n    {}",
+        fixture.location_yaml().replace('\n', "\n    ")
+    );
+    let db = tempfile::tempdir().expect("tempdir");
+    let dest = DuckDb::open(db.path().join("out.duckdb")).expect("open db");
+    Engine::new(
+        EngineConfig::new("s3-trip"),
+        FileSource::from_yaml(&yaml).expect("config"),
+        dest.clone(),
+    )
+    .run()
+    .await
+    .expect("run 1");
+
+    // Same byte length, different content → same size, new etag.
+    fixture.put("trip/x.jsonl", b"{\"id\":9}\n").await;
+    let err = Engine::new(
+        EngineConfig::new("s3-trip"),
+        FileSource::from_yaml(&yaml).expect("config"),
+        dest.clone(),
+    )
+    .run()
+    .await
+    .expect_err("rewrite tripwire")
+    .to_string();
+    assert!(
+        err.contains("trip/x.jsonl") && err.contains("etag"),
+        "names the key: {err}"
+    );
+}
+
+/// Parquet objects load through the temp-fetch path with row-group cursors.
+#[tokio::test(flavor = "multi_thread")]
+async fn parquet_objects_load_through_the_engine() {
+    use rdlt_connector_duckdb::dest::DuckDb;
+    use rdlt_connector_file::FileSource;
+    use rdlt_engine::{Engine, EngineConfig};
+
+    let Some(fixture) = S3Fixture::start().await else {
+        return;
+    };
+    // Build a small parquet file locally, then seed it as an object.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let local = dir.path().join("m.parquet");
+    write_parquet(&local, &[10, 20, 30]);
+    fixture
+        .put("pq/m.parquet", &std::fs::read(&local).expect("read"))
+        .await;
+
+    let yaml = format!(
+        "streams:\n  - name: metrics\n    format: parquet\n    path: \"pq/*.parquet\"\n    {}",
+        fixture.location_yaml().replace('\n', "\n    ")
+    );
+    let db = tempfile::tempdir().expect("tempdir");
+    let dest = DuckDb::open(db.path().join("out.duckdb")).expect("open db");
+    let report = Engine::new(
+        EngineConfig::new("s3-pq"),
+        FileSource::from_yaml(&yaml).expect("config"),
+        dest.clone(),
+    )
+    .run()
+    .await
+    .expect("run");
+    assert_eq!(report.total_rows(), 3);
+    assert_eq!(dest.count_rows("metrics").expect("count"), 3);
+
+    // A second run re-lists and skips the completed object entirely.
+    let report = Engine::new(
+        EngineConfig::new("s3-pq"),
+        FileSource::from_yaml(&yaml).expect("config"),
+        dest.clone(),
+    )
+    .run()
+    .await
+    .expect("run 2");
+    assert_eq!(report.total_rows(), 0, "completed object skipped");
+}
+
+fn write_parquet(path: &std::path::Path, ids: &[i64]) {
+    use std::sync::Arc;
+    let schema = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("id", arrow::datatypes::DataType::Int64, false),
+    ]));
+    let batch = arrow::record_batch::RecordBatch::try_new(
+        schema.clone(),
+        vec![Arc::new(arrow::array::Int64Array::from(ids.to_vec()))],
+    )
+    .expect("batch");
+    let file = std::fs::File::create(path).expect("create");
+    let mut writer = parquet::arrow::ArrowWriter::try_new(file, schema, None).expect("writer");
+    writer.write(&batch).expect("write");
+    writer.close().expect("close");
+}

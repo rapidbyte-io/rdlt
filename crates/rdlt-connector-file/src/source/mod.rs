@@ -133,25 +133,76 @@ impl Source for FileSource {
             .ok_or_else(|| SourceError::fatal(format!("unknown stream {}", req.stream.name)))?;
 
         let mut cursor = FileCursor::decode(req.since.as_ref())?;
+        let location = crate::location::Location::from_options(stream.location.as_ref())?;
         // Snapshot the file list once per run (stable list; new files next run).
-        let matched = match stream.format {
-            Format::Jsonl => resolve_files(&stream.path)?,
-            Format::Parquet => parquet::resolve_with_row_groups(&stream.path)?,
+        // Local parquet keeps its row-group listing; object-store parquet is
+        // fetched to temp files first (correctness-first, research R10) with
+        // the cursor still keyed by the object.
+        let mut fetched_dir: Option<std::path::PathBuf> = None;
+        let (matched, read_paths) = match (&location, stream.format) {
+            (crate::location::Location::Local, Format::Jsonl) => {
+                (resolve_files(&stream.path)?, None)
+            }
+            (crate::location::Location::Local, Format::Parquet) => {
+                (parquet::resolve_with_row_groups(&stream.path)?, None)
+            }
+            (crate::location::Location::S3(_), Format::Jsonl) => {
+                (location.list(&stream.path).await?, None)
+            }
+            (crate::location::Location::S3(_), Format::Parquet) => {
+                let listed = location.list(&stream.path).await?;
+                let dir = std::env::temp_dir().join(format!(
+                    "rdlt-file-{}-{}",
+                    std::process::id(),
+                    stream.name
+                ));
+                std::fs::create_dir_all(&dir)
+                    .map_err(|e| SourceError::fatal(format!("temp dir for parquet fetch: {e}")))?;
+                let mut metas = Vec::with_capacity(listed.len());
+                let mut paths = std::collections::BTreeMap::new();
+                for (i, meta) in listed.into_iter().enumerate() {
+                    let local = fetch_to_temp(&location, &meta.path, &dir, i).await?;
+                    let counted = parquet::resolve_with_row_groups(&local.to_string_lossy())?;
+                    let groups = counted.first().map(|m| m.size).unwrap_or(0);
+                    paths.insert(meta.path.clone(), local.to_string_lossy().into_owned());
+                    metas.push(FileMeta {
+                        size: groups,
+                        ..meta
+                    });
+                }
+                fetched_dir = Some(dir);
+                (metas, Some(paths))
+            }
         };
-        let tasks = cursor.plan(&matched)?;
+        let mut tasks = cursor.plan(&matched)?;
+        if let Some(paths) = &read_paths {
+            for task in &mut tasks {
+                task.read_path = paths.get(&task.path).cloned();
+            }
+        }
 
+        let mut outcome = Ok(());
         for task in &tasks {
             let proceeded = match stream.format {
                 Format::Jsonl => {
-                    jsonl::read_task(task, stream.validate, &mut cursor, &mut req.out).await?
+                    jsonl::read_task(&location, task, stream.validate, &mut cursor, &mut req.out)
+                        .await
                 }
-                Format::Parquet => parquet::read_task(task, &mut cursor, &mut req.out).await?,
+                Format::Parquet => parquet::read_task(task, &mut cursor, &mut req.out).await,
             };
-            if !proceeded {
-                return Ok(()); // cancellation (clause S4)
+            match proceeded {
+                Ok(true) => {}
+                Ok(false) => break, // cancellation (clause S4)
+                Err(e) => {
+                    outcome = Err(e);
+                    break;
+                }
             }
         }
-        Ok(())
+        if let Some(dir) = fetched_dir {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+        outcome
     }
 }
 
@@ -159,4 +210,31 @@ impl Source for FileSource {
 /// declared schema and the parser cannot drift.
 pub fn config_schema() -> serde_json::Value {
     serde_json::to_value(schemars::schema_for!(config::FileConfig)).expect("schema serializes")
+}
+
+/// Drain one object into a temp file (bounded buffer).
+async fn fetch_to_temp(
+    location: &crate::location::Location,
+    key: &str,
+    dir: &std::path::Path,
+    i: usize,
+) -> Result<std::path::PathBuf, SourceError> {
+    use std::io::Write;
+    let mut reader = location.open_from(key, 0).await?;
+    let path = dir.join(format!("obj-{i}.parquet"));
+    let mut file = std::fs::File::create(&path)
+        .map_err(|e| SourceError::fatal(format!("temp file for `{key}`: {e}")))?;
+    let mut buf = vec![0u8; 8 << 20];
+    loop {
+        let n = reader
+            .read_full(&mut buf)
+            .await
+            .map_err(|e| SourceError::fatal(format!("fetching `{key}`: {e}")))?;
+        if n == 0 {
+            break;
+        }
+        file.write_all(&buf[..n])
+            .map_err(|e| SourceError::fatal(format!("writing temp for `{key}`: {e}")))?;
+    }
+    Ok(path)
 }

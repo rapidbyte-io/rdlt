@@ -101,7 +101,7 @@ everything skips (not fails) without a container runtime.
   jsonl bucket → engine → duckdb exact totals; listing-pagination cell
   (seed >1000 keys, complete set proven by totals); unreachable
   endpoint + wrong-credentials typed cells.
-- [ ] T007 [US2] Source over Location: thread `location:` through
+- [X] T007 [US2] Source over Location: thread `location:` through
   `src/source/{config.rs,mod.rs}` (additive field, data-model §5;
   validation: csv block only with format csv, existing rules
   untouched) and route discovery + reads through the Location layer

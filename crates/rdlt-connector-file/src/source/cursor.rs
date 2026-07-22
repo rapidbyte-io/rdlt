@@ -71,6 +71,11 @@ pub struct FileTask {
     pub mtime_ms: Option<u64>,
     /// The object etag observed at planning time (object-store files).
     pub etag: Option<String>,
+    /// Snapshot size (bytes / row groups) from the listing.
+    pub size: u64,
+    /// Read from THIS local path instead of `path` (object-store parquet
+    /// is fetched to a temp file first; the cursor stays keyed by `path`).
+    pub read_path: Option<String>,
 }
 
 impl FileCursor {
@@ -100,6 +105,8 @@ impl FileCursor {
                     start: 0,
                     mtime_ms: meta.mtime_ms,
                     etag: meta.etag.clone(),
+                    size: meta.size,
+                    read_path: None,
                 }),
                 Some(progress) => {
                     if meta.size < progress.size || progress.done > meta.size {
@@ -108,6 +115,18 @@ impl FileCursor {
                              bytes, now {}); refusing to read from a stale \
                              offset — clear it from the pipeline state or restore the file",
                             meta.path, progress.done, progress.size, meta.size
+                        )));
+                    }
+                    if meta.size == progress.size
+                        && let (Some(then), Some(now)) =
+                            (progress.etag.as_deref(), meta.etag.as_deref())
+                        && then != now
+                    {
+                        return Err(SourceError::fatal(format!(
+                            "file `{}` was rewritten in place (same size, different etag); \
+                             refusing to trust recorded progress — clear it from the \
+                             pipeline state or restore the object",
+                            meta.path
                         )));
                     }
                     if meta.size == progress.size
@@ -135,6 +154,8 @@ impl FileCursor {
                             start: progress.done,
                             mtime_ms: meta.mtime_ms,
                             etag: meta.etag.clone(),
+                            size: meta.size,
+                            read_path: None,
                         });
                     }
                     // done == size (+ same mtime): complete and unchanged → skip.
@@ -187,6 +208,8 @@ mod tests {
                 start: 10,
                 mtime_ms: None,
                 etag: None,
+                size: 15,
+                read_path: None,
             }]
         );
 

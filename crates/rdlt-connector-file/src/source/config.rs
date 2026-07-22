@@ -21,6 +21,10 @@ pub struct FileStream {
     pub name: String,
     /// Explicit — no extension magic (research R13).
     pub format: Format,
+    /// Where the files live (015): absent = local filesystem (pre-015
+    /// semantics, unchanged); `{s3: {…}}` = S3-compatible object storage.
+    #[serde(default)]
+    pub location: Option<crate::location::LocationOptions>,
     /// Explicit file path or glob pattern. An explicitly named missing file is an
     /// error; an empty glob is an empty stream.
     pub path: String,
@@ -103,6 +107,11 @@ impl FileConfig {
             ));
         }
         for stream in &self.streams {
+            if let Some(location) = &stream.location {
+                location
+                    .validate(&format!("stream `{}`", stream.name))
+                    .map_err(ConfigError::Invalid)?;
+            }
             if stream.format == Format::Parquet && stream.primary_key.is_some() {
                 return Err(ConfigError::Invalid(format!(
                     "stream `{}`: parquet streams are structured and cannot declare \

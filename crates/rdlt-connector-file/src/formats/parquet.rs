@@ -32,14 +32,15 @@ pub(crate) async fn read_task(
     cursor: &mut FileCursor,
     out: &mut RecordsOut,
 ) -> Result<bool, SourceError> {
-    let file = std::fs::File::open(&task.path)
+    let read_path = task.read_path.as_deref().unwrap_or(&task.path);
+    let file = std::fs::File::open(read_path)
         .map_err(|e| SourceError::fatal(format!("opening `{}`: {e}", task.path)))?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)
         .map_err(|e| SourceError::fatal(format!("reading parquet `{}`: {e}", task.path)))?;
     let total_groups = builder.metadata().num_row_groups() as u64;
 
     for group in task.start..total_groups {
-        let file = std::fs::File::open(&task.path)
+        let file = std::fs::File::open(read_path)
             .map_err(|e| SourceError::fatal(format!("opening `{}`: {e}", task.path)))?;
         let reader = ParquetRecordBatchReaderBuilder::try_new(file)
             .map_err(|e| SourceError::fatal(format!("reading parquet `{}`: {e}", task.path)))?
