@@ -12,7 +12,7 @@ use rdlt_connector::core::{
     StateDoc, TableName, TableSchema, WriteMode,
 };
 use rdlt_connector::{Destination, OpenCtx};
-use rdlt_connector_parquet::ParquetDir;
+use rdlt_connector_file::ParquetDir;
 
 fn schema_for(table: &str) -> TableSchema {
     TableSchema {

@@ -47,7 +47,7 @@ No big-bang commit — every task leaves the whole suite green.
   `src/lib.rs` a thin façade (`pub mod source; pub mod formats;` +
   root re-exports of every currently-public item). All existing tests
   compile UNCHANGED beyond import paths; suite green.
-- [ ] T003 Dest absorption: move the ENTIRE
+- [X] T003 Dest absorption: move the ENTIRE
   `crates/rdlt-connector-parquet/src/lib.rs` surface into
   `crates/rdlt-connector-file/src/dest/{mod.rs,config.rs}` (staging
   constants, `LAYOUT_FORMAT_VERSION`, `pq.*` FAIL_POINTS registry,

@@ -27,7 +27,7 @@ failpoints = ["rdlt-core/failpoints"]
 
 [dev-dependencies]
 rdlt-testkit = { workspace = true }
-rdlt-connector-parquet = { workspace = true, features = ["failpoints"] }
+rdlt-connector-file = { workspace = true, features = ["failpoints"] }
 rdlt-connector-duckdb = { workspace = true, features = ["failpoints"] }
 async-trait = { workspace = true }
 proptest = { workspace = true }

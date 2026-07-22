@@ -9,7 +9,7 @@ use arrow::record_batch::RecordBatch;
 use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use rdlt_connector_file::FileSource;
-use rdlt_connector_parquet::ParquetDir;
+use rdlt_connector_file::ParquetDir;
 use rdlt_engine::{Engine, EngineConfig};
 
 fn write_parquet(path: &std::path::Path, ids: &[i64]) {

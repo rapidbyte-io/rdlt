@@ -30,3 +30,6 @@ tempfile = { workspace = true }
 
 [lints]
 workspace = true
+
+[features]
+failpoints = ["rdlt-connector/failpoints"]

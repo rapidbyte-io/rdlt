@@ -170,7 +170,7 @@ async fn drive(spec: Spec) -> Result<RunOutcome> {
                     builder.destination(dest).build().map_err(err)?
                 }
                 DestSpec::Parquet { path } => {
-                    let dest = rdlt::connector::parquet::ParquetDir::open(path).map_err(err)?;
+                    let dest = rdlt::connector::file::ParquetDir::open(path).map_err(err)?;
                     builder.destination(dest).build().map_err(err)?
                 }
             };

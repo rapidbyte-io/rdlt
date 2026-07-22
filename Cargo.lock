@@ -3044,7 +3044,6 @@ dependencies = [
  "rdlt-connector",
  "rdlt-connector-duckdb",
  "rdlt-connector-file",
- "rdlt-connector-parquet",
  "rdlt-connector-postgres",
  "rdlt-connector-rest",
  "rdlt-core",
@@ -3141,23 +3140,6 @@ dependencies = [
  "serde_yaml",
  "tempfile",
  "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "rdlt-connector-parquet"
-version = "0.2.0"
-dependencies = [
- "arrow",
- "async-trait",
- "parquet",
- "rdlt-connector",
- "rdlt-connector-file",
- "rdlt-engine",
- "rdlt-testkit",
- "serde",
- "serde_json",
- "tempfile",
  "tokio",
 ]
 
@@ -3262,7 +3244,7 @@ dependencies = [
  "proptest",
  "rdlt-connector",
  "rdlt-connector-duckdb",
- "rdlt-connector-parquet",
+ "rdlt-connector-file",
  "rdlt-core",
  "rdlt-testkit",
  "serde",

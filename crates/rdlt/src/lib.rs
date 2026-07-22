@@ -42,9 +42,6 @@ pub mod connector {
     #[cfg(feature = "file")]
     pub use rdlt_connector_file as file;
 
-    #[cfg(feature = "parquet")]
-    pub use rdlt_connector_parquet as parquet;
-
     #[cfg(any(feature = "postgres", feature = "postgres-source"))]
     pub use rdlt_connector_postgres as postgres;
 

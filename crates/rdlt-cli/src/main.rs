@@ -267,7 +267,7 @@ async fn run(spec_path: PathBuf, report_path: Option<PathBuf>) -> Result<(), Cli
                     builder.destination(dest).build()?
                 }
                 DestSpec::Parquet { path } => {
-                    let dest = rdlt::connector::parquet::ParquetDir::open(path)
+                    let dest = rdlt::connector::file::ParquetDir::open(path)
                         .map_err(|e| CliError::Usage(format!("opening parquet dir: {e}")))?;
                     builder.destination(dest).build()?
                 }

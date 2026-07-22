@@ -1,7 +1,7 @@
 //! T015: parquet destination — public destination conformance suite (FR-011).
 
 use async_trait::async_trait;
-use rdlt_connector_parquet::ParquetDir;
+use rdlt_connector_file::ParquetDir;
 use rdlt_testkit::conformance::dest::verify_destination;
 use rdlt_testkit::{TableProbe, assert_conformant};
 

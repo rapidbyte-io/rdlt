@@ -13,7 +13,9 @@ duckdb = ["dep:rdlt-connector-duckdb"]
 postgres = ["dep:rdlt-connector-postgres", "rdlt-connector-postgres/dest"]
 file = ["dep:rdlt-connector-file"]
 postgres-source = ["dep:rdlt-connector-postgres", "rdlt-connector-postgres/source"]
-parquet = ["dep:rdlt-connector-parquet"]
+# The parquet FEATURE spelling stays (frozen for build scripts): the
+# parquet destination now lives in the file family (015 FF1).
+parquet = ["file"]
 
 [dependencies]
 rdlt-core = { workspace = true }
@@ -23,7 +25,6 @@ rdlt-connector-rest = { workspace = true, optional = true }
 rdlt-connector-duckdb = { workspace = true, optional = true }
 rdlt-connector-file = { workspace = true, optional = true }
 rdlt-connector-postgres = { workspace = true, optional = true }
-rdlt-connector-parquet = { workspace = true, optional = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 

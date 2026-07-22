@@ -1,4 +1,5 @@
-//! # rdlt-connector-parquet — minimal parquet-file destination
+//! The file DESTINATION side (absorbed rdlt-connector-parquet, 015 FF1):
+//! parquet-file output — temp-dir staging, atomic rename publication.
 //!
 //! Write-only, Append/Replace (no merge — `merge: false`). One directory per table;
 //! staged batches live under `.rdlt-staging/<pipeline>/<load>/` and publication is a
