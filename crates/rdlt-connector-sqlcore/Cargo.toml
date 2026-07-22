@@ -1,0 +1,18 @@
+[package]
+name = "rdlt-connector-sqlcore"
+description = "Shared merge-planning core for rdlt SQL destinations: options vocabulary, plan shapes, dialect seam"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Contract SM8: existing workspace dependencies only — this crate may never
+# add a NEW external dependency.
+[dependencies]
+rdlt-connector = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+
+[lints]
+workspace = true

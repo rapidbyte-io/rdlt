@@ -3174,6 +3174,7 @@ dependencies = [
  "rcgen",
  "rdlt-connector",
  "rdlt-connector-duckdb",
+ "rdlt-connector-sqlcore",
  "rdlt-engine",
  "rdlt-testkit",
  "rustls",
@@ -3209,6 +3210,16 @@ dependencies = [
  "thiserror",
  "tokio",
  "wiremock",
+]
+
+[[package]]
+name = "rdlt-connector-sqlcore"
+version = "0.2.0"
+dependencies = [
+ "rdlt-connector",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

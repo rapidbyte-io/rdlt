@@ -27,7 +27,7 @@ commits — SM4 reviewability.
 
 ## Phase 2: Foundational — the extraction (blocking; pure moves, no DuckDB code)
 
-- [ ] T002 Scaffold `crates/rdlt-connector-sqlcore` (member in
+- [X] T002 Scaffold `crates/rdlt-connector-sqlcore` (member in
   `Cargo.toml`, deps serde + thiserror only — SM8) and MOVE the shared
   vocabulary from `crates/rdlt-connector-postgres/src/dest/config.rs`:
   `MergeStrategy`, `Scd2Options`, `TableOptions`, `DestOptions`
@@ -35,7 +35,7 @@ commits — SM4 reviewability.
   validation; postgres re-exports at the existing paths
   (`PgDestOptions`/`PgTableOptions` aliases) — CLI, facade, and schema
   round-trip tests untouched-green.
-- [ ] T003 Move the plan shapes: `MergePlan` (dedup/survivor ordering,
+- [X] T003 Move the plan shapes: `MergePlan` (dedup/survivor ordering,
   scope replacement, strategy arms, hard-delete-on-survivor decision,
   per-table single-commit-unit state) from
   `crates/rdlt-connector-postgres/src/dest/commit.rs` into
@@ -45,7 +45,7 @@ commits — SM4 reviewability.
   scope_delete, upsert, scd2_close/scd2_open, tx_boundary_expr,
   ensure_merge_index) — SQL TEXT only (SM2); unit cells for shape
   logic move with the code.
-- [ ] T004 Extract the postgres dialect into
+- [X] T004 Extract the postgres dialect into
   `crates/rdlt-connector-postgres/src/dest/dialect.rs` and rewire
   `dest/commit.rs` through sqlcore. PROOF (SM4): golden_sql pins
   byte-identical, full postgres suite + refined-merge/scd2/upsert

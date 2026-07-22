@@ -12,6 +12,7 @@
 mod commit;
 mod config;
 mod ddl;
+mod dialect;
 mod encode;
 
 use async_trait::async_trait;
@@ -30,10 +31,13 @@ pub use config::{
 /// sqlcore extraction. Not a public API.
 #[doc(hidden)]
 pub mod sqlgen {
-    pub use super::commit::{
-        ARRIVAL_COL, HardDelete, MergePlan, identity_delete_insert_sql, keyed_delete_insert_sql,
-        keyed_upsert_sql, scd2_merge_sql, scope_replace_sql,
+    pub use super::commit::ARRIVAL_COL;
+    pub use super::dialect::PgDialect;
+    pub use rdlt_connector_sqlcore::plan::{
+        identity_delete_insert_sql, keyed_delete_insert_sql, keyed_upsert_sql, scd2_merge_sql,
+        scope_replace_sql,
     };
+    pub use rdlt_connector_sqlcore::{HardDelete, MergePlan};
 }
 
 /// Fail-point registry (gate G2.2): every `crash_point!` site in this crate —

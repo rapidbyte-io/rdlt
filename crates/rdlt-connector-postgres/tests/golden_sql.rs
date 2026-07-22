@@ -12,8 +12,8 @@
 use rdlt_connector::core::schema::ColumnDef;
 use rdlt_connector::core::{ColumnType, LogicalType, Provenance, TableName, TableSchema};
 use rdlt_connector_postgres::dest::sqlgen::{
-    HardDelete, MergePlan, identity_delete_insert_sql, keyed_delete_insert_sql, keyed_upsert_sql,
-    scd2_merge_sql, scope_replace_sql,
+    HardDelete, MergePlan, PgDialect, identity_delete_insert_sql, keyed_delete_insert_sql,
+    keyed_upsert_sql, scd2_merge_sql, scope_replace_sql,
 };
 use rdlt_connector_postgres::dest::{DedupSort, Scd2Options, SortOrder};
 
@@ -49,6 +49,7 @@ fn plan<'a>(
     dedup: Option<&'a DedupSort>,
 ) -> MergePlan<'a> {
     MergePlan {
+        dialect: &PgDialect,
         target: "\"events\"",
         stage: "\"_rdlt_stage_feedcafe\"",
         cols: "\"id\", \"day\", \"name\", \"seq\", \"deleted\", \"_rdlt_load_id\"",
@@ -56,7 +57,7 @@ fn plan<'a>(
         key,
         root_stage: "\"_rdlt_stage_feedcafe\"".into(),
         is_child: false,
-        hard_delete: hard_delete.map(|c| HardDelete::new(c, schema)),
+        hard_delete: hard_delete.map(|c| HardDelete::new(c, schema, &PgDialect)),
         dedup_sort: dedup,
     }
 }
@@ -64,6 +65,7 @@ fn plan<'a>(
 #[test]
 fn pin_scope_replace() {
     let sql = scope_replace_sql(
+        &PgDialect,
         "\"events\"",
         "\"_rdlt_stage_feedcafe\"",
         &["day".into(), "tenant".into()],
