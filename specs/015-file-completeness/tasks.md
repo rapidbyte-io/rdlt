@@ -176,7 +176,7 @@ readers never observe final-name partials.
 
 ## Phase 5: Polish & close-out
 
-- [ ] T014 [P] Traceability matrix
+- [X] T014 [P] Traceability matrix
   `specs/015-file-completeness/matrix.md`: every config row (location,
   discovery, cursor, per-format options, codecs, dest
   format/partition/location, CLI spellings) → cells, zero uncited
