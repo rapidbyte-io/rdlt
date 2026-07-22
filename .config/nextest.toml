@@ -1,0 +1,10 @@
+# Live container cells: each iceberg cell boots its own Polaris (JVM) +
+# RUSTFS pair. Unbounded parallelism starts 6+ JVMs at once and health
+# checks time out under the load — bound the group, everything else
+# keeps full parallelism.
+[test-groups.iceberg-live]
+max-threads = 3
+
+[[profile.default.overrides]]
+filter = "package(rdlt-connector-iceberg) and not binary(config_schema)"
+test-group = "iceberg-live"

@@ -137,7 +137,7 @@ impl CatalogFixture {
             ],
         );
         let base = format!("http://127.0.0.1:{api_port}");
-        wait_http_answers(&format!("http://127.0.0.1:{health_port}/q/health"), 200).await;
+        wait_http_answers(&format!("http://127.0.0.1:{health_port}/q/health"), 400).await;
 
         let http = reqwest::Client::new();
         // OAuth (T001): client_credentials at /api/catalog/v1/oauth/tokens.
@@ -347,16 +347,24 @@ try:
 except urllib.error.HTTPError as e:
     if e.code not in (200, 409):
         sys.exit(f"create bucket: HTTP {{e.code}}: {{e.read()[:200]}}")
+except urllib.error.URLError as e:
+    sys.exit(f"create bucket: {{e.reason}}")
 "#
     );
-    let out = std::process::Command::new("python3")
-        .arg("-c")
-        .arg(&script)
-        .output()
-        .expect("python3 for the fixture bucket-create");
-    assert!(
-        out.status.success(),
-        "create bucket failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    // RUSTFS answers HTTP before it accepts authenticated PUTs during
+    // startup — retry (the 015 seed-put pattern; observed live).
+    let mut last = String::new();
+    for _ in 0..8 {
+        let out = std::process::Command::new("python3")
+            .arg("-c")
+            .arg(&script)
+            .output()
+            .expect("python3 for the fixture bucket-create");
+        if out.status.success() {
+            return;
+        }
+        last = String::from_utf8_lossy(&out.stderr).into_owned();
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    }
+    panic!("create bucket failed after retries: {last}");
 }
