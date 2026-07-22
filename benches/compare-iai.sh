@@ -21,22 +21,29 @@ IAI_DIR = pathlib.Path("target/iai")
 
 def max_ir(doc):
     """Current-run 'Ir' from an iai-callgrind 0.16 summary: profiles[] ->
-    summaries.parts[] -> metrics_summary.Callgrind.Ir.metrics.<variant>[0]
-    (first element is the CURRENT run; the second, when present, the prior)."""
+    summaries.parts[] -> metrics_summary.Callgrind.Ir.metrics, an
+    either-or-both map: 'Both' -> [current, prior], 'Left' -> current only
+    (every FIRST run over a fresh target/iai — always the case in CI),
+    'Right' -> prior only (not this run; skipped)."""
     best = 0
     for profile in doc.get("profiles", []):
         for part in profile.get("summaries", {}).get("parts", []):
             ir = part.get("metrics_summary", {}).get("Callgrind", {}).get("Ir")
             if not ir:
                 continue
-            for variant in ir.get("metrics", {}).values():
-                if isinstance(variant, list) and variant and isinstance(variant[0], dict):
-                    value = variant[0].get("Int", variant[0].get("Float", 0))
+            for key, variant in ir.get("metrics", {}).items():
+                if key == "Right":
+                    continue
+                current = variant[0] if isinstance(variant, list) else variant
+                if isinstance(current, dict):
+                    value = current.get("Int", current.get("Float", 0))
                     best = max(best, int(value))
     return best
 
 measured = {}
+summary_files = 0
 for summary in IAI_DIR.rglob("summary.json"):
+    summary_files += 1
     doc = json.loads(summary.read_text())
     name = doc.get("function_name") or summary.parent.name.split(".")[0]
     ir = max_ir(doc)
@@ -44,6 +51,12 @@ for summary in IAI_DIR.rglob("summary.json"):
         measured[name] = max(measured.get(name, 0), ir)
 
 if not measured:
+    if summary_files:
+        sys.exit(
+            f"{summary_files} summary.json file(s) under target/iai but no "
+            "current-run Ir metrics parsed — summary schema drift? (expected "
+            "iai-callgrind 0.16 Both/Left metric variants)"
+        )
     sys.exit("no iai summaries under target/iai — run the bench with --save-summary first")
 
 mode = sys.argv[1]
