@@ -40,14 +40,15 @@ pub struct Scd2Options {
     #[serde(default)]
     pub absent: AbsentPolicy,
     /// Feature 013 G2 (dlt parity): the OPEN-version marker written to
-    /// `valid_to` instead of NULL — a timestamp literal like
+    /// `valid_to` instead of NULL — an RFC3339 literal like
     /// `9999-12-31T00:00:00Z` (some BI tools cannot range-query NULLs).
-    /// Validated as RFC3339 or `YYYY-MM-DD`.
+    /// Active-version predicates treat NULL AND the marker as open, so a
+    /// table that predates the option (NULL-open rows) keeps working; new
+    /// versions open with the marker. Must differ from `boundary_timestamp`.
     #[serde(default)]
     pub active_record_timestamp: Option<String>,
-    /// Feature 013 G2 (dlt parity): a CALLER-SUPPLIED boundary timestamp
-    /// used instead of the transaction timestamp for close/open/retire.
-    /// Validated as RFC3339 or `YYYY-MM-DD`.
+    /// Feature 013 G2 (dlt parity): a CALLER-SUPPLIED RFC3339 boundary used
+    /// instead of the transaction timestamp for close/open/retire.
     #[serde(default)]
     pub boundary_timestamp: Option<String>,
 }
@@ -64,14 +65,16 @@ impl Default for Scd2Options {
     }
 }
 
-/// A timestamp OPTION value must be a real timestamp before it may appear as
-/// a SQL literal (validated here, quoted at generation — never raw user
-/// text in a statement). Accepted: RFC3339, `YYYY-MM-DD HH:MM:SS`, or
-/// `YYYY-MM-DD`.
+/// A timestamp OPTION value must be a real, ZONE-EXPLICIT timestamp before
+/// it may appear as a SQL literal (validated here, quoted at generation —
+/// never raw user text in a statement). RFC3339 with offset ONLY
+/// (`9999-12-31T00:00:00Z`): these literals are compared for EQUALITY
+/// against TIMESTAMPTZ columns, and a zone-less literal resolves per
+/// session/system TimeZone — the same marker would mean different instants
+/// on different machines, silently corrupting scd2 history (013 review
+/// finding 2).
 pub(crate) fn validate_timestamp_literal(value: &str) -> bool {
     chrono::DateTime::parse_from_rfc3339(value).is_ok()
-        || chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S").is_ok()
-        || chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").is_ok()
 }
 
 fn default_valid_from() -> String {
@@ -244,10 +247,25 @@ impl DestOptions {
                     {
                         return Err(format!(
                             "tables.{table}.scd2.{field}: `{value}` is not a \
-                             timestamp (RFC3339, `YYYY-MM-DD HH:MM:SS`, or \
-                             `YYYY-MM-DD`)"
+                             zone-explicit timestamp (RFC3339 with offset, \
+                             e.g. `9999-12-31T00:00:00Z` — zone-less \
+                             literals resolve per session TimeZone)"
                         ));
                     }
+                }
+                // Review finding 3: a boundary EQUAL to the open marker makes
+                // every closed row satisfy the active predicate — reject.
+                if let (Some(marker), Some(boundary)) = (
+                    scd2.active_record_timestamp.as_deref(),
+                    scd2.boundary_timestamp.as_deref(),
+                ) && marker == boundary
+                {
+                    return Err(format!(
+                        "tables.{table}.scd2: boundary_timestamp equals \
+                         active_record_timestamp — closed versions would \
+                         read as ACTIVE; pick a marker outside the data's \
+                         time range (e.g. 9999-12-31T00:00:00Z)"
+                    ));
                 }
             }
         }
@@ -387,10 +405,28 @@ mod tests {
         }
         DestOptions::from_value(serde_json::json!({
             "tables": {"t": {"merge_strategy": "scd2",
-                              "scd2": {"active_record_timestamp": "9999-12-31",
-                                       "boundary_timestamp": "2026-07-22 00:00:00"}}}
+                              "scd2": {"active_record_timestamp": "9999-12-31T00:00:00Z",
+                                       "boundary_timestamp": "2026-07-22T00:00:00Z"}}}
         }))
         .expect("valid marker + boundary literals");
+        // Zone-less literals resolve per session TimeZone — rejected (013
+        // review finding 2).
+        for zoneless in ["9999-12-31", "2026-07-22 00:00:00"] {
+            let bad = DestOptions::from_value(serde_json::json!({
+                "tables": {"t": {"merge_strategy": "scd2",
+                                  "scd2": {"boundary_timestamp": zoneless}}}
+            }))
+            .unwrap_err();
+            assert!(bad.contains("zone-explicit"), "{bad}");
+        }
+        // boundary == marker: closed rows would read as active (finding 3).
+        let bad = DestOptions::from_value(serde_json::json!({
+            "tables": {"t": {"merge_strategy": "scd2",
+                              "scd2": {"active_record_timestamp": "9999-12-31T00:00:00Z",
+                                       "boundary_timestamp": "9999-12-31T00:00:00Z"}}}
+        }))
+        .unwrap_err();
+        assert!(bad.contains("equals active_record_timestamp"), "{bad}");
 
         // Valid: destination default upsert + per-table scd2.
         let ok = DestOptions::from_value(serde_json::json!({

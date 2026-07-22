@@ -157,8 +157,8 @@ fn pin_scd2_markers_and_boundary() {
     let key = vec!["id".to_string()];
     let scd2 = Scd2Options {
         absent: rdlt_connector_postgres::dest::AbsentPolicy::Retire,
-        active_record_timestamp: Some("9999-12-31".into()),
-        boundary_timestamp: Some("2026-07-22 00:00:00".into()),
+        active_record_timestamp: Some("9999-12-31T00:00:00Z".into()),
+        boundary_timestamp: Some("2026-07-22T00:00:00Z".into()),
         ..Scd2Options::default()
     };
     let mut markers_plan = plan(&schema, &key, None, None);
@@ -206,7 +206,7 @@ fn pin_scd2_scoped_retirement() {
     assert_eq!(stmts.last().unwrap(), PIN_SCOPED);
 }
 
-const PIN_M0: &str = "UPDATE \"events\" t SET \"_rdlt_valid_to\" = '2026-07-22 00:00:00' FROM (SELECT DISTINCT ON (\"id\") * FROM \"_rdlt_stage_feedcafe\" ORDER BY \"id\", \"__rdlt_arrival\" DESC) d WHERE t.\"_rdlt_valid_to\" = '9999-12-31' AND t.\"id\" = d.\"id\" AND (t.\"day\" IS DISTINCT FROM d.\"day\" OR t.\"name\" IS DISTINCT FROM d.\"name\")";
-const PIN_M1: &str = "INSERT INTO \"events\" (\"id\", \"day\", \"name\", \"_rdlt_load_id\", \"_rdlt_valid_from\", \"_rdlt_valid_to\") SELECT \"id\", \"day\", \"name\", \"_rdlt_load_id\", '2026-07-22 00:00:00', '9999-12-31' FROM (SELECT DISTINCT ON (\"id\") * FROM \"_rdlt_stage_feedcafe\" ORDER BY \"id\", \"__rdlt_arrival\" DESC) d WHERE NOT EXISTS ( SELECT 1 FROM \"events\" t WHERE t.\"_rdlt_valid_to\" = '9999-12-31' AND t.\"id\" = d.\"id\")";
-const PIN_M2: &str = "UPDATE \"events\" t SET \"_rdlt_valid_to\" = '2026-07-22 00:00:00' WHERE t.\"_rdlt_valid_to\" = '9999-12-31' AND (\"id\") NOT IN (SELECT \"id\" FROM (SELECT DISTINCT ON (\"id\") * FROM \"_rdlt_stage_feedcafe\" ORDER BY \"id\", \"__rdlt_arrival\" DESC) d)";
+const PIN_M0: &str = "UPDATE \"events\" t SET \"_rdlt_valid_to\" = '2026-07-22T00:00:00Z' FROM (SELECT DISTINCT ON (\"id\") * FROM \"_rdlt_stage_feedcafe\" ORDER BY \"id\", \"__rdlt_arrival\" DESC) d WHERE (t.\"_rdlt_valid_to\" IS NULL OR t.\"_rdlt_valid_to\" = '9999-12-31T00:00:00Z') AND t.\"id\" = d.\"id\" AND (t.\"day\" IS DISTINCT FROM d.\"day\" OR t.\"name\" IS DISTINCT FROM d.\"name\")";
+const PIN_M1: &str = "INSERT INTO \"events\" (\"id\", \"day\", \"name\", \"_rdlt_load_id\", \"_rdlt_valid_from\", \"_rdlt_valid_to\") SELECT \"id\", \"day\", \"name\", \"_rdlt_load_id\", '2026-07-22T00:00:00Z', '9999-12-31T00:00:00Z' FROM (SELECT DISTINCT ON (\"id\") * FROM \"_rdlt_stage_feedcafe\" ORDER BY \"id\", \"__rdlt_arrival\" DESC) d WHERE NOT EXISTS ( SELECT 1 FROM \"events\" t WHERE (t.\"_rdlt_valid_to\" IS NULL OR t.\"_rdlt_valid_to\" = '9999-12-31T00:00:00Z') AND t.\"id\" = d.\"id\")";
+const PIN_M2: &str = "UPDATE \"events\" t SET \"_rdlt_valid_to\" = '2026-07-22T00:00:00Z' WHERE (t.\"_rdlt_valid_to\" IS NULL OR t.\"_rdlt_valid_to\" = '9999-12-31T00:00:00Z') AND (\"id\") NOT IN (SELECT \"id\" FROM (SELECT DISTINCT ON (\"id\") * FROM \"_rdlt_stage_feedcafe\" ORDER BY \"id\", \"__rdlt_arrival\" DESC) d)";
 const PIN_SCOPED: &str = "UPDATE \"events\" t SET \"_rdlt_valid_to\" = now() WHERE t.\"_rdlt_valid_to\" IS NULL AND (\"id\") NOT IN (SELECT \"id\" FROM (SELECT DISTINCT ON (\"id\") * FROM \"_rdlt_stage_feedcafe\" ORDER BY \"id\", \"__rdlt_arrival\" DESC) d) AND (\"day\") IN (SELECT \"day\" FROM \"_rdlt_stage_feedcafe\" WHERE \"day\" IS NOT NULL)";

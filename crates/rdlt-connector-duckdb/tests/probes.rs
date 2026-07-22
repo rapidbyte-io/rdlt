@@ -179,6 +179,9 @@ fn g3_settings_and_extensions_passthrough() {
         .unwrap()
         .extension("json")
         .unwrap();
+    // query_string runs on a CLONED (fresh-session) connection — passing
+    // proves the replay-per-session fix (013 review finding 4), not just
+    // the builder connection.
     assert_eq!(
         dest.query_string("SELECT current_setting('threads')::VARCHAR")
             .unwrap(),

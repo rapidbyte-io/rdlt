@@ -38,6 +38,18 @@ pub use rdlt_connector_sqlcore::{
 pub struct DuckDb {
     db: std::sync::Arc<Mutex<Connection>>,
     options: DestOptions,
+    /// G3 settings/extensions, REPLAYED on every session connection:
+    /// `try_clone` opens a NEW DuckDB session that inherits neither
+    /// session-scoped SETs nor LOADs — applying them only on the builder
+    /// connection would leave the session that actually writes silently
+    /// unconfigured (013 review finding 4).
+    session_setup: Vec<SetupStmt>,
+}
+
+#[derive(Debug, Clone)]
+enum SetupStmt {
+    Setting { key: String, value: String },
+    Extension { name: String },
 }
 
 impl std::fmt::Debug for DuckDb {
@@ -53,6 +65,7 @@ impl DuckDb {
         Ok(Self {
             db: std::sync::Arc::new(Mutex::new(conn)),
             options: DestOptions::default(),
+            session_setup: Vec::new(),
         })
     }
 
@@ -72,46 +85,60 @@ impl DuckDb {
         self.setting("memory_limit", limit)
     }
 
-    /// Apply one DuckDB setting (`SET key = 'value'`) on the shared database
-    /// instance — the dlt-parity G3 passthrough (threads, temp_directory, …).
-    /// The key must be a bare identifier; the value is escaped as a literal.
-    pub fn setting(self, key: &str, value: &str) -> Result<Self, DestError> {
+    /// Apply one DuckDB setting (`SET key = 'value'`) — the dlt-parity G3
+    /// passthrough (threads, temp_directory, TimeZone, …). Validated + applied
+    /// eagerly (a bad key/value errors HERE), and replayed on every session
+    /// connection the destination opens (finding 4: cloned connections are
+    /// fresh sessions). The key must be a bare identifier; the value is
+    /// escaped as a literal.
+    pub fn setting(mut self, key: &str, value: &str) -> Result<Self, DestError> {
         if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
             return Err(fatal(format!(
                 "duckdb setting `{key}`: keys must be bare identifiers \
                  ([A-Za-z0-9_]) — refusing to interpolate"
             )));
         }
+        let stmt = SetupStmt::Setting {
+            key: key.to_owned(),
+            value: value.to_owned(),
+        };
         {
             let guard = self.db.lock().map_err(|_| fatal("connection poisoned"))?;
-            guard
-                .execute_batch(&format!("SET {key}='{}'", value.replace('\'', "''")))
-                .map_err(|e| fatal(format!("duckdb setting `{key}`: {e}")))?;
+            apply_setup(&guard, &stmt)?;
         }
+        self.session_setup.push(stmt);
         Ok(self)
     }
 
     /// LOAD a DuckDB extension by name (G3 passthrough; bundled builds carry
     /// the core extensions statically — LOAD activates, no network install).
-    pub fn extension(self, name: &str) -> Result<Self, DestError> {
+    /// Applied eagerly and replayed per session connection (finding 4).
+    pub fn extension(mut self, name: &str) -> Result<Self, DestError> {
         if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
             return Err(fatal(format!(
                 "duckdb extension `{name}`: names must be bare identifiers \
                  ([A-Za-z0-9_]) — refusing to interpolate"
             )));
         }
+        let stmt = SetupStmt::Extension {
+            name: name.to_owned(),
+        };
         {
             let guard = self.db.lock().map_err(|_| fatal("connection poisoned"))?;
-            guard
-                .execute_batch(&format!("LOAD {name}"))
-                .map_err(|e| fatal(format!("duckdb extension `{name}`: {e}")))?;
+            apply_setup(&guard, &stmt)?;
         }
+        self.session_setup.push(stmt);
         Ok(self)
     }
 
     fn clone_conn(&self) -> Result<Connection, DestError> {
         let guard = self.db.lock().map_err(|_| fatal("connection poisoned"))?;
-        guard.try_clone().map_err(fatal)
+        let conn = guard.try_clone().map_err(fatal)?;
+        // Fresh session: replay the declared settings/extensions (finding 4).
+        for stmt in &self.session_setup {
+            apply_setup(&conn, stmt)?;
+        }
+        Ok(conn)
     }
 
     /// Test/inspection helper: count reader-visible rows.
@@ -137,6 +164,17 @@ impl DuckDb {
 
 pub(crate) fn fatal(e: impl std::fmt::Display) -> DestError {
     DestError::fatal(e.to_string())
+}
+
+fn apply_setup(conn: &Connection, stmt: &SetupStmt) -> Result<(), DestError> {
+    match stmt {
+        SetupStmt::Setting { key, value } => conn
+            .execute_batch(&format!("SET {key}='{}'", value.replace('\'', "''")))
+            .map_err(|e| fatal(format!("duckdb setting `{key}`: {e}"))),
+        SetupStmt::Extension { name } => conn
+            .execute_batch(&format!("LOAD {name}"))
+            .map_err(|e| fatal(format!("duckdb extension `{name}`: {e}"))),
+    }
 }
 
 /// Fail-point registry (gate G2.2); coarse by design — DuckDB's own

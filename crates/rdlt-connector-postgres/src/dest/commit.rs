@@ -431,9 +431,12 @@ impl LoadSession for PgSession {
                             continue; // nothing delivered for THIS table this unit
                         }
                         if self.single_unit_done.contains(table) {
+                            // 013 review finding 9: cite the rule that FIRED —
+                            // under scd2 the retire rule (S6) governs even
+                            // when a merge_key scopes it.
                             return Err(fatal(sqlplan::single_unit_violation(
                                 table.as_str(),
-                                scoped.is_some(),
+                                scoped.is_some() && !retire,
                             )));
                         }
                         single_unit_marks.push(table.clone());

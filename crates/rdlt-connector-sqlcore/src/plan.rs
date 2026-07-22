@@ -273,11 +273,16 @@ pub fn scd2_merge_sql(plan: &MergePlan<'_>, scd2: &Scd2Options) -> Vec<String> {
     let vf = plan.quote(&scd2.valid_from);
     let vt = plan.quote(&scd2.valid_to);
     // G2: the OPEN-version marker — NULL by default, a validated timestamp
-    // literal when `active_record_timestamp` is set.
+    // literal when `active_record_timestamp` is set. The active predicate is
+    // MARKER-TOLERANT (`IS NULL OR = marker`): a table whose history predates
+    // the option holds NULL-open rows, and treating only the marker as open
+    // would orphan them — duplicate actives, retirement blind spots (013
+    // review finding 1). New versions open with the marker; NULL-open rows
+    // close normally as their keys change.
     let (open_value, is_active) = match &scd2.active_record_timestamp {
         Some(marker) => {
             let lit = format!("'{}'", marker.replace('\'', "''"));
-            (lit.clone(), format!("t.{vt} = {lit}"))
+            (lit.clone(), format!("(t.{vt} IS NULL OR t.{vt} = {lit})"))
         }
         None => ("NULL".to_string(), format!("t.{vt} IS NULL")),
     };

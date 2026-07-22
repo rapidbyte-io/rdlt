@@ -408,8 +408,8 @@ async fn scd2_active_marker_and_boundary_override() {
         .options(options(json!({
             "merge_strategy": "scd2",
             "tables": {"kv": {"scd2": {
-                "active_record_timestamp": "9999-12-31",
-                "boundary_timestamp": "2026-07-22 00:00:00"
+                "active_record_timestamp": "9999-12-31T00:00:00Z",
+                "boundary_timestamp": "2026-07-22T00:00:00Z"
             }}}
         })))
         .unwrap();
@@ -438,7 +438,7 @@ async fn scd2_active_marker_and_boundary_override() {
     // Closed row closed AT the caller-supplied boundary.
     assert_eq!(
         dest.query_string(
-            "SELECT v FROM kv WHERE _rdlt_valid_to = TIMESTAMPTZ '2026-07-22 00:00:00'"
+            "SELECT v FROM kv WHERE _rdlt_valid_to = TIMESTAMPTZ '2026-07-22T00:00:00Z'"
         )
         .unwrap(),
         "one"

@@ -117,3 +117,79 @@ async fn replace_recovery_session_keeps_prior_commits_of_same_load() {
         "a new load's first commit still truncates Replace tables"
     );
 }
+
+/// Feature 013 (review finding 5 companion): the D3 replay branch must
+/// RE-MARK the single-unit discipline — a committed-but-unacknowledged unit
+/// that redelivers (same load, same seq) still counts as the scoped table's
+/// one unit, so a LATER unit for the same table errors instead of
+/// double-firing the scope delete.
+#[tokio::test]
+async fn replay_re_marks_single_unit_discipline() {
+    use rdlt_connector_duckdb::dest::DestOptions;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let dest = DuckDb::open(dir.path().join("remark.duckdb"))
+        .expect("open dest")
+        .options(
+            DestOptions::from_value(serde_json::json!({
+                "tables": {"events": {"merge_key": ["id"]}}
+            }))
+            .expect("options"),
+        )
+        .expect("options ok");
+    let pipeline = PipelineId::new("p1");
+    let load = LoadId::new("load-a");
+    let table = TableName::new("events");
+    let merge = WriteMode::Merge {
+        key: vec!["id".into()],
+    };
+
+    // Session 1: unit 1 stages + commits (receipt recorded).
+    let mut s1 = dest
+        .open(OpenCtx::new(pipeline.clone(), load.clone()))
+        .await
+        .expect("open s1");
+    s1.ensure_table(&schema_for("events"), &merge)
+        .await
+        .expect("ensure");
+    s1.write(&table, batch_of(&[1, 2])).await.expect("write");
+    s1.commit(meta_for(&pipeline, &load, 1))
+        .await
+        .expect("commit 1");
+
+    // Crash-recovery session, SAME load: the engine's WAL replays unit 1 —
+    // same (load_id, commit_seq), stage re-populated. The D3 branch must
+    // publish nothing AND re-mark the unit.
+    let mut s2 = dest
+        .open(OpenCtx::new(pipeline.clone(), load.clone()))
+        .await
+        .expect("open recovery session");
+    s2.ensure_table(&schema_for("events"), &merge)
+        .await
+        .expect("ensure again");
+    s2.write(&table, batch_of(&[1, 2]))
+        .await
+        .expect("replay write");
+    s2.commit(meta_for(&pipeline, &load, 1))
+        .await
+        .expect("replayed commit is a no-op publish");
+    assert_eq!(
+        dest.count_rows("events").expect("count"),
+        2,
+        "no double-publish"
+    );
+
+    // A SECOND unit for the same scoped table in this load must now be the
+    // typed single-unit violation — proof the replay branch re-marked.
+    s2.write(&table, batch_of(&[3]))
+        .await
+        .expect("unit-2 write");
+    let err = s2
+        .commit(meta_for(&pipeline, &load, 2))
+        .await
+        .expect_err("second unit for a scoped table must be typed")
+        .to_string();
+    assert!(
+        err.contains("SINGLE commit unit") && err.contains("merge_key"),
+        "{err}"
+    );
+}

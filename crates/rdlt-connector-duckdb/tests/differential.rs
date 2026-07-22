@@ -104,6 +104,13 @@ async fn start_pg() -> (
     )
 }
 
+/// A canonical column: a bare identifier (quoted + normalized per engine) or
+/// a raw SQL EXPRESSION (valid on both engines — used for derived facts like
+/// history openness, 013 review finding 8).
+fn is_bare_ident(c: &str) -> bool {
+    !c.is_empty() && c.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+}
+
 /// Canonical rows: every column cast to text, NULL → "∅", bools normalized,
 /// ordered by the canonical text of the row itself (total order).
 async fn canon_pg(conn: &str, schema: &str, table: &str, cols: &[&str]) -> Vec<Vec<String>> {
@@ -114,12 +121,16 @@ async fn canon_pg(conn: &str, schema: &str, table: &str, cols: &[&str]) -> Vec<V
     let select = cols
         .iter()
         .map(|c| {
-            format!(
-                "CASE WHEN \"{c}\" IS NULL THEN '∅' \
-                 ELSE CASE pg_typeof(\"{c}\")::text WHEN 'boolean' \
-                 THEN (CASE WHEN \"{c}\"::text = 't' THEN 'true' ELSE 'false' END) \
-                 ELSE \"{c}\"::text END END"
-            )
+            if is_bare_ident(c) {
+                format!(
+                    "CASE WHEN \"{c}\" IS NULL THEN '∅' \
+                     ELSE CASE pg_typeof(\"{c}\")::text WHEN 'boolean' \
+                     THEN (CASE WHEN \"{c}\"::text = 't' THEN 'true' ELSE 'false' END) \
+                     ELSE \"{c}\"::text END END"
+                )
+            } else {
+                format!("coalesce(({c})::text, '∅')")
+            }
         })
         .collect::<Vec<_>>()
         .join(", ");
@@ -141,7 +152,13 @@ async fn canon_pg(conn: &str, schema: &str, table: &str, cols: &[&str]) -> Vec<V
 fn canon_duck(dest: &DuckDb, table: &str, cols: &[&str]) -> Vec<Vec<String>> {
     let select = cols
         .iter()
-        .map(|c| format!("coalesce(CAST(\"{c}\" AS VARCHAR), '∅')"))
+        .map(|c| {
+            if is_bare_ident(c) {
+                format!("coalesce(CAST(\"{c}\" AS VARCHAR), '∅')")
+            } else {
+                format!("coalesce(CAST(({c}) AS VARCHAR), '∅')")
+            }
+        })
         .collect::<Vec<_>>()
         .join(" || '\u{1}' || ");
     let joined = dest
@@ -437,7 +454,7 @@ async fn differential_scd2_scoped_retirement() {
         serde_json::json!({
             "merge_strategy": "scd2",
             "tables": {"kv": {"scd2": {"absent": "retire",
-                                        "active_record_timestamp": "9999-12-31"},
+                                        "active_record_timestamp": "9999-12-31T00:00:00Z"},
                                "merge_key": ["day"]}}
         }),
         WriteMode::Merge {

@@ -66,6 +66,18 @@ impl DuckDbSession {
 
 /// `CREATE [UNIQUE] INDEX IF NOT EXISTS` with the same `rdlt_ix_` naming
 /// convention as postgres (M5).
+/// The pre-rename spelling of a unique merge-identity index (this branch's
+/// earlier commits used `rdlt_ix_` for unique too) — dropped before creating
+/// the correctly-prefixed one so a database written mid-branch doesn't carry
+/// two identical unique ART indexes forever (013 review finding 7).
+fn legacy_unique_index_name(table: &str, columns: &[String]) -> String {
+    format!(
+        "{}_{}",
+        rdlt_connector_sqlcore::names::INDEX_PREFIX,
+        rdlt_connector::core::naming::ident_hash(&format!("{table}:{}", columns.join(",")), 16)
+    )
+}
+
 fn create_index_sql(unique: bool, table: &str, columns: &[String]) -> String {
     let prefix = if unique {
         rdlt_connector_sqlcore::names::UNIQUE_INDEX_PREFIX
@@ -199,9 +211,21 @@ impl LoadSession for DuckDbSession {
                     })
                     .collect();
             for (unique, columns, sql) in index_stmts {
+                if unique {
+                    let legacy = legacy_unique_index_name(&table_str, &columns);
+                    self.with_conn(|conn| {
+                        conn.execute_batch(&format!("DROP INDEX IF EXISTS {}", quote(&legacy)))
+                            .map_err(fatal)
+                    })?;
+                }
                 let result = self.with_conn(|conn| conn.execute_batch(&sql).map_err(fatal));
                 if let Err(e) = result {
-                    if unique {
+                    // M3 twin of the pg SQLSTATE-23505 check (013 review
+                    // finding 6): only an actual constraint violation gets
+                    // the duplicate-keys diagnosis; anything else (locks,
+                    // disk, I/O) surfaces as itself.
+                    let msg = e.to_string();
+                    if unique && (msg.contains("Constraint Error") || msg.contains("violate")) {
                         return Err(fatal(format!(
                             "table `{table_str}`: cannot create the unique index the upsert \
                              strategy requires — existing rows duplicate the merge key \
@@ -234,10 +258,6 @@ impl LoadSession for DuckDbSession {
     }
 
     async fn commit(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestError> {
-        crash_point!(
-            "duck.tx.commit",
-            Err(DestError::fatal("injected crash at duck.tx.commit"))
-        );
         let receipt = CommitReceipt {
             load_id: meta.load_id.clone(),
             commit_seq: meta.commit_seq,
@@ -366,9 +386,12 @@ impl LoadSession for DuckDbSession {
                                 continue; // nothing delivered for THIS table this unit
                             }
                             if single_unit_done.contains(table) {
+                                // 013 review finding 9: cite the rule that
+                                // FIRED — under scd2 the retire rule (S6)
+                                // governs even when a merge_key scopes it.
                                 return Err(fatal(sqlplan::single_unit_violation(
                                     table.as_str(),
-                                    scoped.is_some(),
+                                    scoped.is_some() && !retire,
                                 )));
                             }
                             marks.push(table.clone());
@@ -462,6 +485,13 @@ impl LoadSession for DuckDbSession {
                 duckdb::params![meta.load_id.as_str(), meta.commit_seq as i64],
             )
             .map_err(fatal)?;
+            // The canonical redelivery window (pg-mirroring placement, 013
+            // review finding 5): everything published in ONE transaction; a
+            // crash at this edge must replay idempotently (D3).
+            crash_point!(
+                "duck.tx.commit",
+                Err(DestError::fatal("injected crash at duck.tx.commit"))
+            );
             tx.commit().map_err(fatal)?;
             Ok(marks)
         })?;
