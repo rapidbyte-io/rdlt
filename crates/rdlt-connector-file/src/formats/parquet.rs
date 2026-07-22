@@ -5,11 +5,11 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use rdlt_connector::{RecordsOut, SourceError};
 
-use crate::cursor::{FileCursor, FileMeta, FileProgress, FileTask};
+use crate::source::cursor::{FileCursor, FileMeta, FileProgress, FileTask};
 
 /// Like `resolve_files`, but sizes are ROW GROUP counts (the parquet seek unit).
 pub(crate) fn resolve_with_row_groups(pattern: &str) -> Result<Vec<FileMeta>, SourceError> {
-    let files = crate::resolve_files(pattern)?;
+    let files = crate::source::resolve_files(pattern)?;
     files
         .into_iter()
         .map(|meta| {

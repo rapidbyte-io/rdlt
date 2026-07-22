@@ -5,19 +5,14 @@ use std::collections::BTreeMap;
 use rdlt_connector::core::LogicalType;
 use serde::{Deserialize, Serialize};
 
+pub use crate::formats::Format;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FileConfig {
     /// At least one stream (mirrors `validate()`).
     #[schemars(length(min = 1))]
     pub streams: Vec<FileStream>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum Format {
-    Jsonl,
-    Parquet,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]

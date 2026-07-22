@@ -39,7 +39,7 @@ No big-bang commit — every task leaves the whole suite green.
 
 ## Phase 2: Foundational — the weld (blocking all stories)
 
-- [ ] T002 Source move (moves only): restructure
+- [X] T002 Source move (moves only): restructure
   `crates/rdlt-connector-file/src/` to the family layout —
   `src/source/{mod.rs,config.rs,cursor.rs}` +
   `src/formats/{mod.rs,jsonl.rs,parquet.rs}` (jsonl/parquet readers

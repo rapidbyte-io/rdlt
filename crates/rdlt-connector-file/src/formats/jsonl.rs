@@ -10,7 +10,7 @@ use std::io::{Read, Seek, SeekFrom};
 use bytes::Bytes;
 use rdlt_connector::{RecordsOut, SourceError};
 
-use crate::cursor::{FileCursor, FileProgress, FileTask};
+use crate::source::cursor::{FileCursor, FileProgress, FileTask};
 
 const SLAB_BYTES: usize = 8 << 20;
 
