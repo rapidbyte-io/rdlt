@@ -74,14 +74,15 @@ impl AuthOptions {
         }
     }
 
-    fn validate(&self) -> Result<(), String> {
+    fn validate(&self) -> Result<(), ConfigError> {
         match (&self.oauth2_client_credentials, &self.bearer) {
-            (Some(_), Some(_)) => Err("catalog.auth declares BOTH \
-                 oauth2_client_credentials and bearer — pick one"
-                .into()),
-            (None, None) => Err("catalog.auth declares no scheme (expected \
-                 oauth2_client_credentials or bearer)"
-                .into()),
+            (Some(_), Some(_)) => Err(ConfigError::Invalid(
+                "catalog.auth declares BOTH oauth2_client_credentials and bearer — pick one".into(),
+            )),
+            (None, None) => Err(ConfigError::Invalid(
+                "catalog.auth declares no scheme (expected oauth2_client_credentials or bearer)"
+                    .into(),
+            )),
             _ => Ok(()),
         }
     }
@@ -321,7 +322,7 @@ impl IcebergConfig {
         if self.catalog.warehouse.is_empty() {
             return invalid("catalog.warehouse must not be empty".into());
         }
-        self.catalog.auth.validate().map_err(ConfigError::Invalid)?;
+        self.catalog.auth.validate()?;
         if let Some(oauth) = &self.catalog.auth.oauth2_client_credentials
             && let Some(url) = &oauth.token_url
             && !url.starts_with("http://")

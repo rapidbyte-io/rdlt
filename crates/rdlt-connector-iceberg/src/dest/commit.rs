@@ -1,120 +1,29 @@
-//! The commit machinery: catalog construction from config, batch → data-file
-//! writing, snapshot-native receipts, bounded optimistic-concurrency retry,
-//! and the marker-table state document. Library types stay BELOW this module
-//! and `errors.rs`.
+//! The commit loop: the snapshot-summary commit identity, the ONE bounded
+//! optimistic-concurrency retry every commit rides (data, state, and schema
+//! alike), and the fast-append that publishes a load's staged data files.
+//! Library types stay BELOW this module and `errors.rs`.
 
 use std::collections::HashMap;
+use std::hash::BuildHasher;
 use std::sync::Arc;
+use std::sync::OnceLock;
+use std::time::Duration;
 
-use iceberg::arrow::RecordBatchPartitionSplitter;
-use iceberg::spec::DataFileFormat;
 use iceberg::transaction::{ApplyTransactionAction, Transaction};
-use iceberg::writer::base_writer::data_file_writer::DataFileWriterBuilder;
-use iceberg::writer::file_writer::ParquetWriterBuilder;
-use iceberg::writer::file_writer::location_generator::{
-    DefaultFileNameGenerator, DefaultLocationGenerator,
-};
-use iceberg::writer::file_writer::rolling_writer::RollingFileWriterBuilder;
-use iceberg::writer::partitioning::PartitioningWriter;
-use iceberg::writer::partitioning::fanout_writer::FanoutWriter;
-use iceberg::writer::{IcebergWriter, IcebergWriterBuilder};
-use iceberg::{Catalog, CatalogBuilder, NamespaceIdent, TableIdent};
-use iceberg_catalog_rest::RestCatalogBuilder;
-use iceberg_storage_opendal::OpenDalResolvingStorageFactory;
+use iceberg::{Catalog, TableIdent};
 use rdlt_connector::DestError;
 use rdlt_connector::core::crash_point;
 
-use super::config::IcebergConfig;
 use super::errors::{classify, is_commit_conflict};
 
 /// Snapshot-summary receipt keys — the persisted commit identity.
 pub(crate) const PROP_PIPELINE: &str = "rdlt.pipeline";
 pub(crate) const PROP_LOAD_ID: &str = "rdlt.load-id";
 pub(crate) const PROP_COMMIT_SEQ: &str = "rdlt.commit-seq";
-/// Property-key prefix for the pipeline-scoped state document (lives on
-/// the `_rdlt_state` marker table — see [`STATE_TABLE`]).
-pub(crate) const PROP_STATE_PREFIX: &str = "rdlt.state.";
 
-/// REST-catalog load-property keys (iceberg-rust `RestCatalogBuilder::load`).
-/// Centralized so the catalog-construction wiring reads against one vocabulary
-/// rather than scattered string literals.
-const CAT_URI: &str = "uri";
-const CAT_WAREHOUSE: &str = "warehouse";
-const CAT_CREDENTIAL: &str = "credential";
-const CAT_SCOPE: &str = "scope";
-const CAT_OAUTH2_SERVER_URI: &str = "oauth2-server-uri";
-const CAT_TOKEN: &str = "token";
-const CAT_S3_ENDPOINT: &str = "s3.endpoint";
-const CAT_S3_REGION: &str = "s3.region";
-const CAT_S3_ACCESS_KEY_ID: &str = "s3.access-key-id";
-const CAT_S3_SECRET_ACCESS_KEY: &str = "s3.secret-access-key";
-const CAT_S3_PATH_STYLE_ACCESS: &str = "s3.path-style-access";
-
-/// Bounded conflict-retry attempt count.
-const COMMIT_ATTEMPTS: u32 = 4;
-
-fn fatal(message: impl std::fmt::Display) -> DestError {
-    DestError::fatal(message.to_string())
-}
-
-/// Build the REST catalog from the config document. Secrets are revealed
-/// HERE only; the storage override (family S3 spelling) maps to FileIO
-/// props that take precedence over the catalog's vended defaults.
-pub(crate) async fn connect(config: &IcebergConfig) -> Result<Arc<dyn Catalog>, DestError> {
-    let mut props: HashMap<String, String> = HashMap::from([
-        (CAT_URI.to_string(), config.catalog.uri.clone()),
-        (CAT_WAREHOUSE.to_string(), config.catalog.warehouse.clone()),
-    ]);
-    if let Some(oauth) = &config.catalog.auth.oauth2_client_credentials {
-        props.insert(
-            CAT_CREDENTIAL.into(),
-            format!("{}:{}", oauth.client_id, oauth.client_secret.reveal()),
-        );
-        if !oauth.scopes.is_empty() {
-            props.insert(CAT_SCOPE.into(), oauth.scopes.join(" "));
-        }
-        if let Some(url) = &oauth.token_url {
-            props.insert(CAT_OAUTH2_SERVER_URI.into(), url.clone());
-        }
-    }
-    if let Some(bearer) = &config.catalog.auth.bearer {
-        props.insert(CAT_TOKEN.into(), bearer.token.reveal().to_owned());
-    }
-    if let Some(s3) = config.storage.as_ref().and_then(|s| s.s3.as_ref()) {
-        if let Some(endpoint) = &s3.endpoint {
-            props.insert(CAT_S3_ENDPOINT.into(), endpoint.clone());
-        }
-        if let Some(region) = &s3.region {
-            props.insert(CAT_S3_REGION.into(), region.clone());
-        }
-        props.insert(
-            CAT_S3_ACCESS_KEY_ID.into(),
-            s3.access_key.reveal().to_owned(),
-        );
-        props.insert(
-            CAT_S3_SECRET_ACCESS_KEY.into(),
-            s3.secret_key.reveal().to_owned(),
-        );
-        props.insert(CAT_S3_PATH_STYLE_ACCESS.into(), s3.path_style.to_string());
-    }
-    for (key, value) in &config.catalog.props {
-        props.insert(key.clone(), value.clone());
-    }
-    let catalog = RestCatalogBuilder::default()
-        .with_storage_factory(Arc::new(OpenDalResolvingStorageFactory::new()))
-        .load(config.catalog.warehouse.clone(), props)
-        .await
-        .map_err(|e| {
-            classify(
-                &format!(
-                    "catalog `{}` warehouse `{}`",
-                    config.catalog.uri, config.catalog.warehouse
-                ),
-                e,
-            )
-        })?;
-    Ok(Arc::new(catalog))
-}
+/// Bounded conflict-retry attempt count. Shared by every commit path so the
+/// retry budget is one number.
+pub(crate) const COMMIT_ATTEMPTS: u32 = 4;
 
 /// The commit identity a snapshot carries.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,119 +53,90 @@ impl CommitIdentity {
     }
 }
 
-type RdltDataFileWriterBuilder =
-    DataFileWriterBuilder<ParquetWriterBuilder, DefaultLocationGenerator, DefaultFileNameGenerator>;
-
-/// One table's writer for the current commit window: plain for
-/// unpartitioned tables, library fanout (splitter computes the
-/// partition values from source columns) for partitioned ones.
-pub(crate) enum TableWriter {
-    Plain(Box<dyn IcebergWriter>),
-    Fanout(Box<FanoutParts>),
+/// What one attempt of [`commit_with_retry`] found to do.
+pub(crate) enum CommitPlan {
+    /// The desired state already holds (an idempotent re-run or a converged
+    /// no-op) — return the loaded table unchanged, committing nothing.
+    Settled,
+    /// Commit this prepared transaction; a conflict rides the bounded retry.
+    /// Boxed: a `Transaction` dwarfs the unit `Settled` variant.
+    Commit(Box<Transaction>),
 }
 
-pub(crate) struct FanoutParts {
-    writer: FanoutWriter<RdltDataFileWriterBuilder>,
-    splitter: RecordBatchPartitionSplitter,
-}
-
-impl TableWriter {
-    /// Open a writer against the CURRENT table metadata. `session_nonce`
-    /// makes file names unique ACROSS sessions: a recovery session
-    /// re-staging the same (load, window) must never overwrite a file a
-    /// prior session already committed (its own files stay orphaned and
-    /// invisible when the replay check discards them).
-    pub(crate) async fn open(
-        table: &iceberg::table::Table,
-        file_prefix: &str,
-        session_nonce: &str,
-    ) -> Result<Self, DestError> {
-        let context = || format!("table `{}`", table.identifier());
-        let location =
-            DefaultLocationGenerator::new(table.metadata()).map_err(|e| classify(&context(), e))?;
-        let names = DefaultFileNameGenerator::new(
-            file_prefix.to_owned(),
-            Some(session_nonce.to_owned()),
-            DataFileFormat::Parquet,
-        );
-        let parquet = ParquetWriterBuilder::new(
-            parquet::file::properties::WriterProperties::default(),
-            table.metadata().current_schema().clone(),
-        );
-        let rolling = RollingFileWriterBuilder::new_with_default_file_size(
-            parquet,
-            table.file_io().clone(),
-            location,
-            names,
-        );
-        crash_point!(
-            "ice.files.write",
-            Err(DestError::fatal("injected crash at ice.files.write"))
-        );
-        let builder = DataFileWriterBuilder::new(rolling);
-        let spec = table.metadata().default_partition_spec().clone();
-        if spec.fields().is_empty() {
-            let inner = builder
-                .build(None)
-                .await
-                .map_err(|e| classify(&context(), e))?;
-            Ok(Self::Plain(Box::new(inner)))
-        } else {
-            let splitter = RecordBatchPartitionSplitter::try_new_with_computed_values(
-                table.metadata().current_schema().clone(),
-                spec,
-            )
-            .map_err(|e| classify(&context(), e))?;
-            Ok(Self::Fanout(Box::new(FanoutParts {
-                writer: FanoutWriter::new(builder),
-                splitter,
-            })))
-        }
-    }
-
-    pub(crate) async fn write(
-        &mut self,
-        context: &str,
-        batch: arrow_array::RecordBatch,
-    ) -> Result<(), DestError> {
-        match self {
-            Self::Plain(inner) => inner.write(batch).await.map_err(|e| classify(context, e)),
-            Self::Fanout(fanout) => {
-                let parts = fanout
-                    .splitter
-                    .split(&batch)
+/// The ONE bounded optimistic-concurrency retry: build → commit → on a CAS
+/// conflict refresh the table and let `plan` rebuild against the competitor's
+/// snapshot (never dropping their history), up to [`COMMIT_ATTEMPTS`]. Data
+/// appends, state-property writes, and schema evolution all ride this one
+/// loop. `subject` names the commit kind in the exhaustion diagnostic;
+/// `entropy` distinguishes writers so two of them do not back off in lockstep
+/// (see [`backoff`]). The loop diverges by construction — every path returns
+/// or retries, so exhaustion needs no `unreachable!` tail.
+pub(crate) async fn commit_with_retry<F>(
+    catalog: &Arc<dyn Catalog>,
+    ident: &TableIdent,
+    context: &str,
+    subject: &str,
+    entropy: &str,
+    initial: iceberg::table::Table,
+    mut plan: F,
+) -> Result<iceberg::table::Table, DestError>
+where
+    F: FnMut(&iceberg::table::Table) -> Result<CommitPlan, DestError>,
+{
+    let mut current = initial;
+    let mut attempt = 0u32;
+    loop {
+        attempt += 1;
+        let tx = match plan(&current)? {
+            CommitPlan::Settled => return Ok(current),
+            CommitPlan::Commit(tx) => *tx,
+        };
+        match tx.commit(catalog.as_ref()).await {
+            Ok(table) => return Ok(table),
+            Err(e) if is_commit_conflict(&e) && attempt < COMMIT_ATTEMPTS => {
+                backoff(entropy, attempt).await;
+                current = catalog
+                    .load_table(ident)
+                    .await
                     .map_err(|e| classify(context, e))?;
-                for (key, part) in parts {
-                    fanout
-                        .writer
-                        .write(key, part)
-                        .await
-                        .map_err(|e| classify(context, e))?;
-                }
-                Ok(())
             }
+            // The final attempt's conflict is the typed exhaustion; `classify`
+            // renders "commit conflicts exhausted the bounded retry", so the
+            // subject/attempt prefix must NOT repeat the word.
+            Err(e) if is_commit_conflict(&e) => {
+                return Err(classify(
+                    &format!("{context} ({subject} attempt {attempt}/{COMMIT_ATTEMPTS})"),
+                    e,
+                ));
+            }
+            Err(e) => return Err(classify(context, e)),
         }
     }
+}
 
-    pub(crate) async fn close(
-        self,
-        context: &str,
-    ) -> Result<Vec<iceberg::spec::DataFile>, DestError> {
-        match self {
-            Self::Plain(mut inner) => inner.close().await.map_err(|e| classify(context, e)),
-            Self::Fanout(fanout) => fanout
-                .writer
-                .close()
-                .await
-                .map_err(|e| classify(context, e)),
-        }
-    }
+/// Jittered exponential backoff between optimistic-commit attempts. The base
+/// doubles per attempt; the jitter is a full `[0, base)` window keyed on the
+/// writer's `entropy` plus a per-process seed. Two DIFFERENT writers (distinct
+/// entropy) therefore diverge instead of colliding on an identical schedule,
+/// while one writer's schedule stays reproducible within a process run — no
+/// wall-clock or global RNG in the commit path. `std::hash::RandomState`
+/// gives per-process entropy with no new dependency.
+async fn backoff(entropy: &str, attempt: u32) {
+    static SEED: OnceLock<std::collections::hash_map::RandomState> = OnceLock::new();
+    let base = 50u64 * (1u64 << attempt.min(4));
+    let jitter = SEED
+        .get_or_init(std::collections::hash_map::RandomState::new)
+        .hash_one((entropy, attempt))
+        % base;
+    tokio::time::sleep(Duration::from_millis(base + jitter)).await;
 }
 
 /// Commit staged data files as ONE fast-append snapshot carrying the
-/// identity — with the bounded conflict retry (refresh → rebuild →
-/// commit). Returns the refreshed table. The caller has already checked
-/// replay (a replayed identity never reaches here).
+/// identity, riding the bounded conflict retry. Returns the refreshed table.
+/// The caller has already checked replay (a replayed identity never reaches
+/// here); the retry re-checks it because the competitor it lost to may have
+/// been our OWN replay landing the same identity — a second append would
+/// double that identity's snapshot.
 pub(crate) async fn append_commit(
     catalog: &Arc<dyn Catalog>,
     table: iceberg::table::Table,
@@ -265,515 +145,42 @@ pub(crate) async fn append_commit(
 ) -> Result<iceberg::table::Table, DestError> {
     let ident = table.identifier().clone();
     let context = format!("table `{ident}`");
-    let mut current = table;
-    let mut attempt = 0u32;
-    loop {
-        attempt += 1;
-        let tx = Transaction::new(&current);
-        let action = tx
-            .fast_append()
-            .add_data_files(files.clone())
-            .set_snapshot_properties(identity.summary_props());
-        let tx = action.apply(tx).map_err(|e| classify(&context, e))?;
-        crash_point!(
-            "ice.commit",
-            Err(DestError::fatal("injected crash at ice.commit"))
-        );
-        match tx.commit(catalog.as_ref()).await {
-            Ok(table) => return Ok(table),
-            Err(e) if is_commit_conflict(&e) && attempt < COMMIT_ATTEMPTS => {
-                // Refresh and rebuild against the competitor's snapshot —
-                // never dropping THEIR history.
-                backoff(attempt).await;
-                current = catalog
-                    .load_table(&ident)
-                    .await
-                    .map_err(|e| classify(&context, e))?;
-                // The competitor may have been OUR replay racing us.
-                if identity.already_committed(&current) {
-                    return Ok(current);
-                }
+    let entropy = format!("{}:{}", identity.scope, identity.load_id);
+    commit_with_retry(
+        catalog,
+        &ident,
+        &context,
+        "commit",
+        &entropy,
+        table,
+        |current| {
+            if identity.already_committed(current) {
+                return Ok(CommitPlan::Settled);
             }
-            Err(e) => {
-                return Err(classify(
-                    &format!("{context} (commit attempt {attempt}/{COMMIT_ATTEMPTS})"),
-                    e,
-                ));
-            }
-        }
-    }
-}
-
-/// Jittered exponential backoff between optimistic-commit attempts.
-async fn backoff(attempt: u32) {
-    let millis = 50u64 * (1 << attempt.min(4)) + (attempt as u64 * 13) % 37;
-    tokio::time::sleep(std::time::Duration::from_millis(millis)).await;
-}
-
-/// The state doc lives in the properties of a dedicated marker table
-/// (`_rdlt_state`) in the destination namespace — NOT in namespace
-/// properties: the REST client's `update_namespace` is unimplemented in
-/// iceberg-catalog-rest 0.10 (`FeatureUnsupported`, verified live), and
-/// NOT in stream-table properties: `read_state` cannot enumerate stream
-/// tables from dest config alone. A fixed table name is enumerable.
-pub(crate) const STATE_TABLE: &str = "_rdlt_state";
-
-fn state_table_schema() -> Result<iceberg::spec::Schema, iceberg::Error> {
-    use iceberg::spec::{NestedField, PrimitiveType, Type};
-    iceberg::spec::Schema::builder()
-        .with_fields(vec![Arc::new(NestedField::optional(
-            1,
-            "scope",
-            Type::Primitive(PrimitiveType::String),
-        ))])
-        .build()
-}
-
-/// The property key a pipeline's state doc lives under on the marker
-/// table. ONE spelling shared by the write and read sides: a resume must
-/// read state back from the exact key the commit wrote it to, so the
-/// prefix + scope composition lives in a single place both call.
-fn state_key(scope: &str) -> String {
-    format!("{PROP_STATE_PREFIX}{scope}")
-}
-
-/// Write the pipeline-scoped state doc as a property of the marker
-/// table, creating the (forever-empty) table on first use. Property
-/// commits conflict like any other commit — bounded retry.
-pub(crate) async fn write_state(
-    catalog: &Arc<dyn Catalog>,
-    namespace: &NamespaceIdent,
-    scope: &str,
-    state_json: String,
-) -> Result<(), DestError> {
-    let ident = TableIdent::new(namespace.clone(), STATE_TABLE.to_string());
-    let context = format!("state table `{ident}`");
-    let mut table = match catalog.load_table(&ident).await {
-        Ok(table) => table,
-        Err(e) if matches!(e.kind(), iceberg::ErrorKind::TableNotFound) => {
-            let schema = state_table_schema().map_err(|e| classify(&context, e))?;
-            let creation = iceberg::TableCreation::builder()
-                .name(STATE_TABLE.to_string())
-                .schema(schema)
-                .build();
-            match catalog.create_table(namespace, creation).await {
-                Ok(table) => table,
-                // A concurrent creator is fine — load theirs.
-                Err(e) if matches!(e.kind(), iceberg::ErrorKind::TableAlreadyExists) => catalog
-                    .load_table(&ident)
-                    .await
-                    .map_err(|e| classify(&context, e))?,
-                Err(e) => return Err(classify(&context, e)),
-            }
-        }
-        Err(e) => return Err(classify(&context, e)),
-    };
-    let key = state_key(scope);
-    for attempt in 0..COMMIT_ATTEMPTS {
-        let tx = Transaction::new(&table);
-        let action = tx
-            .update_table_properties()
-            .set(key.clone(), state_json.clone());
-        let tx = action.apply(tx).map_err(|e| classify(&context, e))?;
-        match tx.commit(catalog.as_ref()).await {
-            Ok(_) => return Ok(()),
-            Err(e) if is_commit_conflict(&e) => {
-                // The FINAL attempt's conflict is the typed exhaustion.
-                if attempt + 1 == COMMIT_ATTEMPTS {
-                    return Err(classify(
-                        &format!("{context}: {COMMIT_ATTEMPTS} property-commit attempts exhausted"),
-                        e,
-                    ));
-                }
-                backoff(attempt).await;
-                table = catalog
-                    .load_table(&ident)
-                    .await
-                    .map_err(|e| classify(&context, e))?;
-            }
-            Err(e) => return Err(classify(&context, e)),
-        }
-    }
-    unreachable!("the final attempt returns through the match above")
-}
-
-/// Read the pipeline-scoped state document back from the marker table.
-pub(crate) async fn read_state(
-    catalog: &Arc<dyn Catalog>,
-    namespace: &NamespaceIdent,
-    scope: &str,
-) -> Result<Option<String>, DestError> {
-    let ident = TableIdent::new(namespace.clone(), STATE_TABLE.to_string());
-    match catalog.load_table(&ident).await {
-        Ok(table) => Ok(table
-            .metadata()
-            .properties()
-            .get(&state_key(scope))
-            .cloned()),
-        // No marker table (or namespace) yet = no state yet (first run).
-        Err(e)
-            if matches!(
-                e.kind(),
-                iceberg::ErrorKind::TableNotFound | iceberg::ErrorKind::NamespaceNotFound
-            ) =>
-        {
-            Ok(None)
-        }
-        Err(e) => Err(classify(&format!("state table `{ident}`"), e)),
-    }
-}
-
-/// Load-or-create the namespace per the explicit config flag.
-pub(crate) async fn ensure_namespace(
-    catalog: &Arc<dyn Catalog>,
-    namespace: &NamespaceIdent,
-    create_if_missing: bool,
-) -> Result<(), DestError> {
-    let context = format!("namespace `{}`", namespace.to_url_string());
-    let exists = catalog
-        .namespace_exists(namespace)
-        .await
-        .map_err(|e| classify(&context, e))?;
-    if exists {
-        return Ok(());
-    }
-    if !create_if_missing {
-        return Err(fatal(format!(
-            "{context} does not exist and create_namespace is false — create it \
-             (or set create_namespace: true)"
-        )));
-    }
-    match catalog.create_namespace(namespace, HashMap::new()).await {
-        Ok(_) => Ok(()),
-        // A concurrent creator is fine.
-        Err(e) if matches!(e.kind(), iceberg::ErrorKind::NamespaceAlreadyExists) => Ok(()),
-        Err(e) => Err(classify(&context, e)),
-    }
-}
-
-/// Load-or-create a table with the mapped schema; reconcile drift
-/// (additive nullable columns via UpdateSchema; conflicts typed).
-pub(crate) async fn ensure_table(
-    catalog: &Arc<dyn Catalog>,
-    namespace: &NamespaceIdent,
-    name: &str,
-    wanted: &iceberg::spec::Schema,
-    partition: &[super::config::PartitionField],
-) -> Result<iceberg::table::Table, DestError> {
-    let ident = TableIdent::new(namespace.clone(), name.to_owned());
-    let context = format!("table `{ident}`");
-    let exists = catalog
-        .table_exists(&ident)
-        .await
-        .map_err(|e| classify(&context, e))?;
-    if !exists {
-        let spec = super::schema::to_partition_spec(&context, wanted, partition)?;
-        let creation = iceberg::TableCreation::builder()
-            .name(name.to_owned())
-            .schema(wanted.clone())
-            .partition_spec_opt(spec)
-            .build();
-        return match catalog.create_table(namespace, creation).await {
-            Ok(table) => Ok(table),
-            // Concurrent creator: fall through to load + reconcile.
-            Err(e) if matches!(e.kind(), iceberg::ErrorKind::TableAlreadyExists) => {
-                reconcile(catalog, &ident, wanted, partition).await
-            }
-            Err(e) => Err(classify(&context, e)),
-        };
-    }
-    reconcile(catalog, &ident, wanted, partition).await
-}
-
-/// The partition spec is fixed at table creation; a config that
-/// disagrees with the live table is a typed error, never a silent
-/// re-spec (Iceberg spec evolution is out of scope this release).
-fn check_partition_spec(
-    context: &str,
-    table: &iceberg::table::Table,
-    partition: &[super::config::PartitionField],
-) -> Result<(), DestError> {
-    use super::config::PartitionTransform;
-    let live = table.metadata().default_partition_spec();
-    let schema = table.metadata().current_schema();
-    let live_fields: Vec<(String, iceberg::spec::Transform)> = live
-        .fields()
-        .iter()
-        .map(|f| {
-            let column = schema
-                .field_by_id(f.source_id)
-                .map(|s| s.name.clone())
-                .unwrap_or_else(|| format!("#{}", f.source_id));
-            (column, f.transform)
-        })
-        .collect();
-    let wanted_fields: Vec<(String, iceberg::spec::Transform)> = partition
-        .iter()
-        .map(|f| {
-            let transform = match f.transform {
-                PartitionTransform::Identity => iceberg::spec::Transform::Identity,
-                PartitionTransform::Year => iceberg::spec::Transform::Year,
-                PartitionTransform::Month => iceberg::spec::Transform::Month,
-                PartitionTransform::Day => iceberg::spec::Transform::Day,
-                PartitionTransform::Hour => iceberg::spec::Transform::Hour,
-                PartitionTransform::Bucket(n) => iceberg::spec::Transform::Bucket(n),
-                PartitionTransform::Truncate(w) => iceberg::spec::Transform::Truncate(w),
-            };
-            (f.column.clone(), transform)
-        })
-        .collect();
-    if live_fields != wanted_fields {
-        return Err(fatal(format!(
-            "{context}: configured partition_by {wanted_fields:?} does not match the live \
-             table's partition spec {live_fields:?} — partition specs are fixed at \
-             creation (drop the table or align the config)"
-        )));
-    }
-    Ok(())
-}
-
-/// Compare the wanted schema against the live table by NAME: identical
-/// types pass, missing nullable columns are ADDED (additive drift),
-/// anything else is typed naming the column.
-async fn reconcile(
-    catalog: &Arc<dyn Catalog>,
-    ident: &TableIdent,
-    wanted: &iceberg::spec::Schema,
-    partition: &[super::config::PartitionField],
-) -> Result<iceberg::table::Table, DestError> {
-    use iceberg::transaction::AddColumn;
-    let context = format!("table `{ident}`");
-    // Schema commits conflict like any other commit: the bounded retry
-    // reloads and RECOMPUTES the additions each attempt — a competitor may
-    // have added the same column, which converges to an empty addition set.
-    for attempt in 0..COMMIT_ATTEMPTS {
-        let table = catalog
-            .load_table(ident)
-            .await
-            .map_err(|e| classify(&context, e))?;
-        check_partition_spec(&context, &table, partition)?;
-        let existing = table.metadata().current_schema();
-        let mut additions: Vec<AddColumn> = Vec::new();
-        for field in wanted.as_struct().fields() {
-            match existing
-                .as_struct()
-                .fields()
-                .iter()
-                .find(|f| f.name == field.name)
-            {
-                Some(current) => {
-                    if current.field_type != field.field_type {
-                        return Err(fatal(format!(
-                            "{context} column `{}`: stream type {} conflicts with the \
-                             table's {} — contradictory drift is never applied",
-                            field.name, field.field_type, current.field_type
-                        )));
-                    }
-                }
-                None => {
-                    // New column: ADDITIVE only (nullable in the table even if
-                    // the stream declares it required — existing rows have no
-                    // value for it; the drift rules' documented posture).
-                    additions.push(AddColumn::optional(
-                        &field.name,
-                        field.field_type.as_ref().clone(),
-                    ));
-                }
-            }
-        }
-        if additions.is_empty() {
-            return Ok(table);
-        }
-        let tx = Transaction::new(&table);
-        let mut action = tx.update_schema();
-        for addition in additions {
-            action = action.add_column(addition);
-        }
-        let tx = action.apply(tx).map_err(|e| classify(&context, e))?;
-        match tx.commit(catalog.as_ref()).await {
-            Ok(table) => return Ok(table),
-            Err(e) if is_commit_conflict(&e) && attempt + 1 < COMMIT_ATTEMPTS => {
-                backoff(attempt).await;
-            }
-            Err(e) => {
-                return Err(classify(
-                    &format!(
-                        "{context} (schema commit attempt {}/{COMMIT_ATTEMPTS})",
-                        attempt + 1
-                    ),
-                    e,
-                ));
-            }
-        }
-    }
-    unreachable!("the final attempt returns through the match above")
+            let tx = Transaction::new(current);
+            let action = tx
+                .fast_append()
+                .add_data_files(files.clone())
+                .set_snapshot_properties(identity.summary_props());
+            let tx = action.apply(tx).map_err(|e| classify(&context, e))?;
+            crash_point!(
+                "ice.commit",
+                Err(DestError::fatal("injected crash at ice.commit"))
+            );
+            Ok(CommitPlan::Commit(Box::new(tx)))
+        },
+    )
+    .await
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::atomic::Ordering;
 
-    use async_trait::async_trait;
-    use iceberg::spec::{
-        DataContentType, DataFileBuilder, DataFileFormat, NestedField, PrimitiveType, Schema,
-        Struct, TableMetadata, Type,
-    };
-    use iceberg::table::Table;
-    use iceberg::{Namespace, TableCommit, TableCreation};
+    use iceberg::{NamespaceIdent, TableIdent};
 
     use super::*;
-
-    fn test_table() -> Table {
-        let schema = Schema::builder()
-            .with_fields(vec![std::sync::Arc::new(NestedField::required(
-                1,
-                "id",
-                Type::Primitive(PrimitiveType::Long),
-            ))])
-            .build()
-            .expect("schema");
-        let creation = TableCreation::builder()
-            .name("events".to_string())
-            .location("memory://wh/ns/events".to_string())
-            .schema(schema)
-            .build();
-        let metadata: TableMetadata =
-            iceberg::spec::TableMetadataBuilder::from_table_creation(creation)
-                .expect("metadata builder")
-                .build()
-                .expect("metadata")
-                .metadata;
-        Table::builder()
-            .metadata(metadata)
-            .identifier(TableIdent::new(
-                NamespaceIdent::new("ns".into()),
-                "events".into(),
-            ))
-            .file_io(iceberg::io::FileIO::new_with_memory())
-            .metadata_location("memory://wh/ns/events/metadata/v0.json")
-            .runtime(iceberg::Runtime::current())
-            .build()
-            .expect("table")
-    }
-
-    fn data_file() -> iceberg::spec::DataFile {
-        DataFileBuilder::default()
-            .content(DataContentType::Data)
-            .file_path("memory://wh/ns/events/data/f.parquet".to_string())
-            .file_format(DataFileFormat::Parquet)
-            .partition(Struct::empty())
-            .partition_spec_id(0)
-            .record_count(1)
-            .file_size_in_bytes(1)
-            .build()
-            .expect("data file")
-    }
-
-    fn conflict_error() -> iceberg::Error {
-        iceberg::Error::new(
-            iceberg::ErrorKind::CatalogCommitConflicts,
-            "injected CAS conflict",
-        )
-    }
-
-    /// A catalog whose `update_table` conflicts a configured number of
-    /// times before succeeding — the deterministic harness for the
-    /// bounded-retry loop (a live competitor cannot be timed reliably).
-    #[derive(Debug)]
-    struct ConflictCatalog {
-        table: Mutex<Table>,
-        conflicts_remaining: AtomicU32,
-        commits: AtomicU32,
-    }
-
-    impl ConflictCatalog {
-        fn failing(conflicts: u32) -> Arc<Self> {
-            Arc::new(Self {
-                table: Mutex::new(test_table()),
-                conflicts_remaining: AtomicU32::new(conflicts),
-                commits: AtomicU32::new(0),
-            })
-        }
-    }
-
-    #[async_trait]
-    impl Catalog for ConflictCatalog {
-        async fn list_namespaces(
-            &self,
-            _parent: Option<&NamespaceIdent>,
-        ) -> iceberg::Result<Vec<NamespaceIdent>> {
-            unimplemented!()
-        }
-        async fn create_namespace(
-            &self,
-            _namespace: &NamespaceIdent,
-            _properties: HashMap<String, String>,
-        ) -> iceberg::Result<Namespace> {
-            unimplemented!()
-        }
-        async fn get_namespace(&self, _namespace: &NamespaceIdent) -> iceberg::Result<Namespace> {
-            unimplemented!()
-        }
-        async fn namespace_exists(&self, _namespace: &NamespaceIdent) -> iceberg::Result<bool> {
-            unimplemented!()
-        }
-        async fn update_namespace(
-            &self,
-            _namespace: &NamespaceIdent,
-            _properties: HashMap<String, String>,
-        ) -> iceberg::Result<()> {
-            unimplemented!()
-        }
-        async fn drop_namespace(&self, _namespace: &NamespaceIdent) -> iceberg::Result<()> {
-            unimplemented!()
-        }
-        async fn list_tables(
-            &self,
-            _namespace: &NamespaceIdent,
-        ) -> iceberg::Result<Vec<TableIdent>> {
-            unimplemented!()
-        }
-        async fn create_table(
-            &self,
-            _namespace: &NamespaceIdent,
-            _creation: TableCreation,
-        ) -> iceberg::Result<Table> {
-            unimplemented!()
-        }
-        async fn load_table(&self, _table: &TableIdent) -> iceberg::Result<Table> {
-            Ok(self.table.lock().expect("table lock").clone())
-        }
-        async fn drop_table(&self, _table: &TableIdent) -> iceberg::Result<()> {
-            unimplemented!()
-        }
-        async fn purge_table(&self, _table: &TableIdent) -> iceberg::Result<()> {
-            unimplemented!()
-        }
-        async fn table_exists(&self, _table: &TableIdent) -> iceberg::Result<bool> {
-            unimplemented!()
-        }
-        async fn rename_table(&self, _src: &TableIdent, _dest: &TableIdent) -> iceberg::Result<()> {
-            unimplemented!()
-        }
-        async fn register_table(
-            &self,
-            _table: &TableIdent,
-            _metadata_location: String,
-        ) -> iceberg::Result<Table> {
-            unimplemented!()
-        }
-        async fn update_table(&self, _commit: TableCommit) -> iceberg::Result<Table> {
-            self.commits.fetch_add(1, Ordering::SeqCst);
-            let remaining = self.conflicts_remaining.load(Ordering::SeqCst);
-            if remaining > 0 {
-                self.conflicts_remaining
-                    .store(remaining - 1, Ordering::SeqCst);
-                return Err(conflict_error());
-            }
-            Ok(self.table.lock().expect("table lock").clone())
-        }
-    }
+    use crate::dest::test_support::{ConflictCatalog, data_file};
 
     fn identity() -> CommitIdentity {
         CommitIdentity {
@@ -781,24 +188,6 @@ mod tests {
             load_id: "load-a".into(),
             commit_seq: 1,
         }
-    }
-
-    /// The state doc's write key and read key are ONE helper: a doc
-    /// stored under `state_key(scope)` is found under `state_key(scope)`,
-    /// so the write and read sides agree by construction (drift here would
-    /// silently strand state across a resume).
-    #[test]
-    fn state_key_write_and_read_agree() {
-        let scope = "abc123";
-        let mut properties: HashMap<String, String> = HashMap::new();
-        properties.insert(state_key(scope), "{\"v\":1}".to_string());
-        assert_eq!(
-            properties.get(&state_key(scope)).map(String::as_str),
-            Some("{\"v\":1}"),
-            "read side must look under the exact key the write side used"
-        );
-        // Distinct scopes never collide onto one key.
-        assert_ne!(state_key("abc123"), state_key("def456"));
     }
 
     /// Conflicts within the bound are retried (refresh → rebuild → commit)
@@ -822,57 +211,6 @@ mod tests {
             COMMIT_ATTEMPTS,
             "3 conflicts + the landing attempt"
         );
-    }
-
-    /// Reconcile's schema commit rides the SAME bounded retry as data
-    /// commits — one conflict must not fail the load.
-    #[tokio::test]
-    async fn reconcile_retries_schema_commit_conflicts() {
-        use iceberg::spec::{NestedField, PrimitiveType, Type};
-        let catalog = ConflictCatalog::failing(COMMIT_ATTEMPTS - 1);
-        let arc: Arc<dyn Catalog> = catalog.clone();
-        let wanted = iceberg::spec::Schema::builder()
-            .with_fields(vec![
-                Arc::new(NestedField::required(
-                    1,
-                    "id",
-                    Type::Primitive(PrimitiveType::Long),
-                )),
-                Arc::new(NestedField::optional(
-                    2,
-                    "note",
-                    Type::Primitive(PrimitiveType::String),
-                )),
-            ])
-            .build()
-            .expect("schema");
-        let ident = TableIdent::new(NamespaceIdent::new("ns".into()), "events".into());
-        reconcile(&arc, &ident, &wanted, &[])
-            .await
-            .expect("lands within the bound");
-        assert_eq!(
-            catalog.commits.load(Ordering::SeqCst),
-            COMMIT_ATTEMPTS,
-            "3 conflicts + the landing attempt"
-        );
-    }
-
-    /// The state-write exhaustion diagnostic is REACHABLE — the final
-    /// conflict returns the typed attempts-exhausted error.
-    #[tokio::test]
-    async fn write_state_exhaustion_is_typed() {
-        let catalog = ConflictCatalog::failing(u32::MAX);
-        let arc: Arc<dyn Catalog> = catalog.clone();
-        let namespace = NamespaceIdent::new("ns".into());
-        let err = write_state(&arc, &namespace, "abc123", "{}".into())
-            .await
-            .expect_err("must exhaust");
-        let text = format!("{err}");
-        assert!(
-            text.contains("property-commit attempts exhausted"),
-            "the dedicated diagnostic fires: {text}"
-        );
-        assert_eq!(catalog.commits.load(Ordering::SeqCst), COMMIT_ATTEMPTS);
     }
 
     /// Exhaustion is a TYPED error naming the table and the attempt bound —

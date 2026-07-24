@@ -8,6 +8,13 @@
 use iceberg::ErrorKind;
 use rdlt_connector::DestError;
 
+/// A fatal Dest error from any Display subject. Defined ONCE here — the
+/// error boundary is the natural home — so the commit, schema, and session
+/// modules share one spelling instead of each keeping a private copy.
+pub(crate) fn fatal(message: impl std::fmt::Display) -> DestError {
+    DestError::fatal(message.to_string())
+}
+
 /// Classify a library error with its subject context (catalog/table/…).
 pub(crate) fn classify(context: &str, error: iceberg::Error) -> DestError {
     match error.kind() {
@@ -28,6 +35,9 @@ pub(crate) fn classify(context: &str, error: iceberg::Error) -> DestError {
                     "{context}: authentication/authorization rejected — fix the \
                      credential or its grants: {rendered}"
                 )),
+                // Throttling gets its own channel so the engine can honor
+                // pacing instead of guessing with generic backoff.
+                Some(429) => DestError::rate_limited(format!("{context}: {rendered}"), None),
                 _ => DestError::transient(format!("{context}: {rendered}")),
             }
         }
@@ -125,6 +135,17 @@ mod tests {
                 "{status}: {rendered}"
             );
         }
+        // Throttling rides its own channel: the engine honors pacing
+        // instead of guessing with generic backoff.
+        let throttled = iceberg::Error::new(
+            ErrorKind::Unexpected,
+            "Received response with unexpected status code",
+        )
+        .with_context("status", "429 Too Many Requests".to_string());
+        assert!(matches!(
+            classify("catalog `c`", throttled),
+            DestError::RateLimited { .. }
+        ));
         // 5xx stays transient.
         let error = iceberg::Error::new(
             ErrorKind::Unexpected,

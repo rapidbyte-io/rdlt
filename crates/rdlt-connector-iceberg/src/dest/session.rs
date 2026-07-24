@@ -18,16 +18,14 @@ use rdlt_connector::{
     LoadSession, OpenCtx, RecordBatch,
 };
 
-use super::commit::{
-    CommitIdentity, TableWriter, append_commit, connect, ensure_namespace, ensure_table,
-    read_state as read_state_prop, write_state,
-};
+use super::catalog::connect;
+use super::commit::{CommitIdentity, append_commit};
 use super::config::{IcebergConfig, config_schema};
+use super::ensure::{ensure_namespace, ensure_table};
+use super::errors::{classify, fatal};
 use super::schema::to_iceberg_schema;
-
-fn fatal(message: impl std::fmt::Display) -> DestError {
-    DestError::fatal(message.to_string())
-}
+use super::state::{STATE_TABLE, read_state_doc, write_state};
+use super::writer::TableWriter;
 
 /// Width of the pipeline scope hash. The scope names the pipeline in
 /// snapshot summaries and the state-doc property key, so the width a
@@ -105,7 +103,7 @@ struct TableState {
     /// writer — see ensure_table); committed with the window's files.
     pending_files: Vec<iceberg::spec::DataFile>,
     /// Sequence for unique data-file name prefixes.
-    windows: u64,
+    window_seq: u64,
 }
 
 struct IcebergSession {
@@ -131,7 +129,86 @@ fn session_nonce() -> String {
     format!("{:x}-{}", nanos, SEQ.fetch_add(1, Ordering::Relaxed))
 }
 
+/// The table's field-id-annotated arrow schema, wrapped for reuse. Batches
+/// are aligned to this; a concurrent writer's additive evolution changes it,
+/// so it is recomputed at ensure/commit boundaries (one helper, both sites).
+fn arrow_target(
+    context: &str,
+    table: &iceberg::table::Table,
+) -> Result<Arc<arrow_schema::Schema>, DestError> {
+    iceberg::arrow::schema_to_arrow_schema(table.metadata().current_schema())
+        .map(Arc::new)
+        .map_err(|e| fatal(format!("{context}: arrow schema conversion: {e}")))
+}
+
 impl IcebergSession {
+    /// Only Append maps onto a snapshot this release; Merge and Replace are
+    /// typed unsupported (see the module and `ensure_table` docs).
+    fn check_mode(mode: &WriteMode) -> Result<(), DestError> {
+        match mode {
+            WriteMode::Append => Ok(()),
+            WriteMode::Merge { .. } => Err(fatal(
+                "iceberg destination does not support Merge (capabilities.merge = false)",
+            )),
+            // Replace needs an overwrite transaction the underlying iceberg
+            // library does not expose. Rejecting is the only correct answer:
+            // emulating it (delete + append) would not be atomic.
+            WriteMode::Replace => Err(fatal(
+                "iceberg destination: Replace is not supported — the underlying \
+                 iceberg library exposes no overwrite transaction, which Replace \
+                 requires; use Append, or a SQL destination for replace semantics",
+            )),
+        }
+    }
+
+    /// Stage the freshly ensured table into the session, carrying the window
+    /// counter and any in-flight writer across a re-ensure.
+    ///
+    /// The window counter MUST survive: resetting it regenerates window 1's
+    /// exact file path (same load, window, nonce), overwriting a committed
+    /// data file. A staged writer survives ONLY while the write schema is
+    /// unchanged: a re-ensure carrying drift retires it — its closed files
+    /// (valid under the prior schema; Iceberg reads absent columns as null
+    /// after additive evolution) join the window's commit via pending_files,
+    /// so the next writer opens against the evolved table.
+    async fn reinstall_state(
+        &mut self,
+        stream: &TableName,
+        name: &str,
+        table: iceberg::table::Table,
+        arrow_target: Arc<arrow_schema::Schema>,
+    ) -> Result<(), DestError> {
+        let (window_seq, prev_writer, prev_target, mut pending_files) =
+            match self.tables.remove(stream) {
+                Some(prev) => (
+                    prev.window_seq,
+                    prev.writer,
+                    Some(prev.arrow_target),
+                    prev.pending_files,
+                ),
+                None => (0, None, None, Vec::new()),
+            };
+        let writer = match prev_writer {
+            Some(writer) if prev_target.as_deref() != Some(arrow_target.as_ref()) => {
+                let context = format!("table `{name}` (schema-change writer retirement)");
+                pending_files.extend(writer.close(&context).await?);
+                None
+            }
+            other => other,
+        };
+        self.tables.insert(
+            stream.clone(),
+            TableState {
+                table,
+                arrow_target,
+                writer,
+                pending_files,
+                window_seq,
+            },
+        );
+        Ok(())
+    }
+
     /// Align an engine batch to the table's field-id-annotated arrow
     /// schema: columns matched BY NAME, cast where representations differ
     /// (e.g. timestamp units). A table column the batch lacks is
@@ -186,77 +263,23 @@ impl LoadSession for IcebergSession {
         schema: &TableSchema,
         mode: &WriteMode,
     ) -> Result<(), DestError> {
-        match mode {
-            WriteMode::Append => {}
-            WriteMode::Merge { .. } => {
-                return Err(fatal(
-                    "iceberg destination does not support Merge (capabilities.merge = false)",
-                ));
-            }
-            // Replace needs an overwrite transaction the underlying iceberg
-            // library does not expose. Rejecting is the only correct answer:
-            // emulating it (delete + append) would not be atomic.
-            WriteMode::Replace => {
-                return Err(fatal(
-                    "iceberg destination: Replace is not supported — the underlying \
-                     iceberg library exposes no overwrite transaction, which Replace \
-                     requires; use Append, or a SQL destination for replace semantics",
-                ));
-            }
-        }
+        Self::check_mode(mode)?;
         let stream = schema.table.as_str();
-        let wanted = to_iceberg_schema(schema)?;
         let name = self.config.table_name(stream);
-        if name == super::commit::STATE_TABLE {
+        // The reserved-name check is cheap and infallible — do it BEFORE the
+        // fallible schema mapping so a misconfigured name fails on its own
+        // terms, not behind a type-mapping error.
+        if name == STATE_TABLE {
             return Err(fatal(format!(
                 "table name `{name}` is reserved for the rdlt state marker table"
             )));
         }
+        let wanted = to_iceberg_schema(schema)?;
         let partition = self.config.partition_fields(stream);
         let table = ensure_table(&self.catalog, &self.namespace, &name, &wanted, partition).await?;
-        let arrow_target = Arc::new(
-            iceberg::arrow::schema_to_arrow_schema(table.metadata().current_schema())
-                .map_err(|e| fatal(format!("table `{name}`: arrow schema conversion: {e}")))?,
-        );
-        // The engine may re-ensure mid-session (e.g. after a WAL replay).
-        // The window counter MUST survive: resetting it regenerates window
-        // 1's exact file path (same load, window, nonce), overwriting a
-        // committed data file. A staged writer survives ONLY while the write
-        // schema is
-        // unchanged: a re-ensure carrying drift retires it — its closed
-        // files (valid under the prior schema; Iceberg reads absent
-        // columns as null after additive evolution) join the window's
-        // commit via pending_files — so the next writer opens against
-        // the evolved table.
-        let (windows, prev_writer, prev_target, mut pending_files) =
-            match self.tables.remove(&schema.table) {
-                Some(prev) => (
-                    prev.windows,
-                    prev.writer,
-                    Some(prev.arrow_target),
-                    prev.pending_files,
-                ),
-                None => (0, None, None, Vec::new()),
-            };
-        let writer = match prev_writer {
-            Some(writer) if prev_target.as_deref() != Some(arrow_target.as_ref()) => {
-                let context = format!("table `{name}` (schema-change writer retirement)");
-                pending_files.extend(writer.close(&context).await?);
-                None
-            }
-            other => other,
-        };
-        self.tables.insert(
-            schema.table.clone(),
-            TableState {
-                table,
-                arrow_target,
-                writer,
-                pending_files,
-                windows,
-            },
-        );
-        Ok(())
+        let arrow_target = arrow_target(&format!("table `{name}`"), &table)?;
+        self.reinstall_state(&schema.table, &name, table, arrow_target)
+            .await
     }
 
     async fn write(&mut self, table: &TableName, batch: RecordBatch) -> Result<(), DestError> {
@@ -267,8 +290,8 @@ impl LoadSession for IcebergSession {
         let context = format!("table `{}`", self.config.table_name(table.as_str()));
         let aligned = Self::align(&context, &state.arrow_target, &batch)?;
         if state.writer.is_none() {
-            state.windows += 1;
-            let prefix = format!("{}-{}", self.load_id, state.windows);
+            state.window_seq += 1;
+            let prefix = format!("{}-{}", self.load_id, state.window_seq);
             state.writer = Some(TableWriter::open(&state.table, &prefix, &self.nonce).await?);
         }
         state
@@ -305,7 +328,7 @@ impl LoadSession for IcebergSession {
                 .catalog
                 .load_table(state.table.identifier())
                 .await
-                .map_err(|e| super::errors::classify(&context, e))?;
+                .map_err(|e| classify(&context, e))?;
             if identity.already_committed(&fresh) {
                 state.table = fresh;
             } else {
@@ -314,10 +337,7 @@ impl LoadSession for IcebergSession {
             // The refresh may carry a CONCURRENT writer's schema evolution:
             // realign the target so the next window's writer and batches
             // agree with the evolved table (nullable additions null-fill).
-            state.arrow_target = Arc::new(
-                iceberg::arrow::schema_to_arrow_schema(state.table.metadata().current_schema())
-                    .map_err(|e| fatal(format!("{context}: arrow schema conversion: {e}")))?,
-            );
+            state.arrow_target = arrow_target(&context, &state.table)?;
         }
         crash_point!(
             "ice.receipt.visible",
@@ -334,7 +354,7 @@ impl LoadSession for IcebergSession {
 
     async fn read_state(&mut self, pipeline: &PipelineId) -> Result<Option<StateDoc>, DestError> {
         let scope = ident_hash(pipeline.as_str(), SCOPE_HASH_LEN);
-        let Some(raw) = read_state_prop(&self.catalog, &self.namespace, &scope).await? else {
+        let Some(raw) = read_state_doc(&self.catalog, &self.namespace, &scope).await? else {
             return Ok(None);
         };
         let state: StateDoc =

@@ -9,8 +9,22 @@ use iceberg::spec::{NestedField, PrimitiveType, Schema, Type};
 use rdlt_connector::DestError;
 use rdlt_connector::core::{ColumnDef, ColumnType, LogicalType, TableSchema};
 
-fn fatal(message: impl std::fmt::Display) -> DestError {
-    DestError::fatal(message.to_string())
+use super::config::PartitionTransform;
+use super::errors::fatal;
+
+/// The config partition vocabulary → Iceberg transform. ONE mapping shared by
+/// spec construction (below) and the live-spec drift check (`ensure`), so the
+/// seven-arm match is never duplicated.
+pub(crate) fn to_transform(transform: PartitionTransform) -> iceberg::spec::Transform {
+    match transform {
+        PartitionTransform::Identity => iceberg::spec::Transform::Identity,
+        PartitionTransform::Year => iceberg::spec::Transform::Year,
+        PartitionTransform::Month => iceberg::spec::Transform::Month,
+        PartitionTransform::Day => iceberg::spec::Transform::Day,
+        PartitionTransform::Hour => iceberg::spec::Transform::Hour,
+        PartitionTransform::Bucket(n) => iceberg::spec::Transform::Bucket(n),
+        PartitionTransform::Truncate(w) => iceberg::spec::Transform::Truncate(w),
+    }
 }
 
 /// Map one scalar logical type. `Json` maps to string — Iceberg v2 has no
@@ -103,7 +117,6 @@ pub(crate) fn to_partition_spec(
     schema: &Schema,
     fields: &[super::config::PartitionField],
 ) -> Result<Option<iceberg::spec::UnboundPartitionSpec>, DestError> {
-    use super::config::PartitionTransform;
     if fields.is_empty() {
         return Ok(None);
     }
@@ -113,40 +126,22 @@ pub(crate) fn to_partition_spec(
     let mut builder = iceberg::spec::UnboundPartitionSpec::builder().with_spec_id(0);
     for (next_field_id, field) in (1000..).zip(fields.iter()) {
         let source = schema.field_by_name(&field.column).ok_or_else(|| {
-            DestError::fatal(format!(
+            fatal(format!(
                 "{context}: partition_by names unknown column `{}`",
                 field.column
             ))
         })?;
-        let (name, transform) = match field.transform {
-            PartitionTransform::Identity => {
-                (field.column.clone(), iceberg::spec::Transform::Identity)
-            }
-            PartitionTransform::Year => (
-                format!("{}_year", field.column),
-                iceberg::spec::Transform::Year,
-            ),
-            PartitionTransform::Month => (
-                format!("{}_month", field.column),
-                iceberg::spec::Transform::Month,
-            ),
-            PartitionTransform::Day => (
-                format!("{}_day", field.column),
-                iceberg::spec::Transform::Day,
-            ),
-            PartitionTransform::Hour => (
-                format!("{}_hour", field.column),
-                iceberg::spec::Transform::Hour,
-            ),
-            // Java-convention names: `col_bucket` / `col_trunc`.
-            PartitionTransform::Bucket(n) => (
-                format!("{}_bucket", field.column),
-                iceberg::spec::Transform::Bucket(n),
-            ),
-            PartitionTransform::Truncate(w) => (
-                format!("{}_trunc", field.column),
-                iceberg::spec::Transform::Truncate(w),
-            ),
+        let transform = to_transform(field.transform);
+        // Field NAME convention: identity keeps the column name, temporal
+        // transforms append `_{unit}`, Java-convention `col_bucket`/`col_trunc`.
+        let name = match field.transform {
+            PartitionTransform::Identity => field.column.clone(),
+            PartitionTransform::Year => format!("{}_year", field.column),
+            PartitionTransform::Month => format!("{}_month", field.column),
+            PartitionTransform::Day => format!("{}_day", field.column),
+            PartitionTransform::Hour => format!("{}_hour", field.column),
+            PartitionTransform::Bucket(_) => format!("{}_bucket", field.column),
+            PartitionTransform::Truncate(_) => format!("{}_trunc", field.column),
         };
         let unbound = iceberg::spec::UnboundPartitionField::builder()
             .source_id(source.id)
@@ -155,9 +150,9 @@ pub(crate) fn to_partition_spec(
             .transform(transform)
             .build();
         builder = builder.add_partition_fields([unbound]).map_err(|e| {
-            DestError::fatal(format!(
-                "{context}: partition field `{}` ({:?}): {e}",
-                field.column, field.transform
+            fatal(format!(
+                "{context}: partition field `{}` ({}): {e}",
+                field.column, transform
             ))
         })?;
     }

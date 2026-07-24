@@ -32,7 +32,7 @@ paths/names and in-repo vocabulary, not on-disk data written by runs.
 |---|---|---|---|
 | B1 | 1 | applied | `with_parent_context` preserves Transient/RateLimited (incl. retry_after) through child fan-out; only fatal stays fatal. Red captured: `child_retryable_failure_keeps_classification` FAIL pre-fix — "HTTP 500 child failure must stay retryable, got Fatal(…transient source error: HTTP 500…)" (the upstream classification visibly wrapped inside Fatal). Green: rest suite 68/68. Note for the R8 pass: `SourceError::RateLimited`'s Display omits its inner message — parent context on rate-limited children is only visible via the source() chain (pre-existing; candidate alongside T054) |
 | B2 (interim guard) | 1 | overtaken | Catalogue false positive: object_store 0.12.5 appends `/` to the server-side list prefix (`client/list.rs:72`) — segment semantics, `out/a` cannot match `out/ab/`. Pinned by `rdlt-connector-file::prefix_semantics::list_prefix_is_segment_based_not_byte_based` (PASS) |
-| B2 (root cause, keys_of_table) | 8 | | Still worthwhile as shared-helper consolidation under R7 (dedup, not defect) |
+| B2 (root cause, keys_of_table) | 8 | applied | ONE `Location::keys_of_table` (tails under `{table}/`) consumed by BOTH count_rows_async and Replace truncation — the ownership rule has one home (dedup; the defect itself was overtaken in increment 1) |
 | B3 (stopgap sync + parity pin) | 1 | applied | Bench `DestSpec` gained `File`/`Iceberg` + construction arms (library_mode.rs); shared fixture `benches/parity_specs.yaml` (5 docs, every dest kind) pinned by `shared_parity_specs_all_parse` in BOTH rdlt-cli and rdlt-bench (PASS ×2). Red: pre-sync the bench parser had no such variants (catalogue-verified drift) |
 | B3 (structural, rdlt::pipeline_spec) | 12 | | |
 | B4 | 1 | applied | Ordering violation now typed Fatal in all profiles; `row_key` renders through fallible `render_cell`. Red: `out_of_order_arrival_fails_in_all_profiles` panicked on the old `debug_assert` (captured). The "adjacent" key-format defect proved LIVE, not latent: arrow cannot display `Timestamp(_, Some("UTC"))` without a tz database, so EVERY timestamptz boundary key was silently an empty colliding component — surfaced by `pkless_table_dedups_via_row_hash` failing once rendering became fallible; fixed by re-labeling zoned→naive (instant unchanged) before display. Pins: `row_key_threads_and_composes`, `zoned_timestamp_keys_are_distinct_and_nonempty` (fails against pre-fix empty-component behavior), full pg suite PASS. Note: boundary keys for timestamptz cursors change value (empty→rendered) — a defect-confined behavior change per WR1; old keys could only over-deliver boundary rows, and dedup is per-run |
@@ -41,7 +41,7 @@ paths/names and in-repo vocabulary, not on-disk data written by runs.
 | B7 | 1 | applied | One `const SCOPE_HASH_LEN` (dest.rs, both sites) + one `fn state_key(scope)` (commit.rs, write+read); pin `state_key_write_and_read_agree`. Iceberg suite 117/117 PASS incl. exactly-once container legs |
 | B8 | 1 | applied | `classify` (IO-prefix → Transient) at open/appender/tx sites. Red: `unopenable_file_is_transient_not_fatal` FAIL with `fatal` at open, PASS with `classify` (captured) |
 | B9 (interim dest classification) | 1 | applied | One recoverability rule `location::s3::is_recoverable` shared by source classify + new dest `store_err` (8 object_store sites rewired: get/put/list/delete/copy incl. staged put + count reads); `S3Reader::read_full` carries recoverability via ConnectionReset kind; consumers classify through `classify_read_error` (3 sites). Pin `store_error_recoverability_is_shared_and_honest` PASS. Red: helpers absent pre-fix (compile-fail shape, same caveat as B5) |
-| B9 (root cause, unified Location) | 8 | | |
+| B9 (root cause, unified Location) | 8 | applied | One classification rulebook (store_err/classify/is_recoverable) lives in location/ — read and write halves share it structurally, completing the increment-1 interim fix |
 | B10 | 1* | applied | Two-pass replay: pass 1 decodes every segment batch-at-a-time and drops (validation without retention — `Vec<LoadItem>` buffer deleted), pass 2 streams through the session; damage reasons now logged (`tracing::warn!`) instead of swallowed. RSS bound is structural (no span-sized collection exists; grep `Vec<LoadItem>` in resume.rs = 0). Engine suite 75/75 PASS incl. recovery tests. *Landed early (increment 1) — the split (T038) no longer gates it |
 | B11 | 1 | applied | `parse_slab` fuzz target now drives `Arena::parse_rows` (production parser); `table::parse_rows` gated `#[cfg(test)]` as the arena's differential oracle (its only remaining caller). Oracle test `arena_and_value_agree_on_canonical_bytes` PASS |
 | B12 | 1 | applied | `Provenance` doc corrected to actual persisted semantic (provenance IS hashed); pin `provenance_participates_in_the_hash` PASS; hash bytes unchanged |
@@ -71,32 +71,32 @@ paths/names and in-repo vocabulary, not on-disk data written by runs.
 | R4 postgres PgSession::commit split | 6 | | |
 | R4 postgres source read cursor-arm move | 7 | | |
 | R4 duckdb commit split | 6 | | |
-| R4 file dest/mod.rs split | 8 | | |
-| R4 rest read/mod.rs split | 9 | | |
-| R4 iceberg commit.rs split | 10 | | |
+| R4 file dest/mod.rs split | 8 | applied | 882 lines → mod(145)/session(314: commit = 4 named phases)/layout(133)/truncate(79: one owns_tail rule)/inspect(74); source read → resolve_inputs/plan_tasks/stage_s3_fetches; jsonl SlabReader unifies the twin slab loops. Fail-point registry unchanged but relocated to fire honestly (pq.* local-only). csv convert_cell EXHAUSTIVE over HintType — new variants fail compile |
+| R4 rest read/mod.rs split | 9 | applied | 668 → mod(187)/driver(345)/fanout(192); substitute_body → resolve; ONE match(method,body) in build_page_request; wire bytes identical (query ordering preserved) |
+| R4 iceberg commit.rs split | 10 | applied | commit.rs 863 → catalog(96)/writer(135)/commit(240)/state(171)/ensure(238)+test_support; dest.rs → session.rs (module-inception allow GONE); reveal() concentrated to 4 sites in one pure catalog_props (grep-proven) |
 | R4 sqlcore plan.rs split | 6 | applied | plan/{mod,arms,validate,index}.rs, no shims (greenfield); `IndexSpec` replaces the tuple |
 | R4 testkit memory commit split | 4 | | |
 | R4 cli main.rs split | 12 | | |
 | R4 bench cmd_run/fixtures/runner splits | 12 | | |
 | R5 postgres validate decomposition | 7 | | |
-| R5 rest validate decomposition | 9 | | |
+| R5 rest validate decomposition | 9 | applied | 5 helpers (the named 4 + validate_headers unifying the reserved-auth check); texts frozen |
 | R5 sqlcore options/plan validate decomposition | 6 | applied | check_hard_delete/dedup_sort/merge_key/scd2 per rule group; message texts frozen (pinned) |
-| R5 iceberg validate decomposition | 10 | | |
-| R5 file validate convention unification | 8 | | |
+| R5 iceberg validate decomposition | 10 | applied | AuthOptions unified on ConfigError (frozen texts); validate split landed with the config restructure |
+| R5 file validate convention unification | 8 | applied | One convention + context param (public signature change, direct per greenfield); error-text prefix unified |
 | R6 shared apply_delta/apply_batch | 5 | applied | load/apply.rs owns the lower_schema→ensure_table→record-hash triple and lower_batch→write pair |
 | R6 replay consumes helpers | 5 | applied | Loader::process + both replay arms consume the helpers (ensure SEMANTICS unchanged — only the code deduplicated); borrowed-box fixed (`&mut dyn LoadSession`); crash sweeps + recovery pins green |
-| R7 Location unification (read+write) | 8 | | |
-| R7 FileMeta/FileTask/FileProgress relocation | 8 | | |
-| R8 DestError::RateLimited | 7* | | |
+| R7 Location unification (read+write) | 8 | applied | `Store` DELETED; one `Location {Local, S3}` with read half (from_options/list/open_from) + write half (staging/publish/docs/keys_of_table/…); `unreachable!("s3_list on a local store")` gone with NO replacement (list-by-table works both backends). 74/74 + 76/76 failpoints; engine ParquetDir sweep green |
+| R7 FileMeta/FileTask/FileProgress relocation | 8 | applied | location/types.rs (upward import killed); public paths preserved via re-export. Wire-preserving renames `done_units`/`size_units`/`ended_at_record_boundary` (serde renames; pre-015 cursor-bytes pins green) |
+| R8 DestError::RateLimited | 7* | applied | ADDITIVE `DestError::RateLimited {retry_after, source}` + ctors; deeper finding: `RdltError::Destination` carried NO retryability — the run driver never retried ANY destination failure, making the whole Transient channel cosmetic at run level. Completed the chain: Destination{retryable, retry_after_ms}, `classify_dest_error` at all 6 engine map sites, run driver retries BOTH sides under one MAX_RUN_ATTEMPTS ceiling (restart-from-committed-state, so no double-publish). Both RateLimited Displays now carry the inner message (closes B1's source()-chain note). iceberg 429 → RateLimited. Pins: `transient_destination_failures_retry_and_are_bounded` (retry count + bounded exhaustion + terminal classification), iceberg 429 test. 119/119 + 19/19 green |
 | R8 sqlcore typed validation errors | 6 | applied | plan::validate_* → typed `ValidateError` with Display = frozen texts; options parse-layer kept its from_value String contract (decomposed, typed at the destination-facing layer where the docs promised it) |
-| R8 rest Paginator typed error | 9 | | |
+| R8 rest Paginator typed error | 9 | applied | `PaginatorError` (frozen Displays, both variants deliberately fatal — API-contract violations don't heal); `RestSource::new -> Result` makes the validated-at-construction invariant REAL (greenfield breaking constructor) |
 | R8 postgres DDL classification + decode conventions | 7 | | |
 | R8 engine error-variant misuse | 5 | applied | Task panics → new additive `RdltError::Internal` (enum was non_exhaustive; CLI catch-all absorbs); workdir-lock failures → `config` (operator-actionable, consistent with sibling); `RecordsOut::rows` ChannelClosed lie → `.expect()` on genuinely-infallible serialization (writer infallible, non-finite rejected at construction; SPI signature change considered and declined — expect is truthful and simpler; greenfield permits revisiting if the SPI ever gains fallible pushes) |
 | R9 engine ping-pong expects | 5 | applied | Via ShredOwner (see R4 engine row) |
 | R9 postgres RunState expects | 7 | | |
-| R9 rest validated-at-parse expects | 9 | | |
-| R9 iceberg retry unreachable tails | 10 | | |
-| R9 file s3_list partial method | 8 | | |
+| R9 rest validated-at-parse expects | 9 | applied | 5 expects died with fallible from_config; the 6th an honest ok_or_else; `selector_paths()` one home for variant knowledge; defensive papering deleted (max(1), or_else fallback) |
+| R9 iceberg retry unreachable tails | 10 | applied | ONE `commit_with_retry` (loop diverges — both unreachable! tails gone BY CONSTRUCTION); unified 1-based/100ms schedule (the conflict-suite-verified one); already_committed re-check only in the append plan (lost race may be our own replay); REAL jitter via process-seeded RandomState (no deps, no wall clock); conflict suite green under contention |
+| R9 file s3_list partial method | 8 | applied | Died with Store (see R7 row) |
 | R9 cross-module invariant panics (pg decimal / sqlcore hard_delete / duckdb scd2) | 6-7 | partially applied | sqlcore hard_delete + duckdb scd2 expects ELIMINATED BY CONSTRUCTION (MergeArm::Scd2 carries options from the total scd2_for; flagged_roots takes &HardDelete proven by the match). pg copy_decode decimal expect → increment 7 |
 | R10 non-breaking renames | 11 | | |
 | R10 aliasable renames (DestinationError etc.) | 11 | | |
@@ -136,17 +136,17 @@ spot satisfies WR8 as long as the gate is green.
 | 3.4 duckdb quote-bypass deletion | 6 | applied | Local quote deleted; everything routes through the dialect seam |
 | 3.4 DestOptions/TableOptions re-export convention | 11 | | |
 | 3.4 MergePlan field naming | 11 (deferral candidate) | | |
-| 3.5 jsonl SlabReader, FileTask ×4, staged-part path ×3, owned-tail ×2, fill loops, compression-ext ×2 | 8 | | |
-| 3.5 FileSource::read split, csv convert_cell catch-all | 8 | | |
-| 3.5 read_doc reserialize round-trip | 8 | | |
+| 3.5 jsonl SlabReader, FileTask ×4, staged-part path ×3, owned-tail ×2, fill loops, compression-ext ×2 | 8 | applied | SlabReader; new_task/check_rewrite; one staged-part rule on Location; one owns_tail; StagedPart records its index |
+| 3.5 FileSource::read split, csv convert_cell catch-all | 8 | applied | resolve_inputs/plan_tasks/stage_s3_fetches; convert_cell exhaustive (compile-forcing) |
+| 3.5 read_doc reserialize round-trip | 8 | applied | Local arm reads raw bytes like S3; expect("reserialize") gone |
 | 3.5 ParquetDir deprecation intent, format_version, pub constants | 3 | applied | See R12 rest/iceberg/file row: intent recorded (frozen stable spelling), format_version enforced, constants narrowed |
 | 3.5 parquet footer re-parse perf note | 8 | | |
-| 3.6 Pagination selector_paths, stop-block dup, json_kind/render_scalar, base-url join, derive stacks | 9 | | |
-| 3.6 fetch_page split, read_children/current_token | 9 | | |
-| 3.7 conflict-retry triplication → commit_with_retry | 10 | | |
-| 3.7 PartitionTransform From impl, fatal() ×3, arrow-target ×2 | 10 | | |
-| 3.7 doubled exhausted phrasing, Debug tuples in message, AuthOptions error type | 10 | | |
-| 3.7 root re-export completeness | 11 | | |
+| 3.6 Pagination selector_paths, stop-block dup, json_kind/render_scalar, base-url join, derive stacks | 9 | applied | selector_paths; total_count_reached; json_kind/render_scalar unified where ACCIDENTAL, kept+commented where deliberate (value_kind terse form; parent-value bool policy); base-url join + not-valid-JSON ×3 deduped; absent-cursor let-else judged clearer inline (recorded) |
+| 3.6 fetch_page split, read_children/current_token | 9 | applied | build_page_request extraction; fanout decomposition; redundant parent param removed |
+| 3.7 conflict-retry triplication → commit_with_retry | 10 | applied | See R9 iceberg row |
+| 3.7 PartitionTransform From impl, fatal() ×3, arrow-target ×2 | 10 | applied | `schema::to_transform` (orphan rule forbids the From impl — recorded); fatal() once in errors.rs; one arrow_target |
+| 3.7 doubled exhausted phrasing, Debug tuples in message, AuthOptions error type | 10 | applied | "exhausted" renders once (pinned count==1); partition-mismatch message Display-rendered; ConfigError unified |
+| 3.7 root re-export completeness | 10 | applied | CatalogOptions/StorageOptions/ConfigError added to lib.rs (landed early with increment 10) |
 | 3.8 CLI run() macro → build_* fns | 12 | | |
 | 3.8 testkit try_step!, fixture schema-from-TableSchema, util visibility, verify_* re-exports, Row alias | 4 | | |
 | 3.8 bench four TOML loaders, last_json_field, container boilerplate | 3* | applied | One `load_toml<T>`; `protocol::last_json_field` ×3; `start_container` helper. *Landed early with increment 3 (same files) |
