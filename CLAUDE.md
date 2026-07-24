@@ -1,6 +1,42 @@
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
+`specs/018-bench-refinement/plan.md` (feature: benchmark refinement per
+BENCH_REFINMENT.md v3.1 — collapse the benchmark to an e2e-only,
+THREE-WAY-comparable five-cell matrix (rdlt/dlt/Airbyte, same
+conditions: same seeded sources, same destination instances w/
+per-product databases/prefixes, rowcount-verified, per-product timing
+boundaries stated). DELETE outright (git history is the archive): the
+gated/scoreboard taxonomy, suites, Library+Hyperfine modes (+
+library_mode.rs — the parity fixture + CLI pins SURVIVE, they guard the
+shared rdlt::pipeline_spec), 25 of 26 cells (selftest exempt; lineage:
+pg-to-pg-1m <- pg-wide-pg-1m, s3jsonl-to-s3parquet-200k <-
+parquet-passthrough), 10 of 13 fixtures (pg-src -> pg w/ per-product
+dest DBs; file-s3 -> rustfs raw+lake, pin beta.11 kept), all 8 bars
+(ONE policy entry citing final values + archive commit; Milestones
+seeded w/ 13.5x flagship etc.), dlt duckdb/rest/cold scripts +
+dlt-sqlalchemy variant. Artifact format_version 1->2 (class removed,
+extra{} added, v1 REJECTED naming archive commit). cold-start -> the
+instruments track (check-cold-start.sh, <=40ms kept). GOVERNANCE:
+constitution v1.1.0 amends Principle VIII (cells/bars vocabulary,
+mechanism preserved + recorded-session-floor requirement) BEFORE the
+vocab deletion merges; 012 BH1/BH2/BH3/BH6 amended the same recorded
+way (amendment texts verbatim in contracts/bench-refinement.md).
+Airbyte: driver competitor kind (per-module variants.toml discovery,
+flat namespace, last-line JSON convention — zero artifact divergence),
+abctl = machine PREREQUISITE (Missing{reason} skip), 5 PROBES FIRST
+(runtime podman-vs-kind is the #1 risk; docker install needs recorded
+owner approval; no-go => absent-with-reason, never silent 2-way);
+headline = job wall, sync_s labeled context, cluster RSS never barred;
+runs=3 airbyte / 5 rdlt+dlt. dlt honest-fastest: connectorx headline,
+pyarrow context, multiples drop (~2.2x expected). bars.toml EMPTY until
+after the first recorded 3-way session, then <=1 bar/cell below the
+recorded floor w/ policy entries. RESULTS.md rebuilt (generated matrix/
+caveats/trends from history.jsonl/milestones) + GOVERNANCE.md split.
+Phases P0-P4 independently mergeable, gate green each; P4's 3-way
+Iceberg cell NOT taken unless owner elevates lakehouse. Contract:
+contracts/bench-refinement.md BR1-BR8).
+Previous feature 017 for reference:
 `specs/017-workspace-refactoring/plan.md` (feature: workspace refactoring
 program executing REFACTORING.md end-to-end — fix 12 latent defects
 B1-B12 with red-before/green-after regression pins, then cross-cutting
