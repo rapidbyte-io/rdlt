@@ -701,6 +701,8 @@ impl Source for PostgresSource {
                     key_columns,
                     (cc.nulls == config::NullPolicy::Error)
                         .then(|| (name.clone(), cc.column.clone())),
+                    name.clone(),
+                    cc.column.clone(),
                 );
                 incremental = Some((tracker, cc.clone()));
                 (clauses.where_sql, clauses.order_sql)

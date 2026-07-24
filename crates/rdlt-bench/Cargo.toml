@@ -16,7 +16,7 @@ path = "src/main.rs"
 # 2026-07-21); everything else ships in the workspace already.
 [dependencies]
 clap = { workspace = true }
-rdlt = { workspace = true, features = ["rest", "duckdb", "postgres", "file", "parquet", "postgres-source"] }
+rdlt = { workspace = true, features = ["rest", "duckdb", "postgres", "file", "parquet", "postgres-source", "iceberg"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }

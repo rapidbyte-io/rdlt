@@ -198,6 +198,11 @@ pub(crate) struct Tracker {
     cursor_idx: usize,
     decode: Decode,
     direction_max: bool,
+    /// Stream name and cursor column, named in the typed error raised when
+    /// the stream breaks its cursor ordering or a row key cannot be rendered
+    /// (always present — distinct from the policy-gated `null_error`).
+    stream: String,
+    cursor_column: String,
     /// Stored state we resumed from (monotonic guard + dedup source).
     stored: Option<CursorState>,
     /// Column indices forming the row key; None ⇒ hash every column.
@@ -216,6 +221,7 @@ pub(crate) struct Tracker {
 }
 
 impl Tracker {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         cursor_idx: usize,
         decode: Decode,
@@ -225,12 +231,16 @@ impl Tracker {
         // `NullPolicy::Error` context: (stream, column) — a NULL cursor
         // value fails `process` with a typed error naming both (N1).
         null_error: Option<(String, String)>,
+        stream: String,
+        cursor_column: String,
     ) -> Self {
         Self {
             cursor_idx,
             null_error,
             decode,
             direction_max,
+            stream,
+            cursor_column,
             stored,
             key_columns,
             in_boundary: true,
@@ -249,20 +259,20 @@ impl Tracker {
         }
     }
 
-    fn row_key(&self, batch: &arrow_array::RecordBatch, row: usize) -> String {
-        use arrow_cast::display::array_value_to_string;
+    fn row_key(&self, batch: &arrow_array::RecordBatch, row: usize) -> Result<String, SourceError> {
         match &self.key_columns {
-            Some(indices) => indices
-                .iter()
-                .map(|&i| {
-                    if batch.column(i).is_null(row) {
-                        "\u{2205}".to_owned()
+            Some(indices) => {
+                let mut parts = Vec::with_capacity(indices.len());
+                for &i in indices {
+                    let column = batch.column(i);
+                    if column.is_null(row) {
+                        parts.push("\u{2205}".to_owned());
                     } else {
-                        array_value_to_string(batch.column(i), row).unwrap_or_default()
+                        parts.push(self.render_cell(column, row)?);
                     }
-                })
-                .collect::<Vec<_>>()
-                .join("|"),
+                }
+                Ok(parts.join("|"))
+            }
             None => {
                 // PK-less table: hash the whole row's canonical rendering.
                 let mut hasher = blake3::Hasher::new();
@@ -270,17 +280,59 @@ impl Tracker {
                     if column.is_null(row) {
                         hasher.update(b"\xff\x00");
                     } else {
-                        hasher.update(
-                            array_value_to_string(column, row)
-                                .unwrap_or_default()
-                                .as_bytes(),
-                        );
+                        hasher.update(self.render_cell(column, row)?.as_bytes());
                         hasher.update(b"\x00");
                     }
                 }
-                hasher.finalize().to_hex().to_string()
+                Ok(hasher.finalize().to_hex().to_string())
             }
         }
+    }
+
+    /// Render one non-NULL cell to its canonical resume-key text. A rendering
+    /// failure is Fatal: defaulting it to an empty component would silently
+    /// collide distinct rows and corrupt boundary dedup on resume.
+    ///
+    /// Zoned timestamps are re-labeled naive first: arrow's display needs a
+    /// timezone database for NAMED zones (`"UTC"`), and without it every
+    /// timestamptz cursor key would fail to render. The stored instant is
+    /// unchanged (UTC micros), so the naive rendering is deterministic and
+    /// collision-free — exactly what a resume key needs.
+    fn render_cell(
+        &self,
+        column: &arrow_array::ArrayRef,
+        row: usize,
+    ) -> Result<String, SourceError> {
+        use arrow_schema::DataType;
+        let zoned;
+        let column = match column.data_type() {
+            DataType::Timestamp(unit, Some(_)) => {
+                zoned =
+                    arrow_cast::cast(column, &DataType::Timestamp(*unit, None)).map_err(|e| {
+                        errors::fatal(
+                            Phase::Copy,
+                            Some(&self.stream),
+                            format!(
+                                "row key for cursor column `{}`: re-labeling zoned \
+                                 timestamp failed: {e}",
+                                self.cursor_column
+                            ),
+                        )
+                    })?;
+                &zoned
+            }
+            _ => column,
+        };
+        arrow_cast::display::array_value_to_string(column, row).map_err(|e| {
+            errors::fatal(
+                Phase::Copy,
+                Some(&self.stream),
+                format!(
+                    "row key for cursor column `{}` could not be rendered to text: {e}",
+                    self.cursor_column
+                ),
+            )
+        })
     }
 
     /// Process one decoded batch BEFORE pushing: dedup re-fetched boundary
@@ -322,7 +374,7 @@ impl Tracker {
                 if self.beyond(v, &stored.watermark) {
                     self.in_boundary = false;
                 } else if *v == stored.watermark
-                    && stored.boundary_keys.contains(&self.row_key(&batch, row))
+                    && stored.boundary_keys.contains(&self.row_key(&batch, row)?)
                 {
                     drop = true;
                 }
@@ -342,20 +394,27 @@ impl Tracker {
             };
             match &self.last_value {
                 Some(last) if *last == value => {
-                    let key = self.row_key(&batch, row);
+                    let key = self.row_key(&batch, row)?;
                     self.run_keys.push(key);
                 }
                 Some(last) => {
-                    debug_assert!(
-                        self.beyond(&value, last),
-                        "cursor stream not ordered — sqlgen ORDER BY violated"
-                    );
+                    if !self.beyond(&value, last) {
+                        return Err(errors::fatal(
+                            Phase::Copy,
+                            Some(&self.stream),
+                            format!(
+                                "cursor column `{}` produced an out-of-order row: the read \
+                                 stream broke the ordering its resume watermark depends on",
+                                self.cursor_column
+                            ),
+                        ));
+                    }
                     self.last_value = Some(value);
-                    self.run_keys = vec![self.row_key(&batch, row)];
+                    self.run_keys = vec![self.row_key(&batch, row)?];
                 }
                 None => {
                     self.last_value = Some(value);
-                    self.run_keys = vec![self.row_key(&batch, row)];
+                    self.run_keys = vec![self.row_key(&batch, row)?];
                 }
             }
         }
@@ -559,6 +618,112 @@ mod tests {
             Watermark::Date(20_000).to_sql_literal(),
             "(DATE 'epoch' + 20000::int4)"
         );
+    }
+
+    #[test]
+    fn out_of_order_arrival_fails_in_all_profiles() {
+        use crate::source::types::Decode;
+        use arrow_array::{Int64Array, RecordBatch};
+        use arrow_schema::{DataType, Field, Schema};
+        use std::sync::Arc;
+
+        // A MAX cursor whose stream regresses (1, 3, then back to 2). The
+        // resume watermark is only sound when the stream is cursor-ordered;
+        // a silently-accepted out-of-order row corrupts it.
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![1_i64, 3, 2]))])
+                .expect("batch builds");
+        let mut tracker = Tracker::new(
+            0,
+            Decode::Int8,
+            true,
+            None,
+            None,
+            None,
+            "public.events".to_owned(),
+            "id".to_owned(),
+        );
+        let err = tracker
+            .process(batch)
+            .expect_err("an out-of-order row must be a typed error, not silently accepted");
+        let msg = err.to_string();
+        assert!(msg.contains("out-of-order"), "names the failure: {msg}");
+        assert!(msg.contains("`id`"), "names the cursor column: {msg}");
+        assert!(msg.contains("events"), "names the stream: {msg}");
+    }
+
+    #[test]
+    fn row_key_threads_and_composes() {
+        use crate::source::types::Decode;
+        use arrow_array::{Int64Array, RecordBatch};
+        use arrow_schema::{DataType, Field, Schema};
+        use std::sync::Arc;
+
+        // Composite key over two columns, one NULL. Key rendering is fallible
+        // now; the happy path must still yield the exact composite key (NULL
+        // sentinel + rendered value), never a silently defaulted component.
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("region", DataType::Int64, true),
+            Field::new("id", DataType::Int64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from(vec![None::<i64>])),
+                Arc::new(Int64Array::from(vec![7_i64])),
+            ],
+        )
+        .expect("batch builds");
+        let tracker = Tracker::new(
+            1,
+            Decode::Int8,
+            true,
+            None,
+            Some(vec![0, 1]),
+            None,
+            "public.events".to_owned(),
+            "id".to_owned(),
+        );
+        let key = tracker
+            .row_key(&batch, 0)
+            .expect("renderable cells return Ok");
+        assert_eq!(key, "\u{2205}|7");
+    }
+
+    /// Zoned timestamps (postgres timestamptz decodes as
+    /// `Timestamp(Microsecond, Some("UTC"))`) must render DISTINCT,
+    /// NON-EMPTY key components. Arrow's display cannot render named
+    /// zones without a timezone database, so before key rendering became
+    /// fallible this silently produced an empty component for EVERY
+    /// timestamptz boundary row — all boundary rows colliding on one key.
+    #[test]
+    fn zoned_timestamp_keys_are_distinct_and_nonempty() {
+        use crate::source::types::Decode;
+        use arrow_array::{RecordBatch, TimestampMicrosecondArray};
+        use arrow_schema::{DataType, Field, Schema, TimeUnit};
+        use std::sync::Arc;
+
+        let ty = DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
+        let schema = Arc::new(Schema::new(vec![Field::new("ts", ty.clone(), false)]));
+        let values =
+            TimestampMicrosecondArray::from(vec![1_700_000_000_000_000_i64, 1_700_000_000_000_001])
+                .with_timezone("UTC");
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(values)]).expect("batch builds");
+        let tracker = Tracker::new(
+            1,
+            Decode::Timestamp { tz: true },
+            true,
+            None,
+            Some(vec![0]),
+            None,
+            "public.events".to_owned(),
+            "ts".to_owned(),
+        );
+        let first = tracker.row_key(&batch, 0).expect("zoned key renders");
+        let second = tracker.row_key(&batch, 1).expect("zoned key renders");
+        assert!(!first.is_empty() && !second.is_empty());
+        assert_ne!(first, second, "distinct instants must never share a key");
     }
 
     #[test]

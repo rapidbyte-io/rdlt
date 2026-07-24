@@ -4,6 +4,7 @@
 mod common;
 
 use common::read_err;
+use rdlt_connector::SourceError;
 use rdlt_connector_duckdb::dest::DuckDb;
 use rdlt_connector_rest::RestSource;
 use rdlt_engine::{Engine, EngineConfig};
@@ -129,6 +130,72 @@ streams:
         err.contains("owner=acme") && err.contains("repo=ghost"),
         "{err}"
     );
+}
+
+/// A retryable child failure keeps its classification through the parent
+/// fan-out: a 500 stays Transient and a 429 stays RateLimited, so the run
+/// consumes its retry budget instead of aborting. The parent context is
+/// still attached to the surfaced error.
+#[tokio::test]
+async fn child_retryable_failure_keeps_classification() {
+    for (status, expect_rate_limited) in [(500u16, false), (429u16, true)] {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                {"owner": "acme", "name": "ghost"}
+            ])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/ghost/issues"))
+            .respond_with(ResponseTemplate::new(status))
+            .mount(&server)
+            .await;
+        let yaml = format!(
+            r#"
+base_url: "{}"
+streams:
+  - name: repos
+    path: /repos
+  - name: issues
+    path: /repos/{{owner}}/{{repo}}/issues
+    parent:
+      stream: repos
+      placeholders: {{owner: owner, repo: name}}
+"#,
+            server.uri()
+        );
+        let outcome = common::read_stream(&yaml, "issues", None).await;
+        let err = outcome.result.expect_err("child failure surfaces typed");
+        match &err {
+            SourceError::RateLimited { .. } => {
+                assert!(expect_rate_limited, "HTTP {status} → RateLimited: {err:?}")
+            }
+            SourceError::Transient(_) => {
+                assert!(!expect_rate_limited, "HTTP {status} → Transient: {err:?}")
+            }
+            other => panic!("HTTP {status} child failure must stay retryable, got {other:?}"),
+        }
+        let chain = error_chain(&err);
+        assert!(
+            chain.contains("owner=acme") && chain.contains("repo=ghost"),
+            "parent context lost: {chain}"
+        );
+    }
+}
+
+/// Render an error and its full `source` chain (the `RateLimited` variant
+/// keeps its detail in the source, not the top-level Display).
+fn error_chain(err: &dyn std::error::Error) -> String {
+    let mut rendered = err.to_string();
+    let mut source = err.source();
+    while let Some(next) = source {
+        rendered.push_str(": ");
+        rendered.push_str(&next.to_string());
+        source = next.source();
+    }
+    rendered
 }
 
 /// Parent validation matrix: undeclared parent, self-parent, nested child,

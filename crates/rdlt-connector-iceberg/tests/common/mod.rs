@@ -108,9 +108,11 @@ impl CatalogFixture {
 
         // RUSTFS on the host network at a random port (T001: RUSTFS_ADDRESS
         // is honored; anonymous requests answer S3-style XML).
+        // Pinned tag: a floating `latest` re-resolves whenever upstream
+        // pushes, failing the gate without any change on our side.
         let rustfs = run_container(
             "rustfs",
-            "docker.io/rustfs/rustfs:latest",
+            "docker.io/rustfs/rustfs:1.0.0-beta.11",
             &[
                 ("RUSTFS_ADDRESS".into(), format!("0.0.0.0:{s3_port}")),
                 ("RUSTFS_ACCESS_KEY".into(), S3_KEY.into()),

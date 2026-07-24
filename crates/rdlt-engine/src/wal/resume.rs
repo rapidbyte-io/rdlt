@@ -11,7 +11,19 @@ use rdlt_connector::LoadSession;
 use rdlt_core::{CommitMeta, LoadId, RdltError, StateDoc};
 
 use super::WalRecord;
-use crate::load::LoadItem;
+
+/// Open one WAL segment for streaming decode; the error text names the
+/// failure so degradation to re-extraction is diagnosable from logs.
+fn open_segment(
+    dir: &Path,
+    file: &str,
+) -> Result<parquet::arrow::arrow_reader::ParquetRecordBatchReader, String> {
+    let path = dir.join(file);
+    File::open(&path)
+        .map_err(|e| e.to_string())
+        .and_then(|f| ParquetRecordBatchReaderBuilder::try_new(f).map_err(|e| e.to_string()))
+        .and_then(|b| b.build().map_err(|e| e.to_string()))
+}
 
 /// The uncommitted tail of a previous run.
 #[derive(Debug)]
@@ -151,51 +163,28 @@ pub(crate) async fn replay(
     state: &mut StateDoc,
     caps: rdlt_connector::DestCapabilities,
 ) -> Result<Option<u64>, RdltError> {
-    // Damage checks first: all segment files must be readable before any write.
-    let mut items: Vec<LoadItem> = Vec::new();
-    let mut batches: u64 = 0;
-    for record in span.records {
-        match record {
-            WalRecord::Delta {
-                schema,
-                delta,
-                mode,
-            } => {
-                items.push(LoadItem::Delta {
-                    schema,
-                    delta,
-                    mode,
-                });
-            }
-            WalRecord::Checkpoint { stream, cursor } => {
-                items.push(LoadItem::Checkpoint { stream, cursor });
-            }
-            WalRecord::Segment { table, file, .. } => {
-                let path = dir.join(&file);
-                let reader = match File::open(&path)
-                    .map_err(|e| e.to_string())
-                    .and_then(|f| {
-                        ParquetRecordBatchReaderBuilder::try_new(f).map_err(|e| e.to_string())
-                    })
-                    .and_then(|b| b.build().map_err(|e| e.to_string()))
-                {
-                    Ok(reader) => reader,
-                    Err(_) => return Ok(None), // quarantine → degrade to re-extract
-                };
-                for batch in reader {
-                    match batch {
-                        Ok(batch) => {
-                            batches += 1;
-                            items.push(LoadItem::Batch {
-                                table: table.clone(),
-                                batch,
-                            });
-                        }
-                        Err(_) => return Ok(None),
-                    }
+    // Pass 1 — validate: every segment must fully decode BEFORE any write
+    // reaches the session. Batches are decoded one at a time and dropped,
+    // so recovery memory stays bounded by one batch regardless of span
+    // size (a time-based commit policy makes spans unbounded — buffering
+    // a whole span can dwarf the configured byte budget exactly when the
+    // system is already degraded). Damage degrades to re-extraction, with
+    // the reason logged, never swallowed.
+    for record in &span.records {
+        if let WalRecord::Segment { file, .. } = record {
+            let reader = match open_segment(dir, file) {
+                Ok(reader) => reader,
+                Err(reason) => {
+                    tracing::warn!(segment = %file, %reason, "WAL segment unreadable — degrading to re-extraction");
+                    return Ok(None);
+                }
+            };
+            for batch in reader {
+                if let Err(e) = batch {
+                    tracing::warn!(segment = %file, reason = %e, "WAL segment batch undecodable — degrading to re-extraction");
+                    return Ok(None);
                 }
             }
-            WalRecord::Run { .. } | WalRecord::Committed { .. } => {}
         }
     }
 
@@ -213,14 +202,15 @@ pub(crate) async fn replay(
             .insert(schema.table.clone(), schema.content_hash());
     }
 
-    // Apply in WAL order: delta-before-batch survives crashes (invariant 3).
-    for item in items {
-        match item {
-            LoadItem::Delta {
-                schema,
-                delta: _,
-                mode,
-            } => {
+    // Pass 2 — stream, in WAL order (delta-before-batch survives crashes,
+    // invariant 3): segments re-open and flow through the session one
+    // batch at a time. A read failure here is unexpected (pass 1 decoded
+    // everything) but still degrades: staged-but-uncommitted writes are
+    // invisible and torn down by the destination (clause D4).
+    let mut batches: u64 = 0;
+    for record in span.records {
+        match record {
+            WalRecord::Delta { schema, mode, .. } => {
                 // Same lowering seam as the live loader (design doc §5.3).
                 let lowered = crate::load::lowering::lower_schema(&schema, &caps);
                 session
@@ -231,18 +221,31 @@ pub(crate) async fn replay(
                     .schema_hashes
                     .insert(schema.table.clone(), schema.content_hash());
             }
-            LoadItem::Batch { table, batch } => {
-                let lowered = crate::load::lowering::lower_batch(&batch, &caps)?;
-                session
-                    .write(&table, lowered)
-                    .await
-                    .map_err(RdltError::destination)?;
-            }
-            LoadItem::Checkpoint { stream, cursor } => {
+            WalRecord::Checkpoint { stream, cursor } => {
                 state.cursors.insert(stream, cursor);
             }
-            // Never persisted to the WAL; nothing to replay.
-            LoadItem::Discarded { .. } => {}
+            WalRecord::Segment { table, file, .. } => {
+                let reader = match open_segment(dir, &file) {
+                    Ok(reader) => reader,
+                    Err(reason) => {
+                        tracing::warn!(segment = %file, %reason, "WAL segment vanished mid-replay — degrading to re-extraction");
+                        return Ok(None);
+                    }
+                };
+                for batch in reader {
+                    let Ok(batch) = batch else {
+                        tracing::warn!(segment = %file, "WAL segment failed re-read mid-replay — degrading to re-extraction");
+                        return Ok(None);
+                    };
+                    batches += 1;
+                    let lowered = crate::load::lowering::lower_batch(&batch, &caps)?;
+                    session
+                        .write(&table, lowered)
+                        .await
+                        .map_err(RdltError::destination)?;
+                }
+            }
+            WalRecord::Run { .. } | WalRecord::Committed { .. } => {}
         }
     }
 

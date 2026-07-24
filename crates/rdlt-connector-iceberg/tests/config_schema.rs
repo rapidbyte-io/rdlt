@@ -152,6 +152,31 @@ fn helper_lookups() {
 }
 
 /// Parameterized transforms (parity D2 closed): the map spellings
+/// The YAML spellings the config documents: unit transforms as plain
+/// strings, parameterized ones as single-key maps. YAML is what CLI
+/// users write, and its enum handling differs from JSON's — the JSON
+/// twin below passing does NOT prove these parse.
+#[test]
+fn yaml_transform_spellings_parse() {
+    let config = IcebergConfig::from_yaml(
+        "catalog:\n  uri: http://x:8181/api/catalog\n  warehouse: w\n  auth:\n    bearer:\n      token: t\nnamespace: raw\ntables:\n  events:\n    partition_by:\n      - column: id\n        transform:\n          bucket: 16\n      - column: region\n        transform:\n          truncate: 2\n      - column: created_at\n        transform: day\n",
+    )
+    .expect("documented YAML spellings parse");
+    let fields = config.partition_fields("events");
+    assert_eq!(
+        fields[0].transform,
+        rdlt_connector_iceberg::PartitionTransform::Bucket(16)
+    );
+    assert_eq!(
+        fields[1].transform,
+        rdlt_connector_iceberg::PartitionTransform::Truncate(2)
+    );
+    assert_eq!(
+        fields[2].transform,
+        rdlt_connector_iceberg::PartitionTransform::Day
+    );
+}
+
 /// round-trip schema AND parser; zero parameters are typed eagerly.
 #[test]
 fn bucket_and_truncate_spellings_and_validation() {

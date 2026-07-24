@@ -144,7 +144,22 @@ impl S3Location {
             _ => SourceError::transient(format!("{name}: {error}")),
         }
     }
+}
 
+/// The one store-error recoverability rule, shared by the read and write
+/// paths: missing objects and auth/permission failures are configuration
+/// problems (fatal, the operator's to fix); everything else at the
+/// transport/store level heals on retry and rides the engine budget.
+pub(crate) fn is_recoverable(error: &object_store::Error) -> bool {
+    !matches!(
+        error,
+        object_store::Error::NotFound { .. }
+            | object_store::Error::Unauthenticated { .. }
+            | object_store::Error::PermissionDenied { .. }
+    )
+}
+
+impl S3Location {
     /// Split a `path` pattern into the fixed prefix and an optional glob
     /// remainder (`landed/2026/*.jsonl` → prefix `landed/2026/`, glob over
     /// the full key).
@@ -258,13 +273,22 @@ impl S3Reader {
             if self.pending.is_empty() {
                 match self.stream.next().await {
                     None => break,
-                    Some(Ok(chunk)) => self.pending = chunk,
                     Some(Err(e)) => {
-                        return Err(std::io::Error::other(format!(
-                            "reading {}: {e}",
-                            self.subject
-                        )));
+                        // Carry recoverability through the io::Error seam:
+                        // a mid-stream transport failure keeps a retryable
+                        // kind so consumers classify it transient instead
+                        // of failing the whole run.
+                        let kind = if is_recoverable(&e) {
+                            std::io::ErrorKind::ConnectionReset
+                        } else {
+                            std::io::ErrorKind::Other
+                        };
+                        return Err(std::io::Error::new(
+                            kind,
+                            format!("reading {}: {e}", self.subject),
+                        ));
                     }
+                    Some(Ok(chunk)) => self.pending = chunk,
                 }
             }
             let take = self.pending.len().min(buf.len() - filled);

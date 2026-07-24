@@ -57,8 +57,9 @@ pub(crate) struct Arena<'s> {
 impl<'s> Arena<'s> {
     /// Parse a raw-JSON push (NDJSON, a top-level array, or a single document)
     /// into this arena, returning the ROW nodes: top-level arrays flatten into
-    /// their items, and non-object rows are wrapped as `{"value": …}` — the
-    /// exact semantics of `table::parse_rows` + the traversal's wrapping.
+    /// their items, and non-object rows are wrapped as `{"value": …}` —
+    /// semantics pinned against an independent `serde_json::Value` oracle in
+    /// this module's tests.
     ///
     /// Documents are located zero-copy via `&RawValue` (serde_json's stream
     /// iterator cannot seed), then each document slice is seed-parsed into the
@@ -363,6 +364,20 @@ mod tests {
     use crate::shred::view::JsonView;
     use serde_json::Value;
 
+    /// Independent `serde_json::Value`-based parse of a raw slab (NDJSON /
+    /// top-level array / single doc) — the differential oracle the arena
+    /// parser is checked against. Lives here, with its only consumer.
+    fn oracle_rows(bytes: &[u8]) -> Result<Vec<Value>, serde_json::Error> {
+        let mut rows = Vec::new();
+        for doc in serde_json::Deserializer::from_slice(bytes).into_iter::<Value>() {
+            match doc? {
+                Value::Array(items) => rows.extend(items),
+                value => rows.push(value),
+            }
+        }
+        Ok(rows)
+    }
+
     /// Duplicate keys keep FIRST-occurrence POSITION with LAST-occurrence value
     /// (IndexMap insert semantics — the view contract schema column order
     /// depends on). Canonicalization sorts and is structurally blind to
@@ -411,7 +426,7 @@ mod tests {
             let bytes = case.as_bytes();
             let mut arena = Arena::default();
             let arena_rows = arena.parse_rows(bytes).expect("arena parse");
-            let value_rows = crate::shred::table::parse_rows(bytes).expect("value parse");
+            let value_rows = oracle_rows(bytes).expect("value parse");
             assert_eq!(arena_rows.len(), value_rows.len(), "row count for {case}");
             for (node, value) in arena_rows.iter().zip(&value_rows) {
                 // Wrap the Value side exactly like push_row does.

@@ -1,0 +1,167 @@
+# Close-Out Matrix: Workspace Refactoring Program
+
+Contract WR7: every catalogue item reaches a terminal disposition
+(`applied` / `shimmed` / `deferred` / `overtaken`) with non-empty evidence.
+R-theme rows expand to Part 3 sub-items at the granularity the tasks touch
+them; a row is filled when its task completes, not retroactively.
+
+**Coverage baseline (pre-feature, `cargo llvm-cov nextest --features
+failpoints` on merge base + rustfs pin, 595 tests green)**: **83.68% lines**
+(82.48% regions, 78.04% functions) — recorded 2026-07-24. SC-004 compares
+final line coverage against 83.68%.
+
+**Red-run evidence method**: per research D-14 (test-before-fix ordering or
+stash-red capture; excerpts inline or cited by test name + run).
+
+## Part 1 — Defects
+
+| Item | Increment | Disposition | Evidence |
+|---|---|---|---|
+| B1 | 1 | applied | `with_parent_context` preserves Transient/RateLimited (incl. retry_after) through child fan-out; only fatal stays fatal. Red: new `child_retryable_failure_keeps_classification` (500→Transient, 429→RateLimited via wiremock) fails against the old blanket `SourceError::fatal` wrap. Rest suite PASS |
+| B2 (interim guard) | 1 | overtaken | Catalogue false positive: object_store 0.12.5 appends `/` to the server-side list prefix (`client/list.rs:72`) — segment semantics, `out/a` cannot match `out/ab/`. Pinned by `rdlt-connector-file::prefix_semantics::list_prefix_is_segment_based_not_byte_based` (PASS) |
+| B2 (root cause, keys_of_table) | 8 | | Still worthwhile as shared-helper consolidation under R7 (dedup, not defect) |
+| B3 (stopgap sync + parity pin) | 1 | applied | Bench `DestSpec` gained `File`/`Iceberg` + construction arms (library_mode.rs); shared fixture `benches/parity_specs.yaml` (5 docs, every dest kind) pinned by `shared_parity_specs_all_parse` in BOTH rdlt-cli and rdlt-bench (PASS ×2). Red: pre-sync the bench parser had no such variants (catalogue-verified drift) |
+| B3 (structural, rdlt::pipeline_spec) | 12 | | |
+| B4 | 1 | applied | Ordering violation now typed Fatal in all profiles; `row_key` renders through fallible `render_cell`. Red: `out_of_order_arrival_fails_in_all_profiles` panicked on the old `debug_assert` (captured). The "adjacent" key-format defect proved LIVE, not latent: arrow cannot display `Timestamp(_, Some("UTC"))` without a tz database, so EVERY timestamptz boundary key was silently an empty colliding component — surfaced by `pkless_table_dedups_via_row_hash` failing once rendering became fallible; fixed by re-labeling zoned→naive (instant unchanged) before display. Pins: `row_key_threads_and_composes`, `zoned_timestamp_keys_are_distinct_and_nonempty` (fails against pre-fix empty-component behavior), full pg suite PASS. Note: boundary keys for timestamptz cursors change value (empty→rendered) — a defect-confined behavior change per WR1; old keys could only over-deliver boundary rows, and dedup is per-run |
+| B5 | 1 | applied | Probe `error_codes.rs` (2 PASS): structured channel degenerate → designed fallback (research D-02). Fix: `is_constraint_violation` prefix classifier applied on the library error pre-wrap; broad `"violate"` needle deleted. Red: pre-fix classifier absent (E0425 stash-run) — old logic was inline/untestable; regression `violation_wording_in_other_errors_is_not_misdiagnosed` (PASS) |
+| B6 | 1 | applied | `status_from_context` parses the `status:` CONTEXT ENTRY from the pinned Display form (anchored on the context block, never body text); 401/403→fatal, else transient. Probe facts: `iceberg-catalog-rest-0.10.0/src/client.rs:343` attaches the context; no public getter (research D-03 fallback). Pins: `status_parser_reads_the_context_entry`, `body_text_status_without_context_stays_transient` (red vs old `contains()`), live `auth_probe::live_auth_rejection_classifies_fatal` PASS against real Polaris 401 |
+| B7 | 1 | applied | One `const SCOPE_HASH_LEN` (dest.rs, both sites) + one `fn state_key(scope)` (commit.rs, write+read); pin `state_key_write_and_read_agree`. Iceberg suite 117/117 PASS incl. exactly-once container legs |
+| B8 | 1 | applied | `classify` (IO-prefix → Transient) at open/appender/tx sites. Red: `unopenable_file_is_transient_not_fatal` FAIL with `fatal` at open, PASS with `classify` (captured) |
+| B9 (interim dest classification) | 1 | applied | One recoverability rule `location::s3::is_recoverable` shared by source classify + new dest `store_err` (8 object_store sites rewired: get/put/list/delete/copy incl. staged put + count reads); `S3Reader::read_full` carries recoverability via ConnectionReset kind; consumers classify through `classify_read_error` (3 sites). Pin `store_error_recoverability_is_shared_and_honest` PASS. Red: helpers absent pre-fix (compile-fail shape, same caveat as B5) |
+| B9 (root cause, unified Location) | 8 | | |
+| B10 | 1* | applied | Two-pass replay: pass 1 decodes every segment batch-at-a-time and drops (validation without retention — `Vec<LoadItem>` buffer deleted), pass 2 streams through the session; damage reasons now logged (`tracing::warn!`) instead of swallowed. RSS bound is structural (no span-sized collection exists; grep `Vec<LoadItem>` in resume.rs = 0). Engine suite 75/75 PASS incl. recovery tests. *Landed early (increment 1) — the split (T038) no longer gates it |
+| B11 | 1 | applied | `parse_slab` fuzz target now drives `Arena::parse_rows` (production parser); `table::parse_rows` gated `#[cfg(test)]` as the arena's differential oracle (its only remaining caller). Oracle test `arena_and_value_agree_on_canonical_bytes` PASS |
+| B12 | 1 | applied | `Provenance` doc corrected to actual persisted semantic (provenance IS hashed); pin `provenance_participates_in_the_hash` PASS; hash bytes unchanged |
+| B13 (new — YAML transform spelling) | 1 | applied | Red: parity fixture rejected documented `transform: {bucket: 16}` ("expected a YAML tag starting with '!'", captured). Fix: `singleton_map` on `PartitionField.transform` + `#[schemars(with)]`; pins `yaml_transform_spellings_parse` + both parity tests PASS; JSON path re-verified by existing `bucket_and_truncate_spellings_and_validation` PASS |
+
+## Part 2 — Cross-cutting themes
+
+| Item | Increment | Disposition | Evidence |
+|---|---|---|---|
+| R1 user-facing citation strip | 2 | | |
+| R1 rotted-citation corrections | 2 | | |
+| R1 self-containment: engine | 2 | | |
+| R1 self-containment: postgres | 2 | | |
+| R1 self-containment: sqlcore/duckdb/iceberg | 2 | | |
+| R1 self-containment: core/connector/facade/file/rest | 2 | | |
+| R1 self-containment: testkit/bench/cli | 2 | | |
+| R2 commit splits (pg + duckdb) | 6 | | |
+| R2 mechanical helpers (quote/column_list/root_of/index-name/hard_delete/MergePlan/scoped/retire/insert-select/delete-stage/setting) | 6 | | |
+| R2 protocol planner commit_script | 6 | | |
+| R2 destinations execute planner | 6 | | |
+| R3 shared Secret in SPI | 4 | | |
+| R3 three copies migrated + re-exports | 4 | | |
+| R3 headers/params redaction posture | 4 | | |
+| R4 engine run_once split + ping-pong owner | 5 | | |
+| R4 postgres tls.rs split | 7 | | |
+| R4 postgres cdc/mod.rs split | 7 | | |
+| R4 postgres PgSession::commit split | 6 | | |
+| R4 postgres source read cursor-arm move | 7 | | |
+| R4 duckdb commit split | 6 | | |
+| R4 file dest/mod.rs split | 8 | | |
+| R4 rest read/mod.rs split | 9 | | |
+| R4 iceberg commit.rs split | 10 | | |
+| R4 sqlcore plan.rs split | 6 | | |
+| R4 testkit memory commit split | 4 | | |
+| R4 cli main.rs split | 12 | | |
+| R4 bench cmd_run/fixtures/runner splits | 12 | | |
+| R5 postgres validate decomposition | 7 | | |
+| R5 rest validate decomposition | 9 | | |
+| R5 sqlcore options/plan validate decomposition | 6 | | |
+| R5 iceberg validate decomposition | 10 | | |
+| R5 file validate convention unification | 8 | | |
+| R6 shared apply_delta/apply_batch | 5 | | |
+| R6 replay consumes helpers | 5 | | |
+| R7 Location unification (read+write) | 8 | | |
+| R7 FileMeta/FileTask/FileProgress relocation | 8 | | |
+| R8 DestError::RateLimited | 7* | | |
+| R8 sqlcore typed validation errors | 6 | | |
+| R8 rest Paginator typed error | 9 | | |
+| R8 postgres DDL classification + decode conventions | 7 | | |
+| R8 engine error-variant misuse | 5 | | |
+| R9 engine ping-pong expects | 5 | | |
+| R9 postgres RunState expects | 7 | | |
+| R9 rest validated-at-parse expects | 9 | | |
+| R9 iceberg retry unreachable tails | 10 | | |
+| R9 file s3_list partial method | 8 | | |
+| R9 cross-module invariant panics (pg decimal / sqlcore hard_delete / duckdb scd2) | 6-7 | | |
+| R10 non-breaking renames | 11 | | |
+| R10 aliasable renames (DestinationError etc.) | 11 | | |
+| R10 named deferrals to 0.3 window | 11 | | |
+| R11 ShredCtx | 5 | | |
+| R11 postgres TableCtx | 7 | | |
+| R11 bench return_side restructure | 12 | | |
+| R12 core/engine dead code + visibility | 3 | | |
+| R12 postgres/duckdb dead code (peek unification, pgoutput fields, query_string gating) | 3 | | |
+| R12 rest/iceberg/file dead code + visibility | 3 | | |
+| R12 bench dead surface | 3 | | |
+| R13 SLAB_BYTES / channel caps / iceberg prop keys / root_of 64 / initial_wal_version | 3 | | |
+
+*R8 RateLimited is scheduled with increment 7 in tasks.md (T054) though
+plan.md's increment table folds it into the taxonomy work — either landing
+spot satisfies WR8 as long as the gate is green.
+
+## Part 3 — Per-crate findings not covered above
+
+| Item | Increment | Disposition | Evidence |
+|---|---|---|---|
+| 3.1 CommitCounters/TableReport unification | 3 | | |
+| 3.1 to_hex/write_hex | 3 | | |
+| 3.1 merge-key validation dedup + error constructors macro | 3 | | |
+| 3.1 channel subsystem → channel.rs | 3 | | |
+| 3.1 API items (merge-key precedence doc, StateDoc::new version, re-export completeness, Pipeline::run typestate, merge_streams return, prelude) | 11 | | |
+| 3.2 write_compact_json/canonical_json_bytes | 5 | | |
+| 3.2 hex-id append helper ×3 | 5 | | |
+| 3.2 lowering rule duplication | 5 | | |
+| 3.2 root-name normalization ×2, fuzz scaffolding ×2, registry.get expect ×4, TapeRow/Queued | 5 | | |
+| 3.2 build_scalar/drain_tables/push_and_drain complexity | 5 | | |
+| 3.2 replay damage-reason logging, byte-budget clamp doc, clock fallback doc | 5 | | |
+| 3.2 borrowed-box replay signature | 5 | | |
+| 3.3 pg_error_detail ×3 + SQLSTATE list ×2 | 7 | | |
+| 3.3 ConnectResult match ×2, quoting ×2, effective_pk ×3, prepare_stream, serde vocab ×3, decimal/date parsing ×2, pump_copy ×2, Emit loop ×2, strategy wrappers, PEM loading ×2, select_sql WHERE dup | 7 | | |
+| 3.3 slot peek binding inconsistency | 3 | | |
+| 3.4 duckdb quote-bypass deletion | 6 | | |
+| 3.4 DestOptions/TableOptions re-export convention | 11 | | |
+| 3.4 MergePlan field naming | 11 (deferral candidate) | | |
+| 3.5 jsonl SlabReader, FileTask ×4, staged-part path ×3, owned-tail ×2, fill loops, compression-ext ×2 | 8 | | |
+| 3.5 FileSource::read split, csv convert_cell catch-all | 8 | | |
+| 3.5 read_doc reserialize round-trip | 8 | | |
+| 3.5 ParquetDir deprecation intent, format_version, pub constants | 3 | | |
+| 3.5 parquet footer re-parse perf note | 8 | | |
+| 3.6 Pagination selector_paths, stop-block dup, json_kind/render_scalar, base-url join, derive stacks | 9 | | |
+| 3.6 fetch_page split, read_children/current_token | 9 | | |
+| 3.7 conflict-retry triplication → commit_with_retry | 10 | | |
+| 3.7 PartitionTransform From impl, fatal() ×3, arrow-target ×2 | 10 | | |
+| 3.7 doubled exhausted phrasing, Debug tuples in message, AuthOptions error type | 10 | | |
+| 3.7 root re-export completeness | 11 | | |
+| 3.8 CLI run() macro → build_* fns | 12 | | |
+| 3.8 testkit try_step!, fixture schema-from-TableSchema, util visibility, verify_* re-exports, Row alias | 4 | | |
+| 3.8 bench four TOML loaders, last_json_field, container boilerplate | 12 | | |
+| 3.8 bench error hygiene (offender naming, malformed message, load_cells drops, reset_sql validation) | 12 | | |
+| 3.8 bench ClassArg/Display/fingerprint/hash-data renames | 12 | | |
+
+## Part 5 — Delivery surfaces
+
+| Item | Increment | Disposition | Evidence |
+|---|---|---|---|
+| D1 runtime probe 3→1 | 4 | | |
+| D2 skip-not-fail posture | 4 | | |
+| D3 PgFixture into testkit | 4 | | |
+| D4 fixture trio into testkit | 4 | | |
+| D5 stream_yaml builders | 4 | | |
+| D6 free-disk composite action | 3 | | |
+| D7 iai-callgrind pin unification | 3 | | |
+| D8 CI env/comment dedup | 3 | | |
+| D9 semver job disk step | 3 | | |
+| D10 toolchain install cleanup | 3 | | |
+| D11 variants.toml defaults | 3 | | |
+| D12 fixtures.toml defaults | 3 | | |
+| D13 workspace rust-version | 3 | | |
+| D14 inheritance stragglers + implied features | 3 | | |
+| D15 mutants.out.old untracking | 3 | | |
+| D16 container image tags pinned (rustfs ×3 sites; polaris pending) | 1 | partially applied | Discovered at T001: gate red on merge base — file-crate S3 dest tests 500ing. Root cause = HOST DISK 100% FULL (168GB podman test residue: 188 stopped pg containers, 1117 anonymous volumes, dangling images — pruned, 158G freed); tests green after cleanup. Floating `rustfs:latest` pinned to 1.0.0-beta.11 at all 3 sites (file s3.rs, iceberg common, fixtures.toml ×2 refs) as drift-proofing; `apache/polaris:latest` pin deferred to increment 4 (testkit unification) with a live-verified tag |
+| P5-low Makefile check/coverage notes | 3 | | |
+| P5-low deep-checks RUSTFLAGS doc | 3 | | |
+| P5-low CLAUDE.md drift (rustc/arrow numbers) | 3 | | |
+| P5-low root README decision | close-out | | |
+| P5-low bench reset_sql dup / conn-less fixtures / strat_duck_unused / cell-id convention | 3 | | |

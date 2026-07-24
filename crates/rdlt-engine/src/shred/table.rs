@@ -13,7 +13,6 @@ use rdlt_core::identity::{FieldValue, RowIdBuilder};
 use rdlt_core::naming::{IdentRules, UniqueNamer};
 use rdlt_core::schema::system_columns;
 use rdlt_core::{ColumnDef, ParentLink, Provenance, RowId, TableName, TableSchema};
-use serde_json::Value;
 
 use super::canon::{canonical_json_bytes, render_scalar};
 use super::infer::ColState;
@@ -143,19 +142,6 @@ pub(crate) fn content_hash_with<'a, V: JsonView<'a>>(row: V, scratch: &mut Vec<u
     let mut builder = RowIdBuilder::keyless();
     builder.field("", FieldValue::Bytes(scratch));
     builder.finish()
-}
-
-/// Parse a raw-JSON push: NDJSON, a top-level array, or a single document.
-pub(crate) fn parse_rows(bytes: &[u8]) -> Result<Vec<Value>, serde_json::Error> {
-    let mut rows = Vec::new();
-    let stream = serde_json::Deserializer::from_slice(bytes).into_iter::<Value>();
-    for doc in stream {
-        match doc? {
-            Value::Array(items) => rows.extend(items),
-            value => rows.push(value),
-        }
-    }
-    Ok(rows)
 }
 
 /// Resolve one table's observation state into schema columns: system/lineage

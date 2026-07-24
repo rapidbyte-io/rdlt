@@ -101,6 +101,18 @@ struct CommitLog {
     receipts: Vec<(String, u64)>,
 }
 
+/// Classify a store failure on the WRITE path with the same rule the read
+/// path uses (one recoverability rulebook): transport-level failures ride
+/// the engine's retry budget; missing objects and auth/permission failures
+/// are configuration problems.
+fn store_err(e: object_store::Error) -> DestError {
+    if crate::location::s3::is_recoverable(&e) {
+        DestError::transient(e.to_string())
+    } else {
+        DestError::fatal(e.to_string())
+    }
+}
+
 /// Fsync a directory so a preceding rename inside it survives power loss.
 fn fsync_dir(path: &Path) -> Result<(), DestError> {
     std::fs::File::open(path)
@@ -161,9 +173,9 @@ impl Store {
             Self::Local { out } => Ok(read_json::<serde_json::Value>(&out.join(name))?
                 .map(|v| serde_json::to_vec(&v).expect("reserialize"))),
             Self::S3 { store, prefix } => match store.get(&Self::s3_key(prefix, name)).await {
-                Ok(result) => Ok(Some(result.bytes().await.map_err(fatal)?.to_vec())),
+                Ok(result) => Ok(Some(result.bytes().await.map_err(store_err)?.to_vec())),
                 Err(object_store::Error::NotFound { .. }) => Ok(None),
-                Err(e) => Err(fatal(e)),
+                Err(e) => Err(store_err(e)),
             },
         }
     }
@@ -179,7 +191,7 @@ impl Store {
                         bytes::Bytes::from(bytes).into(),
                     )
                     .await
-                    .map_err(fatal)?;
+                    .map_err(store_err)?;
                 Ok(())
             }
         }
@@ -196,7 +208,7 @@ impl Store {
         let mut listing = store.list(Some(&full));
         let mut keys = Vec::new();
         while let Some(entry) = listing.next().await {
-            keys.push(entry.map_err(fatal)?.location);
+            keys.push(entry.map_err(store_err)?.location);
         }
         Ok(keys)
     }
@@ -267,10 +279,10 @@ impl FileDest {
                         let bytes = store
                             .get(&key)
                             .await
-                            .map_err(fatal)?
+                            .map_err(store_err)?
                             .bytes()
                             .await
-                            .map_err(fatal)?;
+                            .map_err(store_err)?;
                         use parquet::file::reader::{FileReader, SerializedFileReader};
                         let reader = SerializedFileReader::new(bytes).map_err(fatal)?;
                         total += reader.metadata().file_metadata().num_rows() as u64;
@@ -278,10 +290,10 @@ impl FileDest {
                         let bytes = store
                             .get(&key)
                             .await
-                            .map_err(fatal)?
+                            .map_err(store_err)?
                             .bytes()
                             .await
-                            .map_err(fatal)?;
+                            .map_err(store_err)?;
                         total += bytes.iter().filter(|b| **b == b'\n').count() as u64;
                     }
                 }
@@ -355,7 +367,7 @@ impl Destination for FileDest {
                     .s3_list(&format!("{STAGING_DIR}/{scope}"))
                     .await?
                 {
-                    store.delete(&key).await.map_err(fatal)?;
+                    store.delete(&key).await.map_err(store_err)?;
                 }
             }
         }
@@ -554,7 +566,7 @@ impl LoadSession for FileSession {
                             bytes::Bytes::from(bytes).into(),
                         )
                         .await
-                        .map_err(fatal)?;
+                        .map_err(store_err)?;
                 }
             }
             self.staged.push(StagedPart {
@@ -663,7 +675,7 @@ impl LoadSession for FileSession {
                                     _ => false,
                                 };
                                 if owned {
-                                    store.delete(&key).await.map_err(fatal)?;
+                                    store.delete(&key).await.map_err(store_err)?;
                                 }
                             }
                         }
@@ -720,7 +732,7 @@ impl LoadSession for FileSession {
                         "file.finalize.copy",
                         Err(DestError::fatal("injected crash at file.finalize.copy"))
                     );
-                    store.copy(&from, &to).await.map_err(fatal)?;
+                    store.copy(&from, &to).await.map_err(store_err)?;
                     crash_point!(
                         "file.finalize.delete",
                         Err(DestError::fatal("injected crash at file.finalize.delete"))

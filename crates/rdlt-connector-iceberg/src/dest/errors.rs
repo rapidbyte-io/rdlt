@@ -15,18 +15,20 @@ pub(crate) fn classify(context: &str, error: iceberg::Error) -> DestError {
         // internal errors ride the engine's retry budget. The library
         // surfaces network failures and 5xx as Unexpected — but ALSO
         // 401/403 (its fallback for unmatched status codes), and a
-        // rejected credential never heals by retrying. The status rides
-        // the error's context (`status: 401 Unauthorized`), the only
-        // seam the library exposes for it.
+        // rejected credential never heals by retrying. The transport
+        // status rides the error's `status` context entry (the only seam
+        // the library exposes for it); 401/403 there fail fast, while a
+        // 429, a 5xx, or an error carrying NO decodable status (network
+        // faults, and bodies that merely quote a status in their text)
+        // ride the retry budget.
         ErrorKind::Unexpected => {
             let rendered = error.to_string();
-            if rendered.contains("401 Unauthorized") || rendered.contains("403 Forbidden") {
-                DestError::fatal(format!(
+            match status_from_context(&error) {
+                Some(401) | Some(403) => DestError::fatal(format!(
                     "{context}: authentication/authorization rejected — fix the \
                      credential or its grants: {rendered}"
-                ))
-            } else {
-                DestError::transient(format!("{context}: {rendered}"))
+                )),
+                _ => DestError::transient(format!("{context}: {rendered}")),
             }
         }
         // Optimistic-concurrency conflicts are RETRIED by the commit loop;
@@ -53,6 +55,27 @@ pub(crate) fn classify(context: &str, error: iceberg::Error) -> DestError {
 /// Is this the library's commit-conflict signal? (drives the retry loop).
 pub(crate) fn is_commit_conflict(error: &iceberg::Error) -> bool {
     matches!(error.kind(), ErrorKind::CatalogCommitConflicts)
+}
+
+/// Recover the numeric HTTP status the REST catalog attaches to an error
+/// via `with_context("status", status.to_string())`. The library has no
+/// public getter for its context vec, so we read it back off the rendered
+/// Display: context entries render as `, context: { key: value, key2: v2 }`
+/// (a format pinned by iceberg's own Display tests), and a reqwest status
+/// renders as `<code> <reason>` (e.g. `401 Unauthorized`). We anchor on
+/// the entry KEY (`status: `) inside that block — the status entry is the
+/// first the client pushes and its value has no interior comma, so it is
+/// one whole `split(", ")` piece — so a status quoted in a response BODY
+/// (which renders after the ` => ` message marker, outside the context
+/// block) can never be mistaken for the transport's status.
+fn status_from_context(error: &iceberg::Error) -> Option<u16> {
+    let rendered = error.to_string();
+    let context = rendered.split_once(", context: { ")?.1;
+    context
+        .split(", ")
+        .find_map(|entry| entry.strip_prefix("status: "))
+        .and_then(|value| value.split_whitespace().next())
+        .and_then(|code| code.parse().ok())
 }
 
 #[cfg(test)]
@@ -113,6 +136,40 @@ mod tests {
             classify("catalog `c`", error),
             DestError::Transient { .. }
         ));
+    }
+
+    /// Pin the context parser against the exact seam the REST client uses
+    /// (`with_context("status", <code> <reason>)`). If this regresses, the
+    /// upstream iceberg Error Display format changed and status_from_context
+    /// must be re-derived from the new rendering.
+    #[test]
+    fn status_parser_reads_the_context_entry() {
+        let error = iceberg::Error::new(ErrorKind::Unexpected, "unexpected status code")
+            .with_context("status", "401 Unauthorized")
+            .with_context("headers", "{ }");
+        assert_eq!(
+            status_from_context(&error),
+            Some(401),
+            "the REST catalog attaches the transport status as a `status: <code> <reason>` \
+             context entry; a mismatch means iceberg's Error Display format changed"
+        );
+    }
+
+    /// A rejected credential rides the error's `status` context entry —
+    /// NOT a payload that merely echoes "401 Unauthorized" in its body.
+    /// An Unexpected error with no transport status must stay transient
+    /// (a real 5xx body can quote a client-side 401 without the request
+    /// itself being unauthorized); only the context entry is authoritative.
+    #[test]
+    fn body_text_status_without_context_stays_transient() {
+        let error = iceberg::Error::new(
+            ErrorKind::Unexpected,
+            "upstream service replied 401 Unauthorized in its error body",
+        );
+        assert!(
+            matches!(classify("catalog `c`", error), DestError::Transient { .. }),
+            "a status only in the message body must not be read as the transport status"
+        );
     }
 
     #[test]

@@ -131,9 +131,50 @@ impl ByteReader {
     }
 }
 
+/// Classify a `read_full` failure into the source taxonomy: a retryable
+/// kind (a mid-object transport reset carried through the io seam) rides
+/// the engine budget; everything else is fatal with the subject named.
+pub(crate) fn classify_read_error(context: &str, e: std::io::Error) -> SourceError {
+    if e.kind() == std::io::ErrorKind::ConnectionReset {
+        SourceError::transient(format!("{context}: {e}"))
+    } else {
+        SourceError::fatal(format!("{context}: {e}"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One recoverability rulebook for store errors, both halves: a
+    /// mid-object transport failure must ride the engine's retry budget
+    /// (transient), never abort the run; missing objects and auth
+    /// failures stay fatal.
+    #[test]
+    fn store_error_recoverability_is_shared_and_honest() {
+        let transport = object_store::Error::Generic {
+            store: "S3",
+            source: "connection reset by peer".into(),
+        };
+        assert!(s3::is_recoverable(&transport));
+        let missing = object_store::Error::NotFound {
+            path: "x".into(),
+            source: "gone".into(),
+        };
+        assert!(!s3::is_recoverable(&missing));
+
+        // The io seam carries the classification through read_full.
+        let reset = std::io::Error::new(std::io::ErrorKind::ConnectionReset, "mid-stream");
+        assert!(matches!(
+            classify_read_error("reading `k`", reset),
+            SourceError::Transient { .. }
+        ));
+        let other = std::io::Error::other("parse");
+        assert!(matches!(
+            classify_read_error("reading `k`", other),
+            SourceError::Fatal { .. }
+        ));
+    }
 
     fn s3_options(endpoint: &str, bucket: &str) -> LocationOptions {
         LocationOptions {

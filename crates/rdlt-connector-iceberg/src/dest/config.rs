@@ -239,6 +239,13 @@ pub enum PartitionTransform {
 #[non_exhaustive]
 pub struct PartitionField {
     pub column: String,
+    // singleton_map: YAML's natural `transform: {bucket: 16}` single-key
+    // map for parameterized variants (plain strings for unit variants) —
+    // serde_yaml otherwise demands `!bucket` tag syntax and rejects the
+    // documented spelling. Deserializer-generic, so JSON parses the same
+    // shape through it unchanged.
+    #[serde(with = "serde_yaml::with::singleton_map")]
+    #[schemars(with = "PartitionTransform")]
     pub transform: PartitionTransform,
 }
 

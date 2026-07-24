@@ -15,6 +15,10 @@ use testcontainers::{ContainerAsync, GenericImage, ImageExt};
 pub const ACCESS_KEY: &str = "rdlt-test-access";
 pub const SECRET_KEY: &str = "rdlt-test-secret";
 pub const BUCKET: &str = "raw";
+/// Pinned: a floating `latest` re-resolves whenever upstream pushes, so
+/// a broken upstream build fails our gate without any change on our
+/// side. Bump deliberately, with the live cells green, never by drift.
+pub const RUSTFS_TAG: &str = "1.0.0-beta.11";
 
 pub struct S3Fixture {
     // Held for Drop: the container stops when the fixture drops.
@@ -45,7 +49,7 @@ impl S3Fixture {
             eprintln!("SKIP: no container runtime socket — s3 live cell not run");
             return None;
         }
-        let container = GenericImage::new("docker.io/rustfs/rustfs", "latest")
+        let container = GenericImage::new("docker.io/rustfs/rustfs", RUSTFS_TAG)
             .with_exposed_port(9000.tcp())
             .with_wait_for(WaitFor::message_on_stdout("Starting"))
             .with_env_var("RUSTFS_ACCESS_KEY", ACCESS_KEY)

@@ -51,7 +51,7 @@ image = "docker.io/apache/polaris:latest"
 port = 8191
 container_port = 8181
 run_args = ["-e", "POLARIS_BOOTSTRAP_CREDENTIALS=POLARIS,root,s3cr3t", "-e", "polaris.realm-context.realms=POLARIS", "-e", "AWS_REGION=us-east-1", "-e", "AWS_ACCESS_KEY_ID=ice-key", "-e", "AWS_SECRET_ACCESS_KEY=ice-secret"]
-generate_sh = "podman rm -f rdlt-bench-ice-rustfs >/dev/null 2>&1; podman run -d --name rdlt-bench-ice-rustfs -p 19120:9000 -e RUSTFS_ACCESS_KEY=ice-key -e RUSTFS_SECRET_KEY=ice-secret docker.io/rustfs/rustfs:latest && python3 {{benches}}/fixtures/gen_jsonl.py 200000 {{data}}/rows.jsonl && printf 'streams:\n  - name: events\n    format: jsonl\n    path: \"{{data}}/rows.jsonl\"\n' > {{data}}/files.yaml && python3 {{benches}}/fixtures/polaris_bootstrap.py http://127.0.0.1:8191 http://127.0.0.1:19120 http://host.containers.internal:19120 ice-key ice-secret root s3cr3t rdlt ice"
+generate_sh = "podman rm -f rdlt-bench-ice-rustfs >/dev/null 2>&1; podman run -d --name rdlt-bench-ice-rustfs -p 19120:9000 -e RUSTFS_ACCESS_KEY=ice-key -e RUSTFS_SECRET_KEY=ice-secret docker.io/rustfs/rustfs:1.0.0-beta.11 && python3 {{benches}}/fixtures/gen_jsonl.py 200000 {{data}}/rows.jsonl && printf 'streams:\n  - name: events\n    format: jsonl\n    path: \"{{data}}/rows.jsonl\"\n' > {{data}}/files.yaml && python3 {{benches}}/fixtures/polaris_bootstrap.py http://127.0.0.1:8191 http://127.0.0.1:19120 http://host.containers.internal:19120 ice-key ice-secret root s3cr3t rdlt ice"
 reset_sh = "python3 {{benches}}/fixtures/polaris_reset.py http://127.0.0.1:8191 root s3cr3t rdlt bench"
 teardown_sh = "podman rm -f rdlt-bench-ice-rustfs >/dev/null 2>&1 || true"
 hash = ["{{data}}/rows.jsonl"]
@@ -118,7 +118,7 @@ seed_sql = "{{benches}}/fixtures/seed_refine.sql"
 [[fixture]]
 id = "file-s3"
 kind = "container"
-image = "docker.io/rustfs/rustfs:latest"
+image = "docker.io/rustfs/rustfs:1.0.0-beta.11"
 port = 19110
 container_port = 9000
 run_args = ["-e", "RUSTFS_ACCESS_KEY=rdlt-bench", "-e", "RUSTFS_SECRET_KEY=rdlt-bench-secret"]

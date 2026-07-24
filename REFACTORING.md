@@ -124,6 +124,17 @@ it — fuzzer cycles spent on unreachable code while the real parser is only
 fuzzed indirectly. **Fix:** repoint `parse_slab` at `Arena::parse_rows`; move
 `table::parse_rows` under `#[cfg(test)]` or delete it.
 
+### B13. Iceberg partition transforms unparseable in documented YAML spelling
+*(discovered during 017 implementation, via the B3 parity fixture)*
+`crates/rdlt-connector-iceberg/src/dest/config.rs` (`PartitionField.transform`)
+The `PartitionTransform` doc promises `transform: {bucket: 16}` /
+`{truncate: 8}` single-key maps, but `IcebergConfig::from_yaml` parses with
+plain serde_yaml, which demands `!bucket 16` tag syntax for externally-tagged
+enums — the documented spelling was rejected with "expected a YAML tag
+starting with '!'". The crate's own tests exercised the map form only
+through JSON, which masked it. **Fix:** `serde_yaml::with::singleton_map` on
+the field (Deserializer-generic — JSON unchanged) + a YAML spelling pin test.
+
 ### B12. Provenance-hashing doc contradiction on a persisted format
 `crates/rdlt-core/src/schema.rs:27-28` vs `:90-94`
 `Provenance`'s doc says it is excluded from the content hash's semantic meaning,
@@ -929,7 +940,25 @@ are standalone mechanical fixes that can land with step 3.
 - Clean (verified): `[lints] workspace = true` in all 13 crates; license/
   edition/version/repository inherited everywhere.
 
-### 5.6 Repo-root hygiene
+### 5.6 Container image pinning (discovered during 017 implementation)
+
+- **D16. Test-container images ride floating tags** *(high — promoted from
+  implementation)* `rustfs:latest` in 3 places
+  (`crates/rdlt-connector-file/tests/common/s3.rs`,
+  `crates/rdlt-connector-iceberg/tests/common/mod.rs`,
+  `benches/fixtures/fixtures.toml` ×2 refs) and `apache/polaris:latest` +
+  `postgres:16-alpine`-adjacent tags elsewhere. A floating tag re-resolves
+  whenever upstream pushes, so an upstream regression fails our gate with no
+  change on our side — and misdirects diagnosis (the 017 baseline run's
+  RUSTFS 500s initially looked like image drift; the actual cause was host
+  disk exhaustion from accumulated container-test residue). **Fix:** pin
+  every test/bench image to a specific tag; bump deliberately with the live
+  cells green. Secondary: test fixtures leak stopped containers + anonymous
+  volumes on abnormal exits (188 stopped postgres containers, 1117 volumes
+  observed) — the testkit containers module (D1-D3) should also own a
+  best-effort reaper/labeling convention so residue is identifiable.
+
+### 5.7 Repo-root hygiene
 
 - **D15. `mutants.out.old/` is gitignored yet 694 files under it are
   tracked** *(medium)* The ignore rule is dead for already-tracked files;

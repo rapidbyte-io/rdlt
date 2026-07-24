@@ -5,10 +5,12 @@
 use rdlt_connector::{DestCapabilities, StreamSpec};
 use rdlt_core::{LoadId, SchemaPolicy, TableName, WriteMode};
 
-/// Raw-JSON slab parsing only (NDJSON / array / single doc): must never panic,
-/// hang, or blow memory — errors are the only acceptable failure.
+/// Raw-JSON slab parsing only (NDJSON / array / single doc) through the
+/// PRODUCTION arena parser: must never panic, hang, or blow memory —
+/// errors are the only acceptable failure.
 pub fn parse_slab(bytes: &[u8]) {
-    let _ = crate::shred::table::parse_rows(bytes);
+    let mut arena = crate::shred::arena::Arena::default();
+    let _ = arena.parse_rows(bytes);
 }
 
 /// The FULL (tape) shred path over arbitrary bytes: parse, observe, resolve,

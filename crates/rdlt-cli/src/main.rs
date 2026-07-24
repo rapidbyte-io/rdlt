@@ -521,6 +521,26 @@ mod tests {
         serde_yaml::from_str(yaml).expect("spec parses")
     }
 
+    /// Every document in the shared parity fixture must parse as a Spec.
+    /// The bench harness pins the SAME file against its library-mode
+    /// parser, so a destination or source kind added to one parser
+    /// without the other fails one of the two pins instead of drifting
+    /// silently.
+    #[test]
+    fn shared_parity_specs_all_parse() {
+        let raw = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../benches/parity_specs.yaml"
+        ));
+        let mut parsed = 0usize;
+        for document in serde_yaml::Deserializer::from_str(raw) {
+            let parsed_spec = Spec::deserialize(document).expect("parity spec parses in the CLI");
+            assert!(!parsed_spec.pipeline.is_empty());
+            parsed += 1;
+        }
+        assert_eq!(parsed, 5, "fixture covers every destination kind");
+    }
+
     fn cdc_config() -> rdlt::connector::postgres::source::PostgresConfig {
         rdlt::connector::postgres::source::PostgresConfig::from_yaml(
             "conn: host=localhost\ncdc:\n  slot: s\n  publication: p\n\

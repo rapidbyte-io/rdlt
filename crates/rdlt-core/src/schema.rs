@@ -24,8 +24,11 @@ pub mod system_columns {
     }
 }
 
-/// Where a column's type came from; excluded from the content hash's semantic meaning
-/// but recorded for diagnostics.
+/// Where a column's type came from. Recorded for diagnostics — and, like
+/// every other field of the schema's canonical serde form, it PARTICIPATES
+/// in `TableSchema::content_hash`: a provenance-only change (e.g. a column
+/// moving from inferred to hinted) yields a new `SchemaHash`. That hash is
+/// a persisted format, so this semantic is deliberate and pinned by test.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Provenance {
@@ -161,6 +164,19 @@ mod tests {
         let mut renamed = schema();
         renamed.columns[0].name = "id2".into();
         assert_ne!(base, renamed.content_hash());
+    }
+
+    /// Provenance participates in the hash — a persisted-format semantic:
+    /// a provenance-only change is a schema-hash change. If this test
+    /// fails, the hash's canonical form changed, which is a
+    /// state-migration event, not a refactor.
+    #[test]
+    fn provenance_participates_in_the_hash() {
+        let base = schema().content_hash();
+        let mut rehinted = schema();
+        assert_eq!(rehinted.columns[0].provenance, Provenance::Inferred);
+        rehinted.columns[0].provenance = Provenance::Hinted;
+        assert_ne!(base, rehinted.content_hash());
     }
 }
 

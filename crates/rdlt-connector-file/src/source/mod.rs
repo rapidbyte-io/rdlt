@@ -301,7 +301,7 @@ async fn fetch_to_temp(
         let n = reader
             .read_full(&mut buf)
             .await
-            .map_err(|e| SourceError::fatal(format!("fetching `{key}`: {e}")))?;
+            .map_err(|e| crate::location::classify_read_error(&format!("fetching `{key}`"), e))?;
         if n == 0 {
             break;
         }

@@ -311,6 +311,14 @@ fn state_table_schema() -> Result<iceberg::spec::Schema, iceberg::Error> {
         .build()
 }
 
+/// The property key a pipeline's state doc lives under on the marker
+/// table. ONE spelling shared by the write and read sides: a resume must
+/// read state back from the exact key the commit wrote it to, so the
+/// prefix + scope composition lives in a single place both call.
+fn state_key(scope: &str) -> String {
+    format!("{PROP_STATE_PREFIX}{scope}")
+}
+
 /// Write the pipeline-scoped state doc as a property of the marker
 /// table, creating the (forever-empty) table on first use. Property
 /// commits conflict like any other commit — bounded retry.
@@ -342,7 +350,7 @@ pub(crate) async fn write_state(
         }
         Err(e) => return Err(classify(&context, e)),
     };
-    let key = format!("{PROP_STATE_PREFIX}{scope}");
+    let key = state_key(scope);
     for attempt in 0..COMMIT_ATTEMPTS {
         let tx = Transaction::new(&table);
         let action = tx
@@ -382,7 +390,7 @@ pub(crate) async fn read_state(
         Ok(table) => Ok(table
             .metadata()
             .properties()
-            .get(&format!("{PROP_STATE_PREFIX}{scope}"))
+            .get(&state_key(scope))
             .cloned()),
         // No marker table (or namespace) yet = no state yet (first run).
         Err(e)
@@ -760,6 +768,24 @@ mod tests {
             load_id: "load-a".into(),
             commit_seq: 1,
         }
+    }
+
+    /// The state doc's write key and read key are ONE helper: a doc
+    /// stored under `state_key(scope)` is found under `state_key(scope)`,
+    /// so the write and read sides agree by construction (drift here would
+    /// silently strand state across a resume).
+    #[test]
+    fn state_key_write_and_read_agree() {
+        let scope = "abc123";
+        let mut properties: HashMap<String, String> = HashMap::new();
+        properties.insert(state_key(scope), "{\"v\":1}".to_string());
+        assert_eq!(
+            properties.get(&state_key(scope)).map(String::as_str),
+            Some("{\"v\":1}"),
+            "read side must look under the exact key the write side used"
+        );
+        // Distinct scopes never collide onto one key.
+        assert_ne!(state_key("abc123"), state_key("def456"));
     }
 
     /// ID3: conflicts within the bound are retried (refresh → rebuild →

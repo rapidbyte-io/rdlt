@@ -91,6 +91,17 @@ enum DestSpec {
     Parquet {
         path: PathBuf,
     },
+    /// The full file-destination vocabulary — format (parquet|jsonl),
+    /// location (local | s3), partition_by. The `parquet:` spelling above
+    /// stays frozen (≡ file: local parquet).
+    File {
+        path: String,
+        format: Option<rdlt::connector::file::dest::DestFormat>,
+        location: Option<rdlt::connector::file::location::LocationOptions>,
+        partition_by: Option<String>,
+    },
+    /// The Iceberg destination — the crate's full config vocabulary inline.
+    Iceberg(Box<rdlt::connector::iceberg::IcebergConfig>),
 }
 
 /// Timestamped event log of one run.
@@ -171,6 +182,32 @@ async fn drive(spec: Spec) -> Result<RunOutcome> {
                 }
                 DestSpec::Parquet { path } => {
                     let dest = rdlt::connector::file::ParquetDir::open(path).map_err(err)?;
+                    builder.destination(dest).build().map_err(err)?
+                }
+                DestSpec::File {
+                    path,
+                    format,
+                    location,
+                    partition_by,
+                } => {
+                    let mut config = rdlt::connector::file::dest::FileDestConfig::new(path.clone());
+                    if let Some(format) = format {
+                        config = config.with_format(*format);
+                    }
+                    if let Some(location) = location {
+                        config = config.with_location(location.clone());
+                    }
+                    if let Some(column) = partition_by {
+                        config = config.with_partition_by(column.clone());
+                    }
+                    let dest =
+                        rdlt::connector::file::dest::FileDest::from_config(config).map_err(err)?;
+                    builder.destination(dest).build().map_err(err)?
+                }
+                DestSpec::Iceberg(config) => {
+                    let dest =
+                        rdlt::connector::iceberg::IcebergDest::from_config((**config).clone())
+                            .map_err(err)?;
                     builder.destination(dest).build().map_err(err)?
                 }
             };
@@ -377,6 +414,25 @@ pub fn verify_from(cell: &Cell, samples: &[Sample<RunOutcome>]) -> Result<Option
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every document in the shared parity fixture must parse as a Spec.
+    /// The CLI pins the SAME file against its own spec parser, so a
+    /// destination or source kind added to one parser without the other
+    /// fails one of the two pins instead of drifting silently.
+    #[test]
+    fn shared_parity_specs_all_parse() {
+        let raw = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../benches/parity_specs.yaml"
+        ));
+        let mut parsed = 0usize;
+        for document in serde_yaml::Deserializer::from_str(raw) {
+            let spec = Spec::deserialize(document).expect("parity spec parses in library mode");
+            assert!(!spec.pipeline.is_empty());
+            parsed += 1;
+        }
+        assert_eq!(parsed, 5, "fixture covers every destination kind");
+    }
 
     /// The T007 cell: a tiny file→parquet pipeline in-process, asserting
     /// non-estimated totals and attribution ordering.

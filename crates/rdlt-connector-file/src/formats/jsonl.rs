@@ -49,10 +49,9 @@ pub(crate) async fn read_task(
     let mut tail: Vec<u8> = Vec::new();
     if let Some((window, expected)) = verify {
         let mut got = vec![0u8; *window as usize];
-        let n = file
-            .read_full(&mut got)
-            .await
-            .map_err(|e| SourceError::fatal(format!("reading `{}`: {e}", task.path)))?;
+        let n = file.read_full(&mut got).await.map_err(|e| {
+            crate::location::classify_read_error(&format!("reading `{}`", task.path), e)
+        })?;
         got.truncate(n);
         let matches = n as u64 == *window && blake3::hash(&got).to_hex().to_string() == *expected;
         if !matches {
@@ -89,10 +88,9 @@ pub(crate) async fn read_task(
         loop {
             let filled = slab.len();
             slab.resize(filled + SLAB_BYTES, 0);
-            let n = file
-                .read_full(&mut slab[filled..])
-                .await
-                .map_err(|e| SourceError::fatal(format!("reading `{}`: {e}", task.path)))?;
+            let n = file.read_full(&mut slab[filled..]).await.map_err(|e| {
+                crate::location::classify_read_error(&format!("reading `{}`", task.path), e)
+            })?;
             slab.truncate(filled + n);
             if n == 0 {
                 eof = true;

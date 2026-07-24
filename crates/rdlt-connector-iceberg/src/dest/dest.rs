@@ -30,6 +30,12 @@ fn fatal(message: impl std::fmt::Display) -> DestError {
     DestError::fatal(message.to_string())
 }
 
+/// Width of the pipeline scope hash. The scope names the pipeline in
+/// snapshot summaries and the state-doc property key, so the width a
+/// session opens with MUST equal the width `read_state` re-derives with —
+/// one constant on both sides keeps a resume looking under the same scope.
+const SCOPE_HASH_LEN: usize = 12;
+
 /// Fail-point registry (gate G2.2): every `crash_point!` site in this
 /// crate, swept live against the catalog fixture (ID7).
 #[cfg(feature = "failpoints")]
@@ -81,7 +87,7 @@ impl Destination for IcebergDest {
             config: self.config.clone(),
             catalog,
             namespace,
-            scope: ident_hash(ctx.pipeline.as_str(), 12),
+            scope: ident_hash(ctx.pipeline.as_str(), SCOPE_HASH_LEN),
             load_id: ctx.load_id,
             nonce: session_nonce(),
             tables: BTreeMap::new(),
@@ -328,7 +334,7 @@ impl LoadSession for IcebergSession {
     }
 
     async fn read_state(&mut self, pipeline: &PipelineId) -> Result<Option<StateDoc>, DestError> {
-        let scope = ident_hash(pipeline.as_str(), 12);
+        let scope = ident_hash(pipeline.as_str(), SCOPE_HASH_LEN);
         let Some(raw) = read_state_prop(&self.catalog, &self.namespace, &scope).await? else {
             return Ok(None);
         };

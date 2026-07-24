@@ -61,7 +61,9 @@ impl std::fmt::Debug for DuckDb {
 impl DuckDb {
     /// Open (or create) a DuckDB database file as a destination.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, DestError> {
-        let conn = Connection::open(path.into()).map_err(fatal)?;
+        // A locked or I/O-pressured file is recoverable — classified
+        // transient so the engine retries instead of aborting the run.
+        let conn = Connection::open(path.into()).map_err(classify)?;
         Ok(Self {
             db: std::sync::Arc::new(Mutex::new(conn)),
             options: DestOptions::default(),
@@ -164,6 +166,32 @@ impl DuckDb {
 
 pub(crate) fn fatal(e: impl std::fmt::Display) -> DestError {
     DestError::fatal(e.to_string())
+}
+
+/// Classify environmental failures as recoverable: DuckDB's "IO Error"
+/// family (file locks — another process holding the database — and disk
+/// pressure) heals on retry, so it rides the engine's backoff budget.
+/// Everything else (parser/binder/catalog/constraint) is deterministic
+/// and the operator's to fix. DuckDB exposes no structured error
+/// category, so the stable message prefix is the classification key —
+/// both facts are pinned by tests/error_codes.rs.
+pub(crate) fn classify(e: duckdb::Error) -> DestError {
+    match &e {
+        duckdb::Error::DuckDBFailure(_, Some(msg)) if msg.starts_with("IO Error") => {
+            DestError::transient(e.to_string())
+        }
+        _ => DestError::fatal(e.to_string()),
+    }
+}
+
+/// The duplicate-merge-key diagnosis key: DuckDB renders constraint
+/// violations with this stable message prefix (pinned by
+/// tests/error_codes.rs — a rewording upstream fails that probe loudly
+/// instead of silently losing this diagnosis). Public only for the
+/// crate's own classification tests.
+#[doc(hidden)]
+pub fn is_constraint_violation(e: &duckdb::Error) -> bool {
+    matches!(e, duckdb::Error::DuckDBFailure(_, Some(msg)) if msg.starts_with("Constraint Error"))
 }
 
 fn apply_setup(conn: &Connection, stmt: &SetupStmt) -> Result<(), DestError> {

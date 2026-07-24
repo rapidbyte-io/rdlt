@@ -24,7 +24,10 @@ use rdlt_connector_sqlcore::plan::{
 use rdlt_connector_sqlcore::{DestOptions, HardDelete, MergePlan, MergeStrategy};
 
 use super::dialect::DuckDialect;
-use super::{column_list, create_table_sql, fatal, quote, sql_type, stage_name};
+use super::{
+    classify, column_list, create_table_sql, fatal, is_constraint_violation, quote, sql_type,
+    stage_name,
+};
 
 pub(super) struct DuckDbSession {
     /// DuckDB connections are Send but not Sync; the mutex makes the session
@@ -218,23 +221,26 @@ impl LoadSession for DuckDbSession {
                             .map_err(fatal)
                     })?;
                 }
-                let result = self.with_conn(|conn| conn.execute_batch(&sql).map_err(fatal));
-                if let Err(e) = result {
-                    // M3 twin of the pg SQLSTATE-23505 check (013 review
-                    // finding 6): only an actual constraint violation gets
-                    // the duplicate-keys diagnosis; anything else (locks,
-                    // disk, I/O) surfaces as itself.
-                    let msg = e.to_string();
-                    if unique && (msg.contains("Constraint Error") || msg.contains("violate")) {
-                        return Err(fatal(format!(
-                            "table `{table_str}`: cannot create the unique index the upsert \
-                             strategy requires — existing rows duplicate the merge key \
-                             ({}); deduplicate the table or use delete_insert: {e}",
-                            columns.join(", ")
-                        )));
-                    }
-                    return Err(e);
-                }
+                // Only an actual constraint violation gets the
+                // duplicate-keys diagnosis — classified on the library
+                // error BEFORE wrapping, so an unrelated failure whose
+                // message merely mentions violations (a table name, a
+                // quoted value) can never be misdiagnosed; anything else
+                // (locks, disk, I/O) surfaces as itself.
+                self.with_conn(|conn| {
+                    conn.execute_batch(&sql).map_err(|e| {
+                        if unique && is_constraint_violation(&e) {
+                            fatal(format!(
+                                "table `{table_str}`: cannot create the unique index the upsert \
+                                 strategy requires — existing rows duplicate the merge key \
+                                 ({}); deduplicate the table or use delete_insert: {e}",
+                                columns.join(", ")
+                            ))
+                        } else {
+                            fatal(e)
+                        }
+                    })
+                })?;
             }
         }
         self.tables.insert(table, (schema.clone(), mode.clone()));
@@ -247,12 +253,14 @@ impl LoadSession for DuckDbSession {
             Err(DestError::fatal("injected crash at duck.append"))
         );
         let stage = stage_name(table);
+        // Staging I/O is environmental: lock/disk failures classify
+        // transient so the engine can retry the load instead of aborting.
         self.with_conn(move |conn| {
-            let mut appender = conn.appender(&stage).map_err(fatal)?;
-            appender.append_record_batch(batch).map_err(fatal)?;
+            let mut appender = conn.appender(&stage).map_err(classify)?;
+            appender.append_record_batch(batch).map_err(classify)?;
             // Appender drop swallows errors; flush explicitly so failures surface
             // as DestError instead of silently losing staged rows.
-            appender.flush().map_err(fatal)?;
+            appender.flush().map_err(classify)?;
             Ok(())
         })
     }
@@ -272,7 +280,7 @@ impl LoadSession for DuckDbSession {
         let state_json = serde_json::to_string(&meta.state).map_err(fatal)?;
 
         let marks = self.with_conn(move |conn| {
-            let tx = conn.transaction().map_err(fatal)?;
+            let tx = conn.transaction().map_err(classify)?;
             // Clause D3: idempotence by (load_id, commit_seq).
             let already: u64 = tx
                 .query_row(
@@ -335,7 +343,7 @@ impl LoadSession for DuckDbSession {
                     tx.execute_batch(&format!("DELETE FROM {}", quote(&stage_name(table))))
                         .map_err(fatal)?;
                 }
-                tx.commit().map_err(fatal)?;
+                tx.commit().map_err(classify)?;
                 return Ok(marks);
             }
 
@@ -492,7 +500,7 @@ impl LoadSession for DuckDbSession {
                 "duck.tx.commit",
                 Err(DestError::fatal("injected crash at duck.tx.commit"))
             );
-            tx.commit().map_err(fatal)?;
+            tx.commit().map_err(classify)?;
             Ok(marks)
         })?;
 

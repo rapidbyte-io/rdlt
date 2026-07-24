@@ -1,0 +1,96 @@
+# Pipeline-spec parity fixture: every destination kind the spec language
+# supports, one document each. BOTH spec parsers — the CLI's and the bench
+# harness's library mode — must parse every document here; each side pins
+# that with a test including this file. A new destination kind is added
+# HERE first, which forces both parsers to learn it in the same change.
+# (The two parsers are scheduled to collapse into one shared model in the
+# rdlt facade; this fixture then becomes that model's own parse pin.)
+pipeline: parity-duckdb
+write_mode:
+  merge:
+    key: [id]
+source:
+  rest:
+    config: source.yaml
+destination:
+  duckdb:
+    path: out.duckdb
+    memory_limit: 512MB
+    merge_strategy: upsert
+    extensions: [json]
+    settings:
+      threads: "4"
+    tables:
+      events:
+        merge_strategy: delete_insert
+---
+pipeline: parity-postgres
+write_mode:
+  merge:
+    key: [id]
+source:
+  file:
+    config: files.yaml
+destination:
+  postgres:
+    conn: host=127.0.0.1 port=5432 user=postgres password=postgres dbname=raw
+    dataset: raw
+    merge_strategy: scd2
+    tables:
+      events:
+        merge_strategy: upsert
+---
+pipeline: parity-parquet
+source:
+  postgres:
+    config: pg-source.yaml
+destination:
+  parquet:
+    path: ./lake
+---
+pipeline: parity-file-s3
+write_mode: replace
+source:
+  file:
+    config: files.yaml
+destination:
+  file:
+    path: lake/out
+    format: jsonl
+    partition_by: date
+    location:
+      s3:
+        endpoint: http://127.0.0.1:9000
+        bucket: raw
+        access_key: parity-access
+        secret_key: parity-secret
+---
+pipeline: parity-iceberg
+source:
+  rest:
+    config: source.yaml
+destination:
+  iceberg:
+    catalog:
+      uri: http://127.0.0.1:8181/api/catalog
+      warehouse: rdlt
+      auth:
+        oauth2_client_credentials:
+          client_id: root
+          client_secret: parity-secret
+          scopes: ["PRINCIPAL_ROLE:ALL"]
+    namespace: raw
+    create_namespace: true
+    storage:
+      s3:
+        endpoint: http://127.0.0.1:9000
+        access_key: parity-access
+        secret_key: parity-secret
+    tables:
+      events:
+        partition_by:
+          - column: created_at
+            transform: day
+          - column: id
+            transform:
+              bucket: 16

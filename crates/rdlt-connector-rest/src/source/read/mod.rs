@@ -244,13 +244,7 @@ async fn read_children(
                         &tx,
                     )
                     .await
-                    .map_err(|e| {
-                        SourceError::fatal(format!(
-                            "child stream `{}` failed for parent ({}): {e}",
-                            stream.name,
-                            resolve::describe(&values.placeholders)
-                        ))
-                    })
+                    .map_err(|e| with_parent_context(e, &stream.name, values))
                 }
             })
             .collect();
@@ -316,6 +310,25 @@ async fn read_child_pages(
         }
     }
     Ok(local_max)
+}
+
+/// Attach parent fan-out context to a child failure WITHOUT changing how the
+/// engine will treat it: a transient or rate-limited child error keeps its
+/// variant (and any `retry_after`) so the run still spends its retry budget
+/// rather than aborting; only an already-fatal error stays fatal.
+fn with_parent_context(err: SourceError, stream: &str, values: &ParentValues) -> SourceError {
+    let message = format!(
+        "child stream `{stream}` failed for parent ({}): {err}",
+        resolve::describe(&values.placeholders)
+    );
+    match err {
+        SourceError::Transient(_) => SourceError::transient(message),
+        SourceError::RateLimited { retry_after, .. } => SourceError::RateLimited {
+            retry_after,
+            source: message.into(),
+        },
+        _ => SourceError::fatal(message),
+    }
 }
 
 fn parse_selector(stream: &RestStream) -> Result<Option<Selector>, SourceError> {
