@@ -1,0 +1,30 @@
+# The Airbyte competitor module (feature 018, contract BR-Airbyte). Unlike dlt
+# (a self-timed container), Airbyte is a machine PREREQUISITE: an abctl-managed
+# kind cluster that must already be installed. So this variant is `kind=driver`
+# — a host-side driver.py drives the pre-created connections and prints the same
+# summary JSON line as every other arm (zero artifact divergence).
+#
+# ONE flat-namespace variant id `airbyte` (no collision with dlt's ids). The pin
+# is the Airbyte platform chart version; bump it -> re-run setup + re-measure
+# every cell before quoting a multiple (the version policy).
+#
+# prerequisite_sh is the light, honest gate the harness runs once per cell (cwd
+# = this dir): the abctl kubeconfig exists, the cluster API answers kubectl, and
+# state.json is present. It deliberately does NOT require the port-forward to be
+# running (the driver owns that) — a non-zero exit records the arm as
+# Missing{reason} rather than failing the cell. Setup is manual and one-time:
+#   python3 benches/competitors/airbyte/setup.py     (see README.md)
+
+[[variant]]
+id = "airbyte"
+pin = "airbyte 2.1.1"
+kind = "driver"
+driver = "driver.py"
+runs = 3
+prerequisite_sh = '''
+KC="${KUBECONFIG:-$HOME/.airbyte/abctl/abctl.kubeconfig}"
+[ -f "$KC" ] || { echo "no abctl kubeconfig at $KC — run 'abctl local install'"; exit 1; }
+K=$(command -v kubectl || echo "$HOME/.local/share/mise/installs/kubectl/latest/kubectl")
+KUBECONFIG="$KC" "$K" get ns airbyte-abctl >/dev/null 2>&1 || { echo "abctl cluster unreachable (kubectl get ns airbyte-abctl)"; exit 1; }
+[ -f state.json ] || { echo "state.json missing — run benches/competitors/airbyte/setup.py"; exit 1; }
+'''

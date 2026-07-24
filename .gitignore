@@ -13,3 +13,8 @@ mutants.out.old/
 toolbox/
 benches/results/raw/
 benches/results/selftest-protocol.json
+# Airbyte competitor: machine-local connection ids written by setup.py, and any
+# optional local venv for the driver.
+benches/competitors/airbyte/state.json
+benches/competitors/airbyte/.venv/
+benches/competitors/airbyte/__pycache__/

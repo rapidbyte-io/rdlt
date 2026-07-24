@@ -28,6 +28,11 @@ network = "host"
 variant = "dlt-pyarrow"
 args = ["pipeline_pg_pg.py", "{{conn}}", "postgresql://postgres:postgres@127.0.0.1:5439/dest_dlt", "pyarrow", "events"]
 network = "host"
+# Airbyte: driver.py drives the pre-created connection (setup.py). Args are the
+# cell id (keys state.json) + expected rows. Full-refresh overwrite.
+[[cell.competitor]]
+variant = "airbyte"
+args = ["pg-to-pg-1m", "1000000"]
 
 # ---------------------------------------------------------------------------
 # pg-to-s3parquet-1m — Postgres → Parquet on S3, 1M rows, full replace.
@@ -48,6 +53,11 @@ network = "host"
 variant = "dlt-pyarrow"
 args = ["pipeline_pg_s3parquet.py", "{{conn}}", "pyarrow", "events", "http://127.0.0.1:19110", "rdlt-bench", "rdlt-bench-secret", "lake", "dlt"]
 network = "host"
+# Airbyte: pg source -> S3 (parquet) destination at lake/airbyte/. Driver cleans
+# the lake prefix per run (the fixture reset does not).
+[[cell.competitor]]
+variant = "airbyte"
+args = ["pg-to-s3parquet-1m", "1000000"]
 
 # ---------------------------------------------------------------------------
 # s3jsonl-to-pg-200k — nested JSONL on S3 → Postgres, 200k records, replace.
@@ -64,6 +74,10 @@ expected_rows = 200_000
 variant = "dlt"
 args = ["pipeline_s3jsonl_pg.py", "http://127.0.0.1:19110", "rdlt-bench", "rdlt-bench-secret", "raw", "landed/*.jsonl", "postgresql://postgres:postgres@127.0.0.1:5439/dest_dlt"]
 network = "host"
+# Airbyte: S3 (jsonl) source -> pg destination dest_airbyte.public.events.
+[[cell.competitor]]
+variant = "airbyte"
+args = ["s3jsonl-to-pg-200k", "200000"]
 
 # ---------------------------------------------------------------------------
 # s3jsonl-to-s3parquet-200k — nested JSONL on S3 → Parquet on S3, 200k records.
@@ -80,6 +94,10 @@ expected_rows = 200_000
 variant = "dlt"
 args = ["pipeline_s3jsonl_s3parquet.py", "http://127.0.0.1:19110", "rdlt-bench", "rdlt-bench-secret", "raw", "landed/*.jsonl", "lake", "dlt"]
 network = "host"
+# Airbyte: S3 (jsonl) source -> S3 (parquet) destination at lake/airbyte/.
+[[cell.competitor]]
+variant = "airbyte"
+args = ["s3jsonl-to-s3parquet-200k", "200000"]
 
 # ---------------------------------------------------------------------------
 # pg-to-pg-dedup-1m — Postgres → Postgres, keep-in-sync by id (LOAD 2 measured).
@@ -104,3 +122,12 @@ network = "host"
 variant = "dlt-pyarrow"
 args = ["pipeline_pg_pg_dedup.py", "{{conn}}", "postgresql://postgres:postgres@127.0.0.1:5439/dest_dlt", "pyarrow", "events", "events_v2"]
 network = "host"
+# Airbyte: closest supported dedup shape — a single incremental+dedup stream on
+# events_v2 (PK id), connection STATE wiped per run so every run re-reads all
+# 1M rows and dedups by id -> 1M. Airbyte cannot merge two distinct source
+# tables (events -> events_v2) into one dest table via one connection, so it
+# does not model the load1/load2 split; same full-redelivery-plus-dedup regime
+# and final rowcount. Deviation documented in the module README.
+[[cell.competitor]]
+variant = "airbyte"
+args = ["pg-to-pg-dedup-1m", "1000000"]
