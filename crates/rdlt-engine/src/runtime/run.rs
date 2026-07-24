@@ -55,8 +55,9 @@ fn new_load_id() -> LoadId {
     LoadId::new(format!("{millis:x}-{:x}-{seq:x}", std::process::id()))
 }
 
-/// Engine-owned retry ceiling for transient source failures.
-const MAX_SOURCE_ATTEMPTS: u32 = 5;
+/// Engine-owned retry ceiling for transient failures (source OR
+/// destination): each retry is a full run from committed state.
+const MAX_RUN_ATTEMPTS: u32 = 5;
 
 fn backoff(attempt: u32) -> std::time::Duration {
     std::time::Duration::from_millis(100u64.saturating_mul(1 << attempt.min(6)))
@@ -85,32 +86,40 @@ pub(crate) async fn run(
             retries,
         )
         .await;
-        match result {
+        // Retryable failures from EITHER side restart the run from
+        // committed state: the crash-recovery path tears down staging and
+        // resumes cursors, so a retry can never double-publish.
+        let (stream, message, retry_after_ms) = match result {
             Err(RdltError::Source {
                 stream,
                 message,
                 retryable: true,
                 retry_after_ms,
-            }) if attempt + 1 < MAX_SOURCE_ATTEMPTS && !cancel.is_cancelled() => {
-                attempt += 1;
-                retries += 1;
-                let delay = retry_after_ms
-                    .map(std::time::Duration::from_millis)
-                    .unwrap_or_else(|| backoff(attempt));
-                tracing::warn!(
-                    stream = %stream, attempt, %message,
-                    "transient source failure; restarting run from committed state"
-                );
-                let _ = events.send(rdlt_core::PipelineEvent::Retried {
-                    stream: Some(stream),
-                    attempt,
-                });
-                tokio::select! {
-                    _ = tokio::time::sleep(delay) => {}
-                    _ = cancel.cancelled() => return Err(RdltError::Cancelled),
-                }
+            }) if attempt + 1 < MAX_RUN_ATTEMPTS && !cancel.is_cancelled() => {
+                (Some(stream), message, retry_after_ms)
+            }
+            Err(RdltError::Destination {
+                message,
+                retryable: true,
+                retry_after_ms,
+            }) if attempt + 1 < MAX_RUN_ATTEMPTS && !cancel.is_cancelled() => {
+                (None, message, retry_after_ms)
             }
             other => return other,
+        };
+        attempt += 1;
+        retries += 1;
+        let delay = retry_after_ms
+            .map(std::time::Duration::from_millis)
+            .unwrap_or_else(|| backoff(attempt));
+        tracing::warn!(
+            stream = ?stream, attempt, %message,
+            "transient failure; restarting run from committed state"
+        );
+        let _ = events.send(rdlt_core::PipelineEvent::Retried { stream, attempt });
+        tokio::select! {
+            _ = tokio::time::sleep(delay) => {}
+            _ = cancel.cancelled() => return Err(RdltError::Cancelled),
         }
     }
 }
@@ -296,11 +305,11 @@ async fn recover_wal(
     let mut session = destination
         .open(OpenCtx::new(config.pipeline.clone(), load_id.clone()))
         .await
-        .map_err(RdltError::destination)?;
+        .map_err(|e| crate::runtime::run::classify_dest_error(&e))?;
     let recovered = session
         .read_state(&config.pipeline)
         .await
-        .map_err(RdltError::destination)?;
+        .map_err(|e| crate::runtime::run::classify_dest_error(&e))?;
     if let Some(state) = &recovered {
         state
             .check_readable()
@@ -615,6 +624,25 @@ async fn drain_loader(
     // ---- Final commit: trailing work; state travels with the data ----
     loader.finish().await?;
     Ok(loader.report)
+}
+
+/// Map a connector-classified destination error onto the embedder taxonomy,
+/// preserving retryability for the run-level driver — a transient warehouse
+/// failure (lock, rate limit, network) restarts the run from committed state
+/// exactly like a transient source failure, instead of aborting.
+pub(crate) fn classify_dest_error(e: &rdlt_connector::DestError) -> RdltError {
+    use rdlt_connector::DestError;
+    match e {
+        DestError::Transient(inner) => {
+            RdltError::destination_retryable(format!("transient: {inner}"), None)
+        }
+        DestError::RateLimited {
+            retry_after,
+            source,
+        } => RdltError::destination_retryable(format!("rate limited: {source}"), *retry_after),
+        DestError::Fatal(inner) => RdltError::destination(format!("fatal: {inner}")),
+        other => RdltError::destination(other.to_string()),
+    }
 }
 
 /// Map a connector-classified source error onto the embedder taxonomy, preserving

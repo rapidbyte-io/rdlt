@@ -11,6 +11,7 @@
 pub(crate) mod cdc;
 pub mod config;
 pub(crate) mod copy_decode;
+mod copy_pump;
 mod cursor;
 mod errors;
 mod reflect;
@@ -20,7 +21,6 @@ mod types;
 use std::collections::BTreeMap;
 
 use async_trait::async_trait;
-use futures::TryStreamExt;
 use rdlt_connector::{ConnectorSpec, ReadRequest, Source, SourceError, StreamSpec};
 use tokio_postgres::Client;
 
@@ -164,7 +164,7 @@ pub mod testhook {
                 not_null: false,
             },
         ];
-        let mut decoder = CopyDecoder::new(plans, 8 << 20, 65_536);
+        let mut decoder = CopyDecoder::new(plans, 8 << 20, 65_536).expect("bench plans are valid");
         // Feed in 64 KiB chunks — socket-realistic boundaries.
         let mut rows = 0u64;
         for chunk in wire.chunks(64 << 10) {
@@ -245,7 +245,9 @@ pub mod testhook {
                 not_null: false,
             },
         ];
-        let mut decoder = CopyDecoder::new(plans, 4096, 64);
+        let Ok(mut decoder) = CopyDecoder::new(plans, 4096, 64) else {
+            return; // fixed fuzz plans are valid; a build failure is not the target
+        };
         let Some((&split, rest)) = data.split_first() else {
             return;
         };
@@ -339,6 +341,30 @@ impl PostgresSource {
             .cloned()
             .or_else(|| self.config.synthesized_table_config(name))
     }
+
+    /// The shared per-stream prep for `streams()` and `read()`: resolve the
+    /// reflected table (graceful — a missing entry is typed, never an index
+    /// panic), its effective per-stream config, and the hint-applied selected
+    /// columns.
+    fn prepare_stream<'a>(
+        &self,
+        reflected: &'a BTreeMap<String, ReflectedTable>,
+        name: &str,
+    ) -> Result<
+        (
+            &'a ReflectedTable,
+            Option<config::TableConfig>,
+            Vec<reflect::ReflectedColumn>,
+        ),
+        SourceError,
+    > {
+        let table = reflected.get(name).ok_or_else(|| {
+            errors::fatal(Phase::Reflect, Some(name), "stream has no reflected table")
+        })?;
+        let owned_config = self.stream_config(name);
+        let columns = reflect::hinted_columns(table, owned_config.as_ref())?;
+        Ok((table, owned_config, columns))
+    }
 }
 
 /// Open one connection through the shared TLS policy: conn parse failure is
@@ -386,8 +412,7 @@ impl Source for PostgresSource {
         let cdc_names = self.cdc_tables(reflected);
         let mut specs = Vec::with_capacity(names.len());
         for name in names {
-            let table = &reflected[name];
-            let owned_config = self.stream_config(name);
+            let (table, owned_config, hinted) = self.prepare_stream(reflected, name)?;
             let table_config = owned_config.as_ref();
             // CDC table streams: keyed structured streams, the key from the
             // replica-identity preflight; cursor config is impossible here
@@ -395,12 +420,13 @@ impl Source for PostgresSource {
             if let Some(cdc_config) = &self.config.cdc
                 && self.config.query_config(name).is_none()
             {
-                let hinted = reflect::hinted_columns(table, table_config)?;
                 let identities = self
                     .cdc_runtime
                     .identities(&self.config, cdc_config, reflected, &cdc_names)
                     .await?;
-                let identity = &identities[name];
+                let identity = identities.get(name).ok_or_else(|| {
+                    errors::fatal(Phase::Reflect, Some(name), "stream is not a CDC table")
+                })?;
                 // The merge key must survive the column selection — delete
                 // records are key-only, so an excluded key column would strand
                 // them.
@@ -428,16 +454,8 @@ impl Source for PostgresSource {
             }
             // Validate selection + hints + cursor at publish time: fail fast,
             // before any data moves. The cursor check runs POST-hint (a hint
-            // may change capability).
-            let hinted = reflect::hinted_columns(table, table_config)?;
-            let pk: Vec<String> = match table_config.and_then(|t| t.primary_key.clone()) {
-                Some(overridden) => overridden,
-                None => table
-                    .primary_key()
-                    .iter()
-                    .map(|s| (*s).to_owned())
-                    .collect(),
-            };
+            // may change capability); `hinted` came from `prepare_stream`.
+            let pk: Vec<String> = table.effective_pk(table_config);
             if let Some(cursor) = table_config.and_then(|t| t.cursor.as_ref()) {
                 let col = hinted
                     .iter()
@@ -509,12 +527,8 @@ impl Source for PostgresSource {
     async fn read(&self, mut req: ReadRequest) -> Result<(), SourceError> {
         let name = req.stream.name.as_str().to_owned();
         let reflected = self.reflected().await?;
-        let table = reflected.get(&name).ok_or_else(|| {
-            errors::fatal(Phase::Reflect, Some(&name), "stream has no reflected table")
-        })?;
-        let owned_config = self.stream_config(&name);
+        let (table, owned_config, owned_columns) = self.prepare_stream(reflected, &name)?;
         let table_config = owned_config.as_ref();
-        let owned_columns = reflect::hinted_columns(table, table_config)?;
         // Lossy visibility: each [documented-lossy]
         // column announces itself ONCE per read on a dedicated target, so
         // embedders can subscribe to `rdlt::lossy` without log-scraping.
@@ -563,146 +577,35 @@ impl Source for PostgresSource {
             let identity = identities.get(&name).ok_or_else(|| {
                 errors::fatal(Phase::Reflect, Some(&name), "stream is not a CDC table")
             })?;
-            return cdc::read_stream(
-                &self.cdc_runtime,
-                &self.config,
-                cdc_config,
+            let ctx = cdc::TableCtx {
+                config: &self.config,
+                cdc: cdc_config,
                 identity,
-                &cdc_names,
-                plans,
-                &columns,
-                req,
-            )
-            .await;
+                plans: &plans,
+            };
+            return cdc::read_stream(&self.cdc_runtime, &ctx, &cdc_names, &columns, req).await;
         }
 
         // Incremental setup: resume state, boundary matrix, ordered read +
         // tracker. Snapshot streams skip all of it.
+        // Incremental plan resolution lives in cursor.rs (the boundary matrix,
+        // watermark decoding, lag window, and dedup tracker are one cohesive
+        // unit); snapshot streams skip it entirely.
         let cursor_config = table_config.and_then(|t| t.cursor.as_ref());
         let mut incremental: Option<(cursor::Tracker, config::CursorConfig)> = None;
         let (where_sql, order_sql) = match cursor_config {
             None => (String::new(), String::new()),
             Some(cc) => {
-                let reflected_cursor = columns
-                    .iter()
-                    .find(|c| c.name == cc.column)
-                    .filter(|c| c.mapped.cursor_capable)
-                    .ok_or_else(|| {
-                        errors::fatal(
-                            Phase::Reflect,
-                            Some(&name),
-                            format!(
-                                "cursor column `{}` missing from selection or not \
-                                 cursor-capable after type mapping/hints",
-                                cc.column
-                            ),
-                        )
-                    })?;
-                let cursor_decode = reflected_cursor.mapped.decode;
-                let cursor_idx = columns
-                    .iter()
-                    .position(|c| c.name == cc.column)
-                    .ok_or_else(|| {
-                        errors::fatal(
-                            Phase::Reflect,
-                            Some(&name),
-                            format!(
-                                "cursor column `{}` is excluded by the column selection",
-                                cc.column
-                            ),
-                        )
-                    })?;
-                let direction_max = cc.direction == config::Direction::Max;
-                let stored = match &req.since {
-                    Some(since) => Some(cursor::CursorState::decode(since, &name)?),
-                    None => None,
-                };
-                // Lower bound: stored state — closed (>= + dedup) iff it
-                // carries boundary keys, which every checkpoint does except
-                // an open-boundary final; else the configured initial_value
-                // under the configured boundary.
-                let closed_default = cc.boundary == config::Boundary::Closed;
-                let lower: Option<(cursor::Watermark, bool)> = match &stored {
-                    Some(state) => Some((state.watermark.clone(), !state.boundary_keys.is_empty())),
-                    None => match &cc.initial_value {
-                        Some(text) => Some((
-                            cursor::Watermark::parse_config_literal(cursor_decode, text, &name)?,
-                            closed_default,
-                        )),
-                        None => None,
-                    },
-                };
-                let upper: Option<cursor::Watermark> = match &cc.end_value {
-                    Some(text) => Some(cursor::Watermark::parse_config_literal(
-                        cursor_decode,
-                        text,
-                        &name,
-                    )?),
-                    None => None,
-                };
-                // Lag: widen the RESUMED window only — run 1 (no watermark)
-                // is unaffected,
-                // and the saved watermark is never lowered. The window
-                // re-read forces closed semantics regardless of how the
-                // stored state's boundary flag landed.
-                let lag_delta: Option<String> = match (&cc.lag, &stored) {
-                    (Some(lag), Some(_)) => Some(lag.sql_delta(cursor_decode).map_err(|d| {
-                        errors::fatal(
-                            Phase::Reflect,
-                            Some(&name),
-                            format!("cursor lag on `{}`: {d}", cc.column),
-                        )
-                    })?),
-                    _ => None,
-                };
-                let lower = match (lower, &lag_delta) {
-                    (Some((w, _)), Some(_)) => Some((w, true)),
-                    (other, _) => other,
-                };
-                let clauses = sqlgen::incremental_clauses(
-                    &cc.column,
-                    direction_max,
-                    lower.as_ref().map(|(w, closed)| (w, *closed)),
-                    lag_delta.as_deref(),
-                    upper
-                        .as_ref()
-                        .map(|w| (w, cc.end_bound == config::EndBound::Inclusive)),
-                    // `error` keeps NULL rows IN the read (like include) so
-                    // the tracker can raise on them (N1).
-                    cc.nulls != config::NullPolicy::Exclude,
-                    matches!(cursor_decode, types::Decode::Utf8),
-                );
-                // Row keys: configured/reflected PK columns present in the
-                // selection; otherwise whole-row hashing.
-                let pk_names: Vec<String> = match table_config.and_then(|t| t.primary_key.clone()) {
-                    Some(overridden) => overridden,
-                    None => table
-                        .primary_key()
-                        .iter()
-                        .map(|s| (*s).to_owned())
-                        .collect(),
-                };
-                let key_columns: Option<Vec<usize>> = if pk_names.is_empty() {
-                    None
-                } else {
-                    pk_names
-                        .iter()
-                        .map(|k| columns.iter().position(|c| &c.name == k))
-                        .collect()
-                };
-                let tracker = cursor::Tracker::new(
-                    cursor_idx,
-                    cursor_decode,
-                    direction_max,
-                    stored,
-                    key_columns,
-                    (cc.nulls == config::NullPolicy::Error)
-                        .then(|| (name.clone(), cc.column.clone())),
-                    name.clone(),
-                    cc.column.clone(),
-                );
-                incremental = Some((tracker, cc.clone()));
-                (clauses.where_sql, clauses.order_sql)
+                let plan = cursor::IncrementalPlan::prepare(
+                    cc,
+                    &columns,
+                    table,
+                    table_config,
+                    req.since.as_ref(),
+                    &name,
+                )?;
+                incremental = Some((plan.tracker, plan.cursor));
+                (plan.where_sql, plan.order_sql)
             }
         };
 
@@ -721,50 +624,32 @@ impl Source for PostgresSource {
         let copy = sqlgen::copy_sql(&select);
 
         let client = connect(&self.config).await?;
-        let stream = client
-            .copy_out(copy.as_str())
-            .await
-            .map_err(|e| errors::classify(Phase::Copy, Some(&name), &e))?;
-        futures::pin_mut!(stream);
-
         let mut decoder = CopyDecoder::new(
             plans,
             self.config.batch_target_bytes,
             self.config.batch_max_rows,
-        );
+        )
+        .map_err(|e| errors::fatal(Phase::Decode, Some(&name), e))?;
         let mut pushed_any = false;
-        loop {
-            let chunk = stream
-                .try_next()
-                .await
-                .map_err(|e| errors::classify(Phase::Copy, Some(&name), &e))?;
-            let Some(chunk) = chunk else { break };
-            // Simulated mid-stream connection loss: Transient — the ENGINE
-            // retries the whole read from committed state.
-            crash_point!(
-                "pg.src.mid_copy",
-                Err(errors::transient(
-                    Phase::Copy,
-                    Some(&name),
-                    "injected: connection lost mid-COPY"
-                ))
-            );
-            let batches = decoder
-                .feed(&chunk)
-                .map_err(|e| errors::fatal(Phase::Decode, Some(&name), e))?;
-            for batch in batches {
-                if !push_tracked(&mut req, &mut incremental, batch, &mut pushed_any).await? {
-                    return Ok(()); // cancellation; dropping the
-                    // client aborts the server-side COPY
-                }
-            }
-        }
-        if let Some(tail) = decoder
-            .finish()
-            .map_err(|e| errors::fatal(Phase::Decode, Some(&name), e))?
-            && !push_tracked(&mut req, &mut incremental, tail, &mut pushed_any).await?
-        {
-            return Ok(());
+        // The COPY stream + decode loop is the shared pump; the per-batch work
+        // is the incremental tracker (dedup → push → intermediate checkpoint).
+        // `pg.src.mid_copy` is the pump's mid-stream crash site; the tracker's
+        // post-push `pg.src.after_batch_push` rides a `Push::Crash`.
+        let completed = copy_pump::pump_copy(
+            &client,
+            copy.as_str(),
+            &mut decoder,
+            &mut req,
+            &name,
+            copy_pump::CrashSite {
+                label: "pg.src.mid_copy",
+                msg: "injected: connection lost mid-COPY",
+            },
+            |batch| tracked_pushes(&mut incremental, batch, &mut pushed_any),
+        )
+        .await?;
+        if !completed {
+            return Ok(()); // cancellation; dropping the client aborts the COPY
         }
         if !pushed_any && req.out.arrow(decoder.empty_batch()).await.is_err() {
             return Ok(()); // still cancellation
@@ -802,42 +687,39 @@ impl Source for PostgresSource {
     }
 }
 
-/// Push one decoded batch, routed through the incremental tracker when
-/// present (dedup → push → intermediate checkpoint, in that order).
-/// Returns Ok(false) on cancellation.
-async fn push_tracked(
-    req: &mut ReadRequest,
+/// The plain read's per-batch transform for [`copy_pump::pump_copy`]: route
+/// each decoded batch through the incremental tracker (dedup → push →
+/// intermediate checkpoint, in that order) and return the ordered pushes. The
+/// `Push::Crash` between the batch push and its checkpoint is the former
+/// `pg.src.after_batch_push` site — it fires only after a non-empty batch was
+/// pushed, exactly as before. Snapshot (tracker-less) streams push the batch
+/// straight through.
+fn tracked_pushes(
     incremental: &mut Option<(cursor::Tracker, config::CursorConfig)>,
     batch: arrow_array::RecordBatch,
     pushed_any: &mut bool,
-) -> Result<bool, SourceError> {
+) -> Result<Vec<copy_pump::Push>, SourceError> {
+    use copy_pump::Push;
     match incremental {
         None => {
             *pushed_any = true;
-            Ok(req.out.arrow(batch).await.is_ok())
+            Ok(vec![Push::Arrow(batch)])
         }
         Some((tracker, _)) => {
             let (filtered, checkpoint) = tracker.process(batch)?;
+            let mut pushes = Vec::new();
             if let Some(filtered) = filtered {
                 *pushed_any = true;
-                if req.out.arrow(filtered).await.is_err() {
-                    return Ok(false);
-                }
-                crash_point!(
+                pushes.push(Push::Arrow(filtered));
+                pushes.push(Push::Crash(
                     "pg.src.after_batch_push",
-                    Err(errors::transient(
-                        Phase::Copy,
-                        None,
-                        "injected: after batch push"
-                    ))
-                );
+                    "injected: after batch push",
+                ));
             }
-            if let Some(state) = checkpoint
-                && req.out.checkpoint(state.encode()).await.is_err()
-            {
-                return Ok(false);
+            if let Some(state) = checkpoint {
+                pushes.push(Push::Checkpoint(state.encode()));
             }
-            Ok(true)
+            Ok(pushes)
         }
     }
 }

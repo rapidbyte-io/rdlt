@@ -14,6 +14,14 @@ use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use crate::source::copy_decode::FieldPlan;
 use crate::source::types::Decode;
 
+/// Typed change-row decode failure. thiserror, matching the crate's other
+/// decode errors ([`crate::source::copy_decode::DecodeError`],
+/// [`crate::source::cdc::pgoutput::PgoutputError`]); the message is already
+/// composed (it names the column) so it renders verbatim.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub(crate) struct ValueError(String);
+
 /// One cell of one change row: SQL NULL or the text form. (Unchanged-TOAST
 /// markers are resolved BEFORE rows reach this module — substitution or a
 /// typed error.)
@@ -32,14 +40,14 @@ pub(crate) fn rows_to_batch(
     flag_column: &str,
     rows: &[Vec<Cell>],
     deleted: &[bool],
-) -> Result<RecordBatch, String> {
+) -> Result<RecordBatch, ValueError> {
     debug_assert_eq!(rows.len(), deleted.len());
     let mut fields: Vec<Field> = Vec::with_capacity(plans.len() + 1);
     let mut arrays: Vec<ArrayRef> = Vec::with_capacity(plans.len() + 1);
     for (idx, plan) in plans.iter().enumerate() {
         let column = rows.iter().map(|row| &row[idx]);
         let array = build_column(plan, column.clone(), rows.len())
-            .map_err(|detail| format!("column `{}`: {detail}", plan.name))?;
+            .map_err(|detail| ValueError(format!("column `{}`: {detail}", plan.name)))?;
         fields.push(Field::new(&plan.name, array.data_type().clone(), true));
         arrays.push(array);
     }
@@ -54,7 +62,7 @@ pub(crate) fn rows_to_batch(
     fields.push(Field::new(flag_column, DataType::Boolean, true));
     arrays.push(std::sync::Arc::new(flag.finish()));
     RecordBatch::try_new(std::sync::Arc::new(Schema::new(fields)), arrays)
-        .map_err(|e| format!("assembling change batch: {e}"))
+        .map_err(|e| ValueError(format!("assembling change batch: {e}")))
 }
 
 fn build_column<'a>(
@@ -343,7 +351,8 @@ mod tests {
             &[vec![Cell::Text("not-a-number".into())]],
             &[false],
         )
-        .expect_err("typed");
+        .expect_err("typed")
+        .to_string();
         assert!(err.contains("`qty`"), "{err}");
         // Excess numeric precision and NaN are refused, not rounded.
         let plans = vec![plan(
@@ -361,7 +370,8 @@ mod tests {
                 &[vec![Cell::Text(bad.into())]],
                 &[false],
             )
-            .expect_err(bad);
+            .expect_err(bad)
+            .to_string();
             assert!(err.contains("`n`"), "{err}");
         }
     }

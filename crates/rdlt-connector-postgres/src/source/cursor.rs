@@ -7,7 +7,10 @@
 use rdlt_connector::{Cursor, SourceError};
 use serde::{Deserialize, Serialize};
 
+use crate::source::config::{self, CursorConfig, TableConfig};
 use crate::source::errors::{self, Phase};
+use crate::source::reflect::{ReflectedColumn, ReflectedTable};
+use crate::source::sqlgen;
 use crate::source::types::Decode;
 
 /// A typed watermark value. Ordering is the cursor ordering (same-variant
@@ -553,6 +556,143 @@ impl CursorState {
                 Some(table),
                 format!("stored cursor state does not decode (state corruption?): {e}"),
             )
+        })
+    }
+}
+
+/// The resolved incremental read plan for a cursor stream: the boundary/order
+/// SQL that shapes the COPY subselect, plus the tracker that dedups re-fetched
+/// boundary rows and emits resume checkpoints. Built once per `read()`.
+pub(crate) struct IncrementalPlan {
+    pub tracker: Tracker,
+    pub cursor: CursorConfig,
+    pub where_sql: String,
+    pub order_sql: String,
+}
+
+impl IncrementalPlan {
+    /// Resolve the full dlt-parity incremental plan: validate the cursor column
+    /// is selected + cursor-capable, decode the resume/config watermarks, apply
+    /// the lag window, render the boundary matrix, and build the dedup tracker.
+    /// Every failure is typed and early — before any data moves.
+    pub(crate) fn prepare(
+        cc: &CursorConfig,
+        columns: &[&ReflectedColumn],
+        table: &ReflectedTable,
+        table_config: Option<&TableConfig>,
+        since: Option<&Cursor>,
+        name: &str,
+    ) -> Result<Self, SourceError> {
+        let reflected_cursor = columns
+            .iter()
+            .find(|c| c.name == cc.column)
+            .filter(|c| c.mapped.cursor_capable)
+            .ok_or_else(|| {
+                errors::fatal(
+                    Phase::Reflect,
+                    Some(name),
+                    format!(
+                        "cursor column `{}` missing from selection or not \
+                         cursor-capable after type mapping/hints",
+                        cc.column
+                    ),
+                )
+            })?;
+        let cursor_decode = reflected_cursor.mapped.decode;
+        let cursor_idx = columns
+            .iter()
+            .position(|c| c.name == cc.column)
+            .ok_or_else(|| {
+                errors::fatal(
+                    Phase::Reflect,
+                    Some(name),
+                    format!(
+                        "cursor column `{}` is excluded by the column selection",
+                        cc.column
+                    ),
+                )
+            })?;
+        let direction_max = cc.direction == config::Direction::Max;
+        let stored = match since {
+            Some(since) => Some(CursorState::decode(since, name)?),
+            None => None,
+        };
+        // Lower bound: stored state — closed (>= + dedup) iff it carries
+        // boundary keys, which every checkpoint does except an open-boundary
+        // final; else the configured initial_value under the configured
+        // boundary.
+        let closed_default = cc.boundary == config::Boundary::Closed;
+        let lower: Option<(Watermark, bool)> = match &stored {
+            Some(state) => Some((state.watermark.clone(), !state.boundary_keys.is_empty())),
+            None => match &cc.initial_value {
+                Some(text) => Some((
+                    Watermark::parse_config_literal(cursor_decode, text, name)?,
+                    closed_default,
+                )),
+                None => None,
+            },
+        };
+        let upper: Option<Watermark> = match &cc.end_value {
+            Some(text) => Some(Watermark::parse_config_literal(cursor_decode, text, name)?),
+            None => None,
+        };
+        // Lag: widen the RESUMED window only — run 1 (no watermark) is
+        // unaffected, and the saved watermark is never lowered. The window
+        // re-read forces closed semantics regardless of how the stored state's
+        // boundary flag landed.
+        let lag_delta: Option<String> = match (&cc.lag, &stored) {
+            (Some(lag), Some(_)) => Some(lag.sql_delta(cursor_decode).map_err(|d| {
+                errors::fatal(
+                    Phase::Reflect,
+                    Some(name),
+                    format!("cursor lag on `{}`: {d}", cc.column),
+                )
+            })?),
+            _ => None,
+        };
+        let lower = match (lower, &lag_delta) {
+            (Some((w, _)), Some(_)) => Some((w, true)),
+            (other, _) => other,
+        };
+        let clauses = sqlgen::incremental_clauses(
+            &cc.column,
+            direction_max,
+            lower.as_ref().map(|(w, closed)| (w, *closed)),
+            lag_delta.as_deref(),
+            upper
+                .as_ref()
+                .map(|w| (w, cc.end_bound == config::EndBound::Inclusive)),
+            // `error` keeps NULL rows IN the read (like include) so the tracker
+            // can raise on them (N1).
+            cc.nulls != config::NullPolicy::Exclude,
+            matches!(cursor_decode, Decode::Utf8),
+        );
+        // Row keys: configured/reflected PK columns present in the selection;
+        // otherwise whole-row hashing.
+        let pk_names: Vec<String> = table.effective_pk(table_config);
+        let key_columns: Option<Vec<usize>> = if pk_names.is_empty() {
+            None
+        } else {
+            pk_names
+                .iter()
+                .map(|k| columns.iter().position(|c| &c.name == k))
+                .collect()
+        };
+        let tracker = Tracker::new(
+            cursor_idx,
+            cursor_decode,
+            direction_max,
+            stored,
+            key_columns,
+            (cc.nulls == config::NullPolicy::Error).then(|| (name.to_owned(), cc.column.clone())),
+            name.to_owned(),
+            cc.column.clone(),
+        );
+        Ok(Self {
+            tracker,
+            cursor: cc.clone(),
+            where_sql: clauses.where_sql,
+            order_sql: clauses.order_sql,
         })
     }
 }

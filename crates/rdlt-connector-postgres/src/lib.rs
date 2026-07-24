@@ -8,6 +8,7 @@
 //! Facade paths are unchanged: `rdlt::postgres` re-exports [`dest`],
 //! `rdlt::postgres_source` re-exports [`source`].
 
+mod pgerror;
 pub mod tls;
 mod tls_verify;
 

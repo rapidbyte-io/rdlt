@@ -50,6 +50,15 @@ impl ReflectedTable {
             .collect()
     }
 
+    /// The effective merge/dedup key for a stream: a declared `primary_key`
+    /// override, else the reflected primary key. Empty when neither exists.
+    pub(crate) fn effective_pk(&self, config: Option<&TableConfig>) -> Vec<String> {
+        match config.and_then(|t| t.primary_key.clone()) {
+            Some(overridden) => overridden,
+            None => self.primary_key().iter().map(|s| (*s).to_owned()).collect(),
+        }
+    }
+
     pub fn column(&self, name: &str) -> Option<&ReflectedColumn> {
         self.columns.iter().find(|c| c.name == name)
     }

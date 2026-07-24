@@ -274,7 +274,7 @@ impl Loader {
             .session
             .commit(meta)
             .await
-            .map_err(RdltError::destination)?;
+            .map_err(|e| crate::runtime::run::classify_dest_error(&e))?;
         // The canonical redelivery window: destination acknowledged, WAL not yet
         // marked — a crash here MUST replay idempotently (D3).
         crash_point!(

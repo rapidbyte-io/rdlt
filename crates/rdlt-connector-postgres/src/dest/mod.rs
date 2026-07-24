@@ -48,39 +48,23 @@ pub mod sqlgen {
 #[doc(hidden)]
 pub const FAIL_POINTS: &[&str] = &["pg.stage.copy", "pg.publish.begin", "pg.tx.commit"];
 
-/// Every db-originated error carries the server's message + SQLSTATE —
-/// tokio-postgres's Display for db errors is just "db error". Non-db errors
-/// render their full source chain.
+/// Render a driver error with its server message + SQLSTATE — the shared
+/// rendering both connectors use (tokio-postgres's own Display for a db error
+/// is just "db error"; non-db errors render their full source chain).
 pub(crate) fn describe(e: &tokio_postgres::Error) -> String {
-    use std::error::Error as _;
-    if let Some(db) = e.as_db_error() {
-        // The CONTEXT line names the COPY column for data errors.
-        let context = db.where_().map(|w| format!(" [{w}]")).unwrap_or_default();
-        return format!(
-            "{e}: {} (SQLSTATE {}){context}",
-            db.message(),
-            db.code().code()
-        );
-    }
-    let mut rendered = e.to_string();
-    let mut source = e.source();
-    while let Some(cause) = source {
-        rendered.push_str(": ");
-        rendered.push_str(&cause.to_string());
-        source = cause.source();
-    }
-    rendered
+    crate::pgerror::pg_error_detail(e)
 }
 
 pub(crate) fn transient(e: tokio_postgres::Error) -> DestError {
     DestError::transient(describe(&e))
 }
 
-/// Write-path (COPY) error mapping: data-shaped SQLSTATE classes
-/// (22 data exception, 23 integrity, 42 syntax/access) are PERMANENT — a
-/// poisoned batch must not burn the engine's retry budget on unwinnable
-/// retries. Everything else stays transient (connection-shaped).
-pub(crate) fn copy_error(e: tokio_postgres::Error) -> DestError {
+/// Statement-error classification shared by the COPY write path AND table DDL:
+/// data-shaped SQLSTATE classes (22 data exception, 23 integrity, 42
+/// syntax/access) are PERMANENT — a poisoned batch or an unwinnable 42xxx DDL
+/// statement must not burn the engine's retry budget on retries that cannot
+/// win. Everything else stays transient (connection-shaped).
+pub(crate) fn classify_stmt(e: tokio_postgres::Error) -> DestError {
     match e.as_db_error() {
         Some(db) if matches!(&db.code().code()[..2], "22" | "23" | "42") => {
             DestError::fatal(describe(&e))

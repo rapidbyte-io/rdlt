@@ -468,19 +468,16 @@ impl schemars::JsonSchema for HintType {
 /// else is an error the caller surfaces as a typed config failure at open.
 pub(crate) fn apply_hint(info: &PgTypeInfo, hint: HintType) -> Result<MappedType, String> {
     use SelectPolicy::CastText;
-    let text_family = matches!(info.oid, oid::TEXT | oid::VARCHAR | oid::BPCHAR | oid::NAME)
-        && info.typtype == 'b'
-        && info.typcategory != 'A';
-    let int_family = matches!(info.oid, oid::INT2 | oid::INT4 | oid::INT8)
-        && info.typtype == 'b'
-        && info.typcategory != 'A';
-    let float_family = matches!(info.oid, oid::FLOAT4 | oid::FLOAT8)
-        && info.typtype == 'b'
-        && info.typcategory != 'A';
-    let numeric = info.oid == oid::NUMERIC && info.typtype == 'b' && info.typcategory != 'A';
-    let timestampish = matches!(info.oid, oid::TIMESTAMP | oid::TIMESTAMPTZ)
-        && info.typtype == 'b'
-        && info.typcategory != 'A';
+    // A hint applies only to a PLAIN base scalar of the named oid — never an
+    // array element (`typcategory 'A'`) or an enum/composite/range
+    // (`typtype != 'b'`), which carry their own mapping.
+    let plain_base =
+        |oids: &[u32]| oids.contains(&info.oid) && info.typtype == 'b' && info.typcategory != 'A';
+    let text_family = plain_base(&[oid::TEXT, oid::VARCHAR, oid::BPCHAR, oid::NAME]);
+    let int_family = plain_base(&[oid::INT2, oid::INT4, oid::INT8]);
+    let float_family = plain_base(&[oid::FLOAT4, oid::FLOAT8]);
+    let numeric = plain_base(&[oid::NUMERIC]);
+    let timestampish = plain_base(&[oid::TIMESTAMP, oid::TIMESTAMPTZ]);
 
     // Cast expression per target; decode matches the 005 lossless set.
     let target =

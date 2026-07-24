@@ -7,19 +7,12 @@
 use crate::source::reflect::ReflectedColumn;
 use crate::source::types::SelectPolicy;
 
-/// PostgreSQL identifier quoting: wrap in double quotes, double any embedded
-/// quote. Total — any string becomes a safe identifier.
+/// PostgreSQL identifier quoting: the ONE injection-safe rule shared with
+/// every SQL destination. Delegates to [`rdlt_connector_sqlcore::quote_ident`]
+/// (wrap in double quotes, double any embedded quote) — a thin crate-local
+/// alias so the many source-side call sites read `quote_ident(...)`.
 pub(crate) fn quote_ident(ident: &str) -> String {
-    let mut quoted = String::with_capacity(ident.len() + 2);
-    quoted.push('"');
-    for ch in ident.chars() {
-        if ch == '"' {
-            quoted.push('"');
-        }
-        quoted.push(ch);
-    }
-    quoted.push('"');
-    quoted
+    rdlt_connector_sqlcore::quote_ident(ident)
 }
 
 /// One projection item per the column's SelectPolicy; policy conversions run

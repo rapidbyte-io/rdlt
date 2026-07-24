@@ -47,20 +47,6 @@ fn tagged(phase: Phase, table: Option<&str>, detail: impl std::fmt::Display) -> 
     }
 }
 
-/// Render an error WITH its source chain — tokio-postgres's Display for db
-/// errors is just "db error"; the actual message lives in the cause.
-fn full_chain(err: &tokio_postgres::Error) -> String {
-    use std::error::Error as _;
-    let mut out = err.to_string();
-    let mut source = err.source();
-    while let Some(cause) = source {
-        out.push_str(": ");
-        out.push_str(&cause.to_string());
-        source = cause.source();
-    }
-    out
-}
-
 pub(crate) fn fatal(
     phase: Phase,
     table: Option<&str>,
@@ -77,32 +63,22 @@ pub(crate) fn transient(
     SourceError::transient(tagged(phase, table, detail))
 }
 
-/// Classify a driver error. SQLSTATE class decides when present; a missing
-/// code means the failure never reached the server (io, closed connection) —
-/// transient by definition.
+/// Classify a driver error into Transient/Fatal by SQLSTATE class (the shared
+/// [`crate::pgerror::is_transient_sqlstate`] rule), carrying the server's full
+/// rendered detail either way.
 pub(crate) fn classify(
     phase: Phase,
     table: Option<&str>,
     err: &tokio_postgres::Error,
 ) -> SourceError {
-    let transient_shaped = match err.code() {
-        // No SQLSTATE: io error / connection closed before a server reply.
-        None => true,
-        Some(state) => matches!(
-            &state.code()[..2],
-            // 08 connection exception, 53 insufficient resources,
-            // 57 operator intervention (shutdown), 40 tx rollback (serialization).
-            "08" | "53" | "57" | "40"
-        ),
-    };
-    let err = full_chain(err);
-    if transient_shaped {
-        transient(phase, table, err)
+    let detail = crate::pgerror::pg_error_detail(err);
+    if crate::pgerror::is_transient_sqlstate(err) {
+        transient(phase, table, detail)
     } else {
         // 28 auth, 3D invalid catalog, 42 syntax/undefined object, 22 data
         // exception, 0A unsupported — and anything else server-classified:
         // retrying cannot fix it.
-        fatal(phase, table, err)
+        fatal(phase, table, detail)
     }
 }
 

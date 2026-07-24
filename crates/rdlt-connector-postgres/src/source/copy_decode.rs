@@ -57,15 +57,24 @@ enum ColumnBuilder {
 }
 
 impl ColumnBuilder {
-    fn for_plan(plan: &FieldPlan) -> Self {
-        match plan.decode {
+    fn for_plan(plan: &FieldPlan) -> Result<Self, DecodeError> {
+        Ok(match plan.decode {
             Decode::Bool => Self::Bool(BooleanBuilder::new()),
             Decode::Int2 | Decode::Int4 | Decode::Int8 => Self::Int64(Int64Builder::new()),
             Decode::Float4 | Decode::Float8 => Self::Float64(Float64Builder::new()),
+            // reflection/hints only ever emit a valid (precision, scale) — a
+            // rejection here is an internal invariant break, surfaced as a
+            // typed decode error rather than a panic.
             Decode::Decimal { precision, scale } => Self::Decimal(
                 Decimal128Builder::new()
                     .with_precision_and_scale(precision, scale as i8)
-                    .expect("reflection produced a valid decimal shape"),
+                    .map_err(|e| {
+                        DecodeError(format!(
+                            "column `{}`: internal invalid decimal shape \
+                             (precision {precision}, scale {scale}): {e}",
+                            plan.name
+                        ))
+                    })?,
             ),
             Decode::Utf8 | Decode::JsonbText | Decode::UuidText => Self::Utf8(StringBuilder::new()),
             Decode::Bytea => Self::Binary(BinaryBuilder::new()),
@@ -75,7 +84,7 @@ impl ColumnBuilder {
             }
             Decode::Date => Self::Date(Date32Builder::new()),
             Decode::Time => Self::Time(Time64MicrosecondBuilder::new()),
-        }
+        })
     }
 
     fn append_null(&mut self) {
@@ -246,15 +255,22 @@ pub(crate) struct CopyDecoder {
 }
 
 impl CopyDecoder {
-    pub fn new(plans: Vec<FieldPlan>, target_bytes: usize, max_rows: usize) -> Self {
+    pub fn new(
+        plans: Vec<FieldPlan>,
+        target_bytes: usize,
+        max_rows: usize,
+    ) -> Result<Self, DecodeError> {
         let schema = Arc::new(Schema::new(
             plans
                 .iter()
                 .map(|p| Field::new(&p.name, p.arrow.clone(), !p.not_null))
                 .collect::<Vec<_>>(),
         ));
-        let builders = plans.iter().map(ColumnBuilder::for_plan).collect();
-        Self {
+        let builders = plans
+            .iter()
+            .map(ColumnBuilder::for_plan)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self {
             plans,
             schema,
             builders,
@@ -265,7 +281,7 @@ impl CopyDecoder {
             rows_total: 0,
             target_bytes: target_bytes.max(1),
             max_rows: max_rows.max(1),
-        }
+        })
     }
 
     pub fn rows_decoded(&self) -> u64 {
@@ -565,6 +581,7 @@ mod tests {
             usize::MAX >> 1,
             usize::MAX >> 1,
         )
+        .expect("two-col decoder builds")
     }
 
     #[test]
@@ -609,7 +626,8 @@ mod tests {
             vec![plan("id", Decode::Int8, DataType::Int64, true)],
             usize::MAX >> 1,
             2, // cut every 2 rows
-        );
+        )
+        .expect("decoder builds");
         let mut wire = header();
         for i in 0..5i64 {
             wire.extend(tuple(&[Some(i.to_be_bytes().to_vec())]));
@@ -640,7 +658,8 @@ mod tests {
             )],
             usize::MAX >> 1,
             usize::MAX >> 1,
-        );
+        )
+        .expect("decoder builds");
         let mut wire = header();
         wire.extend(tuple(&[Some(numeric_wire(2, 0, 0x0000, 2, &[1, 2500]))]));
         // -0.05: digits [500], weight -1, sign negative.
@@ -697,7 +716,8 @@ mod tests {
             )],
             usize::MAX >> 1,
             usize::MAX >> 1,
-        );
+        )
+        .expect("decoder builds");
         let mut wire = header();
         wire.extend(tuple(&[Some(0i64.to_be_bytes().to_vec())])); // PG epoch
         wire.extend(trailer());
@@ -764,7 +784,8 @@ mod tests {
             vec![plan("j", Decode::JsonbText, DataType::Utf8, false)],
             usize::MAX >> 1,
             usize::MAX >> 1,
-        );
+        )
+        .expect("decoder builds");
         let mut wire = header();
         let mut payload = vec![1u8];
         payload.extend_from_slice(br#"{"a":1}"#);

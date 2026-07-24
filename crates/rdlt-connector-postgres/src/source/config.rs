@@ -452,8 +452,19 @@ impl PostgresConfig {
     }
 
     /// Local validation (shape rules checkable without the database); rules
-    /// that need the live catalog run at open, against reflection.
+    /// that need the live catalog run at open, against reflection. Split by
+    /// concern — connection, cursors, CDC, and stream selection — each owning a
+    /// coherent slice of the same typed errors.
     fn validate(&self) -> Result<(), ConfigError> {
+        self.validate_conn()?;
+        self.validate_cursors()?;
+        self.validate_cdc()?;
+        self.validate_tables()?;
+        Ok(())
+    }
+
+    /// Top-level connection + batching scalars.
+    fn validate_conn(&self) -> Result<(), ConfigError> {
         let invalid = |msg: String| Err(ConfigError::Invalid(msg));
         if self.conn.trim().is_empty() {
             return invalid("`conn` must not be empty".into());
@@ -465,6 +476,18 @@ impl PostgresConfig {
         if let Err(e) = crate::tls::parse_conn(&self.conn, self.tls.as_ref()) {
             return invalid(e.to_string());
         }
+        if self.schema.trim().is_empty() {
+            return invalid("`schema` must not be empty".into());
+        }
+        if self.batch_target_bytes == 0 || self.batch_max_rows == 0 {
+            return invalid("batch knobs must be positive".into());
+        }
+        Ok(())
+    }
+
+    /// Cursor-shape rules checkable without the catalog.
+    fn validate_cursors(&self) -> Result<(), ConfigError> {
+        let invalid = |msg: String| Err(ConfigError::Invalid(msg));
         for cursor in self
             .tables
             .iter()
@@ -480,9 +503,12 @@ impl PostgresConfig {
                 ));
             }
         }
-        if self.schema.trim().is_empty() {
-            return invalid("`schema` must not be empty".into());
-        }
+        Ok(())
+    }
+
+    /// The CDC block: required non-empty names + the cursor/cdc exclusivity.
+    fn validate_cdc(&self) -> Result<(), ConfigError> {
+        let invalid = |msg: String| Err(ConfigError::Invalid(msg));
         if let Some(cdc) = &self.cdc {
             for (field, value) in [
                 ("cdc.slot", &cdc.slot),
@@ -504,9 +530,13 @@ impl PostgresConfig {
                 ));
             }
         }
-        if self.batch_target_bytes == 0 || self.batch_max_rows == 0 {
-            return invalid("batch knobs must be positive".into());
-        }
+        Ok(())
+    }
+
+    /// Query + table stream selection: unique names, no qualified table names,
+    /// exclusive column selections, non-empty overrides.
+    fn validate_tables(&self) -> Result<(), ConfigError> {
+        let invalid = |msg: String| Err(ConfigError::Invalid(msg));
         {
             let mut names = BTreeSet::new();
             if let Some(tables) = &self.tables {

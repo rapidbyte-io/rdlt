@@ -20,7 +20,7 @@ use rdlt_connector_sqlcore::{
 
 use super::config::MergeStrategy;
 use super::dialect::PgDialect;
-use super::{copy_error, encode, fatal, quote, transient};
+use super::{classify_stmt, encode, fatal, quote, transient};
 
 /// Arrival-order column on STAGE tables only: makes merge dedup deterministic
 /// ("last wins" for real). Excluded from publish column lists because it
@@ -201,7 +201,7 @@ impl LoadSession for PgSession {
                     quote(&name)
                 ))
                 .await
-                .map_err(transient)?;
+                .map_err(classify_stmt)?;
             // Migrations: add new columns; widen with a USING cast.
             for column in &schema.columns {
                 self.client
@@ -212,7 +212,7 @@ impl LoadSession for PgSession {
                         super::ddl::sql_type(&column.ty)
                     ))
                     .await
-                    .map_err(transient)?;
+                    .map_err(classify_stmt)?;
                 if let Some(prev) = &previous
                     && let Some(old) = prev.column(&column.name)
                     && old.ty != column.ty
@@ -227,7 +227,7 @@ impl LoadSession for PgSession {
                             super::ddl::sql_type(&column.ty)
                         ))
                         .await
-                        .map_err(transient)?;
+                        .map_err(classify_stmt)?;
                 }
             }
         }
@@ -271,7 +271,7 @@ impl LoadSession for PgSession {
                             quote(col)
                         ))
                         .await
-                        .map_err(transient)?;
+                        .map_err(classify_stmt)?;
                 }
             }
             // Index plan — shared shape from sqlcore; this destination owns
@@ -295,7 +295,7 @@ impl LoadSession for PgSession {
                             super::describe(&e)
                         )));
                     }
-                    return Err(transient(e));
+                    return Err(classify_stmt(e));
                 }
             }
         }
@@ -337,7 +337,7 @@ impl LoadSession for PgSession {
                 quote(&stage)
             ))
             .await
-            .map_err(copy_error)?;
+            .map_err(classify_stmt)?;
         let writer = BinaryCopyInWriter::new(sink, &types);
         futures::pin_mut!(writer);
 
@@ -357,9 +357,9 @@ impl LoadSession for PgSession {
                 .iter()
                 .map(|b| b.as_ref() as &(dyn ToSql + Sync))
                 .collect();
-            writer.as_mut().write(&refs).await.map_err(copy_error)?;
+            writer.as_mut().write(&refs).await.map_err(classify_stmt)?;
         }
-        writer.finish().await.map_err(copy_error)?;
+        writer.finish().await.map_err(classify_stmt)?;
         Ok(())
     }
 

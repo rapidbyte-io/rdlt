@@ -14,7 +14,9 @@ pub enum SourceError {
     #[error("transient source error: {0}")]
     Transient(#[source] BoxError),
     /// Engine waits (`retry_after` honored when present) and retries.
-    #[error("source rate limited")]
+    /// The Display carries the inner message so context attached by
+    /// wrappers stays visible without walking the source() chain.
+    #[error("source rate limited: {source}")]
     RateLimited {
         retry_after: Option<Duration>,
         #[source]
@@ -30,6 +32,13 @@ impl SourceError {
         SourceError::Transient(err.into())
     }
 
+    pub fn rate_limited(err: impl Into<BoxError>, retry_after: Option<Duration>) -> Self {
+        SourceError::RateLimited {
+            retry_after,
+            source: err.into(),
+        }
+    }
+
     pub fn fatal(err: impl Into<BoxError>) -> Self {
         SourceError::Fatal(err.into())
     }
@@ -41,6 +50,15 @@ pub enum DestError {
     /// Engine retries with backoff + jitter.
     #[error("transient destination error: {0}")]
     Transient(#[source] BoxError),
+    /// Engine waits (`retry_after` honored when present) and retries —
+    /// REST catalogs and warehouses rate-limit in practice, and losing
+    /// the hint would burn backoff budget guessing.
+    #[error("destination rate limited: {source}")]
+    RateLimited {
+        retry_after: Option<Duration>,
+        #[source]
+        source: BoxError,
+    },
     /// Run aborts with a classified error.
     #[error("fatal destination error: {0}")]
     Fatal(#[source] BoxError),
@@ -49,6 +67,13 @@ pub enum DestError {
 impl DestError {
     pub fn transient(err: impl Into<BoxError>) -> Self {
         DestError::Transient(err.into())
+    }
+
+    pub fn rate_limited(err: impl Into<BoxError>, retry_after: Option<Duration>) -> Self {
+        DestError::RateLimited {
+            retry_after,
+            source: err.into(),
+        }
     }
 
     pub fn fatal(err: impl Into<BoxError>) -> Self {

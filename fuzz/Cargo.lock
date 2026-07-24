@@ -1867,6 +1867,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "rdlt-core",
+ "schemars",
  "serde",
  "serde_json",
  "thiserror",

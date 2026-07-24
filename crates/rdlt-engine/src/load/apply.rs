@@ -27,7 +27,7 @@ pub(crate) async fn apply_delta(
     session
         .ensure_table(&lowered, mode)
         .await
-        .map_err(RdltError::destination)?;
+        .map_err(|e| crate::runtime::run::classify_dest_error(&e))?;
     state
         .schema_hashes
         .insert(schema.table.clone(), schema.content_hash());
@@ -48,5 +48,5 @@ pub(crate) async fn apply_batch(
     session
         .write(table, lowered)
         .await
-        .map_err(RdltError::destination)
+        .map_err(|e| crate::runtime::run::classify_dest_error(&e))
 }

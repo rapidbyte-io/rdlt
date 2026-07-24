@@ -243,7 +243,7 @@ pub(crate) async fn replay(
             counters: Default::default(),
         })
         .await
-        .map_err(RdltError::destination)?;
+        .map_err(|e| crate::runtime::run::classify_dest_error(&e))?;
     Ok(Some(batches))
 }
 

@@ -7,15 +7,12 @@
 //! Message reference: PostgreSQL docs, "Logical Replication Message
 //! Formats". Tuple values arrive TEXT-form under proto v1.
 
-/// Typed parse failure — never a panic (fuzz-pinned).
-#[derive(Debug)]
+/// Typed parse failure — never a panic (fuzz-pinned). thiserror, matching the
+/// crate's other decode errors ([`crate::source::copy_decode::DecodeError`],
+/// [`crate::source::cdc::values::ValueError`]).
+#[derive(Debug, thiserror::Error)]
+#[error("pgoutput: {0}")]
 pub struct PgoutputError(pub String);
-
-impl std::fmt::Display for PgoutputError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "pgoutput: {}", self.0)
-    }
-}
 
 fn err<T>(message: impl Into<String>) -> Result<T, PgoutputError> {
     Err(PgoutputError(message.into()))

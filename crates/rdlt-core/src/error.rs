@@ -53,7 +53,16 @@ pub enum RdltError {
 
     /// Operator action: check the destination/warehouse.
     #[error("destination error: {message}")]
-    Destination { message: String },
+    Destination {
+        message: String,
+        /// True for transient/rate-limited destination failures: the run
+        /// driver restarts from committed state instead of aborting.
+        #[serde(default)]
+        retryable: bool,
+        /// Rate-limit hint carried from `DestError::RateLimited`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        retry_after_ms: Option<u64>,
+    },
 
     /// Operator action: check local disk / the work directory.
     #[error("WAL error: {message}")]
@@ -81,6 +90,20 @@ impl RdltError {
     pub fn destination(message: impl std::fmt::Display) -> Self {
         RdltError::Destination {
             message: message.to_string(),
+            retryable: false,
+            retry_after_ms: None,
+        }
+    }
+
+    pub fn destination_retryable(
+        message: impl std::fmt::Display,
+        retry_after: Option<std::time::Duration>,
+    ) -> Self {
+        RdltError::Destination {
+            message: message.to_string(),
+            retryable: true,
+            // Saturate rather than truncate an implausibly-long hint.
+            retry_after_ms: retry_after.map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX)),
         }
     }
 
