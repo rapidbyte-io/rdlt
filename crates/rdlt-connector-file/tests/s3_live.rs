@@ -25,7 +25,7 @@ async fn seeded_bucket_lists_deterministically() {
     assert_eq!(files.len(), 2);
     assert_eq!(files[0].path, "landed/a.jsonl");
     assert_eq!(files[1].path, "landed/b.jsonl");
-    assert_eq!(files[0].size, 9);
+    assert_eq!(files[0].size_units, 9);
     assert!(files[0].etag.is_some(), "etag is the object identity");
 }
 

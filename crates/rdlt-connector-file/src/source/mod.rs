@@ -20,7 +20,7 @@ use crate::formats::{Format, csv, jsonl, parquet};
 #[doc(hidden)]
 pub const FAIL_POINTS: &[&str] = &["file.list", "file.read"];
 pub use config::{FileConfig, FileStream};
-use cursor::{FileCursor, FileMeta};
+use cursor::{FileCursor, FileMeta, FileTask};
 
 #[derive(Debug)]
 pub struct FileSource {
@@ -92,7 +92,7 @@ pub(crate) fn resolve_files(pattern: &str) -> Result<Vec<FileMeta>, SourceError>
                 .map(|d| d.as_millis() as u64);
             Ok(FileMeta {
                 path,
-                size: meta.len(),
+                size_units: meta.len(),
                 mtime_ms,
                 etag: None,
             })
@@ -141,87 +141,18 @@ impl Source for FileSource {
 
         let mut cursor = FileCursor::decode(req.since.as_ref())?;
         let location = crate::location::Location::from_options(stream.location.as_ref())?;
-        // Snapshot the file list once per run (stable list; new files next run).
-        // Local parquet keeps its row-group listing; object-store parquet is
-        // fetched to temp files first (correctness over streaming) with the
-        // cursor still keyed by the object.
-        let mut fetched_dir: Option<std::path::PathBuf> = None;
-        let is_s3 = matches!(location, crate::location::Location::S3(_));
-        let (matched, read_paths) = match (&location, stream.format) {
-            (crate::location::Location::Local, Format::Jsonl | Format::Csv) => {
-                (resolve_files(&stream.path)?, None)
-            }
-            (crate::location::Location::Local, Format::Parquet) => {
-                (parquet::resolve_with_row_groups(&stream.path)?, None)
-            }
-            (crate::location::Location::S3(_), Format::Jsonl | Format::Csv) => {
-                (location.list(&stream.path).await?, None)
-            }
-            (crate::location::Location::S3(_), Format::Parquet) => {
-                let listed = location.list(&stream.path).await?;
-                let dir = temp_fetch_dir(&stream.name)?;
-                let mut metas = Vec::with_capacity(listed.len());
-                let mut paths = std::collections::BTreeMap::new();
-                for (i, meta) in listed.into_iter().enumerate() {
-                    let local = fetch_to_temp(&location, &meta.path, &dir, i).await?;
-                    let counted = parquet::resolve_with_row_groups(&local.to_string_lossy())?;
-                    let groups = counted.first().map(|m| m.size).unwrap_or(0);
-                    paths.insert(meta.path.clone(), local.to_string_lossy().into_owned());
-                    metas.push(FileMeta {
-                        size: groups,
-                        ..meta
-                    });
-                }
-                fetched_dir = Some(dir);
-                (metas, Some(paths))
-            }
-        };
+
+        let ResolvedInputs {
+            matched,
+            read_paths,
+            mut fetched_dir,
+        } = resolve_inputs(&location, stream).await?;
         rdlt_connector::core::crash_point!(
             "file.list",
             Err(SourceError::fatal("injected crash at file.list"))
         );
-        // Plan per the format's incremental unit: parquet = row groups
-        // (tail), csv and COMPRESSED jsonl = whole-file (R5), plain jsonl =
-        // byte tails. A jsonl glob may match both plain and compressed
-        // files — each follows its own rule.
-        let mut tasks = match stream.format {
-            Format::Parquet => cursor.plan(&matched)?,
-            Format::Csv => cursor.plan_whole(&matched)?,
-            Format::Jsonl => {
-                let (tail, whole): (Vec<_>, Vec<_>) = matched
-                    .into_iter()
-                    .partition(|m| crate::formats::codec_of(&m.path).is_plain());
-                let mut tasks = cursor.plan(&tail)?;
-                tasks.extend(cursor.plan_whole(&whole)?);
-                tasks.sort_by(|a, b| a.path.cmp(&b.path));
-                tasks
-            }
-        };
-        if let Some(paths) = &read_paths {
-            for task in &mut tasks {
-                task.read_path = paths.get(&task.path).cloned();
-            }
-        }
-        // Object-store csv/compressed-jsonl read through a LOCAL decode:
-        // fetch the (post-plan, non-skipped) tasks to temp files.
-        if is_s3 && stream.format != Format::Parquet {
-            for (i, task) in tasks.iter_mut().enumerate() {
-                let needs_local = stream.format == Format::Csv
-                    || !crate::formats::codec_of(&task.path).is_plain();
-                if needs_local && task.read_path.is_none() {
-                    let dir = match &fetched_dir {
-                        Some(dir) => dir.clone(),
-                        None => {
-                            let dir = temp_fetch_dir(&stream.name)?;
-                            fetched_dir = Some(dir.clone());
-                            dir
-                        }
-                    };
-                    let local = fetch_to_temp(&location, &task.path, &dir, i).await?;
-                    task.read_path = Some(local.to_string_lossy().into_owned());
-                }
-            }
-        }
+        let mut tasks = plan_tasks(&cursor, stream, matched)?;
+        stage_s3_fetches(&location, stream, &mut tasks, &read_paths, &mut fetched_dir).await?;
 
         let csv_options = stream.csv.clone().unwrap_or_default();
         let mut outcome = Ok(());
@@ -264,6 +195,124 @@ impl Source for FileSource {
         }
         outcome
     }
+}
+
+/// The run's resolved file inputs: the snapshot listing, and — for object-store
+/// parquet, fetched up front — the per-object local temp paths and the temp dir.
+struct ResolvedInputs {
+    matched: Vec<FileMeta>,
+    /// object key → local temp path (object-store parquet, fetched before planning).
+    read_paths: Option<std::collections::BTreeMap<String, String>>,
+    /// temp dir holding object fetches, removed after the run.
+    fetched_dir: Option<std::path::PathBuf>,
+}
+
+/// Snapshot the file list once per run (stable list; new files next run). Local
+/// parquet keeps its row-group listing; object-store parquet is fetched to temp
+/// files first (correctness over streaming) with the cursor still keyed by the
+/// object.
+async fn resolve_inputs(
+    location: &crate::location::Location,
+    stream: &FileStream,
+) -> Result<ResolvedInputs, SourceError> {
+    use crate::location::Location;
+    let plain = |matched| ResolvedInputs {
+        matched,
+        read_paths: None,
+        fetched_dir: None,
+    };
+    match (location, stream.format) {
+        (Location::Local { .. }, Format::Jsonl | Format::Csv) => {
+            Ok(plain(resolve_files(&stream.path)?))
+        }
+        (Location::Local { .. }, Format::Parquet) => {
+            Ok(plain(parquet::resolve_with_row_groups(&stream.path)?))
+        }
+        (Location::S3(_), Format::Jsonl | Format::Csv) => {
+            Ok(plain(location.list(&stream.path).await?))
+        }
+        (Location::S3(_), Format::Parquet) => {
+            let listed = location.list(&stream.path).await?;
+            let dir = temp_fetch_dir(&stream.name)?;
+            let mut metas = Vec::with_capacity(listed.len());
+            let mut paths = std::collections::BTreeMap::new();
+            for (i, meta) in listed.into_iter().enumerate() {
+                let local = fetch_to_temp(location, &meta.path, &dir, i).await?;
+                let counted = parquet::resolve_with_row_groups(&local.to_string_lossy())?;
+                let groups = counted.first().map(|m| m.size_units).unwrap_or(0);
+                paths.insert(meta.path.clone(), local.to_string_lossy().into_owned());
+                metas.push(FileMeta {
+                    size_units: groups,
+                    ..meta
+                });
+            }
+            Ok(ResolvedInputs {
+                matched: metas,
+                read_paths: Some(paths),
+                fetched_dir: Some(dir),
+            })
+        }
+    }
+}
+
+/// Plan per the format's incremental unit: parquet = row groups (tail), csv and
+/// COMPRESSED jsonl = whole-file (R5), plain jsonl = byte tails. A jsonl glob may
+/// match both plain and compressed files — each follows its own rule.
+fn plan_tasks(
+    cursor: &FileCursor,
+    stream: &FileStream,
+    matched: Vec<FileMeta>,
+) -> Result<Vec<FileTask>, SourceError> {
+    match stream.format {
+        Format::Parquet => cursor.plan(&matched),
+        Format::Csv => cursor.plan_whole(&matched),
+        Format::Jsonl => {
+            let (tail, whole): (Vec<_>, Vec<_>) = matched
+                .into_iter()
+                .partition(|m| crate::formats::codec_of(&m.path).is_plain());
+            let mut tasks = cursor.plan(&tail)?;
+            tasks.extend(cursor.plan_whole(&whole)?);
+            tasks.sort_by(|a, b| a.path.cmp(&b.path));
+            Ok(tasks)
+        }
+    }
+}
+
+/// Wire up local read paths for the planned tasks: object-store parquet uses the
+/// up-front fetches; object-store csv/compressed-jsonl fetch the (post-plan,
+/// non-skipped) tasks to temp files here so they read through a LOCAL decode.
+async fn stage_s3_fetches(
+    location: &crate::location::Location,
+    stream: &FileStream,
+    tasks: &mut [FileTask],
+    read_paths: &Option<std::collections::BTreeMap<String, String>>,
+    fetched_dir: &mut Option<std::path::PathBuf>,
+) -> Result<(), SourceError> {
+    if let Some(paths) = read_paths {
+        for task in tasks.iter_mut() {
+            task.read_path = paths.get(&task.path).cloned();
+        }
+    }
+    let is_s3 = matches!(location, crate::location::Location::S3(_));
+    if is_s3 && stream.format != Format::Parquet {
+        for (i, task) in tasks.iter_mut().enumerate() {
+            let needs_local =
+                stream.format == Format::Csv || !crate::formats::codec_of(&task.path).is_plain();
+            if needs_local && task.read_path.is_none() {
+                let dir = match fetched_dir {
+                    Some(dir) => dir.clone(),
+                    None => {
+                        let dir = temp_fetch_dir(&stream.name)?;
+                        *fetched_dir = Some(dir.clone());
+                        dir
+                    }
+                };
+                let local = fetch_to_temp(location, &task.path, &dir, i).await?;
+                task.read_path = Some(local.to_string_lossy().into_owned());
+            }
+        }
+    }
+    Ok(())
 }
 
 /// JSON Schema GENERATED from the config structs — the declared schema and the

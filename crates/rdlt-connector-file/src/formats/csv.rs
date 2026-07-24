@@ -171,9 +171,9 @@ pub(crate) async fn read_task(
     cursor.record(
         &task.path,
         FileProgress {
-            done: task.size,
-            size: task.size,
-            eol: true,
+            done_units: task.size_units,
+            size_units: task.size_units,
+            ended_at_record_boundary: true,
             mtime_ms: task.mtime_ms,
             etag: task.etag.clone(),
             tail_hash: None, // whole-file units never tail-resume
@@ -276,8 +276,17 @@ fn convert_cell(
         Conversion::Declared(HintType::Json) => {
             serde_json::from_str(cell).map_err(|_| violation("json"))?
         }
-        // String-shaped logical types (utf8/timestamp_tz/date/time/uuid):
-        // emitted as strings; the stream spec's hint types them downstream.
-        Conversion::Declared(_) => serde_json::Value::String(cell.to_owned()),
+        // String-shaped logical types: emitted as strings; the stream spec's
+        // hint types them downstream. This arm is EXHAUSTIVE over `HintType`
+        // (no `_` catch-all), so a newly added hint variant fails to compile
+        // HERE until its CSV conversion is decided — never silently coerced to
+        // a string (Principle V: no accidental behavior for future variants).
+        Conversion::Declared(
+            HintType::Utf8
+            | HintType::TimestampTz
+            | HintType::Date
+            | HintType::Time
+            | HintType::Uuid,
+        ) => serde_json::Value::String(cell.to_owned()),
     })
 }

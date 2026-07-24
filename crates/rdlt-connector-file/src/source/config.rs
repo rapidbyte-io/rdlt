@@ -140,7 +140,7 @@ impl FileConfig {
                 )));
             }
             if stream.format == Format::Parquet
-                && (stream.path.ends_with(".gz") || stream.path.ends_with(".zst"))
+                && !crate::formats::codec_of(&stream.path).is_plain()
             {
                 return Err(ConfigError::Invalid(format!(
                     "stream `{}`: parquet carries its own internal codecs — a \

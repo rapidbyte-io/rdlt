@@ -26,7 +26,7 @@ const PRE_015_CURSOR: &str = r#"{
 fn meta(path: &str, size: u64, mtime_ms: u64) -> FileMeta {
     FileMeta {
         path: path.into(),
-        size,
+        size_units: size,
         mtime_ms: Some(mtime_ms),
         etag: None,
     }

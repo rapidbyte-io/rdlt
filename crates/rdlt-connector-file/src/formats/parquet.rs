@@ -18,7 +18,7 @@ pub(crate) fn resolve_with_row_groups(pattern: &str) -> Result<Vec<FileMeta>, So
             let reader = SerializedFileReader::new(file)
                 .map_err(|e| SourceError::fatal(format!("reading parquet `{}`: {e}", meta.path)))?;
             Ok(FileMeta {
-                size: reader.metadata().num_row_groups() as u64,
+                size_units: reader.metadata().num_row_groups() as u64,
                 ..meta
             })
         })
@@ -61,9 +61,9 @@ pub(crate) async fn read_task(
         cursor.record(
             &task.path,
             FileProgress {
-                done: group + 1,
-                size: total_groups,
-                eol: true, // row groups are whole records by construction
+                done_units: group + 1,
+                size_units: total_groups,
+                ended_at_record_boundary: true, // row groups are whole records by construction
                 mtime_ms: task.mtime_ms,
                 etag: task.etag.clone(),
                 tail_hash: None, // row-group units: etag/mtime identity governs

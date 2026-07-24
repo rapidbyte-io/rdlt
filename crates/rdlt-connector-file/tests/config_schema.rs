@@ -84,6 +84,6 @@ fn dest_schema_valid_corpus_parses() {
         );
         let parsed: FileDestConfig =
             serde_json::from_value(config.clone()).expect("schema-valid config parses");
-        parsed.validate().expect("validates");
+        parsed.validate("file destination").expect("validates");
     }
 }

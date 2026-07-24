@@ -6,12 +6,13 @@
 use futures::StreamExt;
 use object_store::ObjectStore;
 use object_store::aws::{AmazonS3, AmazonS3Builder};
-use rdlt_connector::SourceError;
+use rdlt_connector::{DestError, SourceError};
 use serde::{Deserialize, Serialize};
 
 use rdlt_connector::Secret;
 
-use crate::source::cursor::FileMeta;
+use super::store_err;
+use crate::location::types::FileMeta;
 
 /// Configuration for an S3-compatible location: `location: {s3: {...}}`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -86,12 +87,17 @@ impl S3Options {
     }
 }
 
-/// A connected S3-compatible location.
-#[derive(Debug)]
+/// A connected S3-compatible location — the S3 half of the unified
+/// [`super::Location`], serving BOTH the source read path (list/get) and the
+/// destination write path (put/copy/delete/list-by-table). `prefix` is the key
+/// prefix all write-side tails hang under (the destination's `path`); it is
+/// EMPTY on the read side, where callers pass full keys.
+#[derive(Debug, Clone)]
 pub struct S3Location {
     store: AmazonS3,
     endpoint: String,
     bucket: String,
+    prefix: String,
 }
 
 /// Build the raw client (shared by the source Location and the dest
@@ -115,13 +121,116 @@ pub(crate) fn build_store(options: &S3Options) -> Result<AmazonS3, String> {
 }
 
 impl S3Location {
+    /// Read-side connect: full keys, no prefix (the source names whole objects).
     pub fn connect(options: &S3Options) -> Result<Self, SourceError> {
-        let store = build_store(options).map_err(SourceError::fatal)?;
+        Self::build(options, String::new()).map_err(SourceError::fatal)
+    }
+
+    /// Write-side connect: `prefix` is the destination's key prefix; every
+    /// staged, published, state, and receipt key hangs under it.
+    pub(crate) fn connect_for_dest(options: &S3Options, prefix: String) -> Result<Self, DestError> {
+        Self::build(options, prefix).map_err(DestError::fatal)
+    }
+
+    fn build(options: &S3Options, prefix: String) -> Result<Self, String> {
         Ok(Self {
-            store,
+            store: build_store(options)?,
             endpoint: options.endpoint.clone(),
             bucket: options.bucket.clone(),
+            prefix,
         })
+    }
+
+    /// Resolve a tail into a full object key under this location's prefix.
+    fn key(&self, tail: &str) -> object_store::path::Path {
+        let joined = if self.prefix.is_empty() {
+            tail.to_owned()
+        } else {
+            format!("{}/{tail}", self.prefix.trim_end_matches('/'))
+        };
+        object_store::path::Path::from(joined)
+    }
+
+    /// Read one document's bytes (state / commit log); `None` when absent.
+    pub(crate) async fn read_doc(&self, name: &str) -> Result<Option<Vec<u8>>, DestError> {
+        match self.store.get(&self.key(name)).await {
+            Ok(result) => Ok(Some(result.bytes().await.map_err(store_err)?.to_vec())),
+            Err(object_store::Error::NotFound { .. }) => Ok(None),
+            Err(e) => Err(store_err(e)),
+        }
+    }
+
+    /// Put raw bytes at `tail` (atomic per key: no partial object is ever
+    /// visible under the final name).
+    pub(crate) async fn put(&self, tail: &str, bytes: Vec<u8>) -> Result<(), DestError> {
+        self.store
+            .put(&self.key(tail), bytes::Bytes::from(bytes).into())
+            .await
+            .map_err(store_err)?;
+        Ok(())
+    }
+
+    /// COPY `from_tail` → `to_tail` (per-key atomic publish).
+    pub(crate) async fn copy(&self, from_tail: &str, to_tail: &str) -> Result<(), DestError> {
+        self.store
+            .copy(&self.key(from_tail), &self.key(to_tail))
+            .await
+            .map_err(store_err)
+    }
+
+    /// Delete `tail`; a replayed finalize may find it already gone, which is
+    /// success (idempotent).
+    pub(crate) async fn delete_idempotent(&self, tail: &str) -> Result<(), DestError> {
+        match self.store.delete(&self.key(tail)).await {
+            Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
+            Err(e) => Err(store_err(e)),
+        }
+    }
+
+    /// Best-effort delete (staging cleanup on a replayed commit); errors are
+    /// swallowed — the reclaim converges on the next open.
+    pub(crate) async fn delete_best_effort(&self, tail: &str) {
+        let _ = self.store.delete(&self.key(tail)).await;
+    }
+
+    /// List full keys under `tail` (server-side segment-scoped: listing
+    /// `foo/a` never returns `foo/ab/*` — pinned by tests/prefix_semantics.rs).
+    pub(crate) async fn list_keys(
+        &self,
+        tail: &str,
+    ) -> Result<Vec<object_store::path::Path>, DestError> {
+        let mut listing = self.store.list(Some(&self.key(tail)));
+        let mut keys = Vec::new();
+        while let Some(entry) = listing.next().await {
+            keys.push(entry.map_err(store_err)?.location);
+        }
+        Ok(keys)
+    }
+
+    /// Delete a full object key (already resolved by a prior listing).
+    pub(crate) async fn delete_key(&self, key: &object_store::path::Path) -> Result<(), DestError> {
+        self.store.delete(key).await.map_err(store_err)
+    }
+
+    /// The full object key for one file under `{table}/` addressed by its tail.
+    pub(crate) fn key_of_table(&self, table: &str, tail: &str) -> object_store::path::Path {
+        self.key(&format!("{table}/{tail}"))
+    }
+
+    /// Read a full object key's bytes (already resolved by a prior listing).
+    pub(crate) async fn get_key(
+        &self,
+        key: &object_store::path::Path,
+    ) -> Result<Vec<u8>, DestError> {
+        Ok(self
+            .store
+            .get(key)
+            .await
+            .map_err(store_err)?
+            .bytes()
+            .await
+            .map_err(store_err)?
+            .to_vec())
     }
 
     fn classify(&self, action: &str, subject: &str, error: object_store::Error) -> SourceError {
@@ -185,7 +294,7 @@ impl S3Location {
             Ok(head) => {
                 return Ok(vec![FileMeta {
                     path: pattern.to_owned(),
-                    size: head.size,
+                    size_units: head.size,
                     mtime_ms: None,
                     etag: head.e_tag,
                 }]);
@@ -217,7 +326,7 @@ impl S3Location {
             if matcher.matches_with(&key, match_options) {
                 matched.push(FileMeta {
                     path: key,
-                    size: entry.size,
+                    size_units: entry.size,
                     mtime_ms: None,
                     etag: entry.e_tag,
                 });

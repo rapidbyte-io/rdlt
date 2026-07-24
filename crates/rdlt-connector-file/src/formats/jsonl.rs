@@ -3,7 +3,11 @@
 //!
 //! Slabs are read as raw bytes and split on `memchr` newlines — no per-line `String`,
 //! no per-line UTF-8 validation (the JSON parse downstream validates), and the slab
-//! moves into `Bytes` without a copy.
+//! moves into `Bytes` without a copy. The slab-assembly logic (fill until a newline,
+//! carry the unterminated tail, emit the final line at EOF) lives ONCE in
+//! [`SlabReader`]; the byte-offset-resume reader and the whole-file reader differ
+//! only in their fill primitive (async object stream vs sync codec) and in what they
+//! record per slab.
 
 use bytes::Bytes;
 use rdlt_connector::{RecordsOut, SourceError};
@@ -11,6 +15,116 @@ use rdlt_connector::{RecordsOut, SourceError};
 use super::SLAB_BYTES;
 use crate::location::{ByteReader, Location};
 use crate::source::cursor::{FileCursor, FileProgress, FileTask, TAIL_WINDOW};
+
+/// Fills a caller-provided buffer as far as possible, returning the byte count
+/// (0 = end of stream). One abstraction over the async object-stream reader and
+/// the synchronous codec reader, so both share [`SlabReader`].
+trait SlabFill {
+    async fn fill(&mut self, buf: &mut [u8]) -> Result<usize, SourceError>;
+}
+
+/// Async fill from a [`ByteReader`] (local file or object-store GET). A
+/// mid-object transport reset is carried through the io seam as a transient.
+struct AsyncFill<'a> {
+    reader: &'a mut ByteReader,
+    path: &'a str,
+}
+
+impl SlabFill for AsyncFill<'_> {
+    async fn fill(&mut self, buf: &mut [u8]) -> Result<usize, SourceError> {
+        self.reader.read_full(buf).await.map_err(|e| {
+            crate::location::classify_read_error(&format!("reading `{}`", self.path), e)
+        })
+    }
+}
+
+/// Synchronous fill from a decoded local reader (the compressed whole-file path;
+/// compressed streams are not seekable, so this reader never tail-resumes).
+struct SyncFill<'a> {
+    reader: Box<dyn std::io::Read + Send>,
+    path: &'a str,
+}
+
+impl SlabFill for SyncFill<'_> {
+    async fn fill(&mut self, buf: &mut [u8]) -> Result<usize, SourceError> {
+        use std::io::Read;
+        let mut filled = 0;
+        while filled < buf.len() {
+            match self.reader.read(&mut buf[filled..]) {
+                Ok(0) => break,
+                Ok(n) => filled += n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(SourceError::fatal(format!("reading `{}`: {e}", self.path))),
+            }
+        }
+        Ok(filled)
+    }
+}
+
+/// Assembles slabs of COMPLETE lines from a byte source. Each `next` returns the
+/// next slab ending at a newline (or, at EOF, the final unterminated line); the
+/// bytes after the last newline carry into the following slab. `None` marks the
+/// stream fully consumed. A single line longer than one slab grows the buffer
+/// until its newline (or EOF) arrives.
+struct SlabReader {
+    carry: Vec<u8>,
+    done: bool,
+}
+
+impl SlabReader {
+    fn new() -> Self {
+        Self {
+            carry: Vec::new(),
+            done: false,
+        }
+    }
+
+    async fn next<F: SlabFill>(&mut self, fill: &mut F) -> Result<Option<Vec<u8>>, SourceError> {
+        if self.done {
+            return Ok(None);
+        }
+        let mut slab = std::mem::take(&mut self.carry);
+        slab.reserve(SLAB_BYTES);
+        let mut eof = false;
+        loop {
+            let filled = slab.len();
+            slab.resize(filled + SLAB_BYTES, 0);
+            let n = fill.fill(&mut slab[filled..]).await?;
+            slab.truncate(filled + n);
+            if n == 0 {
+                eof = true;
+                break;
+            }
+            if memchr::memrchr(b'\n', &slab).is_some() {
+                break;
+            }
+            // No newline yet: the line spans slabs — keep growing.
+        }
+        // Split at the last newline; the tail carries into the next round.
+        let split = memchr::memrchr(b'\n', &slab)
+            .map(|nl| nl + 1)
+            .unwrap_or(slab.len());
+        self.carry = slab.split_off(split);
+        if slab.is_empty() {
+            if eof && self.carry.is_empty() {
+                self.done = true;
+                return Ok(None);
+            }
+            if eof {
+                // EOF with only an unterminated fragment: emit it as the final line.
+                slab = std::mem::take(&mut self.carry);
+            }
+        }
+        if slab.is_empty() {
+            self.done = true;
+            return Ok(None);
+        }
+        if eof && self.carry.is_empty() {
+            self.done = true;
+        }
+        Ok(Some(slab))
+    }
+}
 
 /// Keep `tail` = the last `TAIL_WINDOW` bytes of everything consumed.
 fn roll_tail(tail: &mut Vec<u8>, slab: &[u8]) {
@@ -67,61 +181,21 @@ pub(crate) async fn read_task(
     // Snapshot size from the listing; the loop reads to end-of-stream, so a
     // file that grew since listing still loads whole (progress caps at the
     // observed end).
-    let total_size = task.size;
+    let total_size = task.size_units;
 
     let mut offset = task.start;
-    // Bytes after the last newline of the previous read — always < one line.
-    let mut carry: Vec<u8> = Vec::new();
     // Whether the consumed range ends at a newline. A final line without one still
     // loads (files legitimately end that way), but the cursor remembers it: if the
     // file GROWS later, the recorded offset points mid-record and resume must fail
     // loudly instead of reading from the middle of a record.
     let mut ended_on_newline = true;
 
-    loop {
-        // One slab: the carried tail + fresh bytes. A single line longer than
-        // the slab keeps growing the buffer until its newline (or EOF) arrives.
-        let mut slab = std::mem::take(&mut carry);
-        slab.reserve(SLAB_BYTES);
-        let mut eof = false;
-        loop {
-            let filled = slab.len();
-            slab.resize(filled + SLAB_BYTES, 0);
-            let n = file.read_full(&mut slab[filled..]).await.map_err(|e| {
-                crate::location::classify_read_error(&format!("reading `{}`", task.path), e)
-            })?;
-            slab.truncate(filled + n);
-            if n == 0 {
-                eof = true;
-                break;
-            }
-            if memchr::memrchr(b'\n', &slab).is_some() {
-                break;
-            }
-            // No newline yet: the line spans slabs — keep growing.
-        }
-
-        // Split at the last newline; the tail carries into the next round.
-        let split = match memchr::memrchr(b'\n', &slab) {
-            Some(nl) => nl + 1,
-            None if eof => slab.len(), // unterminated final line: loads whole
-            None => slab.len(),        // unreachable: non-EOF exits only on a newline
-        };
-        carry = slab.split_off(split);
-
-        if slab.is_empty() {
-            if eof && carry.is_empty() {
-                break;
-            }
-            if eof {
-                // EOF with only an unterminated fragment: push it as the final line.
-                slab = std::mem::take(&mut carry);
-            }
-        }
-        if slab.is_empty() {
-            break;
-        }
-
+    let mut fill = AsyncFill {
+        reader: &mut file,
+        path: &task.path,
+    };
+    let mut slabs = SlabReader::new();
+    while let Some(slab) = slabs.next(&mut fill).await? {
         if validate {
             validate_lines(&slab, offset, &task.path)?;
         }
@@ -138,9 +212,9 @@ pub(crate) async fn read_task(
         cursor.record(
             &task.path,
             FileProgress {
-                done: offset,
-                size: total_size.max(offset),
-                eol: ended_on_newline,
+                done_units: offset,
+                size_units: total_size.max(offset),
+                ended_at_record_boundary: ended_on_newline,
                 mtime_ms: task.mtime_ms,
                 etag: task.etag.clone(),
                 tail_hash: Some(blake3::hash(&tail).to_hex().to_string()),
@@ -149,18 +223,15 @@ pub(crate) async fn read_task(
         if out.checkpoint(cursor.encode()).await.is_err() {
             return Ok(false);
         }
-        if eof && carry.is_empty() {
-            break;
-        }
     }
 
     // File fully consumed: mark complete at its observed end position.
     cursor.record(
         &task.path,
         FileProgress {
-            done: offset,
-            size: offset.max(task.start),
-            eol: ended_on_newline,
+            done_units: offset,
+            size_units: offset.max(task.start),
+            ended_at_record_boundary: ended_on_newline,
             mtime_ms: task.mtime_ms,
             etag: task.etag.clone(),
             tail_hash: Some(blake3::hash(&tail).to_hex().to_string()),
@@ -206,54 +277,16 @@ pub(crate) async fn read_task_whole(
     cursor: &mut FileCursor,
     out: &mut RecordsOut,
 ) -> Result<bool, SourceError> {
-    use std::io::Read;
     let read_path = task.read_path.as_deref().unwrap_or(&task.path);
-    let mut reader = super::open_decoded(read_path, super::codec_of(&task.path))?;
+    let reader = super::open_decoded(read_path, super::codec_of(&task.path))?;
     let mut offset = 0u64; // decompressed bytes, for error context only
-    let mut carry: Vec<u8> = Vec::new();
-    loop {
-        let mut slab = std::mem::take(&mut carry);
-        slab.reserve(SLAB_BYTES);
-        let mut eof = false;
-        loop {
-            let filled = slab.len();
-            slab.resize(filled + SLAB_BYTES, 0);
-            let mut n = 0;
-            while n < SLAB_BYTES {
-                match reader.read(&mut slab[filled + n..]) {
-                    Ok(0) => break,
-                    Ok(read) => n += read,
-                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                    Err(e) => {
-                        return Err(SourceError::fatal(format!("reading `{}`: {e}", task.path)));
-                    }
-                }
-            }
-            slab.truncate(filled + n);
-            if n == 0 {
-                eof = true;
-                break;
-            }
-            if memchr::memrchr(b'\n', &slab).is_some() {
-                break;
-            }
-        }
-        let split = match memchr::memrchr(b'\n', &slab) {
-            Some(nl) => nl + 1,
-            None => slab.len(),
-        };
-        carry = slab.split_off(split);
-        if slab.is_empty() {
-            if eof && carry.is_empty() {
-                break;
-            }
-            if eof {
-                slab = std::mem::take(&mut carry);
-            }
-        }
-        if slab.is_empty() {
-            break;
-        }
+
+    let mut fill = SyncFill {
+        reader,
+        path: &task.path,
+    };
+    let mut slabs = SlabReader::new();
+    while let Some(slab) = slabs.next(&mut fill).await? {
         if validate {
             validate_lines(&slab, offset, &task.path)?;
         }
@@ -261,16 +294,13 @@ pub(crate) async fn read_task_whole(
         if out.raw_json(Bytes::from(slab)).await.is_err() {
             return Ok(false); // closed channel = cancellation
         }
-        if eof && carry.is_empty() {
-            break;
-        }
     }
     cursor.record(
         &task.path,
         FileProgress {
-            done: task.size,
-            size: task.size,
-            eol: true,
+            done_units: task.size_units,
+            size_units: task.size_units,
+            ended_at_record_boundary: true,
             mtime_ms: task.mtime_ms,
             etag: task.etag.clone(),
             tail_hash: None, // whole-file units never tail-resume

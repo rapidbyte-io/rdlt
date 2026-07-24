@@ -1,54 +1,29 @@
 //! Per-file progress cursor: `path → {done, size, eol, mtime}`.
 //!
-//! Complete ⇔ `done == size`. Resume rules: grown file → read the tail from `done`
-//! (only if the consumed range ended at a record boundary); shrunk file, `done >
-//! current size`, or a same-size file whose mtime moved → fatal, naming the file —
-//! never read from a stale offset.
+//! Complete ⇔ `done_units == size_units`. Resume rules: grown file → read the tail
+//! from `done_units` (only if the consumed range ended at a record boundary); shrunk
+//! file, `done_units > current size`, or a same-size file whose mtime moved → fatal,
+//! naming the file — never read from a stale offset.
+//!
+//! The value types themselves (`FileMeta`, `FileTask`, `FileProgress`) live under
+//! `location/` so the shared lower layer never imports upward from `source/`; this
+//! module owns the PLANNING logic over them.
 
 use std::collections::BTreeMap;
 
 use rdlt_connector::{Cursor, SourceError};
 use serde::{Deserialize, Serialize};
 
+pub use crate::location::types::{FileMeta, FileProgress, FileTask};
+
 pub(crate) const CURSOR_FORMAT_VERSION: u32 = 1;
 
 /// Tail-verification window: the cursor records a blake3 hash of the last
-/// `min(done, TAIL_WINDOW)` consumed bytes; a resumed read re-fetches exactly that
-/// window and compares BEFORE trusting the offset — a grown REWRITE (changed prefix)
-/// fails loudly on both location kinds, while a genuine append (identical prefix)
-/// resumes.
+/// `min(done_units, TAIL_WINDOW)` consumed bytes; a resumed read re-fetches exactly
+/// that window and compares BEFORE trusting the offset — a grown REWRITE (changed
+/// prefix) fails loudly on both location kinds, while a genuine append (identical
+/// prefix) resumes.
 pub(crate) const TAIL_WINDOW: u64 = 4096;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FileProgress {
-    /// Bytes consumed (jsonl) / row groups consumed (parquet).
-    pub done: u64,
-    /// Total size (bytes / row groups) when last read.
-    pub size: u64,
-    /// Whether the consumed range ended at a record boundary (a newline for jsonl;
-    /// always true for parquet's row-group unit). A range that swallowed an
-    /// unterminated final line must not be resumed past if the file later grows —
-    /// `done` would point mid-record.
-    #[serde(default = "default_true")]
-    pub eol: bool,
-    /// File mtime (ms since epoch) observed when this progress was recorded. A
-    /// same-size file whose mtime moved was rewritten in place — size alone cannot
-    /// see that, so this is the loud-failure tripwire for it.
-    #[serde(default)]
-    pub mtime_ms: Option<u64>,
-    /// Object-store content identity: the etag observed when this progress was
-    /// recorded — the object-side rewrite tripwire.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub etag: Option<String>,
-    /// blake3 of the last `min(done, TAIL_WINDOW)` consumed bytes (jsonl only — the
-    /// resume-offset integrity check).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tail_hash: Option<String>,
-}
-
-fn default_true() -> bool {
-    true
-}
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct FileCursor {
@@ -61,36 +36,38 @@ fn default_version() -> u32 {
     CURSOR_FORMAT_VERSION
 }
 
-/// One matched file as observed on disk this run.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FileMeta {
-    pub path: String,
-    /// Bytes (jsonl) / row groups (parquet).
-    pub size: u64,
-    pub mtime_ms: Option<u64>,
-    /// Object-store content identity (None for local files).
-    pub etag: Option<String>,
-}
-
-/// What to do with one matched file this run.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FileTask {
-    pub path: String,
-    /// Where to start (bytes / row groups); equals prior `done` (0 for new files).
-    pub start: u64,
-    /// The mtime observed at planning time, recorded with this file's progress.
-    pub mtime_ms: Option<u64>,
-    /// The object etag observed at planning time (object-store files).
-    pub etag: Option<String>,
-    /// Snapshot size (bytes / row groups) from the listing.
-    pub size: u64,
-    /// Read from THIS local path instead of `path` (object-store parquet
-    /// is fetched to a temp file first; the cursor stays keyed by `path`).
-    pub read_path: Option<String>,
-    /// Resume-offset integrity check: (window bytes, expected blake3 hex)
-    /// over `[start - window, start)` — present only for resumed tails
-    /// whose progress recorded a tail hash.
-    pub tail_check: Option<(u64, String)>,
+impl FileProgress {
+    /// The same-size rewrite tripwire, shared by both planners: an object whose
+    /// etag changed, or a file whose mtime moved, was rewritten in place even
+    /// though its size did not — trusting the recorded offset would read stale
+    /// or mismatched content, so this is a typed Fatal naming the file. `None`
+    /// means the recorded progress is safe to trust.
+    fn rewritten_in_place(&self, meta: &FileMeta) -> Option<SourceError> {
+        if meta.size_units != self.size_units {
+            return None;
+        }
+        if let (Some(then), Some(now)) = (self.etag.as_deref(), meta.etag.as_deref())
+            && then != now
+        {
+            return Some(SourceError::fatal(format!(
+                "file `{}` was rewritten in place (same size, different etag); \
+                 refusing to trust recorded progress — clear it from the \
+                 pipeline state or restore the object",
+                meta.path
+            )));
+        }
+        if let (Some(then), Some(now)) = (self.mtime_ms, meta.mtime_ms)
+            && then != now
+        {
+            return Some(SourceError::fatal(format!(
+                "file `{}` was rewritten in place (same size, but modified \
+                 since the last run); refusing to trust recorded progress — \
+                 clear it from the pipeline state or restore the file",
+                meta.path
+            )));
+        }
+        None
+    }
 }
 
 impl FileCursor {
@@ -114,73 +91,37 @@ impl FileCursor {
     pub fn plan(&self, matched: &[FileMeta]) -> Result<Vec<FileTask>, SourceError> {
         let mut tasks = Vec::new();
         for meta in matched {
-            match self.files.get(&meta.path) {
-                None => tasks.push(FileTask {
-                    path: meta.path.clone(),
-                    start: 0,
-                    mtime_ms: meta.mtime_ms,
-                    etag: meta.etag.clone(),
-                    size: meta.size,
-                    read_path: None,
-                    tail_check: None,
-                }),
-                Some(progress) => {
-                    if meta.size < progress.size || progress.done > meta.size {
-                        return Err(SourceError::fatal(format!(
-                            "file `{}` shrank or was rewritten (recorded {} of {} \
-                             bytes, now {}); refusing to read from a stale \
-                             offset — clear it from the pipeline state or restore the file",
-                            meta.path, progress.done, progress.size, meta.size
-                        )));
-                    }
-                    if meta.size == progress.size
-                        && let (Some(then), Some(now)) =
-                            (progress.etag.as_deref(), meta.etag.as_deref())
-                        && then != now
-                    {
-                        return Err(SourceError::fatal(format!(
-                            "file `{}` was rewritten in place (same size, different etag); \
-                             refusing to trust recorded progress — clear it from the \
-                             pipeline state or restore the object",
-                            meta.path
-                        )));
-                    }
-                    if meta.size == progress.size
-                        && let (Some(then), Some(now)) = (progress.mtime_ms, meta.mtime_ms)
-                        && then != now
-                    {
-                        return Err(SourceError::fatal(format!(
-                            "file `{}` was rewritten in place (same size, but modified \
-                             since the last run); refusing to trust recorded progress — \
-                             clear it from the pipeline state or restore the file",
-                            meta.path
-                        )));
-                    }
-                    if progress.done < meta.size {
-                        if !progress.eol {
-                            return Err(SourceError::fatal(format!(
-                                "file `{}` grew after a run that consumed an unterminated \
-                                 final line; the recorded offset {} points mid-record — \
-                                 clear it from the pipeline state or restore the file",
-                                meta.path, progress.done
-                            )));
-                        }
-                        tasks.push(FileTask {
-                            path: meta.path.clone(),
-                            start: progress.done,
-                            mtime_ms: meta.mtime_ms,
-                            etag: meta.etag.clone(),
-                            size: meta.size,
-                            read_path: None,
-                            tail_check: progress
-                                .tail_hash
-                                .clone()
-                                .map(|hash| (progress.done.min(TAIL_WINDOW), hash)),
-                        });
-                    }
-                    // done == size (+ same mtime): complete and unchanged → skip.
-                }
+            let Some(progress) = self.files.get(&meta.path) else {
+                tasks.push(FileTask::fresh(meta));
+                continue;
+            };
+            if meta.size_units < progress.size_units || progress.done_units > meta.size_units {
+                return Err(SourceError::fatal(format!(
+                    "file `{}` shrank or was rewritten (recorded {} of {} \
+                     bytes, now {}); refusing to read from a stale \
+                     offset — clear it from the pipeline state or restore the file",
+                    meta.path, progress.done_units, progress.size_units, meta.size_units
+                )));
             }
+            if let Some(err) = progress.rewritten_in_place(meta) {
+                return Err(err);
+            }
+            if progress.done_units < meta.size_units {
+                if !progress.ended_at_record_boundary {
+                    return Err(SourceError::fatal(format!(
+                        "file `{}` grew after a run that consumed an unterminated \
+                         final line; the recorded offset {} points mid-record — \
+                         clear it from the pipeline state or restore the file",
+                        meta.path, progress.done_units
+                    )));
+                }
+                let tail_check = progress
+                    .tail_hash
+                    .clone()
+                    .map(|hash| (progress.done_units.min(TAIL_WINDOW), hash));
+                tasks.push(FileTask::from_meta(meta, progress.done_units, tail_check));
+            }
+            // done == size (+ same mtime): complete and unchanged → skip.
         }
         Ok(tasks)
     }
@@ -193,60 +134,26 @@ impl FileCursor {
     pub fn plan_whole(&self, matched: &[FileMeta]) -> Result<Vec<FileTask>, SourceError> {
         let mut tasks = Vec::new();
         for meta in matched {
-            match self.files.get(&meta.path) {
-                None => tasks.push(FileTask {
-                    path: meta.path.clone(),
-                    start: 0,
-                    mtime_ms: meta.mtime_ms,
-                    etag: meta.etag.clone(),
-                    size: meta.size,
-                    read_path: None,
-                    tail_check: None,
-                }),
-                Some(progress) => {
-                    if meta.size != progress.size {
-                        return Err(SourceError::fatal(format!(
-                            "file `{}` changed size ({} → {}) — whole-file formats \
-                             (csv, compressed) never grow in place; deliver new data \
-                             as a new file, or clear this file from the pipeline state",
-                            meta.path, progress.size, meta.size
-                        )));
-                    }
-                    if let (Some(then), Some(now)) =
-                        (progress.etag.as_deref(), meta.etag.as_deref())
-                        && then != now
-                    {
-                        return Err(SourceError::fatal(format!(
-                            "file `{}` was rewritten in place (same size, different etag); \
-                             clear it from the pipeline state or restore the object",
-                            meta.path
-                        )));
-                    }
-                    if let (Some(then), Some(now)) = (progress.mtime_ms, meta.mtime_ms)
-                        && then != now
-                    {
-                        return Err(SourceError::fatal(format!(
-                            "file `{}` was rewritten in place (same size, but modified \
-                             since the last run); clear it from the pipeline state or \
-                             restore the file",
-                            meta.path
-                        )));
-                    }
-                    if progress.done < progress.size {
-                        // Crash mid-file: re-read whole (re-delivery documented).
-                        tasks.push(FileTask {
-                            path: meta.path.clone(),
-                            start: 0,
-                            mtime_ms: meta.mtime_ms,
-                            etag: meta.etag.clone(),
-                            size: meta.size,
-                            read_path: None,
-                            tail_check: None,
-                        });
-                    }
-                    // done == size: complete → skip.
-                }
+            let Some(progress) = self.files.get(&meta.path) else {
+                tasks.push(FileTask::fresh(meta));
+                continue;
+            };
+            if meta.size_units != progress.size_units {
+                return Err(SourceError::fatal(format!(
+                    "file `{}` changed size ({} → {}) — whole-file formats \
+                     (csv, compressed) never grow in place; deliver new data \
+                     as a new file, or clear this file from the pipeline state",
+                    meta.path, progress.size_units, meta.size_units
+                )));
             }
+            if let Some(err) = progress.rewritten_in_place(meta) {
+                return Err(err);
+            }
+            if progress.done_units < progress.size_units {
+                // Crash mid-file: re-read whole (re-delivery documented).
+                tasks.push(FileTask::fresh(meta));
+            }
+            // done == size: complete → skip.
         }
         Ok(tasks)
     }
@@ -263,7 +170,7 @@ mod tests {
     fn meta(path: &str, size: u64) -> FileMeta {
         FileMeta {
             path: path.into(),
-            size,
+            size_units: size,
             mtime_ms: None,
             etag: None,
         }
@@ -271,9 +178,9 @@ mod tests {
 
     fn done(done: u64, size: u64) -> FileProgress {
         FileProgress {
-            done,
-            size,
-            eol: true,
+            done_units: done,
+            size_units: size,
+            ended_at_record_boundary: true,
             mtime_ms: None,
             etag: None,
             tail_hash: None,
@@ -295,7 +202,7 @@ mod tests {
                 start: 10,
                 mtime_ms: None,
                 etag: None,
-                size: 15,
+                size_units: 15,
                 read_path: None,
                 tail_check: None,
             }]
@@ -311,9 +218,9 @@ mod tests {
         cursor.record(
             "a",
             FileProgress {
-                done: 10,
-                size: 10,
-                eol: true,
+                done_units: 10,
+                size_units: 10,
+                ended_at_record_boundary: true,
                 mtime_ms: Some(1_000),
                 etag: None,
                 tail_hash: None,
@@ -323,7 +230,7 @@ mod tests {
         let plan = cursor
             .plan(&[FileMeta {
                 path: "a".into(),
-                size: 10,
+                size_units: 10,
                 mtime_ms: Some(1_000),
                 etag: None,
             }])
@@ -333,7 +240,7 @@ mod tests {
         let err = cursor
             .plan(&[FileMeta {
                 path: "a".into(),
-                size: 10,
+                size_units: 10,
                 mtime_ms: Some(2_000),
                 etag: None,
             }])
@@ -347,9 +254,9 @@ mod tests {
         cursor.record(
             "a",
             FileProgress {
-                done: 10,
-                size: 10,
-                eol: false, // previous run swallowed an unterminated final line
+                done_units: 10,
+                size_units: 10,
+                ended_at_record_boundary: false, // previous run swallowed an unterminated final line
                 mtime_ms: None,
                 etag: None,
                 tail_hash: None,
@@ -372,14 +279,15 @@ mod tests {
     #[test]
     fn decodes_pre_tripwire_cursors_with_defaults() {
         // Cursors written before the eol/mtime fields existed must still decode
-        // (serde defaults: eol=true, mtime=None).
+        // (serde defaults: eol=true, mtime=None). The wire keys stay `done`/`size`/
+        // `eol` regardless of the Rust field renames.
         let old = serde_json::json!({
             "format_version": 1,
             "files": {"a": {"done": 5, "size": 5}}
         });
         let decoded = FileCursor::decode(Some(&Cursor::new(old))).expect("decode");
         let progress = decoded.files.get("a").expect("entry");
-        assert!(progress.eol);
+        assert!(progress.ended_at_record_boundary);
         assert_eq!(progress.mtime_ms, None);
     }
 }

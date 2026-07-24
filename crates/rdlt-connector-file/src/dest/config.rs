@@ -69,17 +69,21 @@ impl FileDestConfig {
         self
     }
 
-    pub fn validate(&self) -> Result<(), String> {
+    /// Eager, typed validation following the one config convention: every
+    /// message is prefixed by `context` (the subject), and nested blocks
+    /// receive the SAME context, so source and destination configs read
+    /// identically. The SPI mapping (String → `DestError`) stays at the caller.
+    pub fn validate(&self, context: &str) -> Result<(), String> {
         if self.path.is_empty() {
-            return Err("file destination: `path` must not be empty".into());
+            return Err(format!("{context}: `path` must not be empty"));
         }
         if let Some(location) = &self.location {
-            location.validate("file destination")?;
+            location.validate(context)?;
         }
         if let Some(column) = &self.partition_by
             && column.is_empty()
         {
-            return Err("file destination: `partition_by` must name a column".into());
+            return Err(format!("{context}: `partition_by` must name a column"));
         }
         Ok(())
     }
