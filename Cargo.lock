@@ -4033,7 +4033,9 @@ dependencies = [
  "rdlt-core",
  "rdlt-engine",
  "rdlt-testkit",
+ "serde",
  "serde_json",
+ "serde_yaml",
  "tokio",
  "tokio-util",
 ]

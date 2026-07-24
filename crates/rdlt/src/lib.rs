@@ -24,6 +24,7 @@
 //! e.g. `rdlt::connector::postgres` carries `source`, `dest`, and `tls` together.
 
 mod builder;
+pub mod pipeline_spec;
 
 pub use builder::{Pipeline, PipelineBuilder};
 pub use rdlt_core::{

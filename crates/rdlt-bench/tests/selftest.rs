@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use rdlt_bench::runner::Paths;
+use rdlt_bench::paths::Paths;
 use rdlt_bench::{artifact, cells, fixtures, runner};
 
 fn repo_paths() -> Paths {

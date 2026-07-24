@@ -178,14 +178,14 @@ fn run_container_once(
     }
     for mount in &reference.mounts {
         argv.push("-v".into());
-        argv.push(crate::runner::substitute(mount, subs));
+        argv.push(crate::template::substitute(mount, subs));
     }
     argv.push(variant.image.clone());
     argv.extend(
         reference
             .args
             .iter()
-            .map(|a| crate::runner::substitute(a, subs)),
+            .map(|a| crate::template::substitute(a, subs)),
     );
 
     let started = Instant::now();

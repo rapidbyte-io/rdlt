@@ -6,8 +6,8 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 
 use rdlt_bench::cells::{Cell, Class};
+use rdlt_bench::paths::Paths;
 use rdlt_bench::protocol::QuietVerdict;
-use rdlt_bench::runner::Paths;
 use rdlt_bench::{
     BenchError, artifact, cells, competitors, fixtures, gate, protocol, report, runner,
 };
@@ -117,12 +117,18 @@ fn cmd_list(paths: &Paths, selection: &SelectionArgs) -> rdlt_bench::Result<()> 
     Ok(())
 }
 
-fn cmd_run(paths: &Paths, selection: &SelectionArgs) -> rdlt_bench::Result<bool> {
+/// Everything loaded once before the per-cell loop.
+struct RunContext {
+    all_cells: Vec<Cell>,
+    bars: Vec<cells::Bar>,
+    fixture_defs: Vec<fixtures::FixtureDef>,
+    variants: Vec<competitors::Variant>,
+}
+
+/// Load the cell matrix, bars, fixture definitions, and competitor variants —
+/// the optional files (fixtures/variants) resolve to empty when absent.
+fn prepare(paths: &Paths) -> rdlt_bench::Result<RunContext> {
     let (all_cells, bars) = load_all(paths)?;
-    let selected: Vec<&Cell> = all_cells.iter().filter(|c| selection.selects(c)).collect();
-    if selected.is_empty() {
-        return Err(BenchError("no cells match the selection".into()));
-    }
     let fixture_defs = if paths.fixtures_toml.is_file() {
         fixtures::load_fixtures(&paths.fixtures_toml)?
     } else {
@@ -136,122 +142,129 @@ fn cmd_run(paths: &Paths, selection: &SelectionArgs) -> rdlt_bench::Result<bool>
             Vec::new()
         }
     };
+    Ok(RunContext {
+        all_cells,
+        bars,
+        fixture_defs,
+        variants,
+    })
+}
 
-    // Fixtures shared across cells within this invocation.
-    let mut started: BTreeMap<String, fixtures::Started> = BTreeMap::new();
-    let base_subs: BTreeMap<String, String> = BTreeMap::from([
-        ("repo".to_owned(), paths.repo.display().to_string()),
-        ("benches".to_owned(), paths.benches.display().to_string()),
-        ("cli".to_owned(), paths.cli.display().to_string()),
-    ]);
+/// One cell end to end: bring up its fixture (shared within the invocation),
+/// run competitors baseline-first, then the rdlt side; write and announce the
+/// artifact and return it for the run summary.
+fn run_one_cell(
+    cell: &Cell,
+    paths: &Paths,
+    ctx: &RunContext,
+    base_subs: &BTreeMap<String, String>,
+    started: &mut BTreeMap<String, fixtures::Started>,
+) -> rdlt_bench::Result<artifact::Artifact> {
+    eprintln!(
+        "== {} ({} {}, {} runs) ==",
+        cell.id, cell.class, cell.mode, cell.runs
+    );
+    if !started.contains_key(&cell.fixture) {
+        let def = ctx
+            .fixture_defs
+            .iter()
+            .find(|f| f.id == cell.fixture)
+            .ok_or_else(|| {
+                BenchError(format!(
+                    "cell `{}`: unknown fixture `{}`",
+                    cell.id, cell.fixture
+                ))
+            })?;
+        started.insert(cell.fixture.clone(), fixtures::start(def, base_subs)?);
+    }
+    let fixture = &started[&cell.fixture];
 
-    let mut measured: Vec<artifact::Artifact> = Vec::new();
-    for cell in selected {
-        eprintln!(
-            "== {} ({} {}, {} runs) ==",
-            cell.id, cell.class, cell.mode, cell.runs
-        );
-        if !started.contains_key(&cell.fixture) {
-            let def = fixture_defs
-                .iter()
-                .find(|f| f.id == cell.fixture)
-                .ok_or_else(|| {
-                    BenchError(format!(
-                        "cell `{}`: unknown fixture `{}`",
-                        cell.id, cell.fixture
-                    ))
-                })?;
-            started.insert(cell.fixture.clone(), fixtures::start(def, &base_subs)?);
+    // Quiet guard BEFORE anything is measured — the baselines feed gated
+    // ratios, so they need the quiet machine as much as the rdlt side.
+    let quiet_note = match protocol::quiet_guard_now(cell.class)? {
+        QuietVerdict::Quiet => None,
+        QuietVerdict::Annotated(note) => {
+            eprintln!("[{}] {note}", cell.id);
+            Some(note)
         }
-        let fixture = &started[&cell.fixture];
+    };
 
-        // Quiet guard BEFORE anything is measured — the baselines feed gated
-        // ratios, so they need the quiet machine as much as the rdlt side.
-        let quiet_note = match protocol::quiet_guard_now(cell.class)? {
-            QuietVerdict::Quiet => None,
-            QuietVerdict::Annotated(note) => {
-                eprintln!("[{}] {note}", cell.id);
-                Some(note)
-            }
-        };
-
-        // Baseline FIRST — competitors run before the rdlt side.
-        let mut competitor_sides = BTreeMap::new();
-        let mut competitor_pins: BTreeMap<String, String> = BTreeMap::new();
-        for reference in &cell.competitors {
-            let variant = variants
-                .iter()
-                .find(|v| v.id == reference.variant)
-                .ok_or_else(|| {
-                    BenchError(format!(
-                        "cell `{}`: unknown competitor variant `{}`",
-                        cell.id, reference.variant
-                    ))
-                })?;
-            competitor_pins.insert(variant.id.clone(), variant.pin.clone());
-            let mut subs = base_subs.clone();
-            subs.insert("data".into(), fixture.data_dir.path().display().to_string());
-            if let Some(conn) = fixture.conn() {
-                subs.insert("conn".into(), conn.to_owned());
-            }
-            eprintln!("   baseline {} ...", variant.id);
-            let side = competitors::run_competitor(variant, reference, cell.runs, &subs, fixture);
-            if let artifact::CompetitorSide::Missing { reason } = &side {
-                // Scoreboard cells record the MISSING loudly; a GATED cell
-                // refuses instead — writing a baseline-less artifact would
-                // overwrite the committed competitor medians and only fail
-                // later at `gate`.
-                if cell.class == Class::Gated {
-                    return Err(BenchError(format!(
-                        "gated cell `{}`: baseline `{}` MISSING ({reason}) — refusing to run and overwrite the committed artifact",
-                        cell.id, variant.id
-                    )));
-                }
-                eprintln!("   baseline {} MISSING: {reason}", variant.id);
-            }
-            competitor_sides.insert(variant.id.clone(), side);
+    // Baseline FIRST — competitors run before the rdlt side.
+    let mut competitor_sides = BTreeMap::new();
+    let mut competitor_pins: BTreeMap<String, String> = BTreeMap::new();
+    for reference in &cell.competitors {
+        let variant = ctx
+            .variants
+            .iter()
+            .find(|v| v.id == reference.variant)
+            .ok_or_else(|| {
+                BenchError(format!(
+                    "cell `{}`: unknown competitor variant `{}`",
+                    cell.id, reference.variant
+                ))
+            })?;
+        competitor_pins.insert(variant.id.clone(), variant.pin.clone());
+        let mut subs = base_subs.clone();
+        subs.insert("data".into(), fixture.data_dir.path().display().to_string());
+        if let Some(conn) = fixture.conn() {
+            subs.insert("conn".into(), conn.to_owned());
         }
-
-        let result = runner::run_cell(
-            cell,
-            paths,
-            fixture,
-            competitor_pins,
-            competitor_sides,
-            quiet_note,
-        )?;
-        let path = artifact::write(&paths.results, &result)?;
-        eprintln!(
-            "   median {:.1} ms  (artifact: {})",
-            result.rdlt.median_ms,
-            path.strip_prefix(&paths.repo).unwrap_or(&path).display()
-        );
-        measured.push(result);
+        eprintln!("   baseline {} ...", variant.id);
+        let side = competitors::run_competitor(variant, reference, cell.runs, &subs, fixture);
+        if let artifact::CompetitorSide::Missing { reason } = &side {
+            // Scoreboard cells record the MISSING loudly; a GATED cell
+            // refuses instead — writing a baseline-less artifact would
+            // overwrite the committed competitor medians and only fail
+            // later at `gate`.
+            if cell.class == Class::Gated {
+                return Err(BenchError(format!(
+                    "gated cell `{}`: baseline `{}` MISSING ({reason}) — refusing to run and overwrite the committed artifact",
+                    cell.id, variant.id
+                )));
+            }
+            eprintln!("   baseline {} MISSING: {reason}", variant.id);
+        }
+        competitor_sides.insert(variant.id.clone(), side);
     }
 
-    // The invocation's PRODUCT goes to stdout (progress stayed on stderr):
-    // the same table renderer RESULTS.md uses — one rendering path, no
-    // drift — plus immediate bar verdicts for the gated cells just
-    // measured. A fresh gated measurement below its bar exits nonzero.
+    let result = runner::run_cell(
+        cell,
+        paths,
+        fixture,
+        competitor_pins,
+        competitor_sides,
+        quiet_note,
+    )?;
+    let path = artifact::write(&paths.results, &result)?;
+    eprintln!(
+        "   median {:.1} ms  (artifact: {})",
+        result.rdlt.median_ms,
+        path.strip_prefix(&paths.repo).unwrap_or(&path).display()
+    );
+    Ok(result)
+}
+
+/// The invocation's PRODUCT to stdout (progress stayed on stderr): the same
+/// table renderer RESULTS.md uses — one rendering path, no drift — plus
+/// immediate bar verdicts for the gated cells just measured. Returns whether
+/// every bar held; a fresh gated measurement below its bar exits nonzero.
+fn print_run_summary(measured: &[artifact::Artifact], bars: &[cells::Bar]) -> bool {
     println!(
         "\n## run summary ({} cell{})\n",
         measured.len(),
         if measured.len() == 1 { "" } else { "s" }
     );
     let refs: Vec<&artifact::Artifact> = measured.iter().collect();
-    print!("{}", report::summary_table(&refs, &bars));
+    print!("{}", report::summary_table(&refs, bars));
     let mut all_pass = true;
     let mut any_bar = false;
-    for artifact in &measured {
+    for artifact in measured {
         if let Some(note) = &artifact.fingerprint.quiet_note {
             println!("[WARN] {}: {note}", artifact.cell_id);
         }
         for bar in bars.iter().filter(|b| b.cell == artifact.cell_id) {
             any_bar = true;
-            let verdict = gate::evaluate(bar, artifact);
-            let tag = if verdict.passed() { "PASS" } else { "FAIL" };
-            all_pass &= verdict.passed();
-            println!("[{tag}] {}", verdict.detail());
+            all_pass &= gate::print_verdict(&gate::evaluate(bar, artifact));
         }
     }
     if any_bar {
@@ -267,7 +280,31 @@ fn cmd_run(paths: &Paths, selection: &SelectionArgs) -> rdlt_bench::Result<bool>
     println!(
         "artifacts: benches/results/  ·  full gate: `rdlt-bench gate`  ·  tables: `rdlt-bench report`"
     );
-    Ok(all_pass)
+    all_pass
+}
+
+fn cmd_run(paths: &Paths, selection: &SelectionArgs) -> rdlt_bench::Result<bool> {
+    let ctx = prepare(paths)?;
+    let selected: Vec<&Cell> = ctx
+        .all_cells
+        .iter()
+        .filter(|c| selection.selects(c))
+        .collect();
+    if selected.is_empty() {
+        return Err(BenchError("no cells match the selection".into()));
+    }
+    let base_subs: BTreeMap<String, String> = BTreeMap::from([
+        ("repo".to_owned(), paths.repo.display().to_string()),
+        ("benches".to_owned(), paths.benches.display().to_string()),
+        ("cli".to_owned(), paths.cli.display().to_string()),
+    ]);
+    // Fixtures shared across cells within this invocation.
+    let mut started: BTreeMap<String, fixtures::Started> = BTreeMap::new();
+    let mut measured: Vec<artifact::Artifact> = Vec::new();
+    for cell in selected {
+        measured.push(run_one_cell(cell, paths, &ctx, &base_subs, &mut started)?);
+    }
+    Ok(print_run_summary(&measured, &ctx.bars))
 }
 
 fn cmd_gate(paths: &Paths) -> rdlt_bench::Result<bool> {
@@ -279,8 +316,7 @@ fn cmd_gate(paths: &Paths) -> rdlt_bench::Result<bool> {
     }
     let (verdicts, all_pass) = gate::run_gate(&bars, &paths.results)?;
     for verdict in &verdicts {
-        let tag = if verdict.passed() { "PASS" } else { "FAIL" };
-        println!("[{tag}] {}", verdict.detail());
+        gate::print_verdict(verdict);
     }
     println!(
         "{}",

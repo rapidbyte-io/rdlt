@@ -33,11 +33,15 @@ rdlt-connector-iceberg = { workspace = true, optional = true }
 rdlt-connector-postgres = { workspace = true, optional = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
+# The shared pipeline_spec model: serde derive + serde_yaml's singleton_map
+# with-module, and serde_json for the postgres inline `from_value` gate.
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 rdlt-testkit = { workspace = true }
 rdlt-connector = { workspace = true }
-serde_json = { workspace = true }
 
 [lints]
 workspace = true

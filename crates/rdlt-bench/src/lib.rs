@@ -13,10 +13,12 @@ pub mod competitors;
 pub mod fixtures;
 pub mod gate;
 pub mod library_mode;
+pub mod paths;
 pub mod protocol;
 pub mod report;
 pub mod runner;
 pub mod sample;
+pub mod template;
 
 /// Harness errors: one type, offender always named in the message — a bad
 /// cell file must say which file and which cell.

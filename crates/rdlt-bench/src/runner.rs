@@ -10,63 +10,16 @@ use std::time::Instant;
 
 use crate::artifact::{Artifact, CpuStats, RdltSide, RssStats, VerifyOutcome};
 use crate::cells::{Cell, Mode, Timing};
+use crate::paths::Paths;
 use crate::protocol::{self, Sample};
 use crate::sample::{ResourceUsage, Sampler};
+use crate::template::substitute;
 use crate::{BenchError, Result};
-
-/// Repo-anchored paths. The harness runs from the repo root (`cargo run -p
-/// rdlt-bench`) or any directory containing `benches/`.
-#[derive(Debug, Clone)]
-pub struct Paths {
-    pub repo: PathBuf,
-    pub benches: PathBuf,
-    pub cells_dir: PathBuf,
-    pub fixtures_toml: PathBuf,
-    pub bars_toml: PathBuf,
-    pub results: PathBuf,
-    pub cli: PathBuf,
-}
-
-impl Paths {
-    pub fn resolve() -> Result<Self> {
-        let mut dir = std::env::current_dir()?;
-        loop {
-            if dir.join("benches").is_dir() && dir.join("Cargo.toml").is_file() {
-                break;
-            }
-            if !dir.pop() {
-                return Err(BenchError(
-                    "not inside the rdlt repo (no benches/ + Cargo.toml above cwd)".into(),
-                ));
-            }
-        }
-        let benches = dir.join("benches");
-        Ok(Self {
-            cells_dir: benches.join("cells"),
-            fixtures_toml: benches.join("fixtures/fixtures.toml"),
-            bars_toml: benches.join("bars.toml"),
-            results: benches.join("results"),
-            cli: dir.join("target/release/rdlt"),
-            repo: dir,
-            benches,
-        })
-    }
-}
 
 /// Attach the path an io failure concerns — a bare `?` on `std::fs` yields
 /// only "io: {e}" (the `From<io::Error>` shape) with no offender named.
 fn at(path: &Path) -> impl Fn(std::io::Error) -> BenchError + '_ {
     move |e| BenchError(format!("{}: {e}", path.display()))
-}
-
-/// `{{key}}` substitution — unknown keys are left intact so a typo surfaces
-/// verbatim in the failing command rather than vanishing.
-pub fn substitute(template: &str, subs: &BTreeMap<String, String>) -> String {
-    let mut out = template.to_owned();
-    for (key, value) in subs {
-        out = out.replace(&format!("{{{{{key}}}}}"), value);
-    }
-    out
 }
 
 /// Rows/bytes totals a RunReport JSON attributes to its tables.
@@ -102,6 +55,105 @@ pub struct RunDetail {
     pub clock_ms: f64,
 }
 
+/// Render the cell's pipeline template into `run_dir/pipeline.yaml` and expose
+/// it to later substitutions as `{{spec}}`. Runs BEFORE prepare_sh so untimed
+/// setup (snapshot loads, seed refreshes) can drive the very pipeline. `None`
+/// when the cell has no `pipeline` (a custom `command` cell).
+fn render_spec(
+    cell: &Cell,
+    subs: &mut BTreeMap<String, String>,
+    paths: &Paths,
+    run_dir: &Path,
+) -> Result<Option<PathBuf>> {
+    let Some(template) = &cell.pipeline else {
+        return Ok(None);
+    };
+    let raw = std::fs::read_to_string(paths.benches.join(template)).map_err(|e| {
+        BenchError(format!(
+            "cell `{}`: reading template {}: {e}",
+            cell.id,
+            template.display()
+        ))
+    })?;
+    let spec = run_dir.join("pipeline.yaml");
+    std::fs::write(&spec, substitute(&raw, subs)).map_err(at(&spec))?;
+    subs.insert("spec".into(), spec.display().to_string());
+    Ok(Some(spec))
+}
+
+/// Run the cell's untimed `prepare_sh` (seed refresh, state wipe) if declared.
+fn run_prepare(cell: &Cell, subs: &BTreeMap<String, String>) -> Result<()> {
+    let Some(prepare) = &cell.prepare_sh else {
+        return Ok(());
+    };
+    let script = substitute(prepare, subs);
+    let status = std::process::Command::new("sh")
+        .args(["-c", &script])
+        .status()?;
+    if !status.success() {
+        return Err(BenchError(format!("cell `{}`: prepare_sh failed", cell.id)));
+    }
+    Ok(())
+}
+
+/// The measured argv: a custom `command` (substituted), else the release CLI
+/// running the rendered spec with a `--report` sink.
+fn measured_argv(
+    cell: &Cell,
+    subs: &BTreeMap<String, String>,
+    paths: &Paths,
+    spec_path: Option<&PathBuf>,
+    report_path: &Path,
+) -> Vec<String> {
+    match &cell.command {
+        Some(custom) => custom.iter().map(|a| substitute(a, subs)).collect(),
+        None => {
+            let spec = spec_path.expect("checked at load: pipeline or command");
+            vec![
+                paths.cli.display().to_string(),
+                "run".into(),
+                spec.display().to_string(),
+                "--report".into(),
+                report_path.display().to_string(),
+            ]
+        }
+    }
+}
+
+/// The reported measurement for one run, per the cell's timing mode: harness
+/// wall clock, a numeric stdout line, or a `seconds` field in self-reported
+/// JSON (the latter two let a self-timing command exclude its own setup).
+fn measured_wall_ms(cell: &Cell, output: &std::process::Output, clock_ms: f64) -> Result<f64> {
+    match cell.timing {
+        Timing::Wall => Ok(clock_ms),
+        Timing::StdoutMs => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            stdout
+                .lines()
+                .rev()
+                .find_map(|l| l.trim().parse::<f64>().ok())
+                .ok_or_else(|| {
+                    BenchError(format!(
+                        "cell `{}`: timing=stdout_ms but no numeric line on stdout: {stdout}",
+                        cell.id
+                    ))
+                })
+        }
+        Timing::SelfJsonSeconds => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            protocol::last_json_field(&stdout, "seconds")
+                .and_then(|v| v.as_f64())
+                .map(|s| s * 1000.0)
+                .ok_or_else(|| {
+                    BenchError(format!(
+                        "cell `{}`: timing=self_json_seconds but no `seconds` JSON on stdout: {stdout}",
+                        cell.id
+                    ))
+                })
+        }
+    }
+}
+
 fn run_once_subprocess(
     cell: &Cell,
     subs: &BTreeMap<String, String>,
@@ -116,53 +168,10 @@ fn run_once_subprocess(
     // (the merge-strategy 50%-changed regime, finding 1).
     subs.insert("run".into(), seq.to_string());
 
-    // Template renders BEFORE prepare_sh so untimed setup (snapshot loads,
-    // seed refreshes) can run the very pipeline via `{{spec}}`.
     let report_path = run_dir.join("report.json");
-    let spec_path = match &cell.pipeline {
-        Some(template) => {
-            let raw = std::fs::read_to_string(paths.benches.join(template)).map_err(|e| {
-                BenchError(format!(
-                    "cell `{}`: reading template {}: {e}",
-                    cell.id,
-                    template.display()
-                ))
-            })?;
-            let spec = run_dir.join("pipeline.yaml");
-            std::fs::write(&spec, substitute(&raw, &subs)).map_err(at(&spec))?;
-            Some(spec)
-        }
-        None => None,
-    };
-    if let Some(spec) = &spec_path {
-        subs.insert("spec".into(), spec.display().to_string());
-    }
-
-    if let Some(prepare) = &cell.prepare_sh {
-        let script = substitute(prepare, &subs);
-        let status = std::process::Command::new("sh")
-            .args(["-c", &script])
-            .status()?;
-        if !status.success() {
-            return Err(BenchError(format!("cell `{}`: prepare_sh failed", cell.id)));
-        }
-    }
-
-    let argv: Vec<String> = match &cell.command {
-        Some(custom) => custom.iter().map(|a| substitute(a, &subs)).collect(),
-        None => {
-            let spec = spec_path
-                .as_ref()
-                .expect("checked at load: pipeline or command");
-            vec![
-                paths.cli.display().to_string(),
-                "run".into(),
-                spec.display().to_string(),
-                "--report".into(),
-                report_path.display().to_string(),
-            ]
-        }
-    };
+    let spec_path = render_spec(cell, &mut subs, paths, run_dir)?;
+    run_prepare(cell, &subs)?;
+    let argv = measured_argv(cell, &subs, paths, spec_path.as_ref(), &report_path);
 
     let capture_stdout = cell.timing != Timing::Wall;
     let started = Instant::now();
@@ -191,34 +200,7 @@ fn run_once_subprocess(
         )));
     }
 
-    let wall_ms = match cell.timing {
-        Timing::Wall => clock_ms,
-        Timing::StdoutMs => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            stdout
-                .lines()
-                .rev()
-                .find_map(|l| l.trim().parse::<f64>().ok())
-                .ok_or_else(|| {
-                    BenchError(format!(
-                        "cell `{}`: timing=stdout_ms but no numeric line on stdout: {stdout}",
-                        cell.id
-                    ))
-                })?
-        }
-        Timing::SelfJsonSeconds => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            protocol::last_json_field(&stdout, "seconds")
-                .and_then(|v| v.as_f64())
-                .map(|s| s * 1000.0)
-                .ok_or_else(|| {
-                    BenchError(format!(
-                        "cell `{}`: timing=self_json_seconds but no `seconds` JSON on stdout: {stdout}",
-                        cell.id
-                    ))
-                })?
-        }
-    };
+    let wall_ms = measured_wall_ms(cell, &output, clock_ms)?;
 
     let report = report_path
         .exists()
@@ -421,7 +403,10 @@ pub fn run_cell(
     let invocation = tempfile::tempdir().map_err(|e| BenchError(format!("tempdir: {e}")))?;
     let mut run_seq = 0u32;
 
-    let mut rdlt = match cell.mode {
+    // Each mode YIELDS its measured (rdlt side, verify outcome); the Artifact
+    // is assembled once below, so the per-mode arms stay small and the
+    // fixed-shape fields (fingerprint, workload, timestamps) live in one place.
+    let (rdlt_side, verify): (RdltSide, Option<VerifyOutcome>) = match cell.mode {
         Mode::Subprocess => {
             if cell.command.is_none() && !paths.cli.is_file() {
                 return Err(BenchError(format!(
@@ -437,20 +422,9 @@ pub fn run_cell(
                 let seq = run_seq - 1;
                 run_once_subprocess(cell, &subs, paths, &run_dir, seq, counted)
             })?;
-            let mut side = rdlt_side(&samples);
-            let verify = verify_outcome(cell, &samples)?;
-            return_side(
-                cell,
-                paths,
-                fixture,
-                competitor_pins,
-                competitors,
-                quiet_note,
-                {
-                    side.streams = vec![];
-                    (side, verify)
-                },
-            )
+            // Subprocess mode has no per-stream attribution; `rdlt_side` already
+            // leaves `streams` empty.
+            (rdlt_side(&samples), verify_outcome(cell, &samples)?)
         }
         Mode::Library => {
             let samples = protocol::run_protocol(cell.warmups, cell.runs, |_counted| {
@@ -462,15 +436,7 @@ pub fn run_cell(
             })?;
             let side = crate::library_mode::side_from(&samples);
             let verify = crate::library_mode::verify_from(cell, &samples)?;
-            return_side(
-                cell,
-                paths,
-                fixture,
-                competitor_pins,
-                competitors,
-                quiet_note,
-                (side, verify),
-            )
+            (side, verify)
         }
         Mode::Hyperfine => {
             fixture.reset()?;
@@ -506,44 +472,11 @@ pub fn run_cell(
                 streams: vec![],
                 runs_ms,
             };
-            return_side(
-                cell,
-                paths,
-                fixture,
-                competitor_pins,
-                competitors,
-                quiet_note,
-                (side, None),
-            )
+            (side, None)
         }
-    }?;
+    };
 
-    // Fill competitor→rdlt ratios now that the rdlt median exists.
-    let rdlt_median = rdlt.rdlt.median_ms;
-    for side in rdlt.competitors.values_mut() {
-        if let crate::artifact::CompetitorSide::Ok {
-            median_ms,
-            ratio_vs_rdlt,
-            ..
-        } = side
-        {
-            *ratio_vs_rdlt = Some(*median_ms / rdlt_median);
-        }
-    }
-    Ok(rdlt)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn return_side(
-    cell: &Cell,
-    _paths: &Paths,
-    fixture: &crate::fixtures::Started,
-    competitor_pins: BTreeMap<String, String>,
-    competitors: BTreeMap<String, crate::artifact::CompetitorSide>,
-    quiet_note: Option<String>,
-    (rdlt, verify): (RdltSide, Option<VerifyOutcome>),
-) -> Result<Artifact> {
-    Ok(Artifact {
+    let mut artifact = Artifact {
         format_version: crate::artifact::ARTIFACT_FORMAT_VERSION,
         cell_id: cell.id.clone(),
         class: cell.class,
@@ -556,25 +489,29 @@ fn return_side(
             quiet_note,
         ),
         workload: cell.workload.clone(),
-        rdlt,
+        rdlt: rdlt_side,
         competitors,
         verify,
-    })
+    };
+
+    // Fill competitor→rdlt ratios now that the rdlt median exists.
+    let rdlt_median = artifact.rdlt.median_ms;
+    for side in artifact.competitors.values_mut() {
+        if let crate::artifact::CompetitorSide::Ok {
+            median_ms,
+            ratio_vs_rdlt,
+            ..
+        } = side
+        {
+            *ratio_vs_rdlt = Some(*median_ms / rdlt_median);
+        }
+    }
+    Ok(artifact)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn substitution_replaces_known_and_keeps_unknown() {
-        let mut subs = BTreeMap::new();
-        subs.insert("conn".to_owned(), "pg://x".to_owned());
-        assert_eq!(
-            substitute("a {{conn}} b {{typo}}", &subs),
-            "a pg://x b {{typo}}"
-        );
-    }
 
     #[test]
     fn report_totals_sum_across_tables() {

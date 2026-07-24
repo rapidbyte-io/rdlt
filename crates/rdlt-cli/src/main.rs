@@ -4,7 +4,9 @@
 //!
 //! ONE YAML document describes the whole pipeline: pipeline-wide settings,
 //! the source (inline, or `config: path` to a reusable document), and the
-//! destination — one file, one format, end to end.
+//! destination — one file, one format, end to end. The document model and its
+//! construction into a pipeline are the shared [`rdlt::pipeline_spec`]; this
+//! binary parses the file, renders the event feed, and emits the report.
 //!
 //! Everything the CLI does, the library does — the CLI adds zero engine
 //! capability. Events stream to stderr (human-readable); the
@@ -14,114 +16,13 @@
 //! 0 success · 2 config · 3 schema contract · 4 source · 5 destination · 6 WAL/disk ·
 //! 7 cancelled · 64 usage.
 
+mod cdc;
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use rdlt::pipeline_spec::{self, Spec, SpecError};
 use rdlt::prelude::*;
-use serde::Deserialize;
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Spec {
-    pipeline: String,
-    #[serde(default)]
-    workdir: Option<PathBuf>,
-    // singleton_map: YAML's natural `write_mode: {merge: {key: […]}}` /
-    // `source: postgres: …` singleton-map form for externally-tagged
-    // enums (serde_yaml 0.9 otherwise wants `!tag` syntax).
-    #[serde(default, with = "serde_yaml::with::singleton_map")]
-    write_mode: Option<WriteModeSpec>,
-    #[serde(with = "serde_yaml::with::singleton_map")]
-    source: SourceSpec,
-    #[serde(with = "serde_yaml::with::singleton_map")]
-    destination: DestSpec,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum WriteModeSpec {
-    Append,
-    Replace,
-    Merge { key: Vec<String> },
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-enum SourceSpec {
-    /// Path to the declarative REST source YAML.
-    Rest { config: PathBuf },
-    /// Path to the file source YAML (jsonl/parquet streams).
-    File { config: PathBuf },
-    /// Postgres source: the config document INLINE (the natural form — the
-    /// pipeline is one YAML document), or `config: path` referencing a
-    /// reusable YAML/JSON file with the identical shape.
-    Postgres(PgSourceSpec),
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum PgSourceSpec {
-    /// `source: postgres: {config: source.yaml}` — tried first; strict
-    /// (`deny_unknown_fields`), so `config` mixed with inline fields is a
-    /// loud error, never a silently-ignored document.
-    File(PgSourceFile),
-    /// The full source document inline (boxed — it dwarfs the path form).
-    Inline(Box<rdlt::connector::postgres::source::PostgresConfig>),
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PgSourceFile {
-    config: PathBuf,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-enum DestSpec {
-    Duckdb {
-        path: PathBuf,
-        memory_limit: Option<String>,
-        /// The SAME destination-options vocabulary as postgres — shared
-        /// sqlcore types, one YAML shape.
-        merge_strategy: Option<rdlt::connector::duckdb::dest::MergeStrategy>,
-        tables:
-            Option<std::collections::BTreeMap<String, rdlt::connector::duckdb::dest::TableOptions>>,
-        /// dlt-parity passthrough: extensions to LOAD and `SET` settings.
-        extensions: Option<Vec<String>>,
-        settings: Option<std::collections::BTreeMap<String, String>>,
-    },
-    Postgres {
-        conn: String,
-        dataset: String,
-        /// Optional TLS block: `tls: {mode: verify_full, root_cert: /ca.pem}`.
-        tls: Option<rdlt::connector::postgres::tls::TlsPolicy>,
-        /// Destination-wide merge strategy
-        /// ("delete_insert" | "upsert" | "scd2").
-        merge_strategy: Option<rdlt::connector::postgres::dest::MergeStrategy>,
-        /// Per-table options — `tables: <name>: {…}` with
-        /// `merge_strategy`, `hard_delete`, `dedup_sort`, `merge_key`, and
-        /// `scd2: {valid_from, valid_to, absent}`.
-        tables: Option<
-            std::collections::BTreeMap<String, rdlt::connector::postgres::dest::PgTableOptions>,
-        >,
-    },
-    Parquet {
-        path: PathBuf,
-    },
-    /// The full file-destination vocabulary — format (parquet|jsonl),
-    /// location (local | s3), partition_by. The `parquet:` spelling above
-    /// stays frozen (equivalent to file: local parquet).
-    File {
-        path: String,
-        format: Option<rdlt::connector::file::dest::DestFormat>,
-        location: Option<rdlt::connector::file::location::LocationOptions>,
-        partition_by: Option<String>,
-    },
-    /// The Iceberg destination — the crate's full config vocabulary inline
-    /// (catalog/auth, namespace, storage override, per-stream tables with
-    /// partition_by).
-    Iceberg(Box<rdlt::connector::iceberg::IcebergConfig>),
-}
 
 /// Bound glibc's allocator retention: data movement churns
 /// large short-lived buffers (slabs, arenas, arrow builds), and glibc's default
@@ -197,264 +98,35 @@ impl From<RdltError> for CliError {
     }
 }
 
+impl From<SpecError> for CliError {
+    fn from(e: SpecError) -> Self {
+        match e {
+            // A spec-resolution problem is a config error (exit 2), the same
+            // taxonomy the loud parse/IO paths below use.
+            SpecError::Resolve(message) => CliError::Usage(message),
+            // The builder's own typed error keeps its exit-code mapping.
+            SpecError::Build(error) => CliError::Run(error),
+        }
+    }
+}
+
 async fn run(spec_path: PathBuf, report_path: Option<PathBuf>) -> Result<(), CliError> {
     let raw = std::fs::read_to_string(&spec_path)
         .map_err(|e| CliError::Usage(format!("reading {}: {e}", spec_path.display())))?;
     let spec: Spec =
         serde_yaml::from_str(&raw).map_err(|e| CliError::Usage(format!("parsing spec: {e}")))?;
 
-    // The source and destination arms each fix the builder's generic type, so the
-    // whole tail expands per combination via a macro (typestate-friendly).
-    macro_rules! run_with {
-        ($source:expr) => {{
-            let builder = Pipeline::builder(spec.pipeline.as_str()).source($source);
-            let builder = match &spec.write_mode {
-                None | Some(WriteModeSpec::Append) => builder.write_mode(WriteMode::Append),
-                Some(WriteModeSpec::Replace) => builder.write_mode(WriteMode::Replace),
-                Some(WriteModeSpec::Merge { key }) => {
-                    builder.write_mode(WriteMode::Merge { key: key.clone() })
-                }
-            };
-            let builder = match &spec.workdir {
-                Some(dir) => builder.workdir(dir),
-                None => builder.workdir(".rdlt"),
-            };
-            let mut pipeline = match &spec.destination {
-                DestSpec::Duckdb {
-                    path,
-                    memory_limit,
-                    merge_strategy,
-                    tables,
-                    extensions,
-                    settings,
-                } => {
-                    let mut dest = rdlt::connector::duckdb::dest::DuckDb::open(path)
-                        .map_err(|e| CliError::Usage(format!("opening duckdb: {e}")))?;
-                    for ext in extensions.iter().flatten() {
-                        dest = dest
-                            .extension(ext)
-                            .map_err(|e| CliError::Usage(e.to_string()))?;
-                    }
-                    for (key, value) in settings.iter().flatten() {
-                        dest = dest
-                            .setting(key, value)
-                            .map_err(|e| CliError::Usage(e.to_string()))?;
-                    }
-                    if let Some(limit) = memory_limit {
-                        dest = dest
-                            .memory_limit(limit)
-                            .map_err(|e| CliError::Usage(format!("duckdb memory_limit: {e}")))?;
-                    }
-                    if merge_strategy.is_some() || tables.is_some() {
-                        let options = rdlt::connector::duckdb::dest::DestOptions {
-                            merge_strategy: *merge_strategy,
-                            tables: tables.clone().unwrap_or_default(),
-                        };
-                        dest = dest
-                            .options(options)
-                            .map_err(|e| CliError::Usage(format!("destination options: {e}")))?;
-                    }
-                    builder.destination(dest).build()?
-                }
-                DestSpec::Postgres {
-                    conn,
-                    dataset,
-                    tls,
-                    merge_strategy,
-                    tables,
-                } => {
-                    let mut dest =
-                        rdlt::connector::postgres::dest::Postgres::connect(conn).dataset(dataset);
-                    if let Some(policy) = tls {
-                        dest = dest.tls(policy.clone());
-                    }
-                    if merge_strategy.is_some() || tables.is_some() {
-                        let options = rdlt::connector::postgres::dest::PgDestOptions {
-                            merge_strategy: *merge_strategy,
-                            tables: tables.clone().unwrap_or_default(),
-                        };
-                        dest = dest
-                            .options(options)
-                            .map_err(|e| CliError::Usage(format!("destination options: {e}")))?;
-                    }
-                    builder.destination(dest).build()?
-                }
-                DestSpec::Parquet { path } => {
-                    let dest = rdlt::connector::file::ParquetDir::open(path)
-                        .map_err(|e| CliError::Usage(format!("opening parquet dir: {e}")))?;
-                    builder.destination(dest).build()?
-                }
-                DestSpec::File {
-                    path,
-                    format,
-                    location,
-                    partition_by,
-                } => {
-                    let mut config = rdlt::connector::file::dest::FileDestConfig::new(path.clone());
-                    if let Some(format) = format {
-                        config = config.with_format(*format);
-                    }
-                    if let Some(location) = location {
-                        config = config.with_location(location.clone());
-                    }
-                    if let Some(column) = partition_by {
-                        config = config.with_partition_by(column.clone());
-                    }
-                    let dest = rdlt::connector::file::dest::FileDest::from_config(config)
-                        .map_err(|e| CliError::Usage(format!("file destination: {e}")))?;
-                    builder.destination(dest).build()?
-                }
-                DestSpec::Iceberg(config) => {
-                    let dest =
-                        rdlt::connector::iceberg::IcebergDest::from_config((**config).clone())
-                            .map_err(|e| CliError::Usage(format!("iceberg destination: {e}")))?;
-                    builder.destination(dest).build()?
-                }
-            };
-            drive(&mut pipeline, report_path).await
-        }};
+    // The exactly-once CDC composition advisories need the resolved postgres
+    // SOURCE config; `pg_source_config` is `None` for other source kinds.
+    if let Some(config) = spec.pg_source_config() {
+        let config = config?;
+        for warning in cdc::cdc_composition_warnings(&spec, &config) {
+            eprintln!("warning: {warning}");
+        }
     }
 
-    // Source config files: YAML by default, JSON when the file says so —
-    // the same document shape either way (the library's from_yaml/from_json
-    // share validation; embedders pass serde_json::Value via from_value).
-    let is_json = |path: &PathBuf| {
-        path.extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("json"))
-    };
-    match &spec.source {
-        SourceSpec::Rest { config } => {
-            let text = std::fs::read_to_string(config)
-                .map_err(|e| CliError::Usage(format!("reading {}: {e}", config.display())))?;
-            let source = if is_json(config) {
-                rdlt::connector::rest::RestSource::from_json(&text)
-            } else {
-                rdlt::connector::rest::RestSource::from_yaml(&text)
-            }
-            .map_err(|e| CliError::Usage(e.to_string()))?;
-            run_with!(source)
-        }
-        SourceSpec::File { config } => {
-            let text = std::fs::read_to_string(config)
-                .map_err(|e| CliError::Usage(format!("reading {}: {e}", config.display())))?;
-            let source = if is_json(config) {
-                rdlt::connector::file::FileSource::from_json(&text)
-            } else {
-                rdlt::connector::file::FileSource::from_yaml(&text)
-            }
-            .map_err(|e| CliError::Usage(e.to_string()))?;
-            run_with!(source)
-        }
-        SourceSpec::Postgres(pg) => {
-            let parsed = match pg {
-                PgSourceSpec::File(file) => {
-                    let path = &file.config;
-                    let text = std::fs::read_to_string(path)
-                        .map_err(|e| CliError::Usage(format!("reading {}: {e}", path.display())))?;
-                    if is_json(path) {
-                        rdlt::connector::postgres::source::PostgresConfig::from_json(&text)
-                    } else {
-                        rdlt::connector::postgres::source::PostgresConfig::from_yaml(&text)
-                    }
-                    .map_err(|e| CliError::Usage(e.to_string()))?
-                }
-                PgSourceSpec::Inline(inline) => {
-                    // Untagged deserialization bypassed the document
-                    // validation; route through the shared from_value gate
-                    // so inline and file configs are held to identical rules.
-                    let value =
-                        serde_json::to_value(inline).map_err(|e| CliError::Usage(e.to_string()))?;
-                    rdlt::connector::postgres::source::PostgresConfig::from_value(value)
-                        .map_err(|e| CliError::Usage(e.to_string()))?
-                }
-            };
-            for warning in cdc_composition_warnings(&spec, &parsed) {
-                eprintln!("warning: {warning}");
-            }
-            let source = rdlt::connector::postgres::source::PostgresSource::new(parsed);
-            run_with!(source)
-        }
-    }
-}
-
-/// The exactly-once-outcome CDC composition is `write_mode = merge{key}` +
-/// destination `merge_strategy = upsert` + `hard_delete = <flag column>`. Its
-/// absence WARNS, never blocks — other shapes still run, but as at-least-once
-/// delivery and/or soft-delete (deletions kept as flagged rows).
-fn cdc_composition_warnings(
-    spec: &Spec,
-    config: &rdlt::connector::postgres::source::PostgresConfig,
-) -> Vec<String> {
-    let Some(cdc) = &config.cdc else {
-        return Vec::new();
-    };
-    let mut warnings = Vec::new();
-    if !matches!(spec.write_mode, Some(WriteModeSpec::Merge { .. })) {
-        warnings.push(
-            "cdc: write_mode is not merge — changed rows will append instead of \
-             converging; set write_mode: {merge: {key: [...]}}"
-                .to_string(),
-        );
-    }
-    match &spec.destination {
-        DestSpec::Postgres {
-            merge_strategy,
-            tables,
-            ..
-        } => {
-            if !matches!(
-                merge_strategy,
-                Some(rdlt::connector::postgres::dest::MergeStrategy::Upsert)
-            ) {
-                warnings.push(
-                    "cdc: destination merge_strategy is not upsert — the \
-                     recommended composition is merge_strategy = \"upsert\""
-                        .to_string(),
-                );
-            }
-            match &config.tables {
-                // Schema-wide discovery: the table set is unknown here, so the
-                // per-table check below can't run — emit one generic notice
-                // rather than staying silent about the missing hard_delete.
-                None => warnings.push(format!(
-                    "cdc: schema-wide discovery (no `tables:` list) — give every \
-                     CDC table hard_delete = \"{}\" in the destination options, \
-                     or deletes land as flagged rows (soft delete) instead of \
-                     removals",
-                    cdc.flag_column
-                )),
-                Some(listed) => {
-                    for table in listed {
-                        let has_flag = tables
-                            .as_ref()
-                            .and_then(|t| t.get(&table.name))
-                            .and_then(|t| t.hard_delete.as_deref())
-                            == Some(cdc.flag_column.as_str());
-                        if !has_flag {
-                            warnings.push(format!(
-                                "cdc: table `{}` has no hard_delete = \"{}\" — \
-                                 deletes will land as flagged rows (soft delete) \
-                                 instead of removals",
-                                table.name, cdc.flag_column
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-        DestSpec::Duckdb { .. }
-        | DestSpec::Parquet { .. }
-        | DestSpec::File { .. }
-        | DestSpec::Iceberg(_) => {
-            warnings.push(format!(
-                "cdc: this destination has no hard-delete support — the \
-                 deletion flag `{}` lands as data (soft delete); deletes are \
-                 kept as flagged rows, not removed",
-                cdc.flag_column
-            ));
-        }
-    }
-    warnings
+    let mut pipeline = pipeline_spec::build_pipeline(&spec)?;
+    drive(&mut pipeline, report_path).await
 }
 
 /// Event feed + run + report emission (shared tail after the pipeline is built).
@@ -514,17 +186,17 @@ async fn drive(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use rdlt::pipeline_spec::{DestSpec, PgSourceSpec, SourceSpec, Spec, WriteModeSpec};
+    use serde::Deserialize;
 
     fn spec(yaml: &str) -> Spec {
         serde_yaml::from_str(yaml).expect("spec parses")
     }
 
-    /// Every document in the shared parity fixture must parse as a Spec.
-    /// The bench harness pins the SAME file against its library-mode
-    /// parser, so a destination or source kind added to one parser
-    /// without the other fails one of the two pins instead of drifting
-    /// silently.
+    /// Every document in the shared parity fixture must parse as a Spec. The
+    /// bench harness pins the SAME file against the SAME shared model
+    /// (`rdlt::pipeline_spec`), so this fixture — the one place a destination
+    /// or source kind is added first — is exercised from both consumers.
     #[test]
     fn shared_parity_specs_all_parse() {
         let raw = include_str!(concat!(
@@ -538,14 +210,6 @@ mod tests {
             parsed += 1;
         }
         assert_eq!(parsed, 5, "fixture covers every destination kind");
-    }
-
-    fn cdc_config() -> rdlt::connector::postgres::source::PostgresConfig {
-        rdlt::connector::postgres::source::PostgresConfig::from_yaml(
-            "conn: host=localhost\ncdc:\n  slot: s\n  publication: p\n\
-             tables:\n  - name: orders\n",
-        )
-        .expect("config")
     }
 
     /// The iceberg destination block parses the crate's full vocabulary from
@@ -824,89 +488,5 @@ destination:
             }
             other => panic!("expected file destination, got {other:?}"),
         }
-    }
-
-    /// CDC-composition warning matrix: the recommended composition is silent;
-    /// every missing leg warns with the fix; non-merge destinations warn soft
-    /// delete.
-    #[test]
-    fn cdc_composition_warning_matrix() {
-        let recommended = spec(
-            r#"
-pipeline: p
-write_mode: {merge: {key: [id]}}
-source:
-  postgres: {config: src.yaml}
-destination:
-  postgres:
-    conn: host=x
-    dataset: d
-    merge_strategy: upsert
-    tables:
-      orders: {hard_delete: _rdlt_deleted}
-"#,
-        );
-        assert!(cdc_composition_warnings(&recommended, &cdc_config()).is_empty());
-
-        let append = spec(
-            r#"
-pipeline: p
-source:
-  postgres: {config: src.yaml}
-destination:
-  postgres: {conn: host=x, dataset: d}
-"#,
-        );
-        let warnings = cdc_composition_warnings(&append, &cdc_config());
-        assert_eq!(warnings.len(), 3, "{warnings:?}");
-        assert!(warnings[0].contains("write_mode"), "{warnings:?}");
-        assert!(warnings[1].contains("upsert"), "{warnings:?}");
-        assert!(
-            warnings[2].contains("`orders`") && warnings[2].contains("hard_delete"),
-            "{warnings:?}"
-        );
-
-        let duckdb = spec(
-            r#"
-pipeline: p
-write_mode: {merge: {key: [id]}}
-source:
-  postgres: {config: src.yaml}
-destination:
-  duckdb: {path: out.db}
-"#,
-        );
-        let warnings = cdc_composition_warnings(&duckdb, &cdc_config());
-        assert_eq!(warnings.len(), 1, "{warnings:?}");
-        assert!(warnings[0].contains("soft delete"), "{warnings:?}");
-
-        // Schema-wide discovery (no tables list): the hard_delete leg still
-        // warns — once, generically.
-        let schema_wide = rdlt::connector::postgres::source::PostgresConfig::from_yaml(
-            "conn: host=localhost\ncdc:\n  slot: s\n  publication: p\n",
-        )
-        .expect("config");
-        let recommended_no_tables = spec(
-            r#"
-pipeline: p
-write_mode: {merge: {key: [id]}}
-source:
-  postgres: {config: src.yaml}
-destination:
-  postgres: {conn: host=x, dataset: d, merge_strategy: upsert}
-"#,
-        );
-        let warnings = cdc_composition_warnings(&recommended_no_tables, &schema_wide);
-        assert_eq!(warnings.len(), 1, "{warnings:?}");
-        assert!(
-            warnings[0].contains("schema-wide") && warnings[0].contains("hard_delete"),
-            "{warnings:?}"
-        );
-
-        // No cdc block: silent regardless of shape.
-        let plain =
-            rdlt::connector::postgres::source::PostgresConfig::from_yaml("conn: host=localhost\n")
-                .expect("config");
-        assert!(cdc_composition_warnings(&append, &plain).is_empty());
     }
 }

@@ -130,6 +130,15 @@ pub fn evaluate(bar: &Bar, artifact: &Artifact) -> Verdict {
     }
 }
 
+/// Render one verdict as its `[PASS|FAIL] detail` line; returns whether it
+/// passed. The one place the tag wording lives — `gate` and the run summary
+/// print through here.
+pub fn print_verdict(verdict: &Verdict) -> bool {
+    let tag = if verdict.passed() { "PASS" } else { "FAIL" };
+    println!("[{tag}] {}", verdict.detail());
+    verdict.passed()
+}
+
 /// Evaluate every bar; returns Ok(report) only if all pass, Err(report) with
 /// every verdict otherwise — the caller exits nonzero.
 pub fn run_gate(bars: &[Bar], results_dir: &Path) -> Result<(Vec<Verdict>, bool)> {

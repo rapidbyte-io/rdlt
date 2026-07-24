@@ -336,11 +336,120 @@ fn run_sh(script: &str, cwd: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Bring up the postgres container: start it, wait for readiness, seed it
+/// (retrying across the image's post-initdb restart), capture the seed's
+/// printed dataset identity, and spawn any sidecar service beside it.
+fn bring_up_postgres(
+    def: &FixtureDef,
+    subs: &BTreeMap<String, String>,
+    data: &Path,
+    hashes: &mut BTreeMap<String, String>,
+    guard: &mut CleanupGuard,
+) -> Result<()> {
+    let sub = |s: &str| crate::template::substitute(s, subs);
+    let engine = container_engine()?;
+    let port = def
+        .port
+        .ok_or_else(|| BenchError(format!("fixture `{}`: missing port", def.id)))?;
+    let name = start_container(
+        &engine,
+        def,
+        format!("{port}:5432"),
+        &["-e", "POSTGRES_PASSWORD=postgres"],
+        guard,
+    )?;
+    // pg_isready inside the container, then the host-published port.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let ready = Command::new(&engine)
+            .args(["exec", &name, "pg_isready", "-U", "postgres"])
+            .output()
+            .is_ok_and(|o| o.status.success());
+        if ready {
+            break;
+        }
+        if Instant::now() > deadline {
+            return Err(BenchError(format!("{name}: postgres never became ready")));
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    if let Some(seed) = &def.seed_sql {
+        let seed_path = sub(&seed.display().to_string());
+        // The postgres image restarts once after initdb: pg_isready
+        // can pass against the init-phase temporary server, so retry
+        // seeding across the restart gap.
+        let mut out = None;
+        for attempt in 0..5 {
+            if attempt > 0 {
+                std::thread::sleep(Duration::from_secs(2));
+            }
+            let seed_file = std::fs::File::open(&seed_path)
+                .map_err(|e| BenchError(format!("opening seed {seed_path}: {e}")))?;
+            let result = Command::new(&engine)
+                .args(["exec", "-i", &name, "psql", "-q", "-U", "postgres"])
+                .stdin(seed_file)
+                .output()?;
+            let ok = result.status.success();
+            out = Some(result);
+            if ok {
+                break;
+            }
+        }
+        let out = out.expect("at least one attempt ran");
+        if !out.status.success() {
+            return Err(BenchError(format!(
+                "seeding `{}` failed after retries: {}",
+                def.id,
+                String::from_utf8_lossy(&out.stderr)
+            )));
+        }
+        // Seed scripts print their own dataset identity — capture it.
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let identity: Vec<&str> = stdout
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect();
+        if !identity.is_empty() {
+            hashes.insert("seed_output".into(), identity.join(" | "));
+        }
+    }
+    // Sidecar service beside the container (the REST→PG cell needs
+    // both the mock API and a Postgres destination).
+    if let Some(script) = &def.service_sh {
+        spawn_service(def, &sub(script), data, guard)?;
+    }
+    Ok(())
+}
+
+/// Bring up a generic container (015: the RUSTFS object store): start it with
+/// its `port:container_port` mapping and `run_args`, then wait for the host
+/// port to accept connections.
+fn bring_up_container(def: &FixtureDef, guard: &mut CleanupGuard) -> Result<()> {
+    let engine = container_engine()?;
+    let port = def
+        .port
+        .ok_or_else(|| BenchError(format!("fixture `{}`: missing port", def.id)))?;
+    let container_port = def
+        .container_port
+        .ok_or_else(|| BenchError(format!("fixture `{}`: missing container_port", def.id)))?;
+    let run_args: Vec<&str> = def.run_args.iter().map(String::as_str).collect();
+    start_container(
+        &engine,
+        def,
+        format!("{port}:{container_port}"),
+        &run_args,
+        guard,
+    )?;
+    wait_tcp(port, &def.id)?;
+    Ok(())
+}
+
 pub fn start(def: &FixtureDef, subs: &BTreeMap<String, String>) -> Result<Started> {
     let data = tempfile::tempdir().map_err(|e| BenchError(format!("tempdir: {e}")))?;
     let mut subs = subs.clone();
     subs.insert("data".into(), data.path().display().to_string());
-    let sub = |s: &str| crate::runner::substitute(s, &subs);
+    let sub = |s: &str| crate::template::substitute(s, &subs);
 
     let mut hashes = BTreeMap::new();
     let mut guard = CleanupGuard {
@@ -353,97 +462,9 @@ pub fn start(def: &FixtureDef, subs: &BTreeMap<String, String>) -> Result<Starte
     match def.kind {
         FixtureKind::None | FixtureKind::GeneratedFiles => {}
         FixtureKind::PostgresContainer => {
-            let engine = container_engine()?;
-            let port = def
-                .port
-                .ok_or_else(|| BenchError(format!("fixture `{}`: missing port", def.id)))?;
-            let name = start_container(
-                &engine,
-                def,
-                format!("{port}:5432"),
-                &["-e", "POSTGRES_PASSWORD=postgres"],
-                &mut guard,
-            )?;
-            // pg_isready inside the container, then the host-published port.
-            let deadline = Instant::now() + Duration::from_secs(30);
-            loop {
-                let ready = Command::new(&engine)
-                    .args(["exec", &name, "pg_isready", "-U", "postgres"])
-                    .output()
-                    .is_ok_and(|o| o.status.success());
-                if ready {
-                    break;
-                }
-                if Instant::now() > deadline {
-                    return Err(BenchError(format!("{name}: postgres never became ready")));
-                }
-                std::thread::sleep(Duration::from_millis(300));
-            }
-            if let Some(seed) = &def.seed_sql {
-                let seed_path = sub(&seed.display().to_string());
-                // The postgres image restarts once after initdb: pg_isready
-                // can pass against the init-phase temporary server, so retry
-                // seeding across the restart gap.
-                let mut out = None;
-                for attempt in 0..5 {
-                    if attempt > 0 {
-                        std::thread::sleep(Duration::from_secs(2));
-                    }
-                    let seed_file = std::fs::File::open(&seed_path)
-                        .map_err(|e| BenchError(format!("opening seed {seed_path}: {e}")))?;
-                    let result = Command::new(&engine)
-                        .args(["exec", "-i", &name, "psql", "-q", "-U", "postgres"])
-                        .stdin(seed_file)
-                        .output()?;
-                    let ok = result.status.success();
-                    out = Some(result);
-                    if ok {
-                        break;
-                    }
-                }
-                let out = out.expect("at least one attempt ran");
-                if !out.status.success() {
-                    return Err(BenchError(format!(
-                        "seeding `{}` failed after retries: {}",
-                        def.id,
-                        String::from_utf8_lossy(&out.stderr)
-                    )));
-                }
-                // Seed scripts print their own dataset identity — capture it.
-                let stdout = String::from_utf8_lossy(&out.stdout);
-                let identity: Vec<&str> = stdout
-                    .lines()
-                    .map(str::trim)
-                    .filter(|l| !l.is_empty())
-                    .collect();
-                if !identity.is_empty() {
-                    hashes.insert("seed_output".into(), identity.join(" | "));
-                }
-            }
-            // Sidecar service beside the container (the REST→PG cell needs
-            // both the mock API and a Postgres destination).
-            if let Some(script) = &def.service_sh {
-                spawn_service(def, &sub(script), data.path(), &mut guard)?;
-            }
+            bring_up_postgres(def, &subs, data.path(), &mut hashes, &mut guard)?;
         }
-        FixtureKind::Container => {
-            let engine = container_engine()?;
-            let port = def
-                .port
-                .ok_or_else(|| BenchError(format!("fixture `{}`: missing port", def.id)))?;
-            let container_port = def.container_port.ok_or_else(|| {
-                BenchError(format!("fixture `{}`: missing container_port", def.id))
-            })?;
-            let run_args: Vec<&str> = def.run_args.iter().map(String::as_str).collect();
-            start_container(
-                &engine,
-                def,
-                format!("{port}:{container_port}"),
-                &run_args,
-                &mut guard,
-            )?;
-            wait_tcp(port, &def.id)?;
-        }
+        FixtureKind::Container => bring_up_container(def, &mut guard)?,
         FixtureKind::Service => {
             let script = def
                 .service_sh

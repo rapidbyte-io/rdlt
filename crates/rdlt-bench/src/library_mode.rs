@@ -6,106 +6,24 @@
 //! they are null here with a stated reason — a metric is never fabricated;
 //! an absent number is null with a reason.
 //!
-//! The `Spec` below deliberately duplicates the CLI's YAML spec structs
-//! (crates/rdlt-cli/src/main.rs): both are thin consumers of the same library
-//! surface, and this harness must parse the SAME pipeline templates the
-//! subprocess mode feeds the CLI. The duplication is a deliberate constraint,
-//! not an oversight — the shared fixture `benches/parity_specs.yaml` pins both
-//! parsers so the two struct sets can never drift apart.
+//! The pipeline templates this harness renders are the SAME documents the
+//! subprocess mode feeds the CLI, so both parse them through the one shared
+//! model, [`rdlt::pipeline_spec`]. The shared fixture
+//! `benches/parity_specs.yaml` pins that model from both consumers.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Instant;
 
+use rdlt::pipeline_spec::{self, Spec};
 use rdlt::prelude::*;
-use serde::Deserialize;
 
 use crate::artifact::{CpuStats, RdltSide, RssStats, StreamAttribution, VerifyOutcome};
 use crate::cells::Cell;
+use crate::paths::Paths;
 use crate::protocol::{self, Sample};
-use crate::runner::{Paths, substitute};
+use crate::template::substitute;
 use crate::{BenchError, Result};
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Spec {
-    pipeline: String,
-    #[serde(default)]
-    workdir: Option<PathBuf>,
-    #[serde(default, with = "serde_yaml::with::singleton_map")]
-    write_mode: Option<WriteModeSpec>,
-    #[serde(with = "serde_yaml::with::singleton_map")]
-    source: SourceSpec,
-    #[serde(with = "serde_yaml::with::singleton_map")]
-    destination: DestSpec,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum WriteModeSpec {
-    Append,
-    Replace,
-    Merge { key: Vec<String> },
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-enum SourceSpec {
-    Rest { config: PathBuf },
-    File { config: PathBuf },
-    Postgres(PgSourceSpec),
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum PgSourceSpec {
-    File(PgSourceFile),
-    Inline(Box<rdlt::connector::postgres::source::PostgresConfig>),
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PgSourceFile {
-    config: PathBuf,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-enum DestSpec {
-    Duckdb {
-        path: PathBuf,
-        memory_limit: Option<String>,
-        /// The SAME destination-options vocabulary as postgres — shared
-        /// sqlcore types, one YAML shape.
-        merge_strategy: Option<rdlt::connector::duckdb::dest::MergeStrategy>,
-        tables:
-            Option<std::collections::BTreeMap<String, rdlt::connector::duckdb::dest::TableOptions>>,
-        /// dlt-parity passthrough: extensions to LOAD and `SET` settings.
-        extensions: Option<Vec<String>>,
-        settings: Option<std::collections::BTreeMap<String, String>>,
-    },
-    Postgres {
-        conn: String,
-        dataset: String,
-        tls: Option<rdlt::connector::postgres::tls::TlsPolicy>,
-        merge_strategy: Option<rdlt::connector::postgres::dest::MergeStrategy>,
-        tables: Option<BTreeMap<String, rdlt::connector::postgres::dest::PgTableOptions>>,
-    },
-    Parquet {
-        path: PathBuf,
-    },
-    /// The full file-destination vocabulary — format (parquet|jsonl),
-    /// location (local | s3), partition_by. The `parquet:` spelling above
-    /// stays frozen (≡ file: local parquet).
-    File {
-        path: String,
-        format: Option<rdlt::connector::file::dest::DestFormat>,
-        location: Option<rdlt::connector::file::location::LocationOptions>,
-        partition_by: Option<String>,
-    },
-    /// The Iceberg destination — the crate's full config vocabulary inline.
-    Iceberg(Box<rdlt::connector::iceberg::IcebergConfig>),
-}
 
 /// Timestamped event log of one run.
 #[derive(Debug)]
@@ -118,169 +36,25 @@ fn err(e: impl std::fmt::Display) -> BenchError {
     BenchError(e.to_string())
 }
 
+/// Build the pipeline from the shared spec model, then run it in-process while
+/// a collector timestamps every event (the attribution detail scoreboards use).
 async fn drive(spec: Spec) -> Result<RunOutcome> {
-    macro_rules! run_with {
-        ($source:expr) => {{
-            let builder = Pipeline::builder(spec.pipeline.as_str()).source($source);
-            let builder = match &spec.write_mode {
-                None | Some(WriteModeSpec::Append) => builder.write_mode(WriteMode::Append),
-                Some(WriteModeSpec::Replace) => builder.write_mode(WriteMode::Replace),
-                Some(WriteModeSpec::Merge { key }) => {
-                    builder.write_mode(WriteMode::Merge { key: key.clone() })
-                }
-            };
-            let builder = match &spec.workdir {
-                Some(dir) => builder.workdir(dir),
-                None => builder.workdir(".rdlt"),
-            };
-            let mut pipeline = match &spec.destination {
-                DestSpec::Duckdb {
-                    path,
-                    memory_limit,
-                    merge_strategy,
-                    tables,
-                    extensions,
-                    settings,
-                } => {
-                    let mut dest =
-                        rdlt::connector::duckdb::dest::DuckDb::open(path).map_err(err)?;
-                    for ext in extensions.iter().flatten() {
-                        dest = dest.extension(ext).map_err(err)?;
-                    }
-                    for (key, value) in settings.iter().flatten() {
-                        dest = dest.setting(key, value).map_err(err)?;
-                    }
-                    if let Some(limit) = memory_limit {
-                        dest = dest.memory_limit(limit).map_err(err)?;
-                    }
-                    if merge_strategy.is_some() || tables.is_some() {
-                        let options = rdlt::connector::duckdb::dest::DestOptions {
-                            merge_strategy: *merge_strategy,
-                            tables: tables.clone().unwrap_or_default(),
-                        };
-                        dest = dest.options(options).map_err(err)?;
-                    }
-                    builder.destination(dest).build().map_err(err)?
-                }
-                DestSpec::Postgres {
-                    conn,
-                    dataset,
-                    tls,
-                    merge_strategy,
-                    tables,
-                } => {
-                    let mut dest =
-                        rdlt::connector::postgres::dest::Postgres::connect(conn).dataset(dataset);
-                    if let Some(policy) = tls {
-                        dest = dest.tls(policy.clone());
-                    }
-                    if merge_strategy.is_some() || tables.is_some() {
-                        let options = rdlt::connector::postgres::dest::PgDestOptions {
-                            merge_strategy: *merge_strategy,
-                            tables: tables.clone().unwrap_or_default(),
-                        };
-                        dest = dest.options(options).map_err(err)?;
-                    }
-                    builder.destination(dest).build().map_err(err)?
-                }
-                DestSpec::Parquet { path } => {
-                    let dest = rdlt::connector::file::ParquetDir::open(path).map_err(err)?;
-                    builder.destination(dest).build().map_err(err)?
-                }
-                DestSpec::File {
-                    path,
-                    format,
-                    location,
-                    partition_by,
-                } => {
-                    let mut config = rdlt::connector::file::dest::FileDestConfig::new(path.clone());
-                    if let Some(format) = format {
-                        config = config.with_format(*format);
-                    }
-                    if let Some(location) = location {
-                        config = config.with_location(location.clone());
-                    }
-                    if let Some(column) = partition_by {
-                        config = config.with_partition_by(column.clone());
-                    }
-                    let dest =
-                        rdlt::connector::file::dest::FileDest::from_config(config).map_err(err)?;
-                    builder.destination(dest).build().map_err(err)?
-                }
-                DestSpec::Iceberg(config) => {
-                    let dest =
-                        rdlt::connector::iceberg::IcebergDest::from_config((**config).clone())
-                            .map_err(err)?;
-                    builder.destination(dest).build().map_err(err)?
-                }
-            };
-
-            let mut stream = pipeline
-                .events()
-                .ok_or_else(|| BenchError("pipeline already ran".into()))?;
-            let started = Instant::now();
-            let collector = tokio::spawn(async move {
-                let mut log = Vec::new();
-                while let Some(event) = stream.recv().await {
-                    log.push((started.elapsed().as_millis() as u64, event));
-                }
-                log
-            });
-            let report = pipeline.run().await.map_err(err)?;
-            drop(pipeline); // close the broadcast sender so the collector ends
-            let events = collector.await.map_err(err)?;
-            Ok(RunOutcome { report, events })
-        }};
-    }
-
-    let is_json = |path: &PathBuf| {
-        path.extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("json"))
-    };
-    match &spec.source {
-        SourceSpec::Rest { config } => {
-            let text = std::fs::read_to_string(config).map_err(err)?;
-            let source = if is_json(config) {
-                rdlt::connector::rest::RestSource::from_json(&text)
-            } else {
-                rdlt::connector::rest::RestSource::from_yaml(&text)
-            }
-            .map_err(err)?;
-            run_with!(source)
+    let mut pipeline = pipeline_spec::build_pipeline(&spec).map_err(err)?;
+    let mut stream = pipeline
+        .events()
+        .ok_or_else(|| BenchError("pipeline already ran".into()))?;
+    let started = Instant::now();
+    let collector = tokio::spawn(async move {
+        let mut log = Vec::new();
+        while let Some(event) = stream.recv().await {
+            log.push((started.elapsed().as_millis() as u64, event));
         }
-        SourceSpec::File { config } => {
-            let text = std::fs::read_to_string(config).map_err(err)?;
-            let source = if is_json(config) {
-                rdlt::connector::file::FileSource::from_json(&text)
-            } else {
-                rdlt::connector::file::FileSource::from_yaml(&text)
-            }
-            .map_err(err)?;
-            run_with!(source)
-        }
-        SourceSpec::Postgres(pg) => {
-            let parsed = match pg {
-                PgSourceSpec::File(f) => {
-                    let text = std::fs::read_to_string(&f.config).map_err(err)?;
-                    if is_json(&f.config) {
-                        rdlt::connector::postgres::source::PostgresConfig::from_json(&text)
-                    } else {
-                        rdlt::connector::postgres::source::PostgresConfig::from_yaml(&text)
-                    }
-                    .map_err(err)?
-                }
-                // Same rule as the CLI: untagged inline bypasses document
-                // validation, so route through the shared from_value gate.
-                PgSourceSpec::Inline(inline) => {
-                    let value = serde_json::to_value(inline).map_err(err)?;
-                    rdlt::connector::postgres::source::PostgresConfig::from_value(value)
-                        .map_err(err)?
-                }
-            };
-            let source = rdlt::connector::postgres::source::PostgresSource::new(parsed);
-            run_with!(source)
-        }
-    }
+        log
+    });
+    let report = pipeline.run().await.map_err(err)?;
+    drop(pipeline); // close the broadcast sender so the collector ends
+    let events = collector.await.map_err(err)?;
+    Ok(RunOutcome { report, events })
 }
 
 /// One library-mode run: render the template, run in-process, log events.
@@ -415,12 +189,15 @@ pub fn verify_from(cell: &Cell, samples: &[Sample<RunOutcome>]) -> Result<Option
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::path::PathBuf;
 
-    /// Every document in the shared parity fixture must parse as a Spec.
-    /// The CLI pins the SAME file against its own spec parser, so a
-    /// destination or source kind added to one parser without the other
-    /// fails one of the two pins instead of drifting silently.
+    use super::*;
+    use serde::Deserialize;
+
+    /// Every document in the shared parity fixture must parse as a Spec. The
+    /// CLI pins the SAME file against the SAME shared model
+    /// (`rdlt::pipeline_spec`), so this fixture is exercised from both
+    /// consumers — a destination or source kind added here forces both.
     #[test]
     fn shared_parity_specs_all_parse() {
         let raw = include_str!(concat!(
