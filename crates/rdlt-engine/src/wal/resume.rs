@@ -158,7 +158,7 @@ pub(crate) fn scan(dir: &Path) -> Scan {
 pub(crate) async fn replay(
     dir: &Path,
     span: RecoverySpan,
-    session: &mut Box<dyn LoadSession>,
+    session: &mut dyn LoadSession,
     state: &mut StateDoc,
     caps: rdlt_connector::DestCapabilities,
 ) -> Result<Option<u64>, RdltError> {
@@ -191,14 +191,7 @@ pub(crate) async fn replay(
     // register publishable tables per session, and a span's delta may have committed
     // in an earlier span (spans would be silently lost otherwise).
     for (schema, mode) in &span.schemas {
-        let lowered = crate::load::lowering::lower_schema(schema, &caps);
-        session
-            .ensure_table(&lowered, mode)
-            .await
-            .map_err(RdltError::destination)?;
-        state
-            .schema_hashes
-            .insert(schema.table.clone(), schema.content_hash());
+        crate::load::apply::apply_delta(&mut *session, state, &caps, schema, mode).await?;
     }
 
     // Pass 2 — stream, in WAL order (delta-before-batch survives crashes):
@@ -211,14 +204,8 @@ pub(crate) async fn replay(
         match record {
             WalRecord::Delta { schema, mode, .. } => {
                 // Same lowering seam as the live loader.
-                let lowered = crate::load::lowering::lower_schema(&schema, &caps);
-                session
-                    .ensure_table(&lowered, &mode)
-                    .await
-                    .map_err(RdltError::destination)?;
-                state
-                    .schema_hashes
-                    .insert(schema.table.clone(), schema.content_hash());
+                crate::load::apply::apply_delta(&mut *session, state, &caps, &schema, &mode)
+                    .await?;
             }
             WalRecord::Checkpoint { stream, cursor } => {
                 state.cursors.insert(stream, cursor);
@@ -237,11 +224,7 @@ pub(crate) async fn replay(
                         return Ok(None);
                     };
                     batches += 1;
-                    let lowered = crate::load::lowering::lower_batch(&batch, &caps)?;
-                    session
-                        .write(&table, lowered)
-                        .await
-                        .map_err(RdltError::destination)?;
+                    crate::load::apply::apply_batch(&mut *session, &caps, &table, &batch).await?;
                 }
             }
             WalRecord::Run { .. } | WalRecord::Committed { .. } => {}

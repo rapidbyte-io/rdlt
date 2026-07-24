@@ -63,7 +63,7 @@ paths/names and in-repo vocabulary, not on-disk data written by runs.
 | R3 shared Secret in SPI | 4 | applied | `rdlt_connector::secret::Secret` (newtype, `***` mask, transparent serde, `reveal()` audit surface) with schemars behind new SPI feature `schema` (optional dep; SPI builds with/without). Copies differed only in schemars description text — majority form adopted (nothing pins it) |
 | R3 three copies migrated + re-exports | 4 | applied (greenfield) | Per user directive mid-increment: NO legacy paths — both secret.rs shims deleted, all module-path chains killed; one canonical spelling per crate (rest/iceberg root re-export; file uses the SPI path — it never exported one). Grep-zero over every old path; `reveal()` production sites byte-identical (13); 196/196 + 140/140 after cleanup |
 | R3 headers/params redaction posture | 4 | applied | Doc comments on both maps (credentials belong in `auth:`) + validate() REJECTS `authorization`/`x-api-key` header names (case-insensitive, source+per-stream) with a typed error pointing at `auth:`. Tests `credential_header_names_are_rejected_toward_auth`, `ordinary_headers_still_accepted` |
-| R4 engine run_once split + ping-pong owner | 5 | | |
+| R4 engine run_once split + ping-pong owner | 5 | applied | graph.rs → run.rs (no shim, greenfield); run_once 388→105 lines via `validate_streams`(56)/`recover_wal`(62)/named `stream_task`(120)/`drain_loader`(65); `ShredOwner` consumes-self/returns-Self — both expects deleted, panic-free by construction. 80/80 failpoints green after every step |
 | R4 postgres tls.rs split | 7 | | |
 | R4 postgres cdc/mod.rs split | 7 | | |
 | R4 postgres PgSession::commit split | 6 | | |
@@ -81,16 +81,16 @@ paths/names and in-repo vocabulary, not on-disk data written by runs.
 | R5 sqlcore options/plan validate decomposition | 6 | | |
 | R5 iceberg validate decomposition | 10 | | |
 | R5 file validate convention unification | 8 | | |
-| R6 shared apply_delta/apply_batch | 5 | | |
-| R6 replay consumes helpers | 5 | | |
+| R6 shared apply_delta/apply_batch | 5 | applied | load/apply.rs owns the lower_schema→ensure_table→record-hash triple and lower_batch→write pair |
+| R6 replay consumes helpers | 5 | applied | Loader::process + both replay arms consume the helpers (ensure SEMANTICS unchanged — only the code deduplicated); borrowed-box fixed (`&mut dyn LoadSession`); crash sweeps + recovery pins green |
 | R7 Location unification (read+write) | 8 | | |
 | R7 FileMeta/FileTask/FileProgress relocation | 8 | | |
 | R8 DestError::RateLimited | 7* | | |
 | R8 sqlcore typed validation errors | 6 | | |
 | R8 rest Paginator typed error | 9 | | |
 | R8 postgres DDL classification + decode conventions | 7 | | |
-| R8 engine error-variant misuse | 5 | | |
-| R9 engine ping-pong expects | 5 | | |
+| R8 engine error-variant misuse | 5 | applied | Task panics → new additive `RdltError::Internal` (enum was non_exhaustive; CLI catch-all absorbs); workdir-lock failures → `config` (operator-actionable, consistent with sibling); `RecordsOut::rows` ChannelClosed lie → `.expect()` on genuinely-infallible serialization (writer infallible, non-finite rejected at construction; SPI signature change considered and declined — expect is truthful and simpler; greenfield permits revisiting if the SPI ever gains fallible pushes) |
+| R9 engine ping-pong expects | 5 | applied | Via ShredOwner (see R4 engine row) |
 | R9 postgres RunState expects | 7 | | |
 | R9 rest validated-at-parse expects | 9 | | |
 | R9 iceberg retry unreachable tails | 10 | | |
@@ -99,7 +99,7 @@ paths/names and in-repo vocabulary, not on-disk data written by runs.
 | R10 non-breaking renames | 11 | | |
 | R10 aliasable renames (DestinationError etc.) | 11 | | |
 | R10 named deferrals to 0.3 window | 11 | | |
-| R11 ShredCtx | 5 | | |
+| R11 ShredCtx | 5 | applied | One `ShredCtx {registry, load_id, mode, policy}` field order; both former two-order sites + 3 fuzz/bench entry points updated; Loader::new 8→7 via cohesive `Sink {session, caps}` (matches the apply seam), too_many_arguments allow removed; no mega-struct forced |
 | R11 postgres TableCtx | 7 | | |
 | R11 bench return_side restructure | 12 | | |
 | R12 core/engine dead code + visibility | 3 | applied | `flattened_column_name` DELETED; `needs_lowering`/`arrow_scalar_type`/`ArrayShape`(+constructor) private; channel.rs `#![allow(dead_code)]` removed (no dead code surfaced — allow was unnecessary); channel subsystem moved to rdlt-connector/src/channel.rs w/ unchanged public paths; CommitCounters/TableReport: parallel accumulators (no conversion site exists) → `From` impl + binding docs; `to_hex` via `write_hex`; `SchemaRegistry::apply` returns the schema (2 expect sites gone); `append_hex_id` ×3; `source_retryable` saturating (lived in rdlt-core). 115 tests PASS; workspace + fuzz check clean |
@@ -121,13 +121,13 @@ spot satisfies WR8 as long as the gate is green.
 | 3.1 merge-key validation dedup + error constructors macro | 3 | | |
 | 3.1 channel subsystem → channel.rs | 3 | | |
 | 3.1 API items (merge-key precedence doc, StateDoc::new version, re-export completeness, Pipeline::run typestate, merge_streams return, prelude) | 11 | | |
-| 3.2 write_compact_json/canonical_json_bytes | 5 | | |
-| 3.2 hex-id append helper ×3 | 5 | | |
-| 3.2 lowering rule duplication | 5 | | |
-| 3.2 root-name normalization ×2, fuzz scaffolding ×2, registry.get expect ×4, TapeRow/Queued | 5 | | |
-| 3.2 build_scalar/drain_tables/push_and_drain complexity | 5 | | |
-| 3.2 replay damage-reason logging, byte-budget clamp doc, clock fallback doc | 5 | | |
-| 3.2 borrowed-box replay signature | 5 | | |
+| 3.2 write_compact_json/canonical_json_bytes | 5 | applied (bound, not unified) | The two differ in KEY ORDERING and that difference is load-bearing: compact preserves insertion order for stored Json; canonical sorts for order-independent `_rdlt_id`. Unifying behind a flag = persisted identity one boolean from silent change. Cross-binding comments added; identity/canon oracle tests pin both |
+| 3.2 hex-id append helper ×3 | 3* | applied | `append_hex_id` landed with the increment-3 core/engine sweep |
+| 3.2 lowering rule duplication | 5 | deferred-in-place | lower_column/flatten_array parity still hand-maintained; revisit if a third site appears (no natural shared shape found during the split) |
+| 3.2 root-name normalization ×2, fuzz scaffolding ×2, registry.get expect ×4, TapeRow/Queued | 3+5 | applied | registry.apply returns schema (inc.3); Queued lifted to module scope beside shred_root/enqueue_children (inc.5); remaining lows absorbed by the splits |
+| 3.2 build_scalar/drain_tables/push_and_drain complexity | 5 | applied | build_scalar → dispatch + per-type scalar_* helpers; `TableDrain` zips the three parallel slices (misalignment unrepresentable); push_and_drain → shred_root + enqueue_children |
+| 3.2 replay damage-reason logging, byte-budget clamp doc, clock fallback doc | 1+5 | applied | Damage logging landed with B10; clamp + clock-fallback documented with self-contained comments (inc.5) |
+| 3.2 borrowed-box replay signature | 5 | applied | `&mut dyn LoadSession` |
 | 3.3 pg_error_detail ×3 + SQLSTATE list ×2 | 7 | | |
 | 3.3 ConnectResult match ×2, quoting ×2, effective_pk ×3, prepare_stream, serde vocab ×3, decimal/date parsing ×2, pump_copy ×2, Emit loop ×2, strategy wrappers, PEM loading ×2, select_sql WHERE dup | 7 | | |
 | 3.3 slot peek binding inconsistency | 3 | applied | Folded into the R12 peek unification (one implementation, one binding form) |

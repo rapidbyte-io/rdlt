@@ -56,7 +56,10 @@ pub(crate) struct StageClosed;
 impl<T: ByteSized> ByteTx<T> {
     pub(crate) async fn send(&self, value: T) -> Result<(), StageClosed> {
         // An item larger than the whole budget degrades to "budget fully drained"
-        // rather than deadlocking.
+        // rather than deadlocking. The `.min` caps the request at the budget, so
+        // the `u32` conversion can only overflow when the budget ITSELF exceeds
+        // `u32::MAX` (semaphore permits are `u32`); there it saturates to
+        // `u32::MAX` permits — still a valid "drain the budget" request.
         let permits = value
             .byte_size()
             .min(self.budget_max)

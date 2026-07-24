@@ -16,18 +16,22 @@ pub(crate) struct WorkdirLock {
 
 impl WorkdirLock {
     pub(crate) fn acquire(workdir: &Path) -> Result<Self, RdltError> {
-        std::fs::create_dir_all(workdir)
-            .map_err(|e| RdltError::wal(format!("creating workdir {}: {e}", workdir.display())))?;
+        // Failures here are about the configured workdir being usable and
+        // ownable by this run (path, permissions, contention) — not WAL damage,
+        // so they classify as configuration, like the "already held" case below.
+        std::fs::create_dir_all(workdir).map_err(|e| {
+            RdltError::config(format!("creating workdir {}: {e}", workdir.display()))
+        })?;
         let path = workdir.join(".lock");
         let file = OpenOptions::new()
             .create(true)
             .truncate(false)
             .write(true)
             .open(&path)
-            .map_err(|e| RdltError::wal(format!("opening lock {}: {e}", path.display())))?;
+            .map_err(|e| RdltError::config(format!("opening lock {}: {e}", path.display())))?;
         if !file
             .try_lock_exclusive()
-            .map_err(|e| RdltError::wal(format!("locking {}: {e}", path.display())))?
+            .map_err(|e| RdltError::config(format!("locking {}: {e}", path.display())))?
         {
             return Err(RdltError::config(format!(
                 "another run holds the workdir lock at {} — one process per pipeline",

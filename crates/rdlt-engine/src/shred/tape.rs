@@ -19,9 +19,8 @@ use super::arena::{Arena, NodeId};
 use super::infer::{ColState, ScalarState};
 use super::table::{TableBuffer, content_hash_with, row_identity};
 use super::view::JsonView;
-use super::{DrainRow, drain_tables};
+use super::{DrainRow, ShredCtx, drain_tables};
 use crate::load::LoadItem;
-use crate::schema::registry::SchemaRegistry;
 
 /// A shred-path error: JSON errors format at the call site exactly like the
 /// tree path's `push_bytes` errors do.
@@ -36,6 +35,18 @@ struct TapeRow {
     id: RowId,
     parent_id: Option<RowId>,
     root_id: Option<RowId>,
+    pos: Option<u64>,
+}
+
+/// A node queued for breadth-first traversal, carrying the lineage its row will
+/// inherit. `root_id` is always present here (the row build decides whether the
+/// root's own row records it).
+struct Queued {
+    table_idx: usize,
+    node: NodeId,
+    id: RowId,
+    parent_id: Option<RowId>,
+    root_id: RowId,
     pos: Option<u64>,
 }
 
@@ -70,10 +81,7 @@ impl TapeShredder {
     pub(crate) fn push_and_drain(
         &mut self,
         bytes: &[u8],
-        registry: &mut SchemaRegistry,
-        load_id: &rdlt_core::LoadId,
-        mode: &rdlt_core::WriteMode,
-        policy: &rdlt_core::SchemaPolicy,
+        ctx: ShredCtx,
     ) -> Result<Vec<LoadItem>, PushError> {
         // Snapshot observation states: Discard* enforcement rolls offending
         // columns back to exactly this point.
@@ -85,77 +93,16 @@ impl TapeShredder {
         // Buffered rows per table, index-aligned with `self.tables`.
         let mut rows: Vec<Vec<TapeRow>> = self.tables.iter().map(|_| Vec::new()).collect();
 
-        struct Queued {
-            table_idx: usize,
-            node: NodeId,
-            id: RowId,
-            parent_id: Option<RowId>,
-            root_id: RowId,
-            pos: Option<u64>,
-        }
         let lists_as_columns = self.caps.scalar_lists;
         let mut hash_scratch = Vec::new();
         for root in roots {
-            let root_id = row_identity(self.spec.primary_key.as_deref(), arena.node(root));
-            let mut queue: VecDeque<Queued> = VecDeque::new();
-            queue.push_back(Queued {
-                table_idx: 0,
-                node: root,
-                id: root_id,
-                parent_id: None,
-                root_id,
-                pos: None,
-            });
-
-            while let Some(entry) = queue.pop_front() {
-                let is_root = entry.table_idx == 0;
-
-                // Observe every field; discover child tables. Keys borrow the
-                // arena; table state is disjoint, so both borrows coexist.
-                let mut child_lists: Vec<(String, Vec<NodeId>)> = Vec::new();
-                for (key, value) in arena.node(entry.node).obj_entries() {
-                    let state = self.tables[entry.table_idx].state_mut(key);
-                    state.observe(value, lists_as_columns);
-                    if state.is_child_table() && value.is_array() {
-                        child_lists
-                            .push((key.to_owned(), value.arr_items().map(|n| n.id()).collect()));
-                    }
-                }
-
-                // Enqueue child rows (position counts null slots, like the tree path).
-                for (key, items) in child_lists {
-                    let child_idx = self.child_table_idx(entry.table_idx, &key, &mut rows);
-                    for (i, item) in items.into_iter().enumerate() {
-                        if arena.node(item).is_null() {
-                            continue;
-                        }
-                        // Scalar list items in a child table become {"value": …} rows.
-                        let child_node = if arena.node(item).is_object() {
-                            item
-                        } else {
-                            arena.wrap_in_value_obj(item)
-                        };
-                        let content = content_hash_with(arena.node(child_node), &mut hash_scratch);
-                        let child_id = child_row_id(&entry.id, i as u64, &content);
-                        queue.push_back(Queued {
-                            table_idx: child_idx,
-                            node: child_node,
-                            id: child_id,
-                            parent_id: Some(entry.id),
-                            root_id: entry.root_id,
-                            pos: Some(i as u64),
-                        });
-                    }
-                }
-
-                rows[entry.table_idx].push(TapeRow {
-                    node: entry.node,
-                    id: entry.id,
-                    parent_id: entry.parent_id,
-                    root_id: if is_root { None } else { Some(entry.root_id) },
-                    pos: entry.pos,
-                });
-            }
+            self.shred_root(
+                &mut arena,
+                root,
+                lists_as_columns,
+                &mut rows,
+                &mut hash_scratch,
+            );
         }
 
         // Lower into the shared drain representation and run the ONE pipeline.
@@ -179,12 +126,98 @@ impl TapeShredder {
             &mut self.tables,
             &mut drain_rows,
             &self.pre_batch,
-            registry,
-            load_id,
-            mode,
-            policy,
+            ctx.registry,
+            ctx.load_id,
+            ctx.mode,
+            ctx.policy,
         )
         .map_err(PushError::Engine)
+    }
+
+    /// Breadth-first traversal of one root document: observe every field at every
+    /// depth into the table buffers, discover child tables, and buffer one
+    /// `TapeRow` per node with its lineage identity.
+    fn shred_root(
+        &mut self,
+        arena: &mut Arena,
+        root: NodeId,
+        lists_as_columns: bool,
+        rows: &mut Vec<Vec<TapeRow>>,
+        hash_scratch: &mut Vec<u8>,
+    ) {
+        let root_id = row_identity(self.spec.primary_key.as_deref(), arena.node(root));
+        let mut queue: VecDeque<Queued> = VecDeque::new();
+        queue.push_back(Queued {
+            table_idx: 0,
+            node: root,
+            id: root_id,
+            parent_id: None,
+            root_id,
+            pos: None,
+        });
+
+        while let Some(entry) = queue.pop_front() {
+            let is_root = entry.table_idx == 0;
+
+            // Observe every field; discover child tables. Keys borrow the
+            // arena; table state is disjoint, so both borrows coexist.
+            let mut child_lists: Vec<(String, Vec<NodeId>)> = Vec::new();
+            for (key, value) in arena.node(entry.node).obj_entries() {
+                let state = self.tables[entry.table_idx].state_mut(key);
+                state.observe(value, lists_as_columns);
+                if state.is_child_table() && value.is_array() {
+                    child_lists.push((key.to_owned(), value.arr_items().map(|n| n.id()).collect()));
+                }
+            }
+
+            self.enqueue_children(child_lists, &entry, arena, rows, &mut queue, hash_scratch);
+
+            rows[entry.table_idx].push(TapeRow {
+                node: entry.node,
+                id: entry.id,
+                parent_id: entry.parent_id,
+                root_id: if is_root { None } else { Some(entry.root_id) },
+                pos: entry.pos,
+            });
+        }
+    }
+
+    /// Enqueue the child rows discovered under one node: each non-null list item
+    /// becomes a queued row in its child table (scalar items wrapped as
+    /// `{"value": …}`), position counting null slots like the tree path.
+    fn enqueue_children(
+        &mut self,
+        child_lists: Vec<(String, Vec<NodeId>)>,
+        entry: &Queued,
+        arena: &mut Arena,
+        rows: &mut Vec<Vec<TapeRow>>,
+        queue: &mut VecDeque<Queued>,
+        hash_scratch: &mut Vec<u8>,
+    ) {
+        for (key, items) in child_lists {
+            let child_idx = self.child_table_idx(entry.table_idx, &key, rows);
+            for (i, item) in items.into_iter().enumerate() {
+                if arena.node(item).is_null() {
+                    continue;
+                }
+                // Scalar list items in a child table become {"value": …} rows.
+                let child_node = if arena.node(item).is_object() {
+                    item
+                } else {
+                    arena.wrap_in_value_obj(item)
+                };
+                let content = content_hash_with(arena.node(child_node), hash_scratch);
+                let child_id = child_row_id(&entry.id, i as u64, &content);
+                queue.push_back(Queued {
+                    table_idx: child_idx,
+                    node: child_node,
+                    id: child_id,
+                    parent_id: Some(entry.id),
+                    root_id: entry.root_id,
+                    pos: Some(i as u64),
+                });
+            }
+        }
     }
 
     fn child_table_idx(

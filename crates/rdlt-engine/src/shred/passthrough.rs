@@ -20,13 +20,13 @@ use rdlt_connector::DestCapabilities;
 use rdlt_core::naming::UniqueNamer;
 use rdlt_core::schema::system_columns;
 use rdlt_core::{
-    ColumnDef, ColumnType, LoadId, LogicalType, PolicyAction, Provenance, RdltError, SchemaChange,
-    SchemaPolicy, TableName, TableSchema, WriteMode,
+    ColumnDef, ColumnType, LogicalType, PolicyAction, Provenance, RdltError, SchemaChange,
+    TableName, TableSchema,
 };
 
 use crate::load::LoadItem;
 use crate::schema::contracts::{change_column, violation_for};
-use crate::schema::registry::SchemaRegistry;
+use crate::shred::ShredCtx;
 use crate::shred::build::{arrow_column_type, arrow_schema};
 
 /// Process one structured batch: schema mapping, policy enforcement, load-id
@@ -34,12 +34,15 @@ use crate::shred::build::{arrow_column_type, arrow_schema};
 pub(crate) fn passthrough_items(
     batch: &RecordBatch,
     table: &TableName,
-    registry: &mut SchemaRegistry,
-    policy: &SchemaPolicy,
-    load_id: &LoadId,
-    mode: &WriteMode,
+    ctx: ShredCtx,
     caps: DestCapabilities,
 ) -> Result<Vec<LoadItem>, RdltError> {
+    let ShredCtx {
+        registry,
+        load_id,
+        mode,
+        policy,
+    } = ctx;
     // ---- Map the arrow schema onto the logical schema ----
     let (mut observed, name_map) = schema_from_arrow(batch, table, caps)?;
 

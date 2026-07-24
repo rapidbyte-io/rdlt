@@ -7,6 +7,7 @@
 
 use std::time::Instant;
 
+pub(crate) mod apply;
 pub(crate) mod lowering;
 
 use rdlt_connector::{DestCapabilities, LoadSession, RecordBatch};
@@ -51,8 +52,16 @@ impl ByteSized for LoadItem {
     }
 }
 
+/// The destination and how to lower for it — the two are always used together at
+/// the write seam (`apply_delta`/`apply_batch` take exactly this pair), so they
+/// travel as one.
+pub(crate) struct Sink {
+    pub(crate) session: Box<dyn LoadSession>,
+    pub(crate) caps: DestCapabilities,
+}
+
 pub(crate) struct Loader {
-    session: Box<dyn LoadSession>,
+    sink: Sink,
     pub(crate) report: RunReport,
     /// The evolving pipeline state; every commit persists a snapshot of it.
     state: StateDoc,
@@ -69,8 +78,6 @@ pub(crate) struct Loader {
     /// degrades to cursor re-extraction — slower, never wrong).
     wal: Option<Wal>,
     events: tokio::sync::broadcast::Sender<rdlt_core::PipelineEvent>,
-    /// Destination capabilities drive lowering at this seam.
-    caps: DestCapabilities,
     /// Keyed structured merge: tables whose write mode is Merge
     /// and whose schema carries NO per-row identity — their key columns must
     /// never be NULL (keys are identities; validated per batch).
@@ -78,19 +85,17 @@ pub(crate) struct Loader {
 }
 
 impl Loader {
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        session: Box<dyn LoadSession>,
+        sink: Sink,
         report: RunReport,
         base_state: StateDoc,
         load_id: LoadId,
         policy: CommitPolicy,
         wal: Option<Wal>,
         events: tokio::sync::broadcast::Sender<rdlt_core::PipelineEvent>,
-        caps: DestCapabilities,
     ) -> Self {
         Self {
-            session,
+            sink,
             report,
             state: base_state,
             load_id,
@@ -103,7 +108,6 @@ impl Loader {
             dirty: false,
             wal,
             events,
-            caps,
             structured_merge_keys: std::collections::BTreeMap::new(),
         }
     }
@@ -125,13 +129,16 @@ impl Loader {
                 delta,
                 mode,
             } => {
-                // Lowering at the destination seam: flatten/downcast for the
-                // destination's capabilities; the engine keeps the rich schema.
-                let lowered = lowering::lower_schema(&schema, &self.caps);
-                self.session
-                    .ensure_table(&lowered, &mode)
-                    .await
-                    .map_err(RdltError::destination)?;
+                // Lowering + ensure + hash-record at the destination seam, shared
+                // with WAL replay so recovery reproduces this exactly.
+                apply::apply_delta(
+                    &mut *self.sink.session,
+                    &mut self.state,
+                    &self.sink.caps,
+                    &schema,
+                    &mode,
+                )
+                .await?;
                 crash_point!(
                     "session.after_ensure",
                     Err(RdltError::config(
@@ -149,9 +156,6 @@ impl Loader {
                     self.structured_merge_keys
                         .insert(schema.table.clone(), key.clone());
                 }
-                self.state
-                    .schema_hashes
-                    .insert(schema.table.clone(), schema.content_hash());
                 self.emit(rdlt_core::PipelineEvent::SchemaEvolved {
                     delta: delta.clone(),
                 });
@@ -178,11 +182,8 @@ impl Loader {
                 }
                 let rows = batch.num_rows() as u64;
                 let bytes = batch.get_array_memory_size() as u64;
-                let lowered = lowering::lower_batch(&batch, &self.caps)?;
-                self.session
-                    .write(&table, lowered)
-                    .await
-                    .map_err(RdltError::destination)?;
+                apply::apply_batch(&mut *self.sink.session, &self.sink.caps, &table, &batch)
+                    .await?;
                 crash_point!(
                     "session.after_write",
                     Err(RdltError::config("injected crash after write (failpoint)",))
@@ -269,7 +270,8 @@ impl Loader {
             state: self.state.clone(),
             counters: std::mem::take(&mut self.counters),
         };
-        self.session
+        self.sink
+            .session
             .commit(meta)
             .await
             .map_err(RdltError::destination)?;

@@ -59,6 +59,13 @@ pub enum RdltError {
     #[error("WAL error: {message}")]
     Wal { message: String },
 
+    /// An engine invariant broke — a background task panicked, or an internal
+    /// contract was violated. Not operator-actionable: it means a bug to report,
+    /// not a pipeline/config/destination change. Additive variant; older clients
+    /// that never saw it are unaffected (`#[non_exhaustive]`).
+    #[error("internal engine error: {message}")]
+    Internal { message: String },
+
     /// The run was cancelled; recovery on next run is identical to a crash.
     #[error("run cancelled")]
     Cancelled,
@@ -104,6 +111,12 @@ impl RdltError {
     pub fn wal(message: impl std::fmt::Display) -> Self {
         RdltError::Wal {
             message: message.to_string(),
+        }
+    }
+
+    pub fn internal(message: impl Into<String>) -> Self {
+        RdltError::Internal {
+            message: message.into(),
         }
     }
 }

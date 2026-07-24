@@ -34,6 +34,11 @@ pub(crate) fn render_scalar<'a, V: JsonView<'a>>(value: V) -> Option<String> {
 ///
 /// Entry order from the view is native (insertion) order — the sort happens
 /// HERE, explicitly, exactly as it always has.
+///
+/// The sibling `build::write_compact_json` shares every rule below EXCEPT this
+/// key sort (it preserves native order for the stored `Json` column). They are
+/// kept as two functions on purpose: unifying them would put persisted `_rdlt_id`
+/// bytes one flag away from a silent change. Mirror any shared-rule edit in both.
 pub(crate) fn canonical_json_bytes<'a, V: JsonView<'a>>(value: V, out: &mut Vec<u8>) {
     match value.kind() {
         Kind::Object => {

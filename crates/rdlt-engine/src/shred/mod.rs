@@ -28,6 +28,18 @@ use table::TableBuffer;
 pub(crate) use tape::TapeShredder;
 use view::JsonView;
 
+/// The per-batch shred context: the mutable schema registry plus the run-scoped
+/// load id, write mode, and schema policy. One bundle, one field order — shared
+/// by the tape shred path (`TapeShredder::push_and_drain`) and the structured
+/// passthrough path (`passthrough::passthrough_items`), which previously threaded
+/// these same four values in two different argument orders.
+pub(crate) struct ShredCtx<'a> {
+    pub(crate) registry: &'a mut SchemaRegistry,
+    pub(crate) load_id: &'a LoadId,
+    pub(crate) mode: &'a WriteMode,
+    pub(crate) policy: &'a SchemaPolicy,
+}
+
 /// One row inside the drain: a view value + lineage + the DiscardValue overlay.
 /// Both paths lower their buffered rows into this before draining.
 pub(crate) struct DrainRow<V> {
@@ -54,6 +66,18 @@ impl<V: Copy> DrainRow<V> {
     }
 }
 
+/// One table's slice of a drain: its buffer, its buffered rows, and its
+/// pre-batch column snapshot — bound together so an index can never pair the
+/// wrong snapshot (or row vector) with a buffer. Built once by zipping the
+/// previously-parallel slices; the drain loop then only ever touches one bundle.
+struct TableDrain<'a, V> {
+    buffer: &'a mut TableBuffer,
+    rows: &'a mut Vec<DrainRow<V>>,
+    /// Column snapshot to roll back to on Discard*; `None` for a table that did
+    /// not exist before this batch (nothing to revert to).
+    pre: Option<&'a [(String, ColState)]>,
+}
+
 /// The shared drain: cascade filtering, schema resolution, policy enforcement,
 /// registry diff/apply, Arrow building — identical for both shred paths.
 pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
@@ -69,16 +93,28 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
     // Rows discarded in earlier (parent) tables cascade into their descendants.
     let mut discarded_ids: BTreeSet<RowId> = BTreeSet::new();
 
-    for idx in 0..tables.len() {
+    // Pair the three index-aligned inputs once; `pre_batch.get(idx)` is resolved
+    // here and never again, so the loop below cannot misalign them.
+    let mut drains: Vec<TableDrain<V>> = tables
+        .iter_mut()
+        .zip(rows.iter_mut())
+        .enumerate()
+        .map(|(idx, (buffer, rows))| TableDrain {
+            buffer,
+            rows,
+            pre: pre_batch.get(idx).map(Vec::as_slice),
+        })
+        .collect();
+
+    for d in &mut drains {
         // Cascade: drop rows whose parent or root was discarded upstream. A
         // cascade-dropped row's OWN id joins the set, so its descendants at any
         // depth cascade too (parent-first table order makes one pass complete);
         // cascade drops are counted — never silent.
         if !discarded_ids.is_empty() {
-            let table_rows = &mut rows[idx];
             let mut cascade_dropped = 0u64;
-            let mut kept = Vec::with_capacity(table_rows.len());
-            for row in table_rows.drain(..) {
+            let mut kept = Vec::with_capacity(d.rows.len());
+            for row in d.rows.drain(..) {
                 let doomed = row
                     .parent_id
                     .as_ref()
@@ -94,18 +130,18 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
                     kept.push(row);
                 }
             }
-            *table_rows = kept;
+            *d.rows = kept;
             if cascade_dropped > 0 {
                 items.push(LoadItem::Discarded {
-                    table: tables[idx].table.clone(),
+                    table: d.buffer.table.clone(),
                     rows: cascade_dropped,
                     values: 0,
                 });
             }
         }
 
-        let has_rows = !rows[idx].is_empty();
-        let observed = table::resolve_schema(&mut tables[idx]);
+        let has_rows = !d.rows.is_empty();
+        let observed = table::resolve_schema(d.buffer);
         let table = observed.table.clone();
         if !has_rows && registry.get(&table).is_none() {
             continue;
@@ -140,15 +176,15 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
             (observed, kept)
         } else {
             enforce_discards(
-                &mut tables[idx],
-                &mut rows[idx],
-                pre_batch.get(idx).map(Vec::as_slice),
+                d.buffer,
+                d.rows,
+                d.pre,
                 &discard,
                 &mut discarded_ids,
                 &mut items,
             );
             // Re-resolve after rollback + filtering; everything left is approved.
-            let observed = table::resolve_schema(&mut tables[idx]);
+            let observed = table::resolve_schema(d.buffer);
             let changes = registry.diff(&observed);
             (observed, changes)
         };
@@ -161,17 +197,17 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
             });
         }
 
-        if !rows[idx].is_empty() {
-            let buffer = &tables[idx];
+        if !d.rows.is_empty() {
             let schema = registry
-                .get(&buffer.table)
+                .get(&d.buffer.table)
                 .expect("schema registered before building")
                 .clone();
-            let batch = build::build_batch(&schema, buffer.name_map(), &rows[idx], load_id)
-                .map_err(|e| RdltError::config(format!("arrow build: {e}")))?;
-            rows[idx].clear();
+            let batch =
+                build::build_batch(&schema, d.buffer.name_map(), d.rows.as_slice(), load_id)
+                    .map_err(|e| RdltError::config(format!("arrow build: {e}")))?;
+            d.rows.clear();
             items.push(LoadItem::Batch {
-                table: buffer.table.clone(),
+                table: d.buffer.table.clone(),
                 batch,
             });
         }

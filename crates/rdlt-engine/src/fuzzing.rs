@@ -20,12 +20,19 @@ pub fn shred_slab(bytes: &[u8]) {
     let mut shredder =
         crate::shred::TapeShredder::new(StreamSpec::new("fuzz"), caps, TableName::new("fuzz"));
     let mut registry = crate::schema::registry::SchemaRegistry::default();
+    let (load_id, mode, policy) = (
+        LoadId::new("fuzz-load"),
+        WriteMode::Append,
+        SchemaPolicy::evolve(),
+    );
     let items = shredder.push_and_drain(
         bytes,
-        &mut registry,
-        &LoadId::new("fuzz-load"),
-        &WriteMode::Append,
-        &SchemaPolicy::evolve(),
+        crate::shred::ShredCtx {
+            registry: &mut registry,
+            load_id: &load_id,
+            mode: &mode,
+            policy: &policy,
+        },
     );
     let Ok(items) = items else { return };
     for item in items {
@@ -56,13 +63,20 @@ pub fn bench_shred_bytes(bytes: &[u8]) -> u64 {
     let mut shredder =
         crate::shred::TapeShredder::new(StreamSpec::new("bench"), caps, TableName::new("bench"));
     let mut registry = crate::schema::registry::SchemaRegistry::default();
+    let (load_id, mode, policy) = (
+        LoadId::new("bench-load"),
+        WriteMode::Append,
+        SchemaPolicy::evolve(),
+    );
     let items = shredder
         .push_and_drain(
             bytes,
-            &mut registry,
-            &LoadId::new("bench-load"),
-            &WriteMode::Append,
-            &SchemaPolicy::evolve(),
+            crate::shred::ShredCtx {
+                registry: &mut registry,
+                load_id: &load_id,
+                mode: &mode,
+                policy: &policy,
+            },
         )
         .unwrap_or_else(|_| panic!("bench shred succeeds"));
     items
@@ -77,13 +91,20 @@ pub fn bench_shred_bytes(bytes: &[u8]) -> u64 {
 /// Passthrough over one structured batch; returns emitted row count.
 pub fn bench_passthrough(batch: &arrow::record_batch::RecordBatch) -> u64 {
     let mut registry = crate::schema::registry::SchemaRegistry::default();
+    let (load_id, mode, policy) = (
+        LoadId::new("bench-load"),
+        WriteMode::Append,
+        SchemaPolicy::evolve(),
+    );
     let items = crate::shred::passthrough::passthrough_items(
         batch,
         &TableName::new("bench"),
-        &mut registry,
-        &SchemaPolicy::evolve(),
-        &LoadId::new("bench-load"),
-        &WriteMode::Append,
+        crate::shred::ShredCtx {
+            registry: &mut registry,
+            load_id: &load_id,
+            mode: &mode,
+            policy: &policy,
+        },
         DestCapabilities::default(),
     )
     .expect("bench passthrough succeeds");

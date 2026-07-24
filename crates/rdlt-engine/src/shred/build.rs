@@ -196,176 +196,210 @@ fn build_column<'v, V: JsonView<'v>>(ty: &ColumnType, values: &[Option<V>]) -> A
     }
 }
 
+/// The observed [`Kind`] of an optional view cell — `None` for an absent cell.
+fn view_kind<'v, V: JsonView<'v>>(v: &Option<V>) -> Option<Kind<'v>> {
+    v.map(JsonView::kind)
+}
+
+/// Build one scalar column: dispatch to the per-logical-type builder. Each arm
+/// is a small named function so the value semantics of a single type read (and
+/// diff) in isolation; the dispatch is the whole story of "which type → which
+/// builder".
 fn build_scalar<'v, V: JsonView<'v>>(ty: LogicalType, values: &[Option<V>]) -> ArrayRef {
-    let kind_of = |v: &Option<V>| v.map(JsonView::kind);
     match ty {
-        LogicalType::Bool => {
-            let mut b = BooleanBuilder::new();
-            for v in values {
-                b.append_option(match kind_of(v) {
-                    Some(Kind::Bool(x)) => Some(x),
-                    _ => None,
-                });
+        LogicalType::Bool => scalar_bool(values),
+        LogicalType::Int64 => scalar_int64(values),
+        LogicalType::Float64 => scalar_float64(values),
+        LogicalType::Utf8 | LogicalType::Uuid => scalar_utf8(values),
+        LogicalType::Json => scalar_json(values),
+        LogicalType::TimestampTz => scalar_timestamp_tz(values),
+        LogicalType::TimestampNaive => scalar_timestamp_naive(values),
+        LogicalType::Date => scalar_date(values),
+        LogicalType::Time => scalar_time(values),
+        LogicalType::Decimal { precision, scale } => scalar_decimal(values, precision, scale),
+        LogicalType::Binary => scalar_binary(values),
+    }
+}
+
+fn scalar_bool<'v, V: JsonView<'v>>(values: &[Option<V>]) -> ArrayRef {
+    let mut b = BooleanBuilder::new();
+    for v in values {
+        b.append_option(match view_kind(v) {
+            Some(Kind::Bool(x)) => Some(x),
+            _ => None,
+        });
+    }
+    Arc::new(b.finish())
+}
+
+fn scalar_int64<'v, V: JsonView<'v>>(values: &[Option<V>]) -> ArrayRef {
+    let mut b = Int64Builder::new();
+    for v in values {
+        b.append_option(match view_kind(v) {
+            Some(Kind::Int(i)) => Some(i),
+            _ => None,
+        });
+    }
+    Arc::new(b.finish())
+}
+
+fn scalar_float64<'v, V: JsonView<'v>>(values: &[Option<V>]) -> ArrayRef {
+    let mut b = Float64Builder::new();
+    for v in values {
+        // Mirrors `Value::as_f64`: any JSON number converts with `as` casts.
+        b.append_option(match view_kind(v) {
+            Some(Kind::Float(f)) => Some(f),
+            Some(Kind::Int(i)) => Some(i as f64),
+            Some(Kind::UInt(u)) => Some(u as f64),
+            _ => None,
+        });
+    }
+    Arc::new(b.finish())
+}
+
+fn scalar_utf8<'v, V: JsonView<'v>>(values: &[Option<V>]) -> ArrayRef {
+    // Same semantics as `render_scalar`, minus the per-cell String
+    // clone for the dominant case (values that already ARE strings).
+    let mut b = StringBuilder::new();
+    let mut scratch = String::new();
+    for v in values {
+        match view_kind(v) {
+            Some(Kind::Str(s)) => b.append_value(s),
+            Some(Kind::Bool(x)) => b.append_value(if x { "true" } else { "false" }),
+            Some(Kind::Int(i)) => {
+                scratch.clear();
+                std::fmt::Write::write_fmt(&mut scratch, format_args!("{i}"))
+                    .expect("write to String");
+                b.append_value(&scratch);
             }
-            Arc::new(b.finish())
-        }
-        LogicalType::Int64 => {
-            let mut b = Int64Builder::new();
-            for v in values {
-                b.append_option(match kind_of(v) {
-                    Some(Kind::Int(i)) => Some(i),
-                    _ => None,
-                });
+            Some(Kind::UInt(u)) => {
+                scratch.clear();
+                std::fmt::Write::write_fmt(&mut scratch, format_args!("{u}"))
+                    .expect("write to String");
+                b.append_value(&scratch);
             }
-            Arc::new(b.finish())
-        }
-        LogicalType::Float64 => {
-            let mut b = Float64Builder::new();
-            for v in values {
-                // Mirrors `Value::as_f64`: any JSON number converts with `as` casts.
-                b.append_option(match kind_of(v) {
-                    Some(Kind::Float(f)) => Some(f),
-                    Some(Kind::Int(i)) => Some(i as f64),
-                    Some(Kind::UInt(u)) => Some(u as f64),
-                    _ => None,
-                });
+            Some(Kind::Float(f)) => {
+                scratch.clear();
+                std::fmt::Write::write_fmt(&mut scratch, format_args!("{f}"))
+                    .expect("write to String");
+                b.append_value(&scratch);
             }
-            Arc::new(b.finish())
-        }
-        LogicalType::Utf8 | LogicalType::Uuid => {
-            // Same semantics as `render_scalar`, minus the per-cell String
-            // clone for the dominant case (values that already ARE strings).
-            let mut b = StringBuilder::new();
-            let mut scratch = String::new();
-            for v in values {
-                match kind_of(v) {
-                    Some(Kind::Str(s)) => b.append_value(s),
-                    Some(Kind::Bool(x)) => b.append_value(if x { "true" } else { "false" }),
-                    Some(Kind::Int(i)) => {
-                        scratch.clear();
-                        std::fmt::Write::write_fmt(&mut scratch, format_args!("{i}"))
-                            .expect("write to String");
-                        b.append_value(&scratch);
-                    }
-                    Some(Kind::UInt(u)) => {
-                        scratch.clear();
-                        std::fmt::Write::write_fmt(&mut scratch, format_args!("{u}"))
-                            .expect("write to String");
-                        b.append_value(&scratch);
-                    }
-                    Some(Kind::Float(f)) => {
-                        scratch.clear();
-                        std::fmt::Write::write_fmt(&mut scratch, format_args!("{f}"))
-                            .expect("write to String");
-                        b.append_value(&scratch);
-                    }
-                    Some(Kind::Null | Kind::Object | Kind::Array) | None => b.append_null(),
-                }
-            }
-            Arc::new(b.finish())
-        }
-        LogicalType::Json => {
-            let mut b = StringBuilder::new();
-            for v in values {
-                match v {
-                    Some(value) if !value.is_null() => {
-                        let mut out = Vec::new();
-                        write_compact_json(*value, &mut out);
-                        b.append_value(
-                            std::str::from_utf8(&out).expect("serialized JSON is UTF-8"),
-                        );
-                    }
-                    _ => b.append_null(),
-                }
-            }
-            Arc::new(b.finish())
-        }
-        LogicalType::TimestampTz => {
-            let mut b = TimestampMicrosecondBuilder::new();
-            for v in values {
-                let micros = match kind_of(v) {
-                    Some(Kind::Str(s)) => parse_timestamp_tz(s).map(|dt| dt.timestamp_micros()),
-                    _ => None,
-                };
-                b.append_option(micros);
-            }
-            Arc::new(b.finish().with_timezone("+00:00"))
-        }
-        LogicalType::TimestampNaive => {
-            let mut b = TimestampMicrosecondBuilder::new();
-            for v in values {
-                let micros = match kind_of(v) {
-                    Some(Kind::Str(s)) => {
-                        chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f")
-                            .ok()
-                            .map(|dt| dt.and_utc().timestamp_micros())
-                    }
-                    _ => None,
-                };
-                b.append_option(micros);
-            }
-            Arc::new(b.finish())
-        }
-        LogicalType::Date => {
-            let mut b = Date32Builder::new();
-            for v in values {
-                let days = match kind_of(v) {
-                    Some(Kind::Str(s)) => chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
-                        .ok()
-                        .map(|d| {
-                            d.signed_duration_since(
-                                chrono::NaiveDate::from_ymd_opt(1970, 1, 1).expect("epoch"),
-                            )
-                            .num_days() as i32
-                        }),
-                    _ => None,
-                };
-                b.append_option(days);
-            }
-            Arc::new(b.finish())
-        }
-        LogicalType::Time => {
-            let mut b = Time64MicrosecondBuilder::new();
-            for v in values {
-                let micros = match kind_of(v) {
-                    Some(Kind::Str(s)) => chrono::NaiveTime::parse_from_str(s, "%H:%M:%S%.f")
-                        .ok()
-                        .map(|t| {
-                            i64::from(chrono::Timelike::num_seconds_from_midnight(&t)) * 1_000_000
-                                + i64::from(chrono::Timelike::nanosecond(&t) / 1_000)
-                        }),
-                    _ => None,
-                };
-                b.append_option(micros);
-            }
-            Arc::new(b.finish())
-        }
-        LogicalType::Decimal { precision, scale } => {
-            let mut b = Decimal128Builder::new();
-            for v in values {
-                b.append_option(v.and_then(|v| parse_decimal(v, scale)));
-            }
-            Arc::new(
-                b.finish()
-                    .with_precision_and_scale(precision, scale as i8)
-                    .expect("valid decimal precision/scale by lattice construction"),
-            )
-        }
-        LogicalType::Binary => {
-            // Not producible from JSON inference; hinted Binary without an Arrow-native
-            // source yields nulls (never a silent lossy decode).
-            let mut b = BinaryBuilder::new();
-            for _ in values {
-                b.append_null();
-            }
-            Arc::new(b.finish())
+            Some(Kind::Null | Kind::Object | Kind::Array) | None => b.append_null(),
         }
     }
+    Arc::new(b.finish())
+}
+
+fn scalar_json<'v, V: JsonView<'v>>(values: &[Option<V>]) -> ArrayRef {
+    let mut b = StringBuilder::new();
+    for v in values {
+        match v {
+            Some(value) if !value.is_null() => {
+                let mut out = Vec::new();
+                write_compact_json(*value, &mut out);
+                b.append_value(std::str::from_utf8(&out).expect("serialized JSON is UTF-8"));
+            }
+            _ => b.append_null(),
+        }
+    }
+    Arc::new(b.finish())
+}
+
+fn scalar_timestamp_tz<'v, V: JsonView<'v>>(values: &[Option<V>]) -> ArrayRef {
+    let mut b = TimestampMicrosecondBuilder::new();
+    for v in values {
+        let micros = match view_kind(v) {
+            Some(Kind::Str(s)) => parse_timestamp_tz(s).map(|dt| dt.timestamp_micros()),
+            _ => None,
+        };
+        b.append_option(micros);
+    }
+    Arc::new(b.finish().with_timezone("+00:00"))
+}
+
+fn scalar_timestamp_naive<'v, V: JsonView<'v>>(values: &[Option<V>]) -> ArrayRef {
+    let mut b = TimestampMicrosecondBuilder::new();
+    for v in values {
+        let micros = match view_kind(v) {
+            Some(Kind::Str(s)) => chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f")
+                .ok()
+                .map(|dt| dt.and_utc().timestamp_micros()),
+            _ => None,
+        };
+        b.append_option(micros);
+    }
+    Arc::new(b.finish())
+}
+
+fn scalar_date<'v, V: JsonView<'v>>(values: &[Option<V>]) -> ArrayRef {
+    let mut b = Date32Builder::new();
+    for v in values {
+        let days = match view_kind(v) {
+            Some(Kind::Str(s)) => chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
+                .ok()
+                .map(|d| {
+                    d.signed_duration_since(
+                        chrono::NaiveDate::from_ymd_opt(1970, 1, 1).expect("epoch"),
+                    )
+                    .num_days() as i32
+                }),
+            _ => None,
+        };
+        b.append_option(days);
+    }
+    Arc::new(b.finish())
+}
+
+fn scalar_time<'v, V: JsonView<'v>>(values: &[Option<V>]) -> ArrayRef {
+    let mut b = Time64MicrosecondBuilder::new();
+    for v in values {
+        let micros = match view_kind(v) {
+            Some(Kind::Str(s)) => chrono::NaiveTime::parse_from_str(s, "%H:%M:%S%.f")
+                .ok()
+                .map(|t| {
+                    i64::from(chrono::Timelike::num_seconds_from_midnight(&t)) * 1_000_000
+                        + i64::from(chrono::Timelike::nanosecond(&t) / 1_000)
+                }),
+            _ => None,
+        };
+        b.append_option(micros);
+    }
+    Arc::new(b.finish())
+}
+
+fn scalar_decimal<'v, V: JsonView<'v>>(values: &[Option<V>], precision: u8, scale: u8) -> ArrayRef {
+    let mut b = Decimal128Builder::new();
+    for v in values {
+        b.append_option(v.and_then(|v| parse_decimal(v, scale)));
+    }
+    Arc::new(
+        b.finish()
+            .with_precision_and_scale(precision, scale as i8)
+            .expect("valid decimal precision/scale by lattice construction"),
+    )
+}
+
+fn scalar_binary<'v, V: JsonView<'v>>(values: &[Option<V>]) -> ArrayRef {
+    // Not producible from JSON inference; hinted Binary without an Arrow-native
+    // source yields nulls (never a silent lossy decode).
+    let mut b = BinaryBuilder::new();
+    for _ in values {
+        b.append_null();
+    }
+    Arc::new(b.finish())
 }
 
 /// Compact JSON serialization in NATIVE entry order — byte-identical to
 /// `serde_json::to_string(&Value)` (preserve_order semantics, serde escaping,
 /// itoa/ryu numbers). Used for the `Json` column type's verbatim subtrees.
+///
+/// DELIBERATELY NOT unified with [`super::canon::canonical_json_bytes`]: the two
+/// share every rule (escaping, number rendering, array recursion) EXCEPT key
+/// order — this one preserves native insertion order for the stored value, while
+/// `canonical_json_bytes` sorts object keys because `_rdlt_id` hashes must be
+/// order-independent. Merging them behind a `sort_keys` flag would put persisted
+/// identity bytes one boolean away from a silent change; they stay separate on
+/// purpose. Any edit to the shared rules must be mirrored in both.
 fn write_compact_json<'v, V: JsonView<'v>>(value: V, out: &mut Vec<u8>) {
     match value.kind() {
         Kind::Object => {

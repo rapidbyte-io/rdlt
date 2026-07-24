@@ -69,7 +69,13 @@ impl RecordsOut {
     ) -> Result<(), ChannelClosed> {
         let mut buf = Vec::new();
         for row in rows {
-            serde_json::to_writer(&mut buf, &row).map_err(|_| ChannelClosed)?;
+            // A `serde_json::Value` written to a `Vec` cannot fail (the writer is
+            // infallible and a `Value` is always valid JSON — `Number` rejects
+            // non-finite floats at construction). Asserting that invariant is
+            // truthful; mapping a would-be failure to `ChannelClosed` was a lie
+            // that told the source to stop as if the host had hung up.
+            serde_json::to_writer(&mut buf, &row)
+                .expect("a serde_json::Value serializes to a Vec infallibly");
             buf.push(b'\n');
         }
         if buf.is_empty() {

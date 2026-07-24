@@ -132,7 +132,7 @@ impl Engine {
     /// Run to completion (resumable, cancel-safe). Consumes the engine — a run is not
     /// restartable in place; construct a new one to run again.
     pub async fn run(self) -> Result<RunReport, RdltError> {
-        runtime::graph::run(
+        runtime::run::run(
             self.config,
             self.source,
             self.destination,
