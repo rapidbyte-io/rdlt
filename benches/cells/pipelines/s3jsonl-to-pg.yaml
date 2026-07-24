@@ -1,0 +1,15 @@
+# 018 e2e matrix cell s3jsonl-to-pg-200k: nested jsonl on the RUSTFS `raw`
+# bucket → postgres destination (dest_rdlt), full replace. Fixtures
+# [rustfs, pg]: rustfs is primary ({{data}}/files.yaml is the generated
+# file-source config); the postgres destination is addressed by its database
+# name on the same server (fixed port 5439).
+pipeline: bench-s3jsonl-to-pg
+workdir: {{workdir}}/.rdlt
+write_mode: replace
+source:
+  file:
+    config: {{data}}/files.yaml
+destination:
+  postgres:
+    conn: "host=127.0.0.1 port=5439 user=postgres password=postgres dbname=dest_rdlt"
+    dataset: bench

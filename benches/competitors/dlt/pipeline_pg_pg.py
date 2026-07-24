@@ -1,6 +1,8 @@
 """Baseline: Postgres table -> Postgres via pinned dlt's sql_database source
-(feature 005 US3). Same protocol as pipeline_pg_duckdb.py; destination is a
-separate dataset (schema) on the same server.
+(018 e2e cell pg-to-pg-1m). Full replace into the `bench` dataset (schema) of
+the per-product destination database dest_dlt on the same server. connectorx is
+dlt's fastest documented pg extraction backend (variant `dlt`); pyarrow is the
+recorded-context backend (variant `dlt-pyarrow`).
 
 Usage: pipeline_pg_pg.py <src_pg_conn_url> <dest_pg_conn_url> <backend> [table]
 Emits JSON: rows, seconds, rows_per_s, peak_rss_kb, backend, table.
@@ -17,27 +19,23 @@ from dlt.sources.sql_database import sql_database
 if __name__ == "__main__":
     src = sys.argv[1]
     dest = sys.argv[2]
-    backend = sys.argv[3] if len(sys.argv) > 3 else "pyarrow"
-    table = sys.argv[4] if len(sys.argv) > 4 else "pg_wide"
+    backend = sys.argv[3] if len(sys.argv) > 3 else "connectorx"
+    table = sys.argv[4] if len(sys.argv) > 4 else "events"
 
-    source = sql_database(
-        credentials=src,
-        table_names=[table],
-        backend=backend,
-    )
+    source = sql_database(credentials=src, table_names=[table], backend=backend)
 
     started = time.monotonic()
     pipe = dlt.pipeline(
-        pipeline_name=f"baseline_pg_pg_{backend}_{table}",
+        pipeline_name=f"bench_pg_pg_{backend}",
         destination=dlt.destinations.postgres(dest),
-        dataset_name="raw_dlt",
+        dataset_name="bench",
         dev_mode=False,
     )
-    pipe.run(source)
+    pipe.run(source, write_disposition="replace")
     elapsed = time.monotonic() - started
 
     with pipe.sql_client() as client:
-        rows = client.execute_sql(f"SELECT count(*) FROM raw_dlt.{table}")[0][0]
+        rows = client.execute_sql(f"SELECT count(*) FROM bench.{table}")[0][0]
     peak_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     print(json.dumps({"rows": rows, "seconds": elapsed,
                       "rows_per_s": rows / elapsed, "peak_rss_kb": peak_kb,

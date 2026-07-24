@@ -1,27 +1,46 @@
--- Feature 005 T024: deterministic benchmark datasets (research R7).
--- pg_wide: 1M rows x 12 typed columns (the gated pg->duckdb / pg->pg cells).
--- pg_jsonb: 200k rows carrying the harness's nested document shape in jsonb
---           (scoreboard context: the Json escape-hatch path end-to-end).
--- Identity = row counts + the content hashes printed at the end; every run
--- of this script produces byte-identical tables (no now()/random()).
+-- Same-conditions postgres fixture for the 018 e2e matrix (research D-07).
+-- Piped through `psql -U postgres` on the default database, so it may CREATE
+-- DATABASE and `\connect` between them.
+--
+-- One server hosts:
+--   src          — the seeded source datasets (read by every pg-source arm).
+--   dest_rdlt    — empty; rdlt's destination.
+--   dest_dlt     — empty; dlt's destination.
+--   dest_airbyte — empty; Airbyte's destination (P3).
+--
+-- Two source tables in `src`:
+--   events    — 1M × 12 typed columns (the standard matrix source; also the
+--               dedup cell's LOAD 1).
+--   events_v2 — the same 1M ids with 50% of rows carrying changed non-key
+--               values (the dedup cell's LOAD 2 — full re-delivery, dedup by
+--               id, research D-08).
+--
+-- Deterministic: no now()/random(), so every run seeds byte-identical tables.
+-- The identity block at the end (row counts + content hashes) is captured as
+-- the fixture's recorded dataset identity.
 
-DROP TABLE IF EXISTS pg_wide, pg_jsonb CASCADE;
+CREATE DATABASE src;
+CREATE DATABASE dest_rdlt;
+CREATE DATABASE dest_dlt;
+CREATE DATABASE dest_airbyte;
 
-CREATE TABLE pg_wide (
+\connect src
+
+CREATE TABLE events (
     id         int8 PRIMARY KEY,
-    small      int4         NOT NULL,
-    big        int8         NOT NULL,
-    ratio      float8       NOT NULL,
+    small      int4          NOT NULL,
+    big        int8          NOT NULL,
+    ratio      float8        NOT NULL,
     amount     numeric(12,4) NOT NULL,
-    name       text         NOT NULL,
-    code       varchar(16)  NOT NULL,
-    active     bool         NOT NULL,
-    created_at timestamptz  NOT NULL,
-    birthday   date         NOT NULL,
-    token      uuid         NOT NULL,
-    note       text                  -- nullable: 1 in 10 NULL
+    name       text          NOT NULL,
+    code       varchar(16)   NOT NULL,
+    active     bool          NOT NULL,
+    created_at timestamptz   NOT NULL,
+    birthday   date          NOT NULL,
+    token      uuid          NOT NULL,
+    note       text                    -- nullable: 1 in 10 NULL
 );
-INSERT INTO pg_wide
+INSERT INTO events
 SELECT i,
        (i % 100000)::int4,
        (i * 2654435761)::int8,
@@ -36,32 +55,33 @@ SELECT i,
        CASE WHEN i % 10 = 0 THEN NULL ELSE 'note-' || (i % 1000) END
 FROM generate_series(1, 1000000) i;
 
-CREATE TABLE pg_jsonb (
-    id  int8 PRIMARY KEY,
-    doc jsonb NOT NULL
-);
-INSERT INTO pg_jsonb
-SELECT i,
-       jsonb_build_object(
-           'id', i,
-           'name', 'user-' || i,
-           'score', i * 0.5,
-           'profile', jsonb_build_object('city', 'NYC', 'zip', 10001 + i % 100),
-           'tags', jsonb_build_array(
-               jsonb_build_object('label', 'a'),
-               jsonb_build_object('label', 'b')
-           )
-       )
-FROM generate_series(1, 200000) i;
+-- events_v2: identical shape and ids; rows with an even id carry changed
+-- non-key values (name/amount/note), so a full re-delivery deduped by id
+-- rewrites 50% of the table and leaves 50% untouched.
+CREATE TABLE events_v2 (LIKE events INCLUDING ALL);
+INSERT INTO events_v2
+SELECT id,
+       small,
+       big,
+       ratio,
+       CASE WHEN id % 2 = 0 THEN amount + 1 ELSE amount END,
+       CASE WHEN id % 2 = 0 THEN 'user-v2-' || id ELSE name END,
+       code,
+       active,
+       created_at,
+       birthday,
+       token,
+       CASE WHEN id % 2 = 0 THEN 'note-v2-' || (id % 1000) ELSE note END
+FROM events;
 
-ANALYZE pg_wide;
-ANALYZE pg_jsonb;
+ANALYZE events;
+ANALYZE events_v2;
 
--- Identity block (record in the evidence artifact):
-SELECT 'pg_wide'  AS dataset, count(*) AS rows,
+-- Identity block (recorded in the evidence artifact):
+SELECT 'events'    AS dataset, count(*) AS rows,
        md5(string_agg(md5(t::text), '' ORDER BY id)) AS content_md5
-FROM pg_wide t
+FROM events t
 UNION ALL
-SELECT 'pg_jsonb', count(*),
+SELECT 'events_v2', count(*),
        md5(string_agg(md5(t::text), '' ORDER BY id))
-FROM pg_jsonb t;
+FROM events_v2 t;

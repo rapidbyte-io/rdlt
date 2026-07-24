@@ -57,7 +57,13 @@ pub struct CompetitorRef {
 #[serde(deny_unknown_fields)]
 pub struct Cell {
     pub id: String,
-    pub fixture: String,
+    /// Fixtures this cell brings up (all started before the cell runs, all
+    /// reset before every run). The FIRST is the primary — it supplies the
+    /// `{{conn}}`/`{{data}}`/`{{port}}` substitutions and its data dir is the
+    /// cell's working data. A cross-store cell (e.g. postgres source → s3
+    /// destination) lists both; the non-primary endpoints are addressed by
+    /// their fixed fixture ports in the pipeline spec.
+    pub fixtures: Vec<String>,
     /// Pipeline-spec YAML template (relative to benches/); `{{conn}}`,
     /// `{{data}}`, `{{workdir}}` substituted by the runner.
     #[serde(default)]
@@ -84,6 +90,11 @@ pub struct Cell {
     pub competitors: Vec<CompetitorRef>,
     #[serde(default)]
     pub verify: Option<Verify>,
+    /// The cell's claim — one sentence, rendered as the matrix-row caption
+    /// (FR-014). Carries any regime caveats (e.g. the dedup cell's
+    /// full-redelivery note).
+    #[serde(default)]
+    pub note: Option<String>,
 }
 
 fn default_warmups() -> u32 {
@@ -104,7 +115,21 @@ impl Cell {
                 self.id
             )));
         }
+        if self.fixtures.is_empty() {
+            return Err(BenchError(format!(
+                "{}: cell `{}` names no fixtures",
+                file.display(),
+                self.id
+            )));
+        }
         Ok(())
+    }
+
+    /// The primary fixture — first in the list; supplies the cell's
+    /// `{{conn}}`/`{{data}}`/`{{port}}` substitutions.
+    pub fn primary_fixture(&self) -> &str {
+        // `check` guarantees the list is non-empty before any cell runs.
+        &self.fixtures[0]
     }
 }
 
@@ -235,7 +260,7 @@ mod tests {
     const GOOD: &str = r#"
 [[cell]]
 id = "a-cell"
-fixture = "none"
+fixtures = ["none"]
 pipeline = "cells/pipelines/a.yaml"
 warmups = 0
 runs = 3
@@ -261,7 +286,7 @@ rows = 1000
     fn unknown_field_is_rejected_naming_the_file() {
         let dir = dir_with(&[(
             "e2e.toml",
-            "[[cell]]\nid='x'\nfixture='f'\npipeline='p'\nbogus=1\n",
+            "[[cell]]\nid='x'\nfixtures=['f']\npipeline='p'\nbogus=1\n",
         )]);
         let err = load_cells(dir.path()).unwrap_err().to_string();
         assert!(err.contains("e2e.toml"), "{err}");
@@ -274,7 +299,7 @@ rows = 1000
         // not a silently ignored field.
         let dir = dir_with(&[(
             "e2e.toml",
-            "[[cell]]\nid='x'\nfixture='f'\npipeline='p'\nclass='gated'\n",
+            "[[cell]]\nid='x'\nfixtures=['f']\npipeline='p'\nclass='gated'\n",
         )]);
         let err = load_cells(dir.path()).unwrap_err().to_string();
         assert!(err.contains("class"), "{err}");
@@ -282,7 +307,7 @@ rows = 1000
 
     #[test]
     fn duplicate_id_names_both_files() {
-        let one = "[[cell]]\nid='dup'\nfixture='f'\npipeline='p'\n";
+        let one = "[[cell]]\nid='dup'\nfixtures=['f']\npipeline='p'\n";
         let dir = dir_with(&[("a.toml", one), ("b.toml", one)]);
         let err = load_cells(dir.path()).unwrap_err().to_string();
         assert!(err.contains("duplicate cell id `dup`"), "{err}");
@@ -290,8 +315,16 @@ rows = 1000
     }
 
     #[test]
+    fn cell_with_no_fixtures_is_rejected() {
+        let dir = dir_with(&[("a.toml", "[[cell]]\nid='x'\nfixtures=[]\npipeline='p'\n")]);
+        let err = load_cells(dir.path()).unwrap_err().to_string();
+        assert!(err.contains("names no fixtures"), "{err}");
+        assert!(err.contains('x'), "{err}");
+    }
+
+    #[test]
     fn cell_without_pipeline_or_command_is_rejected() {
-        let dir = dir_with(&[("a.toml", "[[cell]]\nid='x'\nfixture='f'\n")]);
+        let dir = dir_with(&[("a.toml", "[[cell]]\nid='x'\nfixtures=['f']\n")]);
         let err = load_cells(dir.path()).unwrap_err().to_string();
         assert!(err.contains("neither `pipeline` nor `command`"), "{err}");
         assert!(err.contains('x'), "{err}");

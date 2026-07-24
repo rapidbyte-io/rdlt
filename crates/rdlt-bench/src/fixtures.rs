@@ -3,6 +3,7 @@
 //! `postgres_container`, `service` (background process, e.g. the mock REST API).
 
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -198,9 +199,32 @@ impl Started {
         let (Some((engine, name)), Some(sql)) = (&self.container, &self.def.reset_sql) else {
             return Ok(());
         };
-        let out = Command::new(engine)
-            .args(["exec", name, "psql", "-q", "-U", "postgres", "-c", sql])
-            .output()?;
+        // Pipe the SQL through psql's stdin rather than `-c` so a reset script
+        // may switch databases with `\connect` (the per-product destination
+        // databases live on one server). ON_ERROR_STOP makes any failing
+        // statement in the script fail the whole reset, not just the last one.
+        let mut child = Command::new(engine)
+            .args([
+                "exec",
+                "-i",
+                name,
+                "psql",
+                "-q",
+                "-v",
+                "ON_ERROR_STOP=1",
+                "-U",
+                "postgres",
+            ])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
+        child
+            .stdin
+            .take()
+            .expect("stdin piped")
+            .write_all(sql.as_bytes())?;
+        let out = child.wait_with_output()?;
         if !out.status.success() {
             return Err(BenchError(format!(
                 "fixture `{}` reset failed: {}",

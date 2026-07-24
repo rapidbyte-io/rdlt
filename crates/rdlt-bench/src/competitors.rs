@@ -275,7 +275,7 @@ pub fn run_competitor(
     reference: &CompetitorRef,
     runs: u32,
     subs: &BTreeMap<String, String>,
-    fixture: &crate::fixtures::Started,
+    fixtures: &[&crate::fixtures::Started],
 ) -> CompetitorSide {
     let engine = match crate::fixtures::container_engine() {
         Ok(e) => e,
@@ -300,10 +300,13 @@ pub fn run_competitor(
     for seq in 0..runs {
         // Same discipline as the rdlt side: destination state reset between
         // runs (the shell harnesses dropped dest schemas per baseline run).
-        if let Err(e) = fixture.reset() {
-            return CompetitorSide::Missing {
-                reason: format!("fixture reset failed: {e}"),
-            };
+        // Every store the cell uses is reset, source and destination alike.
+        for fixture in fixtures {
+            if let Err(e) = fixture.reset() {
+                return CompetitorSide::Missing {
+                    reason: format!("fixture reset failed: {e}"),
+                };
+            }
         }
         match run_container_once(&engine, variant, reference, subs, seq) {
             Ok(run) => {
@@ -432,7 +435,7 @@ mod tests {
             &BTreeMap::new(),
         )
         .unwrap();
-        let side = run_competitor(&variant, &reference, 1, &BTreeMap::new(), &fixture);
+        let side = run_competitor(&variant, &reference, 1, &BTreeMap::new(), &[&fixture]);
         match side {
             CompetitorSide::Missing { reason } => {
                 assert!(!reason.is_empty());

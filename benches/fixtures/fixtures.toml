@@ -1,12 +1,26 @@
-# Fixture registry (data-model.md §2). The harness owns lifecycle: create →
+# Fixture registry (data-model.md §7). The harness owns lifecycle: create →
 # seed (identity recorded) → shared within one invocation → teardown.
 # Container fixtures are named rdlt-bench-<id>; prepare scripts rely on that.
 #
-# P0 keeps three fixtures: the harness self-test `none`, plus `pg-src` and
-# `file-s3` as the seeds P2's reshape (T016) grows into the two same-conditions
-# fixtures (`pg` with per-product destination databases, `rustfs` with `raw` +
-# `lake` buckets). The 10 legacy fixtures were retired in the migration commit
-# (archive commit 40841ab).
+# Two same-conditions benchmark fixtures back the five-cell e2e matrix
+# (feature 018, research D-07), plus the exempt harness self-test `none`:
+#
+#   pg     — ONE postgres:16 container. Database `src` is seeded 1M×12 (the
+#            `events` table) plus a 50%-changed `events_v2` for the dedup
+#            cell; EMPTY per-product destination databases dest_rdlt/dest_dlt/
+#            dest_airbyte are created in the same seed. Per-run reset recreates
+#            every destination database's user schemas (drop/recreate), so each
+#            arm starts from an identical empty destination.
+#   rustfs — ONE RUSTFS container (pin 1.0.0-beta.11). Bucket `raw` is seeded
+#            once per session with 200k nested jsonl (gen_jsonl.py); bucket
+#            `lake` receives per-product prefixes (lake/rdlt, lake/dlt,
+#            lake/airbyte). The lake prefixes need no explicit reset seam — the
+#            file destination's Replace mode is the ownership-precise prefix
+#            truncation.
+#
+# A cross-store cell (postgres source → s3 destination, or the reverse) lists
+# BOTH fixtures; the harness brings both up and resets both before each run.
+# The non-primary store is addressed by its fixed port in the pipeline spec.
 
 # Shared across every postgres_container fixture (they differ only by port). A
 # fixture may still state its own `image`/`conn` to override.
@@ -16,30 +30,49 @@ postgres_conn = "postgresql://postgres:postgres@127.0.0.1:{{port}}/postgres"
 
 # Reusable blocks; a fixture opts in with `reset_sql = "@name"`.
 [snippets]
-# Drop the per-run destination schemas (raw%) a load recreates.
-drop_raw_schemas = "DO $$ DECLARE s text; BEGIN FOR s IN SELECT schema_name FROM information_schema.schemata WHERE schema_name LIKE 'raw%' LOOP EXECUTE 'DROP SCHEMA ' || quote_ident(s) || ' CASCADE'; END LOOP; END $$;"
+# Per-run reset: recreate every per-product destination database's user
+# schemas. Piped through psql's stdin so `\connect` can switch databases (the
+# reset runs against all three destinations on the one server). Resetting an
+# already-recorded arm's destination is harmless — its result was captured
+# before the next reset — and it guarantees every arm meets an identical empty
+# destination (research D-07).
+reset_dest_schemas = '''
+\c dest_rdlt
+DO $$ DECLARE s text; BEGIN FOR s IN SELECT nspname FROM pg_namespace WHERE nspname NOT LIKE 'pg_%' AND nspname <> 'information_schema' LOOP EXECUTE format('DROP SCHEMA %I CASCADE', s); END LOOP; END $$;
+CREATE SCHEMA public;
+\c dest_dlt
+DO $$ DECLARE s text; BEGIN FOR s IN SELECT nspname FROM pg_namespace WHERE nspname NOT LIKE 'pg_%' AND nspname <> 'information_schema' LOOP EXECUTE format('DROP SCHEMA %I CASCADE', s); END LOOP; END $$;
+CREATE SCHEMA public;
+\c dest_airbyte
+DO $$ DECLARE s text; BEGIN FOR s IN SELECT nspname FROM pg_namespace WHERE nspname NOT LIKE 'pg_%' AND nspname <> 'information_schema' LOOP EXECUTE format('DROP SCHEMA %I CASCADE', s); END LOOP; END $$;
+CREATE SCHEMA public;
+'''
 
 [[fixture]]
 id = "selftest-none"
 kind = "none"
 
-# Postgres source (feature 005 datasets); P2 grows this into the `pg` fixture
-# with empty per-product destination databases on the same server.
+# One postgres server: `src` (seeded source datasets) + three empty
+# per-product destination databases. The `conn` points at `src` so the primary
+# `{{conn}}` substitution addresses the source; destinations are addressed by
+# their database name in the pipeline spec (fixed port 5439).
 [[fixture]]
-id = "pg-src"
+id = "pg"
 kind = "postgres_container"
 port = 5439
+conn = "postgresql://postgres:postgres@127.0.0.1:5439/src"
 seed_sql = "{{benches}}/fixtures/seed_pg.sql"
-reset_sql = "@drop_raw_schemas"
+reset_sql = "@reset_dest_schemas"
 
-# RUSTFS object store (015). The flagship 200k jsonl dataset is seeded INTO the
-# bucket; P2 grows this into the `rustfs` fixture with `raw` + `lake` buckets.
+# One RUSTFS object store: `raw` seeded with the flagship 200k nested jsonl;
+# `lake` created empty for per-product output prefixes. generate_sh also writes
+# the file-source config the s3-source cells consume ({{data}}/files.yaml).
 [[fixture]]
-id = "file-s3"
+id = "rustfs"
 kind = "container"
 image = "docker.io/rustfs/rustfs:1.0.0-beta.11"
 port = 19110
 container_port = 9000
 run_args = ["-e", "RUSTFS_ACCESS_KEY=rdlt-bench", "-e", "RUSTFS_SECRET_KEY=rdlt-bench-secret"]
-generate_sh = "python3 {{benches}}/fixtures/gen_jsonl.py 200000 {{data}}/rows.jsonl && python3 {{benches}}/fixtures/seed_s3.py http://127.0.0.1:19110 rdlt-bench rdlt-bench-secret raw landed/rows.jsonl {{data}}/rows.jsonl && printf 'streams:\n  - name: events\n    format: jsonl\n    path: \"landed/*.jsonl\"\n    location:\n      s3:\n        endpoint: \"http://127.0.0.1:19110\"\n        bucket: raw\n        access_key: rdlt-bench\n        secret_key: rdlt-bench-secret\n' > {{data}}/files.yaml"
+generate_sh = "python3 {{benches}}/fixtures/gen_jsonl.py 200000 {{data}}/rows.jsonl && python3 {{benches}}/fixtures/seed_s3.py http://127.0.0.1:19110 rdlt-bench rdlt-bench-secret raw landed/rows.jsonl {{data}}/rows.jsonl && python3 {{benches}}/fixtures/s3_bucket.py http://127.0.0.1:19110 rdlt-bench rdlt-bench-secret lake && printf 'streams:\n  - name: events\n    format: jsonl\n    path: \"landed/*.jsonl\"\n    location:\n      s3:\n        endpoint: \"http://127.0.0.1:19110\"\n        bucket: raw\n        access_key: rdlt-bench\n        secret_key: rdlt-bench-secret\n' > {{data}}/files.yaml"
 hash = ["{{data}}/rows.jsonl"]

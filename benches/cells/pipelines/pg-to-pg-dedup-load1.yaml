@@ -1,0 +1,20 @@
+# LOAD 1 of the dedup cell — the untimed setup the measured pg-to-pg-dedup.yaml
+# builds on. Run by that cell's prepare_sh (`cd {{workdir}} && rdlt run …`), so
+# its conns are hardcoded (fixed port 5439) — this file is NOT rendered by the
+# harness template pass. Reads src.events and merges by id into dest_rdlt's
+# `events` table; LOAD 2 then re-delivers the 50%-changed rows over it.
+pipeline: bench-pg-to-pg-dedup-load1
+workdir: .rdlt-load1
+write_mode:
+  merge:
+    key: [id]
+source:
+  postgres:
+    conn: "postgresql://postgres:postgres@127.0.0.1:5439/src"
+    tables:
+      - name: events
+destination:
+  postgres:
+    conn: "host=127.0.0.1 port=5439 user=postgres password=postgres dbname=dest_rdlt"
+    dataset: bench
+    merge_strategy: upsert

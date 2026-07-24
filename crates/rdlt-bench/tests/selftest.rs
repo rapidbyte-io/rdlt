@@ -46,14 +46,14 @@ fn selftest_cell_runs_the_full_protocol() {
     let defs = fixtures::load_fixtures(&paths.fixtures_toml).expect("fixtures load");
     let def = defs
         .iter()
-        .find(|f| f.id == cell.fixture)
+        .find(|f| f.id == cell.primary_fixture())
         .expect("fixture registered");
     let started = fixtures::start(def, &BTreeMap::new()).expect("none fixture starts");
 
     let result = runner::run_cell(
         cell,
         &paths,
-        &started,
+        &[&started],
         BTreeMap::new(),
         BTreeMap::new(),
         None,

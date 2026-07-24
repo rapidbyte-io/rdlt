@@ -1,0 +1,16 @@
+# 018 e2e matrix cell pg-to-pg-1m: postgres source (src.events, 1M×12) →
+# postgres destination (dest_rdlt), full replace. `{{conn}}` is the pg fixture's
+# src-database connection (primary fixture); the destination is addressed by its
+# database name on the same server (fixed port 5439).
+pipeline: bench-pg-to-pg
+workdir: {{workdir}}/.rdlt
+write_mode: replace
+source:
+  postgres:
+    conn: "{{conn}}"
+    tables:
+      - name: events
+destination:
+  postgres:
+    conn: "host=127.0.0.1 port=5439 user=postgres password=postgres dbname=dest_rdlt"
+    dataset: bench

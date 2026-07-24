@@ -4,7 +4,7 @@
 
 [[cell]]
 id = "selftest-protocol"
-fixture = "selftest-none"
+fixtures = ["selftest-none"]
 command = ["sh", "-c", "sleep 0.02"]
 warmups = 1
 runs = 3

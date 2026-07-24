@@ -1,18 +1,21 @@
-# The dlt competitor module (research R4, contract BH4). One pinned image
-# (Dockerfile here), several variants. Which variants feed gated ratio bars is
-# decided by bars.toml (it names the competitor per cell), not here. Bump the
-# pin → re-measure every cell before quoting a multiple (the RESULTS.md version
-# policy). `pin`/`image` are shared in [defaults]; a variant overrides either.
+# The dlt competitor module (feature 018, contract BR7). One pinned image
+# (Dockerfile here), two variants. dlt runs its fastest documented
+# configuration per cell as the HEADLINE (`dlt`, connectorx for pg extraction);
+# `dlt-pyarrow` is retained as recorded CONTEXT on the pg-source cells. The
+# sqlalchemy variant was deleted with the matrix rebuild (policy log). Bump the
+# pin → re-measure every cell before quoting a multiple (the version policy).
+# `pin`/`image` are shared in [defaults]; a variant may override either.
 
 [defaults]
 pin = "dlt 1.29.0"
 image = "rdlt-baseline"
 
+# Headline: fastest honest configuration. On pg-source cells the cell's args
+# select backend=connectorx; on file-source cells backend is not applicable.
 [[variant]]
 id = "dlt"
 
+# Recorded context on pg-source cells: dlt's arrow-native sql_database backend
+# (backend=pyarrow), selected by the cell's args.
 [[variant]]
 id = "dlt-pyarrow"
-
-[[variant]]
-id = "dlt-connectorx"

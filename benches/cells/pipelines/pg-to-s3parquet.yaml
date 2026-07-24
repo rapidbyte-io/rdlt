@@ -1,0 +1,23 @@
+# 018 e2e matrix cell pg-to-s3parquet-1m: postgres source (src.events, 1M×12) →
+# parquet files on the RUSTFS `lake` bucket under the per-product prefix `rdlt`,
+# full replace. Fixtures [pg, rustfs]: pg is primary ({{conn}} = src); the lake
+# bucket is addressed by its fixed endpoint (port 19110). Replace truncates the
+# `rdlt` prefix ownership-precisely — that is the per-run lake reset.
+pipeline: bench-pg-to-s3parquet
+workdir: {{workdir}}/.rdlt
+write_mode: replace
+source:
+  postgres:
+    conn: "{{conn}}"
+    tables:
+      - name: events
+destination:
+  file:
+    path: rdlt
+    format: parquet
+    location:
+      s3:
+        endpoint: "http://127.0.0.1:19110"
+        bucket: lake
+        access_key: rdlt-bench
+        secret_key: rdlt-bench-secret

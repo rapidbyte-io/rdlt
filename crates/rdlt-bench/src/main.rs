@@ -98,7 +98,7 @@ fn cmd_list(paths: &Paths, selection: &SelectionArgs) -> rdlt_bench::Result<()> 
         println!(
             "{:<34} {:<16} {:<5} {}{}",
             cell.id,
-            cell.fixture,
+            cell.fixtures.join(","),
             cell.runs,
             competitors.join(","),
             if barred { "  [bar]" } else { "" },
@@ -151,20 +151,21 @@ fn run_one_cell(
     started: &mut BTreeMap<String, fixtures::Started>,
 ) -> rdlt_bench::Result<artifact::Artifact> {
     eprintln!("== {} ({} runs) ==", cell.id, cell.runs);
-    if !started.contains_key(&cell.fixture) {
-        let def = ctx
-            .fixture_defs
-            .iter()
-            .find(|f| f.id == cell.fixture)
-            .ok_or_else(|| {
-                BenchError(format!(
-                    "cell `{}`: unknown fixture `{}`",
-                    cell.id, cell.fixture
-                ))
-            })?;
-        started.insert(cell.fixture.clone(), fixtures::start(def, base_subs)?);
+    // Bring up every store the cell uses (shared across the invocation), then
+    // collect them primary-first — the order the cell declared them in.
+    for id in &cell.fixtures {
+        if !started.contains_key(id) {
+            let def = ctx
+                .fixture_defs
+                .iter()
+                .find(|f| &f.id == id)
+                .ok_or_else(|| BenchError(format!("cell `{}`: unknown fixture `{id}`", cell.id)))?;
+            started.insert(id.clone(), fixtures::start(def, base_subs)?);
+        }
     }
-    let fixture = &started[&cell.fixture];
+    let cell_fixtures: Vec<&fixtures::Started> =
+        cell.fixtures.iter().map(|id| &started[id]).collect();
+    let primary = cell_fixtures[0];
 
     // Quiet guard BEFORE anything is measured — the baselines feed the
     // recorded ratios, so they need the quiet machine as much as the rdlt side.
@@ -193,12 +194,16 @@ fn run_one_cell(
             })?;
         competitor_pins.insert(variant.id.clone(), variant.pin.clone());
         let mut subs = base_subs.clone();
-        subs.insert("data".into(), fixture.data_dir.path().display().to_string());
-        if let Some(conn) = fixture.conn() {
+        subs.insert("data".into(), primary.data_dir.path().display().to_string());
+        if let Some(conn) = primary.conn() {
             subs.insert("conn".into(), conn.to_owned());
         }
+        if let Some(port) = primary.def.port {
+            subs.insert("port".into(), port.to_string());
+        }
         eprintln!("   baseline {} ...", variant.id);
-        let side = competitors::run_competitor(variant, reference, cell.runs, &subs, fixture);
+        let side =
+            competitors::run_competitor(variant, reference, cell.runs, &subs, &cell_fixtures);
         // A baseline that could not run is recorded as a loud `Missing{reason}`,
         // never a silent skip. Enforcement is measurement-first (bars gate a
         // recorded session, not the live run), so the run proceeds and the
@@ -212,7 +217,7 @@ fn run_one_cell(
     let result = runner::run_cell(
         cell,
         paths,
-        fixture,
+        &cell_fixtures,
         competitor_pins,
         competitor_sides,
         quiet_note,

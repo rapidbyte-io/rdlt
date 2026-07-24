@@ -317,11 +317,29 @@ fn verify_outcome(cell: &Cell, samples: &[Sample<RunDetail>]) -> Result<Option<V
     }))
 }
 
+/// Merge every fixture's recorded dataset identity into one map for the
+/// fingerprint. Keys are prefixed with the fixture id so a cross-store cell
+/// records both stores' identities without collision.
+fn merged_fixture_hashes(fixtures: &[&crate::fixtures::Started]) -> BTreeMap<String, String> {
+    let mut merged = BTreeMap::new();
+    for fixture in fixtures {
+        for (key, value) in &fixture.hashes {
+            merged.insert(format!("{}:{key}", fixture.def.id), value.clone());
+        }
+    }
+    merged
+}
+
 /// Run one cell end to end and return its artifact (not yet written).
+///
+/// `fixtures` are the cell's started fixtures, primary first: the primary
+/// supplies `{{conn}}`/`{{data}}`/`{{port}}` and its data dir is the working
+/// data; every fixture is reset before each run (a cross-store cell resets
+/// both its source and destination stores).
 pub fn run_cell(
     cell: &Cell,
     paths: &Paths,
-    fixture: &crate::fixtures::Started,
+    fixtures: &[&crate::fixtures::Started],
     competitor_pins: BTreeMap<String, String>,
     competitors: BTreeMap<String, crate::artifact::CompetitorSide>,
     // Quiet-guard verdict, obtained by the CALLER before any competitor ran
@@ -331,15 +349,18 @@ pub fn run_cell(
     // into the artifact so a forced number is never mistaken for evidence.
     forced: bool,
 ) -> Result<Artifact> {
+    let primary = fixtures
+        .first()
+        .expect("cell has >= 1 fixture (load-checked)");
     let mut subs: BTreeMap<String, String> = BTreeMap::new();
     subs.insert("repo".into(), paths.repo.display().to_string());
     subs.insert("benches".into(), paths.benches.display().to_string());
     subs.insert("cli".into(), paths.cli.display().to_string());
-    subs.insert("data".into(), fixture.data_dir.path().display().to_string());
-    if let Some(conn) = fixture.conn() {
+    subs.insert("data".into(), primary.data_dir.path().display().to_string());
+    if let Some(conn) = primary.conn() {
         subs.insert("conn".into(), conn.to_owned());
     }
-    if let Some(port) = fixture.def.port {
+    if let Some(port) = primary.def.port {
         subs.insert("port".into(), port.to_string());
     }
 
@@ -356,7 +377,11 @@ pub fn run_cell(
         )));
     }
     let samples = protocol::run_protocol(cell.warmups, cell.runs, |counted| {
-        fixture.reset()?;
+        // Reset every store the cell uses — a cross-store cell resets both its
+        // source and destination fixtures before each run.
+        for fixture in fixtures {
+            fixture.reset()?;
+        }
         let run_dir = invocation.path().join(format!("run-{run_seq}"));
         run_seq += 1;
         std::fs::create_dir_all(&run_dir).map_err(at(&run_dir))?;
@@ -371,7 +396,7 @@ pub fn run_cell(
         cell_id: cell.id.clone(),
         recorded_at: crate::artifact::recorded_at(),
         fingerprint: crate::artifact::fingerprint(
-            fixture.hashes.clone(),
+            merged_fixture_hashes(fixtures),
             competitor_pins,
             quiet_note,
         ),

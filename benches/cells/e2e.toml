@@ -1,6 +1,106 @@
-# The e2e matrix cells land in P2 (feature 018, tasks T017–T018): the five
-# three-way-comparable pipelines — pg-to-pg-1m, pg-to-s3parquet-1m,
-# s3jsonl-to-pg-200k, s3jsonl-to-s3parquet-200k, pg-to-pg-dedup-1m. The 25
-# legacy cells were retired in the migration commit; their final recorded
-# values and the archive commit (40841ab) live in benches/RESULTS.md
-# (Milestones) and the migration commit message.
+# The five-cell e2e matrix (feature 018, data-model §1). One flat file — the
+# retired importance/taxonomy vocabulary is gone (the loader rejects it). Each
+# cell is a three-way-comparable end-to-end pipeline: source data → product →
+# destination, same seeded data
+# and same destination server/store for every arm. `note` is the cell's claim,
+# rendered as the matrix caption; `verify` pins destination row count = expected
+# on every arm (FR-015). Competitors run their fastest honest configuration
+# (dlt: connectorx for pg extraction — variant `dlt`; pyarrow retained as
+# recorded context on pg-source cells — variant `dlt-pyarrow`). All competitor
+# arms reach the host fixtures over `network = "host"` at their fixed ports.
+
+# ---------------------------------------------------------------------------
+# pg-to-pg-1m — Postgres → Postgres, 1M rows, full replace.
+# ---------------------------------------------------------------------------
+[[cell]]
+id = "pg-to-pg-1m"
+fixtures = ["pg"]
+pipeline = "cells/pipelines/pg-to-pg.yaml"
+note = "Postgres → Postgres, 1M×12 rows, full replace — the everyday relational table copy."
+[cell.verify]
+table = "events"
+expected_rows = 1_000_000
+[[cell.competitor]]
+variant = "dlt"
+args = ["pipeline_pg_pg.py", "{{conn}}", "postgresql://postgres:postgres@127.0.0.1:5439/dest_dlt", "connectorx", "events"]
+network = "host"
+[[cell.competitor]]
+variant = "dlt-pyarrow"
+args = ["pipeline_pg_pg.py", "{{conn}}", "postgresql://postgres:postgres@127.0.0.1:5439/dest_dlt", "pyarrow", "events"]
+network = "host"
+
+# ---------------------------------------------------------------------------
+# pg-to-s3parquet-1m — Postgres → Parquet on S3, 1M rows, full replace.
+# ---------------------------------------------------------------------------
+[[cell]]
+id = "pg-to-s3parquet-1m"
+fixtures = ["pg", "rustfs"]
+pipeline = "cells/pipelines/pg-to-s3parquet.yaml"
+note = "Postgres → Parquet on S3, 1M×12 rows, full replace — relational extract to a lake."
+[cell.verify]
+table = "events"
+expected_rows = 1_000_000
+[[cell.competitor]]
+variant = "dlt"
+args = ["pipeline_pg_s3parquet.py", "{{conn}}", "connectorx", "events", "http://127.0.0.1:19110", "rdlt-bench", "rdlt-bench-secret", "lake", "dlt"]
+network = "host"
+[[cell.competitor]]
+variant = "dlt-pyarrow"
+args = ["pipeline_pg_s3parquet.py", "{{conn}}", "pyarrow", "events", "http://127.0.0.1:19110", "rdlt-bench", "rdlt-bench-secret", "lake", "dlt"]
+network = "host"
+
+# ---------------------------------------------------------------------------
+# s3jsonl-to-pg-200k — nested JSONL on S3 → Postgres, 200k records, replace.
+# ---------------------------------------------------------------------------
+[[cell]]
+id = "s3jsonl-to-pg-200k"
+fixtures = ["rustfs", "pg"]
+pipeline = "cells/pipelines/s3jsonl-to-pg.yaml"
+note = "Nested JSONL on S3 → Postgres, 200k records, full replace — semi-structured ingestion with child-table shredding."
+[cell.verify]
+table = "events"
+expected_rows = 200_000
+[[cell.competitor]]
+variant = "dlt"
+args = ["pipeline_s3jsonl_pg.py", "http://127.0.0.1:19110", "rdlt-bench", "rdlt-bench-secret", "raw", "landed/*.jsonl", "postgresql://postgres:postgres@127.0.0.1:5439/dest_dlt"]
+network = "host"
+
+# ---------------------------------------------------------------------------
+# s3jsonl-to-s3parquet-200k — nested JSONL on S3 → Parquet on S3, 200k records.
+# ---------------------------------------------------------------------------
+[[cell]]
+id = "s3jsonl-to-s3parquet-200k"
+fixtures = ["rustfs"]
+pipeline = "cells/pipelines/s3jsonl-to-s3parquet.yaml"
+note = "Nested JSONL on S3 → Parquet on S3, 200k records, full replace — lake file-format conversion."
+[cell.verify]
+table = "events"
+expected_rows = 200_000
+[[cell.competitor]]
+variant = "dlt"
+args = ["pipeline_s3jsonl_s3parquet.py", "http://127.0.0.1:19110", "rdlt-bench", "rdlt-bench-secret", "raw", "landed/*.jsonl", "lake", "dlt"]
+network = "host"
+
+# ---------------------------------------------------------------------------
+# pg-to-pg-dedup-1m — Postgres → Postgres, keep-in-sync by id (LOAD 2 measured).
+# The rdlt arm's LOAD 1 (untimed) runs via prepare_sh against the load-1 spec;
+# the measured pipeline re-delivers the 50%-changed rows and dedups by id. The
+# dlt arm mirrors the two loads inside its script and times LOAD 2 only.
+# ---------------------------------------------------------------------------
+[[cell]]
+id = "pg-to-pg-dedup-1m"
+fixtures = ["pg"]
+pipeline = "cells/pipelines/pg-to-pg-dedup.yaml"
+prepare_sh = "cd {{workdir}} && {{cli}} run {{benches}}/cells/pipelines/pg-to-pg-dedup-load1.yaml"
+note = "Postgres → Postgres, 1M rows, keep-in-sync by id — LOAD 2 measured: full re-delivery with 50% of rows changed, deduped by id. All three products run the same full-redelivery-plus-dedup regime; Airbyte's cheaper incremental regime is deliberately not benched (no dlt counterpart, research D-08)."
+[cell.verify]
+table = "events"
+expected_rows = 1_000_000
+[[cell.competitor]]
+variant = "dlt"
+args = ["pipeline_pg_pg_dedup.py", "{{conn}}", "postgresql://postgres:postgres@127.0.0.1:5439/dest_dlt", "connectorx", "events", "events_v2"]
+network = "host"
+[[cell.competitor]]
+variant = "dlt-pyarrow"
+args = ["pipeline_pg_pg_dedup.py", "{{conn}}", "postgresql://postgres:postgres@127.0.0.1:5439/dest_dlt", "pyarrow", "events", "events_v2"]
+network = "host"
