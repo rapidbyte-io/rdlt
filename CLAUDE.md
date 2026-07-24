@@ -1,6 +1,34 @@
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
+`specs/017-workspace-refactoring/plan.md` (feature: workspace refactoring
+program executing REFACTORING.md end-to-end — fix 12 latent defects
+B1-B12 with red-before/green-after regression pins, then cross-cutting
+refactors R1-R13 + delivery-surface items D1-D15 as ~12 independently
+mergeable increments in value-per-risk order (Part 4 + Part 5 folded
+in). Constitution v1.0.0 ratified (.specify/memory/constitution.md) —
+this feature enforces Principles V (typed taxonomy, no citation IDs in
+user-facing strings; substring-matching rendered errors FORBIDDEN) and
+VI (self-contained comments). Key decisions (research.md): B5 duckdb
+classification via structured code/extended_code (probe-pinned); B6
+iceberg via status context value (probe + designed fallback);
+DestError::RateLimited is ADDITIVE (#[non_exhaustive] verified); one
+Secret in rdlt-connector::secret behind new SPI `schema` feature; R2
+commit protocol = pure sqlcore planner commit_script->Vec<Step>,
+destinations execute (golden pins prove SQL-identical); R6 shared
+apply_delta/apply_batch used by Loader + two-pass WAL replay (B10);
+R7 one file Location abstraction w/ read+write halves + one
+keys_of_table ownership helper (closes B2/B9); D1-D5 testkit
+containers module (runtime_available() superset probe, PgFixture
+Option-returning skip-not-fail) + fixtures module (batch_of/
+schema_for/meta_for); breaking renames = deprecated aliases or NAMED
+deferrals to the recorded 0.2->0.3 window — window NOT opened here.
+Behavior changes CONFINED to defect fixes + classification
+corrections; persisted formats/golden pins byte-identical (WR1);
+close-out matrix zero uncited dispositions (WR7); full gate green at
+EVERY increment merge (WR8). Contract:
+contracts/workspace-refactoring.md WR1-WR8).
+Previous feature 016 for reference:
 `specs/016-iceberg-dest/plan.md` (feature: provider-agnostic Iceberg
 REST-catalog DESTINATION — new THIN crate rdlt-connector-iceberg
 (facade rdlt::connector::iceberg, CLI destination: iceberg:) wrapping
