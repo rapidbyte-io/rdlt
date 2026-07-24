@@ -6,6 +6,10 @@ use serde_json::Value;
 
 use super::ConformanceFailure;
 
+/// Byte budget for the harness's record channel — large enough that a well-behaved
+/// source never blocks on backpressure while being certified.
+const CHANNEL_BYTE_BUDGET: usize = 16 << 20;
+
 /// What one full read produced: row groups separated by checkpoints.
 #[derive(Debug, Default)]
 struct Observed {
@@ -43,7 +47,7 @@ async fn read_all<S: Source>(
     spec: &StreamSpec,
     since: Option<Cursor>,
 ) -> Result<Observed, String> {
-    let (out, mut input) = records_channel(16 << 20);
+    let (out, mut input) = records_channel(CHANNEL_BYTE_BUDGET);
     let request = ReadRequest::new(spec.clone(), since, out);
     let reader = source.read(request);
     tokio::pin!(reader);
@@ -161,7 +165,7 @@ pub async fn verify_source<S: Source>(source: &S) -> Vec<ConformanceFailure> {
         }
 
         // S4: a closed channel means cancellation — return promptly, without error.
-        let (out, mut input) = records_channel(16 << 20);
+        let (out, mut input) = records_channel(CHANNEL_BYTE_BUDGET);
         input.close();
         drop(input);
         let request = ReadRequest::new(spec.clone(), None, out);

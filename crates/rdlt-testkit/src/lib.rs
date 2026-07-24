@@ -10,11 +10,14 @@ pub mod containers;
 pub mod crash;
 pub mod fixtures;
 pub mod memory;
-pub mod util;
+pub(crate) mod util;
 
-pub use conformance::{ConformanceFailure, assert_conformant, dest::TableProbe};
+pub use conformance::{
+    ConformanceFailure, assert_conformant, dest::TableProbe, dest::verify_destination,
+    source::verify_source,
+};
 #[cfg(feature = "containers")]
 pub use containers::{CdcPgFixture, PgFixture, runtime_available};
-pub use crash::{FaultPoint, FlakyDestination};
+pub use crash::{CrashDestination, FaultPoint};
 pub use fixtures::{batch_of, meta_for, schema_for};
-pub use memory::{MemoryBatch, MemoryDestination, MemorySource, MemoryStream};
+pub use memory::{MemoryBatch, MemoryDestination, MemorySource, MemoryStream, Row};

@@ -48,11 +48,10 @@ fn fixture_schema(table: &str) -> TableSchema {
 }
 
 fn fixture_batch(load_id: &str, ids: &[&str], values: &[i64]) -> RecordBatch {
-    let schema = Schema::new(vec![
-        Field::new(system_columns::LOAD_ID, DataType::Utf8, false),
-        Field::new(system_columns::ID, DataType::Utf8, false),
-        Field::new("v", DataType::Int64, false),
-    ]);
+    // Derive the Arrow schema from the logical fixture schema so the two column lists
+    // cannot drift apart; the arrays below fill those columns positionally.
+    let logical = fixture_schema("_");
+    let schema = Schema::new(logical.columns.iter().map(arrow_field).collect::<Vec<_>>());
     RecordBatch::try_new(
         Arc::new(schema),
         vec![
@@ -62,6 +61,21 @@ fn fixture_batch(load_id: &str, ids: &[&str], values: &[i64]) -> RecordBatch {
         ],
     )
     .expect("fixture batch")
+}
+
+/// Map a fixture column to its Arrow field. Only the scalar types the fixture schema
+/// uses are handled — any other type is a bug in the fixture, not a runtime input.
+fn arrow_field(column: &ColumnDef) -> Field {
+    let data_type = match &column.ty {
+        ColumnType::Scalar {
+            scalar: LogicalType::Utf8,
+        } => DataType::Utf8,
+        ColumnType::Scalar {
+            scalar: LogicalType::Int64,
+        } => DataType::Int64,
+        other => unreachable!("fixture schema uses only Utf8/Int64 columns, got {other:?}"),
+    };
+    Field::new(column.name.clone(), data_type, column.nullable)
 }
 
 fn meta(pipeline: &PipelineId, load_id: &LoadId, seq: u64, cursor: Option<i64>) -> CommitMeta {
@@ -88,63 +102,71 @@ pub async fn verify_destination<D: Destination>(
     let mut failures = Vec::new();
     let fail = |clause: &'static str, message: String| ConformanceFailure { clause, message };
 
+    // Run a fallible SPI step; on error, record the clause failure (message
+    // `"{prefix}: {error}"`) and return the failures gathered so far. The clause id
+    // and prefix are the diagnostic the connector author reads, so they are spelled
+    // out verbatim at each call site.
+    macro_rules! try_step {
+        ($clause:expr, $prefix:expr, $step:expr $(,)?) => {
+            match $step {
+                Ok(value) => value,
+                Err(e) => {
+                    failures.push(fail($clause, format!("{}: {e}", $prefix)));
+                    return failures;
+                }
+            }
+        };
+    }
+
     let pipeline = PipelineId::new("rdlt-conformance");
     let load_a = LoadId::new("conf-load-a");
     let table = TableName::new("rdlt_conf_t");
     let schema = fixture_schema("rdlt_conf_t");
 
     // ---- D6: a fresh pipeline has no state ----
-    match dest
-        .open(OpenCtx::new(
+    let mut session = try_step!(
+        "D4",
+        "open failed",
+        dest.open(OpenCtx::new(
             PipelineId::new("rdlt-conf-fresh"),
-            load_a.clone(),
+            load_a.clone()
         ))
         .await
+    );
+    match session
+        .read_state(&PipelineId::new("rdlt-conf-fresh"))
+        .await
     {
-        Ok(mut session) => {
-            match session
-                .read_state(&PipelineId::new("rdlt-conf-fresh"))
-                .await
-            {
-                Ok(None) => {}
-                Ok(Some(_)) => failures.push(fail(
-                    "D6",
-                    "read_state returned state for a never-committed pipeline".into(),
-                )),
-                Err(e) => failures.push(fail("D6", format!("read_state failed: {e}"))),
-            }
-        }
-        Err(e) => {
-            failures.push(fail("D4", format!("open failed: {e}")));
-            return failures;
-        }
+        Ok(None) => {}
+        Ok(Some(_)) => failures.push(fail(
+            "D6",
+            "read_state returned state for a never-committed pipeline".into(),
+        )),
+        Err(e) => failures.push(fail("D6", format!("read_state failed: {e}"))),
     }
 
     // ---- D1: staged writes are invisible before commit ----
-    let mut session1 = match dest
-        .open(OpenCtx::new(pipeline.clone(), load_a.clone()))
-        .await
-    {
-        Ok(s) => s,
-        Err(e) => {
-            failures.push(fail("D4", format!("open failed: {e}")));
-            return failures;
-        }
-    };
+    let mut session1 = try_step!(
+        "D4",
+        "open failed",
+        dest.open(OpenCtx::new(pipeline.clone(), load_a.clone()))
+            .await
+    );
     // D5: ensure_table is idempotent.
     for attempt in 0..2 {
-        if let Err(e) = session1.ensure_table(&schema, &WriteMode::Append).await {
-            failures.push(fail("D5", format!("ensure_table attempt {attempt}: {e}")));
-            return failures;
-        }
+        try_step!(
+            "D5",
+            format!("ensure_table attempt {attempt}"),
+            session1.ensure_table(&schema, &WriteMode::Append).await
+        );
     }
-    if let Err(e) = session1
-        .write(&table, fixture_batch("conf-load-a", &["r1", "r2"], &[1, 2]))
-        .await
-    {
-        failures.push(fail("D1", format!("write failed: {e}")));
-        return failures;
-    }
+    try_step!(
+        "D1",
+        "write failed",
+        session1
+            .write(&table, fixture_batch("conf-load-a", &["r1", "r2"], &[1, 2]))
+            .await
+    );
     if probe.count(&table).await != 0 {
         failures.push(fail(
             "D1",
@@ -154,34 +176,29 @@ pub async fn verify_destination<D: Destination>(
 
     // ---- D4: a new session tears down the previous session's staged data ----
     drop(session1);
-    let mut session2 = match dest
-        .open(OpenCtx::new(pipeline.clone(), load_a.clone()))
-        .await
-    {
-        Ok(s) => s,
-        Err(e) => {
-            failures.push(fail("D4", format!("re-open failed: {e}")));
-            return failures;
-        }
-    };
-    if let Err(e) = session2.ensure_table(&schema, &WriteMode::Append).await {
-        failures.push(fail("D5", format!("ensure_table on new session: {e}")));
-        return failures;
-    }
-    if let Err(e) = session2
-        .write(&table, fixture_batch("conf-load-a", &["r3"], &[3]))
-        .await
-    {
-        failures.push(fail("D4", format!("write on new session: {e}")));
-        return failures;
-    }
-    let receipt1 = match session2.commit(meta(&pipeline, &load_a, 1, Some(10))).await {
-        Ok(r) => r,
-        Err(e) => {
-            failures.push(fail("D2", format!("commit failed: {e}")));
-            return failures;
-        }
-    };
+    let mut session2 = try_step!(
+        "D4",
+        "re-open failed",
+        dest.open(OpenCtx::new(pipeline.clone(), load_a.clone()))
+            .await
+    );
+    try_step!(
+        "D5",
+        "ensure_table on new session",
+        session2.ensure_table(&schema, &WriteMode::Append).await
+    );
+    try_step!(
+        "D4",
+        "write on new session",
+        session2
+            .write(&table, fixture_batch("conf-load-a", &["r3"], &[3]))
+            .await
+    );
+    let receipt1 = try_step!(
+        "D2",
+        "commit failed",
+        session2.commit(meta(&pipeline, &load_a, 1, Some(10))).await
+    );
     let after_first_commit = probe.count(&table).await;
     if after_first_commit != 1 {
         failures.push(fail(

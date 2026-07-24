@@ -10,7 +10,7 @@ use rdlt_core::schema::system_columns;
 use rdlt_core::{CommitPolicy, Cursor, RdltError, ResumedFrom, TableName};
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{
-    FaultPoint, FlakyDestination, MemoryBatch, MemoryDestination, MemorySource, MemoryStream,
+    CrashDestination, FaultPoint, MemoryBatch, MemoryDestination, MemorySource, MemoryStream,
 };
 use serde_json::json;
 
@@ -74,7 +74,7 @@ async fn row1_source_crash_mid_extraction() {
     let dir = tempfile::tempdir().expect("tempdir");
     let dest = MemoryDestination::new();
     let crashing = MemorySource::new(vec![
-        MemoryStream::new(rdlt_connector::StreamSpec::new("events"), batches()).fail_after(1),
+        MemoryStream::new(rdlt_connector::StreamSpec::new("events"), batches()).fatal_after(1),
     ]);
     let err = Engine::new(config(dir.path()), crashing, dest.clone())
         .run()
@@ -104,7 +104,7 @@ async fn row1_source_crash_mid_extraction() {
 async fn row2_crash_before_commit_replays_wal() {
     let dir = tempfile::tempdir().expect("tempdir");
     let inner = MemoryDestination::new();
-    let flaky = FlakyDestination::new(inner.clone(), FaultPoint::BeforeCommit(2));
+    let flaky = CrashDestination::new(inner.clone(), FaultPoint::BeforeCommit(2));
 
     Engine::new(config(dir.path()), source(), flaky.clone())
         .run()
@@ -145,7 +145,7 @@ async fn row2_crash_before_commit_replays_wal() {
 async fn row3_crash_mid_commit_hits_idempotence() {
     let dir = tempfile::tempdir().expect("tempdir");
     let inner = MemoryDestination::new();
-    let flaky = FlakyDestination::new(inner.clone(), FaultPoint::AfterCommit(2));
+    let flaky = CrashDestination::new(inner.clone(), FaultPoint::AfterCommit(2));
 
     Engine::new(config(dir.path()), source(), flaky.clone())
         .run()
@@ -171,7 +171,7 @@ async fn row3_crash_mid_commit_hits_idempotence() {
 async fn row4_wal_lost_reextracts_from_cursor() {
     let dir = tempfile::tempdir().expect("tempdir");
     let inner = MemoryDestination::new();
-    let flaky = FlakyDestination::new(inner.clone(), FaultPoint::BeforeCommit(2));
+    let flaky = CrashDestination::new(inner.clone(), FaultPoint::BeforeCommit(2));
 
     Engine::new(config(dir.path()), source(), flaky.clone())
         .run()
@@ -201,7 +201,7 @@ async fn row4_wal_lost_reextracts_from_cursor() {
 async fn row2_variant_crash_before_write() {
     let dir = tempfile::tempdir().expect("tempdir");
     let inner = MemoryDestination::new();
-    let flaky = FlakyDestination::new(inner.clone(), FaultPoint::BeforeWrite(2));
+    let flaky = CrashDestination::new(inner.clone(), FaultPoint::BeforeWrite(2));
 
     Engine::new(config(dir.path()), source(), flaky.clone())
         .run()
@@ -275,7 +275,7 @@ async fn dropped_run_recovers_like_a_crash() {
 #[tokio::test]
 async fn loader_failure_with_saturated_channel_errors_instead_of_hanging() {
     let inner = MemoryDestination::new();
-    let flaky = FlakyDestination::new(inner, FaultPoint::BeforeWrite(1));
+    let flaky = CrashDestination::new(inner, FaultPoint::BeforeWrite(1));
     // Many sizable batches, no checkpoints, and a tiny byte budget: the channel is
     // guaranteed saturated while the loader fails on the very first write.
     let big_rows: Vec<serde_json::Value> = (0..200)

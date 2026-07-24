@@ -33,8 +33,10 @@ impl MemoryBatch {
 pub struct MemoryStream {
     pub spec: StreamSpec,
     pub batches: Vec<MemoryBatch>,
-    /// Crash injection: return a fatal error after this many batches were pushed.
-    pub fail_after: Option<usize>,
+    /// Crash injection: return a FATAL error after this many batches were pushed
+    /// (the run aborts and does not retry). Named to contrast with the
+    /// `transient_*` siblings, which inject retryable failures.
+    pub fatal_after: Option<usize>,
     /// Pacing for cancellation tests: sleep before each batch.
     pub batch_delay: Option<std::time::Duration>,
     /// Retry testing: fail with a Transient error at the start of the first N `read`
@@ -51,15 +53,15 @@ impl MemoryStream {
         Self {
             spec,
             batches,
-            fail_after: None,
+            fatal_after: None,
             batch_delay: None,
             transient_start_failures: 0,
             transient_fail_after_once: None,
         }
     }
 
-    pub fn transient_fail_after_once(mut self, batches: usize) -> Self {
-        self.transient_fail_after_once = Some(batches);
+    pub fn transient_fail_after_once(mut self, count: usize) -> Self {
+        self.transient_fail_after_once = Some(count);
         self
     }
 
@@ -68,8 +70,8 @@ impl MemoryStream {
         self
     }
 
-    pub fn fail_after(mut self, batches: usize) -> Self {
-        self.fail_after = Some(batches);
+    pub fn fatal_after(mut self, count: usize) -> Self {
+        self.fatal_after = Some(count);
         self
     }
 
@@ -179,7 +181,7 @@ impl Source for MemorySource {
                 return Ok(());
             }
             pushed += 1;
-            if stream.fail_after == Some(pushed) {
+            if stream.fatal_after == Some(pushed) {
                 return Err(SourceError::fatal("injected source crash"));
             }
             if attempt == 1 && stream.transient_fail_after_once == Some(pushed) {

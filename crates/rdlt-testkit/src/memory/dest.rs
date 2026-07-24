@@ -17,7 +17,9 @@ use serde_json::{Map, Value};
 
 use crate::util::batch_to_rows;
 
-type Row = Map<String, Value>;
+/// One committed or staged row: a JSON object keyed by column name, the memory
+/// destination's row representation.
+pub type Row = Map<String, Value>;
 
 #[derive(Debug, Default)]
 struct Inner {
@@ -29,9 +31,11 @@ struct Inner {
     modes: BTreeMap<TableName, WriteMode>,
     state: Option<StateDoc>,
     receipts: BTreeMap<(String, u64), CommitReceipt>,
-    /// Tables already truncated by `Replace` in the current load.
-    replaced: BTreeSet<TableName>,
-    replaced_load: Option<LoadId>,
+    /// Tables already truncated by a `Replace` write in the current load — the first
+    /// `Replace` batch per table wipes, later batches for it in the same load append.
+    truncated_tables: BTreeSet<TableName>,
+    /// The load the `truncated_tables` bookkeeping belongs to; a new load resets it.
+    truncated_load: Option<LoadId>,
     /// Diagnostics for conformance tests.
     opens: u64,
     staged_dropped_on_open: u64,
@@ -212,9 +216,9 @@ impl LoadSession for MemorySession {
         }
 
         // Replace bookkeeping is per load.
-        if inner.replaced_load.as_ref() != Some(&meta.load_id) {
-            inner.replaced.clear();
-            inner.replaced_load = Some(meta.load_id.clone());
+        if inner.truncated_load.as_ref() != Some(&meta.load_id) {
+            inner.truncated_tables.clear();
+            inner.truncated_load = Some(meta.load_id.clone());
         }
 
         // Merge pass 1: per merge-root table, the staged root ids define which
@@ -234,7 +238,8 @@ impl LoadSession for MemorySession {
         }
 
         // Pass 2: apply staged writes in arrival order (clause D2: all-or-nothing is
-        // trivial under one mutex).
+        // trivial under one mutex). Each write mode has its own algorithm; the match
+        // selects it and the extracted `apply_*` functions carry the rules.
         let staged = std::mem::take(&mut inner.staged);
         for (table, rows) in staged {
             let mode = inner
@@ -243,76 +248,17 @@ impl LoadSession for MemorySession {
                 .cloned()
                 .unwrap_or(WriteMode::Append);
             match mode {
-                WriteMode::Append => {
-                    inner.committed.entry(table).or_default().extend(rows);
-                }
-                WriteMode::Replace => {
-                    if inner.replaced.insert(table.clone()) {
-                        inner.committed.insert(table.clone(), rows);
-                    } else {
-                        inner.committed.entry(table).or_default().extend(rows);
-                    }
-                }
+                WriteMode::Append => apply_append(&mut inner, table, rows),
+                WriteMode::Replace => apply_replace(&mut inner, table, rows),
                 WriteMode::Merge { key }
                     if inner.schemas.get(&table).is_some_and(|s| {
                         s.columns.iter().all(|c| c.name != system_columns::ID)
                     }) =>
                 {
-                    // Keyed STRUCTURED merge: no per-row identity column exists,
-                    // so delete by the declared merge key, then take last-wins
-                    // within the staged batch by that same key.
-                    let key_of = |row: &Row| -> String {
-                        let tuple: Vec<&Value> = key
-                            .iter()
-                            .map(|k| row.get(k).unwrap_or(&Value::Null))
-                            .collect();
-                        serde_json::to_string(&tuple).expect("key tuple serializes")
-                    };
-                    let staged_keys: BTreeSet<String> = rows.iter().map(&key_of).collect();
-                    let committed = inner.committed.entry(table.clone()).or_default();
-                    committed.retain(|row| !staged_keys.contains(&key_of(row)));
-                    let mut seen = BTreeSet::new();
-                    let mut deduped: Vec<Row> = Vec::new();
-                    for row in rows.into_iter().rev() {
-                        if seen.insert(key_of(&row)) {
-                            deduped.push(row);
-                        }
-                    }
-                    deduped.reverse();
-                    committed.extend(deduped);
+                    apply_merge_keyed(&mut inner, table, rows, &key);
                 }
                 WriteMode::Merge { .. } => {
-                    let root = root_table(&inner.schemas, &table);
-                    let replaced: BTreeSet<String> =
-                        staged_root_ids.get(&root).cloned().unwrap_or_default();
-                    let id_column = if table == root {
-                        system_columns::ID
-                    } else {
-                        system_columns::ROOT_ID
-                    };
-                    let committed = inner.committed.entry(table).or_default();
-                    committed.retain(|row| {
-                        row.get(id_column)
-                            .and_then(Value::as_str)
-                            .is_none_or(|id| !replaced.contains(id))
-                    });
-                    // Upsert semantics also within one staged batch: identical
-                    // `_rdlt_id`s collapse, last write wins (keyless
-                    // content-hash dedup).
-                    let mut seen = BTreeSet::new();
-                    let mut deduped: Vec<Row> = Vec::new();
-                    for row in rows.into_iter().rev() {
-                        let id = row
-                            .get(system_columns::ID)
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .to_owned();
-                        if seen.insert(id) {
-                            deduped.push(row);
-                        }
-                    }
-                    deduped.reverse();
-                    committed.extend(deduped);
+                    apply_merge_by_id(&mut inner, table, rows, &staged_root_ids);
                 }
             }
         }
@@ -331,6 +277,91 @@ impl LoadSession for MemorySession {
         let inner = self.lock();
         Ok(inner.state.clone().filter(|s| &s.pipeline == pipeline))
     }
+}
+
+/// Append mode: staged rows are concatenated onto the committed table in arrival
+/// order; nothing already committed is touched.
+fn apply_append(inner: &mut Inner, table: TableName, rows: Vec<Row>) {
+    inner.committed.entry(table).or_default().extend(rows);
+}
+
+/// Replace mode: the first `Replace` batch for a table within a load truncates it
+/// (recorded in `truncated_tables`); any later batch for the same table in the same
+/// load appends, so a multi-batch Replace accumulates instead of repeatedly wiping.
+fn apply_replace(inner: &mut Inner, table: TableName, rows: Vec<Row>) {
+    if inner.truncated_tables.insert(table.clone()) {
+        inner.committed.insert(table, rows);
+    } else {
+        inner.committed.entry(table).or_default().extend(rows);
+    }
+}
+
+/// Keyed structured merge: used when the table has no per-row `_rdlt_id` column, so
+/// identity is the declared merge `key`. Delete every committed row whose key tuple
+/// appears in the staged batch, then append the staged rows deduplicated last-wins by
+/// that same key.
+fn apply_merge_keyed(inner: &mut Inner, table: TableName, rows: Vec<Row>, key: &[String]) {
+    let key_of = |row: &Row| -> String {
+        let tuple: Vec<&Value> = key
+            .iter()
+            .map(|k| row.get(k).unwrap_or(&Value::Null))
+            .collect();
+        serde_json::to_string(&tuple).expect("key tuple serializes")
+    };
+    let staged_keys: BTreeSet<String> = rows.iter().map(&key_of).collect();
+    let committed = inner.committed.entry(table).or_default();
+    committed.retain(|row| !staged_keys.contains(&key_of(row)));
+    let mut seen = BTreeSet::new();
+    let mut deduped: Vec<Row> = Vec::new();
+    for row in rows.into_iter().rev() {
+        if seen.insert(key_of(&row)) {
+            deduped.push(row);
+        }
+    }
+    deduped.reverse();
+    committed.extend(deduped);
+}
+
+/// Id-keyed merge: the staged root ids for this table's merge root define which whole
+/// subtrees are being replaced. Delete committed rows keyed by `_rdlt_id` (the root
+/// table) or `_rdlt_root_id` (a child table) that fall in that set, then append the
+/// staged rows deduplicated last-wins by `_rdlt_id`.
+fn apply_merge_by_id(
+    inner: &mut Inner,
+    table: TableName,
+    rows: Vec<Row>,
+    staged_root_ids: &BTreeMap<TableName, BTreeSet<String>>,
+) {
+    let root = root_table(&inner.schemas, &table);
+    let replaced_root_ids: BTreeSet<String> =
+        staged_root_ids.get(&root).cloned().unwrap_or_default();
+    let id_column = if table == root {
+        system_columns::ID
+    } else {
+        system_columns::ROOT_ID
+    };
+    let committed = inner.committed.entry(table).or_default();
+    committed.retain(|row| {
+        row.get(id_column)
+            .and_then(Value::as_str)
+            .is_none_or(|id| !replaced_root_ids.contains(id))
+    });
+    // Upsert semantics also within one staged batch: identical `_rdlt_id`s collapse,
+    // last write wins (keyless content-hash dedup).
+    let mut seen = BTreeSet::new();
+    let mut deduped: Vec<Row> = Vec::new();
+    for row in rows.into_iter().rev() {
+        let id = row
+            .get(system_columns::ID)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        if seen.insert(id) {
+            deduped.push(row);
+        }
+    }
+    deduped.reverse();
+    committed.extend(deduped);
 }
 
 /// Cast one stored row to the (possibly widened) column types — the memory analogue

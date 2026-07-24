@@ -30,11 +30,12 @@ pub enum FaultPoint {
     AfterCommit(u64),
 }
 
-/// Wraps any destination and fails exactly once at the configured fault point.
-/// Clone shares the trigger, so "restart" = build a new engine over the same wrapper
+/// Wraps any destination and injects a single deterministic fault: it fails exactly
+/// once at the configured fault point, then behaves like the inner destination. Clone
+/// shares the trigger, so "restart" = build a new engine over the same wrapper
 /// (already-fired faults don't fire again).
 #[derive(Debug, Clone)]
-pub struct FlakyDestination<D> {
+pub struct CrashDestination<D> {
     inner: D,
     fault: FaultPoint,
     writes: Arc<AtomicU64>,
@@ -42,7 +43,7 @@ pub struct FlakyDestination<D> {
     fired: Arc<AtomicU64>,
 }
 
-impl<D> FlakyDestination<D> {
+impl<D> CrashDestination<D> {
     pub fn new(inner: D, fault: FaultPoint) -> Self {
         Self {
             inner,
@@ -60,7 +61,7 @@ impl<D> FlakyDestination<D> {
 }
 
 #[async_trait]
-impl<D: Destination + Clone> Destination for FlakyDestination<D> {
+impl<D: Destination + Clone> Destination for CrashDestination<D> {
     fn spec(&self) -> ConnectorSpec {
         self.inner.spec()
     }
@@ -71,7 +72,7 @@ impl<D: Destination + Clone> Destination for FlakyDestination<D> {
 
     async fn open(&self, ctx: OpenCtx) -> Result<Box<dyn LoadSession>, DestError> {
         let session = self.inner.open(ctx).await?;
-        Ok(Box::new(FlakySession {
+        Ok(Box::new(CrashSession {
             inner: session,
             fault: self.fault,
             writes: Arc::clone(&self.writes),
@@ -81,7 +82,7 @@ impl<D: Destination + Clone> Destination for FlakyDestination<D> {
     }
 }
 
-struct FlakySession {
+struct CrashSession {
     inner: Box<dyn LoadSession>,
     fault: FaultPoint,
     writes: Arc<AtomicU64>,
@@ -89,7 +90,7 @@ struct FlakySession {
     fired: Arc<AtomicU64>,
 }
 
-impl FlakySession {
+impl CrashSession {
     fn crash(&self, what: &str) -> DestError {
         self.fired.fetch_add(1, Ordering::SeqCst);
         DestError::fatal(format!("injected crash: {what}"))
@@ -97,7 +98,7 @@ impl FlakySession {
 }
 
 #[async_trait]
-impl LoadSession for FlakySession {
+impl LoadSession for CrashSession {
     async fn ensure_table(
         &mut self,
         schema: &TableSchema,

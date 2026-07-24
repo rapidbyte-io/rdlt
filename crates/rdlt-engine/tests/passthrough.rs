@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use rdlt_connector::{ConnectorSpec, Cursor, ReadRequest, Source, SourceError, StreamSpec};
 use rdlt_core::{PolicyAction, RdltError, SchemaPolicy, TableName};
 use rdlt_engine::{Engine, EngineConfig};
-use rdlt_testkit::{FaultPoint, FlakyDestination, MemoryDestination};
+use rdlt_testkit::{CrashDestination, FaultPoint, MemoryDestination};
 use serde_json::json;
 
 /// Test source pushing pre-built Arrow batches, checkpointing after each.
@@ -196,7 +196,7 @@ async fn undeclared_arrow_push_is_rejected() {
 async fn structured_segments_replay_from_wal() {
     let dir = tempfile::tempdir().expect("tempdir");
     let inner = MemoryDestination::new();
-    let flaky = FlakyDestination::new(inner.clone(), FaultPoint::BeforeCommit(2));
+    let flaky = CrashDestination::new(inner.clone(), FaultPoint::BeforeCommit(2));
     let mut config = EngineConfig::new("pt-crash");
     config.workdir = Some(dir.path().to_path_buf());
     config.commit_policy = rdlt_core::CommitPolicy::EveryCheckpoints(1);
