@@ -32,14 +32,17 @@ pub struct StateDoc {
 }
 
 impl StateDoc {
-    pub fn new(pipeline: PipelineId) -> Self {
+    /// `engine_version` is stamped by the CALLER — the engine passes its own
+    /// `CARGO_PKG_VERSION`, not rdlt-core's, so the recorded version identifies
+    /// the engine that wrote the document (diagnostics only; never logic).
+    pub fn new(pipeline: PipelineId, engine_version: impl Into<String>) -> Self {
         Self {
             format_version: STATE_FORMAT_VERSION,
             pipeline,
             cursors: BTreeMap::new(),
             schema_hashes: BTreeMap::new(),
             last_commit: None,
-            engine_version: env!("CARGO_PKG_VERSION").to_owned(),
+            engine_version: engine_version.into(),
         }
     }
 
@@ -75,7 +78,7 @@ mod version_tests {
 
     #[test]
     fn future_state_version_is_a_typed_error_current_is_fine() {
-        let mut doc = StateDoc::new(PipelineId::new("p"));
+        let mut doc = StateDoc::new(PipelineId::new("p"), env!("CARGO_PKG_VERSION"));
         assert!(doc.check_readable().is_ok());
         doc.format_version = STATE_FORMAT_VERSION + 1;
         let err = doc.check_readable().expect_err("future version");

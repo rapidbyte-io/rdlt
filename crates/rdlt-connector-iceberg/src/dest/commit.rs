@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use iceberg::transaction::{ApplyTransactionAction, Transaction};
 use iceberg::{Catalog, TableIdent};
-use rdlt_connector::DestError;
+use rdlt_connector::DestinationError;
 use rdlt_connector::core::crash_point;
 
 use super::errors::{classify, is_commit_conflict};
@@ -79,9 +79,9 @@ pub(crate) async fn commit_with_retry<F>(
     entropy: &str,
     initial: iceberg::table::Table,
     mut plan: F,
-) -> Result<iceberg::table::Table, DestError>
+) -> Result<iceberg::table::Table, DestinationError>
 where
-    F: FnMut(&iceberg::table::Table) -> Result<CommitPlan, DestError>,
+    F: FnMut(&iceberg::table::Table) -> Result<CommitPlan, DestinationError>,
 {
     let mut current = initial;
     let mut attempt = 0u32;
@@ -142,7 +142,7 @@ pub(crate) async fn append_commit(
     table: iceberg::table::Table,
     files: Vec<iceberg::spec::DataFile>,
     identity: &CommitIdentity,
-) -> Result<iceberg::table::Table, DestError> {
+) -> Result<iceberg::table::Table, DestinationError> {
     let ident = table.identifier().clone();
     let context = format!("table `{ident}`");
     let entropy = format!("{}:{}", identity.scope, identity.load_id);
@@ -165,7 +165,7 @@ pub(crate) async fn append_commit(
             let tx = action.apply(tx).map_err(|e| classify(&context, e))?;
             crash_point!(
                 "ice.commit",
-                Err(DestError::fatal("injected crash at ice.commit"))
+                Err(DestinationError::fatal("injected crash at ice.commit"))
             );
             Ok(CommitPlan::Commit(Box::new(tx)))
         },

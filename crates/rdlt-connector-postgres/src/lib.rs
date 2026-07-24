@@ -7,6 +7,19 @@
 //!
 //! Facade paths are unchanged: `rdlt::postgres` re-exports [`dest`],
 //! `rdlt::postgres_source` re-exports [`source`].
+//!
+//! ## Naming: `Postgres` vs `Pg` prefix
+//!
+//! One rule for the whole crate. A public type that a downstream crate names —
+//! the entry points [`dest::Postgres`], [`source::PostgresSource`],
+//! [`source::PostgresConfig`] — spells out `Postgres`, so its origin is
+//! unambiguous at the use site. Everything else — internal helpers and impl
+//! details that never need cross-crate disambiguation — takes the short `Pg`
+//! prefix (`PgDialect`, `PgSession`, `PgTypeInfo`, `PgSourceError`,
+//! `PgoutputError`). Shared config vocabulary is not Postgres-specific and
+//! carries no prefix at all: it is re-exported under its bare `sqlcore` names
+//! (`DestOptions`, `TableOptions`, …), the same spelling every SQL destination
+//! uses.
 
 mod pgerror;
 pub mod tls;

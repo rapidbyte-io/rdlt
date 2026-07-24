@@ -60,19 +60,19 @@ impl SchemaRegistry {
                 None => changes.push(SchemaChange::AddColumn {
                     column: column.clone(),
                 }),
-                Some(existing) if existing.ty != column.ty => {
+                Some(existing) if existing.column_type != column.column_type => {
                     debug_assert!(
-                        is_widening(&existing.ty, &column.ty),
+                        is_widening(&existing.column_type, &column.column_type),
                         "schema regression on {}.{}: {:?} -> {:?}",
                         table,
                         column.name,
-                        existing.ty,
-                        column.ty
+                        existing.column_type,
+                        column.column_type
                     );
                     changes.push(SchemaChange::WidenColumn {
                         name: column.name.clone(),
-                        from: existing.ty.clone(),
-                        to: column.ty.clone(),
+                        from: existing.column_type.clone(),
+                        to: column.column_type.clone(),
                     });
                 }
                 Some(_) => {}
@@ -119,7 +119,9 @@ fn is_widening(from: &ColumnType, to: &ColumnType) -> bool {
             to_fields
                 .iter()
                 .find(|t| t.name == f.name)
-                .is_some_and(|t| f.ty == t.ty || is_widening(&f.ty, &t.ty))
+                .is_some_and(|t| {
+                    f.column_type == t.column_type || is_widening(&f.column_type, &t.column_type)
+                })
         }),
         _ => false,
     }

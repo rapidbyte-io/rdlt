@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use iceberg::transaction::{ApplyTransactionAction, Transaction};
 use iceberg::{Catalog, NamespaceIdent, TableIdent};
-use rdlt_connector::DestError;
+use rdlt_connector::DestinationError;
 
 use super::commit::{CommitPlan, commit_with_retry};
 use super::errors::classify;
@@ -49,7 +49,7 @@ pub(crate) async fn write_state(
     namespace: &NamespaceIdent,
     scope: &str,
     state_json: String,
-) -> Result<(), DestError> {
+) -> Result<(), DestinationError> {
     let ident = TableIdent::new(namespace.clone(), STATE_TABLE.to_string());
     let context = format!("state table `{ident}`");
     let table = match catalog.load_table(&ident).await {
@@ -98,7 +98,7 @@ pub(crate) async fn read_state_doc(
     catalog: &Arc<dyn Catalog>,
     namespace: &NamespaceIdent,
     scope: &str,
-) -> Result<Option<String>, DestError> {
+) -> Result<Option<String>, DestinationError> {
     let ident = TableIdent::new(namespace.clone(), STATE_TABLE.to_string());
     match catalog.load_table(&ident).await {
         Ok(table) => Ok(table

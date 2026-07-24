@@ -20,7 +20,7 @@ pub(crate) fn value_fits<'a, V: JsonView<'a>>(value: V, ty: &ColumnType) -> bool
             value
                 .obj_entries()
                 .all(|(key, item)| match fields.iter().find(|f| f.name == key) {
-                    Some(field) => value_fits(item, &field.ty),
+                    Some(field) => value_fits(item, &field.column_type),
                     None => item.is_null(), // a new nested field forced an evolution
                 })
         }
@@ -75,7 +75,7 @@ pub(crate) fn violation_for(table: &TableName, change: &SchemaChange) -> Contrac
             column: Some(column.name.clone()),
             change: format!("new column `{}` would be added", column.name),
             from: None,
-            to: scalar_of(&column.ty),
+            to: scalar_of(&column.column_type),
         },
         SchemaChange::WidenColumn { name, from, to } => ContractViolation {
             table: table.clone(),
@@ -157,7 +157,7 @@ mod tests {
         let struct_ty = ColumnType::Struct {
             fields: vec![rdlt_core::ColumnDef {
                 name: "a".into(),
-                ty: ColumnType::scalar(LogicalType::Int64),
+                column_type: ColumnType::scalar(LogicalType::Int64),
                 nullable: true,
                 provenance: rdlt_core::Provenance::Inferred,
             }],

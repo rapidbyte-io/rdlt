@@ -31,7 +31,7 @@ use std::collections::BTreeMap;
 
 use async_trait::async_trait;
 use rdlt_connector::{
-    ConnectorSpec, DestCapabilities, DestError, Destination, LoadSession, OpenCtx,
+    ConnectorSpec, Destination, DestinationCapabilities, DestinationError, LoadSession, OpenCtx,
     core::naming::IdentRules,
 };
 
@@ -67,8 +67,8 @@ pub const S3_FAIL_POINTS: &[&str] = &[
 ];
 
 /// The one fatal-error constructor for the destination side.
-pub(crate) fn fatal(e: impl std::fmt::Display) -> DestError {
-    DestError::fatal(e.to_string())
+pub(crate) fn fatal(e: impl std::fmt::Display) -> DestinationError {
+    DestinationError::fatal(e.to_string())
 }
 
 #[derive(Debug, Clone)]
@@ -89,7 +89,7 @@ impl FileDest {
     /// destination — the plain-path constructor. The PathBuf is used AS-IS
     /// (no lossy string round-trip: non-UTF-8 paths keep their bytes); the
     /// config mirror is informational only.
-    pub fn open(out: impl Into<std::path::PathBuf>) -> Result<Self, DestError> {
+    pub fn open(out: impl Into<std::path::PathBuf>) -> Result<Self, DestinationError> {
         let out = out.into();
         let config = FileDestConfig::new(out.to_string_lossy().into_owned());
         let location = Location::local_dir(out)?;
@@ -97,7 +97,7 @@ impl FileDest {
     }
 
     /// The full configuration vocabulary: format, location, partitioning.
-    pub fn from_config(config: FileDestConfig) -> Result<Self, DestError> {
+    pub fn from_config(config: FileDestConfig) -> Result<Self, DestinationError> {
         config.validate("file destination").map_err(fatal)?;
         let location = Location::for_dest(&config.path, config.location.as_ref())?;
         Ok(Self { config, location })
@@ -112,8 +112,8 @@ impl Destination for FileDest {
         spec
     }
 
-    fn capabilities(&self) -> DestCapabilities {
-        DestCapabilities {
+    fn capabilities(&self) -> DestinationCapabilities {
+        DestinationCapabilities {
             merge: false, // write-only destination; no per-row identity semantics
             structs: true,
             scalar_lists: true,
@@ -123,7 +123,7 @@ impl Destination for FileDest {
         }
     }
 
-    async fn open(&self, ctx: OpenCtx) -> Result<Box<dyn LoadSession>, DestError> {
+    async fn open(&self, ctx: OpenCtx) -> Result<Box<dyn LoadSession>, DestinationError> {
         let scope = pipeline_scope(&ctx.pipeline);
         // Clause D4: staged data from THIS PIPELINE's dead sessions becomes
         // invisible/reclaimable. Scoped — another pipeline sharing this output

@@ -8,7 +8,7 @@
 //!   destination writes — top level, plus one level into partition dirs when
 //!   partitioning is declared. User files are never ours to delete.
 
-use rdlt_connector::DestError;
+use rdlt_connector::DestinationError;
 
 use crate::location::Location;
 
@@ -38,7 +38,7 @@ pub(crate) async fn truncate_table(
     ext: &str,
     partitioned: bool,
     frozen_plain_parquet: bool,
-) -> Result<(), DestError> {
+) -> Result<(), DestinationError> {
     for tail in location.keys_of_table(table).await? {
         let owned = if frozen_plain_parquet {
             frozen_owns(&tail)

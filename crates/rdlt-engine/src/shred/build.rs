@@ -54,7 +54,7 @@ pub(crate) fn arrow_column_type(ty: &ColumnType) -> DataType {
 fn arrow_fields(columns: &[ColumnDef]) -> Fields {
     columns
         .iter()
-        .map(|c| Field::new(&c.name, arrow_column_type(&c.ty), c.nullable))
+        .map(|c| Field::new(&c.name, arrow_column_type(&c.column_type), c.nullable))
         .collect()
 }
 
@@ -62,11 +62,11 @@ pub(crate) fn arrow_schema(schema: &TableSchema) -> Schema {
     Schema::new(arrow_fields(&schema.columns))
 }
 
-/// Build one table's batch. `name_map` maps source keys to normalized column names
+/// Build one table's batch. `source_to_normalized` maps source keys to normalized column names
 /// (the schema speaks normalized; the drained rows speak source).
 pub(crate) fn build_batch<'v, V: JsonView<'v>>(
     schema: &TableSchema,
-    name_map: &[(String, String)],
+    source_to_normalized: &[(String, String)],
     rows: &[DrainRow<V>],
     load_id: &LoadId,
 ) -> Result<RecordBatch, ArrowError> {
@@ -121,14 +121,14 @@ pub(crate) fn build_batch<'v, V: JsonView<'v>>(
                 Arc::new(b.finish())
             }
             _ => {
-                let source_key = name_map
+                let source_key = source_to_normalized
                     .iter()
                     .find(|(_, normalized)| normalized == &column.name)
                     .map(|(source, _)| source.as_str())
                     .unwrap_or(column.name.as_str());
                 let values: Vec<Option<V>> =
                     rows.iter().map(|row| row.get_top(source_key)).collect();
-                build_column(&column.ty, &values)
+                build_column(&column.column_type, &values)
             }
         };
         arrays.push(array);
@@ -161,7 +161,7 @@ fn build_column<'v, V: JsonView<'v>>(ty: &ColumnType, values: &[Option<V>]) -> A
                             _ => None,
                         })
                         .collect();
-                    build_column(&field.ty, &projected)
+                    build_column(&field.column_type, &projected)
                 })
                 .collect();
             Arc::new(StructArray::new(

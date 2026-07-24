@@ -20,7 +20,7 @@ use rdlt_connector_postgres::dest::{DedupSort, Scd2Options, SortOrder};
 fn col(name: &str, scalar: LogicalType) -> ColumnDef {
     ColumnDef {
         name: name.into(),
-        ty: ColumnType::Scalar { scalar },
+        column_type: ColumnType::Scalar { scalar },
         nullable: true,
         provenance: Provenance::Inferred,
     }
@@ -50,12 +50,12 @@ fn plan<'a>(
 ) -> MergePlan<'a> {
     MergePlan {
         dialect: &PgDialect,
-        target: "\"events\"",
-        stage: "\"_rdlt_stage_feedcafe\"",
-        cols: "\"id\", \"day\", \"name\", \"seq\", \"deleted\", \"_rdlt_load_id\"",
+        target_sql: "\"events\"",
+        stage_sql: "\"_rdlt_stage_feedcafe\"",
+        cols_sql: "\"id\", \"day\", \"name\", \"seq\", \"deleted\", \"_rdlt_load_id\"",
         schema,
         key,
-        root_stage: "\"_rdlt_stage_feedcafe\"".into(),
+        root_stage_sql: "\"_rdlt_stage_feedcafe\"".into(),
         is_child: false,
         hard_delete: hard_delete.map(|c| HardDelete::new(c, schema, &PgDialect)),
         dedup_sort: dedup,
@@ -162,7 +162,7 @@ fn pin_scd2_markers_and_boundary() {
         ..Scd2Options::default()
     };
     let mut markers_plan = plan(&schema, &key, None, None);
-    markers_plan.cols = "\"id\", \"day\", \"name\", \"_rdlt_load_id\"";
+    markers_plan.cols_sql = "\"id\", \"day\", \"name\", \"_rdlt_load_id\"";
     let markers_schema = TableSchema {
         table: TableName::from("events"),
         parent: None,
@@ -196,7 +196,7 @@ fn pin_scd2_scoped_retirement() {
     let key = vec!["id".to_string()];
     let scope = vec!["day".to_string()];
     let mut scoped_plan = plan(&schema, &key, None, None);
-    scoped_plan.cols = "\"id\", \"day\", \"name\", \"_rdlt_load_id\"";
+    scoped_plan.cols_sql = "\"id\", \"day\", \"name\", \"_rdlt_load_id\"";
     scoped_plan.merge_scope = Some(&scope);
     let scd2 = Scd2Options {
         absent: rdlt_connector_postgres::dest::AbsentPolicy::Retire,

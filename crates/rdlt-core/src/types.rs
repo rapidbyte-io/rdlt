@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 pub const DECIMAL_MAX_PRECISION: u8 = 38;
 
 /// The engine's logical column types, mapped to Arrow physically and to destination
-/// types via `DestCapabilities`.
+/// types via `DestinationCapabilities`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LogicalType {

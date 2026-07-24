@@ -3,9 +3,9 @@
 
 use async_trait::async_trait;
 use rdlt_connector::{
-    CommitMeta, CommitReceipt, ConnectorSpec, DestCapabilities, DestError, Destination,
-    LoadSession, OpenCtx, PipelineId, ReadRequest, RecordBatch, Source, SourceError, StateDoc,
-    StreamSpec, TableName, TableSchema, WriteMode,
+    CommitMeta, CommitReceipt, ConnectorSpec, Destination, DestinationCapabilities,
+    DestinationError, LoadSession, OpenCtx, PipelineId, ReadRequest, RecordBatch, Source,
+    SourceError, StateDoc, StreamSpec, TableName, TableSchema, WriteMode,
 };
 use rdlt_testkit::conformance::{dest::verify_destination, source::verify_source};
 use rdlt_testkit::{MemoryDestination, TableProbe};
@@ -57,14 +57,14 @@ impl Destination for ForgetfulDest {
         ConnectorSpec::new("forgetful", "0.0.0")
     }
 
-    fn capabilities(&self) -> DestCapabilities {
-        DestCapabilities {
+    fn capabilities(&self) -> DestinationCapabilities {
+        DestinationCapabilities {
             merge: false,
             ..self.inner.capabilities()
         }
     }
 
-    async fn open(&self, ctx: OpenCtx) -> Result<Box<dyn LoadSession>, DestError> {
+    async fn open(&self, ctx: OpenCtx) -> Result<Box<dyn LoadSession>, DestinationError> {
         Ok(Box::new(ForgetfulSession {
             inner: self.inner.open(ctx).await?,
             bump: 0,
@@ -83,22 +83,29 @@ impl LoadSession for ForgetfulSession {
         &mut self,
         schema: &TableSchema,
         mode: &WriteMode,
-    ) -> Result<(), DestError> {
+    ) -> Result<(), DestinationError> {
         self.inner.ensure_table(schema, mode).await
     }
 
-    async fn write(&mut self, table: &TableName, batch: RecordBatch) -> Result<(), DestError> {
+    async fn write(
+        &mut self,
+        table: &TableName,
+        batch: RecordBatch,
+    ) -> Result<(), DestinationError> {
         self.inner.write(table, batch).await
     }
 
-    async fn commit(&mut self, mut meta: CommitMeta) -> Result<CommitReceipt, DestError> {
+    async fn commit(&mut self, mut meta: CommitMeta) -> Result<CommitReceipt, DestinationError> {
         // NOTE the bug: the idempotency key is destroyed, so a re-commit looks new.
         self.bump += 1;
         meta.commit_seq = meta.commit_seq * 1000 + self.bump;
         self.inner.commit(meta).await
     }
 
-    async fn read_state(&mut self, pipeline: &PipelineId) -> Result<Option<StateDoc>, DestError> {
+    async fn read_state(
+        &mut self,
+        pipeline: &PipelineId,
+    ) -> Result<Option<StateDoc>, DestinationError> {
         self.inner.read_state(pipeline).await
     }
 }

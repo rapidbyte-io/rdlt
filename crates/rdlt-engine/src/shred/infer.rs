@@ -212,7 +212,7 @@ impl ColState {
                     .filter_map(|(name, state)| {
                         state.resolve().map(|ty| ColumnDef {
                             name: name.clone(),
-                            ty,
+                            column_type: ty,
                             nullable: true,
                             provenance: Provenance::Inferred,
                         })

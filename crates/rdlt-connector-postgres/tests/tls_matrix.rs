@@ -6,7 +6,7 @@ mod common;
 
 use common::{PgFixture, TlsPgFixture};
 use rdlt_connector_postgres::source::{PostgresConfig, PostgresSource};
-use rdlt_connector_postgres::tls::{RootCert, TlsMode, TlsPolicy};
+use rdlt_connector_postgres::tls::{PemSource, TlsMode, TlsPolicy};
 
 fn source(conn: &str, tls_yaml: &str) -> PostgresSource {
     PostgresSource::from_yaml(&format!("conn: \"{conn}\"\n{tls_yaml}")).expect("config")
@@ -117,7 +117,7 @@ async fn destination_uses_the_same_policy_path() {
         .dataset("tls_ok")
         .tls(TlsPolicy {
             mode: TlsMode::VerifyFull,
-            root_cert: Some(RootCert(fixture.pki.ca_pem.clone())),
+            root_cert: Some(PemSource(fixture.pki.ca_pem.clone())),
             ..TlsPolicy::default()
         });
     assert!(
@@ -132,7 +132,7 @@ async fn destination_uses_the_same_policy_path() {
         .dataset("tls_bad")
         .tls(TlsPolicy {
             mode: TlsMode::VerifyFull,
-            root_cert: Some(RootCert(fixture.pki.wrong_ca_pem.clone())),
+            root_cert: Some(PemSource(fixture.pki.wrong_ca_pem.clone())),
             ..TlsPolicy::default()
         });
     let err = match bad.open(OpenCtx::new(pipeline, load)).await {
@@ -198,9 +198,9 @@ async fn client_cert_matrix_against_cert_auth_server() {
         .dataset("mtls_ok")
         .tls(TlsPolicy {
             mode: TlsMode::VerifyFull,
-            root_cert: Some(RootCert(pki.ca_pem.clone())),
-            client_cert: Some(RootCert(pki.client_cert_pem.clone())),
-            client_key: Some(RootCert(pki.client_key_pem.clone())),
+            root_cert: Some(PemSource(pki.ca_pem.clone())),
+            client_cert: Some(PemSource(pki.client_cert_pem.clone())),
+            client_key: Some(PemSource(pki.client_key_pem.clone())),
         });
     dest.open(OpenCtx::new(
         PipelineId::new("mtls"),

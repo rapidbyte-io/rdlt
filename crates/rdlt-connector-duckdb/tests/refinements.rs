@@ -1,5 +1,5 @@
 //! Feature 013 US1 (T008): the 010 merge refinements on DuckDB — dedup_sort
-//! ordered survivor selection and merge_key scope replacement, mirroring the
+//! ordered survivor selection and merge_scope replacement, mirroring the
 //! postgres cells' claims (contracts MR1–MR6 through the shared core).
 
 mod common;
@@ -92,15 +92,15 @@ async fn dedup_sort_orders_survivors_values_beat_null() {
     }
 }
 
-/// MR3/MR4: merge_key replaces DELIVERED scopes wholesale, leaves other
+/// MR3/MR4: merge_scope replaces DELIVERED scopes wholesale, leaves other
 /// scopes untouched, and NULL is not a scope.
 #[tokio::test(flavor = "multi_thread")]
-async fn merge_key_scope_replacement() {
+async fn merge_scope_scope_replacement() {
     let dir = tempfile::tempdir().unwrap();
     let dest = DuckDb::open(dir.path().join("scope.duckdb"))
         .unwrap()
         .options(options(json!({
-            "tables": {"kv": {"merge_key": ["day"]}}
+            "tables": {"kv": {"merge_scope": ["day"]}}
         })))
         .unwrap();
 
@@ -148,12 +148,12 @@ async fn merge_key_scope_replacement() {
 /// MR5 (shared single-unit rule): a scoped table whose feed spans TWO commit
 /// units is a typed error on the second unit — same message as postgres.
 #[tokio::test(flavor = "multi_thread")]
-async fn merge_key_split_feed_is_typed_on_the_second_unit() {
+async fn merge_scope_split_feed_is_typed_on_the_second_unit() {
     let dir = tempfile::tempdir().unwrap();
     let dest = DuckDb::open(dir.path().join("unit.duckdb"))
         .unwrap()
         .options(options(json!({
-            "tables": {"kv": {"merge_key": ["day"]}}
+            "tables": {"kv": {"merge_scope": ["day"]}}
         })))
         .unwrap();
     // Two batches, each with its own checkpoint → two commit units, both
@@ -180,7 +180,7 @@ async fn merge_key_split_feed_is_typed_on_the_second_unit() {
         .unwrap_err()
         .to_string();
     assert!(
-        err.contains("merge_key scope replacement") && err.contains("SINGLE commit unit"),
+        err.contains("merge_scope replacement") && err.contains("SINGLE commit unit"),
         "{err}"
     );
 }
@@ -208,11 +208,11 @@ async fn refinement_option_misuse_is_typed() {
         .to_string();
     assert!(err.contains("dedup_sort requires a KEYED"), "{err}");
 
-    // merge_key column that is not a column of the table.
+    // merge_scope column that is not a column of the table.
     let dest = DuckDb::open(dir.path().join("t2.duckdb"))
         .unwrap()
         .options(options(json!({
-            "tables": {"kv": {"merge_key": ["ghost"]}}
+            "tables": {"kv": {"merge_scope": ["ghost"]}}
         })))
         .unwrap();
     let source = kday(&[(Some(1), Some(1), Some("x"))]);
@@ -221,7 +221,7 @@ async fn refinement_option_misuse_is_typed() {
         .unwrap_err()
         .to_string();
     assert!(
-        err.contains("merge_key column `ghost` is not a column"),
+        err.contains("merge_scope column `ghost` is not a column"),
         "{err}"
     );
 

@@ -59,7 +59,7 @@ pub enum RdltError {
         /// driver restarts from committed state instead of aborting.
         #[serde(default)]
         retryable: bool,
-        /// Rate-limit hint carried from `DestError::RateLimited`.
+        /// Rate-limit hint carried from `DestinationError::RateLimited`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         retry_after_ms: Option<u64>,
     },

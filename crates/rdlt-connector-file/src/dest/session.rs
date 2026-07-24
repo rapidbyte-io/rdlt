@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use parquet::arrow::ArrowWriter;
 use rdlt_connector::core::crash_point;
 use rdlt_connector::{
-    CommitMeta, CommitReceipt, DestError, LoadSession, RecordBatch, WriteMode,
+    CommitMeta, CommitReceipt, DestinationError, LoadSession, RecordBatch, WriteMode,
     core::{LoadId, PipelineId, StateDoc, TableName, TableSchema},
 };
 
@@ -44,7 +44,7 @@ pub(super) struct FileSession {
 
 impl FileSession {
     /// Encode one batch per the configured format.
-    fn encode(&self, batch: &RecordBatch) -> Result<Vec<u8>, DestError> {
+    fn encode(&self, batch: &RecordBatch) -> Result<Vec<u8>, DestinationError> {
         match self.format {
             DestFormat::Parquet => {
                 let mut buf = Vec::new();
@@ -69,7 +69,7 @@ impl FileSession {
         &self,
         table: &TableName,
         batch: RecordBatch,
-    ) -> Result<Vec<(Option<String>, RecordBatch)>, DestError> {
+    ) -> Result<Vec<(Option<String>, RecordBatch)>, DestinationError> {
         let Some(column) = &self.partition_by else {
             return Ok(vec![(None, batch)]);
         };
@@ -115,11 +115,13 @@ impl FileSession {
 
     /// Phase 2 (truncate): clear each Replace-mode table's owned files, ONCE per
     /// load. The crash point fires before any deletion (local protocol only).
-    async fn truncate_replace_tables(&self) -> Result<(), DestError> {
+    async fn truncate_replace_tables(&self) -> Result<(), DestinationError> {
         if self.location.is_local() {
             crash_point!(
                 "pq.replace.truncate",
-                Err(DestError::fatal("injected crash at pq.replace.truncate"))
+                Err(DestinationError::fatal(
+                    "injected crash at pq.replace.truncate"
+                ))
             );
         }
         let ext = self.format.extension();
@@ -137,7 +139,7 @@ impl FileSession {
     /// Phase 3 (publish): move each staged part to its deterministic final name,
     /// then fsync every touched directory so the renames survive power loss (D2,
     /// local only). The per-part index was recorded at write time.
-    async fn publish_staged(&mut self, meta: &CommitMeta) -> Result<(), DestError> {
+    async fn publish_staged(&mut self, meta: &CommitMeta) -> Result<(), DestinationError> {
         let ext = self.format.extension();
         for part in &self.staged {
             let to = final_tail(
@@ -154,7 +156,7 @@ impl FileSession {
         if self.location.is_local() {
             crash_point!(
                 "pq.dir.fsync",
-                Err(DestError::fatal("injected crash at pq.dir.fsync"))
+                Err(DestinationError::fatal("injected crash at pq.dir.fsync"))
             );
             let mut synced = BTreeSet::new();
             for part in &self.staged {
@@ -184,11 +186,11 @@ impl FileSession {
         commits_name: &str,
         log: &mut CommitLog,
         key: (String, u64),
-    ) -> Result<(), DestError> {
+    ) -> Result<(), DestinationError> {
         if self.location.is_local() {
             crash_point!(
                 "pq.state.write",
-                Err(DestError::fatal("injected crash at pq.state.write"))
+                Err(DestinationError::fatal("injected crash at pq.state.write"))
             );
         }
         self.location
@@ -199,7 +201,9 @@ impl FileSession {
         if self.location.is_local() {
             crash_point!(
                 "pq.receipt.write",
-                Err(DestError::fatal("injected crash at pq.receipt.write"))
+                Err(DestinationError::fatal(
+                    "injected crash at pq.receipt.write"
+                ))
             );
         }
         self.location.write_doc(commits_name, &*log).await?;
@@ -213,7 +217,7 @@ impl LoadSession for FileSession {
         &mut self,
         schema: &TableSchema,
         mode: &WriteMode,
-    ) -> Result<(), DestError> {
+    ) -> Result<(), DestinationError> {
         if matches!(mode, WriteMode::Merge { .. }) {
             return Err(fatal(
                 "file destination does not support Merge (capabilities.merge = false)",
@@ -227,7 +231,11 @@ impl LoadSession for FileSession {
         Ok(())
     }
 
-    async fn write(&mut self, table: &TableName, batch: RecordBatch) -> Result<(), DestError> {
+    async fn write(
+        &mut self,
+        table: &TableName,
+        batch: RecordBatch,
+    ) -> Result<(), DestinationError> {
         if !self.tables.contains_key(table) {
             return Err(fatal(format!("write before ensure_table for `{table}`")));
         }
@@ -261,7 +269,7 @@ impl LoadSession for FileSession {
         Ok(())
     }
 
-    async fn commit(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestError> {
+    async fn commit(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestinationError> {
         let receipt = CommitReceipt {
             load_id: meta.load_id.clone(),
             commit_seq: meta.commit_seq,
@@ -303,7 +311,10 @@ impl LoadSession for FileSession {
         Ok(receipt)
     }
 
-    async fn read_state(&mut self, pipeline: &PipelineId) -> Result<Option<StateDoc>, DestError> {
+    async fn read_state(
+        &mut self,
+        pipeline: &PipelineId,
+    ) -> Result<Option<StateDoc>, DestinationError> {
         let name = state_file(&pipeline_scope(pipeline));
         let state: Option<StateDoc> = match self.location.read_doc(&name).await? {
             Some(bytes) => Some(serde_json::from_slice(&bytes).map_err(fatal)?),

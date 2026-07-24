@@ -8,8 +8,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use rdlt_connector::{
-    CommitMeta, CommitReceipt, ConnectorSpec, DestCapabilities, DestError, Destination,
-    LoadSession, OpenCtx, PipelineId, RecordBatch, StateDoc, TableName, TableSchema, WriteMode,
+    CommitMeta, CommitReceipt, ConnectorSpec, Destination, DestinationCapabilities,
+    DestinationError, LoadSession, OpenCtx, PipelineId, RecordBatch, StateDoc, TableName,
+    TableSchema, WriteMode,
 };
 
 /// Where to inject the fault.
@@ -66,11 +67,11 @@ impl<D: Destination + Clone> Destination for CrashDestination<D> {
         self.inner.spec()
     }
 
-    fn capabilities(&self) -> DestCapabilities {
+    fn capabilities(&self) -> DestinationCapabilities {
         self.inner.capabilities()
     }
 
-    async fn open(&self, ctx: OpenCtx) -> Result<Box<dyn LoadSession>, DestError> {
+    async fn open(&self, ctx: OpenCtx) -> Result<Box<dyn LoadSession>, DestinationError> {
         let session = self.inner.open(ctx).await?;
         Ok(Box::new(CrashSession {
             inner: session,
@@ -91,9 +92,9 @@ struct CrashSession {
 }
 
 impl CrashSession {
-    fn crash(&self, what: &str) -> DestError {
+    fn crash(&self, what: &str) -> DestinationError {
         self.fired.fetch_add(1, Ordering::SeqCst);
-        DestError::fatal(format!("injected crash: {what}"))
+        DestinationError::fatal(format!("injected crash: {what}"))
     }
 }
 
@@ -103,11 +104,15 @@ impl LoadSession for CrashSession {
         &mut self,
         schema: &TableSchema,
         mode: &WriteMode,
-    ) -> Result<(), DestError> {
+    ) -> Result<(), DestinationError> {
         self.inner.ensure_table(schema, mode).await
     }
 
-    async fn write(&mut self, table: &TableName, batch: RecordBatch) -> Result<(), DestError> {
+    async fn write(
+        &mut self,
+        table: &TableName,
+        batch: RecordBatch,
+    ) -> Result<(), DestinationError> {
         let n = self.writes.fetch_add(1, Ordering::SeqCst) + 1;
         if let FaultPoint::BeforeWrite(at) = self.fault
             && n == at
@@ -118,7 +123,7 @@ impl LoadSession for CrashSession {
         self.inner.write(table, batch).await
     }
 
-    async fn commit(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestError> {
+    async fn commit(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestinationError> {
         let n = self.commits.fetch_add(1, Ordering::SeqCst) + 1;
         let unfired = self.fired.load(Ordering::SeqCst) == 0;
         match self.fault {
@@ -132,7 +137,10 @@ impl LoadSession for CrashSession {
         }
     }
 
-    async fn read_state(&mut self, pipeline: &PipelineId) -> Result<Option<StateDoc>, DestError> {
+    async fn read_state(
+        &mut self,
+        pipeline: &PipelineId,
+    ) -> Result<Option<StateDoc>, DestinationError> {
         self.inner.read_state(pipeline).await
     }
 }

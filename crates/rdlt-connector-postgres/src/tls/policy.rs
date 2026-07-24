@@ -31,11 +31,12 @@ impl TlsMode {
     }
 }
 
-/// A trust root: a filesystem path to a PEM bundle, or the PEM text inline
-/// (config strings starting with `-----BEGIN` are treated as inline).
+/// A PEM input — trust root, client certificate, or client key: a filesystem
+/// path to a PEM file, or the PEM text inline (config strings starting with
+/// `-----BEGIN` are treated as inline).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(transparent)]
-pub struct RootCert(pub String);
+pub struct PemSource(pub String);
 
 /// The per-connection TLS posture shared by source and destination.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -44,14 +45,14 @@ pub struct TlsPolicy {
     #[serde(default)]
     pub mode: TlsMode,
     #[serde(default)]
-    pub root_cert: Option<RootCert>,
+    pub root_cert: Option<PemSource>,
     /// Client certificate for mutual TLS. Path or inline PEM; requires
     /// `client_key`.
     #[serde(default)]
-    pub client_cert: Option<RootCert>,
+    pub client_cert: Option<PemSource>,
     /// Private key matching `client_cert` (PKCS#8/RSA/SEC1, unencrypted).
     #[serde(default)]
-    pub client_key: Option<RootCert>,
+    pub client_key: Option<PemSource>,
 }
 
 /// Config-shaped TLS failures (open phase).
@@ -63,8 +64,12 @@ pub enum TlsConfigError {
          happen; align them or drop one"
     )]
     Contradiction { conn: &'static str, block: TlsMode },
-    #[error("tls.root_cert `{path}`: {detail}")]
-    RootCert { path: String, detail: String },
+    /// TLS setup failure naming its subject — a PEM input
+    /// (`root_cert `path``), the crypto provider, or verifier
+    /// construction. One variant because every arm is "the TLS stack
+    /// could not be built from this input".
+    #[error("tls {subject}: {detail}")]
+    Setup { subject: String, detail: String },
     #[error(
         "tls.mode `{0:?}` verifies certificates but no trust root resolved \
          (no tls.root_cert and the platform trust store is empty/unavailable)"
@@ -206,7 +211,7 @@ mod tests {
         // sets root_cert) tolerates plaintext by its own semantics and must
         // compose with conn sslmode=disable.
         let prefer_block = TlsPolicy {
-            root_cert: Some(RootCert("/some/ca.pem".into())),
+            root_cert: Some(PemSource("/some/ca.pem".into())),
             ..TlsPolicy::default()
         };
         let resolved = resolve_policy(&conn("host=h sslmode=disable"), Some(&prefer_block))
@@ -216,9 +221,9 @@ mod tests {
 
     #[test]
     fn credential_shape_rules_are_typed_and_early() {
-        let cert = RootCert("cert".into());
-        let key = RootCert("key".into());
-        let policy = |mode, c: Option<&RootCert>, k: Option<&RootCert>| TlsPolicy {
+        let cert = PemSource("cert".into());
+        let key = PemSource("key".into());
+        let policy = |mode, c: Option<&PemSource>, k: Option<&PemSource>| TlsPolicy {
             mode,
             root_cert: None,
             client_cert: c.cloned(),

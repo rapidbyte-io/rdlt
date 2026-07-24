@@ -16,7 +16,7 @@ use arrow::array::{ArrayRef, StringArray, new_null_array};
 use arrow::compute::cast;
 use arrow::datatypes::{DataType, TimeUnit};
 use arrow::record_batch::RecordBatch;
-use rdlt_connector::DestCapabilities;
+use rdlt_connector::DestinationCapabilities;
 use rdlt_core::naming::UniqueNamer;
 use rdlt_core::schema::system_columns;
 use rdlt_core::{
@@ -35,7 +35,7 @@ pub(crate) fn passthrough_items(
     batch: &RecordBatch,
     table: &TableName,
     ctx: ShredCtx,
-    caps: DestCapabilities,
+    caps: DestinationCapabilities,
 ) -> Result<Vec<LoadItem>, RdltError> {
     let ShredCtx {
         registry,
@@ -44,7 +44,7 @@ pub(crate) fn passthrough_items(
         policy,
     } = ctx;
     // ---- Map the arrow schema onto the logical schema ----
-    let (mut observed, name_map) = schema_from_arrow(batch, table, caps)?;
+    let (mut observed, normalized_to_index) = schema_from_arrow(batch, table, caps)?;
 
     // ---- Join with the registry's current types (widening lattice) ----
     // The shredder's observation states join implicitly; passthrough must do it
@@ -54,7 +54,7 @@ pub(crate) fn passthrough_items(
     if let Some(current) = registry.get(table) {
         for column in &mut observed.columns {
             if let Some(existing) = current.columns.iter().find(|c| c.name == column.name) {
-                column.ty = join_column_types(&existing.ty, &column.ty);
+                column.column_type = join_column_types(&existing.column_type, &column.column_type);
             }
         }
     }
@@ -128,8 +128,8 @@ pub(crate) fn passthrough_items(
             arrays.push(Arc::new(StringArray::from(vec![load_id.as_str(); rows])));
             continue;
         }
-        let target_type = arrow_column_type(&column.ty);
-        let array = match name_map
+        let target_type = arrow_column_type(&column.column_type);
+        let array = match normalized_to_index
             .iter()
             .find(|(normalized, _)| normalized == &column.name)
         {
@@ -167,18 +167,18 @@ pub(crate) fn passthrough_items(
 fn schema_from_arrow(
     batch: &RecordBatch,
     table: &TableName,
-    caps: DestCapabilities,
+    caps: DestinationCapabilities,
 ) -> Result<(TableSchema, Vec<(String, usize)>), RdltError> {
     let mut namer = UniqueNamer::new(caps.ident_rules);
     namer.reserve(system_columns::LOAD_ID); // even a literal `_rdlt_load_id` input suffixes
 
     let mut columns = vec![ColumnDef {
         name: system_columns::LOAD_ID.to_owned(),
-        ty: ColumnType::scalar(LogicalType::Utf8),
+        column_type: ColumnType::scalar(LogicalType::Utf8),
         nullable: false,
         provenance: Provenance::System,
     }];
-    let mut name_map = Vec::new();
+    let mut normalized_to_index = Vec::new();
     for (idx, field) in batch.schema().fields().iter().enumerate() {
         let ty = column_type_from_arrow(field.data_type()).map_err(|reason| {
             RdltError::config(format!(
@@ -189,10 +189,10 @@ fn schema_from_arrow(
             ))
         })?;
         let name = namer.name_for(field.name());
-        name_map.push((name.clone(), idx));
+        normalized_to_index.push((name.clone(), idx));
         columns.push(ColumnDef {
             name,
-            ty,
+            column_type: ty,
             nullable: true,
             provenance: Provenance::Inferred,
         });
@@ -203,7 +203,7 @@ fn schema_from_arrow(
             parent: None,
             columns,
         },
-        name_map,
+        normalized_to_index,
     ))
 }
 
@@ -227,7 +227,7 @@ fn join_column_types(a: &ColumnType, b: &ColumnType) -> ColumnType {
             let mut joined = xs.clone();
             for y in ys {
                 match joined.iter_mut().find(|x| x.name == y.name) {
-                    Some(x) => x.ty = join_column_types(&x.ty, &y.ty),
+                    Some(x) => x.column_type = join_column_types(&x.column_type, &y.column_type),
                     None => joined.push(y.clone()),
                 }
             }
@@ -270,7 +270,7 @@ pub(crate) fn column_type_from_arrow(dt: &DataType) -> Result<ColumnType, String
                 .map(|f| {
                     Ok(ColumnDef {
                         name: f.name().clone(),
-                        ty: column_type_from_arrow(f.data_type())?,
+                        column_type: column_type_from_arrow(f.data_type())?,
                         nullable: true,
                         provenance: Provenance::Inferred,
                     })

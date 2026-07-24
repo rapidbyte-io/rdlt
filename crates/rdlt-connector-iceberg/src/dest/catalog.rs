@@ -8,7 +8,7 @@ use std::sync::Arc;
 use iceberg::{Catalog, CatalogBuilder};
 use iceberg_catalog_rest::RestCatalogBuilder;
 use iceberg_storage_opendal::OpenDalResolvingStorageFactory;
-use rdlt_connector::DestError;
+use rdlt_connector::DestinationError;
 
 use super::config::IcebergConfig;
 use super::errors::classify;
@@ -78,7 +78,7 @@ fn catalog_props(config: &IcebergConfig) -> HashMap<String, String> {
 }
 
 /// Build the REST catalog from the config document.
-pub(crate) async fn connect(config: &IcebergConfig) -> Result<Arc<dyn Catalog>, DestError> {
+pub(crate) async fn connect(config: &IcebergConfig) -> Result<Arc<dyn Catalog>, DestinationError> {
     let catalog = RestCatalogBuilder::default()
         .with_storage_factory(Arc::new(OpenDalResolvingStorageFactory::new()))
         .load(config.catalog.warehouse.clone(), catalog_props(config))

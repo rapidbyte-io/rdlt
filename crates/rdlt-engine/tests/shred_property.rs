@@ -239,7 +239,7 @@ proptest! {
                     prop_assert!(false, "column `{}` of `{table}` vanished", c1.name);
                     continue;
                 };
-                if let (Some(t1), Some(t2)) = (scalar_of(&c1.ty), scalar_of(&c2.ty)) {
+                if let (Some(t1), Some(t2)) = (scalar_of(&c1.column_type), scalar_of(&c2.column_type)) {
                     // t2 must be t1 widened (possibly unchanged): joining them
                     // lands on t2, never back on t1's side of the lattice.
                     prop_assert!(

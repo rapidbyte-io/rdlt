@@ -5,7 +5,7 @@ use arrow_array::{
     StringArray, Time64MicrosecondArray, TimestampMicrosecondArray,
 };
 use arrow_schema::{DataType, TimeUnit};
-use rdlt_connector::DestError;
+use rdlt_connector::DestinationError;
 use tokio_postgres::types::{ToSql, Type};
 
 use rdlt_connector::core::{ColumnType, LogicalType};
@@ -22,7 +22,7 @@ pub(super) enum ColumnWire {
     Text,
     Bytea,
     TimestampTz,
-    Timestamp,
+    TimestampNaive,
     Date,
     Time,
     Numeric { scale: u8 },
@@ -36,7 +36,7 @@ pub(super) enum ColumnWire {
 pub(super) fn column_wire(
     logical: Option<&ColumnType>,
     dt: &DataType,
-) -> Result<ColumnWire, DestError> {
+) -> Result<ColumnWire, DestinationError> {
     if let Some(ColumnType::Scalar { scalar }) = logical {
         match (scalar, dt) {
             (LogicalType::Decimal { scale, .. }, DataType::Decimal128(_, _)) => {
@@ -57,7 +57,7 @@ pub(super) fn column_wire(
         DataType::Utf8 => ColumnWire::Text,
         DataType::Binary => ColumnWire::Bytea,
         DataType::Timestamp(TimeUnit::Microsecond, Some(_)) => ColumnWire::TimestampTz,
-        DataType::Timestamp(TimeUnit::Microsecond, None) => ColumnWire::Timestamp,
+        DataType::Timestamp(TimeUnit::Microsecond, None) => ColumnWire::TimestampNaive,
         DataType::Date32 => ColumnWire::Date,
         DataType::Time64(TimeUnit::Microsecond) => ColumnWire::Time,
         DataType::Decimal128(_, scale) => ColumnWire::Numeric {
@@ -77,7 +77,7 @@ pub(super) fn wire_type(wire: ColumnWire) -> Type {
         ColumnWire::Text => Type::TEXT,
         ColumnWire::Bytea => Type::BYTEA,
         ColumnWire::TimestampTz => Type::TIMESTAMPTZ,
-        ColumnWire::Timestamp => Type::TIMESTAMP,
+        ColumnWire::TimestampNaive => Type::TIMESTAMP,
         ColumnWire::Date => Type::DATE,
         ColumnWire::Time => Type::TIME,
         ColumnWire::Numeric { .. } => Type::NUMERIC,
@@ -93,7 +93,7 @@ pub(super) fn cell_value(
     array: &dyn Array,
     row: usize,
     column: &str,
-) -> Result<Box<dyn ToSql + Sync + Send>, DestError> {
+) -> Result<Box<dyn ToSql + Sync + Send>, DestinationError> {
     macro_rules! cast {
         ($ty:ty) => {
             array
@@ -112,7 +112,7 @@ pub(super) fn cell_value(
             ColumnWire::Text => Box::new(Option::<String>::None),
             ColumnWire::Bytea => Box::new(Option::<Vec<u8>>::None),
             ColumnWire::TimestampTz => Box::new(Option::<chrono::DateTime<chrono::Utc>>::None),
-            ColumnWire::Timestamp => Box::new(Option::<chrono::NaiveDateTime>::None),
+            ColumnWire::TimestampNaive => Box::new(Option::<chrono::NaiveDateTime>::None),
             ColumnWire::Date => Box::new(Option::<chrono::NaiveDate>::None),
             ColumnWire::Time => Box::new(Option::<chrono::NaiveTime>::None),
             ColumnWire::Numeric { .. } => Box::new(Option::<NumericWire>::None),
@@ -133,7 +133,7 @@ pub(super) fn cell_value(
                     .ok_or_else(|| fatal(format!("column `{column}`: timestamp out of range")))?,
             )
         }
-        ColumnWire::Timestamp => {
+        ColumnWire::TimestampNaive => {
             let micros = cast!(TimestampMicrosecondArray).value(row);
             Box::new(
                 chrono::DateTime::from_timestamp_micros(micros)

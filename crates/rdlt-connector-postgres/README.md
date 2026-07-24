@@ -265,7 +265,7 @@ validated at construction (`options()` returns the error) — and again at
 open against the live stream schema.
 
 > **One vocabulary, every SQL destination** (feature 013): the options
-> below — `merge_strategy`, `hard_delete`, `dedup_sort`, `merge_key`,
+> below — `merge_strategy`, `hard_delete`, `dedup_sort`, `merge_scope`,
 > the `scd2` block — are the SHARED merge core
 > (`rdlt-connector-sqlcore`) and work identically under
 > `destination: duckdb:`, same YAML shape, same validation, same typed
@@ -316,7 +316,7 @@ write mode; append/replace are engine dispositions, not strategies):
 | `merge_strategy` | strategy | destination-wide value | Per-table override. |
 | `hard_delete` | column name | absent | CDC-style deletion flag: rows whose flag fires **delete their key** instead of merging (boolean columns compare `IS TRUE`, other types `IS NOT NULL`). The surviving in-load version's flag decides. Root tables only (typed error on children); the column must exist; not valid with scd2. |
 | `dedup_sort` | `{ column, order: asc\|desc }` | absent (= last-wins) | **Ordered in-load survivor selection**: when one load carries several versions of the same key, the version this column ranks first survives — `desc` = greatest wins, `asc` = least wins — instead of arrival order. Values beat NULL; ties (and all-NULL groups) keep the deterministic arrival-order last-wins. The survivor drives every downstream decision (hard-delete flag, upsert content, SCD2 change detection). `order` is required. Typed errors: nonexistent column, the hard_delete flag, a merge-key column (constant per group — could never order), shredded streams, non-merge write modes. |
-| `merge_key` | [column] | absent | **Scope replacement**: a non-unique column set, independent of the row identity. A merge load deletes every target row whose scope appears among the delivered rows, then applies the batch — undelivered rows in delivered scopes disappear; untouched scopes stay. NULL is not a scope (matches nothing, both sides). Scope columns are auto-indexed. The scoped **table's** feed must arrive in one commit unit — per-table, so other streams' checkpoints never trigger it; a split feed is a typed error advising the engine commit thresholds (recovery converges on re-run). One recorded caveat: scoped streams should checkpoint only at feed end (a mid-feed checkpoint plus a crash in the window resumes as a partial feed the destination cannot distinguish from a fresh load). Typed errors: nonexistent columns, the hard_delete flag, shredded streams, scd2-without-retire, non-merge write modes. |
+| `merge_scope` | [column] | absent | **Scope replacement**: a non-unique column set, independent of the row identity. A merge load deletes every target row whose scope appears among the delivered rows, then applies the batch — undelivered rows in delivered scopes disappear; untouched scopes stay. NULL is not a scope (matches nothing, both sides). Scope columns are auto-indexed. The scoped **table's** feed must arrive in one commit unit — per-table, so other streams' checkpoints never trigger it; a split feed is a typed error advising the engine commit thresholds (recovery converges on re-run). One recorded caveat: scoped streams should checkpoint only at feed end (a mid-feed checkpoint plus a crash in the window resumes as a partial feed the destination cannot distinguish from a fresh load). Typed errors: nonexistent columns, the hard_delete flag, shredded streams, scd2-without-retire, non-merge write modes. |
 | `scd2` | scd2 block | defaults | See below; only valid with `merge_strategy: scd2` (typed both ways). |
 
 Worked example:
@@ -331,7 +331,7 @@ destination:
       orders:
         hard_delete: _rdlt_deleted
         dedup_sort: {column: seq, order: desc}
-        merge_key: [day]
+        merge_scope: [day]
       customers:
         merge_strategy: scd2
         scd2: {absent: retire}
@@ -343,7 +343,7 @@ destination:
 |---|---|---|---|
 | `valid_from` | column name | `_rdlt_valid_from` | Validity-start column added to the target (`TIMESTAMPTZ NOT NULL`). |
 | `valid_to` | column name | `_rdlt_valid_to` | Validity-end column; `NULL` marks the active version. Must differ from `valid_from`; neither may collide with a stream column. |
-| `absent` | `keep` \| `retire` | `keep` | Active keys **absent** from a load: `keep` leaves them active (incremental feeds are partial); `retire` closes them at the boundary (full-feed semantics). Retire requires the table's full feed in a single commit unit — same per-table rule as `merge_key`, same typed error, same thresholds remedy. With a `merge_key` on the table, retirement is **scoped**: absent keys retire only within delivered scopes (feature 013; requires `retire` — under `keep` the merge_key would be inert, typed error). |
+| `absent` | `keep` \| `retire` | `keep` | Active keys **absent** from a load: `keep` leaves them active (incremental feeds are partial); `retire` closes them at the boundary (full-feed semantics). Retire requires the table's full feed in a single commit unit — same per-table rule as `merge_scope`, same typed error, same thresholds remedy. With a `merge_scope` on the table, retirement is **scoped**: absent keys retire only within delivered scopes (feature 013; requires `retire` — under `keep` the merge_scope would be inert, typed error). |
 | `active_record_timestamp` | RFC3339 timestamp | absent (= NULL marker) | The OPEN-version marker written to `valid_to` instead of NULL (e.g. `9999-12-31T00:00:00Z` — some BI tools cannot range-query NULLs). Must be zone-explicit RFC3339 (zone-less literals resolve per session TimeZone — typed error) and must differ from `boundary_timestamp` (typed error). Active-version predicates treat NULL **and** the marker as open, so a table whose history predates the option keeps working. |
 | `boundary_timestamp` | RFC3339 timestamp | absent (= transaction timestamp) | Caller-supplied boundary used for close/open/retire instead of the transaction timestamp. Same zone-explicit validation; never interpolated unvalidated. |
 
@@ -352,7 +352,7 @@ destination:
 Merge identities get supporting indexes automatically, with
 deterministic names (`rdlt_ix_*` / unique `rdlt_ux_*`): the identity
 index per strategy (unique for upsert), `(key…, valid_to)` for scd2
-active-version lookups, and the scope columns for `merge_key`. Measured
+active-version lookups, and the scope columns for `merge_scope`. Measured
 where it matters: 20.4× on the incremental-regime merge DELETE
 (`benches/RESULTS.md`).
 

@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use iceberg::transaction::{ApplyTransactionAction, Transaction};
 use iceberg::{Catalog, NamespaceIdent, TableIdent};
-use rdlt_connector::DestError;
+use rdlt_connector::DestinationError;
 
 use super::commit::{CommitPlan, commit_with_retry};
 use super::config::PartitionField;
@@ -19,7 +19,7 @@ pub(crate) async fn ensure_namespace(
     catalog: &Arc<dyn Catalog>,
     namespace: &NamespaceIdent,
     create_if_missing: bool,
-) -> Result<(), DestError> {
+) -> Result<(), DestinationError> {
     let context = format!("namespace `{}`", namespace.to_url_string());
     let exists = catalog
         .namespace_exists(namespace)
@@ -50,7 +50,7 @@ pub(crate) async fn ensure_table(
     name: &str,
     wanted: &iceberg::spec::Schema,
     partition: &[PartitionField],
-) -> Result<iceberg::table::Table, DestError> {
+) -> Result<iceberg::table::Table, DestinationError> {
     let ident = TableIdent::new(namespace.clone(), name.to_owned());
     let context = format!("table `{ident}`");
     let exists = catalog
@@ -93,7 +93,7 @@ fn check_partition_spec(
     context: &str,
     table: &iceberg::table::Table,
     partition: &[PartitionField],
-) -> Result<(), DestError> {
+) -> Result<(), DestinationError> {
     let live = table.metadata().default_partition_spec();
     let schema = table.metadata().current_schema();
     let live_fields: Vec<(String, iceberg::spec::Transform)> = live
@@ -134,7 +134,7 @@ async fn reconcile(
     ident: &TableIdent,
     wanted: &iceberg::spec::Schema,
     partition: &[PartitionField],
-) -> Result<iceberg::table::Table, DestError> {
+) -> Result<iceberg::table::Table, DestinationError> {
     use iceberg::transaction::AddColumn;
     let context = format!("table `{ident}`");
     let initial = catalog

@@ -8,7 +8,7 @@ use rdlt_core::naming::IdentRules;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DestCapabilities {
+pub struct DestinationCapabilities {
     /// Supports keyed merge (upsert + subtree replacement by `_rdlt_root_id`).
     pub merge: bool,
     /// Native struct/nested columns; if false the engine flattens collision-safely.

@@ -34,11 +34,11 @@ pub use commit::{CommitCounters, CommitMeta, CommitPolicy, CommitReceipt, WriteM
 pub use cursor::Cursor;
 pub use error::{ContractViolation, RdltError};
 pub use event::PipelineEvent;
-pub use ids::{LoadId, PipelineId, RowId, SchemaHash, StreamName, TableName};
-pub use policy::{PolicyAction, SchemaPolicy};
+pub use ids::{InvalidHexId, LoadId, PipelineId, RowId, SchemaHash, StreamName, TableName};
+pub use policy::{ColumnRef, PolicyAction, SchemaPolicy};
 pub use report::{ResumedFrom, RunReport, TableReport};
 pub use schema::{
     ColumnDef, ColumnType, ParentLink, Provenance, SchemaChange, SchemaDelta, TableSchema,
 };
-pub use state::{LastCommit, StateDoc};
-pub use types::{LogicalType, widen};
+pub use state::{LastCommit, StateDoc, UnsupportedStateVersion};
+pub use types::{LogicalType, is_widening_of, widen};

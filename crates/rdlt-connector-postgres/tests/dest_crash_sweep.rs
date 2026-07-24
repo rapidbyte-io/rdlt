@@ -170,7 +170,9 @@ impl Source for KeyedArrowSource {
 
     async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
         Ok(vec![
-            StreamSpec::new("s").structured().with_primary_key(["id"]),
+            StreamSpec::new("s")
+                .with_structured()
+                .with_primary_key(["id"]),
         ])
     }
 
@@ -215,7 +217,7 @@ fn with_strategy(
     dest: Postgres,
     strategy: rdlt_connector_postgres::dest::MergeStrategy,
 ) -> Postgres {
-    dest.options(rdlt_connector_postgres::dest::PgDestOptions {
+    dest.options(rdlt_connector_postgres::dest::DestOptions {
         merge_strategy: Some(strategy),
         ..Default::default()
     })
@@ -300,7 +302,7 @@ async fn sweep_postgres_destination_keyed_structured_merge() {
     );
 }
 
-// ---- Feature 010 T007: the refined-merge arm (dedup_sort + merge_key)
+// ---- Feature 010 T007: the refined-merge arm (dedup_sort + merge_scope)
 // crosses every registered boundary — receipts must survive crash/replay
 // without double-deleting a scope (contract merge-refinements.md MR5). ----
 
@@ -318,7 +320,9 @@ impl Source for RefinedArrowSource {
 
     async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
         Ok(vec![
-            StreamSpec::new("s").structured().with_primary_key(["id"]),
+            StreamSpec::new("s")
+                .with_structured()
+                .with_primary_key(["id"]),
         ])
     }
 
@@ -408,15 +412,15 @@ async fn sweep_postgres_destination_refined_merge() {
             let workdir = dir.path().join("wal");
             let dest = Postgres::connect(&conn)
                 .dataset(&dataset)
-                .options(rdlt_connector_postgres::dest::PgDestOptions {
+                .options(rdlt_connector_postgres::dest::DestOptions {
                     tables: [(
                         "s".to_string(),
-                        rdlt_connector_postgres::dest::PgTableOptions {
+                        rdlt_connector_postgres::dest::TableOptions {
                             dedup_sort: Some(rdlt_connector_postgres::dest::DedupSort {
                                 column: "seq".into(),
                                 order: rdlt_connector_postgres::dest::SortOrder::Desc,
                             }),
-                            merge_key: Some(vec!["day".into()]),
+                            merge_scope: Some(vec!["day".into()]),
                             ..Default::default()
                         },
                     )]

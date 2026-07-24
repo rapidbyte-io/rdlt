@@ -14,7 +14,7 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use duckdb::Connection;
 use rdlt_connector::{
-    CommitMeta, CommitReceipt, DestError, LoadSession, RecordBatch, WriteMode,
+    CommitMeta, CommitReceipt, DestinationError, LoadSession, RecordBatch, WriteMode,
     core::{PipelineId, StateDoc, TableName, TableSchema, crash_point, schema::system_columns},
 };
 use rdlt_connector_sqlcore::plan::{self as sqlplan, IndexSpec, TableFacts, scope_replace_sql};
@@ -45,8 +45,8 @@ pub(super) struct DuckDbSession {
 impl DuckDbSession {
     fn with_conn<T>(
         &mut self,
-        f: impl FnOnce(&mut Connection) -> Result<T, DestError>,
-    ) -> Result<T, DestError> {
+        f: impl FnOnce(&mut Connection) -> Result<T, DestinationError>,
+    ) -> Result<T, DestinationError> {
         let mut guard = self.conn.lock().map_err(|_| fatal("connection poisoned"))?;
         f(&mut guard)
     }
@@ -80,7 +80,10 @@ fn create_index_sql(unique: bool, table: &str, columns: &[String]) -> String {
     )
 }
 
-fn staged_nonempty(tx: &duckdb::Transaction<'_>, table: &TableName) -> Result<bool, DestError> {
+fn staged_nonempty(
+    tx: &duckdb::Transaction<'_>,
+    table: &TableName,
+) -> Result<bool, DestinationError> {
     tx.query_row(
         &format!(
             "SELECT EXISTS (SELECT 1 FROM {})",
@@ -103,7 +106,7 @@ fn execute_step(
     meta: &CommitMeta,
     state_json: &str,
     step: &Step,
-) -> Result<(), DestError> {
+) -> Result<(), DestinationError> {
     match step {
         Step::ClearTarget { table } => {
             tx.execute_batch(&DuckDialect.clear_table(&quote(table.as_str())))
@@ -189,7 +192,7 @@ impl LoadSession for DuckDbSession {
         &mut self,
         schema: &TableSchema,
         mode: &WriteMode,
-    ) -> Result<(), DestError> {
+    ) -> Result<(), DestinationError> {
         let table = schema.table.clone();
         let stage = stage_name(&table);
         let previous = self.tables.get(&table).map(|(s, _)| s.clone());
@@ -212,18 +215,18 @@ impl LoadSession for DuckDbSession {
                             "ALTER TABLE {} ADD COLUMN IF NOT EXISTS {} {}",
                             quote(&target),
                             quote(&column.name),
-                            sql_type(&column.ty, is_stage)
+                            sql_type(&column.column_type, is_stage)
                         );
                         conn.execute_batch(&add).map_err(fatal)?;
                         if let Some(prev) = &previous
                             && let Some(old) = prev.column(&column.name)
-                            && old.ty != column.ty
+                            && old.column_type != column.column_type
                         {
                             let widen = format!(
                                 "ALTER TABLE {} ALTER COLUMN {} SET DATA TYPE {}",
                                 quote(&target),
                                 quote(&column.name),
-                                sql_type(&column.ty, is_stage)
+                                sql_type(&column.column_type, is_stage)
                             );
                             conn.execute_batch(&widen).map_err(fatal)?;
                         }
@@ -327,10 +330,14 @@ impl LoadSession for DuckDbSession {
         Ok(())
     }
 
-    async fn write(&mut self, table: &TableName, batch: RecordBatch) -> Result<(), DestError> {
+    async fn write(
+        &mut self,
+        table: &TableName,
+        batch: RecordBatch,
+    ) -> Result<(), DestinationError> {
         crash_point!(
             "duck.append",
-            Err(DestError::fatal("injected crash at duck.append"))
+            Err(DestinationError::fatal("injected crash at duck.append"))
         );
         let stage = stage_name(table);
         // Staging I/O is environmental: lock/disk failures classify
@@ -339,13 +346,13 @@ impl LoadSession for DuckDbSession {
             let mut appender = conn.appender(&stage).map_err(classify)?;
             appender.append_record_batch(batch).map_err(classify)?;
             // Appender drop swallows errors; flush explicitly so failures surface
-            // as DestError instead of silently losing staged rows.
+            // as DestinationError instead of silently losing staged rows.
             appender.flush().map_err(classify)?;
             Ok(())
         })
     }
 
-    async fn commit(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestError> {
+    async fn commit(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestinationError> {
         let receipt = CommitReceipt {
             load_id: meta.load_id.clone(),
             commit_seq: meta.commit_seq,
@@ -425,7 +432,7 @@ impl LoadSession for DuckDbSession {
             if !replayed {
                 crash_point!(
                     "duck.tx.commit",
-                    Err(DestError::fatal("injected crash at duck.tx.commit"))
+                    Err(DestinationError::fatal("injected crash at duck.tx.commit"))
                 );
             }
             tx.commit().map_err(classify)?;
@@ -438,7 +445,10 @@ impl LoadSession for DuckDbSession {
         Ok(receipt)
     }
 
-    async fn read_state(&mut self, pipeline: &PipelineId) -> Result<Option<StateDoc>, DestError> {
+    async fn read_state(
+        &mut self,
+        pipeline: &PipelineId,
+    ) -> Result<Option<StateDoc>, DestinationError> {
         let pipeline = pipeline.as_str().to_owned();
         self.with_conn(move |conn| {
             let doc: Option<String> = conn

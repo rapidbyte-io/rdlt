@@ -336,7 +336,7 @@ async fn wal_retention_overrun_is_typed_with_fresh_snapshot_recovery() {
 
 // ───────────────────────── US1: bounded catch-up ─────────────────────────
 
-use rdlt_connector_postgres::dest::{MergeStrategy, PgDestOptions, PgTableOptions, Postgres};
+use rdlt_connector_postgres::dest::{DestOptions, MergeStrategy, Postgres, TableOptions};
 use rdlt_connector_postgres::source::PostgresSource;
 use rdlt_engine::{Engine, EngineConfig};
 
@@ -387,16 +387,16 @@ impl CdcRig {
     fn dest(&self, tables: &[&str]) -> Postgres {
         Postgres::connect(self.fixture.conn_url())
             .dataset("mirror")
-            .options(PgDestOptions {
+            .options(DestOptions {
                 merge_strategy: Some(MergeStrategy::Upsert),
                 tables: tables
                     .iter()
                     .map(|t| {
                         (
                             t.to_string(),
-                            PgTableOptions {
+                            TableOptions {
                                 hard_delete: Some("_rdlt_deleted".into()),
-                                ..PgTableOptions::default()
+                                ..TableOptions::default()
                             },
                         )
                     })
@@ -1270,13 +1270,13 @@ async fn custom_flag_column_flows_end_to_end() {
     let dest = || {
         Postgres::connect(rig.fixture.conn_url())
             .dataset("mirror")
-            .options(PgDestOptions {
+            .options(DestOptions {
                 merge_strategy: Some(MergeStrategy::Upsert),
                 tables: [(
                     "orders".to_string(),
-                    PgTableOptions {
+                    TableOptions {
                         hard_delete: Some("gone".into()),
-                        ..PgTableOptions::default()
+                        ..TableOptions::default()
                     },
                 )]
                 .into_iter()

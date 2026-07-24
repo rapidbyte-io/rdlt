@@ -28,7 +28,7 @@ pub trait TableProbe: Send + Sync {
 fn fixture_schema(table: &str) -> TableSchema {
     let col = |name: &str, ty, provenance| ColumnDef {
         name: name.to_owned(),
-        ty: ColumnType::scalar(ty),
+        column_type: ColumnType::scalar(ty),
         nullable: false,
         provenance,
     };
@@ -66,7 +66,7 @@ fn fixture_batch(load_id: &str, ids: &[&str], values: &[i64]) -> RecordBatch {
 /// Map a fixture column to its Arrow field. Only the scalar types the fixture schema
 /// uses are handled — any other type is a bug in the fixture, not a runtime input.
 fn arrow_field(column: &ColumnDef) -> Field {
-    let data_type = match &column.ty {
+    let data_type = match &column.column_type {
         ColumnType::Scalar {
             scalar: LogicalType::Utf8,
         } => DataType::Utf8,
@@ -79,7 +79,7 @@ fn arrow_field(column: &ColumnDef) -> Field {
 }
 
 fn meta(pipeline: &PipelineId, load_id: &LoadId, seq: u64, cursor: Option<i64>) -> CommitMeta {
-    let mut state = StateDoc::new(pipeline.clone());
+    let mut state = StateDoc::new(pipeline.clone(), env!("CARGO_PKG_VERSION"));
     if let Some(c) = cursor {
         state
             .cursors

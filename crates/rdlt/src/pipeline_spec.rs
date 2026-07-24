@@ -113,10 +113,10 @@ pub enum DestSpec {
         /// ("delete_insert" | "upsert" | "scd2").
         merge_strategy: Option<crate::connector::postgres::dest::MergeStrategy>,
         /// Per-table options — `tables: <name>: {…}` with
-        /// `merge_strategy`, `hard_delete`, `dedup_sort`, `merge_key`, and
+        /// `merge_strategy`, `hard_delete`, `dedup_sort`, `merge_scope`, and
         /// `scd2: {valid_from, valid_to, absent}`.
         tables: Option<
-            std::collections::BTreeMap<String, crate::connector::postgres::dest::PgTableOptions>,
+            std::collections::BTreeMap<String, crate::connector::postgres::dest::TableOptions>,
         >,
     },
     /// The frozen `parquet:` spelling (equivalent to `file: local parquet`);
@@ -370,7 +370,7 @@ fn build_with<S: rdlt_connector::Source>(
                 dest = dest.tls(policy.clone());
             }
             if merge_strategy.is_some() || tables.is_some() {
-                let options = crate::connector::postgres::dest::PgDestOptions {
+                let options = crate::connector::postgres::dest::DestOptions {
                     merge_strategy: *merge_strategy,
                     tables: tables.clone().unwrap_or_default(),
                 };

@@ -93,7 +93,7 @@ async fn open_boundary_skips_watermark_equal_rows() {
     };
     fixture.seed(BASE).await;
     let rig = Rig::new();
-    let cfg = "      boundary: open\n";
+    let cfg = "      boundary: exclusive\n";
 
     assert_eq!(
         rig.run(source(&fixture.conn_url(), cfg), "inc-open").await,

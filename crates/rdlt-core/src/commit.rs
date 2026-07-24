@@ -68,5 +68,11 @@ pub enum WriteMode {
     Replace,
     /// Upsert by key: an updated record replaces its prior version *and its entire
     /// subtree of child rows* (delete by `_rdlt_root_id`, insert the new subtree).
+    ///
+    /// Merge-key precedence: `key` and a source's `StreamSpec::primary_key` are
+    /// two names for one identity, not independent knobs. For a structured
+    /// stream the engine requires them to AGREE (same columns, as a set) and
+    /// rejects a mismatch typed at plan time; for a shredded stream `key`
+    /// drives `_rdlt_id`. Neither silently overrides the other.
     Merge { key: Vec<String> },
 }

@@ -14,8 +14,8 @@ use rdlt_connector::core::{
     naming::{IdentRules, ident_hash},
 };
 use rdlt_connector::{
-    CommitMeta, CommitReceipt, ConnectorSpec, DestCapabilities, DestError, Destination,
-    LoadSession, OpenCtx, RecordBatch,
+    CommitMeta, CommitReceipt, ConnectorSpec, Destination, DestinationCapabilities,
+    DestinationError, LoadSession, OpenCtx, RecordBatch,
 };
 
 use super::catalog::connect;
@@ -45,12 +45,12 @@ pub struct IcebergDest {
 }
 
 impl IcebergDest {
-    pub fn from_config(config: IcebergConfig) -> Result<Self, DestError> {
+    pub fn from_config(config: IcebergConfig) -> Result<Self, DestinationError> {
         config.validate().map_err(fatal)?;
         Ok(Self { config })
     }
 
-    pub fn from_yaml(yaml: &str) -> Result<Self, DestError> {
+    pub fn from_yaml(yaml: &str) -> Result<Self, DestinationError> {
         let config = IcebergConfig::from_yaml(yaml).map_err(fatal)?;
         Ok(Self { config })
     }
@@ -64,8 +64,8 @@ impl Destination for IcebergDest {
         spec
     }
 
-    fn capabilities(&self) -> DestCapabilities {
-        DestCapabilities {
+    fn capabilities(&self) -> DestinationCapabilities {
+        DestinationCapabilities {
             merge: false, // append-only lakehouse tables; merge stays SQL-side
             structs: true,
             scalar_lists: true,
@@ -75,7 +75,7 @@ impl Destination for IcebergDest {
         }
     }
 
-    async fn open(&self, ctx: OpenCtx) -> Result<Box<dyn LoadSession>, DestError> {
+    async fn open(&self, ctx: OpenCtx) -> Result<Box<dyn LoadSession>, DestinationError> {
         let catalog = connect(&self.config).await?;
         let namespace = NamespaceIdent::from_vec(self.config.namespace_levels())
             .map_err(|e| fatal(format!("namespace `{}`: {e}", self.config.namespace)))?;
@@ -135,7 +135,7 @@ fn session_nonce() -> String {
 fn arrow_target(
     context: &str,
     table: &iceberg::table::Table,
-) -> Result<Arc<arrow_schema::Schema>, DestError> {
+) -> Result<Arc<arrow_schema::Schema>, DestinationError> {
     iceberg::arrow::schema_to_arrow_schema(table.metadata().current_schema())
         .map(Arc::new)
         .map_err(|e| fatal(format!("{context}: arrow schema conversion: {e}")))
@@ -144,7 +144,7 @@ fn arrow_target(
 impl IcebergSession {
     /// Only Append maps onto a snapshot this release; Merge and Replace are
     /// typed unsupported (see the module and `ensure_table` docs).
-    fn check_mode(mode: &WriteMode) -> Result<(), DestError> {
+    fn check_mode(mode: &WriteMode) -> Result<(), DestinationError> {
         match mode {
             WriteMode::Append => Ok(()),
             WriteMode::Merge { .. } => Err(fatal(
@@ -177,7 +177,7 @@ impl IcebergSession {
         name: &str,
         table: iceberg::table::Table,
         arrow_target: Arc<arrow_schema::Schema>,
-    ) -> Result<(), DestError> {
+    ) -> Result<(), DestinationError> {
         let (window_seq, prev_writer, prev_target, mut pending_files) =
             match self.tables.remove(stream) {
                 Some(prev) => (
@@ -219,7 +219,7 @@ impl IcebergSession {
         context: &str,
         target: &Arc<arrow_schema::Schema>,
         batch: &RecordBatch,
-    ) -> Result<RecordBatch, DestError> {
+    ) -> Result<RecordBatch, DestinationError> {
         let mut columns = Vec::with_capacity(target.fields().len());
         for field in target.fields() {
             let column = match batch.schema().index_of(field.name()) {
@@ -262,7 +262,7 @@ impl LoadSession for IcebergSession {
         &mut self,
         schema: &TableSchema,
         mode: &WriteMode,
-    ) -> Result<(), DestError> {
+    ) -> Result<(), DestinationError> {
         Self::check_mode(mode)?;
         let stream = schema.table.as_str();
         let name = self.config.table_name(stream);
@@ -282,7 +282,11 @@ impl LoadSession for IcebergSession {
             .await
     }
 
-    async fn write(&mut self, table: &TableName, batch: RecordBatch) -> Result<(), DestError> {
+    async fn write(
+        &mut self,
+        table: &TableName,
+        batch: RecordBatch,
+    ) -> Result<(), DestinationError> {
         let state = self
             .tables
             .get_mut(table)
@@ -302,7 +306,7 @@ impl LoadSession for IcebergSession {
             .await
     }
 
-    async fn commit(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestError> {
+    async fn commit(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestinationError> {
         let receipt = CommitReceipt {
             load_id: meta.load_id.clone(),
             commit_seq: meta.commit_seq,
@@ -341,7 +345,9 @@ impl LoadSession for IcebergSession {
         }
         crash_point!(
             "ice.receipt.visible",
-            Err(DestError::fatal("injected crash at ice.receipt.visible"))
+            Err(DestinationError::fatal(
+                "injected crash at ice.receipt.visible"
+            ))
         );
         // State is written LAST, after every table's data commit: the
         // per-table snapshot receipts make replays converge even if we crash
@@ -352,7 +358,10 @@ impl LoadSession for IcebergSession {
         Ok(receipt)
     }
 
-    async fn read_state(&mut self, pipeline: &PipelineId) -> Result<Option<StateDoc>, DestError> {
+    async fn read_state(
+        &mut self,
+        pipeline: &PipelineId,
+    ) -> Result<Option<StateDoc>, DestinationError> {
         let scope = ident_hash(pipeline.as_str(), SCOPE_HASH_LEN);
         let Some(raw) = read_state_doc(&self.catalog, &self.namespace, &scope).await? else {
             return Ok(None);

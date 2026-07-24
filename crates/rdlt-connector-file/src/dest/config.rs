@@ -72,7 +72,7 @@ impl FileDestConfig {
     /// Eager, typed validation following the one config convention: every
     /// message is prefixed by `context` (the subject), and nested blocks
     /// receive the SAME context, so source and destination configs read
-    /// identically. The SPI mapping (String → `DestError`) stays at the caller.
+    /// identically. The SPI mapping (String → `DestinationError`) stays at the caller.
     pub fn validate(&self, context: &str) -> Result<(), String> {
         if self.path.is_empty() {
             return Err(format!("{context}: `path` must not be empty"));

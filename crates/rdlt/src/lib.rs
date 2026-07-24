@@ -8,7 +8,7 @@
 //! use rdlt_testkit::{MemoryDestination, MemorySource};
 //!
 //! # async fn demo() -> Result<(), RdltError> {
-//! let mut pipeline = Pipeline::builder("demo")
+//! let pipeline = Pipeline::builder("demo")
 //!     .source(MemorySource::default())
 //!     .destination(MemoryDestination::new())
 //!     .write_mode(WriteMode::Append)
@@ -63,9 +63,15 @@ pub mod connector {
     pub use rdlt_connector_rest as rest;
 }
 
+/// Glob-import target for pipeline authors.
+///
+/// Rule: the prelude is the crate-root vocabulary re-export set (every type re-exported
+/// at `rdlt::`) plus the [`Pipeline`] entry point. Import `rdlt::prelude::*` and you can
+/// name everything a pipeline definition and its report handling touch without reaching
+/// for the submodules. Anything reachable at the crate root is reachable here.
 pub mod prelude {
     pub use crate::{
-        CommitPolicy, Pipeline, PipelineEvent, PolicyAction, RdltError, RunReport, SchemaPolicy,
-        WriteMode,
+        CommitPolicy, Cursor, Pipeline, PipelineEvent, PolicyAction, RdltError, ResumedFrom,
+        RunReport, SchemaPolicy, TableReport, WriteMode,
     };
 }

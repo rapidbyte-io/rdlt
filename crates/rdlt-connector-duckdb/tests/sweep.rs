@@ -92,9 +92,9 @@ async fn strategy_arms_survive_crash_sweep() {
             true,
         ),
         (
-            "merge_key",
+            "merge_scope",
             serde_json::json!({
-                "tables": {"kv": {"merge_key": ["day"],
+                "tables": {"kv": {"merge_scope": ["day"],
                                    "dedup_sort": {"column": "seq", "order": "desc"}}}
             }),
             false,

@@ -67,8 +67,10 @@ impl ColumnType {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ColumnDef {
     pub name: String,
+    // Wire key stays `type` — the Rust field is `column_type` to read as prose
+    // and to avoid the `ty` abbreviation; the serialized format is unchanged.
     #[serde(rename = "type")]
-    pub ty: ColumnType,
+    pub column_type: ColumnType,
     pub nullable: bool,
     pub provenance: Provenance,
 }
@@ -142,7 +144,7 @@ mod tests {
             parent: None,
             columns: vec![ColumnDef {
                 name: "id".into(),
-                ty: ColumnType::scalar(LogicalType::Int64),
+                column_type: ColumnType::scalar(LogicalType::Int64),
                 nullable: false,
                 provenance: Provenance::Inferred,
             }],
@@ -158,7 +160,7 @@ mod tests {
     fn any_semantic_change_changes_the_hash() {
         let base = schema().content_hash();
         let mut widened = schema();
-        widened.columns[0].ty = ColumnType::scalar(LogicalType::Float64);
+        widened.columns[0].column_type = ColumnType::scalar(LogicalType::Float64);
         assert_ne!(base, widened.content_hash());
 
         let mut renamed = schema();

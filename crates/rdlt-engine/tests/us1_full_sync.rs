@@ -71,7 +71,7 @@ async fn full_sync_infers_types_splits_children_and_stamps_lineage() {
         schema
             .column(name)
             .unwrap_or_else(|| panic!("column {name}"))
-            .ty
+            .column_type
             .clone()
     };
     assert_eq!(ty("id"), scalar(LogicalType::Int64));
@@ -82,7 +82,11 @@ async fn full_sync_infers_types_splits_children_and_stamps_lineage() {
     match ty("profile") {
         ColumnType::Struct { fields } => {
             let zip = fields.iter().find(|f| f.name == "zip").expect("zip field");
-            assert_eq!(zip.ty, scalar(LogicalType::Utf8), "Int64 ⊔ Utf8 → Utf8");
+            assert_eq!(
+                zip.column_type,
+                scalar(LogicalType::Utf8),
+                "Int64 ⊔ Utf8 → Utf8"
+            );
         }
         other => panic!("profile should be a struct column, got {other:?}"),
     }
@@ -193,21 +197,22 @@ async fn scalar_lists_follow_destination_capabilities() {
         .expect("run");
     let schema = dest.schema("s").expect("schema");
     assert_eq!(
-        schema.column("nums").expect("nums column").ty,
+        schema.column("nums").expect("nums column").column_type,
         ColumnType::ScalarList {
             item: LogicalType::Int64
         }
     );
 
     // Degraded destination: child table instead.
-    let dest = MemoryDestination::new().with_capabilities(rdlt_connector::DestCapabilities {
-        merge: false,
-        structs: true,
-        scalar_lists: false,
-        json_type: true,
-        decimal: true,
-        ident_rules: Default::default(),
-    });
+    let dest =
+        MemoryDestination::new().with_capabilities(rdlt_connector::DestinationCapabilities {
+            merge: false,
+            structs: true,
+            scalar_lists: false,
+            json_type: true,
+            decimal: true,
+            ident_rules: Default::default(),
+        });
     let source = MemorySource::single_stream(rdlt_connector::StreamSpec::new("s"), rows);
     Engine::new(EngineConfig::new("lists-child"), source, dest.clone())
         .run()
@@ -225,14 +230,15 @@ async fn scalar_lists_follow_destination_capabilities() {
 #[tokio::test]
 async fn structless_destination_gets_flattened_columns() {
     let rows = vec![json!({"id": 1, "profile": {"city": "NYC", "geo": {"lat": 1.5}}})];
-    let dest = MemoryDestination::new().with_capabilities(rdlt_connector::DestCapabilities {
-        merge: false,
-        structs: false,
-        scalar_lists: true,
-        json_type: true,
-        decimal: true,
-        ident_rules: Default::default(),
-    });
+    let dest =
+        MemoryDestination::new().with_capabilities(rdlt_connector::DestinationCapabilities {
+            merge: false,
+            structs: false,
+            scalar_lists: true,
+            json_type: true,
+            decimal: true,
+            ident_rules: Default::default(),
+        });
     let source = MemorySource::single_stream(rdlt_connector::StreamSpec::new("s"), rows);
     Engine::new(EngineConfig::new("flatten"), source, dest.clone())
         .run()

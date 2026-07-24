@@ -59,7 +59,7 @@ pub fn index_plan(
         }
         // The scope delete probes by the scope columns — without this index
         // it seq-scans the whole target every load.
-        if let Some(scope) = options.merge_key_for(table) {
+        if let Some(scope) = options.merge_scope_for(table) {
             indexes.push(IndexSpec::plain(scope.to_vec()));
         }
     }

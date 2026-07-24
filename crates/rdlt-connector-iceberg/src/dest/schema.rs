@@ -6,7 +6,7 @@
 //! renumbers or reuses an ID.
 
 use iceberg::spec::{NestedField, PrimitiveType, Schema, Type};
-use rdlt_connector::DestError;
+use rdlt_connector::DestinationError;
 use rdlt_connector::core::{ColumnDef, ColumnType, LogicalType, TableSchema};
 
 use super::config::PartitionTransform;
@@ -29,7 +29,7 @@ pub(crate) fn to_transform(transform: PartitionTransform) -> iceberg::spec::Tran
 
 /// Map one scalar logical type. `Json` maps to string — Iceberg v2 has no
 /// JSON type (documented; the variant type is future work).
-fn scalar_type(table: &str, column: &str, scalar: LogicalType) -> Result<Type, DestError> {
+fn scalar_type(table: &str, column: &str, scalar: LogicalType) -> Result<Type, DestinationError> {
     Ok(Type::Primitive(match scalar {
         LogicalType::Bool => PrimitiveType::Boolean,
         LogicalType::Int64 => PrimitiveType::Long,
@@ -65,10 +65,10 @@ fn build_field(
     table: &str,
     column: &ColumnDef,
     next_id: &mut i32,
-) -> Result<NestedField, DestError> {
+) -> Result<NestedField, DestinationError> {
     let id = *next_id;
     *next_id += 1;
-    let field_type = match &column.ty {
+    let field_type = match &column.column_type {
         ColumnType::Scalar { scalar } => scalar_type(table, &column.name, *scalar)?,
         ColumnType::ScalarList { item } => {
             let element = scalar_type(table, &column.name, *item)?;
@@ -95,7 +95,7 @@ fn build_field(
 
 /// The full mapping: engine `TableSchema` → iceberg `Schema` (creation
 /// time; sequential IDs).
-pub(crate) fn to_iceberg_schema(schema: &TableSchema) -> Result<Schema, DestError> {
+pub(crate) fn to_iceberg_schema(schema: &TableSchema) -> Result<Schema, DestinationError> {
     let table = schema.table.as_str();
     let mut next_id = 1i32;
     let mut fields = Vec::with_capacity(schema.columns.len());
@@ -116,7 +116,7 @@ pub(crate) fn to_partition_spec(
     context: &str,
     schema: &Schema,
     fields: &[super::config::PartitionField],
-) -> Result<Option<iceberg::spec::UnboundPartitionSpec>, DestError> {
+) -> Result<Option<iceberg::spec::UnboundPartitionSpec>, DestinationError> {
     if fields.is_empty() {
         return Ok(None);
     }
@@ -171,13 +171,13 @@ mod partition_tests {
             columns: vec![
                 ColumnDef {
                     name: "region".into(),
-                    ty: ColumnType::scalar(LogicalType::Utf8),
+                    column_type: ColumnType::scalar(LogicalType::Utf8),
                     nullable: false,
                     provenance: rdlt_connector::core::Provenance::Inferred,
                 },
                 ColumnDef {
                     name: "ts".into(),
-                    ty: ColumnType::scalar(LogicalType::TimestampTz),
+                    column_type: ColumnType::scalar(LogicalType::TimestampTz),
                     nullable: false,
                     provenance: rdlt_connector::core::Provenance::Inferred,
                 },
@@ -259,7 +259,7 @@ mod tests {
     fn column(name: &str, ty: ColumnType, nullable: bool) -> ColumnDef {
         ColumnDef {
             name: name.into(),
-            ty,
+            column_type: ty,
             nullable,
             provenance: Provenance::Inferred,
         }

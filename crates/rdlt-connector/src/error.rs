@@ -46,7 +46,7 @@ impl SourceError {
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
-pub enum DestError {
+pub enum DestinationError {
     /// Engine retries with backoff + jitter.
     #[error("transient destination error: {0}")]
     Transient(#[source] BoxError),
@@ -64,19 +64,19 @@ pub enum DestError {
     Fatal(#[source] BoxError),
 }
 
-impl DestError {
+impl DestinationError {
     pub fn transient(err: impl Into<BoxError>) -> Self {
-        DestError::Transient(err.into())
+        DestinationError::Transient(err.into())
     }
 
     pub fn rate_limited(err: impl Into<BoxError>, retry_after: Option<Duration>) -> Self {
-        DestError::RateLimited {
+        DestinationError::RateLimited {
             retry_after,
             source: err.into(),
         }
     }
 
     pub fn fatal(err: impl Into<BoxError>) -> Self {
-        DestError::Fatal(err.into())
+        DestinationError::Fatal(err.into())
     }
 }

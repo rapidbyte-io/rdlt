@@ -85,7 +85,7 @@ impl Source for StructuredSource {
     async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
         Ok(vec![
             StreamSpec::new(self.stream)
-                .structured()
+                .with_structured()
                 .with_primary_key(self.key.iter().copied()),
         ])
     }

@@ -8,13 +8,13 @@ use std::path::Path;
 
 use bytes::Bytes;
 use parquet::file::reader::{FileReader, SerializedFileReader};
-use rdlt_connector::DestError;
+use rdlt_connector::DestinationError;
 
 use super::{FileDest, fatal};
 
 /// Rows in one data file, decided by extension: parquet footer row count, jsonl
 /// newline count, anything else zero (not a data file this destination writes).
-fn count_data_units(name: &str, bytes: &[u8]) -> Result<u64, DestError> {
+fn count_data_units(name: &str, bytes: &[u8]) -> Result<u64, DestinationError> {
     if name.ends_with(".parquet") {
         let reader = SerializedFileReader::new(Bytes::copy_from_slice(bytes)).map_err(fatal)?;
         Ok(reader.metadata().file_metadata().num_rows() as u64)
@@ -28,7 +28,7 @@ fn count_data_units(name: &str, bytes: &[u8]) -> Result<u64, DestError> {
 impl FileDest {
     /// Test/inspection helper: total published rows of a table, partitions
     /// included, staged excluded. Synchronous — local stores only.
-    pub fn count_rows(&self, table: &str) -> Result<u64, DestError> {
+    pub fn count_rows(&self, table: &str) -> Result<u64, DestinationError> {
         let Some(root) = self.location.local_root() else {
             return Err(fatal(
                 "count_rows is synchronous; use count_rows_async for object stores",
@@ -39,7 +39,7 @@ impl FileDest {
 
     /// Async row count (object stores; works for local too), over the shared
     /// per-table ownership listing.
-    pub async fn count_rows_async(&self, table: &str) -> Result<u64, DestError> {
+    pub async fn count_rows_async(&self, table: &str) -> Result<u64, DestinationError> {
         let mut total = 0u64;
         for tail in self.location.keys_of_table(table).await? {
             if tail.ends_with(".parquet") || tail.ends_with(".jsonl") {
@@ -52,7 +52,7 @@ impl FileDest {
 }
 
 /// Recursive local row count (partition subdirectories included).
-fn count_rows_local(dir: &Path) -> Result<u64, DestError> {
+fn count_rows_local(dir: &Path) -> Result<u64, DestinationError> {
     let mut total = 0u64;
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,

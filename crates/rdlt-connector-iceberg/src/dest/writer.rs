@@ -14,7 +14,7 @@ use iceberg::writer::file_writer::rolling_writer::RollingFileWriterBuilder;
 use iceberg::writer::partitioning::PartitioningWriter;
 use iceberg::writer::partitioning::fanout_writer::FanoutWriter;
 use iceberg::writer::{IcebergWriter, IcebergWriterBuilder};
-use rdlt_connector::DestError;
+use rdlt_connector::DestinationError;
 use rdlt_connector::core::crash_point;
 
 use super::errors::classify;
@@ -51,7 +51,7 @@ impl TableWriter {
         table: &iceberg::table::Table,
         file_prefix: &str,
         session_nonce: &str,
-    ) -> Result<Self, DestError> {
+    ) -> Result<Self, DestinationError> {
         let context = || format!("table `{}`", table.identifier());
         let location =
             DefaultLocationGenerator::new(table.metadata()).map_err(|e| classify(&context(), e))?;
@@ -72,7 +72,7 @@ impl TableWriter {
         );
         crash_point!(
             "ice.files.write",
-            Err(DestError::fatal("injected crash at ice.files.write"))
+            Err(DestinationError::fatal("injected crash at ice.files.write"))
         );
         let builder = DataFileWriterBuilder::new(rolling);
         let spec = table.metadata().default_partition_spec().clone();
@@ -99,7 +99,7 @@ impl TableWriter {
         &mut self,
         context: &str,
         batch: arrow_array::RecordBatch,
-    ) -> Result<(), DestError> {
+    ) -> Result<(), DestinationError> {
         match self {
             Self::Plain(inner) => inner.write(batch).await.map_err(|e| classify(context, e)),
             Self::Fanout(fanout) => {
@@ -122,7 +122,7 @@ impl TableWriter {
     pub(crate) async fn close(
         self,
         context: &str,
-    ) -> Result<Vec<iceberg::spec::DataFile>, DestError> {
+    ) -> Result<Vec<iceberg::spec::DataFile>, DestinationError> {
         match self {
             Self::Plain(mut inner) => inner.close().await.map_err(|e| classify(context, e)),
             Self::Fanout(fanout) => fanout

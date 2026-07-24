@@ -22,13 +22,13 @@ fn schema_for(table: &str) -> TableSchema {
         columns: vec![
             ColumnDef {
                 name: "id".into(),
-                ty: ColumnType::scalar(LogicalType::Int64),
+                column_type: ColumnType::scalar(LogicalType::Int64),
                 nullable: false,
                 provenance: Provenance::Inferred,
             },
             ColumnDef {
                 name: "day".into(),
-                ty: ColumnType::scalar(LogicalType::Utf8),
+                column_type: ColumnType::scalar(LogicalType::Utf8),
                 nullable: true,
                 provenance: Provenance::Inferred,
             },

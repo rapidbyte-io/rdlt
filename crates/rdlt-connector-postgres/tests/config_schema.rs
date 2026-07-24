@@ -143,11 +143,11 @@ fn cdc_block_round_trips_the_schema() {
 
 mod dest_options {
     use jsonschema::validator_for;
-    use rdlt_connector_postgres::dest::PgDestOptions;
+    use rdlt_connector_postgres::dest::DestOptions;
     use serde_json::json;
 
     fn schema() -> serde_json::Value {
-        serde_json::to_value(schemars::schema_for!(PgDestOptions)).expect("schema serializes")
+        serde_json::to_value(schemars::schema_for!(DestOptions)).expect("schema serializes")
     }
 
     #[test]
@@ -162,7 +162,7 @@ mod dest_options {
                                         "valid_to": "_rdlt_valid_to"}},
                 "orders": {"hard_delete": "is_deleted",
                             "dedup_sort": {"column": "seq", "order": "desc"},
-                            "merge_key": ["day", "tenant"]}
+                            "merge_scope": ["day", "tenant"]}
             }
         });
         assert!(
@@ -170,7 +170,7 @@ mod dest_options {
             "example must validate: {:?}",
             validator.iter_errors(&example).next()
         );
-        PgDestOptions::from_value(example).expect("schema-valid example parses");
+        DestOptions::from_value(example).expect("schema-valid example parses");
     }
 
     #[test]
@@ -183,11 +183,11 @@ mod dest_options {
             json!({"tables": {"t": {"dedup_sort": {"column": "seq"}}}}),
             json!({"tables": {"t": {"dedup_sort": {"column": "seq", "order": "desc",
                                                      "nulls": "first"}}}}),
-            json!({"tables": {"t": {"merge_key": "day"}}}),
+            json!({"tables": {"t": {"merge_scope": "day"}}}),
         ] {
             assert!(!validator.is_valid(&bad), "schema must reject: {bad}");
             assert!(
-                PgDestOptions::from_value(bad.clone()).is_err(),
+                DestOptions::from_value(bad.clone()).is_err(),
                 "parser agrees: {bad}"
             );
         }
@@ -199,18 +199,18 @@ mod dest_options {
         // Unknown field: schema AND parser agree.
         let bad = json!({"merge_stratgy": "upsert"});
         assert!(!validator.is_valid(&bad));
-        assert!(PgDestOptions::from_value(bad).is_err());
+        assert!(DestOptions::from_value(bad).is_err());
         // Unknown strategy value.
         let bad = json!({"merge_strategy": "replace"});
         assert!(!validator.is_valid(&bad));
-        assert!(PgDestOptions::from_value(bad).is_err());
+        assert!(DestOptions::from_value(bad).is_err());
         // Schema-valid but semantically contradictory (S8): the VALIDATOR
         // accepts the shape; the parser's validate() names the field.
         let contradiction = json!({
             "tables": {"t": {"merge_strategy": "scd2", "hard_delete": "gone"}}
         });
         assert!(validator.is_valid(&contradiction), "shape is legal");
-        let err = PgDestOptions::from_value(contradiction).unwrap_err();
+        let err = DestOptions::from_value(contradiction).unwrap_err();
         assert!(err.contains("tables.t.hard_delete"), "{err}");
     }
 }

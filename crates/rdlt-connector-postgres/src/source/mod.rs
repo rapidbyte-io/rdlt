@@ -447,7 +447,7 @@ impl Source for PostgresSource {
                 }
                 specs.push(
                     StreamSpec::new(name)
-                        .structured()
+                        .with_structured()
                         .with_primary_key(identity.key.clone()),
                 );
                 continue;
@@ -481,11 +481,14 @@ impl Source for PostgresSource {
                 // caught at config parse), defined cursor-family subtraction,
                 // and a primary key so the keyed-Merge dedup path exists.
                 if let Some(lag) = &cursor.lag {
-                    if cursor.boundary == config::Boundary::Open {
+                    if cursor.boundary == config::Bound::Exclusive {
                         return Err(errors::fatal(
                             Phase::Reflect,
                             Some(name),
-                            format!("cursor `{}`: lag requires a closed boundary", cursor.column),
+                            format!(
+                                "cursor `{}`: lag requires an inclusive boundary",
+                                cursor.column
+                            ),
                         ));
                     }
                     if let Err(detail) = lag.sql_delta(col.mapped.decode) {
@@ -512,7 +515,7 @@ impl Source for PostgresSource {
                     }
                 }
             }
-            let mut spec = StreamSpec::new(name).structured();
+            let mut spec = StreamSpec::new(name).with_structured();
             if !pk.is_empty() {
                 spec = spec.with_primary_key(pk);
             }
@@ -669,7 +672,7 @@ impl Source for PostgresSource {
                         "injected: before final checkpoint"
                     ))
                 );
-                let keep_keys = cc.boundary == config::Boundary::Closed;
+                let keep_keys = cc.boundary == config::Bound::Inclusive;
                 if let Some(state) = tracker.final_state(keep_keys)
                     && req.out.checkpoint(state.encode()).await.is_err()
                 {

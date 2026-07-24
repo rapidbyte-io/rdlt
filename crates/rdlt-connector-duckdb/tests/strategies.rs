@@ -322,17 +322,17 @@ async fn upsert_over_preexisting_duplicates_is_typed() {
     );
 }
 
-/// 013 G1 (MR6 amended): with a merge_key, scd2 retirement is SCOPED —
+/// 013 G1 (MR6 amended): with a merge_scope, scd2 retirement is SCOPED —
 /// absent keys retire only within delivered scopes; other scopes keep their
 /// active versions untouched.
 #[tokio::test(flavor = "multi_thread")]
-async fn scd2_scoped_retirement_by_merge_key() {
+async fn scd2_scoped_retirement_by_merge_scope() {
     let dir = tempfile::tempdir().unwrap();
     let dest = DuckDb::open(dir.path().join("scoped.duckdb"))
         .unwrap()
         .options(options(json!({
             "merge_strategy": "scd2",
-            "tables": {"kv": {"scd2": {"absent": "retire"}, "merge_key": ["day"]}}
+            "tables": {"kv": {"scd2": {"absent": "retire"}, "merge_scope": ["day"]}}
         })))
         .unwrap();
 
@@ -383,17 +383,17 @@ async fn scd2_scoped_retirement_by_merge_key() {
     assert_eq!(dest.count_rows("kv").unwrap(), 3);
 }
 
-/// 013 G1 typed matrix: merge_key with scd2 under `absent: keep` would be
+/// 013 G1 typed matrix: merge_scope with scd2 under `absent: keep` would be
 /// silently inert — rejected naming the requirement.
 #[tokio::test(flavor = "multi_thread")]
-async fn scd2_merge_key_requires_retire() {
+async fn scd2_merge_scope_requires_retire() {
     let err = DestOptions::from_value(json!({
         "merge_strategy": "scd2",
-        "tables": {"kv": {"scd2": {}, "merge_key": ["day"]}}
+        "tables": {"kv": {"scd2": {}, "merge_scope": ["day"]}}
     }))
     .unwrap_err();
     assert!(
-        err.contains("tables.kv.merge_key") && err.contains("absent: retire"),
+        err.contains("tables.kv.merge_scope") && err.contains("absent: retire"),
         "{err}"
     );
 }

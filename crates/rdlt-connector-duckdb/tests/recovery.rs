@@ -86,7 +86,7 @@ async fn replay_re_marks_single_unit_discipline() {
         .expect("open dest")
         .options(
             DestOptions::from_value(serde_json::json!({
-                "tables": {"events": {"merge_key": ["id"]}}
+                "tables": {"events": {"merge_scope": ["id"]}}
             }))
             .expect("options"),
         )
@@ -144,7 +144,7 @@ async fn replay_re_marks_single_unit_discipline() {
         .expect_err("second unit for a scoped table must be typed")
         .to_string();
     assert!(
-        err.contains("SINGLE commit unit") && err.contains("merge_key"),
+        err.contains("SINGLE commit unit") && err.contains("merge_scope"),
         "{err}"
     );
 }

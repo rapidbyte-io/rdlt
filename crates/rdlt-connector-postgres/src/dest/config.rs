@@ -1,6 +1,6 @@
 //! Destination handle + builder: connection string, dataset, TLS posture.
 
-use rdlt_connector::DestError;
+use rdlt_connector::DestinationError;
 use tokio_postgres::Client;
 
 #[derive(Debug, Clone)]
@@ -8,7 +8,7 @@ pub struct Postgres {
     pub(super) conn_string: String,
     pub(super) schema: String,
     pub(super) tls: Option<crate::tls::TlsPolicy>,
-    pub(super) options: PgDestOptions,
+    pub(super) options: DestOptions,
 }
 
 impl Postgres {
@@ -18,7 +18,7 @@ impl Postgres {
             conn_string: conn_string.into(),
             schema: "public".into(),
             tls: None,
-            options: PgDestOptions::default(),
+            options: DestOptions::default(),
         }
     }
 
@@ -35,17 +35,21 @@ impl Postgres {
         self
     }
 
-    pub(super) async fn client(&self) -> Result<Client, DestError> {
+    pub(super) async fn client(&self) -> Result<Client, DestinationError> {
         let crate::tls::ParsedConn { pg, policy } =
             crate::tls::parse_conn(&self.conn_string, self.tls.as_ref())
-                .map_err(|e| DestError::fatal(e.to_string()))?;
+                .map_err(|e| DestinationError::fatal(e.to_string()))?;
         match crate::tls::connect(&pg, &policy).await {
             Ok(client) => Ok(client),
-            Err(crate::tls::ConnectResult::Config(e)) => Err(DestError::fatal(e.to_string())),
-            Err(crate::tls::ConnectResult::Connect(e)) if e.transient => {
-                Err(DestError::transient(e.to_string()))
+            Err(crate::tls::ConnectResult::Config(e)) => {
+                Err(DestinationError::fatal(e.to_string()))
             }
-            Err(crate::tls::ConnectResult::Connect(e)) => Err(DestError::fatal(e.to_string())),
+            Err(crate::tls::ConnectResult::Connect(e)) if e.transient => {
+                Err(DestinationError::transient(e.to_string()))
+            }
+            Err(crate::tls::ConnectResult::Connect(e)) => {
+                Err(DestinationError::fatal(e.to_string()))
+            }
         }
     }
 }
@@ -53,21 +57,19 @@ impl Postgres {
 // ---- Destination options ----
 //
 // The vocabulary + validation live in rdlt-connector-sqlcore (shared with
-// every SQL destination). Re-exported here at the original paths; the Pg*
-// names stay as aliases so no consumer changes.
+// every SQL destination). Re-exported here under their bare sqlcore names —
+// the same spelling duckdb uses, so a config type reads identically whichever
+// SQL destination consumes it.
 
-pub use rdlt_connector_sqlcore::{AbsentPolicy, DedupSort, MergeStrategy, Scd2Options, SortOrder};
-
-/// Alias of the shared [`rdlt_connector_sqlcore::DestOptions`].
-pub type PgDestOptions = rdlt_connector_sqlcore::DestOptions;
-/// Alias of the shared [`rdlt_connector_sqlcore::TableOptions`].
-pub type PgTableOptions = rdlt_connector_sqlcore::TableOptions;
+pub use rdlt_connector_sqlcore::{
+    AbsentPolicy, DedupSort, DestOptions, MergeStrategy, Scd2Options, SortOrder, TableOptions,
+};
 
 impl Postgres {
     /// Strategy/hard-delete/SCD2 options. Validated here — errors name the
     /// field.
-    pub fn options(mut self, options: PgDestOptions) -> Result<Self, DestError> {
-        options.validate().map_err(DestError::fatal)?;
+    pub fn options(mut self, options: DestOptions) -> Result<Self, DestinationError> {
+        options.validate().map_err(DestinationError::fatal)?;
         self.options = options;
         Ok(self)
     }

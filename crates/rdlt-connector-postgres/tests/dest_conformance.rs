@@ -163,7 +163,7 @@ async fn keyed_structured_merge_into_postgres() {
         async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
             Ok(vec![
                 StreamSpec::new("metrics")
-                    .structured()
+                    .with_structured()
                     .with_primary_key(["id"]),
             ])
         }
@@ -257,7 +257,7 @@ mod native_types {
     fn col(name: &str, scalar: LogicalType, nullable: bool) -> ColumnDef {
         ColumnDef {
             name: name.into(),
-            ty: ColumnType::Scalar { scalar },
+            column_type: ColumnType::Scalar { scalar },
             nullable,
             provenance: Provenance::Hinted,
         }
@@ -317,7 +317,7 @@ mod native_types {
         CommitMeta {
             load_id: LoadId::new("fid-load"),
             commit_seq: seq,
-            state: StateDoc::new(pipeline.clone()),
+            state: StateDoc::new(pipeline.clone(), env!("CARGO_PKG_VERSION")),
             counters: CommitCounters::default(),
         }
     }
@@ -618,7 +618,7 @@ mod strategies {
     use arrow_schema::{DataType, Field, Schema};
     use async_trait::async_trait;
     use rdlt_connector::{ConnectorSpec, Cursor, ReadRequest, Source, SourceError, StreamSpec};
-    use rdlt_connector_postgres::dest::{MergeStrategy, PgDestOptions, PgTableOptions, Postgres};
+    use rdlt_connector_postgres::dest::{DestOptions, MergeStrategy, Postgres, TableOptions};
     use rdlt_engine::{Engine, EngineConfig};
 
     use super::PgFixture;
@@ -637,7 +637,7 @@ mod strategies {
         async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
             Ok(vec![
                 StreamSpec::new("events")
-                    .structured()
+                    .with_structured()
                     .with_primary_key(["id"]),
             ])
         }
@@ -674,13 +674,13 @@ mod strategies {
     fn upsert_dest(conn: &str, dataset: &str) -> Postgres {
         Postgres::connect(conn)
             .dataset(dataset)
-            .options(PgDestOptions {
+            .options(DestOptions {
                 merge_strategy: Some(MergeStrategy::Upsert),
                 tables: [(
                     "events".to_string(),
-                    PgTableOptions {
+                    TableOptions {
                         hard_delete: Some("deleted".into()),
-                        ..PgTableOptions::default()
+                        ..TableOptions::default()
                     },
                 )]
                 .into_iter()
@@ -831,9 +831,9 @@ mod strategies {
         let conn = pg.conn.clone();
         let dest = Postgres::connect(&conn)
             .dataset("shup")
-            .options(PgDestOptions {
+            .options(DestOptions {
                 merge_strategy: Some(MergeStrategy::Upsert),
-                ..PgDestOptions::default()
+                ..DestOptions::default()
             })
             .expect("options");
         let mut config = EngineConfig::new("shup");
@@ -869,17 +869,17 @@ mod strategies {
         let conn = pg.conn.clone();
         let dest = Postgres::connect(&conn)
             .dataset("recreate")
-            .options(PgDestOptions {
+            .options(DestOptions {
                 tables: [(
                     "users".to_string(),
-                    PgTableOptions {
+                    TableOptions {
                         hard_delete: Some("deleted".into()),
-                        ..PgTableOptions::default()
+                        ..TableOptions::default()
                     },
                 )]
                 .into_iter()
                 .collect(),
-                ..PgDestOptions::default()
+                ..DestOptions::default()
             })
             .expect("options");
         let mut config = EngineConfig::new("recreate");
@@ -930,17 +930,17 @@ mod strategies {
         let conn = pg.conn.clone();
         let dest = Postgres::connect(&conn)
             .dataset("childhd")
-            .options(PgDestOptions {
+            .options(DestOptions {
                 tables: [(
                     "users__tags".to_string(),
-                    PgTableOptions {
+                    TableOptions {
                         hard_delete: Some("deleted".into()),
-                        ..PgTableOptions::default()
+                        ..TableOptions::default()
                     },
                 )]
                 .into_iter()
                 .collect(),
-                ..PgDestOptions::default()
+                ..DestOptions::default()
             })
             .expect("options");
         let mut config = EngineConfig::new("childhd");
@@ -970,7 +970,7 @@ mod refinements {
     use async_trait::async_trait;
     use rdlt_connector::{ConnectorSpec, Cursor, ReadRequest, Source, SourceError, StreamSpec};
     use rdlt_connector_postgres::dest::{
-        DedupSort, MergeStrategy, PgDestOptions, PgTableOptions, Postgres, SortOrder,
+        DedupSort, DestOptions, MergeStrategy, Postgres, SortOrder, TableOptions,
     };
     use rdlt_engine::{Engine, EngineConfig};
 
@@ -1026,7 +1026,7 @@ mod refinements {
         async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
             Ok(vec![
                 StreamSpec::new("events")
-                    .structured()
+                    .with_structured()
                     .with_primary_key(["id"]),
             ])
         }
@@ -1044,7 +1044,7 @@ mod refinements {
     struct Opts {
         strategy: Option<MergeStrategy>,
         dedup: Option<(&'static str, SortOrder)>,
-        merge_key: Option<&'static [&'static str]>,
+        merge_scope: Option<&'static [&'static str]>,
         hard_delete: bool,
         scd2_retire: bool,
     }
@@ -1052,18 +1052,18 @@ mod refinements {
     fn dest(conn: &str, dataset: &str, opts: Opts) -> Postgres {
         Postgres::connect(conn)
             .dataset(dataset)
-            .options(PgDestOptions {
+            .options(DestOptions {
                 merge_strategy: opts.strategy,
                 tables: [(
                     "events".to_string(),
-                    PgTableOptions {
+                    TableOptions {
                         hard_delete: opts.hard_delete.then(|| "deleted".into()),
                         dedup_sort: opts.dedup.map(|(column, order)| DedupSort {
                             column: column.into(),
                             order,
                         }),
-                        merge_key: opts
-                            .merge_key
+                        merge_scope: opts
+                            .merge_scope
                             .map(|c| c.iter().map(|s| s.to_string()).collect()),
                         scd2: opts.scd2_retire.then(|| {
                             rdlt_connector_postgres::dest::Scd2Options {
@@ -1071,7 +1071,7 @@ mod refinements {
                                 ..rdlt_connector_postgres::dest::Scd2Options::default()
                             }
                         }),
-                        ..PgTableOptions::default()
+                        ..TableOptions::default()
                     },
                 )]
                 .into_iter()
@@ -1206,13 +1206,13 @@ mod refinements {
     // ---- US2: scope-key replacement (MR3–MR5, SC-002) ----
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn merge_key_replaces_delivered_scopes_only() {
+    async fn merge_scope_replaces_delivered_scopes_only() {
         let Some(pg) = PgFixture::start().await else {
             return;
         };
         let conn = pg.conn.clone();
         let opts = Opts {
-            merge_key: Some(&["day"]),
+            merge_scope: Some(&["day"]),
             ..Opts::default()
         };
         // Seed two scopes.
@@ -1255,7 +1255,7 @@ mod refinements {
             )
             .await,
             1,
-            "merge_key scope index auto-ensured"
+            "merge_scope scope index auto-ensured"
         );
 
         // An unseen scope simply lands (US2-AS2); replay is idempotent
@@ -1274,13 +1274,13 @@ mod refinements {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn merge_key_scope_moves_and_null_scopes() {
+    async fn merge_scope_scope_moves_and_null_scopes() {
         let Some(pg) = PgFixture::start().await else {
             return;
         };
         let conn = pg.conn.clone();
         let opts = Opts {
-            merge_key: Some(&["day"]),
+            merge_scope: Some(&["day"]),
             ..Opts::default()
         };
         run(
@@ -1316,7 +1316,7 @@ mod refinements {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn merge_key_requires_a_single_commit_unit() {
+    async fn merge_scope_requires_a_single_commit_unit() {
         // The NON-OPTIONAL cell (plan rule; the 008 S6/F2 lesson, sharpened
         // by this feature's own crash sweep): "the batch is the complete
         // truth for its scope" only holds when the scope's truth arrives in
@@ -1329,7 +1329,7 @@ mod refinements {
         };
         let conn = pg.conn.clone();
         let opts = Opts {
-            merge_key: Some(&["day"]),
+            merge_scope: Some(&["day"]),
             ..Opts::default()
         };
         run(
@@ -1411,7 +1411,7 @@ mod refinements {
         };
         let conn = pg.conn.clone();
         let opts = Opts {
-            merge_key: Some(&["day"]),
+            merge_scope: Some(&["day"]),
             ..Opts::default()
         };
         run(
@@ -1553,7 +1553,7 @@ mod refinements {
             &conn,
             "mr_bad_scope",
             Opts {
-                merge_key: Some(&["ghost"]),
+                merge_scope: Some(&["ghost"]),
                 ..Opts::default()
             },
             one_row.clone(),
@@ -1582,7 +1582,7 @@ mod refinements {
             &conn,
             "mr_flag_scope",
             Opts {
-                merge_key: Some(&["deleted"]),
+                merge_scope: Some(&["deleted"]),
                 hard_delete: true,
                 ..Opts::default()
             },
@@ -1617,7 +1617,7 @@ mod refinements {
                 &conn,
                 "mr_inert",
                 Opts {
-                    merge_key: Some(&["day"]),
+                    merge_scope: Some(&["day"]),
                     ..Opts::default()
                 },
             ),
@@ -1641,29 +1641,29 @@ mod refinements {
         for (dataset, table_opts, needle) in [
             (
                 "mr_sh_dedup",
-                PgTableOptions {
+                TableOptions {
                     dedup_sort: Some(DedupSort {
                         column: "seq".into(),
                         order: SortOrder::Desc,
                     }),
-                    ..PgTableOptions::default()
+                    ..TableOptions::default()
                 },
                 "dedup_sort requires a KEYED structured",
             ),
             (
                 "mr_sh_scope",
-                PgTableOptions {
-                    merge_key: Some(vec!["day".into()]),
-                    ..PgTableOptions::default()
+                TableOptions {
+                    merge_scope: Some(vec!["day".into()]),
+                    ..TableOptions::default()
                 },
-                "merge_key requires a KEYED structured",
+                "merge_scope requires a KEYED structured",
             ),
         ] {
             let dest = Postgres::connect(&conn)
                 .dataset(dataset)
-                .options(PgDestOptions {
+                .options(DestOptions {
                     tables: [("users".to_string(), table_opts)].into_iter().collect(),
-                    ..PgDestOptions::default()
+                    ..DestOptions::default()
                 })
                 .expect("options");
             let mut config = EngineConfig::new(dataset);
@@ -1684,7 +1684,7 @@ mod refinements {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn merge_key_composes_with_upsert_hard_delete_and_dedup_sort() {
+    async fn merge_scope_composes_with_upsert_hard_delete_and_dedup_sort() {
         let Some(pg) = PgFixture::start().await else {
             return;
         };
@@ -1692,7 +1692,7 @@ mod refinements {
         let opts = Opts {
             strategy: Some(MergeStrategy::Upsert),
             dedup: Some(("seq", SortOrder::Desc)),
-            merge_key: Some(&["day"]),
+            merge_scope: Some(&["day"]),
             hard_delete: true,
             ..Opts::default()
         };
@@ -1856,7 +1856,7 @@ mod refinements {
 // ---- Feature 011 (contract PM1/PM2): parameter-matrix gap cells ----
 
 mod param_matrix {
-    use rdlt_connector_postgres::dest::{MergeStrategy, PgDestOptions, PgTableOptions, Postgres};
+    use rdlt_connector_postgres::dest::{DestOptions, MergeStrategy, Postgres, TableOptions};
     use rdlt_engine::{Engine, EngineConfig};
     use rdlt_testkit::MemorySource;
     use serde_json::json;
@@ -1909,7 +1909,7 @@ mod param_matrix {
                 vec![json!({"id": 1, "v": "a"})],
             )
         };
-        let run = |mode: rdlt_connector::WriteMode, options: PgDestOptions| {
+        let run = |mode: rdlt_connector::WriteMode, options: DestOptions| {
             let dest = Postgres::connect(&conn)
                 .dataset("r5")
                 .options(options)
@@ -1922,9 +1922,9 @@ mod param_matrix {
         // Destination-wide explicit strategy under APPEND: typed.
         let err = run(
             rdlt_connector::WriteMode::Append,
-            PgDestOptions {
+            DestOptions {
                 merge_strategy: Some(MergeStrategy::Upsert),
-                ..PgDestOptions::default()
+                ..DestOptions::default()
             },
         )
         .await
@@ -1936,17 +1936,17 @@ mod param_matrix {
         // Per-table explicit strategy under REPLACE: typed too.
         let err = run(
             rdlt_connector::WriteMode::Replace,
-            PgDestOptions {
+            DestOptions {
                 tables: [(
                     "things".to_string(),
-                    PgTableOptions {
+                    TableOptions {
                         merge_strategy: Some(MergeStrategy::DeleteInsert),
-                        ..PgTableOptions::default()
+                        ..TableOptions::default()
                     },
                 )]
                 .into_iter()
                 .collect(),
-                ..PgDestOptions::default()
+                ..DestOptions::default()
             },
         )
         .await
@@ -1955,7 +1955,7 @@ mod param_matrix {
         assert!(err.contains("`things`"), "{err}");
 
         // UNCONFIGURED default: append works exactly as before.
-        run(rdlt_connector::WriteMode::Append, PgDestOptions::default())
+        run(rdlt_connector::WriteMode::Append, DestOptions::default())
             .await
             .expect("default options never reject append");
     }
@@ -1982,7 +1982,9 @@ mod param_matrix {
             }
             async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
                 Ok(vec![
-                    StreamSpec::new("ev").structured().with_primary_key(["id"]),
+                    StreamSpec::new("ev")
+                        .with_structured()
+                        .with_primary_key(["id"]),
                 ])
             }
             async fn read(&self, mut req: ReadRequest) -> Result<(), SourceError> {
@@ -2023,13 +2025,13 @@ mod param_matrix {
         let conn = pg.conn.clone();
         let dest = Postgres::connect(&conn)
             .dataset("nbhd")
-            .options(PgDestOptions {
+            .options(DestOptions {
                 merge_strategy: Some(MergeStrategy::Upsert),
                 tables: [(
                     "ev".to_string(),
-                    PgTableOptions {
+                    TableOptions {
                         hard_delete: Some("deleted_at".into()),
-                        ..PgTableOptions::default()
+                        ..TableOptions::default()
                     },
                 )]
                 .into_iter()

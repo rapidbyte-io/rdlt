@@ -15,29 +15,29 @@ async fn full_sync_through_the_facade() {
     );
     let dest = MemoryDestination::new();
 
-    let mut pipeline = Pipeline::builder("facade-demo")
+    let pipeline = Pipeline::builder("facade-demo")
         .source(source)
         .destination(dest.clone())
         .write_mode(WriteMode::Append)
         .build()
         .expect("valid config");
 
+    // A pipeline is one-shot: `run` consumes it, so a second run cannot compile
+    // (proven by the `compile_fail` doctest on `Pipeline::run`). Resuming means
+    // building a fresh pipeline, which continues from committed state.
     let report = pipeline.run().await.expect("run succeeds");
     assert_eq!(report.total_rows(), 3, "2 users + 1 email child row");
     assert_eq!(dest.committed_rows("users").len(), 2);
     assert_eq!(dest.committed_rows("users__emails").len(), 1);
-
-    // A pipeline is one-shot; a second run() is a clear config error, not a panic.
-    let err = pipeline.run().await.expect_err("already consumed");
-    assert!(matches!(err, RdltError::Config { .. }));
 }
 
 #[test]
 fn build_rejects_merge_against_non_merge_destination() {
-    let dest = MemoryDestination::new().with_capabilities(rdlt_connector::DestCapabilities {
-        merge: false,
-        ..rdlt_connector::DestCapabilities::default()
-    });
+    let dest =
+        MemoryDestination::new().with_capabilities(rdlt_connector::DestinationCapabilities {
+            merge: false,
+            ..rdlt_connector::DestinationCapabilities::default()
+        });
     let err = Pipeline::builder("bad")
         .source(MemorySource::default())
         .destination(dest)

@@ -17,13 +17,13 @@ mod encode;
 
 use async_trait::async_trait;
 use rdlt_connector::{
-    ConnectorSpec, DestCapabilities, DestError, Destination, LoadSession, OpenCtx,
+    ConnectorSpec, Destination, DestinationCapabilities, DestinationError, LoadSession, OpenCtx,
     core::naming::IdentRules,
 };
 
 pub use config::{
-    AbsentPolicy, DedupSort, MergeStrategy, PgDestOptions, PgTableOptions, Postgres, Scd2Options,
-    SortOrder,
+    AbsentPolicy, DedupSort, DestOptions, MergeStrategy, Postgres, Scd2Options, SortOrder,
+    TableOptions,
 };
 
 /// SQL-generation seam, exposed ONLY for the golden-SQL pin suite: the pins
@@ -55,8 +55,8 @@ pub(crate) fn describe(e: &tokio_postgres::Error) -> String {
     crate::pgerror::pg_error_detail(e)
 }
 
-pub(crate) fn transient(e: tokio_postgres::Error) -> DestError {
-    DestError::transient(describe(&e))
+pub(crate) fn transient(e: tokio_postgres::Error) -> DestinationError {
+    DestinationError::transient(describe(&e))
 }
 
 /// Statement-error classification shared by the COPY write path AND table DDL:
@@ -64,17 +64,17 @@ pub(crate) fn transient(e: tokio_postgres::Error) -> DestError {
 /// syntax/access) are PERMANENT — a poisoned batch or an unwinnable 42xxx DDL
 /// statement must not burn the engine's retry budget on retries that cannot
 /// win. Everything else stays transient (connection-shaped).
-pub(crate) fn classify_stmt(e: tokio_postgres::Error) -> DestError {
+pub(crate) fn classify_stmt(e: tokio_postgres::Error) -> DestinationError {
     match e.as_db_error() {
         Some(db) if matches!(&db.code().code()[..2], "22" | "23" | "42") => {
-            DestError::fatal(describe(&e))
+            DestinationError::fatal(describe(&e))
         }
-        _ => DestError::transient(describe(&e)),
+        _ => DestinationError::transient(describe(&e)),
     }
 }
 
-pub(crate) fn fatal(e: impl std::fmt::Display) -> DestError {
-    DestError::fatal(e.to_string())
+pub(crate) fn fatal(e: impl std::fmt::Display) -> DestinationError {
+    DestinationError::fatal(e.to_string())
 }
 
 pub(crate) fn quote(ident: &str) -> String {
@@ -90,8 +90,8 @@ impl Destination for Postgres {
         ConnectorSpec::new("postgres", env!("CARGO_PKG_VERSION"))
     }
 
-    fn capabilities(&self) -> DestCapabilities {
-        DestCapabilities {
+    fn capabilities(&self) -> DestinationCapabilities {
+        DestinationCapabilities {
             merge: true,
             structs: false,      // → engine flattens collision-safely at the seam
             scalar_lists: false, // → scalar lists become child tables at shred planning
@@ -104,7 +104,7 @@ impl Destination for Postgres {
         }
     }
 
-    async fn open(&self, _ctx: OpenCtx) -> Result<Box<dyn LoadSession>, DestError> {
+    async fn open(&self, _ctx: OpenCtx) -> Result<Box<dyn LoadSession>, DestinationError> {
         let client = self.client().await?;
         let schema = quote(&self.schema);
         client

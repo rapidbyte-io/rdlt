@@ -104,8 +104,8 @@ pub struct CursorConfig {
     /// Typed literal for the first run (absent ⇒ full initial load).
     #[serde(default)]
     pub initial_value: Option<String>,
-    #[serde(default)]
-    pub boundary: Boundary,
+    #[serde(default = "default_boundary")]
+    pub boundary: Bound,
     #[serde(default)]
     pub direction: Direction,
     /// Optional upper bound (typed literal, exclusive under `max` unless
@@ -114,8 +114,8 @@ pub struct CursorConfig {
     pub end_value: Option<String>,
     /// Upper-bound semantics: `exclusive` (default) or `inclusive` — rows
     /// exactly AT `end_value` load. A read filter only; never resume state.
-    #[serde(default)]
-    pub end_bound: EndBound,
+    #[serde(default = "default_end_bound")]
+    pub end_bound: Bound,
     #[serde(default)]
     pub nulls: NullPolicy,
     /// Attribution window: each RESUMED run widens the read window this far
@@ -248,29 +248,29 @@ impl Lag {
 }
 
 /// Upper-bound semantics for `end_value` (dlt `range_end` parity).
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
-)]
+/// Edge semantics for a cursor-window bound — ONE vocabulary for both the
+/// resume boundary and the optional end bound. Defaults differ per field
+/// (resume: inclusive, so watermark-equal rows re-fetch and dedup; end:
+/// exclusive), carried by per-field serde defaults.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub enum EndBound {
-    /// `<` under max / `>` under min.
-    #[default]
-    Exclusive,
-    /// `<=` / `>=` — the window `[start, end]` directly expressible.
+pub enum Bound {
+    /// `>=` / `<=` — rows exactly AT the edge value load. As the resume
+    /// boundary this re-fetches watermark-equal rows, deduped via
+    /// boundary keys.
     Inclusive,
+    /// `>` / `<` — the edge value itself is excluded. As the resume
+    /// boundary this skips dedup: safe only for strictly monotonic
+    /// cursors.
+    Exclusive,
 }
 
-/// Lower-bound semantics on resume (dlt parity).
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum Boundary {
-    /// `>=` — watermark-equal rows re-fetched and deduped via boundary keys.
-    #[default]
-    Closed,
-    /// `>` — no dedup; safe only for strictly monotonic cursors.
-    Open,
+fn default_boundary() -> Bound {
+    Bound::Inclusive
+}
+
+fn default_end_bound() -> Bound {
+    Bound::Exclusive
 }
 
 #[derive(
@@ -495,10 +495,10 @@ impl PostgresConfig {
             .filter_map(|t| t.cursor.as_ref())
             .chain(self.queries.iter().filter_map(|q| q.cursor.as_ref()))
         {
-            if cursor.lag.is_some() && cursor.boundary == Boundary::Open {
+            if cursor.lag.is_some() && cursor.boundary == Bound::Exclusive {
                 return invalid(format!(
-                    "cursor `{}`: lag requires a CLOSED boundary (open boundaries \
-                     exist to skip re-reads; lag is a deliberate re-read)",
+                    "cursor `{}`: lag requires an INCLUSIVE boundary (an exclusive boundary \
+                     skips the dedup that makes the lag window safe): ",
                     cursor.column
                 ));
             }
@@ -668,7 +668,7 @@ tables:
     cursor:
       column: updated_at
       initial_value: "2026-01-01T00:00:00Z"
-      boundary: open
+      boundary: exclusive
       direction: min
       end_value: "2027-01-01T00:00:00Z"
       nulls: include
@@ -680,7 +680,7 @@ tables:
         .expect("full config");
         let orders = c.table_config("orders").expect("orders");
         let cursor = orders.cursor.as_ref().expect("cursor");
-        assert_eq!(cursor.boundary, Boundary::Open);
+        assert_eq!(cursor.boundary, Bound::Exclusive);
         assert_eq!(cursor.direction, Direction::Min);
         assert_eq!(cursor.nulls, NullPolicy::Include);
         assert!(
@@ -908,10 +908,10 @@ tables:
     #[test]
     fn lag_with_open_boundary_dies_at_config_parse() {
         let err = PostgresConfig::from_yaml(
-            "conn: host=localhost\ntables:\n  - name: t\n    cursor:\n      column: ts\n      boundary: open\n      lag: \"5m\"\n",
+            "conn: host=localhost\ntables:\n  - name: t\n    cursor:\n      column: ts\n      boundary: exclusive\n      lag: \"5m\"\n",
         )
         .unwrap_err();
-        assert!(err.to_string().contains("CLOSED boundary"), "{err}");
+        assert!(err.to_string().contains("INCLUSIVE boundary"), "{err}");
         // Closed (default) parses fine.
         PostgresConfig::from_yaml(
             "conn: host=localhost\ntables:\n  - name: t\n    cursor:\n      column: ts\n      lag: \"5m\"\n",

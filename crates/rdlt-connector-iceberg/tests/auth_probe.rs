@@ -10,7 +10,7 @@ mod common;
 
 use common::CatalogFixture;
 use rdlt_connector::core::{LoadId, PipelineId};
-use rdlt_connector::{DestError, Destination, OpenCtx};
+use rdlt_connector::{Destination, DestinationError, OpenCtx};
 use rdlt_connector_iceberg::{AuthOptions, IcebergConfig, IcebergDest};
 
 #[tokio::test]
@@ -32,7 +32,7 @@ async fn live_auth_rejection_classifies_fatal() {
         ))
         .await;
     match result {
-        Err(DestError::Fatal { .. }) => {}
+        Err(DestinationError::Fatal { .. }) => {}
         Err(other) => panic!("rejected credential must be FATAL, got a retryable class: {other}"),
         Ok(_) => panic!("catalog accepted a garbage bearer token"),
     }

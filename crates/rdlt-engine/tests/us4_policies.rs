@@ -103,7 +103,7 @@ async fn discard_row_drops_and_counts() {
         "schema must not evolve under discard"
     );
     assert_eq!(
-        schema.column("v").expect("v").ty,
+        schema.column("v").expect("v").column_type,
         rdlt_core::ColumnType::scalar(rdlt_core::LogicalType::Int64)
     );
 

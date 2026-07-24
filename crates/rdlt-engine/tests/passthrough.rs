@@ -30,7 +30,7 @@ impl Source for ArrowSource {
     async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
         let spec = StreamSpec::new("metrics");
         Ok(vec![if self.declare_structured {
-            spec.structured()
+            spec.with_structured()
         } else {
             spec
         }])
@@ -339,7 +339,7 @@ async fn cross_batch_narrowing_keeps_the_wide_type() {
         .find(|c| c.name == "v")
         .expect("v column");
     assert_eq!(
-        v.ty,
+        v.column_type,
         rdlt_core::ColumnType::scalar(rdlt_core::LogicalType::Utf8),
         "narrowing must not shrink the registry type"
     );
@@ -369,7 +369,7 @@ impl Source for KeyedArrowSource {
     async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
         Ok(vec![
             StreamSpec::new("metrics")
-                .structured()
+                .with_structured()
                 .with_primary_key(self.key.clone()),
         ])
     }

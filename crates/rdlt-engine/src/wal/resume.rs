@@ -160,7 +160,7 @@ pub(crate) async fn replay(
     span: RecoverySpan,
     session: &mut dyn LoadSession,
     state: &mut StateDoc,
-    caps: rdlt_connector::DestCapabilities,
+    caps: rdlt_connector::DestinationCapabilities,
 ) -> Result<Option<u64>, RdltError> {
     // Pass 1 — validate: every segment must fully decode BEFORE any write
     // reaches the session. Batches are decoded one at a time and dropped,

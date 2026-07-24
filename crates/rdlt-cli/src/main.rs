@@ -125,16 +125,13 @@ async fn run(spec_path: PathBuf, report_path: Option<PathBuf>) -> Result<(), Cli
         }
     }
 
-    let mut pipeline = pipeline_spec::build_pipeline(&spec)?;
-    drive(&mut pipeline, report_path).await
+    let pipeline = pipeline_spec::build_pipeline(&spec)?;
+    drive(pipeline, report_path).await
 }
 
 /// Event feed + run + report emission (shared tail after the pipeline is built).
-async fn drive(
-    pipeline: &mut rdlt::Pipeline,
-    report_path: Option<PathBuf>,
-) -> Result<(), CliError> {
-    let mut events = pipeline.events().expect("events available before run");
+async fn drive(pipeline: rdlt::Pipeline, report_path: Option<PathBuf>) -> Result<(), CliError> {
+    let mut events = pipeline.events();
     let feed = tokio::spawn(async move {
         while let Some(event) = events.recv().await {
             match event {
@@ -312,7 +309,7 @@ destination:
       events:
         hard_delete: deleted
         dedup_sort: {column: seq, order: desc}
-        merge_key: [day, tenant]
+        merge_scope: [day, tenant]
 "#,
         );
         let DestSpec::Postgres { tables, .. } = &parsed.destination else {
@@ -326,7 +323,7 @@ destination:
             rdlt::connector::postgres::dest::SortOrder::Desc
         );
         assert_eq!(
-            events.merge_key.as_deref(),
+            events.merge_scope.as_deref(),
             Some(&["day".to_string(), "tenant".to_string()][..])
         );
     }

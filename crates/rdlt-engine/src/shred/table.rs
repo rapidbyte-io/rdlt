@@ -48,7 +48,7 @@ impl TableBuffer {
     }
 
     /// Source key → normalized column name pairs accumulated so far.
-    pub(crate) fn name_map(&self) -> &[(String, String)] {
+    pub(crate) fn source_to_normalized(&self) -> &[(String, String)] {
         &self.names
     }
 
@@ -65,9 +65,9 @@ impl TableBuffer {
     pub(crate) fn revert_column(
         &mut self,
         source_key: &str,
-        snapshot: Option<&[(String, ColState)]>,
+        rollback_snapshot: Option<&[(String, ColState)]>,
     ) {
-        let prior = snapshot.and_then(|columns| {
+        let prior = rollback_snapshot.and_then(|columns| {
             columns
                 .iter()
                 .find(|(key, _)| key == source_key)
@@ -83,7 +83,9 @@ impl TableBuffer {
         }
     }
 
-    pub(crate) fn column_name(&mut self, source_key: &str) -> String {
+    /// Normalized column name for a source key, memoizing the pairing on first
+    /// sight — may allocate and insert into the source→normalized map.
+    pub(crate) fn normalized_name_for(&mut self, source_key: &str) -> String {
         if let Some((_, normalized)) = self.names.iter().find(|(k, _)| k == source_key) {
             return normalized.clone();
         }
@@ -143,7 +145,7 @@ pub(crate) fn resolve_schema(buffer: &mut TableBuffer) -> TableSchema {
     let mut columns: Vec<ColumnDef> = Vec::new();
     let system = |name: &str, ty| ColumnDef {
         name: name.to_owned(),
-        ty: rdlt_core::ColumnType::scalar(ty),
+        column_type: rdlt_core::ColumnType::scalar(ty),
         nullable: false,
         provenance: Provenance::System,
     };
@@ -171,10 +173,10 @@ pub(crate) fn resolve_schema(buffer: &mut TableBuffer) -> TableSchema {
         .collect();
     for (source_key, resolved) in sources {
         if let Some(ty) = resolved {
-            let name = buffer.column_name(&source_key);
+            let name = buffer.normalized_name_for(&source_key);
             columns.push(ColumnDef {
                 name,
-                ty,
+                column_type: ty,
                 nullable: true,
                 provenance: Provenance::Inferred,
             });

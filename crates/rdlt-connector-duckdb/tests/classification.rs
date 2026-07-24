@@ -4,7 +4,7 @@
 //! database file, disk pressure) so the engine can retry instead of
 //! aborting the run.
 
-use rdlt_connector::DestError;
+use rdlt_connector::DestinationError;
 use rdlt_connector_duckdb::DuckDb;
 
 /// A message that merely CONTAINS violation-adjacent words (here: a table
@@ -45,7 +45,7 @@ fn unopenable_file_is_transient_not_fatal() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("no-such-dir").join("db.duckdb");
     match DuckDb::open(path) {
-        Err(DestError::Transient { .. }) => {}
+        Err(DestinationError::Transient { .. }) => {}
         Err(other) => panic!("environmental open failure classified unrecoverable: {other}"),
         Ok(_) => panic!("open succeeded against a missing directory"),
     }

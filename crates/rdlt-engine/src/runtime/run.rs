@@ -21,7 +21,7 @@ use std::time::Instant;
 
 use bytes::Bytes;
 use rdlt_connector::{
-    DestCapabilities, Destination, LoadSession, OpenCtx, PushPayload, ReadRequest, Source,
+    Destination, DestinationCapabilities, LoadSession, OpenCtx, PushPayload, ReadRequest, Source,
     SourceError, StreamSpec, records_channel,
 };
 use rdlt_core::naming::normalize_ident;
@@ -237,7 +237,7 @@ async fn run_once(
 fn validate_streams(
     config: &EngineConfig,
     streams: &[StreamSpec],
-    caps: DestCapabilities,
+    caps: DestinationCapabilities,
     destination: &dyn Destination,
 ) -> Result<(), RdltError> {
     let mut root_tables: BTreeMap<TableName, StreamName> = BTreeMap::new();
@@ -300,7 +300,7 @@ async fn recover_wal(
     config: &EngineConfig,
     load_id: &LoadId,
     wal_dir: Option<&Path>,
-    caps: DestCapabilities,
+    caps: DestinationCapabilities,
 ) -> Result<(Box<dyn LoadSession>, StateDoc, ResumedFrom), RdltError> {
     let mut session = destination
         .open(OpenCtx::new(config.pipeline.clone(), load_id.clone()))
@@ -319,7 +319,8 @@ async fn recover_wal(
         Some(state) if !state.cursors.is_empty() => ResumedFrom::Cursor,
         _ => ResumedFrom::Fresh,
     };
-    let mut base_state = recovered.unwrap_or_else(|| StateDoc::new(config.pipeline.clone()));
+    let mut base_state = recovered
+        .unwrap_or_else(|| StateDoc::new(config.pipeline.clone(), env!("CARGO_PKG_VERSION")));
 
     // WAL recovery: replay the uncommitted span of a crashed run (row 2), or
     // degrade to cursor re-extraction on damage (row 4 — slower, never wrong).
@@ -412,7 +413,7 @@ impl ShredOwner {
         load_id: LoadId,
         mode: WriteMode,
         policy: SchemaPolicy,
-        caps: DestCapabilities,
+        caps: DestinationCapabilities,
     ) -> Result<(Self, Result<Vec<LoadItem>, RdltError>), RdltError> {
         tokio::task::spawn_blocking(move || {
             let span = tracing::info_span!("rdlt.passthrough");
@@ -440,7 +441,7 @@ async fn stream_task(
     source: Arc<dyn Source>,
     tx: ByteTx<LoadItem>,
     cancel: CancellationToken,
-    caps: DestCapabilities,
+    caps: DestinationCapabilities,
     since: Option<Cursor>,
     mode: WriteMode,
     root_table: TableName,
@@ -630,17 +631,17 @@ async fn drain_loader(
 /// preserving retryability for the run-level driver — a transient warehouse
 /// failure (lock, rate limit, network) restarts the run from committed state
 /// exactly like a transient source failure, instead of aborting.
-pub(crate) fn classify_dest_error(e: &rdlt_connector::DestError) -> RdltError {
-    use rdlt_connector::DestError;
+pub(crate) fn classify_dest_error(e: &rdlt_connector::DestinationError) -> RdltError {
+    use rdlt_connector::DestinationError;
     match e {
-        DestError::Transient(inner) => {
+        DestinationError::Transient(inner) => {
             RdltError::destination_retryable(format!("transient: {inner}"), None)
         }
-        DestError::RateLimited {
+        DestinationError::RateLimited {
             retry_after,
             source,
         } => RdltError::destination_retryable(format!("rate limited: {source}"), *retry_after),
-        DestError::Fatal(inner) => RdltError::destination(format!("fatal: {inner}")),
+        DestinationError::Fatal(inner) => RdltError::destination(format!("fatal: {inner}")),
         other => RdltError::destination(other.to_string()),
     }
 }

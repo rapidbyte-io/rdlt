@@ -12,7 +12,7 @@ mod common;
 
 use common::CdcPgFixture;
 use rdlt_connector::core::failpoint::fail;
-use rdlt_connector_postgres::dest::{MergeStrategy, PgDestOptions, PgTableOptions, Postgres};
+use rdlt_connector_postgres::dest::{DestOptions, MergeStrategy, Postgres, TableOptions};
 use rdlt_connector_postgres::source::PostgresSource;
 use rdlt_engine::{Engine, EngineConfig};
 
@@ -48,13 +48,13 @@ impl Rig {
     fn dest(conn: &str) -> Postgres {
         Postgres::connect(conn)
             .dataset("mirror")
-            .options(PgDestOptions {
+            .options(DestOptions {
                 merge_strategy: Some(MergeStrategy::Upsert),
                 tables: [(
                     "ev".to_string(),
-                    PgTableOptions {
+                    TableOptions {
                         hard_delete: Some("_rdlt_deleted".into()),
-                        ..PgTableOptions::default()
+                        ..TableOptions::default()
                     },
                 )]
                 .into_iter()

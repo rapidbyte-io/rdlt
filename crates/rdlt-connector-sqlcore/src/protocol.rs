@@ -90,11 +90,11 @@ pub struct CommitScript {
 }
 
 /// A planner decision that fails the unit — surfaced typed so the destination
-/// maps it to a fatal `DestError` at its SPI boundary with the exact current
+/// maps it to a fatal `DestinationError` at its SPI boundary with the exact current
 /// text (the SPI conversion stays at the destination).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommitError {
-    /// A full-feed table (merge_key scope replacement or scd2 `absent: retire`)
+    /// A full-feed table (merge_scope replacement or scd2 `absent: retire`)
     /// published a second non-empty unit within one load.
     SingleUnit { table: String, scoped: bool },
     /// A merge arm impossible for the stream shape (shredded upsert / scd2).
@@ -262,7 +262,7 @@ pub fn commit_script(
                                 table: table.as_str().to_owned(),
                                 // Name the rule that FIRED — under scd2 the
                                 // absent-retire rule governs even when a
-                                // merge_key scopes it.
+                                // merge_scope scopes it.
                                 scoped: mctx.scoped.is_some() && !mctx.retire,
                             });
                         }
@@ -270,7 +270,7 @@ pub fn commit_script(
                     }
                 }
                 // Scope replacement runs BEFORE the strategy arm. NOT for scd2:
-                // there the merge_key scopes RETIREMENT inside the arm —
+                // there the merge_scope scopes RETIREMENT inside the arm —
                 // deleting scope rows would destroy history.
                 if let Some(scope) = mctx.scoped
                     && mctx.strategy != MergeStrategy::Scd2
@@ -320,27 +320,27 @@ pub fn build_merge_plan<'a>(
     table: &'a TableName,
     schema: &'a TableSchema,
     key: &'a [String],
-    target: &'a str,
-    stage: &'a str,
-    cols: &'a str,
+    target_sql: &'a str,
+    stage_sql: &'a str,
+    cols_sql: &'a str,
     root: &TableName,
-    root_stage: String,
+    root_stage_sql: String,
     root_schema: Option<&TableSchema>,
 ) -> MergePlan<'a> {
     MergePlan {
         dialect,
-        target,
-        stage,
-        cols,
+        target_sql,
+        stage_sql,
+        cols_sql,
         schema,
         key,
-        root_stage,
+        root_stage_sql,
         is_child: table != root,
         hard_delete: options
             .hard_delete_for(root.as_str())
             .and_then(|col| Some(HardDelete::new(col, root_schema?, dialect))),
         dedup_sort: options.dedup_sort_for(table.as_str()),
-        merge_scope: options.merge_key_for(table.as_str()),
+        merge_scope: options.merge_scope_for(table.as_str()),
     }
 }
 
@@ -364,7 +364,7 @@ mod tests {
     fn col(name: &str) -> ColumnDef {
         ColumnDef {
             name: name.into(),
-            ty: ColumnType::scalar(LogicalType::Int64),
+            column_type: ColumnType::scalar(LogicalType::Int64),
             nullable: true,
             provenance: Provenance::Inferred,
         }
@@ -510,7 +510,7 @@ mod tests {
             tables: [(
                 "events".to_string(),
                 TableOptions {
-                    merge_key: Some(vec!["day".to_string()]),
+                    merge_scope: Some(vec!["day".to_string()]),
                     ..Default::default()
                 },
             )]
@@ -547,7 +547,7 @@ mod tests {
             tables: [(
                 "events".to_string(),
                 TableOptions {
-                    merge_key: Some(vec!["day".to_string()]),
+                    merge_scope: Some(vec!["day".to_string()]),
                     ..Default::default()
                 },
             )]
@@ -576,7 +576,7 @@ mod tests {
             tables: [(
                 "events".to_string(),
                 TableOptions {
-                    merge_key: Some(vec!["day".to_string()]),
+                    merge_scope: Some(vec!["day".to_string()]),
                     ..Default::default()
                 },
             )]
@@ -605,7 +605,7 @@ mod tests {
             tables: [(
                 "events".to_string(),
                 TableOptions {
-                    merge_key: Some(vec!["day".to_string()]),
+                    merge_scope: Some(vec!["day".to_string()]),
                     ..Default::default()
                 },
             )]

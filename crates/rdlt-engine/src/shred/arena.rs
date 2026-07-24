@@ -33,7 +33,7 @@ fn checked_idx(len: usize) -> u32 {
 }
 
 #[derive(Debug)]
-pub(crate) enum ANode<'s> {
+pub(crate) enum ArenaNode<'s> {
     Null,
     Bool(bool),
     Int(i64),
@@ -49,7 +49,7 @@ pub(crate) enum ANode<'s> {
 
 #[derive(Debug, Default)]
 pub(crate) struct Arena<'s> {
-    nodes: Vec<ANode<'s>>,
+    nodes: Vec<ArenaNode<'s>>,
     obj_entries: Vec<(Cow<'s, str>, NodeId)>,
     arr_items: Vec<NodeId>,
 }
@@ -75,7 +75,7 @@ impl<'s> Arena<'s> {
             let node = NodeSeed { arena: self }.deserialize(&mut de)?;
             de.end()?;
             match self.nodes[node as usize] {
-                ANode::Arr(start, end) => {
+                ArenaNode::Arr(start, end) => {
                     for i in start..end {
                         rows.push(self.arr_items[i as usize]);
                     }
@@ -85,7 +85,7 @@ impl<'s> Arena<'s> {
         }
         // Wrap AFTER parsing (arena mutation is safe on plain ids).
         for row in &mut rows {
-            if !matches!(self.nodes[*row as usize], ANode::Obj(..)) {
+            if !matches!(self.nodes[*row as usize], ArenaNode::Obj(..)) {
                 *row = self.wrap_in_value_obj(*row);
             }
         }
@@ -96,14 +96,14 @@ impl<'s> Arena<'s> {
     pub(crate) fn wrap_in_value_obj(&mut self, node: NodeId) -> NodeId {
         let start = checked_idx(self.obj_entries.len());
         self.obj_entries.push((Cow::Borrowed("value"), node));
-        self.push_node(ANode::Obj(start, start + 1))
+        self.push_node(ArenaNode::Obj(start, start + 1))
     }
 
     pub(crate) fn node(&self, id: NodeId) -> Node<'_, 's> {
         Node { arena: self, id }
     }
 
-    fn push_node(&mut self, node: ANode<'s>) -> NodeId {
+    fn push_node(&mut self, node: ArenaNode<'s>) -> NodeId {
         let id = checked_idx(self.nodes.len());
         self.nodes.push(node);
         id
@@ -135,20 +135,20 @@ impl<'a, 's: 'a> JsonView<'a> for Node<'a, 's> {
 
     fn kind(self) -> Kind<'a> {
         match &self.arena.nodes[self.id as usize] {
-            ANode::Null => Kind::Null,
-            ANode::Bool(b) => Kind::Bool(*b),
-            ANode::Int(i) => Kind::Int(*i),
-            ANode::UInt(u) => Kind::UInt(*u),
-            ANode::Float(f) => Kind::Float(*f),
-            ANode::Str(s) => Kind::Str(s.as_ref()),
-            ANode::Obj(..) => Kind::Object,
-            ANode::Arr(..) => Kind::Array,
+            ArenaNode::Null => Kind::Null,
+            ArenaNode::Bool(b) => Kind::Bool(*b),
+            ArenaNode::Int(i) => Kind::Int(*i),
+            ArenaNode::UInt(u) => Kind::UInt(*u),
+            ArenaNode::Float(f) => Kind::Float(*f),
+            ArenaNode::Str(s) => Kind::Str(s.as_ref()),
+            ArenaNode::Obj(..) => Kind::Object,
+            ArenaNode::Arr(..) => Kind::Array,
         }
     }
 
     fn obj_entries(self) -> Self::ObjIter {
         let (start, end) = match self.arena.nodes[self.id as usize] {
-            ANode::Obj(start, end) => (start, end),
+            ArenaNode::Obj(start, end) => (start, end),
             _ => (0, 0),
         };
         ObjIter {
@@ -160,7 +160,7 @@ impl<'a, 's: 'a> JsonView<'a> for Node<'a, 's> {
 
     fn arr_items(self) -> Self::ArrIter {
         let (start, end) = match self.arena.nodes[self.id as usize] {
-            ANode::Arr(start, end) => (start, end),
+            ArenaNode::Arr(start, end) => (start, end),
             _ => (0, 0),
         };
         ArrIter {
@@ -171,7 +171,7 @@ impl<'a, 's: 'a> JsonView<'a> for Node<'a, 's> {
     }
 
     fn obj_get(self, key: &str) -> Option<Self> {
-        let ANode::Obj(start, end) = self.arena.nodes[self.id as usize] else {
+        let ArenaNode::Obj(start, end) = self.arena.nodes[self.id as usize] else {
             return None;
         };
         self.arena.obj_entries[start as usize..end as usize]
@@ -252,40 +252,42 @@ where
     }
 
     fn visit_unit<E>(self) -> Result<NodeId, E> {
-        Ok(self.arena.push_node(ANode::Null))
+        Ok(self.arena.push_node(ArenaNode::Null))
     }
 
     fn visit_bool<E>(self, b: bool) -> Result<NodeId, E> {
-        Ok(self.arena.push_node(ANode::Bool(b)))
+        Ok(self.arena.push_node(ArenaNode::Bool(b)))
     }
 
     fn visit_i64<E>(self, i: i64) -> Result<NodeId, E> {
-        Ok(self.arena.push_node(ANode::Int(i)))
+        Ok(self.arena.push_node(ArenaNode::Int(i)))
     }
 
     fn visit_u64<E>(self, u: u64) -> Result<NodeId, E> {
         // Mirror serde_json::Number: within i64 range it IS an i64.
         Ok(self.arena.push_node(if u <= i64::MAX as u64 {
-            ANode::Int(u as i64)
+            ArenaNode::Int(u as i64)
         } else {
-            ANode::UInt(u)
+            ArenaNode::UInt(u)
         }))
     }
 
     fn visit_f64<E>(self, f: f64) -> Result<NodeId, E> {
-        Ok(self.arena.push_node(ANode::Float(f)))
+        Ok(self.arena.push_node(ArenaNode::Float(f)))
     }
 
     fn visit_borrowed_str<E>(self, s: &'de str) -> Result<NodeId, E> {
-        Ok(self.arena.push_node(ANode::Str(Cow::Borrowed(s))))
+        Ok(self.arena.push_node(ArenaNode::Str(Cow::Borrowed(s))))
     }
 
     fn visit_str<E>(self, s: &str) -> Result<NodeId, E> {
-        Ok(self.arena.push_node(ANode::Str(Cow::Owned(s.to_owned()))))
+        Ok(self
+            .arena
+            .push_node(ArenaNode::Str(Cow::Owned(s.to_owned()))))
     }
 
     fn visit_string<E>(self, s: String) -> Result<NodeId, E> {
-        Ok(self.arena.push_node(ANode::Str(Cow::Owned(s))))
+        Ok(self.arena.push_node(ArenaNode::Str(Cow::Owned(s))))
     }
 
     fn visit_seq<A>(self, mut seq: A) -> Result<NodeId, A::Error>
@@ -299,7 +301,7 @@ where
         let start = checked_idx(self.arena.arr_items.len());
         self.arena.arr_items.extend_from_slice(&items);
         let end = checked_idx(self.arena.arr_items.len());
-        Ok(self.arena.push_node(ANode::Arr(start, end)))
+        Ok(self.arena.push_node(ArenaNode::Arr(start, end)))
     }
 
     fn visit_map<A>(self, mut map: A) -> Result<NodeId, A::Error>
@@ -318,7 +320,7 @@ where
         let start = checked_idx(self.arena.obj_entries.len());
         self.arena.obj_entries.extend(entries);
         let end = checked_idx(self.arena.obj_entries.len());
-        Ok(self.arena.push_node(ANode::Obj(start, end)))
+        Ok(self.arena.push_node(ArenaNode::Obj(start, end)))
     }
 }
 

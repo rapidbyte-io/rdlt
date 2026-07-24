@@ -10,7 +10,7 @@ use std::time::Instant;
 pub(crate) mod apply;
 pub(crate) mod lowering;
 
-use rdlt_connector::{DestCapabilities, LoadSession, RecordBatch};
+use rdlt_connector::{DestinationCapabilities, LoadSession, RecordBatch};
 use rdlt_core::{
     CommitCounters, CommitMeta, CommitPolicy, Cursor, LoadId, RdltError, RunReport, SchemaDelta,
     StateDoc, StreamName, TableName, TableSchema, WriteMode,
@@ -57,7 +57,7 @@ impl ByteSized for LoadItem {
 /// travel as one.
 pub(crate) struct Sink {
     pub(crate) session: Box<dyn LoadSession>,
-    pub(crate) caps: DestCapabilities,
+    pub(crate) caps: DestinationCapabilities,
 }
 
 pub(crate) struct Loader {

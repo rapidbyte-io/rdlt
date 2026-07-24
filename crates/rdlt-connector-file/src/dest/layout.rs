@@ -5,7 +5,7 @@
 //! never a config option. This family deliberately does NOT share the SQL naming
 //! vocabulary; it owns its own file-name spellings.
 
-use rdlt_connector::DestError;
+use rdlt_connector::DestinationError;
 use rdlt_connector::core::{LoadId, PipelineId, TableName, naming::ident_hash};
 use serde::{Deserialize, Serialize};
 
@@ -100,9 +100,9 @@ impl CommitLog {
     /// re-deliver, duplicating under Append) — the same future-version rule the
     /// engine's WAL manifest and state doc enforce. Version 0 (absent field, a
     /// pre-versioning log) is accepted.
-    pub(crate) fn check_readable(&self, file: &str) -> Result<(), DestError> {
+    pub(crate) fn check_readable(&self, file: &str) -> Result<(), DestinationError> {
         if self.format_version > LAYOUT_FORMAT_VERSION {
-            return Err(DestError::fatal(format!(
+            return Err(DestinationError::fatal(format!(
                 "commit log `{file}` format v{} is newer than this build supports \
                  (v{LAYOUT_FORMAT_VERSION}); upgrade rdlt instead of resetting",
                 self.format_version

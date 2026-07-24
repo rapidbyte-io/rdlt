@@ -146,7 +146,7 @@ async fn engine_empty_commit_publishes_no_snapshot() {
 }
 
 /// Typed-error cells: unauthorized and missing-warehouse against a
-/// LIVE catalog; each surfaces a typed DestError naming the subject —
+/// LIVE catalog; each surfaces a typed DestinationError naming the subject —
 /// never a panic or a silent success.
 #[tokio::test(flavor = "multi_thread")]
 async fn open_failures_are_typed_against_live_catalog() {

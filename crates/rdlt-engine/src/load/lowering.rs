@@ -12,16 +12,16 @@ use std::sync::Arc;
 use arrow::array::{Array, ArrayRef, Decimal128Array, StringArray, StructArray};
 use arrow::buffer::NullBuffer;
 use arrow::record_batch::RecordBatch;
-use rdlt_connector::DestCapabilities;
+use rdlt_connector::DestinationCapabilities;
 use rdlt_core::naming::UniqueNamer;
 use rdlt_core::{ColumnDef, ColumnType, LogicalType, RdltError, TableSchema};
 
-fn needs_lowering(caps: &DestCapabilities) -> bool {
+fn needs_lowering(caps: &DestinationCapabilities) -> bool {
     !caps.structs || !caps.decimal
 }
 
 /// Lower a schema for the destination's capabilities.
-pub(crate) fn lower_schema(schema: &TableSchema, caps: &DestCapabilities) -> TableSchema {
+pub(crate) fn lower_schema(schema: &TableSchema, caps: &DestinationCapabilities) -> TableSchema {
     if !needs_lowering(caps) {
         return schema.clone();
     }
@@ -40,13 +40,13 @@ pub(crate) fn lower_schema(schema: &TableSchema, caps: &DestCapabilities) -> Tab
 fn lower_column(
     column: &ColumnDef,
     path: &[&str],
-    caps: &DestCapabilities,
+    caps: &DestinationCapabilities,
     namer: &mut UniqueNamer,
     out: &mut Vec<ColumnDef>,
 ) {
     let mut full_path: Vec<&str> = path.to_vec();
     full_path.push(&column.name);
-    match &column.ty {
+    match &column.column_type {
         ColumnType::Struct { fields } if !caps.structs => {
             for field in fields {
                 lower_column(field, &full_path, caps, namer, out);
@@ -61,7 +61,7 @@ fn lower_column(
             };
             out.push(ColumnDef {
                 name: namer.name_for(&full_path.join("__")),
-                ty: lowered_ty,
+                column_type: lowered_ty,
                 nullable: column.nullable || !path.is_empty(),
                 provenance: column.provenance,
             });
@@ -74,7 +74,7 @@ fn lower_column(
 /// Field names/paths are identical to `lower_schema`'s inputs → identical names out.
 pub(crate) fn lower_batch(
     batch: &RecordBatch,
-    caps: &DestCapabilities,
+    caps: &DestinationCapabilities,
 ) -> Result<RecordBatch, RdltError> {
     if !needs_lowering(caps) {
         return Ok(batch.clone());
@@ -101,7 +101,7 @@ fn flatten_array(
     field: &arrow::datatypes::Field,
     path: &[&str],
     array: ArrayRef,
-    caps: &DestCapabilities,
+    caps: &DestinationCapabilities,
     namer: &mut UniqueNamer,
     fields: &mut Vec<arrow::datatypes::Field>,
     out: &mut Vec<ArrayRef>,
@@ -191,18 +191,18 @@ mod tests {
     use arrow::datatypes::{DataType, Field, Schema};
     use rdlt_core::{Provenance, TableName};
 
-    fn caps(structs: bool, decimal: bool) -> DestCapabilities {
-        DestCapabilities {
+    fn caps(structs: bool, decimal: bool) -> DestinationCapabilities {
+        DestinationCapabilities {
             structs,
             decimal,
-            ..DestCapabilities::default()
+            ..DestinationCapabilities::default()
         }
     }
 
     fn col(name: &str, ty: ColumnType) -> ColumnDef {
         ColumnDef {
             name: name.into(),
-            ty,
+            column_type: ty,
             nullable: false,
             provenance: Provenance::Inferred,
         }
@@ -264,11 +264,11 @@ mod tests {
             vec!["id", "profile__city", "profile__geo__lat", "price"]
         );
         let city = &lowered.columns[1];
-        assert_eq!(city.ty, ColumnType::scalar(LogicalType::Utf8));
+        assert_eq!(city.column_type, ColumnType::scalar(LogicalType::Utf8));
         assert!(city.nullable, "flattened children must be nullable");
         // Decimal untouched: only structs were lowered.
         assert_eq!(
-            lowered.columns[3].ty,
+            lowered.columns[3].column_type,
             ColumnType::scalar(LogicalType::Decimal {
                 precision: 10,
                 scale: 2
@@ -279,8 +279,14 @@ mod tests {
     #[test]
     fn decimal_off_lowers_to_utf8_leaving_structs() {
         let lowered = lower_schema(&schema_with_struct_and_decimal(), &caps(true, false));
-        assert_eq!(lowered.columns[2].ty, ColumnType::scalar(LogicalType::Utf8));
-        assert!(matches!(lowered.columns[1].ty, ColumnType::Struct { .. }));
+        assert_eq!(
+            lowered.columns[2].column_type,
+            ColumnType::scalar(LogicalType::Utf8)
+        );
+        assert!(matches!(
+            lowered.columns[1].column_type,
+            ColumnType::Struct { .. }
+        ));
     }
 
     #[test]

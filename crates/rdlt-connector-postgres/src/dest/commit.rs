@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use async_trait::async_trait;
 use rdlt_connector::{
-    CommitMeta, CommitReceipt, DestError, LoadSession, RecordBatch, WriteMode,
+    CommitMeta, CommitReceipt, DestinationError, LoadSession, RecordBatch, WriteMode,
     core::{PipelineId, StateDoc, TableName, TableSchema, crash_point, schema::system_columns},
 };
 use tokio_postgres::Client;
@@ -55,7 +55,7 @@ pub(super) struct PgSession {
     pub(super) client: Client,
     pub(super) pipeline: PipelineId,
     pub(super) tables: BTreeMap<TableName, (TableSchema, WriteMode)>,
-    pub(super) options: super::config::PgDestOptions,
+    pub(super) options: super::config::DestOptions,
     /// Single-unit discipline, PER TABLE: tables whose stage has already
     /// published non-empty in an earlier commit unit of THIS load.
     /// Session-scoped is load-scoped: a session spans one engine run = one
@@ -80,11 +80,11 @@ async fn execute_step(
     tx: &tokio_postgres::Transaction<'_>,
     pipeline: &PipelineId,
     tables: &BTreeMap<TableName, (TableSchema, WriteMode)>,
-    options: &super::config::PgDestOptions,
+    options: &super::config::DestOptions,
     roots: &BTreeMap<TableName, TableName>,
     meta: &CommitMeta,
     step: &Step,
-) -> Result<(), DestError> {
+) -> Result<(), DestinationError> {
     match step {
         Step::ClearTarget { table } => {
             tx.batch_execute(&PgDialect.clear_table(&quote(table.as_str())))
@@ -178,7 +178,7 @@ impl LoadSession for PgSession {
         &mut self,
         schema: &TableSchema,
         mode: &WriteMode,
-    ) -> Result<(), DestError> {
+    ) -> Result<(), DestinationError> {
         let previous = self.tables.get(&schema.table).map(|(s, _)| s.clone());
         for (name, is_stage) in [
             (schema.table.as_str().to_owned(), false),
@@ -209,22 +209,22 @@ impl LoadSession for PgSession {
                         "ALTER TABLE {} ADD COLUMN IF NOT EXISTS {} {}",
                         quote(&name),
                         quote(&column.name),
-                        super::ddl::sql_type(&column.ty)
+                        super::ddl::sql_type(&column.column_type)
                     ))
                     .await
                     .map_err(classify_stmt)?;
                 if let Some(prev) = &previous
                     && let Some(old) = prev.column(&column.name)
-                    && old.ty != column.ty
+                    && old.column_type != column.column_type
                 {
                     self.client
                         .batch_execute(&format!(
                             "ALTER TABLE {} ALTER COLUMN {} TYPE {} USING {}::{}",
                             quote(&name),
                             quote(&column.name),
-                            super::ddl::sql_type(&column.ty),
+                            super::ddl::sql_type(&column.column_type),
                             quote(&column.name),
-                            super::ddl::sql_type(&column.ty)
+                            super::ddl::sql_type(&column.column_type)
                         ))
                         .await
                         .map_err(classify_stmt)?;
@@ -304,10 +304,14 @@ impl LoadSession for PgSession {
         Ok(())
     }
 
-    async fn write(&mut self, table: &TableName, batch: RecordBatch) -> Result<(), DestError> {
+    async fn write(
+        &mut self,
+        table: &TableName,
+        batch: RecordBatch,
+    ) -> Result<(), DestinationError> {
         crash_point!(
             "pg.stage.copy",
-            Err(DestError::fatal("injected crash at pg.stage.copy"))
+            Err(DestinationError::fatal("injected crash at pg.stage.copy"))
         );
         let stage = stage_name(&self.pipeline, table);
         let arrow_schema = batch.schema();
@@ -324,7 +328,9 @@ impl LoadSession for PgSession {
             .fields()
             .iter()
             .map(|f| {
-                let logical = table_schema.and_then(|s| s.column(f.name())).map(|c| &c.ty);
+                let logical = table_schema
+                    .and_then(|s| s.column(f.name()))
+                    .map(|c| &c.column_type);
                 encode::column_wire(logical, f.data_type())
             })
             .collect::<Result<_, _>>()?;
@@ -363,7 +369,7 @@ impl LoadSession for PgSession {
         Ok(())
     }
 
-    async fn commit(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestError> {
+    async fn commit(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestinationError> {
         let receipt = CommitReceipt {
             load_id: meta.load_id.clone(),
             commit_seq: meta.commit_seq,
@@ -376,7 +382,9 @@ impl LoadSession for PgSession {
 
         crash_point!(
             "pg.publish.begin",
-            Err(DestError::fatal("injected crash at pg.publish.begin"))
+            Err(DestinationError::fatal(
+                "injected crash at pg.publish.begin"
+            ))
         );
         let tx = self.client.transaction().await.map_err(transient)?;
         // Idempotence by (load_id, commit_seq).
@@ -462,7 +470,7 @@ impl LoadSession for PgSession {
         if !replayed {
             crash_point!(
                 "pg.tx.commit",
-                Err(DestError::fatal("injected crash at pg.tx.commit"))
+                Err(DestinationError::fatal("injected crash at pg.tx.commit"))
             );
         }
         tx.commit().await.map_err(transient)?;
@@ -472,7 +480,10 @@ impl LoadSession for PgSession {
         Ok(receipt)
     }
 
-    async fn read_state(&mut self, pipeline: &PipelineId) -> Result<Option<StateDoc>, DestError> {
+    async fn read_state(
+        &mut self,
+        pipeline: &PipelineId,
+    ) -> Result<Option<StateDoc>, DestinationError> {
         let row = self
             .client
             .query_opt(

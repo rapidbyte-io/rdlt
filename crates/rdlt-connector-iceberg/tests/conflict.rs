@@ -9,13 +9,13 @@ mod common;
 
 use common::CatalogFixture;
 use rdlt_connector::core::{LoadId, PipelineId, TableName, WriteMode};
-use rdlt_connector::{DestError, Destination, OpenCtx};
+use rdlt_connector::{Destination, DestinationError, OpenCtx};
 use rdlt_connector_iceberg::IcebergDest;
 use rdlt_testkit::{batch_of, meta_for, schema_for};
 
 const COMMITS_PER_WRITER: u64 = 4;
 
-async fn run_writer(dest: IcebergDest, pipeline: &str, load: &str) -> Result<(), DestError> {
+async fn run_writer(dest: IcebergDest, pipeline: &str, load: &str) -> Result<(), DestinationError> {
     let pipeline = PipelineId::new(pipeline);
     let load = LoadId::new(load);
     let table = TableName::new("contested");

@@ -11,7 +11,7 @@ use rdlt_connector::{
     ConnectorSpec, Cursor, Destination as _, OpenCtx, ReadRequest, Source, SourceError, StreamSpec,
 };
 use rdlt_connector_postgres::dest::{
-    AbsentPolicy, MergeStrategy, PgDestOptions, PgTableOptions, Postgres, Scd2Options,
+    AbsentPolicy, DestOptions, MergeStrategy, Postgres, Scd2Options, TableOptions,
 };
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::PgFixture;
@@ -29,7 +29,7 @@ impl Source for DimSource {
     async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
         Ok(vec![
             StreamSpec::new("dims")
-                .structured()
+                .with_structured()
                 .with_primary_key(["id"]),
         ])
     }
@@ -62,17 +62,17 @@ fn batch(rows: &[(i64, &str)]) -> RecordBatch {
 fn scd2_dest(conn: &str, dataset: &str, absent: AbsentPolicy) -> Postgres {
     Postgres::connect(conn)
         .dataset(dataset)
-        .options(PgDestOptions {
+        .options(DestOptions {
             merge_strategy: Some(MergeStrategy::DeleteInsert),
             tables: [(
                 "dims".to_string(),
-                PgTableOptions {
+                TableOptions {
                     merge_strategy: Some(MergeStrategy::Scd2),
                     scd2: Some(Scd2Options {
                         absent,
                         ..Scd2Options::default()
                     }),
-                    ..PgTableOptions::default()
+                    ..TableOptions::default()
                 },
             )]
             .into_iter()
@@ -262,7 +262,7 @@ async fn redelivery_adds_zero_versions() {
         columns: vec![
             rdlt_connector::core::ColumnDef {
                 name: "id".into(),
-                ty: rdlt_connector::core::ColumnType::scalar(
+                column_type: rdlt_connector::core::ColumnType::scalar(
                     rdlt_connector::core::LogicalType::Int64,
                 ),
                 nullable: false,
@@ -270,7 +270,7 @@ async fn redelivery_adds_zero_versions() {
             },
             rdlt_connector::core::ColumnDef {
                 name: "name".into(),
-                ty: rdlt_connector::core::ColumnType::scalar(
+                column_type: rdlt_connector::core::ColumnType::scalar(
                     rdlt_connector::core::LogicalType::Utf8,
                 ),
                 nullable: true,
@@ -289,7 +289,7 @@ async fn redelivery_adds_zero_versions() {
     let meta = CommitMeta {
         load_id: LoadId::new("rd-load"),
         commit_seq: 0,
-        state: StateDoc::new(pipeline.clone()),
+        state: StateDoc::new(pipeline.clone(), env!("CARGO_PKG_VERSION")),
         counters: CommitCounters::default(),
     };
     session.commit(meta.clone()).await.expect("commit 1");
@@ -325,21 +325,21 @@ async fn rejections_are_typed_at_ensure() {
     // Validity-name collision with a stream column (S1).
     let dest = Postgres::connect(&conn)
         .dataset("bad")
-        .options(PgDestOptions {
+        .options(DestOptions {
             tables: [(
                 "dims".to_string(),
-                PgTableOptions {
+                TableOptions {
                     merge_strategy: Some(MergeStrategy::Scd2),
                     scd2: Some(Scd2Options {
                         valid_from: "name".into(), // collides
                         ..Scd2Options::default()
                     }),
-                    ..PgTableOptions::default()
+                    ..TableOptions::default()
                 },
             )]
             .into_iter()
             .collect(),
-            ..PgDestOptions::default()
+            ..DestOptions::default()
         })
         .expect("options parse");
     let mut config = EngineConfig::new("bad");
@@ -364,9 +364,9 @@ async fn rejections_are_typed_at_ensure() {
     use serde_json::json;
     let dest = Postgres::connect(&conn)
         .dataset("badsh")
-        .options(PgDestOptions {
+        .options(DestOptions {
             merge_strategy: Some(MergeStrategy::Scd2),
-            ..PgDestOptions::default()
+            ..DestOptions::default()
         })
         .expect("options parse");
     let mut config = EngineConfig::new("badsh");
@@ -409,7 +409,7 @@ async fn absent_retire_rejects_multi_unit_loads() {
         columns: vec![
             rdlt_connector::core::ColumnDef {
                 name: "id".into(),
-                ty: rdlt_connector::core::ColumnType::scalar(
+                column_type: rdlt_connector::core::ColumnType::scalar(
                     rdlt_connector::core::LogicalType::Int64,
                 ),
                 nullable: false,
@@ -417,7 +417,7 @@ async fn absent_retire_rejects_multi_unit_loads() {
             },
             rdlt_connector::core::ColumnDef {
                 name: "name".into(),
-                ty: rdlt_connector::core::ColumnType::scalar(
+                column_type: rdlt_connector::core::ColumnType::scalar(
                     rdlt_connector::core::LogicalType::Utf8,
                 ),
                 nullable: true,
@@ -431,7 +431,7 @@ async fn absent_retire_rejects_multi_unit_loads() {
     let meta = |seq: u64| CommitMeta {
         load_id: LoadId::new("mu-load"),
         commit_seq: seq,
-        state: StateDoc::new(pipeline.clone()),
+        state: StateDoc::new(pipeline.clone(), env!("CARGO_PKG_VERSION")),
         counters: CommitCounters::default(),
     };
     session.ensure_table(&schema, &mode).await.expect("ensure");
@@ -460,9 +460,7 @@ async fn absent_retire_rejects_multi_unit_loads() {
 /// the configured names appear on the target and carry the history.
 #[tokio::test(flavor = "multi_thread")]
 async fn custom_validity_column_names_flow_end_to_end() {
-    use rdlt_connector_postgres::dest::{
-        MergeStrategy, PgDestOptions, PgTableOptions, Scd2Options,
-    };
+    use rdlt_connector_postgres::dest::{DestOptions, MergeStrategy, Scd2Options, TableOptions};
 
     let Some(pg) = PgFixture::start().await else {
         return;
@@ -470,18 +468,18 @@ async fn custom_validity_column_names_flow_end_to_end() {
     let conn = pg.conn.clone();
     let dest = Postgres::connect(&conn)
         .dataset("scd2c")
-        .options(PgDestOptions {
+        .options(DestOptions {
             merge_strategy: Some(MergeStrategy::Scd2),
             tables: [(
                 "dims".to_string(),
-                PgTableOptions {
+                TableOptions {
                     merge_strategy: Some(MergeStrategy::Scd2),
                     scd2: Some(Scd2Options {
                         valid_from: "row_since".into(),
                         valid_to: "row_until".into(),
                         ..Scd2Options::default()
                     }),
-                    ..PgTableOptions::default()
+                    ..TableOptions::default()
                 },
             )]
             .into_iter()

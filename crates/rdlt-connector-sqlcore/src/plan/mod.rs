@@ -63,7 +63,7 @@ pub fn column_list(schema: &TableSchema) -> String {
 #[derive(Debug)]
 pub struct MergeCtx<'a> {
     pub strategy: MergeStrategy,
-    /// merge_key scope columns, when configured.
+    /// merge_scope scope columns, when configured.
     pub scoped: Option<&'a [String]>,
     /// scd2 settings, resolved only under the scd2 strategy.
     pub scd2: Option<Scd2Options>,
@@ -74,7 +74,7 @@ pub struct MergeCtx<'a> {
 impl<'a> MergeCtx<'a> {
     pub fn resolve(options: &'a DestOptions, table: &str) -> Self {
         let strategy = options.strategy_for(table);
-        let scoped = options.merge_key_for(table);
+        let scoped = options.merge_scope_for(table);
         let scd2 = (strategy == MergeStrategy::Scd2).then(|| options.scd2_for(table));
         let retire = scd2
             .as_ref()

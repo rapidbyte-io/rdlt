@@ -621,13 +621,13 @@ impl IncrementalPlan {
         // boundary keys, which every checkpoint does except an open-boundary
         // final; else the configured initial_value under the configured
         // boundary.
-        let closed_default = cc.boundary == config::Boundary::Closed;
+        let inclusive_default = cc.boundary == config::Bound::Inclusive;
         let lower: Option<(Watermark, bool)> = match &stored {
             Some(state) => Some((state.watermark.clone(), !state.boundary_keys.is_empty())),
             None => match &cc.initial_value {
                 Some(text) => Some((
                     Watermark::parse_config_literal(cursor_decode, text, name)?,
-                    closed_default,
+                    inclusive_default,
                 )),
                 None => None,
             },
@@ -661,7 +661,7 @@ impl IncrementalPlan {
             lag_delta.as_deref(),
             upper
                 .as_ref()
-                .map(|w| (w, cc.end_bound == config::EndBound::Inclusive)),
+                .map(|w| (w, cc.end_bound == config::Bound::Inclusive)),
             // `error` keeps NULL rows IN the read (like include) so the tracker
             // can raise on them (N1).
             cc.nulls != config::NullPolicy::Exclude,

@@ -8,12 +8,12 @@ use std::sync::Arc;
 
 use rustls::RootCertStore;
 
-use super::policy::{RootCert, TlsConfigError, TlsMode, TlsPolicy, validate_credentials};
+use super::policy::{PemSource, TlsConfigError, TlsMode, TlsPolicy, validate_credentials};
 use crate::tls_verify::{AcceptAnyCert, ChainOnly, provider};
 
-/// Resolve a `RootCert`-shaped input (path or inline PEM) to labeled bytes.
-fn pem_bytes(source: &RootCert, kind: &str) -> Result<(String, Vec<u8>), TlsConfigError> {
-    let RootCert(source) = source;
+/// Resolve a `PemSource`-shaped input (path or inline PEM) to labeled bytes.
+fn pem_bytes(source: &PemSource, kind: &str) -> Result<(String, Vec<u8>), TlsConfigError> {
+    let PemSource(source) = source;
     if source.trim_start().starts_with("-----BEGIN") {
         Ok((format!("<inline {kind} pem>"), source.clone().into_bytes()))
     } else {
@@ -75,15 +75,15 @@ fn client_credential(
 fn root_store(policy: &TlsPolicy) -> Result<RootCertStore, TlsConfigError> {
     let mut store = RootCertStore::empty();
     match &policy.root_cert {
-        Some(RootCert(source)) => {
+        Some(PemSource(source)) => {
             let (label, pem_bytes): (String, Vec<u8>) =
                 if source.trim_start().starts_with("-----BEGIN") {
                     ("<inline pem>".into(), source.clone().into_bytes())
                 } else {
                     (
                         source.clone(),
-                        std::fs::read(source).map_err(|e| TlsConfigError::RootCert {
-                            path: source.clone(),
+                        std::fs::read(source).map_err(|e| TlsConfigError::Setup {
+                            subject: format!("root_cert `{source}`"),
                             detail: format!("unreadable: {e}"),
                         })?,
                     )
@@ -91,19 +91,19 @@ fn root_store(policy: &TlsPolicy) -> Result<RootCertStore, TlsConfigError> {
             let mut cursor = std::io::Cursor::new(pem_bytes);
             let mut added = 0usize;
             for item in rustls_pemfile::certs(&mut cursor) {
-                let cert = item.map_err(|e| TlsConfigError::RootCert {
-                    path: label.clone(),
+                let cert = item.map_err(|e| TlsConfigError::Setup {
+                    subject: format!("root_cert `{label}`"),
                     detail: format!("PEM parse error: {e}"),
                 })?;
-                store.add(cert).map_err(|e| TlsConfigError::RootCert {
-                    path: label.clone(),
+                store.add(cert).map_err(|e| TlsConfigError::Setup {
+                    subject: format!("root_cert `{label}`"),
                     detail: format!("not a usable CA certificate: {e}"),
                 })?;
                 added += 1;
             }
             if added == 0 {
-                return Err(TlsConfigError::RootCert {
-                    path: label,
+                return Err(TlsConfigError::Setup {
+                    subject: format!("root_cert `{label}`"),
                     detail: "no certificates found in PEM input".into(),
                 });
             }
@@ -125,8 +125,8 @@ fn builder()
 -> Result<rustls::ConfigBuilder<rustls::ClientConfig, rustls::WantsVerifier>, TlsConfigError> {
     rustls::ClientConfig::builder_with_provider(provider())
         .with_safe_default_protocol_versions()
-        .map_err(|e| TlsConfigError::RootCert {
-            path: "<crypto provider>".into(),
+        .map_err(|e| TlsConfigError::Setup {
+            subject: "crypto provider".into(),
             detail: e.to_string(),
         })
 }
@@ -166,8 +166,8 @@ pub(crate) fn client_config(
                 builder()?
                     .dangerous()
                     .with_custom_certificate_verifier(Arc::new(ChainOnly::new(store).map_err(
-                        |e| TlsConfigError::RootCert {
-                            path: "<trust store>".into(),
+                        |e| TlsConfigError::Setup {
+                            subject: "trust store".into(),
                             detail: format!("building verifier: {e}"),
                         },
                     )?)),
@@ -198,8 +198,8 @@ mod tests {
         TlsPolicy {
             mode,
             root_cert: None,
-            client_cert: cert.map(|c| RootCert(c.into())),
-            client_key: key.map(|k| RootCert(k.into())),
+            client_cert: cert.map(|c| PemSource(c.into())),
+            client_key: key.map(|k| PemSource(k.into())),
         }
     }
 
@@ -207,7 +207,7 @@ mod tests {
     fn root_errors_are_typed_and_name_the_input() {
         let missing = TlsPolicy {
             mode: TlsMode::VerifyFull,
-            root_cert: Some(RootCert("/nonexistent/ca.pem".into())),
+            root_cert: Some(PemSource("/nonexistent/ca.pem".into())),
             ..TlsPolicy::default()
         };
         let err = root_store(&missing).unwrap_err();
@@ -215,7 +215,7 @@ mod tests {
 
         let garbage = TlsPolicy {
             mode: TlsMode::VerifyFull,
-            root_cert: Some(RootCert("-----BEGIN CERTIFICATE-----\ngarbage".into())),
+            root_cert: Some(PemSource("-----BEGIN CERTIFICATE-----\ngarbage".into())),
             ..TlsPolicy::default()
         };
         let err = root_store(&garbage).unwrap_err();
@@ -232,7 +232,7 @@ mod tests {
         let pem = ca.pem();
         let inline = TlsPolicy {
             mode: TlsMode::VerifyFull,
-            root_cert: Some(RootCert(pem.clone())),
+            root_cert: Some(PemSource(pem.clone())),
             ..TlsPolicy::default()
         };
         assert_eq!(root_store(&inline).expect("inline").len(), 1);
@@ -242,7 +242,7 @@ mod tests {
         std::fs::write(&path, pem).expect("write");
         let from_path = TlsPolicy {
             mode: TlsMode::VerifyCa,
-            root_cert: Some(RootCert(path.display().to_string())),
+            root_cert: Some(PemSource(path.display().to_string())),
             ..TlsPolicy::default()
         };
         assert_eq!(root_store(&from_path).expect("path").len(), 1);
@@ -304,7 +304,7 @@ mod tests {
             TlsMode::VerifyFull,
         ] {
             let mut p = policy(mode, Some(&cert), Some(&key));
-            p.root_cert = Some(RootCert(ca.pem()));
+            p.root_cert = Some(PemSource(ca.pem()));
             assert!(
                 client_config(&p).expect("config").is_some(),
                 "mode {mode:?}"

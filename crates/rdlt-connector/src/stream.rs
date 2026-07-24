@@ -11,13 +11,20 @@ use serde::{Deserialize, Serialize};
 pub struct StreamSpec {
     pub name: StreamName,
     /// Declared key: `_rdlt_id` becomes a key hash and `Merge` merges on it.
+    ///
+    /// Merge-key precedence: this and a stream's `WriteMode::Merge { key }` name
+    /// one identity, not two. The engine requires them to AGREE (same columns,
+    /// as a set) and rejects a mismatch typed at plan time — neither silently
+    /// wins over the other.
     pub primary_key: Option<Vec<String>>,
     /// The field carrying the incremental cursor, if the stream supports one.
     pub cursor_field: Option<String>,
     /// Per-column logical-type hints; take precedence over inference.
     pub type_hints: BTreeMap<String, LogicalType>,
-    /// This stream pushes already-structured Arrow batches. Structured streams carry
-    /// run-level provenance only (no `_rdlt_id`), so `Merge` is rejected at plan time.
+    /// This stream pushes already-structured Arrow batches (no per-row `_rdlt_id`).
+    /// A structured stream may still `Merge`, but only on a declared `primary_key`
+    /// that its `WriteMode::Merge { key }` names exactly; a keyless structured
+    /// stream cannot Merge (rejected at plan time).
     /// Serde-defaults to `false` so older payloads deserialize unchanged.
     #[serde(default)]
     pub structured: bool,
@@ -35,7 +42,7 @@ impl StreamSpec {
     }
 
     /// Declare this stream as pushing already-structured Arrow batches.
-    pub fn structured(mut self) -> Self {
+    pub fn with_structured(mut self) -> Self {
         self.structured = true;
         self
     }

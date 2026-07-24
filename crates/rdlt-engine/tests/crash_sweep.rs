@@ -274,7 +274,9 @@ impl rdlt_connector::Source for KeyedArrowSource {
 
     async fn streams(&self) -> Result<Vec<StreamSpec>, rdlt_connector::SourceError> {
         Ok(vec![
-            StreamSpec::new("s").structured().with_primary_key(["id"]),
+            StreamSpec::new("s")
+                .with_structured()
+                .with_primary_key(["id"]),
         ])
     }
 

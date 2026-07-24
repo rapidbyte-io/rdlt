@@ -42,7 +42,7 @@ pub(super) fn column_def(column: &ColumnDef, target: bool) -> String {
     format!(
         "{} {}{}",
         super::quote(&column.name),
-        sql_type(&column.ty),
+        sql_type(&column.column_type),
         not_null
     )
 }

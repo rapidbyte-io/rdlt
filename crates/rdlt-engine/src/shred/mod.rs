@@ -75,7 +75,7 @@ struct TableDrain<'a, V> {
     rows: &'a mut Vec<DrainRow<V>>,
     /// Column snapshot to roll back to on Discard*; `None` for a table that did
     /// not exist before this batch (nothing to revert to).
-    pre: Option<&'a [(String, ColState)]>,
+    rollback_snapshot: Option<&'a [(String, ColState)]>,
 }
 
 /// The shared drain: cascade filtering, schema resolution, policy enforcement,
@@ -83,7 +83,7 @@ struct TableDrain<'a, V> {
 pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
     tables: &mut [TableBuffer],
     rows: &mut [Vec<DrainRow<V>>],
-    pre_batch: &[Vec<(String, ColState)>],
+    rollback_snapshot: &[Vec<(String, ColState)>],
     registry: &mut SchemaRegistry,
     load_id: &LoadId,
     mode: &WriteMode,
@@ -93,7 +93,7 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
     // Rows discarded in earlier (parent) tables cascade into their descendants.
     let mut discarded_ids: BTreeSet<RowId> = BTreeSet::new();
 
-    // Pair the three index-aligned inputs once; `pre_batch.get(idx)` is resolved
+    // Pair the three index-aligned inputs once; `rollback_snapshot.get(idx)` is resolved
     // here and never again, so the loop below cannot misalign them.
     let mut drains: Vec<TableDrain<V>> = tables
         .iter_mut()
@@ -102,7 +102,7 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
         .map(|(idx, (buffer, rows))| TableDrain {
             buffer,
             rows,
-            pre: pre_batch.get(idx).map(Vec::as_slice),
+            rollback_snapshot: rollback_snapshot.get(idx).map(Vec::as_slice),
         })
         .collect();
 
@@ -178,7 +178,7 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
             enforce_discards(
                 d.buffer,
                 d.rows,
-                d.pre,
+                d.rollback_snapshot,
                 &discard,
                 &mut discarded_ids,
                 &mut items,
@@ -202,9 +202,13 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
                 .get(&d.buffer.table)
                 .expect("schema registered before building")
                 .clone();
-            let batch =
-                build::build_batch(&schema, d.buffer.name_map(), d.rows.as_slice(), load_id)
-                    .map_err(|e| RdltError::config(format!("arrow build: {e}")))?;
+            let batch = build::build_batch(
+                &schema,
+                d.buffer.source_to_normalized(),
+                d.rows.as_slice(),
+                load_id,
+            )
+            .map_err(|e| RdltError::config(format!("arrow build: {e}")))?;
             d.rows.clear();
             items.push(LoadItem::Batch {
                 table: d.buffer.table.clone(),
@@ -222,7 +226,7 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
 fn enforce_discards<'v, V: JsonView<'v>>(
     buffer: &mut TableBuffer,
     rows: &mut Vec<DrainRow<V>>,
-    snapshot: Option<&[(String, ColState)]>,
+    rollback_snapshot: Option<&[(String, ColState)]>,
     discard: &[(SchemaChange, PolicyAction)],
     discarded_ids: &mut BTreeSet<RowId>,
     items: &mut Vec<LoadItem>,
@@ -246,7 +250,7 @@ fn enforce_discards<'v, V: JsonView<'v>>(
             .source_key_for(normalized)
             .unwrap_or(normalized)
             .to_owned();
-        buffer.revert_column(&source_key, snapshot);
+        buffer.revert_column(&source_key, rollback_snapshot);
         let must_fit = match change {
             SchemaChange::WidenColumn { from, .. } => Some(from.clone()),
             _ => None,

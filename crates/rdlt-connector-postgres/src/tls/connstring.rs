@@ -5,7 +5,7 @@
 //! bare parse error.
 
 use super::policy::{
-    RootCert, TlsConfigError, TlsMode, TlsPolicy, resolve_policy, validate_credentials,
+    PemSource, TlsConfigError, TlsMode, TlsPolicy, resolve_policy, validate_credentials,
 };
 
 /// A fully parsed connection: the driver config (TLS trio stripped,
@@ -74,7 +74,7 @@ pub fn parse_conn(conn: &str, block: Option<&TlsPolicy>) -> Result<ParsedConn, T
     let merge = |param: &'static str,
                  param_field: &'static str,
                  conn_value: Option<String>,
-                 field: &mut Option<RootCert>|
+                 field: &mut Option<PemSource>|
      -> Result<(), TlsConfigError> {
         let Some(conn_value) = conn_value else {
             return Ok(());
@@ -82,7 +82,7 @@ pub fn parse_conn(conn: &str, block: Option<&TlsPolicy>) -> Result<ParsedConn, T
         // `sslrootcert=system` (libpq 16+) = the platform store — our
         // native-roots default, i.e. an EMPTY root_cert.
         if param == "sslrootcert" && conn_value == "system" {
-            if let Some(RootCert(existing)) = field {
+            if let Some(PemSource(existing)) = field {
                 return Err(TlsConfigError::ConnParamConflict {
                     param,
                     param_field,
@@ -93,7 +93,7 @@ pub fn parse_conn(conn: &str, block: Option<&TlsPolicy>) -> Result<ParsedConn, T
             return Ok(());
         }
         match field {
-            Some(RootCert(existing)) if *existing != conn_value => {
+            Some(PemSource(existing)) if *existing != conn_value => {
                 Err(TlsConfigError::ConnParamConflict {
                     param,
                     param_field,
@@ -103,7 +103,7 @@ pub fn parse_conn(conn: &str, block: Option<&TlsPolicy>) -> Result<ParsedConn, T
             }
             Some(_) => Ok(()),
             None => {
-                *field = Some(RootCert(conn_value));
+                *field = Some(PemSource(conn_value));
                 Ok(())
             }
         }
@@ -352,7 +352,7 @@ mod tests {
         .expect("url form");
         assert_eq!(
             parsed.policy.root_cert,
-            Some(RootCert("/etc/ca.pem".into()))
+            Some(PemSource("/etc/ca.pem".into()))
         );
         // libpq's verify-full spelling (which the driver itself rejects)
         // translates into the policy mode.
@@ -379,10 +379,10 @@ mod tests {
         .expect("kv form");
         assert_eq!(
             parsed.policy.root_cert,
-            Some(RootCert("/my ca/ca.pem".into()))
+            Some(PemSource("/my ca/ca.pem".into()))
         );
-        assert_eq!(parsed.policy.client_cert, Some(RootCert("/c.pem".into())));
-        assert_eq!(parsed.policy.client_key, Some(RootCert("/k.pem".into())));
+        assert_eq!(parsed.policy.client_cert, Some(PemSource("/c.pem".into())));
+        assert_eq!(parsed.policy.client_key, Some(PemSource("/k.pem".into())));
         // The remainder reached the driver intact.
         assert_eq!(parsed.pg.get_user(), Some("u"));
 
@@ -394,7 +394,7 @@ mod tests {
     #[test]
     fn conn_and_block_values_must_agree() {
         let block = TlsPolicy {
-            root_cert: Some(RootCert("/etc/other.pem".into())),
+            root_cert: Some(PemSource("/etc/other.pem".into())),
             ..TlsPolicy::default()
         };
         // Disagreement: typed, names both sides.
@@ -408,11 +408,11 @@ mod tests {
         parse_conn("host=h sslrootcert=/etc/other.pem", Some(&block)).expect("agreeing dup");
         // Split credential across sources: cert in string, key in block.
         let block = TlsPolicy {
-            client_key: Some(RootCert("/k.pem".into())),
+            client_key: Some(PemSource("/k.pem".into())),
             ..TlsPolicy::default()
         };
         let parsed = parse_conn("host=h sslcert=/c.pem", Some(&block)).expect("split");
-        assert_eq!(parsed.policy.client_cert, Some(RootCert("/c.pem".into())));
+        assert_eq!(parsed.policy.client_cert, Some(PemSource("/c.pem".into())));
         // …and the both-or-neither rule still bites across sources.
         let err = parse_conn("host=h sslcert=/c.pem", None).unwrap_err();
         assert!(err.to_string().contains("client_key is missing"), "{err}");

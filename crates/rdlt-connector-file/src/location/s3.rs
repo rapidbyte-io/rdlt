@@ -6,7 +6,7 @@
 use futures::StreamExt;
 use object_store::ObjectStore;
 use object_store::aws::{AmazonS3, AmazonS3Builder};
-use rdlt_connector::{DestError, SourceError};
+use rdlt_connector::{DestinationError, SourceError};
 use serde::{Deserialize, Serialize};
 
 use rdlt_connector::Secret;
@@ -128,8 +128,11 @@ impl S3Location {
 
     /// Write-side connect: `prefix` is the destination's key prefix; every
     /// staged, published, state, and receipt key hangs under it.
-    pub(crate) fn connect_for_dest(options: &S3Options, prefix: String) -> Result<Self, DestError> {
-        Self::build(options, prefix).map_err(DestError::fatal)
+    pub(crate) fn connect_for_dest(
+        options: &S3Options,
+        prefix: String,
+    ) -> Result<Self, DestinationError> {
+        Self::build(options, prefix).map_err(DestinationError::fatal)
     }
 
     fn build(options: &S3Options, prefix: String) -> Result<Self, String> {
@@ -152,7 +155,7 @@ impl S3Location {
     }
 
     /// Read one document's bytes (state / commit log); `None` when absent.
-    pub(crate) async fn read_doc(&self, name: &str) -> Result<Option<Vec<u8>>, DestError> {
+    pub(crate) async fn read_doc(&self, name: &str) -> Result<Option<Vec<u8>>, DestinationError> {
         match self.store.get(&self.key(name)).await {
             Ok(result) => Ok(Some(result.bytes().await.map_err(store_err)?.to_vec())),
             Err(object_store::Error::NotFound { .. }) => Ok(None),
@@ -162,7 +165,7 @@ impl S3Location {
 
     /// Put raw bytes at `tail` (atomic per key: no partial object is ever
     /// visible under the final name).
-    pub(crate) async fn put(&self, tail: &str, bytes: Vec<u8>) -> Result<(), DestError> {
+    pub(crate) async fn put(&self, tail: &str, bytes: Vec<u8>) -> Result<(), DestinationError> {
         self.store
             .put(&self.key(tail), bytes::Bytes::from(bytes).into())
             .await
@@ -171,7 +174,11 @@ impl S3Location {
     }
 
     /// COPY `from_tail` → `to_tail` (per-key atomic publish).
-    pub(crate) async fn copy(&self, from_tail: &str, to_tail: &str) -> Result<(), DestError> {
+    pub(crate) async fn copy(
+        &self,
+        from_tail: &str,
+        to_tail: &str,
+    ) -> Result<(), DestinationError> {
         self.store
             .copy(&self.key(from_tail), &self.key(to_tail))
             .await
@@ -180,7 +187,7 @@ impl S3Location {
 
     /// Delete `tail`; a replayed finalize may find it already gone, which is
     /// success (idempotent).
-    pub(crate) async fn delete_idempotent(&self, tail: &str) -> Result<(), DestError> {
+    pub(crate) async fn delete_idempotent(&self, tail: &str) -> Result<(), DestinationError> {
         match self.store.delete(&self.key(tail)).await {
             Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
             Err(e) => Err(store_err(e)),
@@ -198,7 +205,7 @@ impl S3Location {
     pub(crate) async fn list_keys(
         &self,
         tail: &str,
-    ) -> Result<Vec<object_store::path::Path>, DestError> {
+    ) -> Result<Vec<object_store::path::Path>, DestinationError> {
         let mut listing = self.store.list(Some(&self.key(tail)));
         let mut keys = Vec::new();
         while let Some(entry) = listing.next().await {
@@ -208,7 +215,10 @@ impl S3Location {
     }
 
     /// Delete a full object key (already resolved by a prior listing).
-    pub(crate) async fn delete_key(&self, key: &object_store::path::Path) -> Result<(), DestError> {
+    pub(crate) async fn delete_key(
+        &self,
+        key: &object_store::path::Path,
+    ) -> Result<(), DestinationError> {
         self.store.delete(key).await.map_err(store_err)
     }
 
@@ -221,7 +231,7 @@ impl S3Location {
     pub(crate) async fn get_key(
         &self,
         key: &object_store::path::Path,
-    ) -> Result<Vec<u8>, DestError> {
+    ) -> Result<Vec<u8>, DestinationError> {
         Ok(self
             .store
             .get(key)

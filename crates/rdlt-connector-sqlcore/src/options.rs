@@ -137,7 +137,7 @@ pub struct TableOptions {
     /// untouched. NULL is not a scope. Keyed structured tables only; not
     /// valid with scd2.
     #[serde(default)]
-    pub merge_key: Option<Vec<String>>,
+    pub merge_scope: Option<Vec<String>>,
 }
 
 /// Destination-wide defaults + per-table overrides.
@@ -172,7 +172,7 @@ impl DestOptions {
                 .unwrap_or_default();
             check_hard_delete(table, opts, strategy)?;
             check_dedup_sort(table, opts)?;
-            check_merge_key(table, opts, strategy)?;
+            check_merge_scope(table, opts, strategy)?;
             check_scd2(table, opts, strategy)?;
         }
         Ok(())
@@ -209,8 +209,10 @@ impl DestOptions {
         self.tables.get(table).and_then(|t| t.dedup_sort.as_ref())
     }
 
-    pub fn merge_key_for(&self, table: &str) -> Option<&[String]> {
-        self.tables.get(table).and_then(|t| t.merge_key.as_deref())
+    pub fn merge_scope_for(&self, table: &str) -> Option<&[String]> {
+        self.tables
+            .get(table)
+            .and_then(|t| t.merge_scope.as_deref())
     }
 }
 
@@ -242,27 +244,27 @@ fn check_dedup_sort(table: &str, opts: &TableOptions) -> Result<(), String> {
     Ok(())
 }
 
-fn check_merge_key(
+fn check_merge_scope(
     table: &str,
     opts: &TableOptions,
     strategy: MergeStrategy,
 ) -> Result<(), String> {
-    let Some(scope) = &opts.merge_key else {
+    let Some(scope) = &opts.merge_scope else {
         return Ok(());
     };
     if scope.is_empty() {
-        return Err(format!("tables.{table}.merge_key: empty column list"));
+        return Err(format!("tables.{table}.merge_scope: empty column list"));
     }
     if scope.iter().any(|c| c.trim().is_empty()) {
-        return Err(format!("tables.{table}.merge_key: empty column name"));
+        return Err(format!("tables.{table}.merge_scope: empty column name"));
     }
     let mut seen = std::collections::BTreeSet::new();
     if let Some(dup) = scope.iter().find(|c| !seen.insert(c.as_str())) {
         return Err(format!(
-            "tables.{table}.merge_key: column `{dup}` listed twice"
+            "tables.{table}.merge_scope: column `{dup}` listed twice"
         ));
     }
-    // merge_key COMPOSES with scd2 as SCOPED RETIREMENT — absent keys retire
+    // merge_scope COMPOSES with scd2 as SCOPED RETIREMENT — absent keys retire
     // only within delivered scopes. That reading requires `absent: retire`;
     // under `keep` the option would be silently inert, so reject it rather than
     // ignore it.
@@ -271,7 +273,7 @@ fn check_merge_key(
             opts.scd2.as_ref().map(|s| s.absent).unwrap_or_default() == AbsentPolicy::Retire;
         if !retire {
             return Err(format!(
-                "tables.{table}.merge_key: with merge_strategy scd2 this \
+                "tables.{table}.merge_scope: with merge_strategy scd2 this \
                  scopes RETIREMENT and requires scd2 {{absent: retire}} \
                  — under `keep` it would be silently inert"
             ));
@@ -399,23 +401,23 @@ mod tests {
             (serde_json::json!(["day", "day"]), "listed twice"),
         ] {
             let bad = DestOptions::from_value(serde_json::json!({
-                "tables": {"t": {"merge_key": scope}}
+                "tables": {"t": {"merge_scope": scope}}
             }))
             .unwrap_err();
             assert!(bad.contains(needle), "{bad}");
         }
-        // merge_key + scd2 under KEEP is the inert-option rejection; under
+        // merge_scope + scd2 under KEEP is the inert-option rejection; under
         // RETIRE it is VALID (scoped retirement).
         let bad = DestOptions::from_value(serde_json::json!({
-            "tables": {"t": {"merge_strategy": "scd2", "merge_key": ["day"]}}
+            "tables": {"t": {"merge_strategy": "scd2", "merge_scope": ["day"]}}
         }))
         .unwrap_err();
         assert!(
-            bad.contains("tables.t.merge_key") && bad.contains("absent: retire"),
+            bad.contains("tables.t.merge_scope") && bad.contains("absent: retire"),
             "{bad}"
         );
         DestOptions::from_value(serde_json::json!({
-            "tables": {"t": {"merge_strategy": "scd2", "merge_key": ["day"],
+            "tables": {"t": {"merge_strategy": "scd2", "merge_scope": ["day"],
                               "scd2": {"absent": "retire"}}}
         }))
         .expect("scoped retirement is valid");
@@ -461,7 +463,7 @@ mod tests {
                 "dims": {"merge_strategy": "scd2", "scd2": {"absent": "retire"}},
                 "facts": {"hard_delete": "is_deleted",
                            "dedup_sort": {"column": "seq", "order": "desc"},
-                           "merge_key": ["day", "tenant"]}
+                           "merge_scope": ["day", "tenant"]}
             }
         }))
         .expect("valid options");
@@ -476,7 +478,7 @@ mod tests {
             ("seq", SortOrder::Desc)
         );
         assert_eq!(
-            ok.merge_key_for("facts"),
+            ok.merge_scope_for("facts"),
             Some(&["day".to_string(), "tenant".to_string()][..])
         );
         assert_eq!(ok.dedup_sort_for("other"), None);

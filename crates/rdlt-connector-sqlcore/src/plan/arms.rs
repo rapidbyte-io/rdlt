@@ -22,7 +22,7 @@ impl HardDelete {
     pub fn new(column: &str, root_schema: &TableSchema, dialect: &dyn MergeDialect) -> Self {
         use rdlt_connector::core::{ColumnType, LogicalType};
         let is_bool = matches!(
-            root_schema.column(column).map(|c| &c.ty),
+            root_schema.column(column).map(|c| &c.column_type),
             Some(ColumnType::Scalar {
                 scalar: LogicalType::Bool
             })
@@ -45,17 +45,20 @@ impl HardDelete {
 /// Everything a strategy arm needs about one table's publish.
 pub struct MergePlan<'a> {
     pub dialect: &'a dyn MergeDialect,
-    pub target: &'a str,
-    pub stage: &'a str,
-    pub cols: &'a str,
+    /// Fields suffixed `_sql` hold pre-rendered, already-quoted SQL operands the
+    /// arm interpolates verbatim; unsuffixed fields (`key`, `merge_scope`) carry
+    /// raw column names the arm quotes itself.
+    pub target_sql: &'a str,
+    pub stage_sql: &'a str,
+    pub cols_sql: &'a str,
     pub schema: &'a TableSchema,
     pub key: &'a [String],
-    pub root_stage: String,
+    pub root_stage_sql: String,
     pub is_child: bool,
     pub hard_delete: Option<HardDelete>,
     /// Ordered in-load survivor selection; None keeps arrival-order last-wins.
     pub dedup_sort: Option<&'a DedupSort>,
-    /// The table's merge_key columns. For
+    /// The table's merge_scope columns. For
     /// non-scd2 strategies the caller runs scope REPLACEMENT before the arm;
     /// for scd2 this SCOPES RETIREMENT instead (retire absent keys only
     /// within delivered scopes).
@@ -65,7 +68,7 @@ pub struct MergePlan<'a> {
 impl std::fmt::Debug for MergePlan<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MergePlan")
-            .field("target", &self.target)
+            .field("target_sql", &self.target_sql)
             .finish_non_exhaustive()
     }
 }
@@ -100,7 +103,7 @@ impl MergePlan<'_> {
             }
             None => String::new(),
         };
-        self.dialect.dedup_subquery(identity, &sort, self.stage)
+        self.dialect.dedup_subquery(identity, &sort, self.stage_sql)
     }
 
     /// `SET c = EXCLUDED.c, …` over the non-identity columns.
@@ -125,7 +128,7 @@ impl MergePlan<'_> {
         format!(
             "(SELECT {id} FROM (SELECT DISTINCT ON ({id}) * FROM {} \
              ORDER BY {id}, {} DESC) d WHERE {})",
-            self.root_stage,
+            self.root_stage_sql,
             self.dialect.arrival_order(),
             hd.flagged
         )
@@ -168,7 +171,7 @@ pub fn scope_replace_sql(
 /// structured_merge_keys guard, conformance-pinned). Direct SPI drivers
 /// bypassing the engine inherit that same obligation.
 pub fn keyed_delete_insert_sql(plan: &MergePlan<'_>) -> Vec<String> {
-    let (target, stage, cols) = (plan.target, plan.stage, plan.cols);
+    let (target, stage, cols) = (plan.target_sql, plan.stage_sql, plan.cols_sql);
     let key_list = plan.key_list();
     let keep = plan
         .hard_delete
@@ -186,7 +189,7 @@ pub fn keyed_delete_insert_sql(plan: &MergePlan<'_>) -> Vec<String> {
 
 /// Keyed structured upsert: conflict-update on the merge key.
 pub fn keyed_upsert_sql(plan: &MergePlan<'_>) -> Vec<String> {
-    let (target, cols) = (plan.target, plan.cols);
+    let (target, cols) = (plan.target_sql, plan.cols_sql);
     let key_list = plan.key_list();
     let mut out = Vec::new();
     if let Some(hd) = &plan.hard_delete {
@@ -221,7 +224,7 @@ pub fn keyed_upsert_sql(plan: &MergePlan<'_>) -> Vec<String> {
 
 /// Shredded identity delete-insert, with the hard-delete arm.
 pub fn identity_delete_insert_sql(plan: &MergePlan<'_>) -> Vec<String> {
-    let (target, cols) = (plan.target, plan.cols);
+    let (target, cols) = (plan.target_sql, plan.cols_sql);
     let id = plan.quote(system_columns::ID);
     let id_col = if plan.is_child {
         plan.quote(system_columns::ROOT_ID)
@@ -244,7 +247,7 @@ pub fn identity_delete_insert_sql(plan: &MergePlan<'_>) -> Vec<String> {
         // arrival order breaks ties, so "last wins" is real.
         format!(
             "DELETE FROM {target} WHERE {id_col} IN (SELECT {id} FROM {})",
-            plan.root_stage
+            plan.root_stage_sql
         ),
         format!(
             "INSERT INTO {target} ({cols}) SELECT {cols} FROM {} deduped{keep}",
@@ -258,7 +261,7 @@ pub fn identity_delete_insert_sql(plan: &MergePlan<'_>) -> Vec<String> {
 /// expression is TRANSACTION-stable, so every statement in this publish sees
 /// the same instant; redelivery re-executes nothing.
 pub fn scd2_merge_sql(plan: &MergePlan<'_>, scd2: &Scd2Options) -> Vec<String> {
-    let (target, cols) = (plan.target, plan.cols);
+    let (target, cols) = (plan.target_sql, plan.cols_sql);
     // A caller-supplied boundary beats the transaction timestamp. The
     // value was VALIDATED as a timestamp at the options layer — the quoted
     // literal here can never carry raw user SQL.
@@ -318,7 +321,7 @@ pub fn scd2_merge_sql(plan: &MergePlan<'_>, scd2: &Scd2Options) -> Vec<String> {
          WHERE NOT EXISTS ( \
              SELECT 1 FROM {target} t WHERE {is_active} AND {key_match})"
     ));
-    // Full-feed absence semantics on request: with a merge_key, retirement is
+    // Full-feed absence semantics on request: with a merge_scope, retirement is
     // SCOPED to the delivered scopes (NULL is not a scope); without one, every
     // absent active key retires.
     if scd2.absent == AbsentPolicy::Retire {
@@ -336,7 +339,7 @@ pub fn scd2_merge_sql(plan: &MergePlan<'_>, scd2: &Scd2Options) -> Vec<String> {
                     .join(" AND ");
                 format!(
                     " AND ({cols}) IN (SELECT {cols} FROM {} WHERE {not_null})",
-                    plan.stage
+                    plan.stage_sql
                 )
             }
             _ => String::new(),
@@ -351,11 +354,11 @@ pub fn scd2_merge_sql(plan: &MergePlan<'_>, scd2: &Scd2Options) -> Vec<String> {
     out
 }
 
-/// The per-table single-commit-unit violation: scoped merge_key replacement
+/// The per-table single-commit-unit violation: scoped merge_scope replacement
 /// and scd2 `absent: retire` share one rule and one message.
 pub fn single_unit_violation(table: &str, scoped: bool) -> String {
     let what = if scoped {
-        "merge_key scope replacement"
+        "merge_scope replacement"
     } else {
         "scd2 `absent: retire`"
     };

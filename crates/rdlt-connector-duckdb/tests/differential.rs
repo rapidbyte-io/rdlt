@@ -48,7 +48,7 @@ impl Source for Feed {
     async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
         Ok(vec![
             StreamSpec::new(self.stream)
-                .structured()
+                .with_structured()
                 .with_primary_key(self.key.iter().copied()),
         ])
     }
@@ -365,7 +365,7 @@ async fn differential_scd2_history() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn differential_merge_key_scope_and_null_scope() {
+async fn differential_merge_scope_scope_and_null_scope() {
     if !rdlt_testkit::containers::runtime_available() {
         eprintln!("SKIP: no container runtime — differential cell not run");
         return;
@@ -391,7 +391,7 @@ async fn differential_merge_key_scope_and_null_scope() {
             ]),
             feed(&[(Some(1), Some(1), Some("d1-a2"))]),
         ],
-        serde_json::json!({"tables": {"kv": {"merge_key": ["day"]}}}),
+        serde_json::json!({"tables": {"kv": {"merge_scope": ["day"]}}}),
         WriteMode::Merge {
             key: vec!["k".into()],
         },
@@ -399,7 +399,7 @@ async fn differential_merge_key_scope_and_null_scope() {
         &["k", "day", "v"],
     )
     .await;
-    assert_equivalent("merge_key", pg, duck);
+    assert_equivalent("merge_scope", pg, duck);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -465,7 +465,7 @@ async fn differential_scd2_scoped_retirement() {
             "merge_strategy": "scd2",
             "tables": {"kv": {"scd2": {"absent": "retire",
                                         "active_record_timestamp": "9999-12-31T00:00:00Z"},
-                               "merge_key": ["day"]}}
+                               "merge_scope": ["day"]}}
         }),
         WriteMode::Merge {
             key: vec!["k".into()],

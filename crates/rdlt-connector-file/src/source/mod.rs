@@ -127,7 +127,7 @@ impl Source for FileSource {
                     }
                     // Parquet streams are structured: Arrow batches, run-level
                     // provenance only.
-                    Format::Parquet => spec = spec.structured(),
+                    Format::Parquet => spec = spec.with_structured(),
                 }
                 spec
             })

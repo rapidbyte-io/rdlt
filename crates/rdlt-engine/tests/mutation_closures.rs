@@ -237,13 +237,13 @@ impl rdlt_connector::Destination for TransientCommitDest {
     fn spec(&self) -> rdlt_connector::ConnectorSpec {
         self.inner.spec()
     }
-    fn capabilities(&self) -> rdlt_connector::DestCapabilities {
+    fn capabilities(&self) -> rdlt_connector::DestinationCapabilities {
         self.inner.capabilities()
     }
     async fn open(
         &self,
         ctx: rdlt_connector::OpenCtx,
-    ) -> Result<Box<dyn rdlt_connector::LoadSession>, rdlt_connector::DestError> {
+    ) -> Result<Box<dyn rdlt_connector::LoadSession>, rdlt_connector::DestinationError> {
         let session = self.inner.open(ctx).await?;
         Ok(Box::new(TransientCommitSession {
             inner: session,
@@ -263,33 +263,33 @@ impl rdlt_connector::LoadSession for TransientCommitSession {
         &mut self,
         schema: &rdlt_connector::core::TableSchema,
         mode: &rdlt_core::WriteMode,
-    ) -> Result<(), rdlt_connector::DestError> {
+    ) -> Result<(), rdlt_connector::DestinationError> {
         self.inner.ensure_table(schema, mode).await
     }
     async fn write(
         &mut self,
         table: &rdlt_core::TableName,
         batch: rdlt_connector::RecordBatch,
-    ) -> Result<(), rdlt_connector::DestError> {
+    ) -> Result<(), rdlt_connector::DestinationError> {
         self.inner.write(table, batch).await
     }
     async fn read_state(
         &mut self,
         pipeline: &rdlt_core::PipelineId,
-    ) -> Result<Option<rdlt_core::StateDoc>, rdlt_connector::DestError> {
+    ) -> Result<Option<rdlt_core::StateDoc>, rdlt_connector::DestinationError> {
         self.inner.read_state(pipeline).await
     }
     async fn commit(
         &mut self,
         meta: rdlt_connector::CommitMeta,
-    ) -> Result<rdlt_connector::CommitReceipt, rdlt_connector::DestError> {
+    ) -> Result<rdlt_connector::CommitReceipt, rdlt_connector::DestinationError> {
         use std::sync::atomic::Ordering;
         if self
             .remaining
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
             .is_ok()
         {
-            return Err(rdlt_connector::DestError::transient(
+            return Err(rdlt_connector::DestinationError::transient(
                 "injected transient commit failure",
             ));
         }

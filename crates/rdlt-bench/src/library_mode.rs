@@ -39,10 +39,8 @@ fn err(e: impl std::fmt::Display) -> BenchError {
 /// Build the pipeline from the shared spec model, then run it in-process while
 /// a collector timestamps every event (the attribution detail scoreboards use).
 async fn drive(spec: Spec) -> Result<RunOutcome> {
-    let mut pipeline = pipeline_spec::build_pipeline(&spec).map_err(err)?;
-    let mut stream = pipeline
-        .events()
-        .ok_or_else(|| BenchError("pipeline already ran".into()))?;
+    let pipeline = pipeline_spec::build_pipeline(&spec).map_err(err)?;
+    let mut stream = pipeline.events();
     let started = Instant::now();
     let collector = tokio::spawn(async move {
         let mut log = Vec::new();
@@ -51,8 +49,8 @@ async fn drive(spec: Spec) -> Result<RunOutcome> {
         }
         log
     });
+    // `run` consumes the pipeline, dropping the event sender, which ends the collector.
     let report = pipeline.run().await.map_err(err)?;
-    drop(pipeline); // close the broadcast sender so the collector ends
     let events = collector.await.map_err(err)?;
     Ok(RunOutcome { report, events })
 }

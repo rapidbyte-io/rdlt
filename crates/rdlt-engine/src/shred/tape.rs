@@ -10,7 +10,7 @@
 
 use std::collections::VecDeque;
 
-use rdlt_connector::{DestCapabilities, StreamSpec};
+use rdlt_connector::{DestinationCapabilities, StreamSpec};
 use rdlt_core::identity::child_row_id;
 use rdlt_core::naming::child_table_name;
 use rdlt_core::{ParentLink, RdltError, RowId, TableName};
@@ -50,18 +50,26 @@ struct Queued {
     pos: Option<u64>,
 }
 
+/// Shreds a stream off the *tape*: the flat slab arena the parse lays every JSON
+/// node into — one append-only buffer walked breadth-first, never a per-row owned
+/// tree. Observation and drain read straight off that slab, so no intermediate
+/// tree is ever materialized.
 pub(crate) struct TapeShredder {
     spec: StreamSpec,
-    caps: DestCapabilities,
+    caps: DestinationCapabilities,
     /// Root first, children after, in first-seen order (shared state type with
     /// the tree path).
     tables: Vec<TableBuffer>,
     /// Rollback point for Discard* policy enforcement.
-    pre_batch: Vec<Vec<(String, ColState)>>,
+    rollback_snapshot: Vec<Vec<(String, ColState)>>,
 }
 
 impl TapeShredder {
-    pub(crate) fn new(spec: StreamSpec, caps: DestCapabilities, root_table: TableName) -> Self {
+    pub(crate) fn new(
+        spec: StreamSpec,
+        caps: DestinationCapabilities,
+        root_table: TableName,
+    ) -> Self {
         let mut root = TableBuffer::new(root_table, None, caps.ident_rules);
         // Hints pin root-level scalar columns (they win over inference).
         for (column, ty) in &spec.type_hints {
@@ -71,7 +79,7 @@ impl TapeShredder {
             spec,
             caps,
             tables: vec![root],
-            pre_batch: Vec::new(),
+            rollback_snapshot: Vec::new(),
         }
     }
 
@@ -85,7 +93,7 @@ impl TapeShredder {
     ) -> Result<Vec<LoadItem>, PushError> {
         // Snapshot observation states: Discard* enforcement rolls offending
         // columns back to exactly this point.
-        self.pre_batch = self.tables.iter().map(|t| t.columns.clone()).collect();
+        self.rollback_snapshot = self.tables.iter().map(|t| t.columns.clone()).collect();
 
         let mut arena = Arena::default();
         let roots = arena.parse_rows(bytes).map_err(PushError::Json)?;
@@ -125,7 +133,7 @@ impl TapeShredder {
         drain_tables(
             &mut self.tables,
             &mut drain_rows,
-            &self.pre_batch,
+            &self.rollback_snapshot,
             ctx.registry,
             ctx.load_id,
             ctx.mode,

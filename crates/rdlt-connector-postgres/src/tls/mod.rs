@@ -20,4 +20,4 @@ mod rustls_config;
 
 pub use connect::{ConnectError, ConnectResult, TlsFailure, connect};
 pub use connstring::{ParsedConn, parse_conn};
-pub use policy::{RootCert, TlsConfigError, TlsMode, TlsPolicy};
+pub use policy::{PemSource, TlsConfigError, TlsMode, TlsPolicy};

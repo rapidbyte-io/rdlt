@@ -23,9 +23,9 @@ use async_trait::async_trait;
 
 pub use arrow_array as arrow;
 pub use arrow_array::RecordBatch;
-pub use capabilities::DestCapabilities;
+pub use capabilities::DestinationCapabilities;
 pub use channel::{ChannelClosed, PushPayload, RecordsIn, RecordsOut, SourcePush, records_channel};
-pub use error::{BoxError, DestError, SourceError};
+pub use error::{BoxError, DestinationError, SourceError};
 /// The rdlt vocabulary. Connectors MUST take these types from here (single-version
 /// identity across the workspace).
 pub use rdlt_core as core;
@@ -82,11 +82,11 @@ pub trait Destination: Send + Sync + 'static {
 
     /// Truthful capability declaration — the engine plans from this and will not
     /// re-verify at runtime.
-    fn capabilities(&self) -> DestCapabilities;
+    fn capabilities(&self) -> DestinationCapabilities;
 
     /// Open a load session. MUST make uncommitted staged data from any previous
     /// (crashed) session invisible and reclaimable.
-    async fn open(&self, ctx: OpenCtx) -> Result<Box<dyn LoadSession>, DestError>;
+    async fn open(&self, ctx: OpenCtx) -> Result<Box<dyn LoadSession>, DestinationError>;
 }
 
 /// Session context. Exhaustive pub-field struct; [`OpenCtx::new`] as hedge.
@@ -114,20 +114,27 @@ pub trait LoadSession: Send {
         &mut self,
         schema: &TableSchema,
         mode: &WriteMode,
-    ) -> Result<(), DestError>;
+    ) -> Result<(), DestinationError>;
 
     /// Write one batch. The engine guarantees `batch` conforms exactly to the last
     /// ensured schema for `table` and that per-table batches arrive in order. Delivery
     /// is at-least-once — safe because staged writes stay invisible until commit and a
     /// crashed session's staging is reclaimed on the next open.
-    async fn write(&mut self, table: &TableName, batch: RecordBatch) -> Result<(), DestError>;
+    async fn write(
+        &mut self,
+        table: &TableName,
+        batch: RecordBatch,
+    ) -> Result<(), DestinationError>;
 
     /// Atomically publish all writes since the last commit AND persist `meta.state`.
     /// Re-committing the same `(load_id, commit_seq)` returns the prior receipt
     /// without re-publishing.
-    async fn commit(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestError>;
+    async fn commit(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestinationError>;
 
     /// Recover the state persisted by the latest successful commit, or `None` for a
     /// fresh pipeline.
-    async fn read_state(&mut self, pipeline: &PipelineId) -> Result<Option<StateDoc>, DestError>;
+    async fn read_state(
+        &mut self,
+        pipeline: &PipelineId,
+    ) -> Result<Option<StateDoc>, DestinationError>;
 }

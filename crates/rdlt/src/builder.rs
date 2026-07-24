@@ -100,19 +100,19 @@ impl<S: Source, D: Destination> PipelineBuilder<S, D> {
     /// against the declared destination capabilities.
     pub fn build(self) -> Result<Pipeline, RdltError> {
         let caps = self.destination.capabilities();
-        let merge_requested = merge_streams(&self.config.write_mode, &self.config.write_modes);
-        if !caps.merge && !merge_requested.is_empty() {
+        let merge = merge_streams(&self.config.write_mode, &self.config.write_modes);
+        if !caps.merge && merge.any() {
             return Err(RdltError::config(format!(
                 "destination `{}` does not support Merge (requested {})",
                 self.destination.spec().name,
-                if merge_requested.contains(&None) {
+                if merge.default {
                     "as the default write mode".to_owned()
                 } else {
                     format!(
                         "for streams: {}",
-                        merge_requested
+                        merge
+                            .streams
                             .iter()
-                            .flatten()
                             .map(|s| s.as_str())
                             .collect::<Vec<_>>()
                             .join(", ")
@@ -120,6 +120,13 @@ impl<S: Source, D: Destination> PipelineBuilder<S, D> {
                 }
             )));
         }
+        // Merge-key precedence: `WriteMode::Merge { key }` and a source's
+        // `StreamSpec::primary_key` are NOT independent — for a structured
+        // stream the two must AGREE (name the same columns, as a set), and the
+        // engine enforces that agreement at plan time in `validate_streams`
+        // once the source's streams are known. `build` runs before any stream
+        // exists, so it can only enforce the stream-agnostic half: a Merge
+        // write mode must carry at least one key column.
         for (stream, mode) in &self.config.write_modes {
             if let WriteMode::Merge { key } = mode
                 && key.is_empty()
@@ -135,32 +142,45 @@ impl<S: Source, D: Destination> PipelineBuilder<S, D> {
             return Err(RdltError::config("Merge requires at least one key column"));
         }
         Ok(Pipeline {
-            engine: Some(Engine::new(self.config, self.source, self.destination)),
+            engine: Engine::new(self.config, self.source, self.destination),
         })
     }
 }
 
-/// Which streams (None = the default mode) request Merge.
+/// Which streams request Merge: the default write mode (`default`) and any
+/// named per-stream overrides (`streams`). Replaces an earlier
+/// `Vec<Option<StreamName>>` whose `None` element was an easy-to-miss sentinel
+/// for "the default mode".
+struct MergeRequests {
+    default: bool,
+    streams: Vec<StreamName>,
+}
+
+impl MergeRequests {
+    /// Any Merge requested at all — default mode or a named stream.
+    fn any(&self) -> bool {
+        self.default || !self.streams.is_empty()
+    }
+}
+
 fn merge_streams(
     default: &WriteMode,
     overrides: &BTreeMap<StreamName, WriteMode>,
-) -> Vec<Option<StreamName>> {
-    let mut requesting = Vec::new();
-    if matches!(default, WriteMode::Merge { .. }) {
-        requesting.push(None);
+) -> MergeRequests {
+    MergeRequests {
+        default: matches!(default, WriteMode::Merge { .. }),
+        streams: overrides
+            .iter()
+            .filter(|(_, mode)| matches!(mode, WriteMode::Merge { .. }))
+            .map(|(stream, _)| stream.clone())
+            .collect(),
     }
-    for (stream, mode) in overrides {
-        if matches!(mode, WriteMode::Merge { .. }) {
-            requesting.push(Some(stream.clone()));
-        }
-    }
-    requesting
 }
 
 /// A configured, runnable pipeline.
 #[derive(Debug)]
 pub struct Pipeline {
-    engine: Option<Engine>,
+    engine: Engine,
 }
 
 impl Pipeline {
@@ -170,23 +190,35 @@ impl Pipeline {
 
     /// Token for cancelling a running pipeline; safe at any instant (cancellation is
     /// recovered exactly like a crash).
-    pub fn cancellation_token(&self) -> Option<tokio_util::sync::CancellationToken> {
-        self.engine.as_ref().map(Engine::cancellation_token)
+    pub fn cancellation_token(&self) -> tokio_util::sync::CancellationToken {
+        self.engine.cancellation_token()
     }
 
     /// Typed event stream (StreamStarted, BatchLoaded, SchemaEvolved, Committed, etc.).
-    /// Subscribe before calling [`Pipeline::run`]; `None` once the pipeline ran.
-    pub fn events(&self) -> Option<rdlt_engine::EventStream> {
-        self.engine.as_ref().map(Engine::events)
+    /// Subscribe before calling [`Pipeline::run`], which consumes the pipeline.
+    pub fn events(&self) -> rdlt_engine::EventStream {
+        self.engine.events()
     }
 
-    /// Run to completion. Resumable: after a crash or cancellation, constructing the
-    /// same pipeline again and calling `run` continues from committed state.
-    pub async fn run(&mut self) -> Result<RunReport, RdltError> {
-        let engine = self
-            .engine
-            .take()
-            .ok_or_else(|| RdltError::config("this pipeline was already run; build a new one"))?;
-        engine.run().await
+    /// Run to completion, CONSUMING the pipeline. Resumable: after a crash or
+    /// cancellation, build the same pipeline again and call `run` to continue from
+    /// committed state. Taking `self` by value makes "run the same pipeline twice"
+    /// a compile error instead of a runtime one — the engine is single-shot.
+    ///
+    /// ```compile_fail
+    /// # async fn demo() {
+    /// use rdlt::Pipeline;
+    /// use rdlt_testkit::{MemoryDestination, MemorySource};
+    /// let pipeline = Pipeline::builder("p")
+    ///     .source(MemorySource::default())
+    ///     .destination(MemoryDestination::new())
+    ///     .build()
+    ///     .unwrap();
+    /// let _ = pipeline.run().await;
+    /// let _ = pipeline.run().await; // moved by the first run — must NOT compile
+    /// # }
+    /// ```
+    pub async fn run(self) -> Result<RunReport, RdltError> {
+        self.engine.run().await
     }
 }

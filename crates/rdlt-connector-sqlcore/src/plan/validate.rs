@@ -2,7 +2,7 @@
 //! across every SQL destination. Each rule group is one `check_*` fn; the
 //! rejections are a typed [`ValidateError`] whose `Display` is the frozen
 //! message text (the postgres conformance cells pin these strings, and the
-//! destinations map the error to a fatal `DestError` at their SPI boundary).
+//! destinations map the error to a fatal `DestinationError` at their SPI boundary).
 
 use std::fmt;
 
@@ -115,21 +115,21 @@ impl fmt::Display for ValidateError {
             ),
             ValidateError::MergeKeyNeedsKeyed { table } => write!(
                 f,
-                "table `{table}`: merge_key requires a KEYED structured \
+                "table `{table}`: merge_scope requires a KEYED structured \
                  stream — shredded streams replace by root subtree"
             ),
             ValidateError::MergeKeyScd2NeedsRetire { table } => write!(
                 f,
-                "table `{table}`: merge_key with scd2 scopes RETIREMENT and \
+                "table `{table}`: merge_scope with scd2 scopes RETIREMENT and \
                  requires scd2 {{absent: retire}}"
             ),
             ValidateError::MergeKeyColMissing { table, col } => write!(
                 f,
-                "merge_key column `{col}` is not a column of table `{table}`"
+                "merge_scope column `{col}` is not a column of table `{table}`"
             ),
             ValidateError::MergeKeyColIsHardDelete { table, col } => write!(
                 f,
-                "table `{table}`: merge_key column `{col}` is the \
+                "table `{table}`: merge_scope column `{col}` is the \
                  hard_delete flag — a deletion flag is not a scope"
             ),
             ValidateError::UpsertNeedsKeyed { table } => write!(
@@ -153,7 +153,7 @@ impl fmt::Display for ValidateError {
 
 impl std::error::Error for ValidateError {}
 
-/// Merge-only options (strategy, dedup_sort, merge_key) under Append or
+/// Merge-only options (strategy, dedup_sort, merge_scope) under Append or
 /// Replace would be silently inert — reject typed instead. Only an EXPLICIT
 /// merge_strategy rejects; the unconfigured default does not.
 pub fn validate_non_merge(options: &DestOptions, table: &str) -> Result<(), ValidateError> {
@@ -163,7 +163,7 @@ pub fn validate_non_merge(options: &DestOptions, table: &str) -> Result<(), Vali
             "merge_strategy",
         ),
         (options.dedup_sort_for(table).is_some(), "dedup_sort"),
-        (options.merge_key_for(table).is_some(), "merge_key"),
+        (options.merge_scope_for(table).is_some(), "merge_scope"),
     ] {
         if declared {
             return Err(ValidateError::OptionRequiresMerge {
@@ -187,7 +187,7 @@ pub fn validate_merge(
     let strategy = options.strategy_for(table);
     check_hard_delete(options, table, facts)?;
     check_dedup_sort(options, table, key, facts)?;
-    check_merge_key(options, table, facts, strategy)?;
+    check_merge_scope(options, table, facts, strategy)?;
     check_upsert(strategy, facts.has_identity, table)?;
     check_scd2(options, table, facts, strategy)?;
     Ok(())
@@ -258,16 +258,16 @@ fn check_dedup_sort(
     Ok(())
 }
 
-/// merge_key (scope replacement) is keyed-structured only; under scd2 it scopes
+/// merge_scope (scope replacement) is keyed-structured only; under scd2 it scopes
 /// retirement and requires `absent: retire`; its columns must exist and may not
 /// be the hard_delete flag.
-fn check_merge_key(
+fn check_merge_scope(
     options: &DestOptions,
     table: &str,
     facts: &TableFacts<'_>,
     strategy: MergeStrategy,
 ) -> Result<(), ValidateError> {
-    let Some(scope) = options.merge_key_for(table) else {
+    let Some(scope) = options.merge_scope_for(table) else {
         return Ok(());
     };
     if facts.has_identity {
@@ -277,7 +277,7 @@ fn check_merge_key(
     }
     if strategy == MergeStrategy::Scd2 && options.scd2_for(table).absent != AbsentPolicy::Retire {
         // Belt: parse-time validation already rejects this; direct struct
-        // construction must not slip past it — merge_key with scd2 is scoped
+        // construction must not slip past it — merge_scope with scd2 is scoped
         // retirement and requires `absent: retire`.
         return Err(ValidateError::MergeKeyScd2NeedsRetire {
             table: table.to_owned(),

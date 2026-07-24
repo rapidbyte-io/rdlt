@@ -6,7 +6,7 @@
 //! (rdlt-connector-sqlcore) only.
 //!
 //! The full destination-options vocabulary (merge strategies, hard_delete,
-//! dedup_sort, merge_key, scd2) executes through the SHARED sqlcore shapes via
+//! dedup_sort, merge_scope, scd2) executes through the SHARED sqlcore shapes via
 //! [`dialect::DuckDialect`] — the same plans, validation, and typed errors as
 //! the postgres destination. `Json` columns land as native DuckDB JSON
 //! (probe-verified, tests/probes.rs).
@@ -24,7 +24,7 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use duckdb::Connection;
 use rdlt_connector::{
-    ConnectorSpec, DestCapabilities, DestError, Destination, LoadSession, OpenCtx,
+    ConnectorSpec, Destination, DestinationCapabilities, DestinationError, LoadSession, OpenCtx,
     core::{ColumnType, LogicalType, TableName, TableSchema, naming::IdentRules},
 };
 pub use rdlt_connector_sqlcore::{
@@ -60,7 +60,7 @@ impl std::fmt::Debug for DuckDb {
 
 impl DuckDb {
     /// Open (or create) a DuckDB database file as a destination.
-    pub fn open(path: impl Into<PathBuf>) -> Result<Self, DestError> {
+    pub fn open(path: impl Into<PathBuf>) -> Result<Self, DestinationError> {
         // A locked or I/O-pressured file is recoverable — classified
         // transient so the engine retries instead of aborting the run.
         let conn = Connection::open(path.into()).map_err(classify)?;
@@ -73,8 +73,8 @@ impl DuckDb {
 
     /// Strategy/hard-delete/refinement options — the SAME vocabulary as the
     /// postgres destination. Validated here; errors name the field.
-    pub fn options(mut self, options: DestOptions) -> Result<Self, DestError> {
-        options.validate().map_err(DestError::fatal)?;
+    pub fn options(mut self, options: DestOptions) -> Result<Self, DestinationError> {
+        options.validate().map_err(DestinationError::fatal)?;
         self.options = options;
         Ok(self)
     }
@@ -82,7 +82,7 @@ impl DuckDb {
     /// Cap DuckDB's own buffer/cache memory (e.g. `"512MB"`). DuckDB's default
     /// is a fraction of SYSTEM RAM, which dominates pipeline RSS on large-memory
     /// machines; ingestion workloads rarely need it.
-    pub fn memory_limit(self, limit: &str) -> Result<Self, DestError> {
+    pub fn memory_limit(self, limit: &str) -> Result<Self, DestinationError> {
         self.setting("memory_limit", limit)
     }
 
@@ -98,7 +98,7 @@ impl DuckDb {
         plural: &str,
         name: &str,
         stmt: SetupStmt,
-    ) -> Result<Self, DestError> {
+    ) -> Result<Self, DestinationError> {
         if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
             return Err(fatal(format!(
                 "duckdb {noun} `{name}`: {plural} must be bare identifiers \
@@ -117,7 +117,7 @@ impl DuckDb {
     /// threads, temp_directory, TimeZone, and the like. Validated + applied
     /// eagerly and replayed per session connection. The key must be a bare
     /// identifier; the value is escaped as a literal.
-    pub fn setting(self, key: &str, value: &str) -> Result<Self, DestError> {
+    pub fn setting(self, key: &str, value: &str) -> Result<Self, DestinationError> {
         self.declare_setup(
             "setting",
             "keys",
@@ -132,7 +132,7 @@ impl DuckDb {
     /// LOAD a DuckDB extension by name (bundled builds carry the core
     /// extensions statically — LOAD activates, no network install).
     /// Applied eagerly and replayed per session connection.
-    pub fn extension(self, name: &str) -> Result<Self, DestError> {
+    pub fn extension(self, name: &str) -> Result<Self, DestinationError> {
         self.declare_setup(
             "extension",
             "names",
@@ -143,7 +143,7 @@ impl DuckDb {
         )
     }
 
-    fn clone_conn(&self) -> Result<Connection, DestError> {
+    fn clone_conn(&self) -> Result<Connection, DestinationError> {
         let guard = self.db.lock().map_err(|_| fatal("connection poisoned"))?;
         let conn = guard.try_clone().map_err(fatal)?;
         // Fresh session: replay the declared settings/extensions.
@@ -157,7 +157,7 @@ impl DuckDb {
     /// crate's tests and the differential/bench harnesses (which consume it
     /// cross-crate); not part of the public destination API — hence hidden.
     #[doc(hidden)]
-    pub fn count_rows(&self, table: &str) -> Result<u64, DestError> {
+    pub fn count_rows(&self, table: &str) -> Result<u64, DestinationError> {
         let conn = self.clone_conn()?;
         let count: u64 = conn
             .query_row(
@@ -175,15 +175,15 @@ impl DuckDb {
     /// executes raw SQL, so it is deliberately NOT part of the public
     /// destination API — hence hidden.
     #[doc(hidden)]
-    pub fn query_string(&self, sql: &str) -> Result<String, DestError> {
+    pub fn query_string(&self, sql: &str) -> Result<String, DestinationError> {
         let conn = self.clone_conn()?;
         conn.query_row(sql, [], |row| row.get::<_, String>(0))
             .map_err(fatal)
     }
 }
 
-pub(crate) fn fatal(e: impl std::fmt::Display) -> DestError {
-    DestError::fatal(e.to_string())
+pub(crate) fn fatal(e: impl std::fmt::Display) -> DestinationError {
+    DestinationError::fatal(e.to_string())
 }
 
 /// Classify environmental failures as recoverable: DuckDB's "IO Error"
@@ -193,12 +193,12 @@ pub(crate) fn fatal(e: impl std::fmt::Display) -> DestError {
 /// and the operator's to fix. DuckDB exposes no structured error
 /// category, so the stable message prefix is the classification key —
 /// both facts are pinned by tests/error_codes.rs.
-pub(crate) fn classify(e: duckdb::Error) -> DestError {
+pub(crate) fn classify(e: duckdb::Error) -> DestinationError {
     match &e {
         duckdb::Error::DuckDBFailure(_, Some(msg)) if msg.starts_with("IO Error") => {
-            DestError::transient(e.to_string())
+            DestinationError::transient(e.to_string())
         }
-        _ => DestError::fatal(e.to_string()),
+        _ => DestinationError::fatal(e.to_string()),
     }
 }
 
@@ -212,7 +212,7 @@ pub fn is_constraint_violation(e: &duckdb::Error) -> bool {
     matches!(e, duckdb::Error::DuckDBFailure(_, Some(msg)) if msg.starts_with("Constraint Error"))
 }
 
-fn apply_setup(conn: &Connection, stmt: &SetupStmt) -> Result<(), DestError> {
+fn apply_setup(conn: &Connection, stmt: &SetupStmt) -> Result<(), DestinationError> {
     match stmt {
         SetupStmt::Setting { key, value } => conn
             .execute_batch(&format!("SET {key}='{}'", value.replace('\'', "''")))
@@ -274,7 +274,7 @@ pub(crate) fn sql_type(ty: &ColumnType, is_stage: bool) -> String {
         ColumnType::Struct { fields } => {
             let inner = fields
                 .iter()
-                .map(|f| format!("{} {}", quote(&f.name), sql_type(&f.ty, is_stage)))
+                .map(|f| format!("{} {}", quote(&f.name), sql_type(&f.column_type, is_stage)))
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("STRUCT({inner})")
@@ -289,7 +289,7 @@ pub(crate) fn create_table_sql(name: &str, schema: &TableSchema, temp: bool) -> 
     let columns = schema
         .columns
         .iter()
-        .map(|c| format!("{} {}", quote(&c.name), sql_type(&c.ty, temp)))
+        .map(|c| format!("{} {}", quote(&c.name), sql_type(&c.column_type, temp)))
         .collect::<Vec<_>>()
         .join(", ");
     let temp = if temp { "TEMP " } else { "" };
@@ -305,8 +305,8 @@ impl Destination for DuckDb {
         ConnectorSpec::new("duckdb", env!("CARGO_PKG_VERSION"))
     }
 
-    fn capabilities(&self) -> DestCapabilities {
-        DestCapabilities {
+    fn capabilities(&self) -> DestinationCapabilities {
+        DestinationCapabilities {
             merge: true,
             structs: true,
             scalar_lists: true,
@@ -318,7 +318,7 @@ impl Destination for DuckDb {
         }
     }
 
-    async fn open(&self, _ctx: OpenCtx) -> Result<Box<dyn LoadSession>, DestError> {
+    async fn open(&self, _ctx: OpenCtx) -> Result<Box<dyn LoadSession>, DestinationError> {
         // A cloned connection shares the database instance but has its OWN temp-table
         // catalog — a dead session's staged temp tables are unreachable.
         let conn = self.clone_conn()?;

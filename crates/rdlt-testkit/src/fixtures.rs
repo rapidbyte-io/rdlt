@@ -19,7 +19,7 @@ pub fn schema_for(table: &str) -> TableSchema {
         parent: None,
         columns: vec![ColumnDef {
             name: "id".into(),
-            ty: ColumnType::scalar(LogicalType::Int64),
+            column_type: ColumnType::scalar(LogicalType::Int64),
             nullable: false,
             provenance: Provenance::Inferred,
         }],
