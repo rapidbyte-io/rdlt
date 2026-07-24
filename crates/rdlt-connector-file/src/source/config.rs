@@ -6,7 +6,10 @@ use std::collections::BTreeMap;
 use rdlt_connector::core::LogicalType;
 use serde::{Deserialize, Serialize};
 
-pub use crate::formats::{CsvOptions, Format};
+pub use crate::formats::CsvOptions;
+// `Format` is re-exported once, at the crate root (`rdlt_connector_file::Format`);
+// here it is only brought into scope for the config field types.
+use crate::formats::Format;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]

@@ -19,6 +19,9 @@ members = [
 [workspace.package]
 version = "0.2.0"
 edition = "2024"
+# MSRV floor. rust-toolchain.toml pins the exact build toolchain (1.96.0); this
+# is the minimum the workspace commits to supporting, inherited by every crate.
+rust-version = "1.96"
 license = "Apache-2.0"
 repository = "https://github.com/rapidbyte/rdlt"
 
@@ -65,6 +68,8 @@ zstd = "0.13"
 futures = "0.3"
 tokio-util = "0.7"
 fs4 = "0.13"
+# CLI-only: the mallopt FFI (rdlt-cli) — the sole sanctioned unsafe in the tree.
+libc = "0.2"
 
 # Connectors
 object_store = { version = "0.12", features = ["aws"] }
@@ -85,6 +90,11 @@ jsonschema = "0.48"
 # Dev / test
 proptest = "1"
 criterion = "0.5"
+# iai-callgrind: the instruction-count bench library. Pinned EXACTLY to the
+# iai-callgrind-runner version installed by CI (.github/workflows/ci.yml,
+# perf-gate job) — lib and runner must agree or counts skew; the perf-gate job
+# has a step that fails loudly if these drift.
+iai-callgrind = "=0.16.1"
 wiremock = "0.6"
 testcontainers = "0.23"
 testcontainers-modules = { version = "0.11", features = ["postgres"] }

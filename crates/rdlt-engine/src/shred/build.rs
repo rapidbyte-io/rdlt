@@ -17,14 +17,14 @@ use arrow::datatypes::{DataType, Field, Fields, Schema, TimeUnit};
 use arrow::error::ArrowError;
 use arrow::record_batch::RecordBatch;
 use rdlt_core::schema::system_columns;
-use rdlt_core::{ColumnDef, ColumnType, LoadId, LogicalType, TableSchema};
+use rdlt_core::{ColumnDef, ColumnType, LoadId, LogicalType, RowId, TableSchema};
 
 use super::DrainRow;
 use super::canon::parse_timestamp_tz;
 use super::view::{JsonView, Kind};
 
 /// Arrow physical type for a logical type.
-pub(crate) fn arrow_scalar_type(ty: LogicalType) -> DataType {
+fn arrow_scalar_type(ty: LogicalType) -> DataType {
     match ty {
         LogicalType::Bool => DataType::Boolean,
         LogicalType::Int64 => DataType::Int64,
@@ -84,8 +84,7 @@ pub(crate) fn build_batch<'v, V: JsonView<'v>>(
                 let mut b = StringBuilder::new();
                 let mut hex = [0u8; 64];
                 for row in rows {
-                    row.id.write_hex(&mut hex);
-                    b.append_value(std::str::from_utf8(&hex).expect("hex is ASCII"));
+                    append_hex_id(&mut b, &row.id, &mut hex);
                 }
                 Arc::new(b.finish())
             }
@@ -94,10 +93,7 @@ pub(crate) fn build_batch<'v, V: JsonView<'v>>(
                 let mut hex = [0u8; 64];
                 for row in rows {
                     match &row.parent_id {
-                        Some(id) => {
-                            id.write_hex(&mut hex);
-                            b.append_value(std::str::from_utf8(&hex).expect("hex is ASCII"));
-                        }
+                        Some(id) => append_hex_id(&mut b, id, &mut hex),
                         None => b.append_null(),
                     }
                 }
@@ -108,10 +104,7 @@ pub(crate) fn build_batch<'v, V: JsonView<'v>>(
                 let mut hex = [0u8; 64];
                 for row in rows {
                     match &row.root_id {
-                        Some(id) => {
-                            id.write_hex(&mut hex);
-                            b.append_value(std::str::from_utf8(&hex).expect("hex is ASCII"));
-                        }
+                        Some(id) => append_hex_id(&mut b, id, &mut hex),
                         None => b.append_null(),
                     }
                 }
@@ -141,6 +134,13 @@ pub(crate) fn build_batch<'v, V: JsonView<'v>>(
         arrays.push(array);
     }
     RecordBatch::try_new(Arc::new(arrow_schema(schema)), arrays)
+}
+
+/// Append one lineage id to a string column as lowercase hex, reusing `hex` as scratch
+/// so the encoding allocates nothing per row.
+fn append_hex_id(b: &mut StringBuilder, id: &RowId, hex: &mut [u8; 64]) {
+    id.write_hex(hex);
+    b.append_value(std::str::from_utf8(hex).expect("hex is ASCII"));
 }
 
 fn build_column<'v, V: JsonView<'v>>(ty: &ColumnType, values: &[Option<V>]) -> ArrayRef {

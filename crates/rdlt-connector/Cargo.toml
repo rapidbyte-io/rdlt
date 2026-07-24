@@ -3,6 +3,7 @@ name = "rdlt-connector"
 description = "rdlt connector SPI: Source/Destination/LoadSession traits, RecordsOut, capabilities, error taxonomy"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
@@ -15,7 +16,7 @@ bytes = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["sync", "macros", "rt", "time"] }
+tokio = { workspace = true }
 
 [lints]
 workspace = true

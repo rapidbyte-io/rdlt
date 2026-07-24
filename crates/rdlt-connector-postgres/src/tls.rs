@@ -446,7 +446,7 @@ fn percent_decode(value: &str) -> Result<String, ()> {
 /// config block. The block wins ONLY when consistent: an explicit conn
 /// `sslmode` may be refined (require → verify_*) but never
 /// silently reversed.
-pub fn resolve_policy(
+pub(crate) fn resolve_policy(
     conn: &tokio_postgres::Config,
     block: Option<&TlsPolicy>,
 ) -> Result<TlsPolicy, TlsConfigError> {
@@ -683,7 +683,7 @@ fn client_config(policy: &TlsPolicy) -> Result<Option<rustls::ClientConfig>, Tls
 /// Classify a driver error's TLS meaning by walking its source chain for
 /// rustls/tokio-postgres evidence. Best-effort by design: unknown shapes
 /// classify `Other` with the full detail preserved.
-pub fn classify_connect_error(err: &tokio_postgres::Error) -> ConnectError {
+pub(crate) fn classify_connect_error(err: &tokio_postgres::Error) -> ConnectError {
     use std::error::Error as _;
     // tokio-postgres Display for db errors is just "db error"; ALWAYS carry
     // the real server message + SQLSTATE — bad password / unknown database

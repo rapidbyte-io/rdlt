@@ -37,7 +37,7 @@ use serde::{Deserialize, Serialize};
 pub use config::{DestFormat, FileDestConfig, dest_config_schema};
 
 const STAGING_DIR: &str = ".rdlt-staging";
-pub const LAYOUT_FORMAT_VERSION: u32 = 1;
+pub(crate) const LAYOUT_FORMAT_VERSION: u32 = 1;
 
 fn fatal(e: impl std::fmt::Display) -> DestError {
     DestError::fatal(e.to_string())
@@ -94,6 +94,24 @@ struct CommitLog {
     format_version: u32,
     #[serde(default)]
     receipts: Vec<(String, u64)>,
+}
+
+impl CommitLog {
+    /// A commit log written by a NEWER layout than this build understands is a
+    /// typed failure, never a silent reset (a reset would re-truncate and
+    /// re-deliver, duplicating under Append) — the same future-version rule the
+    /// engine's WAL manifest and state doc enforce. Version 0 (absent field, a
+    /// pre-versioning log) is accepted.
+    fn check_readable(&self, file: &str) -> Result<(), DestError> {
+        if self.format_version > LAYOUT_FORMAT_VERSION {
+            return Err(DestError::fatal(format!(
+                "commit log `{file}` format v{} is newer than this build supports \
+                 (v{LAYOUT_FORMAT_VERSION}); upgrade rdlt instead of resetting",
+                self.format_version
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// Classify a store failure on the WRITE path with the same rule the read
@@ -215,7 +233,11 @@ pub struct FileDest {
     store: Store,
 }
 
-/// The original name, frozen: `ParquetDir::open(dir)` ≡ local parquet.
+/// `ParquetDir::open(dir)` ≡ local-parquet output. This spelling is STABLE and
+/// frozen — the bench and crash-sweep tooling depend on the name — so it is the
+/// supported entry point for local parquet, not a deprecated alias. New
+/// destination options land on [`FileDest`] (and its config), which this
+/// aliases; both share one implementation.
 pub type ParquetDir = FileDest;
 
 impl FileDest {
@@ -581,6 +603,7 @@ impl LoadSession for FileSession {
             Some(bytes) => serde_json::from_slice(&bytes).map_err(fatal)?,
             None => CommitLog::default(),
         };
+        log.check_readable(&commits_name)?;
         let key = (meta.load_id.as_str().to_owned(), meta.commit_seq);
 
         // Clause D3: idempotent per (load_id, commit_seq) — discard staged,
@@ -836,4 +859,24 @@ fn remove_owned_parts(dir: &Path, ext: &str, partitioned: bool) -> Result<(), De
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod version_tests {
+    // Mutation-report closure: the future-version guard is `>`, strictly —
+    // the current version and a pre-versioning (absent = 0) log both read.
+    use super::*;
+
+    #[test]
+    fn future_commit_log_version_is_a_typed_error_current_is_fine() {
+        let mut log = CommitLog::default();
+        assert!(log.check_readable("_rdlt_commits.abc.json").is_ok());
+        log.format_version = LAYOUT_FORMAT_VERSION;
+        assert!(log.check_readable("_rdlt_commits.abc.json").is_ok());
+        log.format_version = LAYOUT_FORMAT_VERSION + 1;
+        let err = log
+            .check_readable("_rdlt_commits.abc.json")
+            .expect_err("future version must be rejected");
+        assert!(err.to_string().contains("_rdlt_commits.abc.json"));
+    }
 }

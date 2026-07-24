@@ -40,8 +40,9 @@ pub struct FixtureDef {
     #[serde(default)]
     pub generate_sh: Option<String>,
     /// Files (post-substitution paths) whose blake3 hashes are the identity.
-    #[serde(default)]
-    pub hash: Vec<String>,
+    /// Spelled `hash` in fixtures.toml (the file format is frozen).
+    #[serde(default, rename = "hash")]
+    pub hash_files: Vec<String>,
     #[serde(default)]
     pub image: Option<String>,
     /// Extra args after the image (e.g. `-c wal_level=logical`).
@@ -78,19 +79,75 @@ pub struct FixtureDef {
     pub teardown_sh: Option<String>,
 }
 
+/// Shared values every postgres_container fixture inherits unless it states
+/// its own — the image and the conn-string template differ only by port.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FixtureDefaults {
+    postgres_image: Option<String>,
+    /// `{{port}}` is filled from each fixture's own `port`.
+    postgres_conn: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FixtureFile {
+    #[serde(default)]
+    defaults: FixtureDefaults,
+    /// Reusable SQL/script blocks; a fixture opts in with `reset_sql = "@name"`.
+    #[serde(default)]
+    snippets: BTreeMap<String, String>,
     #[serde(default, rename = "fixture")]
     fixtures: Vec<FixtureDef>,
 }
 
 pub fn load_fixtures(path: &Path) -> Result<Vec<FixtureDef>> {
-    let raw = std::fs::read_to_string(path)
-        .map_err(|e| BenchError(format!("reading {}: {e}", path.display())))?;
-    let file: FixtureFile =
-        toml::from_str(&raw).map_err(|e| BenchError(format!("parsing {}: {e}", path.display())))?;
-    Ok(file.fixtures)
+    let FixtureFile {
+        defaults,
+        snippets,
+        mut fixtures,
+    } = crate::load_toml(path)?;
+    for def in &mut fixtures {
+        // Resolve a `reset_sql = "@name"` reference against [snippets].
+        if let Some(stripped) = def.reset_sql.as_deref().and_then(|s| s.strip_prefix('@')) {
+            let resolved = snippets.get(stripped).cloned().ok_or_else(|| {
+                BenchError(format!(
+                    "fixture `{}`: unknown reset_sql snippet `@{stripped}`",
+                    def.id
+                ))
+            })?;
+            def.reset_sql = Some(resolved);
+        }
+        // Fill postgres defaults where the fixture omitted them.
+        if def.kind == FixtureKind::PostgresContainer {
+            if def.image.is_none() {
+                def.image = defaults.postgres_image.clone();
+            }
+            if def.conn.is_none()
+                && let (Some(tmpl), Some(port)) = (&defaults.postgres_conn, def.port)
+            {
+                def.conn = Some(tmpl.replace("{{port}}", &port.to_string()));
+            }
+        }
+        def.validate()?;
+    }
+    Ok(fixtures)
+}
+
+impl FixtureDef {
+    /// Load-time cross-field validation, before any container is touched.
+    fn validate(&self) -> Result<()> {
+        // reset_sql runs `psql` inside a postgres container; on any other kind
+        // Started::reset would silently no-op, so declaring it elsewhere is a
+        // config error, not a run-time surprise.
+        if self.reset_sql.is_some() && self.kind != FixtureKind::PostgresContainer {
+            return Err(BenchError(format!(
+                "fixture `{}`: reset_sql requires a postgres_container fixture",
+                self.id
+            )));
+        }
+        Ok(())
+    }
 }
 
 pub fn container_engine() -> Result<String> {
@@ -113,7 +170,7 @@ pub fn container_engine() -> Result<String> {
 #[derive(Debug)]
 pub struct Started {
     pub def: FixtureDef,
-    pub data: tempfile::TempDir,
+    pub data_dir: tempfile::TempDir,
     pub hashes: BTreeMap<String, String>,
     container: Option<(String, String)>, // (engine, name)
     service: Option<std::process::Child>,
@@ -235,6 +292,37 @@ fn wait_tcp(port: u16, what: &str) -> Result<()> {
     )))
 }
 
+/// Bring up one detached container and arm the cleanup guard with it. The
+/// port mapping and any args BEFORE the image (`-e KEY=V`, extra mounts) vary
+/// by kind; everything else — `rm -f` the stale name, `run -d --name`, image,
+/// trailing `container_args`, the success check — is shared. Returns the
+/// container name (`rdlt-bench-<id>`) callers wait on / seed through.
+fn start_container(
+    engine: &str,
+    def: &FixtureDef,
+    port_map: String,
+    pre_image_args: &[&str],
+    guard: &mut CleanupGuard,
+) -> Result<String> {
+    let image = def
+        .image
+        .as_deref()
+        .ok_or_else(|| BenchError(format!("fixture `{}`: missing image", def.id)))?;
+    let name = format!("rdlt-bench-{}", def.id);
+    let _ = Command::new(engine).args(["rm", "-f", &name]).output();
+    let status = Command::new(engine)
+        .args(["run", "-d", "--name", &name, "-p", &port_map])
+        .args(pre_image_args.iter().copied())
+        .arg(image)
+        .args(&def.container_args)
+        .status()?;
+    if !status.success() {
+        return Err(BenchError(format!("starting container {name} failed")));
+    }
+    guard.container = Some((engine.to_owned(), name.clone()));
+    Ok(name)
+}
+
 fn run_sh(script: &str, cwd: &Path) -> Result<()> {
     let status = Command::new("sh")
         .args(["-c", script])
@@ -266,33 +354,16 @@ pub fn start(def: &FixtureDef, subs: &BTreeMap<String, String>) -> Result<Starte
         FixtureKind::None | FixtureKind::GeneratedFiles => {}
         FixtureKind::PostgresContainer => {
             let engine = container_engine()?;
-            let image = def
-                .image
-                .as_deref()
-                .ok_or_else(|| BenchError(format!("fixture `{}`: missing image", def.id)))?;
             let port = def
                 .port
                 .ok_or_else(|| BenchError(format!("fixture `{}`: missing port", def.id)))?;
-            let name = format!("rdlt-bench-{}", def.id);
-            let _ = Command::new(&engine).args(["rm", "-f", &name]).output();
-            let status = Command::new(&engine)
-                .args([
-                    "run",
-                    "-d",
-                    "--name",
-                    &name,
-                    "-e",
-                    "POSTGRES_PASSWORD=postgres",
-                    "-p",
-                    &format!("{port}:5432"),
-                    image,
-                ])
-                .args(&def.container_args)
-                .status()?;
-            if !status.success() {
-                return Err(BenchError(format!("starting container {name} failed")));
-            }
-            guard.container = Some((engine.clone(), name.clone()));
+            let name = start_container(
+                &engine,
+                def,
+                format!("{port}:5432"),
+                &["-e", "POSTGRES_PASSWORD=postgres"],
+                &mut guard,
+            )?;
             // pg_isready inside the container, then the host-published port.
             let deadline = Instant::now() + Duration::from_secs(30);
             loop {
@@ -357,35 +428,20 @@ pub fn start(def: &FixtureDef, subs: &BTreeMap<String, String>) -> Result<Starte
         }
         FixtureKind::Container => {
             let engine = container_engine()?;
-            let image = def
-                .image
-                .as_deref()
-                .ok_or_else(|| BenchError(format!("fixture `{}`: missing image", def.id)))?;
             let port = def
                 .port
                 .ok_or_else(|| BenchError(format!("fixture `{}`: missing port", def.id)))?;
             let container_port = def.container_port.ok_or_else(|| {
                 BenchError(format!("fixture `{}`: missing container_port", def.id))
             })?;
-            let name = format!("rdlt-bench-{}", def.id);
-            let _ = Command::new(&engine).args(["rm", "-f", &name]).output();
-            let status = Command::new(&engine)
-                .args([
-                    "run",
-                    "-d",
-                    "--name",
-                    &name,
-                    "-p",
-                    &format!("{port}:{container_port}"),
-                ])
-                .args(&def.run_args)
-                .arg(image)
-                .args(&def.container_args)
-                .status()?;
-            if !status.success() {
-                return Err(BenchError(format!("starting container {name} failed")));
-            }
-            guard.container = Some((engine.clone(), name.clone()));
+            let run_args: Vec<&str> = def.run_args.iter().map(String::as_str).collect();
+            start_container(
+                &engine,
+                def,
+                format!("{port}:{container_port}"),
+                &run_args,
+                &mut guard,
+            )?;
             wait_tcp(port, &def.id)?;
         }
         FixtureKind::Service => {
@@ -403,7 +459,7 @@ pub fn start(def: &FixtureDef, subs: &BTreeMap<String, String>) -> Result<Starte
         run_sh(&sub(script), data.path())?;
     }
 
-    for pattern in &def.hash {
+    for pattern in &def.hash_files {
         let path = sub(pattern);
         let bytes = std::fs::read(&path).map_err(|e| BenchError(format!("hashing {path}: {e}")))?;
         hashes.insert(path, blake3::hash(&bytes).to_hex().to_string());
@@ -416,7 +472,7 @@ pub fn start(def: &FixtureDef, subs: &BTreeMap<String, String>) -> Result<Starte
     let reset_sh = def.reset_sh.as_deref().map(&sub);
     Ok(Started {
         def: def.clone(),
-        data,
+        data_dir: data,
         hashes,
         container,
         service,
@@ -465,7 +521,7 @@ mod tests {
             kind: FixtureKind::None,
             generate_sh: None,
             container_args: vec![],
-            hash: vec![],
+            hash_files: vec![],
             image: None,
             port: None,
             seed_sql: None,
@@ -491,7 +547,7 @@ mod tests {
             kind: FixtureKind::GeneratedFiles,
             generate_sh: Some("printf 'hello' > {{data}}/f.txt".into()),
             container_args: vec![],
-            hash: vec!["{{data}}/f.txt".into()],
+            hash_files: vec!["{{data}}/f.txt".into()],
             image: None,
             port: None,
             seed_sql: None,

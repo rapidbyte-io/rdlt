@@ -1,0 +1,28 @@
+name: Free runner disk space
+description: >
+  Reclaim disk on hosted GitHub runners before the build. This is the ONE
+  canonical copy of the disk-constraint rationale for the whole repository;
+  every workflow step that reclaims disk points here instead of re-explaining.
+
+# WHY THIS EXISTS (canonical rationale — do not duplicate elsewhere):
+# The full workspace debug tree links a bundled DuckDB C++ build; with full
+# debuginfo it no longer fits the hosted runner's ~14 GB free disk. Two
+# mitigations work together:
+#   1. This action removes large preinstalled toolchains the build never uses
+#      (Android SDK, .NET, GHC/ghcup, PowerShell, Swift), recovering ~10+ GB.
+#   2. Workflows set CARGO_PROFILE_DEV_DEBUG: line-tables-only in their env,
+#      which keeps usable backtraces at a fraction of full-debuginfo size.
+#      (Workflow-level env cannot be shared across files, so that VAR is
+#      repeated per workflow — but its justification lives here.)
+# Jobs that build one or more full workspace trees (check, test, perf-gate,
+# semver, and the deep-checks nightly/weekly-mutants jobs) all need this.
+
+runs:
+  using: composite
+  steps:
+    - name: Free runner disk space
+      shell: bash
+      run: |
+        sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+          /usr/local/.ghcup /usr/local/share/powershell /usr/share/swift
+        df -h /

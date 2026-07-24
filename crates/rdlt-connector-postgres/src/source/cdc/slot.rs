@@ -8,6 +8,7 @@
 
 use std::collections::BTreeSet;
 
+use futures::{Stream, StreamExt};
 use rdlt_connector::SourceError;
 use tokio_postgres::Client;
 
@@ -218,35 +219,44 @@ pub async fn ensure(
     })
 }
 
-/// Peek the change feed up to `upto` WITHOUT consuming it: every
-/// CDC stream re-peeks the same range and filters its own table; nothing
-/// moves until [`advance`].
-pub async fn peek(client: &Client, cdc: &CdcConfig, upto: u64) -> Result<Vec<Change>, SourceError> {
+/// Peek the change feed up to `upto` WITHOUT consuming it, as a server-side
+/// row stream: every CDC stream re-peeks the same range and filters its own
+/// table; nothing moves until [`advance`]. Rows arrive incrementally so a
+/// large change set is never fully buffered — the caller decodes each
+/// [`Change`] as it lands. `upto` is passed as a bound parameter, cast
+/// `text -> pg_lsn` server-side.
+pub async fn peek(
+    client: &Client,
+    cdc: &CdcConfig,
+    upto: u64,
+) -> Result<impl Stream<Item = Result<Change, SourceError>>, SourceError> {
+    let upto = fmt_lsn(upto);
+    let params: [&(dyn tokio_postgres::types::ToSql + Sync); 3] =
+        [&cdc.slot, &upto, &cdc.publication];
     let rows = client
-        .query(
+        .query_raw(
             "SELECT lsn::text, data FROM pg_logical_slot_peek_binary_changes(\
              $1, $2::text::pg_lsn, NULL::int4, \
              'proto_version', '1', 'publication_names', $3)",
-            &[&cdc.slot, &fmt_lsn(upto), &cdc.publication],
+            params,
         )
         .await
         .map_err(|e| classify(Phase::Slot, None, &e))?;
-    rows.into_iter()
-        .map(|row| {
-            let lsn: String = row.get(0);
-            let lsn = parse_lsn(&lsn).ok_or_else(|| {
-                fatal(
-                    Phase::Slot,
-                    None,
-                    format!("server returned unparseable change lsn `{lsn}`"),
-                )
-            })?;
-            Ok(Change {
-                lsn,
-                data: row.get(1),
-            })
+    Ok(rows.map(|row| {
+        let row = row.map_err(|e| classify(Phase::Slot, None, &e))?;
+        let lsn: String = row.get(0);
+        let lsn = parse_lsn(&lsn).ok_or_else(|| {
+            fatal(
+                Phase::Slot,
+                None,
+                format!("server returned unparseable change lsn `{lsn}`"),
+            )
+        })?;
+        Ok(Change {
+            lsn,
+            data: row.get(1),
         })
-        .collect()
+    }))
 }
 
 /// Acknowledge: advance the slot's confirmed position to `upto` — once per

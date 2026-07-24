@@ -2,6 +2,18 @@
 # seed (identity recorded) → shared within one invocation → teardown.
 # Container fixtures are named rdlt-bench-<id>; prepare scripts rely on that.
 
+# Shared across every postgres_container fixture (they differ only by port). A
+# fixture may still state its own `image`/`conn` to override.
+[defaults]
+postgres_image = "postgres:16"
+postgres_conn = "postgresql://postgres:postgres@127.0.0.1:{{port}}/postgres"
+
+# Reusable blocks; a fixture opts in with `reset_sql = "@name"`.
+[snippets]
+# Drop the per-run destination schemas (raw%) a load recreates — shared by the
+# REST→PG and postgres-source fixtures.
+drop_raw_schemas = "DO $$ DECLARE s text; BEGIN FOR s IN SELECT schema_name FROM information_schema.schemata WHERE schema_name LIKE 'raw%' LOOP EXECUTE 'DROP SCHEMA ' || quote_ident(s) || ' CASCADE'; END LOOP; END $$;"
+
 [[fixture]]
 id = "selftest-none"
 kind = "none"
@@ -31,10 +43,8 @@ hash = ["{{data}}/one.jsonl"]
 [[fixture]]
 id = "rest-pg"
 kind = "postgres_container"
-image = "postgres:16"
 port = 5440
-conn = "postgresql://postgres:postgres@127.0.0.1:5440/postgres"
-reset_sql = "DO $$ DECLARE s text; BEGIN FOR s IN SELECT schema_name FROM information_schema.schemata WHERE schema_name LIKE 'raw%' LOOP EXECUTE 'DROP SCHEMA ' || quote_ident(s) || ' CASCADE'; END LOOP; END $$;"
+reset_sql = "@drop_raw_schemas"
 service_sh = "cd {{repo}} && cargo run -q --release -p rdlt-connector-rest --example mock_api"
 ready_port = 8642
 generate_sh = "printf 'base_url: http://127.0.0.1:8642\nstreams:\n  - name: events\n    path: /events\n    pagination: {type: page, page_param: page, start: 1}\n' > {{data}}/rest.yaml"
@@ -61,20 +71,16 @@ hash = ["{{data}}/rows.jsonl"]
 [[fixture]]
 id = "pg-src"
 kind = "postgres_container"
-image = "postgres:16"
 port = 5439
-conn = "postgresql://postgres:postgres@127.0.0.1:5439/postgres"
 seed_sql = "{{benches}}/fixtures/seed_pg.sql"
-reset_sql = "DO $$ DECLARE s text; BEGIN FOR s IN SELECT schema_name FROM information_schema.schemata WHERE schema_name LIKE 'raw%' LOOP EXECUTE 'DROP SCHEMA ' || quote_ident(s) || ' CASCADE'; END LOOP; END $$;"
+reset_sql = "@drop_raw_schemas"
 
 # -- merge strategies (feature 008) ------------------------------------------
 
 [[fixture]]
 id = "strat-pg"
 kind = "postgres_container"
-image = "postgres:16"
 port = 5441
-conn = "postgresql://postgres:postgres@127.0.0.1:5441/postgres"
 seed_sql = "{{benches}}/fixtures/seed_pg.sql"
 
 # -- CDC (feature 009) — logical replication enabled -------------------------
@@ -82,18 +88,14 @@ seed_sql = "{{benches}}/fixtures/seed_pg.sql"
 [[fixture]]
 id = "cdc-tp-pg"
 kind = "postgres_container"
-image = "postgres:16"
 container_args = ["-c", "wal_level=logical", "-c", "max_replication_slots=8", "-c", "max_wal_senders=8"]
 port = 5442
-conn = "postgresql://postgres:postgres@127.0.0.1:5442/postgres"
 
 [[fixture]]
 id = "cdc-lat-pg"
 kind = "postgres_container"
-image = "postgres:16"
 container_args = ["-c", "wal_level=logical", "-c", "max_replication_slots=8", "-c", "max_wal_senders=8"]
 port = 5443
-conn = "postgresql://postgres:postgres@127.0.0.1:5443/postgres"
 seed_sql = "{{benches}}/fixtures/seed_pg.sql"
 
 # -- SQL-level scoreboards (features 008/010) --------------------------------
@@ -101,14 +103,12 @@ seed_sql = "{{benches}}/fixtures/seed_pg.sql"
 [[fixture]]
 id = "merge-index-pg"
 kind = "postgres_container"
-image = "postgres:16"
 port = 5444
 seed_sql = "{{benches}}/fixtures/seed_merge_index.sql"
 
 [[fixture]]
 id = "refine-pg"
 kind = "postgres_container"
-image = "postgres:16"
 port = 5445
 seed_sql = "{{benches}}/fixtures/seed_refine.sql"
 

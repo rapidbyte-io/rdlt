@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::commit::CommitCounters;
 use crate::cursor::Cursor;
 use crate::ids::{LoadId, PipelineId, StreamName, TableName};
 use crate::schema::SchemaDelta;
@@ -21,6 +22,20 @@ pub struct TableReport {
     pub bytes: u64,
     pub discarded_rows: u64,
     pub discarded_values: u64,
+}
+
+/// A commit unit's totals projected into report shape. The two types are
+/// field-identical but hold different aggregation levels (see [`CommitCounters`]);
+/// this binds them so the shared field set has one authority.
+impl From<CommitCounters> for TableReport {
+    fn from(counters: CommitCounters) -> Self {
+        Self {
+            rows: counters.rows,
+            bytes: counters.bytes,
+            discarded_rows: counters.discarded_rows,
+            discarded_values: counters.discarded_values,
+        }
+    }
 }
 
 /// How this run started relative to previous state.

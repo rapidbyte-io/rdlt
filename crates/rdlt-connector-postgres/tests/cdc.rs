@@ -6,8 +6,10 @@
 mod common;
 
 use common::CdcPgFixture;
+use futures::TryStreamExt;
 use rdlt_connector_postgres::source::config::{AckMode, CdcConfig, CdcMode, Wait};
 use rdlt_connector_postgres::source::testhook::cdc_slot;
+use rdlt_connector_postgres::source::testhook::cdc_slot::Change;
 
 fn cdc(slot: &str, publication: &str, create_if_missing: bool) -> CdcConfig {
     CdcConfig {
@@ -159,13 +161,19 @@ async fn peek_is_nonconsuming_and_advance_acknowledges() {
         .unwrap();
     let target = cdc_slot::current_wal_lsn(&client).await.expect("target");
 
-    let first = cdc_slot::peek(&client, &config, target)
+    let first: Vec<Change> = cdc_slot::peek(&client, &config, target)
         .await
-        .expect("peek");
+        .expect("peek")
+        .try_collect()
+        .await
+        .expect("collect peek");
     assert!(!first.is_empty(), "changes visible");
-    let second = cdc_slot::peek(&client, &config, target)
+    let second: Vec<Change> = cdc_slot::peek(&client, &config, target)
         .await
-        .expect("re-peek");
+        .expect("re-peek")
+        .try_collect()
+        .await
+        .expect("collect re-peek");
     assert_eq!(
         first.len(),
         second.len(),
@@ -184,9 +192,12 @@ async fn peek_is_nonconsuming_and_advance_acknowledges() {
         .await
         .expect("confirmed");
     assert!(confirmed >= max_lsn, "ack recorded");
-    let after = cdc_slot::peek(&client, &config, target)
+    let after: Vec<Change> = cdc_slot::peek(&client, &config, target)
         .await
-        .expect("peek after ack");
+        .expect("peek after ack")
+        .try_collect()
+        .await
+        .expect("collect peek after ack");
     assert!(
         after.iter().all(|c| c.lsn > max_lsn),
         "acknowledged changes are gone from the feed"

@@ -91,11 +91,11 @@ stash-red capture; excerpts inline or cited by test name + run).
 | R11 ShredCtx | 5 | | |
 | R11 postgres TableCtx | 7 | | |
 | R11 bench return_side restructure | 12 | | |
-| R12 core/engine dead code + visibility | 3 | | |
-| R12 postgres/duckdb dead code (peek unification, pgoutput fields, query_string gating) | 3 | | |
-| R12 rest/iceberg/file dead code + visibility | 3 | | |
-| R12 bench dead surface | 3 | | |
-| R13 SLAB_BYTES / channel caps / iceberg prop keys / root_of 64 / initial_wal_version | 3 | | |
+| R12 core/engine dead code + visibility | 3 | applied | `flattened_column_name` DELETED; `needs_lowering`/`arrow_scalar_type`/`ArrayShape`(+constructor) private; channel.rs `#![allow(dead_code)]` removed (no dead code surfaced — allow was unnecessary); channel subsystem moved to rdlt-connector/src/channel.rs w/ unchanged public paths; CommitCounters/TableReport: parallel accumulators (no conversion site exists) → `From` impl + binding docs; `to_hex` via `write_hex`; `SchemaRegistry::apply` returns the schema (2 expect sites gone); `append_hex_id` ×3; `source_retryable` saturating (lived in rdlt-core). 115 tests PASS; workspace + fuzz check clean |
+| R12 postgres/duckdb dead code (peek unification, pgoutput fields, query_string gating) | 3 | applied | ONE canonical `slot::peek`: streams (production semantics won — no whole-changeset Vec) + fully-parameterized binding (slot form won; interpolated LSN literal gone); pgoutput dead fields dropped w/ wire bytes still consumed in order; `tls::resolve_policy`/`classify_connect_error` → pub(crate); duckdb `count_rows`/`query_string` `#[doc(hidden)]` (cross-crate consumers forbid gating). CDC suite 25 + crash sweep 5 PASS through the new peek path; 227 total |
+| R12 rest/iceberg/file dead code + visibility | 3 | applied | rest: `SequenceDriver::started/last_count` deleted, `extract`/`resolve` → pub(crate), `RestClient` fields private + dead `http()` deleted, headers parsed ONCE in new (parseability now a validate()-time typed guarantee); iceberg: `with_catalog_prop` + `_uses` shim deleted, `from_json` kept (API symmetry), `#[must_use]` completed; file: `format_version` ENFORCED (`check_readable`, test `future_commit_log_version_is_a_typed_error_current_is_fine`), version consts → pub(crate), one canonical `Format` re-export, ParquetDir documented as frozen stable spelling (not deprecated — sweep tooling + bench consume it). 191 tests PASS incl. container legs |
+| R12 bench dead surface | 3 | applied | `BenchError::msg` deleted; `Variant.role`+`Role` enum DELETED (provably never read — gating is bars.toml-driven; variants.toml + header corrected); `Bar.policy` kept as documented informational provenance; `VerifyOutcome.ok` removed from struct+JSON (was always true); `rdlt_side`/markers → pub(crate); fingerprint → `competitor_pins: BTreeMap` w/ legacy-scalar migration — RESULTS.md regenerates BYTE-IDENTICAL (WR8 proof). 43/43 PASS |
+| R13 SLAB_BYTES / channel caps / iceberg prop keys / root_of 64 / initial_wal_version | 3 | applied | One `SLAB_BYTES` (formats/mod.rs, 3 consumers); `CHANNEL_MSG_CAPACITY`=64, `EVENT_CHANNEL_CAPACITY`=4096, `STAGE_MSG_CAPACITY`=256 named+documented; 11 `CAT_*` catalog property-key constants beside the PROP_* discipline; `initial_wal_version` renamed w/ deliberate-pin doc (wire unchanged). Remaining: testkit 16<<20 caps + `root_of` 64 → land with increments 4/6 (testkit + sqlcore tasks own those files) |
 
 *R8 RateLimited is scheduled with increment 7 in tasks.md (T054) though
 plan.md's increment table folds it into the taxonomy work — either landing
@@ -119,14 +119,14 @@ spot satisfies WR8 as long as the gate is green.
 | 3.2 borrowed-box replay signature | 5 | | |
 | 3.3 pg_error_detail ×3 + SQLSTATE list ×2 | 7 | | |
 | 3.3 ConnectResult match ×2, quoting ×2, effective_pk ×3, prepare_stream, serde vocab ×3, decimal/date parsing ×2, pump_copy ×2, Emit loop ×2, strategy wrappers, PEM loading ×2, select_sql WHERE dup | 7 | | |
-| 3.3 slot peek binding inconsistency | 3 | | |
+| 3.3 slot peek binding inconsistency | 3 | applied | Folded into the R12 peek unification (one implementation, one binding form) |
 | 3.4 duckdb quote-bypass deletion | 6 | | |
 | 3.4 DestOptions/TableOptions re-export convention | 11 | | |
 | 3.4 MergePlan field naming | 11 (deferral candidate) | | |
 | 3.5 jsonl SlabReader, FileTask ×4, staged-part path ×3, owned-tail ×2, fill loops, compression-ext ×2 | 8 | | |
 | 3.5 FileSource::read split, csv convert_cell catch-all | 8 | | |
 | 3.5 read_doc reserialize round-trip | 8 | | |
-| 3.5 ParquetDir deprecation intent, format_version, pub constants | 3 | | |
+| 3.5 ParquetDir deprecation intent, format_version, pub constants | 3 | applied | See R12 rest/iceberg/file row: intent recorded (frozen stable spelling), format_version enforced, constants narrowed |
 | 3.5 parquet footer re-parse perf note | 8 | | |
 | 3.6 Pagination selector_paths, stop-block dup, json_kind/render_scalar, base-url join, derive stacks | 9 | | |
 | 3.6 fetch_page split, read_children/current_token | 9 | | |
@@ -136,9 +136,9 @@ spot satisfies WR8 as long as the gate is green.
 | 3.7 root re-export completeness | 11 | | |
 | 3.8 CLI run() macro → build_* fns | 12 | | |
 | 3.8 testkit try_step!, fixture schema-from-TableSchema, util visibility, verify_* re-exports, Row alias | 4 | | |
-| 3.8 bench four TOML loaders, last_json_field, container boilerplate | 12 | | |
-| 3.8 bench error hygiene (offender naming, malformed message, load_cells drops, reset_sql validation) | 12 | | |
-| 3.8 bench ClassArg/Display/fingerprint/hash-data renames | 12 | | |
+| 3.8 bench four TOML loaders, last_json_field, container boilerplate | 3* | applied | One `load_toml<T>`; `protocol::last_json_field` ×3; `start_container` helper. *Landed early with increment 3 (same files) |
+| 3.8 bench error hygiene (offender naming, malformed message, load_cells drops, reset_sql validation) | 3* | applied | Paths carried via `at()` helper; malformed message fixed; load_cells loud; reset_sql load-time validated. *Landed early with increment 3 |
+| 3.8 bench ClassArg/Display/fingerprint/hash-data renames | 3* | applied | ValueEnum on Class (ClassArg deleted); Display for Mode; `hash_files` (serde keeps TOML key)/`data_dir`; competitor_pins map w/ migration. *Landed early with increment 3 |
 
 ## Part 5 — Delivery surfaces
 
@@ -149,19 +149,19 @@ spot satisfies WR8 as long as the gate is green.
 | D3 PgFixture into testkit | 4 | | |
 | D4 fixture trio into testkit | 4 | | |
 | D5 stream_yaml builders | 4 | | |
-| D6 free-disk composite action | 3 | | |
-| D7 iai-callgrind pin unification | 3 | | |
-| D8 CI env/comment dedup | 3 | | |
-| D9 semver job disk step | 3 | | |
-| D10 toolchain install cleanup | 3 | | |
-| D11 variants.toml defaults | 3 | | |
-| D12 fixtures.toml defaults | 3 | | |
-| D13 workspace rust-version | 3 | | |
-| D14 inheritance stragglers + implied features | 3 | | |
-| D15 mutants.out.old untracking | 3 | | |
+| D6 free-disk composite action | 3 | applied | `.github/actions/free-disk/action.yml` with THE canonical disk rationale; 6 jobs reference it (checkout-first verified per job) |
+| D7 iai-callgrind pin unification | 3 | applied | `[workspace.dependencies] iai-callgrind = "=0.16.1"` cross-linked to ci.yml; both consumers inherit; perf-gate guard step fails loudly on mismatch (sed tested against real manifest) |
+| D8 CI env/comment dedup | 3 | applied | One canonical rationale in the action; per-workflow env var kept (cannot be shared) with one-line pointers |
+| D9 semver job disk step | 3 | applied | free-disk added to semver (builds two full trees — heaviest case) |
+| D10 toolchain install cleanup | 3 | applied | `@stable` installs dropped (rust-toolchain.toml governs); `@nightly` kept for fuzz only; per-job needs verified |
+| D11 variants.toml defaults | 3 | applied | `[defaults]` pin/image, per-variant override, loud missing-field error; `role=` lines removed with the dead field |
+| D12 fixtures.toml defaults | 3 | applied | `[defaults]` postgres image + conn template ({{port}}); `[snippets]` drop_raw_schemas via `@name`; exec-only fixtures gained conn naturally; `strat_duck_unused` dropped (merge_prepare.sh arg now optional); reset_sql-without-container = load-time error |
+| D13 workspace rust-version | 3 | applied | `rust-version = "1.96"` in [workspace.package], inherited by all 13 crates; matches rust-toolchain.toml |
+| D14 inheritance stragglers + implied features | 3 | applied | iai-callgrind + libc → workspace deps; `postgres-source`/`file` dropped from CLI+bench (implication proven from rdlt [features] + resolved-tree check); rdlt-connector tokio simplified (strict-superset union). `cargo check --workspace` clean |
+| D15 mutants.out.old untracking | 3 | applied | `git rm -r --cached` — 694 files untracked, ignore entry kept, directory on disk |
 | D16 container image tags pinned (rustfs ×3 sites; polaris pending) | 1 | partially applied | Discovered at T001: gate red on merge base — file-crate S3 dest tests 500ing. Root cause = HOST DISK 100% FULL (168GB podman test residue: 188 stopped pg containers, 1117 anonymous volumes, dangling images — pruned, 158G freed); tests green after cleanup. Floating `rustfs:latest` pinned to 1.0.0-beta.11 at all 3 sites (file s3.rs, iceberg common, fixtures.toml ×2 refs) as drift-proofing; `apache/polaris:latest` pin deferred to increment 4 (testkit unification) with a live-verified tag |
 | P5-low Makefile check/coverage notes | 3 | | |
-| P5-low deep-checks RUSTFLAGS doc | 3 | | |
-| P5-low CLAUDE.md drift (rustc/arrow numbers) | 3 | | |
+| P5-low deep-checks RUSTFLAGS doc | 3 | applied | Deliberate-divergence comment added (deep tier measures, PR tier lints) |
+| P5-low CLAUDE.md drift (rustc/arrow numbers) | 3 | applied | 016 block corrected: arrow 58.3, toolchain 1.96.0 |
 | P5-low root README decision | close-out | | |
-| P5-low bench reset_sql dup / conn-less fixtures / strat_duck_unused / cell-id convention | 3 | | |
+| P5-low bench reset_sql dup / conn-less fixtures / strat_duck_unused / cell-id convention | 3 | applied | First three via D12; cell-id renames SKIPPED deliberately (RESULTS.md history would orphan) — naming note for NEW cells added to benches/README.md |

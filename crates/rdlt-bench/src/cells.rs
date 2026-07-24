@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{BenchError, Result};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum Class {
     Gated,
@@ -51,6 +51,16 @@ pub enum Mode {
     Library,
     /// Cold-start only: shells the recorded hyperfine protocol (R8).
     Hyperfine,
+}
+
+impl std::fmt::Display for Mode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Mode::Subprocess => "subprocess",
+            Mode::Library => "library",
+            Mode::Hyperfine => "hyperfine",
+        })
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -149,20 +159,26 @@ struct CellFile {
 /// Load every `*.toml` under `cells_dir`. Duplicate ids are a typed error
 /// naming both files.
 pub fn load_cells(cells_dir: &Path) -> Result<Vec<Cell>> {
-    let mut entries: Vec<PathBuf> = std::fs::read_dir(cells_dir)
+    // Unreadable directory entries are an error naming the directory, never
+    // silently skipped: a cell file the OS refused to stat would otherwise
+    // vanish from the matrix without a trace.
+    let mut entries: Vec<PathBuf> = Vec::new();
+    for entry in std::fs::read_dir(cells_dir)
         .map_err(|e| BenchError(format!("reading {}: {e}", cells_dir.display())))?
-        .filter_map(|d| d.ok().map(|d| d.path()))
-        .filter(|p| p.extension().is_some_and(|e| e == "toml"))
-        .collect();
+    {
+        let path = entry
+            .map_err(|e| BenchError(format!("reading an entry of {}: {e}", cells_dir.display())))?
+            .path();
+        if path.extension().is_some_and(|e| e == "toml") {
+            entries.push(path);
+        }
+    }
     entries.sort();
 
     let mut cells: Vec<Cell> = Vec::new();
     let mut seen: BTreeMap<String, PathBuf> = BTreeMap::new();
     for path in entries {
-        let raw = std::fs::read_to_string(&path)
-            .map_err(|e| BenchError(format!("reading {}: {e}", path.display())))?;
-        let file: CellFile = toml::from_str(&raw)
-            .map_err(|e| BenchError(format!("parsing {}: {e}", path.display())))?;
+        let file: CellFile = crate::load_toml(&path)?;
         let suite = path
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
@@ -216,7 +232,10 @@ pub struct Bar {
     /// Jitter allowance (percent) before a violation is declared.
     #[serde(default)]
     pub tolerance_pct: f64,
-    /// Pointer to the evidence/version-policy record that set this bar.
+    /// Informational-only: a pointer to the evidence/version-policy record
+    /// that set this bar. Required in bars.toml so every bar cites its
+    /// provenance, but the gate never reads it — it documents, it does not
+    /// gate.
     pub policy: String,
 }
 
@@ -228,10 +247,7 @@ struct BarsFile {
 }
 
 pub fn load_bars(path: &Path) -> Result<Vec<Bar>> {
-    let raw = std::fs::read_to_string(path)
-        .map_err(|e| BenchError(format!("reading {}: {e}", path.display())))?;
-    let file: BarsFile =
-        toml::from_str(&raw).map_err(|e| BenchError(format!("parsing {}: {e}", path.display())))?;
+    let file: BarsFile = crate::load_toml(path)?;
     Ok(file.bars)
 }
 

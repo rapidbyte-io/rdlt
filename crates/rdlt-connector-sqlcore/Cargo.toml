@@ -3,6 +3,7 @@ name = "rdlt-connector-sqlcore"
 description = "Shared merge-planning core for rdlt SQL destinations: options vocabulary, plan shapes, dialect seam"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 

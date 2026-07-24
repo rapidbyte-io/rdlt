@@ -730,37 +730,19 @@ async fn change_pass(
             "injected: peek connection lost"
         ))
     );
-    let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = vec![&cdc.slot, &cdc.publication];
-    let upto = slot::fmt_lsn(target);
-    let sql = format!(
-        "SELECT lsn::text, data FROM pg_logical_slot_peek_binary_changes(\
-         $1, '{upto}'::pg_lsn, NULL::int4, \
-         'proto_version', '1', 'publication_names', $2)"
-    );
-    let rows = control
-        .query_raw(sql.as_str(), params)
-        .await
-        .map_err(|e| errors::classify(Phase::Slot, Some(name), &e))?;
-    futures::pin_mut!(rows);
+    // ONE canonical peek: `slot::peek` owns the SQL, the parameter binding,
+    // and the LSN parsing (it classifies its errors slot-scoped, so they
+    // carry no table name — a peek reads every table's changes and filters
+    // its own). The stream is consumed row-by-row, decoding each change as
+    // it lands rather than buffering the whole range.
+    let changes = slot::peek(control, cdc, target).await?;
+    futures::pin_mut!(changes);
 
     let mut apply = Apply::new(cdc, schema, name, identity, plans, batch_max_rows, since);
-    while let Some(row) = rows
-        .try_next()
-        .await
-        .map_err(|e| errors::classify(Phase::Slot, Some(name), &e))?
-    {
-        let lsn_text: String = row.get(0);
-        let lsn = slot::parse_lsn(&lsn_text).ok_or_else(|| {
-            errors::fatal(
-                Phase::Slot,
-                Some(name),
-                format!("server returned unparseable change lsn `{lsn_text}`"),
-            )
-        })?;
-        let data: Vec<u8> = row.get(1);
-        let message =
-            pgoutput::parse(&data).map_err(|e| errors::fatal(Phase::Decode, Some(name), e))?;
-        for action in apply.on_message(lsn, message)? {
+    while let Some(change) = changes.try_next().await? {
+        let message = pgoutput::parse(&change.data)
+            .map_err(|e| errors::fatal(Phase::Decode, Some(name), e))?;
+        for action in apply.on_message(change.lsn, message)? {
             match action {
                 Emit::Batch(batch) => {
                     if req.out.arrow(batch).await.is_err() {
@@ -886,7 +868,7 @@ impl<'a> Apply<'a> {
 
     fn on_message(&mut self, lsn: u64, message: Message) -> Result<Vec<Emit>, SourceError> {
         match message {
-            Message::Begin { .. } => {
+            Message::Begin => {
                 self.in_tx = true;
                 self.tx_rows.clear();
                 Ok(Vec::new())
@@ -970,7 +952,7 @@ impl<'a> Apply<'a> {
                 }
                 Ok(Vec::new())
             }
-            Message::Commit { .. } => {
+            Message::Commit => {
                 self.in_tx = false;
                 // Already-applied transaction (commit position ≤ cursor):
                 // discard rows AND any unappliable-record error — replaying

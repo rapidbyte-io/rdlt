@@ -6,6 +6,11 @@ use crate::ids::LoadId;
 use crate::state::StateDoc;
 
 /// Counters for one commit unit. Feeds `RunReport` accounting — no silent failures.
+///
+/// Field-identical to [`crate::report::TableReport`] by design, but a different role:
+/// `CommitCounters` totals one commit unit across all its tables, whereas a
+/// `TableReport` totals one table across the whole run. `From<CommitCounters>` (defined
+/// alongside `TableReport`) projects the former into the latter's shape.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommitCounters {
     pub rows: u64,

@@ -4,6 +4,7 @@ description = "rdlt dev benchmark harness: declarative cells -> run -> gate -> r
 publish = false
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
@@ -16,7 +17,8 @@ path = "src/main.rs"
 # 2026-07-21); everything else ships in the workspace already.
 [dependencies]
 clap = { workspace = true }
-rdlt = { workspace = true, features = ["rest", "duckdb", "postgres", "file", "parquet", "postgres-source", "iceberg"] }
+# postgres implies postgres-source; parquet implies file (see crates/rdlt features).
+rdlt = { workspace = true, features = ["rest", "duckdb", "postgres", "parquet", "iceberg"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }

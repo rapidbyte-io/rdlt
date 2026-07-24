@@ -3,6 +3,7 @@ name = "rdlt"
 description = "rdlt facade: Pipeline builder, prelude, connector features"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 

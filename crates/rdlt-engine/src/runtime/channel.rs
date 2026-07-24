@@ -5,12 +5,14 @@
 //! scale RSS with schema size. A slow consumer exhausts the byte budget and the
 //! producer parks on it: that *is* the backpressure.
 
-// Constructed only where the task graph is built.
-#![allow(dead_code)]
-
 use std::sync::Arc;
 
 use tokio::sync::{Semaphore, mpsc};
+
+/// Secondary message-count bound on a stage channel. The byte budget is the primary
+/// backpressure; this hard cap keeps zero-byte items (markers) from queueing without
+/// limit when the budget alone would never park them.
+const STAGE_MSG_CAPACITY: usize = 256;
 
 /// Items know their in-memory footprint.
 pub(crate) trait ByteSized {
@@ -89,9 +91,7 @@ impl<T> ByteRx<T> {
 
 pub(crate) fn byte_channel<T>(byte_budget: usize) -> (ByteTx<T>, ByteRx<T>) {
     let budget = Arc::new(Semaphore::new(byte_budget));
-    // Message-count capacity is a secondary bound so zero-byte items (markers) can't
-    // queue unboundedly.
-    let (tx, rx) = mpsc::channel(256);
+    let (tx, rx) = mpsc::channel(STAGE_MSG_CAPACITY);
     (
         ByteTx {
             tx,

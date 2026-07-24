@@ -17,12 +17,14 @@ impl SchemaRegistry {
     }
 
     /// Store `observed` as current, described by pre-computed `changes` (usually from
-    /// [`Self::diff`], possibly policy-filtered). No-op when nothing changed.
+    /// [`Self::diff`], possibly policy-filtered). No-op when nothing changed. Returns
+    /// the delta paired with the now-current schema, so callers emitting a
+    /// `Delta` load item need not look the schema back up.
     pub(crate) fn apply(
         &mut self,
         observed: TableSchema,
         changes: Vec<SchemaChange>,
-    ) -> Option<SchemaDelta> {
+    ) -> Option<(SchemaDelta, TableSchema)> {
         if changes.is_empty() {
             return None;
         }
@@ -36,8 +38,9 @@ impl SchemaRegistry {
             to: observed.content_hash(),
             changes,
         };
+        let current = observed.clone();
         self.tables.insert(observed.table.clone(), observed);
-        Some(delta)
+        Some((delta, current))
     }
 
     /// Non-mutating: what would change if `observed` became current?

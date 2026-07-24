@@ -14,7 +14,7 @@ class = "scoreboard"
 mode = "subprocess"
 fixture = "strat-pg"
 pipeline = "cells/pipelines/strat-delete-insert.yaml"
-prepare_sh = "sh {{benches}}/fixtures/merge_prepare.sh rdlt-bench-strat-pg {{cli}} {{spec}} strat_delete_insert {{run}}"
+prepare_sh = "sh {{benches}}/fixtures/merge_prepare.sh rdlt-bench-strat-pg {{cli}} {{spec}} {{run}} strat_delete_insert"
 warmups = 0
 runs = 5
 verify = { table = "pg_wide", expected_rows = 1000000 }
@@ -28,7 +28,7 @@ class = "scoreboard"
 mode = "subprocess"
 fixture = "strat-pg"
 pipeline = "cells/pipelines/strat-upsert.yaml"
-prepare_sh = "sh {{benches}}/fixtures/merge_prepare.sh rdlt-bench-strat-pg {{cli}} {{spec}} strat_upsert {{run}}"
+prepare_sh = "sh {{benches}}/fixtures/merge_prepare.sh rdlt-bench-strat-pg {{cli}} {{spec}} {{run}} strat_upsert"
 warmups = 0
 runs = 5
 verify = { table = "pg_wide", expected_rows = 1000000 }
@@ -149,7 +149,7 @@ class = "scoreboard"
 mode = "subprocess"
 fixture = "strat-pg"
 pipeline = "cells/pipelines/strat-duck-delete-insert.yaml"
-prepare_sh = "sh {{benches}}/fixtures/merge_prepare.sh rdlt-bench-strat-pg {{cli}} {{spec}} strat_duck_unused {{run}}"
+prepare_sh = "sh {{benches}}/fixtures/merge_prepare.sh rdlt-bench-strat-pg {{cli}} {{spec}} {{run}}"
 warmups = 0
 runs = 5
 verify = { table = "pg_wide", expected_rows = 1000000 }
@@ -163,7 +163,7 @@ class = "scoreboard"
 mode = "subprocess"
 fixture = "strat-pg"
 pipeline = "cells/pipelines/strat-duck-upsert.yaml"
-prepare_sh = "sh {{benches}}/fixtures/merge_prepare.sh rdlt-bench-strat-pg {{cli}} {{spec}} strat_duck_unused {{run}}"
+prepare_sh = "sh {{benches}}/fixtures/merge_prepare.sh rdlt-bench-strat-pg {{cli}} {{spec}} {{run}}"
 warmups = 0
 runs = 5
 verify = { table = "pg_wide", expected_rows = 1000000 }

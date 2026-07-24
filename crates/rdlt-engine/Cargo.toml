@@ -3,6 +3,7 @@ name = "rdlt-engine"
 description = "rdlt engine: shredder, schema registry, WAL, state, runtime, loader (deep module)"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
@@ -33,7 +34,7 @@ async-trait = { workspace = true }
 proptest = { workspace = true }
 tempfile = { workspace = true }
 criterion = { workspace = true }
-iai-callgrind = "0.16"
+iai-callgrind = { workspace = true }
 
 [[bench]]
 name = "shred"

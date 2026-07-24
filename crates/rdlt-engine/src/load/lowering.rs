@@ -16,7 +16,7 @@ use rdlt_connector::DestCapabilities;
 use rdlt_core::naming::UniqueNamer;
 use rdlt_core::{ColumnDef, ColumnType, LogicalType, RdltError, TableSchema};
 
-pub(crate) fn needs_lowering(caps: &DestCapabilities) -> bool {
+fn needs_lowering(caps: &DestCapabilities) -> bool {
     !caps.structs || !caps.decimal
 }
 

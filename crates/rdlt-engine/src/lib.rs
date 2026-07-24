@@ -69,6 +69,11 @@ pub struct Engine {
     events: tokio::sync::broadcast::Sender<PipelineEvent>,
 }
 
+/// Ring-buffer depth of the observability broadcast channel. Large enough that a
+/// briefly-stalled subscriber rarely lags out; a subscriber slower than this loses
+/// oldest events (by design — observability never backpressures data movement).
+const EVENT_CHANNEL_CAPACITY: usize = 4096;
+
 /// Typed observability stream (embedder-api.md O1): every [`PipelineEvent`] in causal
 /// order. Slow consumers lose oldest events rather than backpressuring the pipeline —
 /// observability must never slow data movement.
@@ -106,7 +111,7 @@ impl Engine {
             source: Arc::new(source),
             destination: Arc::new(destination),
             cancel: CancellationToken::new(),
-            events: tokio::sync::broadcast::channel(4096).0,
+            events: tokio::sync::broadcast::channel(EVENT_CHANNEL_CAPACITY).0,
         }
     }
 

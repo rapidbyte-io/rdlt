@@ -10,14 +10,14 @@ use std::collections::BTreeMap;
 use rdlt_connector::{Cursor, SourceError};
 use serde::{Deserialize, Serialize};
 
-pub const CURSOR_FORMAT_VERSION: u32 = 1;
+pub(crate) const CURSOR_FORMAT_VERSION: u32 = 1;
 
 /// Tail-verification window: the cursor records a blake3 hash of the last
 /// `min(done, TAIL_WINDOW)` consumed bytes; a resumed read re-fetches exactly that
 /// window and compares BEFORE trusting the offset — a grown REWRITE (changed prefix)
 /// fails loudly on both location kinds, while a genuine append (identical prefix)
 /// resumes.
-pub const TAIL_WINDOW: u64 = 4096;
+pub(crate) const TAIL_WINDOW: u64 = 4096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileProgress {

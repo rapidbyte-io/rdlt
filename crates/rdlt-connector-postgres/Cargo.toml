@@ -3,6 +3,7 @@ name = "rdlt-connector-postgres"
 description = "rdlt PostgreSQL connectors: binary-COPY-to-Arrow source and binary-COPY destination, one shared TLS/config home"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
@@ -38,7 +39,7 @@ rustls-native-certs = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-iai-callgrind = "0.16"
+iai-callgrind = { workspace = true }
 tokio-postgres-rustls = { workspace = true }
 rustls = { workspace = true }
 rustls-pemfile = { workspace = true }

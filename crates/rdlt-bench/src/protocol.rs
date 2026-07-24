@@ -92,6 +92,18 @@ pub fn median(samples: &[f64]) -> f64 {
     }
 }
 
+/// The last stdout line that parses as a JSON object carrying `field`, and
+/// that field's value. The self-timing convention the dlt baselines, the
+/// shred-only example, and the subprocess `self_json_seconds` timing all
+/// share: a run may print noise, then one JSON summary line last.
+pub(crate) fn last_json_field(stdout: &str, field: &str) -> Option<serde_json::Value> {
+    stdout.lines().rev().find_map(|line| {
+        serde_json::from_str::<serde_json::Value>(line.trim())
+            .ok()
+            .and_then(|v| v.get(field).cloned())
+    })
+}
+
 /// Nearest-rank p95 (the sample at ceil(0.95·N), 1-indexed).
 pub fn p95(samples: &[f64]) -> f64 {
     assert!(!samples.is_empty(), "p95 of zero runs");

@@ -327,21 +327,19 @@ impl IcebergConfig {
         }
     }
 
+    #[must_use]
     pub fn with_create_namespace(mut self, create: bool) -> Self {
         self.create_namespace = create;
         self
     }
 
-    pub fn with_catalog_prop(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.catalog.props.insert(key.into(), value.into());
-        self
-    }
-
+    #[must_use]
     pub fn with_storage_s3(mut self, s3: S3Override) -> Self {
         self.storage = Some(StorageOptions { s3: Some(s3) });
         self
     }
 
+    #[must_use]
     pub fn with_table(mut self, stream: impl Into<String>, options: TableOptions) -> Self {
         self.tables.insert(stream.into(), options);
         self

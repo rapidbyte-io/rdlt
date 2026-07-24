@@ -3,6 +3,7 @@ name = "rdlt-connector-file"
 description = "rdlt bundled file source: JSONL and Parquet, glob selection, per-file incremental cursors"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 

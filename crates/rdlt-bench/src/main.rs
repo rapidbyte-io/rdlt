@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 
 use rdlt_bench::cells::{Cell, Class};
 use rdlt_bench::protocol::QuietVerdict;
@@ -42,19 +42,13 @@ enum Cmd {
     Report,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum ClassArg {
-    Gated,
-    Scoreboard,
-}
-
 #[derive(Debug, clap::Args)]
 struct SelectionArgs {
     /// A single cell id
     cell: Option<String>,
     /// Only cells of this class
     #[arg(long, value_enum)]
-    class: Option<ClassArg>,
+    class: Option<Class>,
     /// Glob over cell ids (`*` wildcards, e.g. 'pg-*')
     #[arg(long)]
     filter: Option<String>,
@@ -62,12 +56,8 @@ struct SelectionArgs {
 
 impl SelectionArgs {
     fn selects(&self, cell: &Cell) -> bool {
-        let class = self.class.map(|c| match c {
-            ClassArg::Gated => Class::Gated,
-            ClassArg::Scoreboard => Class::Scoreboard,
-        });
         self.cell.as_deref().is_none_or(|id| id == cell.id)
-            && class.is_none_or(|c| c == cell.class)
+            && self.class.is_none_or(|c| c == cell.class)
             && self
                 .filter
                 .as_deref()
@@ -116,7 +106,7 @@ fn cmd_list(paths: &Paths, selection: &SelectionArgs) -> rdlt_bench::Result<()> 
             "{:<34} {:<10} {:<11} {:<9} {:<16} {:<5} {}{}",
             cell.id,
             cell.class.to_string(),
-            format!("{:?}", cell.mode).to_lowercase(),
+            cell.mode.to_string(),
             cell.suite,
             cell.fixture,
             cell.runs,
@@ -158,7 +148,7 @@ fn cmd_run(paths: &Paths, selection: &SelectionArgs) -> rdlt_bench::Result<bool>
     let mut measured: Vec<artifact::Artifact> = Vec::new();
     for cell in selected {
         eprintln!(
-            "== {} ({} {:?}, {} runs) ==",
+            "== {} ({} {}, {} runs) ==",
             cell.id, cell.class, cell.mode, cell.runs
         );
         if !started.contains_key(&cell.fixture) {
@@ -187,7 +177,7 @@ fn cmd_run(paths: &Paths, selection: &SelectionArgs) -> rdlt_bench::Result<bool>
 
         // Baseline FIRST — competitors run before the rdlt side.
         let mut competitor_sides = BTreeMap::new();
-        let mut pin = None;
+        let mut competitor_pins: BTreeMap<String, String> = BTreeMap::new();
         for reference in &cell.competitors {
             let variant = variants
                 .iter()
@@ -198,9 +188,9 @@ fn cmd_run(paths: &Paths, selection: &SelectionArgs) -> rdlt_bench::Result<bool>
                         cell.id, reference.variant
                     ))
                 })?;
-            pin.get_or_insert_with(|| variant.pin.clone());
+            competitor_pins.insert(variant.id.clone(), variant.pin.clone());
             let mut subs = base_subs.clone();
-            subs.insert("data".into(), fixture.data.path().display().to_string());
+            subs.insert("data".into(), fixture.data_dir.path().display().to_string());
             if let Some(conn) = fixture.conn() {
                 subs.insert("conn".into(), conn.to_owned());
             }
@@ -213,7 +203,7 @@ fn cmd_run(paths: &Paths, selection: &SelectionArgs) -> rdlt_bench::Result<bool>
                 // later at `gate`.
                 if cell.class == Class::Gated {
                     return Err(BenchError(format!(
-                        "gated cell `{}`: baseline `{}` MISSING ({reason}) — refusing to run                          and overwrite the committed artifact",
+                        "gated cell `{}`: baseline `{}` MISSING ({reason}) — refusing to run and overwrite the committed artifact",
                         cell.id, variant.id
                     )));
                 }
@@ -222,7 +212,14 @@ fn cmd_run(paths: &Paths, selection: &SelectionArgs) -> rdlt_bench::Result<bool>
             competitor_sides.insert(variant.id.clone(), side);
         }
 
-        let result = runner::run_cell(cell, paths, fixture, pin, competitor_sides, quiet_note)?;
+        let result = runner::run_cell(
+            cell,
+            paths,
+            fixture,
+            competitor_pins,
+            competitor_sides,
+            quiet_note,
+        )?;
         let path = artifact::write(&paths.results, &result)?;
         eprintln!(
             "   median {:.1} ms  (artifact: {})",

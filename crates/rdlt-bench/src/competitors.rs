@@ -16,38 +16,68 @@ use crate::cells::CompetitorRef;
 use crate::protocol;
 use crate::{BenchError, Result};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Role {
-    /// Feeds gated ratio bars.
-    Baseline,
-    /// Scoreboard context only.
-    Context,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// A resolved competitor variant: the pin + image every artifact fingerprint
+/// records. `pin`/`image` may come from the file's `[defaults]` table (all
+/// dlt variants share one pinned image), a per-variant value overriding it.
+#[derive(Debug, Clone)]
 pub struct Variant {
     pub id: String,
     /// e.g. "dlt 1.29.0" — recorded in every artifact fingerprint.
     pub pin: String,
     pub image: String,
-    pub role: Role,
+}
+
+/// Shared defaults every variant inherits unless it states its own.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VariantDefaults {
+    pin: Option<String>,
+    image: Option<String>,
+}
+
+/// One `[[variant]]` as written: `pin`/`image` are optional here and fall back
+/// to `[defaults]`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawVariant {
+    id: String,
+    pin: Option<String>,
+    image: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct VariantsFile {
+    #[serde(default)]
+    defaults: VariantDefaults,
     #[serde(default, rename = "variant")]
-    variants: Vec<Variant>,
+    variants: Vec<RawVariant>,
 }
 
 pub fn load_variants(path: &Path) -> Result<Vec<Variant>> {
-    let raw = std::fs::read_to_string(path)
-        .map_err(|e| BenchError(format!("reading {}: {e}", path.display())))?;
-    let file: VariantsFile =
-        toml::from_str(&raw).map_err(|e| BenchError(format!("parsing {}: {e}", path.display())))?;
-    Ok(file.variants)
+    fn resolve(
+        value: Option<String>,
+        default: &Option<String>,
+        id: &str,
+        name: &str,
+    ) -> Result<String> {
+        value.or_else(|| default.clone()).ok_or_else(|| {
+            BenchError(format!(
+                "variant `{id}`: no `{name}` and none in [defaults]"
+            ))
+        })
+    }
+    let file: VariantsFile = crate::load_toml(path)?;
+    file.variants
+        .into_iter()
+        .map(|raw| {
+            Ok(Variant {
+                pin: resolve(raw.pin, &file.defaults.pin, &raw.id, "pin")?,
+                image: resolve(raw.image, &file.defaults.image, &raw.id, "image")?,
+                id: raw.id,
+            })
+        })
+        .collect()
 }
 
 fn image_exists(engine: &str, image: &str) -> bool {
@@ -113,22 +143,15 @@ fn read_cgroup_via_exec(engine: &str, name: &str) -> CgroupReading {
 /// the fallback only, and is labeled as the different statistic it is (it
 /// additionally charges page cache, so it is not comparable to ru_maxrss).
 fn self_reported_rss(stdout: &str) -> Option<u64> {
-    stdout.lines().rev().find_map(|line| {
-        serde_json::from_str::<serde_json::Value>(line.trim())
-            .ok()
-            .and_then(|v| v.get("peak_rss_kb").and_then(|s| s.as_u64()))
-            .map(|kb| kb * 1024)
-    })
+    protocol::last_json_field(stdout, "peak_rss_kb")
+        .and_then(|v| v.as_u64())
+        .map(|kb| kb * 1024)
 }
 
 /// The baseline scripts' convention: one JSON line on stdout whose `seconds`
 /// field is the in-process self-timed measurement.
 fn self_timed_seconds(stdout: &str) -> Option<f64> {
-    stdout.lines().rev().find_map(|line| {
-        serde_json::from_str::<serde_json::Value>(line.trim())
-            .ok()
-            .and_then(|v| v.get("seconds").and_then(|s| s.as_f64()))
-    })
+    protocol::last_json_field(stdout, "seconds").and_then(|v| v.as_f64())
 }
 
 struct ContainerRun {
@@ -331,19 +354,37 @@ mod tests {
         let p = dir.path().join("variants.toml");
         std::fs::write(
             &p,
-            "[[variant]]\nid='dlt-pyarrow'\npin='dlt 1.29.0'\nimage='rdlt-baseline'\nrole='baseline'\n",
+            "[[variant]]\nid='dlt-pyarrow'\npin='dlt 1.29.0'\nimage='rdlt-baseline'\n",
         )
         .unwrap();
         let variants = load_variants(&p).unwrap();
-        assert_eq!(variants[0].role, Role::Baseline);
+        assert_eq!(variants[0].pin, "dlt 1.29.0");
+        assert_eq!(variants[0].image, "rdlt-baseline");
 
-        std::fs::write(
-            &p,
-            "[[variant]]\nid='x'\npin='p'\nimage='i'\nrole='baseline'\nnope=1\n",
-        )
-        .unwrap();
+        std::fs::write(&p, "[[variant]]\nid='x'\npin='p'\nimage='i'\nnope=1\n").unwrap();
         let err = load_variants(&p).unwrap_err().to_string();
         assert!(err.contains("nope"), "{err}");
+    }
+
+    #[test]
+    fn variant_defaults_fill_pin_and_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("variants.toml");
+        std::fs::write(
+            &p,
+            "[defaults]\npin='dlt 1.29.0'\nimage='rdlt-baseline'\n\n[[variant]]\nid='dlt'\n\n[[variant]]\nid='other'\nimage='custom'\n",
+        )
+        .unwrap();
+        let variants = load_variants(&p).unwrap();
+        assert_eq!(variants[0].pin, "dlt 1.29.0");
+        assert_eq!(variants[0].image, "rdlt-baseline");
+        // per-variant override wins over the default
+        assert_eq!(variants[1].image, "custom");
+
+        // no value and no default → a loud error naming the variant + field
+        std::fs::write(&p, "[[variant]]\nid='bare'\n").unwrap();
+        let err = load_variants(&p).unwrap_err().to_string();
+        assert!(err.contains("bare") && err.contains("pin"), "{err}");
     }
 
     #[test]
@@ -360,7 +401,6 @@ mod tests {
             id: "ghost".into(),
             pin: "dlt 0.0.0".into(),
             image: "rdlt-bench-definitely-not-built".into(),
-            role: Role::Baseline,
         };
         let reference = CompetitorRef {
             variant: "ghost".into(),
@@ -376,7 +416,7 @@ mod tests {
                 kind: crate::fixtures::FixtureKind::None,
                 generate_sh: None,
                 container_args: vec![],
-                hash: vec![],
+                hash_files: vec![],
                 image: None,
                 port: None,
                 seed_sql: None,

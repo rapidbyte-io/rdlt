@@ -142,7 +142,10 @@ impl DuckDb {
         Ok(conn)
     }
 
-    /// Test/inspection helper: count reader-visible rows.
+    /// Test/inspection helper: count reader-visible rows. Exists for the
+    /// crate's tests and the differential/bench harnesses (which consume it
+    /// cross-crate); not part of the public destination API — hence hidden.
+    #[doc(hidden)]
     pub fn count_rows(&self, table: &str) -> Result<u64, DestError> {
         let conn = self.clone_conn()?;
         let count: u64 = conn
@@ -155,7 +158,12 @@ impl DuckDb {
         Ok(count)
     }
 
-    /// Test/inspection helper: run a scalar query.
+    /// Test/inspection helper: run a scalar query and return its first
+    /// column as text. Exists for the crate's tests and the
+    /// differential/bench harnesses (which consume it cross-crate); it
+    /// executes raw SQL, so it is deliberately NOT part of the public
+    /// destination API — hence hidden.
+    #[doc(hidden)]
     pub fn query_string(&self, sql: &str) -> Result<String, DestError> {
         let conn = self.clone_conn()?;
         conn.query_row(sql, [], |row| row.get::<_, String>(0))

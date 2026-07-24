@@ -3,6 +3,7 @@ name = "rdlt-core"
 description = "rdlt vocabulary: pure data contracts and semantic laws (ids, logical types, widening lattice, schemas, cursors, reports)"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 

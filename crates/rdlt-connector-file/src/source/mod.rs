@@ -12,14 +12,14 @@ pub mod cursor;
 use async_trait::async_trait;
 use rdlt_connector::{ConnectorSpec, ReadRequest, Source, SourceError, StreamSpec};
 
-use crate::formats::{csv, jsonl, parquet};
+use crate::formats::{Format, csv, jsonl, parquet};
 
 /// Fail-point registry: the SOURCE-side crash points (the dest points live in
 /// `crate::dest::FAIL_POINTS`).
 #[cfg(feature = "failpoints")]
 #[doc(hidden)]
 pub const FAIL_POINTS: &[&str] = &["file.list", "file.read"];
-pub use config::{FileConfig, FileStream, Format};
+pub use config::{FileConfig, FileStream};
 use cursor::{FileCursor, FileMeta};
 
 #[derive(Debug)]
@@ -296,7 +296,7 @@ async fn fetch_to_temp(
     let path = dir.join(format!("obj-{i}"));
     let mut file = std::fs::File::create(&path)
         .map_err(|e| SourceError::fatal(format!("temp file for `{key}`: {e}")))?;
-    let mut buf = vec![0u8; 8 << 20];
+    let mut buf = vec![0u8; crate::formats::SLAB_BYTES];
     loop {
         let n = reader
             .read_full(&mut buf)

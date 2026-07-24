@@ -2,9 +2,9 @@
 //! response actions, incremental binding, parent-child fan-out, loop guards,
 //! and the crash points (`rest.request`, `rest.decode`, `rest.checkpoint`).
 
-pub mod extract;
+pub(crate) mod extract;
 pub mod paginate;
-pub mod resolve;
+pub(crate) mod resolve;
 
 use std::collections::{BTreeMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -362,9 +362,7 @@ struct SequenceDriver<'a> {
     /// Body of the LAST response (for body-driven paginators).
     last_body: Option<Value>,
     last_headers: reqwest::header::HeaderMap,
-    last_count: usize,
     done: bool,
-    started: bool,
 }
 
 impl<'a> SequenceDriver<'a> {
@@ -390,9 +388,7 @@ impl<'a> SequenceDriver<'a> {
             total_records: 0,
             last_body: None,
             last_headers: reqwest::header::HeaderMap::new(),
-            last_count: 0,
             done: false,
-            started: false,
         }
     }
 
@@ -418,7 +414,6 @@ impl<'a> SequenceDriver<'a> {
         if self.done {
             return Ok(None);
         }
-        self.started = true;
         let url = self.url_override.clone().unwrap_or_else(|| self.base_url());
 
         // The same-request guard: fingerprint URL + all params + body,
@@ -535,7 +530,6 @@ impl<'a> SequenceDriver<'a> {
 
         let extracted = extract_records(&body, selector.as_ref(), self.need_values)?;
         self.total_records += extracted.count as u64;
-        self.last_count = extracted.count;
         self.last_headers = headers;
         self.last_body = if self.paginator.needs_body() {
             Some(
@@ -567,7 +561,6 @@ impl<'a> SequenceDriver<'a> {
                 // An empty page — but a body-driven paginator still gets the
                 // body: an ignored page may carry the cursor that continues
                 // the chain; an unparseable one ends it cleanly.
-                self.last_count = 0;
                 self.last_body = if self.paginator.needs_body() {
                     serde_json::from_slice(body).ok()
                 } else {

@@ -16,12 +16,20 @@ pub struct Fingerprint {
     pub cpu_model: String,
     pub kernel: String,
     pub rustc: String,
-    /// Competitor pin (e.g. "dlt 1.29.0") when any competitor ran.
-    pub competitor_pin: Option<String>,
+    /// Every competitor that ran, keyed by variant id → pin (e.g.
+    /// `{"dlt": "dlt 1.29.0"}`) — not only the first. Empty when no competitor
+    /// ran.
+    #[serde(default)]
+    pub competitor_pins: BTreeMap<String, String>,
     pub dataset_hashes: BTreeMap<String, String>,
     pub loadavg_at_start: f64,
     /// Present when the quiet-machine guard annotated the run.
     pub quiet_note: Option<String>,
+    /// Read-only migration slot: pre-cleanup artifacts recorded a single
+    /// `competitor_pin` string here. [`read`] folds it into `competitor_pins`
+    /// so regenerated reports stay byte-identical; never written back.
+    #[serde(default, skip_serializing, rename = "competitor_pin")]
+    legacy_competitor_pin: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -86,12 +94,14 @@ pub enum CompetitorSide {
     Missing { reason: String },
 }
 
+/// A row-count verification that PASSED — `verify_outcome` returns an error
+/// (never this) on a mismatch, so a recorded outcome is always a match; the
+/// `expected`/`actual` pair is kept for the artifact record.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct VerifyOutcome {
     pub table: String,
     pub expected_rows: u64,
     pub actual_rows: u64,
-    pub ok: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -114,7 +124,7 @@ pub struct Artifact {
 
 pub fn fingerprint(
     dataset_hashes: BTreeMap<String, String>,
-    competitor_pin: Option<String>,
+    competitor_pins: BTreeMap<String, String>,
     quiet_note: Option<String>,
 ) -> Fingerprint {
     let cpu_model = std::fs::read_to_string("/proc/cpuinfo")
@@ -140,10 +150,11 @@ pub fn fingerprint(
         cpu_model,
         kernel,
         rustc,
-        competitor_pin,
+        competitor_pins,
         dataset_hashes,
         loadavg_at_start: crate::protocol::loadavg_1min().unwrap_or(-1.0),
         quiet_note,
+        legacy_competitor_pin: None,
     }
 }
 
@@ -174,8 +185,22 @@ pub fn read(results_dir: &Path, cell_id: &str) -> Result<Artifact> {
             path.display()
         ))
     })?;
-    let artifact: Artifact = serde_json::from_str(&raw)
+    let mut artifact: Artifact = serde_json::from_str(&raw)
         .map_err(|e| BenchError(format!("parsing {}: {e}", path.display())))?;
+    // Fold a pre-cleanup single `competitor_pin` into the pins map. The old
+    // format lost which variant produced it, so key it by the competitor that
+    // ran (provenance renders only the values — display-neutral either way).
+    if artifact.fingerprint.competitor_pins.is_empty()
+        && let Some(pin) = artifact.fingerprint.legacy_competitor_pin.take()
+    {
+        let key = artifact
+            .competitors
+            .keys()
+            .next()
+            .cloned()
+            .unwrap_or_else(|| "competitor".into());
+        artifact.fingerprint.competitor_pins.insert(key, pin);
+    }
     if artifact.format_version != ARTIFACT_FORMAT_VERSION {
         return Err(BenchError(format!(
             "{}: format_version {} (this harness reads {ARTIFACT_FORMAT_VERSION})",
@@ -203,10 +228,11 @@ pub(crate) mod tests {
                 cpu_model: "test-cpu".into(),
                 kernel: "6.0".into(),
                 rustc: "rustc test".into(),
-                competitor_pin: None,
+                competitor_pins: BTreeMap::new(),
                 dataset_hashes: BTreeMap::new(),
                 loadavg_at_start: 0.1,
                 quiet_note: None,
+                legacy_competitor_pin: None,
             },
             workload: BTreeMap::new(),
             rdlt: RdltSide {
@@ -260,9 +286,46 @@ pub(crate) mod tests {
 
     #[test]
     fn fingerprint_reads_the_live_machine() {
-        let fp = fingerprint(BTreeMap::new(), Some("dlt 1.29.0".into()), None);
+        let pins = BTreeMap::from([("dlt".to_owned(), "dlt 1.29.0".to_owned())]);
+        let fp = fingerprint(BTreeMap::new(), pins, None);
         assert!(!fp.kernel.is_empty());
         assert!(fp.loadavg_at_start >= 0.0);
-        assert_eq!(fp.competitor_pin.as_deref(), Some("dlt 1.29.0"));
+        assert_eq!(
+            fp.competitor_pins.get("dlt").map(String::as_str),
+            Some("dlt 1.29.0")
+        );
+    }
+
+    #[test]
+    fn legacy_single_pin_migrates_into_the_map_on_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut art = minimal("legacy-cell", Class::Gated);
+        art.competitors.insert(
+            "dlt".into(),
+            CompetitorSide::Missing {
+                reason: "n/a".into(),
+            },
+        );
+        // Hand-write the artifact in the pre-cleanup shape: a scalar
+        // `competitor_pin`, no `competitor_pins`.
+        let mut value = serde_json::to_value(&art).unwrap();
+        let fp = value["fingerprint"].as_object_mut().unwrap();
+        fp.remove("competitor_pins");
+        fp.insert("competitor_pin".into(), serde_json::json!("dlt 1.29.0"));
+        std::fs::write(
+            dir.path().join("legacy-cell.json"),
+            serde_json::to_string_pretty(&value).unwrap(),
+        )
+        .unwrap();
+
+        let back = read(dir.path(), "legacy-cell").unwrap();
+        assert_eq!(
+            back.fingerprint
+                .competitor_pins
+                .get("dlt")
+                .map(String::as_str),
+            Some("dlt 1.29.0"),
+            "legacy scalar pin folded into the map, keyed by the competitor"
+        );
     }
 }

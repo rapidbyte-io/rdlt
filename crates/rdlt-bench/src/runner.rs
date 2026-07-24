@@ -53,6 +53,12 @@ impl Paths {
     }
 }
 
+/// Attach the path an io failure concerns — a bare `?` on `std::fs` yields
+/// only "io: {e}" (the `From<io::Error>` shape) with no offender named.
+fn at(path: &Path) -> impl Fn(std::io::Error) -> BenchError + '_ {
+    move |e| BenchError(format!("{}: {e}", path.display()))
+}
+
 /// `{{key}}` substitution — unknown keys are left intact so a typo surfaces
 /// verbatim in the failing command rather than vanishing.
 pub fn substitute(template: &str, subs: &BTreeMap<String, String>) -> String {
@@ -123,7 +129,7 @@ fn run_once_subprocess(
                 ))
             })?;
             let spec = run_dir.join("pipeline.yaml");
-            std::fs::write(&spec, substitute(&raw, &subs))?;
+            std::fs::write(&spec, substitute(&raw, &subs)).map_err(at(&spec))?;
             Some(spec)
         }
         None => None,
@@ -202,14 +208,8 @@ fn run_once_subprocess(
         }
         Timing::SelfJsonSeconds => {
             let stdout = String::from_utf8_lossy(&output.stdout);
-            stdout
-                .lines()
-                .rev()
-                .find_map(|line| {
-                    serde_json::from_str::<serde_json::Value>(line.trim())
-                        .ok()
-                        .and_then(|v| v.get("seconds").and_then(|s| s.as_f64()))
-                })
+            protocol::last_json_field(&stdout, "seconds")
+                .and_then(|v| v.as_f64())
                 .map(|s| s * 1000.0)
                 .ok_or_else(|| {
                     BenchError(format!(
@@ -283,7 +283,7 @@ fn rss_stats(usage: Option<&ResourceUsage>) -> RssStats {
 }
 
 /// Assemble the rdlt side from counted samples (+ the last run's detail).
-pub fn rdlt_side(samples: &[Sample<RunDetail>]) -> RdltSide {
+pub(crate) fn rdlt_side(samples: &[Sample<RunDetail>]) -> RdltSide {
     let runs_ms: Vec<f64> = samples.iter().map(|s| s.wall_ms).collect();
     let median_ms = protocol::median(&runs_ms);
     let p95_ms = protocol::p95(&runs_ms);
@@ -323,8 +323,7 @@ fn verify_outcome(cell: &Cell, samples: &[Sample<RunDetail>]) -> Result<Option<V
             ))
         })?;
     let actual = report_table_rows(report, &verify.table);
-    let ok = actual == verify.expected_rows;
-    if !ok {
+    if actual != verify.expected_rows {
         return Err(BenchError(format!(
             "cell `{}`: verify FAILED — table `{}` has {actual} rows, expected {}",
             cell.id, verify.table, verify.expected_rows
@@ -334,7 +333,6 @@ fn verify_outcome(cell: &Cell, samples: &[Sample<RunDetail>]) -> Result<Option<V
         table: verify.table.clone(),
         expected_rows: verify.expected_rows,
         actual_rows: actual,
-        ok,
     }))
 }
 
@@ -382,7 +380,7 @@ fn run_hyperfine(cell: &Cell, subs: &BTreeMap<String, String>, run_dir: &Path) -
             cell.id
         )));
     }
-    let raw = std::fs::read_to_string(&export)?;
+    let raw = std::fs::read_to_string(&export).map_err(at(&export))?;
     let parsed: serde_json::Value =
         serde_json::from_str(&raw).map_err(|e| BenchError(format!("hyperfine export: {e}")))?;
     parsed["results"][0]["times"]
@@ -402,7 +400,7 @@ pub fn run_cell(
     cell: &Cell,
     paths: &Paths,
     fixture: &crate::fixtures::Started,
-    competitor_pin: Option<String>,
+    competitor_pins: BTreeMap<String, String>,
     competitors: BTreeMap<String, crate::artifact::CompetitorSide>,
     // Quiet-guard verdict, obtained by the CALLER before any competitor ran
     // (finding 2: the baseline side must be guarded too).
@@ -412,7 +410,7 @@ pub fn run_cell(
     subs.insert("repo".into(), paths.repo.display().to_string());
     subs.insert("benches".into(), paths.benches.display().to_string());
     subs.insert("cli".into(), paths.cli.display().to_string());
-    subs.insert("data".into(), fixture.data.path().display().to_string());
+    subs.insert("data".into(), fixture.data_dir.path().display().to_string());
     if let Some(conn) = fixture.conn() {
         subs.insert("conn".into(), conn.to_owned());
     }
@@ -435,7 +433,7 @@ pub fn run_cell(
                 fixture.reset()?;
                 let run_dir = invocation.path().join(format!("run-{run_seq}"));
                 run_seq += 1;
-                std::fs::create_dir_all(&run_dir)?;
+                std::fs::create_dir_all(&run_dir).map_err(at(&run_dir))?;
                 let seq = run_seq - 1;
                 run_once_subprocess(cell, &subs, paths, &run_dir, seq, counted)
             })?;
@@ -445,7 +443,7 @@ pub fn run_cell(
                 cell,
                 paths,
                 fixture,
-                competitor_pin,
+                competitor_pins,
                 competitors,
                 quiet_note,
                 {
@@ -459,7 +457,7 @@ pub fn run_cell(
                 fixture.reset()?;
                 let run_dir = invocation.path().join(format!("run-{run_seq}"));
                 run_seq += 1;
-                std::fs::create_dir_all(&run_dir)?;
+                std::fs::create_dir_all(&run_dir).map_err(at(&run_dir))?;
                 crate::library_mode::run_once(cell, &subs, paths, &run_dir)
             })?;
             let side = crate::library_mode::side_from(&samples);
@@ -468,7 +466,7 @@ pub fn run_cell(
                 cell,
                 paths,
                 fixture,
-                competitor_pin,
+                competitor_pins,
                 competitors,
                 quiet_note,
                 (side, verify),
@@ -477,15 +475,16 @@ pub fn run_cell(
         Mode::Hyperfine => {
             fixture.reset()?;
             let run_dir = invocation.path().join("hyperfine");
-            std::fs::create_dir_all(&run_dir)?;
+            std::fs::create_dir_all(&run_dir).map_err(at(&run_dir))?;
             // Render the pipeline template once — hyperfine reuses it, the
             // prepare_sh wipes per-run state.
             let mut hsubs = subs.clone();
             hsubs.insert("workdir".into(), run_dir.display().to_string());
             if let Some(template) = &cell.pipeline {
-                let raw = std::fs::read_to_string(paths.benches.join(template))?;
+                let tmpl_path = paths.benches.join(template);
+                let raw = std::fs::read_to_string(&tmpl_path).map_err(at(&tmpl_path))?;
                 let spec = run_dir.join("pipeline.yaml");
-                std::fs::write(&spec, substitute(&raw, &hsubs))?;
+                std::fs::write(&spec, substitute(&raw, &hsubs)).map_err(at(&spec))?;
                 subs.insert("spec".into(), spec.display().to_string());
             }
             let runs_ms = run_hyperfine(cell, &subs, &run_dir)?;
@@ -511,7 +510,7 @@ pub fn run_cell(
                 cell,
                 paths,
                 fixture,
-                competitor_pin,
+                competitor_pins,
                 competitors,
                 quiet_note,
                 (side, None),
@@ -539,7 +538,7 @@ fn return_side(
     cell: &Cell,
     _paths: &Paths,
     fixture: &crate::fixtures::Started,
-    competitor_pin: Option<String>,
+    competitor_pins: BTreeMap<String, String>,
     competitors: BTreeMap<String, crate::artifact::CompetitorSide>,
     quiet_note: Option<String>,
     (rdlt, verify): (RdltSide, Option<VerifyOutcome>),
@@ -553,7 +552,7 @@ fn return_side(
         recorded_at: crate::artifact::recorded_at(),
         fingerprint: crate::artifact::fingerprint(
             fixture.hashes.clone(),
-            competitor_pin,
+            competitor_pins,
             quiet_note,
         ),
         workload: cell.workload.clone(),

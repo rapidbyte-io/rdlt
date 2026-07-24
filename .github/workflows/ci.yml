@@ -8,9 +8,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
-  # The full workspace debug tree (bundled DuckDB C++ included) no longer fits
-  # the hosted runner's ~14 GB free disk with full debuginfo; line tables keep
-  # usable backtraces at a fraction of the size. Test profile inherits dev.
+  # Disk-constraint mitigation; rationale in .github/actions/free-disk/action.yml.
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
 jobs:
@@ -18,14 +16,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Free runner disk space
-        run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
-            /usr/local/.ghcup /usr/local/share/powershell /usr/share/swift
-          df -h /
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+      # Disk-constraint mitigation — see .github/actions/free-disk/action.yml.
+      - uses: ./.github/actions/free-disk
+      # Toolchain (1.96.0 + rustfmt/clippy) governed by rust-toolchain.toml;
+      # rustup auto-installs it with its components on first cargo invocation.
       - uses: Swatinem/rust-cache@v2
       - name: Lint (make lint)
         run: make lint
@@ -34,12 +28,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Free runner disk space
-        run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
-            /usr/local/.ghcup /usr/local/share/powershell /usr/share/swift
-          df -h /
-      - uses: dtolnay/rust-toolchain@stable
+      # Disk-constraint mitigation — see .github/actions/free-disk/action.yml.
+      - uses: ./.github/actions/free-disk
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
@@ -55,16 +45,32 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Free runner disk space
-        run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
-            /usr/local/.ghcup /usr/local/share/powershell /usr/share/swift
-          df -h /
-      - uses: dtolnay/rust-toolchain@stable
+      # Disk-constraint mitigation — see .github/actions/free-disk/action.yml.
+      - uses: ./.github/actions/free-disk
       - uses: Swatinem/rust-cache@v2
+      - name: Verify iai-callgrind lib/runner version agreement
+        run: |
+          # The iai-callgrind LIBRARY and its RUNNER must match exactly, or the
+          # instruction counts silently skew. The lib is pinned in
+          # [workspace.dependencies] (Cargo.toml: iai-callgrind = "=X.Y.Z"); the
+          # runner version is the literal below and on the install step's
+          # --version flag. Bumping one without the others fails here, loudly.
+          RUNNER_VERSION=0.16.1
+          LIB_VERSION="$(sed -n 's/^iai-callgrind = "=\([0-9][0-9.]*\)"/\1/p' Cargo.toml)"
+          if [ -z "$LIB_VERSION" ]; then
+            echo "::error::could not parse iai-callgrind pin from Cargo.toml [workspace.dependencies]"
+            exit 1
+          fi
+          if [ "$LIB_VERSION" != "$RUNNER_VERSION" ]; then
+            echo "::error::iai-callgrind lib pin ($LIB_VERSION) != runner ($RUNNER_VERSION) — bump both together"
+            exit 1
+          fi
+          echo "iai-callgrind lib and runner agree at $LIB_VERSION"
       - name: Install valgrind + iai runner
         run: |
           sudo apt-get update && sudo apt-get install -y valgrind
+          # Runner version kept in lockstep with the iai-callgrind lib pin in
+          # Cargo.toml [workspace.dependencies]; the step above enforces it.
           cargo install iai-callgrind-runner --version 0.16.1 --locked
       - name: Perf gate (make bench TARGET=iai)
         run: make bench TARGET=iai
@@ -79,7 +85,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
+      # Disk-constraint mitigation — see .github/actions/free-disk/action.yml.
+      # semver-checks builds two full workspace trees (baseline + current).
+      - uses: ./.github/actions/free-disk
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:

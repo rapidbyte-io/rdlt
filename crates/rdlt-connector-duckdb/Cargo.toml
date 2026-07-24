@@ -3,6 +3,7 @@ name = "rdlt-connector-duckdb"
 description = "rdlt DuckDB destination: Arrow ingestion, struct-native lowering, staged atomic commits"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 

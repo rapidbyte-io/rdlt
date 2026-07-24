@@ -108,11 +108,7 @@ pub(crate) fn passthrough_items(
         registry.diff(&observed)
     };
 
-    if let Some(delta) = registry.apply(observed, changes) {
-        let current = registry
-            .get(&delta.table)
-            .expect("apply() just stored this schema")
-            .clone();
+    if let Some((delta, current)) = registry.apply(observed, changes) {
         items.push(LoadItem::Delta {
             schema: current,
             delta,

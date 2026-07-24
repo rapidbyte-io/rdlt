@@ -233,14 +233,14 @@ impl ColState {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum ArrayShape {
+enum ArrayShape {
     Empty,
     Objects,
     Scalars,
     Mixed,
 }
 
-pub(crate) fn array_shape<'a, V: JsonView<'a>>(value: V) -> ArrayShape {
+fn array_shape<'a, V: JsonView<'a>>(value: V) -> ArrayShape {
     if !value.is_array() {
         return ArrayShape::Mixed;
     }

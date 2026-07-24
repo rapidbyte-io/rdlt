@@ -3,6 +3,7 @@ name = "rdlt-connector-iceberg"
 description = "rdlt Iceberg destination: provider-agnostic REST catalog, snapshot-native exactly-once"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 

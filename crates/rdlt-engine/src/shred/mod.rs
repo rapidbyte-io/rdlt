@@ -153,11 +153,7 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
             (observed, changes)
         };
 
-        if let Some(delta) = registry.apply(observed, kept) {
-            let current = registry
-                .get(&delta.table)
-                .expect("apply() just stored this schema")
-                .clone();
+        if let Some((delta, current)) = registry.apply(observed, kept) {
             items.push(LoadItem::Delta {
                 schema: current,
                 delta,

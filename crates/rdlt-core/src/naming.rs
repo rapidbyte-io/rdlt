@@ -60,12 +60,6 @@ pub fn child_table_name(parent: &str, field: &str, rules: IdentRules) -> String 
     normalize_ident(&format!("{parent}__{field}"), rules)
 }
 
-/// The flattened column name for a nested object path (destinations without struct
-/// support).
-pub fn flattened_column_name(path: &[&str], rules: IdentRules) -> String {
-    normalize_ident(&path.join("__"), rules)
-}
-
 /// Assigns each distinct source name a unique normalized identifier, appending a
 /// deterministic hash suffix on collision. First occurrence keeps the plain name;
 /// later colliding names get `_<hash8(source)>`.
@@ -177,17 +171,6 @@ mod tests {
         let over = normalize_ident("abcdefghijk", rules);
         assert_ne!(over, "abcdefghijk");
         assert!(over.len() <= 10);
-    }
-
-    #[test]
-    fn flattened_column_name_joins_path() {
-        // This test is the only exercise of `flattened_column_name`: it has no
-        // production caller yet, but stays as part of the naming vocabulary for
-        // destinations that flatten nested objects, so pin its behavior here.
-        assert_eq!(
-            flattened_column_name(&["profile", "geo", "lat"], IdentRules::default()),
-            "profile__geo__lat"
-        );
     }
 
     #[test]

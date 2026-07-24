@@ -411,6 +411,19 @@ impl RestConfig {
         if self.max_concurrency == 0 {
             return invalid("max_concurrency must be at least 1".into());
         }
+        // Source-level headers are parsed once at client construction, so their
+        // parseability is guaranteed here (the typed failure surfaces at config
+        // parse time, not mid-read).
+        for (name, value) in &self.headers {
+            if name.parse::<reqwest::header::HeaderName>().is_err() {
+                return invalid(format!("header `{name}`: not a valid HTTP header name"));
+            }
+            if value.parse::<reqwest::header::HeaderValue>().is_err() {
+                return invalid(format!(
+                    "header `{name}`: value is not a valid HTTP header value"
+                ));
+            }
+        }
         let names: Vec<&str> = self.streams.iter().map(|s| s.name.as_str()).collect();
         for stream in &self.streams {
             let name = &stream.name;

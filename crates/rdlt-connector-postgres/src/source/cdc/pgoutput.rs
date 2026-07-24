@@ -39,11 +39,7 @@ pub struct TupleData {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelationColumn {
-    /// Bit 1 = part of the replica identity key.
-    pub flags: u8,
     pub name: String,
-    pub type_oid: u32,
-    pub typmod: i32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,22 +47,19 @@ pub struct Relation {
     pub id: u32,
     pub namespace: String,
     pub name: String,
-    /// 'd' default, 'n' nothing, 'f' full, 'i' index.
-    pub replident: u8,
     pub columns: Vec<RelationColumn>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Message {
-    Begin {
-        /// Commit LSN of the transaction this Begin opens.
-        final_lsn: u64,
-        xid: u32,
-    },
-    Commit {
-        commit_lsn: u64,
-        end_lsn: u64,
-    },
+    /// Transaction boundary. The wire carries the commit LSN and xid; the
+    /// consumer checkpoints from the peek row's own LSN and does not read
+    /// them.
+    Begin,
+    /// Transaction boundary. The wire carries the commit/end LSNs; the
+    /// consumer checkpoints from the peek row's own LSN and does not read
+    /// them.
+    Commit,
     Relation(Relation),
     Insert {
         rel: u32,
@@ -179,20 +172,17 @@ pub fn parse(bytes: &[u8]) -> Result<Message, PgoutputError> {
     let tag = r.u8()?;
     let message = match tag {
         b'B' => {
-            let final_lsn = r.u64()?;
+            let _final_lsn = r.u64()?;
             let _commit_ts = r.u64()?;
-            let xid = r.u32()?;
-            Message::Begin { final_lsn, xid }
+            let _xid = r.u32()?;
+            Message::Begin
         }
         b'C' => {
             let _flags = r.u8()?;
-            let commit_lsn = r.u64()?;
-            let end_lsn = r.u64()?;
+            let _commit_lsn = r.u64()?;
+            let _end_lsn = r.u64()?;
             let _commit_ts = r.u64()?;
-            Message::Commit {
-                commit_lsn,
-                end_lsn,
-            }
+            Message::Commit
         }
         b'O' => {
             let _lsn = r.u64()?;
@@ -203,25 +193,29 @@ pub fn parse(bytes: &[u8]) -> Result<Message, PgoutputError> {
             let id = r.u32()?;
             let namespace = r.cstr()?;
             let name = r.cstr()?;
-            let replident = r.u8()?;
+            // replica-identity setting ('d'/'n'/'f'/'i'); identity is read
+            // from the catalog at preflight, not from the wire.
+            let _replident = r.u8()?;
             let ncols = r.u16()? as usize;
             if ncols > bytes.len() {
                 return err("relation column count exceeds message");
             }
             let mut columns = Vec::with_capacity(ncols);
             for _ in 0..ncols {
-                columns.push(RelationColumn {
-                    flags: r.u8()?,
-                    name: r.cstr()?,
-                    type_oid: r.u32()?,
-                    typmod: r.i32()?,
-                });
+                // Wire order per column: flags (identity-key bit), name,
+                // type OID, type modifier. Only the name is retained — column
+                // mapping is by name; type/identity facts come from the
+                // catalog.
+                let _flags = r.u8()?;
+                let name = r.cstr()?;
+                let _type_oid = r.u32()?;
+                let _typmod = r.i32()?;
+                columns.push(RelationColumn { name });
             }
             Message::Relation(Relation {
                 id,
                 namespace,
                 name,
-                replident,
                 columns,
             })
         }
@@ -322,26 +316,14 @@ mod tests {
         b.extend(7u64.to_be_bytes());
         b.extend(0i64.to_be_bytes());
         b.extend(42u32.to_be_bytes());
-        assert_eq!(
-            parse(&b).unwrap(),
-            Message::Begin {
-                final_lsn: 7,
-                xid: 42
-            }
-        );
+        assert_eq!(parse(&b).unwrap(), Message::Begin);
 
         // Commit
         let mut c = vec![b'C', 0];
         c.extend(7u64.to_be_bytes());
         c.extend(8u64.to_be_bytes());
         c.extend(0i64.to_be_bytes());
-        assert_eq!(
-            parse(&c).unwrap(),
-            Message::Commit {
-                commit_lsn: 7,
-                end_lsn: 8
-            }
-        );
+        assert_eq!(parse(&c).unwrap(), Message::Commit);
 
         // Relation with one key column.
         let mut r = vec![b'R'];
@@ -362,10 +344,9 @@ mod tests {
         match parsed {
             Message::Relation(rel) => {
                 assert_eq!(rel.name, "orders");
-                assert_eq!(rel.replident, b'd');
                 assert_eq!(rel.columns.len(), 2);
                 assert_eq!(rel.columns[0].name, "id");
-                assert_eq!(rel.columns[0].flags, 1);
+                assert_eq!(rel.columns[1].name, "name");
             }
             other => panic!("{other:?}"),
         }

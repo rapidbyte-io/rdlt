@@ -7,6 +7,8 @@ pub mod secret;
 
 use std::time::{Duration, Instant};
 
+use reqwest::header::{HeaderName, HeaderValue};
+
 use rdlt_connector::SourceError;
 
 pub use auth::AuthProvider;
@@ -18,10 +20,12 @@ pub use secret::Secret;
 pub struct RestClient {
     http: reqwest::Client,
     auth: AuthProvider,
-    /// Source-level headers, merged UNDER per-stream headers.
-    pub default_headers: Vec<(String, String)>,
+    /// Source-level headers, merged UNDER per-stream headers. Parsed once at
+    /// construction: config validation guarantees parseability, so per-page
+    /// requests reuse the typed name/value pairs without re-parsing strings.
+    default_headers: Vec<(HeaderName, HeaderValue)>,
     /// Source-level params, merged UNDER per-stream params.
-    pub default_params: Vec<(String, String)>,
+    default_params: Vec<(String, String)>,
     min_interval: Duration,
     retry_after_cap: Duration,
     last_request_at: tokio::sync::Mutex<Option<Instant>>,
@@ -35,6 +39,21 @@ impl RestClient {
         min_request_interval_ms: u64,
         retry_after_cap_secs: u64,
     ) -> Self {
+        // Parse once. `RestConfig::validate` rejects an unparseable
+        // source-level header before this constructor is reached, so a parse
+        // failure here is a config-validation bug, not runtime input.
+        let default_headers = default_headers
+            .into_iter()
+            .map(|(name, value)| {
+                let name: HeaderName = name
+                    .parse()
+                    .expect("source header name validated by RestConfig::validate");
+                let value: HeaderValue = value
+                    .parse()
+                    .expect("source header value validated by RestConfig::validate");
+                (name, value)
+            })
+            .collect();
         Self {
             http: reqwest::Client::new(),
             auth,
@@ -44,10 +63,6 @@ impl RestClient {
             retry_after_cap: Duration::from_secs(retry_after_cap_secs),
             last_request_at: tokio::sync::Mutex::new(None),
         }
-    }
-
-    pub fn http(&self) -> &reqwest::Client {
-        &self.http
     }
 
     /// Pacing floor: at least `min_interval` between request sends.
@@ -124,14 +139,8 @@ impl RestClient {
     /// source-level default of the same name.
     fn apply_defaults(&self, request: &mut reqwest::Request) -> Result<(), SourceError> {
         for (name, value) in &self.default_headers {
-            let name: reqwest::header::HeaderName = name
-                .parse()
-                .map_err(|e| SourceError::fatal(format!("header `{name}`: {e}")))?;
-            if !request.headers().contains_key(&name) {
-                let value = value
-                    .parse()
-                    .map_err(|e| SourceError::fatal(format!("header `{name}` value: {e}")))?;
-                request.headers_mut().insert(name, value);
+            if !request.headers().contains_key(name) {
+                request.headers_mut().insert(name.clone(), value.clone());
             }
         }
         if !self.default_params.is_empty() {

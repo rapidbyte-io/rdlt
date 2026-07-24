@@ -74,17 +74,15 @@ macro_rules! hash_id {
             }
 
             /// Lowercase hex; the portable rendering used in destination columns
-            /// and persisted formats. Table-driven — this runs three times per
-            /// shredded row (id/parent/root); the `write!("{:02x}")` form it
-            /// replaced dominated shred-time instruction counts under profiling.
+            /// and persisted formats. Delegates to [`Self::write_hex`] so the
+            /// single encoding loop lives in one place; on hot paths (shredding
+            /// lands three of these per row in Arrow builders) call `write_hex`
+            /// directly to avoid the allocation.
             pub fn to_hex(&self) -> String {
-                const HEX: &[u8; 16] = b"0123456789abcdef";
-                let mut out = vec![0u8; 64];
-                for (i, byte) in self.0.iter().enumerate() {
-                    out[i * 2] = HEX[(byte >> 4) as usize];
-                    out[i * 2 + 1] = HEX[(byte & 0x0f) as usize];
-                }
-                String::from_utf8(out).expect("hex digits are ASCII")
+                let mut out = [0u8; 64];
+                self.write_hex(&mut out);
+                // `write_hex` emits only ASCII hex digits.
+                String::from_utf8(out.to_vec()).expect("hex digits are ASCII")
             }
 
             /// Allocation-free hex into a stack buffer (hot path: three of

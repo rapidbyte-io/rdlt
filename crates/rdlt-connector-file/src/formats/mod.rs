@@ -7,6 +7,11 @@ pub(crate) mod parquet;
 
 use serde::{Deserialize, Serialize};
 
+/// Shared streaming I/O slab (8 MiB): the reusable buffer the JSONL and CSV
+/// readers fill per flush, and the source's file read buffer. One knob keeps
+/// all three read paths on the same allocation size.
+pub(crate) const SLAB_BYTES: usize = 8 << 20;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]

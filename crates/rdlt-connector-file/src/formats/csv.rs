@@ -13,11 +13,9 @@ use std::collections::BTreeMap;
 use bytes::Bytes;
 use rdlt_connector::{RecordsOut, SourceError};
 
-use super::{Codec, CsvOptions, open_decoded};
+use super::{Codec, CsvOptions, SLAB_BYTES, open_decoded};
 use crate::source::config::HintType;
 use crate::source::cursor::{FileCursor, FileProgress, FileTask};
-
-const SLAB_BYTES: usize = 8 << 20;
 
 /// The lattice: `Empty` is bottom (a column that never saw a value);
 /// int widens to float; bool is DISJOINT from the numeric chain — any

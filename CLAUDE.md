@@ -37,7 +37,8 @@ types never cross the public surface; duckdb-rs wrapping precedent).
 SURVEY RESOLVED AT PLAN TIME with registry facts: iceberg 0.10.0 +
 iceberg-catalog-rest 0.10.0 + iceberg-storage-opendal 0.10.0
 (opendal-s3) — arrow ^58/parquet ^58 match the workspace pin (single
-arrow 58.4 tree proven by live cargo-tree probe); rustc floor 1.94 ok.
+arrow 58 tree proven by live cargo-tree probe — workspace pins 58.3);
+toolchain pinned 1.96.0 (rust-toolchain.toml + workspace rust-version).
 NOT taken: iceberg-catalog-glue (aws-sdk smithy tree; Glue/SigV4 is
 PHASE-2, recorded); rdlt-connector-rest NOT a dep; file-crate
 location/ NOT extracted (config VOCABULARY shared — family S3

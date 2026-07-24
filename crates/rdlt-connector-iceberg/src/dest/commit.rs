@@ -35,6 +35,21 @@ pub(crate) const PROP_COMMIT_SEQ: &str = "rdlt.commit-seq";
 /// the `_rdlt_state` marker table — see [`STATE_TABLE`]).
 pub(crate) const PROP_STATE_PREFIX: &str = "rdlt.state.";
 
+/// REST-catalog load-property keys (iceberg-rust `RestCatalogBuilder::load`).
+/// Centralized so the catalog-construction wiring reads against one vocabulary
+/// rather than scattered string literals.
+const CAT_URI: &str = "uri";
+const CAT_WAREHOUSE: &str = "warehouse";
+const CAT_CREDENTIAL: &str = "credential";
+const CAT_SCOPE: &str = "scope";
+const CAT_OAUTH2_SERVER_URI: &str = "oauth2-server-uri";
+const CAT_TOKEN: &str = "token";
+const CAT_S3_ENDPOINT: &str = "s3.endpoint";
+const CAT_S3_REGION: &str = "s3.region";
+const CAT_S3_ACCESS_KEY_ID: &str = "s3.access-key-id";
+const CAT_S3_SECRET_ACCESS_KEY: &str = "s3.secret-access-key";
+const CAT_S3_PATH_STYLE_ACCESS: &str = "s3.path-style-access";
+
 /// Bounded conflict-retry attempt count.
 const COMMIT_ATTEMPTS: u32 = 4;
 
@@ -47,37 +62,40 @@ fn fatal(message: impl std::fmt::Display) -> DestError {
 /// props that take precedence over the catalog's vended defaults.
 pub(crate) async fn connect(config: &IcebergConfig) -> Result<Arc<dyn Catalog>, DestError> {
     let mut props: HashMap<String, String> = HashMap::from([
-        ("uri".to_string(), config.catalog.uri.clone()),
-        ("warehouse".to_string(), config.catalog.warehouse.clone()),
+        (CAT_URI.to_string(), config.catalog.uri.clone()),
+        (CAT_WAREHOUSE.to_string(), config.catalog.warehouse.clone()),
     ]);
     if let Some(oauth) = &config.catalog.auth.oauth2_client_credentials {
         props.insert(
-            "credential".into(),
+            CAT_CREDENTIAL.into(),
             format!("{}:{}", oauth.client_id, oauth.client_secret.reveal()),
         );
         if !oauth.scopes.is_empty() {
-            props.insert("scope".into(), oauth.scopes.join(" "));
+            props.insert(CAT_SCOPE.into(), oauth.scopes.join(" "));
         }
         if let Some(url) = &oauth.token_url {
-            props.insert("oauth2-server-uri".into(), url.clone());
+            props.insert(CAT_OAUTH2_SERVER_URI.into(), url.clone());
         }
     }
     if let Some(bearer) = &config.catalog.auth.bearer {
-        props.insert("token".into(), bearer.token.reveal().to_owned());
+        props.insert(CAT_TOKEN.into(), bearer.token.reveal().to_owned());
     }
     if let Some(s3) = config.storage.as_ref().and_then(|s| s.s3.as_ref()) {
         if let Some(endpoint) = &s3.endpoint {
-            props.insert("s3.endpoint".into(), endpoint.clone());
+            props.insert(CAT_S3_ENDPOINT.into(), endpoint.clone());
         }
         if let Some(region) = &s3.region {
-            props.insert("s3.region".into(), region.clone());
+            props.insert(CAT_S3_REGION.into(), region.clone());
         }
-        props.insert("s3.access-key-id".into(), s3.access_key.reveal().to_owned());
         props.insert(
-            "s3.secret-access-key".into(),
+            CAT_S3_ACCESS_KEY_ID.into(),
+            s3.access_key.reveal().to_owned(),
+        );
+        props.insert(
+            CAT_S3_SECRET_ACCESS_KEY.into(),
             s3.secret_key.reveal().to_owned(),
         );
-        props.insert("s3.path-style-access".into(), s3.path_style.to_string());
+        props.insert(CAT_S3_PATH_STYLE_ACCESS.into(), s3.path_style.to_string());
     }
     for (key, value) in &config.catalog.props {
         props.insert(key.clone(), value.clone());
@@ -602,7 +620,7 @@ mod tests {
         Struct, TableMetadata, Type,
     };
     use iceberg::table::Table;
-    use iceberg::{Namespace, TableCommit, TableCreation, TableRequirement, TableUpdate};
+    use iceberg::{Namespace, TableCommit, TableCreation};
 
     use super::*;
 
@@ -756,10 +774,6 @@ mod tests {
             Ok(self.table.lock().expect("table lock").clone())
         }
     }
-
-    // Silence unused-import lint pathways for trait items the mock ignores.
-    #[allow(dead_code)]
-    fn _uses(_: Option<(TableRequirement, TableUpdate)>) {}
 
     fn identity() -> CommitIdentity {
         CommitIdentity {

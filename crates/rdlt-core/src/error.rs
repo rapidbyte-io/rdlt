@@ -95,7 +95,9 @@ impl RdltError {
             stream,
             message: message.to_string(),
             retryable: true,
-            retry_after_ms: retry_after.map(|d| d.as_millis() as u64),
+            // `Duration::as_millis` is u128; saturate rather than truncate an
+            // implausibly-long hint into a small wrapped value.
+            retry_after_ms: retry_after.map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX)),
         }
     }
 

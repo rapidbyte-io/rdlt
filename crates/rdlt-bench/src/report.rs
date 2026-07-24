@@ -8,10 +8,10 @@ use crate::artifact::{Artifact, CompetitorSide};
 use crate::cells::{Bar, BarKind, Cell};
 use crate::{BenchError, Result};
 
-pub fn begin_marker(section: &str) -> String {
+pub(crate) fn begin_marker(section: &str) -> String {
     format!("<!-- rdlt-bench:BEGIN {section} -->")
 }
-pub fn end_marker(section: &str) -> String {
+pub(crate) fn end_marker(section: &str) -> String {
     format!("<!-- rdlt-bench:END {section} -->")
 }
 
@@ -165,7 +165,7 @@ fn provenance(artifacts: &[&Artifact], source: &str) -> String {
         artifacts.iter().map(|a| a.recorded_at.as_str()).collect();
     let pins: std::collections::BTreeSet<&str> = artifacts
         .iter()
-        .filter_map(|a| a.fingerprint.competitor_pin.as_deref())
+        .flat_map(|a| a.fingerprint.competitor_pins.values().map(String::as_str))
         .collect();
     format!(
         "\n_{source} (recorded {}{})._\n",

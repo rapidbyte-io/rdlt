@@ -18,6 +18,16 @@ Contract: `specs/012-bench-harness/contracts/bench-harness.md` (BH1–BH8).
 | `RESULTS.md` | Narrative (history, policy, honest caveats) + GENERATED tables between `rdlt-bench` markers |
 | `compare-iai.sh`, `perf-baselines.json` | The instruction-count gate (iai-callgrind) — a separate instrument, unchanged |
 
+### Naming a new cell
+
+Cell ids are kebab-case and appear verbatim in committed artifact filenames and
+in `RESULTS.md` history, so **existing ids are frozen** — renaming one orphans
+its recorded rows. For NEW cells, spell the id `<workload>-<dest>-<size>` (e.g.
+`jsonl-duckdb-200k`, `pg-wide-pg-1m`); when a cell is one variant of an existing
+family, prefix the family consistently (`strategy-…` for pg strategy cells,
+`duckdb-strategy-…` for their embedded-DuckDB twins) rather than coining a third
+spelling.
+
 ## Run
 
 ```bash

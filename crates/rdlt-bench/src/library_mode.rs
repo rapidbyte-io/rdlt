@@ -410,7 +410,6 @@ pub fn verify_from(cell: &Cell, samples: &[Sample<RunOutcome>]) -> Result<Option
         table: verify.table.clone(),
         expected_rows: verify.expected_rows,
         actual_rows: actual,
-        ok: true,
     }))
 }
 
@@ -525,7 +524,8 @@ mod tests {
         // source-side StreamFinished may precede the destination's tail load.
         assert!(events.first_batch_ms <= events.last_batch_ms);
 
-        // verify passes on exact totals
-        assert!(verify_from(&cell, &samples).unwrap().unwrap().ok);
+        // verify passes on exact totals (a mismatch would have been an Err)
+        let outcome = verify_from(&cell, &samples).unwrap().unwrap();
+        assert_eq!(outcome.actual_rows, outcome.expected_rows);
     }
 }

@@ -29,7 +29,12 @@ use rdlt_core::crash_point;
 /// rather than being misread.
 pub(crate) const WAL_FORMAT_VERSION: u32 = 1;
 
-fn default_wal_version() -> u32 {
+/// Version stamped into a NEWLY written `Run` record, and the serde fallback for a
+/// manifest that predates the versioned header. Deliberately pinned to `1` (not
+/// [`WAL_FORMAT_VERSION`]): it seeds new manifests, whereas `WAL_FORMAT_VERSION` is the
+/// ceiling a read compares against. They are `1` together today; keeping them separate
+/// keeps a future bump from silently claiming old manifests are current.
+fn initial_wal_version() -> u32 {
     1
 }
 
@@ -40,7 +45,7 @@ pub(crate) enum WalRecord {
     /// First record of each run; identifies the load for recovery commits and
     /// carries the manifest format version.
     Run {
-        #[serde(default = "default_wal_version")]
+        #[serde(default = "initial_wal_version")]
         format_version: u32,
         load_id: LoadId,
         pipeline: PipelineId,

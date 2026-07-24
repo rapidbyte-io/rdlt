@@ -13,8 +13,9 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # Same disk constraint as ci.yml: full workspace debuginfo (bundled DuckDB
-  # C++ included) overflows the hosted runner; test profile inherits dev.
+  # No RUSTFLAGS: -D warnings here (unlike ci.yml), deliberately: the deep tier
+  # MEASURES (fuzz / extended properties / mutation), the PR tier LINTS.
+  # Disk-constraint mitigation; rationale in .github/actions/free-disk/action.yml.
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
 jobs:
@@ -32,12 +33,10 @@ jobs:
         ports: ["5432:5432"]
     steps:
       - uses: actions/checkout@v4
-      - name: Free runner disk space
-        run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
-            /usr/local/.ghcup /usr/local/share/powershell /usr/share/swift
-          df -h /
-      - uses: dtolnay/rust-toolchain@stable
+      # Disk-constraint mitigation — see .github/actions/free-disk/action.yml.
+      - uses: ./.github/actions/free-disk
+      # The default toolchain (1.96.0) is governed by rust-toolchain.toml; only
+      # cargo-fuzz needs nightly, so nightly is the one toolchain installed here.
       - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
@@ -62,12 +61,10 @@ jobs:
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
-      - name: Free runner disk space
-        run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
-            /usr/local/.ghcup /usr/local/share/powershell /usr/share/swift
-          df -h /
-      - uses: dtolnay/rust-toolchain@stable
+      # Disk-constraint mitigation — see .github/actions/free-disk/action.yml.
+      - uses: ./.github/actions/free-disk
+      # Toolchain (1.96.0) governed by rust-toolchain.toml; rustup auto-installs
+      # it on first cargo invocation.
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:

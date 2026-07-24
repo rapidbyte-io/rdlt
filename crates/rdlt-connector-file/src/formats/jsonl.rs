@@ -8,6 +8,7 @@
 use bytes::Bytes;
 use rdlt_connector::{RecordsOut, SourceError};
 
+use super::SLAB_BYTES;
 use crate::location::{ByteReader, Location};
 use crate::source::cursor::{FileCursor, FileProgress, FileTask, TAIL_WINDOW};
 
@@ -24,8 +25,6 @@ fn roll_tail(tail: &mut Vec<u8>, slab: &[u8]) {
         }
     }
 }
-
-const SLAB_BYTES: usize = 8 << 20;
 
 /// Read one file task, pushing slabs and checkpointing progress into `cursor`.
 /// Returns Ok(false) if the host closed the channel (cancellation).
