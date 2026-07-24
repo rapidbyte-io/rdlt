@@ -1,6 +1,18 @@
 <!--
 Sync Impact Report
 ==================
+Version change: 1.0.0 → 1.1.0 (2026-07-24, feature 018)
+Modified principles: VIII Benchmark Governance — materially reworded: the
+  gated/scoreboard cell taxonomy is removed from the constitutional
+  vocabulary; enforcement is expressed as cells (measured, reported) and
+  bars (enforced). The mechanism is preserved and STRENGTHENED: a bar now
+  explicitly requires a recorded measurement-session floor in addition to
+  the governance (policy-log) entry.
+Added/Removed sections: none.
+Templates requiring updates: none (plan-time gates read this file live).
+Follow-up TODOs: none.
+
+Prior report (1.0.0 initial ratification):
 Version change: (template, unversioned) → 1.0.0
 Modified principles: n/a (initial ratification — template placeholders replaced)
 Added sections:
@@ -113,13 +125,17 @@ gate is what makes the claim true rather than aspirational.
 
 ### VIII. Benchmark Governance
 
-Benchmarks are declarative cells. New cells enter as SCOREBOARD (observed,
-never gated) unless governance explicitly grants a gated bar; bars live in
-`bars.toml` and are enforced by the bench gate. Performance claims MUST be
-backed by harness evidence, not ad-hoc timing.
+Benchmarks are declarative cells — end-to-end pipeline comparisons,
+measured and reported. Enforcement exists only as bars: a bar references
+exactly one existing cell, lives in `bars.toml`, and is enforced by the
+bench gate. No bar exists without recorded measurement evidence — a bar
+is set below the floor of a recorded session and cites a governance
+(policy-log) entry. Performance claims MUST be backed by harness
+evidence, not ad-hoc timing.
 
-**Rationale**: ungoverned gates rot into flaky CI; ungoverned claims rot into
-marketing.
+**Rationale**: ungoverned gates rot into flaky CI; ungoverned claims rot
+into marketing; importance taxonomies rot into labels that substitute
+for evidence.
 
 ### IX. Contracts and Persisted Formats Are Frozen
 
@@ -169,4 +185,4 @@ this constitution conflict, the constitution wins and the spec is amended.
   feature close-out re-verifies the Principle VII gate; complexity deviations
   MUST be justified in the plan's Complexity Tracking table or removed.
 
-**Version**: 1.0.0 | **Ratified**: 2026-07-24 | **Last Amended**: 2026-07-24
+**Version**: 1.1.0 | **Ratified**: 2026-07-24 | **Last Amended**: 2026-07-24
