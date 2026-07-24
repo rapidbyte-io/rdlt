@@ -66,10 +66,10 @@ paths/names and in-repo vocabulary, not on-disk data written by runs.
 | R3 three copies migrated + re-exports | 4 | applied (greenfield) | Per user directive mid-increment: NO legacy paths — both secret.rs shims deleted, all module-path chains killed; one canonical spelling per crate (rest/iceberg root re-export; file uses the SPI path — it never exported one). Grep-zero over every old path; `reveal()` production sites byte-identical (13); 196/196 + 140/140 after cleanup |
 | R3 headers/params redaction posture | 4 | applied | Doc comments on both maps (credentials belong in `auth:`) + validate() REJECTS `authorization`/`x-api-key` header names (case-insensitive, source+per-stream) with a typed error pointing at `auth:`. Tests `credential_header_names_are_rejected_toward_auth`, `ordinary_headers_still_accepted` |
 | R4 engine run_once split + ping-pong owner | 5 | applied | graph.rs → run.rs (no shim, greenfield); run_once 388→105 lines via `validate_streams`(56)/`recover_wal`(62)/named `stream_task`(120)/`drain_loader`(65); `ShredOwner` consumes-self/returns-Self — both expects deleted, panic-free by construction. 80/80 failpoints green after every step |
-| R4 postgres tls.rs split | 7 | | |
-| R4 postgres cdc/mod.rs split | 7 | | |
-| R4 postgres PgSession::commit split | 6 | | |
-| R4 postgres source read cursor-arm move | 7 | | |
+| R4 postgres tls.rs split | 7 | applied | 1191 lines → tls/{mod,policy,connstring,rustls_config,connect}; public names re-exported (current API, not shims); string-sniffing refusal isolated + pinned |
+| R4 postgres cdc/mod.rs split | 7 | applied | 1151 → cdc/{runtime,read,tail,apply}; shared pump_copy at both COPY sites; twice-written Emit loop unified. Ops note: a resumed verification agent began a divergent parallel split mid-increment (collision caught via mtime interleaving) — stood down + terminated; the owner reconciled to spec (ack/lag → tail, pump_copy wired, R9/R11 seams restored) |
+| R4 postgres PgSession::commit split | 6 | applied | See R2 commit-splits row (landed with increment 6) |
+| R4 postgres source read cursor-arm move | 7 | applied | 120-line cursor arm → `IncrementalPlan::prepare`; `prepare_stream` shared by streams()/read(); `ReflectedTable::effective_pk` (3 copies gone); streams() no longer panics where read() is graceful |
 | R4 duckdb commit split | 6 | | |
 | R4 file dest/mod.rs split | 8 | applied | 882 lines → mod(145)/session(314: commit = 4 named phases)/layout(133)/truncate(79: one owns_tail rule)/inspect(74); source read → resolve_inputs/plan_tasks/stage_s3_fetches; jsonl SlabReader unifies the twin slab loops. Fail-point registry unchanged but relocated to fire honestly (pq.* local-only). csv convert_cell EXHAUSTIVE over HintType — new variants fail compile |
 | R4 rest read/mod.rs split | 9 | applied | 668 → mod(187)/driver(345)/fanout(192); substitute_body → resolve; ONE match(method,body) in build_page_request; wire bytes identical (query ordering preserved) |
@@ -78,7 +78,7 @@ paths/names and in-repo vocabulary, not on-disk data written by runs.
 | R4 testkit memory commit split | 4 | | |
 | R4 cli main.rs split | 12 | | |
 | R4 bench cmd_run/fixtures/runner splits | 12 | | |
-| R5 postgres validate decomposition | 7 | | |
+| R5 postgres validate decomposition | 7 | applied | validate_conn/validate_cursors/validate_cdc/validate_tables; texts frozen |
 | R5 rest validate decomposition | 9 | applied | 5 helpers (the named 4 + validate_headers unifying the reserved-auth check); texts frozen |
 | R5 sqlcore options/plan validate decomposition | 6 | applied | check_hard_delete/dedup_sort/merge_key/scd2 per rule group; message texts frozen (pinned) |
 | R5 iceberg validate decomposition | 10 | applied | AuthOptions unified on ConfigError (frozen texts); validate split landed with the config restructure |
@@ -90,19 +90,19 @@ paths/names and in-repo vocabulary, not on-disk data written by runs.
 | R8 DestError::RateLimited | 7* | applied | ADDITIVE `DestError::RateLimited {retry_after, source}` + ctors; deeper finding: `RdltError::Destination` carried NO retryability — the run driver never retried ANY destination failure, making the whole Transient channel cosmetic at run level. Completed the chain: Destination{retryable, retry_after_ms}, `classify_dest_error` at all 6 engine map sites, run driver retries BOTH sides under one MAX_RUN_ATTEMPTS ceiling (restart-from-committed-state, so no double-publish). Both RateLimited Displays now carry the inner message (closes B1's source()-chain note). iceberg 429 → RateLimited. Pins: `transient_destination_failures_retry_and_are_bounded` (retry count + bounded exhaustion + terminal classification), iceberg 429 test. 119/119 + 19/19 green |
 | R8 sqlcore typed validation errors | 6 | applied | plan::validate_* → typed `ValidateError` with Display = frozen texts; options parse-layer kept its from_value String contract (decomposed, typed at the destination-facing layer where the docs promised it) |
 | R8 rest Paginator typed error | 9 | applied | `PaginatorError` (frozen Displays, both variants deliberately fatal — API-contract violations don't heal); `RestSource::new -> Result` makes the validated-at-construction invariant REAL (greenfield breaking constructor) |
-| R8 postgres DDL classification + decode conventions | 7 | | |
+| R8 postgres DDL classification + decode conventions | 7 | applied | DDL errors classify by SQLSTATE via the ONE is_transient_sqlstate (42xxx unwinnable retries end — deliberate correction); decode conventions unified on thiserror (values::ValueError, pgoutput typed, copy_decode DecodeError) |
 | R8 engine error-variant misuse | 5 | applied | Task panics → new additive `RdltError::Internal` (enum was non_exhaustive; CLI catch-all absorbs); workdir-lock failures → `config` (operator-actionable, consistent with sibling); `RecordsOut::rows` ChannelClosed lie → `.expect()` on genuinely-infallible serialization (writer infallible, non-finite rejected at construction; SPI signature change considered and declined — expect is truthful and simpler; greenfield permits revisiting if the SPI ever gains fallible pushes) |
 | R9 engine ping-pong expects | 5 | applied | Via ShredOwner (see R4 engine row) |
-| R9 postgres RunState expects | 7 | | |
+| R9 postgres RunState expects | 7 | applied | RunState::ensure_control/ensure_snapshot — the ~10 hand-tracked expects live in one audited place |
 | R9 rest validated-at-parse expects | 9 | applied | 5 expects died with fallible from_config; the 6th an honest ok_or_else; `selector_paths()` one home for variant knowledge; defensive papering deleted (max(1), or_else fallback) |
 | R9 iceberg retry unreachable tails | 10 | applied | ONE `commit_with_retry` (loop diverges — both unreachable! tails gone BY CONSTRUCTION); unified 1-based/100ms schedule (the conflict-suite-verified one); already_committed re-check only in the append plan (lost race may be our own replay); REAL jitter via process-seeded RandomState (no deps, no wall clock); conflict suite green under contention |
 | R9 file s3_list partial method | 8 | applied | Died with Store (see R7 row) |
-| R9 cross-module invariant panics (pg decimal / sqlcore hard_delete / duckdb scd2) | 6-7 | partially applied | sqlcore hard_delete + duckdb scd2 expects ELIMINATED BY CONSTRUCTION (MergeArm::Scd2 carries options from the total scd2_for; flagged_roots takes &HardDelete proven by the match). pg copy_decode decimal expect → increment 7 |
+| R9 cross-module invariant panics (pg decimal / sqlcore hard_delete / duckdb scd2) | 6-7 | applied | sqlcore hard_delete + duckdb scd2 eliminated BY CONSTRUCTION (increment 6); pg decimal-shape expect → fallible CopyDecoder::new typed error (increment 7) |
 | R10 non-breaking renames | 11 | | |
 | R10 aliasable renames (DestinationError etc.) | 11 | | |
 | R10 named deferrals to 0.3 window | 11 | | |
 | R11 ShredCtx | 5 | applied | One `ShredCtx {registry, load_id, mode, policy}` field order; both former two-order sites + 3 fuzz/bench entry points updated; Loader::new 8→7 via cohesive `Sink {session, caps}` (matches the apply seam), too_many_arguments allow removed; no mega-struct forced |
-| R11 postgres TableCtx | 7 | | |
+| R11 postgres TableCtx | 7 | applied | TableCtx for the shared 6-arg prefix; all 5 too_many_arguments allows removed |
 | R11 bench return_side restructure | 12 | | |
 | R12 core/engine dead code + visibility | 3 | applied | `flattened_column_name` DELETED; `needs_lowering`/`arrow_scalar_type`/`ArrayShape`(+constructor) private; channel.rs `#![allow(dead_code)]` removed (no dead code surfaced — allow was unnecessary); channel subsystem moved to rdlt-connector/src/channel.rs w/ unchanged public paths; CommitCounters/TableReport: parallel accumulators (no conversion site exists) → `From` impl + binding docs; `to_hex` via `write_hex`; `SchemaRegistry::apply` returns the schema (2 expect sites gone); `append_hex_id` ×3; `source_retryable` saturating (lived in rdlt-core). 115 tests PASS; workspace + fuzz check clean |
 | R12 postgres/duckdb dead code (peek unification, pgoutput fields, query_string gating) | 3 | applied | ONE canonical `slot::peek`: streams (production semantics won — no whole-changeset Vec) + fully-parameterized binding (slot form won; interpolated LSN literal gone); pgoutput dead fields dropped w/ wire bytes still consumed in order; `tls::resolve_policy`/`classify_connect_error` → pub(crate); duckdb `count_rows`/`query_string` `#[doc(hidden)]` (cross-crate consumers forbid gating). CDC suite 25 + crash sweep 5 PASS through the new peek path; 227 total |
@@ -130,8 +130,8 @@ spot satisfies WR8 as long as the gate is green.
 | 3.2 build_scalar/drain_tables/push_and_drain complexity | 5 | applied | build_scalar → dispatch + per-type scalar_* helpers; `TableDrain` zips the three parallel slices (misalignment unrepresentable); push_and_drain → shred_root + enqueue_children |
 | 3.2 replay damage-reason logging, byte-budget clamp doc, clock fallback doc | 1+5 | applied | Damage logging landed with B10; clamp + clock-fallback documented with self-contained comments (inc.5) |
 | 3.2 borrowed-box replay signature | 5 | applied | `&mut dyn LoadSession` |
-| 3.3 pg_error_detail ×3 + SQLSTATE list ×2 | 7 | | |
-| 3.3 ConnectResult match ×2, quoting ×2, effective_pk ×3, prepare_stream, serde vocab ×3, decimal/date parsing ×2, pump_copy ×2, Emit loop ×2, strategy wrappers, PEM loading ×2, select_sql WHERE dup | 7 | | |
+| 3.3 pg_error_detail ×3 + SQLSTATE list ×2 | 7 | applied | ONE src/pgerror.rs (pg_error_detail + is_transient_sqlstate) used by dest/source/tls |
+| 3.3 ConnectResult match ×2, quoting ×2, effective_pk ×3, prepare_stream, serde vocab ×3, decimal/date parsing ×2, pump_copy ×2, Emit loop ×2, strategy wrappers, PEM loading ×2, select_sql WHERE dup | 7 | applied | Quoting → sqlcore quote_ident (ONE impl workspace-wide); effective_pk/prepare_stream/pump_copy/Emit landed; strategy wrappers died with the increment-6 planner; remaining smalls folded into the splits where they fell naturally |
 | 3.3 slot peek binding inconsistency | 3 | applied | Folded into the R12 peek unification (one implementation, one binding form) |
 | 3.4 duckdb quote-bypass deletion | 6 | applied | Local quote deleted; everything routes through the dialect seam |
 | 3.4 DestOptions/TableOptions re-export convention | 11 | | |
