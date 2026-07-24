@@ -39,6 +39,10 @@ pub(crate) async fn read_task(
         .map_err(|e| SourceError::fatal(format!("reading parquet `{}`: {e}", task.path)))?;
     let total_groups = builder.metadata().num_row_groups() as u64;
 
+    // Each row group gets a fresh reader (its own file handle + footer
+    // parse): resume is row-group-scoped, so every group must be readable
+    // independently of its predecessors, and the footer re-parse is
+    // microseconds against the group's read cost.
     for group in task.start..total_groups {
         let file = std::fs::File::open(read_path)
             .map_err(|e| SourceError::fatal(format!("opening `{}`: {e}", task.path)))?;

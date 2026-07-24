@@ -7,8 +7,32 @@ them; a row is filled when its task completes, not retroactively.
 
 **Coverage baseline (pre-feature, `cargo llvm-cov nextest --features
 failpoints` on merge base + rustfs pin, 595 tests green)**: **83.68% lines**
-(82.48% regions, 78.04% functions) — recorded 2026-07-24. SC-004 compares
-final line coverage against 83.68%.
+(82.48% regions, 78.04% functions) — recorded 2026-07-24.
+**FINAL coverage (post-feature, same command)**: **85.37% lines** (84.05%
+regions, 80.49% functions) — **+1.69 points over baseline**; SC-004
+SATISFIED. Gap initially -1.19 after the structural work (well-tested
+duplicates deleted, new code under-tested); closed by build-parity tests
+over pipeline_spec, entry-point smoke over the fuzz/bench wrappers, and
+builder-misuse tests.
+
+**US5 fault-injection verification (T062)**: zero panics in library code
+across the catalogued sites — evidenced by: failpoint sweeps 23/23 across
+all 6 crates (make test TARGET=sweep) driving every crash_point; the
+conformance certifications (pg 38 / duckdb 5 / file 3) over the reference
+implementation; classification pins (duckdb IO→Transient, iceberg
+401/403→Fatal + 429→RateLimited + live 401 probe, rest child-fanout
+preservation, store-error rulebook, DDL SQLSTATE split); and the R9 rows
+above (every catalogued expect/unreachable eliminated by construction or
+typed). Recoverable-mistyped-as-fatal: zero observed — the dest-retry
+engine test additionally proves the run driver ACTS on recoverable
+classifications.
+
+**Flake log (2nd entry)**: one unidentified container-leg failure during
+the close-out commit's gate run (output truncated by the invoking command
+— a process slip: the commit was chained with `;` not `&&`, so it landed
+before the gate verdict was read). Immediate full re-run at the SAME
+commit: 636/636 green, so the committed head's gate claim holds; both
+flakes are container-timing class under full parallel load.
 
 **Flake log**: one CDC test (`toast_full_identity_substitutes_from_the_old_image`) failed ONCE under full-suite parallel container load during increment 6's gate; passed in isolation and on full re-run (624/624). Timing-sensitive TOAST leg — watch, not chase.
 
@@ -70,7 +94,7 @@ paths/names and in-repo vocabulary, not on-disk data written by runs.
 | R4 postgres cdc/mod.rs split | 7 | applied | 1151 → cdc/{runtime,read,tail,apply}; shared pump_copy at both COPY sites; twice-written Emit loop unified. Ops note: a resumed verification agent began a divergent parallel split mid-increment (collision caught via mtime interleaving) — stood down + terminated; the owner reconciled to spec (ack/lag → tail, pump_copy wired, R9/R11 seams restored) |
 | R4 postgres PgSession::commit split | 6 | applied | See R2 commit-splits row (landed with increment 6) |
 | R4 postgres source read cursor-arm move | 7 | applied | 120-line cursor arm → `IncrementalPlan::prepare`; `prepare_stream` shared by streams()/read(); `ReflectedTable::effective_pk` (3 copies gone); streams() no longer panics where read() is graceful |
-| R4 duckdb commit split | 6 | | |
+| R4 duckdb commit split | 6 | applied | See R2 commit-splits row (landed with increment 6; became a thin planner interpreter) |
 | R4 file dest/mod.rs split | 8 | applied | 882 lines → mod(145)/session(314: commit = 4 named phases)/layout(133)/truncate(79: one owns_tail rule)/inspect(74); source read → resolve_inputs/plan_tasks/stage_s3_fetches; jsonl SlabReader unifies the twin slab loops. Fail-point registry unchanged but relocated to fire honestly (pq.* local-only). csv convert_cell EXHAUSTIVE over HintType — new variants fail compile |
 | R4 rest read/mod.rs split | 9 | applied | 668 → mod(187)/driver(345)/fanout(192); substitute_body → resolve; ONE match(method,body) in build_page_request; wire bytes identical (query ordering preserved) |
 | R4 iceberg commit.rs split | 10 | applied | commit.rs 863 → catalog(96)/writer(135)/commit(240)/state(171)/ensure(238)+test_support; dest.rs → session.rs (module-inception allow GONE); reveal() concentrated to 4 sites in one pure catalog_props (grep-proven) |
@@ -119,10 +143,10 @@ spot satisfies WR8 as long as the gate is green.
 
 | Item | Increment | Disposition | Evidence |
 |---|---|---|---|
-| 3.1 CommitCounters/TableReport unification | 3 | | |
-| 3.1 to_hex/write_hex | 3 | | |
-| 3.1 merge-key validation dedup + error constructors macro | 3 | | |
-| 3.1 channel subsystem → channel.rs | 3 | | |
+| 3.1 CommitCounters/TableReport unification | 3 | applied (bound, not merged) | Both types kept (distinct roles: per-commit vs per-table accumulation — grep showed NO whole-struct conversion site exists); `From` impl + cross-binding docs give the shared 4-field set one documented authority |
+| 3.1 to_hex/write_hex | 3 | applied | to_hex delegates to write_hex (one encoding loop) |
+| 3.1 merge-key validation dedup + error constructors macro | 3+11 | applied / declined | Merge-key checks: builder enforces the stream-agnostic half, plan-time enforces agreement (documented both sites, increment 11). Constructor macro DECLINED with reason: after RateLimited ctors the pairs are 6 small fns whose bodies differ (retry_after threading) — a macro would obscure more than it saves (catalogued low) |
+| 3.1 channel subsystem → channel.rs | 3 | applied | Moved with unchanged public paths; CHANNEL_MSG_CAPACITY named |
 | 3.1 API items (merge-key precedence doc, StateDoc::new version, re-export completeness, Pipeline::run typestate, merge_streams return, prelude) | 11 | applied | Merge-key agreement rule was ALREADY enforced at plan time (validate_streams; test merge_key_mismatch_rejected_at_plan_time) — documented at both type sites instead of duplicating; StateDoc::new takes engine_version (engine stamps its own); Pipeline::run(self) typestate + compile_fail doctest; merge_streams returns MergeRequests (sentinel dead); prelude rule documented |
 | 3.2 write_compact_json/canonical_json_bytes | 5 | applied (bound, not unified) | The two differ in KEY ORDERING and that difference is load-bearing: compact preserves insertion order for stored Json; canonical sorts for order-independent `_rdlt_id`. Unifying behind a flag = persisted identity one boolean from silent change. Cross-binding comments added; identity/canon oracle tests pin both |
 | 3.2 hex-id append helper ×3 | 3* | applied | `append_hex_id` landed with the increment-3 core/engine sweep |
@@ -141,7 +165,7 @@ spot satisfies WR8 as long as the gate is green.
 | 3.5 FileSource::read split, csv convert_cell catch-all | 8 | applied | resolve_inputs/plan_tasks/stage_s3_fetches; convert_cell exhaustive (compile-forcing) |
 | 3.5 read_doc reserialize round-trip | 8 | applied | Local arm reads raw bytes like S3; expect("reserialize") gone |
 | 3.5 ParquetDir deprecation intent, format_version, pub constants | 3 | applied | See R12 rest/iceberg/file row: intent recorded (frozen stable spelling), format_version enforced, constants narrowed |
-| 3.5 parquet footer re-parse perf note | 8 | | |
+| 3.5 parquet footer re-parse perf note | close-out | applied (documented) | Per-group readers are DELIBERATE: row-group-scoped resume needs each group readable independently; footer re-parse is microseconds vs group read cost — comment now states this in place |
 | 3.6 Pagination selector_paths, stop-block dup, json_kind/render_scalar, base-url join, derive stacks | 9 | applied | selector_paths; total_count_reached; json_kind/render_scalar unified where ACCIDENTAL, kept+commented where deliberate (value_kind terse form; parent-value bool policy); base-url join + not-valid-JSON ×3 deduped; absent-cursor let-else judged clearer inline (recorded) |
 | 3.6 fetch_page split, read_children/current_token | 9 | applied | build_page_request extraction; fanout decomposition; redundant parent param removed |
 | 3.7 conflict-retry triplication → commit_with_retry | 10 | applied | See R9 iceberg row |
@@ -174,8 +198,8 @@ spot satisfies WR8 as long as the gate is green.
 | D14 inheritance stragglers + implied features | 3 | applied | iai-callgrind + libc → workspace deps; `postgres-source`/`file` dropped from CLI+bench (implication proven from rdlt [features] + resolved-tree check); rdlt-connector tokio simplified (strict-superset union). `cargo check --workspace` clean |
 | D15 mutants.out.old untracking | 3 | applied | `git rm -r --cached` — 694 files untracked, ignore entry kept, directory on disk |
 | D16 container image tags pinned (rustfs ×3 sites; polaris pending) | 1 | partially applied | Discovered at T001: gate red on merge base — file-crate S3 dest tests 500ing. Root cause = HOST DISK 100% FULL (168GB podman test residue: 188 stopped pg containers, 1117 anonymous volumes, dangling images — pruned, 158G freed); tests green after cleanup. Floating `rustfs:latest` pinned to 1.0.0-beta.11 at all 3 sites (file s3.rs, iceberg common, fixtures.toml ×2 refs) as drift-proofing; `apache/polaris:latest` pin deferred to a later increment with a live-verified tag. Leak pattern OBSERVED LIVE during increment 4: 16 orphaned postgres containers (fail-fast skips fixture Drop) + target/ ballooned to 851GB under parallel agent rebuilds — cleaned (866GB reclaimed); reaper/labeling convention remains the recorded follow-up |
-| P5-low Makefile check/coverage notes | 3 | | |
+| P5-low Makefile check/coverage notes | close-out | applied | Header now states CI runs the verbs as parallel jobs (make check = contributor-local composition) and where the coverage floor is enforced |
 | P5-low deep-checks RUSTFLAGS doc | 3 | applied | Deliberate-divergence comment added (deep tier measures, PR tier lints) |
 | P5-low CLAUDE.md drift (rustc/arrow numbers) | 3 | applied | 016 block corrected: arrow 58.3, toolchain 1.96.0 |
-| P5-low root README decision | close-out | | |
+| P5-low root README decision | close-out | applied | Minimal root README.md written (what rdlt is, library+CLI use, dev verbs, license) — the pre-publish item closed now |
 | P5-low bench reset_sql dup / conn-less fixtures / strat_duck_unused / cell-id convention | 3 | applied | First three via D12; cell-id renames SKIPPED deliberately (RESULTS.md history would orphan) — naming note for NEW cells added to benches/README.md |

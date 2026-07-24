@@ -152,7 +152,9 @@ impl Location {
         matches!(self, Self::Local { .. })
     }
 
-    /// Reclaim THIS pipeline scope's dead-session staging (clause D4), then make
+    /// Reclaim THIS pipeline scope's dead-session staging — staged-but-
+    /// uncommitted data from a crashed session must never survive into a
+    /// fresh load — then make
     /// the fresh load's staging area ready. Scoped — a sibling pipeline sharing
     /// the output keeps its live staged data.
     pub async fn prepare_staging(&self, scope: &str, load: &str) -> Result<(), DestinationError> {

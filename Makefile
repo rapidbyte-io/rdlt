@@ -1,5 +1,8 @@
-# rdlt — canonical entry points for contributors AND CI (feature 003, FR-014 / gate G4).
+# rdlt — canonical entry points for contributors AND CI.
 # CI invokes these verbs; never duplicate their commands inline anywhere else.
+# (CI runs lint/test/perf as PARALLEL jobs rather than calling `make check`;
+#  `check` is the contributor-local composition of the same verbs. The 80%
+#  coverage floor is enforced at feature close-out, not per-push.)
 #
 #   make build                 debug build, whole workspace
 #   make release               optimized CLI with all bundled connectors

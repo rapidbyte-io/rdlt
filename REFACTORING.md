@@ -1,5 +1,12 @@
 # REFACTORING.md — Code-wide refactoring opportunities
 
+> **EXECUTED — feature 017.** Every item below reached a terminal
+> disposition; the authoritative execution record with per-item evidence is
+> `specs/017-workspace-refactoring/close-out.md` (contract WR1–WR8,
+> `specs/017-workspace-refactoring/contracts/workspace-refactoring.md`).
+> This file is preserved as the review-time inventory; line numbers refer
+> to the pre-017 tree.
+
 A full review of the workspace (~54k lines of Rust across 13 crates) for DRY
 violations, single-responsibility/god-file problems, naming consistency, comment
 quality, complexity, error handling, dead code, and API design.

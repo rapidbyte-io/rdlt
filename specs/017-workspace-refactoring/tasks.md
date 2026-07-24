@@ -132,7 +132,7 @@ No foundational tasks — the existing workspace, test gate, and CI are the foun
 - [X] T059 [US5] R9 iceberg: one parameterized `commit_with_retry` helper in crates/rdlt-connector-iceberg/src/dest/commit.rs replacing the triplicated divergent retry scaffolding (unifies loop shape, backoff base, `already_committed` re-check; kills both `unreachable!` tails); add real jitter or fix the "Jittered" naming/comment
 - [X] T060 [P] [US5] R9 postgres: give CDC `RunState` `ensure_control`/`ensure_snapshot` methods so the ~10 hand-tracked `.expect("control client")` calls live in one audited place (crates/rdlt-connector-postgres/src/source/cdc/runtime.rs); fix `streams()` panicking on missing reflection entry where `read()` handles it
 - [X] T061 [P] [US5] R9 cross-module invariants → typed internal errors: postgres copy_decode.rs decimal-shape expect, sqlcore plan.rs `expect("hard_delete present")` (resolved structurally by T031's helper), duckdb commit.rs `expect("scd2 options resolved")`; file `Store::s3_list` `unreachable!` is retired by T034 — record in close-out
-- [ ] T062 [US5] WR5 verification: fault-injection/conformance pass over all catalogued panic and misclassification sites — zero panics in library code, classification matches the taxonomy per connector; evidence into close-out.md rows R8/R9
+- [X] T062 [US5] WR5 verification: fault-injection/conformance pass over all catalogued panic and misclassification sites — zero panics in library code, classification matches the taxonomy per connector; evidence into close-out.md rows R8/R9
 
 **Checkpoint**: US5 deliverable — taxonomy honest workspace-wide.
 
@@ -180,11 +180,11 @@ No foundational tasks — the existing workspace, test gate, and CI are the foun
 
 ## Phase 10: Polish & Close-Out
 
-- [ ] T081 [P] Re-run the WR2 citation sweep and WR3 single-source greps (quickstart) — zero hits/one-definition confirmed after all increments; outputs cited in close-out.md
-- [ ] T082 [P] Final coverage run (`make coverage`) — at or above the T001 baseline (SC-004); number recorded in close-out.md header
-- [ ] T083 Complete specs/017-workspace-refactoring/close-out.md — every catalogue row terminal with non-empty evidence (FR-023/WR7); empty-cell grep returns nothing
-- [ ] T084 Final full gate: `cargo nextest run`, `cargo test --doc`, failpoint sweeps, container cells (both runtime postures), `make bench TARGET=gate`; bench RESULTS.md regeneration diff-clean for untouched cells (WR8)
-- [ ] T085 Record REFACTORING.md's disposition (append a header note pointing at close-out.md as the execution record); update the CLAUDE.md SPECKIT block if any plan-level decision changed during implementation
+- [X] T081 [P] Re-run the WR2 citation sweep and WR3 single-source greps (quickstart) — zero hits/one-definition confirmed after all increments; outputs cited in close-out.md
+- [X] T082 [P] Final coverage run (`make coverage`) — at or above the T001 baseline (SC-004); number recorded in close-out.md header
+- [X] T083 Complete specs/017-workspace-refactoring/close-out.md — every catalogue row terminal with non-empty evidence (FR-023/WR7); empty-cell grep returns nothing
+- [X] T084 Final full gate: `cargo nextest run`, `cargo test --doc`, failpoint sweeps, container cells (both runtime postures), `make bench TARGET=gate`; bench RESULTS.md regeneration diff-clean for untouched cells (WR8)
+- [X] T085 Record REFACTORING.md's disposition (append a header note pointing at close-out.md as the execution record); update the CLAUDE.md SPECKIT block if any plan-level decision changed during implementation
 
 ---
 

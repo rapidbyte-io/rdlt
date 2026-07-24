@@ -231,7 +231,8 @@ async fn run_once(
 }
 
 /// Build-time validation over the discovered streams: one owning stream per
-/// destination table (clause E2), Merge only where the destination supports it,
+/// destination table (two streams writing one table would interleave
+/// unowned rows), Merge only where the destination supports it,
 /// and structured Merge only against a declared primary key. Fails before any
 /// session is opened.
 fn validate_streams(
