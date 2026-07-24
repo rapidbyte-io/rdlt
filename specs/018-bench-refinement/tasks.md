@@ -47,12 +47,12 @@ No foundational tasks — the existing harness and gate are the foundation; US1'
 
 **Independent Test**: specs/018-bench-refinement/spike/ holds five evidence-backed records; the runtime probe has an explicit decision; no crates/ or benches/ code changed in this phase.
 
-- [ ] T010 [US2] Probe 1 — RUNTIME (#1 risk): attempt `abctl local install --low-resource-mode` under rootless podman (`KIND_EXPERIMENTAL_PROVIDER=podman`); record evidence + decision in specs/018-bench-refinement/spike/01-runtime.md. If podman fails: DOCUMENT the docker path and STOP for recorded owner approval before any system-level install (BR5); a no-go records the absent-with-reason fallback shape for US4
-- [ ] T011 [US2] Probe 2 — networking (depends on T010 go): from a kind pod, reach the host's postgres and RUSTFS fixture ports; record the working address form (host.docker.internal vs gateway IP) in spike/02-networking.md
-- [ ] T012 [US2] Probe 3 — API fields (depends on T010 go): throwaway connection via the public API, one sync, `GET /v1/jobs/{id}`; pin the exact status/timing/recordsSynced/bytesSynced field names in spike/03-api-fields.md
-- [ ] T013 [P] [US2] Probe 4 — quiet-guard fit (depends on T010 go): idle 1-min loadavg with the kind cluster up vs the guard threshold; decision (fits / recorded allowance / stop-cluster-between-arms) in spike/04-quiet-guard.md
-- [ ] T014 [P] [US2] Probe 5 — reset fidelity (depends on T010 go): sync → reset + destination schema drop → row counts prove initial state restored; record in spike/05-reset.md
-- [ ] T015 [US2] Spike summary: spike/00-summary.md with the five go/no-go decisions and the resulting US4 shape (3-way, or 2-way + absent-with-reason); close-out row BR5 filled
+- [x] T010 [US2] Probe 1 — RUNTIME (#1 risk): attempt `abctl local install --low-resource-mode` under rootless podman (`KIND_EXPERIMENTAL_PROVIDER=podman`); record evidence + decision in specs/018-bench-refinement/spike/01-runtime.md. If podman fails: DOCUMENT the docker path and STOP for recorded owner approval before any system-level install (BR5); a no-go records the absent-with-reason fallback shape for US4
+- [x] T011 [US2] Probe 2 — networking (depends on T010 go): from a kind pod, reach the host's postgres and RUSTFS fixture ports; record the working address form (host.docker.internal vs gateway IP) in spike/02-networking.md
+- [x] T012 [US2] Probe 3 — API fields (depends on T010 go): throwaway connection via the public API, one sync, `GET /v1/jobs/{id}`; pin the exact status/timing/recordsSynced/bytesSynced field names in spike/03-api-fields.md
+- [x] T013 [P] [US2] Probe 4 — quiet-guard fit (depends on T010 go): idle 1-min loadavg with the kind cluster up vs the guard threshold; decision (fits / recorded allowance / stop-cluster-between-arms) in spike/04-quiet-guard.md
+- [x] T014 [P] [US2] Probe 5 — reset fidelity (depends on T010 go): sync → reset + destination schema drop → row counts prove initial state restored; record in spike/05-reset.md
+- [x] T015 [US2] Spike summary: spike/00-summary.md with the five go/no-go decisions and the resulting US4 shape (3-way, or 2-way + absent-with-reason); close-out row BR5 filled
 
 **Checkpoint**: US2 = plan P1. If probe 1 is no-go, US3 still proceeds; US4 blocks with the recorded fallback.
 
