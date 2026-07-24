@@ -1,0 +1,77 @@
+{
+  "format_version": 2,
+  "cell_id": "s3jsonl-to-pg-200k",
+  "recorded_at": "2026-07-25",
+  "fingerprint": {
+    "cpu_model": "AMD RYZEN AI MAX+ 395 w/ Radeon 8060S",
+    "kernel": "7.0.12-201.fc44.x86_64",
+    "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+    "competitor_pins": {
+      "dlt": "dlt 1.29.0"
+    },
+    "dataset_hashes": {
+      "pg:seed_output": "dataset  |  rows   |           content_md5 | -----------+---------+---------------------------------- | events    | 1000000 | e840f51738a6b4b15f9f085ea85e3df8 | events_v2 | 1000000 | 7e208273f4d5333658fff2fa1c9839d9 | (2 rows)",
+      "rustfs:/tmp/.tmpHnuCiA/rows.jsonl": "34e4e3d045b4f35e9c8ac8f1c8bba9af3711c341b21f2a8e72c58a401b27b747"
+    },
+    "loadavg_at_start": 1.61,
+    "quiet_note": null
+  },
+  "workload": {},
+  "rdlt": {
+    "runs_ms": [
+      1141.321407,
+      1142.074426,
+      1158.199993,
+      1168.17204,
+      1160.513754
+    ],
+    "median_ms": 1158.199993,
+    "p95_ms": 1168.17204,
+    "rows": 600000,
+    "bytes": 149965184,
+    "rows_per_s": 518045.2457488488,
+    "mb_per_s": 123.48294353334322,
+    "cpu": {
+      "mean_util": 0.835836711677611,
+      "peak_util": 2.0338983050847457,
+      "user_sys_ms": 970,
+      "note": "process TREE sampled at 50ms (root VmHWM exact; tree spikes between polls can be missed; cpu undercounts up to one interval)"
+    },
+    "rss": {
+      "peak_bytes": 212840448,
+      "note": "process TREE sampled at 50ms (root VmHWM exact; tree spikes between polls can be missed; cpu undercounts up to one interval)"
+    },
+    "streams": []
+  },
+  "competitors": {
+    "dlt": {
+      "status": "ok",
+      "runs_ms": [
+        59106.26728797797,
+        63562.81572696753,
+        63509.82260500314,
+        63610.08087103255,
+        63633.69965105085
+      ],
+      "median_ms": 63562.81572696753,
+      "self_timed": true,
+      "cpu": {
+        "mean_util": 0.9693139073654475,
+        "peak_util": null,
+        "user_sys_ms": 62431,
+        "note": "cgroup v2 cpu.stat, last poll before exit"
+      },
+      "rss": {
+        "peak_bytes": 313425920,
+        "note": "self-reported ru_maxrss — the recorded statistic (bar derivation)"
+      },
+      "ratio_vs_rdlt": 54.88069082294281
+    }
+  },
+  "verify": {
+    "table": "events",
+    "expected_rows": 200000,
+    "actual_rows": 200000
+  },
+  "forced": false
+}

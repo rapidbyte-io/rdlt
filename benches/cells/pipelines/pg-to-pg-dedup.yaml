@@ -1,8 +1,10 @@
 # 018 e2e matrix cell pg-to-pg-dedup-1m — the MEASURED load (LOAD 2 only,
-# research D-08). A query stream named `events` reads the 50%-changed
-# `events_v2` and merges by id into the SAME destination table `events` that
-# LOAD 1 populated (LOAD 1 runs untimed via the cell's prepare_sh against
-# pg-to-pg-dedup-load1.yaml). Full re-delivery + dedup by id.
+# research D-08). A query stream named `events_merged` reads the 50%-changed
+# `events_v2` and merges by id into the SAME destination table `events_merged`
+# that LOAD 1 populated (LOAD 1 runs untimed via the cell's prepare_sh against
+# pg-to-pg-dedup-load1.yaml). Full re-delivery + dedup by id. The stream name
+# is deliberately no physical table's name: a query stream may not share a
+# name with any table reflected from the source schema.
 pipeline: bench-pg-to-pg-dedup
 workdir: {{workdir}}/.rdlt
 write_mode:
@@ -12,7 +14,7 @@ source:
   postgres:
     conn: "{{conn}}"
     queries:
-      - name: events
+      - name: events_merged
         sql: "SELECT * FROM events_v2"
         primary_key: [id]
 destination:

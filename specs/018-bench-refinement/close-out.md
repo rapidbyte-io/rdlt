@@ -28,11 +28,11 @@ completes. Evidence cites tests, commits, sessions, or spike records.
 |---|---|---|---|
 | BR1 one matrix by rule (migration + sweep) | P0 | applied (P0 half) | Migration commit 212edf5: 64 files deleted (25 cells, 10 fixtures, all v1 artifacts, 5 dlt scripts, 8 bars), message cites every final value + archive 40841ab; selftest exempt; vocabulary sweep ZERO hits (verified independently). The 5 new cells land in P2 |
 | BR2 amend-then-delete governance | P0 | applied | 631d9bd (constitution v1.1.0 + 012 BH note) PRECEDES 212edf5 — order verified in git log. Ops note: the first amendment attempt committed only Amendment B (scripted-edit assert failure, caught by tree grep); fixed with exact edits + commit amend BEFORE any deletion existed |
-| BR3 artifacts versioned (v2 + history feed) | P0+P2 | applied (P0 half) | format_version 2 (class/mode/suite gone; forced + extra added); v1 REJECTED naming 40841ab — pins v1_artifact_is_refused_naming_the_archive_commit + future_format_version_is_refused; history.jsonl appended from main.rs (deliberately not run_cell — selftest must not dirty it) |
-| BR4 same conditions provable | P2 | | |
+| BR3 artifacts versioned (v2 + history feed) | P0+P2 | applied | format_version 2 (class/mode/suite gone; forced + extra added); v1 REJECTED naming 40841ab — pins v1_artifact_is_refused_naming_the_archive_commit + future_format_version_is_refused; history.jsonl appended from main.rs (deliberately not run_cell — selftest must not dirty it) |
+| BR4 same conditions provable | P2 | applied | First recorded session 2026-07-25: all 5 cells verify PASS (actual==expected rowcounts in every artifact); same seeded sources, per-product destination databases, fingerprint (cpu/kernel/rustc/pins/dataset hashes/loadavg) in each artifact; timing boundaries stated in cell notes |
 | BR5 probes before machinery | P1 | applied | 5/5 probes GO with evidence in spike/00–05 BEFORE any driver code exists. The spike caught two runtime defects machinery would have hit blind: ingress-nginx hostPort 443 hijack (portmap DNAT, controller scaled to 0) and node pids-limit exhaustion (2048→32768) — both owner-applied live, recorded as setup.py obligations. Job-API fields pinned from a real sync (rowsSynced, ISO-8601 duration); reset recipe = plain DROP, verified |
 | BR6 driver kind, zero artifact divergence | P3 | | |
-| BR7 honest competitor configuration | P2+P3 | | |
+| BR7 honest competitor configuration | P2+P3 | applied (dlt half) | connectorx = dlt headline (its fastest pg backend), pyarrow = labeled context; policy entry 2026-07-25 records the accepted consequence: 4.6x compressed, parquet parity 1.0x, dedup 0.9x LOSS recorded as-is. Airbyte half lands in P3 |
 | BR8 measurement-first enforcement | P4 | | |
 
 ## Phase deliverables
@@ -47,10 +47,10 @@ completes. Evidence cites tests, commits, sessions, or spike records.
 | Migration commit (25 cells / 10 fixtures / artifacts / scripts / 8 bars) | P0 | applied | 212edf5 (see BR1 row) |
 | RESULTS.md rebuild + GOVERNANCE.md + history plumbing + Milestones seed | P0 | applied | RESULTS.md net 359 lines removed, 78 added (matrix/caveats/trends/milestones; policy entry cites 40841ab; 8 retired claims seeded w/ evidence commit); GOVERNANCE.md carries relocated records verbatim; report regeneration idempotent |
 | Spike: 5 probes go/no-go | P1 | applied | All GO → US4 proceeds 3-way (no absent-with-reason needed). Pinned facts: API via supervised port-forward :8600 (ingress dead); pods → host fixtures at 169.254.1.2; headline = driver trigger→terminal wall w/ API duration as labeled context; discover-before-create required; first-job image pull = untimed warmup; ~20–50 s per-job orchestration floor goes in the cell note |
-| Fixtures pg + rustfs reshape | P2 | | |
-| 5 pipelines + 5 cells | P2 | | |
-| dlt module slim (+s3fs +connectorx −duckdb; sqlalchemy deleted) | P2 | | |
-| First recorded session (rdlt vs dlt, 10 arms verified) | P2 | | |
+| Fixtures pg + rustfs reshape | P2 | applied | pg 5439 (src + dest_rdlt/dest_dlt/dest_airbyte + events_v2 twin), rustfs beta.11 :19110 raw/lake — both live in the recorded session |
+| 5 pipelines + 5 cells | P2 | applied | 6 pipeline specs (dedup = load1 + measured), 5 cells in e2e.toml — all executed live 2026-07-25 |
+| dlt module slim (+s3fs +connectorx −duckdb; sqlalchemy deleted) | P2 | applied | 5 scripts, variants dlt + dlt-pyarrow; s3fs endpoint wiring validated live in both s3jsonl cells |
+| First recorded session (rdlt vs dlt, 10 arms verified) | P2 | applied | 13 arms (5 rdlt + 5 dlt + 3 dlt-pyarrow context), 5 runs each, all rowcount-verified; artifacts v2 committed; history.jsonl +13 lines; matrix + first Trends render. Live catch: dedup cell spec collided a query-stream name with a reflected table — both loads renamed to query stream events_merged (first live execution of the P2-built spec) |
 | Driver kind + variants discovery | P3 | | |
 | Airbyte module (setup/driver/variants/README) | P3 | | |
 | First 3-way session (15 arms or absent-with-reason) | P3 | | |

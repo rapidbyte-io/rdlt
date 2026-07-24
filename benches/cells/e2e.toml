@@ -94,7 +94,7 @@ pipeline = "cells/pipelines/pg-to-pg-dedup.yaml"
 prepare_sh = "cd {{workdir}} && {{cli}} run {{benches}}/cells/pipelines/pg-to-pg-dedup-load1.yaml"
 note = "Postgres → Postgres, 1M rows, keep-in-sync by id — LOAD 2 measured: full re-delivery with 50% of rows changed, deduped by id. All three products run the same full-redelivery-plus-dedup regime; Airbyte's cheaper incremental regime is deliberately not benched (no dlt counterpart, research D-08)."
 [cell.verify]
-table = "events"
+table = "events_merged"
 expected_rows = 1_000_000
 [[cell.competitor]]
 variant = "dlt"

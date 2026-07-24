@@ -1,0 +1,76 @@
+{
+  "format_version": 2,
+  "cell_id": "s3jsonl-to-s3parquet-200k",
+  "recorded_at": "2026-07-25",
+  "fingerprint": {
+    "cpu_model": "AMD RYZEN AI MAX+ 395 w/ Radeon 8060S",
+    "kernel": "7.0.12-201.fc44.x86_64",
+    "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+    "competitor_pins": {
+      "dlt": "dlt 1.29.0"
+    },
+    "dataset_hashes": {
+      "rustfs:/tmp/.tmpHnuCiA/rows.jsonl": "34e4e3d045b4f35e9c8ac8f1c8bba9af3711c341b21f2a8e72c58a401b27b747"
+    },
+    "loadavg_at_start": 2.15,
+    "quiet_note": null
+  },
+  "workload": {},
+  "rdlt": {
+    "runs_ms": [
+      966.6913000000001,
+      969.429181,
+      964.636436,
+      976.8755970000001,
+      943.875672
+    ],
+    "median_ms": 966.6913000000001,
+    "p95_ms": 976.8755970000001,
+    "rows": 600000,
+    "bytes": 149965184,
+    "rows_per_s": 620673.8386908002,
+    "mb_per_s": 147.9458275210892,
+    "cpu": {
+      "mean_util": 0.9111369489773226,
+      "peak_util": 1.8644067796610169,
+      "user_sys_ms": 860,
+      "note": "process TREE sampled at 50ms (root VmHWM exact; tree spikes between polls can be missed; cpu undercounts up to one interval)"
+    },
+    "rss": {
+      "peak_bytes": 224092160,
+      "note": "process TREE sampled at 50ms (root VmHWM exact; tree spikes between polls can be missed; cpu undercounts up to one interval)"
+    },
+    "streams": []
+  },
+  "competitors": {
+    "dlt": {
+      "status": "ok",
+      "runs_ms": [
+        59454.03189299395,
+        59098.69612701005,
+        58844.94423499564,
+        58934.690425987355,
+        59107.45077900356
+      ],
+      "median_ms": 59098.69612701005,
+      "self_timed": true,
+      "cpu": {
+        "mean_util": 1.038428774167046,
+        "peak_util": null,
+        "user_sys_ms": 62295,
+        "note": "cgroup v2 cpu.stat, last poll before exit"
+      },
+      "rss": {
+        "peak_bytes": 259330048,
+        "note": "self-reported ru_maxrss — the recorded statistic (bar derivation)"
+      },
+      "ratio_vs_rdlt": 61.135024311287424
+    }
+  },
+  "verify": {
+    "table": "events",
+    "expected_rows": 200000,
+    "actual_rows": 200000
+  },
+  "forced": false
+}

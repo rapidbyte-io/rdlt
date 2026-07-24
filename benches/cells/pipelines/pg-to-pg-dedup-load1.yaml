@@ -2,7 +2,10 @@
 # builds on. Run by that cell's prepare_sh (`cd {{workdir}} && rdlt run …`), so
 # its conns are hardcoded (fixed port 5439) — this file is NOT rendered by the
 # harness template pass. Reads src.events and merges by id into dest_rdlt's
-# `events` table; LOAD 2 then re-delivers the 50%-changed rows over it.
+# `events_merged` table; LOAD 2 then re-delivers the 50%-changed rows over it.
+# Both loads are QUERY streams under the same neutral stream name: a query
+# stream may not share a name with any table reflected from the source schema,
+# and LOAD 2's stream must land in the table LOAD 1 populated.
 pipeline: bench-pg-to-pg-dedup-load1
 workdir: .rdlt-load1
 write_mode:
@@ -11,8 +14,10 @@ write_mode:
 source:
   postgres:
     conn: "postgresql://postgres:postgres@127.0.0.1:5439/src"
-    tables:
-      - name: events
+    queries:
+      - name: events_merged
+        sql: "SELECT * FROM events"
+        primary_key: [id]
 destination:
   postgres:
     conn: "host=127.0.0.1 port=5439 user=postgres password=postgres dbname=dest_rdlt"
