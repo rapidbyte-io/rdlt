@@ -8,7 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-rdlt-connector = { workspace = true }
+rdlt-connector = { workspace = true, features = ["schema"] }
 schemars = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }

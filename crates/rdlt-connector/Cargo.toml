@@ -13,6 +13,7 @@ arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
+schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -25,3 +26,6 @@ workspace = true
 # Forwarded test infrastructure (crash sweep): connectors depend on the SPI
 # only, so the fail-point feature routes through this seam to rdlt-core.
 failpoints = ["rdlt-core/failpoints"]
+# Opt-in `schemars::JsonSchema` for `Secret`, so the SPI carries no mandatory
+# schemars dependency; connectors that generate config schemas enable it.
+schema = ["dep:schemars"]

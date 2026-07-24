@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{read_err, read_ok, read_stream};
+use common::{read_err, read_ok, read_stream, stream_yaml};
 use serde_json::json;
 use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -21,15 +21,11 @@ async fn wildcard_selector_extracts_nested() {
         })))
         .mount(&server)
         .await;
-    let yaml = format!(
-        r#"
-base_url: "{}"
-streams:
-  - name: items
-    path: /items
-    records_path: data.groups[*].payload
-"#,
-        server.uri()
+    let yaml = stream_yaml(
+        &server.uri(),
+        "items",
+        "/items",
+        "records_path: data.groups[*].payload",
     );
     let rows = read_ok(&yaml, "items").await;
     assert_eq!(rows.len(), 2);
@@ -47,16 +43,7 @@ async fn selector_no_match_is_typed() {
         })))
         .mount(&server)
         .await;
-    let yaml = format!(
-        r#"
-base_url: "{}"
-streams:
-  - name: items
-    path: /items
-    records_path: data.items
-"#,
-        server.uri()
-    );
+    let yaml = stream_yaml(&server.uri(), "items", "/items", "records_path: data.items");
     let err = read_err(&yaml, "items").await;
     assert!(err.contains("data.items") && err.contains("meta"), "{err}");
 }
@@ -64,15 +51,12 @@ streams:
 /// Invalid selector syntax fails AT CONFIG PARSE, naming the subset.
 #[tokio::test]
 async fn invalid_selector_fails_at_parse() {
-    let err = rdlt_connector_rest::RestConfig::from_yaml(
-        r#"
-base_url: http://x
-streams:
-  - name: a
-    path: /a
-    records_path: "data[x]"
-"#,
-    )
+    let err = rdlt_connector_rest::RestConfig::from_yaml(&stream_yaml(
+        "http://x",
+        "a",
+        "/a",
+        r#"records_path: "data[x]""#,
+    ))
     .expect_err("bad selector")
     .to_string();
     assert!(err.contains("records_path") && err.contains("[*]"), "{err}");
@@ -87,16 +71,11 @@ async fn action_404_end_stream() {
         .respond_with(ResponseTemplate::new(404))
         .mount(&server)
         .await;
-    let yaml = format!(
-        r#"
-base_url: "{}"
-streams:
-  - name: items
-    path: /items
-    response_actions:
-      - {{status: 404, action: end_stream}}
-"#,
-        server.uri()
+    let yaml = stream_yaml(
+        &server.uri(),
+        "items",
+        "/items",
+        "response_actions:\n  - {status: 404, action: end_stream}",
     );
     let rows = read_ok(&yaml, "items").await;
     assert!(rows.is_empty(), "clean end, zero rows");
@@ -111,16 +90,11 @@ async fn undeclared_4xx_stays_typed() {
         .respond_with(ResponseTemplate::new(403))
         .mount(&server)
         .await;
-    let yaml = format!(
-        r#"
-base_url: "{}"
-streams:
-  - name: items
-    path: /items
-    response_actions:
-      - {{status: 404, action: end_stream}}
-"#,
-        server.uri()
+    let yaml = stream_yaml(
+        &server.uri(),
+        "items",
+        "/items",
+        "response_actions:\n  - {status: 404, action: end_stream}",
     );
     let err = read_err(&yaml, "items").await;
     assert!(err.contains("403"), "{err}");
@@ -138,17 +112,11 @@ async fn action_content_ignore() {
         })))
         .mount(&server)
         .await;
-    let yaml = format!(
-        r#"
-base_url: "{}"
-streams:
-  - name: items
-    path: /items
-    records_path: data
-    response_actions:
-      - {{content_contains: quota_soft_limit, action: ignore}}
-"#,
-        server.uri()
+    let yaml = stream_yaml(
+        &server.uri(),
+        "items",
+        "/items",
+        "records_path: data\nresponse_actions:\n  - {content_contains: quota_soft_limit, action: ignore}",
     );
     let rows = read_ok(&yaml, "items").await;
     assert!(rows.is_empty(), "ignored page contributes nothing");
@@ -157,16 +125,12 @@ streams:
 /// Unconditional actions are rejected at parse (they'd swallow everything).
 #[tokio::test]
 async fn unconditional_action_rejected_at_parse() {
-    let err = rdlt_connector_rest::RestConfig::from_yaml(
-        r#"
-base_url: http://x
-streams:
-  - name: a
-    path: /a
-    response_actions:
-      - {action: ignore}
-"#,
-    )
+    let err = rdlt_connector_rest::RestConfig::from_yaml(&stream_yaml(
+        "http://x",
+        "a",
+        "/a",
+        "response_actions:\n  - {action: ignore}",
+    ))
     .expect_err("unconditional")
     .to_string();
     assert!(err.contains("response_actions[0]"), "{err}");
@@ -193,18 +157,11 @@ async fn post_body_with_cursor_pagination() {
         })))
         .mount(&server)
         .await;
-    let yaml = format!(
-        r#"
-base_url: "{}"
-streams:
-  - name: hits
-    path: /search
-    method: post
-    body: {{query: x}}
-    records_path: hits
-    pagination: {{type: cursor, cursor_path: next, cursor_param: cursor}}
-"#,
-        server.uri()
+    let yaml = stream_yaml(
+        &server.uri(),
+        "hits",
+        "/search",
+        "method: post\nbody: {query: x}\nrecords_path: hits\npagination: {type: cursor, cursor_path: next, cursor_param: cursor}",
     );
     let rows = read_ok(&yaml, "hits").await;
     assert_eq!(rows.len(), 2);
@@ -213,15 +170,12 @@ streams:
 /// body without method: post is typed at parse.
 #[tokio::test]
 async fn body_requires_post() {
-    let err = rdlt_connector_rest::RestConfig::from_yaml(
-        r#"
-base_url: http://x
-streams:
-  - name: a
-    path: /a
-    body: {q: 1}
-"#,
-    )
+    let err = rdlt_connector_rest::RestConfig::from_yaml(&stream_yaml(
+        "http://x",
+        "a",
+        "/a",
+        "body: {q: 1}",
+    ))
     .expect_err("body on GET")
     .to_string();
     assert!(err.contains("method: post"), "{err}");
@@ -230,17 +184,12 @@ streams:
 /// Incremental aliases and the block are mutually exclusive (typed).
 #[tokio::test]
 async fn incremental_block_and_aliases_are_exclusive() {
-    let err = rdlt_connector_rest::RestConfig::from_yaml(
-        r#"
-base_url: http://x
-streams:
-  - name: a
-    path: /a
-    cursor_field: seq
-    cursor_param: since
-    incremental: {cursor_field: seq}
-"#,
-    )
+    let err = rdlt_connector_rest::RestConfig::from_yaml(&stream_yaml(
+        "http://x",
+        "a",
+        "/a",
+        "cursor_field: seq\ncursor_param: since\nincremental: {cursor_field: seq}",
+    ))
     .expect_err("mixed")
     .to_string();
     assert!(err.contains("not both"), "{err}");
@@ -268,16 +217,11 @@ async fn wildcard_selector_terminates_on_empty_page() {
         })))
         .mount(&server)
         .await;
-    let yaml = format!(
-        r#"
-base_url: "{}"
-streams:
-  - name: items
-    path: /items
-    records_path: data.items[*].payload
-    pagination: {{type: page}}
-"#,
-        server.uri()
+    let yaml = stream_yaml(
+        &server.uri(),
+        "items",
+        "/items",
+        "records_path: data.items[*].payload\npagination: {type: page}",
     );
     let rows = read_ok(&yaml, "items").await;
     assert_eq!(rows.len(), 2, "clean end at the empty terminal page");
@@ -294,17 +238,11 @@ async fn action_content_error_is_fatal() {
         })))
         .mount(&server)
         .await;
-    let yaml = format!(
-        r#"
-base_url: "{}"
-streams:
-  - name: items
-    path: /items
-    records_path: data
-    response_actions:
-      - {{content_contains: internal_error, action: error}}
-"#,
-        server.uri()
+    let yaml = stream_yaml(
+        &server.uri(),
+        "items",
+        "/items",
+        "records_path: data\nresponse_actions:\n  - {content_contains: internal_error, action: error}",
     );
     let err = read_err(&yaml, "items").await;
     assert!(err.contains("declared error action matched"), "{err}");
@@ -339,18 +277,11 @@ async fn action_ignore_rides_cursor_pagination() {
         })))
         .mount(&server)
         .await;
-    let yaml = format!(
-        r#"
-base_url: "{}"
-streams:
-  - name: items
-    path: /items
-    records_path: data
-    pagination: {{type: cursor, cursor_path: next, cursor_param: c}}
-    response_actions:
-      - {{content_contains: maintenance_window, action: ignore}}
-"#,
-        server.uri()
+    let yaml = stream_yaml(
+        &server.uri(),
+        "items",
+        "/items",
+        "records_path: data\npagination: {type: cursor, cursor_path: next, cursor_param: c}\nresponse_actions:\n  - {content_contains: maintenance_window, action: ignore}",
     );
     let rows = read_ok(&yaml, "items").await;
     assert_eq!(
@@ -370,16 +301,11 @@ async fn action_429_end_stream() {
         .respond_with(ResponseTemplate::new(429))
         .mount(&server)
         .await;
-    let yaml = format!(
-        r#"
-base_url: "{}"
-streams:
-  - name: items
-    path: /items
-    response_actions:
-      - {{status: 429, action: end_stream}}
-"#,
-        server.uri()
+    let yaml = stream_yaml(
+        &server.uri(),
+        "items",
+        "/items",
+        "response_actions:\n  - {status: 429, action: end_stream}",
     );
     let rows = read_ok(&yaml, "items").await;
     assert!(rows.is_empty(), "declared 429 ends cleanly");
@@ -395,20 +321,12 @@ async fn action_status_and_content_combined() {
         .respond_with(ResponseTemplate::new(404).set_body_string("resource gone"))
         .mount(&server)
         .await;
-    let yaml_for = |server: &MockServer| {
-        format!(
-            r#"
-base_url: "{}"
-streams:
-  - name: items
-    path: /items
-    response_actions:
-      - {{status: 404, content_contains: gone, action: end_stream}}
-"#,
-            server.uri()
-        )
-    };
-    let rows = read_ok(&yaml_for(&server), "items").await;
+    let extra = "response_actions:\n  - {status: 404, content_contains: gone, action: end_stream}";
+    let rows = read_ok(
+        &stream_yaml(&server.uri(), "items", "/items", extra),
+        "items",
+    )
+    .await;
     assert!(rows.is_empty(), "404 + matching body ends cleanly");
 
     let server = MockServer::start().await;
@@ -417,7 +335,11 @@ streams:
         .respond_with(ResponseTemplate::new(404).set_body_string("something else"))
         .mount(&server)
         .await;
-    let err = read_err(&yaml_for(&server), "items").await;
+    let err = read_err(
+        &stream_yaml(&server.uri(), "items", "/items", extra),
+        "items",
+    )
+    .await;
     assert!(
         err.contains("404"),
         "non-matching body keeps the typed 404: {err}"
@@ -427,16 +349,12 @@ streams:
 /// Declared statuses must be real HTTP statuses (typo net).
 #[tokio::test]
 async fn action_status_out_of_range_rejected_at_parse() {
-    let err = rdlt_connector_rest::RestConfig::from_yaml(
-        r#"
-base_url: http://x
-streams:
-  - name: a
-    path: /a
-    response_actions:
-      - {status: 42, action: end_stream}
-"#,
-    )
+    let err = rdlt_connector_rest::RestConfig::from_yaml(&stream_yaml(
+        "http://x",
+        "a",
+        "/a",
+        "response_actions:\n  - {status: 42, action: end_stream}",
+    ))
     .expect_err("status 42")
     .to_string();
     assert!(err.contains("not an HTTP status"), "{err}");
@@ -448,20 +366,17 @@ streams:
 #[tokio::test]
 async fn validation_matrix_covers_remaining_arms() {
     for (frag, needle) in [
-        ("    cursor_field: seq\n", "set together"),
+        ("cursor_field: seq", "set together"),
+        ("incremental: {cursor_field: \" \"}", "must not be empty"),
         (
-            "    incremental: {cursor_field: \" \"}\n",
-            "must not be empty",
-        ),
-        (
-            "    pagination: {type: page, total_pages_path: meta.pages, total_count_path: meta.total}\n",
+            "pagination: {type: page, total_pages_path: meta.pages, total_count_path: meta.total}",
             "pick one stop condition",
         ),
     ] {
-        let yaml = format!("base_url: http://x\nstreams:\n  - name: a\n    path: /a\n{frag}");
-        let err = rdlt_connector_rest::RestConfig::from_yaml(&yaml)
-            .expect_err(needle)
-            .to_string();
+        let err =
+            rdlt_connector_rest::RestConfig::from_yaml(&stream_yaml("http://x", "a", "/a", frag))
+                .expect_err(needle)
+                .to_string();
         assert!(err.contains(needle), "expected `{needle}` in: {err}");
     }
     // from_json: same document shape, same validation.
@@ -479,15 +394,12 @@ async fn validation_matrix_covers_remaining_arms() {
 /// end_param requires end_value (closed windows are explicit).
 #[tokio::test]
 async fn end_param_requires_end_value() {
-    let err = rdlt_connector_rest::RestConfig::from_yaml(
-        r#"
-base_url: http://x
-streams:
-  - name: a
-    path: /a
-    incremental: {cursor_field: seq, start_param: since, end_param: until}
-"#,
-    )
+    let err = rdlt_connector_rest::RestConfig::from_yaml(&stream_yaml(
+        "http://x",
+        "a",
+        "/a",
+        "incremental: {cursor_field: seq, start_param: since, end_param: until}",
+    ))
     .expect_err("end without value")
     .to_string();
     assert!(err.contains("end_value"), "{err}");
@@ -505,15 +417,11 @@ async fn incremental_start_and_end_params_bind() {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"seq": 7}])))
         .mount(&server)
         .await;
-    let yaml = format!(
-        r#"
-base_url: "{}"
-streams:
-  - name: items
-    path: /items
-    incremental: {{cursor_field: seq, start_param: since, end_param: until, end_value: "9"}}
-"#,
-        server.uri()
+    let yaml = stream_yaml(
+        &server.uri(),
+        "items",
+        "/items",
+        r#"incremental: {cursor_field: seq, start_param: since, end_param: until, end_value: "9"}"#,
     );
     let outcome = read_stream(&yaml, "items", Some(rdlt_connector::Cursor::new("5"))).await;
     outcome.result.expect("windowed read");

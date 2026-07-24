@@ -47,7 +47,7 @@ rcgen = { workspace = true }
 proptest = { workspace = true }
 rdlt-connector-duckdb = { workspace = true }
 rdlt-engine = { workspace = true }
-rdlt-testkit = { workspace = true }
+rdlt-testkit = { workspace = true, features = ["containers"] }
 tempfile = { workspace = true }
 testcontainers-modules = { workspace = true }
 jsonschema = { workspace = true }

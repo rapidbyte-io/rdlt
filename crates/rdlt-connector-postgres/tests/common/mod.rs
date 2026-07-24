@@ -1,62 +1,19 @@
-//! Shared testcontainers fixture (T002): one postgres:16-alpine container per
-//! test binary, seeded via SQL batches, handing out conn strings/clients.
-//! Mirrors the rdlt-dest-postgres test conventions.
+//! Postgres test fixtures. The plain and CDC containers now live in
+//! `rdlt-testkit` (one image/port/credential home for the whole workspace);
+//! re-exported here so the existing `common::PgFixture` / `common::CdcPgFixture`
+//! call sites keep resolving. The TLS matrix fixtures stay crate-local — they
+//! are postgres-TLS-specific — but route their runtime check through testkit's
+//! shared probe so they honour the same skip-not-fail posture.
 
 use testcontainers_modules::postgres::Postgres as PostgresImage;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};
-use tokio_postgres::{Client, NoTls};
 
-pub struct PgFixture {
-    // Held for its Drop: the container stops when the fixture drops.
-    _container: ContainerAsync<PostgresImage>,
-    pub conn: String,
-}
-
-#[allow(dead_code)]
-impl PgFixture {
-    /// Start a fresh postgres:16-alpine (needs docker/podman; the workspace's
-    /// existing suites already require this).
-    pub async fn start() -> Self {
-        let container = PostgresImage::default()
-            .with_tag("16-alpine")
-            .start()
-            .await
-            .expect("start postgres container (needs docker/podman)");
-        let port = container
-            .get_host_port_ipv4(5432)
-            .await
-            .expect("mapped port");
-        let conn =
-            format!("host=127.0.0.1 port={port} user=postgres password=postgres dbname=postgres");
-        Self {
-            _container: container,
-            conn,
-        }
-    }
-
-    /// A raw client for seeding/asserting, independent of the source under test.
-    pub async fn client(&self) -> Client {
-        let (client, connection) = tokio_postgres::connect(&self.conn, NoTls)
-            .await
-            .expect("connect to fixture postgres");
-        tokio::spawn(async move {
-            let _ = connection.await;
-        });
-        client
-    }
-
-    /// Run semicolon-separated DDL/DML (simple batch seeding).
-    pub async fn seed(&self, sql: &str) {
-        let client = self.client().await;
-        client.batch_execute(sql).await.expect("seed SQL");
-    }
-
-    /// The source-config YAML `conn:` value for this fixture.
-    pub fn conn_url(&self) -> String {
-        self.conn.clone()
-    }
-}
+// Re-exported so the existing `common::PgFixture` / `common::CdcPgFixture`
+// paths resolve; each test binary uses only one, so silence per-binary
+// "unused" noise (the old local fixtures carried `#[allow(dead_code)]`).
+#[allow(unused_imports)]
+pub use rdlt_testkit::{CdcPgFixture, PgFixture};
 
 /// Generated PKI for the TLS matrix (T007): a CA, a server cert signed by it
 /// (SAN: localhost ONLY — connecting via 127.0.0.1 is the hostname-mismatch
@@ -148,18 +105,22 @@ pub struct TlsPgFixture {
 
 #[allow(dead_code)]
 impl TlsPgFixture {
-    pub async fn start() -> Self {
+    pub async fn start() -> Option<Self> {
         Self::start_with(false).await
     }
 
     /// Feature 007: a server that REQUIRES client certificates — the test
     /// CA becomes `ssl_ca_file` and pg_hba uses `cert` auth (the handshake
     /// identity IS the login; CN maps to the role).
-    pub async fn start_cert_auth() -> Self {
+    pub async fn start_cert_auth() -> Option<Self> {
         Self::start_with(true).await
     }
 
-    async fn start_with(cert_auth: bool) -> Self {
+    async fn start_with(cert_auth: bool) -> Option<Self> {
+        if !rdlt_testkit::containers::runtime_available() {
+            eprintln!("SKIP: no container runtime — TLS postgres fixture not started");
+            return None;
+        }
         let pki = TlsPki::generate();
         let hba = if cert_auth {
             "hostssl all all 0.0.0.0/0   cert\nhostssl all all ::0/0       cert"
@@ -211,11 +172,11 @@ HBA
             .get_host_port_ipv4(5432)
             .await
             .expect("mapped port");
-        Self {
+        Some(Self {
             _container: container,
             port,
             pki,
-        }
+        })
     }
 
     /// Conn string via `localhost` (matches the cert SAN).
@@ -232,67 +193,5 @@ HBA
             "host=127.0.0.1 port={} user=postgres password=postgres dbname=postgres",
             self.port
         )
-    }
-}
-
-/// Feature 009 (research R10): a postgres with logical replication enabled —
-/// the CDC fixture. Same image, three server flags.
-#[allow(dead_code)]
-pub struct CdcPgFixture {
-    _container: ContainerAsync<PostgresImage>,
-    conn: String,
-}
-
-#[allow(dead_code)]
-impl CdcPgFixture {
-    pub async fn start() -> Self {
-        let container = PostgresImage::default()
-            .with_tag("16-alpine")
-            .with_cmd([
-                "postgres",
-                "-c",
-                "wal_level=logical",
-                "-c",
-                "max_replication_slots=8",
-                "-c",
-                "max_wal_senders=8",
-            ])
-            .start()
-            .await
-            .expect("start CDC postgres (needs docker/podman)");
-        let port = container
-            .get_host_port_ipv4(5432)
-            .await
-            .expect("mapped port");
-        let conn =
-            format!("host=127.0.0.1 port={port} user=postgres password=postgres dbname=postgres");
-        Self {
-            _container: container,
-            conn,
-        }
-    }
-
-    pub fn conn_url(&self) -> String {
-        self.conn.clone()
-    }
-
-    /// A raw client for seeding/mutating/asserting, independent of the
-    /// source under test.
-    pub async fn client(&self) -> Client {
-        let (client, connection) = tokio_postgres::connect(&self.conn, NoTls)
-            .await
-            .expect("connect to CDC fixture");
-        tokio::spawn(async move {
-            let _ = connection.await;
-        });
-        client
-    }
-
-    pub async fn seed(&self, sql: &str) {
-        self.client()
-            .await
-            .batch_execute(sql)
-            .await
-            .expect("seed SQL");
     }
 }

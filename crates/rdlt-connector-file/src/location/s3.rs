@@ -9,7 +9,8 @@ use object_store::aws::{AmazonS3, AmazonS3Builder};
 use rdlt_connector::SourceError;
 use serde::{Deserialize, Serialize};
 
-use super::Secret;
+use rdlt_connector::Secret;
+
 use crate::source::cursor::FileMeta;
 
 /// Configuration for an S3-compatible location: `location: {s3: {...}}`.

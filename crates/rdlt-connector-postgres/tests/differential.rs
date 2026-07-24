@@ -73,7 +73,11 @@ fn shared() -> &'static (tokio::runtime::Runtime, PgFixture, String) {
     SHARED.get_or_init(|| {
         let rt = tokio::runtime::Runtime::new().expect("runtime");
         let fixture = rt.block_on(async {
-            let f = PgFixture::start().await;
+            // Callers guard on `runtime_available()` before reaching `shared()`,
+            // so a present runtime is invariant here.
+            let f = PgFixture::start()
+                .await
+                .expect("postgres runtime (probed before shared())");
             f.seed(
                 "CREATE TABLE diff (id int8 PRIMARY KEY, a int4, b text, c float8, \
                  d numeric(12,4), e timestamptz, f bool, g bytea);",
@@ -254,6 +258,9 @@ proptest! {
 
     #[test]
     fn copy_decoder_matches_driver_reference(rows in proptest::collection::vec(row_strategy(), 0..32)) {
+        if !rdlt_testkit::containers::runtime_available() {
+            return Ok(()); // skip-not-fail: no container runtime
+        }
         let (rt, fixture, conn) = shared();
         rt.block_on(async {
             seed_rows(fixture, &rows).await;
@@ -283,6 +290,9 @@ proptest! {
     fn copy_decoder_matches_reference_across_batch_boundaries(
         rows in proptest::collection::vec(row_strategy(), 10..60)
     ) {
+        if !rdlt_testkit::containers::runtime_available() {
+            return Ok(()); // skip-not-fail: no container runtime
+        }
         let (rt, fixture, conn) = shared();
         rt.block_on(async {
             seed_rows(fixture, &rows).await;

@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::{read_err, read_ok};
+use common::{read_err, read_ok, stream_yaml};
 use serde_json::json;
 use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -31,16 +31,11 @@ async fn body_cursor_chains_and_terminates() {
         })))
         .mount(&server)
         .await;
-    let yaml = format!(
-        r#"
-base_url: "{}"
-streams:
-  - name: items
-    path: /items
-    records_path: data
-    pagination: {{type: cursor, cursor_path: meta.next, cursor_param: cursor}}
-"#,
-        server.uri()
+    let yaml = stream_yaml(
+        &server.uri(),
+        "items",
+        "/items",
+        "records_path: data\npagination: {type: cursor, cursor_path: meta.next, cursor_param: cursor}",
     );
     assert_eq!(ids(&read_ok(&yaml, "items").await), vec![1, 2, 3]);
 }
@@ -64,15 +59,11 @@ async fn header_cursor_chains_and_terminates() {
         )
         .mount(&server)
         .await;
-    let yaml = format!(
-        r#"
-base_url: "{}"
-streams:
-  - name: items
-    path: /items
-    pagination: {{type: header_cursor, header: x-next-cursor, cursor_param: after}}
-"#,
-        server.uri()
+    let yaml = stream_yaml(
+        &server.uri(),
+        "items",
+        "/items",
+        "pagination: {type: header_cursor, header: x-next-cursor, cursor_param: after}",
     );
     assert_eq!(ids(&read_ok(&yaml, "items").await), vec![1, 2]);
 }
@@ -105,16 +96,11 @@ async fn next_url_follows_absolute_and_relative() {
         })))
         .mount(&server)
         .await;
-    let yaml = format!(
-        r#"
-base_url: "{}"
-streams:
-  - name: items
-    path: /items
-    records_path: results
-    pagination: {{type: next_url, next_url_path: next}}
-"#,
-        server.uri()
+    let yaml = stream_yaml(
+        &server.uri(),
+        "items",
+        "/items",
+        "records_path: results\npagination: {type: next_url, next_url_path: next}",
     );
     assert_eq!(ids(&read_ok(&yaml, "items").await), vec![1, 2, 3]);
 }
@@ -146,15 +132,11 @@ async fn link_header_follows_rel_next() {
         )
         .mount(&server)
         .await;
-    let yaml = format!(
-        r#"
-base_url: "{}"
-streams:
-  - name: items
-    path: /items
-    pagination: {{type: link_header}}
-"#,
-        server.uri()
+    let yaml = stream_yaml(
+        &server.uri(),
+        "items",
+        "/items",
+        "pagination: {type: link_header}",
     );
     assert_eq!(ids(&read_ok(&yaml, "items").await), vec![1, 2]);
 }
@@ -176,16 +158,11 @@ async fn page_with_total_pages_stops_at_total() {
             .await;
     }
     // NO page=3 mock: a third request would 404 and fail the read.
-    let yaml = format!(
-        r#"
-base_url: "{}"
-streams:
-  - name: items
-    path: /items
-    records_path: data
-    pagination: {{type: page, total_pages_path: total_pages}}
-"#,
-        server.uri()
+    let yaml = stream_yaml(
+        &server.uri(),
+        "items",
+        "/items",
+        "records_path: data\npagination: {type: page, total_pages_path: total_pages}",
     );
     assert_eq!(ids(&read_ok(&yaml, "items").await), vec![1, 2]);
 }
@@ -210,16 +187,11 @@ async fn offset_with_total_count_stops_at_total() {
         })))
         .mount(&server)
         .await;
-    let yaml = format!(
-        r#"
-base_url: "{}"
-streams:
-  - name: items
-    path: /items
-    records_path: data
-    pagination: {{type: offset, page_size: 2, total_count_path: total}}
-"#,
-        server.uri()
+    let yaml = stream_yaml(
+        &server.uri(),
+        "items",
+        "/items",
+        "records_path: data\npagination: {type: offset, page_size: 2, total_count_path: total}",
     );
     // Page 2 is short (1 < 2) so termination also holds without the total;
     // the total makes it explicit.
@@ -237,16 +209,11 @@ async fn same_request_loop_guard_fires_typed() {
         })))
         .mount(&server)
         .await;
-    let yaml = format!(
-        r#"
-base_url: "{}"
-streams:
-  - name: items
-    path: /items
-    records_path: data
-    pagination: {{type: cursor, cursor_path: next, cursor_param: cursor}}
-"#,
-        server.uri()
+    let yaml = stream_yaml(
+        &server.uri(),
+        "items",
+        "/items",
+        "records_path: data\npagination: {type: cursor, cursor_path: next, cursor_param: cursor}",
     );
     let err = read_err(&yaml, "items").await;
     assert!(

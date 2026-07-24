@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 
 use rdlt_connector::SourceError;
 
-use super::secret::Secret;
 use crate::source::config::{ApiKeyLocation, Auth};
+use rdlt_connector::Secret;
 
 /// Runtime auth state built from the config `Auth`.
 #[derive(Debug)]

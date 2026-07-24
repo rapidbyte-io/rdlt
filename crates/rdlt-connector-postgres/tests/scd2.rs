@@ -14,27 +14,7 @@ use rdlt_connector_postgres::dest::{
     AbsentPolicy, MergeStrategy, PgDestOptions, PgTableOptions, Postgres, Scd2Options,
 };
 use rdlt_engine::{Engine, EngineConfig};
-use testcontainers_modules::postgres::Postgres as PostgresImage;
-use testcontainers_modules::testcontainers::ImageExt;
-use testcontainers_modules::testcontainers::runners::AsyncRunner;
-
-async fn start_pg() -> (
-    testcontainers_modules::testcontainers::ContainerAsync<PostgresImage>,
-    String,
-) {
-    let container = PostgresImage::default()
-        .with_tag("16-alpine")
-        .start()
-        .await
-        .expect("start postgres container (needs docker/podman)");
-    let port = container
-        .get_host_port_ipv4(5432)
-        .await
-        .expect("mapped port");
-    let conn =
-        format!("host=127.0.0.1 port={port} user=postgres password=postgres dbname=postgres");
-    (container, conn)
-}
+use rdlt_testkit::PgFixture;
 
 struct DimSource {
     batch: RecordBatch,
@@ -114,7 +94,10 @@ async fn run(dest: Postgres, rows: &[(i64, &str)]) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn three_rounds_produce_correct_history_and_point_in_time() {
-    let (_container, conn) = start_pg().await;
+    let Some(pg) = PgFixture::start().await else {
+        return;
+    };
+    let conn = pg.conn.clone();
     let (client, connection) = tokio_postgres::connect(&conn, tokio_postgres::NoTls)
         .await
         .expect("connect");
@@ -219,7 +202,10 @@ async fn three_rounds_produce_correct_history_and_point_in_time() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn absent_retire_closes_missing_keys() {
-    let (_container, conn) = start_pg().await;
+    let Some(pg) = PgFixture::start().await else {
+        return;
+    };
+    let conn = pg.conn.clone();
     run(
         scd2_dest(&conn, "ret", AbsentPolicy::Retire),
         &[(1, "a"), (2, "b")],
@@ -260,7 +246,10 @@ async fn redelivery_adds_zero_versions() {
     use rdlt_connector::core::{CommitCounters, StateDoc};
     use rdlt_connector::{CommitMeta, WriteMode};
 
-    let (_container, conn) = start_pg().await;
+    let Some(pg) = PgFixture::start().await else {
+        return;
+    };
+    let conn = pg.conn.clone();
     let dest = scd2_dest(&conn, "redel", AbsentPolicy::Keep);
     let pipeline = PipelineId::new("redel");
     let mut session = dest
@@ -328,7 +317,10 @@ async fn redelivery_adds_zero_versions() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn rejections_are_typed_at_ensure() {
-    let (_container, conn) = start_pg().await;
+    let Some(pg) = PgFixture::start().await else {
+        return;
+    };
+    let conn = pg.conn.clone();
 
     // Validity-name collision with a stream column (S1).
     let dest = Postgres::connect(&conn)
@@ -401,7 +393,10 @@ async fn absent_retire_rejects_multi_unit_loads() {
     use rdlt_connector::core::{CommitCounters, StateDoc};
     use rdlt_connector::{CommitMeta, WriteMode};
 
-    let (_container, conn) = start_pg().await;
+    let Some(pg) = PgFixture::start().await else {
+        return;
+    };
+    let conn = pg.conn.clone();
     let dest = scd2_dest(&conn, "multiunit", AbsentPolicy::Retire);
     let pipeline = PipelineId::new("multiunit");
     let mut session = dest
@@ -469,7 +464,10 @@ async fn custom_validity_column_names_flow_end_to_end() {
         MergeStrategy, PgDestOptions, PgTableOptions, Scd2Options,
     };
 
-    let (_container, conn) = start_pg().await;
+    let Some(pg) = PgFixture::start().await else {
+        return;
+    };
+    let conn = pg.conn.clone();
     let dest = Postgres::connect(&conn)
         .dataset("scd2c")
         .options(PgDestOptions {

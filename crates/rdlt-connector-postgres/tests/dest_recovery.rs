@@ -3,21 +3,10 @@
 //! the feature-002 review's confirmed data-loss finding; Postgres carried the
 //! same latent in-memory pattern (never crash-swept until now).
 
-use std::collections::BTreeMap;
-
-use std::sync::Arc;
-
-use arrow_array::{Int64Array, RecordBatch};
-use arrow_schema::{DataType, Field, Schema};
-use rdlt_connector::core::{
-    ColumnDef, ColumnType, CommitCounters, CommitMeta, LoadId, LogicalType, PipelineId, Provenance,
-    StateDoc, TableName, TableSchema, WriteMode,
-};
+use rdlt_connector::core::{LoadId, PipelineId, TableName, WriteMode};
 use rdlt_connector::{Destination, OpenCtx};
 use rdlt_connector_postgres::dest::Postgres;
-use testcontainers_modules::postgres::Postgres as PostgresImage;
-use testcontainers_modules::testcontainers::ImageExt;
-use testcontainers_modules::testcontainers::runners::AsyncRunner;
+use rdlt_testkit::{PgFixture, batch_of, meta_for, schema_for};
 
 async fn count(conn: &str, dataset: &str, table: &str) -> u64 {
     let (client, connection) = tokio_postgres::connect(conn, tokio_postgres::NoTls)
@@ -38,55 +27,16 @@ async fn count(conn: &str, dataset: &str, table: &str) -> u64 {
     }
 }
 
-fn meta_for(pipeline: &PipelineId, load: &LoadId, seq: u64) -> CommitMeta {
-    CommitMeta {
-        load_id: load.clone(),
-        commit_seq: seq,
-        state: StateDoc {
-            format_version: 1,
-            pipeline: pipeline.clone(),
-            cursors: BTreeMap::new(),
-            schema_hashes: BTreeMap::new(),
-            last_commit: None,
-            engine_version: "test".into(),
-        },
-        counters: CommitCounters::default(),
-    }
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn replace_recovery_session_keeps_prior_commits_of_same_load() {
-    let container = PostgresImage::default()
-        .with_tag("16-alpine")
-        .start()
-        .await
-        .expect("start postgres container (needs docker/podman)");
-    let port = container
-        .get_host_port_ipv4(5432)
-        .await
-        .expect("mapped port");
-    let conn =
-        format!("host=127.0.0.1 port={port} user=postgres password=postgres dbname=postgres");
+    let Some(pg) = PgFixture::start().await else {
+        return;
+    };
+    let conn = pg.conn.clone();
     let dest = Postgres::connect(&conn).dataset("rec");
     let pipeline = PipelineId::new("p1");
     let load = LoadId::new("load-a");
-    let schema = TableSchema {
-        table: TableName::new("events"),
-        parent: None,
-        columns: vec![ColumnDef {
-            name: "id".into(),
-            ty: ColumnType::scalar(LogicalType::Int64),
-            nullable: false,
-            provenance: Provenance::Inferred,
-        }],
-    };
-    let batch_of = |ids: &[i64]| {
-        RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)])),
-            vec![Arc::new(Int64Array::from(ids.to_vec()))],
-        )
-        .expect("batch")
-    };
+    let schema = schema_for("events");
     let batch1 = batch_of(&[1, 2, 3]);
     let batch2 = batch_of(&[4, 5]);
     let table = TableName::new("events");

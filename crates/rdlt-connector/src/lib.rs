@@ -15,6 +15,7 @@
 pub mod capabilities;
 pub mod channel;
 pub mod error;
+pub mod secret;
 pub mod spec;
 pub mod stream;
 
@@ -32,6 +33,10 @@ pub use rdlt_core::{
     CommitMeta, CommitReceipt, Cursor, LoadId, PipelineId, StateDoc, TableName, TableSchema,
     WriteMode,
 };
+/// The shared credential newtype: serde-transparent, renders as `***`,
+/// [`Secret::reveal`] the sole (grep-able) accessor. Connectors re-export it
+/// from their own config paths.
+pub use secret::Secret;
 pub use spec::ConnectorSpec;
 pub use stream::StreamSpec;
 

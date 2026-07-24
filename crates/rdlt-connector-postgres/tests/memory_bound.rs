@@ -59,7 +59,9 @@ async fn snapshot_ten_times_larger_than_memory_ceiling() {
         return;
     };
 
-    let fixture = PgFixture::start().await;
+    let Some(fixture) = PgFixture::start().await else {
+        return;
+    };
     fixture
         .seed(
             "CREATE TABLE big (id int8 PRIMARY KEY, bucket int4, payload text); \

@@ -15,6 +15,8 @@ pub mod dest;
 
 pub use dest::IcebergDest;
 pub use dest::config::{
-    AuthOptions, IcebergConfig, PartitionField, PartitionTransform, S3Override, Secret,
-    TableOptions, config_schema,
+    AuthOptions, IcebergConfig, PartitionField, PartitionTransform, S3Override, TableOptions,
+    config_schema,
 };
+/// The shared credential newtype, re-exported once at this crate's root.
+pub use rdlt_connector::Secret;

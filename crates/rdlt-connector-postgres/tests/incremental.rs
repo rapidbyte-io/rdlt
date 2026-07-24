@@ -58,7 +58,9 @@ impl Rig {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn delta_loads_and_closed_boundary_dedup() {
-    let fixture = PgFixture::start().await;
+    let Some(fixture) = PgFixture::start().await else {
+        return;
+    };
     fixture.seed(BASE).await;
     let rig = Rig::new();
 
@@ -86,7 +88,9 @@ async fn delta_loads_and_closed_boundary_dedup() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn open_boundary_skips_watermark_equal_rows() {
-    let fixture = PgFixture::start().await;
+    let Some(fixture) = PgFixture::start().await else {
+        return;
+    };
     fixture.seed(BASE).await;
     let rig = Rig::new();
     let cfg = "      boundary: open\n";
@@ -109,7 +113,9 @@ async fn open_boundary_skips_watermark_equal_rows() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn null_cursor_policies() {
-    let fixture = PgFixture::start().await;
+    let Some(fixture) = PgFixture::start().await else {
+        return;
+    };
     fixture.seed(BASE).await;
     fixture
         .seed("INSERT INTO ev VALUES (90, 'n1', NULL), (91, 'n2', NULL);")
@@ -138,7 +144,9 @@ async fn null_cursor_policies() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn regressing_clock_never_moves_watermark_backward() {
-    let fixture = PgFixture::start().await;
+    let Some(fixture) = PgFixture::start().await else {
+        return;
+    };
     fixture.seed(BASE).await;
     let rig = Rig::new();
 
@@ -160,7 +168,9 @@ async fn regressing_clock_never_moves_watermark_backward() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn initial_and_end_value_window() {
-    let fixture = PgFixture::start().await;
+    let Some(fixture) = PgFixture::start().await else {
+        return;
+    };
     fixture.seed(BASE).await;
     fixture
         .seed("INSERT INTO ev VALUES (8, 'h', '2026-01-05T00:00:00Z'), (9, 'i', '2026-01-06T00:00:00Z');")
@@ -183,7 +193,9 @@ async fn initial_and_end_value_window() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn pkless_table_dedups_via_row_hash() {
-    let fixture = PgFixture::start().await;
+    let Some(fixture) = PgFixture::start().await else {
+        return;
+    };
     fixture
         .seed(
             "CREATE TABLE ev (id int8, v text, ts timestamptz); \
@@ -211,7 +223,9 @@ async fn pkless_table_dedups_via_row_hash() {
 async fn uuid_cursor_end_to_end() {
     // Pre-fix, a uuid cursor generated `"col" >= '...'::text`, which has no
     // uuid>=text operator — a guaranteed runtime error on the second run.
-    let fixture = PgFixture::start().await;
+    let Some(fixture) = PgFixture::start().await else {
+        return;
+    };
     fixture
         .seed(
             "CREATE TABLE ev (id uuid PRIMARY KEY, v text); \
@@ -239,7 +253,9 @@ async fn uuid_cursor_end_to_end() {
 async fn text_cursor_mixed_case_byte_order() {
     // COLLATE "C" pins SQL ordering/filtering to the tracker's Rust byte
     // order: 'B' < 'a' in bytes, though most locales sort 'a' < 'B'.
-    let fixture = PgFixture::start().await;
+    let Some(fixture) = PgFixture::start().await else {
+        return;
+    };
     fixture
         .seed(
             "CREATE TABLE ev (id int8 PRIMARY KEY, name text); \
@@ -276,7 +292,9 @@ async fn merge_by_declared_key_converges_and_keyless_is_rejected() {
     // structured streams with a declared primary_key merge BY that key —
     // update-heavy re-runs converge to one row per key. Keyless structured
     // streams keep the original plan-time rejection.
-    let fixture = PgFixture::start().await;
+    let Some(fixture) = PgFixture::start().await else {
+        return;
+    };
     fixture.seed(BASE).await;
     let rig = Rig::new();
 
@@ -354,7 +372,9 @@ async fn merge_by_declared_key_converges_and_keyless_is_rejected() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn lag_captures_late_arrivals_with_exact_totals_under_merge() {
-    let fixture = PgFixture::start().await;
+    let Some(fixture) = PgFixture::start().await else {
+        return;
+    };
     fixture.seed(BASE).await;
     let rig = Rig::new();
 
@@ -410,7 +430,9 @@ async fn lag_captures_late_arrivals_with_exact_totals_under_merge() {
 #[tokio::test(flavor = "multi_thread")]
 async fn lag_rejections_are_typed_and_early() {
     use rdlt_connector::Source as _;
-    let fixture = PgFixture::start().await;
+    let Some(fixture) = PgFixture::start().await else {
+        return;
+    };
     fixture
         .seed(
             "CREATE TABLE ev (id int8 PRIMARY KEY, v text, ts timestamptz); \
@@ -456,7 +478,9 @@ async fn lag_rejections_are_typed_and_early() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn null_cursor_error_policy_fails_typed_and_old_policies_unchanged() {
-    let fixture = PgFixture::start().await;
+    let Some(fixture) = PgFixture::start().await else {
+        return;
+    };
     fixture
         .seed(
             "CREATE TABLE ev (id int8 PRIMARY KEY, v text, ts timestamptz); \
@@ -513,7 +537,9 @@ async fn null_cursor_error_policy_fails_typed_and_old_policies_unchanged() {
     assert_eq!(rig.distinct_ids(), "3");
 
     // N3: exclude (default) and include pins — byte-identical behavior.
-    let fixture2 = PgFixture::start().await;
+    let Some(fixture2) = PgFixture::start().await else {
+        return;
+    };
     fixture2
         .seed(
             "CREATE TABLE ev (id int8 PRIMARY KEY, v text, ts timestamptz); \
@@ -559,7 +585,9 @@ async fn null_cursor_error_policy_fails_typed_and_old_policies_unchanged() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn inclusive_end_bound_loads_boundary_rows_exactly_once() {
-    let fixture = PgFixture::start().await;
+    let Some(fixture) = PgFixture::start().await else {
+        return;
+    };
     fixture.seed(BASE).await; // ids 1..3, ts 01-01 .. 01-02
     let src = |end_bound: &str| {
         PostgresSource::from_yaml(&format!(
@@ -610,7 +638,9 @@ async fn inclusive_end_bound_loads_boundary_rows_exactly_once() {
 /// seen, and later runs load rows BELOW it.
 #[tokio::test(flavor = "multi_thread")]
 async fn direction_min_descends_and_resumes() {
-    let fixture = PgFixture::start().await;
+    let Some(fixture) = PgFixture::start().await else {
+        return;
+    };
     fixture
         .seed(
             "CREATE TABLE ev (id int8 PRIMARY KEY, v text, ts timestamptz);\
@@ -643,7 +673,9 @@ async fn direction_min_descends_and_resumes() {
 /// exact totals under merge.
 #[tokio::test(flavor = "multi_thread")]
 async fn magnitude_lag_for_integer_cursors() {
-    let fixture = PgFixture::start().await;
+    let Some(fixture) = PgFixture::start().await else {
+        return;
+    };
     fixture
         .seed(
             "CREATE TABLE ev (id int8 PRIMARY KEY, v text, ts timestamptz);\
@@ -689,7 +721,9 @@ async fn magnitude_lag_for_integer_cursors() {
 /// typed error naming the column, before any data moves.
 #[tokio::test(flavor = "multi_thread")]
 async fn cursor_column_must_survive_selection() {
-    let fixture = PgFixture::start().await;
+    let Some(fixture) = PgFixture::start().await else {
+        return;
+    };
     fixture
         .seed("CREATE TABLE ev (id int8 PRIMARY KEY, v text, ts timestamptz);")
         .await;
@@ -713,7 +747,9 @@ async fn cursor_column_must_survive_selection() {
 /// batches: tiny knobs produce many commit units, huge knobs one.
 #[tokio::test(flavor = "multi_thread")]
 async fn batch_knobs_cut_batches_observably() {
-    let fixture = PgFixture::start().await;
+    let Some(fixture) = PgFixture::start().await else {
+        return;
+    };
     fixture
         .seed(
             "CREATE TABLE ev (id int8 PRIMARY KEY, v text, ts timestamptz);\

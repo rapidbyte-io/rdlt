@@ -3,20 +3,12 @@
 //! config spellings — must keep their exact meaning through the family
 //! merge and everything after it.
 
-use std::collections::BTreeMap;
-use std::sync::Arc;
-
-use arrow::array::Int64Array;
-use arrow::datatypes::{DataType, Field, Schema};
-use arrow::record_batch::RecordBatch;
 use rdlt_connector::Cursor;
-use rdlt_connector::core::{
-    ColumnDef, ColumnType, CommitCounters, CommitMeta, LoadId, LogicalType, PipelineId, Provenance,
-    StateDoc, TableName, TableSchema, WriteMode, naming::ident_hash,
-};
+use rdlt_connector::core::{LoadId, PipelineId, TableName, WriteMode, naming::ident_hash};
 use rdlt_connector::{Destination, OpenCtx};
 use rdlt_connector_file::source::cursor::{FileCursor, FileMeta};
 use rdlt_connector_file::{FileConfig, ParquetDir};
+use rdlt_testkit::{batch_of, meta_for, schema_for};
 
 /// A cursor document EXACTLY as pre-015 runs persisted it (format_version 1).
 /// Parsing and plan decisions must never change for these bytes.
@@ -92,43 +84,6 @@ fn pre_015_cursor_document_parses_and_plans_identically() {
         err.contains("data/midline.jsonl") && err.contains("unterminated"),
         "{err}"
     );
-}
-
-fn schema_for(table: &str) -> TableSchema {
-    TableSchema {
-        table: TableName::new(table),
-        parent: None,
-        columns: vec![ColumnDef {
-            name: "id".into(),
-            ty: ColumnType::scalar(LogicalType::Int64),
-            nullable: false,
-            provenance: Provenance::Inferred,
-        }],
-    }
-}
-
-fn batch_of(ids: &[i64]) -> RecordBatch {
-    RecordBatch::try_new(
-        Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)])),
-        vec![Arc::new(Int64Array::from(ids.to_vec()))],
-    )
-    .expect("batch")
-}
-
-fn meta_for(pipeline: &PipelineId, load: &LoadId, seq: u64) -> CommitMeta {
-    CommitMeta {
-        load_id: load.clone(),
-        commit_seq: seq,
-        state: StateDoc {
-            format_version: 1,
-            pipeline: pipeline.clone(),
-            cursors: BTreeMap::new(),
-            schema_hashes: BTreeMap::new(),
-            last_commit: None,
-            engine_version: "test".into(),
-        },
-        counters: CommitCounters::default(),
-    }
 }
 
 /// The on-disk artifact NAMES and shapes are the persisted-format contract

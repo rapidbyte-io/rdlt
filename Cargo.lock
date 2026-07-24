@@ -4075,6 +4075,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "rdlt-core",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "thiserror",
@@ -4284,7 +4285,9 @@ dependencies = [
  "rdlt-connector",
  "rdlt-core",
  "serde_json",
+ "testcontainers-modules",
  "tokio",
+ "tokio-postgres",
 ]
 
 [[package]]

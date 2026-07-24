@@ -16,6 +16,16 @@ bytes = { workspace = true }
 futures = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
+# Container fixtures (behind `containers`): non-dev so consumers reach them
+# through a dev-dependency; optional so testkit's default build stays lean.
+testcontainers-modules = { workspace = true, optional = true }
+tokio-postgres = { workspace = true, optional = true }
+
+[features]
+# Postgres container fixtures + the runtime probe. Off by default (keeps the
+# published lib build free of testcontainers); consumers turn it on in their
+# dev-dependency line where they use `PgFixture`/`runtime_available`.
+containers = ["dep:testcontainers-modules", "dep:tokio-postgres"]
 
 [lints]
 workspace = true

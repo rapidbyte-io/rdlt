@@ -34,7 +34,9 @@ fn tls_yaml(mode: &str, root: Option<&str>) -> String {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn source_matrix_against_tls_only_server() {
-    let fixture = TlsPgFixture::start().await;
+    let Some(fixture) = TlsPgFixture::start().await else {
+        return;
+    };
     let ca = fixture.pki.ca_pem.clone();
     let wrong_ca = fixture.pki.wrong_ca_pem.clone();
     let localhost = fixture.conn_localhost();
@@ -84,7 +86,9 @@ async fn prefer_falls_back_on_plaintext_server_and_conn_sslmode_flows() {
     // A plain (non-TLS) postgres: prefer falls back to plaintext — the
     // libpq vocabulary's promise — and conn-string sslmode drives the
     // policy without any tls block.
-    let plain = PgFixture::start().await;
+    let Some(plain) = PgFixture::start().await else {
+        return;
+    };
     probe_source(&plain.conn_url(), "")
         .await
         .expect("default prefer falls back to plaintext");
@@ -102,7 +106,9 @@ async fn destination_uses_the_same_policy_path() {
     use rdlt_connector::core::{LoadId, PipelineId};
     use rdlt_connector::{Destination as _, OpenCtx};
 
-    let fixture = TlsPgFixture::start().await;
+    let Some(fixture) = TlsPgFixture::start().await else {
+        return;
+    };
     let pipeline = PipelineId::new("tls");
     let load = LoadId::new("tls-load");
 
@@ -171,7 +177,9 @@ async fn client_cert_matrix_against_cert_auth_server() {
     use rdlt_connector::core::{LoadId, PipelineId};
     use rdlt_connector::{Destination as _, OpenCtx};
 
-    let fixture = TlsPgFixture::start_cert_auth().await;
+    let Some(fixture) = TlsPgFixture::start_cert_auth().await else {
+        return;
+    };
     let pki = &fixture.pki;
     let localhost = fixture.conn_localhost();
 
@@ -235,7 +243,9 @@ async fn client_cert_matrix_against_cert_auth_server() {
 async fn credential_offered_but_unused_still_syncs() {
     // C5: against a server that does NOT verify clients, carrying a
     // credential changes nothing.
-    let fixture = TlsPgFixture::start().await;
+    let Some(fixture) = TlsPgFixture::start().await else {
+        return;
+    };
     let yaml = mtls_yaml(
         "verify_full",
         &fixture.pki.ca_pem,
@@ -253,7 +263,9 @@ async fn sslrootcert_url_syncs_and_application_name_is_set() {
     use rdlt_connector::core::{LoadId, PipelineId};
     use rdlt_connector::{Destination as _, OpenCtx};
 
-    let fixture = TlsPgFixture::start().await;
+    let Some(fixture) = TlsPgFixture::start().await else {
+        return;
+    };
     // Write the CA where a real deployment would have it: on disk.
     let dir = tempfile::tempdir().expect("tempdir");
     let ca_path = dir.path().join("ca.pem");
@@ -337,7 +349,9 @@ async fn sslrootcert_url_syncs_and_application_name_is_set() {
 /// not just the cert-28000 shape. Unknown database is the everyday case.
 #[tokio::test(flavor = "multi_thread")]
 async fn common_connect_failures_carry_the_server_message() {
-    let plain = PgFixture::start().await;
+    let Some(plain) = PgFixture::start().await else {
+        return;
+    };
     let bad_db = plain
         .conn_url()
         .replace("dbname=postgres", "dbname=doesnotexist");

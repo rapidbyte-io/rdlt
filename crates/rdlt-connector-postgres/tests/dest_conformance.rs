@@ -7,29 +7,8 @@ use async_trait::async_trait;
 use rdlt_connector_postgres::dest::Postgres;
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::conformance::dest::verify_destination;
-use rdlt_testkit::{MemorySource, TableProbe, assert_conformant};
+use rdlt_testkit::{MemorySource, PgFixture, TableProbe, assert_conformant};
 use serde_json::json;
-use testcontainers_modules::postgres::Postgres as PostgresImage;
-use testcontainers_modules::testcontainers::ImageExt;
-use testcontainers_modules::testcontainers::runners::AsyncRunner;
-
-async fn start_pg() -> (
-    testcontainers_modules::testcontainers::ContainerAsync<PostgresImage>,
-    String,
-) {
-    let container = PostgresImage::default()
-        .with_tag("16-alpine")
-        .start()
-        .await
-        .expect("start postgres container (needs docker/podman)");
-    let port = container
-        .get_host_port_ipv4(5432)
-        .await
-        .expect("mapped port");
-    let conn =
-        format!("host=127.0.0.1 port={port} user=postgres password=postgres dbname=postgres");
-    (container, conn)
-}
 
 struct PgProbe {
     conn: String,
@@ -59,7 +38,10 @@ impl TableProbe for PgProbe {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn postgres_destination_is_conformant() {
-    let (_container, conn) = start_pg().await;
+    let Some(pg) = PgFixture::start().await else {
+        return;
+    };
+    let conn = pg.conn.clone();
     let dest = Postgres::connect(&conn).dataset("raw");
     let probe = PgProbe {
         conn: conn.clone(),
@@ -70,7 +52,10 @@ async fn postgres_destination_is_conformant() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn end_to_end_flattened_sync_into_postgres() {
-    let (_container, conn) = start_pg().await;
+    let Some(pg) = PgFixture::start().await else {
+        return;
+    };
+    let conn = pg.conn.clone();
     let dest = Postgres::connect(&conn).dataset("raw");
 
     let source = MemorySource::single_stream(
@@ -203,7 +188,10 @@ async fn keyed_structured_merge_into_postgres() {
         .expect("batch")
     }
 
-    let (_container, conn) = start_pg().await;
+    let Some(pg) = PgFixture::start().await else {
+        return;
+    };
+    let conn = pg.conn.clone();
     let dest = Postgres::connect(&conn).dataset("raw");
     let merge_config = || {
         let mut config = EngineConfig::new("pg-kmerge");
@@ -264,7 +252,7 @@ mod native_types {
     use rdlt_connector::{CommitMeta, Destination as _, OpenCtx, WriteMode};
     use rdlt_testkit::TableProbe as _;
 
-    use super::{PgProbe, start_pg};
+    use super::{PgFixture, PgProbe};
 
     fn col(name: &str, scalar: LogicalType, nullable: bool) -> ColumnDef {
         ColumnDef {
@@ -336,7 +324,10 @@ mod native_types {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn native_types_land_with_exact_values() {
-        let (_container, conn) = start_pg().await;
+        let Some(pg) = PgFixture::start().await else {
+            return;
+        };
+        let conn = pg.conn.clone();
         let dest = rdlt_connector_postgres::dest::Postgres::connect(&conn).dataset("fid");
         let pipeline = PipelineId::new("fid");
         let mut session = dest
@@ -464,7 +455,10 @@ mod native_types {
     #[tokio::test(flavor = "multi_thread")]
     async fn extreme_decimal_round_trips_through_the_server() {
         use rdlt_connector::core::TableName;
-        let (_container, conn) = start_pg().await;
+        let Some(pg) = PgFixture::start().await else {
+            return;
+        };
+        let conn = pg.conn.clone();
         let dest = rdlt_connector_postgres::dest::Postgres::connect(&conn).dataset("wide");
         let pipeline = PipelineId::new("wide");
         let mut session = dest
@@ -529,7 +523,10 @@ mod native_types {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn rejected_documents_and_uuids_fail_typed_naming_the_column() {
-        let (_container, conn) = start_pg().await;
+        let Some(pg) = PgFixture::start().await else {
+            return;
+        };
+        let conn = pg.conn.clone();
         let dest = rdlt_connector_postgres::dest::Postgres::connect(&conn).dataset("fidbad");
         let pipeline = PipelineId::new("fidbad");
         let mut session = dest
@@ -577,7 +574,10 @@ mod native_types {
     /// F6 regression (SC-007): ANY forced db failure carries message + SQLSTATE.
     #[tokio::test(flavor = "multi_thread")]
     async fn forced_db_failure_surfaces_server_message_and_sqlstate() {
-        let (_container, conn) = start_pg().await;
+        let Some(pg) = PgFixture::start().await else {
+            return;
+        };
+        let conn = pg.conn.clone();
         let dest = rdlt_connector_postgres::dest::Postgres::connect(&conn).dataset("f6");
         let pipeline = PipelineId::new("f6");
         let mut session = dest
@@ -621,7 +621,7 @@ mod strategies {
     use rdlt_connector_postgres::dest::{MergeStrategy, PgDestOptions, PgTableOptions, Postgres};
     use rdlt_engine::{Engine, EngineConfig};
 
-    use super::start_pg;
+    use super::PgFixture;
 
     /// Keyed structured stream with a bool `deleted` flag column.
     struct FlaggedSource {
@@ -702,7 +702,10 @@ mod strategies {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn upsert_converges_and_hard_delete_removes_keys() {
-        let (_container, conn) = start_pg().await;
+        let Some(pg) = PgFixture::start().await else {
+            return;
+        };
+        let conn = pg.conn.clone();
 
         // Run 1: three live rows.
         run_merge(
@@ -771,7 +774,10 @@ mod strategies {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn duplicate_keys_under_upsert_fail_typed_naming_the_key() {
-        let (_container, conn) = start_pg().await;
+        let Some(pg) = PgFixture::start().await else {
+            return;
+        };
+        let conn = pg.conn.clone();
         // A table that already violates key uniqueness.
         {
             let (client, connection) = tokio_postgres::connect(&conn, tokio_postgres::NoTls)
@@ -819,7 +825,10 @@ mod strategies {
         use rdlt_testkit::MemorySource;
         use serde_json::json;
 
-        let (_container, conn) = start_pg().await;
+        let Some(pg) = PgFixture::start().await else {
+            return;
+        };
+        let conn = pg.conn.clone();
         let dest = Postgres::connect(&conn)
             .dataset("shup")
             .options(PgDestOptions {
@@ -854,7 +863,10 @@ mod strategies {
         use rdlt_testkit::MemorySource;
         use serde_json::json;
 
-        let (_container, conn) = start_pg().await;
+        let Some(pg) = PgFixture::start().await else {
+            return;
+        };
+        let conn = pg.conn.clone();
         let dest = Postgres::connect(&conn)
             .dataset("recreate")
             .options(PgDestOptions {
@@ -912,7 +924,10 @@ mod strategies {
         use rdlt_testkit::MemorySource;
         use serde_json::json;
 
-        let (_container, conn) = start_pg().await;
+        let Some(pg) = PgFixture::start().await else {
+            return;
+        };
+        let conn = pg.conn.clone();
         let dest = Postgres::connect(&conn)
             .dataset("childhd")
             .options(PgDestOptions {
@@ -959,7 +974,7 @@ mod refinements {
     };
     use rdlt_engine::{Engine, EngineConfig};
 
-    use super::start_pg;
+    use super::PgFixture;
 
     /// (id, day, seq, name, deleted) — id is the identity key, day the
     /// scope column, seq the dedup-sort column.
@@ -1136,7 +1151,10 @@ mod refinements {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn dedup_sort_orders_survivors_not_arrival() {
-        let (_c, conn) = start_pg().await;
+        let Some(pg) = PgFixture::start().await else {
+            return;
+        };
+        let conn = pg.conn.clone();
         // Wrong arrival order: the newest version arrives FIRST.
         let load: Vec<Vec<Row>> = vec![vec![
             (1, None, Some(5), "newest", None),
@@ -1189,7 +1207,10 @@ mod refinements {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn merge_key_replaces_delivered_scopes_only() {
-        let (_c, conn) = start_pg().await;
+        let Some(pg) = PgFixture::start().await else {
+            return;
+        };
+        let conn = pg.conn.clone();
         let opts = Opts {
             merge_key: Some(&["day"]),
             ..Opts::default()
@@ -1254,7 +1275,10 @@ mod refinements {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn merge_key_scope_moves_and_null_scopes() {
-        let (_c, conn) = start_pg().await;
+        let Some(pg) = PgFixture::start().await else {
+            return;
+        };
+        let conn = pg.conn.clone();
         let opts = Opts {
             merge_key: Some(&["day"]),
             ..Opts::default()
@@ -1300,7 +1324,10 @@ mod refinements {
         // PARTIAL feed, indistinguishable destination-side from a fresh one.
         // Multi-unit scoped loads are therefore a TYPED error, never silent
         // partial replacement.
-        let (_c, conn) = start_pg().await;
+        let Some(pg) = PgFixture::start().await else {
+            return;
+        };
+        let conn = pg.conn.clone();
         let opts = Opts {
             merge_key: Some(&["day"]),
             ..Opts::default()
@@ -1379,7 +1406,10 @@ mod refinements {
         // checkpoints split the LOAD without splitting this table's feed. A
         // leading empty unit (another stream committed first) must not
         // reject the scoped table.
-        let (_c, conn) = start_pg().await;
+        let Some(pg) = PgFixture::start().await else {
+            return;
+        };
+        let conn = pg.conn.clone();
         let opts = Opts {
             merge_key: Some(&["day"]),
             ..Opts::default()
@@ -1410,7 +1440,10 @@ mod refinements {
         // One rule, both consumers. Retire tolerates units where the table
         // stages nothing (an empty stage must not read as "every key absent"
         // = mass retirement), and rejects a split feed typed.
-        let (_c, conn) = start_pg().await;
+        let Some(pg) = PgFixture::start().await else {
+            return;
+        };
+        let conn = pg.conn.clone();
         let opts = Opts {
             strategy: Some(MergeStrategy::Scd2),
             scd2_retire: true,
@@ -1448,7 +1481,10 @@ mod refinements {
     async fn dedup_sort_survivor_drives_scd2_change_detection() {
         // Review F9 / MR2: the scd2 arm consumes the SAME deduped shape —
         // the ordered survivor decides the active version.
-        let (_c, conn) = start_pg().await;
+        let Some(pg) = PgFixture::start().await else {
+            return;
+        };
+        let conn = pg.conn.clone();
         let opts = Opts {
             strategy: Some(MergeStrategy::Scd2),
             dedup: Some(("seq", SortOrder::Desc)),
@@ -1494,7 +1530,10 @@ mod refinements {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn refinement_options_validate_typed_at_open() {
-        let (_c, conn) = start_pg().await;
+        let Some(pg) = PgFixture::start().await else {
+            return;
+        };
+        let conn = pg.conn.clone();
         let one_row: Vec<Vec<Row>> = vec![vec![(1, Some(1), Some(1), "x", None)]];
 
         // Nonexistent columns: table AND column named, before any data moves.
@@ -1595,7 +1634,10 @@ mod refinements {
         use rdlt_testkit::MemorySource;
         use serde_json::json;
 
-        let (_c, conn) = start_pg().await;
+        let Some(pg) = PgFixture::start().await else {
+            return;
+        };
+        let conn = pg.conn.clone();
         for (dataset, table_opts, needle) in [
             (
                 "mr_sh_dedup",
@@ -1643,7 +1685,10 @@ mod refinements {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn merge_key_composes_with_upsert_hard_delete_and_dedup_sort() {
-        let (_c, conn) = start_pg().await;
+        let Some(pg) = PgFixture::start().await else {
+            return;
+        };
+        let conn = pg.conn.clone();
         let opts = Opts {
             strategy: Some(MergeStrategy::Upsert),
             dedup: Some(("seq", SortOrder::Desc)),
@@ -1684,7 +1729,10 @@ mod refinements {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn dedup_sort_survivor_drives_hard_delete() {
-        let (_c, conn) = start_pg().await;
+        let Some(pg) = PgFixture::start().await else {
+            return;
+        };
+        let conn = pg.conn.clone();
         let opts = Opts {
             dedup: Some(("seq", SortOrder::Desc)),
             hard_delete: true,
@@ -1746,7 +1794,10 @@ mod refinements {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn dedup_sort_null_and_tie_policy_is_deterministic() {
-        let (_c, conn) = start_pg().await;
+        let Some(pg) = PgFixture::start().await else {
+            return;
+        };
+        let conn = pg.conn.clone();
         let opts = Opts {
             dedup: Some(("seq", SortOrder::Desc)),
             ..Opts::default()
@@ -1810,13 +1861,16 @@ mod param_matrix {
     use rdlt_testkit::MemorySource;
     use serde_json::json;
 
-    use super::start_pg;
+    use super::PgFixture;
 
     /// `dataset` default — omitted, tables land in `public` (observed,
     /// not inferred; PM3).
     #[tokio::test(flavor = "multi_thread")]
     async fn default_dataset_is_public() {
-        let (_c, conn) = start_pg().await;
+        let Some(pg) = PgFixture::start().await else {
+            return;
+        };
+        let conn = pg.conn.clone();
         let dest = Postgres::connect(&conn); // no .dataset(...)
         let source = MemorySource::single_stream(
             rdlt_connector::StreamSpec::new("things").with_primary_key(["id"]),
@@ -1845,7 +1899,10 @@ mod param_matrix {
     /// rejects.
     #[tokio::test(flavor = "multi_thread")]
     async fn explicit_strategy_under_non_merge_mode_is_typed() {
-        let (_c, conn) = start_pg().await;
+        let Some(pg) = PgFixture::start().await else {
+            return;
+        };
+        let conn = pg.conn.clone();
         let source = || {
             MemorySource::single_stream(
                 rdlt_connector::StreamSpec::new("things").with_primary_key(["id"]),
@@ -1960,7 +2017,10 @@ mod param_matrix {
             .expect("batch")
         }
 
-        let (_c, conn) = start_pg().await;
+        let Some(pg) = PgFixture::start().await else {
+            return;
+        };
+        let conn = pg.conn.clone();
         let dest = Postgres::connect(&conn)
             .dataset("nbhd")
             .options(PgDestOptions {

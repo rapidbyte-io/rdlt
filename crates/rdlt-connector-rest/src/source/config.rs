@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use rdlt_connector::core::LogicalType;
 use serde::{Deserialize, Serialize};
 
-use super::client::secret::Secret;
+use rdlt_connector::Secret;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -26,9 +26,19 @@ pub struct RestConfig {
     #[schemars(with = "Auth")]
     pub auth: Auth,
     /// Source-level default headers, merged UNDER per-stream headers.
+    ///
+    /// These are plain strings and appear VERBATIM in this struct's derived
+    /// `Debug` output — a credential put here is NOT redacted. Put credentials
+    /// under `auth:` instead, where they are `Secret`-wrapped and masked;
+    /// `validate` rejects the `authorization`/`x-api-key` header names here for
+    /// exactly this reason.
     #[serde(default)]
     pub headers: BTreeMap<String, String>,
     /// Source-level default query params, merged UNDER per-stream params.
+    ///
+    /// Plain strings, printed VERBATIM in derived `Debug` like [`headers`](Self::headers).
+    /// A credential belongs under `auth:` (`Secret`-wrapped, masked), e.g. the
+    /// `api_key` scheme with `location: query` — never hard-coded here.
     #[serde(default)]
     pub params: BTreeMap<String, String>,
     /// Parent-child fan-out cap (streams themselves read sequentially).
@@ -49,6 +59,22 @@ pub struct RestConfig {
 
 fn default_max_concurrency() -> u32 {
     1
+}
+
+/// Header names that almost always mean a credential was hard-coded into a
+/// plain (Debug-printable) `headers:` map instead of the `Secret`-wrapped
+/// `auth:` block. Returns the rejection message when `name` is one of them,
+/// case-insensitively.
+fn reserved_auth_header(name: &str) -> Option<String> {
+    const RESERVED: [&str; 2] = ["authorization", "x-api-key"];
+    let lower = name.to_ascii_lowercase();
+    RESERVED.contains(&lower.as_str()).then(|| {
+        format!(
+            "header `{name}` carries a credential — put it under `auth:` \
+             (Secret-wrapped and masked), not in a plain `headers:` map that \
+             renders verbatim in Debug output"
+        )
+    })
 }
 
 /// Auth field (de)serialization: singleton-map form in and out, PLUS the older
@@ -423,10 +449,21 @@ impl RestConfig {
                     "header `{name}`: value is not a valid HTTP header value"
                 ));
             }
+            if let Some(msg) = reserved_auth_header(name) {
+                return invalid(msg);
+            }
         }
         let names: Vec<&str> = self.streams.iter().map(|s| s.name.as_str()).collect();
         for stream in &self.streams {
             let name = &stream.name;
+            // Per-stream headers carry credentials just as readily as
+            // source-level ones, and render the same way — hold them to the
+            // same `auth:`-not-`headers:` rule.
+            for header in stream.headers.keys() {
+                if let Some(msg) = reserved_auth_header(header) {
+                    return invalid(format!("stream `{name}`: {msg}"));
+                }
+            }
             // Legacy flat aliases: set together, and never mixed with the block.
             if stream.cursor_field.is_some() != stream.cursor_param.is_some() {
                 return invalid(format!(
@@ -600,4 +637,46 @@ pub enum ConfigError {
     Json(#[from] serde_json::Error),
     #[error("invalid REST source config: {0}")]
     Invalid(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn err(config: serde_json::Value) -> String {
+        RestConfig::from_value(config)
+            .expect_err("must reject")
+            .to_string()
+    }
+
+    #[test]
+    fn credential_header_names_are_rejected_toward_auth() {
+        // Source-level, per-stream, and case-insensitively — each steered to `auth:`.
+        for header in ["Authorization", "authorization", "X-API-Key", "x-api-key"] {
+            let source_level = serde_json::json!({
+                "base_url": "https://x",
+                "headers": {header: "Bearer leaked"},
+                "streams": [{"name": "s", "path": "/s"}],
+            });
+            let msg = err(source_level);
+            assert!(msg.contains("auth:"), "{header} source-level: {msg}");
+
+            let per_stream = serde_json::json!({
+                "base_url": "https://x",
+                "streams": [{"name": "s", "path": "/s", "headers": {header: "leaked"}}],
+            });
+            let msg = err(per_stream);
+            assert!(msg.contains("auth:"), "{header} per-stream: {msg}");
+        }
+    }
+
+    #[test]
+    fn ordinary_headers_still_accepted() {
+        RestConfig::from_value(serde_json::json!({
+            "base_url": "https://x",
+            "headers": {"user-agent": "rdlt", "x-shared": "1"},
+            "streams": [{"name": "s", "path": "/s", "headers": {"x-stream": "2"}}],
+        }))
+        .expect("non-credential headers pass validation");
+    }
 }

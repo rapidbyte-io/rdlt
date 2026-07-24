@@ -4,68 +4,14 @@
 //! partition specs. All credentials are `Secret`-wrapped; validation is
 //! eager and typed; the generated schema and the parser cannot drift.
 //!
-//! NOTE (recorded): this is the third crate-local `Secret` copy
-//! (014 rest, 015 file, 016 here) — the extraction trigger has FIRED;
-//! unification into a shared home is a dedicated follow-up, not smuggled
-//! into this feature.
+//! `Secret` is the shared SPI newtype ([`rdlt_connector::Secret`]); its
+//! schemars placeholder rides the SPI's `schema` feature (enabled by this
+//! crate).
 
-use std::borrow::Cow;
 use std::collections::BTreeMap;
 
+use rdlt_connector::Secret;
 use serde::{Deserialize, Serialize};
-
-// ---- Secret --------------------------------------------------------------
-
-/// Secret-wrapped credential value: Debug/Display render `***`,
-/// serde-transparent, schemars placeholder (the 014 discipline).
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct Secret(String);
-
-impl Secret {
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
-    }
-
-    /// The only way to the value — call sites are the audit surface.
-    pub fn reveal(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Debug for Secret {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("***")
-    }
-}
-
-impl std::fmt::Display for Secret {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("***")
-    }
-}
-
-impl From<&str> for Secret {
-    fn from(value: &str) -> Self {
-        Self::new(value)
-    }
-}
-
-impl From<String> for Secret {
-    fn from(value: String) -> Self {
-        Self(value)
-    }
-}
-
-impl schemars::JsonSchema for Secret {
-    fn schema_name() -> Cow<'static, str> {
-        Cow::Borrowed("Secret")
-    }
-
-    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        schemars::json_schema!({"type": "string", "description": "secret value; never rendered"})
-    }
-}
 
 // ---- Auth ----------------------------------------------------------------
 

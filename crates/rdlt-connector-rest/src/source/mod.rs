@@ -21,7 +21,7 @@ use rdlt_connector::{
 };
 use serde_json::Value;
 
-pub use client::{RestClient, Secret};
+pub use client::RestClient;
 pub use config::{Auth, Pagination, RestConfig, RestStream};
 pub use read::paginate::{PageContext, PageDecision, Paginator};
 

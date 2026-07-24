@@ -13,6 +13,17 @@ final line coverage against 83.68%.
 **Red-run evidence method**: per research D-14 (test-before-fix ordering or
 stash-red capture; excerpts inline or cited by test name + run).
 
+**Scope amendment (user directive, 2026-07-24, during increment 4)**:
+GREENFIELD — no legacy paths, no compatibility shims, no deprecated
+aliases. Nothing is published, so renames and moves land directly and
+consumers update in the same change. Supersedes research D-10's
+"deprecated aliases for one window" bucket (breaking renames now apply
+directly in increment 11) and the spec assumption about alias-shims;
+named deferrals to the 0.3 window remain only for items NOT worth doing
+at all now (none currently). Persisted **data** formats (WAL, StateDoc,
+receipts) and golden pins remain frozen — the directive covers API
+paths/names and in-repo vocabulary, not on-disk data written by runs.
+
 ## Part 1 — Defects
 
 | Item | Increment | Disposition | Evidence |
@@ -49,9 +60,9 @@ stash-red capture; excerpts inline or cited by test name + run).
 | R2 mechanical helpers (quote/column_list/root_of/index-name/hard_delete/MergePlan/scoped/retire/insert-select/delete-stage/setting) | 6 | | |
 | R2 protocol planner commit_script | 6 | | |
 | R2 destinations execute planner | 6 | | |
-| R3 shared Secret in SPI | 4 | | |
-| R3 three copies migrated + re-exports | 4 | | |
-| R3 headers/params redaction posture | 4 | | |
+| R3 shared Secret in SPI | 4 | applied | `rdlt_connector::secret::Secret` (newtype, `***` mask, transparent serde, `reveal()` audit surface) with schemars behind new SPI feature `schema` (optional dep; SPI builds with/without). Copies differed only in schemars description text — majority form adopted (nothing pins it) |
+| R3 three copies migrated + re-exports | 4 | applied (greenfield) | Per user directive mid-increment: NO legacy paths — both secret.rs shims deleted, all module-path chains killed; one canonical spelling per crate (rest/iceberg root re-export; file uses the SPI path — it never exported one). Grep-zero over every old path; `reveal()` production sites byte-identical (13); 196/196 + 140/140 after cleanup |
+| R3 headers/params redaction posture | 4 | applied | Doc comments on both maps (credentials belong in `auth:`) + validate() REJECTS `authorization`/`x-api-key` header names (case-insensitive, source+per-stream) with a typed error pointing at `auth:`. Tests `credential_header_names_are_rejected_toward_auth`, `ordinary_headers_still_accepted` |
 | R4 engine run_once split + ping-pong owner | 5 | | |
 | R4 postgres tls.rs split | 7 | | |
 | R4 postgres cdc/mod.rs split | 7 | | |
@@ -144,11 +155,11 @@ spot satisfies WR8 as long as the gate is green.
 
 | Item | Increment | Disposition | Evidence |
 |---|---|---|---|
-| D1 runtime probe 3→1 | 4 | | |
-| D2 skip-not-fail posture | 4 | | |
-| D3 PgFixture into testkit | 4 | | |
-| D4 fixture trio into testkit | 4 | | |
-| D5 stream_yaml builders | 4 | | |
+| D1 runtime probe 3→1 | 4 | applied | ONE `rdlt_testkit::containers::runtime_available()` — 5 documented arms incl. `RDLT_TESTKIT_FORCE_NO_CONTAINERS` override (posture verifiable without stopping the runtime, which would kill this session's own container); file S3Fixture + iceberg CatalogFixture + all pg/duckdb sites route through it |
+| D2 skip-not-fail posture | 4 | applied | `PgFixture::start() -> Option` (eprintln SKIP + None); the `.expect()` hard-fail posture eliminated; duckdb differential uses visible top-of-test guards where the Option didn't fit a shared helper (net posture identical). Posture runs recorded below |
+| D3 PgFixture into testkit | 4 | applied | `PgFixture`/`CdcPgFixture` behind testkit feature `containers` (optional testcontainers-modules + tokio-postgres); `POSTGRES_TAG` pin const (16-alpine, one definition); all ~6 `start_pg` copies deleted across postgres+duckdb tests (grep: 0 remain) |
+| D4 fixture trio into testkit | 4 | applied | `rdlt_testkit::{schema_for,batch_of,meta_for}` with the Arrow field DERIVED from the TableSchema (can't drift); 6 byte-identical sites migrated (file recovery/preservation, duckdb recovery, iceberg exactly_once/conflict, pg dest_recovery); file dest_options kept its two-column local variant (not the canonical trio — correctly excluded) |
+| D5 stream_yaml builders | 4 | applied / partially overtaken | rest: `stream_yaml` helper in tests/common; 26 tests migrated, 3 left inline with recorded reasons (top-level config fields ×2; frozen pre-014 spellings pin ×1); counts identical 68→68. file jsonl.rs OVERTAKEN — already fully abstracted by existing `source_for` helper (catalogue premise stale), 12→12 |
 | D6 free-disk composite action | 3 | applied | `.github/actions/free-disk/action.yml` with THE canonical disk rationale; 6 jobs reference it (checkout-first verified per job) |
 | D7 iai-callgrind pin unification | 3 | applied | `[workspace.dependencies] iai-callgrind = "=0.16.1"` cross-linked to ci.yml; both consumers inherit; perf-gate guard step fails loudly on mismatch (sed tested against real manifest) |
 | D8 CI env/comment dedup | 3 | applied | One canonical rationale in the action; per-workflow env var kept (cannot be shared) with one-line pointers |
@@ -159,7 +170,7 @@ spot satisfies WR8 as long as the gate is green.
 | D13 workspace rust-version | 3 | applied | `rust-version = "1.96"` in [workspace.package], inherited by all 13 crates; matches rust-toolchain.toml |
 | D14 inheritance stragglers + implied features | 3 | applied | iai-callgrind + libc → workspace deps; `postgres-source`/`file` dropped from CLI+bench (implication proven from rdlt [features] + resolved-tree check); rdlt-connector tokio simplified (strict-superset union). `cargo check --workspace` clean |
 | D15 mutants.out.old untracking | 3 | applied | `git rm -r --cached` — 694 files untracked, ignore entry kept, directory on disk |
-| D16 container image tags pinned (rustfs ×3 sites; polaris pending) | 1 | partially applied | Discovered at T001: gate red on merge base — file-crate S3 dest tests 500ing. Root cause = HOST DISK 100% FULL (168GB podman test residue: 188 stopped pg containers, 1117 anonymous volumes, dangling images — pruned, 158G freed); tests green after cleanup. Floating `rustfs:latest` pinned to 1.0.0-beta.11 at all 3 sites (file s3.rs, iceberg common, fixtures.toml ×2 refs) as drift-proofing; `apache/polaris:latest` pin deferred to increment 4 (testkit unification) with a live-verified tag |
+| D16 container image tags pinned (rustfs ×3 sites; polaris pending) | 1 | partially applied | Discovered at T001: gate red on merge base — file-crate S3 dest tests 500ing. Root cause = HOST DISK 100% FULL (168GB podman test residue: 188 stopped pg containers, 1117 anonymous volumes, dangling images — pruned, 158G freed); tests green after cleanup. Floating `rustfs:latest` pinned to 1.0.0-beta.11 at all 3 sites (file s3.rs, iceberg common, fixtures.toml ×2 refs) as drift-proofing; `apache/polaris:latest` pin deferred to a later increment with a live-verified tag. Leak pattern OBSERVED LIVE during increment 4: 16 orphaned postgres containers (fail-fast skips fixture Drop) + target/ ballooned to 851GB under parallel agent rebuilds — cleaned (866GB reclaimed); reaper/labeling convention remains the recorded follow-up |
 | P5-low Makefile check/coverage notes | 3 | | |
 | P5-low deep-checks RUSTFLAGS doc | 3 | applied | Deliberate-divergence comment added (deep tier measures, PR tier lints) |
 | P5-low CLAUDE.md drift (rustc/arrow numbers) | 3 | applied | 016 block corrected: arrow 58.3, toolchain 1.96.0 |

@@ -94,7 +94,9 @@ fn registry_is_pinned() {
 #[tokio::test(flavor = "multi_thread")]
 async fn sweep_postgres_source() {
     let _guard = FAIL_POINT_LOCK.lock().await;
-    let fixture = PgFixture::start().await;
+    let Some(fixture) = PgFixture::start().await else {
+        return;
+    };
     fixture.seed(SEED).await;
     let conn = fixture.conn_url();
 
@@ -161,7 +163,9 @@ async fn sweep_postgres_source() {
 #[tokio::test(flavor = "multi_thread")]
 async fn transient_mid_copy_resumes_within_one_run() {
     let _guard = FAIL_POINT_LOCK.lock().await;
-    let fixture = PgFixture::start().await;
+    let Some(fixture) = PgFixture::start().await else {
+        return;
+    };
     fixture.seed(SEED).await;
     let rig = Rig::new();
 
@@ -190,7 +194,9 @@ async fn transient_mid_copy_resumes_within_one_run() {
 /// retries never double-apply.
 #[tokio::test(flavor = "multi_thread")]
 async fn container_kill_mid_read_is_typed_and_preserves_commits() {
-    let fixture = PgFixture::start().await;
+    let Some(fixture) = PgFixture::start().await else {
+        return;
+    };
     // Big enough that the read is still streaming when the container dies.
     fixture
         .seed(

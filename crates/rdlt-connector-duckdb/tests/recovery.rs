@@ -4,55 +4,10 @@
 //! commit already published (the parquet twin was the feature-002 review's
 //! confirmed data-loss finding; DuckDB carried the same latent pattern).
 
-use std::collections::BTreeMap;
-use std::sync::Arc;
-
-use arrow::array::Int64Array;
-use arrow::datatypes::{DataType, Field, Schema};
-use arrow::record_batch::RecordBatch;
-use rdlt_connector::core::{
-    ColumnDef, ColumnType, CommitCounters, CommitMeta, LoadId, LogicalType, PipelineId, Provenance,
-    StateDoc, TableName, TableSchema, WriteMode,
-};
+use rdlt_connector::core::{LoadId, PipelineId, TableName, WriteMode};
 use rdlt_connector::{Destination, OpenCtx};
 use rdlt_connector_duckdb::dest::DuckDb;
-
-fn schema_for(table: &str) -> TableSchema {
-    TableSchema {
-        table: TableName::new(table),
-        parent: None,
-        columns: vec![ColumnDef {
-            name: "id".into(),
-            ty: ColumnType::scalar(LogicalType::Int64),
-            nullable: false,
-            provenance: Provenance::Inferred,
-        }],
-    }
-}
-
-fn batch_of(ids: &[i64]) -> RecordBatch {
-    RecordBatch::try_new(
-        Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)])),
-        vec![Arc::new(Int64Array::from(ids.to_vec()))],
-    )
-    .expect("batch")
-}
-
-fn meta_for(pipeline: &PipelineId, load: &LoadId, seq: u64) -> CommitMeta {
-    CommitMeta {
-        load_id: load.clone(),
-        commit_seq: seq,
-        state: StateDoc {
-            format_version: 1,
-            pipeline: pipeline.clone(),
-            cursors: BTreeMap::new(),
-            schema_hashes: BTreeMap::new(),
-            last_commit: None,
-            engine_version: "test".into(),
-        },
-        counters: CommitCounters::default(),
-    }
-}
+use rdlt_testkit::{batch_of, meta_for, schema_for};
 
 #[tokio::test]
 async fn replace_recovery_session_keeps_prior_commits_of_same_load() {

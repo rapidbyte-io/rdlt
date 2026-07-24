@@ -32,7 +32,9 @@ CREATE TABLE public.not_in_scope (x int4);
 
 #[tokio::test(flavor = "multi_thread")]
 async fn reflects_schema_shape_pks_views_and_type_policies() {
-    let fixture = PgFixture::start().await;
+    let Some(fixture) = PgFixture::start().await else {
+        return;
+    };
     fixture.seed(SEED).await;
 
     // Tables only (no views).

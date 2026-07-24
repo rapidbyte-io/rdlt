@@ -13,11 +13,8 @@ use rdlt_connector::core::WriteMode;
 use rdlt_connector::core::failpoint::fail;
 use rdlt_connector_postgres::dest::Postgres;
 use rdlt_engine::{Engine, EngineConfig};
-use rdlt_testkit::{MemoryBatch, MemorySource, MemoryStream};
+use rdlt_testkit::{MemoryBatch, MemorySource, MemoryStream, PgFixture};
 use serde_json::json;
-use testcontainers_modules::postgres::Postgres as PostgresImage;
-use testcontainers_modules::testcontainers::ImageExt;
-use testcontainers_modules::testcontainers::runners::AsyncRunner;
 
 const TOTAL_ROWS: u64 = 100;
 
@@ -82,16 +79,10 @@ fn registry_is_pinned() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn sweep_postgres_destination() {
-    let Ok(container) = PostgresImage::default().with_tag("16-alpine").start().await else {
-        eprintln!("skipping postgres sweep: no container runtime available");
+    let Some(pg) = PgFixture::start().await else {
         return;
     };
-    let port = container
-        .get_host_port_ipv4(5432)
-        .await
-        .expect("mapped port");
-    let conn =
-        format!("host=127.0.0.1 port={port} user=postgres password=postgres dbname=postgres");
+    let conn = pg.conn.clone();
 
     let mut fired: std::collections::BTreeSet<(&str, &str)> = std::collections::BTreeSet::new();
     for &point in rdlt_connector_postgres::dest::FAIL_POINTS {
@@ -247,16 +238,10 @@ async fn attempt_keyed(workdir: &std::path::Path, dest: &Postgres) -> Result<(),
 
 #[tokio::test(flavor = "multi_thread")]
 async fn sweep_postgres_destination_keyed_structured_merge() {
-    let Ok(container) = PostgresImage::default().with_tag("16-alpine").start().await else {
-        eprintln!("skipping keyed merge sweep: no container runtime available");
+    let Some(pg) = PgFixture::start().await else {
         return;
     };
-    let port = container
-        .get_host_port_ipv4(5432)
-        .await
-        .expect("mapped port");
-    let conn =
-        format!("host=127.0.0.1 port={port} user=postgres password=postgres dbname=postgres");
+    let conn = pg.conn.clone();
 
     // Feature 008 T008: BOTH strategies cross every boundary (M2) — the
     // upsert arm's conflict-update runs inside the same publish transaction.
@@ -400,16 +385,10 @@ async fn attempt_refined(workdir: &std::path::Path, dest: &Postgres) -> Result<(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn sweep_postgres_destination_refined_merge() {
-    let Ok(container) = PostgresImage::default().with_tag("16-alpine").start().await else {
-        eprintln!("skipping refined merge sweep: no container runtime available");
+    let Some(pg) = PgFixture::start().await else {
         return;
     };
-    let port = container
-        .get_host_port_ipv4(5432)
-        .await
-        .expect("mapped port");
-    let conn =
-        format!("host=127.0.0.1 port={port} user=postgres password=postgres dbname=postgres");
+    let conn = pg.conn.clone();
     let (client, connection) = tokio_postgres::connect(&conn, tokio_postgres::NoTls)
         .await
         .expect("probe connect");

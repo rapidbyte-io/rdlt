@@ -63,13 +63,6 @@ fn run_container(prefix: &str, image: &str, envs: &[(String, String)]) -> Contai
     ContainerGuard { name }
 }
 
-fn runtime_available() -> bool {
-    std::process::Command::new("podman")
-        .arg("ps")
-        .output()
-        .is_ok_and(|o| o.status.success())
-}
-
 /// A free port from a PID-disjoint range. `bind(:0)` alone races: nextest
 /// runs each test in its own process, two fixtures can be handed the same
 /// ephemeral port in the release-then-reuse window, and the second test
@@ -98,7 +91,7 @@ impl CatalogFixture {
     /// Start RUSTFS + Polaris, bootstrap a catalog over the bucket, grant
     /// the admin principal, create nothing else — or skip visibly (None).
     pub async fn start() -> Option<Self> {
-        if !runtime_available() {
+        if !rdlt_testkit::containers::runtime_available() {
             eprintln!("SKIP: no container runtime socket — iceberg live cell not run");
             return None;
         }

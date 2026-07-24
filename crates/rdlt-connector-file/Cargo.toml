@@ -8,7 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-rdlt-connector = { workspace = true }
+rdlt-connector = { workspace = true, features = ["schema"] }
 arrow = { workspace = true }
 blake3 = { workspace = true }
 schemars = { workspace = true }
@@ -32,7 +32,7 @@ tokio = { workspace = true }
 jsonschema = { workspace = true }
 object_store = { workspace = true }
 testcontainers = { workspace = true }
-rdlt-testkit = { workspace = true }
+rdlt-testkit = { workspace = true, features = ["containers"] }
 rdlt-engine = { workspace = true }
 rdlt-connector-duckdb = { workspace = true }
 tempfile = { workspace = true }

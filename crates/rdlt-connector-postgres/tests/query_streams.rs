@@ -55,7 +55,9 @@ impl Rig {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn join_query_lands_with_described_schema_and_incremental_works() {
-    let fixture = PgFixture::start().await;
+    let Some(fixture) = PgFixture::start().await else {
+        return;
+    };
     fixture.seed(SEED).await;
     let rig = Rig::new();
 
@@ -121,7 +123,9 @@ async fn rejection_of(source: &PostgresSource) -> String {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn rejections_are_typed_and_early() {
-    let fixture = PgFixture::start().await;
+    let Some(fixture) = PgFixture::start().await else {
+        return;
+    };
     fixture.seed(SEED).await;
 
     // Mutating SQL: rejected at describe time (subquery rules), before data.

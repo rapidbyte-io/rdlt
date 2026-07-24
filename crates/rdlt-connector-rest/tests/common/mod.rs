@@ -55,3 +55,25 @@ pub async fn read_err(yaml: &str, stream: &str) -> String {
     let outcome = read_stream(yaml, stream, None).await;
     outcome.result.expect_err("read fails typed").to_string()
 }
+
+/// One-stream REST config document: `base_url` plus a single stream named
+/// `name` at `path`. `extra` is the stream's remaining fields as raw YAML
+/// (records_path, pagination, response_actions, method/body, incremental, …);
+/// every line is indented to the stream's field column here, so callers write
+/// it flush-left and state only their per-test delta. `base_url` is always
+/// quoted — valid both for a live server URI and for a literal like
+/// `http://x` used by parse-only cases.
+pub fn stream_yaml(base_url: &str, name: &str, path: &str, extra: &str) -> String {
+    let mut doc =
+        format!("base_url: \"{base_url}\"\nstreams:\n  - name: {name}\n    path: {path}\n");
+    for line in extra.lines() {
+        if line.is_empty() {
+            doc.push('\n');
+        } else {
+            doc.push_str("    ");
+            doc.push_str(line);
+            doc.push('\n');
+        }
+    }
+    doc
+}

@@ -30,7 +30,9 @@ INSERT INTO public.orders VALUES (1, 10), (2, 20);
 
 #[tokio::test(flavor = "multi_thread")]
 async fn create_if_missing_is_idempotent_and_reports_the_consistent_point() {
-    let fixture = CdcPgFixture::start().await;
+    let Some(fixture) = CdcPgFixture::start().await else {
+        return;
+    };
     fixture.seed(SEED).await;
     let client = fixture.client().await;
     let tables = vec!["orders".to_string()];
@@ -69,7 +71,9 @@ async fn create_if_missing_is_idempotent_and_reports_the_consistent_point() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn missing_resources_without_create_are_typed_with_the_hint() {
-    let fixture = CdcPgFixture::start().await;
+    let Some(fixture) = CdcPgFixture::start().await else {
+        return;
+    };
     fixture.seed(SEED).await;
     let client = fixture.client().await;
     let tables = vec!["orders".to_string()];
@@ -97,7 +101,9 @@ async fn missing_resources_without_create_are_typed_with_the_hint() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn publication_gap_names_publication_and_missing_tables() {
-    let fixture = CdcPgFixture::start().await;
+    let Some(fixture) = CdcPgFixture::start().await else {
+        return;
+    };
     fixture
         .seed(
             "CREATE TABLE public.a (id int8 PRIMARY KEY);\
@@ -121,7 +127,9 @@ async fn publication_gap_names_publication_and_missing_tables() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn foreign_plugin_slot_is_typed_naming_both_plugins() {
-    let fixture = CdcPgFixture::start().await;
+    let Some(fixture) = CdcPgFixture::start().await else {
+        return;
+    };
     fixture.seed(SEED).await;
     let client = fixture.client().await;
     client
@@ -147,7 +155,9 @@ async fn foreign_plugin_slot_is_typed_naming_both_plugins() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn peek_is_nonconsuming_and_advance_acknowledges() {
-    let fixture = CdcPgFixture::start().await;
+    let Some(fixture) = CdcPgFixture::start().await else {
+        return;
+    };
     fixture.seed(SEED).await;
     let client = fixture.client().await;
     let config = cdc("s1", "p1", true);
@@ -206,7 +216,9 @@ async fn peek_is_nonconsuming_and_advance_acknowledges() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn concurrent_consumer_is_typed_naming_the_pid() {
-    let fixture = CdcPgFixture::start().await;
+    let Some(fixture) = CdcPgFixture::start().await else {
+        return;
+    };
     fixture.seed(SEED).await;
     let client = fixture.client().await;
     let config = cdc("s1", "p1", true);
@@ -264,7 +276,9 @@ async fn concurrent_consumer_is_typed_naming_the_pid() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn wal_retention_overrun_is_typed_with_fresh_snapshot_recovery() {
-    let fixture = CdcPgFixture::start().await;
+    let Some(fixture) = CdcPgFixture::start().await else {
+        return;
+    };
     fixture.seed(SEED).await;
     let client = fixture.client().await;
     let config = cdc("s1", "p1", true);
@@ -336,16 +350,17 @@ struct CdcRig {
 }
 
 impl CdcRig {
-    async fn start(pipeline: &str) -> Self {
-        let fixture = CdcPgFixture::start().await;
+    /// Skip-not-fail: `None` when no container runtime, so callers return early.
+    async fn start(pipeline: &str) -> Option<Self> {
+        let fixture = CdcPgFixture::start().await?;
         let dir = tempfile::tempdir().expect("workdir");
         let workdir = dir.path().to_path_buf();
         std::mem::forget(dir);
-        Self {
+        Some(Self {
             fixture,
             workdir,
             pipeline: pipeline.to_string(),
-        }
+        })
     }
 
     /// A fresh pipeline identity (new workdir + name): the documented
@@ -458,7 +473,9 @@ impl CdcRig {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn us1_equality_cycle_snapshot_mutate_catch_up() {
-    let rig = CdcRig::start("cdc-us1").await;
+    let Some(rig) = CdcRig::start("cdc-us1").await else {
+        return;
+    };
     rig.fixture
         .seed(
             "CREATE TABLE public.orders (id int8 PRIMARY KEY, total int4, note text);\
@@ -518,7 +535,9 @@ async fn boundary_overlap_row_appears_exactly_once_with_final_state() {
     // The recorded refinement's NON-OPTIONAL proof (P2): a row mutated
     // between slot creation and snapshot end lands in BOTH the snapshot and
     // the feed — it must appear exactly once, with its final state.
-    let rig = CdcRig::start("cdc-overlap").await;
+    let Some(rig) = CdcRig::start("cdc-overlap").await else {
+        return;
+    };
     rig.fixture
         .seed(
             "CREATE TABLE public.orders (id int8 PRIMARY KEY, total int4);\
@@ -573,7 +592,9 @@ async fn ack_never_exceeds_the_least_committed_cursor() {
     // The T007 weld (P6): the slot's confirmed position may only reflect
     // positions the DESTINATION durably committed — across full runs (the
     // ack trails one run behind) and across a partial run (no ack at all).
-    let rig = CdcRig::start("cdc-ack").await;
+    let Some(rig) = CdcRig::start("cdc-ack").await else {
+        return;
+    };
     rig.fixture
         .seed(
             "CREATE TABLE public.a (id int8 PRIMARY KEY, v int4);\
@@ -667,7 +688,9 @@ async fn ack_never_exceeds_the_least_committed_cursor() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn tail_applies_bursts_cancels_cleanly_and_resumes() {
-    let rig = CdcRig::start("cdc-tail").await;
+    let Some(rig) = CdcRig::start("cdc-tail").await else {
+        return;
+    };
     rig.fixture
         .seed(
             "CREATE TABLE public.orders (id int8 PRIMARY KEY, total int4);\
@@ -755,7 +778,9 @@ async fn tail_applies_bursts_cancels_cleanly_and_resumes() {
 async fn toast_full_identity_substitutes_from_the_old_image() {
     // O3, retain semantics: an unchanged out-of-line value rides through an
     // unrelated update because REPLICA IDENTITY FULL carries the old image.
-    let rig = CdcRig::start("cdc-toast-full").await;
+    let Some(rig) = CdcRig::start("cdc-toast-full").await else {
+        return;
+    };
     rig.fixture
         .seed(
             "CREATE TABLE public.docs (id int8 PRIMARY KEY, blob text, counter int4);\
@@ -793,7 +818,9 @@ async fn toast_full_identity_substitutes_from_the_old_image() {
 async fn toast_without_full_identity_fails_typed_never_nulls() {
     // O3, the other half: same shape under DEFAULT identity — no old image
     // to substitute from; typed error naming table + column + the ALTER.
-    let rig = CdcRig::start("cdc-toast-default").await;
+    let Some(rig) = CdcRig::start("cdc-toast-default").await else {
+        return;
+    };
     rig.fixture
         .seed(
             "CREATE TABLE public.docs (id int8 PRIMARY KEY, blob text, counter int4);\
@@ -812,7 +839,9 @@ async fn toast_without_full_identity_fails_typed_never_nulls() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn identity_preflight_matrix_is_typed_per_table() {
-    let rig = CdcRig::start("cdc-identity").await;
+    let Some(rig) = CdcRig::start("cdc-identity").await else {
+        return;
+    };
     rig.fixture
         .seed(
             "CREATE TABLE public.nopk (v int4);\
@@ -855,7 +884,9 @@ async fn identity_preflight_matrix_is_typed_per_table() {
 async fn identity_dropped_mid_stream_never_misapplies() {
     // O4: the identity weakens AFTER the pipeline is established — the next
     // run refuses at preflight, before any change could be mis-applied.
-    let rig = CdcRig::start("cdc-identity-drop").await;
+    let Some(rig) = CdcRig::start("cdc-identity-drop").await else {
+        return;
+    };
     rig.fixture
         .seed(
             "CREATE TABLE public.ev (id int8, v int4, CONSTRAINT ev_pk PRIMARY KEY (id));\
@@ -917,7 +948,9 @@ async fn replication_lag_lands_on_the_dedicated_target() {
 
     let _ = tracing::subscriber::set_global_default(LagCollector);
 
-    let rig = CdcRig::start("cdc-lag").await;
+    let Some(rig) = CdcRig::start("cdc-lag").await else {
+        return;
+    };
     rig.fixture
         .seed("CREATE TABLE public.ev (id int8 PRIMARY KEY, v int4); INSERT INTO public.ev VALUES (1, 1);")
         .await;
@@ -938,7 +971,9 @@ async fn replication_lag_lands_on_the_dedicated_target() {
 async fn recreated_slot_with_resuming_cursor_is_typed_never_a_gap() {
     // Review F1: a slot recreated THIS run cannot cover a resuming stream's
     // history — that must be a typed error, never a silent WAL gap.
-    let rig = CdcRig::start("cdc-slot-gap").await;
+    let Some(rig) = CdcRig::start("cdc-slot-gap").await else {
+        return;
+    };
     rig.fixture
         .seed(
             "CREATE TABLE public.orders (id int8 PRIMARY KEY, total int4);\
@@ -984,7 +1019,9 @@ async fn dropped_identity_index_is_typed_not_an_empty_key() {
     // Review F2: relreplident stays 'i' after the identity index is
     // dropped; the empty column set must be a typed error, never an empty
     // merge key.
-    let rig = CdcRig::start("cdc-ident-index").await;
+    let Some(rig) = CdcRig::start("cdc-ident-index").await else {
+        return;
+    };
     rig.fixture
         .seed(
             "CREATE TABLE public.ev (id int8 NOT NULL, v int4);\
@@ -1005,7 +1042,9 @@ async fn truncate_wedge_recovers_via_fresh_snapshot() {
     // Review F3: the TRUNCATE fatal must respect the already-applied filter
     // and the fresh-snapshot recovery must start PAST the truncation —
     // otherwise the error's own remedy can never clear it.
-    let mut rig = CdcRig::start("cdc-truncate").await;
+    let Some(mut rig) = CdcRig::start("cdc-truncate").await else {
+        return;
+    };
     rig.fixture
         .seed(
             "CREATE TABLE public.orders (id int8 PRIMARY KEY, total int4);\
@@ -1043,7 +1082,9 @@ async fn toast_wedge_recovers_after_alter_and_reset() {
     // Review F4: the unchanged-TOAST fatal's advised fix (ALTER … FULL)
     // plus a state reset must actually recover the stream — the old WAL
     // record must not replay-fatal forever.
-    let mut rig = CdcRig::start("cdc-toast-wedge").await;
+    let Some(mut rig) = CdcRig::start("cdc-toast-wedge").await else {
+        return;
+    };
     rig.fixture
         .seed(
             "CREATE TABLE public.docs (id int8 PRIMARY KEY, blob text, counter int4);\
@@ -1082,7 +1123,9 @@ async fn toast_wedge_recovers_after_alter_and_reset() {
 async fn session_gucs_do_not_break_change_decoding() {
     // Review F6: the peek session pins DateStyle/bytea_output — a database
     // with legacy settings must decode identically.
-    let rig = CdcRig::start("cdc-gucs").await;
+    let Some(rig) = CdcRig::start("cdc-gucs").await else {
+        return;
+    };
     let client = rig.fixture.client().await;
     client
         .batch_execute("ALTER DATABASE postgres SET datestyle = 'SQL, DMY'")
@@ -1117,7 +1160,9 @@ async fn declared_primary_key_override_keys_the_stream_under_full() {
     // override must win over the catalog PK (any key has values in the
     // full old image) — not be silently ignored.
     use rdlt_connector::Source;
-    let rig = CdcRig::start("cdc-key-override").await;
+    let Some(rig) = CdcRig::start("cdc-key-override").await else {
+        return;
+    };
     rig.fixture
         .seed(
             "CREATE TABLE public.orders (id int8 PRIMARY KEY, code text NOT NULL);\
@@ -1145,7 +1190,9 @@ async fn declared_primary_key_override_keys_the_stream_under_full() {
 async fn ack_off_never_advances_the_slot() {
     // `ack: off` — data flows, but the slot's confirmed position never
     // moves (debugging / fan-in staging; WAL retention documented).
-    let rig = CdcRig::start("cdc-ack-off").await;
+    let Some(rig) = CdcRig::start("cdc-ack-off").await else {
+        return;
+    };
     rig.fixture
         .seed(
             "CREATE TABLE public.orders (id int8 PRIMARY KEY, total int4);\
@@ -1204,7 +1251,9 @@ async fn ack_off_never_advances_the_slot() {
 async fn custom_flag_column_flows_end_to_end() {
     // `flag_column` — a custom name rides the whole composition: the CDC
     // stream emits it, the destination hard-deletes by it.
-    let rig = CdcRig::start("cdc-flag-name").await;
+    let Some(rig) = CdcRig::start("cdc-flag-name").await else {
+        return;
+    };
     rig.fixture
         .seed(
             "CREATE TABLE public.orders (id int8 PRIMARY KEY, total int4);\
@@ -1272,7 +1321,9 @@ async fn declared_key_mismatch_under_default_identity_is_typed() {
     // `primary_key` override × CDC: under DEFAULT replica identity the
     // delete records only carry the identity columns — a mismatching
     // override is a typed error, never silent mis-keying.
-    let rig = CdcRig::start("cdc-key-mismatch").await;
+    let Some(rig) = CdcRig::start("cdc-key-mismatch").await else {
+        return;
+    };
     rig.fixture
         .seed(
             "CREATE TABLE public.orders (id int8 PRIMARY KEY, code text NOT NULL);\

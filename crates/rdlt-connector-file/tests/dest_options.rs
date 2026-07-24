@@ -2,18 +2,18 @@
 //! LOCAL storage — jsonl format, partition_by, config validation. (The
 //! object-store legs ride s3_live.rs.)
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use arrow::array::{Int64Array, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use rdlt_connector::core::{
-    ColumnDef, ColumnType, CommitCounters, CommitMeta, LoadId, LogicalType, PipelineId, Provenance,
-    StateDoc, TableName, TableSchema, WriteMode,
+    ColumnDef, ColumnType, LoadId, LogicalType, PipelineId, Provenance, TableName, TableSchema,
+    WriteMode,
 };
 use rdlt_connector::{Destination, OpenCtx};
 use rdlt_connector_file::dest::{DestFormat, FileDest, FileDestConfig};
+use rdlt_testkit::meta_for;
 
 fn schema_for(table: &str) -> TableSchema {
     TableSchema {
@@ -48,22 +48,6 @@ fn batch(ids: &[i64], days: &[Option<&str>]) -> RecordBatch {
         ],
     )
     .expect("batch")
-}
-
-fn meta_for(pipeline: &PipelineId, load: &LoadId, seq: u64) -> CommitMeta {
-    CommitMeta {
-        load_id: load.clone(),
-        commit_seq: seq,
-        state: StateDoc {
-            format_version: 1,
-            pipeline: pipeline.clone(),
-            cursors: BTreeMap::new(),
-            schema_hashes: BTreeMap::new(),
-            last_commit: None,
-            engine_version: "test".into(),
-        },
-        counters: CommitCounters::default(),
-    }
 }
 
 async fn run_load(dest: &FileDest, rows: RecordBatch) {

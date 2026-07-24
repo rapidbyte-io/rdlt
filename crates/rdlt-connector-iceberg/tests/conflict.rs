@@ -7,33 +7,13 @@
 
 mod common;
 
-use std::collections::BTreeMap;
-use std::sync::Arc;
-
-use arrow_array::{Int64Array, RecordBatch};
-use arrow_schema::{DataType, Field, Schema};
 use common::CatalogFixture;
-use rdlt_connector::core::{
-    ColumnDef, ColumnType, CommitCounters, CommitMeta, LoadId, LogicalType, PipelineId, Provenance,
-    StateDoc, TableName, TableSchema, WriteMode,
-};
+use rdlt_connector::core::{LoadId, PipelineId, TableName, WriteMode};
 use rdlt_connector::{DestError, Destination, OpenCtx};
 use rdlt_connector_iceberg::IcebergDest;
+use rdlt_testkit::{batch_of, meta_for, schema_for};
 
 const COMMITS_PER_WRITER: u64 = 4;
-
-fn schema_for(table: &str) -> TableSchema {
-    TableSchema {
-        table: TableName::new(table),
-        parent: None,
-        columns: vec![ColumnDef {
-            name: "id".into(),
-            ty: ColumnType::scalar(LogicalType::Int64),
-            nullable: false,
-            provenance: Provenance::Inferred,
-        }],
-    }
-}
 
 async fn run_writer(dest: IcebergDest, pipeline: &str, load: &str) -> Result<(), DestError> {
     let pipeline = PipelineId::new(pipeline);
@@ -46,27 +26,8 @@ async fn run_writer(dest: IcebergDest, pipeline: &str, load: &str) -> Result<(),
         .ensure_table(&schema_for("contested"), &WriteMode::Append)
         .await?;
     for seq in 1..=COMMITS_PER_WRITER {
-        let batch = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)])),
-            vec![Arc::new(Int64Array::from(vec![seq as i64]))],
-        )
-        .expect("batch");
-        session.write(&table, batch).await?;
-        session
-            .commit(CommitMeta {
-                load_id: load.clone(),
-                commit_seq: seq,
-                state: StateDoc {
-                    format_version: 1,
-                    pipeline: pipeline.clone(),
-                    cursors: BTreeMap::new(),
-                    schema_hashes: BTreeMap::new(),
-                    last_commit: None,
-                    engine_version: "test".into(),
-                },
-                counters: CommitCounters::default(),
-            })
-            .await?;
+        session.write(&table, batch_of(&[seq as i64])).await?;
+        session.commit(meta_for(&pipeline, &load, seq)).await?;
     }
     Ok(())
 }

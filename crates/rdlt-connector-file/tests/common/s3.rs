@@ -26,26 +26,10 @@ pub struct S3Fixture {
     pub endpoint: String,
 }
 
-/// Is a container-runtime socket reachable? (testcontainers speaks the
-/// docker API — podman needs its socket, the standing workspace note.)
-fn runtime_available() -> bool {
-    if std::env::var_os("DOCKER_HOST").is_some() {
-        return true;
-    }
-    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR")
-        && std::path::Path::new(&dir)
-            .join("podman/podman.sock")
-            .exists()
-    {
-        return true;
-    }
-    std::path::Path::new("/var/run/docker.sock").exists()
-}
-
 impl S3Fixture {
     /// Start RUSTFS, or skip visibly (None) without a runtime socket.
     pub async fn start() -> Option<Self> {
-        if !runtime_available() {
+        if !rdlt_testkit::containers::runtime_available() {
             eprintln!("SKIP: no container runtime socket — s3 live cell not run");
             return None;
         }

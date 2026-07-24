@@ -123,7 +123,9 @@ async fn sweep_cdc_fail_points() {
         let needs_change_pass = point == "cdc.stream.peek";
         for action in ["return", "panic", "1*off->return"] {
             let context = format!("{point} / {action}");
-            let fixture = CdcPgFixture::start().await;
+            let Some(fixture) = CdcPgFixture::start().await else {
+                return;
+            };
             fixture.seed(SEED).await;
             let conn = fixture.conn_url();
             let rig = Rig::new();
@@ -179,7 +181,9 @@ async fn sweep_cdc_fail_points() {
 #[tokio::test(flavor = "multi_thread")]
 async fn redelivered_changes_converge() {
     let _guard = FAIL_POINT_LOCK.lock().await;
-    let fixture = CdcPgFixture::start().await;
+    let Some(fixture) = CdcPgFixture::start().await else {
+        return;
+    };
     fixture.seed(SEED).await;
     let conn = fixture.conn_url();
     let rig = Rig::new();
@@ -225,7 +229,9 @@ async fn container_kill_mid_catch_up_is_typed_and_preserves_commits() {
     // Arms nothing, but fail points are PROCESS-GLOBAL: without the lock,
     // the sweep's armed points fire inside THIS test's runs.
     let _guard = FAIL_POINT_LOCK.lock().await;
-    let fixture = CdcPgFixture::start().await;
+    let Some(fixture) = CdcPgFixture::start().await else {
+        return;
+    };
     fixture
         .seed("CREATE TABLE public.ev (id int8 PRIMARY KEY, v text);")
         .await;
@@ -314,7 +320,9 @@ async fn container_kill_mid_catch_up_is_typed_and_preserves_commits() {
 #[tokio::test(flavor = "multi_thread")]
 async fn transient_mid_snapshot_resumes_within_one_run() {
     let _guard = FAIL_POINT_LOCK.lock().await;
-    let fixture = CdcPgFixture::start().await;
+    let Some(fixture) = CdcPgFixture::start().await else {
+        return;
+    };
     fixture.seed(SEED).await;
     let rig = Rig::new();
 

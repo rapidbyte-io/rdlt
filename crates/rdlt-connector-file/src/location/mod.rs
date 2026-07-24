@@ -4,12 +4,9 @@
 //! (endpoint/bucket/key).
 
 pub mod s3;
-pub mod secret;
 
 use rdlt_connector::SourceError;
 use serde::{Deserialize, Serialize};
-
-pub use secret::Secret;
 
 use crate::source::cursor::FileMeta;
 
@@ -141,6 +138,8 @@ pub(crate) fn classify_read_error(context: &str, e: std::io::Error) -> SourceErr
 
 #[cfg(test)]
 mod tests {
+    use rdlt_connector::Secret;
+
     use super::*;
 
     /// One recoverability rulebook for store errors, both halves: a

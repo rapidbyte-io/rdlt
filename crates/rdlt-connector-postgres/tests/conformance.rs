@@ -70,7 +70,9 @@ async fn run_to_duckdb(source: PostgresSource, pipeline: &str) -> (DuckDb, rdlt_
 
 #[tokio::test(flavor = "multi_thread")]
 async fn type_matrix_round_trip() {
-    let fixture = PgFixture::start().await;
+    let Some(fixture) = PgFixture::start().await else {
+        return;
+    };
     fixture.seed(TYPE_MATRIX_SEED).await;
     let (dest, report) = run_to_duckdb(
         source_for(&fixture.conn_url(), "tables:\n  - name: type_matrix\n"),
@@ -159,7 +161,9 @@ async fn type_hints_end_to_end() {
     // 006 US2: hinted text→timestamptz lands typed; unconstrained numeric
     // regains decimality via a hint; a failing cast is a typed copy error
     // naming the column.
-    let fixture = PgFixture::start().await;
+    let Some(fixture) = PgFixture::start().await else {
+        return;
+    };
     fixture
         .seed(
             "CREATE TABLE h (id int8 PRIMARY KEY, raw_ts text, amount numeric); \
@@ -187,7 +191,9 @@ async fn type_hints_end_to_end() {
     assert_eq!(amount, "12.3456", "decimal hint restores decimality");
 
     // Cast failure: text that is not a timestamp → typed copy-phase error.
-    let fixture2 = PgFixture::start().await;
+    let Some(fixture2) = PgFixture::start().await else {
+        return;
+    };
     fixture2
         .seed(
             "CREATE TABLE h (id int8 PRIMARY KEY, raw_ts text); \
@@ -212,7 +218,9 @@ async fn partitioned_tables_load_once_via_parent() {
     // 005 review finding (generalized by 007 R7 to pg_inherits): without a
     // hierarchy-child filter, schema-wide discovery streamed BOTH the
     // partitioned parent and every leaf, double-loading every row.
-    let fixture = PgFixture::start().await;
+    let Some(fixture) = PgFixture::start().await else {
+        return;
+    };
     fixture
         .seed(
             "CREATE TABLE metrics (day date NOT NULL, v int8) PARTITION BY RANGE (day); \
@@ -254,7 +262,9 @@ async fn inherits_children_load_once_via_parent() {
     // both double-loaded every child row (dlt has the same defect; we fix
     // it). Mixed hierarchies (a child that is ALSO a partition parent)
     // still load each row exactly once.
-    let fixture = PgFixture::start().await;
+    let Some(fixture) = PgFixture::start().await else {
+        return;
+    };
     fixture
         .seed(
             "CREATE TABLE cities (name text, population int8); \
@@ -302,7 +312,9 @@ async fn inherits_children_load_once_via_parent() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn schema_wide_discovery_and_views() {
-    let fixture = PgFixture::start().await;
+    let Some(fixture) = PgFixture::start().await else {
+        return;
+    };
     fixture
         .seed(
             r#"
@@ -335,7 +347,9 @@ CREATE VIEW gamma AS SELECT id FROM alpha;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn hostile_identifiers_and_column_selection() {
-    let fixture = PgFixture::start().await;
+    let Some(fixture) = PgFixture::start().await else {
+        return;
+    };
     fixture
         .seed(
             r#"
@@ -378,7 +392,9 @@ INSERT INTO "Order ""Items""" VALUES (1, 'kw', 'hidden');
 
 #[tokio::test(flavor = "multi_thread")]
 async fn empty_table_materializes_with_schema() {
-    let fixture = PgFixture::start().await;
+    let Some(fixture) = PgFixture::start().await else {
+        return;
+    };
     fixture
         .seed("CREATE TABLE hollow (id int8 PRIMARY KEY, v numeric(6,3));")
         .await;
@@ -401,7 +417,9 @@ async fn drift_column_added_dropped_retyped() {
 
     // ADDED between reflect and read: this run projects the reflected
     // columns only (discovery is once per run); the NEXT run evolves.
-    let fixture = PgFixture::start().await;
+    let Some(fixture) = PgFixture::start().await else {
+        return;
+    };
     fixture
         .seed("CREATE TABLE d (id int8 PRIMARY KEY, v text); INSERT INTO d VALUES (1, 'x');")
         .await;
@@ -437,7 +455,9 @@ async fn drift_column_added_dropped_retyped() {
     );
 
     // DROPPED between reflect and read: typed error, never misaligned data.
-    let fixture = PgFixture::start().await;
+    let Some(fixture) = PgFixture::start().await else {
+        return;
+    };
     fixture
         .seed("CREATE TABLE d (id int8 PRIMARY KEY, v text); INSERT INTO d VALUES (1, 'x');")
         .await;
@@ -454,7 +474,9 @@ async fn drift_column_added_dropped_retyped() {
 
     // RETYPED between reflect and read: the wire shape no longer matches the
     // reflected decode plan — a typed DECODE error, never silent coercion.
-    let fixture = PgFixture::start().await;
+    let Some(fixture) = PgFixture::start().await else {
+        return;
+    };
     fixture
         .seed("CREATE TABLE d (id int8 PRIMARY KEY, n int4); INSERT INTO d VALUES (1, 5);")
         .await;
@@ -478,7 +500,9 @@ async fn drift_column_added_dropped_retyped() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn drift_table_dropped_between_reflect_and_read() {
-    let fixture = PgFixture::start().await;
+    let Some(fixture) = PgFixture::start().await else {
+        return;
+    };
     fixture
         .seed("CREATE TABLE doomed (id int8 PRIMARY KEY); INSERT INTO doomed VALUES (1);")
         .await;
@@ -561,7 +585,9 @@ async fn lossy_mappings_announce_once_per_read_on_dedicated_target() {
     let _ = tracing::subscriber::set_global_default(LossyCollector);
     EVENTS.get_or_init(Mutex::default);
 
-    let fixture = PgFixture::start().await;
+    let Some(fixture) = PgFixture::start().await else {
+        return;
+    };
     fixture
         .seed(
             "CREATE TABLE noisy (id int8 PRIMARY KEY, dur interval, tags int8[], plain text); \
@@ -606,7 +632,9 @@ async fn lossy_mappings_announce_once_per_read_on_dedicated_target() {
 /// already pinned by `type_hints_end_to_end`.)
 #[tokio::test(flavor = "multi_thread")]
 async fn hint_matrix_covers_every_documented_pair() {
-    let fixture = PgFixture::start().await;
+    let Some(fixture) = PgFixture::start().await else {
+        return;
+    };
     fixture
         .seed(
             "CREATE TABLE h (

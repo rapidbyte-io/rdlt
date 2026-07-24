@@ -3,7 +3,6 @@
 //! any in-source wait is bounded by construction, never a free retry loop.
 
 pub mod auth;
-pub mod secret;
 
 use std::time::{Duration, Instant};
 
@@ -12,7 +11,6 @@ use reqwest::header::{HeaderName, HeaderValue};
 use rdlt_connector::SourceError;
 
 pub use auth::AuthProvider;
-pub use secret::Secret;
 
 /// One configured HTTP client for a source document: reqwest + auth +
 /// source-level defaults + pacing state.

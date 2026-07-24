@@ -30,9 +30,6 @@ use rdlt_connector_duckdb::dest::DuckDb;
 use rdlt_connector_postgres::dest::Postgres;
 use rdlt_connector_sqlcore::DestOptions;
 use rdlt_engine::{Engine, EngineConfig};
-use testcontainers_modules::postgres::Postgres as PostgresImage;
-use testcontainers_modules::testcontainers::ImageExt;
-use testcontainers_modules::testcontainers::runners::AsyncRunner;
 
 // ---- shared structured feed ------------------------------------------------
 
@@ -87,22 +84,6 @@ fn batch(
 }
 
 // ---- both-destinations driver ----------------------------------------------
-
-async fn start_pg() -> (
-    testcontainers_modules::testcontainers::ContainerAsync<PostgresImage>,
-    String,
-) {
-    let container = PostgresImage::default()
-        .with_tag("16-alpine")
-        .start()
-        .await
-        .expect("start postgres container (needs docker/podman)");
-    let port = container.get_host_port_ipv4(5432).await.expect("port");
-    (
-        container,
-        format!("host=127.0.0.1 port={port} user=postgres password=postgres dbname=postgres"),
-    )
-}
 
 /// A canonical column: a bare identifier (quoted + normalized per engine) or
 /// a raw SQL EXPRESSION (valid on both engines — used for derived facts like
@@ -190,7 +171,12 @@ async fn both(
     table: &str,
     cols: &[&str],
 ) -> (Outcome, Outcome) {
-    let (_pg_guard, conn) = start_pg().await;
+    // Callers guard on `runtime_available()` and skip before reaching here,
+    // so a missing runtime at this point is unexpected — fail loudly.
+    let pg = rdlt_testkit::PgFixture::start()
+        .await
+        .expect("postgres runtime (probed by the caller)");
+    let conn = pg.conn.clone();
     let schema = format!("diff_{name}");
     let duck_dir = tempfile::tempdir().expect("tempdir");
 
@@ -277,6 +263,10 @@ fn kv_feed(rows: &[(Option<i64>, Option<&str>)]) -> Feed {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn differential_delete_insert_redelivery() {
+    if !rdlt_testkit::containers::runtime_available() {
+        eprintln!("SKIP: no container runtime — differential cell not run");
+        return;
+    }
     let (pg, duck) = both(
         "di",
         vec![
@@ -298,6 +288,10 @@ type UpsertRow<'a> = (Option<i64>, Option<i64>, Option<&'a str>, Option<bool>);
 
 #[tokio::test(flavor = "multi_thread")]
 async fn differential_upsert_with_hard_delete_and_dedup() {
+    if !rdlt_testkit::containers::runtime_available() {
+        eprintln!("SKIP: no container runtime — differential cell not run");
+        return;
+    }
     let feed = |rows: &[UpsertRow<'_>]| {
         let ks: Vec<_> = rows.iter().map(|r| r.0).collect();
         let seqs: Vec<_> = rows.iter().map(|r| r.1).collect();
@@ -344,6 +338,10 @@ async fn differential_upsert_with_hard_delete_and_dedup() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn differential_scd2_history() {
+    if !rdlt_testkit::containers::runtime_available() {
+        eprintln!("SKIP: no container runtime — differential cell not run");
+        return;
+    }
     let (pg, duck) = both(
         "scd2",
         vec![
@@ -368,6 +366,10 @@ async fn differential_scd2_history() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn differential_merge_key_scope_and_null_scope() {
+    if !rdlt_testkit::containers::runtime_available() {
+        eprintln!("SKIP: no container runtime — differential cell not run");
+        return;
+    }
     let feed = |rows: &[(Option<i64>, Option<i64>, Option<&str>)]| {
         let ks: Vec<_> = rows.iter().map(|r| r.0).collect();
         let days: Vec<_> = rows.iter().map(|r| r.1).collect();
@@ -402,6 +404,10 @@ async fn differential_merge_key_scope_and_null_scope() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn differential_rejections_are_class_identical() {
+    if !rdlt_testkit::containers::runtime_available() {
+        eprintln!("SKIP: no container runtime — differential cell not run");
+        return;
+    }
     // Explicit strategy under append (011 R5): both destinations reject with
     // the SAME shared message.
     let (pg, duck) = both(
@@ -431,6 +437,10 @@ async fn differential_rejections_are_class_identical() {
 /// destinations (retire only within delivered scopes).
 #[tokio::test(flavor = "multi_thread")]
 async fn differential_scd2_scoped_retirement() {
+    if !rdlt_testkit::containers::runtime_available() {
+        eprintln!("SKIP: no container runtime — differential cell not run");
+        return;
+    }
     let feed = |rows: &[(Option<i64>, Option<i64>, Option<&str>)]| {
         let ks: Vec<_> = rows.iter().map(|r| r.0).collect();
         let days: Vec<_> = rows.iter().map(|r| r.1).collect();
