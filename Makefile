@@ -16,13 +16,14 @@
 #     TARGET=mutants make test   mutation pass (slow)
 #     TARGET=deep make test      everything scheduled CI runs (prop+sweep+mutants+fuzz)
 #   make bench                 shred microbench (criterion)
-#     TARGET=iai make bench      instruction-count benches + baseline comparison (perf gate)
-#     TARGET=e2e make bench      gated benchmark cells (rdlt-bench; quiet machine!)
-#     TARGET=matrix make bench   the FULL cell matrix incl. scoreboards (long)
+#     TARGET=iai make bench      instruction-count benches + baseline comparison
+#                                + cold-start check (perf/embeddability gate)
+#     TARGET=e2e make bench      the e2e cell matrix (rdlt-bench; quiet machine!)
+#     TARGET=matrix make bench   the full cell matrix (alias of e2e; long)
 #     TARGET=gate make bench     evaluate benches/bars.toml vs committed artifacts
 #     TARGET=report make bench   regenerate RESULTS.md tables from artifacts
 #     TARGET=<cell-or-glob> make bench   one cell or a slice, e.g.
-#                                TARGET=pg-wide-pg-1m or TARGET='pg-*'
+#                                TARGET=pg-to-pg-1m or TARGET='pg-*'
 #                                (cells: cargo run -p rdlt-bench -- list)
 #   make check                 everything a PR must pass (lint + test + sweep + perf gate)
 #
@@ -92,10 +93,14 @@ else ifeq ($(TARGET),iai)
 	cargo bench -p rdlt-engine --bench iai_hotpath -- --save-summary=json
 	cargo bench -p rdlt-connector-postgres --bench iai_pg -- --save-summary=json
 	benches/compare-iai.sh
+	# Cold-start embeddability check rides the instruments track (so `make
+	# check` keeps guarding the <=40 ms claim). Needs the release binary.
+	$(MAKE) release
+	benches/check-cold-start.sh
 else ifeq ($(TARGET),e2e)
 	$(MAKE) release
 	sh -c 'E=$$(command -v podman || command -v docker); "$$E" build -q -t rdlt-baseline benches/competitors/dlt/'
-	cargo run -q -p rdlt-bench -- run --class gated
+	cargo run -q -p rdlt-bench -- run
 else ifeq ($(TARGET),matrix)
 	$(MAKE) release
 	sh -c 'E=$$(command -v podman || command -v docker); "$$E" build -q -t rdlt-baseline benches/competitors/dlt/'

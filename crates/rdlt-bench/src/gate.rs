@@ -161,10 +161,9 @@ pub fn run_gate(bars: &[Bar], results_dir: &Path) -> Result<(Vec<Verdict>, bool)
 mod tests {
     use super::*;
     use crate::artifact::{CpuStats, RssStats};
-    use crate::cells::Class;
 
     fn artifact_with(median_ms: f64, comp_ms: Option<f64>) -> Artifact {
-        let mut artifact = crate::artifact::tests::minimal("cell-x", Class::Gated);
+        let mut artifact = crate::artifact::tests::minimal("cell-x");
         artifact.rdlt.median_ms = median_ms;
         if let Some(comp) = comp_ms {
             artifact.competitors.insert(

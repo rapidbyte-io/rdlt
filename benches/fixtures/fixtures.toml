@@ -1,6 +1,12 @@
 # Fixture registry (data-model.md §2). The harness owns lifecycle: create →
 # seed (identity recorded) → shared within one invocation → teardown.
 # Container fixtures are named rdlt-bench-<id>; prepare scripts rely on that.
+#
+# P0 keeps three fixtures: the harness self-test `none`, plus `pg-src` and
+# `file-s3` as the seeds P2's reshape (T016) grows into the two same-conditions
+# fixtures (`pg` with per-product destination databases, `rustfs` with `raw` +
+# `lake` buckets). The 10 legacy fixtures were retired in the migration commit
+# (archive commit 40841ab).
 
 # Shared across every postgres_container fixture (they differ only by port). A
 # fixture may still state its own `image`/`conn` to override.
@@ -10,64 +16,15 @@ postgres_conn = "postgresql://postgres:postgres@127.0.0.1:{{port}}/postgres"
 
 # Reusable blocks; a fixture opts in with `reset_sql = "@name"`.
 [snippets]
-# Drop the per-run destination schemas (raw%) a load recreates — shared by the
-# REST→PG and postgres-source fixtures.
+# Drop the per-run destination schemas (raw%) a load recreates.
 drop_raw_schemas = "DO $$ DECLARE s text; BEGIN FOR s IN SELECT schema_name FROM information_schema.schemata WHERE schema_name LIKE 'raw%' LOOP EXECUTE 'DROP SCHEMA ' || quote_ident(s) || ' CASCADE'; END LOOP; END $$;"
 
 [[fixture]]
 id = "selftest-none"
 kind = "none"
 
-# -- e2e ---------------------------------------------------------------------
-
-[[fixture]]
-id = "jsonl-200k"
-kind = "generated_files"
-generate_sh = "python3 {{benches}}/fixtures/gen_jsonl.py 200000 {{data}}/rows.jsonl && printf 'streams:\n  - name: events\n    format: jsonl\n    path: \"{{data}}/rows.jsonl\"\n' > {{data}}/files.yaml"
-hash = ["{{data}}/rows.jsonl"]
-
-[[fixture]]
-id = "parquet-200k"
-kind = "generated_files"
-generate_sh = "sh {{benches}}/fixtures/gen_parquet.sh {{cli}} {{data}} {{benches}}"
-hash = ["{{data}}/rows.jsonl"]
-
-[[fixture]]
-id = "cold-one-row"
-kind = "generated_files"
-generate_sh = "printf '{\"id\":1,\"name\":\"one\"}\n' > {{data}}/one.jsonl && printf 'streams:\n  - name: events\n    format: jsonl\n    path: \"{{data}}/one.jsonl\"\n' > {{data}}/cold-files.yaml"
-hash = ["{{data}}/one.jsonl"]
-
-# REST→PG: a Postgres destination container PLUS the mock API sidecar (the
-# server pre-renders pages; the benchmark measures the clients).
-[[fixture]]
-id = "rest-pg"
-kind = "postgres_container"
-port = 5440
-reset_sql = "@drop_raw_schemas"
-service_sh = "cd {{repo}} && cargo run -q --release -p rdlt-connector-rest --example mock_api"
-ready_port = 8642
-generate_sh = "printf 'base_url: http://127.0.0.1:8642\nstreams:\n  - name: events\n    path: /events\n    pagination: {type: page, page_param: page, start: 1}\n' > {{data}}/rest.yaml"
-
-# 016: Iceberg destination scoreboard — Polaris (harness-managed container)
-# + a RUSTFS sidecar the generate/teardown scripts manage (one container per
-# fixture is the harness shape; the sidecar rides generate_sh + teardown_sh).
-# Dual S3 endpoints: the client reaches RUSTFS at 127.0.0.1, Polaris reaches
-# it through the rootless-podman host alias.
-[[fixture]]
-id = "iceberg-polaris"
-kind = "container"
-image = "docker.io/apache/polaris:latest"
-port = 8191
-container_port = 8181
-run_args = ["-e", "POLARIS_BOOTSTRAP_CREDENTIALS=POLARIS,root,s3cr3t", "-e", "polaris.realm-context.realms=POLARIS", "-e", "AWS_REGION=us-east-1", "-e", "AWS_ACCESS_KEY_ID=ice-key", "-e", "AWS_SECRET_ACCESS_KEY=ice-secret"]
-generate_sh = "podman rm -f rdlt-bench-ice-rustfs >/dev/null 2>&1; podman run -d --name rdlt-bench-ice-rustfs -p 19120:9000 -e RUSTFS_ACCESS_KEY=ice-key -e RUSTFS_SECRET_KEY=ice-secret docker.io/rustfs/rustfs:1.0.0-beta.11 && python3 {{benches}}/fixtures/gen_jsonl.py 200000 {{data}}/rows.jsonl && printf 'streams:\n  - name: events\n    format: jsonl\n    path: \"{{data}}/rows.jsonl\"\n' > {{data}}/files.yaml && python3 {{benches}}/fixtures/polaris_bootstrap.py http://127.0.0.1:8191 http://127.0.0.1:19120 http://host.containers.internal:19120 ice-key ice-secret root s3cr3t rdlt ice"
-reset_sh = "python3 {{benches}}/fixtures/polaris_reset.py http://127.0.0.1:8191 root s3cr3t rdlt bench"
-teardown_sh = "podman rm -f rdlt-bench-ice-rustfs >/dev/null 2>&1 || true"
-hash = ["{{data}}/rows.jsonl"]
-
-# -- postgres source (feature 005 datasets) ----------------------------------
-
+# Postgres source (feature 005 datasets); P2 grows this into the `pg` fixture
+# with empty per-product destination databases on the same server.
 [[fixture]]
 id = "pg-src"
 kind = "postgres_container"
@@ -75,46 +32,8 @@ port = 5439
 seed_sql = "{{benches}}/fixtures/seed_pg.sql"
 reset_sql = "@drop_raw_schemas"
 
-# -- merge strategies (feature 008) ------------------------------------------
-
-[[fixture]]
-id = "strat-pg"
-kind = "postgres_container"
-port = 5441
-seed_sql = "{{benches}}/fixtures/seed_pg.sql"
-
-# -- CDC (feature 009) — logical replication enabled -------------------------
-
-[[fixture]]
-id = "cdc-tp-pg"
-kind = "postgres_container"
-container_args = ["-c", "wal_level=logical", "-c", "max_replication_slots=8", "-c", "max_wal_senders=8"]
-port = 5442
-
-[[fixture]]
-id = "cdc-lat-pg"
-kind = "postgres_container"
-container_args = ["-c", "wal_level=logical", "-c", "max_replication_slots=8", "-c", "max_wal_senders=8"]
-port = 5443
-seed_sql = "{{benches}}/fixtures/seed_pg.sql"
-
-# -- SQL-level scoreboards (features 008/010) --------------------------------
-
-[[fixture]]
-id = "merge-index-pg"
-kind = "postgres_container"
-port = 5444
-seed_sql = "{{benches}}/fixtures/seed_merge_index.sql"
-
-[[fixture]]
-id = "refine-pg"
-kind = "postgres_container"
-port = 5445
-seed_sql = "{{benches}}/fixtures/seed_refine.sql"
-
-# 015: RUSTFS object store for the file-s3 scoreboard cell. The flagship
-# 200k jsonl dataset is seeded INTO the bucket; the pipeline reads it via
-# the s3 location into duckdb.
+# RUSTFS object store (015). The flagship 200k jsonl dataset is seeded INTO the
+# bucket; P2 grows this into the `rustfs` fixture with `raw` + `lake` buckets.
 [[fixture]]
 id = "file-s3"
 kind = "container"

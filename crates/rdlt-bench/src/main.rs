@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
-use rdlt_bench::cells::{Cell, Class};
+use rdlt_bench::cells::Cell;
 use rdlt_bench::paths::Paths;
 use rdlt_bench::protocol::QuietVerdict;
 use rdlt_bench::{
@@ -16,7 +16,7 @@ use rdlt_bench::{
 #[command(
     name = "rdlt-bench",
     about = "rdlt declarative benchmark harness: cells as data -> run -> gate -> report",
-    after_help = "Run from the repo root; gated runs need `make release` and a quiet machine.\n\
+    after_help = "Run from the repo root; measured runs need `make release` and a quiet machine.\n\
                   Cells: benches/cells/*.toml · bars: benches/bars.toml · artifacts: benches/results/"
 )]
 struct Cli {
@@ -26,7 +26,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Cmd {
-    /// Show the cell matrix (coordinates, class, competitors, bars)
+    /// Show the cell matrix (fixture, competitors, bars)
     List {
         #[command(flatten)]
         selection: SelectionArgs,
@@ -46,9 +46,6 @@ enum Cmd {
 struct SelectionArgs {
     /// A single cell id
     cell: Option<String>,
-    /// Only cells of this class
-    #[arg(long, value_enum)]
-    class: Option<Class>,
     /// Glob over cell ids (`*` wildcards, e.g. 'pg-*')
     #[arg(long)]
     filter: Option<String>,
@@ -57,7 +54,6 @@ struct SelectionArgs {
 impl SelectionArgs {
     fn selects(&self, cell: &Cell) -> bool {
         self.cell.as_deref().is_none_or(|id| id == cell.id)
-            && self.class.is_none_or(|c| c == cell.class)
             && self
                 .filter
                 .as_deref()
@@ -91,10 +87,7 @@ fn load_all(paths: &Paths) -> rdlt_bench::Result<(Vec<Cell>, Vec<cells::Bar>)> {
 
 fn cmd_list(paths: &Paths, selection: &SelectionArgs) -> rdlt_bench::Result<()> {
     let (all_cells, bars) = load_all(paths)?;
-    println!(
-        "{:<34} {:<10} {:<11} {:<9} {:<16} {:<5} competitors",
-        "CELL", "CLASS", "MODE", "SUITE", "FIXTURE", "RUNS"
-    );
+    println!("{:<34} {:<16} {:<5} competitors", "CELL", "FIXTURE", "RUNS");
     for cell in all_cells.iter().filter(|c| selection.selects(c)) {
         let competitors: Vec<&str> = cell
             .competitors
@@ -103,11 +96,8 @@ fn cmd_list(paths: &Paths, selection: &SelectionArgs) -> rdlt_bench::Result<()> 
             .collect();
         let barred = bars.iter().any(|b| b.cell == cell.id);
         println!(
-            "{:<34} {:<10} {:<11} {:<9} {:<16} {:<5} {}{}",
+            "{:<34} {:<16} {:<5} {}{}",
             cell.id,
-            cell.class.to_string(),
-            cell.mode.to_string(),
-            cell.suite,
             cell.fixture,
             cell.runs,
             competitors.join(","),
@@ -160,10 +150,7 @@ fn run_one_cell(
     base_subs: &BTreeMap<String, String>,
     started: &mut BTreeMap<String, fixtures::Started>,
 ) -> rdlt_bench::Result<artifact::Artifact> {
-    eprintln!(
-        "== {} ({} {}, {} runs) ==",
-        cell.id, cell.class, cell.mode, cell.runs
-    );
+    eprintln!("== {} ({} runs) ==", cell.id, cell.runs);
     if !started.contains_key(&cell.fixture) {
         let def = ctx
             .fixture_defs
@@ -179,15 +166,16 @@ fn run_one_cell(
     }
     let fixture = &started[&cell.fixture];
 
-    // Quiet guard BEFORE anything is measured — the baselines feed gated
-    // ratios, so they need the quiet machine as much as the rdlt side.
-    let quiet_note = match protocol::quiet_guard_now(cell.class)? {
+    // Quiet guard BEFORE anything is measured — the baselines feed the
+    // recorded ratios, so they need the quiet machine as much as the rdlt side.
+    let quiet_note = match protocol::quiet_guard_now()? {
         QuietVerdict::Quiet => None,
         QuietVerdict::Annotated(note) => {
             eprintln!("[{}] {note}", cell.id);
             Some(note)
         }
     };
+    let forced = protocol::forced();
 
     // Baseline FIRST — competitors run before the rdlt side.
     let mut competitor_sides = BTreeMap::new();
@@ -211,17 +199,11 @@ fn run_one_cell(
         }
         eprintln!("   baseline {} ...", variant.id);
         let side = competitors::run_competitor(variant, reference, cell.runs, &subs, fixture);
+        // A baseline that could not run is recorded as a loud `Missing{reason}`,
+        // never a silent skip. Enforcement is measurement-first (bars gate a
+        // recorded session, not the live run), so the run proceeds and the
+        // matrix shows the gap.
         if let artifact::CompetitorSide::Missing { reason } = &side {
-            // Scoreboard cells record the MISSING loudly; a GATED cell
-            // refuses instead — writing a baseline-less artifact would
-            // overwrite the committed competitor medians and only fail
-            // later at `gate`.
-            if cell.class == Class::Gated {
-                return Err(BenchError(format!(
-                    "gated cell `{}`: baseline `{}` MISSING ({reason}) — refusing to run and overwrite the committed artifact",
-                    cell.id, variant.id
-                )));
-            }
             eprintln!("   baseline {} MISSING: {reason}", variant.id);
         }
         competitor_sides.insert(variant.id.clone(), side);
@@ -234,8 +216,10 @@ fn run_one_cell(
         competitor_pins,
         competitor_sides,
         quiet_note,
+        forced,
     )?;
     let path = artifact::write(&paths.results, &result)?;
+    report::append_history(&paths.benches.join("history.jsonl"), &result)?;
     eprintln!(
         "   median {:.1} ms  (artifact: {})",
         result.rdlt.median_ms,

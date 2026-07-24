@@ -12,7 +12,6 @@ pub mod cells;
 pub mod competitors;
 pub mod fixtures;
 pub mod gate;
-pub mod library_mode;
 pub mod paths;
 pub mod protocol;
 pub mod report;

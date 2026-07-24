@@ -9,7 +9,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::{BenchError, Result};
 
-pub const ARTIFACT_FORMAT_VERSION: u32 = 1;
+/// The archive commit where every retired v1 cell/fixture/artifact/bar stays
+/// checkout-able (feature 018 migration, BR1). Named in the v1-rejection
+/// message so a stale artifact points a reader at its recorded history.
+pub const ARCHIVE_COMMIT: &str = "40841ab";
+
+pub const ARTIFACT_FORMAT_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Fingerprint {
@@ -25,11 +30,6 @@ pub struct Fingerprint {
     pub loadavg_at_start: f64,
     /// Present when the quiet-machine guard annotated the run.
     pub quiet_note: Option<String>,
-    /// Read-only migration slot: pre-cleanup artifacts recorded a single
-    /// `competitor_pin` string here. [`read`] folds it into `competitor_pins`
-    /// so regenerated reports stay byte-identical; never written back.
-    #[serde(default, skip_serializing, rename = "competitor_pin")]
-    legacy_competitor_pin: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -46,7 +46,8 @@ pub struct RssStats {
     pub note: Option<String>,
 }
 
-/// Per-stream attribution (library mode only; from the events seam).
+/// Per-stream attribution (from the events seam). Retained in the artifact
+/// shape; always empty since subprocess is the only run behavior.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StreamAttribution {
     pub stream: String,
@@ -108,9 +109,6 @@ pub struct VerifyOutcome {
 pub struct Artifact {
     pub format_version: u32,
     pub cell_id: String,
-    pub class: crate::cells::Class,
-    pub mode: crate::cells::Mode,
-    pub suite: String,
     /// ISO date of the session (from `date -I` at run time — the harness has
     /// no clock dependency worth adding for this).
     pub recorded_at: String,
@@ -120,6 +118,14 @@ pub struct Artifact {
     #[serde(default)]
     pub competitors: BTreeMap<String, CompetitorSide>,
     pub verify: Option<VerifyOutcome>,
+    /// Set when `RDLT_BENCH_FORCE=1` overrode the quiet guard on a loaded
+    /// machine — the number is context, not evidence, and says so.
+    #[serde(default)]
+    pub forced: bool,
+    /// Driver pass-through context (e.g. `sync_s` for the Airbyte kind),
+    /// carried verbatim into the record. Empty for container/rdlt runs.
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 pub fn fingerprint(
@@ -154,7 +160,6 @@ pub fn fingerprint(
         dataset_hashes,
         loadavg_at_start: crate::protocol::loadavg_1min().unwrap_or(-1.0),
         quiet_note,
-        legacy_competitor_pin: None,
     }
 }
 
@@ -185,45 +190,34 @@ pub fn read(results_dir: &Path, cell_id: &str) -> Result<Artifact> {
             path.display()
         ))
     })?;
-    let mut artifact: Artifact = serde_json::from_str(&raw)
-        .map_err(|e| BenchError(format!("parsing {}: {e}", path.display())))?;
-    // Fold a pre-cleanup single `competitor_pin` into the pins map. The old
-    // format lost which variant produced it, so key it by the competitor that
-    // ran (provenance renders only the values — display-neutral either way).
-    if artifact.fingerprint.competitor_pins.is_empty()
-        && let Some(pin) = artifact.fingerprint.legacy_competitor_pin.take()
-    {
-        let key = artifact
-            .competitors
-            .keys()
-            .next()
-            .cloned()
-            .unwrap_or_else(|| "competitor".into());
-        artifact.fingerprint.competitor_pins.insert(key, pin);
-    }
-    if artifact.format_version != ARTIFACT_FORMAT_VERSION {
+    // Read the version before full deserialization: a retired v1 artifact must
+    // fail loudly and point at its archived history, not error on a since-removed
+    // field with a confusing serde message.
+    let version = serde_json::from_str::<serde_json::Value>(&raw)
+        .ok()
+        .and_then(|v| v.get("format_version").and_then(serde_json::Value::as_u64));
+    if version != Some(ARTIFACT_FORMAT_VERSION as u64) {
         return Err(BenchError(format!(
-            "{}: format_version {} (this harness reads {ARTIFACT_FORMAT_VERSION})",
+            "artifact {} is format v{} (this harness reads v{ARTIFACT_FORMAT_VERSION} only); \
+             retired v1 history lives at commit {ARCHIVE_COMMIT}",
             path.display(),
-            artifact.format_version
+            version.map_or_else(|| "?".to_owned(), |v| v.to_string()),
         )));
     }
+    let artifact: Artifact = serde_json::from_str(&raw)
+        .map_err(|e| BenchError(format!("parsing {}: {e}", path.display())))?;
     Ok(artifact)
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::cells::{Class, Mode};
 
-    pub(crate) fn minimal(cell_id: &str, class: Class) -> Artifact {
+    pub(crate) fn minimal(cell_id: &str) -> Artifact {
         Artifact {
             format_version: ARTIFACT_FORMAT_VERSION,
             cell_id: cell_id.into(),
-            class,
-            mode: Mode::Subprocess,
-            suite: "test".into(),
-            recorded_at: "2026-07-21".into(),
+            recorded_at: "2026-07-24".into(),
             fingerprint: Fingerprint {
                 cpu_model: "test-cpu".into(),
                 kernel: "6.0".into(),
@@ -232,7 +226,6 @@ pub(crate) mod tests {
                 dataset_hashes: BTreeMap::new(),
                 loadavg_at_start: 0.1,
                 quiet_note: None,
-                legacy_competitor_pin: None,
             },
             workload: BTreeMap::new(),
             rdlt: RdltSide {
@@ -249,15 +242,17 @@ pub(crate) mod tests {
             },
             competitors: BTreeMap::new(),
             verify: None,
+            forced: false,
+            extra: serde_json::Map::new(),
         }
     }
 
     #[test]
     fn round_trips_through_disk() {
         let dir = tempfile::tempdir().unwrap();
-        let mut art = minimal("rt-cell", Class::Scoreboard);
+        let mut art = minimal("rt-cell");
         art.competitors.insert(
-            "dlt-pyarrow".into(),
+            "dlt".into(),
             CompetitorSide::Missing {
                 reason: "image not built".into(),
             },
@@ -268,13 +263,30 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn v1_artifact_is_refused_naming_the_archive_commit() {
+        // A retired v1 artifact (any pre-migration shape) must fail loudly and
+        // point the reader at the archived history, never half-parse.
+        let dir = tempfile::tempdir().unwrap();
+        // A v1-shaped artifact: the reader rejects on `format_version` before
+        // touching the since-removed fields, so the discriminator is enough.
+        std::fs::write(
+            dir.path().join("old-cell.json"),
+            r#"{"format_version":1,"cell_id":"old-cell"}"#,
+        )
+        .unwrap();
+        let err = read(dir.path(), "old-cell").unwrap_err().to_string();
+        assert!(err.contains("format v1"), "{err}");
+        assert!(err.contains(ARCHIVE_COMMIT), "{err}");
+    }
+
+    #[test]
     fn future_format_version_is_refused() {
         let dir = tempfile::tempdir().unwrap();
-        let mut art = minimal("v2-cell", Class::Scoreboard);
+        let mut art = minimal("v99-cell");
         art.format_version = 99;
         write(dir.path(), &art).unwrap();
-        let err = read(dir.path(), "v2-cell").unwrap_err().to_string();
-        assert!(err.contains("format_version 99"), "{err}");
+        let err = read(dir.path(), "v99-cell").unwrap_err().to_string();
+        assert!(err.contains("format v99"), "{err}");
     }
 
     #[test]
@@ -293,39 +305,6 @@ pub(crate) mod tests {
         assert_eq!(
             fp.competitor_pins.get("dlt").map(String::as_str),
             Some("dlt 1.29.0")
-        );
-    }
-
-    #[test]
-    fn legacy_single_pin_migrates_into_the_map_on_read() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut art = minimal("legacy-cell", Class::Gated);
-        art.competitors.insert(
-            "dlt".into(),
-            CompetitorSide::Missing {
-                reason: "n/a".into(),
-            },
-        );
-        // Hand-write the artifact in the pre-cleanup shape: a scalar
-        // `competitor_pin`, no `competitor_pins`.
-        let mut value = serde_json::to_value(&art).unwrap();
-        let fp = value["fingerprint"].as_object_mut().unwrap();
-        fp.remove("competitor_pins");
-        fp.insert("competitor_pin".into(), serde_json::json!("dlt 1.29.0"));
-        std::fs::write(
-            dir.path().join("legacy-cell.json"),
-            serde_json::to_string_pretty(&value).unwrap(),
-        )
-        .unwrap();
-
-        let back = read(dir.path(), "legacy-cell").unwrap();
-        assert_eq!(
-            back.fingerprint
-                .competitor_pins
-                .get("dlt")
-                .map(String::as_str),
-            Some("dlt 1.29.0"),
-            "legacy scalar pin folded into the map, keyed by the competitor"
         );
     }
 }

@@ -15,7 +15,4 @@ id = "dlt"
 id = "dlt-pyarrow"
 
 [[variant]]
-id = "dlt-sqlalchemy"
-
-[[variant]]
 id = "dlt-connectorx"

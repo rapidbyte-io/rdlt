@@ -1,9 +1,0 @@
-pipeline: bench-pgj-duck
-workdir: {{workdir}}/.rdlt
-source:
-  postgres:
-    conn: "{{conn}}"
-    tables:
-      - name: pg_jsonb
-destination:
-  duckdb: {path: {{workdir}}/jsonb.duckdb}

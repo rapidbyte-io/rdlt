@@ -1,10 +1,9 @@
 # Pipeline-spec parity fixture: every destination kind the spec language
-# supports, one document each. BOTH spec parsers — the CLI's and the bench
-# harness's library mode — must parse every document here; each side pins
-# that with a test including this file. A new destination kind is added
-# HERE first, which forces both parsers to learn it in the same change.
-# (The two parsers are scheduled to collapse into one shared model in the
-# rdlt facade; this fixture then becomes that model's own parse pin.)
+# supports, one document each. The rdlt-cli parse + build pins consume this
+# file against the shared model `rdlt::pipeline_spec` (which the CLI runs);
+# a new destination kind is added HERE first, forcing those pins to learn it
+# in the same change. (The bench harness's library-mode consumer was retired
+# in feature 018 — this fixture is now the CLI's own parse/build pin.)
 pipeline: parity-duckdb
 write_mode:
   merge:

@@ -1,6 +1,0 @@
-pipeline: bench-file-s3
-workdir: {{workdir}}/.rdlt
-source:
-  file: {config: {{data}}/files.yaml}
-destination:
-  duckdb: {path: {{workdir}}/out.duckdb}

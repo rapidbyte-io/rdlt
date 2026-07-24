@@ -1,11 +1,9 @@
-# Harness self-test (US1 independent test): a trivial subprocess cell that
-# exercises the FULL protocol — declare → filter → warmups → N runs → medians —
-# under nextest, no containers, no release CLI. Never a product measurement.
+# Harness self-test (US1 independent test): a trivial cell that exercises the
+# FULL protocol — declare → filter → warmups → N runs → medians — under
+# nextest, no containers, no release CLI. Never a product measurement.
 
 [[cell]]
 id = "selftest-protocol"
-class = "scoreboard"
-mode = "subprocess"
 fixture = "selftest-none"
 command = ["sh", "-c", "sleep 0.02"]
 warmups = 1

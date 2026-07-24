@@ -1,9 +1,0 @@
-pipeline: bench-pg-duck
-workdir: {{workdir}}/.rdlt
-source:
-  postgres:
-    conn: "{{conn}}"
-    tables:
-      - name: pg_wide
-destination:
-  duckdb: {path: {{workdir}}/wide.duckdb}

@@ -1,71 +1,13 @@
-# The gated set (research R6, contract BH6). `rdlt-bench gate` evaluates
-# these against the latest committed artifacts and exits nonzero naming cell,
-# bar, and measured value. Only wall-median bars exist in this feature —
-# CPU/RSS/throughput are recorded, never gated (FR-006).
+# Enforcement bars — empty by design (feature 018, BR8 + constitution v1.1.0).
 #
-# Tolerances are 0 by design: every bar already carries its headroom (bars
-# were set below the measured session floor, 004 protocol) — a violation is a
-# violation. Bar changes require a version-policy entry at `policy`.
-
-[[bar]]
-cell = "jsonl-duckdb-200k"
-kind = "ratio_vs"
-competitor = "dlt"
-min_ratio = 10.0
-tolerance_pct = 0.0
-policy = "design §8 flagship target; RESULTS.md matrix history (12.9x measured 2026-07-20)"
-
-[[bar]]
-cell = "jsonl-duckdb-200k"
-kind = "rss_ratio_vs"
-competitor = "dlt"
-max_rss_ratio = 0.2
-tolerance_pct = 0.0
-policy = "design §8 peak-RSS target (1/5.4 measured 2026-07-20)"
-
-[[bar]]
-cell = "shred-only-200k"
-kind = "ratio_vs"
-competitor = "dlt"
-min_ratio = 10.0
-tolerance_pct = 0.0
-policy = "specs/004-close-perf-misses/evidence/resolution-shred.md (bar adjusted 20x -> 10x, owner decision)"
-
-[[bar]]
-cell = "rest-pg-100k"
-kind = "ratio_vs"
-competitor = "dlt"
-min_ratio = 5.0
-tolerance_pct = 0.0
-policy = "design §8 REST->PG target (7.7x measured 2026-07-20)"
-
-[[bar]]
-cell = "parquet-passthrough"
-kind = "ratio_vs"
-competitor = "dlt"
-min_ratio = 2.0
-tolerance_pct = 0.0
-policy = "design §8 Arrow-passthrough target (2.6x measured 2026-07-20)"
-
-[[bar]]
-cell = "pg-wide-duckdb-1m"
-kind = "ratio_vs"
-competitor = "dlt-pyarrow"
-min_ratio = 6.0
-tolerance_pct = 0.0
-policy = "specs/005-postgres-source/evidence/bench-pg.md (bar from worst-case session pairs)"
-
-[[bar]]
-cell = "pg-wide-pg-1m"
-kind = "ratio_vs"
-competitor = "dlt-pyarrow"
-min_ratio = 6.0
-tolerance_pct = 0.0
-policy = "specs/005-postgres-source/evidence/bench-pg.md (bar from worst-case session pairs)"
-
-[[bar]]
-cell = "cold-start"
-kind = "absolute_ms"
-max_ms = 40.0
-tolerance_pct = 0.0
-policy = "specs/004-close-perf-misses/evidence/resolution-cold-start.md (23.6 ms floor x 1.5 — a baseline release can never flip this)"
+# Bars return measurement-first: after the first recorded three-way session
+# (rdlt / dlt / Airbyte) lands, at most one bar per cell is added here, each set
+# below its cited session floor and each carrying a policy-log entry in
+# benches/RESULTS.md. Until then the matrix is measured and reported, never
+# gated. Cross-validation requires only that every bar names an existing cell.
+#
+# The 8 bars retired by the matrix rebuild (jsonl-duckdb-200k ratio + RSS,
+# shred-only-200k, rest-pg-100k, parquet-passthrough, pg-wide-duckdb-1m,
+# pg-wide-pg-1m, cold-start) are recorded in the RESULTS.md policy log with
+# their final values and the archive commit (40841ab). The cold-start absolute
+# check now lives on the instruments track (benches/check-cold-start.sh).

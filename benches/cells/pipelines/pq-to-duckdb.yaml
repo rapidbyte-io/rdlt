@@ -1,6 +1,0 @@
-pipeline: bench-pq-duck
-workdir: {{workdir}}/.rdlt
-source:
-  file: {config: {{data}}/pq-files.yaml}
-destination:
-  duckdb: {path: {{workdir}}/pq-out.duckdb}

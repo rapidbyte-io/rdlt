@@ -1,22 +1,21 @@
 //! The measurement protocol as executable code: quiet-machine guard, warmups,
 //! N runs, medians/percentiles. Prose rules become refusals.
 
-use crate::cells::Class;
 use crate::{BenchError, Result};
 
 /// A machine is "quiet" when 1-minute loadavg is below this fraction of the
 /// core count — background compile jobs and browsers blow straight past it.
 const QUIET_LOAD_PER_CORE: f64 = 0.25;
 
-/// Env var to run gated cells on a loaded machine anyway (the run is then
-/// loudly annotated in the artifact instead of refused).
+/// Env var to run on a loaded machine anyway (the run is then loudly annotated
+/// in the artifact — `forced: true` — instead of refused).
 pub const FORCE_ENV: &str = "RDLT_BENCH_FORCE";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum QuietVerdict {
     Quiet,
-    /// Machine is loaded; scoreboard runs (or forced gated runs) proceed with
-    /// this annotation recorded in the artifact.
+    /// Machine is loaded; a forced run proceeds with this annotation recorded
+    /// in the artifact.
     Annotated(String),
 }
 
@@ -32,9 +31,16 @@ fn cores() -> usize {
     std::thread::available_parallelism().map_or(1, |n| n.get())
 }
 
-/// Gated runs REFUSE on a loaded machine (unless forced — then loudly
-/// annotated); scoreboard runs proceed annotated.
-pub fn quiet_guard(class: Class, load1: f64, ncores: usize, forced: bool) -> Result<QuietVerdict> {
+/// Whether the quiet guard is being overridden this invocation (`RDLT_BENCH_FORCE=1`).
+/// Recorded as `forced` in every artifact written under the override.
+pub fn forced() -> bool {
+    std::env::var(FORCE_ENV).is_ok_and(|v| v == "1")
+}
+
+/// One classless rule: every measured run REFUSES on a loaded machine unless
+/// forced — then it proceeds loudly annotated. There is no measurement
+/// configuration that is exempt.
+pub fn quiet_guard(load1: f64, ncores: usize, forced: bool) -> Result<QuietVerdict> {
     let threshold = QUIET_LOAD_PER_CORE * ncores as f64;
     if load1 <= threshold {
         return Ok(QuietVerdict::Quiet);
@@ -42,36 +48,37 @@ pub fn quiet_guard(class: Class, load1: f64, ncores: usize, forced: bool) -> Res
     let note = format!(
         "MACHINE NOT QUIET: loadavg {load1:.2} > {threshold:.2} ({ncores} cores) — number is context, not evidence"
     );
-    match class {
-        Class::Gated if !forced => Err(BenchError(format!(
-            "refusing gated run: {note} (set {FORCE_ENV}=1 to run annotated)"
-        ))),
-        _ => Ok(QuietVerdict::Annotated(note)),
+    if forced {
+        Ok(QuietVerdict::Annotated(note))
+    } else {
+        Err(BenchError(format!(
+            "refusing run: {note} (set {FORCE_ENV}=1 to run annotated)"
+        )))
     }
 }
 
-/// Guard using the live machine state. Gated runs WAIT for the machine to
-/// settle first (container spin-up and fixture builds from earlier cells
-/// linger in the 1-minute loadavg) — refusal is for load that never decays,
-/// i.e. something ELSE is running.
-pub fn quiet_guard_now(class: Class) -> Result<QuietVerdict> {
-    let forced = std::env::var(FORCE_ENV).is_ok_and(|v| v == "1");
+/// Guard using the live machine state. A measured run WAITS for the machine to
+/// settle first (container spin-up and fixture builds from earlier cells linger
+/// in the 1-minute loadavg) — refusal is for load that never decays, i.e.
+/// something ELSE is running. A forced run skips the wait and annotates.
+pub fn quiet_guard_now() -> Result<QuietVerdict> {
+    let forced = forced();
     let ncores = cores();
-    if class == Class::Gated && !forced {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
-        loop {
-            let load1 = loadavg_1min()?;
-            if load1 <= QUIET_LOAD_PER_CORE * ncores as f64 {
-                return Ok(QuietVerdict::Quiet);
-            }
-            if std::time::Instant::now() >= deadline {
-                return quiet_guard(class, load1, ncores, forced);
-            }
-            eprintln!("   waiting for quiet machine (loadavg {load1:.2}) ...");
-            std::thread::sleep(std::time::Duration::from_secs(15));
-        }
+    if forced {
+        return quiet_guard(loadavg_1min()?, ncores, forced);
     }
-    quiet_guard(class, loadavg_1min()?, cores(), forced)
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+    loop {
+        let load1 = loadavg_1min()?;
+        if load1 <= QUIET_LOAD_PER_CORE * ncores as f64 {
+            return Ok(QuietVerdict::Quiet);
+        }
+        if std::time::Instant::now() >= deadline {
+            return quiet_guard(load1, ncores, forced);
+        }
+        eprintln!("   waiting for quiet machine (loadavg {load1:.2}) ...");
+        std::thread::sleep(std::time::Duration::from_secs(15));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -155,24 +162,18 @@ mod tests {
     }
 
     #[test]
-    fn gated_refuses_on_loaded_machine_unless_forced() {
-        let err = quiet_guard(Class::Gated, 6.0, 8, false)
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("refusing gated run"), "{err}");
+    fn loaded_machine_refuses_unless_forced() {
+        let err = quiet_guard(6.0, 8, false).unwrap_err().to_string();
+        assert!(err.contains("refusing run"), "{err}");
         assert!(err.contains(FORCE_ENV), "{err}");
-        let forced = quiet_guard(Class::Gated, 6.0, 8, true).unwrap();
+        let forced = quiet_guard(6.0, 8, true).unwrap();
         assert!(matches!(forced, QuietVerdict::Annotated(ref n) if n.contains("NOT QUIET")));
     }
 
     #[test]
-    fn scoreboard_annotates_and_quiet_passes() {
-        assert_eq!(
-            quiet_guard(Class::Gated, 0.5, 8, false).unwrap(),
-            QuietVerdict::Quiet
-        );
-        let v = quiet_guard(Class::Scoreboard, 6.0, 8, false).unwrap();
-        assert!(matches!(v, QuietVerdict::Annotated(_)));
+    fn quiet_machine_passes_regardless_of_force() {
+        assert_eq!(quiet_guard(0.5, 8, false).unwrap(), QuietVerdict::Quiet);
+        assert_eq!(quiet_guard(0.5, 8, true).unwrap(), QuietVerdict::Quiet);
     }
 
     #[test]

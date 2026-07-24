@@ -41,7 +41,6 @@ fn selftest_cell_runs_the_full_protocol() {
         .iter()
         .find(|c| c.id == "selftest-protocol")
         .expect("selftest cell declared in benches/cells/selftest.toml");
-    assert_eq!(cell.suite, "selftest");
     assert_eq!(cell.runs, 3);
 
     let defs = fixtures::load_fixtures(&paths.fixtures_toml).expect("fixtures load");
@@ -58,6 +57,7 @@ fn selftest_cell_runs_the_full_protocol() {
         BTreeMap::new(),
         BTreeMap::new(),
         None,
+        false,
     )
     .expect("protocol runs end to end");
 

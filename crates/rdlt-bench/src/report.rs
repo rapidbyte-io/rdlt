@@ -1,12 +1,18 @@
-//! RESULTS.md table generation: number tables regenerate from
-//! artifacts between explicit markers; the hand-written narrative outside the
-//! markers is preserved byte-for-byte. No markers → refusal, never guessing.
+//! RESULTS.md generation: the matrix and trends tables regenerate from
+//! artifacts (and the append-only history feed) between explicit markers; the
+//! hand-written narrative outside the markers is preserved byte-for-byte. No
+//! markers → refusal, never guessing.
 
 use std::path::Path;
 
 use crate::artifact::{Artifact, CompetitorSide};
 use crate::cells::{Bar, BarKind, Cell};
 use crate::{BenchError, Result};
+
+/// Cells whose artifacts are harness machinery, never a product row.
+fn is_selftest(id: &str) -> bool {
+    id.starts_with("selftest")
+}
 
 pub(crate) fn begin_marker(section: &str) -> String {
     format!("<!-- rdlt-bench:BEGIN {section} -->")
@@ -27,6 +33,24 @@ fn fmt_opt<T>(v: Option<T>, f: impl Fn(T) -> String) -> String {
     v.map_or_else(|| "—".to_owned(), f)
 }
 
+/// Spread across the counted runs, as a percent of the median — the honest
+/// jitter band behind a single median number.
+fn spread_pct(runs_ms: &[f64], median_ms: f64) -> Option<f64> {
+    if runs_ms.len() < 2 || median_ms <= 0.0 {
+        return None;
+    }
+    let min = runs_ms.iter().copied().fold(f64::INFINITY, f64::min);
+    let max = runs_ms.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    Some((max - min) / median_ms * 100.0)
+}
+
+fn rdlt_cell(artifact: &Artifact) -> String {
+    match spread_pct(&artifact.rdlt.runs_ms, artifact.rdlt.median_ms) {
+        Some(pct) => format!("{} (±{pct:.0}%)", fmt_ms(artifact.rdlt.median_ms)),
+        None => fmt_ms(artifact.rdlt.median_ms),
+    }
+}
+
 fn bar_target(bar: Option<&Bar>) -> String {
     match bar.map(|b| &b.kind) {
         Some(BarKind::RatioVs { min_ratio, .. }) => format!("≥ {min_ratio}×"),
@@ -38,22 +62,36 @@ fn bar_target(bar: Option<&Bar>) -> String {
     }
 }
 
-const HEADERS: [&str; 9] = [
+/// The bar verdict for a cell, or `—` when no bar governs it (measurement-first:
+/// most cells carry no bar).
+fn status(artifact: &Artifact, bar: Option<&Bar>) -> String {
+    match bar {
+        Some(bar) => {
+            if crate::gate::evaluate(bar, artifact).passed() {
+                "PASS".into()
+            } else {
+                "FAIL".into()
+            }
+        }
+        None => "—".into(),
+    }
+}
+
+const HEADERS: [&str; 8] = [
     "Cell",
-    "Class",
     "rdlt median",
     "vs baseline",
     "Target",
+    "Status",
     "rows/s",
     "MB/s",
-    "peak CPU",
     "peak RSS",
 ];
 
 /// The shared ROW builder — both renderers (markdown for RESULTS.md, aligned
 /// text for the run summary) consume these cells, so the two views can never
 /// drift. Emphasis (`**`) is markdown-layer decoration, added there only.
-fn rows_for(artifacts: &[&Artifact], bars: &[Bar]) -> Vec<[String; 9]> {
+fn rows_for(artifacts: &[&Artifact], bars: &[Bar]) -> Vec<[String; 8]> {
     let mut rows = Vec::with_capacity(artifacts.len());
     for artifact in artifacts {
         let bar = bars.iter().find(|b| b.cell == artifact.cell_id);
@@ -82,34 +120,32 @@ fn rows_for(artifacts: &[&Artifact], bars: &[Bar]) -> Vec<[String; 9]> {
         });
         rows.push([
             artifact.cell_id.clone(),
-            artifact.class.to_string(),
-            fmt_ms(artifact.rdlt.median_ms),
+            rdlt_cell(artifact),
             baseline.unwrap_or_else(|| "—".into()),
             bar_target(bar),
-            fmt_opt(artifact.rdlt.rows_per_s, |v| format!("{:.0}", v)),
+            status(artifact, bar),
+            fmt_opt(artifact.rdlt.rows_per_s, |v| format!("{v:.0}")),
             fmt_opt(artifact.rdlt.mb_per_s, |v| format!("{v:.1}")),
-            fmt_opt(artifact.rdlt.cpu.peak_util, |v| {
-                format!("{:.0}%", v * 100.0)
-            }),
             fmt_opt(artifact.rdlt.rss.peak_bytes, |v| format!("{} MB", v >> 20)),
         ]);
     }
     rows
 }
 
-/// Markdown rendering for the RESULTS.md generated sections.
+/// Markdown rendering for the RESULTS.md matrix section. Always emits the
+/// header row so the region is a coherent (possibly empty) table.
 fn table_for(artifacts: &[&Artifact], bars: &[Bar]) -> String {
     let mut out = String::new();
     out.push_str(&format!("| {} |\n", HEADERS.join(" | ")));
-    out.push_str("|---|---|---|---|---|---|---|---|---|\n");
+    out.push_str("|---|---|---|---|---|---|---|---|\n");
     for row in rows_for(artifacts, bars) {
         let mut cells = row;
         // Bold the headline ratio, exactly as the hand tables always did.
-        if !cells[3].starts_with("MISSING")
-            && cells[3] != "—"
-            && let Some(space) = cells[3].find(' ')
+        if !cells[2].starts_with("MISSING")
+            && cells[2] != "—"
+            && let Some(space) = cells[2].find(' ')
         {
-            cells[3] = format!("**{}** {}", &cells[3][..space], &cells[3][space + 1..]);
+            cells[2] = format!("**{}** {}", &cells[2][..space], &cells[2][space + 1..]);
         }
         out.push_str(&format!("| {} |\n", cells.join(" | ")));
     }
@@ -120,7 +156,7 @@ fn table_for(artifacts: &[&Artifact], bars: &[Bar]) -> String {
 /// char-counted — the table stays a table even with ×/≥/— in the cells.
 fn terminal_table(artifacts: &[&Artifact], bars: &[Bar]) -> String {
     let rows = rows_for(artifacts, bars);
-    let mut widths: [usize; 9] = HEADERS.map(str::len);
+    let mut widths: [usize; 8] = HEADERS.map(str::len);
     for row in &rows {
         for (w, cell) in widths.iter_mut().zip(row.iter()) {
             *w = (*w).max(cell.chars().count());
@@ -135,10 +171,10 @@ fn terminal_table(artifacts: &[&Artifact], bars: &[Bar]) -> String {
         }
     };
     // Numeric columns read best right-aligned.
-    const RIGHT: [bool; 9] = [false, false, true, false, false, true, true, true, true];
-    let render = |cells: &[String; 9]| -> String {
+    const RIGHT: [bool; 8] = [false, true, false, false, false, true, true, true];
+    let render = |cells: &[String; 8]| -> String {
         let mut line = String::new();
-        for i in 0..9 {
+        for i in 0..8 {
             if i > 0 {
                 line.push_str("  ");
             }
@@ -149,7 +185,7 @@ fn terminal_table(artifacts: &[&Artifact], bars: &[Bar]) -> String {
     let mut out = render(&HEADERS.map(str::to_owned));
     out.push_str(&format!(
         "{}\n",
-        "─".repeat(widths.iter().sum::<usize>() + 2 * 8)
+        "─".repeat(widths.iter().sum::<usize>() + 2 * 7)
     ));
     for row in &rows {
         out.push_str(&render(row));
@@ -161,6 +197,9 @@ fn terminal_table(artifacts: &[&Artifact], bars: &[Bar]) -> String {
 /// ("committed artifacts" for RESULTS.md, "this invocation" for the run
 /// summary) — the table renderer itself stays shared.
 fn provenance(artifacts: &[&Artifact], source: &str) -> String {
+    if artifacts.is_empty() {
+        return format!("\n_{source} (no recorded sessions yet)._\n");
+    }
     let dates: std::collections::BTreeSet<&str> =
         artifacts.iter().map(|a| a.recorded_at.as_str()).collect();
     let pins: std::collections::BTreeSet<&str> = artifacts
@@ -178,8 +217,8 @@ fn provenance(artifacts: &[&Artifact], source: &str) -> String {
     )
 }
 
-/// The run-summary rendering: the same rows as the RESULTS.md sections,
-/// aligned for a terminal instead of markdown.
+/// The run-summary rendering: the same rows as the RESULTS.md matrix, aligned
+/// for a terminal instead of markdown.
 pub fn summary_table(artifacts: &[&Artifact], bars: &[Bar]) -> String {
     let footer = provenance(artifacts, "Measured by this invocation");
     format!(
@@ -188,6 +227,115 @@ pub fn summary_table(artifacts: &[&Artifact], bars: &[Bar]) -> String {
         footer.replace('_', "") // no markdown italics on a terminal
     )
 }
+
+// ---------------------------------------------------------------------------
+// History feed (Trends)
+// ---------------------------------------------------------------------------
+
+/// One recorded data point per cell×variant. `ts` is taken from the artifact's
+/// own timestamp — the feed introduces no new clock source.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct HistoryLine {
+    pub ts: String,
+    pub cell: String,
+    pub variant: String,
+    pub median_ms: f64,
+    pub rows: Option<u64>,
+}
+
+/// Append one line per cell×variant for this recorded invocation (rdlt plus
+/// every competitor that produced a median). Append-only: the file is the
+/// Trends section's whole memory.
+pub fn append_history(path: &Path, artifact: &Artifact) -> Result<()> {
+    let mut lines = vec![HistoryLine {
+        ts: artifact.recorded_at.clone(),
+        cell: artifact.cell_id.clone(),
+        variant: "rdlt".into(),
+        median_ms: artifact.rdlt.median_ms,
+        rows: artifact.rdlt.rows,
+    }];
+    for (variant, side) in &artifact.competitors {
+        if let CompetitorSide::Ok { median_ms, .. } = side {
+            lines.push(HistoryLine {
+                ts: artifact.recorded_at.clone(),
+                cell: artifact.cell_id.clone(),
+                variant: variant.clone(),
+                median_ms: *median_ms,
+                rows: None,
+            });
+        }
+    }
+    let mut body = String::new();
+    for line in &lines {
+        let json = serde_json::to_string(line)
+            .map_err(|e| BenchError(format!("serializing history line: {e}")))?;
+        body.push_str(&json);
+        body.push('\n');
+    }
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|e| BenchError(format!("opening {}: {e}", path.display())))?;
+    file.write_all(body.as_bytes())
+        .map_err(|e| BenchError(format!("appending {}: {e}", path.display())))?;
+    Ok(())
+}
+
+fn read_history(path: &Path) -> Result<Vec<HistoryLine>> {
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return Ok(Vec::new()); // no feed yet → empty Trends
+    };
+    let mut lines = Vec::new();
+    for (n, line) in raw.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let parsed: HistoryLine = serde_json::from_str(line)
+            .map_err(|e| BenchError(format!("{}:{}: {e}", path.display(), n + 1)))?;
+        lines.push(parsed);
+    }
+    Ok(lines)
+}
+
+/// Trends: the latest two recorded medians per cell×variant, and the delta
+/// between them — the "is it drifting?" view fed only by the history feed.
+fn trends_table(history: &[HistoryLine]) -> String {
+    use std::collections::BTreeMap;
+    // Preserve append order (chronological) per key; keep the last two.
+    let mut by_key: BTreeMap<(String, String), Vec<&HistoryLine>> = BTreeMap::new();
+    for line in history {
+        by_key
+            .entry((line.cell.clone(), line.variant.clone()))
+            .or_default()
+            .push(line);
+    }
+    let mut out = String::new();
+    out.push_str("| Cell | Variant | Latest | Previous | Δ |\n");
+    out.push_str("|---|---|---|---|---|\n");
+    for ((cell, variant), points) in &by_key {
+        let latest = points.last().expect("non-empty by construction");
+        let prev = points.iter().rev().nth(1);
+        let delta = prev.map_or_else(
+            || "—".to_owned(),
+            |p| {
+                let pct = (latest.median_ms - p.median_ms) / p.median_ms * 100.0;
+                format!("{pct:+.1}%")
+            },
+        );
+        out.push_str(&format!(
+            "| {cell} | {variant} | {} | {} | {delta} |\n",
+            fmt_ms(latest.median_ms),
+            prev.map_or_else(|| "—".to_owned(), |p| fmt_ms(p.median_ms)),
+        ));
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// Splice + regenerate
+// ---------------------------------------------------------------------------
 
 /// Splice `body` between the section's markers. Everything outside the
 /// markers — the narrative — is preserved byte-for-byte.
@@ -213,10 +361,10 @@ pub fn splice(results_md: &str, section: &str, body: &str) -> Result<String> {
     Ok(out)
 }
 
-/// Regenerate every suite section present in RESULTS.md from the artifacts on
-/// disk. Suites without a marker pair are skipped ONLY if none of their cells
-/// have artifacts; a suite with artifacts but no markers is an error (no
-/// silent truncation).
+/// Regenerate the two generated regions — `matrix` (from committed artifacts)
+/// and `trends` (from the history feed) — from disk. The hand-written sections
+/// are preserved byte-for-byte. A cell with an artifact file that cannot be
+/// read (corrupt, format-version mismatch) fails loudly.
 pub fn regenerate(
     results_md_path: &Path,
     cells: &[Cell],
@@ -225,74 +373,55 @@ pub fn regenerate(
 ) -> Result<Vec<String>> {
     let mut content = std::fs::read_to_string(results_md_path)
         .map_err(|e| BenchError(format!("reading {}: {e}", results_md_path.display())))?;
-    let mut suites: Vec<&str> = cells.iter().map(|c| c.suite.as_str()).collect();
-    suites.sort_unstable();
-    suites.dedup();
 
-    let mut updated = Vec::new();
-    for suite in suites {
-        if suite == "selftest" {
-            continue; // the harness's own protocol test, never a product row
+    let mut artifacts: Vec<Artifact> = Vec::new();
+    for cell in cells.iter().filter(|c| !is_selftest(&c.id)) {
+        if !results_dir.join(format!("{}.json", cell.id)).is_file() {
+            continue; // not-yet-measured: simply absent from the matrix
         }
-        // A cell without an artifact file is simply not-yet-measured; an
-        // artifact that EXISTS but cannot be read (corrupt, format-version
-        // mismatch) must fail loudly — silently keeping stale tables in the
-        // regenerated report is exactly what this function exists to prevent.
-        let mut artifacts: Vec<Artifact> = Vec::new();
-        for cell in cells.iter().filter(|c| c.suite == suite) {
-            if !results_dir.join(format!("{}.json", cell.id)).is_file() {
-                continue;
-            }
-            artifacts.push(crate::artifact::read(results_dir, &cell.id)?);
-        }
-        if artifacts.is_empty() {
-            continue;
-        }
-        let refs: Vec<&Artifact> = artifacts.iter().collect();
-        let body = format!(
-            "{}{}",
-            table_for(&refs, bars),
-            provenance(
-                &refs,
-                "Generated by `rdlt-bench report` from committed artifacts"
-            )
-        );
-        if !content.contains(&begin_marker(suite)) {
-            return Err(BenchError(format!(
-                "suite `{suite}` has artifacts but RESULTS.md has no `{}` marker",
-                begin_marker(suite)
-            )));
-        }
-        content = splice(&content, suite, &body)?;
-        updated.push(suite.to_owned());
+        artifacts.push(crate::artifact::read(results_dir, &cell.id)?);
     }
+    let refs: Vec<&Artifact> = artifacts.iter().collect();
+
+    let matrix_body = format!(
+        "{}{}",
+        table_for(&refs, bars),
+        provenance(
+            &refs,
+            "Generated by `rdlt-bench report` from committed artifacts"
+        )
+    );
+    content = splice(&content, "matrix", &matrix_body)?;
+
+    let history = read_history(&results_md_path.with_file_name("history.jsonl"))?;
+    content = splice(&content, "trends", &trends_table(&history))?;
+
     std::fs::write(results_md_path, content)?;
-    Ok(updated)
+    Ok(vec!["matrix".to_owned(), "trends".to_owned()])
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cells::Class;
 
-    const DOC: &str = "# Results\n\nNarrative ABOVE — every byte sacred.\n\n<!-- rdlt-bench:BEGIN e2e -->\nold table\n<!-- rdlt-bench:END e2e -->\n\nNarrative BELOW — history, policy notes.\n";
+    const DOC: &str = "# Results\n\nNarrative ABOVE — every byte sacred.\n\n<!-- rdlt-bench:BEGIN matrix -->\nold table\n<!-- rdlt-bench:END matrix -->\n\nNarrative BELOW — history, policy notes.\n";
 
     #[test]
     fn splice_replaces_only_between_markers() {
-        let out = splice(DOC, "e2e", "| new |").unwrap();
+        let out = splice(DOC, "matrix", "| new |").unwrap();
         assert!(out.contains("Narrative ABOVE — every byte sacred."));
         assert!(out.contains("Narrative BELOW — history, policy notes."));
         assert!(out.contains("| new |"));
         assert!(!out.contains("old table"));
         // idempotent: splicing the same body again changes nothing
-        assert_eq!(splice(&out, "e2e", "| new |").unwrap(), out);
+        assert_eq!(splice(&out, "matrix", "| new |").unwrap(), out);
     }
 
     #[test]
     fn narrative_is_byte_identical_outside_markers() {
-        let out = splice(DOC, "e2e", "X").unwrap();
-        let begin = begin_marker("e2e");
-        let end = end_marker("e2e");
+        let out = splice(DOC, "matrix", "X").unwrap();
+        let begin = begin_marker("matrix");
+        let end = end_marker("matrix");
         let (before_in, after_in) = (
             DOC.split(&begin).next().unwrap(),
             DOC.split(&end).nth(1).unwrap(),
@@ -307,21 +436,24 @@ mod tests {
 
     #[test]
     fn missing_markers_are_a_refusal_not_a_guess() {
-        let err = splice("no markers here", "e2e", "X")
+        let err = splice("no markers here", "matrix", "X")
             .unwrap_err()
             .to_string();
-        assert!(err.contains("BEGIN e2e"), "{err}");
-        let err2 = splice("<!-- rdlt-bench:BEGIN e2e -->", "e2e", "X")
+        assert!(err.contains("BEGIN matrix"), "{err}");
+        let err2 = splice("<!-- rdlt-bench:BEGIN matrix -->", "matrix", "X")
             .unwrap_err()
             .to_string();
-        assert!(err2.contains("no `<!-- rdlt-bench:END e2e -->`"), "{err2}");
+        assert!(
+            err2.contains("no `<!-- rdlt-bench:END matrix -->`"),
+            "{err2}"
+        );
     }
 
     #[test]
     fn table_includes_missing_baselines_loudly() {
-        let mut artifact = crate::artifact::tests::minimal("loud-cell", Class::Scoreboard);
+        let mut artifact = crate::artifact::tests::minimal("loud-cell");
         artifact.competitors.insert(
-            "dlt-pyarrow".into(),
+            "dlt".into(),
             CompetitorSide::Missing {
                 reason: "image not built".into(),
             },
@@ -329,5 +461,34 @@ mod tests {
         let table = table_for(&[&artifact], &[]);
         assert!(table.contains("MISSING (image not built)"), "{table}");
         assert!(table.contains("loud-cell"), "{table}");
+    }
+
+    #[test]
+    fn empty_matrix_is_a_coherent_header_only_table() {
+        let table = table_for(&[], &[]);
+        assert!(table.contains("| Cell |"), "{table}");
+        // header + separator only, no data rows
+        assert_eq!(table.lines().count(), 2, "{table}");
+    }
+
+    #[test]
+    fn history_round_trips_and_trends_show_the_delta() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.jsonl");
+        let mut a1 = crate::artifact::tests::minimal("pg-to-pg-1m");
+        a1.recorded_at = "2026-07-24".into();
+        a1.rdlt.median_ms = 1000.0;
+        append_history(&path, &a1).unwrap();
+        let mut a2 = crate::artifact::tests::minimal("pg-to-pg-1m");
+        a2.recorded_at = "2026-07-25".into();
+        a2.rdlt.median_ms = 1100.0;
+        append_history(&path, &a2).unwrap();
+
+        let history = read_history(&path).unwrap();
+        assert_eq!(history.len(), 2);
+        let table = trends_table(&history);
+        assert!(table.contains("pg-to-pg-1m"), "{table}");
+        assert!(table.contains("rdlt"), "{table}");
+        assert!(table.contains("+10.0%"), "{table}");
     }
 }

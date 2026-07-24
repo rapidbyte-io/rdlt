@@ -1,7 +1,7 @@
 //! Cell + bar models and loaders.
 //!
 //! Everything here is load-time validation: unknown fields, duplicate ids, and
-//! gated-cell↔bar mismatches die with the offender named before any container
+//! bars naming an unknown cell die with the offender named before any container
 //! is touched.
 
 use std::collections::BTreeMap;
@@ -11,56 +11,20 @@ use serde::{Deserialize, Serialize};
 
 use crate::{BenchError, Result};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
-#[serde(rename_all = "snake_case")]
-pub enum Class {
-    Gated,
-    Scoreboard,
-}
-
-impl std::fmt::Display for Class {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Class::Gated => "gated",
-            Class::Scoreboard => "scoreboard",
-        })
-    }
-}
-
-/// Where a run's measured statistic comes from (subprocess mode).
+/// Where a run's measured statistic comes from. Every measured cell uses the
+/// harness wall clock around the release-CLI child; the self-timed last-line
+/// JSON convention lives on the competitor side (`protocol::last_json_field`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Timing {
-    /// Harness wall clock around the child (the gated default).
+    /// Harness wall clock around the child (the only measured timing).
     #[default]
     Wall,
-    /// The child prints its measurement in ms as the last stdout line
-    /// (SQL-level cells: EXPLAIN ANALYZE Execution Time).
+    /// The child prints its measurement in ms as the last stdout line.
     StdoutMs,
-    /// The child self-times and prints `{"seconds": …}` JSON (the shred_only
-    /// example — same convention as the dlt baselines).
+    /// The child self-times and prints `{"seconds": …}` JSON (same convention
+    /// as the dlt baselines).
     SelfJsonSeconds,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Mode {
-    /// Release-CLI child process; the GATED measurement configuration.
-    Subprocess,
-    /// In-process via the `rdlt` crate: RunReport + events attribution.
-    Library,
-    /// Cold-start only: shells the recorded hyperfine protocol (R8).
-    Hyperfine,
-}
-
-impl std::fmt::Display for Mode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Mode::Subprocess => "subprocess",
-            Mode::Library => "library",
-            Mode::Hyperfine => "hyperfine",
-        })
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -93,8 +57,6 @@ pub struct CompetitorRef {
 #[serde(deny_unknown_fields)]
 pub struct Cell {
     pub id: String,
-    pub class: Class,
-    pub mode: Mode,
     pub fixture: String,
     /// Pipeline-spec YAML template (relative to benches/); `{{conn}}`,
     /// `{{data}}`, `{{workdir}}` substituted by the runner.
@@ -122,9 +84,6 @@ pub struct Cell {
     pub competitors: Vec<CompetitorRef>,
     #[serde(default)]
     pub verify: Option<Verify>,
-    /// Suite = the cell file's stem (e2e, pg, …); filled by the loader.
-    #[serde(skip)]
-    pub suite: String,
 }
 
 fn default_warmups() -> u32 {
@@ -179,11 +138,7 @@ pub fn load_cells(cells_dir: &Path) -> Result<Vec<Cell>> {
     let mut seen: BTreeMap<String, PathBuf> = BTreeMap::new();
     for path in entries {
         let file: CellFile = crate::load_toml(&path)?;
-        let suite = path
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        for mut cell in file.cells {
+        for cell in file.cells {
             cell.check(&path)?;
             if let Some(first) = seen.get(&cell.id) {
                 return Err(BenchError(format!(
@@ -194,7 +149,6 @@ pub fn load_cells(cells_dir: &Path) -> Result<Vec<Cell>> {
                 )));
             }
             seen.insert(cell.id.clone(), path.clone());
-            cell.suite = suite.clone();
             cells.push(cell);
         }
     }
@@ -251,33 +205,16 @@ pub fn load_bars(path: &Path) -> Result<Vec<Bar>> {
     Ok(file.bars)
 }
 
-/// Cross-validation: gated ↔ bar is bijective over gated cells (a gated
-/// cell without a bar and a bar over an unknown or scoreboard cell are both
-/// load-time errors).
+/// Cross-validation: every bar references an existing cell. Enforcement is
+/// measurement-first (constitution v1.1.0) — a bar is added only after a
+/// recorded session, so the only structural rule left is that its cell exists.
 pub fn cross_validate(cells: &[Cell], bars: &[Bar]) -> Result<()> {
-    for cell in cells.iter().filter(|c| c.class == Class::Gated) {
-        if !bars.iter().any(|b| b.cell == cell.id) {
-            return Err(BenchError(format!(
-                "gated cell `{}` has no bar in bars.toml",
-                cell.id
-            )));
-        }
-    }
     for bar in bars {
-        match cells.iter().find(|c| c.id == bar.cell) {
-            None => {
-                return Err(BenchError(format!(
-                    "bars.toml names unknown cell `{}`",
-                    bar.cell
-                )));
-            }
-            Some(c) if c.class != Class::Gated => {
-                return Err(BenchError(format!(
-                    "bars.toml names cell `{}` but it is {}, not gated — scoreboard cells never gate",
-                    bar.cell, c.class
-                )));
-            }
-            Some(_) => {}
+        if !cells.iter().any(|c| c.id == bar.cell) {
+            return Err(BenchError(format!(
+                "bars.toml names unknown cell `{}`",
+                bar.cell
+            )));
         }
     }
     Ok(())
@@ -298,8 +235,6 @@ mod tests {
     const GOOD: &str = r#"
 [[cell]]
 id = "a-cell"
-class = "scoreboard"
-mode = "subprocess"
 fixture = "none"
 pipeline = "cells/pipelines/a.yaml"
 warmups = 0
@@ -309,13 +244,12 @@ rows = 1000
 "#;
 
     #[test]
-    fn happy_path_parses_with_defaults_and_suite() {
+    fn happy_path_parses_with_defaults() {
         let dir = dir_with(&[("e2e.toml", GOOD)]);
         let cells = load_cells(dir.path()).unwrap();
         assert_eq!(cells.len(), 1);
         let c = &cells[0];
         assert_eq!(c.id, "a-cell");
-        assert_eq!(c.suite, "e2e");
         assert_eq!(c.runs, 3);
         assert_eq!(c.workload["rows"], toml::Value::Integer(1000));
         // defaults where unstated
@@ -327,7 +261,7 @@ rows = 1000
     fn unknown_field_is_rejected_naming_the_file() {
         let dir = dir_with(&[(
             "e2e.toml",
-            "[[cell]]\nid='x'\nclass='gated'\nmode='subprocess'\nfixture='f'\npipeline='p'\nbogus=1\n",
+            "[[cell]]\nid='x'\nfixture='f'\npipeline='p'\nbogus=1\n",
         )]);
         let err = load_cells(dir.path()).unwrap_err().to_string();
         assert!(err.contains("e2e.toml"), "{err}");
@@ -335,8 +269,20 @@ rows = 1000
     }
 
     #[test]
+    fn retired_taxonomy_keys_are_rejected_as_unknown() {
+        // class/mode are gone from the schema — a stray key is a load error,
+        // not a silently ignored field.
+        let dir = dir_with(&[(
+            "e2e.toml",
+            "[[cell]]\nid='x'\nfixture='f'\npipeline='p'\nclass='gated'\n",
+        )]);
+        let err = load_cells(dir.path()).unwrap_err().to_string();
+        assert!(err.contains("class"), "{err}");
+    }
+
+    #[test]
     fn duplicate_id_names_both_files() {
-        let one = "[[cell]]\nid='dup'\nclass='scoreboard'\nmode='subprocess'\nfixture='f'\npipeline='p'\n";
+        let one = "[[cell]]\nid='dup'\nfixture='f'\npipeline='p'\n";
         let dir = dir_with(&[("a.toml", one), ("b.toml", one)]);
         let err = load_cells(dir.path()).unwrap_err().to_string();
         assert!(err.contains("duplicate cell id `dup`"), "{err}");
@@ -345,10 +291,7 @@ rows = 1000
 
     #[test]
     fn cell_without_pipeline_or_command_is_rejected() {
-        let dir = dir_with(&[(
-            "a.toml",
-            "[[cell]]\nid='x'\nclass='scoreboard'\nmode='subprocess'\nfixture='f'\n",
-        )]);
+        let dir = dir_with(&[("a.toml", "[[cell]]\nid='x'\nfixture='f'\n")]);
         let err = load_cells(dir.path()).unwrap_err().to_string();
         assert!(err.contains("neither `pipeline` nor `command`"), "{err}");
         assert!(err.contains('x'), "{err}");
@@ -391,29 +334,18 @@ policy = "specs/012-bench-harness/plan.md"
     }
 
     #[test]
-    fn gated_cell_without_bar_is_rejected() {
-        let dir = dir_with(&[(
-            "a.toml",
-            "[[cell]]\nid='g'\nclass='gated'\nmode='subprocess'\nfixture='f'\npipeline='p'\n",
-        )]);
-        let cells = load_cells(dir.path()).unwrap();
-        let err = cross_validate(&cells, &[]).unwrap_err().to_string();
-        assert!(err.contains("gated cell `g` has no bar"), "{err}");
-    }
-
-    #[test]
-    fn bar_over_unknown_or_scoreboard_cell_is_rejected() {
+    fn every_bar_must_reference_an_existing_cell() {
         let dir = dir_with(&[("a.toml", GOOD)]);
         let cells = load_cells(dir.path()).unwrap();
         let tmp = tempfile::tempdir().unwrap();
+        // `a-cell` exists → a bar over it validates (measurement-first: the
+        // only structural rule left is that the cell exists).
         let bars = load_bars(&bars_file(&tmp, BAR_RATIO)).unwrap();
-        // `a-cell` exists but is scoreboard:
-        let err = cross_validate(&cells, &bars).unwrap_err().to_string();
-        assert!(err.contains("scoreboard cells never gate"), "{err}");
-        // unknown cell:
-        let mut bars2 = bars.clone();
-        bars2[0].cell = "ghost".into();
-        let err2 = cross_validate(&cells, &bars2).unwrap_err().to_string();
-        assert!(err2.contains("unknown cell `ghost`"), "{err2}");
+        cross_validate(&cells, &bars).unwrap();
+        // A bar over an unknown cell is a loud load-time error.
+        let mut ghost = bars.clone();
+        ghost[0].cell = "ghost".into();
+        let err = cross_validate(&cells, &ghost).unwrap_err().to_string();
+        assert!(err.contains("unknown cell `ghost`"), "{err}");
     }
 }

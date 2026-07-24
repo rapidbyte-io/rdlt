@@ -1,15 +1,14 @@
 //! The one protocol that runs every cell: fixtures up, competitors FIRST
 //! (baseline-first discipline — the competitor runs before the rdlt side on
 //! the same quiet machine), then rdlt — warmups, N runs, stats, artifact.
-//! Gated numbers come from the release-CLI subprocess; library mode adds
-//! attribution detail for scoreboards.
+//! Every measured number comes from the release-CLI subprocess.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use crate::artifact::{Artifact, CpuStats, RdltSide, RssStats, VerifyOutcome};
-use crate::cells::{Cell, Mode, Timing};
+use crate::cells::{Cell, Timing};
 use crate::paths::Paths;
 use crate::protocol::{self, Sample};
 use crate::sample::{ResourceUsage, Sampler};
@@ -318,65 +317,6 @@ fn verify_outcome(cell: &Cell, samples: &[Sample<RunDetail>]) -> Result<Option<V
     }))
 }
 
-/// Hyperfine mode (R8): shell the recorded protocol, parse its JSON export.
-fn run_hyperfine(cell: &Cell, subs: &BTreeMap<String, String>, run_dir: &Path) -> Result<Vec<f64>> {
-    let mut subs = subs.clone();
-    subs.insert("workdir".into(), run_dir.display().to_string());
-    let command = cell
-        .command
-        .as_ref()
-        .ok_or_else(|| BenchError(format!("hyperfine cell `{}` needs `command`", cell.id)))?
-        .iter()
-        .map(|a| substitute(a, &subs))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let export = run_dir.join("hyperfine.json");
-    let mut argv: Vec<String> = vec![
-        "hyperfine".into(),
-        "-N".into(),
-        "--warmup".into(),
-        cell.warmups.to_string(),
-        "--runs".into(),
-        cell.runs.to_string(),
-        "--export-json".into(),
-        export.display().to_string(),
-    ];
-    if let Some(prepare) = &cell.prepare_sh {
-        argv.push("--prepare".into());
-        argv.push(substitute(prepare, &subs));
-    }
-    argv.push(command);
-    let status = std::process::Command::new(&argv[0])
-        .args(&argv[1..])
-        .current_dir(run_dir)
-        .status()
-        .map_err(|e| {
-            BenchError(format!(
-                "cell `{}`: hyperfine: {e} (is it installed?)",
-                cell.id
-            ))
-        })?;
-    if !status.success() {
-        return Err(BenchError(format!(
-            "cell `{}`: hyperfine failed ({status})",
-            cell.id
-        )));
-    }
-    let raw = std::fs::read_to_string(&export).map_err(at(&export))?;
-    let parsed: serde_json::Value =
-        serde_json::from_str(&raw).map_err(|e| BenchError(format!("hyperfine export: {e}")))?;
-    parsed["results"][0]["times"]
-        .as_array()
-        .map(|times| {
-            times
-                .iter()
-                .filter_map(|t| t.as_f64())
-                .map(|s| s * 1000.0)
-                .collect()
-        })
-        .ok_or_else(|| BenchError("hyperfine export missing results[0].times".into()))
-}
-
 /// Run one cell end to end and return its artifact (not yet written).
 pub fn run_cell(
     cell: &Cell,
@@ -387,6 +327,9 @@ pub fn run_cell(
     // Quiet-guard verdict, obtained by the CALLER before any competitor ran
     // (finding 2: the baseline side must be guarded too).
     quiet_note: Option<String>,
+    // Whether the quiet guard was overridden (`RDLT_BENCH_FORCE=1`) — stamped
+    // into the artifact so a forced number is never mistaken for evidence.
+    forced: bool,
 ) -> Result<Artifact> {
     let mut subs: BTreeMap<String, String> = BTreeMap::new();
     subs.insert("repo".into(), paths.repo.display().to_string());
@@ -403,85 +346,29 @@ pub fn run_cell(
     let invocation = tempfile::tempdir().map_err(|e| BenchError(format!("tempdir: {e}")))?;
     let mut run_seq = 0u32;
 
-    // Each mode YIELDS its measured (rdlt side, verify outcome); the Artifact
-    // is assembled once below, so the per-mode arms stay small and the
-    // fixed-shape fields (fingerprint, workload, timestamps) live in one place.
-    let (rdlt_side, verify): (RdltSide, Option<VerifyOutcome>) = match cell.mode {
-        Mode::Subprocess => {
-            if cell.command.is_none() && !paths.cli.is_file() {
-                return Err(BenchError(format!(
-                    "release CLI missing at {} — run `make release` first",
-                    paths.cli.display()
-                )));
-            }
-            let samples = protocol::run_protocol(cell.warmups, cell.runs, |counted| {
-                fixture.reset()?;
-                let run_dir = invocation.path().join(format!("run-{run_seq}"));
-                run_seq += 1;
-                std::fs::create_dir_all(&run_dir).map_err(at(&run_dir))?;
-                let seq = run_seq - 1;
-                run_once_subprocess(cell, &subs, paths, &run_dir, seq, counted)
-            })?;
-            // Subprocess mode has no per-stream attribution; `rdlt_side` already
-            // leaves `streams` empty.
-            (rdlt_side(&samples), verify_outcome(cell, &samples)?)
-        }
-        Mode::Library => {
-            let samples = protocol::run_protocol(cell.warmups, cell.runs, |_counted| {
-                fixture.reset()?;
-                let run_dir = invocation.path().join(format!("run-{run_seq}"));
-                run_seq += 1;
-                std::fs::create_dir_all(&run_dir).map_err(at(&run_dir))?;
-                crate::library_mode::run_once(cell, &subs, paths, &run_dir)
-            })?;
-            let side = crate::library_mode::side_from(&samples);
-            let verify = crate::library_mode::verify_from(cell, &samples)?;
-            (side, verify)
-        }
-        Mode::Hyperfine => {
-            fixture.reset()?;
-            let run_dir = invocation.path().join("hyperfine");
-            std::fs::create_dir_all(&run_dir).map_err(at(&run_dir))?;
-            // Render the pipeline template once — hyperfine reuses it, the
-            // prepare_sh wipes per-run state.
-            let mut hsubs = subs.clone();
-            hsubs.insert("workdir".into(), run_dir.display().to_string());
-            if let Some(template) = &cell.pipeline {
-                let tmpl_path = paths.benches.join(template);
-                let raw = std::fs::read_to_string(&tmpl_path).map_err(at(&tmpl_path))?;
-                let spec = run_dir.join("pipeline.yaml");
-                std::fs::write(&spec, substitute(&raw, &hsubs)).map_err(at(&spec))?;
-                subs.insert("spec".into(), spec.display().to_string());
-            }
-            let runs_ms = run_hyperfine(cell, &subs, &run_dir)?;
-            let side = RdltSide {
-                median_ms: protocol::median(&runs_ms),
-                p95_ms: protocol::p95(&runs_ms),
-                rows: None,
-                bytes: None,
-                rows_per_s: None,
-                mb_per_s: None,
-                cpu: CpuStats {
-                    note: Some("hyperfine protocol — wall only (R8)".into()),
-                    ..CpuStats::default()
-                },
-                rss: RssStats {
-                    peak_bytes: None,
-                    note: Some("hyperfine protocol".into()),
-                },
-                streams: vec![],
-                runs_ms,
-            };
-            (side, None)
-        }
-    };
+    // Every cell runs the same way: the release-CLI subprocess, warmups then N
+    // counted runs. A `command` cell (selftest) needs no CLI; a pipeline cell
+    // does, so refuse early with the build hint rather than fail mid-protocol.
+    if cell.command.is_none() && !paths.cli.is_file() {
+        return Err(BenchError(format!(
+            "release CLI missing at {} — run `make release` first",
+            paths.cli.display()
+        )));
+    }
+    let samples = protocol::run_protocol(cell.warmups, cell.runs, |counted| {
+        fixture.reset()?;
+        let run_dir = invocation.path().join(format!("run-{run_seq}"));
+        run_seq += 1;
+        std::fs::create_dir_all(&run_dir).map_err(at(&run_dir))?;
+        let seq = run_seq - 1;
+        run_once_subprocess(cell, &subs, paths, &run_dir, seq, counted)
+    })?;
+    let rdlt_side = rdlt_side(&samples);
+    let verify = verify_outcome(cell, &samples)?;
 
     let mut artifact = Artifact {
         format_version: crate::artifact::ARTIFACT_FORMAT_VERSION,
         cell_id: cell.id.clone(),
-        class: cell.class,
-        mode: cell.mode,
-        suite: cell.suite.clone(),
         recorded_at: crate::artifact::recorded_at(),
         fingerprint: crate::artifact::fingerprint(
             fixture.hashes.clone(),
@@ -492,6 +379,8 @@ pub fn run_cell(
         rdlt: rdlt_side,
         competitors,
         verify,
+        forced,
+        extra: serde_json::Map::new(),
     };
 
     // Fill competitor→rdlt ratios now that the rdlt median exists.

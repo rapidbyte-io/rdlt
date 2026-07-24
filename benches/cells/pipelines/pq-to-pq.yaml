@@ -1,6 +1,0 @@
-pipeline: bench-pq-pq
-workdir: {{workdir}}/.rdlt
-source:
-  file: {config: {{data}}/pq-files.yaml}
-destination:
-  parquet: {path: {{workdir}}/pq-out}
