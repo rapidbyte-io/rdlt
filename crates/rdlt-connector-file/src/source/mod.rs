@@ -1,10 +1,10 @@
 //! The file SOURCE side: config, per-file cursors, and the read loop.
 //!
-//! JSONL and Parquet files by explicit path or glob, with per-file incremental
-//! cursors (completed files skipped, in-progress files resumed at their offset,
-//! shrunk/rewritten files rejected loudly). Parquet streams are STRUCTURED (contract
-//! clause S7): batches push through the Arrow passthrough path with run-level
-//! provenance only. Depends on the SPI only.
+//! JSONL, CSV, and Parquet files by explicit path or glob, on the local filesystem or
+//! S3-compatible object storage, with per-file incremental cursors (completed files
+//! skipped, in-progress files resumed at their offset, shrunk/rewritten files rejected
+//! loudly). Parquet streams are STRUCTURED: batches push through the Arrow passthrough
+//! path with run-level provenance only. Depends on the SPI only.
 
 pub mod config;
 pub mod cursor;
@@ -14,8 +14,8 @@ use rdlt_connector::{ConnectorSpec, ReadRequest, Source, SourceError, StreamSpec
 
 use crate::formats::{csv, jsonl, parquet};
 
-/// Fail-point registry (gate G2.2): the SOURCE-side crash points (015 R9;
-/// the dest points live in `crate::dest::FAIL_POINTS`).
+/// Fail-point registry: the SOURCE-side crash points (the dest points live in
+/// `crate::dest::FAIL_POINTS`).
 #[cfg(feature = "failpoints")]
 #[doc(hidden)]
 pub const FAIL_POINTS: &[&str] = &["file.list", "file.read"];
@@ -126,7 +126,7 @@ impl Source for FileSource {
                         }
                     }
                     // Parquet streams are structured: Arrow batches, run-level
-                    // provenance only (clause S7).
+                    // provenance only.
                     Format::Parquet => spec = spec.structured(),
                 }
                 spec
@@ -143,8 +143,8 @@ impl Source for FileSource {
         let location = crate::location::Location::from_options(stream.location.as_ref())?;
         // Snapshot the file list once per run (stable list; new files next run).
         // Local parquet keeps its row-group listing; object-store parquet is
-        // fetched to temp files first (correctness-first, research R10) with
-        // the cursor still keyed by the object.
+        // fetched to temp files first (correctness over streaming) with the
+        // cursor still keyed by the object.
         let mut fetched_dir: Option<std::path::PathBuf> = None;
         let is_s3 = matches!(location, crate::location::Location::S3(_));
         let (matched, read_paths) = match (&location, stream.format) {
@@ -252,7 +252,7 @@ impl Source for FileSource {
             };
             match proceeded {
                 Ok(true) => {}
-                Ok(false) => break, // cancellation (clause S4)
+                Ok(false) => break, // closed channel = cancellation
                 Err(e) => {
                     outcome = Err(e);
                     break;
@@ -266,8 +266,8 @@ impl Source for FileSource {
     }
 }
 
-/// JSON Schema GENERATED from the config structs (feature 006, US4) — the
-/// declared schema and the parser cannot drift.
+/// JSON Schema GENERATED from the config structs — the declared schema and the
+/// parser cannot drift.
 pub fn config_schema() -> serde_json::Value {
     serde_json::to_value(schemars::schema_for!(config::FileConfig)).expect("schema serializes")
 }

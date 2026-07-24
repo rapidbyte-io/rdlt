@@ -1,4 +1,4 @@
-//! Logical types and the widening lattice (research.md R7, design doc §5.2).
+//! Logical types and the widening lattice.
 //!
 //! `widen` is the pure join used by schema inference. Its laws — commutativity,
 //! idempotence, associativity (order-insensitivity), and monotonicity — are enforced by
@@ -73,7 +73,7 @@ pub fn widen(a: LogicalType, b: LogicalType) -> LogicalType {
             join_decimals(precision, scale, 19, 0)
         }
         (Int64, Float64) | (Float64, Int64) => Float64,
-        // Everything textable meets at Utf8 (canonical renderings, design doc §5.2).
+        // Everything textable meets at Utf8 (canonical renderings).
         _ => Utf8,
     }
 }
@@ -89,7 +89,7 @@ fn join_decimals(p1: u8, s1: u8, p2: u8, s2: u8) -> LogicalType {
 }
 
 /// `true` iff `v` converts to `f64` exactly. Values outside ±2^53 do not; the shredder
-/// must escalate the column instead of silently rounding (spec FR-002).
+/// must escalate the column instead of silently rounding.
 pub fn int64_fits_in_f64(v: i64) -> bool {
     const EXACT: i64 = 1 << 53;
     (-EXACT..=EXACT).contains(&v)

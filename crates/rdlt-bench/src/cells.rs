@@ -1,4 +1,4 @@
-//! Cell + bar models and loaders (data-model.md §1/§5, contract BH1).
+//! Cell + bar models and loaders.
 //!
 //! Everything here is load-time validation: unknown fields, duplicate ids, and
 //! gated-cell↔bar mismatches die with the offender named before any container
@@ -45,7 +45,7 @@ pub enum Timing {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Mode {
-    /// Release-CLI child process; the GATED measurement configuration (FR-011).
+    /// Release-CLI child process; the GATED measurement configuration.
     Subprocess,
     /// In-process via the `rdlt` crate: RunReport + events attribution.
     Library,
@@ -147,7 +147,7 @@ struct CellFile {
 }
 
 /// Load every `*.toml` under `cells_dir`. Duplicate ids are a typed error
-/// naming both files (BH1).
+/// naming both files.
 pub fn load_cells(cells_dir: &Path) -> Result<Vec<Cell>> {
     let mut entries: Vec<PathBuf> = std::fs::read_dir(cells_dir)
         .map_err(|e| BenchError(format!("reading {}: {e}", cells_dir.display())))?
@@ -186,7 +186,7 @@ pub fn load_cells(cells_dir: &Path) -> Result<Vec<Cell>> {
 }
 
 // ---------------------------------------------------------------------------
-// Bars (data-model.md §5)
+// Bars
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Deserialize)]
@@ -235,7 +235,7 @@ pub fn load_bars(path: &Path) -> Result<Vec<Bar>> {
     Ok(file.bars)
 }
 
-/// BH1 cross-validation: gated ↔ bar is bijective over gated cells (a gated
+/// Cross-validation: gated ↔ bar is bijective over gated cells (a gated
 /// cell without a bar and a bar over an unknown or scoreboard cell are both
 /// load-time errors).
 pub fn cross_validate(cells: &[Cell], bars: &[Bar]) -> Result<()> {

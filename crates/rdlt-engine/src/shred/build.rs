@@ -2,7 +2,7 @@
 //! schema. Values land directly in typed arrays; the `Json` column type stores the
 //! verbatim serialized subtree (never dropped, never exploded).
 //!
-//! Generic over [`JsonView`] (feature 003 R24): the tree and streaming paths
+//! Generic over [`JsonView`]: the tree and streaming paths
 //! build through the SAME code — identical arrays, bit for bit.
 
 use std::sync::Arc;
@@ -23,7 +23,7 @@ use super::DrainRow;
 use super::canon::parse_timestamp_tz;
 use super::view::{JsonView, Kind};
 
-/// Arrow physical type for a logical type (design doc §5.1).
+/// Arrow physical type for a logical type.
 pub(crate) fn arrow_scalar_type(ty: LogicalType) -> DataType {
     match ty {
         LogicalType::Bool => DataType::Boolean,

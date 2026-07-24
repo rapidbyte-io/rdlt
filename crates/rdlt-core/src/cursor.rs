@@ -1,4 +1,4 @@
-//! Source positions (data-model.md §4).
+//! Source positions.
 
 use serde::{Deserialize, Serialize};
 

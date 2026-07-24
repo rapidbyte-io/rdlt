@@ -1,11 +1,11 @@
 //! Quarantined certificate verifiers for the deliberately-weaker libpq
-//! levels (contract: tls-policy.md). SAFE Rust throughout — "dangerous" is
-//! rustls's API vocabulary for custom verification, not `unsafe`.
+//! levels. SAFE Rust throughout — "dangerous" is rustls's API vocabulary for
+//! custom verification, not `unsafe`.
 //!
 //! - [`AcceptAnyCert`]: `require`/`prefer` — encrypt, validate NOTHING.
 //!   Exactly libpq's `sslmode=require`. Never a default here; the policy
-//!   layer only builds it for those modes, and the README/contract say
-//!   `verify_full` is what production should use.
+//!   layer only builds it for those modes, and the README says `verify_full`
+//!   is what production should use.
 //! - [`ChainOnly`]: `verify_ca` — full webpki chain verification, hostname
 //!   check waived (ONLY the name-mismatch error is forgiven).
 

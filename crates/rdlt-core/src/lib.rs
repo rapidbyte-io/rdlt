@@ -6,12 +6,15 @@
 //! hashing, naming).
 //!
 //! **Charter**: pure data + pure functions only. If it needs tokio, I/O, or arrow
-//! compute, it does not belong here. Dependencies are limited to serde, arrow-schema,
-//! and blake3.
+//! compute, it does not belong here. Dependencies stay narrow — serde/serde_json for
+//! serialization, arrow-schema for schema types, blake3 for hashing, thiserror for the
+//! error taxonomy, and an optional `fail` dependency used only for crash-point injection
+//! in tests (the `failpoints` feature, never in release builds).
 //!
 //! This crate is SEMVER-SACRED: `cargo semver-checks` gates it in CI, and the persisted
-//! formats it defines (`StateDoc`, schema hashes, `RunReport`) are additionally bound by
-//! `specs/001-rdlt-ingestion-engine/contracts/persisted-formats.md`.
+//! formats it defines (`StateDoc`, schema hashes, `RunReport`) are byte-stable — their
+//! on-disk serialization is a compatibility contract that changes only through an
+//! explicit, versioned format migration, never incidentally.
 
 pub mod commit;
 pub mod cursor;

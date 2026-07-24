@@ -53,7 +53,7 @@ pub async fn read_stream(
             // Fan-out: re-read the parent stream's pages (a fresh, cursor-less
             // pass — the parent stream itself is separately synced if
             // declared for loading) and issue one child sequence per parent
-            // record. Bounded buffering: values only (RS7).
+            // record. Bounded buffering: values only, never whole parent records.
             let parent_stream = config
                 .streams
                 .iter()
@@ -85,8 +85,9 @@ pub async fn read_stream(
             .await?;
         }
     }
-    // Child streams and cursor streams checkpoint at FEED END (the 010-shape
-    // caveat recorded in the plan); per-page checkpoints happen inside
+    // Child streams and cursor streams checkpoint only at FEED END: their pages
+    // do not carry a monotonic per-page position, so an intermediate checkpoint
+    // could not be safely resumed from. Per-page checkpoints happen inside
     // read_sequence only for parentless streams.
     if stream.parent.is_some()
         && incremental.is_some()
@@ -152,13 +153,13 @@ async fn read_sequence(
         let Some(extracted) = page else { break };
         if extracted.count > 0 {
             // Cursor update BEFORE pushing, so the checkpoint that follows
-            // the rows covers exactly them (clause S2).
+            // the rows covers exactly them.
             if let Some(inc) = incremental {
                 let values = extracted.values.as_deref().unwrap_or_default();
                 update_max_cursor(values, &inc.cursor_field, max_cursor);
             }
             if out.raw_json(extracted.records.clone()).await.is_err() {
-                return Ok(()); // clause S4: closed channel = cancellation
+                return Ok(()); // closed channel = cancellation
             }
             // Parentless streams checkpoint per page (unchanged behavior);
             // children checkpoint at feed end (read_stream).
@@ -220,7 +221,7 @@ async fn read_children(
     let forward = async {
         while let Some(records) = rx.recv().await {
             if out.raw_json(records).await.is_err() {
-                break; // clause S4: closed channel = cancellation
+                break; // closed channel = cancellation
             }
         }
     };
@@ -354,7 +355,7 @@ struct SequenceDriver<'a> {
     /// Current page params from the paginator (or a full URL override).
     page_params: Vec<(String, String)>,
     url_override: Option<String>,
-    /// Loop guards (RS2): request fingerprints, stored as u64 hashes.
+    /// Loop guards: request fingerprints, stored as u64 hashes.
     seen_requests: HashSet<u64>,
     pages: u64,
     total_records: u64,
@@ -420,7 +421,7 @@ impl<'a> SequenceDriver<'a> {
         self.started = true;
         let url = self.url_override.clone().unwrap_or_else(|| self.base_url());
 
-        // The same-request guard (RS2): fingerprint URL + all params + body,
+        // The same-request guard: fingerprint URL + all params + body,
         // kept as a u64 hash — O(8 bytes) per page, not the rendered string.
         let fingerprint = {
             let mut hasher = DefaultHasher::new();
@@ -521,8 +522,8 @@ impl<'a> SequenceDriver<'a> {
             Err(SourceError::fatal("injected crash at rest.decode"))
         );
         // Declared response actions match the TYPED status and the body,
-        // success and error responses alike — first match wins (RS3: the
-        // allow-list posture; anything undeclared stays classified).
+        // success and error responses alike — first match wins. This is an
+        // allow-list posture: anything undeclared stays classified.
         if let Some(action) = match_action(&self.stream.response_actions, status.as_u16(), &body) {
             let kind = action.action;
             self.last_headers = headers;

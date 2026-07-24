@@ -1,4 +1,4 @@
-//! Fixture lifecycle (data-model.md §2): create → seed with recorded identity →
+//! Fixture lifecycle: create → seed with recorded identity →
 //! share within an invocation → teardown. Kinds: `none`, `generated_files`,
 //! `postgres_container`, `service` (background process, e.g. the mock REST API).
 

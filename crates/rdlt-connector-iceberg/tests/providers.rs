@@ -1,4 +1,4 @@
-//! T010 provider/storage cells (contract ID4): credential delegation
+//! Provider/storage cells: credential delegation
 //! (no user storage keys — the catalog's config-defaults carry them) is
 //! the DEFAULT path; the family-S3 storage override is the explicit
 //! alternative and genuinely takes precedence (a wrong override FAILS —
@@ -94,10 +94,10 @@ async fn wrong_storage_override_fails_not_silently_ignored() {
     assert!(snapshots.is_empty(), "nothing may land under wrong keys");
 }
 
-/// T011: the bearer auth arm live — a static token attached as
+/// The bearer auth arm live — a static token attached as
 /// `Authorization: Bearer` (the same header path Snowflake Open
-/// Catalog / any bearer catalog sees; UC OSS write leg recorded
-/// read-only at T001). The fixture's admin token doubles as the PAT.
+/// Catalog / any bearer catalog sees). The fixture's admin token doubles as
+/// the PAT.
 #[tokio::test(flavor = "multi_thread")]
 async fn bearer_auth_against_live_catalog() {
     use rdlt_connector_iceberg::{AuthOptions, IcebergConfig};

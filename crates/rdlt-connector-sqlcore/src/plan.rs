@@ -1,16 +1,16 @@
-//! The shared merge shapes (contract SM1): survivor selection, scope
-//! replacement, strategy arms, hard-delete decisions, open-time validation,
-//! index plans, and the single-commit-unit rule. MOVED VERBATIM from the
-//! postgres destination's `dest/commit.rs` (features 006/008/010); every
-//! statement's text is produced through the [`MergeDialect`] seam and pinned
-//! byte-for-byte by the postgres golden-SQL suite (SM4).
+//! The shared merge shapes: survivor selection, scope replacement, strategy
+//! arms, hard-delete decisions, open-time validation, index plans, and the
+//! single-commit-unit rule. Every statement's text is produced through the
+//! [`MergeDialect`] seam; the postgres crate's golden-SQL suite pins that
+//! text byte-for-byte, so a change here that alters emitted SQL is caught
+//! there.
 
 use rdlt_connector::core::{TableSchema, schema::system_columns};
 
 use crate::dialect::MergeDialect;
 use crate::options::{DedupSort, DestOptions, MergeStrategy, Scd2Options, SortOrder};
 
-/// Hard-delete flag semantics (M4): boolean columns compare `IS TRUE`,
+/// Hard-delete flag semantics: boolean columns compare `IS TRUE`,
 /// other types `IS NOT NULL` — both NULL-safe on the KEEP side.
 #[derive(Debug)]
 pub struct HardDelete {
@@ -53,10 +53,9 @@ pub struct MergePlan<'a> {
     pub root_stage: String,
     pub is_child: bool,
     pub hard_delete: Option<HardDelete>,
-    /// Feature 010 (MR1): ordered in-load survivor selection; None keeps
-    /// arrival-order last-wins.
+    /// Ordered in-load survivor selection; None keeps arrival-order last-wins.
     pub dedup_sort: Option<&'a DedupSort>,
-    /// Feature 013 G1 (MR6 amended): the table's merge_key columns. For
+    /// The table's merge_key columns. For
     /// non-scd2 strategies the caller runs scope REPLACEMENT before the arm;
     /// for scd2 this SCOPES RETIREMENT instead (retire absent keys only
     /// within delivered scopes).
@@ -84,12 +83,12 @@ impl MergePlan<'_> {
             .join(", ")
     }
 
-    /// In-batch dedup over the stage: arrival-order last-wins (finding #7),
-    /// or — feature 010 MR1 — ordered survivor selection when `dedup_sort`
+    /// In-batch dedup over the stage: arrival-order last-wins,
+    /// or ordered survivor selection when `dedup_sort`
     /// is declared. Values beat NULL (`NULLS LAST` both directions); the
     /// arrival order stays as the trailing tie-breaker, so ties and
     /// all-NULL groups keep the deterministic last-wins. EVERY strategy's
-    /// survivor decision flows through here (MR2).
+    /// survivor decision flows through here.
     fn deduped(&self, identity: &str) -> String {
         let sort = match self.dedup_sort {
             Some(d) => {
@@ -116,8 +115,8 @@ impl MergePlan<'_> {
     }
 
     /// Roots flagged for hard deletion — decided from the DEDUPED last-wins
-    /// root row (review F3: reading the RAW stage disagreed with survival
-    /// when a root was flagged then re-created in the same load).
+    /// root row. Reading the RAW stage instead would disagree with survival
+    /// when a root is flagged then re-created in the same load.
     fn flagged_roots(&self) -> Option<String> {
         self.hard_delete.as_ref().map(|hd| {
             let id = self.quote(system_columns::ID);
@@ -132,14 +131,12 @@ impl MergePlan<'_> {
     }
 }
 
-/// Scope replacement (feature 010, contract merge-refinements.md MR3–MR5):
-/// delete every target row whose scope matches a DELIVERED stage scope,
-/// inside the publish transaction, in the load's FIRST commit unit only
-/// (the caller enforces the single-unit rule). NULL is not a scope: stage
-/// rows with any NULL scope column are excluded explicitly, and target-side
-/// row comparison is never TRUE against NULL (MR4). Committed-unit
-/// redelivery exits before merge SQL (D3), so the delete can never
-/// double-fire.
+/// Scope replacement: delete every target row whose scope matches a DELIVERED
+/// stage scope, inside the publish transaction, in the load's FIRST commit
+/// unit only (the caller enforces the single-unit rule). NULL is not a scope:
+/// stage rows with any NULL scope column are excluded explicitly, and
+/// target-side row comparison is never TRUE against NULL. Committed-unit
+/// redelivery exits before merge SQL, so the delete can never double-fire.
 pub fn scope_replace_sql(
     dialect: &dyn MergeDialect,
     target: &str,
@@ -162,13 +159,13 @@ pub fn scope_replace_sql(
     )
 }
 
-/// Keyed structured delete-insert (the 006 arm + M4 hard delete).
+/// Keyed structured delete-insert, with the hard-delete arm.
 ///
 /// NULL keys: the `(key) IN (...)` predicate is NULL-blind by SQL semantics,
 /// but NULL merge-key VALUES cannot reach this code — the engine rejects
-/// them typed at write time (feature 006, `rdlt-engine/src/load/mod.rs`
+/// them typed at write time (the `rdlt-engine` load path's
 /// structured_merge_keys guard, conformance-pinned). Direct SPI drivers
-/// bypassing the engine inherit that contract obligation.
+/// bypassing the engine inherit that same obligation.
 pub fn keyed_delete_insert_sql(plan: &MergePlan<'_>) -> Vec<String> {
     let (target, stage, cols) = (plan.target, plan.stage, plan.cols);
     let key_list = plan.key_list();
@@ -186,7 +183,7 @@ pub fn keyed_delete_insert_sql(plan: &MergePlan<'_>) -> Vec<String> {
     ]
 }
 
-/// Keyed structured upsert (M2): conflict-update on the merge key.
+/// Keyed structured upsert: conflict-update on the merge key.
 pub fn keyed_upsert_sql(plan: &MergePlan<'_>) -> Vec<String> {
     let (target, cols) = (plan.target, plan.cols);
     let key_list = plan.key_list();
@@ -221,7 +218,7 @@ pub fn keyed_upsert_sql(plan: &MergePlan<'_>) -> Vec<String> {
     out
 }
 
-/// Shredded identity delete-insert (the original arm + M4 hard delete).
+/// Shredded identity delete-insert, with the hard-delete arm.
 pub fn identity_delete_insert_sql(plan: &MergePlan<'_>) -> Vec<String> {
     let (target, cols) = (plan.target, plan.cols);
     let id = plan.quote(system_columns::ID);
@@ -230,7 +227,7 @@ pub fn identity_delete_insert_sql(plan: &MergePlan<'_>) -> Vec<String> {
     } else {
         id.clone()
     };
-    // Hard delete (M4): flagged ROOTS drop from the root insert; their
+    // Hard delete: flagged ROOTS drop from the root insert; their
     // children drop by root-id membership.
     let keep = match (&plan.hard_delete, plan.is_child) {
         (Some(hd), false) => format!(" WHERE {}", hd.keep),
@@ -243,7 +240,7 @@ pub fn identity_delete_insert_sql(plan: &MergePlan<'_>) -> Vec<String> {
     };
     vec![
         // Subtree replacement by root id + DETERMINISTIC in-batch dedup:
-        // arrival order breaks ties, so "last wins" is real (finding #7).
+        // arrival order breaks ties, so "last wins" is real.
         format!(
             "DELETE FROM {target} WHERE {id_col} IN (SELECT {id} FROM {})",
             plan.root_stage
@@ -255,13 +252,13 @@ pub fn identity_delete_insert_sql(plan: &MergePlan<'_>) -> Vec<String> {
     ]
 }
 
-/// SCD2 (contract scd2.md): retire-changed-then-insert with NULL-safe
-/// column-wise change detection. One boundary per commit unit: the dialect's
-/// timestamp expression is TRANSACTION-stable, so every statement in this
-/// publish sees the same instant (S5); redelivery re-executes nothing (D3).
+/// SCD2: retire-changed-then-insert with NULL-safe column-wise change
+/// detection. One boundary per commit unit: the dialect's timestamp
+/// expression is TRANSACTION-stable, so every statement in this publish sees
+/// the same instant; redelivery re-executes nothing.
 pub fn scd2_merge_sql(plan: &MergePlan<'_>, scd2: &Scd2Options) -> Vec<String> {
     let (target, cols) = (plan.target, plan.cols);
-    // G2: caller-supplied boundary beats the transaction timestamp. The
+    // A caller-supplied boundary beats the transaction timestamp. The
     // value was VALIDATED as a timestamp at the options layer — the quoted
     // literal here can never carry raw user SQL.
     let now = match &scd2.boundary_timestamp {
@@ -272,13 +269,13 @@ pub fn scd2_merge_sql(plan: &MergePlan<'_>, scd2: &Scd2Options) -> Vec<String> {
     let deduped = plan.deduped(&key_list);
     let vf = plan.quote(&scd2.valid_from);
     let vt = plan.quote(&scd2.valid_to);
-    // G2: the OPEN-version marker — NULL by default, a validated timestamp
+    // The OPEN-version marker — NULL by default, a validated timestamp
     // literal when `active_record_timestamp` is set. The active predicate is
     // MARKER-TOLERANT (`IS NULL OR = marker`): a table whose history predates
     // the option holds NULL-open rows, and treating only the marker as open
-    // would orphan them — duplicate actives, retirement blind spots (013
-    // review finding 1). New versions open with the marker; NULL-open rows
-    // close normally as their keys change.
+    // would orphan them — duplicate actives, retirement blind spots. New
+    // versions open with the marker; NULL-open rows close normally as their
+    // keys change.
     let (open_value, is_active) = match &scd2.active_record_timestamp {
         Some(marker) => {
             let lit = format!("'{}'", marker.replace('\'', "''"));
@@ -292,7 +289,7 @@ pub fn scd2_merge_sql(plan: &MergePlan<'_>, scd2: &Scd2Options) -> Vec<String> {
         .map(|k| format!("t.{q} = d.{q}", q = plan.quote(k)))
         .collect::<Vec<_>>()
         .join(" AND ");
-    // Change detection (S3): NULL-safe, over the DATA columns — the key is
+    // Change detection: NULL-safe, over the DATA columns — the key is
     // the identity and the load-id changes every load by construction.
     let changed = plan
         .schema
@@ -304,14 +301,14 @@ pub fn scd2_merge_sql(plan: &MergePlan<'_>, scd2: &Scd2Options) -> Vec<String> {
         .join(" OR ");
 
     let mut out = Vec::new();
-    // S3 retire: active versions whose key arrives with DIFFERENT values.
+    // Retire: active versions whose key arrives with DIFFERENT values.
     if !changed.is_empty() {
         out.push(format!(
             "UPDATE {target} t SET {vt} = {now} \
              FROM {deduped} d WHERE {is_active} AND {key_match} AND ({changed})"
         ));
     }
-    // S2/S3 insert: staged rows with NO remaining active version (changed
+    // Insert: staged rows with NO remaining active version (changed
     // keys were just retired; unchanged keys still hold their identical
     // active version and are SKIPPED — no churn).
     out.push(format!(
@@ -320,9 +317,9 @@ pub fn scd2_merge_sql(plan: &MergePlan<'_>, scd2: &Scd2Options) -> Vec<String> {
          WHERE NOT EXISTS ( \
              SELECT 1 FROM {target} t WHERE {is_active} AND {key_match})"
     ));
-    // S6: full-feed absence semantics on request — G1 (MR6 amended): with a
-    // merge_key, retirement is SCOPED to the delivered scopes (NULL is not a
-    // scope, MR4); without one, every absent active key retires.
+    // Full-feed absence semantics on request: with a merge_key, retirement is
+    // SCOPED to the delivered scopes (NULL is not a scope); without one, every
+    // absent active key retires.
     if scd2.absent == crate::options::AbsentPolicy::Retire {
         let scope_clause = match plan.merge_scope {
             Some(scope) if !scope.is_empty() => {
@@ -353,7 +350,8 @@ pub fn scd2_merge_sql(plan: &MergePlan<'_>, scd2: &Scd2Options) -> Vec<String> {
     out
 }
 
-// ---- Open-time validation (SM1/SM5: one rule set, identical typed errors) ----
+// ---- Open-time validation: one rule set, identical typed errors across
+// both SQL destinations ----
 
 /// Table facts a destination resolves before validation.
 #[derive(Debug)]
@@ -363,9 +361,9 @@ pub struct TableFacts<'a> {
     pub is_child: bool,
 }
 
-/// Feature 010 review (the 008 F6 lesson applied to the options): options
-/// under Append or Replace would be silently inert — reject typed instead
-/// (incl. the 011 R5 explicit-vs-default merge_strategy distinction).
+/// Merge-only options (strategy, dedup_sort, merge_key) under Append or
+/// Replace would be silently inert — reject typed instead. Only an EXPLICIT
+/// merge_strategy rejects; the unconfigured default does not.
 pub fn validate_non_merge(options: &DestOptions, table: &str) -> Result<(), String> {
     for (declared, name) in [
         (
@@ -378,17 +376,16 @@ pub fn validate_non_merge(options: &DestOptions, table: &str) -> Result<(), Stri
         if declared {
             return Err(format!(
                 "table `{table}`: {name} requires the merge write mode \
-                 (contract merge-refinements.md MR6) — under \
-                 append/replace it would be silently inert"
+                 — under append/replace it would be silently inert"
             ));
         }
     }
     Ok(())
 }
 
-/// The 008/010 merge-mode option checks (existence, collisions, keyed-only
-/// rules) — every error names the offender, text frozen from the postgres
-/// cells that pin it.
+/// The merge-mode option checks (existence, collisions, keyed-only rules) —
+/// every error names the offender. The message texts are frozen: the postgres
+/// conformance cells pin them.
 pub fn validate_merge(
     options: &DestOptions,
     table: &str,
@@ -398,34 +395,33 @@ pub fn validate_merge(
     let strategy = options.strategy_for(table);
     let has_identity = facts.has_identity;
     if let Some(col) = options.hard_delete_for(table) {
-        // Review F6: configuring hard_delete on a CHILD table was silently
-        // inert — reject typed instead (M4: flags live on the ROOT row of a
-        // shredded stream).
+        // Configuring hard_delete on a CHILD table would be silently inert —
+        // reject typed instead: the flag lives on the ROOT row of a shredded
+        // stream.
         if facts.is_child {
             return Err(format!(
                 "table `{table}`: hard_delete applies to the ROOT table of a \
                  shredded stream — configure it on the root, not the child"
             ));
         }
-        // M4: the flag column must exist on THIS table's schema.
+        // The flag column must exist on THIS table's schema.
         if facts.schema.column(col).is_none() {
             return Err(format!(
                 "hard_delete column `{col}` is not a column of table `{table}`"
             ));
         }
     }
-    // Feature 010 (MR6): both refinement options are keyed-structured only,
-    // their columns must exist, and they may not repurpose the hard_delete
-    // flag. (A collision with scd2 validity columns is unreachable: validity
-    // names may not be stream columns [S1] while these options' columns MUST
-    // be — S1 fires first.)
+    // Both refinement options (dedup_sort, merge_key) are keyed-structured
+    // only, their columns must exist, and they may not repurpose the
+    // hard_delete flag. (A collision with scd2 validity columns is
+    // unreachable: validity names may not be stream columns while these
+    // options' columns MUST be — the validity-column check fires first.)
     if let Some(dedup) = options.dedup_sort_for(table) {
         if has_identity {
             return Err(format!(
                 "table `{table}`: dedup_sort requires a KEYED structured \
-                 stream (contract merge-refinements.md MR6) — a shredded \
-                 stream's identity is a content hash, ordered survivors \
-                 are meaningless there"
+                 stream — a shredded stream's identity is a content hash, \
+                 ordered survivors are meaningless there"
             ));
         }
         if facts.schema.column(&dedup.column).is_none() {
@@ -437,8 +433,7 @@ pub fn validate_merge(
         if options.hard_delete_for(table) == Some(dedup.column.as_str()) {
             return Err(format!(
                 "table `{table}`: dedup_sort column `{}` is the hard_delete \
-                 flag — use a distinct ordering column (contract \
-                 merge-refinements.md MR6)",
+                 flag — use a distinct ordering column",
                 dedup.column
             ));
         }
@@ -449,7 +444,7 @@ pub fn validate_merge(
             return Err(format!(
                 "table `{table}`: dedup_sort column `{}` is part of the \
                  merge key — constant within each identity group, it can \
-                 never order survivors (contract merge-refinements.md MR6)",
+                 never order survivors",
                 dedup.column
             ));
         }
@@ -458,20 +453,18 @@ pub fn validate_merge(
         if has_identity {
             return Err(format!(
                 "table `{table}`: merge_key requires a KEYED structured \
-                 stream (contract merge-refinements.md MR6) — shredded \
-                 streams replace by root subtree"
+                 stream — shredded streams replace by root subtree"
             ));
         }
         if strategy == MergeStrategy::Scd2
             && options.scd2_for(table).absent != crate::options::AbsentPolicy::Retire
         {
             // Belt: parse-time validation already rejects this; direct
-            // struct construction must not slip past it (013 G1: the
-            // composition is scoped retirement and requires retire).
+            // struct construction must not slip past it — merge_key with scd2
+            // is scoped retirement and requires `absent: retire`.
             return Err(format!(
                 "table `{table}`: merge_key with scd2 scopes RETIREMENT and \
-                 requires scd2 {{absent: retire}} (contract \
-                 merge-refinements.md MR6, amended by feature 013)"
+                 requires scd2 {{absent: retire}}"
             ));
         }
         for col in scope {
@@ -483,14 +476,13 @@ pub fn validate_merge(
             if options.hard_delete_for(table) == Some(col.as_str()) {
                 return Err(format!(
                     "table `{table}`: merge_key column `{col}` is the \
-                     hard_delete flag — a deletion flag is not a scope \
-                     (contract merge-refinements.md MR6)"
+                     hard_delete flag — a deletion flag is not a scope"
                 ));
             }
         }
     }
     if strategy == MergeStrategy::Upsert && has_identity {
-        // Review F4 / contract M7 (amended): a shredded stream's _rdlt_id is
+        // A shredded stream's _rdlt_id is
         // a CONTENT hash for keyless streams — updates mint new ids and
         // ON CONFLICT never fires, silently duplicating. The destination
         // cannot distinguish keyed from keyless shredded streams, so upsert
@@ -498,15 +490,14 @@ pub fn validate_merge(
         // (subtree replacement).
         return Err(format!(
             "table `{table}`: the upsert strategy requires a KEYED \
-             structured stream (contract merge-strategies.md M2/M7) — \
-             shredded streams use delete_insert"
+             structured stream — shredded streams use delete_insert"
         ));
     }
     if strategy == MergeStrategy::Scd2 {
         if has_identity {
             return Err(format!(
                 "table `{table}`: scd2 requires a KEYED structured stream \
-                 (contract scd2.md S1) — shredded streams have no declared key"
+                 — shredded streams have no declared key"
             ));
         }
         let scd2 = options.scd2_for(table);
@@ -514,8 +505,7 @@ pub fn validate_merge(
             if facts.schema.column(name).is_some() {
                 return Err(format!(
                     "table `{table}`: scd2 validity column `{name}` collides \
-                     with a stream column (contract scd2.md S1) — configure \
-                     different names"
+                     with a stream column — configure different names"
                 ));
             }
         }
@@ -524,8 +514,8 @@ pub fn validate_merge(
     Ok(())
 }
 
-/// Index plan (008 data-model): identity per table kind, plus the 010 scope
-/// index. `(unique, columns)` pairs; SQL text is the destination's.
+/// Index plan: identity indexes per table kind, plus the scope index.
+/// `(unique, columns)` pairs; SQL text is the destination's.
 pub fn index_plan(
     options: &DestOptions,
     table: &str,
@@ -552,9 +542,8 @@ pub fn index_plan(
                 indexes.push((false, cols));
             }
         }
-        // Feature 010 review: the scope delete probes by the scope columns —
-        // without this index it seq-scans the whole target every load (the
-        // scoreboard number was measured WITH it).
+        // The scope delete probes by the scope columns — without this index
+        // it seq-scans the whole target every load.
         if let Some(scope) = options.merge_key_for(table) {
             indexes.push((false, scope.to_vec()));
         }
@@ -562,17 +551,17 @@ pub fn index_plan(
     indexes
 }
 
-/// The per-table single-commit-unit violation (MR5 / scd2 S6, one shared
-/// rule + one shared message).
+/// The per-table single-commit-unit violation: scoped merge_key replacement
+/// and scd2 `absent: retire` share one rule and one message.
 pub fn single_unit_violation(table: &str, scoped: bool) -> String {
-    let (what, contract) = if scoped {
-        ("merge_key scope replacement", "merge-refinements.md MR5")
+    let what = if scoped {
+        "merge_key scope replacement"
     } else {
-        ("scd2 `absent: retire`", "scd2.md S6")
+        "scd2 `absent: retire`"
     };
     format!(
         "table `{table}`: {what} requires the table's full \
-         feed in a SINGLE commit unit (contract {contract}) — \
+         feed in a SINGLE commit unit — \
          raise the engine commit thresholds and re-run; the \
          fixed configuration re-delivers the full feed and \
          converges"

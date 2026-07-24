@@ -1,7 +1,7 @@
 //! Hand-rolled pgoutput (logical replication) message parser — protocol
 //! version 1, the format `pg_logical_slot_peek_binary_changes` emits with
-//! `proto_version '1'` (research R2). Same house discipline as the 005
-//! binary-COPY decoder: no dependencies, typed errors, no panics on
+//! `proto_version '1'`. Same house discipline as the binary-COPY decoder:
+//! no dependencies, typed errors, no panics on
 //! malformed input, fuzzed (`pg_pgoutput_decode`).
 //!
 //! Message reference: PostgreSQL docs, "Logical Replication Message
@@ -26,7 +26,7 @@ fn err<T>(message: impl Into<String>) -> Result<T, PgoutputError> {
 pub enum TupleValue {
     Null,
     /// Unchanged out-of-line (TOAST) value — the update did not carry it
-    /// (contract cdc-operability O3 decides what happens next).
+    /// (the row-building layer decides what happens next).
     UnchangedToast,
     /// Text-form value bytes (proto v1 sends text).
     Text(Vec<u8>),

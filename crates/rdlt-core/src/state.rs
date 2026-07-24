@@ -1,4 +1,4 @@
-//! Pipeline state persisted *in the destination* (contracts/persisted-formats.md §1).
+//! Pipeline state persisted *in the destination*.
 //!
 //! Written atomically with the data it covers by `LoadSession::commit`; the reason
 //! correctness survives total loss of the local work directory.
@@ -45,7 +45,7 @@ impl StateDoc {
 
     /// A newer on-disk format than this engine knows must be a typed failure, never a
     /// silent reset (a silent reset would re-extract from zero and duplicate under
-    /// Append). Persisted-formats contract §1.
+    /// Append).
     pub fn check_readable(&self) -> Result<(), UnsupportedStateVersion> {
         if self.format_version > STATE_FORMAT_VERSION {
             return Err(UnsupportedStateVersion {

@@ -1,4 +1,4 @@
-//! Deterministic row identity (design doc §5.4, data-model.md §5).
+//! Deterministic row identity.
 //!
 //! `_rdlt_id` is a pure function of row content (keyless) or key values (keyed);
 //! child ids mix parent id, position, and child content so nested changes produce new
@@ -24,7 +24,7 @@ pub struct RowIdBuilder {
 impl RowIdBuilder {
     /// Identity for a row with no declared key: hash of full canonical content.
     /// Byte-identical rows collapse to the same id — documented dedup semantics under
-    /// `Merge` (design doc §5.4).
+    /// `Merge`.
     pub fn keyless() -> Self {
         Self::with_domain(DOMAIN_KEYLESS)
     }

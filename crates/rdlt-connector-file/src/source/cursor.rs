@@ -1,9 +1,9 @@
-//! Per-file progress cursor (data-model §1): `path → {done, size, eol, mtime}`.
+//! Per-file progress cursor: `path → {done, size, eol, mtime}`.
 //!
 //! Complete ⇔ `done == size`. Resume rules: grown file → read the tail from `done`
 //! (only if the consumed range ended at a record boundary); shrunk file, `done >
 //! current size`, or a same-size file whose mtime moved → fatal, naming the file —
-//! never read from a stale offset (spec FR-003).
+//! never read from a stale offset.
 
 use std::collections::BTreeMap;
 
@@ -12,11 +12,11 @@ use serde::{Deserialize, Serialize};
 
 pub const CURSOR_FORMAT_VERSION: u32 = 1;
 
-/// Tail-verification window (015 review finding 2): the cursor records a
-/// blake3 hash of the last `min(done, TAIL_WINDOW)` consumed bytes; a
-/// resumed read re-fetches exactly that window and compares BEFORE
-/// trusting the offset — a grown REWRITE (changed prefix) fails loudly on
-/// both location kinds, while a genuine append (identical prefix) resumes.
+/// Tail-verification window: the cursor records a blake3 hash of the last
+/// `min(done, TAIL_WINDOW)` consumed bytes; a resumed read re-fetches exactly that
+/// window and compares BEFORE trusting the offset — a grown REWRITE (changed prefix)
+/// fails loudly on both location kinds, while a genuine append (identical prefix)
+/// resumes.
 pub const TAIL_WINDOW: u64 = 4096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,12 +36,12 @@ pub struct FileProgress {
     /// see that, so this is the loud-failure tripwire for it.
     #[serde(default)]
     pub mtime_ms: Option<u64>,
-    /// Object-store content identity (015, additive): the etag observed when
-    /// this progress was recorded — the object-side rewrite tripwire.
+    /// Object-store content identity: the etag observed when this progress was
+    /// recorded — the object-side rewrite tripwire.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub etag: Option<String>,
-    /// blake3 of the last `min(done, TAIL_WINDOW)` consumed bytes (015,
-    /// additive; jsonl only — the resume-offset integrity check).
+    /// blake3 of the last `min(done, TAIL_WINDOW)` consumed bytes (jsonl only — the
+    /// resume-offset integrity check).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tail_hash: Option<String>,
 }

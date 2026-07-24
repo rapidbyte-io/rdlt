@@ -1,4 +1,5 @@
-//! File source configuration (contract: specs/002…/contracts/file-connectors.md).
+//! File source configuration: the `streams` list and each stream's format, location,
+//! path/glob, and per-format options, all deserialized from the pipeline's YAML.
 
 use std::collections::BTreeMap;
 
@@ -21,10 +22,10 @@ pub struct FileConfig {
 #[non_exhaustive]
 pub struct FileStream {
     pub name: String,
-    /// Explicit — no extension magic (research R13).
+    /// Explicit — the format is never inferred from the file extension.
     pub format: Format,
-    /// Where the files live (015): absent = local filesystem (pre-015
-    /// semantics, unchanged); `{s3: {…}}` = S3-compatible object storage.
+    /// Where the files live: absent = local filesystem; `{s3: {...}}` =
+    /// S3-compatible object storage.
     #[serde(default)]
     pub location: Option<crate::location::LocationOptions>,
     /// CSV reader options (only with `format: csv`; typed otherwise).
@@ -34,7 +35,7 @@ pub struct FileStream {
     /// error; an empty glob is an empty stream.
     pub path: String,
     /// Record-stream options (jsonl only; parquet streams are structured and carry
-    /// no per-row identity — clause S7/B4).
+    /// no per-row identity, so they take no primary key).
     #[serde(default)]
     pub primary_key: Option<Vec<String>>,
     #[serde(default)]
@@ -131,7 +132,7 @@ impl FileConfig {
             if stream.format == Format::Parquet && stream.primary_key.is_some() {
                 return Err(ConfigError::Invalid(format!(
                     "stream `{}`: parquet streams are structured and cannot declare \
-                     primary_key (no per-row identity; contract clause S7)",
+                     primary_key (no per-row identity)",
                     stream.name
                 )));
             }

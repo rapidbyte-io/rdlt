@@ -1,4 +1,4 @@
-//! The JSON view seam (feature 003 R24): one definition of shred semantics,
+//! The JSON view seam: one definition of shred semantics,
 //! two representations.
 //!
 //! Everything semantics-bearing in the shredder — type observation, canonical

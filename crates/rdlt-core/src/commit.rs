@@ -1,4 +1,4 @@
-//! The commit protocol vocabulary (data-model.md §6).
+//! The commit protocol vocabulary.
 
 use serde::{Deserialize, Serialize};
 
@@ -27,14 +27,14 @@ pub struct CommitMeta {
 }
 
 /// Destination acknowledgment. Re-committing the same `(load_id, commit_seq)` MUST
-/// return the prior receipt without re-publishing (contract clause D3).
+/// return the prior receipt without re-publishing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommitReceipt {
     pub load_id: LoadId,
     pub commit_seq: u64,
 }
 
-/// When the engine groups checkpoint spans into commit units (design doc §6).
+/// How the engine groups checkpoint spans into commit units.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CommitPolicy {
@@ -52,7 +52,7 @@ impl Default for CommitPolicy {
     }
 }
 
-/// Per-stream write disposition (spec FR-005).
+/// Per-stream write disposition.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum WriteMode {

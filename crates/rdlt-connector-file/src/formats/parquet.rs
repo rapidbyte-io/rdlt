@@ -1,5 +1,5 @@
 //! Parquet reading: row-group batches pushed as already-structured Arrow data
-//! (passthrough path, clause S7); cursor unit = row groups.
+//! (the passthrough path — no shredding); cursor unit = row groups.
 
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::file::reader::{FileReader, SerializedFileReader};
@@ -55,7 +55,7 @@ pub(crate) async fn read_task(
                 ))
             })?;
             if out.arrow(batch).await.is_err() {
-                return Ok(false); // cancellation (clause S4)
+                return Ok(false); // closed channel = cancellation
             }
         }
         cursor.record(

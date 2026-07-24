@@ -5,14 +5,14 @@
 //! atomically with data. Depends on the SPI + the shared merge core
 //! (rdlt-connector-sqlcore) only.
 //!
-//! Feature 013: the full destination-options vocabulary (merge strategies,
-//! hard_delete, dedup_sort, merge_key, scd2) executes through the SHARED
-//! sqlcore shapes via [`dialect::DuckDialect`] — the same plans, validation,
-//! and typed errors as the postgres destination (contract SM1/SM5). `Json`
-//! columns land as native DuckDB JSON (probe-verified, tests/probes.rs).
+//! The full destination-options vocabulary (merge strategies, hard_delete,
+//! dedup_sort, merge_key, scd2) executes through the SHARED sqlcore shapes via
+//! [`dialect::DuckDialect`] — the same plans, validation, and typed errors as
+//! the postgres destination. `Json` columns land as native DuckDB JSON
+//! (probe-verified, tests/probes.rs).
 //!
-//! Module layout (the 008 split-when-code-arrives rule): [`commit`] the
-//! load-session protocol + strategy execution, [`dialect`] the SQL-text seam.
+//! Module layout: [`commit`] the load-session protocol + strategy execution,
+//! [`dialect`] the SQL-text seam.
 
 mod commit;
 mod dialect;
@@ -38,11 +38,11 @@ pub use rdlt_connector_sqlcore::{
 pub struct DuckDb {
     db: std::sync::Arc<Mutex<Connection>>,
     options: DestOptions,
-    /// G3 settings/extensions, REPLAYED on every session connection:
+    /// Settings/extensions, REPLAYED on every session connection:
     /// `try_clone` opens a NEW DuckDB session that inherits neither
     /// session-scoped SETs nor LOADs — applying them only on the builder
     /// connection would leave the session that actually writes silently
-    /// unconfigured (013 review finding 4).
+    /// unconfigured.
     session_setup: Vec<SetupStmt>,
 }
 
@@ -71,9 +71,8 @@ impl DuckDb {
         })
     }
 
-    /// Strategy/hard-delete/refinement options (feature 013 — the SAME
-    /// vocabulary as the postgres destination, contract SM5). Validated
-    /// here; errors name the field.
+    /// Strategy/hard-delete/refinement options — the SAME vocabulary as the
+    /// postgres destination. Validated here; errors name the field.
     pub fn options(mut self, options: DestOptions) -> Result<Self, DestError> {
         options.validate().map_err(DestError::fatal)?;
         self.options = options;
@@ -82,17 +81,17 @@ impl DuckDb {
 
     /// Cap DuckDB's own buffer/cache memory (e.g. `"512MB"`). DuckDB's default
     /// is a fraction of SYSTEM RAM, which dominates pipeline RSS on large-memory
-    /// machines; ingestion workloads rarely need it (design §8 RSS target).
+    /// machines; ingestion workloads rarely need it.
     pub fn memory_limit(self, limit: &str) -> Result<Self, DestError> {
         self.setting("memory_limit", limit)
     }
 
-    /// Apply one DuckDB setting (`SET key = 'value'`) — the dlt-parity G3
-    /// passthrough (threads, temp_directory, TimeZone, …). Validated + applied
+    /// Apply one DuckDB setting (`SET key = 'value'`) — the passthrough for
+    /// threads, temp_directory, TimeZone, and the like. Validated + applied
     /// eagerly (a bad key/value errors HERE), and replayed on every session
-    /// connection the destination opens (finding 4: cloned connections are
-    /// fresh sessions). The key must be a bare identifier; the value is
-    /// escaped as a literal.
+    /// connection the destination opens (cloned connections are fresh
+    /// sessions). The key must be a bare identifier; the value is escaped as a
+    /// literal.
     pub fn setting(mut self, key: &str, value: &str) -> Result<Self, DestError> {
         if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
             return Err(fatal(format!(
@@ -112,9 +111,9 @@ impl DuckDb {
         Ok(self)
     }
 
-    /// LOAD a DuckDB extension by name (G3 passthrough; bundled builds carry
-    /// the core extensions statically — LOAD activates, no network install).
-    /// Applied eagerly and replayed per session connection (finding 4).
+    /// LOAD a DuckDB extension by name (bundled builds carry the core
+    /// extensions statically — LOAD activates, no network install).
+    /// Applied eagerly and replayed per session connection.
     pub fn extension(mut self, name: &str) -> Result<Self, DestError> {
         if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
             return Err(fatal(format!(
@@ -136,7 +135,7 @@ impl DuckDb {
     fn clone_conn(&self) -> Result<Connection, DestError> {
         let guard = self.db.lock().map_err(|_| fatal("connection poisoned"))?;
         let conn = guard.try_clone().map_err(fatal)?;
-        // Fresh session: replay the declared settings/extensions (finding 4).
+        // Fresh session: replay the declared settings/extensions.
         for stmt in &self.session_setup {
             apply_setup(&conn, stmt)?;
         }
@@ -205,7 +204,7 @@ fn apply_setup(conn: &Connection, stmt: &SetupStmt) -> Result<(), DestError> {
     }
 }
 
-/// Fail-point registry (gate G2.2); coarse by design — DuckDB's own
+/// Fail-point registry for crash-sweep tests; coarse by design — DuckDB's own
 /// transaction is one atomic step. Macro defined once in `rdlt_core::failpoint`.
 #[cfg(feature = "failpoints")]
 #[doc(hidden)]
@@ -226,8 +225,8 @@ pub(crate) fn stage_name(table: &TableName) -> String {
 
 /// Quoted, comma-joined column list from the session schema — publishes are ALWAYS
 /// by name: the persistent target's column order is historical while the temp stage
-/// uses this run's order, so positional `SELECT *` corrupts or breaks on drift
-/// (review finding #4).
+/// uses this run's order, so positional `SELECT *` corrupts or breaks on
+/// drift.
 pub(crate) fn column_list(schema: &TableSchema) -> String {
     schema
         .columns
@@ -241,8 +240,8 @@ pub(crate) fn column_list(schema: &TableSchema) -> String {
 ///
 /// `is_stage`: stages carry the ARROW shape (Json stays VARCHAR — the
 /// appender writes Utf8); targets carry the LOGICAL shape (Json = native
-/// JSON, feature 013 R6). The stage→target `INSERT … SELECT` applies
-/// DuckDB's implicit VARCHAR→JSON cast (probe-verified, incl. validation).
+/// JSON). The stage→target `INSERT … SELECT` applies DuckDB's implicit
+/// VARCHAR→JSON cast (probe-verified, incl. validation).
 pub(crate) fn sql_type(ty: &ColumnType, is_stage: bool) -> String {
     match ty {
         ColumnType::Scalar { scalar } => match scalar {
@@ -298,8 +297,8 @@ impl Destination for DuckDb {
             merge: true,
             structs: true,
             scalar_lists: true,
-            // Feature 013 (R6): Json lands as native DuckDB JSON — flipped
-            // with probe + round-trip proof (tests/probes.rs, tests/json.rs).
+            // Json lands as native DuckDB JSON — proven by a probe and a
+            // round-trip test (tests/probes.rs, tests/json.rs).
             json_type: true,
             decimal: true,
             ident_rules: IdentRules::default(),
@@ -308,9 +307,9 @@ impl Destination for DuckDb {
 
     async fn open(&self, _ctx: OpenCtx) -> Result<Box<dyn LoadSession>, DestError> {
         // A cloned connection shares the database instance but has its OWN temp-table
-        // catalog — a dead session's staged temp tables are unreachable (clause D4).
+        // catalog — a dead session's staged temp tables are unreachable.
         let conn = self.clone_conn()?;
-        // Meta tables carry the correctness protocol (contracts/persisted-formats §1).
+        // Meta tables carry the state + commit-receipt correctness protocol.
         conn.execute_batch(&format!(
             "CREATE TABLE IF NOT EXISTS {state} (pipeline VARCHAR PRIMARY KEY, doc VARCHAR);
              CREATE TABLE IF NOT EXISTS {commits} (

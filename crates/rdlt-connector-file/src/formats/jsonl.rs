@@ -1,9 +1,9 @@
 //! JSONL reading: slab-sized pushes of complete lines through the raw-bytes perf
 //! path, per-slab checkpoints, byte-offset resume.
 //!
-//! Feature 003 (FR-007): slabs are read as raw bytes and split on `memchr`
-//! newlines — no per-line `String`, no per-line UTF-8 validation (the JSON
-//! parse downstream validates), and the slab moves into `Bytes` without a copy.
+//! Slabs are read as raw bytes and split on `memchr` newlines — no per-line `String`,
+//! no per-line UTF-8 validation (the JSON parse downstream validates), and the slab
+//! moves into `Bytes` without a copy.
 
 use bytes::Bytes;
 use rdlt_connector::{RecordsOut, SourceError};
@@ -36,7 +36,7 @@ pub(crate) async fn read_task(
     cursor: &mut FileCursor,
     out: &mut RecordsOut,
 ) -> Result<bool, SourceError> {
-    // Resume-offset integrity (015): re-read the recorded tail window and
+    // Resume-offset integrity: re-read the recorded tail window and
     // compare BEFORE trusting the offset — a rewritten prefix fails loudly;
     // a genuine append verifies and continues from the same open reader.
     let verify = task.tail_check.as_ref().filter(|_| task.start > 0);
@@ -132,10 +132,10 @@ pub(crate) async fn read_task(
 
         // Zero-copy handoff: the Vec becomes the pushed Bytes.
         if out.raw_json(Bytes::from(slab)).await.is_err() {
-            return Ok(false); // clause S4: closed channel = cancellation
+            return Ok(false); // closed channel = cancellation
         }
-        // Progress is durable-intent only once checkpointed (clause S2: the
-        // checkpoint covers exactly the rows pushed before it).
+        // Progress is durable-intent only once checkpointed: the checkpoint
+        // covers exactly the rows pushed before it.
         cursor.record(
             &task.path,
             FileProgress {
@@ -260,7 +260,7 @@ pub(crate) async fn read_task_whole(
         }
         offset += slab.len() as u64;
         if out.raw_json(Bytes::from(slab)).await.is_err() {
-            return Ok(false); // clause S4
+            return Ok(false); // closed channel = cancellation
         }
         if eof && carry.is_empty() {
             break;

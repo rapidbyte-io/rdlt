@@ -1,13 +1,6 @@
 //! Shared shredding state: per-table naming, shape observation, lineage
 //! identity, and schema resolution — everything the tape traversal (`tape.rs`)
 //! and the drain (`mod.rs`) build on.
-//!
-//! History: until feature 003 this file also held the original owned-`Value`
-//! "tree" shredder. The tape path replaced it (equivalence proven by
-//! construction over the shared [`super::view::JsonView`] core, then by a
-//! proptest, both retired with the tree path once it shipped); its behavioral
-//! invariants stay pinned by `tests/shred_property.rs` and the hazard cases in
-//! `arena.rs`/`tests/passthrough.rs`.
 
 use rdlt_core::identity::{FieldValue, RowIdBuilder};
 use rdlt_core::naming::{IdentRules, UniqueNamer};
@@ -111,7 +104,7 @@ impl TableBuffer {
 }
 
 /// `_rdlt_id` for a root row: key hash when the stream declares a primary key,
-/// content hash otherwise (design doc §5.4).
+/// content hash otherwise.
 pub(crate) fn row_identity<'a, V: JsonView<'a>>(primary_key: Option<&[String]>, row: V) -> RowId {
     match primary_key {
         Some(key_fields) if !key_fields.is_empty() => {

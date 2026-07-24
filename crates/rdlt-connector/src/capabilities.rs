@@ -1,4 +1,4 @@
-//! Destination capabilities — data, not traits (contract clause D7).
+//! Destination capabilities — data, not traits.
 //!
 //! The engine plans around these at build time: lowering strategy (struct passthrough
 //! vs flatten), merge validation (fail-fast if requested but unsupported), identifier

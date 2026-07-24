@@ -1,4 +1,4 @@
-//! Versioned result artifacts (data-model.md §4, contract BH5). One committed
+//! Versioned result artifacts. One committed
 //! JSON per cell under `benches/results/`; raw sampler series under
 //! `results/raw/` (gitignored). Serde-stable: `format_version` gates readers.
 
@@ -20,7 +20,7 @@ pub struct Fingerprint {
     pub competitor_pin: Option<String>,
     pub dataset_hashes: BTreeMap<String, String>,
     pub loadavg_at_start: f64,
-    /// Present when the quiet-machine guard annotated the run (BH2).
+    /// Present when the quiet-machine guard annotated the run.
     pub quiet_note: Option<String>,
 }
 
@@ -56,7 +56,7 @@ pub struct RdltSide {
     pub runs_ms: Vec<f64>,
     pub median_ms: f64,
     pub p95_ms: f64,
-    /// From the RunReport's own accounting — never estimated (BH3).
+    /// From the RunReport's own accounting — never estimated.
     pub rows: Option<u64>,
     pub bytes: Option<u64>,
     pub rows_per_s: Option<f64>,
@@ -81,7 +81,8 @@ pub enum CompetitorSide {
         /// competitor_median / rdlt_median — >1 means rdlt is faster.
         ratio_vs_rdlt: Option<f64>,
     },
-    /// BH4: never silently skipped.
+    /// A competitor that could not run — recorded explicitly, never silently
+    /// skipped.
     Missing { reason: String },
 }
 

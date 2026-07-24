@@ -218,7 +218,7 @@ impl LoadSession for MemorySession {
         }
 
         // Merge pass 1: per merge-root table, the staged root ids define which
-        // subtrees are being replaced (delete-by-root-id; design doc §5.4).
+        // subtrees are being replaced — merge deletes whole subtrees by root id.
         let mut staged_root_ids: BTreeMap<TableName, BTreeSet<String>> = BTreeMap::new();
         for (table, rows) in &inner.staged {
             let is_merge_root = matches!(inner.modes.get(table), Some(WriteMode::Merge { .. }))
@@ -258,9 +258,9 @@ impl LoadSession for MemorySession {
                         s.columns.iter().all(|c| c.name != system_columns::ID)
                     }) =>
                 {
-                    // Keyed STRUCTURED merge (feature 006, merge-structured.md):
-                    // no per-row identity exists — delete-by-declared-key, then
-                    // last-wins within the staged batch by the same key.
+                    // Keyed STRUCTURED merge: no per-row identity column exists,
+                    // so delete by the declared merge key, then take last-wins
+                    // within the staged batch by that same key.
                     let key_of = |row: &Row| -> String {
                         let tuple: Vec<&Value> = key
                             .iter()
@@ -297,8 +297,8 @@ impl LoadSession for MemorySession {
                             .is_none_or(|id| !replaced.contains(id))
                     });
                     // Upsert semantics also within one staged batch: identical
-                    // `_rdlt_id`s collapse, last write wins (keyless content-hash
-                    // dedup, design doc §5.4).
+                    // `_rdlt_id`s collapse, last write wins (keyless
+                    // content-hash dedup).
                     let mut seen = BTreeSet::new();
                     let mut deduped: Vec<Row> = Vec::new();
                     for row in rows.into_iter().rev() {
@@ -403,7 +403,7 @@ fn coerce_value(value: &mut Value, ty: &rdlt_connector::core::ColumnType) {
     }
 }
 
-/// Walk the parent chain to the root table (child schemas link upward, data-model §3).
+/// Walk the parent chain to the root table (child schemas link upward via `parent`).
 fn root_table(schemas: &BTreeMap<TableName, TableSchema>, table: &TableName) -> TableName {
     let mut current = table.clone();
     let mut hops = 0;

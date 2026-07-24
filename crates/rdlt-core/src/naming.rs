@@ -1,4 +1,4 @@
-//! Identifier normalization and collision-safe naming (design doc §5.3).
+//! Identifier normalization and collision-safe naming.
 //!
 //! The invariant these functions defend: **distinct source names never silently merge**.
 //! When normalization or flattening maps two different source names to the same
@@ -181,8 +181,9 @@ mod tests {
 
     #[test]
     fn flattened_column_name_joins_path() {
-        // Mutation-report closure: the function body was untested (its only
-        // caller is the capability-lowering seam).
+        // This test is the only exercise of `flattened_column_name`: it has no
+        // production caller yet, but stays as part of the naming vocabulary for
+        // destinations that flatten nested objects, so pin its behavior here.
         assert_eq!(
             flattened_column_name(&["profile", "geo", "lat"], IdentRules::default()),
             "profile__geo__lat"

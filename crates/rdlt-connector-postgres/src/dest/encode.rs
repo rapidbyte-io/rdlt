@@ -1,6 +1,4 @@
 //! Binary-COPY wire encoding: arrow column → Postgres wire type + cell values.
-//! (Feature 008 T001: relocated verbatim; the native NUMERIC/JSONB/UUID
-//! encoders land in T002.)
 
 use arrow_array::{
     Array, BinaryArray, BooleanArray, Date32Array, Decimal128Array, Float64Array, Int64Array,
@@ -89,7 +87,7 @@ pub(super) fn wire_type(wire: ColumnWire) -> Type {
 }
 
 /// One cell as an owned ToSql value for binary COPY. `column` names the
-/// column in typed errors (T2/T3).
+/// column in typed errors.
 pub(super) fn cell_value(
     wire: ColumnWire,
     array: &dyn Array,
@@ -176,10 +174,10 @@ pub(super) fn cell_value(
     })
 }
 
-// ---- Feature 008 T002: native wire encoders (contract dest-types.md T5) ----
+// ---- Native wire encoders ----
 //
-// Hand-rolled mirrors of the SOURCE's binary-COPY decoders (research R1):
-// no tokio-postgres type features, no new dependencies. The source decoder
+// Hand-rolled mirrors of the SOURCE's binary-COPY decoders: no tokio-postgres
+// type features, no new dependencies. The source decoder
 // is the round-trip oracle in the tests below.
 
 use bytes::{BufMut, BytesMut};
@@ -196,7 +194,7 @@ pub(super) struct NumericWire {
 
 pub(super) fn numeric_wire_bytes(value: i128, scale: u8) -> Vec<u8> {
     let negative = value < 0;
-    // Overflow-free (review F1): a 38-digit i128 times 10^pad exceeds
+    // Overflow-free: a 38-digit i128 times 10^pad exceeds
     // u128::MAX, so grouping happens in the DECIMAL-STRING domain — append
     // the pad zeros textually, then read base-10000 groups off the digits.
     let pad = (4 - (scale as usize % 4)) % 4;
@@ -296,9 +294,8 @@ impl ToSql for JsonbWire {
 pub(super) struct UuidWire(pub [u8; 16]);
 
 pub(super) fn parse_uuid_text(text: &str) -> Option<[u8; 16]> {
-    // Accept the same textual forms the SERVER's uuid input accepts
-    // (review F7): optional urn:uuid: prefix, optional braces, hyphenated
-    // or bare hex.
+    // Accept the same textual forms the SERVER's uuid input accepts:
+    // optional urn:uuid: prefix, optional braces, hyphenated or bare hex.
     let text = text
         .strip_prefix("urn:uuid:")
         .or_else(|| text.strip_prefix("URN:UUID:"))
@@ -394,10 +391,10 @@ mod tests {
     proptest! {
         #![proptest_config(ProptestConfig { cases: 2048, ..ProptestConfig::default() })]
 
-        /// T5: encode → (source) decode is the identity everywhere the
+        /// Encode → (source) decode is the identity everywhere the
         /// DECODER can represent the padded accumulation (its own documented
         /// boundary: it accumulates wire digits into i128 before rescaling,
-        /// so |v|·10^pad must fit — a pre-existing 005 source limit). The
+        /// so |v|·10^pad must fit — a pre-existing source limit). The
         /// encoder itself is verified beyond that range structurally below
         /// and against a live server in dest_conformance.
         #[test]
@@ -477,7 +474,7 @@ mod tests {
         // Hyphen-less form: also canonical-rejected? PG accepts it, our engine
         // ships hyphenated canonical text — but accept it anyway (32 hex).
         assert!(parse_uuid_text("550e8400e29b41d4a716446655440000").is_some());
-        // Server-accepted forms (review F7): urn prefix and braces.
+        // Server-accepted forms: urn prefix and braces.
         assert!(parse_uuid_text("urn:uuid:550e8400-e29b-41d4-a716-446655440000").is_some());
         assert!(parse_uuid_text("{550e8400-e29b-41d4-a716-446655440000}").is_some());
         assert!(parse_uuid_text("{550e8400e29b41d4a716446655440000}").is_some());

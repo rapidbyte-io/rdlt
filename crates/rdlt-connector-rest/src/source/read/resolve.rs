@@ -1,5 +1,5 @@
-//! Parent-child placeholder resolution (contract RS7 tail): `{token}`
-//! substitution into path/params/body from a parent record's fields, plus
+//! Parent-child placeholder resolution: `{token}` substitution into
+//! path/params/body from a parent record's fields, plus
 //! the `_parent_<field>` embedding. Buffering is BOUNDED — only the
 //! referenced placeholder values and declared include fields, never whole
 //! parent records.
@@ -78,8 +78,8 @@ pub fn substitute(template: &str, values: &BTreeMap<String, String>) -> String {
     out
 }
 
-/// Human-readable resolved-values summary for failure messages (RS7:
-/// child failures NAME the parent's resolved values).
+/// Human-readable resolved-values summary for failure messages, so a child
+/// failure NAMES the parent's resolved values.
 pub fn describe(values: &BTreeMap<String, String>) -> String {
     values
         .iter()

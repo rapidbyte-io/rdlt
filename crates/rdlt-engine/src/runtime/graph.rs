@@ -1,15 +1,15 @@
 //! The task graph: per-stream source + shred tasks feeding one loader over a
-//! byte-bounded channel (design doc §3).
+//! byte-bounded channel.
 //!
 //! - Sources are I/O tasks on the tokio runtime.
 //! - Shredding is CPU-bound and runs via `spawn_blocking` state ping-pong — parse
 //!   work never starves the async I/O stages.
 //! - The loader is a single task owning the `LoadSession`; per-table ordering falls
-//!   out of per-sender FIFO plus one-stream-per-table ownership (clause E2).
+//!   out of per-sender FIFO plus one-stream-per-table ownership.
 //!
 //! Retries are RUN-level: a transient source failure restarts the whole attempt
-//! through the crash-recovery path (session re-open tears down staging per clause
-//! D4, cursors resume from committed state, WAL replays). Retrying a single stream
+//! through the crash-recovery path (session re-open tears down staging,
+//! cursors resume from committed state, WAL replays). Retrying a single stream
 //! in place would leave rows staged after the last checkpoint and publish them
 //! twice on re-extraction — the exactly-once bug the crash path exists to prevent.
 
@@ -46,7 +46,7 @@ fn new_load_id() -> LoadId {
     LoadId::new(format!("{millis:x}-{:x}-{seq:x}", std::process::id()))
 }
 
-/// Engine-owned retry ceiling for transient source failures (clause E5).
+/// Engine-owned retry ceiling for transient source failures.
 const MAX_SOURCE_ATTEMPTS: u32 = 5;
 
 fn backoff(attempt: u32) -> std::time::Duration {
@@ -141,8 +141,7 @@ async fn run_once(
                 destination.spec().name
             )));
         }
-        // Clause B4 (feature-006 amendment, contracts/merge-structured.md):
-        // structured streams merge ONLY by a declared key — accepted iff the
+        // Structured streams merge ONLY by a declared key — accepted iff the
         // stream declares a non-empty primary_key AND Merge{key} names exactly
         // that key (the destination's merge capability was checked above).
         // Keyless structured streams keep the original rejection.
@@ -153,13 +152,13 @@ async fn run_once(
             if declared.is_empty() {
                 return Err(RdltError::config(format!(
                     "stream `{}` is structured with no declared primary_key and \
-                     cannot use Merge (contract clause B4); declare a key on the \
+                     cannot use Merge; declare a key on the \
                      stream and set Merge {{ key }} to it, or use Append/Replace",
                     spec.name
                 )));
             }
             // Order-insensitive: the key is a SET (reflection returns
-            // attnum order, users write DDL order — review F10).
+            // attnum order, users write DDL order).
             let mut key_set = key.clone();
             key_set.sort_unstable();
             let mut declared_set = declared.clone();
@@ -167,15 +166,14 @@ async fn run_once(
             if key_set != declared_set {
                 return Err(RdltError::config(format!(
                     "stream `{}`: Merge key {:?} must name exactly the stream's \
-                     declared primary_key columns {:?} (feature-006 keyed \
-                     structured merge; order does not matter)",
+                     declared primary_key columns {:?} (order does not matter)",
                     spec.name, key, declared
                 )));
             }
         }
     }
 
-    // ---- Workdir lock (one process per pipeline, clause R5) ----
+    // ---- Workdir lock (one process per pipeline) ----
     let _lock = match &config.workdir {
         Some(dir) => Some(crate::runtime::lock::WorkdirLock::acquire(dir)?),
         None => None,
@@ -296,7 +294,7 @@ async fn run_once(
                     PushPayload::RawJson(bytes) => {
                         // CPU-bound shred on the blocking pool; state ping-pong
                         // keeps the shredder single-owner without locks. The tape
-                        // path (feature 003 R24) parses the slab into an arena and
+                        // path parses the slab into an arena and
                         // drains it in one call — no per-row trees.
                         let mut sh = shredder.take().expect("shredder present");
                         let mut reg = registry.take().expect("registry present");
@@ -336,13 +334,13 @@ async fn run_once(
                         }
                     }
                     PushPayload::Arrow(batch) => {
-                        // Structured fast path (clause E7); undeclared streams are a
-                        // contract violation (clause S7).
+                        // Structured fast path; undeclared streams are a
+                        // contract violation.
                         if !spec.structured {
                             break Err(RdltError::source(
                                 stream_name.clone(),
                                 "source pushed Arrow batches on a stream not declared \
-                                 `structured` (contract clause S7)",
+                                 `structured`",
                             ));
                         }
                         // Same blocking-pool ping-pong as the shred arm: the common
@@ -485,7 +483,7 @@ async fn run_once(
         Ok(()) => {}
     }
 
-    // ---- Final commit: trailing work; state travels with the data (design doc §6) ----
+    // ---- Final commit: trailing work; state travels with the data ----
     loader.finish().await?;
 
     // Clean finish: nothing left to replay.

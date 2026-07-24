@@ -1,7 +1,8 @@
-//! Bar enforcement (research R6, contract BH6): bars.toml vs latest artifacts.
-//! A violation names cell, bar, and measured value and exits nonzero. Only
-//! wall-median bars exist in this feature — CPU/RSS/throughput are recorded,
-//! not gated. A ratio bar over a MISSING baseline FAILS (BH4).
+//! Bar enforcement: bars.toml vs latest artifacts. A violation names cell,
+//! bar, and measured value and exits nonzero. Only wall-median bars exist so
+//! far — CPU/RSS/throughput are recorded, not gated. A ratio bar over a
+//! MISSING baseline FAILS: there is nothing to compare against, so the gate
+//! cannot be satisfied.
 
 use std::path::Path;
 
@@ -192,7 +193,7 @@ mod tests {
         let artifact = artifact_with(1000.0, Some(12_000.0)); // 12x
         let pass = evaluate(&ratio_bar(10.0, 0.0), &artifact);
         assert!(pass.passed(), "{}", pass.detail());
-        // SC-002: tighten the bar above the measured ratio → loud failure.
+        // Tighten the bar above the measured ratio → loud failure.
         let fail = evaluate(&ratio_bar(15.0, 0.0), &artifact);
         assert!(!fail.passed());
         assert!(fail.detail().contains("cell-x"), "{}", fail.detail());

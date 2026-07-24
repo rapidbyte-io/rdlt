@@ -6,7 +6,7 @@
 //! exactly-once readable from table history alone. The Iceberg mechanics
 //! (manifests, metadata, field IDs, the REST commit machinery) come from
 //! Apache iceberg-rust, wrapped at ONE boundary: nothing from that library
-//! crosses this crate's public surface (contract ID1).
+//! crosses this crate's public surface.
 //!
 //! Family layout: `dest/` (this crate is destination-only until a reading
 //! feature exists); this façade re-exports the public surface.

@@ -1,4 +1,4 @@
-//! The embedder-facing error taxonomy (design doc §4.3, embedder-api.md X1–X3).
+//! The embedder-facing error taxonomy.
 //!
 //! Each variant maps to exactly one operator action. Fully serde-representable
 //! (sources are flattened to strings) so platforms can persist and render failures.
@@ -43,7 +43,7 @@ pub enum RdltError {
         stream: StreamName,
         message: String,
         /// `true` for transient/rate-limited failures the engine may retry by
-        /// restarting the run from committed state (clause E5).
+        /// restarting the run from committed state.
         #[serde(default)]
         retryable: bool,
         /// Rate-limit hint carried from `SourceError::RateLimited`.

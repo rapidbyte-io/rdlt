@@ -1,6 +1,6 @@
-//! Schema registry: current version per table, evolution as `SchemaDelta`s
-//! (data-model.md §3). Deltas are the ONLY way schemas change, and a delta is always
-//! emitted before the first batch at its `to` version (crash-replay invariant 3).
+//! Schema registry: current version per table, evolution as `SchemaDelta`s.
+//! Deltas are the ONLY way schemas change, and a delta is always
+//! emitted before the first batch at its `to` version.
 
 use std::collections::BTreeMap;
 

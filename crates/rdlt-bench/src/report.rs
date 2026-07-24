@@ -1,4 +1,4 @@
-//! RESULTS.md table generation (contract BH7): number tables regenerate from
+//! RESULTS.md table generation: number tables regenerate from
 //! artifacts between explicit markers; the hand-written narrative outside the
 //! markers is preserved byte-for-byte. No markers → refusal, never guessing.
 
@@ -236,8 +236,8 @@ pub fn regenerate(
         }
         // A cell without an artifact file is simply not-yet-measured; an
         // artifact that EXISTS but cannot be read (corrupt, format-version
-        // mismatch) must fail loudly — silently keeping stale tables is the
-        // BH7 violation this function exists to prevent (review finding 9).
+        // mismatch) must fail loudly — silently keeping stale tables in the
+        // regenerated report is exactly what this function exists to prevent.
         let mut artifacts: Vec<Artifact> = Vec::new();
         for cell in cells.iter().filter(|c| c.suite == suite) {
             if !results_dir.join(format!("{}.json", cell.id)).is_file() {

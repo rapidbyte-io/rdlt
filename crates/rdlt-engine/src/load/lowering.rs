@@ -1,4 +1,4 @@
-//! Capability-driven lowering at the destination seam (design doc §5.3).
+//! Capability-driven lowering at the destination seam.
 //!
 //! Inside the engine, nested objects are struct columns. Destinations without native
 //! structs receive a FLATTENED schema and batches: `profile.city` becomes column
@@ -70,7 +70,7 @@ fn lower_column(
 }
 
 /// Lower a batch. Driven by the batch's OWN arrow schema (which mirrors the engine
-/// schema by clause E4), so replay can lower without engine-schema bookkeeping.
+/// schema), so replay can lower without engine-schema bookkeeping.
 /// Field names/paths are identical to `lower_schema`'s inputs → identical names out.
 pub(crate) fn lower_batch(
     batch: &RecordBatch,
@@ -184,7 +184,7 @@ fn render_decimal(raw: i128, scale: u8) -> String {
 
 #[cfg(test)]
 mod tests {
-    // Mutation-report closure (feature 003 T011): the whole lowering seam ran
+    // Mutation-report closure: the whole lowering seam ran
     // assertion-free — the suite only ever used full-capability destinations.
     use super::*;
     use arrow::array::Int64Array;

@@ -1,6 +1,6 @@
 //! The Iceberg DESTINATION side: config vocabulary, the closed type
 //! mapping, the one error boundary, and the commit machinery mapping
-//! engine commits onto atomic snapshots (contracts ID1–ID7).
+//! engine commits onto atomic snapshots.
 
 pub(crate) mod commit;
 pub mod config;

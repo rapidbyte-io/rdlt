@@ -1,7 +1,7 @@
-//! Public connector conformance suites (spec FR-016): "certified = passes
-//! conformance". Every check names the contract clause it enforces
-//! (`specs/001-rdlt-ingestion-engine/contracts/connector-spi.md`), so a failure reads
-//! as "violates D3", not "test failed".
+//! Public connector conformance suites: "certified = passes conformance".
+//! Every check names the connector-SPI clause it enforces — the destination
+//! clauses D1–D8 and source clauses S1–S6 defined by these suites — so a
+//! failure reads as "violates D3", not "test failed".
 
 pub mod dest;
 pub mod source;

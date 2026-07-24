@@ -1,4 +1,4 @@
-//! Competitors as a first-class module (research R4, contract BH4). dlt is the
+//! Competitors as a first-class module. dlt is the
 //! first: a pinned container image, a variant registry, and same-metric
 //! reporting. Wall time stays the baseline's in-process SELF-timing —
 //! continuity with every recorded multiple; CPU/peak-RSS come from the
@@ -75,7 +75,7 @@ struct CgroupReading {
 ///
 /// ONLY `memory.peak` (a kernel high-water mark) is accepted as a peak;
 /// there is deliberately NO `memory.current` fallback — an instantaneous
-/// reading labeled "peak" is fabrication (review finding 4).
+/// reading labeled "peak" would be a fabricated metric.
 fn read_cgroup_via_exec(engine: &str, name: &str) -> CgroupReading {
     let out = Command::new(engine)
         .args([
@@ -111,7 +111,7 @@ fn read_cgroup_via_exec(engine: &str, name: &str) -> CgroupReading {
 /// (getrusage ru_maxrss) on the same JSON line — the statistic every recorded
 /// dlt RSS multiple and the 1/5 bar derivation used. cgroup `memory.peak` is
 /// the fallback only, and is labeled as the different statistic it is (it
-/// additionally charges page cache — review finding 3).
+/// additionally charges page cache, so it is not comparable to ru_maxrss).
 fn self_reported_rss(stdout: &str) -> Option<u64> {
     stdout.lines().rev().find_map(|line| {
         serde_json::from_str::<serde_json::Value>(line.trim())
@@ -223,7 +223,7 @@ fn run_container_once(
     })?;
     // ru_maxrss FIRST — it is the statistic the recorded multiples and the
     // gated 1/5 bar were derived from; memory.peak also counts page cache
-    // and would silently change what the bar enforces (review finding 3).
+    // and would silently change what the bar enforces.
     let (peak_rss, rss_source) = match self_reported_rss(&stdout) {
         Some(peak) => (
             Some(peak),
@@ -246,7 +246,7 @@ fn run_container_once(
 /// Run one competitor reference for a cell: warmup-free (the baselines have
 /// always been measured cold-process, warm-cache — continuity), N runs,
 /// medians. Returns `Missing` (never an error) when the image isn't built —
-/// the rdlt side must still run (BH4).
+/// the rdlt side must still run.
 pub fn run_competitor(
     variant: &Variant,
     reference: &CompetitorRef,

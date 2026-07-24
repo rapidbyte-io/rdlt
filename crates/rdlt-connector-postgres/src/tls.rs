@@ -1,5 +1,4 @@
-//! TLS policy for BOTH Postgres connectors (feature 006 US1, contract:
-//! `specs/006-postgres-completeness/contracts/tls-policy.md`).
+//! TLS policy for BOTH Postgres connectors.
 //!
 //! One policy type, one connect path — the source and destination call the
 //! same code, so their TLS behavior cannot drift. Modes carry libpq
@@ -56,8 +55,8 @@ pub struct TlsPolicy {
     pub mode: TlsMode,
     #[serde(default)]
     pub root_cert: Option<RootCert>,
-    /// Client certificate for mutual TLS (feature 007, contract
-    /// tls-client-auth.md). Path or inline PEM; requires `client_key`.
+    /// Client certificate for mutual TLS. Path or inline PEM; requires
+    /// `client_key`.
     #[serde(default)]
     pub client_cert: Option<RootCert>,
     /// Private key matching `client_cert` (PKCS#8/RSA/SEC1, unencrypted).
@@ -99,7 +98,7 @@ pub enum TlsConfigError {
     ConnSyntax(String),
 }
 
-/// Connect-phase TLS failures, distinguished per the contract.
+/// Connect-phase TLS failures, distinguished by cause.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TlsFailure {
     /// Certificate signed by an unknown CA — supply `tls.root_cert`.
@@ -110,8 +109,8 @@ pub enum TlsFailure {
     Hostname,
     /// The server refused TLS while the policy demands it.
     ServerRefusedTls,
-    /// The server rejected OUR client credential (mTLS, feature 007):
-    /// TLS-level certificate alerts or auth-phase SQLSTATE 28000.
+    /// The server rejected OUR client credential (mTLS): TLS-level
+    /// certificate alerts or auth-phase SQLSTATE 28000.
     ClientCert,
     /// Any other connection error (not TLS-classified).
     Other,
@@ -136,8 +135,8 @@ pub struct ParsedConn {
     pub policy: TlsPolicy,
 }
 
-/// THE parse gate for both connectors (feature 007, contract
-/// connstring-portability.md): extract libpq's TLS parameter trio, hand the
+/// THE parse gate for both connectors: extract libpq's TLS parameter trio,
+/// hand the
 /// remainder to the driver, translate extractions into the policy with the
 /// same agree-or-error rule sslmode has, and make sure no rejection is ever
 /// a bare parse error.
@@ -149,7 +148,7 @@ pub fn parse_conn(conn: &str, block: Option<&TlsPolicy>) -> Result<ParsedConn, T
         )));
     }
     let mut pg: tokio_postgres::Config = extracted.remainder.parse().map_err(|e| {
-        // P4: a driver rejection must name the parameter when one is the
+        // A driver rejection must name the parameter when one is the
         // cause — scan OUR key list for anything outside the driver's set.
         for key in &extracted.seen_keys {
             if !DRIVER_PARAMS.contains(&key.as_str()) {
@@ -190,7 +189,7 @@ pub fn parse_conn(conn: &str, block: Option<&TlsPolicy>) -> Result<ParsedConn, T
     }
 
     // Merge the trio: conn value + absent block field fills in; agreeing
-    // duplicates pass; disagreement is a typed conflict (P1–P3).
+    // duplicates pass; disagreement is a typed conflict.
     let merge = |param: &'static str,
                  param_field: &'static str,
                  conn_value: Option<String>,
@@ -246,10 +245,10 @@ pub fn parse_conn(conn: &str, block: Option<&TlsPolicy>) -> Result<ParsedConn, T
         extracted.sslkey,
         &mut policy.client_key,
     )?;
-    // The both-or-neither rule holds ACROSS sources of the values (P2).
+    // The both-or-neither rule holds ACROSS sources of the values.
     validate_credentials(&policy)?;
 
-    // A1/A2: identify ourselves unless the user chose a name.
+    // Identify ourselves unless the user chose a name.
     if pg.get_application_name().is_none() {
         pg.application_name("rdlt");
     }
@@ -297,7 +296,7 @@ fn param_hint(param: &str) -> String {
 struct ExtractedConn {
     remainder: String,
     /// First malformed percent-escape seen in an EXTRACTED value:
-    /// (param, raw value) — surfaced as a typed error (review F4).
+    /// (param, raw value) — surfaced as a typed error.
     bad_escape: Option<(String, String)>,
     /// Keys seen and KEPT for the driver (extracted ones are excluded —
     /// they cannot be the cause of a driver rejection).
@@ -306,7 +305,7 @@ struct ExtractedConn {
     sslcert: Option<String>,
     sslkey: Option<String>,
     /// `sslmode=verify-ca|verify-full` — libpq spellings the driver does
-    /// not accept; translated into the policy mode (P1 spirit).
+    /// not accept; translated into the policy mode.
     sslmode_verify: Option<TlsMode>,
 }
 
@@ -420,7 +419,7 @@ fn extract_tls_params(conn: &str) -> ExtractedConn {
 }
 
 /// Strict: a `%` not followed by two hex digits is an error, never a silent
-/// literal passthrough (review F4).
+/// literal passthrough.
 fn percent_decode(value: &str) -> Result<String, ()> {
     let bytes = value.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -444,8 +443,8 @@ fn percent_decode(value: &str) -> Result<String, ()> {
 }
 
 /// Resolve the effective policy from the parsed conn string and the optional
-/// config block. The block wins ONLY when consistent (contract rule): an
-/// explicit conn `sslmode` may be refined (require → verify_*) but never
+/// config block. The block wins ONLY when consistent: an explicit conn
+/// `sslmode` may be refined (require → verify_*) but never
 /// silently reversed.
 pub fn resolve_policy(
     conn: &tokio_postgres::Config,
@@ -464,8 +463,8 @@ pub fn resolve_policy(
     };
     let contradiction = match conn_mode {
         // Explicit plaintext vs a block DEMANDING encryption. `prefer`
-        // tolerates plaintext by its own semantics (review F9: a block
-        // whose mode defaulted to prefer must compose with disable).
+        // tolerates plaintext by its own semantics: a block whose mode
+        // defaulted to prefer must compose with disable.
         SslMode::Disable => matches!(
             block.mode,
             TlsMode::Require | TlsMode::VerifyCa | TlsMode::VerifyFull
@@ -488,8 +487,8 @@ pub fn resolve_policy(
     Ok(block.clone())
 }
 
-/// Client-credential shape rules (contract tls-client-auth.md C2), enforced
-/// BEFORE any connection: both-or-neither, and never with plaintext.
+/// Client-credential shape rules, enforced BEFORE any connection:
+/// both-or-neither, and never with plaintext.
 pub(crate) fn validate_credentials(policy: &TlsPolicy) -> Result<(), TlsConfigError> {
     match (&policy.client_cert, &policy.client_key) {
         (Some(_), None) => Err(TlsConfigError::ClientCredential {
@@ -529,7 +528,7 @@ fn pem_bytes(source: &RootCert, kind: &str) -> Result<(String, Vec<u8>), TlsConf
 }
 
 /// Load the client credential when configured: certificate chain + private
-/// key, with typed errors naming the offending input (contract C2/C4).
+/// key, with typed errors naming the offending input.
 fn client_credential(
     policy: &TlsPolicy,
 ) -> Result<
@@ -636,7 +635,7 @@ fn builder()
 
 fn client_config(policy: &TlsPolicy) -> Result<Option<rustls::ClientConfig>, TlsConfigError> {
     // A mismatched cert/key pair fails HERE (rustls checks consistency at
-    // config construction) — a config error before any connection (C4).
+    // config construction) — a config error before any connection.
     let credential = client_credential(policy)?;
     let auth = move |builder: rustls::ConfigBuilder<
         rustls::ClientConfig,
@@ -686,9 +685,9 @@ fn client_config(policy: &TlsPolicy) -> Result<Option<rustls::ClientConfig>, Tls
 /// classify `Other` with the full detail preserved.
 pub fn classify_connect_error(err: &tokio_postgres::Error) -> ConnectError {
     use std::error::Error as _;
-    // tokio-postgres Display for db errors is just "db error" (006 finding);
-    // ALWAYS carry the real server message + SQLSTATE (review F3 — bad
-    // password / unknown database are the most common connect failures).
+    // tokio-postgres Display for db errors is just "db error"; ALWAYS carry
+    // the real server message + SQLSTATE — bad password / unknown database
+    // are the most common connect failures.
     let detail = match err.as_db_error() {
         Some(db) => format!("{err}: {} (SQLSTATE {})", db.message(), db.code().code()),
         None => format!("{err}"),
@@ -719,11 +718,11 @@ pub fn classify_connect_error(err: &tokio_postgres::Error) -> ConnectError {
             transient: false,
         };
     }
-    // Auth-phase client-certificate rejection (contract tls-client-auth C3):
-    // pg_hba `cert`/`clientcert=` failures surface as SQLSTATE 28000 with a
-    // certificate-naming message, AFTER a successful handshake. The Display
-    // form is just "db error" (tokio-postgres drops the cause — 006 finding),
-    // so read the REAL server message through as_db_error().
+    // Auth-phase client-certificate rejection: pg_hba `cert`/`clientcert=`
+    // failures surface as SQLSTATE 28000 with a certificate-naming message,
+    // AFTER a successful handshake. The Display form is just "db error"
+    // (tokio-postgres drops the cause), so read the REAL server message
+    // through as_db_error().
     if let Some(db) = err.as_db_error()
         && db.code().code() == "28000"
         && db.message().to_lowercase().contains("certificate")
@@ -734,7 +733,7 @@ pub fn classify_connect_error(err: &tokio_postgres::Error) -> ConnectError {
             transient: false,
         };
     }
-    // Non-TLS failure: the 005 SQLSTATE heuristic (no code = io-shaped).
+    // Non-TLS failure: the SQLSTATE heuristic (no code = io-shaped).
     let transient = match err.code() {
         None => true,
         Some(state) => matches!(&state.code()[..2], "08" | "53" | "57" | "40"),
@@ -862,9 +861,9 @@ mod tests {
         assert!(resolve_policy(&conn("host=h sslmode=require"), Some(&disable)).is_err());
         // Prefer composes with anything.
         assert!(resolve_policy(&conn("host=h sslmode=prefer"), Some(&block)).is_ok());
-        // Review F9: a block whose mode is prefer (the DEFAULT — e.g. a
-        // block that only sets root_cert) tolerates plaintext by its own
-        // semantics and must compose with conn sslmode=disable.
+        // A block whose mode is prefer (the DEFAULT — e.g. a block that only
+        // sets root_cert) tolerates plaintext by its own semantics and must
+        // compose with conn sslmode=disable.
         let prefer_block = TlsPolicy {
             root_cert: Some(RootCert("/some/ca.pem".into())),
             ..TlsPolicy::default()
@@ -876,7 +875,7 @@ mod tests {
 
     #[test]
     fn malformed_percent_escapes_are_typed_errors() {
-        // Review F4: never a silent literal passthrough.
+        // Never a silent literal passthrough.
         for bad in [
             "postgresql://u@h/db?sslrootcert=%2",
             "postgresql://u@h/db?sslkey=bad%zz&sslcert=/c.pem",
@@ -934,7 +933,7 @@ mod tests {
         assert_eq!(root_store(&from_path).expect("path").len(), 1);
     }
 
-    // ---- feature 007: client credentials (contract tls-client-auth.md) ----
+    // ---- client credentials ----
 
     fn client_pair() -> (String, String) {
         let key = rcgen::KeyPair::generate().expect("key");
@@ -1005,7 +1004,7 @@ mod tests {
 
     #[test]
     fn credentials_compose_with_every_verifying_mode() {
-        // C5: adding a credential must not change what any mode means —
+        // Adding a credential must not change what any mode means —
         // the config still BUILDS under all four TLS-active modes.
         let (cert, key) = client_pair();
         let ca = rcgen::CertificateParams::new(Vec::<String>::new())
@@ -1027,7 +1026,7 @@ mod tests {
         }
     }
 
-    // ---- feature 007: conn-string portability (connstring-portability.md) ----
+    // ---- conn-string portability ----
 
     #[test]
     fn tls_trio_extracts_from_both_libpq_forms() {
@@ -1070,7 +1069,7 @@ mod tests {
         );
         assert_eq!(parsed.policy.client_cert, Some(RootCert("/c.pem".into())));
         assert_eq!(parsed.policy.client_key, Some(RootCert("/k.pem".into())));
-        // The remainder reached the driver intact (P6).
+        // The remainder reached the driver intact.
         assert_eq!(parsed.pg.get_user(), Some("u"));
 
         // `system` selects the platform store (no explicit root).
@@ -1084,7 +1083,7 @@ mod tests {
             root_cert: Some(RootCert("/etc/other.pem".into())),
             ..TlsPolicy::default()
         };
-        // Disagreement: typed, names both sides (P3).
+        // Disagreement: typed, names both sides.
         let err = parse_conn("host=h sslrootcert=/etc/ca.pem", Some(&block)).unwrap_err();
         let msg = err.to_string();
         assert!(
@@ -1093,7 +1092,7 @@ mod tests {
         );
         // Agreement: accepted.
         parse_conn("host=h sslrootcert=/etc/other.pem", Some(&block)).expect("agreeing dup");
-        // Split credential across sources (P2): cert in string, key in block.
+        // Split credential across sources: cert in string, key in block.
         let block = TlsPolicy {
             client_key: Some(RootCert("/k.pem".into())),
             ..TlsPolicy::default()
@@ -1108,8 +1107,7 @@ mod tests {
     #[test]
     fn sslrootcert_system_selects_the_platform_store() {
         // libpq 16+ `sslrootcert=system` = platform trust store: the policy
-        // resolves to a verifying mode with NO explicit root (feature 011,
-        // PM1 — previously only the code comment claimed it).
+        // resolves to a verifying mode with NO explicit root.
         let parsed = parse_conn(
             "postgresql://u@h/d?sslmode=verify-full&sslrootcert=system",
             None,
@@ -1160,7 +1158,7 @@ mod tests {
     fn rustls_classification_distinguishes_client_cert_rejection() {
         use rustls::AlertDescription as AD;
         use rustls::CertificateError as CE;
-        // Server-verification failures keep their 006 classes…
+        // Server-verification failures keep their classes…
         assert_eq!(
             classify_rustls(&rustls::Error::InvalidCertificate(CE::UnknownIssuer)),
             TlsFailure::TrustAnchor

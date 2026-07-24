@@ -1,19 +1,18 @@
-//! CDC via logical replication (feature 009): pgoutput decoding, slot
-//! lifecycle, and the per-table pass machinery over the SQL peek/advance
-//! interface. Contracts: `specs/009-postgres-cdc/contracts/`.
+//! CDC via logical replication: pgoutput decoding, slot lifecycle, and the
+//! per-table pass machinery over the SQL peek/advance interface.
 //!
-//! Delivery design (research R3/R4/R5): bounded catch-up pins `target_lsn`
-//! once per run; every CDC stream's `read()` peeks `(its cursor, target]`
-//! and filters its own table (peeking consumes NOTHING — P1). First run:
-//! slot FIRST, then ONE `REPEATABLE READ` transaction snapshots every CDC
-//! table; the slot-to-snapshot window applies twice and CONVERGES (P2).
-//! Checkpoints land only at transaction-commit positions (P4). The slot's
+//! Delivery design: bounded catch-up pins `target_lsn` once per run; every
+//! CDC stream's `read()` peeks `(its cursor, target]` and filters its own
+//! table (peeking consumes NOTHING). First run: slot FIRST, then ONE
+//! `REPEATABLE READ` transaction snapshots every CDC table; the
+//! slot-to-snapshot window applies twice and CONVERGES. Checkpoints land only
+//! at transaction-commit positions. The slot's
 //! acknowledged position advances once per run to the min DESTINATION-
-//! COMMITTED position across CDC streams — each stream's `since` (E6: only
-//! ever a cursor the destination durably committed) or its fresh-snapshot
-//! start point — so an ack can never outrun a commit, run shapes be damned
-//! (P6; the current run's own checkpoints are not yet known-committed, so
-//! acking trails one run behind: hygiene, never correctness).
+//! COMMITTED position across CDC streams — each stream's `since` (only ever
+//! a cursor the destination durably committed) or its fresh-snapshot start
+//! point — so an ack can never outrun a commit, run shapes be damned (the
+//! current run's own checkpoints are not yet known-committed, so acking
+//! trails one run behind: hygiene, never correctness).
 
 pub(crate) mod pgoutput;
 pub mod slot;
@@ -58,13 +57,13 @@ impl CdcCursor {
     }
 }
 
-/// Per-table replica-identity preflight result (R8, contract O1).
+/// Per-table replica-identity preflight result.
 #[derive(Debug, Clone)]
 pub(crate) struct TableIdentity {
     /// The merge key: the table's replica identity columns.
     pub key: Vec<String>,
     /// REPLICA IDENTITY FULL — old tuples carry every column (TOAST
-    /// substitution is possible, O3).
+    /// substitution is possible).
     pub full: bool,
 }
 
@@ -94,7 +93,7 @@ struct RunState {
     control: Option<std::sync::Arc<Client>>,
     ensured: Option<slot::EnsureOutcome>,
     /// Open REPEATABLE READ snapshot transaction (first run) — ONE view
-    /// for every CDC table (P2). Arc + drop-on-error like `control`.
+    /// for every CDC table. Arc + drop-on-error like `control`.
     snapshot: Option<std::sync::Arc<Client>>,
     /// The shared snapshot's cursor start point for a PRE-EXISTING slot:
     /// the WAL position read BEFORE the transaction began (its visibility
@@ -103,7 +102,7 @@ struct RunState {
     /// replay a window that can contain unappliable records — TRUNCATE,
     /// TOAST without an old image — and permanently wedge recovery.)
     snapshot_start: Option<u64>,
-    /// `target_lsn`, pinned once per run at the first CDC read (P3).
+    /// `target_lsn`, pinned once per run at the first CDC read.
     target: Option<u64>,
     /// Per-stream ack floors: destination-committed `since`, or the fresh
     /// snapshot start point (see module docs).
@@ -123,7 +122,7 @@ impl Runtime {
         }
     }
 
-    /// The replica-identity preflight, once per run (R8): key + FULL flag
+    /// The replica-identity preflight, once per run: key + FULL flag
     /// per CDC table, flag-column collisions, unusable identities — all
     /// typed BEFORE any stream declares itself.
     pub async fn identities(
@@ -187,7 +186,7 @@ async fn preflight(
                 Some(table),
                 format!(
                     "flag column `{}` collides with an existing column — set \
-                     `cdc.flag_column` to an unused name (contract C2)",
+                     `cdc.flag_column` to an unused name",
                     cdc.flag_column
                 ),
             ));
@@ -219,7 +218,7 @@ async fn preflight(
                     Some(table),
                     "CDC needs a usable replica identity and the table has no \
                      primary key — add one, or `ALTER TABLE … REPLICA IDENTITY \
-                     FULL` / `USING INDEX …` (contract O1)",
+                     FULL` / `USING INDEX …`",
                 ));
             }
             // Explicit index: the identity columns come from that index. A
@@ -236,8 +235,7 @@ async fn preflight(
                     Some(table),
                     "REPLICA IDENTITY USING INDEX but no replica-identity \
                      index exists (was it dropped?) — recreate the index or \
-                     `ALTER TABLE … REPLICA IDENTITY DEFAULT`/`FULL` \
-                     (contract O1)",
+                     `ALTER TABLE … REPLICA IDENTITY DEFAULT`/`FULL`",
                 ));
             }
             // FULL: old tuples carry everything, so ANY declared key has its
@@ -252,8 +250,7 @@ async fn preflight(
                         Phase::Slot,
                         Some(table),
                         "REPLICA IDENTITY FULL but no key to merge by — add a \
-                         primary key or declare `primary_key` on the table \
-                         (contract O1)",
+                         primary key or declare `primary_key` on the table",
                     ));
                 }
             },
@@ -265,7 +262,7 @@ async fn preflight(
                     format!(
                         "replica identity `{other}` cannot replicate \
                          updates/deletes — `ALTER TABLE … REPLICA IDENTITY \
-                         DEFAULT` (with a primary key) or `FULL` (contract O1)"
+                         DEFAULT` (with a primary key) or `FULL`"
                     ),
                 ));
             }
@@ -402,7 +399,7 @@ async fn read_stream_inner(
 
     let cursor = match since {
         None => {
-            // ---- snapshot pass (P2) ----
+            // ---- snapshot pass ----
             // Cursor start: the consistent point when THIS run created the
             // slot; otherwise the shared snapshot's visibility horizon —
             // the WAL position read BEFORE its transaction began (see
@@ -467,7 +464,7 @@ async fn read_stream_inner(
                             .await
                             .is_err()
                         {
-                            return Ok(()); // cancellation (S4)
+                            return Ok(()); // cancellation
                         }
                     }
                 }
@@ -507,7 +504,7 @@ async fn read_stream_inner(
             start
         }
         Some(since) => {
-            // ---- change pass (P3/P4/P5) ----
+            // ---- change pass ----
             let target = match state.target {
                 Some(target) => target,
                 None => {
@@ -544,7 +541,7 @@ async fn read_stream_inner(
         }
     };
 
-    // ---- run completion + ack (P6) ----
+    // ---- run completion + ack ----
     state.final_cursor.insert(name.clone(), cursor);
     let drained = {
         let pending = state.pending.as_mut().expect("pending initialized");
@@ -570,7 +567,7 @@ async fn read_stream_inner(
                 slot::advance(control, &cdc.slot, floor).await?;
             }
         }
-        // Replication lag (contract O5, FR-011): how far the live feed is
+        // Replication lag: how far the live feed is
         // ahead of the least-advanced stream at run completion — LSN delta
         // in bytes on the dedicated `rdlt::cdc` target (embedders subscribe,
         // no log-scraping), plus a wall-clock delta when the server tracks
@@ -611,11 +608,11 @@ async fn read_stream_inner(
 /// (the next run's ack reclaims retention). Documented in the quickstart.
 const TAIL_UNACKED_WARN_BYTES: u64 = 256 << 20;
 
-/// Continuous tail (P7, recorded refinement 2): a chunked loop of bounded
-/// catch-ups — each chunk pins ITS OWN current position, checkpoints flow
-/// per chunk, and a quiet chunk idles `idle_wait`. Cancellation is observed
-/// at commit boundaries: the per-chunk checkpoint probe (always a
-/// commit/target position, P4) fails the moment the engine closes the
+/// Continuous tail: a chunked loop of bounded catch-ups — each chunk pins ITS
+/// OWN current position, checkpoints flow per chunk, and a quiet chunk idles
+/// `idle_wait`. Cancellation is observed at commit boundaries: the per-chunk
+/// checkpoint probe (always a commit/target position) fails the moment the
+/// engine closes the
 /// channel — no new SPI surface needed. Chunks never hold the run-state
 /// lock: concurrent tail streams share the control connection via Arc.
 #[allow(clippy::too_many_arguments)]
@@ -638,7 +635,7 @@ async fn tail_loop(
             .await
             .is_err()
         {
-            return Ok(()); // cancellation, at a commit boundary (S4/P7)
+            return Ok(()); // cancellation, at a commit boundary
         }
         let target = slot::current_wal_lsn(&control).await?;
         let quiet = if target > cursor {
@@ -829,7 +826,7 @@ struct Apply<'a> {
     /// Rows of committed transactions not yet pushed.
     ready_rows: Vec<(Vec<Cell>, bool)>,
     /// Commit position covering every row in `ready_rows` (and everything
-    /// pushed before) — the only value checkpoints may carry (P4).
+    /// pushed before) — the only value checkpoints may carry.
     last_commit: Option<u64>,
     /// First unappliable record of the CURRENT transaction (unchanged
     /// TOAST without an image, TRUNCATE, keyless delete, drift). Raised at
@@ -915,7 +912,7 @@ impl<'a> Apply<'a> {
             Message::Update { rel, old, new } => {
                 if let Some(map) = self.our_map(rel) {
                     // PK-changing update: delete(old key) then insert(new),
-                    // in order, same transaction (P5).
+                    // in order, same transaction.
                     let built = (|| {
                         let mut rows = Vec::new();
                         let old_key = old.as_ref().map(|o| self.key_cells(&map, o)).transpose()?;
@@ -948,7 +945,7 @@ impl<'a> Apply<'a> {
                             self.defer(self.fatal(
                                 "delete record carries no usable key data — the \
                                  table's replica identity was weakened \
-                                 mid-stream; restore it (contract O4)",
+                                 mid-stream; restore it",
                             ));
                         }
                         Ok(key) => self.tx_rows.push((self.delete_row(key), true)),
@@ -1034,7 +1031,7 @@ impl<'a> Apply<'a> {
     /// column missing from the relation = non-additive drift = typed error;
     /// EXTRA relation columns (added after this run's reflection) are
     /// deferred to the next run's reflection (additive drift applies at
-    /// run boundaries, O4/D5).
+    /// run boundaries).
     fn plan_map(&self, rel: &pgoutput::Relation) -> Result<Vec<usize>, SourceError> {
         self.plans
             .iter()
@@ -1045,7 +1042,7 @@ impl<'a> Apply<'a> {
                     .ok_or_else(|| {
                         self.fatal(format!(
                             "column `{}` vanished from the replicated table \
-                             (non-additive schema drift, contract O4)",
+                             (non-additive schema drift)",
                             plan.name
                         ))
                     })
@@ -1055,7 +1052,7 @@ impl<'a> Apply<'a> {
 
     /// A full row from a tuple: plan-ordered cells; unchanged-TOAST markers
     /// substitute from the old image under REPLICA IDENTITY FULL, else are
-    /// a typed error naming table + column (O3).
+    /// a typed error naming table + column.
     fn tuple_row(
         &self,
         map: &[usize],
@@ -1081,8 +1078,7 @@ impl<'a> Apply<'a> {
                             _ => Err(self.fatal(format!(
                                 "unchanged TOAST value in column `{}` and no old \
                                  image to substitute from — `ALTER TABLE {}.{} \
-                                 REPLICA IDENTITY FULL` to retain TOAST values \
-                                 (contract O3)",
+                                 REPLICA IDENTITY FULL` to retain TOAST values",
                                 plan.name, self.schema, self.name
                             ))),
                         }
@@ -1111,15 +1107,14 @@ impl<'a> Apply<'a> {
                     }
                     Some(TupleValue::UnchangedToast) => Err(self.fatal(
                         "key column arrived as an unchanged-TOAST marker — \
-                         unusable key data (contract O4)",
+                         unusable key data",
                     )),
                 }
             })
             .collect()
     }
 
-    /// A delete row: key cells in place, every other column NULL, flag TRUE
-    /// (data-model, change record).
+    /// A delete row: key cells in place, every other column NULL, flag TRUE.
     fn delete_row(&self, key: Vec<Cell>) -> Vec<Cell> {
         let mut row = vec![Cell::Null; self.plans.len()];
         for (&plan_idx, cell) in self.key_plan_idx.iter().zip(key) {

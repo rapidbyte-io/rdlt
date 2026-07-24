@@ -1,14 +1,17 @@
-//! Library-mode runs (research R3): the pipeline in-process via the `rdlt`
-//! crate. RunReport gives EXACT rows/bytes; the `events()` seam gives
-//! per-stream attribution. Scoreboard detail only — gated numbers bind to the
-//! subprocess mode (FR-011). CPU/RSS are subprocess-mode metrics: in-process
-//! /proc/self readings would accumulate across runs, so they are null here
-//! with a reason, never fabricated (BH3).
+//! Library-mode runs: the pipeline in-process via the `rdlt` crate. RunReport
+//! gives EXACT rows/bytes; the `events()` seam gives per-stream attribution.
+//! Scoreboard detail only — gated numbers bind to the subprocess mode, which
+//! is the measured, release-CLI configuration. CPU/RSS are subprocess-mode
+//! metrics: in-process /proc/self readings would accumulate across runs, so
+//! they are null here with a stated reason — a metric is never fabricated;
+//! an absent number is null with a reason.
 //!
 //! The `Spec` below deliberately duplicates the CLI's YAML spec structs
 //! (crates/rdlt-cli/src/main.rs): both are thin consumers of the same library
-//! surface, and the harness must parse the SAME pipeline templates the
-//! subprocess mode feeds the CLI.
+//! surface, and this harness must parse the SAME pipeline templates the
+//! subprocess mode feeds the CLI. The duplication is a deliberate constraint,
+//! not an oversight — the shared fixture `benches/parity_specs.yaml` pins both
+//! parsers so the two struct sets can never drift apart.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -72,12 +75,12 @@ enum DestSpec {
     Duckdb {
         path: PathBuf,
         memory_limit: Option<String>,
-        /// Feature 013: the SAME destination-options vocabulary as postgres
-        /// (shared sqlcore types — one YAML shape, contract SM5).
+        /// The SAME destination-options vocabulary as postgres — shared
+        /// sqlcore types, one YAML shape.
         merge_strategy: Option<rdlt::connector::duckdb::dest::MergeStrategy>,
         tables:
             Option<std::collections::BTreeMap<String, rdlt::connector::duckdb::dest::TableOptions>>,
-        /// G3 dlt-parity passthrough: extensions to LOAD and `SET` settings.
+        /// dlt-parity passthrough: extensions to LOAD and `SET` settings.
         extensions: Option<Vec<String>>,
         settings: Option<std::collections::BTreeMap<String, String>>,
     },
@@ -362,7 +365,7 @@ pub fn side_from(samples: &[Sample<RunOutcome>]) -> RdltSide {
     let rows: u64 = last.detail.report.tables.values().map(|t| t.rows).sum();
     let bytes: u64 = last.detail.report.tables.values().map(|t| t.bytes).sum();
     let secs = median_ms / 1000.0;
-    let note = "in-process run — CPU/RSS are subprocess-mode metrics (FR-011)";
+    let note = "in-process run — CPU/RSS are subprocess-mode metrics, null here";
     RdltSide {
         median_ms,
         p95_ms,
@@ -434,8 +437,8 @@ mod tests {
         assert_eq!(parsed, 5, "fixture covers every destination kind");
     }
 
-    /// The T007 cell: a tiny file→parquet pipeline in-process, asserting
-    /// non-estimated totals and attribution ordering.
+    /// A tiny file→parquet pipeline in-process, asserting non-estimated
+    /// totals and attribution ordering.
     #[test]
     fn in_process_run_reports_exact_totals_and_attribution() {
         let dir = tempfile::tempdir().unwrap();

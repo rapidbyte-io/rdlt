@@ -1,4 +1,4 @@
-//! Identifier newtypes. No bare `String`/`u64` crosses a seam (data-model.md §1).
+//! Identifier newtypes. No bare `String`/`u64` crosses a seam.
 
 use std::fmt;
 
@@ -75,8 +75,8 @@ macro_rules! hash_id {
 
             /// Lowercase hex; the portable rendering used in destination columns
             /// and persisted formats. Table-driven — this runs three times per
-            /// shredded row (id/parent/root), and the `write!("{:02x}")` form it
-            /// replaced was ~48% of ALL shred instructions (feature 003 profile).
+            /// shredded row (id/parent/root); the `write!("{:02x}")` form it
+            /// replaced dominated shred-time instruction counts under profiling.
             pub fn to_hex(&self) -> String {
                 const HEX: &[u8; 16] = b"0123456789abcdef";
                 let mut out = vec![0u8; 64];
@@ -134,7 +134,7 @@ macro_rules! hash_id {
 }
 
 hash_id!(
-    /// Content hash of one `TableSchema` version (contracts/persisted-formats.md §5).
+    /// Content hash of one `TableSchema` version.
     SchemaHash
 );
 hash_id!(

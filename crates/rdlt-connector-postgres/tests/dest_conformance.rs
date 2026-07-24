@@ -554,7 +554,7 @@ mod native_types {
         assert!(msg.contains("uid") && msg.contains("not-a-uuid"), "{msg}");
 
         // JSONB-rejected document (NUL escape): the SERVER refuses it and the
-        // surfaced error carries its message + SQLSTATE (T2 + review F6).
+        // surfaced error carries its message + SQLSTATE.
         let nul_doc = "{\"k\": \"\\u0000\"}".to_string();
         let err = session
             .write(
@@ -1407,9 +1407,9 @@ mod refinements {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn scd2_retire_shares_the_per_table_single_unit_rule() {
-        // Review F10: one rule, both consumers. Retire tolerates units where
-        // the table stages nothing (an empty stage must not read as "every
-        // key absent" = mass retirement), and rejects a split feed typed.
+        // One rule, both consumers. Retire tolerates units where the table
+        // stages nothing (an empty stage must not read as "every key absent"
+        // = mass retirement), and rejects a split feed typed.
         let (_c, conn) = start_pg().await;
         let opts = Opts {
             strategy: Some(MergeStrategy::Scd2),
@@ -1430,7 +1430,7 @@ mod refinements {
             2,
             "empty unit retired nothing"
         );
-        // Split feed: typed, names the S6 contract.
+        // Split feed: typed, names the single-unit rule.
         let err = run_expect_err(
             &conn,
             "mr_scd2_units",
@@ -1441,10 +1441,7 @@ mod refinements {
             ],
         )
         .await;
-        assert!(
-            err.contains("scd2.md S6") && err.contains("SINGLE commit unit"),
-            "{err}"
-        );
+        assert!(err.contains("SINGLE commit unit"), "{err}");
     }
 
     #[tokio::test(flavor = "multi_thread")]

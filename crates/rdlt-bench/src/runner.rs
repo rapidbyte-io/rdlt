@@ -1,7 +1,8 @@
-//! The one protocol that runs every cell (BH2): fixtures up, competitors
-//! FIRST (the R12 baseline-first discipline), then rdlt — warmups, N runs,
-//! stats, artifact. Gated numbers come from the release-CLI subprocess
-//! (FR-011); library mode adds attribution detail for scoreboards.
+//! The one protocol that runs every cell: fixtures up, competitors FIRST
+//! (baseline-first discipline — the competitor runs before the rdlt side on
+//! the same quiet machine), then rdlt — warmups, N runs, stats, artifact.
+//! Gated numbers come from the release-CLI subprocess; library mode adds
+//! attribution detail for scoreboards.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

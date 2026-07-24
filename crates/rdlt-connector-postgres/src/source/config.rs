@@ -1,10 +1,9 @@
-//! Declarative Postgres source configuration (contract:
-//! `specs/005-postgres-source/contracts/source-config.md`): connection, stream
-//! selection, per-table cursor + key configuration, batching knobs. One YAML
-//! document a platform can render and validate; unknown fields are errors.
+//! Declarative Postgres source configuration: connection, stream selection,
+//! per-table cursor + key configuration, batching knobs. One YAML document a
+//! platform can render and validate; unknown fields are errors.
 //!
-//! There is deliberately NO retry configuration — retry policy is engine-owned
-//! (SPI clauses S3/E5); this source only classifies errors.
+//! There is deliberately NO retry configuration — retry policy is engine-owned;
+//! this source only classifies errors.
 
 use std::collections::BTreeSet;
 
@@ -35,23 +34,23 @@ pub struct PostgresConfig {
     /// Absent ⇒ discover ALL tables in `schema`.
     #[serde(default)]
     pub tables: Option<Vec<TableConfig>>,
-    /// Query streams (feature 006, contract query-streams.md): a stream per
-    /// SQL statement, schema DESCRIBED by the database; always executed as
-    /// `SELECT * FROM (sql) AS q` (read-only enforced by subquery rules).
+    /// Query streams: a stream per SQL statement, schema DESCRIBED by the
+    /// database; always executed as `SELECT * FROM (sql) AS q` (read-only
+    /// enforced by subquery rules).
     #[serde(default)]
     pub queries: Vec<QueryConfig>,
-    /// TLS posture (feature 006): full sslmode matrix; verify-* modes are
-    /// expressible only here (conn-string sslmode covers disable/prefer/
-    /// require). Contradicting an explicit conn sslmode is a config error.
+    /// TLS posture: full sslmode matrix; verify-* modes are expressible only
+    /// here (conn-string sslmode covers disable/prefer/require). Contradicting
+    /// an explicit conn sslmode is a config error.
     #[serde(default)]
     pub tls: Option<crate::tls::TlsPolicy>,
-    /// CDC via logical replication (feature 009, contract cdc-config.md):
-    /// when present, EVERY configured table is captured through the
+    /// CDC via logical replication: when present, EVERY configured table is
+    /// captured through the
     /// replication slot instead of cursor-column incremental (the two are
     /// mutually exclusive per table). Query streams are unaffected.
     #[serde(default)]
     pub cdc: Option<CdcConfig>,
-    /// Decoder cuts a RecordBatch at this many buffered bytes (R4).
+    /// Decoder cuts a RecordBatch at this many buffered bytes.
     #[serde(default = "default_batch_target_bytes")]
     pub batch_target_bytes: usize,
     /// Secondary cut: maximum rows per batch.
@@ -74,9 +73,9 @@ pub struct TableConfig {
     pub included_columns: Option<Vec<String>>,
     #[serde(default)]
     pub excluded_columns: Option<Vec<String>>,
-    /// Per-column type-hint overrides (feature 006, contract
-    /// type-hints.md): a CLOSED conversion table; unknown columns or
-    /// undefined (source → hint) pairs are typed config errors at open.
+    /// Per-column type-hint overrides: a CLOSED conversion table; unknown
+    /// columns or undefined (source → hint) pairs are typed config errors at
+    /// open.
     #[serde(default)]
     pub type_hints: std::collections::BTreeMap<String, crate::source::HintType>,
 }
@@ -113,15 +112,14 @@ pub struct CursorConfig {
     /// `end_bound: inclusive`).
     #[serde(default)]
     pub end_value: Option<String>,
-    /// Upper-bound semantics (feature 007, cursor-lag.md E1): `exclusive`
-    /// (default, unchanged) or `inclusive` — rows exactly AT `end_value`
-    /// load. A read filter only; never resume state.
+    /// Upper-bound semantics: `exclusive` (default) or `inclusive` — rows
+    /// exactly AT `end_value` load. A read filter only; never resume state.
     #[serde(default)]
     pub end_bound: EndBound,
     #[serde(default)]
     pub nulls: NullPolicy,
-    /// Attribution window (feature 007, contract cursor-lag.md): each
-    /// RESUMED run widens the read window this far behind the watermark so
+    /// Attribution window: each RESUMED run widens the read window this far
+    /// behind the watermark so
     /// late-committed rows are captured. Requires a closed boundary and a
     /// primary key; the saved watermark is never lowered.
     #[serde(default)]
@@ -249,14 +247,13 @@ impl Lag {
     }
 }
 
-/// Upper-bound semantics for `end_value` (feature 007, dlt `range_end`
-/// parity).
+/// Upper-bound semantics for `end_value` (dlt `range_end` parity).
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum EndBound {
-    /// `<` under max / `>` under min — the pre-007 behavior.
+    /// `<` under max / `>` under min.
     #[default]
     Exclusive,
     /// `<=` / `>=` — the window `[start, end]` directly expressible.
@@ -299,15 +296,14 @@ pub enum NullPolicy {
     /// NULL-cursor rows are included on every run (`… OR cursor IS NULL`).
     Include,
     /// A NULL cursor value is a DATA-CONTRACT violation: the run fails with
-    /// a typed error naming stream and column (feature 007, cursor-lag.md
-    /// N1) — for pipelines that treat NULL `updated_at` as a bug.
+    /// a typed error naming stream and column — for pipelines that treat NULL
+    /// `updated_at` as a bug.
     Error,
 }
 
-/// CDC block (feature 009, contract cdc-config.md): slot + publication are
-/// USER-OWNED server resources — rdlt creates them only under
-/// `create_if_missing` (idempotently) and NEVER drops either. The
-/// flag-column collision check (C2) needs reflection and runs at open.
+/// CDC block: slot + publication are USER-OWNED server resources — rdlt
+/// creates them only under `create_if_missing` (idempotently) and NEVER drops
+/// either. The flag-column collision check needs reflection and runs at open.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CdcConfig {
@@ -455,18 +451,17 @@ impl PostgresConfig {
         Ok(config)
     }
 
-    /// Local validation (contract rules 4–6 and shape rules); rules that need
-    /// the live catalog (2–3) run at open, against reflection.
+    /// Local validation (shape rules checkable without the database); rules
+    /// that need the live catalog run at open, against reflection.
     fn validate(&self) -> Result<(), ConfigError> {
         let invalid = |msg: String| Err(ConfigError::Invalid(msg));
         if self.conn.trim().is_empty() {
             return invalid("`conn` must not be empty".into());
         }
-        // Contract rule 1: parse failure = FATAL config error, up front — a
-        // malformed conn string must never reach the Transient/retry path
-        // (005 review). Feature 007: the shared gate also translates libpq's
-        // TLS parameter trio and names every rejected parameter — no bare
-        // parse errors (contract connstring-portability.md).
+        // Parse failure = FATAL config error, up front — a malformed conn
+        // string must never reach the Transient/retry path. The shared gate
+        // also translates libpq's TLS parameter trio and names every rejected
+        // parameter — no bare parse errors.
         if let Err(e) = crate::tls::parse_conn(&self.conn, self.tls.as_ref()) {
             return invalid(e.to_string());
         }
@@ -498,7 +493,7 @@ impl PostgresConfig {
                     return invalid(format!("`{field}` must not be empty"));
                 }
             }
-            // C1: CDC covers every configured table; a cursor block on any
+            // CDC covers every configured table; a cursor block on any
             // of them is a contradiction, not an override.
             if let Some(table) = self.tables.iter().flatten().find(|t| t.cursor.is_some()) {
                 return invalid(format!(
@@ -724,7 +719,7 @@ tables:
 
     #[test]
     fn cdc_validation_matrix() {
-        // C1: cursor + cdc on the same table — typed, names the table.
+        // cursor + cdc on the same table — typed, names the table.
         let err = PostgresConfig::from_yaml(
             "conn: host=localhost\ncdc:\n  slot: s\n  publication: p\n\
              tables:\n  - name: orders\n    cursor:\n      column: id\n",
@@ -738,7 +733,7 @@ tables:
             "conn: host=localhost\ncdc:\n  slot: s\n",
             "conn: host=localhost\ncdc:\n  slot: \"\"\n  publication: p\n",
             "conn: host=localhost\ncdc:\n  slot: s\n  publication: p\n  flag_column: \"\"\n",
-            // C4: unknown fields fail; idle_wait rejects magnitudes.
+            // unknown fields fail; idle_wait rejects magnitudes.
             "conn: host=localhost\ncdc:\n  slot: s\n  publication: p\n  drop_slot: true\n",
             "conn: host=localhost\ncdc:\n  slot: s\n  publication: p\n  idle_wait: \"5\"\n",
             "conn: host=localhost\ncdc:\n  slot: s\n  publication: p\n  mode: streaming\n",
@@ -785,8 +780,8 @@ tables:
         // Contract rule 1: parse failure = typed CONFIG error, up front.
         let err = PostgresConfig::from_yaml("conn: not-a-conn-string\n").unwrap_err();
         assert!(err.to_string().contains("does not parse"), "{err}");
-        // Feature 006: TLS is wired — every conn-string sslmode level now
-        // passes config validation (incl. the spaced keyword form).
+        // TLS is wired — every conn-string sslmode level now passes config
+        // validation (incl. the spaced keyword form).
         for conn in [
             "postgresql://u:p@h/db?sslmode=require",
             "host=h sslmode=require",
@@ -823,7 +818,7 @@ tables:
         assert!(err.to_string().contains("listed twice"), "{err}");
     }
 
-    // ---- feature 007: lag vocabulary + validation (cursor-lag.md) ----
+    // ---- lag vocabulary + validation ----
 
     #[test]
     fn lag_vocabulary_round_trips_and_rejects() {
@@ -853,7 +848,7 @@ tables:
         let lag: Lag = "5m".parse().unwrap();
         assert_eq!(lag.to_string().parse::<Lag>().unwrap(), lag);
 
-        // sql_delta family matrix (contract L2).
+        // sql_delta family matrix.
         let five_m = Lag::Duration { seconds: 300 };
         assert_eq!(
             five_m.sql_delta(Decode::Timestamp { tz: true }).unwrap(),

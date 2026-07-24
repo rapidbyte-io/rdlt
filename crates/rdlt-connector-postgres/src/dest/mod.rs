@@ -2,12 +2,12 @@
 //!
 //! Binary-protocol COPY into unlogged staging tables; publication is one transaction
 //! moving stage → target, upserting the state document, and recording the commit
-//! receipt (clauses D1–D4). Receives FLATTENED schemas — `structs: false` makes the
+//! receipt. Receives FLATTENED schemas — `structs: false` makes the
 //! engine lower nested objects at the seam. Depends on the SPI only.
 //!
-//! Module layout (feature 008, source-mirroring): [`config`] the handle/
-//! builder, [`ddl`] type mapping + table DDL, [`encode`] the binary-COPY
-//! wire encoding, [`commit`] the load-session protocol.
+//! Module layout (source-mirroring): [`config`] the handle/builder, [`ddl`]
+//! type mapping + table DDL, [`encode`] the binary-COPY wire encoding,
+//! [`commit`] the load-session protocol.
 
 mod commit;
 mod config;
@@ -26,9 +26,9 @@ pub use config::{
     SortOrder,
 };
 
-/// SQL-generation seam, exposed ONLY for the golden-SQL pin suite
-/// (feature 013 SM4): the pins bind the exact statement text across the
-/// sqlcore extraction. Not a public API.
+/// SQL-generation seam, exposed ONLY for the golden-SQL pin suite: the pins
+/// bind the exact statement text across the sqlcore extraction. Not a public
+/// API.
 #[doc(hidden)]
 pub mod sqlgen {
     pub use super::commit::ARRIVAL_COL;
@@ -40,23 +40,21 @@ pub mod sqlgen {
     pub use rdlt_connector_sqlcore::{HardDelete, MergePlan};
 }
 
-/// Fail-point registry (gate G2.2): every `crash_point!` site in this crate —
-/// the ENGINE-OWNED protocol boundaries (stage writes, the publish transaction
-/// edges, the D3 redelivery window). Postgres' internal transaction atomicity
-/// is the database's own guarantee and is deliberately NOT instrumented
-/// (research R20 scope guard).
+/// Fail-point registry: every `crash_point!` site in this crate — the
+/// ENGINE-OWNED protocol boundaries (stage writes, the publish transaction
+/// edges, the redelivery window). Postgres' internal transaction atomicity
+/// is the database's own guarantee and is deliberately NOT instrumented.
 #[cfg(feature = "failpoints")]
 #[doc(hidden)]
 pub const FAIL_POINTS: &[&str] = &["pg.stage.copy", "pg.publish.begin", "pg.tx.commit"];
 
-/// Review-F6 closure (feature 008, FR-010): every db-originated error
-/// carries the server's message + SQLSTATE — tokio-postgres's Display for
-/// db errors is just "db error" (the recurring 006 opacity). Non-db errors
+/// Every db-originated error carries the server's message + SQLSTATE —
+/// tokio-postgres's Display for db errors is just "db error". Non-db errors
 /// render their full source chain.
 pub(crate) fn describe(e: &tokio_postgres::Error) -> String {
     use std::error::Error as _;
     if let Some(db) = e.as_db_error() {
-        // The CONTEXT line names the COPY column for data errors (review F5).
+        // The CONTEXT line names the COPY column for data errors.
         let context = db.where_().map(|w| format!(" [{w}]")).unwrap_or_default();
         return format!(
             "{e}: {} (SQLSTATE {}){context}",
@@ -78,7 +76,7 @@ pub(crate) fn transient(e: tokio_postgres::Error) -> DestError {
     DestError::transient(describe(&e))
 }
 
-/// Write-path (COPY) error mapping (review F5): data-shaped SQLSTATE classes
+/// Write-path (COPY) error mapping: data-shaped SQLSTATE classes
 /// (22 data exception, 23 integrity, 42 syntax/access) are PERMANENT — a
 /// poisoned batch must not burn the engine's retry budget on unwinnable
 /// retries. Everything else stays transient (connection-shaped).
@@ -110,9 +108,9 @@ impl Destination for Postgres {
             merge: true,
             structs: false,      // → engine flattens collision-safely at the seam
             scalar_lists: false, // → scalar lists become child tables at shred planning
-            // Feature 008 US1 (dest-types.md): native JSONB + NUMERIC(p,s) —
-            // engine lowering passes Json/Decimal128 through untouched. These
-            // are CODE-LEVEL declarations; no user configuration exists (R2).
+            // Native JSONB + NUMERIC(p,s) — engine lowering passes
+            // Json/Decimal128 through untouched. These are CODE-LEVEL
+            // declarations; no user configuration exists.
             json_type: true,
             decimal: true,
             ident_rules: IdentRules { max_len: 63 },
@@ -135,9 +133,9 @@ impl Destination for Postgres {
             .await
             .map_err(transient)?;
 
-        // Clause D4: staged data from THIS PIPELINE's dead sessions becomes
+        // Staged data from THIS PIPELINE's dead sessions becomes
         // invisible/reclaimable. Scoped by pipeline-hash prefix: other pipelines
-        // sharing the schema keep their live staged rows (finding #3).
+        // sharing the schema keep their live staged rows.
         let prefix_pattern = format!(
             "{}%",
             commit::stage_prefix(&_ctx.pipeline).replace('_', "\\_")

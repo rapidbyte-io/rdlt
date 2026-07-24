@@ -1,4 +1,4 @@
-//! T012 partitioning cells: partition_by → an Iceberg partition spec at
+//! Partitioning cells: partition_by → an Iceberg partition spec at
 //! table create; partitioned writes fan out one data file per partition
 //! value; the spec is visible in raw table metadata; a config that
 //! disagrees with the live spec is typed. Live against Polaris + RUSTFS,

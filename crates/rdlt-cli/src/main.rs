@@ -6,8 +6,8 @@
 //! the source (inline, or `config: path` to a reusable document), and the
 //! destination — one file, one format, end to end.
 //!
-//! Everything the CLI does, the library does (contract: embedder-api.md — the CLI
-//! adds zero engine capability). Events stream to stderr (human-readable); the
+//! Everything the CLI does, the library does — the CLI adds zero engine
+//! capability. Events stream to stderr (human-readable); the
 //! `RunReport` JSON goes to stdout or `--report`.
 //!
 //! Exit codes mirror `RdltError` variants (stable, scriptable):
@@ -81,12 +81,12 @@ enum DestSpec {
     Duckdb {
         path: PathBuf,
         memory_limit: Option<String>,
-        /// Feature 013: the SAME destination-options vocabulary as postgres
-        /// (shared sqlcore types — one YAML shape, contract SM5).
+        /// The SAME destination-options vocabulary as postgres — shared
+        /// sqlcore types, one YAML shape.
         merge_strategy: Option<rdlt::connector::duckdb::dest::MergeStrategy>,
         tables:
             Option<std::collections::BTreeMap<String, rdlt::connector::duckdb::dest::TableOptions>>,
-        /// G3 dlt-parity passthrough: extensions to LOAD and `SET` settings.
+        /// dlt-parity passthrough: extensions to LOAD and `SET` settings.
         extensions: Option<Vec<String>>,
         settings: Option<std::collections::BTreeMap<String, String>>,
     },
@@ -95,10 +95,10 @@ enum DestSpec {
         dataset: String,
         /// Optional TLS block: `tls: {mode: verify_full, root_cert: /ca.pem}`.
         tls: Option<rdlt::connector::postgres::tls::TlsPolicy>,
-        /// Feature 008: destination-wide merge strategy
+        /// Destination-wide merge strategy
         /// ("delete_insert" | "upsert" | "scd2").
         merge_strategy: Option<rdlt::connector::postgres::dest::MergeStrategy>,
-        /// Feature 008/010: per-table options — `tables: <name>: {…}` with
+        /// Per-table options — `tables: <name>: {…}` with
         /// `merge_strategy`, `hard_delete`, `dedup_sort`, `merge_key`, and
         /// `scd2: {valid_from, valid_to, absent}`.
         tables: Option<
@@ -108,22 +108,22 @@ enum DestSpec {
     Parquet {
         path: PathBuf,
     },
-    /// Feature 015: the full file-destination vocabulary — format
-    /// (parquet|jsonl), location (local | s3), partition_by. The
-    /// `parquet:` spelling above stays frozen (≡ file: local parquet).
+    /// The full file-destination vocabulary — format (parquet|jsonl),
+    /// location (local | s3), partition_by. The `parquet:` spelling above
+    /// stays frozen (equivalent to file: local parquet).
     File {
         path: String,
         format: Option<rdlt::connector::file::dest::DestFormat>,
         location: Option<rdlt::connector::file::location::LocationOptions>,
         partition_by: Option<String>,
     },
-    /// Feature 016: the Iceberg destination — the crate's full config
-    /// vocabulary inline (catalog/auth, namespace, storage override,
-    /// per-stream tables with partition_by).
+    /// The Iceberg destination — the crate's full config vocabulary inline
+    /// (catalog/auth, namespace, storage override, per-stream tables with
+    /// partition_by).
     Iceberg(Box<rdlt::connector::iceberg::IcebergConfig>),
 }
 
-/// Bound glibc's allocator retention (feature 003 T024): data movement churns
+/// Bound glibc's allocator retention: data movement churns
 /// large short-lived buffers (slabs, arenas, arrow builds), and glibc's default
 /// per-thread arenas retain them as RSS long after free. Two arenas + a low trim
 /// threshold returns memory to the OS with no measured wall-time cost (642 MB →
@@ -377,11 +377,10 @@ async fn run(spec_path: PathBuf, report_path: Option<PathBuf>) -> Result<(), Cli
     }
 }
 
-/// C3 (feature 009, contract cdc-config.md): the exactly-once-outcome CDC
-/// composition is `write_mode = merge{key}` + destination
-/// `merge_strategy = upsert` + `hard_delete = <flag column>`. Its absence
-/// WARNS, never blocks — other shapes are documented at-least-once /
-/// soft-delete.
+/// The exactly-once-outcome CDC composition is `write_mode = merge{key}` +
+/// destination `merge_strategy = upsert` + `hard_delete = <flag column>`. Its
+/// absence WARNS, never blocks — other shapes still run, but as at-least-once
+/// delivery and/or soft-delete (deletions kept as flagged rows).
 fn cdc_composition_warnings(
     spec: &Spec,
     config: &rdlt::connector::postgres::source::PostgresConfig,
@@ -393,7 +392,7 @@ fn cdc_composition_warnings(
     if !matches!(spec.write_mode, Some(WriteModeSpec::Merge { .. })) {
         warnings.push(
             "cdc: write_mode is not merge — changed rows will append instead of \
-             converging; set write_mode: {merge: {key: [...]}} (contract C3)"
+             converging; set write_mode: {merge: {key: [...]}}"
                 .to_string(),
         );
     }
@@ -409,19 +408,19 @@ fn cdc_composition_warnings(
             ) {
                 warnings.push(
                     "cdc: destination merge_strategy is not upsert — the \
-                     recommended composition is merge_strategy = \"upsert\" \
-                     (contract C3)"
+                     recommended composition is merge_strategy = \"upsert\""
                         .to_string(),
                 );
             }
             match &config.tables {
-                // Schema-wide discovery: the table set is unknown here, but
-                // the C3 warning must not go silent — one generic notice.
+                // Schema-wide discovery: the table set is unknown here, so the
+                // per-table check below can't run — emit one generic notice
+                // rather than staying silent about the missing hard_delete.
                 None => warnings.push(format!(
                     "cdc: schema-wide discovery (no `tables:` list) — give every \
                      CDC table hard_delete = \"{}\" in the destination options, \
                      or deletes land as flagged rows (soft delete) instead of \
-                     removals (contract C3)",
+                     removals",
                     cdc.flag_column
                 )),
                 Some(listed) => {
@@ -435,7 +434,7 @@ fn cdc_composition_warnings(
                             warnings.push(format!(
                                 "cdc: table `{}` has no hard_delete = \"{}\" — \
                                  deletes will land as flagged rows (soft delete) \
-                                 instead of removals (contract C3)",
+                                 instead of removals",
                                 table.name, cdc.flag_column
                             ));
                         }
@@ -449,8 +448,8 @@ fn cdc_composition_warnings(
         | DestSpec::Iceberg(_) => {
             warnings.push(format!(
                 "cdc: this destination has no hard-delete support — the \
-                 deletion flag `{}` lands as data (documented soft delete, \
-                 contract C3/P8)",
+                 deletion flag `{}` lands as data (soft delete); deletes are \
+                 kept as flagged rows, not removed",
                 cdc.flag_column
             ));
         }
@@ -549,9 +548,9 @@ mod tests {
         .expect("config")
     }
 
-    /// Feature 016: the iceberg destination block parses the crate's
-    /// full vocabulary from the pipeline YAML with zero CLI code —
-    /// and validation errors are typed at spec load.
+    /// The iceberg destination block parses the crate's full vocabulary from
+    /// the pipeline YAML with zero CLI code — and validation errors are typed
+    /// at spec load.
     #[test]
     fn iceberg_spec_parses_from_the_yaml() {
         let parsed = spec(
@@ -585,10 +584,9 @@ destination:
         );
     }
 
-    /// Feature 010 (MR7): the per-table destination options ride the
-    /// pipeline YAML with zero CLI code.
-    /// Feature 013 (SM5): the duckdb destination block accepts the SAME
-    /// options vocabulary as postgres — one YAML shape.
+    /// The per-table destination options ride the pipeline YAML with zero CLI
+    /// code, and the duckdb destination block accepts the SAME options
+    /// vocabulary as postgres — one YAML shape.
     #[test]
     fn duckdb_options_pass_through_the_yaml() {
         let parsed = spec(
@@ -698,7 +696,8 @@ destination:
         let value = serde_json::to_value(inline).expect("serialize");
         rdlt::connector::postgres::source::PostgresConfig::from_value(value).expect("valid inline");
 
-        // …and rejects invalid shapes identically (cdc + cursor, C1).
+        // …and rejects invalid shapes identically — cdc and cursor are
+        // mutually exclusive on the same table.
         let bad = spec(
             r#"
 pipeline: p
@@ -718,7 +717,7 @@ destination:
         };
         let value = serde_json::to_value(inline).expect("serialize");
         let err = rdlt::connector::postgres::source::PostgresConfig::from_value(value)
-            .expect_err("C1 holds inline")
+            .expect_err("cdc + cursor rejected inline")
             .to_string();
         assert!(err.contains("mutually exclusive"), "{err}");
 
@@ -751,8 +750,8 @@ destination:
         ));
     }
 
-    /// Feature 011 (PM1): every pipeline-spec form parses — write_mode's
-    /// three shapes, all destination kinds, workdir default vs custom.
+    /// Every pipeline-spec form parses — write_mode's three shapes, all
+    /// destination kinds, workdir default vs custom.
     #[test]
     fn pipeline_spec_forms_parse() {
         for (mode, want_merge) in [
@@ -827,8 +826,8 @@ destination:
         }
     }
 
-    /// C3 capture matrix: the recommended composition is silent; every
-    /// missing leg warns with the fix; non-merge destinations warn soft
+    /// CDC-composition warning matrix: the recommended composition is silent;
+    /// every missing leg warns with the fix; non-merge destinations warn soft
     /// delete.
     #[test]
     fn cdc_composition_warning_matrix() {
@@ -882,7 +881,7 @@ destination:
         assert!(warnings[0].contains("soft delete"), "{warnings:?}");
 
         // Schema-wide discovery (no tables list): the hard_delete leg still
-        // warns — once, generically (review F9).
+        // warns — once, generically.
         let schema_wide = rdlt::connector::postgres::source::PostgresConfig::from_yaml(
             "conn: host=localhost\ncdc:\n  slot: s\n  publication: p\n",
         )

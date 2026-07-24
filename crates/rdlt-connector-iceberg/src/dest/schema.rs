@@ -1,6 +1,6 @@
-//! The CLOSED engine-type → Iceberg-type mapping (contract ID4,
-//! data-model §2). Unmappable columns are typed at ensure-table naming the
-//! column. Field IDs are assigned SEQUENTIALLY at creation time only — the
+//! The CLOSED engine-type → Iceberg-type mapping. Unmappable columns are
+//! typed at ensure-table naming the column. Field IDs are assigned
+//! SEQUENTIALLY at creation time only — the
 //! catalog normalizes them on create, and post-creation evolution goes
 //! through UpdateSchema (which assigns fresh IDs); this crate never
 //! renumbers or reuses an ID.
@@ -40,7 +40,7 @@ fn scalar_type(table: &str, column: &str, scalar: LogicalType) -> Result<Type, D
         other => {
             return Err(fatal(format!(
                 "table `{table}` column `{column}`: engine type {other:?} has no \
-                 iceberg mapping (closed table, contract ID4)"
+                 iceberg mapping (the engine-type → iceberg-type mapping is closed)"
             )));
         }
     }))

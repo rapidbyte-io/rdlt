@@ -1,4 +1,4 @@
-//! The postgres [`MergeDialect`] (feature 013): the EXTRACTION SOURCE — every
+//! The postgres [`MergeDialect`]: the EXTRACTION SOURCE — every
 //! hook keeps the trait default (the defaults ARE this destination's text,
 //! golden-pinned in tests/golden_sql.rs) except the arrival column, which is
 //! the stage's real `__rdlt_arrival` BIGSERIAL.

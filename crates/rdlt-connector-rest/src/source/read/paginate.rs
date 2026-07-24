@@ -1,7 +1,7 @@
-//! The paginator vocabulary (contract RS2): seven config-backed families
-//! behind the public [`Paginator`] trait — the composition seam wrappers may
-//! implement for API quirks. Every family runs under the same loop guards
-//! (same-request detection + `max_pages`), owned by the read loop.
+//! The paginator vocabulary: seven config-backed families behind the public
+//! [`Paginator`] trait — the composition seam wrappers may implement for API quirks.
+//! Every family runs under the same loop guards (same-request detection + `max_pages`),
+//! owned by the read loop.
 
 use serde_json::Value;
 
@@ -33,7 +33,7 @@ pub enum PageDecision {
     NextUrl(String),
 }
 
-/// The pagination contract (public seam, RS6). Implementations are
+/// The pagination contract (a public, stable seam). Implementations are
 /// per-stream-read state machines: `first()` yields the initial extra
 /// params; `next()` decides after each page.
 pub trait Paginator: Send + Sync {
@@ -307,7 +307,7 @@ impl Paginator for LinkHeader {
 }
 
 /// RFC5988 subset: find the `<url>; rel="next"` member. Members are walked
-/// by locating each `<…>` PAIR first (URLs may legally contain commas, so
+/// by locating each `<...>` PAIR first (URLs may legally contain commas, so
 /// naive `split(',')` breaks them), and a malformed member never aborts the
 /// scan of later ones.
 pub(crate) fn parse_link_next(header: &str) -> Option<String> {
@@ -351,7 +351,7 @@ mod tests {
         assert_eq!(parse_link_next("junk"), None);
     }
 
-    /// Commas INSIDE a member's URL, and non-`<…>` members before the next
+    /// Commas INSIDE a member's URL, and non-`<...>` members before the next
     /// link, must not truncate the scan (the silent-stop bug).
     #[test]
     fn link_header_survives_commas_and_junk_members() {

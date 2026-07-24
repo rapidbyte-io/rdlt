@@ -1,10 +1,12 @@
 //! # rdlt-connector-file — the file family (source + destination)
 //!
-//! JSONL and Parquet files by explicit path or glob, with per-file incremental
+//! Reads and writes JSONL, CSV, and Parquet files — by explicit path or glob — on the
+//! local filesystem or S3-compatible object storage. Sources track per-file incremental
 //! cursors (completed files skipped, in-progress files resumed at their offset,
-//! shrunk/rewritten files rejected loudly). Parquet streams are STRUCTURED
-//! (contract clause S7). Family layout: `source/` + shared `formats/`; this
-//! façade re-exports the public surface (015 FF1 — spellings and paths frozen).
+//! shrunk/rewritten files rejected loudly); Parquet streams are STRUCTURED (Arrow
+//! batches with run-level provenance only). Layout: `source/` and `dest/` sides over a
+//! shared `location/` (where files live) and `formats/` (how they are encoded); this
+//! façade re-exports the public surface.
 
 pub mod dest;
 pub mod formats;

@@ -1,11 +1,11 @@
-//! The dialect seam (contract SM2): destinations own SQL TEXT only. Every
-//! hook receives the shape's full semantic inputs and returns SQL; shapes,
-//! ordering, survivorship, and unit rules live in [`crate::plan`].
+//! The dialect seam: destinations own SQL TEXT only. Every hook receives the
+//! shape's full semantic inputs and returns SQL; shapes, ordering,
+//! survivorship, and unit rules live in [`crate::plan`].
 //!
-//! Defaults are the postgres dialect's text (the extraction source, golden-
-//! pinned there). A destination that cannot honor a shape's exact semantics
-//! must surface a TYPED capability gap at validation time — never override a
-//! hook with an approximation (SM3).
+//! The default hook bodies emit standard SQL that both current destinations
+//! accept. A destination that cannot honor a shape's exact semantics must
+//! surface a TYPED capability gap at validation time — never override a hook
+//! with an approximation that silently changes the result.
 
 /// SQL-text generation hooks for the shared merge shapes.
 ///
@@ -20,13 +20,13 @@ pub trait MergeDialect: Send + Sync {
     /// pseudo-column) — the deterministic last-wins tie-breaker.
     fn arrival_order(&self) -> String;
 
-    /// Transaction-stable timestamp expression (the scd2 boundary, S5): every
+    /// Transaction-stable timestamp expression (the scd2 boundary): every
     /// statement in one commit unit must observe the same instant.
     fn tx_timestamp(&self) -> &'static str {
         "now()"
     }
 
-    /// The dedup/survivor subquery (MR1/MR2): one surviving row per identity
+    /// The dedup/survivor subquery: one surviving row per identity
     /// group. `sort_prefix` is either empty (arrival last-wins) or
     /// `"col" DIR NULLS LAST, ` from a declared dedup_sort — values beat
     /// NULL, arrival stays the trailing tie-breaker.
@@ -37,7 +37,7 @@ pub trait MergeDialect: Send + Sync {
         )
     }
 
-    /// The upsert statement (M2): insert the surviving rows, updating matched
+    /// The upsert statement: insert the surviving rows, updating matched
     /// keys in place. `action` is `DO UPDATE SET …` or `DO NOTHING`.
     fn upsert_stmt(
         &self,

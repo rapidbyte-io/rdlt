@@ -1,10 +1,10 @@
 //! Declarative REST source configuration: base URL, auth, pagination
 //! strategy, incremental cursors, response actions, parent-child linkage,
 //! per-column type hints — everything in one YAML/JSON document a platform
-//! can render and validate (contract RS1: configs are DATA, no callbacks).
+//! can render and validate — configs are DATA, with no callbacks.
 //!
-//! Evolution is ADDITIVE (RS6): every pre-014 spelling parses unchanged;
-//! superseded fields remain as documented aliases.
+//! Evolution is ADDITIVE: every older config spelling parses unchanged; superseded
+//! fields remain as documented aliases.
 
 use std::collections::BTreeMap;
 
@@ -19,9 +19,9 @@ use super::client::secret::Secret;
 pub struct RestConfig {
     /// e.g. `https://api.example.com`
     pub base_url: String,
-    // auth_compat: accepts BOTH the natural `auth: {bearer: {token: …}}`
-    // singleton-map form (YAML and JSON) AND the pre-014 YAML tagged form
-    // `auth: !bearer` — RS6, old spellings parse unchanged.
+    // auth_compat: accepts BOTH the natural `auth: {bearer: {token: ...}}`
+    // singleton-map form (YAML and JSON) AND the older YAML tagged form
+    // `auth: !bearer`, so old spellings parse unchanged.
     #[serde(default, with = "auth_compat")]
     #[schemars(with = "Auth")]
     pub auth: Auth,
@@ -51,9 +51,9 @@ fn default_max_concurrency() -> u32 {
     1
 }
 
-/// Auth field (de)serialization: singleton-map form in and out, PLUS the
-/// pre-014 YAML tagged spelling (`auth: !bearer`) on the way in — the only
-/// YAML form the pre-014 plain externally-tagged enum accepted (RS6).
+/// Auth field (de)serialization: singleton-map form in and out, PLUS the older
+/// YAML tagged spelling (`auth: !bearer`) on the way in — the only YAML form the
+/// original plain externally-tagged enum accepted.
 mod auth_compat {
     use serde::de::Error as _;
     use serde::{Deserialize, Deserializer, Serializer};
@@ -181,14 +181,14 @@ pub struct RestStream {
     /// Incremental block (supersedes the flat aliases below).
     #[serde(default)]
     pub incremental: Option<Incremental>,
-    /// ALIAS (pre-014): `incremental.cursor_field`.
+    /// Legacy ALIAS for `incremental.cursor_field`.
     #[serde(default)]
     pub cursor_field: Option<String>,
-    /// ALIAS (pre-014): `incremental.start_param`.
+    /// Legacy ALIAS for `incremental.start_param`.
     #[serde(default)]
     pub cursor_param: Option<String>,
     /// Declared handling for specific responses; anything undeclared keeps
-    /// the typed-error posture (RS3). First match wins.
+    /// the typed-error posture. First match wins.
     #[serde(default)]
     pub response_actions: Vec<ResponseAction>,
     /// Parent-child linkage: this stream fans out per parent record.
@@ -363,7 +363,7 @@ impl From<HintType> for LogicalType {
 }
 
 impl RestStream {
-    /// The effective incremental configuration: the block, or the pre-014
+    /// The effective incremental configuration: the block, or the legacy flat
     /// aliases assembled into one (validation forbids mixing them).
     pub fn effective_incremental(&self) -> Option<Incremental> {
         if let Some(inc) = &self.incremental {
@@ -414,7 +414,7 @@ impl RestConfig {
         let names: Vec<&str> = self.streams.iter().map(|s| s.name.as_str()).collect();
         for stream in &self.streams {
             let name = &stream.name;
-            // Pre-014 aliases: set together, and never mixed with the block.
+            // Legacy flat aliases: set together, and never mixed with the block.
             if stream.cursor_field.is_some() != stream.cursor_param.is_some() {
                 return invalid(format!(
                     "stream `{name}`: cursor_field and cursor_param must be set together"
@@ -443,7 +443,7 @@ impl RestConfig {
             if stream.body.is_some() && stream.method != HttpMethod::Post {
                 return invalid(format!("stream `{name}`: `body` requires `method: post`"));
             }
-            // Selector syntax is validated eagerly (typed at parse, RS1).
+            // Selector syntax is validated eagerly, typed at parse time.
             for (label, selector) in [
                 ("records_path", stream.records_path.as_deref()),
                 (

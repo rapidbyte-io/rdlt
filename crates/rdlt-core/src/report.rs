@@ -1,8 +1,8 @@
-//! The machine-readable run outcome (data-model.md §7).
+//! The machine-readable run outcome.
 //!
-//! Accounting invariant (spec FR-012/SC-008): totals here equal destination-visible
-//! reality; every retry, widening, and discard appears. Serde-stable — platforms
-//! persist reports across engine upgrades.
+//! Accounting invariant: totals here equal destination-visible reality; every retry,
+//! widening, and discard appears. Serde-stable — platforms persist reports across
+//! engine upgrades.
 
 use std::collections::BTreeMap;
 

@@ -1,4 +1,4 @@
-//! Text-form tuple values → Arrow (feature 009, research R2): pgoutput
+//! Text-form tuple values → Arrow: pgoutput
 //! proto_version 1 delivers every column in postgres's TEXT output form;
 //! this module parses those forms into the SAME Arrow shapes the binary
 //! COPY decoder produces (one conversion vocabulary, one target schema per
@@ -16,7 +16,7 @@ use crate::source::types::Decode;
 
 /// One cell of one change row: SQL NULL or the text form. (Unchanged-TOAST
 /// markers are resolved BEFORE rows reach this module — substitution or a
-/// typed error per contract O3.)
+/// typed error.)
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Cell {
     Null,
@@ -26,8 +26,7 @@ pub(crate) enum Cell {
 /// Build one Arrow batch for `plans` + the trailing deletion-flag column.
 /// `rows` are change rows (each exactly `plans.len()` cells); `deleted`
 /// marks delete rows (flag TRUE; the flag is NULL otherwise). Every field
-/// is nullable: delete rows carry NULL in non-key columns by design
-/// (data-model, change record).
+/// is nullable: delete rows carry NULL in non-key columns by design.
 pub(crate) fn rows_to_batch(
     plans: &[FieldPlan],
     flag_column: &str,

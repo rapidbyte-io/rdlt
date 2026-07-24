@@ -1,4 +1,4 @@
-//! T007 live conflict cell (contract ID3): two independent writers
+//! Live conflict cell: two independent writers
 //! hammering the SAME table concurrently — every commit lands, nobody's
 //! snapshot is lost. (The deterministic retry/exhaustion pins live as
 //! unit tests against a mock conflicting catalog in `dest/commit.rs` —

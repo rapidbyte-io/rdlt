@@ -139,7 +139,7 @@ async fn upsert_on_shredded_stream_is_typed() {
         .to_string();
     assert!(
         err.contains("upsert strategy requires a KEYED")
-            && err.contains("merge-strategies.md M2/M7"),
+            && err.contains("shredded streams use delete_insert"),
         "{err}"
     );
 }

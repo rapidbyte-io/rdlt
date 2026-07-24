@@ -1,5 +1,5 @@
-//! Crash-point injection macro (feature 003 R20, gate G2) — defined ONCE here
-//! because core is the one crate every protocol implementation shares.
+//! Crash-point injection macro — defined ONCE here because core is the one crate
+//! every protocol implementation shares.
 //!
 //! This is test infrastructure, not vocabulary: the `failpoints` feature is
 //! off by default, never enabled by release builds, and the macro expands to
@@ -9,7 +9,7 @@
 //!
 //! Usage: `crash_point!("crate.site.name", <expression to return when armed>)`.
 //! Every site's name MUST appear in its crate's fail-point registry const —
-//! the crash sweep asserts the registry equals its swept list (gate G2.2).
+//! the crash sweep asserts the registry equals its swept list.
 
 /// Re-export for macro hygiene: `crash_point!` expands to
 /// `$crate::fail::fail_point!`, so callers never depend on `fail` directly.

@@ -1,4 +1,4 @@
-//! The ONE error boundary (contract ID1/ID6): every `iceberg::Error` is
+//! The ONE error boundary: every `iceberg::Error` is
 //! classified HERE into the typed Dest posture — nothing above this module
 //! sees library error types. Classification: catalog/storage transport,
 //! 5xx, throttling, credential expiry → transient (the engine budget);
@@ -33,7 +33,7 @@ pub(crate) fn classify(context: &str, error: iceberg::Error) -> DestError {
         }
         // Optimistic-concurrency conflicts are RETRIED by the commit loop;
         // reaching classification means the loop exhausted its budget —
-        // fatal with the conflict context (ID3).
+        // fatal with the conflict context.
         ErrorKind::CatalogCommitConflicts => DestError::fatal(format!(
             "{context}: commit conflicts exhausted the bounded retry — a \
              competing writer keeps winning: {error}"
@@ -107,9 +107,8 @@ mod tests {
         assert!(missing.to_string().contains("warehouse `w`"));
     }
 
-    /// Review F1: the REST client surfaces 401/403 as Unexpected (its
-    /// fallback kind) — a rejected credential must FAIL FAST, not ride
-    /// the retry budget.
+    /// The REST client surfaces 401/403 as Unexpected (its fallback kind) —
+    /// a rejected credential must FAIL FAST, not ride the retry budget.
     #[test]
     fn auth_rejection_is_fatal_not_transient() {
         for status in ["401 Unauthorized", "403 Forbidden"] {

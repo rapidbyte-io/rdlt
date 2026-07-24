@@ -1,8 +1,10 @@
 //! # rdlt-connector — the in-process connector SPI
 //!
-//! `Source`/`Destination`/`LoadSession` traits and their adjuncts. Behavioral contract:
-//! `specs/001-rdlt-ingestion-engine/contracts/connector-spi.md` — every clause there is
-//! enforced by the public conformance suites in `rdlt-testkit`.
+//! `Source`/`Destination`/`LoadSession` traits and their adjuncts. The behavioral
+//! contract these traits obey — sources resume from a committed cursor without re-emitting
+//! rows, destinations stage writes invisibly and publish them atomically with pipeline
+//! state, delivery is at-least-once and idempotent per commit — is enforced by the public
+//! conformance suites in `rdlt-testkit`.
 //!
 //! Vocabulary types come from [`rdlt_core`] (re-exported as [`core`]); this crate adds
 //! the traits. Traits are object-safe and all exchange types serde-serializable, so a
@@ -46,8 +48,8 @@ pub trait Source: Send + Sync + 'static {
 
     /// Read ONE stream, pushing through `req.out`. The engine schedules streams
     /// concurrently. Given `req.since`, the source MUST resume — never re-emit rows
-    /// already covered by that cursor (clause S1). Awaiting the push IS the flow
-    /// control (clause S5); treat [`ChannelClosed`] as cancellation (clause S4).
+    /// already covered by that cursor. Awaiting the push IS the flow control; treat
+    /// [`ChannelClosed`] as cancellation and return promptly.
     async fn read(&self, req: ReadRequest) -> Result<(), SourceError>;
 }
 
@@ -58,8 +60,7 @@ pub trait Source: Send + Sync + 'static {
 #[derive(Debug)]
 pub struct ReadRequest {
     pub stream: StreamSpec,
-    /// Last committed cursor; only ever a cursor the destination previously committed
-    /// (clause E6).
+    /// Last committed cursor; only ever a cursor the destination previously committed.
     pub since: Option<Cursor>,
     /// Push handle.
     pub out: RecordsOut,
@@ -77,11 +78,11 @@ pub trait Destination: Send + Sync + 'static {
     fn spec(&self) -> ConnectorSpec;
 
     /// Truthful capability declaration — the engine plans from this and will not
-    /// re-verify at runtime (clause D7).
+    /// re-verify at runtime.
     fn capabilities(&self) -> DestCapabilities;
 
     /// Open a load session. MUST make uncommitted staged data from any previous
-    /// (crashed) session invisible and reclaimable (clause D4).
+    /// (crashed) session invisible and reclaimable.
     async fn open(&self, ctx: OpenCtx) -> Result<Box<dyn LoadSession>, DestError>;
 }
 
@@ -98,15 +99,14 @@ impl OpenCtx {
     }
 }
 
-/// One destination load session. Writes are staged and invisible until `commit`
-/// (clause D1); publication is atomic with state (D2) and idempotent per
-/// `(load_id, commit_seq)` (D3).
+/// One destination load session. Writes are staged and invisible until `commit`;
+/// publication is atomic with pipeline state and idempotent per `(load_id, commit_seq)`.
 #[async_trait]
 pub trait LoadSession: Send {
     /// Create or migrate the physical table for this schema version, and record the
     /// table's write disposition (`mode` is the root stream's mode for child tables —
     /// merge needs it at commit time). Idempotent; always precedes the first write at
-    /// each schema version (clause E1/D5).
+    /// each schema version.
     async fn ensure_table(
         &mut self,
         schema: &TableSchema,
@@ -114,22 +114,23 @@ pub trait LoadSession: Send {
     ) -> Result<(), DestError>;
 
     /// Write one batch. The engine guarantees `batch` conforms exactly to the last
-    /// ensured schema for `table` (clause E4) and that per-table batches arrive in
-    /// order (E1). Delivery is at-least-once (E3) — safe because of D1/D4.
+    /// ensured schema for `table` and that per-table batches arrive in order. Delivery
+    /// is at-least-once — safe because staged writes stay invisible until commit and a
+    /// crashed session's staging is reclaimed on the next open.
     async fn write(&mut self, table: &TableName, batch: RecordBatch) -> Result<(), DestError>;
 
     /// Atomically publish all writes since the last commit AND persist `meta.state`.
     /// Re-committing the same `(load_id, commit_seq)` returns the prior receipt
-    /// without re-publishing (clause D3).
+    /// without re-publishing.
     async fn commit(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestError>;
 
     /// Recover the state persisted by the latest successful commit, or `None` for a
-    /// fresh pipeline (clause D6).
+    /// fresh pipeline.
     async fn read_state(&mut self, pipeline: &PipelineId) -> Result<Option<StateDoc>, DestError>;
 }
 
 /// The stream was closed by the host (cancellation or failure downstream). Sources
-/// should return promptly without escalating (clause S4).
+/// should return promptly without escalating.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("records channel closed by host")]
 pub struct ChannelClosed;
@@ -195,7 +196,7 @@ impl RecordsOut {
         self.send(PushPayload::Arrow(batch), size).await
     }
 
-    /// "All rows pushed so far are complete up to `cursor`" (clause S2).
+    /// "All rows pushed so far are complete up to `cursor`."
     pub async fn checkpoint(&mut self, cursor: Cursor) -> Result<(), ChannelClosed> {
         self.send(PushPayload::Checkpoint(cursor), 0).await
     }
@@ -237,7 +238,7 @@ impl RecordsIn {
         self.rx.recv().await
     }
 
-    /// Closing tells the source to stop at its next push (clause S4).
+    /// Closing tells the source to stop at its next push.
     pub fn close(&mut self) {
         self.rx.close();
         // Wake any source blocked on the byte budget so it observes the closure.

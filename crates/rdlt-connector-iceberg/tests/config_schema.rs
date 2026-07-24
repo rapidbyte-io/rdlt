@@ -1,6 +1,6 @@
-//! Feature 016 T002: the generated config schema and the parser cannot
-//! drift — round-trip corpus, unknown-field rejection, the validation
-//! matrix, and the Secret grep-proof (ID6).
+//! The generated config schema and the parser cannot drift — round-trip
+//! corpus, unknown-field rejection, the validation matrix, and the Secret
+//! grep-proof (no credential renders from Debug).
 
 use jsonschema::validator_for;
 use rdlt_connector_iceberg::{IcebergConfig, config_schema};
@@ -106,7 +106,7 @@ fn validation_matrix() {
     assert!(err.contains("newtype variant"), "{err}");
 }
 
-/// ID6 grep-proof: no credential value ever renders from Debug.
+/// Grep-proof: no credential value ever renders from Debug.
 #[test]
 fn secrets_never_render() {
     let config = IcebergConfig::from_value(json!({
@@ -126,7 +126,7 @@ fn secrets_never_render() {
     }
     assert!(rendered.contains("***"));
 
-    // The bearer arm redacts too (T011).
+    // The bearer arm redacts too.
     let bearer = IcebergConfig::from_value(json!({
         "catalog": {
             "uri": "http://x:8181/api/catalog",
@@ -229,7 +229,7 @@ fn bucket_and_truncate_spellings_and_validation() {
     }
 }
 
-/// Destination construction surface (T017): from_yaml/from_config
+/// Destination construction surface: from_yaml/from_config
 /// validation, spec, capabilities — the container-free dest.rs paths.
 #[test]
 fn dest_construction_spec_and_capabilities() {

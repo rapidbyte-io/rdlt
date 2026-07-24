@@ -6,7 +6,7 @@
 //! the SPI only. Error classification is the source's whole retry story:
 //! 429 → `RateLimited` (Retry-After honored, bounded), 5xx/network →
 //! `Transient`, other 4xx → `Fatal` unless a DECLARED response action says
-//! otherwise; the ENGINE retries (contract RS3 — no free retry loops here).
+//! otherwise; the ENGINE retries — there are no free retry loops here.
 //!
 //! Module layout (family convention): [`config`] the document, [`client`]
 //! HTTP execution (auth/classify/pacing), [`read`] the paginated read loop.
@@ -25,7 +25,7 @@ pub use client::{RestClient, Secret};
 pub use config::{Auth, Pagination, RestConfig, RestStream};
 pub use read::paginate::{PageContext, PageDecision, Paginator};
 
-/// Fail-point registry (gate G2.2): the read path's protocol boundaries.
+/// Fail-point registry: the read path's protocol boundaries.
 #[cfg(feature = "failpoints")]
 #[doc(hidden)]
 pub const FAIL_POINTS: &[&str] = &["rest.request", "rest.decode", "rest.checkpoint"];
@@ -118,8 +118,8 @@ impl Source for RestSource {
     }
 }
 
-/// JSON Schema GENERATED from the config structs (feature 006, US4) — the
-/// declared schema and the parser cannot drift.
+/// JSON Schema GENERATED from the config structs — the declared schema and the
+/// parser cannot drift.
 pub fn config_schema() -> Value {
     serde_json::to_value(schemars::schema_for!(RestConfig)).expect("schema serializes")
 }

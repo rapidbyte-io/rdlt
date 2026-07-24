@@ -1,10 +1,10 @@
-//! Safe-Rust process resource sampler (research R3, contract BH3).
+//! Safe-Rust process resource sampler.
 //!
 //! `getrusage`/`wait4` are libc FFI (unsafe) — rejected. Instead a thread polls
 //! procfs. The sampled unit is the child's whole PROCESS TREE, not just the
 //! spawned pid: `command` cells run through wrappers (`sh -c`, `cargo run`),
 //! and the wrapper's own /proc numbers would silently describe the wrapper
-//! (review finding 10). Per poll the tree is rebuilt from /proc ppid links;
+//! instead of the workload. Per poll the tree is rebuilt from /proc ppid links;
 //! peak RSS is max(root VmHWM — kernel-exact for the root — , max sampled
 //! tree RSS sum); CPU sums the members' utime+stime plus the root's
 //! cutime+cstime (reaped children land there, so finished workloads keep
@@ -220,8 +220,8 @@ mod tests {
 
     #[test]
     fn wrapper_children_are_charged_to_the_tree() {
-        // The workload hides behind an `sh -c` wrapper (review finding 10):
-        // the tree walk must attribute the grandchild's 50MB, not sh's ~2MB.
+        // The workload hides behind an `sh -c` wrapper: the tree walk must
+        // attribute the grandchild's 50MB, not sh's ~2MB.
         let mut child = std::process::Command::new("sh")
             .args([
                 "-c",

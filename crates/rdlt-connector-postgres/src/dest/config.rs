@@ -1,5 +1,4 @@
 //! Destination handle + builder: connection string, dataset, TLS posture.
-//! (Feature 008 T001: relocated verbatim from the old single-file module.)
 
 use rdlt_connector::DestError;
 use tokio_postgres::Client;
@@ -29,8 +28,8 @@ impl Postgres {
         self
     }
 
-    /// TLS posture (feature 006, contract tls-policy.md) — the SAME policy
-    /// type the source uses; the two directions share one connect path.
+    /// TLS posture — the SAME policy type the source uses; the two directions
+    /// share one connect path.
     pub fn tls(mut self, policy: crate::tls::TlsPolicy) -> Self {
         self.tls = Some(policy);
         self
@@ -51,22 +50,22 @@ impl Postgres {
     }
 }
 
-// ---- Destination options (features 008/010/011) ----
+// ---- Destination options ----
 //
-// Feature 013: the vocabulary + validation MOVED to rdlt-connector-sqlcore
-// (shared with every SQL destination, contract SM5). Re-exported here at the
-// original paths; the Pg* names stay as aliases so no consumer changes.
+// The vocabulary + validation live in rdlt-connector-sqlcore (shared with
+// every SQL destination). Re-exported here at the original paths; the Pg*
+// names stay as aliases so no consumer changes.
 
 pub use rdlt_connector_sqlcore::{AbsentPolicy, DedupSort, MergeStrategy, Scd2Options, SortOrder};
 
-/// Alias of the shared [`rdlt_connector_sqlcore::DestOptions`] (feature 013).
+/// Alias of the shared [`rdlt_connector_sqlcore::DestOptions`].
 pub type PgDestOptions = rdlt_connector_sqlcore::DestOptions;
-/// Alias of the shared [`rdlt_connector_sqlcore::TableOptions`] (feature 013).
+/// Alias of the shared [`rdlt_connector_sqlcore::TableOptions`].
 pub type PgTableOptions = rdlt_connector_sqlcore::TableOptions;
 
 impl Postgres {
-    /// Strategy/hard-delete/SCD2 options (feature 008). Validated here —
-    /// errors name the field.
+    /// Strategy/hard-delete/SCD2 options. Validated here — errors name the
+    /// field.
     pub fn options(mut self, options: PgDestOptions) -> Result<Self, DestError> {
         options.validate().map_err(DestError::fatal)?;
         self.options = options;

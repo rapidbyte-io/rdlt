@@ -1,10 +1,10 @@
-//! Feature 016 live cells against Polaris + RUSTFS (skip-not-fail).
+//! Live cells against Polaris + RUSTFS (skip-not-fail).
 
 mod common;
 
 use common::CatalogFixture;
 
-/// T004 smoke: the fixture yields a working catalog — namespace create +
+/// Smoke: the fixture yields a working catalog — namespace create +
 /// empty table create/load round-trip through the SAME library wiring the
 /// destination will use.
 #[tokio::test(flavor = "multi_thread")]
@@ -65,9 +65,9 @@ async fn fixture_smoke_namespace_and_table_round_trip() {
     assert!(table.metadata().current_snapshot().is_none(), "empty table");
 }
 
-/// T005: exact totals through the ENGINE into a Polaris-cataloged table —
-/// one snapshot per non-empty commit, each carrying the commit identity
-/// (contract ID2), asserted through the raw-catalog receipt oracle.
+/// Exact totals through the ENGINE into a Polaris-cataloged table —
+/// one snapshot per non-empty commit, each carrying the commit identity,
+/// asserted through the raw-catalog receipt oracle.
 #[tokio::test(flavor = "multi_thread")]
 async fn engine_append_exact_totals_one_snapshot_per_commit() {
     use rdlt_connector::StreamSpec;
@@ -113,8 +113,8 @@ async fn engine_append_exact_totals_one_snapshot_per_commit() {
     }
 }
 
-/// T005: an empty commit window publishes NOTHING — no snapshot, no
-/// empty data file (contract ID2).
+/// An empty commit window publishes NOTHING — no snapshot, no
+/// empty data file.
 #[tokio::test(flavor = "multi_thread")]
 async fn engine_empty_commit_publishes_no_snapshot() {
     use rdlt_connector::StreamSpec;
@@ -145,7 +145,7 @@ async fn engine_empty_commit_publishes_no_snapshot() {
     assert_eq!(snapshots[0]["added-records"], "1");
 }
 
-/// T005 typed-error cells: unauthorized and missing-warehouse against a
+/// Typed-error cells: unauthorized and missing-warehouse against a
 /// LIVE catalog; each surfaces a typed DestError naming the subject —
 /// never a panic or a silent success.
 #[tokio::test(flavor = "multi_thread")]
@@ -202,7 +202,7 @@ async fn open_failures_are_typed_against_live_catalog() {
     );
 }
 
-/// T005 typed-error cell: an unreachable catalog endpoint is a typed
+/// Typed-error cell: an unreachable catalog endpoint is a typed
 /// error naming the uri — needs no container.
 #[tokio::test(flavor = "multi_thread")]
 async fn open_unreachable_catalog_is_typed() {

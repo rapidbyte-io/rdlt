@@ -1,31 +1,30 @@
-//! The destination options vocabulary + parse-layer validation. MOVED
-//! VERBATIM from the postgres destination's `dest/config.rs` (features
-//! 008/010/011); serde spellings are frozen — both destinations parse the
-//! identical YAML/JSON shape (SM5). Strategy selection NEVER crosses the
-//! connector SPI: the engine's WriteMode stays frozen; these options choose
-//! how a DESTINATION executes Merge.
+//! The destination options vocabulary + parse-layer validation. The serde
+//! spellings are frozen: both the postgres and DuckDB destinations parse the
+//! identical YAML/JSON shape, so a rename here would diverge them. Strategy
+//! selection NEVER crosses the connector SPI: the engine's WriteMode stays
+//! frozen; these options choose how a DESTINATION executes Merge.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-/// How Merge executes at this destination (contract merge-strategies.md).
+/// How Merge executes at this destination.
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum MergeStrategy {
-    /// Atomic delete-then-insert (the pre-008 behavior; M1).
+    /// Atomic delete-then-insert.
     #[default]
     DeleteInsert,
     /// Matched keys update in place via conflict-update; requires a unique
-    /// index on the merge identity (auto-ensured; M2/M3).
+    /// index on the merge identity (auto-ensured).
     Upsert,
-    /// Full version history with validity columns (contract scd2.md).
+    /// Full version history with validity columns.
     Scd2,
 }
 
-/// SCD2 settings (contract scd2.md).
+/// SCD2 settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Scd2Options {
@@ -36,10 +35,10 @@ pub struct Scd2Options {
     /// `active_record_timestamp` (default: NULL).
     #[serde(default = "default_valid_to")]
     pub valid_to: String,
-    /// What happens to active keys ABSENT from a load (S6).
+    /// What happens to active keys ABSENT from a load (see [`AbsentPolicy`]).
     #[serde(default)]
     pub absent: AbsentPolicy,
-    /// Feature 013 G2 (dlt parity): the OPEN-version marker written to
+    /// The OPEN-version marker written to
     /// `valid_to` instead of NULL — an RFC3339 literal like
     /// `9999-12-31T00:00:00Z` (some BI tools cannot range-query NULLs).
     /// Active-version predicates treat NULL AND the marker as open, so a
@@ -47,7 +46,7 @@ pub struct Scd2Options {
     /// versions open with the marker. Must differ from `boundary_timestamp`.
     #[serde(default)]
     pub active_record_timestamp: Option<String>,
-    /// Feature 013 G2 (dlt parity): a CALLER-SUPPLIED RFC3339 boundary used
+    /// A CALLER-SUPPLIED RFC3339 boundary used
     /// instead of the transaction timestamp for close/open/retire.
     #[serde(default)]
     pub boundary_timestamp: Option<String>,
@@ -71,8 +70,7 @@ impl Default for Scd2Options {
 /// (`9999-12-31T00:00:00Z`): these literals are compared for EQUALITY
 /// against TIMESTAMPTZ columns, and a zone-less literal resolves per
 /// session/system TimeZone — the same marker would mean different instants
-/// on different machines, silently corrupting scd2 history (013 review
-/// finding 2).
+/// on different machines, silently corrupting scd2 history.
 pub(crate) fn validate_timestamp_literal(value: &str) -> bool {
     chrono::DateTime::parse_from_rfc3339(value).is_ok()
 }
@@ -97,9 +95,8 @@ pub enum AbsentPolicy {
     Retire,
 }
 
-/// Ordered in-load survivor selection (feature 010, contract
-/// merge-refinements.md MR1): among same-identity rows within one load,
-/// the row this column ranks first survives. Values beat NULL; ties keep
+/// Ordered in-load survivor selection: among same-identity rows within one
+/// load, the row this column ranks first survives. Values beat NULL; ties keep
 /// the deterministic arrival-order last-wins. `order` is REQUIRED —
 /// survivor selection is too important for an implicit default.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -124,17 +121,17 @@ pub enum SortOrder {
 pub struct TableOptions {
     #[serde(default)]
     pub merge_strategy: Option<MergeStrategy>,
-    /// CDC-style deletion flag column (M4): flagged rows DELETE their key
+    /// CDC-style deletion flag column: flagged rows DELETE their key
     /// instead of merging. Boolean columns compare `= TRUE`, other types
-    /// `IS NOT NULL`. Not valid with scd2 (S8).
+    /// `IS NOT NULL`. Not valid with scd2.
     #[serde(default)]
     pub hard_delete: Option<String>,
     #[serde(default)]
     pub scd2: Option<Scd2Options>,
-    /// Ordered survivor selection within one load (feature 010, MR1/MR2).
+    /// Ordered survivor selection within one load (see [`DedupSort`]).
     #[serde(default)]
     pub dedup_sort: Option<DedupSort>,
-    /// Scope replacement (feature 010, MR3–MR5): a non-unique column set;
+    /// Scope replacement: a non-unique column set;
     /// a merge load replaces every scope present in its delivered rows
     /// (undelivered rows in those scopes disappear), leaving other scopes
     /// untouched. NULL is not a scope. Keyed structured tables only; not
@@ -148,9 +145,9 @@ pub struct TableOptions {
 #[serde(deny_unknown_fields)]
 pub struct DestOptions {
     /// Destination-wide strategy. `None` = the `delete_insert` default —
-    /// and the distinction is LOAD-BEARING (feature 011 R5): an EXPLICIT
-    /// strategy under an append/replace write mode is a typed error at
-    /// open, while the unconfigured default never rejects.
+    /// and the distinction is LOAD-BEARING: an EXPLICIT strategy under an
+    /// append/replace write mode is a typed error at open, while the
+    /// unconfigured default never rejects.
     #[serde(default)]
     pub merge_strategy: Option<MergeStrategy>,
     #[serde(default)]
@@ -179,7 +176,7 @@ impl DestOptions {
                 if strategy == MergeStrategy::Scd2 {
                     return Err(format!(
                         "tables.{table}.hard_delete: not valid with merge_strategy scd2 \
-                         (contract scd2.md S8 — deletion-as-retirement is future work)"
+                         (deletion-as-retirement is future work)"
                     ));
                 }
             }
@@ -201,10 +198,10 @@ impl DestOptions {
                         "tables.{table}.merge_key: column `{dup}` listed twice"
                     ));
                 }
-                // Feature 013 G1 (MR6 amended): merge_key COMPOSES with scd2
-                // as SCOPED RETIREMENT — absent keys retire only within
-                // delivered scopes. That reading requires `absent: retire`;
-                // under `keep` the option would be silently inert (F6 rule).
+                // merge_key COMPOSES with scd2 as SCOPED RETIREMENT — absent
+                // keys retire only within delivered scopes. That reading
+                // requires `absent: retire`; under `keep` the option would be
+                // silently inert, so reject it rather than ignore it.
                 if strategy == MergeStrategy::Scd2 {
                     let retire = opts.scd2.as_ref().map(|s| s.absent).unwrap_or_default()
                         == AbsentPolicy::Retire;
@@ -212,8 +209,7 @@ impl DestOptions {
                         return Err(format!(
                             "tables.{table}.merge_key: with merge_strategy scd2 this \
                              scopes RETIREMENT and requires scd2 {{absent: retire}} \
-                             (contract merge-refinements.md MR6, amended by feature \
-                             013) — under `keep` it would be silently inert"
+                             — under `keep` it would be silently inert"
                         ));
                     }
                 }
@@ -253,8 +249,8 @@ impl DestOptions {
                         ));
                     }
                 }
-                // Review finding 3: a boundary EQUAL to the open marker makes
-                // every closed row satisfy the active predicate — reject.
+                // A boundary EQUAL to the open marker makes every closed row
+                // satisfy the active predicate — reject.
                 if let (Some(marker), Some(boundary)) = (
                     scd2.active_record_timestamp.as_deref(),
                     scd2.boundary_timestamp.as_deref(),
@@ -278,7 +274,7 @@ impl DestOptions {
 
     /// The strategy the user EXPLICITLY configured for this table (per-table
     /// override, else the destination-wide setting), or `None` when both are
-    /// unconfigured (feature 011 R5).
+    /// unconfigured.
     pub fn explicit_strategy_for(&self, table: &str) -> Option<MergeStrategy> {
         self.tables
             .get(table)
@@ -324,7 +320,7 @@ mod tests {
             "{bad}"
         );
 
-        // hard_delete + scd2 contradiction (S8).
+        // hard_delete + scd2 is a contradiction and must be rejected.
         let bad = DestOptions::from_value(serde_json::json!({
             "tables": {"t": {"merge_strategy": "scd2", "hard_delete": "deleted"}}
         }))
@@ -353,7 +349,7 @@ mod tests {
         assert!(DestOptions::from_value(serde_json::json!({"merge_strategy": "replace"})).is_err());
         assert!(DestOptions::from_value(serde_json::json!({"nope": 1})).is_err());
 
-        // Feature 010 shape matrix (MR6 parse layer).
+        // Refinement-option shape matrix at the parse layer.
         let bad = DestOptions::from_value(serde_json::json!({
             "tables": {"t": {"dedup_sort": {"column": " ", "order": "desc"}}}
         }))
@@ -377,8 +373,8 @@ mod tests {
             .unwrap_err();
             assert!(bad.contains(needle), "{bad}");
         }
-        // 013 G1 (MR6 amended): merge_key+scd2 under KEEP is the inert-option
-        // rejection; under RETIRE it is VALID (scoped retirement).
+        // merge_key + scd2 under KEEP is the inert-option rejection; under
+        // RETIRE it is VALID (scoped retirement).
         let bad = DestOptions::from_value(serde_json::json!({
             "tables": {"t": {"merge_strategy": "scd2", "merge_key": ["day"]}}
         }))
@@ -391,9 +387,9 @@ mod tests {
             "tables": {"t": {"merge_strategy": "scd2", "merge_key": ["day"],
                               "scd2": {"absent": "retire"}}}
         }))
-        .expect("scoped retirement is valid (013 G1)");
+        .expect("scoped retirement is valid");
 
-        // 013 G2: marker/boundary must be real timestamps — injection shapes
+        // marker/boundary must be real timestamps — injection shapes
         // are typed errors, never SQL.
         for field in ["active_record_timestamp", "boundary_timestamp"] {
             let bad = DestOptions::from_value(serde_json::json!({
@@ -409,8 +405,7 @@ mod tests {
                                        "boundary_timestamp": "2026-07-22T00:00:00Z"}}}
         }))
         .expect("valid marker + boundary literals");
-        // Zone-less literals resolve per session TimeZone — rejected (013
-        // review finding 2).
+        // Zone-less literals resolve per session TimeZone — rejected.
         for zoneless in ["9999-12-31", "2026-07-22 00:00:00"] {
             let bad = DestOptions::from_value(serde_json::json!({
                 "tables": {"t": {"merge_strategy": "scd2",
@@ -419,7 +414,7 @@ mod tests {
             .unwrap_err();
             assert!(bad.contains("zone-explicit"), "{bad}");
         }
-        // boundary == marker: closed rows would read as active (finding 3).
+        // boundary == marker: closed rows would read as active.
         let bad = DestOptions::from_value(serde_json::json!({
             "tables": {"t": {"merge_strategy": "scd2",
                               "scd2": {"active_record_timestamp": "9999-12-31T00:00:00Z",

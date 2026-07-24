@@ -1,4 +1,4 @@
-//! Stream declarations (data-model.md §4).
+//! Stream declarations: a source's static description of each stream it offers.
 
 use std::collections::BTreeMap;
 
@@ -6,7 +6,7 @@ use rdlt_core::{LogicalType, StreamName};
 use serde::{Deserialize, Serialize};
 
 /// A source's declaration of one stream. Consumed by engine planning; per-column type
-/// hints override inference (design doc §5.2).
+/// hints override inference.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StreamSpec {
     pub name: StreamName,
@@ -16,11 +16,9 @@ pub struct StreamSpec {
     pub cursor_field: Option<String>,
     /// Per-column logical-type hints; take precedence over inference.
     pub type_hints: BTreeMap<String, LogicalType>,
-    /// This stream pushes already-structured Arrow batches (contract clause S7,
-    /// feature 002). Structured streams carry run-level provenance only (no
-    /// `_rdlt_id`), so `Merge` is rejected at plan time (clause B4). Wire-additive
-    /// (serde-defaults to `false`); as a new public field on a constructible struct
-    /// it is source-BREAKING for struct-literal users — shipped in 0.2.0.
+    /// This stream pushes already-structured Arrow batches. Structured streams carry
+    /// run-level provenance only (no `_rdlt_id`), so `Merge` is rejected at plan time.
+    /// Serde-defaults to `false` so older payloads deserialize unchanged.
     #[serde(default)]
     pub structured: bool,
 }
@@ -36,7 +34,7 @@ impl StreamSpec {
         }
     }
 
-    /// Declare this stream as pushing already-structured Arrow batches (clause S7).
+    /// Declare this stream as pushing already-structured Arrow batches.
     pub fn structured(mut self) -> Self {
         self.structured = true;
         self

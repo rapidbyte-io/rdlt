@@ -3,7 +3,7 @@
 //!
 //! The tape path (`tape`: slab arena, no per-row trees) feeds [`drain_tables`]
 //! — the generic resolve/policy/build pipeline over the [`view::JsonView`]
-//! seam (feature 003 R24). The seam stays generic even with one production
+//! seam. The seam stays generic even with one production
 //! path: the `&serde_json::Value` view backs the unit tests, and everything
 //! semantics-bearing remains representation-independent by construction.
 
@@ -73,7 +73,7 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
         // Cascade: drop rows whose parent or root was discarded upstream. A
         // cascade-dropped row's OWN id joins the set, so its descendants at any
         // depth cascade too (parent-first table order makes one pass complete);
-        // cascade drops are counted — never silent (review finding #6).
+        // cascade drops are counted — never silent.
         if !discarded_ids.is_empty() {
             let table_rows = &mut rows[idx];
             let mut cascade_dropped = 0u64;
@@ -127,7 +127,7 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
                 PolicyAction::Evolve => kept.push(change),
                 PolicyAction::Freeze => {
                     // Nothing of this batch has been emitted: fail before any row
-                    // of the violating batch is written (spec FR-010).
+                    // of the violating batch is written.
                     return Err(RdltError::Schema(violation_for(&table, &change)));
                 }
                 PolicyAction::DiscardRow | PolicyAction::DiscardValue => {

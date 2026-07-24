@@ -1,4 +1,4 @@
-//! Binary COPY stream → Arrow batches (research R1/R4 — THE hot path).
+//! Binary COPY stream → Arrow batches (THE hot path).
 //!
 //! Parses the PostgreSQL binary COPY format (19-byte header; per tuple an
 //! i16 field count then length-prefixed fields, NULL = -1; i16 -1 trailer)
@@ -134,8 +134,8 @@ fn exact<const N: usize>(field: &[u8], what: &str) -> Result<[u8; N], DecodeErro
         .map_err(|_| DecodeError(format!("{what}: expected {N} bytes, got {}", field.len())))
 }
 
-/// PG binary numeric → i128 at the declared scale (contract: NBASE-10000
-/// digits; NaN/±Inf are decode errors under `Decimal`).
+/// PG binary numeric → i128 at the declared scale (NBASE-10000 digits;
+/// NaN/±Inf are decode errors under `Decimal`).
 pub(crate) fn decode_numeric(field: &[u8], scale: u8) -> Result<i128, DecodeError> {
     if field.len() < 8 {
         return err("numeric: header short");
@@ -147,12 +147,10 @@ pub(crate) fn decode_numeric(field: &[u8], scale: u8) -> Result<i128, DecodeErro
         0x0000 => false,
         0x4000 => true,
         0xC000 => {
-            return err("numeric NaN is not representable as Decimal (contract: typed error)");
+            return err("numeric NaN is not representable as Decimal");
         }
         0xD000 | 0xF000 => {
-            return err(
-                "numeric ±Infinity is not representable as Decimal (contract: typed error)",
-            );
+            return err("numeric ±Infinity is not representable as Decimal");
         }
         other => return err(format!("numeric: unknown sign word {other:#06x}")),
     };
@@ -194,8 +192,8 @@ pub(crate) fn decode_numeric(field: &[u8], scale: u8) -> Result<i128, DecodeErro
     Ok(if negative { -value } else { value })
 }
 
-/// i64 µs since PG epoch → Unix µs; ±infinity sentinels saturate (contract
-/// "Special values": extremes stay visible, never NULL, never an error).
+/// i64 µs since PG epoch → Unix µs; ±infinity sentinels saturate — extremes
+/// stay visible, never NULL, never an error.
 fn rebase_timestamp(v: i64) -> i64 {
     if v == i64::MAX || v == i64::MIN {
         return v;

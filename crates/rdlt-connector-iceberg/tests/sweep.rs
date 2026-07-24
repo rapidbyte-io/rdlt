@@ -1,4 +1,4 @@
-//! Feature 016 T009 (ID7): crash sweep over the Iceberg destination —
+//! Crash sweep over the Iceberg destination —
 //! every `ICE_FAIL_POINTS` point × 3 actions against the LIVE catalog
 //! fixture, armed-fire pinned, crash/rerun exactly-once with a
 //! duplicate-free snapshot history.

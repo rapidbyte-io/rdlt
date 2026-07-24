@@ -1,14 +1,14 @@
-//! # rdlt-connector-sqlcore — the shared merge-planning core (feature 013)
+//! # rdlt-connector-sqlcore — the shared merge-planning core
 //!
-//! ONE core for every SQL destination (contract shared-merge-core.md SM1):
-//! the destination options vocabulary + validation ([`options`]), the plan
-//! shapes — dedup/survivor ordering, scope replacement, strategy arms,
-//! hard-delete decisions, index plans ([`plan`]) — and the [`dialect`] seam
-//! through which destinations own SQL TEXT and nothing else (SM2).
+//! ONE core for every SQL destination: the destination options vocabulary +
+//! validation ([`options`]), the plan shapes — dedup/survivor ordering, scope
+//! replacement, strategy arms, hard-delete decisions, index plans ([`plan`])
+//! — and the [`dialect`] seam through which destinations own SQL TEXT and
+//! nothing else.
 //!
-//! History: extracted verbatim from the postgres destination (features
-//! 006/008/010/011); the extraction is pinned byte-for-byte by that crate's
-//! golden-SQL suite (SM4). The DuckDB destination is the second consumer.
+//! The plan shapes are shared by the postgres and DuckDB destinations; the
+//! postgres crate's golden-SQL suite pins them byte-for-byte, so any change
+//! here that alters emitted SQL is caught there.
 
 pub mod dialect;
 pub mod names;

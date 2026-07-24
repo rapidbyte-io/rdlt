@@ -1,10 +1,10 @@
-//! The DuckDB [`MergeDialect`] (feature 013): every probe passed
+//! The DuckDB [`MergeDialect`]: every capability probe passed
 //! (tests/probes.rs), so every hook keeps the shared trait default —
 //! DISTINCT ON survivor selection, ON CONFLICT upsert against the
 //! auto-ensured unique index, transaction-stable `now()`. The only
 //! divergence is the arrival order: DuckDB temp-table stages have no
-//! arrival column; `rowid` reflects append order (the 006 finding-#7
-//! determinism decision, unchanged).
+//! arrival column, so `rowid` (which reflects append order) is the
+//! deterministic last-wins tie-breaker.
 
 use rdlt_connector_sqlcore::MergeDialect;
 

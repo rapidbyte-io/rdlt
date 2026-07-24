@@ -1,4 +1,4 @@
-//! Crash-injection tools (spec SC-002): named fault points that kill a run at a
+//! Crash-injection tools: named fault points that kill a run at a
 //! precise stage. A "crash" in tests = the run aborts; durable state (the shared
 //! memory destination and the on-disk WAL) survives into the next run — exactly the
 //! process-death model, minus the process.
@@ -15,14 +15,18 @@ use rdlt_connector::{
 /// Where to inject the fault.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FaultPoint {
-    /// Fail the Nth `write` call (1-based) before it reaches the inner destination.
-    /// Models: crash after WAL append, before destination write (crash-matrix row 2).
+    /// Fail the Nth `write` call (1-based) before the batch reaches the inner
+    /// destination. Models a crash where the WAL has recorded the batch but the
+    /// destination never received it; recovery must replay it from the WAL.
     BeforeWrite(u64),
-    /// Fail the Nth `commit` call before the inner destination commits.
-    /// Models: crash after the WAL span is durable, before publication (row 2).
+    /// Fail the Nth `commit` call before the inner destination commits. The
+    /// earlier `write` calls have all reached the inner destination, so this
+    /// models a crash where the batches are staged but not yet published;
+    /// recovery must re-drive the commit.
     BeforeCommit(u64),
     /// Let the Nth `commit` succeed inside, then fail — the receipt is lost.
-    /// Models: crash mid-commit (row 3); recovery must hit idempotence.
+    /// Models a crash after the destination published but before the caller
+    /// learned; recovery must hit idempotence to avoid double-publishing.
     AfterCommit(u64),
 }
 

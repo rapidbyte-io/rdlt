@@ -1,4 +1,4 @@
-//! SQL assembly for the COPY subselect (research R1/R5). Injection-safe by
+//! SQL assembly for the COPY subselect. Injection-safe by
 //! construction: identifiers come ONLY from reflection/config validated
 //! against reflection, and are strictly double-quoted; COPY accepts no bind
 //! parameters, so cursor literals (Phase 4) render as typed literals with
@@ -63,8 +63,8 @@ pub(crate) fn select_sql(
     sql
 }
 
-/// The universal query wrapper (feature 006, contract query-streams.md):
-/// read-only enforcement + a stable surface for predicates and snapshots.
+/// The universal query wrapper: read-only enforcement + a stable surface for
+/// predicates and snapshots.
 pub(crate) fn wrap_query(sql: &str) -> String {
     format!(
         "SELECT * FROM ( {} ) AS q",
@@ -97,8 +97,8 @@ pub(crate) fn copy_sql(select: &str) -> String {
     format!("COPY ({select}) TO STDOUT (FORMAT BINARY)")
 }
 
-/// Incremental WHERE/ORDER BY rendering (research R5): the full dlt-parity
-/// boundary matrix. `lower_closed` is the RESUME semantics (`>=` re-fetches
+/// Incremental WHERE/ORDER BY rendering: the full dlt-parity boundary
+/// matrix. `lower_closed` is the RESUME semantics (`>=` re-fetches
 /// watermark-equal rows for dedup; `>` skips them), independent of direction.
 pub(crate) struct IncrementalClauses {
     pub where_sql: String,
@@ -109,15 +109,15 @@ pub(crate) fn incremental_clauses(
     column: &str,
     direction_max: bool,
     lower: Option<(&crate::source::cursor::Watermark, bool)>, // (value, closed?)
-    // Feature 007 lag: SQL delta widening the resume window BEHIND the
-    // watermark (`- delta` under max, `+ delta` under min) — read-side only.
+    // Lag: SQL delta widening the resume window BEHIND the watermark
+    // (`- delta` under max, `+ delta` under min) — read-side only.
     lag_delta: Option<&str>,
-    // (value, inclusive?) — feature 007 E1: `<=`/`>=` when inclusive.
+    // (value, inclusive?): `<=`/`>=` when inclusive.
     upper: Option<(&crate::source::cursor::Watermark, bool)>,
     nulls_include: bool,
     // Text cursors force COLLATE "C": the tracker compares watermarks in
     // Rust byte order, so the SQL ordering/filtering must use byte order
-    // too — a column collation (ICU, en_US…) would diverge (005 review).
+    // too — a column collation (ICU, en_US…) would diverge.
     collate_byte_order: bool,
 ) -> IncrementalClauses {
     let bare = quote_ident(column);
@@ -292,7 +292,7 @@ mod tests {
         );
     }
 
-    // ---- feature 007: lag rendering (cursor-lag.md L1) ----
+    // ---- lag rendering ----
 
     #[test]
     fn lag_delta_widens_the_lower_bound_direction_aware() {

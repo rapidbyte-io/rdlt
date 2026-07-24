@@ -1,7 +1,7 @@
-//! The TAPE shred path (feature 003 R24, FR-006) — the production default:
+//! The TAPE shred path — the production default:
 //! slab → arena → drained Arrow batches, with NO per-row owned tree.
 //!
-//! Breadth-first traversal (design doc §§5.3–5.4): observe every field,
+//! Breadth-first traversal: observe every field,
 //! extract child tables at any depth, assign lineage identities — rows are
 //! arena node ids borrowing the slab. Everything downstream (observation,
 //! canonicalization, identity, policy, build) is the generic `JsonView` core;

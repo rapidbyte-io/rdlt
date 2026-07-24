@@ -1,9 +1,8 @@
 //! Type mapping and table DDL decisions.
 //!
-//! Feature 008 US1: native NUMERIC(p,s)/JSONB/UUID + NOT NULL (contract
-//! dest-types.md T1–T4). Decisions come from the LOGICAL column type — a
-//! plain text column and a json/uuid-logical column (same arrow repr) can
-//! never confuse (T6).
+//! Native NUMERIC(p,s)/JSONB/UUID + NOT NULL. Decisions come from the LOGICAL
+//! column type — a plain text column and a json/uuid-logical column (same
+//! arrow repr) can never confuse.
 
 use rdlt_connector::core::{ColumnDef, ColumnType, LogicalType};
 
@@ -32,7 +31,7 @@ pub(super) fn sql_type(ty: &ColumnType) -> String {
 }
 
 /// One column definition for CREATE TABLE. NOT NULL applies to the TARGET
-/// table only (T4: CREATE-time; migrations stay additive) — stage tables
+/// table only (CREATE-time; migrations stay additive) — stage tables
 /// keep everything nullable.
 pub(super) fn column_def(column: &ColumnDef, target: bool) -> String {
     let not_null = if target && !column.nullable {
@@ -48,7 +47,7 @@ pub(super) fn column_def(column: &ColumnDef, target: bool) -> String {
     )
 }
 
-// ---- Feature 008 US2: supporting indexes (contract merge-strategies.md M5) ----
+// ---- Supporting indexes ----
 
 /// Deterministic index name: idempotent `IF NOT EXISTS` across sessions.
 pub(super) fn index_name(unique: bool, table: &str, columns: &[String]) -> String {

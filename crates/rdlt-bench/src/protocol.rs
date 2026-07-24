@@ -1,5 +1,5 @@
-//! The 004 measurement protocol as executable code (contract BH2): quiet-machine
-//! guard, warmups, N runs, medians/percentiles. Prose rules become refusals.
+//! The measurement protocol as executable code: quiet-machine guard, warmups,
+//! N runs, medians/percentiles. Prose rules become refusals.
 
 use crate::cells::Class;
 use crate::{BenchError, Result};
@@ -32,7 +32,7 @@ fn cores() -> usize {
     std::thread::available_parallelism().map_or(1, |n| n.get())
 }
 
-/// BH2: gated runs REFUSE on a loaded machine (unless forced — then loudly
+/// Gated runs REFUSE on a loaded machine (unless forced — then loudly
 /// annotated); scoreboard runs proceed annotated.
 pub fn quiet_guard(class: Class, load1: f64, ncores: usize, forced: bool) -> Result<QuietVerdict> {
     let threshold = QUIET_LOAD_PER_CORE * ncores as f64;

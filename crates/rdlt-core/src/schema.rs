@@ -1,7 +1,7 @@
-//! Versioned table schemas and evolution deltas (data-model.md §3).
+//! Versioned table schemas and evolution deltas.
 //!
-//! Hashing contract (contracts/persisted-formats.md §5): `SchemaHash` is a content hash
-//! over the canonical serde form. Column order is part of the hash — the engine keeps
+//! Hashing: `SchemaHash` is a content hash over the canonical serde form. Column order
+//! is part of the hash — the engine keeps
 //! order stable by only appending new columns. Any change to these types' serde layout
 //! is a state-migration event, not a refactor.
 
@@ -37,8 +37,8 @@ pub enum Provenance {
     System,
 }
 
-/// The shape of one column. Nested objects stay structural inside the engine
-/// (design doc §5.3 — lowering happens at the destination seam); lists of objects are
+/// The shape of one column. Nested objects stay structural inside the engine —
+/// lowering to flat columns happens at the destination seam; lists of objects are
 /// never columns (they become child tables).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -73,7 +73,7 @@ pub struct ColumnDef {
     pub provenance: Provenance,
 }
 
-/// Link from a child table to its parent (data-model.md §3).
+/// Link from a child table to its parent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParentLink {
     pub parent: TableName,
@@ -107,7 +107,7 @@ impl TableSchema {
 }
 
 /// One evolution step: `from` (None = table creation) to `to`, as a minimal change set.
-/// The only way schemas change (data-model.md §3).
+/// The only way schemas change.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SchemaDelta {
     pub table: TableName,

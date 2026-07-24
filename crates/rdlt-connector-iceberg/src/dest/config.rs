@@ -1,5 +1,5 @@
-//! Iceberg destination configuration (contract ID1/ID6, data-model §1):
-//! catalog connection (uri/warehouse/auth), namespace, optional storage
+//! Iceberg destination configuration: catalog connection
+//! (uri/warehouse/auth), namespace, optional storage
 //! override sharing the FAMILY S3 spelling, per-stream table options with
 //! partition specs. All credentials are `Secret`-wrapped; validation is
 //! eager and typed; the generated schema and the parser cannot drift.

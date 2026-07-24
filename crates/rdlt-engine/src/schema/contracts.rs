@@ -1,4 +1,4 @@
-//! Contract enforcement helpers (spec FR-010, design doc §5.4).
+//! Contract enforcement helpers.
 //!
 //! `Freeze` turns a would-be delta into a typed error before any row of the violating
 //! batch is written; `Discard*` filters data down to the frozen shape — counted, never

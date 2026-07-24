@@ -3,7 +3,7 @@
 //!
 //! Commits happen ONLY at checkpoint boundaries (plus one final commit for trailing
 //! work): committing mid-span would publish rows the committed cursor doesn't cover,
-//! and a crash would then re-extract them as duplicates (recovery invariant 2).
+//! and a crash would then re-extract them as duplicates.
 
 use std::time::Instant;
 
@@ -34,7 +34,7 @@ pub(crate) enum LoadItem {
     },
     /// A source checkpoint: rows pushed before this are complete up to `cursor`.
     Checkpoint { stream: StreamName, cursor: Cursor },
-    /// Policy-driven discards — counted, never silent (spec FR-010/FR-012).
+    /// Policy-driven discards — counted, never silent.
     Discarded {
         table: TableName,
         rows: u64,
@@ -69,9 +69,9 @@ pub(crate) struct Loader {
     /// degrades to cursor re-extraction — slower, never wrong).
     wal: Option<Wal>,
     events: tokio::sync::broadcast::Sender<rdlt_core::PipelineEvent>,
-    /// Destination capabilities drive lowering at this seam (design doc §5.3).
+    /// Destination capabilities drive lowering at this seam.
     caps: DestCapabilities,
-    /// Feature-006 keyed structured merge: tables whose write mode is Merge
+    /// Keyed structured merge: tables whose write mode is Merge
     /// and whose schema carries NO per-row identity — their key columns must
     /// never be NULL (keys are identities; validated per batch).
     structured_merge_keys: std::collections::BTreeMap<TableName, Vec<String>>,
@@ -139,8 +139,7 @@ impl Loader {
                     ))
                 );
                 // Track keyed STRUCTURED merges (no `_rdlt_id` column ⇒ the
-                // stream is structured; feature 006): batches must carry
-                // non-NULL keys.
+                // stream is structured): batches must carry non-NULL keys.
                 if let rdlt_core::WriteMode::Merge { key } = &mode
                     && !schema
                         .columns
@@ -172,7 +171,7 @@ impl Loader {
                         if column.null_count() > 0 {
                             return Err(RdltError::config(format!(
                                 "merge key `{key}` contains NULLs in table `{table}` — \
-                                 merge keys are identities (contract merge-structured.md)"
+                                 merge keys are identities"
                             )));
                         }
                     }
@@ -260,7 +259,7 @@ impl Loader {
         });
         // Commit protocol step 1: the WAL span becomes durable BEFORE the
         // destination commit — a crash after this point replays instead of
-        // re-extracting (crash-matrix row 2).
+        // re-extracting.
         if let Some(wal) = &mut self.wal {
             wal.sync_for_commit()?;
         }

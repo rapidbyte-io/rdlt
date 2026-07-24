@@ -1,5 +1,5 @@
-//! CSV as a RECORD format (research R4): rows convert to NDJSON and ride
-//! the record path — primary_key, dedup, merge, drift rules — like jsonl.
+//! CSV as a RECORD format: rows convert to NDJSON and ride the record path —
+//! primary_key, dedup, merge, drift rules — like jsonl.
 //! Whole-file incremental units (quoted newlines make byte-offset resume
 //! unsafe); two passes over the local file: infer, then convert.
 //!
@@ -159,7 +159,7 @@ pub(crate) async fn read_task(
                 .await
                 .is_err()
             {
-                return Ok(false); // clause S4
+                return Ok(false); // closed channel = cancellation
             }
             slab = Vec::with_capacity(SLAB_BYTES);
         }

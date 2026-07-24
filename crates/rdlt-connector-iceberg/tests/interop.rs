@@ -1,4 +1,4 @@
-//! T013 interop cells (contract ID8): pyiceberg — a second, independent
+//! Interop cells: pyiceberg — a second, independent
 //! Iceberg implementation — reads rdlt-written tables back through the
 //! SAME REST catalog and confirms counts, schema, partition spec, and
 //! the rdlt.* snapshot receipts. Skip-not-fail: no container runtime OR

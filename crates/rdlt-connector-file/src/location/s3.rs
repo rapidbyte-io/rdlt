@@ -1,7 +1,6 @@
-//! S3-compatible object storage via `object_store` (research R1: the one
-//! surveyed new dependency, `aws` feature only). Listings drain every
-//! continuation page or fail — a partial listing must never pass as a
-//! complete one (FF2). Errors classify per the S3 posture (FF6) and name
+//! S3-compatible object storage via `object_store` (the `aws` feature only). Listings
+//! drain every continuation page or fail — a partial listing must never pass as a
+//! complete one. Errors classify by kind (transient vs fatal) and name
 //! endpoint/bucket/key.
 
 use futures::StreamExt;
@@ -13,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use super::Secret;
 use crate::source::cursor::FileMeta;
 
-/// `location: {s3: {…}}` (data-model §1).
+/// Configuration for an S3-compatible location: `location: {s3: {...}}`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -134,7 +133,7 @@ impl S3Location {
                 SourceError::fatal(format!("{name}: not found"))
             }
             // Auth/permission failures are configuration problems: fatal,
-            // named — never a silent empty load (FF2).
+            // named — never a silent empty load.
             object_store::Error::Unauthenticated { .. }
             | object_store::Error::PermissionDenied { .. } => {
                 SourceError::fatal(format!("{name}: unauthorized — check credentials/bucket"))

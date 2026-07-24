@@ -5,7 +5,7 @@
 //! scale RSS with schema size. A slow consumer exhausts the byte budget and the
 //! producer parks on it: that *is* the backpressure.
 
-// Wired into the task graph by US1 (T024); constructed only there.
+// Constructed only where the task graph is built.
 #![allow(dead_code)]
 
 use std::sync::Arc;

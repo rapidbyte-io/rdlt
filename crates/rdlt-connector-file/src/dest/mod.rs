@@ -1,17 +1,14 @@
-//! The file DESTINATION side (absorbed rdlt-connector-parquet, 015 FF1/FF5):
-//! parquet or jsonl output to a LOCAL directory or an S3-compatible object
-//! store, optional partition column, commit-atomic visibility.
+//! The file DESTINATION side: parquet or jsonl output to a LOCAL directory or an
+//! S3-compatible object store, optional partition column, commit-atomic visibility.
 //!
 //! Write-only, Append/Replace (no merge — `merge: false`). One directory/
 //! prefix per table; staged parts live under `.rdlt-staging/<pipeline>/<load>/`
 //! and publication is atomic renames (local) or COPY+DELETE (object store —
 //! per-key atomic visibility: a reader can never observe a partial object
-//! under a final name), plus a rewrite of the JSON state/receipt files
-//! (contract: specs/002-file-arrow-ingestion/contracts/file-connectors.md;
-//! honesty note on multi-file set-atomicity in research R18 — recovery
-//! converges because staged names are deterministic per (load_id,
-//! commit_seq, table, partition, n), with `n` counted PER TABLE+PARTITION so
-//! cross-table arrival order cannot change a file's final name).
+//! under a final name), plus a rewrite of the JSON state/receipt files. There is no
+//! single set-atomic multi-file publish, but recovery converges because staged names
+//! are deterministic per (load_id, commit_seq, table, partition, n), with `n` counted
+//! PER TABLE+PARTITION so cross-table arrival order cannot change a file's final name.
 //!
 //! Pipeline scoping: staging, state, and the commit log are all keyed by a
 //! hash of the pipeline id, so pipelines sharing one output location cannot
@@ -47,13 +44,12 @@ fn fatal(e: impl std::fmt::Display) -> DestError {
 }
 use rdlt_connector::core::crash_point;
 
-/// Fail-point registries (gate G2.2): every `crash_point!` site in this
-/// module appears in exactly one, pinned by the sweep that can FIRE it.
-/// `FAIL_POINTS` keeps its pre-015 meaning — the LOCAL protocol points the
-/// engine's crash_sweep drives against `ParquetDir` (FF1: sweep tooling
-/// names frozen). The object-store finalize boundaries live in
-/// `S3_FAIL_POINTS`, swept by this crate's container-gated sweep (they
-/// cannot fire on a local store).
+/// Fail-point registries: every `crash_point!` site in this module appears in
+/// exactly one, pinned by the sweep that can FIRE it. `FAIL_POINTS` holds the LOCAL
+/// protocol points the engine's crash sweep drives against `ParquetDir` (these
+/// spellings are frozen). The object-store finalize boundaries live in
+/// `S3_FAIL_POINTS`, swept by this crate's container-gated sweep (they cannot fire on
+/// a local store).
 #[cfg(feature = "failpoints")]
 #[doc(hidden)]
 pub const FAIL_POINTS: &[&str] = &[
@@ -78,10 +74,9 @@ fn pipeline_scope(pipeline: &PipelineId) -> String {
     ident_hash(pipeline.as_str(), 12)
 }
 
-/// Persisted-format identity (persisted-formats contract) — named constants
-/// so a product-wide rename is a one-line decision, never a config option.
-/// (Format-family destination: deliberately NOT a sqlcore consumer — the SQL
-/// naming vocabulary lives there; this crate owns its file-name spellings.)
+/// Persisted-format identity — named constants so a product-wide rename is a one-line
+/// decision, never a config option. This file-family destination deliberately does not
+/// share the SQL naming vocabulary; it owns its own file-name spellings.
 const STATE_FILE_PREFIX: &str = "_rdlt_state";
 const COMMITS_FILE_PREFIX: &str = "_rdlt_commits";
 
@@ -122,7 +117,7 @@ fn fsync_dir(path: &Path) -> Result<(), DestError> {
 
 /// Atomic durable JSON rewrite: write-temp + fsync + rename + parent-dir fsync.
 /// The data-file path fsyncs before rename too — metadata must not be LESS durable
-/// than the parquet parts it describes (clause D2).
+/// than the parquet parts it describes.
 fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), DestError> {
     use std::io::Write;
     let tmp = path.with_extension("json.tmp");
@@ -220,14 +215,14 @@ pub struct FileDest {
     store: Store,
 }
 
-/// The pre-015 name, frozen: `ParquetDir::open(dir)` ≡ local parquet.
+/// The original name, frozen: `ParquetDir::open(dir)` ≡ local parquet.
 pub type ParquetDir = FileDest;
 
 impl FileDest {
     /// Open (creating if needed) a LOCAL output directory as a parquet
-    /// destination — the pre-015 constructor, byte-identical behavior. The
-    /// PathBuf is used AS-IS (no lossy string round-trip: non-UTF-8 paths
-    /// keep their bytes); the config mirror is informational only.
+    /// destination — the plain-path constructor. The PathBuf is used AS-IS
+    /// (no lossy string round-trip: non-UTF-8 paths keep their bytes); the
+    /// config mirror is informational only.
     pub fn open(out: impl Into<PathBuf>) -> Result<Self, DestError> {
         let out = out.into();
         std::fs::create_dir_all(&out).map_err(fatal)?;
@@ -238,7 +233,7 @@ impl FileDest {
         })
     }
 
-    /// The full 015 vocabulary: format, location, partitioning.
+    /// The full configuration vocabulary: format, location, partitioning.
     pub fn from_config(config: FileDestConfig) -> Result<Self, DestError> {
         config.validate().map_err(fatal)?;
         let store = match config.location.as_ref().and_then(|l| l.s3.as_ref()) {
@@ -427,7 +422,7 @@ impl FileSession {
     }
 
     /// Split one batch by the partition column (path-safe rendered values;
-    /// NULL → `__null__`). Missing column is typed, naming it (FR-009).
+    /// NULL → `__null__`). A missing partition column is a typed error naming it.
     fn split_partitions(
         &self,
         table: &TableName,
@@ -524,14 +519,12 @@ impl LoadSession for FileSession {
 
     async fn write(&mut self, table: &TableName, batch: RecordBatch) -> Result<(), DestError> {
         if !self.tables.contains_key(table) {
-            return Err(fatal(format!(
-                "write before ensure_table for `{table}` (clause E1)"
-            )));
+            return Err(fatal(format!("write before ensure_table for `{table}`")));
         }
         // Staged name is deterministic per (table, partition, per-part write
         // index); the FINAL name is assigned at commit (needs commit_seq).
-        // Per-table writes arrive in order (clause E1), so recovery replay
-        // reproduces both (research R18).
+        // Per-table writes arrive in order, so recovery replay reproduces both
+        // the staged and final names identically.
         for (partition, part) in self.split_partitions(table, batch)? {
             let n = self
                 .staged
@@ -636,7 +629,7 @@ impl LoadSession for FileSession {
                         Store::Local { out } => {
                             let dir = out.join(table.as_str());
                             if self.format == DestFormat::Parquet && self.partition_by.is_none() {
-                                // The FROZEN pre-015 rule, exactly: top-level
+                                // The frozen plain-parquet rule, exactly: top-level
                                 // `*.parquet` in the table dir — nothing
                                 // recursive, nothing of other extensions.
                                 remove_top_level_parquet(&dir)?;
@@ -687,7 +680,7 @@ impl LoadSession for FileSession {
         // Publish: staged parts move to their deterministic final names.
         // Local: fsync + rename (atomic visibility per file). Object store:
         // COPY staged→final + DELETE staged — puts and copies are atomic
-        // per key, so a reader can never observe a partial object (FF5).
+        // per key, so a reader can never observe a partial object.
         let mut per_part: BTreeMap<(&TableName, Option<&str>), u64> = BTreeMap::new();
         for part in &self.staged {
             let n = per_part
@@ -799,7 +792,7 @@ impl LoadSession for FileSession {
     }
 }
 
-/// The frozen pre-015 Replace truncation: TOP-LEVEL `*.parquet` only.
+/// The frozen plain-parquet Replace truncation: TOP-LEVEL `*.parquet` only.
 fn remove_top_level_parquet(dir: &Path) -> Result<(), DestError> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,

@@ -1,7 +1,7 @@
-//! Typed observability events (data-model.md §7, embedder-api.md O1–O2).
+//! Typed observability events.
 //!
-//! Causal-order guarantees (clause R3): a table's `SchemaEvolved` precedes the first
-//! `BatchLoaded` at the new version; `Committed` follows everything it covers.
+//! Causal-order guarantees: a table's `SchemaEvolved` precedes the first `BatchLoaded`
+//! at the new version; `Committed` follows everything it covers.
 
 use std::collections::BTreeMap;
 

@@ -1,4 +1,4 @@
-//! The typestate pipeline builder (embedder-api.md B1–B3).
+//! The typestate pipeline builder.
 //!
 //! Missing source or destination is a **compile** error; configuration errors die in
 //! [`PipelineBuilder::build`], before any I/O.
@@ -96,8 +96,8 @@ impl<S, D> PipelineBuilder<S, D> {
 
 impl<S: Source, D: Destination> PipelineBuilder<S, D> {
     /// Validate configuration against destination capabilities and construct the
-    /// pipeline. No network or destination I/O happens here (clause B3); the checks
-    /// are capability checks (clause B2).
+    /// pipeline. No network or destination I/O happens here; the checks are purely
+    /// against the declared destination capabilities.
     pub fn build(self) -> Result<Pipeline, RdltError> {
         let caps = self.destination.capabilities();
         let merge_requested = merge_streams(&self.config.write_mode, &self.config.write_modes);
@@ -174,7 +174,7 @@ impl Pipeline {
         self.engine.as_ref().map(Engine::cancellation_token)
     }
 
-    /// Typed event stream (StreamStarted, BatchLoaded, SchemaEvolved, Committed, …).
+    /// Typed event stream (StreamStarted, BatchLoaded, SchemaEvolved, Committed, etc.).
     /// Subscribe before calling [`Pipeline::run`]; `None` once the pipeline ran.
     pub fn events(&self) -> Option<rdlt_engine::EventStream> {
         self.engine.as_ref().map(Engine::events)

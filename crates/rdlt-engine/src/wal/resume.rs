@@ -1,6 +1,5 @@
-//! WAL resume: single forward scan of the manifest, replay of the uncommitted span
-//! (crash-matrix row 2), degradation to re-extraction on any damage (row 4 — slower,
-//! never wrong).
+//! WAL resume: single forward scan of the manifest, replay of the uncommitted span,
+//! degradation to re-extraction on any damage (slower, never wrong).
 
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -36,7 +35,7 @@ pub(crate) struct RecoverySpan {
     pub(crate) records: Vec<WalRecord>,
     /// Latest known schema + mode per table across the WHOLE manifest (committed
     /// spans included). A span whose schema delta committed earlier still needs
-    /// `ensure_table` on the fresh recovery session (clause E1) — sessions register
+    /// `ensure_table` on the fresh recovery session — sessions register
     /// publishable tables per session.
     pub(crate) schemas: Vec<(rdlt_core::TableSchema, rdlt_core::WriteMode)>,
 }
@@ -133,7 +132,7 @@ pub(crate) fn scan(dir: &Path) -> Scan {
 
     // CRITICAL: replay only up to the LAST checkpoint. Segments beyond it are not
     // covered by any cursor — committing them would double-apply once the source
-    // re-extracts that range (recovery invariant 2). The uncovered tail is discarded;
+    // re-extracts that range. The uncovered tail is discarded;
     // re-extraction re-delivers it. A span with no checkpoint at all has nothing
     // safely replayable.
     let last_checkpoint = span
@@ -190,7 +189,7 @@ pub(crate) async fn replay(
 
     // Every known table is ensured on THIS session before any write: destinations
     // register publishable tables per session, and a span's delta may have committed
-    // in an earlier span (clause E1; review finding — silently lost spans otherwise).
+    // in an earlier span (spans would be silently lost otherwise).
     for (schema, mode) in &span.schemas {
         let lowered = crate::load::lowering::lower_schema(schema, &caps);
         session
@@ -202,16 +201,16 @@ pub(crate) async fn replay(
             .insert(schema.table.clone(), schema.content_hash());
     }
 
-    // Pass 2 — stream, in WAL order (delta-before-batch survives crashes,
-    // invariant 3): segments re-open and flow through the session one
+    // Pass 2 — stream, in WAL order (delta-before-batch survives crashes):
+    // segments re-open and flow through the session one
     // batch at a time. A read failure here is unexpected (pass 1 decoded
     // everything) but still degrades: staged-but-uncommitted writes are
-    // invisible and torn down by the destination (clause D4).
+    // invisible and torn down by the destination.
     let mut batches: u64 = 0;
     for record in span.records {
         match record {
             WalRecord::Delta { schema, mode, .. } => {
-                // Same lowering seam as the live loader (design doc §5.3).
+                // Same lowering seam as the live loader.
                 let lowered = crate::load::lowering::lower_schema(&schema, &caps);
                 session
                     .ensure_table(&lowered, &mode)

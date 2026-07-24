@@ -1,6 +1,6 @@
-//! Slot + publication lifecycle over the SQL logical-decoding interface
-//! (research R1/R9, contract cdc-operability.md): create-if-missing —
-//! idempotent, and rdlt NEVER drops either resource — range peek via
+//! Slot + publication lifecycle over the SQL logical-decoding interface:
+//! create-if-missing — idempotent, and rdlt NEVER drops either resource —
+//! range peek via
 //! `pg_logical_slot_peek_binary_changes` (reads WITHOUT consuming), and
 //! explicit acknowledgement via `pg_replication_slot_advance`. Every ugly
 //! lifecycle state read from `pg_replication_slots` is its own
@@ -33,7 +33,7 @@ pub fn fmt_lsn(lsn: u64) -> String {
 }
 
 /// Outcome of [`ensure`]: whether this run created the slot, and the
-/// slot's consistent point when it did (the snapshot handoff cursor, R4).
+/// slot's consistent point when it did (the snapshot handoff cursor).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EnsureOutcome {
     pub created_slot: bool,
@@ -49,7 +49,7 @@ pub struct Change {
     pub data: Vec<u8>,
 }
 
-/// Preflight + lifecycle (R9): publication exists and covers every CDC
+/// Preflight + lifecycle: publication exists and covers every CDC
 /// table; slot exists (created here only under `create_if_missing`), runs
 /// the `pgoutput` plugin, is not held by a concurrent consumer, and has
 /// not been invalidated by WAL retention. Each violation is its own typed
@@ -218,7 +218,7 @@ pub async fn ensure(
     })
 }
 
-/// Peek the change feed up to `upto` WITHOUT consuming it (R1/R3): every
+/// Peek the change feed up to `upto` WITHOUT consuming it: every
 /// CDC stream re-peeks the same range and filters its own table; nothing
 /// moves until [`advance`].
 pub async fn peek(client: &Client, cdc: &CdcConfig, upto: u64) -> Result<Vec<Change>, SourceError> {
@@ -249,9 +249,9 @@ pub async fn peek(client: &Client, cdc: &CdcConfig, upto: u64) -> Result<Vec<Cha
         .collect()
 }
 
-/// Acknowledge: advance the slot's confirmed position to `upto` (R5 — once
-/// per run, to the min committed cursor across streams, only after every
-/// stream's destination commit; never a correctness dependency).
+/// Acknowledge: advance the slot's confirmed position to `upto` — once per
+/// run, to the min committed cursor across streams, only after every
+/// stream's destination commit; never a correctness dependency.
 pub async fn advance(client: &Client, slot: &str, upto: u64) -> Result<(), SourceError> {
     client
         .query_one(
@@ -264,7 +264,7 @@ pub async fn advance(client: &Client, slot: &str, upto: u64) -> Result<(), Sourc
 }
 
 /// The feed's current position — the `target_lsn` pin for a bounded
-/// catch-up pass (R3/R6).
+/// catch-up pass.
 pub async fn current_wal_lsn(client: &Client) -> Result<u64, SourceError> {
     let row = client
         .query_one("SELECT pg_current_wal_lsn()::text", &[])

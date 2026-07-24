@@ -1,4 +1,4 @@
-//! T006 exactly-once + state cells (contract ID2): replayed commits
+//! Exactly-once + state cells: replayed commits
 //! publish NOTHING, incremental runs resume from the catalog-persisted
 //! state doc, and receipts are readable from raw snapshot summaries
 //! alone. Live against Polaris + RUSTFS, skip-not-fail.
@@ -182,10 +182,10 @@ async fn incremental_run_resumes_from_catalog_state() {
     );
 }
 
-/// T008 (ID5): Replace is the RECORDED narrowing — a typed
-/// "not supported by this release" error at ensure_table, not silent
-/// Append degradation, not a non-atomic delete+append emulation.
-/// Merge is likewise typed-rejected, through a real catalog session.
+/// Replace is the RECORDED narrowing — a typed "not supported" error at
+/// ensure_table, not silent Append degradation, not a non-atomic
+/// delete+append emulation. Merge is likewise typed-rejected, through a real
+/// catalog session.
 #[tokio::test(flavor = "multi_thread")]
 async fn replace_rejected_against_live_catalog() {
     let Some(fixture) = CatalogFixture::start().await else {
@@ -202,7 +202,7 @@ async fn replace_rejected_against_live_catalog() {
         .expect_err("Replace must be typed-unsupported");
     let text = format!("{err}");
     assert!(
-        text.contains("not supported by this release") && text.contains("overwrite"),
+        text.contains("Replace is not supported") && text.contains("overwrite"),
         "the narrowing names its reason: {text}"
     );
     let err = session
@@ -217,7 +217,7 @@ async fn replace_rejected_against_live_catalog() {
     assert!(format!("{err}").contains("does not support Merge"));
 }
 
-/// Review F5 live: a stream that DROPS a nullable column keeps loading —
+/// Live: a stream that DROPS a nullable column keeps loading —
 /// the dropped column null-fills (the SQL destinations' tolerance)
 /// instead of failing every subsequent run with a misleading error.
 #[tokio::test(flavor = "multi_thread")]

@@ -1,8 +1,7 @@
-//! The location layer (contract FF2/FF3): WHERE files live — the local
-//! filesystem (exactly the pre-015 semantics) or an S3-compatible object
-//! store. Shared by the source and destination sides. Listings are
-//! deterministic and COMPLETE-OR-FAIL; errors classify per the S3 posture
-//! and always name their subject (endpoint/bucket/key).
+//! The location layer: WHERE files live — the local filesystem or an S3-compatible
+//! object store. Shared by the source and destination sides. Listings are deterministic
+//! and COMPLETE-OR-FAIL; errors classify by kind and always name their subject
+//! (endpoint/bucket/key).
 
 pub mod s3;
 pub mod secret;
@@ -14,9 +13,9 @@ pub use secret::Secret;
 
 use crate::source::cursor::FileMeta;
 
-/// Config form (data-model §1): a struct, not an enum, so YAML stays the
-/// natural `location: {s3: {…}}` and future kinds (gcs:, azure:) are
-/// ADDITIVE fields with exactly-one-set validation.
+/// Config form: a struct, not an enum, so YAML stays the natural
+/// `location: {s3: {...}}` and future kinds (gcs:, azure:) are ADDITIVE fields
+/// with exactly-one-set validation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -31,8 +30,7 @@ impl LocationOptions {
         Self { s3: Some(options) }
     }
 
-    /// Eager, typed (FF2 tail): a `location:` block must name exactly one
-    /// kind.
+    /// Eager, typed: a `location:` block must name exactly one kind.
     pub fn validate(&self, context: &str) -> Result<(), String> {
         if self.s3.is_none() {
             return Err(format!(
@@ -89,8 +87,7 @@ impl Location {
 }
 
 /// A sequential reader over either location kind. Local reads stay plain
-/// `std::fs` (the pre-015 hot path, byte-identical behavior); S3 reads
-/// drain a streaming GET.
+/// `std::fs` (the fast path); S3 reads drain a streaming GET.
 pub enum ByteReader {
     Local(std::fs::File),
     S3(s3::S3Reader),
@@ -211,8 +208,8 @@ mod tests {
             .unwrap();
     }
 
-    /// The grep-proof (FF6): credentials never render in Debug (serde
-    /// serialization intentionally round-trips — same posture as 014).
+    /// Credentials never render in Debug output; serde serialization intentionally
+    /// round-trips the value so config can still be parsed.
     #[test]
     fn secrets_never_render_in_location_config() {
         let options = LocationOptions {

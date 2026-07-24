@@ -1,4 +1,4 @@
-//! Cursor state (research R5, data-model §3): one engine `Cursor` (JSON) per
+//! Cursor state: one engine `Cursor` (JSON) per
 //! stream — `{watermark: <tagged typed scalar>, boundary_keys: [...]}`.
 //! Watermarks are TYPE-TAGGED so state round-trips losslessly
 //! (`decode(encode(v)) == v`, property-tested) and renders back into
@@ -28,7 +28,7 @@ pub(crate) enum Watermark {
     Text(String),
     /// uuid cursors (canonical lowercase-hex text; byte order == PG uuid
     /// order, and the SQL literal is `::uuid`-typed — `uuid >= text` has no
-    /// operator, the 005-review-adjacent bug).
+    /// operator, so an untyped literal would fail).
     Uuid(String),
     /// µs since Unix epoch, UTC.
     TimestampTz(i64),
@@ -67,8 +67,8 @@ impl Watermark {
     }
 
     /// Parse a config-provided literal (`initial_value`/`end_value`) for the
-    /// cursor column's decode kind. Formats are the canonical text forms the
-    /// type-mapping contract documents.
+    /// cursor column's decode kind. Formats are the canonical text forms of
+    /// the type mapping.
     pub fn parse_config_literal(
         decode: Decode,
         text: &str,
@@ -190,7 +190,7 @@ fn parse_time_us(text: &str) -> Option<i64> {
     Some(time.num_seconds_from_midnight() as i64 * 1_000_000 + (time.nanosecond() / 1_000) as i64)
 }
 
-/// Per-stream incremental tracking (research R5): boundary dedup on resume,
+/// Per-stream incremental tracking: boundary dedup on resume,
 /// watermark/prev-distinct tracking for mid-stream checkpoints, and the
 /// final boundary-key run. Depends on cursor-ordered streams (NULLS FIRST,
 /// direction-aligned) — the sqlgen ORDER BY guarantees it.
@@ -338,8 +338,8 @@ impl Tracker {
     /// Process one decoded batch BEFORE pushing: dedup re-fetched boundary
     /// rows and update tracking. Returns the (possibly filtered) batch —
     /// `None` when every row was a duplicate — plus an intermediate
-    /// checkpoint to emit AFTER the batch is pushed (S2: rows covered by it
-    /// are then all pushed).
+    /// checkpoint to emit AFTER the batch is pushed (rows covered by it are
+    /// then all pushed).
     pub fn process(
         &mut self,
         batch: arrow_array::RecordBatch,
@@ -427,7 +427,7 @@ impl Tracker {
             Some(batch)
         };
         // Intermediate checkpoint after EVERY batch: watermark = last value
-        // seen, keys = its boundary run. This COVERS every pushed row (S2):
+        // seen, keys = its boundary run. This COVERS every pushed row:
         // an engine commit at this checkpoint can resume `>= watermark` with
         // key dedup and neither lose nor double-apply the boundary run.
         // (The earlier prev-distinct design under-covered pushed rows at the
@@ -531,7 +531,7 @@ pub(crate) fn watermark_at(
     }
 }
 
-/// The persisted per-stream state (data-model §3).
+/// The persisted per-stream state.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct CursorState {
     pub watermark: Watermark,
@@ -578,7 +578,7 @@ mod tests {
     }
 
     proptest! {
-        // Data-model validation rule: decode(encode(state)) == state.
+        // State round-trips losslessly: decode(encode(state)) == state.
         #[test]
         fn state_round_trips(w in watermark_strategy(), keys in proptest::collection::vec("[a-z0-9|]{0,12}", 0..4)) {
             let state = CursorState { watermark: w, boundary_keys: keys };

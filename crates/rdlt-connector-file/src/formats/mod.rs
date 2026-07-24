@@ -13,12 +13,12 @@ use serde::{Deserialize, Serialize};
 pub enum Format {
     Jsonl,
     Parquet,
-    /// Record stream via NDJSON conversion (015 R4): documented inference
-    /// lattice, `type_hints` overrides, whole-file incremental units.
+    /// Record stream via NDJSON conversion: rows follow the type-inference lattice
+    /// with `type_hints` overrides, and the whole file is one incremental unit.
     Csv,
 }
 
-/// `csv: {delimiter, header, quote}` (data-model §4).
+/// CSV reader options: `csv: {delimiter, header, quote}`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]

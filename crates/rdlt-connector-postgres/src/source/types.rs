@@ -1,12 +1,11 @@
-//! Postgres type → engine type mapping (contract:
-//! `specs/005-postgres-source/contracts/type-mapping.md`).
+//! Postgres type → engine type mapping.
 //!
 //! Every reflected column gets a `MappedType`: how the SELECT projects it
 //! (`SelectPolicy` — policy conversions happen SERVER-side so the binary COPY
 //! stream only ever carries the lossless decode set), which Arrow type the
-//! decoder builds (the structured path derives logical types from Arrow,
-//! engine clause E7), and how the wire bytes decode. Nothing falls through to
-//! inference: unknown types take the textual fallback, visibly.
+//! decoder builds (the structured path derives logical types from Arrow), and
+//! how the wire bytes decode. Nothing falls through to inference: unknown
+//! types take the textual fallback, visibly.
 
 use arrow_schema::{DataType, TimeUnit};
 
@@ -44,8 +43,7 @@ pub(crate) enum SelectPolicy {
     CastText,
     /// `to_jsonb(col)::text` — arrays / composites / ranges.
     CastJsonbText,
-    /// `(col)::<target>` — a per-column type hint's server-side cast
-    /// (feature 006, contract type-hints.md).
+    /// `(col)::<target>` — a per-column type hint's server-side cast.
     HintCast(String),
 }
 
@@ -86,7 +84,7 @@ pub(crate) struct MappedType {
     pub select: SelectPolicy,
     pub decode: Decode,
     pub arrow: DataType,
-    /// Accepted for `cursor.column` (contract "Cursor-capable types").
+    /// Accepted for `cursor.column` — the cursor-capable types.
     pub cursor_capable: bool,
     /// True for the [documented-lossy] policy rows — surfaced in the run
     /// report so representation changes are visible, never silent.
@@ -140,7 +138,7 @@ fn text_policy(select: SelectPolicy) -> MappedType {
     }
 }
 
-/// The contract's binding mapping. Total: every input maps; the last arm is
+/// The binding type mapping. Total: every input maps; the last arm is
 /// the textual fallback (visible, documented — never inference).
 pub(crate) fn map_type(info: &PgTypeInfo) -> MappedType {
     use SelectPolicy::{CastJsonbText, CastText, Direct};
@@ -356,10 +354,9 @@ mod tests {
     }
 }
 
-/// Per-column hint vocabulary (feature 006, contract type-hints.md) —
-/// shared naming with the rest/file sources, plus `decimal(p,s)`. Config
-/// form is the contract's literal string vocabulary: `"timestamp_tz"`,
-/// `"decimal(12,4)"`, …
+/// Per-column hint vocabulary — shared naming with the rest/file sources,
+/// plus `decimal(p,s)`. Config form is the literal string vocabulary:
+/// `"timestamp_tz"`, `"decimal(12,4)"`, …
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HintType {
     Bool,
@@ -457,7 +454,7 @@ impl schemars::JsonSchema for HintType {
         // Mirrors `FromStr` exactly — the string vocabulary IS the config form.
         schemars::json_schema!({
             "type": "string",
-            "description": "Type-hint vocabulary (contract type-hints.md): a \
+            "description": "Type-hint vocabulary: a \
                             fixed name or `decimal(p,s)`",
             "pattern": "^(bool|int64|float64|utf8|binary|timestamp_tz|\
                         timestamp_naive|date|time|uuid|json|\
@@ -466,7 +463,7 @@ impl schemars::JsonSchema for HintType {
     }
 }
 
-/// The CLOSED conversion table (contract type-hints.md): every allowed
+/// The CLOSED conversion table: every allowed
 /// (source type → hint) pair yields the server-side cast + decode; anything
 /// else is an error the caller surfaces as a typed config failure at open.
 pub(crate) fn apply_hint(info: &PgTypeInfo, hint: HintType) -> Result<MappedType, String> {
@@ -581,7 +578,7 @@ pub(crate) fn apply_hint(info: &PgTypeInfo, hint: HintType) -> Result<MappedType
         }
         other => Err(format!(
             "no defined conversion from this column's type (oid {}) to hint {:?} — \
-             the type-hints contract table is closed; `utf8` is always available",
+             the type-hint conversion table is closed; `utf8` is always available",
             info.oid, other
         )),
     }

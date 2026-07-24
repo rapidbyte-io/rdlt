@@ -1,4 +1,4 @@
-//! `Secret` — a string that never renders (contract RS4).
+//! `Secret` — a string that never renders.
 //!
 //! Serde-transparent (config documents stay plain strings); Debug/Display
 //! print `***`; the generated JSON schema shows an ordinary string. The only

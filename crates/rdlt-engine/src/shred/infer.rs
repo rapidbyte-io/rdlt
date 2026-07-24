@@ -1,10 +1,10 @@
-//! Per-column type observation with value-checked widening (design doc §5.2).
+//! Per-column type observation with value-checked widening.
 //!
 //! Drives `rdlt_core::widen` and layers the *value* checks the pure lattice cannot
 //! know about: an `Int64` beyond ±2^53 meeting `Float64` escalates the column to
 //! `Utf8` — losslessness is enforced at runtime, never assumed.
 //!
-//! Generic over [`JsonView`] (feature 003 R24): the tree and streaming paths
+//! Generic over [`JsonView`]: the tree and streaming paths
 //! observe through the SAME logic — one lattice, one escalation rule.
 
 use rdlt_core::types::{LogicalType, int64_fits_in_f64, widen};

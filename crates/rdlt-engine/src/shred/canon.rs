@@ -1,8 +1,8 @@
-//! Canonical renderings (design doc §5.2): the single definition of "what bytes
+//! Canonical renderings: the single definition of "what bytes
 //! represent this value" — used for `Utf8` widening output AND for `_rdlt_id` hashing,
 //! so identity stays stable across type widenings of other columns.
 //!
-//! Generic over [`JsonView`] (feature 003 R24): the tree and streaming paths
+//! Generic over [`JsonView`]: the tree and streaming paths
 //! render through the SAME functions — identical bytes, identical hashes.
 //!
 //! Two float renderings coexist ON PURPOSE, exactly as they always have:
@@ -79,15 +79,14 @@ pub(crate) fn canonical_json_bytes<'a, V: JsonView<'a>>(value: V, out: &mut Vec<
 }
 
 /// Strict timestamp detection: RFC 3339 / ISO-8601 **with explicit offset** only
-/// (design doc §5.2 — unambiguous, timezone-carrying strings; everything else stays
-/// text).
+/// (unambiguous, timezone-carrying strings; everything else stays text).
 ///
 /// The pre-filter encodes only what the RFC 3339 grammar REQUIRES (a
 /// `YYYY-MM-DD` prefix and the minimum 20-byte length with an offset), so it
 /// rejects nothing chrono would accept — it just makes the overwhelmingly
 /// common "ordinary string" case cost a few instructions instead of a full
-/// chrono parse attempt (feature 003: this ran on EVERY observed string and
-/// dominated the shred profile).
+/// chrono parse attempt (this runs on EVERY observed string and would
+/// otherwise dominate the shred profile).
 pub(crate) fn parse_timestamp_tz(s: &str) -> Option<chrono::DateTime<chrono::FixedOffset>> {
     let b = s.as_bytes();
     if b.len() < 20

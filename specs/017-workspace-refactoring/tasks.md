@@ -54,14 +54,14 @@ No foundational tasks — the existing workspace, test gate, and CI are the foun
 
 **Independent Test**: quickstart WR2 sweep returns zero hits; gate unchanged.
 
-- [ ] T017 [US2] Strip citation IDs from all user-facing strings: crates/rdlt-connector-postgres/src/source/cdc/mod.rs ("(contract O1)"/"(contract C2)" sites), crates/rdlt-connector-iceberg/src/dest/schema.rs ("contract ID4" + version-pinned claim in the Replace rejection), crates/rdlt-cli/src/main.rs ("(contract C3)" warnings) — then sweep the whole workspace for remaining hits and fix them
-- [ ] T018 [P] [US2] Correct the catalogued rotted citations: rdlt-core charter (crates/rdlt-core/src/lib.rs dependency list vs Cargo.toml), rdlt facade feature list (crates/rdlt/src/lib.rs), iceberg "parquet-dest ordering" reference (crates/rdlt-connector-iceberg/src/dest/dest.rs), engine channel.rs "wired by US1 (T024)" note, sqlcore "MOVED VERBATIM" headers
-- [ ] T019 [P] [US2] Self-containment pass, engine: rewrite/delete spec-citation comments across crates/rdlt-engine/src (62 hits/20 files incl. workdir "US3" doc, table.rs module-doc history lesson); each surviving comment states its rule inline
-- [ ] T020 [P] [US2] Self-containment pass, postgres: crates/rdlt-connector-postgres/src (rustdoc spec paths, dest/*.rs relocation breadcrumbs, stale "rdlt-source-postgres" crate name in source/mod.rs)
-- [ ] T021 [P] [US2] Self-containment pass, sqlcore + duckdb + iceberg: "013 review finding N" citations, `legacy_unique_index_name` branch-history comment, iceberg spec-citation cluster
-- [ ] T022 [P] [US2] Self-containment pass, core + connector + facade + file + rest: rdlt-core citation cluster (~20 files), stream.rs changelog-in-docs, file crate spec paths (incl. the `…`-character path) and stale lib.rs/source docs, REST "The S3 classification" mislabel + overclaiming OAuth2 comment + stale "~80 lines" metric
-- [ ] T023 [P] [US2] Self-containment pass, testkit + bench + cli: conformance/mod.rs spec path, stale "crash-matrix row 2" double-citation (verify against the current matrix), bench "review finding N" sites
-- [ ] T024 [US2] Verify WR2: run the quickstart citation sweep (user-facing strings and comments) — zero hits; record the command output in close-out.md row R1
+- [X] T017 [US2] Strip citation IDs from all user-facing strings: crates/rdlt-connector-postgres/src/source/cdc/mod.rs ("(contract O1)"/"(contract C2)" sites), crates/rdlt-connector-iceberg/src/dest/schema.rs ("contract ID4" + version-pinned claim in the Replace rejection), crates/rdlt-cli/src/main.rs ("(contract C3)" warnings) — then sweep the whole workspace for remaining hits and fix them
+- [X] T018 [P] [US2] Correct the catalogued rotted citations: rdlt-core charter (crates/rdlt-core/src/lib.rs dependency list vs Cargo.toml), rdlt facade feature list (crates/rdlt/src/lib.rs), iceberg "parquet-dest ordering" reference (crates/rdlt-connector-iceberg/src/dest/dest.rs), engine channel.rs "wired by US1 (T024)" note, sqlcore "MOVED VERBATIM" headers
+- [X] T019 [P] [US2] Self-containment pass, engine: rewrite/delete spec-citation comments across crates/rdlt-engine/src (62 hits/20 files incl. workdir "US3" doc, table.rs module-doc history lesson); each surviving comment states its rule inline
+- [X] T020 [P] [US2] Self-containment pass, postgres: crates/rdlt-connector-postgres/src (rustdoc spec paths, dest/*.rs relocation breadcrumbs, stale "rdlt-source-postgres" crate name in source/mod.rs)
+- [X] T021 [P] [US2] Self-containment pass, sqlcore + duckdb + iceberg: "013 review finding N" citations, `legacy_unique_index_name` branch-history comment, iceberg spec-citation cluster
+- [X] T022 [P] [US2] Self-containment pass, core + connector + facade + file + rest: rdlt-core citation cluster (~20 files), stream.rs changelog-in-docs, file crate spec paths (incl. the `…`-character path) and stale lib.rs/source docs, REST "The S3 classification" mislabel + overclaiming OAuth2 comment + stale "~80 lines" metric
+- [X] T023 [P] [US2] Self-containment pass, testkit + bench + cli: conformance/mod.rs spec path, stale "crash-matrix row 2" double-citation (verify against the current matrix), bench "review finding N" sites
+- [X] T024 [US2] Verify WR2: run the quickstart citation sweep (user-facing strings and comments) — zero hits; record the command output in close-out.md row R1
 
 **Checkpoint**: US2 deliverable — mergeable as plan increment 2.
 

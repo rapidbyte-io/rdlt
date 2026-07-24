@@ -180,9 +180,7 @@ async fn merge_key_split_feed_is_typed_on_the_second_unit() {
         .unwrap_err()
         .to_string();
     assert!(
-        err.contains("merge_key scope replacement")
-            && err.contains("SINGLE commit unit")
-            && err.contains("merge-refinements.md MR5"),
+        err.contains("merge_key scope replacement") && err.contains("SINGLE commit unit"),
         "{err}"
     );
 }

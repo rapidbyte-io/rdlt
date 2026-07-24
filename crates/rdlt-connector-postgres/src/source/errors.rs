@@ -1,21 +1,21 @@
-//! Typed, phase-tagged error surface + SPI classification (corrected R6).
+//! Typed, phase-tagged error surface + SPI classification.
 //!
-//! The source NEVER retries (clause S3). It classifies: connection-shaped
-//! failures are `Transient` (the engine retries with backoff, clause E5, and
-//! resume-from-committed-cursor makes that double-apply-safe via E6/S1/D1–D4);
+//! The source NEVER retries. It classifies: connection-shaped failures are
+//! `Transient` (the engine retries with backoff, and
+//! resume-from-committed-cursor makes that double-apply-safe);
 //! config/auth/data-shaped failures are `Fatal`.
 
 use rdlt_connector::SourceError;
 
 /// Where in the source lifecycle a failure happened — part of every message
-/// (spec FR-008: errors name table and phase).
+/// (errors name table and phase).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Phase {
     Connect,
     Reflect,
     Copy,
     Decode,
-    /// CDC slot/publication lifecycle + feed access (feature 009, R9).
+    /// CDC slot/publication lifecycle + feed access.
     Slot,
 }
 
@@ -77,9 +77,9 @@ pub(crate) fn transient(
     SourceError::transient(tagged(phase, table, detail))
 }
 
-/// Classify a driver error per corrected R6. SQLSTATE class decides when
-/// present; a missing code means the failure never reached the server (io,
-/// closed connection) — transient by definition.
+/// Classify a driver error. SQLSTATE class decides when present; a missing
+/// code means the failure never reached the server (io, closed connection) —
+/// transient by definition.
 pub(crate) fn classify(
     phase: Phase,
     table: Option<&str>,

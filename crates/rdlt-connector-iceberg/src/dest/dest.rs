@@ -1,8 +1,7 @@
-//! The Destination/LoadSession implementation (contracts ID1–ID3, ID5):
-//! Append write mode mapped onto fast-append snapshots; Replace is typed
-//! unsupported (the RECORDED T001 verdict — iceberg-rust 0.10 has no
-//! overwrite action; ID5: no silent degradation, no emulation). Merge is
-//! rejected by capability.
+//! The Destination/LoadSession implementation: Append write mode mapped onto
+//! fast-append snapshots; Replace is typed unsupported because the underlying
+//! iceberg library exposes no overwrite action, and there is no silent
+//! degradation or emulation. Merge is rejected by capability.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -36,8 +35,8 @@ fn fatal(message: impl std::fmt::Display) -> DestError {
 /// one constant on both sides keeps a resume looking under the same scope.
 const SCOPE_HASH_LEN: usize = 12;
 
-/// Fail-point registry (gate G2.2): every `crash_point!` site in this
-/// crate, swept live against the catalog fixture (ID7).
+/// Fail-point registry: every `crash_point!` site in this crate, swept live
+/// against the catalog fixture by the crash-sweep tests.
 #[cfg(feature = "failpoints")]
 #[doc(hidden)]
 pub const ICE_FAIL_POINTS: &[&str] = &["ice.files.write", "ice.commit", "ice.receipt.visible"];
@@ -194,14 +193,14 @@ impl LoadSession for IcebergSession {
                     "iceberg destination does not support Merge (capabilities.merge = false)",
                 ));
             }
-            // The RECORDED T001 narrowing (ID5): iceberg-rust 0.10 exposes
-            // no overwrite transaction — no emulation, a typed error.
+            // Replace needs an overwrite transaction the underlying iceberg
+            // library does not expose. Rejecting is the only correct answer:
+            // emulating it (delete + append) would not be atomic.
             WriteMode::Replace => {
                 return Err(fatal(
-                    "iceberg destination: Replace is not supported by this release \
-                     (iceberg-rust 0.10 has no overwrite transaction; recorded \
-                     narrowing — use Append, or a SQL destination for replace \
-                     semantics)",
+                    "iceberg destination: Replace is not supported — the underlying \
+                     iceberg library exposes no overwrite transaction, which Replace \
+                     requires; use Append, or a SQL destination for replace semantics",
                 ));
             }
         }
@@ -219,11 +218,11 @@ impl LoadSession for IcebergSession {
             iceberg::arrow::schema_to_arrow_schema(table.metadata().current_schema())
                 .map_err(|e| fatal(format!("table `{name}`: arrow schema conversion: {e}")))?,
         );
-        // The engine may re-ensure mid-session (clause E1 — e.g. after a
-        // WAL replay). The window counter MUST survive: resetting it
-        // regenerates window 1's exact file path (same load, window,
-        // nonce), overwriting a committed data file. Found by the T009
-        // sweep. A staged writer survives ONLY while the write schema is
+        // The engine may re-ensure mid-session (e.g. after a WAL replay).
+        // The window counter MUST survive: resetting it regenerates window
+        // 1's exact file path (same load, window, nonce), overwriting a
+        // committed data file. A staged writer survives ONLY while the write
+        // schema is
         // unchanged: a re-ensure carrying drift retires it — its closed
         // files (valid under the prior schema; Iceberg reads absent
         // columns as null after additive evolution) join the window's
@@ -261,11 +260,10 @@ impl LoadSession for IcebergSession {
     }
 
     async fn write(&mut self, table: &TableName, batch: RecordBatch) -> Result<(), DestError> {
-        let state = self.tables.get_mut(table).ok_or_else(|| {
-            fatal(format!(
-                "write before ensure_table for `{table}` (clause E1)"
-            ))
-        })?;
+        let state = self
+            .tables
+            .get_mut(table)
+            .ok_or_else(|| fatal(format!("write before ensure_table for `{table}`")))?;
         let context = format!("table `{}`", self.config.table_name(table.as_str()));
         let aligned = Self::align(&context, &state.arrow_target, &batch)?;
         if state.writer.is_none() {
@@ -298,9 +296,9 @@ impl LoadSession for IcebergSession {
                 files.extend(writer.close(&context).await?);
             }
             if files.is_empty() {
-                continue; // empty window: no snapshot (ID2)
+                continue; // empty window: no snapshot
             }
-            // Replay detection against FRESH metadata (ID2): a replayed
+            // Replay detection against FRESH metadata: a replayed
             // identity discards this window's files (orphaned, invisible —
             // no snapshot references them) and publishes nothing.
             let fresh = self
@@ -325,8 +323,9 @@ impl LoadSession for IcebergSession {
             "ice.receipt.visible",
             Err(DestError::fatal("injected crash at ice.receipt.visible"))
         );
-        // State LAST (the parquet-dest ordering): per-table receipts make
-        // replays converge even if we crash before this write lands.
+        // State is written LAST, after every table's data commit: the
+        // per-table snapshot receipts make replays converge even if we crash
+        // before this state write lands.
         let state_json =
             serde_json::to_string(&meta.state).map_err(|e| fatal(format!("state doc: {e}")))?;
         write_state(&self.catalog, &self.namespace, &self.scope, state_json).await?;
@@ -357,8 +356,8 @@ mod tests {
         Arc::new(Schema::new(fields))
     }
 
-    /// Review F5: a nullable table column absent from the batch is
-    /// null-filled (schema narrowing / concurrent additive evolution).
+    /// A nullable table column absent from the batch is null-filled (schema
+    /// narrowing / concurrent additive evolution).
     #[test]
     fn align_null_fills_missing_nullable_column() {
         let target = target(vec![
@@ -375,8 +374,8 @@ mod tests {
         assert_eq!(aligned.column(1).null_count(), 2, "null-filled");
     }
 
-    /// Review F5: a REQUIRED table column the stream stopped providing
-    /// is typed and attributed to the TABLE, not the stream.
+    /// A REQUIRED table column the stream stopped providing is typed and
+    /// attributed to the TABLE, not the stream.
     #[test]
     fn align_missing_required_column_is_typed_naming_the_table() {
         let target = target(vec![

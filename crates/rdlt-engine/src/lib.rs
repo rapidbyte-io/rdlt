@@ -33,7 +33,7 @@ pub struct EngineConfig {
     pub write_modes: BTreeMap<StreamName, WriteMode>,
     pub schema_policy: SchemaPolicy,
     pub commit_policy: CommitPolicy,
-    /// Holds the WAL. `None` until the recovery phase wires it (US3).
+    /// Working directory that holds the WAL. `None` disables durable recovery.
     pub workdir: Option<PathBuf>,
     /// Bound on in-flight bytes per stage channel — this is the RSS cap.
     pub byte_budget: usize,
@@ -119,7 +119,7 @@ impl Engine {
     }
 
     /// Cancelling is safe at any instant and equivalent to a crash: the next run
-    /// recovers identically (recovery invariant 4).
+    /// recovers identically.
     pub fn cancellation_token(&self) -> CancellationToken {
         self.cancel.clone()
     }

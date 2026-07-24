@@ -1,7 +1,6 @@
-//! File destination configuration (015, data-model §6): output format,
-//! location (local | S3-compatible), optional partition column. The
-//! pre-015 `ParquetDir::open(path)` form ≡ local + parquet + no
-//! partitioning (frozen spelling).
+//! File destination configuration: output format, location (local | S3-compatible),
+//! optional partition column. The plain `ParquetDir::open(path)` form is equivalent to
+//! local + parquet + no partitioning (frozen spelling, kept for compatibility).
 
 use serde::{Deserialize, Serialize};
 
@@ -33,13 +32,13 @@ impl DestFormat {
 pub struct FileDestConfig {
     /// Output directory (local) or key prefix (object store).
     pub path: String,
-    /// Absent = local filesystem (pre-015 semantics).
+    /// Absent = local filesystem.
     #[serde(default)]
     pub location: Option<LocationOptions>,
     #[serde(default)]
     pub format: DestFormat,
     /// Optional partition column: one prefix per value
-    /// (`<table>/<column>=<value>/…`; NULLs land under `__null__`). The
+    /// (`<table>/<column>=<value>/...`; NULLs land under `__null__`). The
     /// column must exist in the stream's schema at write time (typed).
     #[serde(default)]
     pub partition_by: Option<String>,

@@ -1,6 +1,6 @@
-//! Secret-wrapped credential values (the 014 discipline): Debug/Display
-//! render `***`, serde-transparent for config parsing, schemars placeholder.
-//! The grep-proof cell asserts no rendering ever contains the value.
+//! Secret-wrapped credential values: Debug/Display render `***`, serde-transparent
+//! for config parsing, schemars placeholder. A test asserts no rendering ever contains
+//! the underlying value.
 
 use std::borrow::Cow;
 

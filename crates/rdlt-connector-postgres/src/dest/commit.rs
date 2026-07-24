@@ -1,6 +1,5 @@
 //! The load-session protocol: staging COPY, the publish transaction, merge
-//! arms, receipts, state. (Feature 008 T001: relocated verbatim; strategy
-//! arms and the describe() error helper land in later tasks.)
+//! arms, receipts, state.
 
 use std::collections::BTreeMap;
 
@@ -24,14 +23,14 @@ use super::dialect::PgDialect;
 use super::{copy_error, encode, fatal, quote, transient};
 
 /// Arrival-order column on STAGE tables only: makes merge dedup deterministic
-/// ("last wins" for real — finding #7). Excluded from publish column lists because it
+/// ("last wins" for real). Excluded from publish column lists because it
 /// is not part of the logical schema.
 pub const ARRIVAL_COL: &str = "__rdlt_arrival";
 
 /// Stage names are pipeline-scoped and hashed: scoping stops one pipeline's `open`
-/// from truncating another's live staged rows in a shared schema (finding #3), and
+/// from truncating another's live staged rows in a shared schema, and
 /// hashing bounds the identifier under Postgres's 63-byte limit, where silent
-/// truncation used to cut off exactly the disambiguation suffix (finding #8).
+/// truncation would otherwise cut off exactly the disambiguation suffix.
 pub(super) fn stage_prefix(pipeline: &PipelineId) -> String {
     format!(
         "{}{}_",
@@ -48,7 +47,7 @@ pub(super) fn stage_name(pipeline: &PipelineId, table: &TableName) -> String {
     )
 }
 
-/// Quoted, comma-joined logical columns — publishes are ALWAYS by name (finding #4).
+/// Quoted, comma-joined logical columns — publishes are ALWAYS by name.
 pub(super) fn column_list(schema: &TableSchema) -> String {
     schema
         .columns
@@ -63,13 +62,13 @@ pub(super) struct PgSession {
     pub(super) pipeline: PipelineId,
     pub(super) tables: BTreeMap<TableName, (TableSchema, WriteMode)>,
     pub(super) options: super::config::PgDestOptions,
-    /// Single-unit discipline, PER TABLE (MR5 / scd2 S6, 010 review round):
-    /// tables whose stage has already published non-empty in an earlier
-    /// commit unit of THIS load. Session-scoped is load-scoped: a session
-    /// spans one engine run = one load; a crash starts both afresh. Marked
-    /// only AFTER the unit's transaction commits (a rolled-back unit never
-    /// counts), and re-marked on the D3 replay branch (a committed unit
-    /// whose outcome the client never learned still counts).
+    /// Single-unit discipline, PER TABLE: tables whose stage has already
+    /// published non-empty in an earlier commit unit of THIS load.
+    /// Session-scoped is load-scoped: a session spans one engine run = one
+    /// load; a crash starts both afresh. Marked only AFTER the unit's
+    /// transaction commits (a rolled-back unit never counts), and re-marked
+    /// on the replay branch (a committed unit whose outcome the client never
+    /// learned still counts).
     pub(super) single_unit_done: std::collections::BTreeSet<TableName>,
 }
 
@@ -109,7 +108,7 @@ impl LoadSession for PgSession {
                 .collect::<Vec<_>>()
                 .join(", ");
             if is_stage {
-                // Arrival order for deterministic merge dedup (finding #7).
+                // Arrival order for deterministic merge dedup.
                 columns.push_str(&format!(", {} BIGSERIAL", quote(ARRIVAL_COL)));
             }
             let unlogged = if is_stage { "UNLOGGED " } else { "" };
@@ -120,7 +119,7 @@ impl LoadSession for PgSession {
                 ))
                 .await
                 .map_err(transient)?;
-            // Migrations (clause D5): add new columns; widen with a USING cast.
+            // Migrations: add new columns; widen with a USING cast.
             for column in &schema.columns {
                 self.client
                     .batch_execute(&format!(
@@ -149,20 +148,20 @@ impl LoadSession for PgSession {
                 }
             }
         }
-        // Feature 013: the option-vs-mode rules live in sqlcore (SM1) — one
-        // rule set, identical typed errors on every SQL destination.
+        // The option-vs-mode rules live in sqlcore — one rule set, identical
+        // typed errors on every SQL destination.
         if !matches!(mode, WriteMode::Merge { .. }) {
             sqlplan::validate_non_merge(&self.options, schema.table.as_str()).map_err(fatal)?;
         }
-        // Feature 008 US2 (merge-strategies.md): strategy validation + the
-        // supporting/unique indexes, ensured WITH the table (M3/M5).
+        // Strategy validation + the supporting/unique indexes, ensured WITH
+        // the table.
         if let WriteMode::Merge { key } = mode {
             let table = schema.table.as_str();
             let strategy = self.options.strategy_for(table);
             let has_identity = schema.columns.iter().any(|c| c.name == system_columns::ID);
             let is_child = schema.parent.is_some();
-            // Feature 013: the 008/010 option checks live in sqlcore (SM1);
-            // errors keep their exact pinned text.
+            // The option checks live in sqlcore; errors keep their exact
+            // pinned text.
             sqlplan::validate_merge(
                 &self.options,
                 table,
@@ -192,14 +191,14 @@ impl LoadSession for PgSession {
                         .map_err(transient)?;
                 }
             }
-            // Index plan (008 data-model + 010 scope index) — shared shape
-            // (feature 013 SM1); this destination owns only the SQL text.
+            // Index plan — shared shape from sqlcore; this destination owns
+            // only the SQL text.
             for (unique, columns) in
                 sqlplan::index_plan(&self.options, table, key, has_identity, is_child)
             {
                 let sql = super::ddl::create_index_sql(unique, table, &columns);
                 if let Err(e) = self.client.batch_execute(&sql).await {
-                    // M3: pre-existing duplicate keys under upsert — typed,
+                    // Pre-existing duplicate keys under upsert — typed,
                     // naming the key columns.
                     if unique
                         && e.as_db_error()
@@ -235,7 +234,7 @@ impl LoadSession for PgSession {
             .map(|f| quote(f.name()))
             .collect::<Vec<_>>()
             .join(", ");
-        // Wire decisions come from the ENSURED schema's logical types (T6);
+        // Wire decisions come from the ENSURED schema's logical types;
         // arrow representation only fills in where the schema is silent.
         let table_schema = self.tables.get(table).map(|(s, _)| s);
         let wires: Vec<encode::ColumnWire> = arrow_schema
@@ -297,7 +296,7 @@ impl LoadSession for PgSession {
             Err(DestError::fatal("injected crash at pg.publish.begin"))
         );
         let tx = self.client.transaction().await.map_err(transient)?;
-        // Clause D3: idempotence by (load_id, commit_seq).
+        // Idempotence by (load_id, commit_seq).
         let already = tx
             .query_one(
                 &format!(
@@ -312,8 +311,8 @@ impl LoadSession for PgSession {
         // Replace truncates at most once per LOAD, guarded DURABLY from the
         // receipt log — a crash-recovery session (fresh memory, same load) must
         // never re-truncate rows an earlier commit already published (the
-        // parquet twin of this bug was the feature-002 review's confirmed
-        // data-loss finding; same fix, same reasoning).
+        // parquet destination had the same latent data-loss bug; same fix,
+        // same reasoning).
         let load_committed_before = tx
             .query_one(
                 &format!(
@@ -327,7 +326,7 @@ impl LoadSession for PgSession {
             .get::<_, i64>(0)
             > 0;
         if already > 0 {
-            // D3 replay of a unit that DID commit server-side: the merge SQL
+            // Replay of a unit that DID commit server-side: the merge SQL
             // never re-runs, but the single-unit discipline must still count
             // this unit — the redelivered stage carries the same rows the
             // committed one did.
@@ -367,12 +366,12 @@ impl LoadSession for PgSession {
         let mut single_unit_marks: Vec<TableName> = Vec::new();
 
         for (table, (schema, mode)) in &self.tables {
-            // Feature 006: a schema without the per-row identity column is a
-            // STRUCTURED stream's table — merge (if requested) goes by key.
+            // A schema without the per-row identity column is a STRUCTURED
+            // stream's table — merge (if requested) goes by key.
             let schema_has_identity = schema.columns.iter().any(|c| c.name == system_columns::ID);
             let target = quote(table.as_str());
             let stage = quote(&stage_name(&self.pipeline, table));
-            // Publishes are ALWAYS by name (finding #4) — and the list excludes the
+            // Publishes are ALWAYS by name — and the list excludes the
             // stage-only arrival column.
             let cols = column_list(schema);
             match mode {
@@ -396,8 +395,8 @@ impl LoadSession for PgSession {
                     .map_err(transient)?;
                 }
                 WriteMode::Merge { key } => {
-                    // Feature 008 (merge-strategies.md): the strategy is
-                    // destination config; the engine's mode stays frozen.
+                    // The strategy is destination config; the engine's mode
+                    // stays frozen.
                     let strategy = self.options.strategy_for(table.as_str());
                     let scoped = self.options.merge_key_for(table.as_str());
                     let scd2 = (strategy == MergeStrategy::Scd2)
@@ -405,22 +404,20 @@ impl LoadSession for PgSession {
                     let retire = scd2
                         .as_ref()
                         .is_some_and(|s| s.absent == super::config::AbsentPolicy::Retire);
-                    // Single-unit discipline, PER TABLE (MR5 + scd2 S6, one
-                    // shared rule): scope replacement and absent-retire each
-                    // interpret the stage as "the complete truth" — sound only
-                    // when THIS TABLE's full feed arrives in one commit unit.
-                    // Per-table tracking (not `load_committed_before`): other
-                    // streams' checkpoints legitimately split the LOAD into
-                    // units without splitting this table's feed. A unit where
-                    // this table stages NOTHING is skipped outright — which
-                    // also stops an empty stage from reading as "every key
-                    // absent" (retire = mass retirement). The crash residual
-                    // is recorded in MR5: a scoped/retire stream that
-                    // checkpoints MID-feed and crashes in the window resumes
-                    // as a new load with a partial feed, which no
-                    // destination-side bookkeeping can distinguish from a
-                    // fresh load (this feature's own sweep killed the receipts
-                    // scheme that tried).
+                    // Single-unit discipline, PER TABLE (one shared rule):
+                    // scope replacement and absent-retire each interpret the
+                    // stage as "the complete truth" — sound only when THIS
+                    // TABLE's full feed arrives in one commit unit. Per-table
+                    // tracking (not `load_committed_before`): other streams'
+                    // checkpoints legitimately split the LOAD into units
+                    // without splitting this table's feed. A unit where this
+                    // table stages NOTHING is skipped outright — which also
+                    // stops an empty stage from reading as "every key absent"
+                    // (retire = mass retirement). The crash residual is
+                    // unavoidable: a scoped/retire stream that checkpoints
+                    // MID-feed and crashes in the window resumes as a new load
+                    // with a partial feed, which no destination-side
+                    // bookkeeping can distinguish from a fresh load.
                     if scoped.is_some() || retire {
                         let staged: bool = tx
                             .query_one(&format!("SELECT EXISTS (SELECT 1 FROM {stage})"), &[])
@@ -431,9 +428,8 @@ impl LoadSession for PgSession {
                             continue; // nothing delivered for THIS table this unit
                         }
                         if self.single_unit_done.contains(table) {
-                            // 013 review finding 9: cite the rule that FIRED —
-                            // under scd2 the retire rule (S6) governs even
-                            // when a merge_key scopes it.
+                            // Name the rule that FIRED — under scd2 the retire
+                            // rule governs even when a merge_key scopes it.
                             return Err(fatal(sqlplan::single_unit_violation(
                                 table.as_str(),
                                 scoped.is_some() && !retire,
@@ -441,11 +437,10 @@ impl LoadSession for PgSession {
                         }
                         single_unit_marks.push(table.clone());
                     }
-                    // Feature 010 (MR3/MR4): scope replacement runs BEFORE
-                    // the strategy arm, inside the same transaction. NOT for
-                    // scd2 (013 G1): there the merge_key scopes RETIREMENT
-                    // inside the strategy arm — deleting scope rows would
-                    // destroy history.
+                    // Scope replacement runs BEFORE the strategy arm, inside
+                    // the same transaction. NOT for scd2: there the merge_key
+                    // scopes RETIREMENT inside the strategy arm — deleting
+                    // scope rows would destroy history.
                     if let Some(scope) = scoped
                         && strategy != MergeStrategy::Scd2
                     {
@@ -487,14 +482,13 @@ impl LoadSession for PgSession {
                             )));
                         }
                         (false, MergeStrategy::Scd2) => {
-                            // 008 review F2's single-unit guard for
-                            // absent-retire now lives in the shared per-table
-                            // discipline above (010 review round).
+                            // The single-unit guard for absent-retire lives in
+                            // the shared per-table discipline above.
                             let scd2 = scd2.expect("scd2 options resolved with the strategy");
                             scd2_merge(&tx, &plan, &scd2).await?
                         }
                         (true, MergeStrategy::Scd2) => {
-                            // Unreachable: ensure_table rejected it (S1).
+                            // Unreachable: ensure_table rejected it.
                             return Err(fatal(format!(
                                 "table `{table}`: scd2 on a shredded stream"
                             )));
@@ -514,7 +508,7 @@ impl LoadSession for PgSession {
             .map_err(transient)?;
         }
 
-        // Clause D2: state travels in the SAME transaction as the data.
+        // State travels in the SAME transaction as the data.
         let doc = serde_json::to_string(&meta.state).map_err(fatal)?;
         tx.execute(
             &format!(
@@ -537,7 +531,7 @@ impl LoadSession for PgSession {
         .map_err(transient)?;
         // The canonical redelivery window: everything published in ONE server-side
         // transaction; a crash at either edge of tx.commit() must replay
-        // idempotently (D3) — the injected error models the client dying without
+        // idempotently — the injected error models the client dying without
         // learning the outcome.
         crash_point!(
             "pg.tx.commit",
@@ -570,9 +564,9 @@ impl LoadSession for PgSession {
     }
 }
 
-// ---- Strategy executors (feature 013): the SQL layer lives in
-// rdlt-connector-sqlcore (contract SM1/SM2); this destination executes the
-// shared shapes' statements through the PgDialect and owns nothing else.
+// ---- Strategy executors: the SQL layer lives in rdlt-connector-sqlcore;
+// this destination executes the shared shapes' statements through the
+// PgDialect and owns nothing else.
 
 async fn keyed_delete_insert(
     tx: &tokio_postgres::Transaction<'_>,

@@ -1,7 +1,6 @@
-//! Catalog reflection (research R3): one pg_catalog round trip per run →
-//! `ReflectedTable` per selected relation. The reflected structure is the
-//! authority for the published stream schema, column projection, and
-//! cursor-column validation (contract rules 2–3).
+//! Catalog reflection: one pg_catalog round trip per run → `ReflectedTable`
+//! per selected relation. The reflected structure is the authority for the
+//! published stream schema, column projection, and cursor-column validation.
 
 use std::collections::BTreeMap;
 
@@ -55,8 +54,8 @@ impl ReflectedTable {
         self.columns.iter().find(|c| c.name == name)
     }
 
-    /// Columns after applying the table's include/exclude selection
-    /// (contract rule 4: unknown names and empty results are typed errors).
+    /// Columns after applying the table's include/exclude selection: unknown
+    /// names and empty results are typed errors.
     pub fn selected_columns(
         &self,
         config: Option<&TableConfig>,
@@ -94,12 +93,11 @@ impl ReflectedTable {
     }
 }
 
-/// Describe-based schema for a QUERY stream (feature 006, contract
-/// query-streams.md): prepare the WRAPPED statement — enforcing read-only
-/// via the database's own subquery rules BEFORE any data moves — and map
-/// the described column types through the 005 contract. typmod is not
-/// described (numerics take the textual policy row unless hinted);
-/// nullability is unknowable (all nullable).
+/// Describe-based schema for a QUERY stream: prepare the WRAPPED statement —
+/// enforcing read-only via the database's own subquery rules BEFORE any data
+/// moves — and map the described column types through the standard type
+/// mapping. typmod is not described (numerics take the textual policy row
+/// unless hinted); nullability is unknowable (all nullable).
 pub(crate) async fn describe_query(
     client: &Client,
     name: &str,
@@ -164,8 +162,8 @@ fn type_info_from(ty: &tokio_postgres::types::Type) -> PgTypeInfo {
     }
 }
 
-/// The selected columns with type hints APPLIED (feature 006): owned
-/// clones whose `mapped` is replaced per the closed conversion table.
+/// The selected columns with type hints APPLIED: owned clones whose `mapped`
+/// is replaced per the closed conversion table.
 /// Typed errors: hint names a non-selected column; undefined pair.
 pub(crate) fn hinted_columns(
     table: &ReflectedTable,
@@ -203,12 +201,12 @@ pub(crate) fn hinted_columns(
 
 /// One round trip: every column of every relation in `schema` matching the
 /// relkind filter, with type shape + PK membership, in attnum order.
-/// Hierarchy CHILDREN are excluded via `pg_inherits` (feature 007 R7 —
-/// declarative partitions AND classic INHERITS children in one predicate):
-/// the parent's stream already scans every child — reflecting children too
-/// would double-load every row under schema-wide discovery (005 review
-/// finding, generalized). Explicitly LISTED names override the exclusion
-/// ($3) — reading one partition/child alone is a legitimate backfill. Domains
+/// Hierarchy CHILDREN are excluded via `pg_inherits` (declarative partitions
+/// AND classic INHERITS children in one predicate): the parent's stream
+/// already scans every child — reflecting children too would double-load
+/// every row under schema-wide discovery. Explicitly LISTED names override
+/// the exclusion ($3) — reading one partition/child alone is a legitimate
+/// backfill. Domains
 /// resolve one level to their base (nested domains fall to the textual
 /// fallback — documented); the domain's own typmod wins when present.
 const REFLECT_SQL: &str = r#"
@@ -248,7 +246,7 @@ pub(crate) async fn reflect_schema(
     } else {
         vec!["r", "p"]
     };
-    // Explicitly listed tables bypass the hierarchy-child exclusion (R7).
+    // Explicitly listed tables bypass the hierarchy-child exclusion.
     let listed: Vec<String> = config
         .tables
         .iter()
@@ -421,7 +419,7 @@ mod tests {
     fn hinted_columns_apply_and_reject() {
         use crate::source::HintType;
         let t = table(&[("id", oid::INT8, true), ("v", oid::TEXT, false)]);
-        // Hint applies: text column → timestamptz (contract row).
+        // Hint applies: text column → timestamptz.
         let cfg = TableConfig {
             name: "t".into(),
             cursor: None,
@@ -437,8 +435,8 @@ mod tests {
             cols.iter().find(|c| c.name == "v").unwrap().mapped.decode,
             Decode::Timestamp { tz: true }
         );
-        // text → binary (contract row added with review F1): the text is
-        // parsed as bytea input server-side; decode becomes Bytea.
+        // text → binary: the text is parsed as bytea input server-side;
+        // decode becomes Bytea.
         let bin = TableConfig {
             type_hints: [("v".to_string(), HintType::Binary)].into_iter().collect(),
             ..cfg.clone()

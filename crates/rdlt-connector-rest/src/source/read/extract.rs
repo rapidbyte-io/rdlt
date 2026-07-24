@@ -1,8 +1,8 @@
 //! Records extraction: the JSONPath SUBSET selector (dot paths + `[*]`
 //! wildcards + `[N]` indices), parsed eagerly at config validation.
-//! Hand-rolled (~80 lines over serde_json::Value) per the 009 crate-survey
-//! rule. The no-selector passthrough — body bytes stream through untouched —
-//! is the flagship perf path and is preserved byte-for-byte (RS5).
+//! Hand-rolled over `serde_json::Value` rather than pulling in a JSONPath crate. The
+//! no-selector passthrough — body bytes stream through untouched — is the flagship perf
+//! path and is preserved byte-for-byte.
 
 use bytes::Bytes;
 use rdlt_connector::SourceError;
@@ -153,7 +153,7 @@ impl Extracted {
 /// Extract records per the stream's selector. Without one, the body must BE
 /// a JSON array and streams through untouched (the perf path); with one,
 /// one parse + reserialize. No-match is a typed error naming the path and
-/// the response's top-level keys (US1-AS3) — EXCEPT when a wildcard
+/// the response's top-level keys — EXCEPT when a wildcard
 /// traversed an existing empty array: that's a legitimately empty page (the
 /// standard terminal-page shape), never an error. `need_values` keeps the
 /// parsed records on the result for downstream consumers.
@@ -168,7 +168,7 @@ pub fn extract_records(
                 .map_err(|e| SourceError::fatal(format!("response is not valid JSON: {e}")))?;
             match value {
                 // The parse already happened for the count — keep the values
-                // for free; the forwarded BYTES stay untouched (RS5).
+                // for free; the forwarded BYTES stay untouched.
                 Value::Array(items) => Ok(Extracted {
                     records: body.clone(),
                     count: items.len(),

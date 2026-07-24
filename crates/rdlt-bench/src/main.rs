@@ -1,4 +1,4 @@
-//! `rdlt-bench` — list / run / gate / report (quickstart.md).
+//! `rdlt-bench` — the four subcommands: list / run / gate / report.
 
 use std::collections::BTreeMap;
 use std::process::ExitCode;
@@ -147,7 +147,7 @@ fn cmd_run(paths: &Paths, selection: &SelectionArgs) -> rdlt_bench::Result<bool>
         }
     };
 
-    // Fixtures shared across cells within this invocation (BH2).
+    // Fixtures shared across cells within this invocation.
     let mut started: BTreeMap<String, fixtures::Started> = BTreeMap::new();
     let base_subs: BTreeMap<String, String> = BTreeMap::from([
         ("repo".to_owned(), paths.repo.display().to_string()),
@@ -176,8 +176,7 @@ fn cmd_run(paths: &Paths, selection: &SelectionArgs) -> rdlt_bench::Result<bool>
         let fixture = &started[&cell.fixture];
 
         // Quiet guard BEFORE anything is measured — the baselines feed gated
-        // ratios, so they need the quiet machine as much as the rdlt side
-        // (review finding 2).
+        // ratios, so they need the quiet machine as much as the rdlt side.
         let quiet_note = match protocol::quiet_guard_now(cell.class)? {
             QuietVerdict::Quiet => None,
             QuietVerdict::Annotated(note) => {
@@ -186,7 +185,7 @@ fn cmd_run(paths: &Paths, selection: &SelectionArgs) -> rdlt_bench::Result<bool>
             }
         };
 
-        // Baseline FIRST (R12) — competitors run before the rdlt side.
+        // Baseline FIRST — competitors run before the rdlt side.
         let mut competitor_sides = BTreeMap::new();
         let mut pin = None;
         for reference in &cell.competitors {
@@ -211,7 +210,7 @@ fn cmd_run(paths: &Paths, selection: &SelectionArgs) -> rdlt_bench::Result<bool>
                 // Scoreboard cells record the MISSING loudly; a GATED cell
                 // refuses instead — writing a baseline-less artifact would
                 // overwrite the committed competitor medians and only fail
-                // later at `gate` (review finding 6).
+                // later at `gate`.
                 if cell.class == Class::Gated {
                     return Err(BenchError(format!(
                         "gated cell `{}`: baseline `{}` MISSING ({reason}) — refusing to run                          and overwrite the committed artifact",

@@ -1,7 +1,7 @@
-//! The commit machinery (contracts ID2/ID3): catalog construction from
-//! config, batch → data-file writing, snapshot-native receipts, bounded
-//! optimistic-concurrency retry, and the marker-table state document.
-//! Library types stay BELOW this module and `errors.rs` (ID1).
+//! The commit machinery: catalog construction from config, batch → data-file
+//! writing, snapshot-native receipts, bounded optimistic-concurrency retry,
+//! and the marker-table state document. Library types stay BELOW this module
+//! and `errors.rs`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -27,7 +27,7 @@ use rdlt_connector::core::crash_point;
 use super::config::IcebergConfig;
 use super::errors::{classify, is_commit_conflict};
 
-/// Snapshot-summary receipt keys (ID2 — the persisted-format identity).
+/// Snapshot-summary receipt keys — the persisted commit identity.
 pub(crate) const PROP_PIPELINE: &str = "rdlt.pipeline";
 pub(crate) const PROP_LOAD_ID: &str = "rdlt.load-id";
 pub(crate) const PROP_COMMIT_SEQ: &str = "rdlt.commit-seq";
@@ -35,7 +35,7 @@ pub(crate) const PROP_COMMIT_SEQ: &str = "rdlt.commit-seq";
 /// the `_rdlt_state` marker table — see [`STATE_TABLE`]).
 pub(crate) const PROP_STATE_PREFIX: &str = "rdlt.state.";
 
-/// Bounded conflict retry (ID3).
+/// Bounded conflict-retry attempt count.
 const COMMIT_ATTEMPTS: u32 = 4;
 
 fn fatal(message: impl std::fmt::Display) -> DestError {
@@ -265,7 +265,7 @@ pub(crate) async fn append_commit(
             Ok(table) => return Ok(table),
             Err(e) if is_commit_conflict(&e) && attempt < COMMIT_ATTEMPTS => {
                 // Refresh and rebuild against the competitor's snapshot —
-                // never dropping THEIR history (ID3).
+                // never dropping THEIR history.
                 backoff(attempt).await;
                 current = catalog
                     .load_table(&ident)
@@ -526,9 +526,8 @@ async fn reconcile(
     use iceberg::transaction::AddColumn;
     let context = format!("table `{ident}`");
     // Schema commits conflict like any other commit: the bounded retry
-    // (ID3) reloads and RECOMPUTES the additions each attempt — a
-    // competitor may have added the same column, which converges to
-    // an empty addition set.
+    // reloads and RECOMPUTES the additions each attempt — a competitor may
+    // have added the same column, which converges to an empty addition set.
     for attempt in 0..COMMIT_ATTEMPTS {
         let table = catalog
             .load_table(ident)
@@ -788,8 +787,8 @@ mod tests {
         assert_ne!(state_key("abc123"), state_key("def456"));
     }
 
-    /// ID3: conflicts within the bound are retried (refresh → rebuild →
-    /// commit) and the commit lands.
+    /// Conflicts within the bound are retried (refresh → rebuild → commit)
+    /// and the commit lands.
     #[tokio::test]
     async fn commit_retries_through_transient_conflicts() {
         let catalog = ConflictCatalog::failing(COMMIT_ATTEMPTS - 1);
@@ -811,8 +810,8 @@ mod tests {
         );
     }
 
-    /// Review F2: reconcile's schema commit rides the SAME bounded
-    /// retry as data commits — one conflict must not fail the load.
+    /// Reconcile's schema commit rides the SAME bounded retry as data
+    /// commits — one conflict must not fail the load.
     #[tokio::test]
     async fn reconcile_retries_schema_commit_conflicts() {
         use iceberg::spec::{NestedField, PrimitiveType, Type};
@@ -844,8 +843,8 @@ mod tests {
         );
     }
 
-    /// Review F6: the state-write exhaustion diagnostic is REACHABLE —
-    /// the final conflict returns the typed attempts-exhausted error.
+    /// The state-write exhaustion diagnostic is REACHABLE — the final
+    /// conflict returns the typed attempts-exhausted error.
     #[tokio::test]
     async fn write_state_exhaustion_is_typed() {
         let catalog = ConflictCatalog::failing(u32::MAX);
@@ -862,8 +861,8 @@ mod tests {
         assert_eq!(catalog.commits.load(Ordering::SeqCst), COMMIT_ATTEMPTS);
     }
 
-    /// ID3: exhaustion is a TYPED error naming the table and the
-    /// attempt bound — never an unbounded loop.
+    /// Exhaustion is a TYPED error naming the table and the attempt bound —
+    /// never an unbounded loop.
     #[tokio::test]
     async fn commit_exhaustion_is_typed() {
         let catalog = ConflictCatalog::failing(u32::MAX);

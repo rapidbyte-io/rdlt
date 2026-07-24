@@ -1,6 +1,6 @@
 //! HTTP execution: request build, auth attachment, classification, pacing,
-//! bounded Retry-After waits (contract RS3 — the source classifies, the
-//! ENGINE retries; in-source waits are bounded, never free loops).
+//! bounded Retry-After waits. The source classifies errors and the ENGINE retries;
+//! any in-source wait is bounded by construction, never a free retry loop.
 
 pub mod auth;
 pub mod secret;
@@ -50,7 +50,7 @@ impl RestClient {
         &self.http
     }
 
-    /// Pacing floor (RS3): at least `min_interval` between request sends.
+    /// Pacing floor: at least `min_interval` between request sends.
     async fn pace(&self) {
         if self.min_interval.is_zero() {
             return;
@@ -75,9 +75,9 @@ impl RestClient {
         &self,
         build: impl Fn(&reqwest::Client) -> reqwest::RequestBuilder,
     ) -> Result<reqwest::Response, SourceError> {
-        // Bounded by construction (RS3): at most ONE Retry-After wait and at
-        // most one auth re-fetch per send — never a free loop; persistent
-        // rate limiting surfaces to the engine's budget with the header value.
+        // Bounded by construction: at most ONE Retry-After wait and at most one
+        // auth re-fetch per send — never a free loop; persistent rate limiting
+        // surfaces to the engine's budget with the header value.
         let mut rate_limit_waited = false;
         let mut auth_retried = false;
         loop {
@@ -93,7 +93,7 @@ impl RestClient {
                 return Ok(response);
             }
             // 401 once-through PER SEND: a refreshable credential re-fetches
-            // and the loop retries exactly once; a second 401 is fatal (RS3).
+            // and the loop retries exactly once; a second 401 is fatal.
             if status == reqwest::StatusCode::UNAUTHORIZED
                 && !auth_retried
                 && self.auth.on_unauthorized().await?
@@ -168,8 +168,10 @@ pub(crate) fn classify_reqwest(error: reqwest::Error) -> SourceError {
     SourceError::transient(error)
 }
 
-/// The S3 classification, from parts (the response body may already be
-/// consumed by the time an undeclared error status is classified).
+/// Classify an undeclared HTTP error status from its parts: 429 is rate-limited
+/// (carrying any Retry-After), a 5xx status is transient, everything else is fatal.
+/// Taken from parts because the response body may already be consumed by the time an
+/// undeclared error status is classified.
 pub(crate) fn classify_status(
     status: reqwest::StatusCode,
     retry_after: Option<Duration>,

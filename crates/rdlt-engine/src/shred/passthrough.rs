@@ -1,4 +1,4 @@
-//! Arrow passthrough — the shredder's sibling fast path (contract clause E7).
+//! Arrow passthrough — the shredder's sibling fast path.
 //!
 //! Already-structured batches are NOT re-shredded: the batch's arrow schema maps
 //! onto the logical schema, the SAME registry/policy seam governs evolution, and the
@@ -6,9 +6,9 @@
 //! arrow type equals the table's current logical type pass through zero-copy
 //! (`Arc` clone); when cross-batch widening or an arrow representation difference
 //! (Large* variants, timestamp unit/zone) changed a column's type, its values are
-//! cast LOSSLESSLY to the current type — never semantically coerced (clause E7).
+//! cast LOSSLESSLY to the current type — never semantically coerced.
 //! Structured streams carry no per-row identity (no `_rdlt_id`) — which is why
-//! Keyless Merge is rejected for them; keyed structured merge lands per the feature-006 amendment (clause B4).
+//! Keyless Merge is rejected for them; keyed structured merge is supported.
 
 use std::sync::Arc;
 
@@ -79,7 +79,7 @@ pub(crate) fn passthrough_items(
             (SchemaChange::WidenColumn { name, .. }, _) => {
                 return Err(RdltError::config(format!(
                     "table `{table}` column `{name}`: Discard policies cannot filter \
-                     value-level type changes on structured streams (clause E7); use \
+                     value-level type changes on structured streams; use \
                      Evolve or Freeze"
                 )));
             }
@@ -184,7 +184,7 @@ fn schema_from_arrow(
         let ty = column_type_from_arrow(field.data_type()).map_err(|reason| {
             RdltError::config(format!(
                 "table `{table}` column `{}`: unmappable arrow type {} ({reason}) — \
-                 never coerced silently (clause E7)",
+                 never coerced silently",
                 field.name(),
                 field.data_type()
             ))

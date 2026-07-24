@@ -18,10 +18,10 @@
 //! # }
 //! ```
 //!
-//! Connector features: `rest` (declarative REST source), `duckdb`, `postgres`,
-//! `postgres-source`, `file`, `parquet`. The bundled connectors live under
-//! [`connector`], one module per SYSTEM — e.g. `rdlt::connector::postgres`
-//! carries `source`, `dest`, and `tls` together.
+//! Connector features: `rest` (declarative REST source), `duckdb`, `postgres`
+//! (with `postgres-source` / `postgres-dest` narrowings), `file`, `parquet`, and
+//! `iceberg`. The bundled connectors live under [`connector`], one module per SYSTEM —
+//! e.g. `rdlt::connector::postgres` carries `source`, `dest`, and `tls` together.
 
 mod builder;
 
@@ -34,7 +34,7 @@ pub use rdlt_core::{
 /// The bundled connectors, one module per system — the same pattern as the
 /// crates themselves (`rdlt-connector-<system>`). A system module exposes
 /// everything it has: `connector::postgres::{source, dest, tls}`,
-/// `connector::rest::RestSource`, `connector::duckdb::DuckDb`, ….
+/// `connector::rest::RestSource`, `connector::duckdb::DuckDb`, etc.
 pub mod connector {
     #[cfg(feature = "duckdb")]
     pub use rdlt_connector_duckdb as duckdb;
@@ -45,9 +45,9 @@ pub mod connector {
     #[cfg(feature = "iceberg")]
     pub use rdlt_connector_iceberg as iceberg;
 
-    /// Frozen alias (015): the parquet destination lives in the file
-    /// family; `rdlt::connector::parquet::ParquetDir` keeps resolving for
-    /// consumers of the frozen `parquet` feature spelling.
+    /// Frozen alias: the parquet destination lives in the file family;
+    /// `rdlt::connector::parquet::ParquetDir` keeps resolving for consumers
+    /// of the frozen `parquet` feature spelling.
     #[cfg(feature = "parquet")]
     pub use rdlt_connector_file as parquet;
 

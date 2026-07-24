@@ -1,9 +1,9 @@
-//! # rdlt-bench — the declarative benchmark harness (feature 012)
+//! # rdlt-bench — the declarative benchmark harness
 //!
 //! Cells are data (`benches/cells/*.toml`); this crate is the one protocol that
-//! runs them (contract bench-harness.md BH1–BH8). Library + thin binary so the
-//! harness's own logic (loaders, stats, gate verdicts, report splicing) is
-//! unit-testable under nextest without containers.
+//! runs them. Library + thin binary so the harness's own logic (loaders, stats,
+//! gate verdicts, report splicing) is unit-testable under nextest without
+//! containers.
 //!
 //! Dev-only (`publish = false`); measures the product, never ships with it.
 
@@ -18,8 +18,8 @@ pub mod report;
 pub mod runner;
 pub mod sample;
 
-/// Harness errors: one type, offender always named in the message (BH1 — a
-/// bad cell file must say which file and which cell).
+/// Harness errors: one type, offender always named in the message — a bad
+/// cell file must say which file and which cell.
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
 pub struct BenchError(pub String);

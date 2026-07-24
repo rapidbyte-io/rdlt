@@ -1,4 +1,4 @@
-//! Slab arena: the streaming shred path's JSON representation (feature 003 R24).
+//! Slab arena: the streaming shred path's JSON representation.
 //!
 //! One arena per pushed slab. Parsing goes through serde_json's OWN parser via a
 //! `DeserializeSeed` — every lexical edge case (escapes, surrogates, number

@@ -1,4 +1,4 @@
-//! # rdlt-source-postgres — bundled PostgreSQL source
+//! # PostgreSQL source
 //!
 //! Declarative (YAML) Postgres source: catalog reflection publishes declared
 //! schemas, rows stream as typed Arrow batches decoded straight from the
@@ -6,8 +6,7 @@
 //! cursor-column incremental has dlt-parity boundary semantics with
 //! mid-table checkpointed resume. Depends on the SPI only.
 //!
-//! Contracts: `specs/005-postgres-source/contracts/{source-config,type-mapping}.md`.
-//! Error policy (SPI clause S3): classify Transient/Fatal, never retry here.
+//! Error policy: classify Transient/Fatal, never retry here.
 
 pub(crate) mod cdc;
 pub mod config;
@@ -33,9 +32,9 @@ use errors::Phase;
 use rdlt_connector::core::crash_point;
 use reflect::ReflectedTable;
 
-/// Fail-point registry (003 gate G2.2, feature 005 FR-009): every
-/// `crash_point!` site in this crate — the source read/checkpoint path.
-/// The crash sweep pins and iterates exactly this list, both passes.
+/// Fail-point registry: every `crash_point!` site in this crate — the source
+/// read/checkpoint path. The crash sweep pins and iterates exactly this list,
+/// both passes.
 #[cfg(feature = "failpoints")]
 #[doc(hidden)]
 pub const FAIL_POINTS: &[&str] = &[
@@ -45,8 +44,8 @@ pub const FAIL_POINTS: &[&str] = &[
     "pg.src.before_checkpoint",
 ];
 
-/// CDC fail-point registry (feature 009, contract O6) — the CDC sweep pins
-/// and iterates exactly this list, both passes.
+/// CDC fail-point registry — the CDC sweep pins and iterates exactly this
+/// list, both passes.
 #[cfg(feature = "failpoints")]
 #[doc(hidden)]
 pub const CDC_FAIL_POINTS: &[&str] = &[
@@ -66,7 +65,7 @@ pub mod testhook {
 
     pub use crate::source::reflect::{ReflectedColumn, ReflectedTable};
 
-    /// CDC lifecycle surface for the integration suites (feature 009).
+    /// CDC lifecycle surface for the integration suites.
     pub use crate::source::cdc::slot as cdc_slot;
 
     pub async fn reflect_for_tests(
@@ -265,11 +264,11 @@ pub mod testhook {
 #[derive(Debug)]
 pub struct PostgresSource {
     config: PostgresConfig,
-    /// Reflection runs once per run (research R3): `streams()` fills it, every
-    /// `read()` reuses it. Drift after this point surfaces as typed errors.
+    /// Reflection runs once per run: `streams()` fills it, every `read()`
+    /// reuses it. Drift after this point surfaces as typed errors.
     reflected: tokio::sync::OnceCell<BTreeMap<String, ReflectedTable>>,
-    /// CDC run state (feature 009): slot lifecycle, the shared snapshot
-    /// transaction, the run's target-LSN pin, and ack accumulation.
+    /// CDC run state: slot lifecycle, the shared snapshot transaction, the
+    /// run's target-LSN pin, and ack accumulation.
     cdc_runtime: cdc::Runtime,
 }
 
@@ -342,12 +341,12 @@ impl PostgresSource {
     }
 }
 
-/// Open one connection through the shared TLS policy (feature 006, contract
-/// tls-policy.md): conn parse failure is Fatal (never the Transient retry
-/// path); the effective policy resolves from the parsed sslmode + the
-/// config's `tls:` block; verification failures are Fatal (retries don't
-/// mint certificates), network-shaped failures Transient (E5). Enforcement
-/// lives HERE so it holds even for configs built without `validate`
+/// Open one connection through the shared TLS policy: conn parse failure is
+/// Fatal (never the Transient retry path); the effective policy resolves from
+/// the parsed sslmode + the config's `tls:` block; verification failures are
+/// Fatal (retries don't mint certificates), network-shaped failures
+/// Transient. Enforcement lives HERE so it holds even for configs built
+/// without `validate`
 /// (`PostgresConfig` has pub fields).
 pub(crate) async fn connect(config: &PostgresConfig) -> Result<Client, SourceError> {
     let crate::tls::ParsedConn { pg, policy } =
@@ -390,10 +389,9 @@ impl Source for PostgresSource {
             let table = &reflected[name];
             let owned_config = self.stream_config(name);
             let table_config = owned_config.as_ref();
-            // CDC table streams (feature 009): keyed structured streams, the
-            // key from the replica-identity preflight (O1); cursor config is
-            // impossible here (C1, validated at parse). Query streams stay on
-            // their own machinery.
+            // CDC table streams: keyed structured streams, the key from the
+            // replica-identity preflight; cursor config is impossible here
+            // (validated at parse). Query streams stay on their own machinery.
             if let Some(cdc_config) = &self.config.cdc
                 && self.config.query_config(name).is_none()
             {
@@ -428,9 +426,9 @@ impl Source for PostgresSource {
                 );
                 continue;
             }
-            // Validate selection + hints + cursor at publish time (contract
-            // rule 3 + 006 hints): fail fast, before any data moves. The
-            // cursor check runs POST-hint (a hint may change capability).
+            // Validate selection + hints + cursor at publish time: fail fast,
+            // before any data moves. The cursor check runs POST-hint (a hint
+            // may change capability).
             let hinted = reflect::hinted_columns(table, table_config)?;
             let pk: Vec<String> = match table_config.and_then(|t| t.primary_key.clone()) {
                 Some(overridden) => overridden,
@@ -461,10 +459,9 @@ impl Source for PostgresSource {
                         ),
                     ));
                 }
-                // Lag validation (feature 007, contract L2), all typed and
-                // early: closed boundary (also caught at config parse),
-                // defined cursor-family subtraction, and a primary key so
-                // the keyed-Merge dedup path exists (research R4).
+                // Lag validation, all typed and early: closed boundary (also
+                // caught at config parse), defined cursor-family subtraction,
+                // and a primary key so the keyed-Merge dedup path exists.
                 if let Some(lag) = &cursor.lag {
                     if cursor.boundary == config::Boundary::Open {
                         return Err(errors::fatal(
@@ -490,7 +487,7 @@ impl Source for PostgresSource {
                             format!(
                                 "cursor `{}`: lag requires a primary key (reflected or \
                                  declared) — window rows re-deliver and dedup by key \
-                                 under Merge (contract cursor-lag.md L2)",
+                                 under Merge",
                                 cursor.column
                             ),
                         ));
@@ -518,7 +515,7 @@ impl Source for PostgresSource {
         let owned_config = self.stream_config(&name);
         let table_config = owned_config.as_ref();
         let owned_columns = reflect::hinted_columns(table, table_config)?;
-        // US4 lossy visibility (type-mapping contract): each [documented-lossy]
+        // Lossy visibility: each [documented-lossy]
         // column announces itself ONCE per read on a dedicated target, so
         // embedders can subscribe to `rdlt::lossy` without log-scraping.
         for column in &owned_columns {
@@ -529,7 +526,7 @@ impl Source for PostgresSource {
                     column = %column.name,
                     source_type = %column.type_name,
                     "documented-lossy mapping: values arrive via a textual or \
-                     normalizing conversion (see contracts/type-hints.md)"
+                     normalizing conversion"
                 );
             }
         }
@@ -552,9 +549,9 @@ impl Source for PostgresSource {
             })
             .collect();
 
-        // CDC dispatch (feature 009): table streams read through the
-        // snapshot/change-pass machinery; everything below (cursor columns,
-        // COPY-per-read) is the non-CDC path.
+        // CDC dispatch: table streams read through the snapshot/change-pass
+        // machinery; everything below (cursor columns, COPY-per-read) is the
+        // non-CDC path.
         if let Some(cdc_config) = &self.config.cdc
             && self.config.query_config(&name).is_none()
         {
@@ -579,8 +576,8 @@ impl Source for PostgresSource {
             .await;
         }
 
-        // Incremental setup (research R5): resume state, boundary matrix,
-        // ordered read + tracker. Snapshot streams skip all of it.
+        // Incremental setup: resume state, boundary matrix, ordered read +
+        // tracker. Snapshot streams skip all of it.
         let cursor_config = table_config.and_then(|t| t.cursor.as_ref());
         let mut incremental: Option<(cursor::Tracker, config::CursorConfig)> = None;
         let (where_sql, order_sql) = match cursor_config {
@@ -643,8 +640,8 @@ impl Source for PostgresSource {
                     )?),
                     None => None,
                 };
-                // Lag (feature 007, contract cursor-lag.md L1): widen the
-                // RESUMED window only — run 1 (no watermark) is unaffected,
+                // Lag: widen the RESUMED window only — run 1 (no watermark)
+                // is unaffected,
                 // and the saved watermark is never lowered. The window
                 // re-read forces closed semantics regardless of how the
                 // stored state's boundary flag landed.
@@ -710,7 +707,7 @@ impl Source for PostgresSource {
         };
 
         let select = match self.config.query_config(&name) {
-            // Query stream (006): the wrapped user SQL is the FROM clause.
+            // Query stream: the wrapped user SQL is the FROM clause.
             Some(query) => sqlgen::select_sql_from(
                 &format!("( {} ) AS q", query.sql.trim().trim_end_matches(';')),
                 &columns,
@@ -743,7 +740,7 @@ impl Source for PostgresSource {
                 .map_err(|e| errors::classify(Phase::Copy, Some(&name), &e))?;
             let Some(chunk) = chunk else { break };
             // Simulated mid-stream connection loss: Transient — the ENGINE
-            // retries the whole read from committed state (E5/E6/S1).
+            // retries the whole read from committed state.
             crash_point!(
                 "pg.src.mid_copy",
                 Err(errors::transient(
@@ -757,7 +754,7 @@ impl Source for PostgresSource {
                 .map_err(|e| errors::fatal(Phase::Decode, Some(&name), e))?;
             for batch in batches {
                 if !push_tracked(&mut req, &mut incremental, batch, &mut pushed_any).await? {
-                    return Ok(()); // cancellation (clause S4); dropping the
+                    return Ok(()); // cancellation; dropping the
                     // client aborts the server-side COPY
                 }
             }
@@ -770,7 +767,7 @@ impl Source for PostgresSource {
             return Ok(());
         }
         if !pushed_any && req.out.arrow(decoder.empty_batch()).await.is_err() {
-            return Ok(()); // still cancellation (S4)
+            return Ok(()); // still cancellation
         }
         match incremental {
             None => {
@@ -806,7 +803,7 @@ impl Source for PostgresSource {
 }
 
 /// Push one decoded batch, routed through the incremental tracker when
-/// present (dedup → push → intermediate checkpoint, in that order — S2).
+/// present (dedup → push → intermediate checkpoint, in that order).
 /// Returns Ok(false) on cancellation.
 async fn push_tracked(
     req: &mut ReadRequest,
@@ -845,8 +842,8 @@ async fn push_tracked(
     }
 }
 
-/// JSON Schema GENERATED from the config structs (feature 006, US4) — the
-/// declared schema and the parser cannot drift.
+/// JSON Schema GENERATED from the config structs — the declared schema and
+/// the parser cannot drift.
 pub fn config_schema() -> serde_json::Value {
     serde_json::to_value(schemars::schema_for!(config::PostgresConfig)).expect("schema serializes")
 }
@@ -873,8 +870,8 @@ mod tests {
 
     #[test]
     fn tls_contradiction_rejected_at_config_validation() {
-        // Feature 006: sslmode=require is ACCEPTED (TLS is wired); the
-        // config-level rejection is now the contradiction rule.
+        // sslmode=require is ACCEPTED (TLS is wired); the config-level
+        // rejection is now the contradiction rule.
         assert!(
             PostgresConfig::from_yaml("conn: \"postgresql://u:p@localhost/db?sslmode=require\"\n")
                 .is_ok(),

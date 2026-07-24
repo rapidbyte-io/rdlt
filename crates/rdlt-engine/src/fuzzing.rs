@@ -1,4 +1,4 @@
-//! Fuzzing entry points (feature 003 R22). `#[doc(hidden)]` — these exist ONLY
+//! Fuzzing entry points. `#[doc(hidden)]` — these exist ONLY
 //! so the out-of-workspace `fuzz/` targets can reach `pub(crate)` hot paths;
 //! they are not API and may change at any time.
 
@@ -42,13 +42,13 @@ pub fn shred_slab(bytes: &[u8]) {
     }
 }
 
-/// Arrow type mapping (clause E7): every `DataType` either maps or returns a
+/// Arrow type mapping: every `DataType` either maps or returns a
 /// typed error — never panics, never silently coerces.
 pub fn map_arrow_type(dt: &arrow::datatypes::DataType) {
     let _ = crate::shred::passthrough::column_type_from_arrow(dt);
 }
 
-// ---- bench entry points (iai_hotpath / perf gate G1) ----
+// ---- bench entry points (iai_hotpath / perf gate) ----
 
 /// Production (tape) shred path over one raw slab; returns emitted row count.
 pub fn bench_shred_bytes(bytes: &[u8]) -> u64 {

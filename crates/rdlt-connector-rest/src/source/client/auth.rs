@@ -1,8 +1,8 @@
 //! Credential attachment + lifecycle. Schemes: none, bearer, arbitrary
 //! header, basic, api_key (header|query), OAuth2 client-credentials (lazy
 //! single-flight token cache, expiry margin, ONE 401 re-fetch then fatal —
-//! spec edge case: a post-refresh 401 means wrong credentials, never a
-//! retry loop). Secrets attach via [`Secret::reveal`] at the request only.
+//! a post-refresh 401 means wrong credentials, never a retry loop). Secrets
+//! attach via [`Secret::reveal`] at the request only.
 
 use std::time::{Duration, Instant};
 
@@ -106,8 +106,10 @@ impl AuthProvider {
         if let Some(audience) = audience {
             form.push(("audience", audience.clone()));
         }
-        // The token endpoint rides the SAME classification path as data
-        // requests: 5xx/network = transient (engine budget), 4xx = fatal.
+        // The token endpoint is fetched with a fresh reqwest client — it does NOT
+        // go through this source's `RestClient`, so it gets no pacing or default
+        // headers. It reuses only the shared error classification: 5xx/network =
+        // transient (engine budget), 4xx = fatal.
         let response = reqwest::Client::new()
             .post(token_url)
             .form(&form)

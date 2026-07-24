@@ -1,4 +1,4 @@
-//! T014 Spark read-back (contract ID8 — DEEP tier only, `make test
+//! Spark read-back (DEEP tier only, `make test
 //! TARGET=deep`). The reference JVM implementation reads rdlt-written
 //! tables through the SAME REST catalog. Gated on RDLT_DEEP=1 (Spark
 //! image + Maven-resolved Iceberg runtime are heavyweight); skips

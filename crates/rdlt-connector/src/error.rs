@@ -1,8 +1,7 @@
-//! Connector error taxonomy (contracts/connector-spi.md).
+//! Connector error taxonomy.
 //!
 //! Connectors classify; the engine acts: `Transient`/`RateLimited` are retried with
-//! backoff (clause E5), `Fatal` aborts the run. Connectors never write retry loops
-//! (clause S3).
+//! backoff, `Fatal` aborts the run. Connectors never write retry loops of their own.
 
 use std::time::Duration;
 

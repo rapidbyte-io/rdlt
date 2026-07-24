@@ -1,4 +1,4 @@
-//! Schema-change policies (spec FR-010, design doc §5.4).
+//! Schema-change policies.
 
 use std::collections::BTreeMap;
 

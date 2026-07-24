@@ -1,5 +1,5 @@
-//! Polaris + RUSTFS fixture (research R8 + the T001 addendum — every fact
-//! below was VERIFIED live at the environment gate). Host networking with
+//! Polaris + RUSTFS fixture (every image, port, and credential fact below
+//! was VERIFIED live against the containers). Host networking with
 //! randomized ports (the vended s3 endpoint must be reachable by Polaris
 //! AND the test client — container-internal DNS would vend unreachable
 //! endpoints). SKIP-NOT-FAIL without a runtime socket.
@@ -106,7 +106,7 @@ impl CatalogFixture {
         let api_port = free_port();
         let health_port = free_port();
 
-        // RUSTFS on the host network at a random port (T001: RUSTFS_ADDRESS
+        // RUSTFS on the host network at a random port (RUSTFS_ADDRESS
         // is honored; anonymous requests answer S3-style XML).
         // Pinned tag: a floating `latest` re-resolves whenever upstream
         // pushes, failing the gate without any change on our side.
@@ -124,7 +124,7 @@ impl CatalogFixture {
         // get S3-style error XML — never 2xx).
         wait_http_answers(&format!("{s3_endpoint}/"), 100, false).await;
 
-        // Polaris (T001 facts): bootstrap credentials REALM,id,secret;
+        // Polaris: bootstrap credentials REALM,id,secret;
         // quarkus ports remapped; server-side S3 access via AWS_* env.
         let polaris = run_container(
             "polaris",
@@ -144,7 +144,7 @@ impl CatalogFixture {
         );
         let base = format!("http://127.0.0.1:{api_port}");
         // Health must be 2xx: Quarkus answers 503 DOWN while Polaris is
-        // still initializing (review F7) — any-answer is not readiness.
+        // still initializing — any-answer is not readiness.
         wait_http_answers(
             &format!("http://127.0.0.1:{health_port}/q/health"),
             400,
@@ -153,13 +153,13 @@ impl CatalogFixture {
         .await;
 
         // Bucket + catalog + grants via the ONE bootstrap implementation
-        // shared with the bench fixture (review F10 — the Rust copy had
-        // already diverged from benches/fixtures/polaris_bootstrap.py).
+        // shared with the bench fixture — a second Rust copy would drift from
+        // benches/fixtures/polaris_bootstrap.py.
         // Host networking: the client and Polaris see the same endpoint.
         bootstrap_catalog(&base, &s3_endpoint);
 
         let http = reqwest::Client::new();
-        // OAuth (T001): client_credentials at /api/catalog/v1/oauth/tokens.
+        // OAuth: client_credentials at /api/catalog/v1/oauth/tokens.
         let token: serde_json::Value = http
             .post(format!("{base}/api/catalog/v1/oauth/tokens"))
             .form(&[

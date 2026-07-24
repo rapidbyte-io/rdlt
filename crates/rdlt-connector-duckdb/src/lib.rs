@@ -6,9 +6,9 @@
 
 pub mod dest;
 
-// Root re-exports: the crate was destination-only at the root before the
-// feature-013 `dest` module restructure — keep the old import paths working
-// (013 review finding 10).
+// Root re-exports: the crate exposed these types at the root before they
+// moved into the `dest` module — re-export to keep the old import paths
+// working.
 #[cfg(feature = "failpoints")]
 pub use dest::FAIL_POINTS;
 pub use dest::{DestOptions, DuckDb, MergeStrategy, TableOptions};

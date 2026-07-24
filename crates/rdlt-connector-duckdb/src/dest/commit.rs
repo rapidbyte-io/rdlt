@@ -1,12 +1,12 @@
-//! The load-session protocol (feature 013: strategy arms via the shared
-//! sqlcore shapes — this destination owns SQL execution and DDL text only).
+//! The load-session protocol: strategy arms run through the shared sqlcore
+//! shapes — this destination owns SQL execution and DDL text only.
 //!
 //! Staging model: writes land in TEMP tables (`_rdlt_stage_*`) on the
-//! session's connection. Temp tables die with the connection, which yields
-//! clause D4 (staged teardown on a fresh `open`) for free. `commit` moves
+//! session's connection. Temp tables die with the connection, so a fresh
+//! `open` tears down any orphaned stage for free. `commit` moves
 //! stage → target through the strategy arms, upserts the state document, and
 //! records the `(load_id, commit_seq)` receipt — all in ONE DuckDB
-//! transaction (clauses D1–D3).
+//! transaction, so state and data become visible atomically.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
@@ -35,10 +35,10 @@ pub(super) struct DuckDbSession {
     pub(super) conn: Mutex<Connection>,
     pub(super) tables: BTreeMap<TableName, (TableSchema, WriteMode)>,
     pub(super) options: DestOptions,
-    /// Single-unit discipline, PER TABLE (MR5 / scd2 S6 — the rule and its
-    /// message live in sqlcore; the bookkeeping mirrors the postgres session
-    /// clause for clause). Marked only AFTER the unit's transaction commits;
-    /// re-marked on the D3 replay branch.
+    /// Single-unit discipline, PER TABLE — the rule and its message live in
+    /// sqlcore; the bookkeeping mirrors the postgres session. Marked only
+    /// AFTER the unit's transaction commits, and re-marked when a committed
+    /// unit is replayed.
     pub(super) single_unit_done: BTreeSet<TableName>,
 }
 
@@ -67,12 +67,11 @@ impl DuckDbSession {
     }
 }
 
-/// `CREATE [UNIQUE] INDEX IF NOT EXISTS` with the same `rdlt_ix_` naming
-/// convention as postgres (M5).
-/// The pre-rename spelling of a unique merge-identity index (this branch's
-/// earlier commits used `rdlt_ix_` for unique too) — dropped before creating
-/// the correctly-prefixed one so a database written mid-branch doesn't carry
-/// two identical unique ART indexes forever (013 review finding 7).
+/// The old spelling of a unique merge-identity index: databases written
+/// before the unique prefix was introduced named unique indexes with the
+/// plain `rdlt_ix_` prefix. The old name is dropped before creating the
+/// correctly-prefixed one, so such a database doesn't carry two identical
+/// unique ART indexes forever.
 fn legacy_unique_index_name(table: &str, columns: &[String]) -> String {
     format!(
         "{}_{}",
@@ -121,8 +120,9 @@ impl LoadSession for DuckDbSession {
                     .map_err(fatal)?;
                 conn.execute_batch(&create_table_sql(&stage, &schema, true))
                     .map_err(fatal)?;
-                // Migrations (clause D5): add new columns; widen changed ones with a
-                // cast — DuckDB's ALTER … SET DATA TYPE migrates existing rows.
+                // Additive schema migration: add new columns; widen changed
+                // ones with a cast — DuckDB's ALTER … SET DATA TYPE migrates
+                // existing rows.
                 for (target, is_stage) in [
                     (schema.table.as_str().to_owned(), false),
                     (stage.clone(), true),
@@ -152,8 +152,8 @@ impl LoadSession for DuckDbSession {
                 Ok(())
             })?;
         }
-        // Feature 013: the option-vs-mode rules live in sqlcore (SM1) — one
-        // rule set, identical typed errors on every SQL destination.
+        // The option-vs-mode rules live in sqlcore — one rule set, identical
+        // typed errors on every SQL destination.
         if !matches!(mode, WriteMode::Merge { .. }) {
             sqlplan::validate_non_merge(&self.options, schema.table.as_str()).map_err(fatal)?;
         }
@@ -177,11 +177,11 @@ impl LoadSession for DuckDbSession {
                 let scd2 = self.options.scd2_for(&table_str);
                 // Validity columns on the TARGET only (the stage carries the
                 // stream's shape); additive for pre-existing scd2 tables.
-                // DDL difference vs postgres (destination-owned, recorded in
-                // the 013 matrix): DuckDB rejects ADD COLUMN with a NOT NULL
-                // constraint. The insert arm always supplies the boundary
-                // value, so the constraint was belt only; DEFAULT now() still
-                // backfills pre-existing rows on a table adopting scd2.
+                // DDL difference vs postgres: DuckDB rejects ADD COLUMN with a
+                // NOT NULL constraint. The insert arm always supplies the
+                // boundary value, so the constraint was belt only; DEFAULT
+                // now() still backfills pre-existing rows on a table adopting
+                // scd2.
                 let stmts: Vec<String> = [
                     (&scd2.valid_from, "TIMESTAMPTZ DEFAULT now()"),
                     (&scd2.valid_to, "TIMESTAMPTZ"),
@@ -202,9 +202,9 @@ impl LoadSession for DuckDbSession {
                     Ok(())
                 })?;
             }
-            // Index plan (008 data-model + 010 scope index) — shared shape;
-            // this destination owns only the SQL text. M3: pre-existing
-            // duplicate keys under upsert get the typed naming error.
+            // Index plan (identity indexes + scope index) — shared shape;
+            // this destination owns only the SQL text. Pre-existing duplicate
+            // keys under upsert surface as the typed naming error.
             let index_stmts: Vec<(bool, Vec<String>, String)> =
                 sqlplan::index_plan(&self.options, &table_str, key, has_identity, is_child)
                     .into_iter()
@@ -281,7 +281,7 @@ impl LoadSession for DuckDbSession {
 
         let marks = self.with_conn(move |conn| {
             let tx = conn.transaction().map_err(classify)?;
-            // Clause D3: idempotence by (load_id, commit_seq).
+            // Idempotence key: (load_id, commit_seq).
             let already: u64 = tx
                 .query_row(
                     &format!(
@@ -320,7 +320,7 @@ impl LoadSession for DuckDbSession {
                 };
             let mut marks: Vec<TableName> = Vec::new();
             if already > 0 {
-                // D3 replay of a unit that DID commit server-side: the merge
+                // Replay of a unit that DID commit server-side: the merge
                 // SQL never re-runs, but the single-unit discipline must
                 // still count this unit — the redelivered stage carries the
                 // same rows the committed one did.
@@ -348,14 +348,13 @@ impl LoadSession for DuckDbSession {
             }
 
             for (table, (schema, mode)) in &tables {
-                // Feature 006: a schema without the per-row identity column
-                // is a STRUCTURED stream's table — merge (if requested) goes
-                // by key.
+                // A schema without the per-row identity column is a STRUCTURED
+                // stream's table — merge (if requested) goes by key.
                 let schema_has_identity =
                     schema.columns.iter().any(|c| c.name == system_columns::ID);
                 let target = quote(table.as_str());
                 let stage = quote(&stage_name(table));
-                // Publishes are ALWAYS by name (finding #4).
+                // Publishes are ALWAYS by name, never positional.
                 let cols = column_list(schema);
                 match mode {
                     WriteMode::Append => {
@@ -375,9 +374,9 @@ impl LoadSession for DuckDbSession {
                         .map_err(fatal)?;
                     }
                     WriteMode::Merge { key } => {
-                        // Feature 013: the strategy arms are the SHARED
-                        // sqlcore shapes through the DuckDB dialect — the
-                        // same plan the postgres destination executes.
+                        // The strategy arms are the SHARED sqlcore shapes
+                        // through the DuckDB dialect — the same plan the
+                        // postgres destination executes.
                         let strategy = options.strategy_for(table.as_str());
                         let scoped = options.merge_key_for(table.as_str());
                         let scd2 = (strategy == MergeStrategy::Scd2)
@@ -385,18 +384,18 @@ impl LoadSession for DuckDbSession {
                         let retire = scd2.as_ref().is_some_and(|s| {
                             s.absent == rdlt_connector_sqlcore::AbsentPolicy::Retire
                         });
-                        // Single-unit discipline, PER TABLE (MR5 + scd2 S6):
-                        // scope replacement and absent-retire interpret the
-                        // stage as "the complete truth" — sound only when
-                        // THIS TABLE's full feed arrives in one commit unit.
+                        // Single-unit discipline, PER TABLE: scope replacement
+                        // and absent-retire interpret the stage as "the
+                        // complete truth" — sound only when THIS TABLE's full
+                        // feed arrives in one commit unit.
                         if scoped.is_some() || retire {
                             if !staged_nonempty(&tx, table)? {
                                 continue; // nothing delivered for THIS table this unit
                             }
                             if single_unit_done.contains(table) {
-                                // 013 review finding 9: cite the rule that
-                                // FIRED — under scd2 the retire rule (S6)
-                                // governs even when a merge_key scopes it.
+                                // Name the rule that FIRED — under scd2 the
+                                // absent-retire rule governs even when a
+                                // merge_key scopes it.
                                 return Err(fatal(sqlplan::single_unit_violation(
                                     table.as_str(),
                                     scoped.is_some() && !retire,
@@ -404,9 +403,8 @@ impl LoadSession for DuckDbSession {
                             }
                             marks.push(table.clone());
                         }
-                        // Feature 010 (MR3/MR4): scope replacement runs
-                        // BEFORE the strategy arm, inside the same
-                        // transaction. NOT for scd2 (013 G1): there the
+                        // Scope replacement runs BEFORE the strategy arm,
+                        // inside the same transaction. NOT for scd2: there the
                         // merge_key scopes RETIREMENT inside the arm —
                         // deleting scope rows would destroy history.
                         if let Some(scope) = scoped
@@ -450,13 +448,15 @@ impl LoadSession for DuckDbSession {
                                 scd2_merge_sql(&plan, scd2)
                             }
                             (true, MergeStrategy::Upsert) => {
-                                // Unreachable: ensure_table rejected it (M7).
+                                // Unreachable: ensure_table rejects upsert on
+                                // a shredded stream.
                                 return Err(fatal(format!(
                                     "table `{table}`: upsert on a shredded stream"
                                 )));
                             }
                             (true, MergeStrategy::Scd2) => {
-                                // Unreachable: ensure_table rejected it (S1).
+                                // Unreachable: ensure_table rejects scd2 on a
+                                // shredded stream.
                                 return Err(fatal(format!(
                                     "table `{table}`: scd2 on a shredded stream"
                                 )));
@@ -476,7 +476,7 @@ impl LoadSession for DuckDbSession {
                     .map_err(fatal)?;
             }
 
-            // Clause D2: state persists in the SAME transaction as the data.
+            // State persists in the SAME transaction as the data.
             tx.execute(
                 &format!(
                     "INSERT OR REPLACE INTO {} VALUES (?, ?)",
@@ -493,9 +493,8 @@ impl LoadSession for DuckDbSession {
                 duckdb::params![meta.load_id.as_str(), meta.commit_seq as i64],
             )
             .map_err(fatal)?;
-            // The canonical redelivery window (pg-mirroring placement, 013
-            // review finding 5): everything published in ONE transaction; a
-            // crash at this edge must replay idempotently (D3).
+            // The redelivery window: everything is published in ONE
+            // transaction, so a crash at this edge must replay idempotently.
             crash_point!(
                 "duck.tx.commit",
                 Err(DestError::fatal("injected crash at duck.tx.commit"))
