@@ -76,6 +76,11 @@ impl PgSession {
 /// can borrow the session fields disjointly from `client`, which the live
 /// transaction holds mutably. Every decision + the order come from the planner;
 /// this renders each step's SQL through the PgDialect seam + shared renderers.
+/// Execute one planned step. Failures CLASSIFY by SQLSTATE (shared rule
+/// with the duckdb executor): environmental errors ride the engine's
+/// retry budget; deterministic classes (22/23/42) — a duplicate receipt's
+/// unique violation included, the idempotence-anomaly signal — fail
+/// loudly instead of burning retries.
 async fn execute_step(
     tx: &tokio_postgres::Transaction<'_>,
     pipeline: &PipelineId,
@@ -89,7 +94,7 @@ async fn execute_step(
         Step::ClearTarget { table } => {
             tx.batch_execute(&PgDialect.clear_table(&quote(table.as_str())))
                 .await
-                .map_err(transient)?;
+                .map_err(classify_stmt)?;
         }
         Step::InsertSelect { table } => {
             let (schema, _) = &tables[table];
@@ -97,14 +102,14 @@ async fn execute_step(
             let stage = quote(&stage_name(pipeline, table));
             tx.batch_execute(&insert_select_sql(&target, &column_list(schema), &stage))
                 .await
-                .map_err(transient)?;
+                .map_err(classify_stmt)?;
         }
         Step::ScopeReplace { table, scope } => {
             let target = quote(table.as_str());
             let stage = quote(&stage_name(pipeline, table));
             tx.batch_execute(&scope_replace_sql(&PgDialect, &target, &stage, scope))
                 .await
-                .map_err(transient)?;
+                .map_err(classify_stmt)?;
         }
         Step::MergeArm { table, arm } => {
             let (schema, mode) = &tables[table];
@@ -135,13 +140,13 @@ async fn execute_step(
                 root_schema,
             );
             for sql in render_arm(&plan, arm) {
-                tx.batch_execute(&sql).await.map_err(transient)?;
+                tx.batch_execute(&sql).await.map_err(classify_stmt)?;
             }
         }
         Step::TruncateStage { table } => {
             tx.batch_execute(&PgDialect.clear_table(&quote(&stage_name(pipeline, table))))
                 .await
-                .map_err(transient)?;
+                .map_err(classify_stmt)?;
         }
         Step::UpsertState => {
             // State travels in the SAME transaction as the data.
@@ -155,7 +160,7 @@ async fn execute_step(
                 &[&meta.state.pipeline.as_str(), &doc],
             )
             .await
-            .map_err(transient)?;
+            .map_err(classify_stmt)?;
         }
         Step::InsertReceipt => {
             tx.execute(
@@ -166,7 +171,7 @@ async fn execute_step(
                 &[&meta.load_id.as_str(), &(meta.commit_seq as i64)],
             )
             .await
-            .map_err(transient)?;
+            .map_err(classify_stmt)?;
         }
     }
     Ok(())

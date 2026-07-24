@@ -38,6 +38,14 @@ pub(crate) fn classify(context: &str, error: iceberg::Error) -> DestinationError
                 // Throttling gets its own channel so the engine can honor
                 // pacing instead of guessing with generic backoff.
                 Some(429) => DestinationError::rate_limited(format!("{context}: {rendered}"), None),
+                // Any other 4xx is the CLIENT's request being wrong —
+                // deterministic; retrying an identical request cannot
+                // win, so it must not burn the retry budget.
+                Some(status) if (400..500).contains(&status) => {
+                    DestinationError::fatal(format!("{context}: {rendered}"))
+                }
+                // 5xx and undecodable statuses (network faults, bodies
+                // merely quoting a status) ride the retry budget.
                 _ => DestinationError::transient(format!("{context}: {rendered}")),
             }
         }
@@ -146,6 +154,21 @@ mod tests {
             classify("catalog `c`", throttled),
             DestinationError::RateLimited { .. }
         ));
+        // Other 4xx client errors are deterministic: fatal, never retried.
+        for status in ["400 Bad Request", "422 Unprocessable Entity"] {
+            let error = iceberg::Error::new(
+                ErrorKind::Unexpected,
+                "Received response with unexpected status code",
+            )
+            .with_context("status", status.to_string());
+            assert!(
+                matches!(
+                    classify("catalog `c`", error),
+                    DestinationError::Fatal { .. }
+                ),
+                "{status} must be fatal"
+            );
+        }
         // 5xx stays transient.
         let error = iceberg::Error::new(
             ErrorKind::Unexpected,

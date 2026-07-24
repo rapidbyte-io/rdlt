@@ -66,7 +66,7 @@ pub(crate) fn transient(e: tokio_postgres::Error) -> DestinationError {
 /// win. Everything else stays transient (connection-shaped).
 pub(crate) fn classify_stmt(e: tokio_postgres::Error) -> DestinationError {
     match e.as_db_error() {
-        Some(db) if matches!(&db.code().code()[..2], "22" | "23" | "42") => {
+        Some(db) if crate::pgerror::is_permanent_statement_sqlstate(db.code().code()) => {
             DestinationError::fatal(describe(&e))
         }
         _ => DestinationError::transient(describe(&e)),

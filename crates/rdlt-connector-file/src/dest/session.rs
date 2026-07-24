@@ -126,7 +126,13 @@ impl FileSession {
         }
         let ext = self.format.extension();
         let partitioned = self.partition_by.is_some();
-        let frozen = self.format == DestFormat::Parquet && self.partition_by.is_none();
+        // The frozen any-top-level-parquet rule is LOCAL-ONLY (its stated
+        // scope): object stores always use the owned-parts rule, so a
+        // user-placed *.parquet under the table prefix is never ours to
+        // delete.
+        let frozen = self.location.is_local()
+            && self.format == DestFormat::Parquet
+            && self.partition_by.is_none();
         for (table, (_, mode)) in &self.tables {
             if matches!(mode, WriteMode::Replace) {
                 truncate::truncate_table(&self.location, table.as_str(), ext, partitioned, frozen)

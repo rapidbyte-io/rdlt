@@ -595,3 +595,73 @@ async fn literal_key_with_metacharacters_reads() {
     assert_eq!(files.len(), 1);
     assert_eq!(files[0].path, "lit/events[v1].jsonl");
 }
+
+/// Replace truncation on an OBJECT STORE must use the owned-parts rule
+/// only: a user-placed top-level `.parquet` under the table prefix — a
+/// file this destination never wrote — survives Replace loads. (The
+/// frozen any-top-level-parquet rule exists solely for local plain-
+/// parquet compatibility and must never run against a bucket.)
+#[tokio::test(flavor = "multi_thread")]
+async fn s3_replace_never_deletes_user_files() {
+    use rdlt_connector::core::WriteMode;
+    use rdlt_connector_file::FileSource;
+    use rdlt_connector_file::dest::{FileDest, FileDestConfig};
+    use rdlt_engine::{Engine, EngineConfig};
+
+    let Some(fixture) = S3Fixture::start().await else {
+        return;
+    };
+
+    // A foreign parquet file directly under the table prefix.
+    fixture
+        .put("lake/rep/events/mydata.parquet", b"not ours")
+        .await;
+
+    let data = tempfile::tempdir().expect("tempdir");
+    std::fs::write(data.path().join("a.jsonl"), "{\"id\":1}\n{\"id\":2}\n").expect("seed");
+    let source = FileSource::from_yaml(&format!(
+        "streams:\n  - name: events\n    format: jsonl\n    path: \"{}/*.jsonl\"\n",
+        data.path().display()
+    ))
+    .expect("config");
+    // Parquet format, no partitioning: exactly the shape that selects the
+    // frozen rule locally.
+    let dest = FileDest::from_config(
+        FileDestConfig::new("lake/rep").with_location(fixture.location_options()),
+    )
+    .expect("connect");
+
+    Engine::new(
+        {
+            let mut c = EngineConfig::new("s3-replace-preserve");
+            c.write_mode = WriteMode::Replace;
+            c
+        },
+        source,
+        dest,
+    )
+    .run()
+    .await
+    .expect("replace load succeeds");
+
+    let survivors = fixture
+        .location()
+        .list("lake/rep/events/*")
+        .await
+        .expect("list");
+    assert!(
+        survivors
+            .iter()
+            .any(|f| f.path.ends_with("events/mydata.parquet")),
+        "user file must survive Replace on an object store; keys: {:?}",
+        survivors.iter().map(|f| &f.path).collect::<Vec<_>>()
+    );
+    assert!(
+        survivors.iter().any(|f| f
+            .path
+            .rsplit('/')
+            .next()
+            .is_some_and(|n| n.starts_with("part-"))),
+        "the load's own part landed"
+    );
+}

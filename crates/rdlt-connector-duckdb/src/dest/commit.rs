@@ -98,6 +98,10 @@ fn staged_nonempty(
 /// Execute one planned [`Step`] in the publish transaction. Every decision +
 /// the order come from the planner; this renders each step's SQL through the
 /// DuckDialect seam + shared renderers and runs it on the session's connection.
+/// Execute one planned step. Failures CLASSIFY (shared rule with the
+/// postgres executor): environmental errors ride the engine's retry
+/// budget; deterministic ones — constraint violations included, e.g. a
+/// duplicate receipt, the idempotence-anomaly signal — fail loudly.
 fn execute_step(
     tx: &duckdb::Transaction<'_>,
     tables: &BTreeMap<TableName, (TableSchema, WriteMode)>,
@@ -110,20 +114,20 @@ fn execute_step(
     match step {
         Step::ClearTarget { table } => {
             tx.execute_batch(&DuckDialect.clear_table(&quote(table.as_str())))
-                .map_err(fatal)?;
+                .map_err(classify)?;
         }
         Step::InsertSelect { table } => {
             let (schema, _) = &tables[table];
             let target = quote(table.as_str());
             let stage = quote(&stage_name(table));
             tx.execute_batch(&insert_select_sql(&target, &column_list(schema), &stage))
-                .map_err(fatal)?;
+                .map_err(classify)?;
         }
         Step::ScopeReplace { table, scope } => {
             let target = quote(table.as_str());
             let stage = quote(&stage_name(table));
             tx.execute_batch(&scope_replace_sql(&DuckDialect, &target, &stage, scope))
-                .map_err(fatal)?;
+                .map_err(classify)?;
         }
         Step::MergeArm { table, arm } => {
             let (schema, mode) = &tables[table];
@@ -154,12 +158,12 @@ fn execute_step(
                 root_schema,
             );
             for sql in render_arm(&plan, arm) {
-                tx.execute_batch(&sql).map_err(fatal)?;
+                tx.execute_batch(&sql).map_err(classify)?;
             }
         }
         Step::TruncateStage { table } => {
             tx.execute_batch(&DuckDialect.clear_table(&quote(&stage_name(table))))
-                .map_err(fatal)?;
+                .map_err(classify)?;
         }
         Step::UpsertState => {
             // State persists in the SAME transaction as the data.
@@ -170,7 +174,7 @@ fn execute_step(
                 ),
                 duckdb::params![meta.state.pipeline.as_str(), state_json],
             )
-            .map_err(fatal)?;
+            .map_err(classify)?;
         }
         Step::InsertReceipt => {
             tx.execute(
@@ -180,7 +184,7 @@ fn execute_step(
                 ),
                 duckdb::params![meta.load_id.as_str(), meta.commit_seq as i64],
             )
-            .map_err(fatal)?;
+            .map_err(classify)?;
         }
     }
     Ok(())

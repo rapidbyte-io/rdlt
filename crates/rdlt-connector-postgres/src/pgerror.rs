@@ -5,10 +5,16 @@
 //! `Display` for a server error is just "db error" — the real message and the
 //! SQLSTATE live in the `DbError`, reachable only through `as_db_error()`, so
 //! every rendered detail reaches through it. Second, the SQLSTATE *class* (or
-//! its absence) decides retry-worthiness: connection/resource/shutdown/
-//! serialization classes are transient (retrying may succeed), everything
-//! server-classified is permanent. Both connectors classify identically, so
-//! the rule lives here once and cannot drift.
+//! its absence) decides retry-worthiness. TWO classification rules live
+//! here, with deliberately OPPOSITE polarity for classes neither lists:
+//! at connect/session time (`is_transient_sqlstate`) only the clearly
+//! environmental classes retry and an unknown class fails fast (it is
+//! auth/configuration-shaped); at statement time
+//! (`is_permanent_statement_sqlstate`) only the clearly deterministic
+//! classes fail fast and an unknown class retries (a load restart is
+//! cheap, and lock/resource/internal classes may heal). Callers name
+//! which posture they take; both rules living side by side is what keeps
+//! the polarity difference a decision instead of drift.
 
 /// Render a driver error with its full meaning. A server (db) error yields its
 /// message + SQLSTATE, plus the statement's column context when the server
@@ -46,4 +52,14 @@ pub(crate) fn is_transient_sqlstate(err: &tokio_postgres::Error) -> bool {
         None => true,
         Some(state) => matches!(&state.code()[..2], "08" | "53" | "57" | "40"),
     }
+}
+
+/// Statement-time classification (COPY writes, DDL, planned commit
+/// steps): the deterministic data-shaped classes — 22 data exception,
+/// 23 integrity (a duplicate receipt included), 42 syntax/access — are
+/// permanent; retrying an identical statement cannot win. Every other
+/// class stays transient. See the module doc for why this polarity
+/// differs from `is_transient_sqlstate`.
+pub(crate) fn is_permanent_statement_sqlstate(code: &str) -> bool {
+    matches!(code.get(..2), Some("22") | Some("23") | Some("42"))
 }

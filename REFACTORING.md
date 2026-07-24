@@ -965,7 +965,27 @@ are standalone mechanical fixes that can land with step 3.
   observed) — the testkit containers module (D1-D3) should also own a
   best-effort reaper/labeling convention so residue is identifiable.
 
-### 5.7 Repo-root hygiene
+### 5.7 Post-review discoveries (017 code review; deferred with names)
+
+- **D17. SPI byte-budget channel duplicates the engine's** *(medium)*
+  `crates/rdlt-connector/src/channel.rs` vs
+  `crates/rdlt-engine/src/runtime/channel.rs` — same Arc<Semaphore> budget,
+  same oversized-degrades-to-drain saturation, same permit-in-item release;
+  secondary msg caps already differ (64 vs 256, per-context sizing).
+  **Fix:** one generic core in the SPI, reused by the engine (dependency
+  direction already allows it). Deferred: next feature touching either.
+- **D18. File-dest write path blocks the async executor** *(medium)*
+  Local `stage_put`/`publish_part`/`prepare_staging` do std::fs
+  write/sync/rename inline in async fns, and the parquet encode runs
+  CPU-bound in async `write()`. Bench bars currently met; **fix:**
+  spawn_blocking (or tokio::fs) around encode + local fs arms. Deferred:
+  perf-focused follow-up with before/after bench evidence.
+- **D19. Config-plumbing trio triplicated** *(low)* `ConfigError` +
+  from_yaml/from_json/from_value are character-identical across rest,
+  iceberg, and postgres configs. **Fix:** shared helper (macro or generic
+  over DeserializeOwned+validate) in the SPI. Deferred: next config change.
+
+### 5.8 Repo-root hygiene
 
 - **D15. `mutants.out.old/` is gitignored yet 694 files under it are
   tracked** *(medium)* The ignore rule is dead for already-tracked files;

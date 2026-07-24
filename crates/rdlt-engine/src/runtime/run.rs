@@ -540,6 +540,12 @@ async fn stream_task(
         }
     };
 
+    // However the push loop ended, release the source BEFORE awaiting it:
+    // closing wakes a sender parked on the byte budget so it observes the
+    // closure — without this, a break on a contract violation would await
+    // a reader that can never finish. (Idempotent; the Cancelled arm
+    // already closed early for faster teardown.)
+    input.close();
     // Surface source-side failures even when the push loop ended first.
     let read_result = (&mut reader).await;
     match (push_result, read_result) {

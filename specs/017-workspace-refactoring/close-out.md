@@ -203,3 +203,25 @@ spot satisfies WR8 as long as the gate is green.
 | P5-low CLAUDE.md drift (rustc/arrow numbers) | 3 | applied | 016 block corrected: arrow 58.3, toolchain 1.96.0 |
 | P5-low root README decision | close-out | applied | Minimal root README.md written (what rdlt is, library+CLI use, dev verbs, license) — the pre-publish item closed now |
 | P5-low bench reset_sql dup / conn-less fixtures / strat_duck_unused / cell-id convention | 3 | applied | First three via D12; cell-id renames SKIPPED deliberately (RESULTS.md history would orphan) — naming note for NEW cells added to benches/README.md |
+
+## Post-close code review (017 branch review, 10 findings)
+
+| Finding | Disposition | Evidence |
+|---|---|---|
+| F1 S3 Replace deletes user files (CONFIRMED) | FIXED | The frozen any-top-level-parquet rule was reaching S3 (its stated scope is local-only). `is_local()` guard added; red-first pin `s3_replace_never_deletes_user_files` — pre-fix run shows the user file actually deleted (only the part survived), green after |
+| F2 contract-violation break skips input.close → hang (PLAUSIBLE) | FIXED | Unconditional `close()` between loop and reader-await (covers every break arm). Red: `arrow_on_unstructured_stream_fails_typed_and_terminates` hit its 10s hang-timeout pre-fix; 4ms green after |
+| F3 executors classify shared-plan steps oppositely (CONFIRMED) | FIXED | Both execute_step bodies route through their crate classifier (duckdb `classify`: IO→transient else fatal; pg `classify_stmt`: 22/23/42→fatal else transient) — 7 sites each; receipt unique-violation now loud on BOTH; rule documented at both heads |
+| F4 merge_scope rename breaks configs (PLAUSIBLE-CONFIRMED) | REJECTED — sanctioned | The break is the USER's explicit greenfield directive (recorded twice: scope amendment + memory), superseding the earlier deferral note the reviewer cites. Nothing published; the flagged migration surface (rapidbyte configs) is already surfaced to the user |
+| F5 SQLSTATE denylist vs allowlist + false "cannot drift" claim (CONFIRMED) | FIXED | Both rules now live in pgerror.rs (`is_transient_sqlstate` connect-time allowlist; new `is_permanent_statement_sqlstate` statement-time denylist); module doc states the polarity difference as the design it is; classify_stmt delegates |
+| F6 iceberg 4xx blanket transient (CONFIRMED, low) | FIXED | 4xx-except-429 → fatal (deterministic client error); 5xx/undecodable stay transient; pins for 400/422 added; 503 pin unchanged |
+| F7 removed max(1) clamp (PLAUSIBLE) | REJECTED — by design | The catalogue itself prescribed "drop or make the invariant real"; increment 9 made it real (`RestSource::new -> Result` runs validate; no construction path skips it). Defense-in-depth removal was the point |
+| F8 SPI/engine channel duplication (CONFIRMED) | DEFERRED as D17 | Real, catalogue-missed; recorded with fix shape + trigger |
+| F9 blocking fs/encode on async executor (PLAUSIBLE) | DEFERRED as D18 | Real, pre-existing pattern re-chosen; bench bars currently met — needs before/after evidence, recorded |
+| F10 config-plumbing trio (CONFIRMED) | DEFERRED as D19 | Real, low; recorded |
+
+Verified-but-cut cleanup residuals from the review (recorded, unscheduled):
+scope-membership SQL dup (plan/arms.rs), TLS connect-arm twins, ShredOwner
+wrapper + retry-arm duplication, DuckDialect::clear_table DELETE-vs-TRUNCATE
+on persistent targets, is_local durability-gating spread in file session,
+duplicated unique-index diagnosis in both executors, sequential per-part S3
+publishes, dead duckdb root re-exports.
