@@ -111,6 +111,15 @@ pub(crate) fn last_json_field(stdout: &str, field: &str) -> Option<serde_json::V
     })
 }
 
+/// The last JSON line as a whole object — for consumers that need more than
+/// one field of the summary line (e.g. the driver `extra{}` pass-through).
+pub(crate) fn last_json(stdout: &str) -> Option<serde_json::Value> {
+    stdout
+        .lines()
+        .rev()
+        .find_map(|line| serde_json::from_str(line.trim()).ok())
+}
+
 /// Nearest-rank p95 (the sample at ceil(0.95·N), 1-indexed).
 pub fn p95(samples: &[f64]) -> f64 {
     assert!(!samples.is_empty(), "p95 of zero runs");

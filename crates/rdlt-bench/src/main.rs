@@ -124,14 +124,7 @@ fn prepare(paths: &Paths) -> rdlt_bench::Result<RunContext> {
     } else {
         Vec::new()
     };
-    let variants = {
-        let path = paths.benches.join("competitors/dlt/variants.toml");
-        if path.is_file() {
-            competitors::load_variants(&path)?
-        } else {
-            Vec::new()
-        }
-    };
+    let variants = competitors::discover_variants(&paths.benches.join("competitors"))?;
     Ok(RunContext {
         all_cells,
         bars,

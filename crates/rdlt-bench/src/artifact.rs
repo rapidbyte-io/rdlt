@@ -76,6 +76,9 @@ pub struct RdltSide {
     pub streams: Vec<StreamAttribution>,
 }
 
+/// One competitor arm's outcome. The size skew between the variants is
+/// accepted: a handful of these exist per artifact, never large collections.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum CompetitorSide {
@@ -89,6 +92,11 @@ pub enum CompetitorSide {
         rss: RssStats,
         /// competitor_median / rdlt_median — >1 means rdlt is faster.
         ratio_vs_rdlt: Option<f64>,
+        /// Driver pass-through, carried verbatim from the summary line's
+        /// `extra{}` object (e.g. a platform-reported `sync_s` as labeled
+        /// context next to the headline wall). Absent for container runs.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        extra: Option<serde_json::Value>,
     },
     /// A competitor that could not run — recorded explicitly, never silently
     /// skipped.

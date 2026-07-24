@@ -178,6 +178,7 @@ mod tests {
                         note: None,
                     },
                     ratio_vs_rdlt: None,
+                    extra: None,
                 },
             );
         }
