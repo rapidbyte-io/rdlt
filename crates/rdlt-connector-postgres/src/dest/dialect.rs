@@ -12,4 +12,8 @@ impl MergeDialect for PgDialect {
     fn arrival_order(&self) -> String {
         super::quote(super::commit::ARRIVAL_COL)
     }
+
+    fn clear_table(&self, table: &str) -> String {
+        format!("TRUNCATE TABLE {table}")
+    }
 }

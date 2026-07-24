@@ -15,4 +15,10 @@ impl MergeDialect for DuckDialect {
     fn arrival_order(&self) -> String {
         "rowid".into()
     }
+
+    fn clear_table(&self, table: &str) -> String {
+        // Temp-table stages reject TRUNCATE; DELETE FROM clears both stage and
+        // Replace target.
+        format!("DELETE FROM {table}")
+    }
 }

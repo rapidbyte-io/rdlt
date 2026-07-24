@@ -94,7 +94,10 @@ pub(crate) fn fatal(e: impl std::fmt::Display) -> DestError {
 }
 
 pub(crate) fn quote(ident: &str) -> String {
-    format!("\"{}\"", ident.replace('"', "\"\""))
+    // The one injection-safe quoting rule, shared with every SQL destination
+    // (and the dialect seam's default). Kept as a thin local alias so the many
+    // DDL/publish call sites read `quote(...)`.
+    rdlt_connector_sqlcore::quote_ident(ident)
 }
 
 #[async_trait]

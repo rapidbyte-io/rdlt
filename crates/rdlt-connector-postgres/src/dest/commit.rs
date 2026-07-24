@@ -12,11 +12,11 @@ use tokio_postgres::Client;
 use tokio_postgres::binary_copy::BinaryCopyInWriter;
 use tokio_postgres::types::{ToSql, Type};
 
-use rdlt_connector_sqlcore::plan::{
-    self as sqlplan, TableFacts, identity_delete_insert_sql, keyed_delete_insert_sql,
-    keyed_upsert_sql, scd2_merge_sql, scope_replace_sql,
+use rdlt_connector_sqlcore::plan::{self as sqlplan, IndexSpec, TableFacts, scope_replace_sql};
+use rdlt_connector_sqlcore::{
+    CommitCtx, MergeDialect, Step, build_merge_plan, commit_script, insert_select_sql, render_arm,
+    staged_probe_targets,
 };
-use rdlt_connector_sqlcore::{HardDelete, MergePlan};
 
 use super::config::MergeStrategy;
 use super::dialect::PgDialect;
@@ -47,15 +47,9 @@ pub(super) fn stage_name(pipeline: &PipelineId, table: &TableName) -> String {
     )
 }
 
-/// Quoted, comma-joined logical columns — publishes are ALWAYS by name.
-pub(super) fn column_list(schema: &TableSchema) -> String {
-    schema
-        .columns
-        .iter()
-        .map(|c| quote(&c.name))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
+/// Quoted, comma-joined logical columns — the shared sqlcore rule; publishes
+/// are ALWAYS by name.
+pub(super) use rdlt_connector_sqlcore::column_list;
 
 pub(super) struct PgSession {
     pub(super) client: Client,
@@ -74,19 +68,108 @@ pub(super) struct PgSession {
 
 impl PgSession {
     fn root_of(&self, table: &TableName) -> TableName {
-        let mut current = table.clone();
-        for _ in 0..64 {
-            match self
-                .tables
-                .get(&current)
-                .and_then(|(s, _)| s.parent.as_ref())
-            {
-                Some(link) => current = link.parent.clone(),
-                None => break,
+        rdlt_connector_sqlcore::root_of(&self.tables, table)
+    }
+}
+
+/// Execute one planned [`Step`] in the publish transaction. Free-standing so it
+/// can borrow the session fields disjointly from `client`, which the live
+/// transaction holds mutably. Every decision + the order come from the planner;
+/// this renders each step's SQL through the PgDialect seam + shared renderers.
+async fn execute_step(
+    tx: &tokio_postgres::Transaction<'_>,
+    pipeline: &PipelineId,
+    tables: &BTreeMap<TableName, (TableSchema, WriteMode)>,
+    options: &super::config::PgDestOptions,
+    roots: &BTreeMap<TableName, TableName>,
+    meta: &CommitMeta,
+    step: &Step,
+) -> Result<(), DestError> {
+    match step {
+        Step::ClearTarget { table } => {
+            tx.batch_execute(&PgDialect.clear_table(&quote(table.as_str())))
+                .await
+                .map_err(transient)?;
+        }
+        Step::InsertSelect { table } => {
+            let (schema, _) = &tables[table];
+            let target = quote(table.as_str());
+            let stage = quote(&stage_name(pipeline, table));
+            tx.batch_execute(&insert_select_sql(&target, &column_list(schema), &stage))
+                .await
+                .map_err(transient)?;
+        }
+        Step::ScopeReplace { table, scope } => {
+            let target = quote(table.as_str());
+            let stage = quote(&stage_name(pipeline, table));
+            tx.batch_execute(&scope_replace_sql(&PgDialect, &target, &stage, scope))
+                .await
+                .map_err(transient)?;
+        }
+        Step::MergeArm { table, arm } => {
+            let (schema, mode) = &tables[table];
+            let WriteMode::Merge { key } = mode else {
+                // The planner emits MergeArm only for merge tables.
+                return Err(fatal(format!(
+                    "internal: merge arm planned for non-merge table `{table}`"
+                )));
+            };
+            let root = &roots[table];
+            let target = quote(table.as_str());
+            let stage = quote(&stage_name(pipeline, table));
+            let cols = column_list(schema);
+            let root_stage = quote(&stage_name(pipeline, root));
+            let root_schema = tables.get(root).map(|(s, _)| s);
+            let dialect = PgDialect;
+            let plan = build_merge_plan(
+                &dialect,
+                options,
+                table,
+                schema,
+                key,
+                &target,
+                &stage,
+                &cols,
+                root,
+                root_stage,
+                root_schema,
+            );
+            for sql in render_arm(&plan, arm) {
+                tx.batch_execute(&sql).await.map_err(transient)?;
             }
         }
-        current
+        Step::TruncateStage { table } => {
+            tx.batch_execute(&PgDialect.clear_table(&quote(&stage_name(pipeline, table))))
+                .await
+                .map_err(transient)?;
+        }
+        Step::UpsertState => {
+            // State travels in the SAME transaction as the data.
+            let doc = serde_json::to_string(&meta.state).map_err(fatal)?;
+            tx.execute(
+                &format!(
+                    "INSERT INTO {} VALUES ($1, $2)
+             ON CONFLICT (pipeline) DO UPDATE SET doc = EXCLUDED.doc",
+                    rdlt_connector_sqlcore::names::STATE_TABLE
+                ),
+                &[&meta.state.pipeline.as_str(), &doc],
+            )
+            .await
+            .map_err(transient)?;
+        }
+        Step::InsertReceipt => {
+            tx.execute(
+                &format!(
+                    "INSERT INTO {} VALUES ($1, $2)",
+                    rdlt_connector_sqlcore::names::COMMITS_TABLE
+                ),
+                &[&meta.load_id.as_str(), &(meta.commit_seq as i64)],
+            )
+            .await
+            .map_err(transient)?;
+        }
     }
+    Ok(())
 }
 
 #[async_trait]
@@ -193,7 +276,7 @@ impl LoadSession for PgSession {
             }
             // Index plan — shared shape from sqlcore; this destination owns
             // only the SQL text.
-            for (unique, columns) in
+            for IndexSpec { unique, columns } in
                 sqlplan::index_plan(&self.options, table, key, has_identity, is_child)
             {
                 let sql = super::ddl::create_index_sql(unique, table, &columns);
@@ -297,7 +380,7 @@ impl LoadSession for PgSession {
         );
         let tx = self.client.transaction().await.map_err(transient)?;
         // Idempotence by (load_id, commit_seq).
-        let already = tx
+        let replayed = tx
             .query_one(
                 &format!(
                     "SELECT count(*) FROM {} WHERE load_id = $1 AND commit_seq = $2",
@@ -307,7 +390,8 @@ impl LoadSession for PgSession {
             )
             .await
             .map_err(transient)?
-            .get::<_, i64>(0);
+            .get::<_, i64>(0)
+            > 0;
         // Replace truncates at most once per LOAD, guarded DURABLY from the
         // receipt log — a crash-recovery session (fresh memory, same load) must
         // never re-truncate rows an earlier commit already published (the
@@ -325,220 +409,66 @@ impl LoadSession for PgSession {
             .map_err(transient)?
             .get::<_, i64>(0)
             > 0;
-        if already > 0 {
-            // Replay of a unit that DID commit server-side: the merge SQL
-            // never re-runs, but the single-unit discipline must still count
-            // this unit — the redelivered stage carries the same rows the
-            // committed one did.
-            for (table, (_, mode)) in &self.tables {
-                if !matches!(mode, WriteMode::Merge { .. }) {
-                    continue;
-                }
-                let scoped = self.options.merge_key_for(table.as_str()).is_some();
-                let retire = self.options.strategy_for(table.as_str()) == MergeStrategy::Scd2
-                    && self.options.scd2_for(table.as_str()).absent
-                        == super::config::AbsentPolicy::Retire;
-                if (scoped || retire) && !self.single_unit_done.contains(table) {
-                    let stage = quote(&stage_name(&self.pipeline, table));
-                    let staged: bool = tx
-                        .query_one(&format!("SELECT EXISTS (SELECT 1 FROM {stage})"), &[])
-                        .await
-                        .map_err(transient)?
-                        .get(0);
-                    if staged {
-                        self.single_unit_done.insert(table.clone());
-                    }
-                }
-            }
-            for table in self.tables.keys() {
-                tx.batch_execute(&format!(
-                    "TRUNCATE TABLE {}",
-                    quote(&stage_name(&self.pipeline, table))
-                ))
-                .await
-                .map_err(transient)?;
-            }
-            tx.commit().await.map_err(transient)?;
-            return Ok(receipt);
-        }
-        // Applied only after THIS unit's transaction commits (see
-        // `single_unit_done`).
-        let mut single_unit_marks: Vec<TableName> = Vec::new();
 
-        for (table, (schema, mode)) in &self.tables {
-            // A schema without the per-row identity column is a STRUCTURED
-            // stream's table — merge (if requested) goes by key.
-            let schema_has_identity = schema.columns.iter().any(|c| c.name == system_columns::ID);
-            let target = quote(table.as_str());
+        // Probe the full-feed stages the planner needs. Staged-row counts are
+        // INVARIANT across the publish (no stage is written during it — merges
+        // read stages, publishes write targets), so probing up front matches the
+        // former lazy per-table check.
+        let mut staged_nonempty = std::collections::BTreeSet::new();
+        for table in staged_probe_targets(&self.tables, &self.options) {
             let stage = quote(&stage_name(&self.pipeline, table));
-            // Publishes are ALWAYS by name — and the list excludes the
-            // stage-only arrival column.
-            let cols = column_list(schema);
-            match mode {
-                WriteMode::Append => {
-                    tx.batch_execute(&format!(
-                        "INSERT INTO {target} ({cols}) SELECT {cols} FROM {stage}"
-                    ))
-                    .await
-                    .map_err(transient)?;
-                }
-                WriteMode::Replace => {
-                    if !load_committed_before {
-                        tx.batch_execute(&format!("TRUNCATE TABLE {target}"))
-                            .await
-                            .map_err(transient)?;
-                    }
-                    tx.batch_execute(&format!(
-                        "INSERT INTO {target} ({cols}) SELECT {cols} FROM {stage}"
-                    ))
-                    .await
-                    .map_err(transient)?;
-                }
-                WriteMode::Merge { key } => {
-                    // The strategy is destination config; the engine's mode
-                    // stays frozen.
-                    let strategy = self.options.strategy_for(table.as_str());
-                    let scoped = self.options.merge_key_for(table.as_str());
-                    let scd2 = (strategy == MergeStrategy::Scd2)
-                        .then(|| self.options.scd2_for(table.as_str()));
-                    let retire = scd2
-                        .as_ref()
-                        .is_some_and(|s| s.absent == super::config::AbsentPolicy::Retire);
-                    // Single-unit discipline, PER TABLE (one shared rule):
-                    // scope replacement and absent-retire each interpret the
-                    // stage as "the complete truth" — sound only when THIS
-                    // TABLE's full feed arrives in one commit unit. Per-table
-                    // tracking (not `load_committed_before`): other streams'
-                    // checkpoints legitimately split the LOAD into units
-                    // without splitting this table's feed. A unit where this
-                    // table stages NOTHING is skipped outright — which also
-                    // stops an empty stage from reading as "every key absent"
-                    // (retire = mass retirement). The crash residual is
-                    // unavoidable: a scoped/retire stream that checkpoints
-                    // MID-feed and crashes in the window resumes as a new load
-                    // with a partial feed, which no destination-side
-                    // bookkeeping can distinguish from a fresh load.
-                    if scoped.is_some() || retire {
-                        let staged: bool = tx
-                            .query_one(&format!("SELECT EXISTS (SELECT 1 FROM {stage})"), &[])
-                            .await
-                            .map_err(transient)?
-                            .get(0);
-                        if !staged {
-                            continue; // nothing delivered for THIS table this unit
-                        }
-                        if self.single_unit_done.contains(table) {
-                            // Name the rule that FIRED — under scd2 the retire
-                            // rule governs even when a merge_key scopes it.
-                            return Err(fatal(sqlplan::single_unit_violation(
-                                table.as_str(),
-                                scoped.is_some() && !retire,
-                            )));
-                        }
-                        single_unit_marks.push(table.clone());
-                    }
-                    // Scope replacement runs BEFORE the strategy arm, inside
-                    // the same transaction. NOT for scd2: there the merge_key
-                    // scopes RETIREMENT inside the strategy arm — deleting
-                    // scope rows would destroy history.
-                    if let Some(scope) = scoped
-                        && strategy != MergeStrategy::Scd2
-                    {
-                        tx.batch_execute(&scope_replace_sql(&PgDialect, &target, &stage, scope))
-                            .await
-                            .map_err(transient)?;
-                    }
-                    let plan = MergePlan {
-                        dialect: &PgDialect,
-                        target: &target,
-                        stage: &stage,
-                        cols: &cols,
-                        schema,
-                        key,
-                        root_stage: quote(&stage_name(&self.pipeline, &roots[table])),
-                        is_child: table != &roots[table],
-                        hard_delete: self
-                            .options
-                            .hard_delete_for(roots[table].as_str())
-                            .and_then(|col| {
-                                let root_schema = self.tables.get(&roots[table]).map(|(s, _)| s)?;
-                                Some(HardDelete::new(col, root_schema, &PgDialect))
-                            }),
-                        dedup_sort: self.options.dedup_sort_for(table.as_str()),
-                        merge_scope: scoped,
-                    };
-                    match (schema_has_identity, strategy) {
-                        (false, MergeStrategy::DeleteInsert) => {
-                            keyed_delete_insert(&tx, &plan).await?
-                        }
-                        (false, MergeStrategy::Upsert) => keyed_upsert(&tx, &plan).await?,
-                        (true, MergeStrategy::DeleteInsert) => {
-                            identity_delete_insert(&tx, &plan).await?
-                        }
-                        (true, MergeStrategy::Upsert) => {
-                            // Unreachable: ensure_table rejected it (M7).
-                            return Err(fatal(format!(
-                                "table `{table}`: upsert on a shredded stream"
-                            )));
-                        }
-                        (false, MergeStrategy::Scd2) => {
-                            // The single-unit guard for absent-retire lives in
-                            // the shared per-table discipline above.
-                            let scd2 = scd2.expect("scd2 options resolved with the strategy");
-                            scd2_merge(&tx, &plan, &scd2).await?
-                        }
-                        (true, MergeStrategy::Scd2) => {
-                            // Unreachable: ensure_table rejected it.
-                            return Err(fatal(format!(
-                                "table `{table}`: scd2 on a shredded stream"
-                            )));
-                        }
-                    }
-                }
+            let staged: bool = tx
+                .query_one(&format!("SELECT EXISTS (SELECT 1 FROM {stage})"), &[])
+                .await
+                .map_err(transient)?
+                .get(0);
+            if staged {
+                staged_nonempty.insert(table.clone());
             }
         }
-        // Truncate stages only after ALL tables published: child-table merges read the
-        // ROOT's stage for their delete-by-root-id subquery.
-        for table in self.tables.keys() {
-            tx.batch_execute(&format!(
-                "TRUNCATE TABLE {}",
-                quote(&stage_name(&self.pipeline, table))
-            ))
-            .await
-            .map_err(transient)?;
+
+        // The planner owns every decision + the ordering; this session executes.
+        let script = commit_script(
+            &self.tables,
+            &self.options,
+            &CommitCtx {
+                replayed,
+                load_committed_before,
+                single_unit_done: &self.single_unit_done,
+                staged_nonempty: &staged_nonempty,
+            },
+        )
+        .map_err(fatal)?;
+
+        for step in &script.steps {
+            execute_step(
+                &tx,
+                &self.pipeline,
+                &self.tables,
+                &self.options,
+                &roots,
+                &meta,
+                step,
+            )
+            .await?;
         }
 
-        // State travels in the SAME transaction as the data.
-        let doc = serde_json::to_string(&meta.state).map_err(fatal)?;
-        tx.execute(
-            &format!(
-                "INSERT INTO {} VALUES ($1, $2)
-             ON CONFLICT (pipeline) DO UPDATE SET doc = EXCLUDED.doc",
-                rdlt_connector_sqlcore::names::STATE_TABLE
-            ),
-            &[&meta.state.pipeline.as_str(), &doc],
-        )
-        .await
-        .map_err(transient)?;
-        tx.execute(
-            &format!(
-                "INSERT INTO {} VALUES ($1, $2)",
-                rdlt_connector_sqlcore::names::COMMITS_TABLE
-            ),
-            &[&meta.load_id.as_str(), &(meta.commit_seq as i64)],
-        )
-        .await
-        .map_err(transient)?;
-        // The canonical redelivery window: everything published in ONE server-side
-        // transaction; a crash at either edge of tx.commit() must replay
-        // idempotently — the injected error models the client dying without
-        // learning the outcome.
-        crash_point!(
-            "pg.tx.commit",
-            Err(DestError::fatal("injected crash at pg.tx.commit"))
-        );
+        // The canonical redelivery window: on a fresh unit everything is
+        // published in ONE server-side transaction, so a crash at either edge of
+        // tx.commit() must replay idempotently — the injected error models the
+        // client dying without learning the outcome. A replay unit only
+        // truncated stages and carried no receipt/state edge (it was never
+        // instrumented), so the crash point stays confined to the fresh path.
+        if !replayed {
+            crash_point!(
+                "pg.tx.commit",
+                Err(DestError::fatal("injected crash at pg.tx.commit"))
+            );
+        }
         tx.commit().await.map_err(transient)?;
-        self.single_unit_done.extend(single_unit_marks);
+        // Applied only after the unit's transaction committed (a rolled-back
+        // unit never counts).
+        self.single_unit_done.extend(script.marks);
         Ok(receipt)
     }
 
@@ -562,49 +492,4 @@ impl LoadSession for PgSession {
             None => Ok(None),
         }
     }
-}
-
-// ---- Strategy executors: the SQL layer lives in rdlt-connector-sqlcore;
-// this destination executes the shared shapes' statements through the
-// PgDialect and owns nothing else.
-
-async fn keyed_delete_insert(
-    tx: &tokio_postgres::Transaction<'_>,
-    plan: &MergePlan<'_>,
-) -> Result<(), DestError> {
-    for sql in keyed_delete_insert_sql(plan) {
-        tx.batch_execute(&sql).await.map_err(transient)?;
-    }
-    Ok(())
-}
-
-async fn keyed_upsert(
-    tx: &tokio_postgres::Transaction<'_>,
-    plan: &MergePlan<'_>,
-) -> Result<(), DestError> {
-    for sql in keyed_upsert_sql(plan) {
-        tx.batch_execute(&sql).await.map_err(transient)?;
-    }
-    Ok(())
-}
-
-async fn identity_delete_insert(
-    tx: &tokio_postgres::Transaction<'_>,
-    plan: &MergePlan<'_>,
-) -> Result<(), DestError> {
-    for sql in identity_delete_insert_sql(plan) {
-        tx.batch_execute(&sql).await.map_err(transient)?;
-    }
-    Ok(())
-}
-
-async fn scd2_merge(
-    tx: &tokio_postgres::Transaction<'_>,
-    plan: &MergePlan<'_>,
-    scd2: &super::config::Scd2Options,
-) -> Result<(), DestError> {
-    for sql in scd2_merge_sql(plan, scd2) {
-        tx.batch_execute(&sql).await.map_err(transient)?;
-    }
-    Ok(())
 }

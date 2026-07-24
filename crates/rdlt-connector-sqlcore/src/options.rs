@@ -162,108 +162,18 @@ impl DestOptions {
         Ok(options)
     }
 
-    /// Validation errors NAME the offending field (FR-012).
+    /// Validation errors NAME the offending field (FR-012). One `check_*` fn
+    /// per rule group, run in the order the messages were frozen.
     pub fn validate(&self) -> Result<(), String> {
         for (table, opts) in &self.tables {
             let strategy = opts
                 .merge_strategy
                 .or(self.merge_strategy)
                 .unwrap_or_default();
-            if let Some(col) = &opts.hard_delete {
-                if col.trim().is_empty() {
-                    return Err(format!("tables.{table}.hard_delete: empty column name"));
-                }
-                if strategy == MergeStrategy::Scd2 {
-                    return Err(format!(
-                        "tables.{table}.hard_delete: not valid with merge_strategy scd2 \
-                         (deletion-as-retirement is future work)"
-                    ));
-                }
-            }
-            if let Some(dedup) = &opts.dedup_sort
-                && dedup.column.trim().is_empty()
-            {
-                return Err(format!("tables.{table}.dedup_sort: empty column name"));
-            }
-            if let Some(scope) = &opts.merge_key {
-                if scope.is_empty() {
-                    return Err(format!("tables.{table}.merge_key: empty column list"));
-                }
-                if scope.iter().any(|c| c.trim().is_empty()) {
-                    return Err(format!("tables.{table}.merge_key: empty column name"));
-                }
-                let mut seen = std::collections::BTreeSet::new();
-                if let Some(dup) = scope.iter().find(|c| !seen.insert(c.as_str())) {
-                    return Err(format!(
-                        "tables.{table}.merge_key: column `{dup}` listed twice"
-                    ));
-                }
-                // merge_key COMPOSES with scd2 as SCOPED RETIREMENT — absent
-                // keys retire only within delivered scopes. That reading
-                // requires `absent: retire`; under `keep` the option would be
-                // silently inert, so reject it rather than ignore it.
-                if strategy == MergeStrategy::Scd2 {
-                    let retire = opts.scd2.as_ref().map(|s| s.absent).unwrap_or_default()
-                        == AbsentPolicy::Retire;
-                    if !retire {
-                        return Err(format!(
-                            "tables.{table}.merge_key: with merge_strategy scd2 this \
-                             scopes RETIREMENT and requires scd2 {{absent: retire}} \
-                             — under `keep` it would be silently inert"
-                        ));
-                    }
-                }
-            }
-            if let Some(scd2) = &opts.scd2 {
-                if strategy != MergeStrategy::Scd2 {
-                    return Err(format!(
-                        "tables.{table}.scd2: options present but merge_strategy is \
-                         {strategy:?} — set merge_strategy: scd2"
-                    ));
-                }
-                if scd2.valid_from.trim().is_empty() || scd2.valid_to.trim().is_empty() {
-                    return Err(format!(
-                        "tables.{table}.scd2: validity column names must not be empty"
-                    ));
-                }
-                if scd2.valid_from == scd2.valid_to {
-                    return Err(format!(
-                        "tables.{table}.scd2: valid_from and valid_to must differ"
-                    ));
-                }
-                for (field, value) in [
-                    (
-                        "active_record_timestamp",
-                        scd2.active_record_timestamp.as_deref(),
-                    ),
-                    ("boundary_timestamp", scd2.boundary_timestamp.as_deref()),
-                ] {
-                    if let Some(value) = value
-                        && !validate_timestamp_literal(value)
-                    {
-                        return Err(format!(
-                            "tables.{table}.scd2.{field}: `{value}` is not a \
-                             zone-explicit timestamp (RFC3339 with offset, \
-                             e.g. `9999-12-31T00:00:00Z` — zone-less \
-                             literals resolve per session TimeZone)"
-                        ));
-                    }
-                }
-                // A boundary EQUAL to the open marker makes every closed row
-                // satisfy the active predicate — reject.
-                if let (Some(marker), Some(boundary)) = (
-                    scd2.active_record_timestamp.as_deref(),
-                    scd2.boundary_timestamp.as_deref(),
-                ) && marker == boundary
-                {
-                    return Err(format!(
-                        "tables.{table}.scd2: boundary_timestamp equals \
-                         active_record_timestamp — closed versions would \
-                         read as ACTIVE; pick a marker outside the data's \
-                         time range (e.g. 9999-12-31T00:00:00Z)"
-                    ));
-                }
-            }
+            check_hard_delete(table, opts, strategy)?;
+            check_dedup_sort(table, opts)?;
+            check_merge_key(table, opts, strategy)?;
+            check_scd2(table, opts, strategy)?;
         }
         Ok(())
     }
@@ -302,6 +212,127 @@ impl DestOptions {
     pub fn merge_key_for(&self, table: &str) -> Option<&[String]> {
         self.tables.get(table).and_then(|t| t.merge_key.as_deref())
     }
+}
+
+fn check_hard_delete(
+    table: &str,
+    opts: &TableOptions,
+    strategy: MergeStrategy,
+) -> Result<(), String> {
+    if let Some(col) = &opts.hard_delete {
+        if col.trim().is_empty() {
+            return Err(format!("tables.{table}.hard_delete: empty column name"));
+        }
+        if strategy == MergeStrategy::Scd2 {
+            return Err(format!(
+                "tables.{table}.hard_delete: not valid with merge_strategy scd2 \
+                 (deletion-as-retirement is future work)"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn check_dedup_sort(table: &str, opts: &TableOptions) -> Result<(), String> {
+    if let Some(dedup) = &opts.dedup_sort
+        && dedup.column.trim().is_empty()
+    {
+        return Err(format!("tables.{table}.dedup_sort: empty column name"));
+    }
+    Ok(())
+}
+
+fn check_merge_key(
+    table: &str,
+    opts: &TableOptions,
+    strategy: MergeStrategy,
+) -> Result<(), String> {
+    let Some(scope) = &opts.merge_key else {
+        return Ok(());
+    };
+    if scope.is_empty() {
+        return Err(format!("tables.{table}.merge_key: empty column list"));
+    }
+    if scope.iter().any(|c| c.trim().is_empty()) {
+        return Err(format!("tables.{table}.merge_key: empty column name"));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    if let Some(dup) = scope.iter().find(|c| !seen.insert(c.as_str())) {
+        return Err(format!(
+            "tables.{table}.merge_key: column `{dup}` listed twice"
+        ));
+    }
+    // merge_key COMPOSES with scd2 as SCOPED RETIREMENT — absent keys retire
+    // only within delivered scopes. That reading requires `absent: retire`;
+    // under `keep` the option would be silently inert, so reject it rather than
+    // ignore it.
+    if strategy == MergeStrategy::Scd2 {
+        let retire =
+            opts.scd2.as_ref().map(|s| s.absent).unwrap_or_default() == AbsentPolicy::Retire;
+        if !retire {
+            return Err(format!(
+                "tables.{table}.merge_key: with merge_strategy scd2 this \
+                 scopes RETIREMENT and requires scd2 {{absent: retire}} \
+                 — under `keep` it would be silently inert"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn check_scd2(table: &str, opts: &TableOptions, strategy: MergeStrategy) -> Result<(), String> {
+    let Some(scd2) = &opts.scd2 else {
+        return Ok(());
+    };
+    if strategy != MergeStrategy::Scd2 {
+        return Err(format!(
+            "tables.{table}.scd2: options present but merge_strategy is \
+             {strategy:?} — set merge_strategy: scd2"
+        ));
+    }
+    if scd2.valid_from.trim().is_empty() || scd2.valid_to.trim().is_empty() {
+        return Err(format!(
+            "tables.{table}.scd2: validity column names must not be empty"
+        ));
+    }
+    if scd2.valid_from == scd2.valid_to {
+        return Err(format!(
+            "tables.{table}.scd2: valid_from and valid_to must differ"
+        ));
+    }
+    for (field, value) in [
+        (
+            "active_record_timestamp",
+            scd2.active_record_timestamp.as_deref(),
+        ),
+        ("boundary_timestamp", scd2.boundary_timestamp.as_deref()),
+    ] {
+        if let Some(value) = value
+            && !validate_timestamp_literal(value)
+        {
+            return Err(format!(
+                "tables.{table}.scd2.{field}: `{value}` is not a \
+                 zone-explicit timestamp (RFC3339 with offset, \
+                 e.g. `9999-12-31T00:00:00Z` — zone-less \
+                 literals resolve per session TimeZone)"
+            ));
+        }
+    }
+    // A boundary EQUAL to the open marker makes every closed row satisfy the
+    // active predicate — reject.
+    if let (Some(marker), Some(boundary)) = (
+        scd2.active_record_timestamp.as_deref(),
+        scd2.boundary_timestamp.as_deref(),
+    ) && marker == boundary
+    {
+        return Err(format!(
+            "tables.{table}.scd2: boundary_timestamp equals \
+             active_record_timestamp — closed versions would \
+             read as ACTIVE; pick a marker outside the data's \
+             time range (e.g. 9999-12-31T00:00:00Z)"
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

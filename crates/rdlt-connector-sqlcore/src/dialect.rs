@@ -7,13 +7,23 @@
 //! surface a TYPED capability gap at validation time — never override a hook
 //! with an approximation that silently changes the result.
 
+/// Identifier quoting — the ONE injection-safety implementation for every SQL
+/// destination: wrap in double quotes and double any embedded quote. Both
+/// current destinations quote identically; the [`MergeDialect::quote`] hook
+/// defaults to this, and each destination's own DDL/publish quoting delegates
+/// here too, so the escaping rule exists in exactly one place.
+pub fn quote_ident(ident: &str) -> String {
+    format!("\"{}\"", ident.replace('"', "\"\""))
+}
+
 /// SQL-text generation hooks for the shared merge shapes.
 ///
 /// `Send + Sync`: plans borrow dialects across await points in async sessions.
 pub trait MergeDialect: Send + Sync {
-    /// Identifier quoting. Both current destinations double-quote with `"` doubling.
+    /// Identifier quoting. Both current destinations double-quote with `"`
+    /// doubling — the shared [`quote_ident`] rule.
     fn quote(&self, ident: &str) -> String {
-        format!("\"{}\"", ident.replace('"', "\"\""))
+        quote_ident(ident)
     }
 
     /// The stage's arrival-order expression (a quoted real column or a
@@ -25,6 +35,12 @@ pub trait MergeDialect: Send + Sync {
     fn tx_timestamp(&self) -> &'static str {
         "now()"
     }
+
+    /// Remove every row of a table — used to clear a Replace target (first unit
+    /// of a load) and to truncate a stage after publish. `table` is already
+    /// quoted. The two current destinations differ only here: Postgres
+    /// `TRUNCATE TABLE`, DuckDB `DELETE FROM` (temp tables reject TRUNCATE).
+    fn clear_table(&self, table: &str) -> String;
 
     /// The dedup/survivor subquery: one surviving row per identity
     /// group. `sort_prefix` is either empty (arrival last-wins) or

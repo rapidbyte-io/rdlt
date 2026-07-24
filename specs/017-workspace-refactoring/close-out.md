@@ -10,6 +10,8 @@ failpoints` on merge base + rustfs pin, 595 tests green)**: **83.68% lines**
 (82.48% regions, 78.04% functions) — recorded 2026-07-24. SC-004 compares
 final line coverage against 83.68%.
 
+**Flake log**: one CDC test (`toast_full_identity_substitutes_from_the_old_image`) failed ONCE under full-suite parallel container load during increment 6's gate; passed in isolation and on full re-run (624/624). Timing-sensitive TOAST leg — watch, not chase.
+
 **Red-run evidence method**: per research D-14 (test-before-fix ordering or
 stash-red capture; excerpts inline or cited by test name + run).
 
@@ -56,10 +58,10 @@ paths/names and in-repo vocabulary, not on-disk data written by runs.
 | R1 self-containment: sqlcore/duckdb/iceberg | 2 | applied | "MOVED VERBATIM" headers → live golden-pin invariant statement; legacy_unique_index_name branch history → live constraint; duckdb src + iceberg src&tests swept. Flagged remainder: duckdb/tests comment tags (T0xx/SMx) — deferred to increment 6 tasks touching those files |
 | R1 self-containment: core/connector/facade/file/rest | 2 | applied | 42 files across 5 crates; residual grep 0; 185/185 incl. S3 live leg |
 | R1 self-containment: testkit/bench/cli | 2 | applied | Conformance clause IDs D1–D8/S1–S6 AND printed E-clauses KEPT (crate-own vocabulary, defined+printed in-crate — the good pattern); bench BH/FR rules inlined; library_mode duplication-constraint doc now cites the parity fixture. 3 documented keeps remain workspace-wide (testkit E1/E6 comments, bench cells.rs test-data policy path). 52/52 |
-| R2 commit splits (pg + duckdb) | 6 | | |
-| R2 mechanical helpers (quote/column_list/root_of/index-name/hard_delete/MergePlan/scoped/retire/insert-select/delete-stage/setting) | 6 | | |
-| R2 protocol planner commit_script | 6 | | |
-| R2 destinations execute planner | 6 | | |
+| R2 commit splits (pg + duckdb) | 6 | applied | PgSession::commit → handle_replay/publish_table/MergeCtx; DuckDbSession::commit → replay_committed_unit/publish_table/check_single_unit — parallel names make the copies visibly identical pre-lift. 242 failpoint tests green |
+| R2 mechanical helpers (quote/column_list/root_of/index-name/hard_delete/MergePlan/scoped/retire/insert-select/delete-stage/setting) | 6 | applied | One `sqlcore::quote_ident` (the injection-safety invariant, ONE impl — duckdb's dialect-bypassing copy deleted; pg dest copy delegates; SOURCE-side twin deferred to increment 7 with its owning files); column_list/root_of(+named depth const)/index-name/build_merge_plan/insert_select_sql/clear via new dialect hook `clear_table`; setting/extension via local declare_setup. Golden pins byte-identical throughout |
+| R2 protocol planner commit_script | 6 | applied | PURE `commit_script(tables, options, &CommitCtx) -> Result<CommitScript, CommitError>` in sqlcore/src/protocol.rs — planner owns decisions+ordering, emits a fully-resolved linear Step program (facts pre-probed by executors keep it pure/pinnable; guard/mark are decisions not steps — a recorded, reasoned deviation from the data-model sketch). 8 new step-script pins (append/replace-first+later/upsert/scd2/scoped+skip-empty/single-unit-violation/replayed/unsupported) |
+| R2 destinations execute planner | 6 | applied | Both commits are thin interpreters (probe → plan → execute → commit → marks); per-destination protocol logic DELETED. NO semantic differences found between the copies — all divergences mechanical; the one nuanced convergence (single-unit mark timing pre→post-commit, both sides) is equivalence-argued (in-memory set, idempotent retry) and accepted by conformance + crash sweeps + differential both sides. 9 pre-existing pg golden-SQL pins pass UNCHANGED |
 | R3 shared Secret in SPI | 4 | applied | `rdlt_connector::secret::Secret` (newtype, `***` mask, transparent serde, `reveal()` audit surface) with schemars behind new SPI feature `schema` (optional dep; SPI builds with/without). Copies differed only in schemars description text — majority form adopted (nothing pins it) |
 | R3 three copies migrated + re-exports | 4 | applied (greenfield) | Per user directive mid-increment: NO legacy paths — both secret.rs shims deleted, all module-path chains killed; one canonical spelling per crate (rest/iceberg root re-export; file uses the SPI path — it never exported one). Grep-zero over every old path; `reveal()` production sites byte-identical (13); 196/196 + 140/140 after cleanup |
 | R3 headers/params redaction posture | 4 | applied | Doc comments on both maps (credentials belong in `auth:`) + validate() REJECTS `authorization`/`x-api-key` header names (case-insensitive, source+per-stream) with a typed error pointing at `auth:`. Tests `credential_header_names_are_rejected_toward_auth`, `ordinary_headers_still_accepted` |
@@ -72,13 +74,13 @@ paths/names and in-repo vocabulary, not on-disk data written by runs.
 | R4 file dest/mod.rs split | 8 | | |
 | R4 rest read/mod.rs split | 9 | | |
 | R4 iceberg commit.rs split | 10 | | |
-| R4 sqlcore plan.rs split | 6 | | |
+| R4 sqlcore plan.rs split | 6 | applied | plan/{mod,arms,validate,index}.rs, no shims (greenfield); `IndexSpec` replaces the tuple |
 | R4 testkit memory commit split | 4 | | |
 | R4 cli main.rs split | 12 | | |
 | R4 bench cmd_run/fixtures/runner splits | 12 | | |
 | R5 postgres validate decomposition | 7 | | |
 | R5 rest validate decomposition | 9 | | |
-| R5 sqlcore options/plan validate decomposition | 6 | | |
+| R5 sqlcore options/plan validate decomposition | 6 | applied | check_hard_delete/dedup_sort/merge_key/scd2 per rule group; message texts frozen (pinned) |
 | R5 iceberg validate decomposition | 10 | | |
 | R5 file validate convention unification | 8 | | |
 | R6 shared apply_delta/apply_batch | 5 | applied | load/apply.rs owns the lower_schema→ensure_table→record-hash triple and lower_batch→write pair |
@@ -86,7 +88,7 @@ paths/names and in-repo vocabulary, not on-disk data written by runs.
 | R7 Location unification (read+write) | 8 | | |
 | R7 FileMeta/FileTask/FileProgress relocation | 8 | | |
 | R8 DestError::RateLimited | 7* | | |
-| R8 sqlcore typed validation errors | 6 | | |
+| R8 sqlcore typed validation errors | 6 | applied | plan::validate_* → typed `ValidateError` with Display = frozen texts; options parse-layer kept its from_value String contract (decomposed, typed at the destination-facing layer where the docs promised it) |
 | R8 rest Paginator typed error | 9 | | |
 | R8 postgres DDL classification + decode conventions | 7 | | |
 | R8 engine error-variant misuse | 5 | applied | Task panics → new additive `RdltError::Internal` (enum was non_exhaustive; CLI catch-all absorbs); workdir-lock failures → `config` (operator-actionable, consistent with sibling); `RecordsOut::rows` ChannelClosed lie → `.expect()` on genuinely-infallible serialization (writer infallible, non-finite rejected at construction; SPI signature change considered and declined — expect is truthful and simpler; greenfield permits revisiting if the SPI ever gains fallible pushes) |
@@ -95,7 +97,7 @@ paths/names and in-repo vocabulary, not on-disk data written by runs.
 | R9 rest validated-at-parse expects | 9 | | |
 | R9 iceberg retry unreachable tails | 10 | | |
 | R9 file s3_list partial method | 8 | | |
-| R9 cross-module invariant panics (pg decimal / sqlcore hard_delete / duckdb scd2) | 6-7 | | |
+| R9 cross-module invariant panics (pg decimal / sqlcore hard_delete / duckdb scd2) | 6-7 | partially applied | sqlcore hard_delete + duckdb scd2 expects ELIMINATED BY CONSTRUCTION (MergeArm::Scd2 carries options from the total scd2_for; flagged_roots takes &HardDelete proven by the match). pg copy_decode decimal expect → increment 7 |
 | R10 non-breaking renames | 11 | | |
 | R10 aliasable renames (DestinationError etc.) | 11 | | |
 | R10 named deferrals to 0.3 window | 11 | | |
@@ -131,7 +133,7 @@ spot satisfies WR8 as long as the gate is green.
 | 3.3 pg_error_detail ×3 + SQLSTATE list ×2 | 7 | | |
 | 3.3 ConnectResult match ×2, quoting ×2, effective_pk ×3, prepare_stream, serde vocab ×3, decimal/date parsing ×2, pump_copy ×2, Emit loop ×2, strategy wrappers, PEM loading ×2, select_sql WHERE dup | 7 | | |
 | 3.3 slot peek binding inconsistency | 3 | applied | Folded into the R12 peek unification (one implementation, one binding form) |
-| 3.4 duckdb quote-bypass deletion | 6 | | |
+| 3.4 duckdb quote-bypass deletion | 6 | applied | Local quote deleted; everything routes through the dialect seam |
 | 3.4 DestOptions/TableOptions re-export convention | 11 | | |
 | 3.4 MergePlan field naming | 11 (deferral candidate) | | |
 | 3.5 jsonl SlabReader, FileTask ×4, staged-part path ×3, owned-tail ×2, fill loops, compression-ext ×2 | 8 | | |

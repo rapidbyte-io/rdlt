@@ -86,23 +86,25 @@ impl DuckDb {
         self.setting("memory_limit", limit)
     }
 
-    /// Apply one DuckDB setting (`SET key = 'value'`) — the passthrough for
-    /// threads, temp_directory, TimeZone, and the like. Validated + applied
-    /// eagerly (a bad key/value errors HERE), and replayed on every session
-    /// connection the destination opens (cloned connections are fresh
-    /// sessions). The key must be a bare identifier; the value is escaped as a
-    /// literal.
-    pub fn setting(mut self, key: &str, value: &str) -> Result<Self, DestError> {
-        if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+    /// Validate a bare identifier (setup names are never interpolated) then
+    /// record + eagerly apply one setup statement, so a bad key/name/value
+    /// errors HERE and the statement replays on every session connection the
+    /// destination opens (cloned connections are fresh sessions). `noun`
+    /// (`setting`/`extension`) and `plural` (`keys`/`names`) name the surface
+    /// in the rejection.
+    fn declare_setup(
+        mut self,
+        noun: &str,
+        plural: &str,
+        name: &str,
+        stmt: SetupStmt,
+    ) -> Result<Self, DestError> {
+        if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
             return Err(fatal(format!(
-                "duckdb setting `{key}`: keys must be bare identifiers \
+                "duckdb {noun} `{name}`: {plural} must be bare identifiers \
                  ([A-Za-z0-9_]) — refusing to interpolate"
             )));
         }
-        let stmt = SetupStmt::Setting {
-            key: key.to_owned(),
-            value: value.to_owned(),
-        };
         {
             let guard = self.db.lock().map_err(|_| fatal("connection poisoned"))?;
             apply_setup(&guard, &stmt)?;
@@ -111,25 +113,34 @@ impl DuckDb {
         Ok(self)
     }
 
+    /// Apply one DuckDB setting (`SET key = 'value'`) — the passthrough for
+    /// threads, temp_directory, TimeZone, and the like. Validated + applied
+    /// eagerly and replayed per session connection. The key must be a bare
+    /// identifier; the value is escaped as a literal.
+    pub fn setting(self, key: &str, value: &str) -> Result<Self, DestError> {
+        self.declare_setup(
+            "setting",
+            "keys",
+            key,
+            SetupStmt::Setting {
+                key: key.to_owned(),
+                value: value.to_owned(),
+            },
+        )
+    }
+
     /// LOAD a DuckDB extension by name (bundled builds carry the core
     /// extensions statically — LOAD activates, no network install).
     /// Applied eagerly and replayed per session connection.
-    pub fn extension(mut self, name: &str) -> Result<Self, DestError> {
-        if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-            return Err(fatal(format!(
-                "duckdb extension `{name}`: names must be bare identifiers \
-                 ([A-Za-z0-9_]) — refusing to interpolate"
-            )));
-        }
-        let stmt = SetupStmt::Extension {
-            name: name.to_owned(),
-        };
-        {
-            let guard = self.db.lock().map_err(|_| fatal("connection poisoned"))?;
-            apply_setup(&guard, &stmt)?;
-        }
-        self.session_setup.push(stmt);
-        Ok(self)
+    pub fn extension(self, name: &str) -> Result<Self, DestError> {
+        self.declare_setup(
+            "extension",
+            "names",
+            name,
+            SetupStmt::Extension {
+                name: name.to_owned(),
+            },
+        )
     }
 
     fn clone_conn(&self) -> Result<Connection, DestError> {
@@ -219,7 +230,10 @@ fn apply_setup(conn: &Connection, stmt: &SetupStmt) -> Result<(), DestError> {
 pub const FAIL_POINTS: &[&str] = &["duck.append", "duck.tx.commit"];
 
 pub(crate) fn quote(ident: &str) -> String {
-    format!("\"{}\"", ident.replace('"', "\"\""))
+    // The one injection-safe quoting rule, shared with every SQL destination
+    // (and the DuckDialect seam's default). Kept as a thin local alias so the
+    // many DDL/publish call sites read `quote(...)`.
+    rdlt_connector_sqlcore::quote_ident(ident)
 }
 
 pub(crate) fn stage_name(table: &TableName) -> String {
@@ -231,18 +245,9 @@ pub(crate) fn stage_name(table: &TableName) -> String {
     )
 }
 
-/// Quoted, comma-joined column list from the session schema — publishes are ALWAYS
-/// by name: the persistent target's column order is historical while the temp stage
-/// uses this run's order, so positional `SELECT *` corrupts or breaks on
-/// drift.
-pub(crate) fn column_list(schema: &TableSchema) -> String {
-    schema
-        .columns
-        .iter()
-        .map(|c| quote(&c.name))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
+/// Quoted, comma-joined column list from the session schema — the shared
+/// sqlcore rule; publishes are ALWAYS by name.
+pub(crate) use rdlt_connector_sqlcore::column_list;
 
 /// DuckDB SQL type for a logical column type — struct-native lowering.
 ///

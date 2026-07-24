@@ -17,11 +17,11 @@ use rdlt_connector::{
     CommitMeta, CommitReceipt, DestError, LoadSession, RecordBatch, WriteMode,
     core::{PipelineId, StateDoc, TableName, TableSchema, crash_point, schema::system_columns},
 };
-use rdlt_connector_sqlcore::plan::{
-    self as sqlplan, TableFacts, identity_delete_insert_sql, keyed_delete_insert_sql,
-    keyed_upsert_sql, scd2_merge_sql, scope_replace_sql,
+use rdlt_connector_sqlcore::plan::{self as sqlplan, IndexSpec, TableFacts, scope_replace_sql};
+use rdlt_connector_sqlcore::{
+    CommitCtx, DestOptions, MergeDialect, MergeStrategy, Step, build_merge_plan, commit_script,
+    insert_select_sql, render_arm, staged_probe_targets,
 };
-use rdlt_connector_sqlcore::{DestOptions, HardDelete, MergePlan, MergeStrategy};
 
 use super::dialect::DuckDialect;
 use super::{
@@ -52,44 +52,21 @@ impl DuckDbSession {
     }
 
     fn root_of(&self, table: &TableName) -> TableName {
-        let mut current = table.clone();
-        for _ in 0..64 {
-            match self
-                .tables
-                .get(&current)
-                .and_then(|(s, _)| s.parent.as_ref())
-            {
-                Some(link) => current = link.parent.clone(),
-                None => break,
-            }
-        }
-        current
+        rdlt_connector_sqlcore::root_of(&self.tables, table)
     }
 }
 
 /// The old spelling of a unique merge-identity index: databases written
 /// before the unique prefix was introduced named unique indexes with the
-/// plain `rdlt_ix_` prefix. The old name is dropped before creating the
-/// correctly-prefixed one, so such a database doesn't carry two identical
-/// unique ART indexes forever.
+/// plain `rdlt_ix_` prefix (the shared formula's non-unique name). The old
+/// name is dropped before creating the correctly-prefixed one, so such a
+/// database doesn't carry two identical unique ART indexes forever.
 fn legacy_unique_index_name(table: &str, columns: &[String]) -> String {
-    format!(
-        "{}_{}",
-        rdlt_connector_sqlcore::names::INDEX_PREFIX,
-        rdlt_connector::core::naming::ident_hash(&format!("{table}:{}", columns.join(",")), 16)
-    )
+    rdlt_connector_sqlcore::names::index_name(false, table, columns)
 }
 
 fn create_index_sql(unique: bool, table: &str, columns: &[String]) -> String {
-    let prefix = if unique {
-        rdlt_connector_sqlcore::names::UNIQUE_INDEX_PREFIX
-    } else {
-        rdlt_connector_sqlcore::names::INDEX_PREFIX
-    };
-    let name = format!(
-        "{prefix}_{}",
-        rdlt_connector::core::naming::ident_hash(&format!("{table}:{}", columns.join(",")), 16)
-    );
+    let name = rdlt_connector_sqlcore::names::index_name(unique, table, columns);
     let unique = if unique { "UNIQUE " } else { "" };
     let cols = columns
         .iter()
@@ -101,6 +78,109 @@ fn create_index_sql(unique: bool, table: &str, columns: &[String]) -> String {
         quote(&name),
         quote(table)
     )
+}
+
+fn staged_nonempty(tx: &duckdb::Transaction<'_>, table: &TableName) -> Result<bool, DestError> {
+    tx.query_row(
+        &format!(
+            "SELECT EXISTS (SELECT 1 FROM {})",
+            quote(&stage_name(table))
+        ),
+        [],
+        |row| row.get(0),
+    )
+    .map_err(fatal)
+}
+
+/// Execute one planned [`Step`] in the publish transaction. Every decision +
+/// the order come from the planner; this renders each step's SQL through the
+/// DuckDialect seam + shared renderers and runs it on the session's connection.
+fn execute_step(
+    tx: &duckdb::Transaction<'_>,
+    tables: &BTreeMap<TableName, (TableSchema, WriteMode)>,
+    options: &DestOptions,
+    roots: &BTreeMap<TableName, TableName>,
+    meta: &CommitMeta,
+    state_json: &str,
+    step: &Step,
+) -> Result<(), DestError> {
+    match step {
+        Step::ClearTarget { table } => {
+            tx.execute_batch(&DuckDialect.clear_table(&quote(table.as_str())))
+                .map_err(fatal)?;
+        }
+        Step::InsertSelect { table } => {
+            let (schema, _) = &tables[table];
+            let target = quote(table.as_str());
+            let stage = quote(&stage_name(table));
+            tx.execute_batch(&insert_select_sql(&target, &column_list(schema), &stage))
+                .map_err(fatal)?;
+        }
+        Step::ScopeReplace { table, scope } => {
+            let target = quote(table.as_str());
+            let stage = quote(&stage_name(table));
+            tx.execute_batch(&scope_replace_sql(&DuckDialect, &target, &stage, scope))
+                .map_err(fatal)?;
+        }
+        Step::MergeArm { table, arm } => {
+            let (schema, mode) = &tables[table];
+            let WriteMode::Merge { key } = mode else {
+                // The planner emits MergeArm only for merge tables.
+                return Err(fatal(format!(
+                    "internal: merge arm planned for non-merge table `{table}`"
+                )));
+            };
+            let root = &roots[table];
+            let target = quote(table.as_str());
+            let stage = quote(&stage_name(table));
+            let cols = column_list(schema);
+            let root_stage = quote(&stage_name(root));
+            let root_schema = tables.get(root).map(|(s, _)| s);
+            let dialect = DuckDialect;
+            let plan = build_merge_plan(
+                &dialect,
+                options,
+                table,
+                schema,
+                key,
+                &target,
+                &stage,
+                &cols,
+                root,
+                root_stage,
+                root_schema,
+            );
+            for sql in render_arm(&plan, arm) {
+                tx.execute_batch(&sql).map_err(fatal)?;
+            }
+        }
+        Step::TruncateStage { table } => {
+            tx.execute_batch(&DuckDialect.clear_table(&quote(&stage_name(table))))
+                .map_err(fatal)?;
+        }
+        Step::UpsertState => {
+            // State persists in the SAME transaction as the data.
+            tx.execute(
+                &format!(
+                    "INSERT OR REPLACE INTO {} VALUES (?, ?)",
+                    rdlt_connector_sqlcore::names::STATE_TABLE
+                ),
+                duckdb::params![meta.state.pipeline.as_str(), state_json],
+            )
+            .map_err(fatal)?;
+        }
+        Step::InsertReceipt => {
+            tx.execute(
+                &format!(
+                    "INSERT INTO {} VALUES (?, ?)",
+                    rdlt_connector_sqlcore::names::COMMITS_TABLE
+                ),
+                duckdb::params![meta.load_id.as_str(), meta.commit_seq as i64],
+            )
+            .map_err(fatal)?;
+        }
+    }
+    Ok(())
 }
 
 #[async_trait]
@@ -208,7 +288,7 @@ impl LoadSession for DuckDbSession {
             let index_stmts: Vec<(bool, Vec<String>, String)> =
                 sqlplan::index_plan(&self.options, &table_str, key, has_identity, is_child)
                     .into_iter()
-                    .map(|(unique, columns)| {
+                    .map(|IndexSpec { unique, columns }| {
                         let sql = create_index_sql(unique, &table_str, &columns);
                         (unique, columns, sql)
                     })
@@ -306,201 +386,50 @@ impl LoadSession for DuckDbSession {
                     |row| row.get(0),
                 )
                 .map_err(fatal)?;
-            let staged_nonempty =
-                |tx: &duckdb::Transaction<'_>, table: &TableName| -> Result<bool, DestError> {
-                    tx.query_row(
-                        &format!(
-                            "SELECT EXISTS (SELECT 1 FROM {})",
-                            quote(&stage_name(table))
-                        ),
-                        [],
-                        |row| row.get(0),
-                    )
-                    .map_err(fatal)
-                };
-            let mut marks: Vec<TableName> = Vec::new();
-            if already > 0 {
-                // Replay of a unit that DID commit server-side: the merge
-                // SQL never re-runs, but the single-unit discipline must
-                // still count this unit — the redelivered stage carries the
-                // same rows the committed one did.
-                for (table, (_, mode)) in &tables {
-                    if !matches!(mode, WriteMode::Merge { .. }) {
-                        continue;
-                    }
-                    let scoped = options.merge_key_for(table.as_str()).is_some();
-                    let retire = options.strategy_for(table.as_str()) == MergeStrategy::Scd2
-                        && options.scd2_for(table.as_str()).absent
-                            == rdlt_connector_sqlcore::AbsentPolicy::Retire;
-                    if (scoped || retire)
-                        && !single_unit_done.contains(table)
-                        && staged_nonempty(&tx, table)?
-                    {
-                        marks.push(table.clone());
-                    }
+            let load_committed_before = load_committed_before > 0;
+            let replayed = already > 0;
+
+            // Probe the full-feed stages the planner needs. Staged-row counts
+            // are INVARIANT across the publish (no stage is written during it),
+            // so probing up front matches the former lazy per-table check.
+            let mut staged_nonempty_set = BTreeSet::new();
+            for table in staged_probe_targets(&tables, &options) {
+                if staged_nonempty(&tx, table)? {
+                    staged_nonempty_set.insert(table.clone());
                 }
-                for table in tables.keys() {
-                    tx.execute_batch(&format!("DELETE FROM {}", quote(&stage_name(table))))
-                        .map_err(fatal)?;
-                }
-                tx.commit().map_err(classify)?;
-                return Ok(marks);
             }
 
-            for (table, (schema, mode)) in &tables {
-                // A schema without the per-row identity column is a STRUCTURED
-                // stream's table — merge (if requested) goes by key.
-                let schema_has_identity =
-                    schema.columns.iter().any(|c| c.name == system_columns::ID);
-                let target = quote(table.as_str());
-                let stage = quote(&stage_name(table));
-                // Publishes are ALWAYS by name, never positional.
-                let cols = column_list(schema);
-                match mode {
-                    WriteMode::Append => {
-                        tx.execute_batch(&format!(
-                            "INSERT INTO {target} ({cols}) SELECT {cols} FROM {stage}"
-                        ))
-                        .map_err(fatal)?;
-                    }
-                    WriteMode::Replace => {
-                        if load_committed_before == 0 {
-                            tx.execute_batch(&format!("DELETE FROM {target}"))
-                                .map_err(fatal)?;
-                        }
-                        tx.execute_batch(&format!(
-                            "INSERT INTO {target} ({cols}) SELECT {cols} FROM {stage}"
-                        ))
-                        .map_err(fatal)?;
-                    }
-                    WriteMode::Merge { key } => {
-                        // The strategy arms are the SHARED sqlcore shapes
-                        // through the DuckDB dialect — the same plan the
-                        // postgres destination executes.
-                        let strategy = options.strategy_for(table.as_str());
-                        let scoped = options.merge_key_for(table.as_str());
-                        let scd2 = (strategy == MergeStrategy::Scd2)
-                            .then(|| options.scd2_for(table.as_str()));
-                        let retire = scd2.as_ref().is_some_and(|s| {
-                            s.absent == rdlt_connector_sqlcore::AbsentPolicy::Retire
-                        });
-                        // Single-unit discipline, PER TABLE: scope replacement
-                        // and absent-retire interpret the stage as "the
-                        // complete truth" — sound only when THIS TABLE's full
-                        // feed arrives in one commit unit.
-                        if scoped.is_some() || retire {
-                            if !staged_nonempty(&tx, table)? {
-                                continue; // nothing delivered for THIS table this unit
-                            }
-                            if single_unit_done.contains(table) {
-                                // Name the rule that FIRED — under scd2 the
-                                // absent-retire rule governs even when a
-                                // merge_key scopes it.
-                                return Err(fatal(sqlplan::single_unit_violation(
-                                    table.as_str(),
-                                    scoped.is_some() && !retire,
-                                )));
-                            }
-                            marks.push(table.clone());
-                        }
-                        // Scope replacement runs BEFORE the strategy arm,
-                        // inside the same transaction. NOT for scd2: there the
-                        // merge_key scopes RETIREMENT inside the arm —
-                        // deleting scope rows would destroy history.
-                        if let Some(scope) = scoped
-                            && strategy != MergeStrategy::Scd2
-                        {
-                            tx.execute_batch(&scope_replace_sql(
-                                &DuckDialect,
-                                &target,
-                                &stage,
-                                scope,
-                            ))
-                            .map_err(fatal)?;
-                        }
-                        let root = &roots[table];
-                        let plan = MergePlan {
-                            dialect: &DuckDialect,
-                            target: &target,
-                            stage: &stage,
-                            cols: &cols,
-                            schema,
-                            key,
-                            root_stage: quote(&stage_name(root)),
-                            is_child: table != root,
-                            hard_delete: options.hard_delete_for(root.as_str()).and_then(|col| {
-                                let root_schema = tables.get(root).map(|(s, _)| s)?;
-                                Some(HardDelete::new(col, root_schema, &DuckDialect))
-                            }),
-                            dedup_sort: options.dedup_sort_for(table.as_str()),
-                            merge_scope: scoped,
-                        };
-                        let stmts = match (schema_has_identity, strategy) {
-                            (false, MergeStrategy::DeleteInsert) => keyed_delete_insert_sql(&plan),
-                            (false, MergeStrategy::Upsert) => keyed_upsert_sql(&plan),
-                            (true, MergeStrategy::DeleteInsert) => {
-                                identity_delete_insert_sql(&plan)
-                            }
-                            (false, MergeStrategy::Scd2) => {
-                                let scd2 = scd2
-                                    .as_ref()
-                                    .expect("scd2 options resolved with the strategy");
-                                scd2_merge_sql(&plan, scd2)
-                            }
-                            (true, MergeStrategy::Upsert) => {
-                                // Unreachable: ensure_table rejects upsert on
-                                // a shredded stream.
-                                return Err(fatal(format!(
-                                    "table `{table}`: upsert on a shredded stream"
-                                )));
-                            }
-                            (true, MergeStrategy::Scd2) => {
-                                // Unreachable: ensure_table rejects scd2 on a
-                                // shredded stream.
-                                return Err(fatal(format!(
-                                    "table `{table}`: scd2 on a shredded stream"
-                                )));
-                            }
-                        };
-                        for sql in stmts {
-                            tx.execute_batch(&sql).map_err(fatal)?;
-                        }
-                    }
-                }
-            }
-            // Truncate stages only after ALL tables published: child-table
-            // merges read the ROOT's stage for their delete-by-root-id
-            // subquery.
-            for table in tables.keys() {
-                tx.execute_batch(&format!("DELETE FROM {}", quote(&stage_name(table))))
-                    .map_err(fatal)?;
+            // The planner owns every decision + the ordering; this session
+            // executes.
+            let script = commit_script(
+                &tables,
+                &options,
+                &CommitCtx {
+                    replayed,
+                    load_committed_before,
+                    single_unit_done: &single_unit_done,
+                    staged_nonempty: &staged_nonempty_set,
+                },
+            )
+            .map_err(fatal)?;
+
+            for step in &script.steps {
+                execute_step(&tx, &tables, &options, &roots, &meta, &state_json, step)?;
             }
 
-            // State persists in the SAME transaction as the data.
-            tx.execute(
-                &format!(
-                    "INSERT OR REPLACE INTO {} VALUES (?, ?)",
-                    rdlt_connector_sqlcore::names::STATE_TABLE
-                ),
-                duckdb::params![meta.state.pipeline.as_str(), state_json],
-            )
-            .map_err(fatal)?;
-            tx.execute(
-                &format!(
-                    "INSERT INTO {} VALUES (?, ?)",
-                    rdlt_connector_sqlcore::names::COMMITS_TABLE
-                ),
-                duckdb::params![meta.load_id.as_str(), meta.commit_seq as i64],
-            )
-            .map_err(fatal)?;
-            // The redelivery window: everything is published in ONE
-            // transaction, so a crash at this edge must replay idempotently.
-            crash_point!(
-                "duck.tx.commit",
-                Err(DestError::fatal("injected crash at duck.tx.commit"))
-            );
+            // The redelivery window: on a fresh unit everything is published in
+            // ONE transaction, so a crash at this edge must replay
+            // idempotently. A replay unit only truncated stages and carried no
+            // receipt/state edge (never instrumented), so the crash point stays
+            // confined to the fresh path.
+            if !replayed {
+                crash_point!(
+                    "duck.tx.commit",
+                    Err(DestError::fatal("injected crash at duck.tx.commit"))
+                );
+            }
             tx.commit().map_err(classify)?;
-            Ok(marks)
+            Ok(script.marks)
         })?;
 
         // Applied only after the unit's transaction committed (the rolled-

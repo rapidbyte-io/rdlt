@@ -1,14 +1,14 @@
-//! The shared merge shapes: survivor selection, scope replacement, strategy
-//! arms, hard-delete decisions, open-time validation, index plans, and the
-//! single-commit-unit rule. Every statement's text is produced through the
-//! [`MergeDialect`] seam; the postgres crate's golden-SQL suite pins that
-//! text byte-for-byte, so a change here that alters emitted SQL is caught
-//! there.
+//! The strategy arms + their building blocks: hard-delete semantics, the
+//! survivor/dedup subquery, scope replacement, the keyed/identity/scd2 shapes,
+//! and the single-commit-unit message. Every statement's text is produced
+//! through the [`MergeDialect`] seam; the postgres crate's golden-SQL suite
+//! pins that text byte-for-byte, so a change here that alters emitted SQL is
+//! caught there.
 
 use rdlt_connector::core::{TableSchema, schema::system_columns};
 
 use crate::dialect::MergeDialect;
-use crate::options::{DedupSort, DestOptions, MergeStrategy, Scd2Options, SortOrder};
+use crate::options::{AbsentPolicy, DedupSort, Scd2Options, SortOrder};
 
 /// Hard-delete flag semantics: boolean columns compare `IS TRUE`,
 /// other types `IS NOT NULL` — both NULL-safe on the KEEP side.
@@ -116,18 +116,19 @@ impl MergePlan<'_> {
 
     /// Roots flagged for hard deletion — decided from the DEDUPED last-wins
     /// root row. Reading the RAW stage instead would disagree with survival
-    /// when a root is flagged then re-created in the same load.
-    fn flagged_roots(&self) -> Option<String> {
-        self.hard_delete.as_ref().map(|hd| {
-            let id = self.quote(system_columns::ID);
-            format!(
-                "(SELECT {id} FROM (SELECT DISTINCT ON ({id}) * FROM {} \
-                 ORDER BY {id}, {} DESC) d WHERE {})",
-                self.root_stage,
-                self.dialect.arrival_order(),
-                hd.flagged
-            )
-        })
+    /// when a root is flagged then re-created in the same load. Takes the
+    /// resolved [`HardDelete`] directly, so the child hard-delete arm needs no
+    /// "is it present?" unwrap — the flag's presence is proven by the caller's
+    /// match.
+    fn flagged_roots(&self, hd: &HardDelete) -> String {
+        let id = self.quote(system_columns::ID);
+        format!(
+            "(SELECT {id} FROM (SELECT DISTINCT ON ({id}) * FROM {} \
+             ORDER BY {id}, {} DESC) d WHERE {})",
+            self.root_stage,
+            self.dialect.arrival_order(),
+            hd.flagged
+        )
     }
 }
 
@@ -231,10 +232,10 @@ pub fn identity_delete_insert_sql(plan: &MergePlan<'_>) -> Vec<String> {
     // children drop by root-id membership.
     let keep = match (&plan.hard_delete, plan.is_child) {
         (Some(hd), false) => format!(" WHERE {}", hd.keep),
-        (Some(_), true) => format!(
+        (Some(hd), true) => format!(
             " WHERE {} NOT IN {}",
             plan.quote(system_columns::ROOT_ID),
-            plan.flagged_roots().expect("hard_delete present")
+            plan.flagged_roots(hd)
         ),
         (None, _) => String::new(),
     };
@@ -320,7 +321,7 @@ pub fn scd2_merge_sql(plan: &MergePlan<'_>, scd2: &Scd2Options) -> Vec<String> {
     // Full-feed absence semantics on request: with a merge_key, retirement is
     // SCOPED to the delivered scopes (NULL is not a scope); without one, every
     // absent active key retires.
-    if scd2.absent == crate::options::AbsentPolicy::Retire {
+    if scd2.absent == AbsentPolicy::Retire {
         let scope_clause = match plan.merge_scope {
             Some(scope) if !scope.is_empty() => {
                 let cols = scope
@@ -348,207 +349,6 @@ pub fn scd2_merge_sql(plan: &MergePlan<'_>, scd2: &Scd2Options) -> Vec<String> {
         ));
     }
     out
-}
-
-// ---- Open-time validation: one rule set, identical typed errors across
-// both SQL destinations ----
-
-/// Table facts a destination resolves before validation.
-#[derive(Debug)]
-pub struct TableFacts<'a> {
-    pub schema: &'a TableSchema,
-    pub has_identity: bool,
-    pub is_child: bool,
-}
-
-/// Merge-only options (strategy, dedup_sort, merge_key) under Append or
-/// Replace would be silently inert — reject typed instead. Only an EXPLICIT
-/// merge_strategy rejects; the unconfigured default does not.
-pub fn validate_non_merge(options: &DestOptions, table: &str) -> Result<(), String> {
-    for (declared, name) in [
-        (
-            options.explicit_strategy_for(table).is_some(),
-            "merge_strategy",
-        ),
-        (options.dedup_sort_for(table).is_some(), "dedup_sort"),
-        (options.merge_key_for(table).is_some(), "merge_key"),
-    ] {
-        if declared {
-            return Err(format!(
-                "table `{table}`: {name} requires the merge write mode \
-                 — under append/replace it would be silently inert"
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// The merge-mode option checks (existence, collisions, keyed-only rules) —
-/// every error names the offender. The message texts are frozen: the postgres
-/// conformance cells pin them.
-pub fn validate_merge(
-    options: &DestOptions,
-    table: &str,
-    key: &[String],
-    facts: &TableFacts<'_>,
-) -> Result<(), String> {
-    let strategy = options.strategy_for(table);
-    let has_identity = facts.has_identity;
-    if let Some(col) = options.hard_delete_for(table) {
-        // Configuring hard_delete on a CHILD table would be silently inert —
-        // reject typed instead: the flag lives on the ROOT row of a shredded
-        // stream.
-        if facts.is_child {
-            return Err(format!(
-                "table `{table}`: hard_delete applies to the ROOT table of a \
-                 shredded stream — configure it on the root, not the child"
-            ));
-        }
-        // The flag column must exist on THIS table's schema.
-        if facts.schema.column(col).is_none() {
-            return Err(format!(
-                "hard_delete column `{col}` is not a column of table `{table}`"
-            ));
-        }
-    }
-    // Both refinement options (dedup_sort, merge_key) are keyed-structured
-    // only, their columns must exist, and they may not repurpose the
-    // hard_delete flag. (A collision with scd2 validity columns is
-    // unreachable: validity names may not be stream columns while these
-    // options' columns MUST be — the validity-column check fires first.)
-    if let Some(dedup) = options.dedup_sort_for(table) {
-        if has_identity {
-            return Err(format!(
-                "table `{table}`: dedup_sort requires a KEYED structured \
-                 stream — a shredded stream's identity is a content hash, \
-                 ordered survivors are meaningless there"
-            ));
-        }
-        if facts.schema.column(&dedup.column).is_none() {
-            return Err(format!(
-                "dedup_sort column `{}` is not a column of table `{table}`",
-                dedup.column
-            ));
-        }
-        if options.hard_delete_for(table) == Some(dedup.column.as_str()) {
-            return Err(format!(
-                "table `{table}`: dedup_sort column `{}` is the hard_delete \
-                 flag — use a distinct ordering column",
-                dedup.column
-            ));
-        }
-        // Review: a merge-key column is CONSTANT within each identity
-        // group — the ordering could never choose a survivor, silently
-        // reverting to arrival order.
-        if key.contains(&dedup.column) {
-            return Err(format!(
-                "table `{table}`: dedup_sort column `{}` is part of the \
-                 merge key — constant within each identity group, it can \
-                 never order survivors",
-                dedup.column
-            ));
-        }
-    }
-    if let Some(scope) = options.merge_key_for(table) {
-        if has_identity {
-            return Err(format!(
-                "table `{table}`: merge_key requires a KEYED structured \
-                 stream — shredded streams replace by root subtree"
-            ));
-        }
-        if strategy == MergeStrategy::Scd2
-            && options.scd2_for(table).absent != crate::options::AbsentPolicy::Retire
-        {
-            // Belt: parse-time validation already rejects this; direct
-            // struct construction must not slip past it — merge_key with scd2
-            // is scoped retirement and requires `absent: retire`.
-            return Err(format!(
-                "table `{table}`: merge_key with scd2 scopes RETIREMENT and \
-                 requires scd2 {{absent: retire}}"
-            ));
-        }
-        for col in scope {
-            if facts.schema.column(col).is_none() {
-                return Err(format!(
-                    "merge_key column `{col}` is not a column of table `{table}`"
-                ));
-            }
-            if options.hard_delete_for(table) == Some(col.as_str()) {
-                return Err(format!(
-                    "table `{table}`: merge_key column `{col}` is the \
-                     hard_delete flag — a deletion flag is not a scope"
-                ));
-            }
-        }
-    }
-    if strategy == MergeStrategy::Upsert && has_identity {
-        // A shredded stream's _rdlt_id is
-        // a CONTENT hash for keyless streams — updates mint new ids and
-        // ON CONFLICT never fires, silently duplicating. The destination
-        // cannot distinguish keyed from keyless shredded streams, so upsert
-        // is keyed-structured only; shredded streams keep delete_insert
-        // (subtree replacement).
-        return Err(format!(
-            "table `{table}`: the upsert strategy requires a KEYED \
-             structured stream — shredded streams use delete_insert"
-        ));
-    }
-    if strategy == MergeStrategy::Scd2 {
-        if has_identity {
-            return Err(format!(
-                "table `{table}`: scd2 requires a KEYED structured stream \
-                 — shredded streams have no declared key"
-            ));
-        }
-        let scd2 = options.scd2_for(table);
-        for name in [&scd2.valid_from, &scd2.valid_to] {
-            if facts.schema.column(name).is_some() {
-                return Err(format!(
-                    "table `{table}`: scd2 validity column `{name}` collides \
-                     with a stream column — configure different names"
-                ));
-            }
-        }
-    }
-    let _ = key;
-    Ok(())
-}
-
-/// Index plan: identity indexes per table kind, plus the scope index.
-/// `(unique, columns)` pairs; SQL text is the destination's.
-pub fn index_plan(
-    options: &DestOptions,
-    table: &str,
-    key: &[String],
-    has_identity: bool,
-    is_child: bool,
-) -> Vec<(bool, Vec<String>)> {
-    let strategy = options.strategy_for(table);
-    let mut indexes: Vec<(bool, Vec<String>)> = Vec::new();
-    if has_identity {
-        indexes.push((false, vec![system_columns::ID.to_string()]));
-        if is_child {
-            indexes.push((false, vec![system_columns::ROOT_ID.to_string()]));
-        }
-    } else {
-        match strategy {
-            MergeStrategy::Upsert => indexes.push((true, key.to_vec())),
-            MergeStrategy::DeleteInsert => indexes.push((false, key.to_vec())),
-            MergeStrategy::Scd2 => {
-                // (key…, valid_to): active-version lookups + retire.
-                let scd2 = options.scd2_for(table);
-                let mut cols = key.to_vec();
-                cols.push(scd2.valid_to.clone());
-                indexes.push((false, cols));
-            }
-        }
-        // The scope delete probes by the scope columns — without this index
-        // it seq-scans the whole target every load.
-        if let Some(scope) = options.merge_key_for(table) {
-            indexes.push((false, scope.to_vec()));
-        }
-    }
-    indexes
 }
 
 /// The per-table single-commit-unit violation: scoped merge_key replacement

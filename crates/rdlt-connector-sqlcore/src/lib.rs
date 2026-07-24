@@ -14,9 +14,14 @@ pub mod dialect;
 pub mod names;
 pub mod options;
 pub mod plan;
+pub mod protocol;
 
-pub use dialect::MergeDialect;
+pub use dialect::{MergeDialect, quote_ident};
 pub use options::{
     AbsentPolicy, DedupSort, DestOptions, MergeStrategy, Scd2Options, SortOrder, TableOptions,
 };
-pub use plan::{HardDelete, MergePlan};
+pub use plan::{HardDelete, MergeCtx, MergePlan, column_list, root_of};
+pub use protocol::{
+    CommitCtx, CommitError, CommitScript, MergeArm, Step, build_merge_plan, commit_script,
+    insert_select_sql, render_arm, staged_probe_targets,
+};
