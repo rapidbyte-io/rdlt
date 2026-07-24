@@ -330,6 +330,6 @@ mod composed_api {
                              "include": ["name"]}}
             ]
         }))?;
-        Ok(RestSource::new(config))
+        Ok(RestSource::new(config)?)
     }
 }

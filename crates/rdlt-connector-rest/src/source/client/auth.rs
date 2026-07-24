@@ -54,7 +54,7 @@ impl AuthProvider {
                 ApiKeyLocation::Header => request.header(name, key.reveal()),
                 ApiKeyLocation::Query => request.query(&[(name, key.reveal())]),
             }),
-            Auth::Oauth2ClientCredentials { .. } => {
+            Auth::OAuth2ClientCredentials { .. } => {
                 let token = self.current_token().await?;
                 Ok(request.bearer_auth(token.reveal()))
             }
@@ -64,7 +64,7 @@ impl AuthProvider {
     /// 401 hook: refreshable schemes drop their cache and report "retry
     /// once"; everything else reports "no, the 401 is final".
     pub async fn on_unauthorized(&self) -> Result<bool, SourceError> {
-        if !matches!(&self.scheme, Auth::Oauth2ClientCredentials { .. }) {
+        if !matches!(&self.scheme, Auth::OAuth2ClientCredentials { .. }) {
             return Ok(false);
         }
         let mut guard = self.token.lock().await;
@@ -77,7 +77,7 @@ impl AuthProvider {
     }
 
     async fn current_token(&self) -> Result<Secret, SourceError> {
-        let Auth::Oauth2ClientCredentials {
+        let Auth::OAuth2ClientCredentials {
             token_url,
             client_id,
             client_secret,

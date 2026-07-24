@@ -23,7 +23,7 @@ use serde_json::Value;
 
 pub use client::RestClient;
 pub use config::{Auth, Pagination, RestConfig, RestStream};
-pub use read::paginate::{PageContext, PageDecision, Paginator};
+pub use read::paginate::{PageContext, PageDecision, Paginator, PaginatorError};
 
 /// Fail-point registry: the read path's protocol boundaries.
 #[cfg(feature = "failpoints")]
@@ -38,19 +38,31 @@ pub struct RestSource {
 
 impl RestSource {
     pub fn from_yaml(yaml: &str) -> Result<Self, config::ConfigError> {
-        Ok(Self::new(RestConfig::from_yaml(yaml)?))
+        Ok(Self::build(RestConfig::from_yaml(yaml)?))
     }
 
     pub fn from_json(json: &str) -> Result<Self, config::ConfigError> {
-        Ok(Self::new(RestConfig::from_json(json)?))
+        Ok(Self::build(RestConfig::from_json(json)?))
     }
 
     /// Embedder entry point (see [`RestConfig::from_value`]).
     pub fn from_value(value: serde_json::Value) -> Result<Self, config::ConfigError> {
-        Ok(Self::new(RestConfig::from_value(value)?))
+        Ok(Self::build(RestConfig::from_value(value)?))
     }
 
-    pub fn new(config: RestConfig) -> Self {
+    /// Construct from an already-parsed [`RestConfig`], validating it first —
+    /// the canonical entry when a caller holds a config value rather than
+    /// serialized text. Validation makes the read path's invariants real (the
+    /// selector parses, `max_concurrency >= 1`, parent-stream membership), so
+    /// nothing downstream has to re-check or paper over them.
+    pub fn new(config: RestConfig) -> Result<Self, config::ConfigError> {
+        config.validate()?;
+        Ok(Self::build(config))
+    }
+
+    /// Wire up the HTTP client for a config already known valid (the `from_*`
+    /// text constructors validate as they parse; [`Self::new`] validates too).
+    fn build(config: RestConfig) -> Self {
         let client = RestClient::new(
             client::AuthProvider::new(config.auth.clone()),
             config

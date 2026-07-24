@@ -136,7 +136,8 @@ pub enum Auth {
     },
     /// OAuth2 client-credentials grant: lazy token fetch, cached with an
     /// expiry margin, single-flight refresh, ONE 401 re-fetch then fatal.
-    Oauth2ClientCredentials {
+    #[serde(rename = "oauth2_client_credentials")]
+    OAuth2ClientCredentials {
         token_url: String,
         client_id: String,
         client_secret: Secret,
@@ -260,8 +261,10 @@ pub enum Pagination {
         total_count_path: Option<String>,
     },
     /// A cursor in the response body feeds the next request's param;
-    /// terminates when the cursor is absent or null.
-    Cursor {
+    /// terminates when the cursor is absent or null. The config spelling stays
+    /// `type: cursor`; the variant is named for its body-cursor semantics.
+    #[serde(rename = "cursor")]
+    BodyCursor {
         /// Selector to the cursor value in the response body.
         cursor_path: String,
         cursor_param: String,
@@ -277,6 +280,45 @@ pub enum Pagination {
     NextUrl { next_url_path: String },
     /// RFC5988 `Link: <url>; rel="next"`; terminates when no next link.
     LinkHeader,
+}
+
+impl Pagination {
+    /// Every selector path this pagination family carries, each labeled for
+    /// error messages — the one home for the variant knowledge that config
+    /// validation (which checks they parse) and paginator construction both
+    /// reach for.
+    pub(crate) fn selector_paths(&self) -> Vec<(&'static str, &str)> {
+        match self {
+            Pagination::Page {
+                total_pages_path,
+                total_count_path,
+                ..
+            } => {
+                let mut paths = Vec::new();
+                if let Some(p) = total_pages_path {
+                    paths.push(("pagination.total_pages_path", p.as_str()));
+                }
+                if let Some(p) = total_count_path {
+                    paths.push(("pagination.total_count_path", p.as_str()));
+                }
+                paths
+            }
+            Pagination::Offset {
+                total_count_path, ..
+            } => total_count_path
+                .as_deref()
+                .map(|p| ("pagination.total_count_path", p))
+                .into_iter()
+                .collect(),
+            Pagination::BodyCursor { cursor_path, .. } => {
+                vec![("pagination.cursor_path", cursor_path.as_str())]
+            }
+            Pagination::NextUrl { next_url_path } => {
+                vec![("pagination.next_url_path", next_url_path.as_str())]
+            }
+            Pagination::None | Pagination::HeaderCursor { .. } | Pagination::LinkHeader => vec![],
+        }
+    }
 }
 
 fn default_page_param() -> String {
@@ -326,7 +368,9 @@ pub struct ResponseAction {
     /// Substring match over the first 64KiB of the body (absent = any body).
     #[serde(default)]
     pub content_contains: Option<String>,
-    pub action: ActionKind,
+    /// What to do when this action matches. The config key stays `action`.
+    #[serde(rename = "action")]
+    pub kind: ActionKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -429,18 +473,40 @@ impl RestConfig {
         Ok(config)
     }
 
-    fn validate(&self) -> Result<(), ConfigError> {
-        let invalid = |msg: String| Err(ConfigError::Invalid(msg));
+    pub(crate) fn validate(&self) -> Result<(), ConfigError> {
         if self.streams.is_empty() {
             return invalid("at least one stream is required".into());
         }
         if self.max_concurrency == 0 {
             return invalid("max_concurrency must be at least 1".into());
         }
-        // Source-level headers are parsed once at client construction, so their
-        // parseability is guaranteed here (the typed failure surfaces at config
-        // parse time, not mid-read).
-        for (name, value) in &self.headers {
+        validate_headers(&self.headers, None)?;
+        let names: Vec<&str> = self.streams.iter().map(|s| s.name.as_str()).collect();
+        for stream in &self.streams {
+            validate_headers(&stream.headers, Some(&stream.name))?;
+            validate_stream_aliases(stream)?;
+            validate_selectors(stream)?;
+            validate_response_actions(stream)?;
+            validate_parent(self, &names, stream)?;
+        }
+        Ok(())
+    }
+}
+
+fn invalid(msg: String) -> Result<(), ConfigError> {
+    Err(ConfigError::Invalid(msg))
+}
+
+/// Reject credential-bearing header names toward `auth:`. Source-level headers
+/// (`stream` is `None`) additionally get their name/value parse-checked, since
+/// they are parsed once at client construction; per-stream headers are attached
+/// per request, where reqwest surfaces a malformed one at build time.
+fn validate_headers(
+    headers: &BTreeMap<String, String>,
+    stream: Option<&str>,
+) -> Result<(), ConfigError> {
+    for (name, value) in headers {
+        if stream.is_none() {
             if name.parse::<reqwest::header::HeaderName>().is_err() {
                 return invalid(format!("header `{name}`: not a valid HTTP header name"));
             }
@@ -449,184 +515,167 @@ impl RestConfig {
                     "header `{name}`: value is not a valid HTTP header value"
                 ));
             }
-            if let Some(msg) = reserved_auth_header(name) {
-                return invalid(msg);
-            }
         }
-        let names: Vec<&str> = self.streams.iter().map(|s| s.name.as_str()).collect();
-        for stream in &self.streams {
-            let name = &stream.name;
-            // Per-stream headers carry credentials just as readily as
-            // source-level ones, and render the same way — hold them to the
-            // same `auth:`-not-`headers:` rule.
-            for header in stream.headers.keys() {
-                if let Some(msg) = reserved_auth_header(header) {
-                    return invalid(format!("stream `{name}`: {msg}"));
-                }
-            }
-            // Legacy flat aliases: set together, and never mixed with the block.
-            if stream.cursor_field.is_some() != stream.cursor_param.is_some() {
-                return invalid(format!(
-                    "stream `{name}`: cursor_field and cursor_param must be set together"
-                ));
-            }
-            if stream.incremental.is_some() && stream.cursor_field.is_some() {
-                return invalid(format!(
-                    "stream `{name}`: use either the `incremental` block or the \
-                     legacy cursor_field/cursor_param aliases, not both"
-                ));
-            }
-            if let Some(inc) = &stream.incremental {
-                if inc.end_param.is_some() != inc.end_value.is_some() {
-                    return invalid(format!(
-                        "stream `{name}`: incremental.end_param and end_value must be \
-                         set together (closed windows take explicit values)"
-                    ));
-                }
-                if inc.cursor_field.trim().is_empty() {
-                    return invalid(format!(
-                        "stream `{name}`: incremental.cursor_field must not be empty"
-                    ));
-                }
-            }
-            // Body only for POST.
-            if stream.body.is_some() && stream.method != HttpMethod::Post {
-                return invalid(format!("stream `{name}`: `body` requires `method: post`"));
-            }
-            // Selector syntax is validated eagerly, typed at parse time.
-            for (label, selector) in [
-                ("records_path", stream.records_path.as_deref()),
-                (
-                    "pagination.cursor_path",
-                    match &stream.pagination {
-                        Pagination::Cursor { cursor_path, .. } => Some(cursor_path.as_str()),
-                        _ => None,
-                    },
-                ),
-                (
-                    "pagination.next_url_path",
-                    match &stream.pagination {
-                        Pagination::NextUrl { next_url_path } => Some(next_url_path.as_str()),
-                        _ => None,
-                    },
-                ),
-                (
-                    "pagination.total_pages_path",
-                    match &stream.pagination {
-                        Pagination::Page {
-                            total_pages_path, ..
-                        } => total_pages_path.as_deref(),
-                        _ => None,
-                    },
-                ),
-                (
-                    "pagination.total_count_path",
-                    match &stream.pagination {
-                        Pagination::Page {
-                            total_count_path, ..
-                        } => total_count_path.as_deref(),
-                        Pagination::Offset {
-                            total_count_path, ..
-                        } => total_count_path.as_deref(),
-                        _ => None,
-                    },
-                ),
-            ] {
-                if let Some(selector) = selector
-                    && let Err(e) = super::read::extract::Selector::parse(selector)
-                {
-                    return invalid(format!("stream `{name}`: {label}: {e}"));
-                }
-            }
-            // Page: the two total stops are mutually exclusive.
-            if let Pagination::Page {
-                total_pages_path: Some(_),
-                total_count_path: Some(_),
-                ..
-            } = &stream.pagination
-            {
-                return invalid(format!(
-                    "stream `{name}`: pagination declares both total_pages_path and \
-                     total_count_path — pick one stop condition"
-                ));
-            }
-            // Response actions: at least one matcher each; declared statuses
-            // must be real HTTP statuses (a typo like `42` would otherwise
-            // just be silently dead).
-            for (i, action) in stream.response_actions.iter().enumerate() {
-                if action.status.is_none() && action.content_contains.is_none() {
-                    return invalid(format!(
-                        "stream `{name}`: response_actions[{i}] needs `status` and/or \
-                         `content_contains` — an unconditional action would swallow \
-                         every response"
-                    ));
-                }
-                if let Some(status) = action.status
-                    && !(100..=599).contains(&status)
-                {
-                    return invalid(format!(
-                        "stream `{name}`: response_actions[{i}]: status {status} is not \
-                         an HTTP status (100–599)"
-                    ));
-                }
-            }
-            // Parent linkage.
-            if let Some(parent) = &stream.parent {
-                if parent.stream == *name {
-                    return invalid(format!("stream `{name}`: parent.stream is itself"));
-                }
-                if !names.contains(&parent.stream.as_str()) {
-                    return invalid(format!(
-                        "stream `{name}`: parent.stream `{}` is not a declared stream",
-                        parent.stream
-                    ));
-                }
-                let parent_decl = self
-                    .streams
-                    .iter()
-                    .find(|s| s.name == parent.stream)
-                    .expect("checked above");
-                if parent_decl.parent.is_some() {
-                    return invalid(format!(
-                        "stream `{name}`: parent.stream `{}` is itself a child — \
-                         one level of nesting is supported",
-                        parent.stream
-                    ));
-                }
-                if parent.placeholders.is_empty() {
-                    return invalid(format!(
-                        "stream `{name}`: parent.placeholders must not be empty"
-                    ));
-                }
-                for token in parent.placeholders.keys() {
-                    let referenced = stream.path.contains(&format!("{{{token}}}"))
-                        || stream
-                            .params
-                            .values()
-                            .any(|v| v.contains(&format!("{{{token}}}")))
-                        || stream
-                            .body
-                            .as_ref()
-                            .is_some_and(|b| b.to_string().contains(&format!("{{{token}}}")));
-                    if !referenced {
-                        return invalid(format!(
-                            "stream `{name}`: placeholder `{{{token}}}` is declared but \
-                             never used in path, params, or body"
-                        ));
-                    }
-                }
-            } else {
-                // Placeholders in the path REQUIRE a parent block.
-                if stream.path.contains('{') && stream.path.contains('}') {
-                    return invalid(format!(
-                        "stream `{name}`: path contains `{{placeholder}}` tokens but no \
-                         `parent` block declares them"
-                    ));
-                }
-            }
+        if let Some(msg) = reserved_auth_header(name) {
+            return match stream {
+                Some(name) => invalid(format!("stream `{name}`: {msg}")),
+                None => invalid(msg),
+            };
         }
-        Ok(())
     }
+    Ok(())
+}
+
+/// Legacy cursor aliases (set together, never mixed with the block), the
+/// incremental block's own consistency, and the POST-only `body`.
+fn validate_stream_aliases(stream: &RestStream) -> Result<(), ConfigError> {
+    let name = &stream.name;
+    if stream.cursor_field.is_some() != stream.cursor_param.is_some() {
+        return invalid(format!(
+            "stream `{name}`: cursor_field and cursor_param must be set together"
+        ));
+    }
+    if stream.incremental.is_some() && stream.cursor_field.is_some() {
+        return invalid(format!(
+            "stream `{name}`: use either the `incremental` block or the \
+             legacy cursor_field/cursor_param aliases, not both"
+        ));
+    }
+    if let Some(inc) = &stream.incremental {
+        if inc.end_param.is_some() != inc.end_value.is_some() {
+            return invalid(format!(
+                "stream `{name}`: incremental.end_param and end_value must be \
+                 set together (closed windows take explicit values)"
+            ));
+        }
+        if inc.cursor_field.trim().is_empty() {
+            return invalid(format!(
+                "stream `{name}`: incremental.cursor_field must not be empty"
+            ));
+        }
+    }
+    if stream.body.is_some() && stream.method != HttpMethod::Post {
+        return invalid(format!("stream `{name}`: `body` requires `method: post`"));
+    }
+    Ok(())
+}
+
+/// Selector syntax, validated eagerly at parse time: the stream's
+/// `records_path` and every selector its pagination family carries, plus the
+/// Page family's mutually exclusive total stops.
+fn validate_selectors(stream: &RestStream) -> Result<(), ConfigError> {
+    let name = &stream.name;
+    let record_path = stream.records_path.as_deref().map(|p| ("records_path", p));
+    for (label, selector) in record_path
+        .into_iter()
+        .chain(stream.pagination.selector_paths())
+    {
+        if let Err(e) = super::read::extract::Selector::parse(selector) {
+            return invalid(format!("stream `{name}`: {label}: {e}"));
+        }
+    }
+    if let Pagination::Page {
+        total_pages_path: Some(_),
+        total_count_path: Some(_),
+        ..
+    } = &stream.pagination
+    {
+        return invalid(format!(
+            "stream `{name}`: pagination declares both total_pages_path and \
+             total_count_path — pick one stop condition"
+        ));
+    }
+    Ok(())
+}
+
+/// Response actions: each needs at least one matcher, and a declared status
+/// must be a real HTTP status (a typo like `42` would otherwise be silently
+/// dead).
+fn validate_response_actions(stream: &RestStream) -> Result<(), ConfigError> {
+    let name = &stream.name;
+    for (i, action) in stream.response_actions.iter().enumerate() {
+        if action.status.is_none() && action.content_contains.is_none() {
+            return invalid(format!(
+                "stream `{name}`: response_actions[{i}] needs `status` and/or \
+                 `content_contains` — an unconditional action would swallow \
+                 every response"
+            ));
+        }
+        if let Some(status) = action.status
+            && !(100..=599).contains(&status)
+        {
+            return invalid(format!(
+                "stream `{name}`: response_actions[{i}]: status {status} is not \
+                 an HTTP status (100–599)"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Parent-child linkage: a declared, non-self, non-nested parent stream, with
+/// every placeholder actually referenced; and, absent a parent, no stray
+/// `{placeholder}` tokens in the path.
+fn validate_parent(
+    config: &RestConfig,
+    names: &[&str],
+    stream: &RestStream,
+) -> Result<(), ConfigError> {
+    let name = &stream.name;
+    let Some(parent) = &stream.parent else {
+        // Placeholders in the path REQUIRE a parent block.
+        if stream.path.contains('{') && stream.path.contains('}') {
+            return invalid(format!(
+                "stream `{name}`: path contains `{{placeholder}}` tokens but no \
+                 `parent` block declares them"
+            ));
+        }
+        return Ok(());
+    };
+    if parent.stream == *name {
+        return invalid(format!("stream `{name}`: parent.stream is itself"));
+    }
+    if !names.contains(&parent.stream.as_str()) {
+        return invalid(format!(
+            "stream `{name}`: parent.stream `{}` is not a declared stream",
+            parent.stream
+        ));
+    }
+    let parent_decl = config
+        .streams
+        .iter()
+        .find(|s| s.name == parent.stream)
+        .expect("parent.stream membership just checked against declared names");
+    if parent_decl.parent.is_some() {
+        return invalid(format!(
+            "stream `{name}`: parent.stream `{}` is itself a child — \
+             one level of nesting is supported",
+            parent.stream
+        ));
+    }
+    if parent.placeholders.is_empty() {
+        return invalid(format!(
+            "stream `{name}`: parent.placeholders must not be empty"
+        ));
+    }
+    for token in parent.placeholders.keys() {
+        let referenced = stream.path.contains(&format!("{{{token}}}"))
+            || stream
+                .params
+                .values()
+                .any(|v| v.contains(&format!("{{{token}}}")))
+            || stream
+                .body
+                .as_ref()
+                .is_some_and(|b| b.to_string().contains(&format!("{{{token}}}")));
+        if !referenced {
+            return invalid(format!(
+                "stream `{name}`: placeholder `{{{token}}}` is declared but \
+                 never used in path, params, or body"
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, thiserror::Error)]

@@ -164,8 +164,7 @@ pub fn extract_records(
 ) -> Result<Extracted, SourceError> {
     match selector {
         None => {
-            let value: Value = serde_json::from_slice(body)
-                .map_err(|e| SourceError::fatal(format!("response is not valid JSON: {e}")))?;
+            let value: Value = parse_body(body)?;
             match value {
                 // The parse already happened for the count — keep the values
                 // for free; the forwarded BYTES stay untouched.
@@ -180,8 +179,7 @@ pub fn extract_records(
             }
         }
         Some(selector) => {
-            let value: Value = serde_json::from_slice(body)
-                .map_err(|e| SourceError::fatal(format!("response is not valid JSON: {e}")))?;
+            let value: Value = parse_body(body)?;
             let (matches, wildcard_saw_empty) = selector.select_tracking(&value);
             if matches.is_empty() {
                 if wildcard_saw_empty {
@@ -219,6 +217,28 @@ pub fn extract_records(
                 values,
             })
         }
+    }
+}
+
+/// Parse a response body into a JSON value, mapping a parse failure to the
+/// canonical typed "not valid JSON" fatal — one message, one policy, shared
+/// by every JSON-decoding site on the read path.
+pub(crate) fn parse_body(body: &[u8]) -> Result<Value, SourceError> {
+    serde_json::from_slice(body)
+        .map_err(|e| SourceError::fatal(format!("response is not valid JSON: {e}")))
+}
+
+/// The kind of a JSON value, article included ("an array", "a bool", "null"),
+/// for error messages that read "field X is {kind}". Distinct from
+/// [`value_kind`], which is article-free for the terse top-level summary.
+pub(crate) fn json_kind(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "a bool",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Array(_) => "an array",
+        Value::Object(_) => "an object",
     }
 }
 

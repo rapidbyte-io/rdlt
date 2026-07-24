@@ -6,7 +6,7 @@
 use serde_json::Value;
 
 use crate::source::config::Pagination;
-use crate::source::read::extract::Selector;
+use crate::source::read::extract::{Selector, json_kind};
 
 /// What the paginator saw of one response — bounded on purpose: never the
 /// whole body a second time.
@@ -33,23 +33,55 @@ pub enum PageDecision {
     NextUrl(String),
 }
 
+/// Why a paginator could not decide the next page. Both variants are fatal:
+/// a wrong-typed cursor or next-url is an API-contract violation retrying
+/// cannot fix; the single call site (`SequenceDriver::advance`) maps them to
+/// `SourceError::fatal`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PaginatorError {
+    /// A body cursor value was neither a string nor a number.
+    CursorNotScalar { path: String, kind: &'static str },
+    /// A next-url value was not a string.
+    NextUrlNotString { path: String },
+}
+
+impl std::fmt::Display for PaginatorError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CursorNotScalar { path, kind } => {
+                write!(
+                    f,
+                    "cursor at `{path}` is {kind} — expected string or number"
+                )
+            }
+            Self::NextUrlNotString { path } => {
+                write!(f, "next url at `{path}` is not a string")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PaginatorError {}
+
 /// The pagination contract (a public, stable seam). Implementations are
-/// per-stream-read state machines: `first()` yields the initial extra
-/// params; `next()` decides after each page.
+/// per-stream-read state machines: `initial_params()` yields the extra params
+/// for the first request; `decide()` decides after each page.
 pub trait Paginator: Send + Sync {
     /// Extra query params for the FIRST request (e.g. `page=1`).
-    fn first(&self) -> Vec<(String, String)>;
+    fn initial_params(&self) -> Vec<(String, String)>;
     /// Decide after a page. `ctx.body` is `Some` iff [`Paginator::needs_body`].
-    fn next(&mut self, ctx: &PageContext<'_>) -> Result<PageDecision, String>;
+    fn decide(&mut self, ctx: &PageContext<'_>) -> Result<PageDecision, PaginatorError>;
     /// Whether this paginator needs the parsed response body.
     fn needs_body(&self) -> bool {
         false
     }
 }
 
-/// Build the config-backed paginator for a stream.
-pub fn from_config(pagination: &Pagination) -> Box<dyn Paginator> {
-    match pagination {
+/// Build the config-backed paginator for a stream. Selector parsing is
+/// re-run here (config validation already proved these paths parse); a parse
+/// error surfaces honestly rather than through a panic.
+pub fn from_config(pagination: &Pagination) -> Result<Box<dyn Paginator>, String> {
+    let paginator: Box<dyn Paginator> = match pagination {
         Pagination::None => Box::new(SinglePage),
         Pagination::Page {
             page_param,
@@ -60,12 +92,8 @@ pub fn from_config(pagination: &Pagination) -> Box<dyn Paginator> {
             param: page_param.clone(),
             next: *start,
             start: *start,
-            total_pages: total_pages_path
-                .as_deref()
-                .map(|p| Selector::parse(p).expect("validated at config parse")),
-            total_count: total_count_path
-                .as_deref()
-                .map(|p| Selector::parse(p).expect("validated at config parse")),
+            total_pages: parse_opt_selector(total_pages_path)?,
+            total_count: parse_opt_selector(total_count_path)?,
         }),
         Pagination::Offset {
             offset_param,
@@ -77,15 +105,13 @@ pub fn from_config(pagination: &Pagination) -> Box<dyn Paginator> {
             limit_param: limit_param.clone(),
             page_size: *page_size,
             offset: 0,
-            total_count: total_count_path
-                .as_deref()
-                .map(|p| Selector::parse(p).expect("validated at config parse")),
+            total_count: parse_opt_selector(total_count_path)?,
         }),
-        Pagination::Cursor {
+        Pagination::BodyCursor {
             cursor_path,
             cursor_param,
         } => Box::new(BodyCursor {
-            path: Selector::parse(cursor_path).expect("validated at config parse"),
+            path: Selector::parse(cursor_path)?,
             param: cursor_param.clone(),
         }),
         Pagination::HeaderCursor {
@@ -96,10 +122,27 @@ pub fn from_config(pagination: &Pagination) -> Box<dyn Paginator> {
             param: cursor_param.clone(),
         }),
         Pagination::NextUrl { next_url_path } => Box::new(NextUrl {
-            path: Selector::parse(next_url_path).expect("validated at config parse"),
+            path: Selector::parse(next_url_path)?,
         }),
         Pagination::LinkHeader => Box::new(LinkHeader),
-    }
+    };
+    Ok(paginator)
+}
+
+/// Parse an optional selector path (a total-count/total-pages stop).
+fn parse_opt_selector(path: &Option<String>) -> Result<Option<Selector>, String> {
+    path.as_deref().map(Selector::parse).transpose()
+}
+
+/// A declared total-count stop: true once the cumulative record count reaches
+/// the total the response advertises at `selector`.
+fn total_count_reached(selector: &Option<Selector>, ctx: &PageContext<'_>) -> bool {
+    let (Some(sel), Some(body)) = (selector, ctx.body) else {
+        return false;
+    };
+    sel.select_one(body)
+        .and_then(Value::as_u64)
+        .is_some_and(|total| ctx.total_records >= total)
 }
 
 // ---- the seven families ----------------------------------------------------
@@ -107,10 +150,10 @@ pub fn from_config(pagination: &Pagination) -> Box<dyn Paginator> {
 struct SinglePage;
 
 impl Paginator for SinglePage {
-    fn first(&self) -> Vec<(String, String)> {
+    fn initial_params(&self) -> Vec<(String, String)> {
         vec![]
     }
-    fn next(&mut self, _ctx: &PageContext<'_>) -> Result<PageDecision, String> {
+    fn decide(&mut self, _ctx: &PageContext<'_>) -> Result<PageDecision, PaginatorError> {
         Ok(PageDecision::Done)
     }
 }
@@ -124,10 +167,10 @@ struct PageNumber {
 }
 
 impl Paginator for PageNumber {
-    fn first(&self) -> Vec<(String, String)> {
+    fn initial_params(&self) -> Vec<(String, String)> {
         vec![(self.param.clone(), self.next.to_string())]
     }
-    fn next(&mut self, ctx: &PageContext<'_>) -> Result<PageDecision, String> {
+    fn decide(&mut self, ctx: &PageContext<'_>) -> Result<PageDecision, PaginatorError> {
         if ctx.record_count == 0 {
             return Ok(PageDecision::Done);
         }
@@ -141,10 +184,7 @@ impl Paginator for PageNumber {
                 return Ok(PageDecision::Done);
             }
         }
-        if let (Some(sel), Some(body)) = (&self.total_count, ctx.body)
-            && let Some(total) = sel.select_one(body).and_then(Value::as_u64)
-            && ctx.total_records >= total
-        {
+        if total_count_reached(&self.total_count, ctx) {
             return Ok(PageDecision::Done);
         }
         self.next = current + 1;
@@ -176,17 +216,14 @@ impl OffsetLimit {
 }
 
 impl Paginator for OffsetLimit {
-    fn first(&self) -> Vec<(String, String)> {
+    fn initial_params(&self) -> Vec<(String, String)> {
         self.params()
     }
-    fn next(&mut self, ctx: &PageContext<'_>) -> Result<PageDecision, String> {
+    fn decide(&mut self, ctx: &PageContext<'_>) -> Result<PageDecision, PaginatorError> {
         if ctx.record_count < self.page_size as usize {
             return Ok(PageDecision::Done); // short page = last page
         }
-        if let (Some(sel), Some(body)) = (&self.total_count, ctx.body)
-            && let Some(total) = sel.select_one(body).and_then(Value::as_u64)
-            && ctx.total_records >= total
-        {
+        if total_count_reached(&self.total_count, ctx) {
             return Ok(PageDecision::Done);
         }
         self.offset += self.page_size;
@@ -203,10 +240,10 @@ struct BodyCursor {
 }
 
 impl Paginator for BodyCursor {
-    fn first(&self) -> Vec<(String, String)> {
+    fn initial_params(&self) -> Vec<(String, String)> {
         vec![]
     }
-    fn next(&mut self, ctx: &PageContext<'_>) -> Result<PageDecision, String> {
+    fn decide(&mut self, ctx: &PageContext<'_>) -> Result<PageDecision, PaginatorError> {
         // No parsed body (an `ignore`d page whose body wasn't JSON): no
         // cursor to follow — the sequence ends cleanly.
         let Some(body) = ctx.body else {
@@ -223,16 +260,10 @@ impl Paginator for BodyCursor {
                 self.param.clone(),
                 n.to_string(),
             )])),
-            Some(other) => Err(format!(
-                "cursor at `{}` is {} — expected string or number",
-                self.path.raw(),
-                match other {
-                    Value::Array(_) => "an array",
-                    Value::Object(_) => "an object",
-                    Value::Bool(_) => "a bool",
-                    _ => "unsupported",
-                }
-            )),
+            Some(other) => Err(PaginatorError::CursorNotScalar {
+                path: self.path.raw().to_owned(),
+                kind: json_kind(other),
+            }),
         }
     }
     fn needs_body(&self) -> bool {
@@ -246,10 +277,10 @@ struct HeaderCursor {
 }
 
 impl Paginator for HeaderCursor {
-    fn first(&self) -> Vec<(String, String)> {
+    fn initial_params(&self) -> Vec<(String, String)> {
         vec![]
     }
-    fn next(&mut self, ctx: &PageContext<'_>) -> Result<PageDecision, String> {
+    fn decide(&mut self, ctx: &PageContext<'_>) -> Result<PageDecision, PaginatorError> {
         match ctx.headers.get(&self.header).and_then(|v| v.to_str().ok()) {
             None => Ok(PageDecision::Done),
             Some("") => Ok(PageDecision::Done),
@@ -266,10 +297,10 @@ struct NextUrl {
 }
 
 impl Paginator for NextUrl {
-    fn first(&self) -> Vec<(String, String)> {
+    fn initial_params(&self) -> Vec<(String, String)> {
         vec![]
     }
-    fn next(&mut self, ctx: &PageContext<'_>) -> Result<PageDecision, String> {
+    fn decide(&mut self, ctx: &PageContext<'_>) -> Result<PageDecision, PaginatorError> {
         let Some(body) = ctx.body else {
             return Ok(PageDecision::Done); // ignored non-JSON page: no next URL
         };
@@ -277,7 +308,9 @@ impl Paginator for NextUrl {
             None | Some(Value::Null) => Ok(PageDecision::Done),
             Some(Value::String(url)) if url.is_empty() => Ok(PageDecision::Done),
             Some(Value::String(url)) => Ok(PageDecision::NextUrl(url.clone())),
-            Some(_) => Err(format!("next url at `{}` is not a string", self.path.raw())),
+            Some(_) => Err(PaginatorError::NextUrlNotString {
+                path: self.path.raw().to_owned(),
+            }),
         }
     }
     fn needs_body(&self) -> bool {
@@ -288,10 +321,10 @@ impl Paginator for NextUrl {
 struct LinkHeader;
 
 impl Paginator for LinkHeader {
-    fn first(&self) -> Vec<(String, String)> {
+    fn initial_params(&self) -> Vec<(String, String)> {
         vec![]
     }
-    fn next(&mut self, ctx: &PageContext<'_>) -> Result<PageDecision, String> {
+    fn decide(&mut self, ctx: &PageContext<'_>) -> Result<PageDecision, PaginatorError> {
         let Some(link) = ctx
             .headers
             .get(reqwest::header::LINK)

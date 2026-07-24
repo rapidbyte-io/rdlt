@@ -37,6 +37,10 @@ pub fn collect_parent_values(
                     "parent record lacks field `{field_path}` for placeholder `{{{token}}}`"
                 ))
             })?;
+            // Placeholders deliberately accept Bool (a `{active}` path segment
+            // renders `true`/`false`) as well as string and number; only
+            // container/null values are rejected — a distinct policy from the
+            // cursor scalar render, which is string-or-number only.
             let rendered = match value {
                 Value::String(s) => s.clone(),
                 Value::Number(n) => n.to_string(),
@@ -45,12 +49,7 @@ pub fn collect_parent_values(
                     return Err(SourceError::fatal(format!(
                         "parent field `{field_path}` for placeholder `{{{token}}}` is {} — \
                          placeholders take scalars",
-                        match other {
-                            Value::Array(_) => "an array",
-                            Value::Object(_) => "an object",
-                            Value::Null => "null",
-                            _ => "unsupported",
-                        }
+                        super::extract::json_kind(other)
                     )));
                 }
             };
@@ -76,6 +75,23 @@ pub fn substitute(template: &str, values: &BTreeMap<String, String>) -> String {
         out = out.replace(&format!("{{{token}}}"), value);
     }
     out
+}
+
+/// Substitute `{token}` occurrences throughout a JSON body template (POST
+/// bodies carry placeholders in string leaves, at any depth).
+pub(crate) fn substitute_body(body: &Value, values: &BTreeMap<String, String>) -> Value {
+    match body {
+        Value::String(s) => Value::String(substitute(s, values)),
+        Value::Array(items) => {
+            Value::Array(items.iter().map(|v| substitute_body(v, values)).collect())
+        }
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(k, v)| (k.clone(), substitute_body(v, values)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
 }
 
 /// Human-readable resolved-values summary for failure messages, so a child

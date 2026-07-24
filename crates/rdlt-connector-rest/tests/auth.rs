@@ -273,7 +273,7 @@ async fn secrets_never_render_anywhere() {
         let yaml = one_item_stream(&server, auth);
         let config = rdlt_connector_rest::RestConfig::from_yaml(&yaml).expect("parses");
         let rendered_config = format!("{config:?}");
-        let source = rdlt_connector_rest::RestSource::new(config);
+        let source = rdlt_connector_rest::RestSource::new(config).expect("valid config");
         let rendered_source = format!("{source:?}");
         let outcome = read_stream(&yaml, "items", None).await;
         let rendered_err = outcome.result.expect_err("500s fail").to_string();

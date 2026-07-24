@@ -10,6 +10,6 @@ pub mod source;
 /// The shared credential newtype, re-exported once at this crate's root.
 pub use rdlt_connector::Secret;
 pub use source::{
-    Auth, PageContext, PageDecision, Pagination, Paginator, RestClient, RestConfig, RestSource,
-    RestStream, config, config_schema,
+    Auth, PageContext, PageDecision, Pagination, Paginator, PaginatorError, RestClient, RestConfig,
+    RestSource, RestStream, config, config_schema,
 };
