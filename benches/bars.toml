@@ -36,7 +36,33 @@ cell = "s3jsonl-to-s3parquet-200k"
 kind = "ratio_vs"
 competitor = "dlt"
 min_ratio = 45.0
-policy = "RESULTS.md policy log 2026-07-25 (bars): floor 60.1x (this session), 61.1x (2-way session same day)"
+policy = "RESULTS.md policy log 2026-07-25 (bars): floor 60.1x (this session), 61.1x (2-way session same day). HELD, not re-derived, after feature 019 US7 made rdlt's arm write COMPRESSED parquet — see the note below."
+
+# Why this bar is held rather than re-derived (feature 019 US7, T078).
+#
+# rdlt's arm on this cell now writes snappy-compressed parquet; dlt's arm
+# always did. That changes what the ratio MEANS more than what it is: the two
+# arms were previously timed doing different amounts of work, with rdlt writing
+# roughly four times the bytes, and the comparison flattered whichever side
+# skipped the compression. It no longer does.
+#
+# The bar itself is not at risk, and the direction is the opposite of what was
+# expected. Measured on this cell, interleaved, medians of 7, the ONLY variable
+# being the compression change:
+#
+#     wall   0.97 -> 0.92 s  (-5.2%)
+#     CPU    0.77 -> 0.81 s  (+5.2%)
+#     RSS     213 ->   208 MB
+#
+# Compression costs CPU, as expected. But the bytes it saves are bytes not
+# pushed to the object store, and on this cell that saving is larger than the
+# encode — so rdlt's WALL, which is what the ratio divides, went DOWN. A ratio
+# floor of 60.1x can only rise.
+#
+# Held rather than re-derived because a bar is derived from a RECORDED session
+# (Principle VIII), and the numbers above are an isolated A/B, not one. The
+# next recorded session should re-derive it; nothing about this is urgent, and
+# the bar is conservative in the meantime.
 
 # Set 2026-07-25 after the cell's scope was corrected (feature 019 US1): the
 # source now delivers only its declared query stream, so the cell measures the
