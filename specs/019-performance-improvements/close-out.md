@@ -179,7 +179,7 @@ RESULTS.md is regenerated.
 | PI5 — exactly-once survives every increment | US1+US2+US4+US5 satisfied | Sweep 23/23 green over the four WAL crash points after the rewrite; none changed meaning (the `crash_point!` return-semantics constraint forced the two-hop fsync split rather than being violated). US4 re-ran the sweep over the rewritten `PgSession::write` and the abort-on-drop staging invariant. US5 renamed `pg.stage.copy`→`pg.unit.write` (no alias), narrowed `pg.publish.begin`, and added `pg.unit.begin` + `pg.target.clear`; reachability is now encoded per write mode so the anti-vacuousness pins stay honest — `pg.target.clear` is demanded of the replace arm, which fires it, and not of merge, which cannot. Remaining: T094 |
 | PI6 — the benchmark measures what it claims | **SATISFIED** | Delivered-vs-declared enforced (`runner.rs`), declared at load time (`cells.rs`), 4 pins incl. one reproducing the exact defect; two further cells corrected; policy entry + bar |
 | PI7 — configuration is expressible and validated | **US1+US7 satisfied** | `tables: []` now expresses "no tables"; two new typed configuration-time rejections with 3 pins. US7 adds `ParquetOptions` with per-field `#[serde(default = "…")]`, `deny_unknown_fields`, and validation split by what each layer can see — codec/level/zero-rows on the options, `parquet`-under-`jsonl` on the destination config where the sibling `format` is in scope |
-| PI8 — the version window is opened deliberately or not at all | pending | T096 — US1 changed no public API, so the window stays closed here |
+| PI8 — the version window is opened deliberately or not at all | **SATISFIED** | `cargo semver-checks --baseline-rev main -p rdlt-core -p rdlt-connector`: **no semver update required**, 196 checks pass each. The recorded 0.2 → 0.3 window STAYS CLOSED across the whole feature — encoder replaced, publish protocol changed, WAL format rewritten, shred path reworked, and `LoadSession` untouched. `ParquetOptions` is additive. Recorded in `benches/GOVERNANCE.md`: an unexercised window is a result, not an omission |
 
 ## User stories
 
@@ -193,7 +193,7 @@ RESULTS.md is regenerated.
 | US6 — shred path | **COMPLETE, one floor missed** | T059–T067. `shred_nested_10k` **347,094,870 → 310,654,653 (−10.5%)**; flagship `s3jsonl-to-s3parquet-200k` CPU **0.81 → 0.77 s (−4.9%)**, wall −2.0%, RSS flat, voluntary context switches −10.4%. Every emitted `_rdlt_id` byte-identical against a corpus captured from the pre-change build. **T067's ≥10% cell-CPU floor MISSED at −4.9%** and **T062 not taken** — see D-12/D-13/D-14. Gate: 659/659 workspace, lint |
 | US7 — output-format configuration | **PARTIAL** | T068–T073, T075–T077 done. Both parquet destinations write snappy by default with a swept dictionary limit, reachable from pipeline YAML; S3 unsigned payload is an explicit opt-in. **Remaining: T079 (needs a recorded session).** Gate: 675/675 workspace, lint |
 | US8 — small wins | **COMPLETE, one item measured away** | T081–T084. `SET LOCAL work_mem` −1.2% wall on the dedup cell; dedup materialized once per publish, **−7.4% median** server-side on a purpose-built scd2 workload, DuckDB byte-identical. **T080 NOT TAKEN** (+2.9% instructions, see D-21). Gate: 675/675, sweep 23/23, 12 golden pins |
-| US9 — parallelism ceiling | pending | T097 |
+| US9 — parallelism ceiling | **RE-SCOPED ON EVIDENCE (T088)** | T085–T088 measured; T089–T095 NOT built. Single-pipeline throughput is now 1.19M rows/s (3.3x the rate the 3.5x target was derived from), 8 concurrent pipelines scale 8.43x, and the story's lever addresses 22.2% of the merge cell — Amdahl-bounded at 1.29x against SC-005's required 1.5x. See the US9 section above |
 
 ## US2 notes (T015–T025)
 
@@ -814,6 +814,103 @@ three evaluations moves less than the framing suggests.
 
 Worth stating because the framing appears in the task text and would otherwise
 read as a shortfall rather than a correction to the model.
+
+## US9 — the ceiling, measured (T085–T088)
+
+The story's premise was a ~3.5x serial-path opportunity. T088 required fixing
+the design target from evidence first, and explicitly authorised re-scoping
+if the evidence did not support the number. It does not.
+
+### Arm E0 — what the SERVER absorbs, rdlt absent
+
+N concurrent `COPY … FROM STDIN BINARY` replaying a captured 145 MB binary
+payload, `synchronous_commit=on`, postgres 16.14:
+
+| regime | N=1 | N=2 | N=4 | N=8 |
+|---|---:|---:|---:|---:|
+| UNLOGGED (the merge staging regime) | 2.22M rows/s | 4.09M | 6.62M | 13.2M |
+| LOGGED (the post-US5 Replace regime) | 1.72M rows/s | 3.03M | 3.35M | 4.88M |
+
+**Methodology limit, stated because it matters:** each COPY re-reads the
+145 MB payload from a file, so at N=8 the logged arm is reading 1.16 GB. Those
+logged numbers are a LOWER bound on server capability, not a ceiling — E1
+below exceeds them, which is the tell.
+
+### Arm E1 — the post-US1–US8 pipeline, N concurrent processes
+
+| N | wall | rows/s | vs N=1 |
+|---|---:|---:|---:|
+| 1 | 0.84 s | 1.19M | 1.00x |
+| 2 | 0.89 s | 2.25M | 1.89x |
+| 4 | 0.78 s | 5.13M | 4.32x |
+| 8 | 0.80 s | 10.0M | **8.43x** |
+
+Wall is FLAT across N. Concurrent pipelines scale almost linearly on this
+machine, and the aggregate reaches 10.0M rows/s.
+
+### Arm E2 — engine + source + writer, against a destination that cannot saturate
+
+`file:` destination on tmpfs, writer properties frozen:
+
+| arm | wall | CPU | rows/s |
+|---|---:|---:|---:|
+| jsonl | 0.51 s | 0.76 s | 1.96M |
+| parquet | 0.39 s | 0.63 s | 2.56M |
+
+Reported as "engine + source + writer", never as an engine ceiling — the
+jsonl/parquet gap is the encoder term and is included above, not subtracted.
+
+**One recorded finding is now false.** PERF_ANALYSIS states every pipeline runs
+at UNDER ONE CORE. Here CPU/wall is 1.6 — the pipeline uses more than one core.
+That observation described the pre-US1–US8 engine and no longer holds.
+
+### The design target, fixed (T088)
+
+**The opportunity was largely consumed by US1–US8.** The 3.5x came from
+362k → 1.52M rows/s aggregate over 8 pipelines. A single pipeline now does
+**1.19M rows/s — 3.3x the old single-pipeline rate**, and 8 now aggregate to
+10.0M. The gap this story existed to close has mostly closed by other means.
+
+**And the story's specific lever cannot reach its own acceptance criterion.**
+T091 scopes parallel staging to MERGE-mode tables — necessarily, because US5
+made Append/Replace COPY straight into the target inside one transaction, and a
+transaction belongs to one connection. So the lever addresses the merge cell.
+Its server-side time divides as:
+
+| | ms | share |
+|---|---:|---:|
+| merge arm (the publish SQL) | 3982.8 | **77.1%** |
+| COPY (staging) | 1146.2 | 22.2% |
+| tx/session, DDL, probes | 38.7 | 0.7% |
+
+Parallel staging targets the 22.2%. Amdahl bounds the whole cell at
+**1.29x** even if staging became free. **SC-005 asks for ≥1.5x.** The
+criterion is unreachable by the specified design, and no amount of care in
+implementing T089–T095 changes that arithmetic.
+
+### Decision: T089–T095 are NOT built
+
+Building them would add multiple connections, engine-assigned ordinals (a
+stage DDL change and an extra column in the wire tuple, forcing a re-pin of
+US4's byte-identity fixture), a quiesce protocol, a new crash point, and a
+backpressure redesign touching the semver-sacred SPI — all into the
+exactly-once core — for a bounded ≤1.29x on one cell whose own acceptance
+criterion is 1.5x.
+
+That is the trade T088 exists to prevent. Recorded as a measured re-scope, not
+a shortfall.
+
+**What the evidence says to do instead**, none of it in this story's scope:
+
+- The merge arm is 77% of the merge cell and is server-side SQL. That is where
+  a merge-mode improvement has to come from.
+- Process-level concurrency already scales 8.43x. A deployment needing
+  aggregate throughput today gets it by running concurrent pipelines, with no
+  engine change — worth documenting rather than engineering around.
+- Full-refresh single-pipeline throughput remains bounded by one bulk-load
+  connection, by construction: US5 put the rows and their clear in one
+  transaction, and that is what makes a reload atomic. Trading it for
+  parallelism would trade a correctness property for throughput.
 
 ## Deviations
 

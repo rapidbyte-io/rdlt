@@ -118,3 +118,27 @@ Semver (016): rdlt-connector-iceberg is NEW this feature (no baseline);
 additive). Bench-harness fixture fields (`reset_sh`, `teardown_sh`) are
 additive serde-defaulted TOML surface. The standing 014 major
 (0.2 → 0.3 at next publish) is unaffected.
+
+## Feature 019 — performance improvements: semver outcome (2026-07-25)
+
+Semver (019): **the 0.2 → 0.3 window recorded by feature 014 STAYS CLOSED.**
+`cargo semver-checks check-release --baseline-rev main -p rdlt-core
+-p rdlt-connector` reports **"no semver update required"** for both seam
+crates — 196 checks pass each.
+
+That outcome is worth stating rather than assuming, because of how much moved
+underneath it. This feature replaced the entire Postgres binary-COPY encoder,
+changed the publish protocol so full loads no longer stage, rewrote the WAL
+segment format, and reworked the shred identity path — and none of it reached
+the SPI. `LoadSession` is unchanged. The one addition, `ParquetOptions` and
+`ParquetCompression` in `rdlt-connector::output`, is a new module plus
+re-exports: additive, and additive is minor.
+
+An unexercised version window is a RESULT, not an omission. The window was
+available for the whole feature and nothing needed it, which is the evidence
+that the SPI boundary held while the implementations behind it were replaced.
+
+Persisted-format changes did occur and are versioned in their own right, not
+through semver: the WAL segment format 1 → 2 (exact-match gate, refuses both
+directions) and the bench artifact 2 → 3 (refuses v2 with its reason). Neither
+is public API.
