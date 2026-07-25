@@ -192,7 +192,7 @@ RESULTS.md is regenerated.
 | US5 — full-refresh publish | **COMPLETE** | T048–T058. Server-side statement time **1927.5 → 999.0 ms (−48.2%)**, `INSERT … SELECT` **eliminated** (812.1 → 0 ms); `pg-to-pg-1m` wall **1.71 → 0.79 s (−53.8%)**, RSS 113 → 105 MB. Both acceptance floors cleared (publish ≥40%, wall ≥10%). FR-024 verified by live test, not inspection: same OID, index, check constraint, grant and dependent view all survive. Gate: 654/654 workspace, sweep 23/23 over 2 renamed + 2 new crash points, both golden suites, lint |
 | US6 — shred path | **COMPLETE, one floor missed** | T059–T067. `shred_nested_10k` **347,094,870 → 310,654,653 (−10.5%)**; flagship `s3jsonl-to-s3parquet-200k` CPU **0.81 → 0.77 s (−4.9%)**, wall −2.0%, RSS flat, voluntary context switches −10.4%. Every emitted `_rdlt_id` byte-identical against a corpus captured from the pre-change build. **T067's ≥10% cell-CPU floor MISSED at −4.9%** and **T062 not taken** — see D-12/D-13/D-14. Gate: 659/659 workspace, lint |
 | US7 — output-format configuration | **PARTIAL** | T068–T073, T075–T077 done. Both parquet destinations write snappy by default with a swept dictionary limit, reachable from pipeline YAML; S3 unsigned payload is an explicit opt-in. **Remaining: T079 (needs a recorded session).** Gate: 675/675 workspace, lint |
-| US8 — small wins | pending | T084 |
+| US8 — small wins | **COMPLETE, one item measured away** | T081–T084. `SET LOCAL work_mem` −1.2% wall on the dedup cell; dedup materialized once per publish, **−7.4% median** server-side on a purpose-built scd2 workload, DuckDB byte-identical. **T080 NOT TAKEN** (+2.9% instructions, see D-21). Gate: 675/675, sweep 23/23, 12 golden pins |
 | US9 — parallelism ceiling | pending | T097 |
 
 ## US2 notes (T015–T025)
@@ -771,6 +771,49 @@ The bar is HELD at 45.0 with the reasoning recorded in `bars.toml`, not
 re-derived: a bar is derived from a recorded session, and the numbers above
 are an isolated A/B. The next recorded session should re-derive it. Nothing
 here is urgent — the bar is conservative in the meantime.
+
+### D-21 (T080) — removing 9,999 allocations made the decoder SLOWER
+
+`CopyDecoder::try_consume_tuple` allocates a `Vec` per ROW. Hoisting it to a
+reused field is the textbook fix, and `pg_copy_decode_10k` decodes 10,000 rows
+through ONE decoder — so the change genuinely removes 9,999 allocations.
+
+It measured **+2.9%** instructions (20,994,190 → 21,606,865). Reverting
+restored the baseline to the byte, which is what attributes the regression to
+this change and nothing else.
+
+The allocation removed is a same-size request served from a hot allocator bin.
+The field indirection added costs more than that: a local `Vec`'s length and
+capacity stay in registers across the push loop, while a field's must be
+reloaded through `&mut self` on every push, and the second pass can no longer
+be reasoned about independently of the rest of `self`.
+
+Not taken. The reasoning is a comment at the site so the next reader does not
+retry it.
+
+This is the SECOND allocation-removal in this feature to measure worse (D-13
+was the first). Both looked obviously correct as counting arguments and both
+lost to the code the compiler could generate around them. Recorded together
+because one is an anecdote and two is a pattern worth expecting.
+
+### D-22 (T081/T082) — two more numbers below their predictions, for two different reasons
+
+**`work_mem` measured −1.2% wall on the dedup cell against ~−4% recorded.**
+Same self-interference as D-19: the −4% was measured on the DEFECTIVE cell,
+which sorted 3M rows. US1 corrected it to 1M, so there is a third as much to
+spill. The change is kept — it costs nothing and the direction is right — but
+the number is reported as measured.
+
+**Materializing the dedup measured −7.4% median, not the ~3x that "three
+sorts become one" implies.** Server-side statement time on a purpose-built
+scd2 workload (1M staged rows over 500k keys, 500k target rows), three runs:
+2125.9 → 2044.1, 2523.8 → 2439.5, 2483.6 → 2123.9 ms. Consistently faster,
+never slower. The dedup simply is not the dominant cost of those statements —
+the joins against the target and the row updates are — so removing two of
+three evaluations moves less than the framing suggests.
+
+Worth stating because the framing appears in the task text and would otherwise
+read as a shortfall rather than a correction to the model.
 
 ## Deviations
 
