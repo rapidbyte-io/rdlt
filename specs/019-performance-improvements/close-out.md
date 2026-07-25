@@ -191,7 +191,7 @@ RESULTS.md is regenerated.
 | US4 — COPY encoder | **COMPLETE, one criterion missed** | T036–T047. Encoder instructions **41,331,557 → 24,686,352 (−40.3%)**; on `pg-to-pg-1m`, CPU **0.99 → 0.49 s (−50.5%)**, wall 1.77 → 1.67 s (−5.6%), RSS 119 → 113 MB, voluntary context switches **110,620 → 27,613 (−75.0%)**. Byte identity proven against a fixture captured from the pre-rewrite encoder. **T047's order-of-magnitude context-switch target MISSED at 4.0×** — see D-06. Gate: 196/196 in-crate (incl. live conformance), sweep 23/23 |
 | US5 — full-refresh publish | **COMPLETE** | T048–T058. Server-side statement time **1927.5 → 999.0 ms (−48.2%)**, `INSERT … SELECT` **eliminated** (812.1 → 0 ms); `pg-to-pg-1m` wall **1.71 → 0.79 s (−53.8%)**, RSS 113 → 105 MB. Both acceptance floors cleared (publish ≥40%, wall ≥10%). FR-024 verified by live test, not inspection: same OID, index, check constraint, grant and dependent view all survive. Gate: 654/654 workspace, sweep 23/23 over 2 renamed + 2 new crash points, both golden suites, lint |
 | US6 — shred path | **COMPLETE, one floor missed** | T059–T067. `shred_nested_10k` **347,094,870 → 310,654,653 (−10.5%)**; flagship `s3jsonl-to-s3parquet-200k` CPU **0.81 → 0.77 s (−4.9%)**, wall −2.0%, RSS flat, voluntary context switches −10.4%. Every emitted `_rdlt_id` byte-identical against a corpus captured from the pre-change build. **T067's ≥10% cell-CPU floor MISSED at −4.9%** and **T062 not taken** — see D-12/D-13/D-14. Gate: 659/659 workspace, lint |
-| US7 — output-format configuration | **PARTIAL** | T068–T070, T072, T073, T075, T077 done; the file destination writes snappy by default with a swept dictionary limit, reachable from pipeline YAML. **Remaining: iceberg half of T071, T074, T076, T078, T079.** Gate: 672/672 workspace, lint |
+| US7 — output-format configuration | **PARTIAL** | T068–T073, T075–T077 done. Both parquet destinations write snappy by default with a swept dictionary limit, reachable from pipeline YAML; S3 unsigned payload is an explicit opt-in. **Remaining: T074, T078, T079.** Gate: 675/675 workspace, lint |
 | US8 — small wins | pending | T084 |
 | US9 — parallelism ceiling | pending | T097 |
 
@@ -712,21 +712,35 @@ Landed: the SPI type, its defaults and validation, the file destination's
 translation boundary, the CLI mirror (without which the whole story would be
 unreachable from YAML), and the bench prefix collision.
 
-**Not landed, and none of it is blocked — only unfinished:**
-
-- **The iceberg half of T071.** `rdlt-connector-iceberg` still writes parquet
-  with library defaults, so iceberg output stays uncompressed. Not a
-  regression — it is what it always did — but it now differs from the file
-  destination, which is worse than either state alone.
-- **T074** (bytes-written in the artifact), **T076** (S3 unsigned payload),
-  **T078** (re-derive the `s3jsonl-to-s3parquet-200k` bar, whose rdlt arm now
-  pays compression CPU that dlt's arm already paid), **T079** (the recorded
-  measurement).
+**Not landed, and none of it is blocked — only unfinished:** **T074**
+(bytes-written in the artifact), **T078** (re-derive the
+`s3jsonl-to-s3parquet-200k` bar, whose rdlt arm now pays compression CPU that
+dlt's arm already paid), **T079** (the recorded measurement).
 
 T078 matters for honesty of the published numbers: that cell carries
 `min_ratio = 45.0` against a 60.1x floor, and D4 adds compression CPU to
 rdlt's side only. Until it is re-measured the bar is stale in the direction
 that flatters rdlt.
+
+### D-19 (US7) — compression ate the unsigned-payload option's headroom
+
+`unsigned_payload` is exposed as an explicit opt-in (never a default: it trades
+request-body integrity for throughput, and only the operator knows whether
+that is acceptable on their network).
+
+Measured on `pg-to-s3parquet-1m`, medians of 5: **CPU 0.66 → 0.64 s (−3.0%)**,
+RSS −9.6%, wall −9.9%. Loadavg was elevated during the run, so the wall figure
+is the least trustworthy of the three and the CPU figure is the one to quote.
+
+PERF_ANALYSIS recorded `ring`'s SHA-256 at **6.72%** of that cell, so −3.0%
+looks like a miss. It is not a failed prediction — it is the same feature
+interfering with itself. The 6.72% was measured against UNCOMPRESSED output;
+snappy landed earlier in this story and shrank the body roughly four-fold, so
+most of the hashing this option removes had already stopped happening.
+
+Recorded because the ordering is not obvious from either measurement alone:
+had the two been evaluated in the other order, unsigned payload would have
+looked like the bigger win and compression the smaller one.
 
 ## Deviations
 
