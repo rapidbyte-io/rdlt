@@ -26,6 +26,7 @@ mod inspect;
 mod layout;
 mod session;
 mod truncate;
+mod writer_props;
 
 use std::collections::BTreeMap;
 
@@ -36,6 +37,9 @@ use rdlt_connector::{
 };
 
 pub use config::{DestFormat, FileDestConfig, dest_config_schema};
+/// Re-exported from the SPI so a user configures parquet output through this
+/// destination's own path, as with `Secret`.
+pub use rdlt_connector::{ParquetCompression, ParquetOptions};
 
 use crate::location::Location;
 use layout::pipeline_scope;
@@ -132,9 +136,15 @@ impl Destination for FileDest {
         self.location
             .prepare_staging(&scope, ctx.load_id.as_str())
             .await?;
+        // Resolved ONCE per session, not per batch: the translation can fail
+        // (an out-of-range compression level), and a load should not get
+        // halfway through writing before finding that out.
+        let writer_properties = writer_props::writer_properties(&self.config.parquet_options())
+            .map_err(DestinationError::fatal)?;
         Ok(Box::new(FileSession {
             location: self.location.clone(),
             format: self.config.format,
+            writer_properties,
             partition_by: self.config.partition_by.clone(),
             scope,
             load_id: ctx.load_id,

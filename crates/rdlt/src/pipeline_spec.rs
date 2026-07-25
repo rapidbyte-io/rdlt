@@ -131,6 +131,13 @@ pub enum DestSpec {
         format: Option<crate::connector::file::dest::DestFormat>,
         location: Option<crate::connector::file::location::LocationOptions>,
         partition_by: Option<String>,
+        /// Mirrors `FileDestConfig::parquet`. This enum is a hand-maintained
+        /// mirror rebuilt field by field below, so a field added to the
+        /// destination config and NOT added here compiles fine and is simply
+        /// unreachable from a pipeline document — silently unconfigurable.
+        /// The reverse direction is safe: adding here forces the destructure
+        /// below to be updated.
+        parquet: Option<crate::connector::file::dest::ParquetOptions>,
     },
     /// The Iceberg destination — the crate's full config vocabulary inline
     /// (catalog/auth, namespace, storage override, per-stream tables with
@@ -392,6 +399,7 @@ fn build_with<S: rdlt_connector::Source>(
             format,
             location,
             partition_by,
+            parquet,
         } => {
             let mut config = crate::connector::file::dest::FileDestConfig::new(path.clone());
             if let Some(format) = format {
@@ -402,6 +410,9 @@ fn build_with<S: rdlt_connector::Source>(
             }
             if let Some(column) = partition_by {
                 config = config.with_partition_by(column.clone());
+            }
+            if let Some(parquet) = parquet {
+                config = config.with_parquet(parquet.clone());
             }
             let dest = crate::connector::file::dest::FileDest::from_config(config)
                 .map_err(|e| SpecError::resolve(format!("file destination: {e}")))?;

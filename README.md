@@ -43,6 +43,38 @@ capability beyond parsing it:
 rdlt run pipeline.yaml
 ```
 
+### Parquet output is compressed
+
+Parquet destinations write **snappy-compressed** files. Earlier versions wrote
+uncompressed ones, so the same data now produces much smaller files — on a
+1M-row extract, roughly a quarter of the bytes.
+
+This is a change to the files rdlt writes, not to what they contain: every
+parquet reader handles snappy, and nothing about the data or its schema
+changes. It is called out because the file sizes will visibly drop.
+
+To restore the previous behaviour, or to choose something else:
+
+```yaml
+destination:
+  file:
+    path: out/
+    format: parquet
+    parquet:
+      compression: uncompressed   # snappy (default) | gzip | zstd | brotli | lz4_raw | uncompressed
+```
+
+The other settings are `compression_level` (only for codecs that have one —
+gzip, zstd, brotli), `dictionary_enabled`, `dictionary_page_size_limit`,
+`data_page_size_limit` and `max_row_group_rows`. Anything omitted takes the
+default.
+
+The dictionary limit defaults well below parquet's own, which is what lets
+compression *save* encoder time on high-cardinality columns rather than cost
+it: without a lower cap, such a column interns nearly every distinct value
+before falling back to plain encoding, and then compresses that work too.
+Columns with few distinct values are unaffected either way.
+
 ## Development
 
 ```sh

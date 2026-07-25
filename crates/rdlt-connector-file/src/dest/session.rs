@@ -35,6 +35,9 @@ pub(super) struct StagedPart {
 pub(super) struct FileSession {
     pub(super) location: Location,
     pub(super) format: DestFormat,
+    /// Resolved at session open, reused for every part. Cheap to clone (the
+    /// library's own type is `Arc`-backed internally for column overrides).
+    pub(super) writer_properties: parquet::file::properties::WriterProperties,
     pub(super) partition_by: Option<String>,
     pub(super) scope: String,
     pub(super) load_id: LoadId,
@@ -48,8 +51,12 @@ impl FileSession {
         match self.format {
             DestFormat::Parquet => {
                 let mut buf = Vec::new();
-                let mut writer = ArrowWriter::try_new(&mut buf, Arc::clone(&batch.schema()), None)
-                    .map_err(fatal)?;
+                let mut writer = ArrowWriter::try_new(
+                    &mut buf,
+                    Arc::clone(&batch.schema()),
+                    Some(self.writer_properties.clone()),
+                )
+                .map_err(fatal)?;
                 writer.write(batch).map_err(fatal)?;
                 writer.close().map_err(fatal)?;
                 Ok(buf)

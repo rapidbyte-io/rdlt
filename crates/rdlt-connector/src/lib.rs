@@ -15,6 +15,7 @@
 pub mod capabilities;
 pub mod channel;
 pub mod error;
+pub mod output;
 pub mod secret;
 pub mod spec;
 pub mod stream;
@@ -33,6 +34,10 @@ pub use rdlt_core::{
     CommitMeta, CommitReceipt, Cursor, LoadId, PipelineId, StateDoc, TableName, TableSchema,
     WriteMode,
 };
+/// How a destination writes parquet — plain data, no parquet dependency in
+/// the SPI. Connectors re-export it from their own config paths and translate
+/// it into `WriterProperties` at their own boundary.
+pub use output::{ParquetCompression, ParquetOptions};
 /// The shared credential newtype: serde-transparent, renders as `***`,
 /// [`Secret::reveal`] the sole (grep-able) accessor. Connectors re-export it
 /// from their own config paths.

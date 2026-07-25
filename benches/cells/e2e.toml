@@ -18,8 +18,7 @@ fixtures = ["pg"]
 pipeline = "cells/pipelines/pg-to-pg.yaml"
 note = "Postgres → Postgres, 1M×12 rows, full replace — the everyday relational table copy."
 [cell.verify]
-table = "events"
-expected_rows = 1_000_000
+events = 1_000_000
 [[cell.competitor]]
 variant = "dlt"
 args = ["pipeline_pg_pg.py", "{{conn}}", "postgresql://postgres:postgres@127.0.0.1:5439/dest_dlt", "connectorx", "events"]
@@ -43,15 +42,19 @@ fixtures = ["pg", "rustfs"]
 pipeline = "cells/pipelines/pg-to-s3parquet.yaml"
 note = "Postgres → Parquet on S3, 1M×12 rows, full replace — relational extract to a lake."
 [cell.verify]
-table = "events"
-expected_rows = 1_000_000
+events = 1_000_000
 [[cell.competitor]]
 variant = "dlt"
 args = ["pipeline_pg_s3parquet.py", "{{conn}}", "connectorx", "events", "http://127.0.0.1:19110", "rdlt-bench", "rdlt-bench-secret", "lake", "dlt"]
 network = "host"
 [[cell.competitor]]
 variant = "dlt-pyarrow"
-args = ["pipeline_pg_s3parquet.py", "{{conn}}", "pyarrow", "events", "http://127.0.0.1:19110", "rdlt-bench", "rdlt-bench-secret", "lake", "dlt"]
+# Its OWN prefix. Both dlt variants used to write to lake/dlt/, so the two arms
+# shared one set of objects and whichever ran second determined what a
+# per-prefix measurement would attribute to both. Timing was unaffected —
+# each arm still ran its own pipeline — but bytes-written per arm could not
+# mean anything until the arms stopped overwriting each other.
+args = ["pipeline_pg_s3parquet.py", "{{conn}}", "pyarrow", "events", "http://127.0.0.1:19110", "rdlt-bench", "rdlt-bench-secret", "lake", "dlt-pyarrow"]
 network = "host"
 # Airbyte: pg source -> S3 (parquet) destination at lake/airbyte/. Driver cleans
 # the lake prefix per run (the fixture reset does not).
@@ -67,9 +70,11 @@ id = "s3jsonl-to-pg-200k"
 fixtures = ["rustfs", "pg"]
 pipeline = "cells/pipelines/s3jsonl-to-pg.yaml"
 note = "Nested JSONL on S3 → Postgres, 200k records, full replace — semi-structured ingestion with child-table shredding."
+# The shred lands a child table too; declaring both is what makes the arm
+# comparable with a competitor that moves only what it claims.
 [cell.verify]
-table = "events"
-expected_rows = 200_000
+events = 200_000
+events__tags = 400_000
 [[cell.competitor]]
 variant = "dlt"
 args = ["pipeline_s3jsonl_pg.py", "http://127.0.0.1:19110", "rdlt-bench", "rdlt-bench-secret", "raw", "landed/*.jsonl", "postgresql://postgres:postgres@127.0.0.1:5439/dest_dlt"]
@@ -88,8 +93,8 @@ fixtures = ["rustfs"]
 pipeline = "cells/pipelines/s3jsonl-to-s3parquet.yaml"
 note = "Nested JSONL on S3 → Parquet on S3, 200k records, full replace — lake file-format conversion."
 [cell.verify]
-table = "events"
-expected_rows = 200_000
+events = 200_000
+events__tags = 400_000
 [[cell.competitor]]
 variant = "dlt"
 args = ["pipeline_s3jsonl_s3parquet.py", "http://127.0.0.1:19110", "rdlt-bench", "rdlt-bench-secret", "raw", "landed/*.jsonl", "lake", "dlt"]
@@ -112,8 +117,7 @@ pipeline = "cells/pipelines/pg-to-pg-dedup.yaml"
 prepare_sh = "cd {{workdir}} && {{cli}} run {{benches}}/cells/pipelines/pg-to-pg-dedup-load1.yaml"
 note = "Postgres → Postgres, 1M rows, keep-in-sync by id — LOAD 2 measured: full re-delivery with 50% of rows changed, deduped by id. All three products run the same full-redelivery-plus-dedup regime; Airbyte's cheaper incremental regime is deliberately not benched (no dlt counterpart, research D-08)."
 [cell.verify]
-table = "events_merged"
-expected_rows = 1_000_000
+events_merged = 1_000_000
 [[cell.competitor]]
 variant = "dlt"
 args = ["pipeline_pg_pg_dedup.py", "{{conn}}", "postgresql://postgres:postgres@127.0.0.1:5439/dest_dlt", "connectorx", "events", "events_v2"]

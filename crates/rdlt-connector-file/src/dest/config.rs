@@ -2,6 +2,7 @@
 //! optional partition column. The plain `ParquetDir::open(path)` form is equivalent to
 //! local + parquet + no partitioning (frozen spelling, kept for compatibility).
 
+use rdlt_connector::ParquetOptions;
 use serde::{Deserialize, Serialize};
 
 use crate::location::LocationOptions;
@@ -19,6 +20,16 @@ pub enum DestFormat {
 
 impl DestFormat {
     pub(crate) fn extension(self) -> &'static str {
+        match self {
+            Self::Parquet => "parquet",
+            Self::Jsonl => "jsonl",
+        }
+    }
+
+    /// The spelling used in error messages — the same word the user wrote in
+    /// their configuration. Kept separate from [`Self::extension`], which
+    /// happens to coincide today but answers a different question.
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Parquet => "parquet",
             Self::Jsonl => "jsonl",
@@ -42,6 +53,11 @@ pub struct FileDestConfig {
     /// column must exist in the stream's schema at write time (typed).
     #[serde(default)]
     pub partition_by: Option<String>,
+    /// How to write parquet. Absent uses the defaults, which compress —
+    /// see [`ParquetOptions`]. Meaningless under `format: jsonl`, and
+    /// rejected there rather than ignored.
+    #[serde(default)]
+    pub parquet: Option<ParquetOptions>,
 }
 
 impl FileDestConfig {
@@ -51,6 +67,7 @@ impl FileDestConfig {
             location: None,
             format: DestFormat::Parquet,
             partition_by: None,
+            parquet: None,
         }
     }
 
@@ -69,6 +86,19 @@ impl FileDestConfig {
         self
     }
 
+    pub fn with_parquet(mut self, parquet: ParquetOptions) -> Self {
+        self.parquet = Some(parquet);
+        self
+    }
+
+    /// The parquet settings this destination will actually write with —
+    /// the configured block, or the defaults. Callers use this rather than
+    /// reading `parquet` directly, so "absent" cannot be mistaken for
+    /// "uncompressed".
+    pub fn parquet_options(&self) -> ParquetOptions {
+        self.parquet.clone().unwrap_or_default()
+    }
+
     /// Eager, typed validation following the one config convention: every
     /// message is prefixed by `context` (the subject), and nested blocks
     /// receive the SAME context, so source and destination configs read
@@ -84,6 +114,24 @@ impl FileDestConfig {
             && column.is_empty()
         {
             return Err(format!("{context}: `partition_by` must name a column"));
+        }
+        if let Some(parquet) = &self.parquet {
+            // This rule lives HERE rather than on `ParquetOptions::validate`
+            // because it needs the sibling `format` field, which the options
+            // themselves cannot see. A `parquet:` block under `jsonl` is a
+            // mistake worth refusing: honouring it is impossible and ignoring
+            // it would leave the user believing they had configured something.
+            if self.format != DestFormat::Parquet {
+                return Err(format!(
+                    "{context}: a `parquet` block is set but `format` is `{}` — \
+                     these settings only apply to parquet output; remove the block, \
+                     or set `format: parquet`",
+                    self.format.as_str()
+                ));
+            }
+            parquet
+                .validate()
+                .map_err(|message| format!("{context}: {message}"))?;
         }
         Ok(())
     }
