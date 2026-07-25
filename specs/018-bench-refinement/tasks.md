@@ -103,9 +103,9 @@ No foundational tasks — the existing harness and gate are the foundation; US1'
 
 ## Phase 8: Polish & Close-Out
 
-- [ ] T026 [P] Re-run the BR1 vocabulary sweep + the amend-order check at final HEAD; verify every RESULTS.md number is generated-or-cited (SC-003) and Milestones cite the archive commit for every retired claim
-- [ ] T027 Complete specs/018-bench-refinement/close-out.md — every BR row terminal with evidence; note BENCH_REFINMENT.md with an executed-disposition header pointing at the close-out (the 017 pattern); update the CLAUDE.md SPECKIT block if any plan decision changed in flight
-- [ ] T028 Final full gate at HEAD: `cargo nextest run` + doc-tests + `make lint` + `TARGET=iai make bench` (instruments incl. relocated cold-start) + `cargo run -p rdlt-bench -- gate` (SC-008)
+- [x] T026 [P] Re-run the BR1 vocabulary sweep + the amend-order check at final HEAD; verify every RESULTS.md number is generated-or-cited (SC-003) and Milestones cite the archive commit for every retired claim
+- [x] T027 Complete specs/018-bench-refinement/close-out.md — every BR row terminal with evidence; note BENCH_REFINMENT.md with an executed-disposition header pointing at the close-out (the 017 pattern); update the CLAUDE.md SPECKIT block if any plan decision changed in flight
+- [x] T028 Final full gate at HEAD: `cargo nextest run` + doc-tests + `make lint` + `TARGET=iai make bench` (instruments incl. relocated cold-start) + `cargo run -p rdlt-bench -- gate` (SC-008)
 
 ---
 

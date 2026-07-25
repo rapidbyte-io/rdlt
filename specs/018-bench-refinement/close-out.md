@@ -55,3 +55,32 @@ completes. Evidence cites tests, commits, sessions, or spike records.
 | Airbyte module (setup/driver/variants/README) | P3 | applied | commits 6908e05 + 341a644; stdlib-only; smoke-proven incl. dedup shape; discover fire/poll decoupled after live 0/5 failure (pod-spam + PF-drop swallowing — recorded); setup requires fixtures up (run with harness-shaped seeds) |
 | First 3-way session (15 arms or absent-with-reason) | P3 | applied | 2026-07-25: 15/15 arms measured, zero Missing, all rdlt verifies exact; airbyte medians 45.4/45.4/45.4/45.4/60.4 s (floor-dominated, caveat added); artifacts + history committed; matrix renders all pairings |
 | Bars measurement-first (≤1/cell) | P4 | applied | see BR8 row; bars.toml carries per-bar floor citations; empty-header narrative replaced by the recorded set |
+
+## In-flight deviations (recorded, none silent)
+
+- **D-10 prerequisite probe**: research pinned `abctl local status`; the spike
+  found abctl's own status/credentials commands poll the dead ingress edge, so
+  the shipped probe is kubeconfig-exists + `kubectl get ns airbyte-abctl` +
+  state.json-present (same machine-prerequisite semantics, working transport).
+- **Airbyte dedup regime**: one incremental+dedup stream on `events_v2` with
+  state wiped per run (full re-delivery of 1M + dedup by id) — Airbyte cannot
+  merge two source tables into one dest table via one connection, so the
+  load1/load2 merge-over-prior sequence is approximated by the closest
+  same-regime shape (module README + cell comment).
+- **Bars**: 3 set, not 5 — the parity cell (1.0×) and the dedup loss (0.9×)
+  cannot honestly carry one; recorded in the policy entry.
+- **setup.py fixtures**: requires fixture endpoints up when it runs (it does
+  not auto-start throwaways); operational recipe = harness-shaped seeded
+  containers, documented in the module README. First real run failed 0/5 on
+  this and on a discover fire/poll bug (fixed, commit 341a644) — recorded.
+- **BR1 sweep exception**: exactly one vocabulary hit survives in
+  crates/rdlt-bench/src/cells.rs — the negative-pin test asserting
+  `class='gated'` is REJECTED at load; the vocabulary appears only as the
+  rejected string.
+- **P0-migration casualty found at T024**: iceberg container suites referenced
+  the deleted benches/fixtures/polaris_bootstrap.py (P0 gate ran
+  container-less, so they skipped-not-failed); the script now ships in the
+  crate (crates/rdlt-connector-iceberg/tests/fixtures/).
+- **Cluster deltas** (machine, spike-recorded): ingress-nginx scaled to 0
+  (portmap hostPort DNAT hijacked all in-cluster :443) and node pids-limit
+  2048→32768; both enforced by setup.py.

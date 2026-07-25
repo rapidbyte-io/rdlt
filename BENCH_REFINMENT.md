@@ -1,6 +1,10 @@
 # Bench refinement — analysis & proposals (v3)
 
-Status: analysis only. Nothing here is implemented.
+Status: **EXECUTED** as feature 018 (2026-07-25). Dispositions per
+proposal — including the deviations taken in flight — are recorded in
+`specs/018-bench-refinement/close-out.md`; the recorded sessions live in
+`benches/results/` with policy entries in `benches/RESULTS.md`. This
+document remains as the owner-authored analysis it was.
 
 **Governing principle (v3, owner-stated):** this benchmark is for **end-to-end
 pipeline benchmarks only**, using sources and destinations that can be measured
