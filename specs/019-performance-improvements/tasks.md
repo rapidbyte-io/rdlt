@@ -242,12 +242,12 @@ US5 additionally **removes the staging table** that US9's lever depends on for f
 
 ## Phase 12: Polish & Close-out
 
-- [ ] T098 Run the final recorded three-way session (`make bench TARGET=e2e`) on the merged tree, quiet guard passing, fixture identity verified — this is the session the published matrix quotes. Regenerate `benches/RESULTS.md` (`make bench TARGET=report`)
-- [ ] T099 Re-derive every bar in `benches/bars.toml` from the final session's own floors per Principle VIII — at most one per cell, each below its cited floor, each with a `RESULTS.md` policy-log entry. Cells at parity or behind carry no bar and that is recorded
-- [ ] T100 [P] Verify PI2 mechanically: a search of the shipped tree finds no surviving copy of anything this feature replaced — the parquet WAL writer/reader, `encode::cell_value` and the boxing path, `BinaryCopyInWriter` usage, `content_hash`, `struct Verify`/`VerifyOutcome`, `StreamAttribution`. Record the searches and their zero results (SC-012)
-- [ ] T101 [P] Verify PI3 mechanically: every hand-written component this feature introduced or retained carries its recorded fact-based justification (numeric encoder, tuple framing, the uuid parser retention), and every dependency change is recorded with version, feature path and tree cost — one removal (`parquet` from `rdlt-engine`), at most one addition (`smallvec`, only if T065's gate opened), one rejection (`uuid`)
-- [ ] T102 Measure coverage baseline-first (`make coverage`) and record it against the ≥ 80% floor with any exclusions named
-- [ ] T103 Complete `specs/019-performance-improvements/close-out.md`: every PI clause and every story disposed with evidence, zero uncited claims, deviations named. Confirm cold start ≤ 40 ms and the full gate green on the merged tree
+- [~] T098 **OPERATOR-RUN — a recorded session is not a developer's A/B (Principle VIII).** Run the final recorded three-way session (`make bench TARGET=e2e`) on the merged tree, quiet guard passing, fixture identity verified — this is the session the published matrix quotes. Regenerate `benches/RESULTS.md` (`make bench TARGET=report`)
+- [~] T099 **OPERATOR-RUN — a recorded session is not a developer's A/B (Principle VIII).** Re-derive every bar in `benches/bars.toml` from the final session's own floors per Principle VIII — at most one per cell, each below its cited floor, each with a `RESULTS.md` policy-log entry. Cells at parity or behind carry no bar and that is recorded
+- [X] T100 [P] Verify PI2 mechanically: a search of the shipped tree finds no surviving copy of anything this feature replaced — the parquet WAL writer/reader, `encode::cell_value` and the boxing path, `BinaryCopyInWriter` usage, `content_hash`, `struct Verify`/`VerifyOutcome`, `StreamAttribution`. Record the searches and their zero results (SC-012)
+- [X] T101 [P] Verify PI3 mechanically: every hand-written component this feature introduced or retained carries its recorded fact-based justification (numeric encoder, tuple framing, the uuid parser retention), and every dependency change is recorded with version, feature path and tree cost — one removal (`parquet` from `rdlt-engine`), at most one addition (`smallvec`, only if T065's gate opened), one rejection (`uuid`)
+- [X] T102 Measure coverage baseline-first (`make coverage`) and record it against the ≥ 80% floor with any exclusions named
+- [X] T103 Complete `specs/019-performance-improvements/close-out.md`: every PI clause and every story disposed with evidence, zero uncited claims, deviations named. Confirm cold start ≤ 40 ms and the full gate green on the merged tree
 
 ---
 

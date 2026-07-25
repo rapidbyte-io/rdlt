@@ -912,6 +912,56 @@ a shortfall.
   transaction, and that is what makes a reload atomic. Trading it for
   parallelism would trade a correctness property for throughput.
 
+## Close-out verification (T100–T103)
+
+**PI2 — nothing this feature replaced survives.** Mechanically checked over
+`crates/ --include='*.rs'`: `cell_value`, `numeric_wire_bytes`, `fn wire_type`,
+`StreamAttribution` and the allocating shred `content_hash` are GONE.
+`BinaryCopyInWriter` returns exactly one hit — a comment explaining what it
+replaced and why the flush size changed. `parquet` is gone from
+`rdlt-engine`'s manifest; its four remaining mentions in that crate are prose
+in the WAL version gate, explaining what v1 segments were.
+
+(The first run of this check silently did nothing: an unquoted `--include=*.rs`
+made zsh fail the glob, aborting each grep so every symbol reported "GONE"
+from zero output. Re-run with the glob quoted. Recorded because a mechanical
+verification that did not run is worse than one not attempted.)
+
+**PI3 — the dependency ledger is NET NEGATIVE.** `Cargo.lock` differs from
+`main` by exactly one line: `parquet` removed from `rdlt-engine`. Zero
+additions across a feature that added parquet configuration, an S3 payload
+option, a new SPI type and two new pin suites. Every deliberately hand-written
+component carries its fact-based justification at the site:
+
+- `write_numeric` — "`postgres-protocol` exposes no `numeric_to_sql`;
+  `rust_decimal`'s 96-bit mantissa cannot hold `Decimal128`'s 38 digits;
+  `bigdecimal` allocates per value, which is the cost this exists to remove."
+- `parse_uuid_text` — the `uuid` crate is not adopted; `try_parse` accepts a
+  strictly narrower set than this parser and than PostgreSQL's own `uuid_in`.
+- the 64 KiB COPY flush — justified by a swept table in the source, not by
+  analogy to the CLI's allocator setting.
+- `smallvec` — correctly absent from every manifest (T065 declined).
+
+**T102 — coverage 84.85% lines** (81.08% functions, 86.11% regions) against
+the ≥80% floor. Measured with four container-backed tests failing under
+llvm-cov instrumentation, which roughly triples runtime and pushes container
+waits past their timeouts — so this is a slight UNDER-count, not an over-count.
+All four pass uninstrumented; `upsert_converges_and_hard_delete_removes_keys`
+was re-run individually rather than assumed, because it exercises the
+hard-delete upsert arm T082 changed.
+
+**T103 — cold start 25.1 ms ± 1.6** (range 21.8–28.6, 20 runs) against the
+≤40 ms bar. Full gate on the merged tree: 675/675 workspace tests, 23/23 crash
+sweep, lint clean, doc-tests clean, both golden suites, iai baselines recorded
+under the adopted codegen profile.
+
+**T098/T099 are NOT done and are not developer work.** The final recorded
+three-way session and the bar re-derivation that follows it are operator-run:
+Principle VIII derives a bar from a recorded session, and every number in this
+document that came from an isolated A/B says so. The bars currently in
+`bars.toml` are unchanged and conservative; the parquet bar carries its own
+note (D-20) explaining why it is held rather than re-derived.
+
 ## Deviations
 
 ### D-01 (T004) — CI at HEAD is not executing, and it is broader than the cold-start gap
