@@ -20,6 +20,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import time
 import urllib.error
@@ -220,6 +221,12 @@ def http(method, path, token=None, body=None, timeout=30, base=API_BASE):
             return e.code, json.loads(raw)
         except Exception:
             return e.code, raw.decode(errors="replace")
+    except (urllib.error.URLError, socket.timeout, TimeoutError, OSError) as e:
+        # Transport failure — the port-forward dropped mid-call, or a long
+        # synchronous call timed out client-side. Return status 0 (never
+        # raise): the server-side work continues regardless of our connection
+        # (spike 03), and callers poll a cheap cache read to observe the result.
+        return 0, str(e)
 
 
 def api(method, path, token, body=None, timeout=30):

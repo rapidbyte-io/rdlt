@@ -169,15 +169,22 @@ def workspace_id(token):
 
 
 def cleanup(token, ws):
-    """Delete any prior rb-ab-* connections, then sources, then destinations."""
+    """Delete every prior rb-ab-* connection, then source, then destination.
+    Loops until a listing page has no rb-ab-* rows left, so an accumulation of
+    duplicate sources from earlier failed runs is fully cleared (not capped at
+    one page)."""
+    idk = {"connections": "connectionId", "sources": "sourceId",
+           "destinations": "destinationId"}
     for kind in ("connections", "sources", "destinations"):
-        _, data, token = ab.api(
-            "GET", f"/api/public/v1/{kind}?workspaceIds={ws}&limit=100", token)
-        for item in (data or {}).get("data", []):
-            if item.get("name", "").startswith(NAME_PREFIX):
-                idk = {"connections": "connectionId", "sources": "sourceId",
-                       "destinations": "destinationId"}[kind]
-                ab.api("DELETE", f"/api/public/v1/{kind}/{item[idk]}", token)
+        while True:
+            _, data, token = ab.api(
+                "GET", f"/api/public/v1/{kind}?workspaceIds={ws}&limit=100", token)
+            ours = [it for it in (data or {}).get("data", [])
+                    if it.get("name", "").startswith(NAME_PREFIX)]
+            if not ours:
+                break
+            for item in ours:
+                ab.api("DELETE", f"/api/public/v1/{kind}/{item[idk[kind]]}", token)
     return token
 
 
@@ -199,22 +206,46 @@ def create_destination(token, ws, name, config):
     return data["destinationId"], token
 
 
-def discover(token, source_id, cap_s=1500):
-    """Fire discover_schema (disable_cache) and poll to a cached catalog.
-    Tolerates the port-forward dropping during a first-time connector image
-    pull: each iteration fires a fresh discover; once the image is cached the
-    call returns fast with a catalog (spike 03)."""
+def _discover_ok(data):
+    return (isinstance(data, dict)
+            and (data.get("jobInfo") or {}).get("succeeded")
+            and data.get("catalogId"))
+
+
+def _discover_call(source_id, disable_cache, timeout):
+    """One discover_schema call (fresh token, PF ensured). Returns the parsed
+    body or None on a transport drop (http() never raises now)."""
+    ab.ensure_port_forward()
+    token = ab.mint_token()
+    _, data = ab.http("POST", "/api/v1/sources/discover_schema", token=token,
+                      body={"sourceId": source_id,
+                            "disable_cache": disable_cache}, timeout=timeout)
+    return data
+
+
+def discover(token, source_id, cap_s=1800):
+    """Cache the source's catalog. The bug the first cut had: it read the LONG
+    synchronous discover_schema response every iteration, so when the
+    port-forward dropped mid-call (spike 03) the completed result was never
+    seen, and it re-fired a fresh discover each loop (pod spam). Fix: FIRE one
+    fresh discover, then POLL a cheap `disable_cache=false` read (~0.01s once
+    the catalog is cached — verified) that survives PF drops. Re-fire only
+    sparingly (stale-failure bust / after a provable drop), never per poll."""
     deadline = time.time() + cap_s
+    refire_at = 0.0
     while time.time() < deadline:
-        ab.ensure_port_forward()
-        token = ab.mint_token()
-        status, data = ab.http(
-            "POST", "/api/v1/sources/discover_schema", token=token,
-            body={"sourceId": source_id, "disable_cache": True}, timeout=120)
-        if isinstance(data, dict):
-            ji = data.get("jobInfo") or {}
-            if ji.get("succeeded") and data.get("catalogId"):
-                return data["catalogId"], token
+        # (Re)fire a fresh discover: immediately (bust any stale cached
+        # failure), then at most every 120s. The fast-image path returns here.
+        if time.time() >= refire_at:
+            fired = _discover_call(source_id, True, timeout=25)
+            refire_at = time.time() + 120
+            if _discover_ok(fired):
+                return fired["catalogId"], token
+        # Cheap cache-read poll — short, PF-drop resistant. Once the fired
+        # discover has cached server-side, this returns the catalog fast.
+        polled = _discover_call(source_id, False, timeout=30)
+        if _discover_ok(polled):
+            return polled["catalogId"], token
         time.sleep(15)
     raise RuntimeError(f"discover did not succeed within {cap_s}s for {source_id}")
 
@@ -248,8 +279,11 @@ def build_source(token, ws, cell, cache):
         sid, token = create_source(
             token, ws, NAME_PREFIX + "src-s3-" + stream_name,
             s3_source_config(stream_name, glob))
-    _, token = discover(token, sid)   # cache the catalog (mandatory)
+    # Cache BEFORE discover so a discover failure does not leak a duplicate
+    # source on the next cell — the same source (and its cached catalog) is
+    # reused across sibling cells and across a re-run's cleanup.
     cache[key] = sid
+    _, token = discover(token, sid)   # cache the catalog (mandatory)
     return sid, token
 
 
