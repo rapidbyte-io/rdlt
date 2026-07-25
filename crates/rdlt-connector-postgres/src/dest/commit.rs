@@ -4,15 +4,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use async_trait::async_trait;
+use bytes::{BufMut, Bytes, BytesMut};
+use futures::SinkExt;
 use rdlt_connector::{
     CommitMeta, CommitReceipt, DestinationError, LoadSession, RecordBatch, WriteMode,
     core::{
-        LoadId, PipelineId, StateDoc, TableName, TableSchema, crash_point,
-        schema::system_columns,
+        LoadId, PipelineId, StateDoc, TableName, TableSchema, crash_point, schema::system_columns,
     },
 };
-use bytes::{BufMut, Bytes, BytesMut};
-use futures::SinkExt;
 use tokio_postgres::Client;
 
 use rdlt_connector_sqlcore::plan::{self as sqlplan, IndexSpec, TableFacts, scope_replace_sql};
@@ -130,10 +129,7 @@ impl PgSession {
     ) -> CommitCtx<'a> {
         CommitCtx {
             replayed,
-            load_committed_before: self
-                .unit
-                .as_ref()
-                .is_some_and(|u| u.load_committed_before),
+            load_committed_before: self.unit.as_ref().is_some_and(|u| u.load_committed_before),
             single_unit_done: &self.single_unit_done,
             staged_nonempty,
             full_load_publish: FullLoadPublish::DirectToTarget,
@@ -254,7 +250,11 @@ impl PgSession {
             .union(&self.unit.as_ref().expect("unit open").cleared)
             .cloned()
             .collect();
-        let steps = prepare_target(&self.tables, &self.ctx(false, &BTreeSet::new(), &cleared), table);
+        let steps = prepare_target(
+            &self.tables,
+            &self.ctx(false, &BTreeSet::new(), &cleared),
+            table,
+        );
         for step in steps {
             let Step::ClearTarget { table } = step else {
                 // `prepare_target` emits nothing else; anything else would be
@@ -327,15 +327,17 @@ impl PgSession {
     }
 }
 
-/// Execute one planned [`Step`] inside the OPEN unit transaction. Free-standing
-/// so it can borrow the session fields disjointly from `client`. Every decision
-/// + the order come from the planner; this renders each step's SQL through the
-/// PgDialect seam + shared renderers.
-/// Failures CLASSIFY by SQLSTATE (shared rule
-/// with the duckdb executor): environmental errors ride the engine's
-/// retry budget; deterministic classes (22/23/42) — a duplicate receipt's
-/// unique violation included, the idempotence-anomaly signal — fail
-/// loudly instead of burning retries.
+/// Execute one planned [`Step`] inside the OPEN unit transaction.
+///
+/// Free-standing so it can borrow the session fields disjointly from `client`.
+/// Every decision and the ordering come from the planner; this renders each
+/// step's SQL through the PgDialect seam and the shared renderers.
+///
+/// Failures CLASSIFY by SQLSTATE (the shared rule with the duckdb executor):
+/// environmental errors ride the engine's retry budget, while deterministic
+/// classes (22/23/42) — a duplicate receipt's unique violation included, which
+/// is the idempotence-anomaly signal — fail loudly instead of burning
+/// retries.
 async fn execute_step(
     tx: &Client,
     pipeline: &PipelineId,
@@ -452,7 +454,6 @@ impl LoadSession for PgSession {
             }
         }
     }
-
 
     async fn write(
         &mut self,

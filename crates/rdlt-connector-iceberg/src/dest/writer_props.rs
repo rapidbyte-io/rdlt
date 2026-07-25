@@ -93,7 +93,9 @@ mod tests {
         let props = writer_properties(&ParquetOptions::default()).expect("valid");
         assert_eq!(
             props.max_row_group_row_count(),
-            WriterProperties::builder().build().max_row_group_row_count()
+            WriterProperties::builder()
+                .build()
+                .max_row_group_row_count()
         );
     }
 

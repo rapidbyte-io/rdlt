@@ -116,8 +116,7 @@ impl CommitCtx<'_> {
     /// Whether `table` still round-trips through a stage table. Merge always
     /// does; Append and Replace do only on the staged publish path.
     fn stages(&self, mode: &WriteMode) -> bool {
-        matches!(mode, WriteMode::Merge { .. })
-            || self.full_load_publish == FullLoadPublish::Staged
+        matches!(mode, WriteMode::Merge { .. }) || self.full_load_publish == FullLoadPublish::Staged
     }
 }
 
@@ -535,9 +534,12 @@ mod tests {
         let tbls = tables(vec![("events", keyed_schema("events"), WriteMode::Append)]);
         let opts = DestOptions::default();
         let (done, staged, cleared) = (empty(), empty(), empty());
-        let script =
-            commit_script(&tbls, &opts, &direct_ctx(false, false, &done, &staged, &cleared))
-                .unwrap();
+        let script = commit_script(
+            &tbls,
+            &opts,
+            &direct_ctx(false, false, &done, &staged, &cleared),
+        )
+        .unwrap();
         // The rows are already in the target and there is no stage to
         // truncate; only the whole-unit state + receipt remain.
         assert_eq!(script.steps, vec![Step::UpsertState, Step::InsertReceipt]);
@@ -620,9 +622,12 @@ mod tests {
         let tbls = tables(vec![("events", keyed_schema("events"), merge(&["id"]))]);
         let opts = DestOptions::default();
         let (done, staged, cleared) = (empty(), empty(), empty());
-        let direct =
-            commit_script(&tbls, &opts, &direct_ctx(false, false, &done, &staged, &cleared))
-                .unwrap();
+        let direct = commit_script(
+            &tbls,
+            &opts,
+            &direct_ctx(false, false, &done, &staged, &cleared),
+        )
+        .unwrap();
         let stagedd = commit_script(&tbls, &opts, &ctx(false, false, &done, &staged)).unwrap();
         assert_eq!(direct.steps, stagedd.steps);
         assert!(
@@ -645,9 +650,12 @@ mod tests {
         ]);
         let opts = DestOptions::default();
         let (done, staged, cleared) = (empty(), empty(), empty());
-        let script =
-            commit_script(&tbls, &opts, &direct_ctx(false, false, &done, &staged, &cleared))
-                .unwrap();
+        let script = commit_script(
+            &tbls,
+            &opts,
+            &direct_ctx(false, false, &done, &staged, &cleared),
+        )
+        .unwrap();
         assert_eq!(
             script.steps,
             vec![
@@ -671,9 +679,12 @@ mod tests {
         ]);
         let opts = DestOptions::default();
         let (done, staged, cleared) = (empty(), empty(), empty());
-        let script =
-            commit_script(&tbls, &opts, &direct_ctx(true, false, &done, &staged, &cleared))
-                .unwrap();
+        let script = commit_script(
+            &tbls,
+            &opts,
+            &direct_ctx(true, false, &done, &staged, &cleared),
+        )
+        .unwrap();
         assert_eq!(script.steps, vec![Step::TruncateStage { table: t("usr") }]);
     }
 

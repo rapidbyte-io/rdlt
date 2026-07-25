@@ -61,9 +61,7 @@ pub use config::{
 /// API.
 #[doc(hidden)]
 pub mod sqlgen {
-    pub use super::commit::{
-        ARRIVAL_COL, UNIT_BEGIN, UNIT_COMMIT, UNIT_ROLLBACK, UNIT_WORK_MEM,
-    };
+    pub use super::commit::{ARRIVAL_COL, UNIT_BEGIN, UNIT_COMMIT, UNIT_ROLLBACK, UNIT_WORK_MEM};
     pub use super::dialect::PgDialect;
     pub use rdlt_connector_sqlcore::plan::{
         identity_delete_insert_sql, keyed_delete_insert_sql, keyed_upsert_sql, scd2_merge_sql,
@@ -138,7 +136,11 @@ pub mod testhook {
             col(
                 "c_text",
                 None,
-                Arc::new(StringArray::from(vec![Some(""), Some("héllo\u{1F600}"), None])),
+                Arc::new(StringArray::from(vec![
+                    Some(""),
+                    Some("héllo\u{1F600}"),
+                    None,
+                ])),
             ),
             col(
                 "c_bytea",
@@ -160,7 +162,11 @@ pub mod testhook {
             col(
                 "c_timestamp",
                 None,
-                Arc::new(TimestampMicrosecondArray::from(vec![Some(0), Some(-1), None])),
+                Arc::new(TimestampMicrosecondArray::from(vec![
+                    Some(0),
+                    Some(-1),
+                    None,
+                ])),
             ),
             col(
                 "c_date",
@@ -253,7 +259,9 @@ pub mod testhook {
                 let cells = (0..rows)
                     .map(|row| {
                         let mut buf = BytesMut::new();
-                        encoder.encode_field(row, c.name, &mut buf).expect("encodable");
+                        encoder
+                            .encode_field(row, c.name, &mut buf)
+                            .expect("encodable");
                         let (prefix, value) = buf.split_at(4);
                         let declared = i32::from_be_bytes(prefix.try_into().expect("4 bytes"));
                         if declared < 0 {

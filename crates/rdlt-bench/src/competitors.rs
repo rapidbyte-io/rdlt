@@ -519,7 +519,7 @@ fn run_container_competitor(
         self_timed: true,
         cpu,
         rss,
-        ratio_vs_rdlt: None, // filled once the rdlt median exists
+        ratio_vs_rdlt: None,  // filled once the rdlt median exists
         artifact_bytes: None, // filled by the caller, which knows the arm's `artifact_bytes_sh`
         extra: None,
     }

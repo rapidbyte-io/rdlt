@@ -362,7 +362,10 @@ mod native_types {
             )
             .await
             .expect("write");
-        session.commit(meta(&pipeline, LOAD, 0)).await.expect("commit");
+        session
+            .commit(meta(&pipeline, LOAD, 0))
+            .await
+            .expect("commit");
 
         let probe = PgProbe {
             conn: conn.clone(),
@@ -504,7 +507,10 @@ mod native_types {
         )
         .expect("batch");
         session.write(&schema.table, batch).await.expect("write");
-        session.commit(meta(&pipeline, LOAD, 0)).await.expect("commit");
+        session
+            .commit(meta(&pipeline, LOAD, 0))
+            .await
+            .expect("commit");
 
         let (client, connection) = tokio_postgres::connect(&conn, tokio_postgres::NoTls)
             .await

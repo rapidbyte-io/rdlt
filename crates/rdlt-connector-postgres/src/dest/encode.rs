@@ -321,7 +321,7 @@ pub(super) fn write_numeric(value: i128, scale: u8, out: &mut BytesMut) {
         v /= 10_000;
     }
 
-    let scale16 = i16::try_from(scale).unwrap_or(i16::MAX);
+    let scale16 = i16::from(scale);
     if count == 1 && groups[0] == 0 {
         // Canonical zero: no digits, weight 0.
         out.put_i16(0); // ndigits
@@ -576,7 +576,10 @@ mod encoder {
     fn null_is_a_bare_minus_one_with_no_value_bytes() {
         let array = Int64Array::from(vec![None, Some(7)]);
         let encoder = ColumnEncoder::new(ColumnWire::Int8, &array, "c").expect("encoder");
-        assert_eq!(&field_bytes(&encoder, 0).unwrap()[..], &(-1i32).to_be_bytes());
+        assert_eq!(
+            &field_bytes(&encoder, 0).unwrap()[..],
+            &(-1i32).to_be_bytes()
+        );
         // …and a present value carries its length, so NULL and a zero-length
         // value can never be confused on the wire.
         let present = field_bytes(&encoder, 1).unwrap();
@@ -589,7 +592,10 @@ mod encoder {
         let array = StringArray::from(vec![Some(""), None]);
         let encoder = ColumnEncoder::new(ColumnWire::Text, &array, "c").expect("encoder");
         assert_eq!(&field_bytes(&encoder, 0).unwrap()[..], &0i32.to_be_bytes());
-        assert_eq!(&field_bytes(&encoder, 1).unwrap()[..], &(-1i32).to_be_bytes());
+        assert_eq!(
+            &field_bytes(&encoder, 1).unwrap()[..],
+            &(-1i32).to_be_bytes()
+        );
     }
 
     /// FR-021: an unrepresentable value returns a FATAL typed error. The

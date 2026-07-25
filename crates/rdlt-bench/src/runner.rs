@@ -111,7 +111,10 @@ pub fn measure_artifact_bytes(
     subs: &BTreeMap<String, String>,
 ) -> Option<u64> {
     let script = substitute(script?, subs);
-    let output = match std::process::Command::new("sh").args(["-c", &script]).output() {
+    let output = match std::process::Command::new("sh")
+        .args(["-c", &script])
+        .output()
+    {
         Ok(output) => output,
         Err(e) => {
             // The one path that used to be silent. An unspawnable `sh` and a

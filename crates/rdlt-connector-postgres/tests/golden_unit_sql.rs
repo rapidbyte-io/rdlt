@@ -9,12 +9,12 @@
 //!
 //! No database: every string here is produced by a pure builder.
 
+use rdlt_connector::WriteMode;
 use rdlt_connector::core::schema::ColumnDef;
 use rdlt_connector::core::{ColumnType, LogicalType, Provenance, TableName, TableSchema};
 use rdlt_connector_postgres::dest::sqlgen::{
     PgDialect, UNIT_BEGIN, UNIT_COMMIT, UNIT_ROLLBACK, UNIT_WORK_MEM,
 };
-use rdlt_connector::WriteMode;
 use rdlt_connector_sqlcore::{
     CommitCtx, DestOptions, FullLoadPublish, Step, column_list, commit_script, insert_select_sql,
     prepare_target, quote_ident,
@@ -115,8 +115,8 @@ fn the_direct_path_emits_no_insert_select() {
     let cleared = BTreeSet::new();
     for mode in [WriteMode::Append, WriteMode::Replace] {
         let tbls = tables(mode);
-        let script = commit_script(&tbls, &DestOptions::default(), &direct(&cleared, false))
-            .expect("plan");
+        let script =
+            commit_script(&tbls, &DestOptions::default(), &direct(&cleared, false)).expect("plan");
         assert_eq!(
             script.steps,
             vec![Step::UpsertState, Step::InsertReceipt],

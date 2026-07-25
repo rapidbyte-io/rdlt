@@ -274,10 +274,7 @@ pub fn append_history(path: &Path, artifact: &Artifact) -> Result<()> {
     // scope correction was rendered as a plain percentage for every arm except
     // rdlt's — precisely the misleading output the guard exists to prevent,
     // just on the other side of the comparison.
-    let declared: Option<u64> = artifact
-        .verify
-        .as_ref()
-        .map(|v| v.values().copied().sum());
+    let declared: Option<u64> = artifact.verify.as_ref().map(|v| v.values().copied().sum());
     for (variant, side) in &artifact.competitors {
         if let CompetitorSide::Ok { median_ms, .. } = side {
             lines.push(HistoryLine {

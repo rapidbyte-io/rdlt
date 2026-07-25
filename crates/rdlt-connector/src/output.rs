@@ -270,7 +270,10 @@ mod tests {
             ..Default::default()
         };
         let err = options.validate().expect_err("snappy has no level");
-        assert!(err.contains("snappy") && err.contains("compression_level"), "{err}");
+        assert!(
+            err.contains("snappy") && err.contains("compression_level"),
+            "{err}"
+        );
         // …and the same level is fine on a codec that has one.
         assert!(
             ParquetOptions {
@@ -336,7 +339,10 @@ mod tests {
             let parsed: ParquetCompression =
                 serde_json::from_str(&format!("\"{text}\"")).expect(text);
             assert_eq!(parsed, codec);
-            assert_eq!(serde_json::to_string(&codec).expect(text), format!("\"{text}\""));
+            assert_eq!(
+                serde_json::to_string(&codec).expect(text),
+                format!("\"{text}\"")
+            );
             assert_eq!(codec.as_str(), text);
         }
     }

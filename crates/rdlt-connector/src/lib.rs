@@ -27,6 +27,10 @@ pub use arrow_array::RecordBatch;
 pub use capabilities::DestinationCapabilities;
 pub use channel::{ChannelClosed, PushPayload, RecordsIn, RecordsOut, SourcePush, records_channel};
 pub use error::{BoxError, DestinationError, SourceError};
+/// How a destination writes parquet — plain data, no parquet dependency in
+/// the SPI. Connectors re-export it from their own config paths and translate
+/// it into `WriterProperties` at their own boundary.
+pub use output::{ParquetCompression, ParquetOptions};
 /// The rdlt vocabulary. Connectors MUST take these types from here (single-version
 /// identity across the workspace).
 pub use rdlt_core as core;
@@ -34,10 +38,6 @@ pub use rdlt_core::{
     CommitMeta, CommitReceipt, Cursor, LoadId, PipelineId, StateDoc, TableName, TableSchema,
     WriteMode,
 };
-/// How a destination writes parquet — plain data, no parquet dependency in
-/// the SPI. Connectors re-export it from their own config paths and translate
-/// it into `WriterProperties` at their own boundary.
-pub use output::{ParquetCompression, ParquetOptions};
 /// The shared credential newtype: serde-transparent, renders as `***`,
 /// [`Secret::reveal`] the sole (grep-able) accessor. Connectors re-export it
 /// from their own config paths.

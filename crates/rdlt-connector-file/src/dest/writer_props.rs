@@ -65,9 +65,9 @@ fn compression(options: &ParquetOptions) -> Result<Compression, String> {
         (ParquetCompression::Snappy, _) => Compression::SNAPPY,
         (ParquetCompression::Lz4Raw, _) => Compression::LZ4_RAW,
         (ParquetCompression::Gzip, None) => Compression::GZIP(GzipLevel::default()),
-        (ParquetCompression::Gzip, Some(_)) => Compression::GZIP(
-            GzipLevel::try_new(unsigned("gzip")?).map_err(|e| bad("gzip", e))?,
-        ),
+        (ParquetCompression::Gzip, Some(_)) => {
+            Compression::GZIP(GzipLevel::try_new(unsigned("gzip")?).map_err(|e| bad("gzip", e))?)
+        }
         (ParquetCompression::Brotli, None) => Compression::BROTLI(BrotliLevel::default()),
         (ParquetCompression::Brotli, Some(_)) => Compression::BROTLI(
             BrotliLevel::try_new(unsigned("brotli")?).map_err(|e| bad("brotli", e))?,
@@ -112,7 +112,9 @@ mod tests {
     fn the_dictionary_limit_reaches_the_writer_and_is_below_the_library_default() {
         let props = writer_properties(&ParquetOptions::default()).expect("valid");
         let ours = props.dictionary_page_size_limit();
-        let library_default = WriterProperties::builder().build().dictionary_page_size_limit();
+        let library_default = WriterProperties::builder()
+            .build()
+            .dictionary_page_size_limit();
         assert!(
             ours < library_default,
             "ours {ours} must be below the library's {library_default}"
@@ -124,7 +126,9 @@ mod tests {
     #[test]
     fn an_unset_row_group_count_keeps_the_library_default_not_unlimited() {
         let props = writer_properties(&ParquetOptions::default()).expect("valid");
-        let library_default = WriterProperties::builder().build().max_row_group_row_count();
+        let library_default = WriterProperties::builder()
+            .build()
+            .max_row_group_row_count();
         assert_eq!(
             props.max_row_group_row_count(),
             library_default,
@@ -157,7 +161,7 @@ mod tests {
                 compression: codec,
                 ..Default::default()
             })
-            .expect(codec.as_str());
+            .unwrap_or_else(|e| panic!("{}: {e}", codec.as_str()));
             assert_eq!(props.compression(&"any".into()), expected);
         }
         // Levelled codecs translate with and without an explicit level.

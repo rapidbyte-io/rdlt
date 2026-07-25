@@ -243,14 +243,10 @@ pub fn keyed_upsert_sql(plan: &MergePlan<'_>) -> Vec<String> {
     } else {
         format!("DO UPDATE SET {set}")
     };
-    out.push(plan.dialect.upsert_stmt(
-        target,
-        cols,
-        &deduped,
-        &keep,
-        &key_list,
-        &action,
-    ));
+    out.push(
+        plan.dialect
+            .upsert_stmt(target, cols, &deduped, &keep, &key_list, &action),
+    );
     out
 }
 
