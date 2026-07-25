@@ -1,6 +1,41 @@
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
+`specs/019-performance-improvements/plan.md` (feature: performance
+improvements — PLANNED, not yet implemented. Nine independently
+mergeable increments from PERF_ANALYSIS.md (repo root, measured
+2026-07-25 @ 270c903). Greenfield (D1): the better option REPLACES the
+old one, superseded code DELETED same change. Baseline of record in
+spec.md; dlt re-measured same machine. THE BIG ONE: the dedup cell
+moves 3M rows not 1M (source discovers all tables when `tables` is
+absent) — the committed artifact already says so (rdlt.rows=3000000
+beside verify.actual_rows=1000000); corrected = 14.7s -> 5.07s, a 2.6x
+WIN not a 0.85x loss. Increments: (1) bench integrity, `tables: []`
+redefined to mean NONE, harness compares delivered vs declared stream
+set from RunReport.tables; (2) WAL segments parquet -> arrow IPC FILE
+(zero new deps, arrow-ipc already in lock; parquet DELETED from
+rdlt-engine; WAL_FORMAT_VERSION 1->2 exact-match gate; measured -18/
+-21% wall, -28% CPU); (3) [profile.release] lto=fat+cgu1 (no
+profile.bench pin — iai baselines shift once and are re-recorded),
+[profile.dist] strip only, NO panic=abort, NO allocator crate,
+mallopt M_TRIM_THRESHOLD is already glibc's default; (4) COPY encoder
+— ToSql::to_sql on borrowed ColumnView, framing+64KiB chunks ours,
+uuid crate REJECTED (not in profile, narrows accepted input), numeric
+stays hand-rolled (no numeric_to_sql exists; rust_decimal loses
+Decimal128 precision); (5) Replace/Append COPY straight into target
+in one unit tx, no stage table for non-merge; (6) shred — FR-029
+CORRECTED (length-prefix makes streaming hash impossible; only the
+allocation is recoverable), build_batch single-pass scatter, smallvec
+measurement-gated; (7) ParquetOptions in the SPI (Secret precedent),
+snappy + LOWERED dictionary_page_size_limit defaults, pipeline_spec.rs
+mirror enum must change too; (9) parallelism — MEASURE FIRST (FR-039;
+the 3.5x may be the stock postgres:16 fixture), LoadSession does NOT
+change so the 0.2->0.3 semver window STAYS CLOSED, __rdlt_arrival
+BIGSERIAL must become an engine-assigned ordinal, SC-005 re-targeted
+to the MERGE cell because increment 5 removes the staging that
+increment 9's lever needs. Contract: contracts/performance-improvements.md
+PI1-PI8. Phase 0 + adversarial review: research.md).
+Previous feature 018 for reference:
 `specs/018-bench-refinement/plan.md` (feature: benchmark refinement —
 COMPLETE. The benchmark is ONE e2e five-cell THREE-WAY matrix
 (rdlt/dlt/Airbyte, same seeded sources, per-product destination
