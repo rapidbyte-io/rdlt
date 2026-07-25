@@ -18,6 +18,9 @@
 #   make bench                 shred microbench (criterion)
 #     TARGET=iai make bench      instruction-count benches + baseline comparison
 #                                + cold-start check (perf/embeddability gate)
+#     TARGET=setup make bench    one-shot competitor setup: dlt image + Airbyte
+#                                connections (skips Airbyte with guidance when
+#                                no abctl cluster is reachable)
 #     TARGET=e2e make bench      the e2e cell matrix (rdlt-bench; quiet machine!)
 #     TARGET=matrix make bench   the full cell matrix (alias of e2e; long)
 #     TARGET=gate make bench     evaluate benches/bars.toml vs committed artifacts
@@ -97,6 +100,8 @@ else ifeq ($(TARGET),iai)
 	# check` keeps guarding the <=40 ms claim). Needs the release binary.
 	$(MAKE) release
 	benches/check-cold-start.sh
+else ifeq ($(TARGET),setup)
+	benches/bench-setup.sh
 else ifeq ($(TARGET),e2e)
 	$(MAKE) release
 	sh -c 'E=$$(command -v podman || command -v docker); "$$E" build -q -t rdlt-baseline benches/competitors/dlt/'

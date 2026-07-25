@@ -31,12 +31,18 @@ harness runs the driver on system `python3`.
 
 1. **Install the cluster** (owner-approved, one-time): `abctl local install
    --low-resource-mode`. See `spike/01-runtime.md`.
-2. **Run setup**: with the bench postgres (`:5439`, databases `src` +
-   `dest_airbyte`) and RUSTFS (`:19110`, buckets `raw` + `lake`) fixtures up,
+2. **Run setup**:
 
    ```
-   python3 benches/competitors/airbyte/setup.py
+   TARGET=setup make bench
    ```
+
+   That verb (`benches/bench-setup.sh`) builds the dlt image, brings up the
+   two fixture containers with the harness seeds, runs this module's
+   `setup.py` against them, and tears the fixtures down. To run `setup.py`
+   directly instead, the bench postgres (`:5439`, databases `src` +
+   `dest_airbyte`) and RUSTFS (`:19110`, buckets `raw` + `lake`) fixtures
+   must already be up — Airbyte's discover reads the source schemas.
 
    Setup re-applies the two runtime deltas (below), creates a source /
    destination / connection per cell (discovering each source's catalog first

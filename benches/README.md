@@ -1,63 +1,56 @@
 # rdlt benchmark framework
 
-One declarative harness (feature 012, `crates/rdlt-bench`) runs every
-end-to-end cell: cells are DATA, the protocol is code, results are committed
-artifacts, and the gated bars are enforced by a command — never by prose.
-Contract: `specs/012-bench-harness/contracts/bench-harness.md` (BH1–BH8).
+One declarative harness (`crates/rdlt-bench`) runs the five-cell,
+three-way end-to-end matrix (rdlt / dlt / Airbyte, same conditions):
+cells are DATA, the protocol is code, results are committed artifacts,
+and enforcement exists only as bars set below recorded session floors.
+Contract: `specs/018-bench-refinement/contracts/bench-refinement.md`
+(BR1–BR8); constitution Principle VIII governs.
+
+## Running it
+
+```
+TARGET=setup make bench    # once per machine: dlt image + Airbyte connections
+                           # (Airbyte leg skips with guidance when no abctl
+                           #  cluster is reachable — the matrix then runs 2-way)
+TARGET=e2e make bench      # the recorded matrix (quiet machine!)
+TARGET=report make bench   # regenerate RESULTS.md tables from artifacts
+TARGET=gate make bench     # evaluate bars.toml against committed artifacts
+TARGET=pg-to-pg-1m make bench   # one cell (globs work: TARGET='pg-*')
+```
+
+The harness owns fixture lifecycle (create → seed → shared within one
+invocation → teardown), resets every destination before every arm's every
+run, refuses to measure on a loaded machine (quiet guard; forced runs are
+stamped `forced: true`), and verifies destination rowcounts — a mismatch
+fails the cell rather than recording a bad number.
 
 ## Layout
 
 | Path | What |
 |---|---|
-| `cells/*.toml` | The cell matrix — source × destination × workload × mode, `gated` or `scoreboard`. Adding a pairing that reuses existing fixtures touches only TOML. |
+| `cells/e2e.toml` | The five-cell matrix — each cell: fixtures, pipeline spec, rowcount verify, per-competitor arms, and a `note` rendered as the matrix caption |
 | `cells/pipelines/` | Pipeline-spec YAML templates (`{{conn}}`, `{{data}}`, `{{workdir}}` substituted per run) |
-| `fixtures/` | Fixture registry + seeds/generators (containers, datasets — identity hashes recorded) |
-| `competitors/dlt/` | The pinned dlt baseline: Dockerfile, variant registry (`variants.toml`), in-container pipelines |
-| `bars.toml` | The gated bars (+ tolerances + policy pointers). `rdlt-bench gate` enforces them. |
-| `results/` | Committed JSON artifacts, one per cell (`raw/` is gitignored) |
-| `RESULTS.md` | Narrative (history, policy, honest caveats) + GENERATED tables between `rdlt-bench` markers |
-| `compare-iai.sh`, `perf-baselines.json` | The instruction-count gate (iai-callgrind) — a separate instrument, unchanged |
+| `fixtures/` | Fixture registry + seeds (pg 1M×12 + 50%-changed twin; RUSTFS raw/lake) |
+| `competitors/dlt/` | Self-timed container competitor: Dockerfile, `variants.toml` (connectorx headline, pyarrow context), in-container pipelines |
+| `competitors/airbyte/` | Driver competitor: `setup.py` + `driver.py` over an abctl kind cluster (its README carries the fairness policy and prerequisites) |
+| `bench-setup.sh` | The `TARGET=setup` implementation (dlt image + Airbyte connections over throwaway seeded fixtures) |
+| `bars.toml` | Enforcement bars — ≤ 1 per cell, each below a recorded session floor, each citing a RESULTS.md policy entry; `rdlt-bench gate` enforces them |
+| `results/` | Committed JSON artifacts (format_version 2), one per cell (`raw/` is gitignored) |
+| `history.jsonl` | Append-only per-session medians; the Trends section renders from it |
+| `RESULTS.md` | Policy log, Caveats, Milestones (narrative) + GENERATED matrix/trends between `rdlt-bench` markers |
+| `GOVERNANCE.md` | Coverage/semver/exclusion records |
+| `check-cold-start.sh`, `compare-iai.sh`, `perf-baselines.json` | The instruments track (cold-start ≤ 40 ms + instruction-count gate) — separate from the matrix, run by `TARGET=iai make bench` |
 
-### Naming a new cell
+## Rules that keep the numbers honest
 
-Cell ids are kebab-case and appear verbatim in committed artifact filenames and
-in `RESULTS.md` history, so **existing ids are frozen** — renaming one orphans
-its recorded rows. For NEW cells, spell the id `<workload>-<dest>-<size>` (e.g.
-`jsonl-duckdb-200k`, `pg-wide-pg-1m`); when a cell is one variant of an existing
-family, prefix the family consistently (`strategy-…` for pg strategy cells,
-`duckdb-strategy-…` for their embedded-DuckDB twins) rather than coining a third
-spelling.
-
-## Run
-
-```bash
-make release                                  # gated cells measure the release CLI
-podman build -t rdlt-baseline benches/competitors/dlt/   # once per dlt pin
-
-cargo run -p rdlt-bench -- list               # the matrix
-TARGET=e2e    make bench                      # the gated set (quiet machine!)
-TARGET=matrix make bench                      # everything, incl. scoreboards
-TARGET=pg-wide-pg-1m make bench               # one cell…
-TARGET='pg-*' make bench                      # …or a slice (any cell id/glob)
-TARGET=gate   make bench                      # bars.toml vs committed artifacts
-TARGET=report make bench                      # regenerate RESULTS.md tables
-```
-
-## Method (unchanged since feature 004; now executable)
-
-- **Baseline first**: competitors run before rdlt, same session, same seeded
-  datasets (identity hashes in every artifact fingerprint).
-- **Gated = the product**: gated numbers come from the release CLI as a
-  subprocess. Library-mode cells add per-stream attribution as scoreboard
-  detail only.
-- **Quiet machine**: gated runs REFUSE on a loaded machine
-  (`RDLT_BENCH_FORCE=1` runs annotated instead).
-- **Metrics**: wall (median/p95 over N runs), rows/s + MB/s from the
-  RunReport's own accounting, CPU + peak RSS via procfs (rdlt) and cgroup v2
-  (dlt container; its wall number stays in-process self-timed — continuity
-  with every recorded multiple). CPU/RSS are recorded, not gated.
-- **Bars move only with evidence**: every bar in `bars.toml` points at the
-  policy record that set it; violations exit nonzero naming cell and value.
-
-Instruction-count (`TARGET=iai make bench`) and the criterion shred micro
-(`make bench`) are separate instruments with their own baselines.
+- **Cell ids are frozen** — they appear in committed artifact filenames and
+  history; renaming one orphans its recorded rows. New cells spell
+  `<source>-to-<dest>-<size>` (e.g. `pg-to-pg-1m`).
+- **Same conditions**: every arm reads the same seeded sources and writes to
+  per-product destinations on the same server/store; competitors run their
+  fastest honest configuration.
+- **Bars are measurement-first**: no bar without a recorded session; cells at
+  parity or behind carry no bar — the matrix reports them as they are.
+- **Missing is loud**: an arm that cannot run records `Missing{reason}` in
+  the artifact; nothing is silently skipped.
