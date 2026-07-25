@@ -1,19 +1,23 @@
-//! Write-ahead log: parquet segments + append-only JSONL manifest.
+//! Write-ahead log: Arrow IPC file segments + append-only JSONL manifest.
 //!
 //! The WAL is a *replayable buffer*, never the source of truth. Commit ordering:
 //! (1) fsync pending segments + manifest, (2) destination commit, (3) append
 //! `Committed` + GC segment files. A crash between (1) and (3) leaves an
 //! uncommitted-looking span whose replay re-commits with the SAME
 //! `(load_id, commit_seq)` — idempotence absorbs the ambiguity.
+//!
+//! Segments carry no dictionary, no statistics and no compression. A columnar
+//! analytics container spends its encoding effort making data queryable, and
+//! nothing ever queries a segment: it is written, replayed at most once, and
+//! unlinked. The container is chosen for cheap round-tripping and for refusing
+//! a truncated file, not for what a reader could do with it.
 
 pub(crate) mod resume;
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
-use parquet::arrow::ArrowWriter;
 use rdlt_connector::RecordBatch;
 use rdlt_core::{
     Cursor, LoadId, PipelineId, RdltError, SchemaDelta, StreamName, TableName, TableSchema,
@@ -24,16 +28,25 @@ use serde::{Deserialize, Serialize};
 use crate::load::LoadItem;
 use rdlt_core::crash_point;
 
-/// Manifest format version. Bumped on any
-/// record-shape change; a newer-than-supported manifest degrades to re-extraction
-/// rather than being misread.
-pub(crate) const WAL_FORMAT_VERSION: u32 = 1;
+/// WAL format version, covering the manifest record shapes AND the segment
+/// container together — they are one format, because a manifest line is only
+/// meaningful if the segment it names can be decoded.
+///
+/// v1: parquet segments. v2: Arrow IPC file segments (`.arrow`).
+///
+/// A manifest at any other version is REFUSED, in both directions. Refusing a
+/// newer one is obvious; refusing an older one matters just as much here,
+/// because a v1 manifest names parquet segments this build cannot read — and
+/// discovering that at segment-open time would report "unreadable segment"
+/// where the truth is "different format". Recovery degrades to source
+/// re-extraction either way: slower, never wrong.
+pub(crate) const WAL_FORMAT_VERSION: u32 = 2;
 
-/// Version stamped into a NEWLY written `Run` record, and the serde fallback for a
-/// manifest that predates the versioned header. Deliberately pinned to `1` (not
-/// [`WAL_FORMAT_VERSION`]): it seeds new manifests, whereas `WAL_FORMAT_VERSION` is the
-/// ceiling a read compares against. They are `1` together today; keeping them separate
-/// keeps a future bump from silently claiming old manifests are current.
+/// The serde fallback for a manifest whose `Run` header predates the versioned
+/// header field. Pinned to `1` FOREVER — such a manifest is by definition a v1
+/// one, so defaulting it to the current version would claim parquet segments
+/// are Arrow IPC and hand corrupt input to the reader. Deliberately not
+/// [`WAL_FORMAT_VERSION`]: that constant moves, this one describes history.
 fn initial_wal_version() -> u32 {
     1
 }
@@ -115,7 +128,21 @@ impl Wal {
     }
 
     /// Record one load item ahead of applying it to the destination.
-    pub(crate) fn record(&mut self, item: &LoadItem) -> Result<(), RdltError> {
+    ///
+    /// The segment is written, then its manifest line appended. That order is
+    /// the durability rule: replay follows manifest lines, so a segment must
+    /// exist before anything names it. A crash between the two leaves an
+    /// unreferenced file, which replay ignores and `clear` removes.
+    ///
+    /// The write happens ON THIS TASK, deliberately. Moving it to the blocking
+    /// pool measured 6.7 ms per batch SLOWER on 8 MiB batches: the encode reads
+    /// a batch that was just produced on this thread, and handing it to another
+    /// core costs more in cache misses than the freed runtime thread is worth
+    /// while the pipeline is serial and nothing else can use it.
+    ///
+    /// Deliberately NOT pipelined against the destination write either: the
+    /// manifest's order on disk IS the replay order.
+    pub(crate) async fn record(&mut self, item: &LoadItem) -> Result<(), RdltError> {
         match item {
             LoadItem::Delta {
                 schema,
@@ -138,7 +165,7 @@ impl Wal {
                         std::io::Error::other("injected crash"),
                     ))
                 );
-                let file = format!("{}-{:06}.parquet", self.load_id, self.segment_seq);
+                let file = format!("{}-{:06}.arrow", self.load_id, self.segment_seq);
                 self.segment_seq += 1;
                 let path = self.dir.join(&file);
                 write_segment(&path, batch)?;
@@ -156,7 +183,19 @@ impl Wal {
     }
 
     /// Step (1) of the commit protocol: make the whole span durable.
-    pub(crate) fn sync_for_commit(&mut self) -> Result<(), RdltError> {
+    ///
+    /// The fsyncs DO go to the blocking pool: unlike the segment encode they are
+    /// pure kernel wait with no working set to keep warm, so nothing is lost by
+    /// moving them and a runtime thread is freed for the duration.
+    ///
+    /// TWO blocking hops, not one, and the split is forced rather than chosen:
+    /// `crash_point!` expands to a fail point whose closure form RETURNS from
+    /// the enclosing function, so moving one inside a `spawn_blocking` closure
+    /// would change what it returns from — and under the panic action would
+    /// move the panic onto a pool thread. `wal.manifest.fsync` sits between the
+    /// segment fsyncs and the manifest fsync, so it stays on this side and the
+    /// two fsync groups go over separately.
+    pub(crate) async fn sync_for_commit(&mut self) -> Result<(), RdltError> {
         crash_point!(
             "wal.segment.fsync",
             Err(wal_err(
@@ -164,11 +203,19 @@ impl Wal {
                 std::io::Error::other("injected crash"),
             ))
         );
-        for path in self.pending_sync.drain(..) {
-            File::open(&path)
-                .and_then(|f| f.sync_all())
-                .map_err(|e| wal_err("fsync segment", e))?;
-        }
+        let pending = std::mem::take(&mut self.pending_sync);
+        tokio::task::spawn_blocking(move || {
+            for path in pending {
+                File::open(&path)
+                    .and_then(|f| f.sync_all())
+                    .map_err(|e| wal_err("fsync segment", e))?;
+            }
+            Ok::<(), RdltError>(())
+        })
+        .await
+        .map_err(|e| wal_err("segment fsync task", e))??;
+        // A no-op on `File` (nothing is buffered in userspace), kept because it
+        // states where the userspace boundary is.
         self.manifest
             .flush()
             .map_err(|e| wal_err("flush manifest", e))?;
@@ -179,19 +226,30 @@ impl Wal {
                 std::io::Error::other("injected crash"),
             ))
         );
-        self.manifest
-            .sync_all()
+        let handle = self
+            .manifest
+            .try_clone()
             .map_err(|e| wal_err("fsync manifest", e))?;
+        tokio::task::spawn_blocking(move || {
+            handle.sync_all().map_err(|e| wal_err("fsync manifest", e))
+        })
+        .await
+        .map_err(|e| wal_err("manifest fsync task", e))??;
         Ok(())
     }
 
     /// Step (3): the destination acknowledged `commit_seq` — mark and reclaim.
-    pub(crate) fn mark_committed(&mut self, commit_seq: u64) -> Result<(), RdltError> {
+    pub(crate) async fn mark_committed(&mut self, commit_seq: u64) -> Result<(), RdltError> {
         self.append(&WalRecord::Committed { commit_seq })?;
-        for path in self.pending_gc.drain(..) {
-            // Best-effort: a survivor just gets replay-skipped via the Committed record.
-            let _ = std::fs::remove_file(path);
-        }
+        let reclaim = std::mem::take(&mut self.pending_gc);
+        // Best-effort: a survivor just gets replay-skipped via the Committed
+        // record, so unlinking never blocks the commit's completion.
+        let _ = tokio::task::spawn_blocking(move || {
+            for path in reclaim {
+                let _ = std::fs::remove_file(path);
+            }
+        })
+        .await;
         Ok(())
     }
 
@@ -211,14 +269,31 @@ impl Wal {
     }
 }
 
-fn write_segment(path: &Path, batch: &RecordBatch) -> Result<(), RdltError> {
+/// Write one segment in the Arrow IPC **file** format.
+///
+/// The file format is chosen over the streaming one for a durability property,
+/// not for speed: its footer is validated on open, so a segment truncated at a
+/// block boundary by a power loss is REFUSED. A truncated IPC *stream*, by
+/// contrast, decodes the messages it has and reports clean end-of-input — which
+/// would replay a short span and silently drop the rest.
+///
+/// No dictionary construction, no statistics, no compression: a segment lives
+/// only until its commit is acknowledged, so encoding effort spent making it
+/// queryable is pure loss.
+///
+/// Buffered, because the writer does NOT emit only a few large writes: each
+/// segment costs roughly sixteen `write_all` calls — continuation markers,
+/// flatbuffer metadata, padding and the footer alongside the body buffers —
+/// so several hundred per load, most of them tiny. Measured at 1.1% of wall on
+/// the 1M-row relational cell: small, but free.
+pub(crate) fn write_segment(path: &Path, batch: &RecordBatch) -> Result<(), RdltError> {
     let file = File::create(path).map_err(|e| wal_err("create segment", e))?;
-    let mut writer = ArrowWriter::try_new(file, Arc::clone(&batch.schema()), None)
+    let mut writer = arrow::ipc::writer::FileWriter::try_new_buffered(file, batch.schema_ref())
         .map_err(|e| wal_err("open segment writer", e))?;
     writer
         .write(batch)
         .map_err(|e| wal_err("write segment", e))?;
-    writer.close().map_err(|e| wal_err("close segment", e))?;
+    writer.finish().map_err(|e| wal_err("close segment", e))?;
     Ok(())
 }
 

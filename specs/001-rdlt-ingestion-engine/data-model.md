@@ -139,7 +139,7 @@ left in `committing`/staged.
 
 ## 9. Engine-internal formats (stable *format*, private *type*)
 
-- **WAL segment**: parquet file keyed `(load_id, table, seq)`.
+- **WAL segment**: Arrow IPC file keyed `(load_id, table, seq)`.
 - **WAL manifest**: append-only records `segment → SchemaHash → covering checkpoint`;
   deltas manifested before any batch at the new version; fsync at commit boundaries only.
 - These are *persisted formats* documented in

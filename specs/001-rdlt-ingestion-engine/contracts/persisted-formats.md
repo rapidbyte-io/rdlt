@@ -26,9 +26,24 @@ replayable buffer.** Every format below carries an explicit `format_version`.
 *(Amended 2026-07-19 to match the implementation; the correctness properties are
 unchanged, the byte layout is now stated as built.)*
 
-- Layout: `<workdir>/wal/<load_id>-<seq>.parquet`, standard parquet, schema equal to
-  the current table schema's Arrow projection (system columns included); the owning
-  table is recorded in the manifest's `segment` record.
+*(Amended 2026-07-25, feature 019 — WAL format v1 → v2. **Migration**: a manifest
+at any version other than the engine's own is REFUSED by version, the reason is
+logged, and recovery degrades to re-extraction from the last committed cursor.
+A v1 manifest names parquet segments this engine does not decode, so the refusal
+is by version rather than by discovering an unreadable segment; an unversioned
+header defaults to v1 and is refused on the same path. Nothing is migrated on
+read — the WAL is disposable by design, so re-extraction is the migration. The
+correctness properties below are unchanged.)*
+
+- Layout: `<workdir>/wal/<load_id>-<seq>.arrow`, Arrow IPC **file** format, schema
+  equal to the current table schema's Arrow projection (system columns included);
+  the owning table is recorded in the manifest's `segment` record. No dictionary
+  encoding, no statistics, no compression: a segment is written, replayed at most
+  once, and unlinked, so encoding effort spent making it queryable is pure loss.
+  The file format is required over the streaming one for a durability property —
+  its footer is validated on open, so a segment truncated by a lost writeback is
+  refused, where a truncated stream would decode its prefix and report a clean
+  end (replaying a short span and silently dropping the rest).
 - Loss/corruption of any segment is **recoverable by design**: recovery degrades to
   re-extraction from the last committed cursor (crash-matrix row 4) — slower, never wrong.
   A damaged span never aborts recovery.

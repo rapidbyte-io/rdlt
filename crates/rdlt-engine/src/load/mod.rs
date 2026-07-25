@@ -121,7 +121,7 @@ impl Loader {
         let _guard = span.enter();
         // Write-ahead: the item is durable-intent before the destination sees it.
         if let Some(wal) = &mut self.wal {
-            wal.record(&item)?;
+            wal.record(&item).await?;
         }
         match item {
             LoadItem::Delta {
@@ -262,7 +262,7 @@ impl Loader {
         // destination commit — a crash after this point replays instead of
         // re-extracting.
         if let Some(wal) = &mut self.wal {
-            wal.sync_for_commit()?;
+            wal.sync_for_commit().await?;
         }
         let meta = CommitMeta {
             load_id: self.load_id.clone(),
@@ -285,7 +285,7 @@ impl Loader {
         );
         // Step 3: receipt in hand — mark and reclaim covered segments.
         if let Some(wal) = &mut self.wal {
-            wal.mark_committed(self.commit_seq)?;
+            wal.mark_committed(self.commit_seq).await?;
         }
         self.emit(rdlt_core::PipelineEvent::Committed {
             commit_seq: self.commit_seq,

@@ -5,7 +5,6 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use rdlt_connector::LoadSession;
 use rdlt_core::{CommitMeta, LoadId, RdltError, StateDoc};
 
@@ -13,15 +12,19 @@ use super::WalRecord;
 
 /// Open one WAL segment for streaming decode; the error text names the
 /// failure so degradation to re-extraction is diagnosable from logs.
+///
+/// The Arrow IPC file reader validates the footer before yielding anything, so
+/// a segment truncated by a power loss fails HERE rather than decoding a
+/// prefix and reporting a clean end — which is the property the file format
+/// was chosen for.
 fn open_segment(
     dir: &Path,
     file: &str,
-) -> Result<parquet::arrow::arrow_reader::ParquetRecordBatchReader, String> {
+) -> Result<arrow::ipc::reader::FileReader<BufReader<File>>, String> {
     let path = dir.join(file);
-    File::open(&path)
-        .map_err(|e| e.to_string())
-        .and_then(|f| ParquetRecordBatchReaderBuilder::try_new(f).map_err(|e| e.to_string()))
-        .and_then(|b| b.build().map_err(|e| e.to_string()))
+    File::open(&path).map_err(|e| e.to_string()).and_then(|f| {
+        arrow::ipc::reader::FileReader::try_new_buffered(f, None).map_err(|e| e.to_string())
+    })
 }
 
 /// The uncommitted tail of a previous run.
@@ -47,6 +50,15 @@ pub(crate) enum Scan {
     Nothing,
     Recover(RecoverySpan),
     Damaged(String),
+    /// The manifest is intact and readable, but was written under a different
+    /// format version, so its segments are in a container this build does not
+    /// decode. Kept distinct from `Damaged` so the log — and any test — can
+    /// tell "different version" from "corruption" by SHAPE rather than by
+    /// matching words in a message.
+    Unsupported {
+        found: u32,
+        supported: u32,
+    },
 }
 
 /// Forward-scan the manifest. A torn FINAL line (crash mid-append) is truncated;
@@ -106,14 +118,16 @@ pub(crate) fn scan(dir: &Path) -> Scan {
                 load_id: id,
                 ..
             } => {
-                if format_version > super::WAL_FORMAT_VERSION {
-                    // A future engine wrote this workdir: don't guess — degrade to
-                    // cursor re-extraction (slower, never wrong).
-                    return Scan::Damaged(format!(
-                        "manifest format v{format_version} is newer than supported \
-                         v{}",
-                        super::WAL_FORMAT_VERSION
-                    ));
+                if format_version != super::WAL_FORMAT_VERSION {
+                    // EXACT match, in both directions. A newer manifest was
+                    // written by an engine whose records this build cannot be
+                    // trusted to read; an older one names segments in a
+                    // container this build no longer decodes. Neither is
+                    // guessable — degrade to cursor re-extraction.
+                    return Scan::Unsupported {
+                        found: format_version,
+                        supported: super::WAL_FORMAT_VERSION,
+                    };
                 }
                 // A run only ever starts after the previous span was resolved
                 // (recovery runs before `Wal::open` appends the new header), so a Run
@@ -248,6 +262,111 @@ pub(crate) async fn replay(
 }
 
 #[cfg(test)]
+mod segment_format {
+    //! What the segment container is required to guarantee, pinned directly
+    //! against `write_segment`/`open_segment` rather than through a pipeline —
+    //! these are properties of the format choice, and a file-mutation test can
+    //! reach states no crash point can produce.
+
+    use std::sync::Arc;
+
+    use arrow::array::{Int64Array, StringArray};
+    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::record_batch::RecordBatch;
+
+    use super::open_segment;
+    use crate::wal::write_segment;
+
+    fn batch(rows: usize) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, true),
+        ]));
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new((0..rows as i64).collect::<Int64Array>()),
+                Arc::new(
+                    (0..rows)
+                        .map(|i| Some(format!("row-{i}")))
+                        .collect::<StringArray>(),
+                ),
+            ],
+        )
+        .expect("batch")
+    }
+
+    #[test]
+    fn a_segment_round_trips_its_rows() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("seg.arrow");
+        write_segment(&path, &batch(1000)).expect("write");
+        let decoded: Vec<_> = open_segment(dir.path(), "seg.arrow")
+            .expect("open")
+            .map(|b| b.expect("decode"))
+            .collect();
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].num_rows(), 1000);
+        assert_eq!(decoded[0].num_columns(), 2);
+    }
+
+    /// A zero-row batch must survive the round trip as a zero-row batch. The
+    /// previous container silently dropped it, so a live write and its replay
+    /// disagreed about how many batches existed; this one has no such branch.
+    #[test]
+    fn an_empty_batch_round_trips_as_one_empty_batch() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("empty.arrow");
+        write_segment(&path, &batch(0)).expect("write");
+        let decoded: Vec<_> = open_segment(dir.path(), "empty.arrow")
+            .expect("open")
+            .map(|b| b.expect("decode"))
+            .collect();
+        assert_eq!(decoded.len(), 1, "the batch must survive, not vanish");
+        assert_eq!(decoded[0].num_rows(), 0);
+    }
+
+    /// THE reason the file container was chosen. A power loss can leave a
+    /// segment truncated at a block boundary; the footer is validated on open,
+    /// so this is REFUSED. A streaming container would decode the messages it
+    /// has and report a clean end — replaying a short span and silently losing
+    /// the rest.
+    #[test]
+    fn a_truncated_segment_is_refused_not_replayed_short() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("torn.arrow");
+        write_segment(&path, &batch(5000)).expect("write");
+        let full = std::fs::metadata(&path).expect("stat").len();
+
+        // Cut at a block boundary partway through, the shape a lost writeback
+        // leaves behind.
+        for keep in [full / 2, full - 4096, full - 8] {
+            let bytes = std::fs::read(&path).expect("read");
+            let torn = dir.path().join("cut.arrow");
+            std::fs::write(&torn, &bytes[..keep as usize]).expect("truncate");
+            let refused = match open_segment(dir.path(), "cut.arrow") {
+                Err(_) => true,
+                // Opening may succeed on some cuts; decoding must then fail
+                // rather than yield a short, clean span.
+                Ok(reader) => reader.into_iter().any(|b| b.is_err()),
+            };
+            assert!(
+                refused,
+                "a segment truncated to {keep}/{full} bytes was accepted"
+            );
+        }
+    }
+
+    /// An empty file is the degenerate truncation — no footer at all.
+    #[test]
+    fn an_empty_segment_file_is_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("nothing.arrow"), b"").expect("write");
+        assert!(open_segment(dir.path(), "nothing.arrow").is_err());
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use rdlt_core::{LoadId, PipelineId};
@@ -281,16 +400,18 @@ mod tests {
         );
         assert_eq!(
             super::super::WAL_FORMAT_VERSION,
-            1,
+            2,
             "bump deliberately, with a migration note"
         );
     }
 
-    /// Mutation-report closure: the future-version guard is `>`, strictly — a
-    /// NEWER manifest degrades to re-extraction (Damaged), while the current
-    /// and any older version scan normally.
+    /// The version gate is EXACT, in both directions. A newer manifest carries
+    /// records this build cannot be trusted to read; an older one names
+    /// segments in a container it no longer decodes. Both degrade to
+    /// re-extraction, and both report `Unsupported` rather than `Damaged` so
+    /// the two causes stay distinguishable by shape, not by message text.
     #[test]
-    fn future_manifest_version_degrades_older_scans_fine() {
+    fn any_other_manifest_version_is_unsupported_current_scans_fine() {
         let run = |version: u32| {
             let dir = tempfile::tempdir().expect("tempdir");
             write_manifest(
@@ -303,14 +424,36 @@ mod tests {
             );
             scan(dir.path())
         };
+        let current = super::super::WAL_FORMAT_VERSION;
         assert!(
-            matches!(run(super::super::WAL_FORMAT_VERSION + 1), Scan::Damaged(_)),
-            "future version must degrade"
+            matches!(run(current + 1), Scan::Unsupported { found, supported }
+                     if found == current + 1 && supported == current),
+            "a newer manifest must be refused by version"
         );
-        // Current version: an empty span (no checkpoint) scans to Nothing, not Damaged.
-        assert!(matches!(
-            run(super::super::WAL_FORMAT_VERSION),
-            Scan::Nothing
-        ));
+        assert!(
+            matches!(run(current - 1), Scan::Unsupported { found, supported }
+                     if found == current - 1 && supported == current),
+            "an older manifest names segments in the previous container and must \
+             be refused by version, not discovered unreadable at open time"
+        );
+        // Current version: an empty span (no checkpoint) scans to Nothing.
+        assert!(matches!(run(current), Scan::Nothing));
+    }
+
+    /// A manifest predating the versioned header defaults to v1 — and must
+    /// therefore be refused now, not treated as current. Defaulting it to the
+    /// current version would claim its parquet segments are Arrow IPC.
+    #[test]
+    fn a_headerless_manifest_defaults_to_v1_and_is_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("manifest.jsonl"),
+            "{\"rec\":\"run\",\"load_id\":\"l\",\"pipeline\":\"p\"}\n",
+        )
+        .expect("write manifest");
+        assert!(
+            matches!(scan(dir.path()), Scan::Unsupported { found: 1, .. }),
+            "an unversioned header is a v1 manifest"
+        );
     }
 }

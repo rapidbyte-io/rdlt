@@ -12,7 +12,7 @@ Build a library-first ELT engine in Rust — extract → shred (normalize) → l
 schema inference/evolution along a value-checked widening lattice, incremental cursors,
 and crash-safe resumable runs with exactly-once destination visibility. Architecture:
 streaming Arrow `RecordBatch`es through byte-bounded channels across concurrent tokio
-stages, a parquet-segment WAL as a replayable buffer, and the destination as sole source
+stages, an Arrow-IPC-segment WAL as a replayable buffer, and the destination as sole source
 of truth (state commits atomically with data). Delivered as a 9-crate workspace with two
 semver-sacred seams (`rdlt-core` vocabulary, `rdlt-connector` SPI) and one deep engine
 module; v1 vertical slice is a declarative REST source loading into DuckDB and Postgres.
@@ -26,7 +26,7 @@ release, pinned in `rust-toolchain.toml`)
 `arrow-schema`), `tokio`, `serde`/`serde_json`, `async-trait`, `thiserror`, `tracing`,
 `bytes`; connectors: `reqwest`, `duckdb` (bundled), `tokio-postgres`. See research.md R10.
 
-**Storage**: Local workdir WAL (parquet segments + append-only JSON manifest); pipeline
+**Storage**: Local workdir WAL (Arrow IPC segments + append-only JSON manifest); pipeline
 state persisted *in the destination* (`_rdlt_state`), committed atomically with data.
 Destinations v1: DuckDB (embedded), PostgreSQL.
 
@@ -115,7 +115,7 @@ crates/
 │       ├── runtime/     #   task graph, byte-bounded channels, retry driver, cancel token
 │       ├── shred/       #   infer.rs, nest.rs, build.rs (raw-JSON → Arrow buffers)
 │       ├── schema/      #   registry, diffing → SchemaDelta, contract enforcement
-│       ├── wal/         #   parquet segments + manifest, resume scan, GC
+│       ├── wal/         #   Arrow IPC segments + manifest, resume scan, GC
 │       ├── state/       #   StateDoc round-trip through destination
 │       └── load/        #   commit protocol, migration planning vs DestCapabilities
 ├── rdlt/                # Facade: Pipeline::builder (typestate), prelude;

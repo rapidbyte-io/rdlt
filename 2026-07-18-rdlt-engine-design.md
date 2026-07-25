@@ -41,7 +41,7 @@ Source (REST/SQL/files)
 Shredder ── schema inference + evolution ──► SchemaRegistry
    │  RecordBatch keyed (load_id, table, seq) + SchemaDelta stream
    ▼
-WAL writer (parquet segments + manifest)          ◄── replay on resume
+WAL writer (Arrow IPC segments + manifest)        ◄── replay on resume
    │  bounded async channel (backpressure)
    ▼
 Loader ──► Destination LoadSession
@@ -119,7 +119,7 @@ src/
 │   ├── nest.rs   # struct preservation, child-table splitting, lineage ids
 │   └── build.rs  # Arrow columnar builders (raw-JSON bytes → buffers, no Value tree)
 ├── schema/       # registry, diffing → SchemaDelta, contracts (types live in rdlt-core)
-├── wal/          # parquet segments + manifest, resume scan, GC
+├── wal/          # Arrow IPC segments + manifest, resume scan, GC
 ├── state/        # cursor/state docs (serde), round-trip through destination
 └── load/         # commit protocol, migration planning vs DestCapabilities
 ```
@@ -309,7 +309,7 @@ The algorithm is FROZEN at the first release tag.
 State commits atomically with data (`commit(meta)`), so correctness survives total loss of
 the work directory; the WAL only makes recovery cheap.
 
-- WAL segment = parquet file keyed `(load_id, table, seq)`; append-only manifest records
+- WAL segment = Arrow IPC file keyed `(load_id, table, seq)`; append-only manifest records
   segment → schema hash → covering source checkpoint. Schema deltas are manifested before
   any batch at the new version.
 - `CommitPolicy` (N checkpoints | bytes | seconds) groups checkpoint spans into commit
