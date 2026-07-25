@@ -14,7 +14,7 @@ use crate::{BenchError, Result};
 /// message so a stale artifact points a reader at its recorded history.
 pub const ARCHIVE_COMMIT: &str = "40841ab";
 
-pub const ARTIFACT_FORMAT_VERSION: u32 = 2;
+pub const ARTIFACT_FORMAT_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Fingerprint {
@@ -46,20 +46,6 @@ pub struct RssStats {
     pub note: Option<String>,
 }
 
-/// Per-stream attribution (from the events seam). Retained in the artifact
-/// shape; always empty since subprocess is the only run behavior.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct StreamAttribution {
-    pub stream: String,
-    pub first_batch_ms: Option<u64>,
-    pub last_batch_ms: Option<u64>,
-    /// Source-side finish (`StreamFinished`) — can PRECEDE `last_batch_ms`:
-    /// the source drains before the destination loads its tail.
-    pub finished_ms: Option<u64>,
-    pub rows: u64,
-    pub bytes: u64,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RdltSide {
     pub runs_ms: Vec<f64>,
@@ -72,8 +58,6 @@ pub struct RdltSide {
     pub mb_per_s: Option<f64>,
     pub cpu: CpuStats,
     pub rss: RssStats,
-    #[serde(default)]
-    pub streams: Vec<StreamAttribution>,
 }
 
 /// One competitor arm's outcome. The size skew between the variants is
@@ -103,15 +87,14 @@ pub enum CompetitorSide {
     Missing { reason: String },
 }
 
-/// A row-count verification that PASSED — `verify_outcome` returns an error
-/// (never this) on a mismatch, so a recorded outcome is always a match; the
-/// `expected`/`actual` pair is kept for the artifact record.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct VerifyOutcome {
-    pub table: String,
-    pub expected_rows: u64,
-    pub actual_rows: u64,
-}
+/// The verified destination shape: every table the cell declared, mapped to the
+/// row count it actually held. `verify_outcome` returns an error (never this)
+/// on any mismatch, so a recorded outcome is always a full match.
+///
+/// The whole SET is recorded, not just one table, because the set is the
+/// evidence: two arms are comparable only if they moved the same tables, and a
+/// record holding a single table's count cannot show that.
+pub type VerifyOutcome = std::collections::BTreeMap<String, u64>;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Artifact {
@@ -207,7 +190,9 @@ pub fn read(results_dir: &Path, cell_id: &str) -> Result<Artifact> {
     if version != Some(ARTIFACT_FORMAT_VERSION as u64) {
         return Err(BenchError(format!(
             "artifact {} is format v{} (this harness reads v{ARTIFACT_FORMAT_VERSION} only); \
-             retired v1 history lives at commit {ARCHIVE_COMMIT}",
+             re-record it with a measurement session — v1 history lives at commit \
+             {ARCHIVE_COMMIT}, and v2 artifacts predate the delivered-vs-declared \
+             table check, so their timings may cover tables the cell never declared",
             path.display(),
             version.map_or_else(|| "?".to_owned(), |v| v.to_string()),
         )));
@@ -246,7 +231,6 @@ pub(crate) mod tests {
                 mb_per_s: Some(0.09),
                 cpu: CpuStats::default(),
                 rss: RssStats::default(),
-                streams: vec![],
             },
             competitors: BTreeMap::new(),
             verify: None,

@@ -13,6 +13,9 @@ write_mode:
 source:
   postgres:
     conn: "{{conn}}"
+    # Deliver ONLY the declared query stream: an absent `tables` would add
+    # every table in the schema alongside it.
+    tables: []
     queries:
       - name: events_merged
         sql: "SELECT * FROM events_v2"

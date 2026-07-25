@@ -328,11 +328,20 @@ fn trends_table(history: &[HistoryLine]) -> String {
     for ((cell, variant), points) in &by_key {
         let latest = points.last().expect("non-empty by construction");
         let prev = points.iter().rev().nth(1);
+        // A percentage is only meaningful between runs that moved the same
+        // volume. When the row counts differ the two points measured different
+        // work, so render the counts instead — a cell whose scope was corrected
+        // would otherwise publish the correction as a speedup.
         let delta = prev.map_or_else(
             || "—".to_owned(),
-            |p| {
-                let pct = (latest.median_ms - p.median_ms) / p.median_ms * 100.0;
-                format!("{pct:+.1}%")
+            |p| match (latest.rows, p.rows) {
+                (Some(now), Some(before)) if now != before => {
+                    format!("rows {before} → {now}")
+                }
+                _ => {
+                    let pct = (latest.median_ms - p.median_ms) / p.median_ms * 100.0;
+                    format!("{pct:+.1}%")
+                }
             },
         );
         out.push_str(&format!(
@@ -501,5 +510,31 @@ mod tests {
         assert!(table.contains("pg-to-pg-1m"), "{table}");
         assert!(table.contains("rdlt"), "{table}");
         assert!(table.contains("+10.0%"), "{table}");
+    }
+
+    /// A cell whose scope is corrected moves fewer rows than it did before, so
+    /// its wall time drops for a reason that is not a speedup. Publishing that
+    /// drop as a percentage would advertise the correction as an improvement.
+    #[test]
+    fn a_delta_across_different_row_counts_shows_the_rows_not_a_percentage() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.jsonl");
+        let mut before = crate::artifact::tests::minimal("pg-to-pg-dedup-1m");
+        before.recorded_at = "2026-07-24".into();
+        before.rdlt.median_ms = 14_784.0;
+        before.rdlt.rows = Some(3_000_000);
+        append_history(&path, &before).unwrap();
+        let mut after = crate::artifact::tests::minimal("pg-to-pg-dedup-1m");
+        after.recorded_at = "2026-07-25".into();
+        after.rdlt.median_ms = 5_028.0;
+        after.rdlt.rows = Some(1_000_000);
+        append_history(&path, &after).unwrap();
+
+        let table = trends_table(&read_history(&path).unwrap());
+        assert!(table.contains("rows 3000000 → 1000000"), "{table}");
+        assert!(
+            !table.contains('%'),
+            "a scope change is not a speedup: {table}"
+        );
     }
 }

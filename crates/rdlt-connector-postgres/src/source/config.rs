@@ -31,7 +31,11 @@ pub struct PostgresConfig {
     /// Include views and materialized views in schema-wide discovery.
     #[serde(default)]
     pub include_views: bool,
-    /// Absent ⇒ discover ALL tables in `schema`.
+    /// Table selection, three-valued. PRESENT ⇒ exactly this list and nothing
+    /// else — including the empty list, which selects no tables and leaves
+    /// `queries` as the run's only streams. ABSENT ⇒ discover every table in
+    /// `schema`, which is why a pipeline that declares queries and omits this
+    /// field also receives every table alongside them.
     #[serde(default)]
     pub tables: Option<Vec<TableConfig>>,
     /// Query streams: a stream per SQL statement, schema DESCRIBED by the
@@ -519,6 +523,17 @@ impl PostgresConfig {
                     return invalid(format!("`{field}` must not be empty"));
                 }
             }
+            // CDC captures the CONFIGURED tables; selecting none captures
+            // nothing, so the slot would never be preflighted or advanced and
+            // the block would behave as if it were absent.
+            if self.tables.as_ref().is_some_and(Vec::is_empty) {
+                return invalid(
+                    "`cdc` is configured but `tables` is empty — change data capture reads \
+                     the configured tables, so selecting none captures nothing; list the \
+                     tables to capture or remove the `cdc` block"
+                        .into(),
+                );
+            }
             // CDC covers every configured table; a cursor block on any
             // of them is a contradiction, not an override.
             if let Some(table) = self.tables.iter().flatten().find(|t| t.cursor.is_some()) {
@@ -565,8 +580,18 @@ impl PostgresConfig {
             }
         }
         if let Some(tables) = &self.tables {
-            if tables.is_empty() {
-                return invalid("`tables` present but empty — omit it to discover all".into());
+            // An empty list selects no tables — legitimate alongside queries,
+            // and the only way to say "deliver the declared queries and nothing
+            // else". With no queries either, the run would select nothing at
+            // all and silently move zero rows, so that combination is refused
+            // here rather than at read time.
+            if tables.is_empty() && self.queries.is_empty() {
+                return invalid(
+                    "no streams selected: `tables` is empty and no `queries` are declared — \
+                     list the tables to read, declare a query, or omit `tables` to discover \
+                     every table in the schema"
+                        .into(),
+                );
             }
             let mut seen = BTreeSet::new();
             for table in tables {
@@ -713,6 +738,44 @@ tables:
         )
         .unwrap_err();
         assert!(err.to_string().contains("mutually exclusive"), "{err}");
+    }
+
+    /// An empty table list means "no tables" — the only way to say "deliver the
+    /// declared queries and nothing else". Absent, by contrast, still discovers
+    /// every table, so a queries-only pipeline that omits the field receives the
+    /// whole schema alongside its queries.
+    #[test]
+    fn empty_table_list_selects_no_tables_and_keeps_queries() {
+        let c = PostgresConfig::from_yaml(
+            "conn: host=localhost\ntables: []\nqueries:\n  - name: q\n    sql: SELECT 1\n",
+        )
+        .expect("empty list alongside a query is a valid selection");
+        assert_eq!(c.tables.as_deref(), Some(&[][..]));
+        assert_eq!(c.queries.len(), 1);
+    }
+
+    /// Selecting nothing at all would move zero rows and report success, so it
+    /// is refused where it is knowable — at parse time, from the document alone.
+    #[test]
+    fn selecting_no_streams_at_all_is_rejected_naming_both_remedies() {
+        let err = PostgresConfig::from_yaml("conn: host=localhost\ntables: []\n")
+            .expect_err("no tables and no queries selects nothing");
+        let msg = err.to_string();
+        assert!(msg.contains("no streams selected"), "{msg}");
+        assert!(msg.contains("queries") && msg.contains("omit"), "{msg}");
+    }
+
+    /// Change data capture reads the configured tables; configuring none would
+    /// leave the slot un-preflighted and never advanced, i.e. the block would
+    /// silently behave as if it were absent.
+    #[test]
+    fn cdc_with_an_empty_table_list_is_rejected() {
+        let err = PostgresConfig::from_yaml(
+            "conn: host=localhost\ncdc:\n  slot: s1\n  publication: p1\ntables: []\n\
+             queries:\n  - name: q\n    sql: SELECT 1\n",
+        )
+        .expect_err("cdc captures the configured tables; none means nothing");
+        assert!(err.to_string().contains("captures nothing"), "{err}");
     }
 
     #[test]

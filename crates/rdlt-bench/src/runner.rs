@@ -3,7 +3,7 @@
 //! the same quiet machine), then rdlt — warmups, N runs, stats, artifact.
 //! Every measured number comes from the release-CLI subprocess.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -285,7 +285,6 @@ pub(crate) fn rdlt_side(samples: &[Sample<RunDetail>]) -> RdltSide {
         mb_per_s: bytes.map(|b| b as f64 / (1024.0 * 1024.0) / secs),
         cpu: cpu_stats(last.detail.usage.as_ref(), last.detail.clock_ms),
         rss: rss_stats(last.detail.usage.as_ref()),
-        streams: vec![],
         runs_ms,
     }
 }
@@ -303,18 +302,53 @@ fn verify_outcome(cell: &Cell, samples: &[Sample<RunDetail>]) -> Result<Option<V
                 cell.id
             ))
         })?;
-    let actual = report_table_rows(report, &verify.table);
-    if actual != verify.expected_rows {
+    // The delivered set must MATCH the declared set, not merely contain it.
+    // Checking only the declared tables' row counts leaves a run free to move
+    // extra streams the cell never claimed — which makes its timing
+    // incomparable with a competitor arm that moved only the declared set,
+    // while every row count still passes.
+    let delivered: BTreeSet<&str> = report
+        .get("tables")
+        .and_then(serde_json::Value::as_object)
+        .map(|t| t.keys().map(String::as_str).collect())
+        .unwrap_or_default();
+    let declared: BTreeSet<&str> = verify.keys().map(String::as_str).collect();
+    let surplus: Vec<&str> = delivered.difference(&declared).copied().collect();
+    let missing: Vec<&str> = declared.difference(&delivered).copied().collect();
+    if !surplus.is_empty() || !missing.is_empty() {
+        let mut detail = Vec::new();
+        if !surplus.is_empty() {
+            detail.push(format!(
+                "delivered but not declared: {}",
+                surplus.join(", ")
+            ));
+        }
+        if !missing.is_empty() {
+            detail.push(format!(
+                "declared but not delivered: {}",
+                missing.join(", ")
+            ));
+        }
         return Err(BenchError(format!(
-            "cell `{}`: verify FAILED — table `{}` has {actual} rows, expected {}",
-            cell.id, verify.table, verify.expected_rows
+            "cell `{}`: verify FAILED — the run's tables do not match the cell's \
+             declared set ({}); a cell that moves undeclared tables is not comparable \
+             with its competitor arms",
+            cell.id,
+            detail.join("; ")
         )));
     }
-    Ok(Some(VerifyOutcome {
-        table: verify.table.clone(),
-        expected_rows: verify.expected_rows,
-        actual_rows: actual,
-    }))
+    let mut outcome = VerifyOutcome::new();
+    for (table, expected) in verify {
+        let actual = report_table_rows(report, table);
+        if actual != *expected {
+            return Err(BenchError(format!(
+                "cell `{}`: verify FAILED — table `{table}` has {actual} rows, expected {expected}",
+                cell.id
+            )));
+        }
+        outcome.insert(table.clone(), actual);
+    }
+    Ok(Some(outcome))
 }
 
 /// Merge every fixture's recorded dataset identity into one map for the
@@ -438,5 +472,86 @@ mod tests {
         assert_eq!(report_totals(&report), (30, 150));
         assert_eq!(report_table_rows(&report, "events"), 10);
         assert_eq!(report_table_rows(&report, "ghost"), 0);
+    }
+
+    /// Build a cell whose only interesting property is its declared table set,
+    /// paired with one sample carrying a RunReport of the delivered set.
+    fn cell_and_sample(
+        declared: &[(&str, u64)],
+        delivered: &[(&str, u64)],
+    ) -> (Cell, Vec<Sample<RunDetail>>) {
+        let toml = format!(
+            "[[cell]]\nid='c'\nfixtures=['f']\npipeline='p'\n[cell.verify]\n{}\n",
+            declared
+                .iter()
+                .map(|(t, r)| format!("{t} = {r}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        let file: toml::Value = toml::from_str(&toml).unwrap();
+        let cell: Cell = file["cell"][0].clone().try_into().unwrap();
+        let tables: serde_json::Map<String, serde_json::Value> = delivered
+            .iter()
+            .map(|(t, r)| ((*t).to_owned(), serde_json::json!({"rows": r, "bytes": 1})))
+            .collect();
+        let sample = Sample {
+            wall_ms: 1.0,
+            detail: RunDetail {
+                report: Some(serde_json::json!({ "tables": tables })),
+                usage: None,
+                clock_ms: 1.0,
+            },
+        };
+        (cell, vec![sample])
+    }
+
+    /// The defect this check exists for: the keep-in-sync cell verified one
+    /// table's row count while the run also delivered two others, so its timing
+    /// covered three times the rows its competitor arm moved and every recorded
+    /// count still passed.
+    #[test]
+    fn a_run_delivering_undeclared_tables_fails_naming_them() {
+        let (cell, samples) = cell_and_sample(
+            &[("events_merged", 1_000_000)],
+            &[
+                ("events_merged", 1_000_000),
+                ("events", 1_000_000),
+                ("events_v2", 1_000_000),
+            ],
+        );
+        let err = verify_outcome(&cell, &samples)
+            .expect_err("undeclared tables make the arm incomparable")
+            .to_string();
+        assert!(err.contains("delivered but not declared"), "{err}");
+        assert!(err.contains("events") && err.contains("events_v2"), "{err}");
+    }
+
+    #[test]
+    fn a_declared_table_the_run_never_landed_fails_too() {
+        let (cell, samples) = cell_and_sample(
+            &[("events", 200_000), ("events__tags", 400_000)],
+            &[("events", 200_000)],
+        );
+        let err = verify_outcome(&cell, &samples).unwrap_err().to_string();
+        assert!(err.contains("declared but not delivered"), "{err}");
+        assert!(err.contains("events__tags"), "{err}");
+    }
+
+    #[test]
+    fn a_matching_set_records_every_declared_table() {
+        let (cell, samples) = cell_and_sample(
+            &[("events", 200_000), ("events__tags", 400_000)],
+            &[("events", 200_000), ("events__tags", 400_000)],
+        );
+        let outcome = verify_outcome(&cell, &samples).unwrap().unwrap();
+        assert_eq!(outcome["events"], 200_000);
+        assert_eq!(outcome["events__tags"], 400_000);
+    }
+
+    #[test]
+    fn a_matching_set_with_a_wrong_count_still_fails() {
+        let (cell, samples) = cell_and_sample(&[("events", 200_000)], &[("events", 199_999)]);
+        let err = verify_outcome(&cell, &samples).unwrap_err().to_string();
+        assert!(err.contains("199999") && err.contains("200000"), "{err}");
     }
 }

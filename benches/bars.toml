@@ -37,3 +37,15 @@ kind = "ratio_vs"
 competitor = "dlt"
 min_ratio = 45.0
 policy = "RESULTS.md policy log 2026-07-25 (bars): floor 60.1x (this session), 61.1x (2-way session same day)"
+
+# Set 2026-07-25 after the cell's scope was corrected (feature 019 US1): the
+# source now delivers only its declared query stream, so the cell measures the
+# 1M rows it claims instead of 3M. The superseded 0.8x "loss" is withdrawn in
+# the policy log. This bar rests on ONE recorded session, unlike the three
+# above; a second session may tighten it.
+[[bar]]
+cell = "pg-to-pg-dedup-1m"
+kind = "ratio_vs"
+competitor = "dlt"
+min_ratio = 2.0
+policy = "RESULTS.md policy log 2026-07-25 (dedup cell correction): floor 2.5x (corrected session, single session)"

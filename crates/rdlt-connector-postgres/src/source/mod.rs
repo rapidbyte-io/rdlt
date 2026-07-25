@@ -408,6 +408,28 @@ impl Source for PostgresSource {
                 .filter(|n| self.config.query_config(n).is_none())
                 .collect(),
         };
+        // Discovery alongside declared queries is legitimate but rarely
+        // intended: the run delivers every table in the schema IN ADDITION to
+        // the queries, which multiplies the volume moved without changing what
+        // the queries produce. Announce it with the remedy, since the extra
+        // streams are otherwise only visible in the row totals.
+        if self.config.tables.is_none() && !self.config.queries.is_empty() {
+            let discovered: Vec<&str> = names
+                .iter()
+                .copied()
+                .filter(|n| self.config.query_config(n).is_none())
+                .collect();
+            if !discovered.is_empty() {
+                tracing::warn!(
+                    schema = %self.config.schema,
+                    count = discovered.len(),
+                    tables = %discovered.join(", "),
+                    "`tables` is not set, so schema discovery adds these tables to the \
+                     declared queries; set `tables: []` to deliver only the queries, or \
+                     list the tables to read"
+                );
+            }
+        }
         names.extend(self.config.queries.iter().map(|q| q.name.as_str()));
         let cdc_names = self.cdc_tables(reflected);
         let mut specs = Vec::with_capacity(names.len());

@@ -27,12 +27,11 @@ pub enum Timing {
     SelfJsonSeconds,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Verify {
-    pub table: String,
-    pub expected_rows: u64,
-}
+/// A cell's declared destination shape: every table it expects, with the row
+/// count each must hold. The map IS the claim — a run that lands a table absent
+/// from it moved rows the cell never said it would, which makes its timing
+/// incomparable with a competitor arm that moved only the declared set.
+pub type Verify = std::collections::BTreeMap<String, u64>;
 
 /// One competitor invocation for this cell: which variant, and the argv it
 /// runs in-container (with `{{conn}}`-style substitutions).
@@ -118,6 +117,18 @@ impl Cell {
         if self.fixtures.is_empty() {
             return Err(BenchError(format!(
                 "{}: cell `{}` names no fixtures",
+                file.display(),
+                self.id
+            )));
+        }
+        // A pipeline cell must declare what its destination should hold, or the
+        // run has nothing to check its delivered tables against and extra
+        // streams pass unnoticed. Rejected at LOAD time so a mis-declared cell
+        // never reaches a container.
+        if self.pipeline.is_some() && self.verify.as_ref().is_none_or(Verify::is_empty) {
+            return Err(BenchError(format!(
+                "{}: cell `{}` runs a pipeline but declares no `[cell.verify]` entries — \
+                 add one `<table> = <rows>` line per table the run must land",
                 file.display(),
                 self.id
             )));
@@ -266,6 +277,8 @@ warmups = 0
 runs = 3
 [cell.workload]
 rows = 1000
+[cell.verify]
+events = 1000
 "#;
 
     #[test]
@@ -279,7 +292,7 @@ rows = 1000
         assert_eq!(c.workload["rows"], toml::Value::Integer(1000));
         // defaults where unstated
         assert!(c.competitors.is_empty());
-        assert!(c.verify.is_none());
+        assert_eq!(c.verify.as_ref().unwrap()["events"], 1000);
     }
 
     #[test]
@@ -307,7 +320,7 @@ rows = 1000
 
     #[test]
     fn duplicate_id_names_both_files() {
-        let one = "[[cell]]\nid='dup'\nfixtures=['f']\npipeline='p'\n";
+        let one = "[[cell]]\nid='dup'\nfixtures=['f']\npipeline='p'\n[cell.verify]\nt=1\n";
         let dir = dir_with(&[("a.toml", one), ("b.toml", one)]);
         let err = load_cells(dir.path()).unwrap_err().to_string();
         assert!(err.contains("duplicate cell id `dup`"), "{err}");
