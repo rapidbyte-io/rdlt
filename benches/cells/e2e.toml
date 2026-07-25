@@ -45,14 +45,14 @@ note = "Postgres → Parquet on S3, 1M×12 rows, full replace — relational ext
 # compared a compressed artifact against an uncompressed one and reported it as
 # parity. Untimed, run after the timed runs, and recorded as ABSENT (never
 # zero) if it cannot reach the store.
-artifact_bytes_sh = "python3 fixtures/s3_prefix_bytes.py http://127.0.0.1:19110 lake rdlt/ rdlt-bench rdlt-bench-secret"
+artifact_bytes_sh = "python3 {{benches}}/fixtures/s3_prefix_bytes.py http://127.0.0.1:19110 lake rdlt/ rdlt-bench rdlt-bench-secret"
 [cell.verify]
 events = 1_000_000
 [[cell.competitor]]
 variant = "dlt"
 args = ["pipeline_pg_s3parquet.py", "{{conn}}", "connectorx", "events", "http://127.0.0.1:19110", "rdlt-bench", "rdlt-bench-secret", "lake", "dlt"]
 network = "host"
-artifact_bytes_sh = "python3 fixtures/s3_prefix_bytes.py http://127.0.0.1:19110 lake dlt/ rdlt-bench rdlt-bench-secret"
+artifact_bytes_sh = "python3 {{benches}}/fixtures/s3_prefix_bytes.py http://127.0.0.1:19110 lake dlt/ rdlt-bench rdlt-bench-secret"
 [[cell.competitor]]
 variant = "dlt-pyarrow"
 # Its OWN prefix. Both dlt variants used to write to lake/dlt/, so the two arms
@@ -62,13 +62,13 @@ variant = "dlt-pyarrow"
 # mean anything until the arms stopped overwriting each other.
 args = ["pipeline_pg_s3parquet.py", "{{conn}}", "pyarrow", "events", "http://127.0.0.1:19110", "rdlt-bench", "rdlt-bench-secret", "lake", "dlt-pyarrow"]
 network = "host"
-artifact_bytes_sh = "python3 fixtures/s3_prefix_bytes.py http://127.0.0.1:19110 lake dlt-pyarrow/ rdlt-bench rdlt-bench-secret"
+artifact_bytes_sh = "python3 {{benches}}/fixtures/s3_prefix_bytes.py http://127.0.0.1:19110 lake dlt-pyarrow/ rdlt-bench rdlt-bench-secret"
 # Airbyte: pg source -> S3 (parquet) destination at lake/airbyte/. Driver cleans
 # the lake prefix per run (the fixture reset does not).
 [[cell.competitor]]
 variant = "airbyte"
 args = ["pg-to-s3parquet-1m", "1000000"]
-artifact_bytes_sh = "python3 fixtures/s3_prefix_bytes.py http://127.0.0.1:19110 lake airbyte/ rdlt-bench rdlt-bench-secret"
+artifact_bytes_sh = "python3 {{benches}}/fixtures/s3_prefix_bytes.py http://127.0.0.1:19110 lake airbyte/ rdlt-bench rdlt-bench-secret"
 
 # ---------------------------------------------------------------------------
 # s3jsonl-to-pg-200k — nested JSONL on S3 → Postgres, 200k records, replace.

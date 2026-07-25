@@ -378,6 +378,79 @@ impl LoadSession for PgSession {
         schema: &TableSchema,
         mode: &WriteMode,
     ) -> Result<(), DestinationError> {
+        // Same discipline as `write`: this runs DDL, and once a unit is open
+        // that DDL joins the unit transaction. A statement failing inside a
+        // transaction poisons the connection until ROLLBACK, so an error here
+        // must abandon the unit rather than leave every later statement
+        // failing with 25P02.
+        match self.ensure_table_inner(schema, mode).await {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                self.rollback_unit().await;
+                Err(e)
+            }
+        }
+    }
+
+
+    async fn write(
+        &mut self,
+        table: &TableName,
+        batch: RecordBatch,
+    ) -> Result<(), DestinationError> {
+        // Every exit from here must leave the connection usable: a statement
+        // that fails mid-transaction poisons it until ROLLBACK, and the engine
+        // may retry a transient failure on this same session.
+        match self.write_inner(table, batch).await {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                self.rollback_unit().await;
+                Err(e)
+            }
+        }
+    }
+
+    async fn commit(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestinationError> {
+        match self.commit_inner(&meta).await {
+            Ok(receipt) => Ok(receipt),
+            Err(e) => {
+                self.rollback_unit().await;
+                Err(e)
+            }
+        }
+    }
+
+    async fn read_state(
+        &mut self,
+        pipeline: &PipelineId,
+    ) -> Result<Option<StateDoc>, DestinationError> {
+        let row = self
+            .client
+            .query_opt(
+                &format!(
+                    "SELECT doc FROM {} WHERE pipeline = $1",
+                    rdlt_connector_sqlcore::names::STATE_TABLE
+                ),
+                &[&pipeline.as_str()],
+            )
+            .await
+            .map_err(transient)?;
+        match row {
+            Some(row) => {
+                let doc: String = row.get(0);
+                Ok(Some(serde_json::from_str(&doc).map_err(fatal)?))
+            }
+            None => Ok(None),
+        }
+    }
+}
+
+impl PgSession {
+    async fn ensure_table_inner(
+        &mut self,
+        schema: &TableSchema,
+        mode: &WriteMode,
+    ) -> Result<(), DestinationError> {
         let previous = self.tables.get(&schema.table).map(|(s, _)| s.clone());
         // Only merge tables get a stage leg. Append and Replace COPY straight
         // into the target inside the unit transaction, so an UNLOGGED twin —
@@ -508,59 +581,6 @@ impl LoadSession for PgSession {
         Ok(())
     }
 
-    async fn write(
-        &mut self,
-        table: &TableName,
-        batch: RecordBatch,
-    ) -> Result<(), DestinationError> {
-        // Every exit from here must leave the connection usable: a statement
-        // that fails mid-transaction poisons it until ROLLBACK, and the engine
-        // may retry a transient failure on this same session.
-        match self.write_inner(table, batch).await {
-            Ok(()) => Ok(()),
-            Err(e) => {
-                self.rollback_unit().await;
-                Err(e)
-            }
-        }
-    }
-
-    async fn commit(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestinationError> {
-        match self.commit_inner(&meta).await {
-            Ok(receipt) => Ok(receipt),
-            Err(e) => {
-                self.rollback_unit().await;
-                Err(e)
-            }
-        }
-    }
-
-    async fn read_state(
-        &mut self,
-        pipeline: &PipelineId,
-    ) -> Result<Option<StateDoc>, DestinationError> {
-        let row = self
-            .client
-            .query_opt(
-                &format!(
-                    "SELECT doc FROM {} WHERE pipeline = $1",
-                    rdlt_connector_sqlcore::names::STATE_TABLE
-                ),
-                &[&pipeline.as_str()],
-            )
-            .await
-            .map_err(transient)?;
-        match row {
-            Some(row) => {
-                let doc: String = row.get(0);
-                Ok(Some(serde_json::from_str(&doc).map_err(fatal)?))
-            }
-            None => Ok(None),
-        }
-    }
-}
-
-impl PgSession {
     async fn write_inner(
         &mut self,
         table: &TableName,
@@ -739,6 +759,36 @@ impl PgSession {
             &self.ctx(replayed, &staged_nonempty, &cleared),
         )
         .map_err(fatal)?;
+
+        // A REDELIVERED unit must be thrown away, not published.
+        //
+        // `replayed` means a receipt for this exact (load_id, commit_seq)
+        // already exists — the original unit committed, and its rows are
+        // already durable in the target. This unit then re-delivered the same
+        // rows: `write` COPYed them straight into the target (or, for merge,
+        // into the stage) inside the transaction that is still open. Committing
+        // now would land them a SECOND time.
+        //
+        // Rolling back discards exactly what this unit wrote — target rows and
+        // staged rows alike, since both went through the one transaction — and
+        // leaves the earlier commit standing. The receipt is returned as
+        // success, because from the caller's side the unit did commit; it just
+        // committed the first time.
+        //
+        // This is the direct-publish path's version of a guarantee the staged
+        // path got structurally: there, redelivered rows landed in a stage the
+        // replay branch truncated without ever publishing, so nothing reached
+        // the target. Writing into the target directly moves that guarantee
+        // from "never published" to "published once, and this attempt is
+        // discarded".
+        //
+        // The single-unit marks are still applied: a full-feed unit whose
+        // outcome the client never learned still counts against the discipline.
+        if replayed {
+            self.rollback_unit().await;
+            self.single_unit_done.extend(script.marks);
+            return Ok(receipt);
+        }
 
         // Narrowed from "before BEGIN" to "before the first publish step":
         // the unit transaction is already open and already holds this unit's

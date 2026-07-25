@@ -111,10 +111,16 @@ pub fn measure_artifact_bytes(
     subs: &BTreeMap<String, String>,
 ) -> Option<u64> {
     let script = substitute(script?, subs);
-    let output = std::process::Command::new("sh")
-        .args(["-c", &script])
-        .output()
-        .ok()?;
+    let output = match std::process::Command::new("sh").args(["-c", &script]).output() {
+        Ok(output) => output,
+        Err(e) => {
+            // The one path that used to be silent. An unspawnable `sh` and a
+            // cell that declared no sizer both produce an absent size, and
+            // without this line they are indistinguishable in the artifact.
+            eprintln!("  {label}: artifact_bytes_sh could not run ({e}) — recording absent");
+            return None;
+        }
+    };
     if !output.status.success() {
         eprintln!(
             "  {label}: artifact_bytes_sh failed ({}) — recording absent, not zero",
