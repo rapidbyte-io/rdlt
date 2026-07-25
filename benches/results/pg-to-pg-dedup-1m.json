@@ -20,26 +20,26 @@
   "workload": {},
   "rdlt": {
     "runs_ms": [
-      4969.176291,
-      4995.859339,
-      4959.616164,
-      5000.356218,
-      5002.809094
+      4817.800731,
+      4937.602637,
+      4778.034707,
+      4859.746297,
+      4819.050758
     ],
-    "median_ms": 4995.859339,
-    "p95_ms": 5002.809094,
+    "median_ms": 4819.050758,
+    "p95_ms": 4937.602637,
     "rows": 1000000,
     "bytes": 198890768,
-    "rows_per_s": 200165.7637142694,
-    "mb_per_s": 37.966845009267395,
+    "rows_per_s": 207509.74625862198,
+    "mb_per_s": 39.35982971273656,
     "cpu": {
-      "mean_util": 0.29983154899893927,
-      "peak_util": 2.0,
-      "user_sys_ms": 1500,
+      "mean_util": 0.09752958074155234,
+      "peak_util": 1.1666666666666667,
+      "user_sys_ms": 470,
       "note": "process TREE sampled at 50ms (root VmHWM exact; tree spikes between polls can be missed; cpu undercounts up to one interval)"
     },
     "rss": {
-      "peak_bytes": 150364160,
+      "peak_bytes": 117215232,
       "note": "process TREE sampled at 50ms (root VmHWM exact; tree spikes between polls can be missed; cpu undercounts up to one interval)"
     }
   },
@@ -47,11 +47,11 @@
     "airbyte": {
       "status": "ok",
       "runs_ms": [
-        45385.26060897857,
-        60434.78073494043,
-        45369.48381504044
+        45376.6820889432,
+        45383.47779400647,
+        60446.679872926325
       ],
-      "median_ms": 45385.26060897857,
+      "median_ms": 45383.47779400647,
       "self_timed": true,
       "cpu": {
         "mean_util": null,
@@ -63,56 +63,56 @@
         "peak_bytes": 24114778112,
         "note": "driver-reported (the module states which system statistic this is)"
       },
-      "ratio_vs_rdlt": 9.084575351167343,
+      "ratio_vs_rdlt": 9.417513961368087,
       "extra": {
-        "sync_s": 44.0
+        "sync_s": 45.0
       }
     },
     "dlt": {
       "status": "ok",
       "runs_ms": [
-        13391.321668052116,
-        12477.62551996857,
-        12456.759214983322,
-        12453.362399945036,
-        12510.323295020498
+        12984.79827598203,
+        12500.822389964014,
+        12759.489106014373,
+        12756.377939949743,
+        12752.537276013754
       ],
-      "median_ms": 12477.62551996857,
+      "median_ms": 12756.377939949743,
       "self_timed": true,
       "cpu": {
-        "mean_util": 0.8656989989801578,
+        "mean_util": 0.8485900727005345,
         "peak_util": null,
-        "user_sys_ms": 21575,
+        "user_sys_ms": 21579,
         "note": "cgroup v2 cpu.stat, last poll before exit"
       },
       "rss": {
-        "peak_bytes": 829140992,
+        "peak_bytes": 815562752,
         "note": "self-reported ru_maxrss — the recorded statistic (bar derivation)"
       },
-      "ratio_vs_rdlt": 2.4975934415451664
+      "ratio_vs_rdlt": 2.6470727494980544
     },
     "dlt-pyarrow": {
       "status": "ok",
       "runs_ms": [
-        20155.431229039095,
-        20301.10352009069,
-        20274.103004019707,
-        20086.221809033304,
-        20061.96167098824
+        21458.660756004974,
+        20509.357549948614,
+        20571.8753420515,
+        20305.94689492136,
+        20583.378176088445
       ],
-      "median_ms": 20155.431229039095,
+      "median_ms": 20571.8753420515,
       "self_timed": true,
       "cpu": {
-        "mean_util": 0.9102227605005421,
+        "mean_util": 0.8879468569282296,
         "peak_util": null,
-        "user_sys_ms": 36093,
+        "user_sys_ms": 35880,
         "note": "cgroup v2 cpu.stat, last poll before exit"
       },
       "rss": {
-        "peak_bytes": 540917760,
+        "peak_bytes": 529768448,
         "note": "self-reported ru_maxrss — the recorded statistic (bar derivation)"
       },
-      "ratio_vs_rdlt": 4.034427284951046
+      "ratio_vs_rdlt": 4.268864632293109
     }
   },
   "verify": {

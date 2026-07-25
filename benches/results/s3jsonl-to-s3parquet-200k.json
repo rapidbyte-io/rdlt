@@ -11,34 +11,34 @@
       "dlt": "dlt 1.29.0"
     },
     "dataset_hashes": {
-      "rustfs:/tmp/.tmpWgOqfD/rows.jsonl": "34e4e3d045b4f35e9c8ac8f1c8bba9af3711c341b21f2a8e72c58a401b27b747"
+      "rustfs:/tmp/.tmpZqnodA/rows.jsonl": "34e4e3d045b4f35e9c8ac8f1c8bba9af3711c341b21f2a8e72c58a401b27b747"
     },
-    "loadavg_at_start": 0.9,
+    "loadavg_at_start": 0.87,
     "quiet_note": null
   },
   "workload": {},
   "rdlt": {
     "runs_ms": [
-      974.0151139999999,
-      958.6750790000001,
-      968.970953,
-      989.398271,
-      968.565428
+      914.055743,
+      905.1214239999999,
+      905.5570349999999,
+      1049.885848,
+      1088.498556
     ],
-    "median_ms": 968.970953,
-    "p95_ms": 989.398271,
+    "median_ms": 914.055743,
+    "p95_ms": 1088.498556,
     "rows": 600000,
     "bytes": 149965184,
-    "rows_per_s": 619213.6081503363,
-    "mb_per_s": 147.5977622374997,
+    "rows_per_s": 656415.108810273,
+    "mb_per_s": 156.4652324884933,
     "cpu": {
-      "mean_util": 0.9085602010564432,
+      "mean_util": 0.7349573369576431,
       "peak_util": 1.6666666666666667,
-      "user_sys_ms": 880,
+      "user_sys_ms": 800,
       "note": "process TREE sampled at 50ms (root VmHWM exact; tree spikes between polls can be missed; cpu undercounts up to one interval)"
     },
     "rss": {
-      "peak_bytes": 222482432,
+      "peak_bytes": 218169344,
       "note": "process TREE sampled at 50ms (root VmHWM exact; tree spikes between polls can be missed; cpu undercounts up to one interval)"
     }
   },
@@ -46,11 +46,11 @@
     "airbyte": {
       "status": "ok",
       "runs_ms": [
-        45418.26815705281,
-        45373.144143028185,
-        45372.265800018795
+        45380.423779948615,
+        45386.78825600073,
+        45381.233253050596
       ],
-      "median_ms": 45373.144143028185,
+      "median_ms": 45381.233253050596,
       "self_timed": true,
       "cpu": {
         "mean_util": null,
@@ -62,7 +62,7 @@
         "peak_bytes": 24114778112,
         "note": "driver-reported (the module states which system statistic this is)"
       },
-      "ratio_vs_rdlt": 46.82611382988297,
+      "ratio_vs_rdlt": 49.64821193957598,
       "extra": {
         "sync_s": 39.0
       }
@@ -70,25 +70,25 @@
     "dlt": {
       "status": "ok",
       "runs_ms": [
-        57552.26016207598,
-        58282.7332529705,
-        58319.8088320205,
-        58144.170167972334,
-        58992.25014902186
+        57733.69731800631,
+        58640.78079210594,
+        57989.19277393725,
+        58112.75781900622,
+        58990.19268003758
       ],
-      "median_ms": 58282.7332529705,
+      "median_ms": 58112.75781900622,
       "self_timed": true,
       "cpu": {
-        "mean_util": 1.0372708335294583,
+        "mean_util": 1.0362148331253282,
         "peak_util": null,
-        "user_sys_ms": 62058,
+        "user_sys_ms": 62029,
         "note": "cgroup v2 cpu.stat, last poll before exit"
       },
       "rss": {
-        "peak_bytes": 257200128,
+        "peak_bytes": 258830336,
         "note": "self-reported ru_maxrss — the recorded statistic (bar derivation)"
       },
-      "ratio_vs_rdlt": 60.149102584059094
+      "ratio_vs_rdlt": 63.576820411713356
     }
   },
   "verify": {

@@ -36,7 +36,7 @@ cell = "s3jsonl-to-s3parquet-200k"
 kind = "ratio_vs"
 competitor = "dlt"
 min_ratio = 45.0
-policy = "RESULTS.md policy log 2026-07-25 (bars): floor 60.1x (this session), 61.1x (2-way session same day). HELD, not re-derived, after feature 019 US7 made rdlt's arm write COMPRESSED parquet — see the note below."
+policy = "RESULTS.md policy log 2026-07-25 (bars): floors 60.1x, 61.1x, and 63.6x (the post-019 session). CONFIRMED by that session — see the note below."
 
 # Why this bar is held rather than re-derived (feature 019 US7, T078).
 #
@@ -59,10 +59,14 @@ policy = "RESULTS.md policy log 2026-07-25 (bars): floor 60.1x (this session), 6
 # encode — so rdlt's WALL, which is what the ratio divides, went DOWN. A ratio
 # floor of 60.1x can only rise.
 #
-# Held rather than re-derived because a bar is derived from a RECORDED session
-# (Principle VIII), and the numbers above are an isolated A/B, not one. The
-# next recorded session should re-derive it; nothing about this is urgent, and
-# the bar is conservative in the meantime.
+# CONFIRMED by the post-019 recorded session: 63.6x, ABOVE the 60.1x floor the
+# bar was derived from. The isolated A/B above predicted the direction and the
+# session bore it out.
+#
+# The bar STAYS at 45.0 rather than tightening toward 63.6x. Two reasons, both
+# policy rather than caution: a bar sits below its cited floor by design, and
+# this cell's spread in the confirming session was +/-20% — the widest of the
+# five. A tighter bar wants a second session at that spread, not one.
 
 # Set 2026-07-25 after the cell's scope was corrected (feature 019 US1): the
 # source now delivers only its declared query stream, so the cell measures the

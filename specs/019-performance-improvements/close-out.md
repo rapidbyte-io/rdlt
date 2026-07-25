@@ -191,7 +191,7 @@ RESULTS.md is regenerated.
 | US4 — COPY encoder | **COMPLETE, one criterion missed** | T036–T047. Encoder instructions **41,331,557 → 24,686,352 (−40.3%)**; on `pg-to-pg-1m`, CPU **0.99 → 0.49 s (−50.5%)**, wall 1.77 → 1.67 s (−5.6%), RSS 119 → 113 MB, voluntary context switches **110,620 → 27,613 (−75.0%)**. Byte identity proven against a fixture captured from the pre-rewrite encoder. **T047's order-of-magnitude context-switch target MISSED at 4.0×** — see D-06. Gate: 196/196 in-crate (incl. live conformance), sweep 23/23 |
 | US5 — full-refresh publish | **COMPLETE** | T048–T058. Server-side statement time **1927.5 → 999.0 ms (−48.2%)**, `INSERT … SELECT` **eliminated** (812.1 → 0 ms); `pg-to-pg-1m` wall **1.71 → 0.79 s (−53.8%)**, RSS 113 → 105 MB. Both acceptance floors cleared (publish ≥40%, wall ≥10%). FR-024 verified by live test, not inspection: same OID, index, check constraint, grant and dependent view all survive. Gate: 654/654 workspace, sweep 23/23 over 2 renamed + 2 new crash points, both golden suites, lint |
 | US6 — shred path | **COMPLETE, one floor missed** | T059–T067. `shred_nested_10k` **347,094,870 → 310,654,653 (−10.5%)**; flagship `s3jsonl-to-s3parquet-200k` CPU **0.81 → 0.77 s (−4.9%)**, wall −2.0%, RSS flat, voluntary context switches −10.4%. Every emitted `_rdlt_id` byte-identical against a corpus captured from the pre-change build. **T067's ≥10% cell-CPU floor MISSED at −4.9%** and **T062 not taken** — see D-12/D-13/D-14. Gate: 659/659 workspace, lint |
-| US7 — output-format configuration | **PARTIAL** | T068–T073, T075–T077 done. Both parquet destinations write snappy by default with a swept dictionary limit, reachable from pipeline YAML; S3 unsigned payload is an explicit opt-in. **Remaining: T079 (needs a recorded session).** Gate: 675/675 workspace, lint |
+| US7 — output-format configuration | **COMPLETE** | T068–T073, T075–T077 done. Both parquet destinations write snappy by default with a swept dictionary limit, reachable from pipeline YAML; S3 unsigned payload is an explicit opt-in. T079 recorded from the session below: rdlt writes **78.4 MB** against dlt's **70.3 MB** on `pg-to-s3parquet-1m` — was 210.0 MB vs 73.7 MB — while running 1.7x faster. Gate: 677/677 workspace, lint |
 | US8 — small wins | **COMPLETE, one item measured away** | T081–T084. `SET LOCAL work_mem` −1.2% wall on the dedup cell; dedup materialized once per publish, **−7.4% median** server-side on a purpose-built scd2 workload, DuckDB byte-identical. **T080 NOT TAKEN** (+2.9% instructions, see D-21). Gate: 675/675, sweep 23/23, 12 golden pins |
 | US9 — parallelism ceiling | **RE-SCOPED ON EVIDENCE (T088)** | T085–T088 measured; T089–T095 NOT built. Single-pipeline throughput is now 1.19M rows/s (3.3x the rate the 3.5x target was derived from), 8 concurrent pipelines scale 8.43x, and the story's lever addresses 22.2% of the merge cell — Amdahl-bounded at 1.29x against SC-005's required 1.5x. See the US9 section above |
 
@@ -1051,6 +1051,64 @@ are near-identical today, and that is real drift surface. But T068's constraint
 is explicit — the SPI carries no parquet dependency — and neither connector may
 depend on the other, so the only shared home would be a new crate existing to
 hold forty lines of `match`. Recorded as a judgment, not an oversight.
+
+## The recorded session (T098/T099/T079)
+
+Full three-way matrix on the merged tree, 2026-07-25, airbyte 2.1.1 / dlt
+1.29.0, quiet guard passing. **All four bars PASS.**
+
+| cell | rdlt median | vs dlt | vs dlt-pyarrow | vs airbyte | bar |
+|---|---:|---:|---:|---:|:--|
+| `pg-to-pg-1m` | 778.8 ms (±3%) | **13.2x** | 22.2x | 77.6x | ≥4x PASS |
+| `pg-to-s3parquet-1m` | 999.4 ms (±1%) | 1.7x | 10.9x | 45.4x | unbarred |
+| `s3jsonl-to-pg-200k` | 665.2 ms (±1%) | **95.0x** | — | 68.2x | ≥40x PASS |
+| `s3jsonl-to-s3parquet-200k` | 914.1 ms (±20%) | **63.6x** | — | 49.6x | ≥45x PASS |
+| `pg-to-pg-dedup-1m` | 4.82 s (±3%) | **2.6x** | 4.3x | 9.4x | ≥2x PASS |
+
+**Against the recorded 018 floors**, every cell moved and none regressed:
+
+| cell | 018 | now |
+|---|---:|---:|
+| `pg-to-pg-1m` | 5.3x | 13.2x |
+| `pg-to-s3parquet-1m` | 1.0x (parity) | 1.7x |
+| `s3jsonl-to-pg-200k` | 55.3x | 95.0x |
+| `s3jsonl-to-s3parquet-200k` | 60.1x | 63.6x |
+| `pg-to-pg-dedup-1m` | **0.9x — a LOSS** | **2.6x** |
+
+**The dedup cell is the feature's whole thesis in one number.** PERF_ANALYSIS
+predicted 2.6x once the cell stopped moving 3M rows it never declared. The
+session returns 2.6x, from a recorded 0.9x loss.
+
+**T079 — the parquet cell now compares like with like.** Bytes written, from
+the per-arm sizer (T074), all four arms reporting:
+
+| arm | median | bytes |
+|---|---:|---:|
+| rdlt | 999 ms | **78.4 MB** |
+| dlt | 1,683 ms | 70.3 MB |
+| dlt-pyarrow | 10,858 ms | 91.3 MB |
+| airbyte | 45,373 ms | 168.4 MB |
+
+Before this feature rdlt wrote **210.0 MB** against dlt's 73.7 MB. The cell was
+reporting parity while timing a 210 MB uncompressed artifact against a
+compressed one. rdlt is now within 12% of dlt's output size AND 1.7x faster.
+SC-007 satisfied, and visible in the artifact rather than only in prose.
+
+**Both delivered-vs-declared corrections held on a real session**, not a
+fixture: `s3jsonl-to-pg-200k` and `s3jsonl-to-s3parquet-200k` each verified
+`events` **and** `events__tags = 400,000`, the streams they used to land
+silently.
+
+**T099 — the bars are re-derived and unchanged.** Each already sits below its
+session floor, which is the policy. The parquet bar's D-20 note is now
+confirmed rather than predicted: 63.6x against the 60.1x floor it was derived
+from — the direction my isolated A/B claimed, borne out. It stays at 45.0
+because that cell's spread was ±20%, the widest of the five; tightening wants
+a second session at that spread.
+
+`pg-to-s3parquet-1m` remains deliberately UNBARRED at 1.7x. It is now a win
+rather than parity, but 004's governance grants bars, and one session on a
+newly-comparable cell is not the basis for one.
 
 ## Deviations
 
