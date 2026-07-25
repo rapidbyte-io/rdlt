@@ -19,8 +19,8 @@ use rdlt_connector::{
 };
 use rdlt_connector_sqlcore::plan::{self as sqlplan, IndexSpec, TableFacts, scope_replace_sql};
 use rdlt_connector_sqlcore::{
-    CommitCtx, DestOptions, MergeDialect, MergeStrategy, Step, build_merge_plan, commit_script,
-    insert_select_sql, render_arm, staged_probe_targets,
+    CommitCtx, DestOptions, FullLoadPublish, MergeDialect, MergeStrategy, Step, build_merge_plan,
+    commit_script, insert_select_sql, render_arm, staged_probe_targets,
 };
 
 use super::dialect::DuckDialect;
@@ -420,6 +420,17 @@ impl LoadSession for DuckDbSession {
                     load_committed_before,
                     single_unit_done: &single_unit_done,
                     staged_nonempty: &staged_nonempty_set,
+                    // DuckDB stays STAGED. Direct-to-target needs the writes
+                    // and the clear inside one transaction the session holds
+                    // open across `write` calls; this session appends through
+                    // an Appender opened per write instead, so the guarantee
+                    // is not available here without a separate redesign.
+                    // Recorded as a deferral, not an oversight — the emitted
+                    // program is byte-identical to before this option existed.
+                    full_load_publish: FullLoadPublish::Staged,
+                    // Unused on the staged path: the planner emits ClearTarget
+                    // itself, inside the publish transaction.
+                    cleared_targets: &BTreeSet::new(),
                 },
             )
             .map_err(fatal)?;

@@ -31,8 +31,11 @@ use crate::plan::{
 /// SQL — the text is still produced through the dialect seam at execution.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Step {
-    /// Clear a Replace target before its insert — emitted only for the FIRST
-    /// commit unit of a load (durable once-per-load guard).
+    /// Clear a Replace target before its rows land — once per (load, target).
+    /// On the staged path the planner emits it in the publish transaction,
+    /// ahead of that target's `InsertSelect`; on the direct path
+    /// [`prepare_target`] emits it as the unit transaction's first statement,
+    /// ahead of the first `COPY` into the target.
     ClearTarget { table: TableName },
     /// Append/Replace publish: by-name `INSERT … SELECT` of the staged rows.
     InsertSelect { table: TableName },
@@ -67,17 +70,85 @@ pub enum MergeArm {
     Scd2(Scd2Options),
 }
 
+/// How a destination lands FULL-LOAD rows — the Append and Replace modes.
+/// Merge is unaffected either way: it genuinely needs the stage, because its
+/// arms join delivered rows against the target.
+///
+/// This is a property of the DESTINATION, not user configuration: a driver
+/// picks the one its engine supports and passes it at every planning call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum FullLoadPublish {
+    /// Rows land in a stage table; the publish transaction moves them into the
+    /// target with `INSERT … SELECT`. Every row is therefore written twice.
+    Staged,
+    /// Rows land in the target directly, inside the unit transaction. The
+    /// target is cleared (Replace only) as that transaction's first statement,
+    /// so readers still see the old contents until the unit commits.
+    DirectToTarget,
+}
+
 /// The transaction facts a destination gathers before planning: whether this
 /// exact `(load_id, commit_seq)` already committed, whether any unit of this
 /// load committed (the Replace once-per-load guard), which tables the
-/// single-unit discipline has already counted this load, and which full-feed
-/// tables staged a non-empty unit (see [`staged_probe_targets`]).
+/// single-unit discipline has already counted this load, which full-feed
+/// tables staged a non-empty unit (see [`staged_probe_targets`]), how the
+/// destination lands full-load rows, and which targets THIS load has already
+/// cleared.
+///
+/// `load_committed_before` and `cleared_targets` are the two halves of one
+/// guard, and both are needed: the first is durable (read from the receipt log,
+/// so it survives a crash), the second is in-process (so the second, third and
+/// nth write of a still-running load does not re-clear what the first already
+/// cleared). Neither implies the other.
 #[derive(Debug, Clone, Copy)]
 pub struct CommitCtx<'a> {
     pub replayed: bool,
     pub load_committed_before: bool,
     pub single_unit_done: &'a BTreeSet<TableName>,
     pub staged_nonempty: &'a BTreeSet<TableName>,
+    pub full_load_publish: FullLoadPublish,
+    pub cleared_targets: &'a BTreeSet<TableName>,
+}
+
+impl CommitCtx<'_> {
+    /// Whether `table` still round-trips through a stage table. Merge always
+    /// does; Append and Replace do only on the staged publish path.
+    fn stages(&self, mode: &WriteMode) -> bool {
+        matches!(mode, WriteMode::Merge { .. })
+            || self.full_load_publish == FullLoadPublish::Staged
+    }
+}
+
+/// What must run against `table` before the FIRST row of this unit is written
+/// into it — the direct-to-target counterpart of the publish steps, hoisted to
+/// write time because by commit time the rows are already there.
+///
+/// Empty for every table that still stages, for Append (which never clears),
+/// and for a Replace target this load has already cleared. When it is not
+/// empty it is `ClearTarget`, and the caller MUST run it inside the same
+/// transaction as the writes that follow: outside one, a crash between the
+/// clear and the rows would leave the target empty.
+pub fn prepare_target(
+    tables: &BTreeMap<TableName, (TableSchema, WriteMode)>,
+    ctx: &CommitCtx<'_>,
+    table: &TableName,
+) -> Vec<Step> {
+    let Some((_, mode)) = tables.get(table) else {
+        return Vec::new();
+    };
+    if ctx.stages(mode) || !matches!(mode, WriteMode::Replace) {
+        return Vec::new();
+    }
+    // Once per (load, target): durably guarded by the receipt log so a
+    // recovery session never re-clears rows an earlier unit published, and
+    // in-process guarded so later units of a live load do not either.
+    if ctx.load_committed_before || ctx.cleared_targets.contains(table) {
+        return Vec::new();
+    }
+    vec![Step::ClearTarget {
+        table: table.clone(),
+    }]
 }
 
 /// The planner's output: the ordered in-transaction step program, plus the
@@ -214,10 +285,12 @@ pub fn commit_script(
                 marks.push(table.clone());
             }
         }
-        for table in tables.keys() {
-            steps.push(Step::TruncateStage {
-                table: table.clone(),
-            });
+        for (table, (_, mode)) in tables {
+            if ctx.stages(mode) {
+                steps.push(Step::TruncateStage {
+                    table: table.clone(),
+                });
+            }
         }
         return Ok(CommitScript { steps, marks });
     }
@@ -230,6 +303,12 @@ pub fn commit_script(
         // table — merge (if requested) goes by key.
         let has_identity = schema.columns.iter().any(|c| c.name == system_columns::ID);
         match mode {
+            // Append and Replace publish nothing here on the direct path: the
+            // rows are already in the target and the clear (Replace only)
+            // happened as the unit transaction's first statement, via
+            // `prepare_target`. See `FullLoadPublish`.
+            WriteMode::Append if !ctx.stages(mode) => {}
+            WriteMode::Replace if !ctx.stages(mode) => {}
             WriteMode::Append => steps.push(Step::InsertSelect {
                 table: table.clone(),
             }),
@@ -289,11 +368,14 @@ pub fn commit_script(
         }
     }
     // Truncate stages only after ALL tables published: child-table merges read
-    // the ROOT's stage for their delete-by-root-id subquery.
-    for table in tables.keys() {
-        steps.push(Step::TruncateStage {
-            table: table.clone(),
-        });
+    // the ROOT's stage for their delete-by-root-id subquery. Tables that never
+    // staged have no stage to truncate.
+    for (table, (_, mode)) in tables {
+        if ctx.stages(mode) {
+            steps.push(Step::TruncateStage {
+                table: table.clone(),
+            });
+        }
     }
     steps.push(Step::UpsertState);
     steps.push(Step::InsertReceipt);
@@ -394,6 +476,9 @@ mod tests {
         }
     }
 
+    /// No target cleared yet — the state every staged-path pin assumes.
+    static NO_CLEARED: BTreeSet<TableName> = BTreeSet::new();
+
     fn ctx<'a>(
         replayed: bool,
         load_committed_before: bool,
@@ -405,6 +490,23 @@ mod tests {
             load_committed_before,
             single_unit_done: done,
             staged_nonempty: staged,
+            full_load_publish: FullLoadPublish::Staged,
+            cleared_targets: &NO_CLEARED,
+        }
+    }
+
+    /// The direct-to-target counterpart of [`ctx`].
+    fn direct_ctx<'a>(
+        replayed: bool,
+        load_committed_before: bool,
+        done: &'a BTreeSet<TableName>,
+        staged: &'a BTreeSet<TableName>,
+        cleared: &'a BTreeSet<TableName>,
+    ) -> CommitCtx<'a> {
+        CommitCtx {
+            full_load_publish: FullLoadPublish::DirectToTarget,
+            cleared_targets: cleared,
+            ..ctx(replayed, load_committed_before, done, staged)
         }
     }
 
@@ -414,6 +516,148 @@ mod tests {
 
     fn empty() -> BTreeSet<TableName> {
         BTreeSet::new()
+    }
+
+    // ---- Direct-to-target pins (feature 019 US5). ADDITIVE: every staged pin
+    // above keeps its exact expected program, because a destination that
+    // stages is unaffected by this option existing. ----
+
+    #[test]
+    fn pin_direct_append_publishes_nothing() {
+        let tbls = tables(vec![("events", keyed_schema("events"), WriteMode::Append)]);
+        let opts = DestOptions::default();
+        let (done, staged, cleared) = (empty(), empty(), empty());
+        let script =
+            commit_script(&tbls, &opts, &direct_ctx(false, false, &done, &staged, &cleared))
+                .unwrap();
+        // The rows are already in the target and there is no stage to
+        // truncate; only the whole-unit state + receipt remain.
+        assert_eq!(script.steps, vec![Step::UpsertState, Step::InsertReceipt]);
+        assert!(script.marks.is_empty());
+    }
+
+    #[test]
+    fn pin_direct_replace_clears_at_write_not_at_publish() {
+        let tbls = tables(vec![("events", keyed_schema("events"), WriteMode::Replace)]);
+        let opts = DestOptions::default();
+        let (done, staged, cleared) = (empty(), empty(), empty());
+        let ctx = direct_ctx(false, false, &done, &staged, &cleared);
+
+        // The clear is planned for the FIRST write of the load…
+        assert_eq!(
+            prepare_target(&tbls, &ctx, &t("events")),
+            vec![Step::ClearTarget { table: t("events") }]
+        );
+        // …and therefore not for the publish, which carries no data step.
+        let script = commit_script(&tbls, &opts, &ctx).unwrap();
+        assert_eq!(script.steps, vec![Step::UpsertState, Step::InsertReceipt]);
+    }
+
+    /// The two halves of the once-per-load guard, each sufficient on its own.
+    #[test]
+    fn pin_direct_replace_clears_exactly_once_per_load() {
+        let tbls = tables(vec![("events", keyed_schema("events"), WriteMode::Replace)]);
+        let (done, staged) = (empty(), empty());
+        let cleared_none = empty();
+        let cleared_events: BTreeSet<TableName> = [t("events")].into_iter().collect();
+
+        // In-process half: this load already cleared it in an earlier write.
+        assert!(
+            prepare_target(
+                &tbls,
+                &direct_ctx(false, false, &done, &staged, &cleared_events),
+                &t("events")
+            )
+            .is_empty()
+        );
+        // Durable half: an earlier unit of this load committed, so a recovery
+        // session with fresh memory still must not re-clear.
+        assert!(
+            prepare_target(
+                &tbls,
+                &direct_ctx(false, true, &done, &staged, &cleared_none),
+                &t("events")
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn pin_direct_append_never_clears() {
+        let tbls = tables(vec![("events", keyed_schema("events"), WriteMode::Append)]);
+        let (done, staged, cleared) = (empty(), empty(), empty());
+        assert!(
+            prepare_target(
+                &tbls,
+                &direct_ctx(false, false, &done, &staged, &cleared),
+                &t("events")
+            )
+            .is_empty()
+        );
+    }
+
+    /// Merge is untouched by the option: it stages either way, so its program
+    /// and its stage truncation are identical on both paths.
+    #[test]
+    fn pin_direct_merge_is_identical_to_staged() {
+        let tbls = tables(vec![("events", keyed_schema("events"), merge(&["id"]))]);
+        let opts = DestOptions::default();
+        let (done, staged, cleared) = (empty(), empty(), empty());
+        let direct =
+            commit_script(&tbls, &opts, &direct_ctx(false, false, &done, &staged, &cleared))
+                .unwrap();
+        let stagedd = commit_script(&tbls, &opts, &ctx(false, false, &done, &staged)).unwrap();
+        assert_eq!(direct.steps, stagedd.steps);
+        assert!(
+            prepare_target(
+                &tbls,
+                &direct_ctx(false, false, &done, &staged, &cleared),
+                &t("events")
+            )
+            .is_empty(),
+            "a merge table has nothing to prepare — it stages"
+        );
+    }
+
+    /// A mixed session truncates only the stages that exist.
+    #[test]
+    fn pin_direct_mixed_truncates_only_merge_stages() {
+        let tbls = tables(vec![
+            ("evt", keyed_schema("evt"), WriteMode::Replace),
+            ("usr", keyed_schema("usr"), merge(&["id"])),
+        ]);
+        let opts = DestOptions::default();
+        let (done, staged, cleared) = (empty(), empty(), empty());
+        let script =
+            commit_script(&tbls, &opts, &direct_ctx(false, false, &done, &staged, &cleared))
+                .unwrap();
+        assert_eq!(
+            script.steps,
+            vec![
+                Step::MergeArm {
+                    table: t("usr"),
+                    arm: MergeArm::KeyedDeleteInsert,
+                },
+                Step::TruncateStage { table: t("usr") },
+                Step::UpsertState,
+                Step::InsertReceipt,
+            ]
+        );
+    }
+
+    /// A REPLAYED unit truncates only real stages too.
+    #[test]
+    fn pin_direct_replay_truncates_only_merge_stages() {
+        let tbls = tables(vec![
+            ("evt", keyed_schema("evt"), WriteMode::Replace),
+            ("usr", keyed_schema("usr"), merge(&["id"])),
+        ]);
+        let opts = DestOptions::default();
+        let (done, staged, cleared) = (empty(), empty(), empty());
+        let script =
+            commit_script(&tbls, &opts, &direct_ctx(true, false, &done, &staged, &cleared))
+                .unwrap();
+        assert_eq!(script.steps, vec![Step::TruncateStage { table: t("usr") }]);
     }
 
     #[test]

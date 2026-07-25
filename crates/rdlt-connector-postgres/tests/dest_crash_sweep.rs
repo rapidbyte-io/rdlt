@@ -72,9 +72,33 @@ async fn attempt(
 fn registry_is_pinned() {
     let mut registry: Vec<&str> = rdlt_connector_postgres::dest::FAIL_POINTS.to_vec();
     registry.sort_unstable();
-    let mut expected = vec!["pg.stage.copy", "pg.publish.begin", "pg.tx.commit"];
+    let mut expected = vec![
+        "pg.unit.begin",
+        "pg.target.clear",
+        "pg.unit.write",
+        "pg.publish.begin",
+        "pg.tx.commit",
+    ];
     expected.sort_unstable();
     assert_eq!(registry, expected, "update BOTH the const and this list");
+}
+
+/// Which registered points a write mode can actually reach.
+///
+/// `pg.target.clear` brackets the TRUNCATE that precedes a Replace target's
+/// first direct write. Append never clears, and Merge does not write the
+/// target at all — it stages and publishes through merge arms — so neither can
+/// reach it. Every other point sits on the unit path all three modes share.
+///
+/// Encoding this keeps the anti-vacuousness pins honest in both directions: a
+/// dead `crash_point!` site still fails the pin, and a point is not demanded
+/// from a mode whose code path cannot contain it.
+fn reachable(mode: &str) -> Vec<&'static str> {
+    rdlt_connector_postgres::dest::FAIL_POINTS
+        .iter()
+        .copied()
+        .filter(|point| *point != "pg.target.clear" || mode == "replace")
+        .collect()
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -137,11 +161,10 @@ async fn sweep_postgres_destination() {
     // Anti-vacuousness pin (005 review): every registered point must have
     // failed at least one armed attempt in ALL THREE modes — a dead crash_point!
     // site fails here instead of passing silently.
-    let expected: std::collections::BTreeSet<(&str, &str)> =
-        rdlt_connector_postgres::dest::FAIL_POINTS
-            .iter()
-            .flat_map(|&p| [(p, "append"), (p, "replace"), (p, "merge")])
-            .collect();
+    let expected: std::collections::BTreeSet<(&str, &str)> = ["append", "replace", "merge"]
+        .into_iter()
+        .flat_map(|mode| reachable(mode).into_iter().map(move |p| (p, mode)))
+        .collect();
     assert_eq!(
         fired, expected,
         "armed-fire pin diverged — a missing entry means a crash_point! site went dead"
@@ -290,11 +313,10 @@ async fn sweep_postgres_destination_keyed_structured_merge() {
         }
     }
     // Anti-vacuousness: every registered point fires under BOTH strategy arms.
-    let expected: std::collections::BTreeSet<(&str, &str)> =
-        rdlt_connector_postgres::dest::FAIL_POINTS
-            .iter()
-            .flat_map(|&p| [(p, "di"), (p, "up")])
-            .collect();
+    let expected: std::collections::BTreeSet<(&str, &str)> = ["di", "up"]
+        .into_iter()
+        .flat_map(|arm| reachable("merge").into_iter().map(move |p| (p, arm)))
+        .collect();
     assert_eq!(
         fired, expected,
         "keyed-merge armed-fire pin diverged — a missing (point, strategy) means \
@@ -468,10 +490,7 @@ async fn sweep_postgres_destination_refined_merge() {
             );
         }
     }
-    let expected: std::collections::BTreeSet<&str> = rdlt_connector_postgres::dest::FAIL_POINTS
-        .iter()
-        .copied()
-        .collect();
+    let expected: std::collections::BTreeSet<&str> = reachable("merge").into_iter().collect();
     assert_eq!(
         fired, expected,
         "refined-merge armed-fire pin diverged — a missing point means the \

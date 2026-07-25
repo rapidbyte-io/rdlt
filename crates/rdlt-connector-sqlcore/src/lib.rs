@@ -22,6 +22,6 @@ pub use options::{
 };
 pub use plan::{HardDelete, MergeCtx, MergePlan, column_list, root_of};
 pub use protocol::{
-    CommitCtx, CommitError, CommitScript, MergeArm, Step, build_merge_plan, commit_script,
-    insert_select_sql, render_arm, staged_probe_targets,
+    CommitCtx, CommitError, CommitScript, FullLoadPublish, MergeArm, Step, build_merge_plan,
+    commit_script, insert_select_sql, prepare_target, render_arm, staged_probe_targets,
 };

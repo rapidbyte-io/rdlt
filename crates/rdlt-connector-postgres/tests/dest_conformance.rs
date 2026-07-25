@@ -313,9 +313,9 @@ mod native_types {
         .expect("batch")
     }
 
-    fn meta(pipeline: &PipelineId, seq: u64) -> CommitMeta {
+    fn meta(pipeline: &PipelineId, load: &str, seq: u64) -> CommitMeta {
         CommitMeta {
-            load_id: LoadId::new("fid-load"),
+            load_id: LoadId::new(load),
             commit_seq: seq,
             state: StateDoc::new(pipeline.clone(), env!("CARGO_PKG_VERSION")),
             counters: CommitCounters::default(),
@@ -330,8 +330,9 @@ mod native_types {
         let conn = pg.conn.clone();
         let dest = rdlt_connector_postgres::dest::Postgres::connect(&conn).dataset("fid");
         let pipeline = PipelineId::new("fid");
+        const LOAD: &str = "fid-load";
         let mut session = dest
-            .open(OpenCtx::new(pipeline.clone(), LoadId::new("fid-load")))
+            .open(OpenCtx::new(pipeline.clone(), LoadId::new(LOAD)))
             .await
             .expect("open");
 
@@ -361,7 +362,7 @@ mod native_types {
             )
             .await
             .expect("write");
-        session.commit(meta(&pipeline, 0)).await.expect("commit");
+        session.commit(meta(&pipeline, LOAD, 0)).await.expect("commit");
 
         let probe = PgProbe {
             conn: conn.clone(),
@@ -461,8 +462,9 @@ mod native_types {
         let conn = pg.conn.clone();
         let dest = rdlt_connector_postgres::dest::Postgres::connect(&conn).dataset("wide");
         let pipeline = PipelineId::new("wide");
+        const LOAD: &str = "w-load";
         let mut session = dest
-            .open(OpenCtx::new(pipeline.clone(), LoadId::new("w-load")))
+            .open(OpenCtx::new(pipeline.clone(), LoadId::new(LOAD)))
             .await
             .expect("open");
         let schema = TableSchema {
@@ -502,7 +504,7 @@ mod native_types {
         )
         .expect("batch");
         session.write(&schema.table, batch).await.expect("write");
-        session.commit(meta(&pipeline, 0)).await.expect("commit");
+        session.commit(meta(&pipeline, LOAD, 0)).await.expect("commit");
 
         let (client, connection) = tokio_postgres::connect(&conn, tokio_postgres::NoTls)
             .await
@@ -529,8 +531,9 @@ mod native_types {
         let conn = pg.conn.clone();
         let dest = rdlt_connector_postgres::dest::Postgres::connect(&conn).dataset("fidbad");
         let pipeline = PipelineId::new("fidbad");
+        const LOAD: &str = "fb-load";
         let mut session = dest
-            .open(OpenCtx::new(pipeline.clone(), LoadId::new("fb-load")))
+            .open(OpenCtx::new(pipeline.clone(), LoadId::new(LOAD)))
             .await
             .expect("open");
         let schema = fidelity_schema();
@@ -580,8 +583,9 @@ mod native_types {
         let conn = pg.conn.clone();
         let dest = rdlt_connector_postgres::dest::Postgres::connect(&conn).dataset("f6");
         let pipeline = PipelineId::new("f6");
+        const LOAD: &str = "f6-load";
         let mut session = dest
-            .open(OpenCtx::new(pipeline.clone(), LoadId::new("f6-load")))
+            .open(OpenCtx::new(pipeline.clone(), LoadId::new(LOAD)))
             .await
             .expect("open");
         let schema = fidelity_schema();
@@ -589,22 +593,32 @@ mod native_types {
             .ensure_table(&schema, &WriteMode::Append)
             .await
             .expect("ensure");
-        // NOT NULL violation at publish: the batch stages fine (stage is
-        // nullable) but violates the target at INSERT.
+        // NOT NULL violation. Append rows go STRAIGHT into the target, so the
+        // constraint is enforced by the COPY itself and the failure surfaces
+        // at `write` — at the offending row, which the server names — rather
+        // than a whole batch later at publish. It used to surface at publish
+        // because the row first landed in a nullable stage table. What SC-007
+        // requires is unchanged either way: the server's message and SQLSTATE
+        // reach the caller, never a bare "db error".
         let batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)])),
             vec![Arc::new(Int64Array::from(vec![None::<i64>]))],
         )
         .expect("batch");
-        session.write(&schema.table, batch).await.expect("stage ok");
         let err = session
-            .commit(meta(&pipeline, 0))
+            .write(&schema.table, batch)
             .await
-            .expect_err("NOT NULL violation at publish");
+            .expect_err("NOT NULL violation on the direct write");
         let msg = err.to_string();
         assert!(
             msg.contains("null value") && msg.contains("SQLSTATE 23502"),
             "F6: server message + SQLSTATE, never bare db error: {msg}"
+        );
+        // The failed unit rolled back, so the session is still usable — the
+        // engine may retry a transient failure on this same session.
+        assert!(
+            session.read_state(&pipeline).await.is_ok(),
+            "a failed unit must leave the connection out of its aborted state"
         );
     }
 }
@@ -2067,6 +2081,296 @@ mod param_matrix {
             names,
             vec!["b2"],
             "non-bool flag: IS NOT NULL deletes, NULL merges normally (M4)"
+        );
+    }
+}
+
+// ---- Feature 019 US5: what the direct-to-target unit transaction guarantees
+// to concurrent readers, and what it deliberately does not. ----
+
+mod unit_isolation {
+    use std::sync::Arc;
+
+    use arrow_array::{Int64Array, RecordBatch};
+    use arrow_schema::{DataType, Field, Schema};
+    use rdlt_connector::core::{
+        ColumnDef, ColumnType, CommitCounters, LoadId, LogicalType, PipelineId, Provenance,
+        StateDoc, TableName, TableSchema,
+    };
+    use rdlt_connector::{CommitMeta, Destination, OpenCtx, WriteMode};
+    use rdlt_testkit::containers::PgFixture;
+
+    fn schema() -> TableSchema {
+        TableSchema {
+            table: TableName::new("iso"),
+            parent: None,
+            columns: vec![ColumnDef {
+                name: "id".into(),
+                column_type: ColumnType::Scalar {
+                    scalar: LogicalType::Int64,
+                },
+                nullable: false,
+                provenance: Provenance::Hinted,
+            }],
+        }
+    }
+
+    fn batch(ids: &[i64]) -> RecordBatch {
+        RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)])),
+            vec![Arc::new(Int64Array::from(ids.to_vec()))],
+        )
+        .expect("batch")
+    }
+
+    async fn count(client: &tokio_postgres::Client, table: &str) -> i64 {
+        client
+            .query_one(&format!("SELECT count(*) FROM {table}"), &[])
+            .await
+            .expect("count")
+            .get(0)
+    }
+
+    async fn reader(conn: &str) -> tokio_postgres::Client {
+        let (client, connection) = tokio_postgres::connect(conn, tokio_postgres::NoTls)
+            .await
+            .expect("connect");
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        client
+    }
+
+    /// A Replace load clears its target and refills it in ONE transaction, so
+    /// no reader ever observes the gap between the two. Pinned here because
+    /// the MECHANISM is not the one an isolation-level argument would predict,
+    /// and the difference is what operators feel:
+    ///
+    /// `clear_table` is `TRUNCATE`, which takes ACCESS EXCLUSIVE. A concurrent
+    /// `SELECT` needs ACCESS SHARE, which conflicts — so a reader arriving
+    /// mid-unit does not see the old rows under MVCC, it **blocks** until the
+    /// unit commits and then sees the new ones. (A `DELETE`-based clear would
+    /// take only ROW EXCLUSIVE and readers would proceed against the old
+    /// snapshot; `TRUNCATE` is chosen for speed, and this is its price.)
+    ///
+    /// The guarantee "never observed empty" therefore holds by locking, not by
+    /// snapshots — and it holds at every isolation level for the same reason.
+    /// What this story changed is the WINDOW: the lock used to be held for the
+    /// publish alone, and is now held from the first batch to the commit. See
+    /// the module doc on what a unit transaction costs.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_replace_reload_is_never_observed_empty() {
+        let Some(pg) = PgFixture::start().await else {
+            return;
+        };
+        let conn = pg.conn.clone();
+        let dest = rdlt_connector_postgres::dest::Postgres::connect(&conn).dataset("iso");
+        let pipeline = PipelineId::new("iso");
+
+        let meta = |load: &str, seq: u64| CommitMeta {
+            load_id: LoadId::new(load),
+            commit_seq: seq,
+            state: StateDoc::new(pipeline.clone(), env!("CARGO_PKG_VERSION")),
+            counters: CommitCounters::default(),
+        };
+
+        // Load 1 establishes the "previous contents".
+        let mut first = dest
+            .open(OpenCtx::new(pipeline.clone(), LoadId::new("iso-1")))
+            .await
+            .expect("open");
+        first
+            .ensure_table(&schema(), &WriteMode::Replace)
+            .await
+            .expect("ensure");
+        first
+            .write(&TableName::new("iso"), batch(&[1, 2, 3]))
+            .await
+            .expect("write");
+        first.commit(meta("iso-1", 0)).await.expect("commit");
+        drop(first);
+
+        let observer = reader(&conn).await;
+        assert_eq!(count(&observer, "iso.iso").await, 3, "load 1 landed");
+
+        // Load 2 clears and refills. Mid-unit — after the TRUNCATE and the
+        // COPY, before the commit — the reader must still see load 1.
+        let mut second = dest
+            .open(OpenCtx::new(pipeline.clone(), LoadId::new("iso-2")))
+            .await
+            .expect("open");
+        second
+            .ensure_table(&schema(), &WriteMode::Replace)
+            .await
+            .expect("ensure");
+        second
+            .write(&TableName::new("iso"), batch(&[4, 5]))
+            .await
+            .expect("write");
+        // The reader is now behind the TRUNCATE's ACCESS EXCLUSIVE lock. It
+        // must NOT complete — and must not come back with 0 — while the unit
+        // is open.
+        let mut blocked = tokio::spawn(async move { count(&observer, "iso.iso").await });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(750), &mut blocked)
+                .await
+                .is_err(),
+            "a reader must block on a cleared-but-uncommitted target, never observe it empty"
+        );
+
+        second.commit(meta("iso-2", 0)).await.expect("commit");
+        assert_eq!(
+            blocked.await.expect("reader task"),
+            2,
+            "the blocked reader resumes and sees load 2's contents, never an empty table"
+        );
+    }
+
+    /// FR-024: a Replace load must not cost the target anything that lives on
+    /// the table rather than in it. The clear is `TRUNCATE`, which keeps the
+    /// table's identity — so indexes, constraints, grants and dependent views
+    /// all survive.
+    ///
+    /// This is the property that ruled out the faster-looking alternative. A
+    /// swap (`CREATE new; ... ; ALTER TABLE RENAME`) clears in ~21 ms against
+    /// TRUNCATE-plus-refill, but it produces a table with a NEW oid, which
+    /// means rebuilding every index, re-granting every privilege and breaking
+    /// every view bound to the old one. Pinned so a future "optimization"
+    /// cannot take that trade silently.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_replace_load_preserves_indexes_grants_and_dependents() {
+        let Some(pg) = PgFixture::start().await else {
+            return;
+        };
+        let conn = pg.conn.clone();
+        let admin = reader(&conn).await;
+        admin
+            .batch_execute(
+                "CREATE SCHEMA IF NOT EXISTS iso3;
+                 DROP VIEW IF EXISTS iso3.iso_v;
+                 DROP TABLE IF EXISTS iso3.iso;
+                 CREATE TABLE iso3.iso (id BIGINT CONSTRAINT iso_id_positive CHECK (id > 0));
+                 CREATE INDEX iso_id_idx ON iso3.iso (id);
+                 CREATE VIEW iso3.iso_v AS SELECT id FROM iso3.iso;
+                 CREATE ROLE iso_reader;
+                 GRANT SELECT ON iso3.iso TO iso_reader;",
+            )
+            .await
+            .expect("fixture objects");
+        let oid_before: u32 = admin
+            .query_one("SELECT 'iso3.iso'::regclass::oid", &[])
+            .await
+            .expect("oid")
+            .get(0);
+
+        let dest = rdlt_connector_postgres::dest::Postgres::connect(&conn).dataset("iso3");
+        let pipeline = PipelineId::new("iso3");
+        let mut session = dest
+            .open(OpenCtx::new(pipeline.clone(), LoadId::new("iso3-load")))
+            .await
+            .expect("open");
+        session
+            .ensure_table(&schema(), &WriteMode::Replace)
+            .await
+            .expect("ensure");
+        session
+            .write(&TableName::new("iso"), batch(&[7, 8]))
+            .await
+            .expect("write");
+        session
+            .commit(CommitMeta {
+                load_id: LoadId::new("iso3-load"),
+                commit_seq: 0,
+                state: StateDoc::new(pipeline.clone(), env!("CARGO_PKG_VERSION")),
+                counters: CommitCounters::default(),
+            })
+            .await
+            .expect("commit");
+
+        let oid_after: u32 = admin
+            .query_one("SELECT 'iso3.iso'::regclass::oid", &[])
+            .await
+            .expect("oid")
+            .get(0);
+        assert_eq!(oid_before, oid_after, "the target keeps its identity");
+
+        let survivors = |what: &'static str, sql: &'static str| {
+            let admin = &admin;
+            async move {
+                let n: i64 = admin.query_one(sql, &[]).await.expect(what).get(0);
+                assert_eq!(n, 1, "{what} did not survive the Replace load");
+            }
+        };
+        survivors(
+            "the index",
+            "SELECT count(*) FROM pg_indexes WHERE schemaname='iso3' AND indexname='iso_id_idx'",
+        )
+        .await;
+        survivors(
+            "the check constraint",
+            "SELECT count(*) FROM pg_constraint WHERE conname='iso_id_positive'",
+        )
+        .await;
+        survivors(
+            "the grant",
+            "SELECT count(*) FROM information_schema.table_privileges \
+             WHERE table_schema='iso3' AND table_name='iso' AND grantee='iso_reader' \
+               AND privilege_type='SELECT'",
+        )
+        .await;
+        // The dependent view still resolves AND sees the new contents.
+        let through_view: i64 = admin
+            .query_one("SELECT count(*) FROM iso3.iso_v", &[])
+            .await
+            .expect("the dependent view")
+            .get(0);
+        assert_eq!(through_view, 2, "the view reads the reloaded table");
+
+        admin
+            .batch_execute("DROP OWNED BY iso_reader; DROP ROLE IF EXISTS iso_reader;")
+            .await
+            .expect("cleanup");
+    }
+
+    /// The clear happens once per LOAD, not once per commit unit: unit 2 of a
+    /// Replace load appends to what unit 1 published rather than wiping it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_multi_unit_replace_load_clears_exactly_once() {
+        let Some(pg) = PgFixture::start().await else {
+            return;
+        };
+        let conn = pg.conn.clone();
+        let dest = rdlt_connector_postgres::dest::Postgres::connect(&conn).dataset("iso2");
+        let pipeline = PipelineId::new("iso2");
+        let mut session = dest
+            .open(OpenCtx::new(pipeline.clone(), LoadId::new("iso2-load")))
+            .await
+            .expect("open");
+        session
+            .ensure_table(&schema(), &WriteMode::Replace)
+            .await
+            .expect("ensure");
+
+        let meta = |seq: u64| CommitMeta {
+            load_id: LoadId::new("iso2-load"),
+            commit_seq: seq,
+            state: StateDoc::new(pipeline.clone(), env!("CARGO_PKG_VERSION")),
+            counters: CommitCounters::default(),
+        };
+
+        for (seq, ids) in [(0u64, [1i64, 2].as_slice()), (1, [3].as_slice())] {
+            session
+                .write(&TableName::new("iso"), batch(ids))
+                .await
+                .expect("write");
+            session.commit(meta(seq)).await.expect("commit");
+        }
+
+        let client = reader(&conn).await;
+        assert_eq!(
+            count(&client, "iso2.iso").await,
+            3,
+            "unit 2 must append to the load's own rows, not re-clear them"
         );
     }
 }
