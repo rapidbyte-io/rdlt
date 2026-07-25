@@ -25,12 +25,30 @@ use rdlt::pipeline_spec::{self, Spec, SpecError};
 use rdlt::prelude::*;
 
 /// Bound glibc's allocator retention: data movement churns
-/// large short-lived buffers (slabs, arenas, arrow builds), and glibc's default
-/// per-thread arenas retain them as RSS long after free. Two arenas + a low trim
-/// threshold returns memory to the OS with no measured wall-time cost (642 MB →
-/// ~370 MB peak on the flagship bench). CLI-only: library embedders own their
-/// allocator policy. The workspace denies unsafe; this single libc FFI call
-/// (no pointers, no invariants — two integer knobs) is the deliberate exception.
+/// large short-lived buffers (slabs, arenas, arrow builds), and glibc retains
+/// them as RSS long after free.
+///
+/// What each call actually does, measured as a 2x2 factorial (7 interleaved
+/// runs per arm, two cells, quiet machine):
+///
+/// - `M_TRIM_THRESHOLD` is set to 128 KiB, which IS glibc's default — so the
+///   value changes nothing. The call's real effect is its documented side
+///   effect: it DISABLES glibc's dynamic growth of the mmap/trim thresholds.
+///   Without it, glibc raises those thresholds as it sees large frees, so more
+///   big allocations come from the retained heap. That is the knob doing the
+///   memory work: dropping it costs +29% peak RSS on a 1M-row relational copy
+///   and +32% on the nested-JSONL cell.
+/// - `M_ARENA_MAX = 2` bounds per-thread arena growth. Its effect is small and
+///   NOT consistent: it improved both wall and RSS on the relational copy and
+///   cost ~4% wall on the JSONL cell, buying no RSS there.
+///
+/// Wall-clock effects of the pair are within a few percent in BOTH directions
+/// depending on the cell, so neither "free" nor "costly" is an honest summary;
+/// the memory reduction is the reason it is here, and it is large.
+///
+/// CLI-only: library embedders own their allocator policy. The workspace denies
+/// unsafe; this single libc FFI call (no pointers, no invariants — two integer
+/// knobs) is the deliberate exception.
 #[allow(unsafe_code)]
 fn bound_allocator_retention() {
     #[cfg(target_env = "gnu")]

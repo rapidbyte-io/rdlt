@@ -4261,7 +4261,6 @@ dependencies = [
  "fs4",
  "futures",
  "iai-callgrind",
- "parquet",
  "proptest",
  "rdlt-connector",
  "rdlt-connector-duckdb",

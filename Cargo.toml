@@ -104,6 +104,32 @@ toml = "0.8"
 # rdlt-bench (dev-only, publish=false) exclusively — never a runtime dep.
 clap = { version = "4", features = ["derive"] }
 
+# Adopted 2026-07-25 from a recorded four-arm sweep (stock / cgu1 / thin / fat+cgu1,
+# 9 interleaved runs each on the 1M-row relational cell): fat+cgu1 is the only arm
+# that clears a 10% processor-time reduction, at -13.2% CPU, -1.7% wall and a 16%
+# smaller binary (93.9 -> 79.0 MB). It costs 119 s on a clean release build (112 ->
+# 231 s); thin LTO was measured at -6.1% CPU for no build cost but no size benefit,
+# and codegen-units=1 alone carries 11 of the 16 size points for ~free.
+#
+# NOTE: `[profile.bench]` deliberately does NOT pin the old codegen settings. It
+# inherits this profile, so instruction-count baselines shift once and are
+# re-recorded deliberately (benches/compare-iai.sh --record) rather than being
+# insulated — a divergent bench profile would stop the perf-gate job sharing build
+# artifacts with `make release`.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+
+# The distribution profile for the shipped CLI. `panic` is deliberately NOT set
+# anywhere: an abort strategy would be inherited by every application embedding
+# the library, and cargo silently forces unwind for test/bench units regardless,
+# so setting it buys a smaller binary at the cost of changing semantics for
+# embedders who never asked. Symbol stripping gets most of the size anyway.
+[profile.dist]
+inherits = "release"
+strip = "symbols"
+
 [workspace.lints.rust]
 unsafe_code = "deny"
 missing_debug_implementations = "warn"

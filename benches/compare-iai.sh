@@ -59,6 +59,28 @@ if not measured:
         )
     sys.exit("no iai summaries under target/iai — run the bench with --save-summary first")
 
+def codegen_signature():
+    """The codegen settings these counts were produced under.
+
+    Instruction counts are a property of the generated code, so they are only
+    comparable within one codegen configuration — `lto` and `codegen-units`
+    move them as surely as a compiler bump does. `[profile.bench]` inherits
+    `[profile.release]`, so the release profile is what the bench binaries are
+    actually built with; read it rather than trusting a profile NAME, which
+    stays "release" no matter what the settings say.
+    """
+    import re
+    manifest = pathlib.Path("Cargo.toml").read_text()
+    block = re.search(r"^\[profile\.release\]\s*$(.*?)(?=^\[|\Z)", manifest, re.S | re.M)
+    body = block.group(1) if block else ""
+    def field(key, default):
+        m = re.search(rf"^{key}\s*=\s*(.+?)\s*$", body, re.M)
+        return m.group(1).strip().strip('"') if m else default
+    # Cargo's own defaults when the profile is absent or silent.
+    return (f"lto={field('lto', 'false')},"
+            f"codegen-units={field('codegen-units', '16')},"
+            f"opt-level={field('opt-level', '3')}")
+
 mode = sys.argv[1]
 if mode == "--record":
     import subprocess
@@ -68,6 +90,7 @@ if mode == "--record":
     BASELINE_FILE.write_text(json.dumps({
         "format_version": 1,
         "toolchain": toolchain,
+        "codegen": codegen_signature(),
         "benches": {name: {"instructions": ir} for name, ir in sorted(measured.items())},
     }, indent=2) + "\n")
     print(f"recorded {len(measured)} baselines -> {BASELINE_FILE}")
@@ -89,6 +112,20 @@ if recorded and current and recorded != current:
         f"PERF GATE: toolchain mismatch — baselines recorded with '{recorded}', "
         f"current is '{current}'. Re-record deliberately in a dedicated commit: "
         f"cargo bench -p rdlt-engine --bench iai_hotpath -- --save-summary=json "
+        f"&& benches/compare-iai.sh --record"
+    )
+
+# Same rule as the toolchain guard, for the same reason: a codegen change
+# shifts every count, so comparing across one would either flap the gate or
+# silently absorb a real regression.
+recorded_codegen = doc.get("codegen", "")
+current_codegen = codegen_signature()
+if recorded_codegen and recorded_codegen != current_codegen:
+    sys.exit(
+        f"PERF GATE: codegen mismatch — baselines recorded under "
+        f"'{recorded_codegen}', current is '{current_codegen}'. Re-record "
+        f"deliberately in a dedicated commit: cargo bench -p rdlt-engine "
+        f"--bench iai_hotpath -- --save-summary=json "
         f"&& benches/compare-iai.sh --record"
     )
 

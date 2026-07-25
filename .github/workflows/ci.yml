@@ -74,6 +74,11 @@ jobs:
           cargo install iai-callgrind-runner --version 0.16.1 --locked
       - name: Perf gate (make bench TARGET=iai)
         run: make bench TARGET=iai
+      # The release profile is still exercised here, but the cold-start check
+      # is NOT: it is a wall-clock measurement needing hyperfine and a quiet
+      # machine. It runs in `make check` locally and in recorded sessions.
+      - name: Release build (profile smoke)
+        run: make release
 
   semver:
     # Seam crates are SEMVER-SACRED (plan.md): every PR is checked against the

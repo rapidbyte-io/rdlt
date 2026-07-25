@@ -6,6 +6,7 @@
 #
 #   make build                 debug build, whole workspace
 #   make release               optimized CLI with all bundled connectors
+#   make dist                  the SHIPPED CLI (release + symbols stripped)
 #   make lint                  format check + clippy (warnings are errors)
 #   make test                  fast suite (nextest + doc-tests)
 #     TARGET=unit make test      nextest only
@@ -17,7 +18,8 @@
 #     TARGET=deep make test      everything scheduled CI runs (prop+sweep+mutants+fuzz)
 #   make bench                 shred microbench (criterion)
 #     TARGET=iai make bench      instruction-count benches + baseline comparison
-#                                + cold-start check (perf/embeddability gate)
+#     TARGET=cold make bench     cold-start check (<=40ms); needs hyperfine and
+#                                a QUIET machine, so it is local/session-only
 #     TARGET=setup make bench    one-shot competitor setup: dlt image + Airbyte
 #                                connections (skips Airbyte with guidance when
 #                                no abctl cluster is reachable)
@@ -36,13 +38,18 @@ TARGET ?=
 FUZZ_SECONDS ?= 600
 FUZZ_TARGETS := jsonl_slab cursor_decode file_config arrow_schema_map shred_push pg_copy_decode pg_pgoutput_decode
 
-.PHONY: build release lint test bench check coverage
+.PHONY: build release dist lint test bench check coverage
 
 build:
 	cargo build --workspace
 
 release:
 	cargo build --release -p rdlt-cli
+
+# The shipped artifact: release plus symbol stripping. Separate from `release`
+# so day-to-day builds keep their symbols for profiling and backtraces.
+dist:
+	cargo build --profile dist -p rdlt-cli
 
 lint:
 	cargo fmt --all --check
@@ -96,8 +103,11 @@ else ifeq ($(TARGET),iai)
 	cargo bench -p rdlt-engine --bench iai_hotpath -- --save-summary=json
 	cargo bench -p rdlt-connector-postgres --bench iai_pg -- --save-summary=json
 	benches/compare-iai.sh
-	# Cold-start embeddability check rides the instruments track (so `make
-	# check` keeps guarding the <=40 ms claim). Needs the release binary.
+else ifeq ($(TARGET),cold)
+	# Cold start is a WALL-CLOCK measurement: it needs hyperfine and a quiet
+	# machine, neither of which a shared CI runner provides. It rides `make
+	# check` locally and the recorded measurement session, never the CI perf
+	# gate — where it silently required a tool no workflow installs.
 	$(MAKE) release
 	benches/check-cold-start.sh
 else ifeq ($(TARGET),setup)
@@ -132,3 +142,4 @@ check: lint
 	$(MAKE) test
 	$(MAKE) test TARGET=sweep
 	$(MAKE) bench TARGET=iai
+	$(MAKE) bench TARGET=cold
