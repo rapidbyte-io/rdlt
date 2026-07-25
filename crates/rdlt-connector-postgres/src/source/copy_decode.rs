@@ -404,6 +404,14 @@ impl CopyDecoder {
             ));
         }
         // First pass: locate every field; bail NeedMore on a partial tuple.
+        //
+        // This Vec is per ROW, and hoisting it to a reused field was tried and
+        // MEASURED WORSE: +2.9% instructions on `pg_copy_decode_10k`, which
+        // decodes 10k rows through one decoder. The allocation it removes is a
+        // same-size request served from a hot allocator bin; the field
+        // indirection it adds costs more than that, because a local's length
+        // and capacity stay in registers where a field's must be reloaded
+        // through `&mut self` on every push.
         let mut ranges: Vec<Option<(usize, usize)>> = Vec::with_capacity(self.plans.len());
         let mut cursor = pos + 2;
         let mut tuple_bytes = 2usize;

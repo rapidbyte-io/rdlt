@@ -46,6 +46,21 @@ pub trait MergeDialect: Send + Sync {
     /// group. `sort_prefix` is either empty (arrival last-wins) or
     /// `"col" DIR NULLS LAST, ` from a declared dedup_sort — values beat
     /// NULL, arrival stays the trailing tie-breaker.
+    /// Materialize the dedup result once per publish, for dialects that can.
+    ///
+    /// The scd2 arm references the dedup subquery in THREE statements and the
+    /// hard-delete upsert arm in two. Interpolated, the server evaluates —
+    /// and therefore re-SORTS — the whole stage once per statement. Named
+    /// once, it sorts once.
+    ///
+    /// `None`, the default, keeps the subquery inline: a dialect that cannot
+    /// hold a transaction-scoped temporary relation must not pretend to. The
+    /// statement returned MUST create something that disappears with the
+    /// transaction, because the publish is the only thing that scopes it.
+    fn materialize_dedup(&self, _name: &str, _subquery: &str) -> Option<String> {
+        None
+    }
+
     fn dedup_subquery(&self, identity: &str, sort_prefix: &str, stage: &str) -> String {
         format!(
             "(SELECT DISTINCT ON ({identity}) * FROM {stage} ORDER BY {identity}, {sort_prefix}{} DESC)",

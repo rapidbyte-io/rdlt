@@ -11,7 +11,9 @@
 
 use rdlt_connector::core::schema::ColumnDef;
 use rdlt_connector::core::{ColumnType, LogicalType, Provenance, TableName, TableSchema};
-use rdlt_connector_postgres::dest::sqlgen::{PgDialect, UNIT_BEGIN, UNIT_COMMIT, UNIT_ROLLBACK};
+use rdlt_connector_postgres::dest::sqlgen::{
+    PgDialect, UNIT_BEGIN, UNIT_COMMIT, UNIT_ROLLBACK, UNIT_WORK_MEM,
+};
 use rdlt_connector::WriteMode;
 use rdlt_connector_sqlcore::{
     CommitCtx, DestOptions, FullLoadPublish, Step, column_list, commit_script, insert_select_sql,
@@ -72,6 +74,14 @@ fn unit_transaction_statements() {
     assert_eq!(UNIT_BEGIN, "BEGIN ISOLATION LEVEL READ COMMITTED");
     assert_eq!(UNIT_COMMIT, "COMMIT");
     assert_eq!(UNIT_ROLLBACK, "ROLLBACK");
+    // SET LOCAL, never a bare SET: the scope is what makes it safe to set
+    // unasked. A bare SET would leak into every later unit on this connection
+    // and into anything else sharing it.
+    assert_eq!(UNIT_WORK_MEM, "SET LOCAL work_mem = '64MB'");
+    assert!(
+        UNIT_WORK_MEM.starts_with("SET LOCAL "),
+        "work_mem must be transaction-scoped"
+    );
 }
 
 /// The Replace clear, rendered exactly as the unit issues it before the first

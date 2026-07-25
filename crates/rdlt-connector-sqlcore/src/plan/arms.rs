@@ -106,6 +106,32 @@ impl MergePlan<'_> {
         self.dialect.dedup_subquery(identity, &sort, self.stage_sql)
     }
 
+    /// The dedup result, evaluated ONCE when the dialect can materialize it.
+    ///
+    /// Returns the statements to run first (empty when it cannot) and the SQL
+    /// to reference in place of the subquery. Both forms are usable wherever
+    /// the subquery was — a table accepts the same alias a subquery requires —
+    /// so callers interpolate the second value exactly as they used to.
+    ///
+    /// Only worth doing where the arm references it MORE THAN ONCE; a
+    /// single-reference arm would pay for a temporary relation to save
+    /// nothing.
+    fn dedup_once(&self, identity: &str) -> (Vec<String>, String) {
+        let subquery = self.deduped(identity);
+        // Derived from the stage name, which is already unique per (pipeline,
+        // table) and length-bounded — so two tables publishing in one
+        // transaction cannot collide, and the name cannot outgrow the
+        // identifier limit.
+        let name = format!(
+            "rdlt_dd_{}",
+            rdlt_connector::core::naming::ident_hash(self.stage_sql, 16)
+        );
+        match self.dialect.materialize_dedup(&name, &subquery) {
+            Some(statement) => (vec![statement], name),
+            None => (Vec::new(), subquery),
+        }
+    }
+
     /// `SET c = EXCLUDED.c, …` over the non-identity columns.
     fn update_set(&self, identity: &[String]) -> String {
         self.schema
@@ -191,12 +217,18 @@ pub fn keyed_delete_insert_sql(plan: &MergePlan<'_>) -> Vec<String> {
 pub fn keyed_upsert_sql(plan: &MergePlan<'_>) -> Vec<String> {
     let (target, cols) = (plan.target_sql, plan.cols_sql);
     let key_list = plan.key_list();
-    let mut out = Vec::new();
+    // Two references ONLY when hard-delete is configured (the delete and the
+    // upsert); without it there is a single reference and materializing would
+    // cost a temporary relation to save nothing.
+    let (mut out, deduped) = if plan.hard_delete.is_some() {
+        plan.dedup_once(&key_list)
+    } else {
+        (Vec::new(), plan.deduped(&key_list))
+    };
     if let Some(hd) = &plan.hard_delete {
         out.push(format!(
             "DELETE FROM {target} WHERE ({key_list}) IN \
-             (SELECT {key_list} FROM {} d WHERE {})",
-            plan.deduped(&key_list),
+             (SELECT {key_list} FROM {deduped} d WHERE {})",
             hd.flagged
         ));
     }
@@ -214,7 +246,7 @@ pub fn keyed_upsert_sql(plan: &MergePlan<'_>) -> Vec<String> {
     out.push(plan.dialect.upsert_stmt(
         target,
         cols,
-        &plan.deduped(&key_list),
+        &deduped,
         &keep,
         &key_list,
         &action,
@@ -270,7 +302,9 @@ pub fn scd2_merge_sql(plan: &MergePlan<'_>, scd2: &Scd2Options) -> Vec<String> {
         None => plan.dialect.tx_timestamp().to_string(),
     };
     let key_list = plan.key_list();
-    let deduped = plan.deduped(&key_list);
+    // Referenced by the retire, insert and (scoped) retirement statements —
+    // three full sorts of the stage when interpolated.
+    let (mut out, deduped) = plan.dedup_once(&key_list);
     let vf = plan.quote(&scd2.valid_from);
     let vt = plan.quote(&scd2.valid_to);
     // The OPEN-version marker — NULL by default, a validated timestamp
@@ -304,7 +338,6 @@ pub fn scd2_merge_sql(plan: &MergePlan<'_>, scd2: &Scd2Options) -> Vec<String> {
         .collect::<Vec<_>>()
         .join(" OR ");
 
-    let mut out = Vec::new();
     // Retire: active versions whose key arrives with DIFFERENT values.
     if !changed.is_empty() {
         out.push(format!(
@@ -347,8 +380,7 @@ pub fn scd2_merge_sql(plan: &MergePlan<'_>, scd2: &Scd2Options) -> Vec<String> {
         out.push(format!(
             "UPDATE {target} t SET {vt} = {now} \
              WHERE {is_active} AND ({key_list}) NOT IN \
-                   (SELECT {key_list} FROM {} d){scope_clause}",
-            plan.deduped(&key_list),
+                   (SELECT {key_list} FROM {deduped} d){scope_clause}"
         ));
     }
     out

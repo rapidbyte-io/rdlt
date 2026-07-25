@@ -61,7 +61,9 @@ pub use config::{
 /// API.
 #[doc(hidden)]
 pub mod sqlgen {
-    pub use super::commit::{ARRIVAL_COL, UNIT_BEGIN, UNIT_COMMIT, UNIT_ROLLBACK};
+    pub use super::commit::{
+        ARRIVAL_COL, UNIT_BEGIN, UNIT_COMMIT, UNIT_ROLLBACK, UNIT_WORK_MEM,
+    };
     pub use super::dialect::PgDialect;
     pub use rdlt_connector_sqlcore::plan::{
         identity_delete_insert_sql, keyed_delete_insert_sql, keyed_upsert_sql, scd2_merge_sql,

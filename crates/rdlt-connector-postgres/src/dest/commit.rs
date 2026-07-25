@@ -39,6 +39,8 @@ const COPY_BINARY_SIGNATURE: &[u8] = b"PGCOPY\n\xff\r\n\0";
 pub const UNIT_BEGIN: &str = "BEGIN ISOLATION LEVEL READ COMMITTED";
 pub const UNIT_COMMIT: &str = "COMMIT";
 pub const UNIT_ROLLBACK: &str = "ROLLBACK";
+/// Transaction-scoped sort memory for the merge dedup — see `begin_unit`.
+pub const UNIT_WORK_MEM: &str = "SET LOCAL work_mem = '64MB'";
 
 /// Arrival-order column on STAGE tables only: makes merge dedup deterministic
 /// ("last wins" for real). Excluded from publish column lists because it
@@ -160,6 +162,23 @@ impl PgSession {
         // server-side default a deployment could change.
         self.client
             .batch_execute(UNIT_BEGIN)
+            .await
+            .map_err(transient)?;
+        // Merge dedup sorts the staged rows, and Postgres's default work_mem
+        // of 4 MB makes that spill to disk on any load worth benchmarking.
+        //
+        // `SET LOCAL` is the whole reason this is safe to do unasked: it is
+        // scoped to THIS transaction and reverts at COMMIT or ROLLBACK, so it
+        // cannot affect another session, another pipeline sharing the
+        // database, or even this connection's next unit. A bare `SET` would
+        // leak into all three.
+        //
+        // The value is per sort operation, not per transaction, so it is kept
+        // modest rather than generous: a unit runs a bounded number of sorts,
+        // and this is a destination that may be one of several against the
+        // same server.
+        self.client
+            .batch_execute(UNIT_WORK_MEM)
             .await
             .map_err(transient)?;
         let load_committed_before = self

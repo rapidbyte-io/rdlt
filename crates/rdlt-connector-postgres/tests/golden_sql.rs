@@ -116,7 +116,7 @@ fn pin_keyed_upsert_with_hard_delete_asc_dedup() {
     let stmts = keyed_upsert_sql(&plan(&schema, &key, Some("deleted"), Some(&dedup)));
     assert_eq!(
         stmts,
-        vec!["DELETE FROM \"events\" WHERE (\"id\") IN (SELECT \"id\" FROM (SELECT DISTINCT ON (\"id\") * FROM \"_rdlt_stage_feedcafe\" ORDER BY \"id\", \"seq\" ASC NULLS LAST, \"__rdlt_arrival\" DESC) d WHERE \"deleted\" IS TRUE)".to_string(), "INSERT INTO \"events\" (\"id\", \"day\", \"name\", \"seq\", \"deleted\", \"_rdlt_load_id\") SELECT \"id\", \"day\", \"name\", \"seq\", \"deleted\", \"_rdlt_load_id\" FROM (SELECT DISTINCT ON (\"id\") * FROM \"_rdlt_stage_feedcafe\" ORDER BY \"id\", \"seq\" ASC NULLS LAST, \"__rdlt_arrival\" DESC) deduped WHERE \"deleted\" IS NOT TRUE ON CONFLICT (\"id\") DO UPDATE SET \"day\" = EXCLUDED.\"day\", \"name\" = EXCLUDED.\"name\", \"seq\" = EXCLUDED.\"seq\", \"deleted\" = EXCLUDED.\"deleted\", \"_rdlt_load_id\" = EXCLUDED.\"_rdlt_load_id\"".to_string()]
+        vec!["CREATE TEMP TABLE rdlt_dd_949c09887f1d4674 ON COMMIT DROP AS SELECT * FROM (SELECT DISTINCT ON (\"id\") * FROM \"_rdlt_stage_feedcafe\" ORDER BY \"id\", \"seq\" ASC NULLS LAST, \"__rdlt_arrival\" DESC) deduped".to_string(), "DELETE FROM \"events\" WHERE (\"id\") IN (SELECT \"id\" FROM rdlt_dd_949c09887f1d4674 d WHERE \"deleted\" IS TRUE)".to_string(), "INSERT INTO \"events\" (\"id\", \"day\", \"name\", \"seq\", \"deleted\", \"_rdlt_load_id\") SELECT \"id\", \"day\", \"name\", \"seq\", \"deleted\", \"_rdlt_load_id\" FROM rdlt_dd_949c09887f1d4674 deduped WHERE \"deleted\" IS NOT TRUE ON CONFLICT (\"id\") DO UPDATE SET \"day\" = EXCLUDED.\"day\", \"name\" = EXCLUDED.\"name\", \"seq\" = EXCLUDED.\"seq\", \"deleted\" = EXCLUDED.\"deleted\", \"_rdlt_load_id\" = EXCLUDED.\"_rdlt_load_id\"".to_string()]
     );
 }
 
@@ -135,17 +135,20 @@ fn pin_scd2_keep_and_retire() {
     let key = vec!["id".to_string()];
     let scd2 = Scd2Options::default();
     let stmts = scd2_merge_sql(&plan(&schema, &key, None, None), &scd2);
-    assert_eq!(stmts, vec!["UPDATE \"events\" t SET \"_rdlt_valid_to\" = now() FROM (SELECT DISTINCT ON (\"id\") * FROM \"_rdlt_stage_feedcafe\" ORDER BY \"id\", \"__rdlt_arrival\" DESC) d WHERE t.\"_rdlt_valid_to\" IS NULL AND t.\"id\" = d.\"id\" AND (t.\"day\" IS DISTINCT FROM d.\"day\" OR t.\"name\" IS DISTINCT FROM d.\"name\" OR t.\"seq\" IS DISTINCT FROM d.\"seq\" OR t.\"deleted\" IS DISTINCT FROM d.\"deleted\")".to_string(), "INSERT INTO \"events\" (\"id\", \"day\", \"name\", \"seq\", \"deleted\", \"_rdlt_load_id\", \"_rdlt_valid_from\", \"_rdlt_valid_to\") SELECT \"id\", \"day\", \"name\", \"seq\", \"deleted\", \"_rdlt_load_id\", now(), NULL FROM (SELECT DISTINCT ON (\"id\") * FROM \"_rdlt_stage_feedcafe\" ORDER BY \"id\", \"__rdlt_arrival\" DESC) d WHERE NOT EXISTS ( SELECT 1 FROM \"events\" t WHERE t.\"_rdlt_valid_to\" IS NULL AND t.\"id\" = d.\"id\")".to_string()]);
+    assert_eq!(stmts, vec!["CREATE TEMP TABLE rdlt_dd_949c09887f1d4674 ON COMMIT DROP AS SELECT * FROM (SELECT DISTINCT ON (\"id\") * FROM \"_rdlt_stage_feedcafe\" ORDER BY \"id\", \"__rdlt_arrival\" DESC) deduped".to_string(), "UPDATE \"events\" t SET \"_rdlt_valid_to\" = now() FROM rdlt_dd_949c09887f1d4674 d WHERE t.\"_rdlt_valid_to\" IS NULL AND t.\"id\" = d.\"id\" AND (t.\"day\" IS DISTINCT FROM d.\"day\" OR t.\"name\" IS DISTINCT FROM d.\"name\" OR t.\"seq\" IS DISTINCT FROM d.\"seq\" OR t.\"deleted\" IS DISTINCT FROM d.\"deleted\")".to_string(), "INSERT INTO \"events\" (\"id\", \"day\", \"name\", \"seq\", \"deleted\", \"_rdlt_load_id\", \"_rdlt_valid_from\", \"_rdlt_valid_to\") SELECT \"id\", \"day\", \"name\", \"seq\", \"deleted\", \"_rdlt_load_id\", now(), NULL FROM rdlt_dd_949c09887f1d4674 d WHERE NOT EXISTS ( SELECT 1 FROM \"events\" t WHERE t.\"_rdlt_valid_to\" IS NULL AND t.\"id\" = d.\"id\")".to_string()]);
 
     let retire = Scd2Options {
         absent: rdlt_connector_postgres::dest::AbsentPolicy::Retire,
         ..Scd2Options::default()
     };
     let stmts = scd2_merge_sql(&plan(&schema, &key, None, None), &retire);
-    assert_eq!(stmts.len(), 3);
+    // Four now, not three: the dedup is materialized once up front and the
+    // three statements name it. All three used to re-sort the whole stage.
+    assert_eq!(stmts.len(), 4);
+    assert_eq!(stmts[0], "CREATE TEMP TABLE rdlt_dd_949c09887f1d4674 ON COMMIT DROP AS SELECT * FROM (SELECT DISTINCT ON (\"id\") * FROM \"_rdlt_stage_feedcafe\" ORDER BY \"id\", \"__rdlt_arrival\" DESC) deduped".to_string());
     assert_eq!(
-        stmts[2],
-        "UPDATE \"events\" t SET \"_rdlt_valid_to\" = now() WHERE t.\"_rdlt_valid_to\" IS NULL AND (\"id\") NOT IN (SELECT \"id\" FROM (SELECT DISTINCT ON (\"id\") * FROM \"_rdlt_stage_feedcafe\" ORDER BY \"id\", \"__rdlt_arrival\" DESC) d)"
+        stmts[3],
+        "UPDATE \"events\" t SET \"_rdlt_valid_to\" = now() WHERE t.\"_rdlt_valid_to\" IS NULL AND (\"id\") NOT IN (SELECT \"id\" FROM rdlt_dd_949c09887f1d4674 d)"
     );
 }
 
@@ -177,7 +180,12 @@ fn pin_scd2_markers_and_boundary() {
     let stmts = scd2_merge_sql(&markers_plan, &scd2);
     assert_eq!(
         stmts,
-        vec![PIN_M0.to_string(), PIN_M1.to_string(), PIN_M2.to_string(),]
+        vec![
+            PIN_CREATE.to_string(),
+            PIN_M0.to_string(),
+            PIN_M1.to_string(),
+            PIN_M2.to_string(),
+        ]
     );
 }
 
@@ -206,7 +214,10 @@ fn pin_scd2_scoped_retirement() {
     assert_eq!(stmts.last().unwrap(), PIN_SCOPED);
 }
 
-const PIN_M0: &str = "UPDATE \"events\" t SET \"_rdlt_valid_to\" = '2026-07-22T00:00:00Z' FROM (SELECT DISTINCT ON (\"id\") * FROM \"_rdlt_stage_feedcafe\" ORDER BY \"id\", \"__rdlt_arrival\" DESC) d WHERE (t.\"_rdlt_valid_to\" IS NULL OR t.\"_rdlt_valid_to\" = '9999-12-31T00:00:00Z') AND t.\"id\" = d.\"id\" AND (t.\"day\" IS DISTINCT FROM d.\"day\" OR t.\"name\" IS DISTINCT FROM d.\"name\")";
-const PIN_M1: &str = "INSERT INTO \"events\" (\"id\", \"day\", \"name\", \"_rdlt_load_id\", \"_rdlt_valid_from\", \"_rdlt_valid_to\") SELECT \"id\", \"day\", \"name\", \"_rdlt_load_id\", '2026-07-22T00:00:00Z', '9999-12-31T00:00:00Z' FROM (SELECT DISTINCT ON (\"id\") * FROM \"_rdlt_stage_feedcafe\" ORDER BY \"id\", \"__rdlt_arrival\" DESC) d WHERE NOT EXISTS ( SELECT 1 FROM \"events\" t WHERE (t.\"_rdlt_valid_to\" IS NULL OR t.\"_rdlt_valid_to\" = '9999-12-31T00:00:00Z') AND t.\"id\" = d.\"id\")";
-const PIN_M2: &str = "UPDATE \"events\" t SET \"_rdlt_valid_to\" = '2026-07-22T00:00:00Z' WHERE (t.\"_rdlt_valid_to\" IS NULL OR t.\"_rdlt_valid_to\" = '9999-12-31T00:00:00Z') AND (\"id\") NOT IN (SELECT \"id\" FROM (SELECT DISTINCT ON (\"id\") * FROM \"_rdlt_stage_feedcafe\" ORDER BY \"id\", \"__rdlt_arrival\" DESC) d)";
-const PIN_SCOPED: &str = "UPDATE \"events\" t SET \"_rdlt_valid_to\" = now() WHERE t.\"_rdlt_valid_to\" IS NULL AND (\"id\") NOT IN (SELECT \"id\" FROM (SELECT DISTINCT ON (\"id\") * FROM \"_rdlt_stage_feedcafe\" ORDER BY \"id\", \"__rdlt_arrival\" DESC) d) AND (\"day\") IN (SELECT \"day\" FROM \"_rdlt_stage_feedcafe\" WHERE \"day\" IS NOT NULL)";
+/// The dedup, evaluated ONCE per publish. Every scd2 pin below now names
+/// this relation instead of re-interpolating (and re-sorting) the stage.
+const PIN_CREATE: &str = "CREATE TEMP TABLE rdlt_dd_949c09887f1d4674 ON COMMIT DROP AS SELECT * FROM (SELECT DISTINCT ON (\"id\") * FROM \"_rdlt_stage_feedcafe\" ORDER BY \"id\", \"__rdlt_arrival\" DESC) deduped";
+const PIN_M0: &str = "UPDATE \"events\" t SET \"_rdlt_valid_to\" = '2026-07-22T00:00:00Z' FROM rdlt_dd_949c09887f1d4674 d WHERE (t.\"_rdlt_valid_to\" IS NULL OR t.\"_rdlt_valid_to\" = '9999-12-31T00:00:00Z') AND t.\"id\" = d.\"id\" AND (t.\"day\" IS DISTINCT FROM d.\"day\" OR t.\"name\" IS DISTINCT FROM d.\"name\")";
+const PIN_M1: &str = "INSERT INTO \"events\" (\"id\", \"day\", \"name\", \"_rdlt_load_id\", \"_rdlt_valid_from\", \"_rdlt_valid_to\") SELECT \"id\", \"day\", \"name\", \"_rdlt_load_id\", '2026-07-22T00:00:00Z', '9999-12-31T00:00:00Z' FROM rdlt_dd_949c09887f1d4674 d WHERE NOT EXISTS ( SELECT 1 FROM \"events\" t WHERE (t.\"_rdlt_valid_to\" IS NULL OR t.\"_rdlt_valid_to\" = '9999-12-31T00:00:00Z') AND t.\"id\" = d.\"id\")";
+const PIN_M2: &str = "UPDATE \"events\" t SET \"_rdlt_valid_to\" = '2026-07-22T00:00:00Z' WHERE (t.\"_rdlt_valid_to\" IS NULL OR t.\"_rdlt_valid_to\" = '9999-12-31T00:00:00Z') AND (\"id\") NOT IN (SELECT \"id\" FROM rdlt_dd_949c09887f1d4674 d)";
+const PIN_SCOPED: &str = "UPDATE \"events\" t SET \"_rdlt_valid_to\" = now() WHERE t.\"_rdlt_valid_to\" IS NULL AND (\"id\") NOT IN (SELECT \"id\" FROM rdlt_dd_949c09887f1d4674 d) AND (\"day\") IN (SELECT \"day\" FROM \"_rdlt_stage_feedcafe\" WHERE \"day\" IS NOT NULL)";
