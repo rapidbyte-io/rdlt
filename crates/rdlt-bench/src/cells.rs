@@ -50,6 +50,12 @@ pub struct CompetitorRef {
     /// the artifact); default: the cell's `runs`.
     #[serde(default)]
     pub runs: Option<u32>,
+    /// Shell line printing this arm's output size in bytes, run AFTER the
+    /// timed runs. Same substitutions as `prepare_sh`. Per arm rather than
+    /// per cell because each arm writes to its own place — which is only true
+    /// since the two dlt variants stopped sharing a prefix.
+    #[serde(default)]
+    pub artifact_bytes_sh: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -76,6 +82,10 @@ pub struct Cell {
     /// BEFORE prepare so untimed setup loads can run the same pipeline.
     #[serde(default)]
     pub prepare_sh: Option<String>,
+    /// Shell line printing rdlt's output size in bytes, run AFTER the timed
+    /// runs. Same substitutions as `prepare_sh`.
+    #[serde(default)]
+    pub artifact_bytes_sh: Option<String>,
     #[serde(default)]
     pub timing: Timing,
     /// Free-form knobs recorded verbatim into the artifact.

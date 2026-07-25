@@ -520,6 +520,7 @@ fn run_container_competitor(
         cpu,
         rss,
         ratio_vs_rdlt: None, // filled once the rdlt median exists
+        artifact_bytes: None, // filled by the caller, which knows the arm's `artifact_bytes_sh`
         extra: None,
     }
 }
@@ -606,6 +607,7 @@ fn run_driver_competitor(
             }),
         },
         ratio_vs_rdlt: None,
+        artifact_bytes: None, // filled by the caller, which knows the arm
         extra: last.extra,
     }
 }
@@ -678,6 +680,7 @@ mod tests {
     fn missing_image_is_loud_not_silent() {
         let variant = container_variant("ghost", "rdlt-bench-definitely-not-built");
         let reference = CompetitorRef {
+            artifact_bytes_sh: None,
             variant: "ghost".into(),
             args: vec!["x.py".into()],
             mounts: vec![],
@@ -792,6 +795,7 @@ mod tests {
             module_dir: dir.path().to_path_buf(),
         };
         let reference = CompetitorRef {
+            artifact_bytes_sh: None,
             variant: "airbyte".into(),
             args: vec![],
             mounts: vec![],
@@ -830,6 +834,7 @@ mod tests {
             module_dir: dir.path().to_path_buf(),
         };
         let reference = CompetitorRef {
+            artifact_bytes_sh: None,
             variant: "airbyte".into(),
             args: vec![],
             mounts: vec![],

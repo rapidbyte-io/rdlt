@@ -95,6 +95,47 @@ fn run_prepare(cell: &Cell, subs: &BTreeMap<String, String>) -> Result<()> {
     Ok(())
 }
 
+/// Measure what an arm left behind, by running its declared shell line and
+/// reading a byte count off stdout.
+///
+/// Deliberately untimed and AFTER the runs: it must not appear in any timing,
+/// and it reads the output of the LAST run, which is the one still on disk.
+///
+/// A failure here is recorded as absent, never as zero and never as a run
+/// failure. The size is context for interpreting a comparison, not part of
+/// the comparison — a cell whose sizer cannot reach its object store should
+/// still produce timings.
+pub fn measure_artifact_bytes(
+    label: &str,
+    script: Option<&String>,
+    subs: &BTreeMap<String, String>,
+) -> Option<u64> {
+    let script = substitute(script?, subs);
+    let output = std::process::Command::new("sh")
+        .args(["-c", &script])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        eprintln!(
+            "  {label}: artifact_bytes_sh failed ({}) — recording absent, not zero",
+            output.status
+        );
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    match text.trim().parse::<u64>() {
+        Ok(bytes) => Some(bytes),
+        Err(_) => {
+            eprintln!(
+                "  {label}: artifact_bytes_sh printed {:?}, which is not a byte count — \
+                 recording absent",
+                text.trim()
+            );
+            None
+        }
+    }
+}
+
 /// The measured argv: a custom `command` (substituted), else the release CLI
 /// running the rendered spec with a `--report` sink.
 fn measured_argv(
@@ -281,6 +322,7 @@ pub(crate) fn rdlt_side(samples: &[Sample<RunDetail>]) -> RdltSide {
         p95_ms,
         rows,
         bytes,
+        artifact_bytes: None, // filled by the caller, which knows the cell
         rows_per_s: rows.map(|r| r as f64 / secs),
         mb_per_s: bytes.map(|b| b as f64 / (1024.0 * 1024.0) / secs),
         cpu: cpu_stats(last.detail.usage.as_ref(), last.detail.clock_ms),
@@ -422,7 +464,9 @@ pub fn run_cell(
         let seq = run_seq - 1;
         run_once_subprocess(cell, &subs, paths, &run_dir, seq, counted)
     })?;
-    let rdlt_side = rdlt_side(&samples);
+    let mut rdlt_side = rdlt_side(&samples);
+    rdlt_side.artifact_bytes =
+        measure_artifact_bytes("rdlt", cell.artifact_bytes_sh.as_ref(), &subs);
     let verify = verify_outcome(cell, &samples)?;
 
     let mut artifact = Artifact {

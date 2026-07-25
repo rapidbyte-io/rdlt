@@ -169,6 +169,7 @@ mod tests {
             artifact.competitors.insert(
                 "dlt-pyarrow".into(),
                 CompetitorSide::Ok {
+                    artifact_bytes: None,
                     runs_ms: vec![comp],
                     median_ms: comp,
                     self_timed: true,

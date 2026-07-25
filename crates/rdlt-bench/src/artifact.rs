@@ -58,6 +58,19 @@ pub struct RdltSide {
     pub mb_per_s: Option<f64>,
     pub cpu: CpuStats,
     pub rss: RssStats,
+    /// Bytes this arm LEFT BEHIND — the size of the output it wrote, not the
+    /// `bytes` above, which is what it moved.
+    ///
+    /// The distinction is the point. Two arms can move identical rows and
+    /// write wildly different artifacts: rdlt wrote 210.0 MB where dlt wrote
+    /// 73.7 MB for the same million rows, because one compressed and the
+    /// other did not. A timing comparison between them was comparing
+    /// different work, and nothing in the artifact said so.
+    ///
+    /// Measured per arm by the cell's `artifact_bytes_sh`, absent when the
+    /// cell declares none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_bytes: Option<u64>,
 }
 
 /// One competitor arm's outcome. The size skew between the variants is
@@ -81,6 +94,9 @@ pub enum CompetitorSide {
         /// context next to the headline wall). Absent for container runs.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         extra: Option<serde_json::Value>,
+        /// Bytes this arm left behind — see [`RdltSide::artifact_bytes`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        artifact_bytes: Option<u64>,
     },
     /// A competitor that could not run — recorded explicitly, never silently
     /// skipped.
@@ -222,6 +238,7 @@ pub(crate) mod tests {
             },
             workload: BTreeMap::new(),
             rdlt: RdltSide {
+                artifact_bytes: None,
                 runs_ms: vec![10.0, 11.0, 12.0],
                 median_ms: 11.0,
                 p95_ms: 12.0,

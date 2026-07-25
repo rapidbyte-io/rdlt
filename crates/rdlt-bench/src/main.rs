@@ -195,8 +195,17 @@ fn run_one_cell(
             subs.insert("port".into(), port.to_string());
         }
         eprintln!("   baseline {} ...", variant.id);
-        let side =
+        let mut side =
             competitors::run_competitor(variant, reference, cell.runs, &subs, &cell_fixtures);
+        // Measured here rather than inside the runner because each arm writes
+        // to its own place and only this loop knows which arm just ran.
+        if let artifact::CompetitorSide::Ok { artifact_bytes, .. } = &mut side {
+            *artifact_bytes = runner::measure_artifact_bytes(
+                &variant.id,
+                reference.artifact_bytes_sh.as_ref(),
+                &subs,
+            );
+        }
         // A baseline that could not run is recorded as a loud `Missing{reason}`,
         // never a silent skip. Enforcement is measurement-first (bars gate a
         // recorded session, not the live run), so the run proceeds and the
