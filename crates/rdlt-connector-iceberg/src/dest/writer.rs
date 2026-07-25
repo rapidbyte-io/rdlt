@@ -51,6 +51,7 @@ impl TableWriter {
         table: &iceberg::table::Table,
         file_prefix: &str,
         session_nonce: &str,
+        properties: parquet::file::properties::WriterProperties,
     ) -> Result<Self, DestinationError> {
         let context = || format!("table `{}`", table.identifier());
         let location =
@@ -61,7 +62,10 @@ impl TableWriter {
             DataFileFormat::Parquet,
         );
         let parquet = ParquetWriterBuilder::new(
-            parquet::file::properties::WriterProperties::default(),
+            // Was `WriterProperties::default()`, which writes UNCOMPRESSED —
+            // and an Iceberg table's data files are read by every engine
+            // pointed at the catalog, not only by rdlt.
+            properties,
             table.metadata().current_schema().clone(),
         );
         let rolling = RollingFileWriterBuilder::new_with_default_file_size(

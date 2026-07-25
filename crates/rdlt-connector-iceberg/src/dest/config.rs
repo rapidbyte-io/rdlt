@@ -10,7 +10,7 @@
 
 use std::collections::BTreeMap;
 
-use rdlt_connector::Secret;
+use rdlt_connector::{ParquetOptions, Secret};
 use serde::{Deserialize, Serialize};
 
 // ---- Auth ----------------------------------------------------------------
@@ -251,6 +251,12 @@ pub struct IcebergConfig {
     /// Per-stream table options.
     #[serde(default)]
     pub tables: BTreeMap<String, TableOptions>,
+    /// How to write the parquet data files. Absent uses the defaults, which
+    /// compress — see [`ParquetOptions`]. Iceberg data files are always
+    /// parquet here, so unlike the file destination there is no format to
+    /// contradict.
+    #[serde(default)]
+    pub parquet: Option<ParquetOptions>,
 }
 
 impl IcebergConfig {
@@ -270,6 +276,7 @@ impl IcebergConfig {
             namespace: namespace.into(),
             create_namespace: false,
             storage: None,
+            parquet: None,
             tables: BTreeMap::new(),
         }
     }
@@ -342,6 +349,11 @@ impl IcebergConfig {
             && storage.s3.is_none()
         {
             return invalid("`storage` block declares no kind (expected `s3`)".into());
+        }
+        if let Some(parquet) = &self.parquet
+            && let Err(message) = parquet.validate()
+        {
+            return invalid(message);
         }
         for (stream, table) in &self.tables {
             if let Some(name) = &table.name

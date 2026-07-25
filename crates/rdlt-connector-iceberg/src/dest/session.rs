@@ -80,6 +80,10 @@ impl Destination for IcebergDest {
         let namespace = NamespaceIdent::from_vec(self.config.namespace_levels())
             .map_err(|e| fatal(format!("namespace `{}`: {e}", self.config.namespace)))?;
         ensure_namespace(&catalog, &namespace, self.config.create_namespace).await?;
+        let writer_properties = super::writer_props::writer_properties(
+            &self.config.parquet.clone().unwrap_or_default(),
+        )
+        .map_err(fatal)?;
         Ok(Box::new(IcebergSession {
             config: self.config.clone(),
             catalog,
@@ -87,6 +91,7 @@ impl Destination for IcebergDest {
             scope: ident_hash(ctx.pipeline.as_str(), SCOPE_HASH_LEN),
             load_id: ctx.load_id,
             nonce: session_nonce(),
+            writer_properties,
             tables: BTreeMap::new(),
         }))
     }
@@ -114,6 +119,10 @@ struct IcebergSession {
     load_id: LoadId,
     /// Unique per session — see [`TableWriter::open`]'s nonce contract.
     nonce: String,
+    /// Resolved once at session open, reused for every data file: the
+    /// translation can fail, and a load should not discover that partway
+    /// through writing.
+    writer_properties: parquet::file::properties::WriterProperties,
     tables: BTreeMap<TableName, TableState>,
 }
 
@@ -296,7 +305,15 @@ impl LoadSession for IcebergSession {
         if state.writer.is_none() {
             state.window_seq += 1;
             let prefix = format!("{}-{}", self.load_id, state.window_seq);
-            state.writer = Some(TableWriter::open(&state.table, &prefix, &self.nonce).await?);
+            state.writer = Some(
+                TableWriter::open(
+                    &state.table,
+                    &prefix,
+                    &self.nonce,
+                    self.writer_properties.clone(),
+                )
+                .await?,
+            );
         }
         state
             .writer

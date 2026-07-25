@@ -13,8 +13,12 @@ mod state;
 #[cfg(test)]
 mod test_support;
 mod writer;
+mod writer_props;
 
 pub use config::{IcebergConfig, config_schema};
+/// Re-exported from the SPI so parquet output is configured through this
+/// destination's own path, as with `Secret`.
+pub use rdlt_connector::{ParquetCompression, ParquetOptions};
 #[cfg(feature = "failpoints")]
 pub use session::ICE_FAIL_POINTS;
 pub use session::IcebergDest;
