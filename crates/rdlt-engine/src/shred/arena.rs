@@ -55,6 +55,28 @@ pub(crate) struct Arena<'s> {
 }
 
 impl<'s> Arena<'s> {
+    /// Pre-size for a slab of `bytes` bytes.
+    ///
+    /// Node count scales with the input, so growing three vectors from empty
+    /// means repeated reallocation-and-copy on every push. The divisor is a
+    /// floor on how many bytes the smallest meaningful node costs (`1,` for an
+    /// array item, `"k":1,` for an object entry), so this under-estimates on
+    /// dense input rather than over-allocating on sparse input.
+    ///
+    /// CAPPED, and capacity only — never a pre-filled length. A raw push
+    /// carries an arbitrary-size payload (only the file source bounds itself,
+    /// to 8 MiB), and peak RSS is a recorded benchmark metric, so an uncapped
+    /// heuristic would trade a measured number for an unmeasured one.
+    pub(crate) fn sized_for(bytes: usize) -> Self {
+        const MAX_PRESIZE: usize = 1 << 20;
+        let nodes = (bytes / 4).min(MAX_PRESIZE);
+        Self {
+            nodes: Vec::with_capacity(nodes),
+            obj_entries: Vec::with_capacity(nodes),
+            arr_items: Vec::with_capacity(nodes / 4),
+        }
+    }
+
     /// Parse a raw-JSON push (NDJSON, a top-level array, or a single document)
     /// into this arena, returning the ROW nodes: top-level arrays flatten into
     /// their items, and non-object rows are wrapped as `{"value": …}` —

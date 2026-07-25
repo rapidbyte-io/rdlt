@@ -6,9 +6,14 @@
 //! render through the SAME functions — identical bytes, identical hashes.
 //!
 //! Two float renderings coexist ON PURPOSE, exactly as they always have:
-//! `render_scalar` uses Rust's `to_string` (Utf8 widening output) while
-//! `canonical_json_bytes` serializes through serde_json (ryu — `_rdlt_id`
-//! hashing). Changing either changes persisted ids/values.
+//! `render_scalar` uses Rust's `to_string` while `canonical_json_bytes`
+//! serializes through serde_json's own float formatter. They DISAGREE, and
+//! that disagreement is persisted: `1.0` renders as `1` here and `1.0` there;
+//! `1e16` as `10000000000000000` here and `1e16` there. Changing either — to
+//! `{:?}`, to a faster float crate, or to the other one — rewrites `_rdlt_id`
+//! values that already exist in users' warehouses.
+
+use std::borrow::Cow;
 
 use super::view::{JsonView, Kind};
 
@@ -17,14 +22,25 @@ use super::view::{JsonView, Kind};
 /// - integers: decimal digits
 /// - floats: Rust's shortest round-trip rendering
 /// - bools: `true` / `false`
-pub(crate) fn render_scalar<'a, V: JsonView<'a>>(value: V) -> Option<String> {
+///
+/// Borrowed for strings, whose canonical text IS the view's own bytes, and
+/// owned for everything else. The borrow is confined to that one arm on
+/// purpose: it is the only case where "render" and "the bytes already there"
+/// are provably the same, and it is the common one — primary keys are usually
+/// strings. Widening the borrow to any other kind would mean deciding a
+/// rendering somewhere new, which is how persisted ids move.
+///
+/// `None` covers null, objects and arrays alike. The caller turns that into
+/// `FieldValue::Null`, so those four inputs share a keyed identity while an
+/// empty string does not — pinned in `tests/shred_identity_pin.rs`.
+pub(crate) fn render_scalar<'a, V: JsonView<'a>>(value: V) -> Option<Cow<'a, str>> {
     match value.kind() {
         Kind::Null | Kind::Object | Kind::Array => None,
-        Kind::Str(s) => Some(s.to_owned()),
-        Kind::Bool(b) => Some(if b { "true" } else { "false" }.to_owned()),
-        Kind::Int(i) => Some(i.to_string()),
-        Kind::UInt(u) => Some(u.to_string()),
-        Kind::Float(f) => Some(f.to_string()),
+        Kind::Str(s) => Some(Cow::Borrowed(s)),
+        Kind::Bool(b) => Some(Cow::Borrowed(if b { "true" } else { "false" })),
+        Kind::Int(i) => Some(Cow::Owned(i.to_string())),
+        Kind::UInt(u) => Some(Cow::Owned(u.to_string())),
+        Kind::Float(f) => Some(Cow::Owned(f.to_string())),
     }
 }
 
@@ -145,6 +161,23 @@ mod tests {
     fn renderings_are_shortest_round_trip() {
         assert_eq!(render_scalar(&json!(10)).unwrap(), "10");
         assert_eq!(render_scalar(&json!(10.5)).unwrap(), "10.5");
+        // Floats where Rust's `Display` (used here) and `Debug` (or any
+        // JSON-shaped formatter) DISAGREE. `10.5` above renders identically
+        // under both and so cannot catch a swapped formatter; these can.
+        assert_eq!(render_scalar(&json!(1.0)).unwrap(), "1");
+        assert_eq!(render_scalar(&json!(-0.0)).unwrap(), "-0");
+        assert_eq!(render_scalar(&json!(1e16)).unwrap(), "10000000000000000");
+        assert_eq!(render_scalar(&json!(1e-6)).unwrap(), "0.000001");
+        // …and the same values through the OTHER renderer, so the two stay
+        // provably distinct rather than drifting into agreement.
+        let canon = |v: &serde_json::Value| {
+            let mut out = Vec::new();
+            canonical_json_bytes(v, &mut out);
+            String::from_utf8(out).expect("utf8")
+        };
+        assert_eq!(canon(&json!(1.0)), "1.0");
+        assert_eq!(canon(&json!(1e16)), "1e+16");
+        assert_eq!(canon(&json!(1e-6)), "1e-6");
         assert_eq!(
             render_scalar(&json!(9007199254740993i64)).unwrap(),
             "9007199254740993"

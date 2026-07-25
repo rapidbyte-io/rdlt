@@ -95,7 +95,7 @@ impl TapeShredder {
         // columns back to exactly this point.
         self.rollback_snapshot = self.tables.iter().map(|t| t.columns.clone()).collect();
 
-        let mut arena = Arena::default();
+        let mut arena = Arena::sized_for(bytes.len());
         let roots = arena.parse_rows(bytes).map_err(PushError::Json)?;
 
         // Buffered rows per table, index-aligned with `self.tables`.
@@ -153,7 +153,11 @@ impl TapeShredder {
         rows: &mut Vec<Vec<TapeRow>>,
         hash_scratch: &mut Vec<u8>,
     ) {
-        let root_id = row_identity(self.spec.primary_key.as_deref(), arena.node(root));
+        let root_id = row_identity(
+            self.spec.primary_key.as_deref(),
+            arena.node(root),
+            hash_scratch,
+        );
         let mut queue: VecDeque<Queued> = VecDeque::new();
         queue.push_back(Queued {
             table_idx: 0,
@@ -234,6 +238,18 @@ impl TapeShredder {
         source_key: &str,
         rows: &mut Vec<Vec<TapeRow>>,
     ) -> usize {
+        // Memo hit: this parent has resolved this exact source key before.
+        // Every document in a push repeats its keys, so after the first one
+        // this replaces a normalized-name construction (which formats, and may
+        // hash and truncate) plus a linear scan of every known table.
+        if let Some(idx) = self.tables[parent_idx]
+            .child_tables
+            .iter()
+            .find(|(key, _)| key == source_key)
+            .map(|(_, idx)| *idx)
+        {
+            return idx;
+        }
         let parent_table = self.tables[parent_idx].table.clone();
         let parent_depth = self.tables[parent_idx]
             .parent
@@ -241,18 +257,26 @@ impl TapeShredder {
             .map_or(0, |p| p.depth);
         let name = child_table_name(parent_table.as_str(), source_key, self.caps.ident_rules);
         let table = TableName::new(name);
-        if let Some(idx) = self.tables.iter().position(|t| t.table == table) {
-            return idx;
-        }
-        self.tables.push(TableBuffer::new(
-            table,
-            Some(ParentLink {
-                parent: parent_table,
-                depth: parent_depth + 1,
-            }),
-            self.caps.ident_rules,
-        ));
-        rows.push(Vec::new());
-        self.tables.len() - 1
+        // On a miss the scan still runs: distinct source keys can normalize to
+        // one table, so "not in the memo" does not mean "not yet created".
+        let idx = match self.tables.iter().position(|t| t.table == table) {
+            Some(idx) => idx,
+            None => {
+                self.tables.push(TableBuffer::new(
+                    table,
+                    Some(ParentLink {
+                        parent: parent_table,
+                        depth: parent_depth + 1,
+                    }),
+                    self.caps.ident_rules,
+                ));
+                rows.push(Vec::new());
+                self.tables.len() - 1
+            }
+        };
+        self.tables[parent_idx]
+            .child_tables
+            .push((source_key.to_owned(), idx));
+        idx
     }
 }
