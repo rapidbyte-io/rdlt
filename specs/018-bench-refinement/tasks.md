@@ -95,7 +95,7 @@ No foundational tasks — the existing harness and gate are the foundation; US1'
 
 **Independent Test**: `cargo run -p rdlt-bench -- gate` passes against the session cited by every bar's policy entry; no cell has two bars; no bar binds a cluster statistic.
 
-- [ ] T025 [US5] Set bars measurement-first (BR8, research D-14): from the recorded 3-way session, add ≤ 5 bars to benches/bars.toml (`ratio_vs dlt` per cell where the floor supports it; optionally ONE rss_ratio_vs dlt on pg-to-pg-1m), each below its session floor with a policy entry in RESULTS.md; run `gate` green against the same session; record the explicitly-NOT-taken 3-way Iceberg cell decision in the policy log; close-out row BR8 filled
+- [x] T025 [US5] Set bars measurement-first (BR8, research D-14): from the recorded 3-way session, add ≤ 5 bars to benches/bars.toml (`ratio_vs dlt` per cell where the floor supports it; optionally ONE rss_ratio_vs dlt on pg-to-pg-1m), each below its session floor with a policy entry in RESULTS.md; run `gate` green against the same session; record the explicitly-NOT-taken 3-way Iceberg cell decision in the policy log; close-out row BR8 filled
 
 **Checkpoint**: US5 = plan P4. Enforcement restored with evidence.
 

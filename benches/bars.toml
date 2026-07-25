@@ -11,3 +11,29 @@
 # pg-wide-pg-1m, cold-start) are recorded in the RESULTS.md policy log with
 # their final values and the archive commit (40841ab). The cold-start absolute
 # check now lives on the instruments track (benches/check-cold-start.sh).
+
+# Bars set 2026-07-25 from the first recorded three-way session (15/15 arms,
+# rowcount-verified; artifacts in benches/results/). One bar per cell, each
+# below its recorded floor; cells at parity (pg-to-s3parquet-1m, 1.0×) or
+# behind (pg-to-pg-dedup-1m, 0.9×) carry NO bar — the matrix reports them.
+
+[[bar]]
+cell = "pg-to-pg-1m"
+kind = "ratio_vs"
+competitor = "dlt"
+min_ratio = 4.0
+policy = "RESULTS.md policy log 2026-07-25 (bars): floor 5.3x (this session), 4.6x (2-way session same day)"
+
+[[bar]]
+cell = "s3jsonl-to-pg-200k"
+kind = "ratio_vs"
+competitor = "dlt"
+min_ratio = 40.0
+policy = "RESULTS.md policy log 2026-07-25 (bars): floor 55.3x (this session), 54.9x (2-way session same day)"
+
+[[bar]]
+cell = "s3jsonl-to-s3parquet-200k"
+kind = "ratio_vs"
+competitor = "dlt"
+min_ratio = 45.0
+policy = "RESULTS.md policy log 2026-07-25 (bars): floor 60.1x (this session), 61.1x (2-way session same day)"
