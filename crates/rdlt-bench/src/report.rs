@@ -265,6 +265,19 @@ pub fn append_history(path: &Path, artifact: &Artifact) -> Result<()> {
         median_ms: artifact.rdlt.median_ms,
         rows: artifact.rdlt.rows,
     }];
+    // Every arm of a cell delivers the SAME declared stream set — that is what
+    // the delivered-vs-declared check enforces — so the cell's declared total
+    // is each competitor's row count too.
+    //
+    // Recording it is what lets the trends guard fire on a competitor row. It
+    // was `None` here, and the guard compares before/now row counts, so a
+    // scope correction was rendered as a plain percentage for every arm except
+    // rdlt's — precisely the misleading output the guard exists to prevent,
+    // just on the other side of the comparison.
+    let declared: Option<u64> = artifact
+        .verify
+        .as_ref()
+        .map(|v| v.values().copied().sum());
     for (variant, side) in &artifact.competitors {
         if let CompetitorSide::Ok { median_ms, .. } = side {
             lines.push(HistoryLine {
@@ -272,7 +285,7 @@ pub fn append_history(path: &Path, artifact: &Artifact) -> Result<()> {
                 cell: artifact.cell_id.clone(),
                 variant: variant.clone(),
                 median_ms: *median_ms,
-                rows: None,
+                rows: declared,
             });
         }
     }

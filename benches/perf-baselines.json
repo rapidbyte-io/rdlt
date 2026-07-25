@@ -16,10 +16,10 @@
       "instructions": 20994190
     },
     "pg_copy_encode_10k": {
-      "instructions": 24469666
+      "instructions": 31924625
     },
     "shred_nested_10k": {
-      "instructions": 310654653
+      "instructions": 311619196
     }
   }
 }

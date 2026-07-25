@@ -18,7 +18,7 @@ use tokio_postgres::Client;
 use rdlt_connector_sqlcore::plan::{self as sqlplan, IndexSpec, TableFacts, scope_replace_sql};
 use rdlt_connector_sqlcore::{
     CommitCtx, FullLoadPublish, MergeDialect, Step, build_merge_plan, commit_script,
-    insert_select_sql, prepare_target, render_arm, staged_probe_targets,
+    prepare_target, render_arm, staged_probe_targets,
 };
 
 use super::config::MergeStrategy;
@@ -228,6 +228,27 @@ impl PgSession {
         load_id: &str,
     ) -> Result<(), DestinationError> {
         self.begin_unit(load_id).await?;
+        // Only Replace has anything to prepare. Checked before building the
+        // union below, so the common path (Append, and every merge table)
+        // allocates nothing.
+        if !matches!(self.tables.get(table), Some((_, WriteMode::Replace))) {
+            return Ok(());
+        }
+        // Seed the guard from the DURABLE record before asking the planner.
+        // A crash-recovery session has fresh memory and would otherwise
+        // re-clear a target an earlier unit of this same load already cleared
+        // and filled.
+        if !self.cleared_targets.contains(table)
+            && !self
+                .unit
+                .as_ref()
+                .expect("unit open")
+                .cleared
+                .contains(table)
+            && self.target_cleared_durably(load_id, table).await?
+        {
+            self.cleared_targets.insert(table.clone());
+        }
         let cleared: BTreeSet<TableName> = self
             .cleared_targets
             .union(&self.unit.as_ref().expect("unit open").cleared)
@@ -250,9 +271,49 @@ impl PgSession {
                 .batch_execute(&PgDialect.clear_table(&quote(table.as_str())))
                 .await
                 .map_err(classify_stmt)?;
+            // Recorded in the SAME transaction as the TRUNCATE it describes,
+            // so the two cannot disagree: a rolled-back clear leaves no record
+            // claiming it happened, and a durable record always has the empty
+            // target behind it.
+            self.client
+                .execute(
+                    &format!(
+                        "INSERT INTO {} VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                        rdlt_connector_sqlcore::names::CLEARED_TABLE
+                    ),
+                    &[&load_id, &table.as_str()],
+                )
+                .await
+                .map_err(classify_stmt)?;
             self.unit.as_mut().expect("unit open").cleared.insert(table);
         }
         Ok(())
+    }
+
+    /// Whether a COMMITTED unit of this load already cleared this target.
+    ///
+    /// The durable half of the once-per-(load, target) guard. It replaces the
+    /// old per-LOAD test, which answered the wrong question: a Replace table
+    /// registered in one unit and first written in a later one found the load
+    /// already committed and skipped its clear entirely.
+    async fn target_cleared_durably(
+        &self,
+        load_id: &str,
+        table: &TableName,
+    ) -> Result<bool, DestinationError> {
+        let cleared: bool = self
+            .client
+            .query_one(
+                &format!(
+                    "SELECT EXISTS (SELECT 1 FROM {} WHERE load_id = $1 AND table_name = $2)",
+                    rdlt_connector_sqlcore::names::CLEARED_TABLE
+                ),
+                &[&load_id, &table.as_str()],
+            )
+            .await
+            .map_err(transient)?
+            .get(0);
+        Ok(cleared)
     }
 
     /// Where this table's rows land: its stage if it merges, the target itself
@@ -285,18 +346,18 @@ async fn execute_step(
     step: &Step,
 ) -> Result<(), DestinationError> {
     match step {
-        Step::ClearTarget { table } => {
-            tx.batch_execute(&PgDialect.clear_table(&quote(table.as_str())))
-                .await
-                .map_err(classify_stmt)?;
-        }
-        Step::InsertSelect { table } => {
-            let (schema, _) = &tables[table];
-            let target = quote(table.as_str());
-            let stage = quote(&stage_name(pipeline, table));
-            tx.batch_execute(&insert_select_sql(&target, &column_list(schema), &stage))
-                .await
-                .map_err(classify_stmt)?;
+        // Unreachable in THIS executor and deliberately not carried as dead
+        // SQL (greenfield: the superseded path is deleted, not kept warm).
+        // Postgres always plans `FullLoadPublish::DirectToTarget`, so a full
+        // load's rows are already in the target and its clear happened at the
+        // first write. Reaching either arm means the planner changed without
+        // this executor being taught, which is worth saying loudly rather than
+        // silently re-running a publish that already happened.
+        Step::ClearTarget { table } | Step::InsertSelect { table } => {
+            return Err(fatal(format!(
+                "internal: staged publish step planned for `{table}`, but this \
+                 destination writes full loads directly"
+            )));
         }
         Step::ScopeReplace { table, scope } => {
             let target = quote(table.as_str());
@@ -679,6 +740,11 @@ impl PgSession {
             if buf.len() >= FLUSH_AT {
                 let chunk = buf.split().freeze();
                 sink.as_mut().feed(chunk).await.map_err(classify_stmt)?;
+                // `split` hands the used capacity to the chunk, so without
+                // this the buffer is near-empty from the third flush on and
+                // every later chunk is rebuilt by repeated growth inside the
+                // per-cell loop — the opposite of reusing one buffer.
+                buf.reserve(FLUSH_AT);
             }
         }
         buf.put_i16(-1); // file trailer

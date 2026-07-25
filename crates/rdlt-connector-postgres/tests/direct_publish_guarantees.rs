@@ -72,8 +72,8 @@ async fn probe_redelivered_unit_does_not_duplicate() {
     assert_eq!(count(&conn, "rp1.t").await, 3, "REDELIVERY MUST NOT DUPLICATE");
 }
 
-/// KNOWN DEFECT, unfixed: a Replace target whose first rows arrive after the
-/// load's first commit unit is never cleared.
+/// A Replace target whose first rows arrive after the load's first commit
+/// unit must still be cleared.
 ///
 /// `prepare_target` clears at the FIRST WRITE of a target, guarded by
 /// `load_committed_before` so a crash-recovery session cannot re-truncate rows
@@ -86,10 +86,10 @@ async fn probe_redelivered_unit_does_not_duplicate() {
 /// `ClearTarget` for every Replace table at unit 1's publish regardless of
 /// whether it had staged anything.
 ///
-/// A correct fix needs a DURABLE per-(load, target) record, which is a design
-/// change to the exactly-once core rather than a patch. Left failing and
-/// visible instead of quietly removed.
-#[ignore = "confirmed defect, unfixed: Replace clear is guarded per-load but must be per-(load, target)"]
+/// Fixed by making the guard per-(load, target) and durable: the executor
+/// seeds it from `_rdlt_cleared` before planning, and records the clear in the
+/// same transaction as the TRUNCATE, so a rolled-back clear leaves no record
+/// claiming it happened.
 #[tokio::test(flavor = "multi_thread")]
 async fn probe_replace_first_written_in_unit_two_is_cleared() {
     let Some(pg) = PgFixture::start().await else { return };

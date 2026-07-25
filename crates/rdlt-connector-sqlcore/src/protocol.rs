@@ -96,11 +96,12 @@ pub enum FullLoadPublish {
 /// destination lands full-load rows, and which targets THIS load has already
 /// cleared.
 ///
-/// `load_committed_before` and `cleared_targets` are the two halves of one
-/// guard, and both are needed: the first is durable (read from the receipt log,
-/// so it survives a crash), the second is in-process (so the second, third and
-/// nth write of a still-running load does not re-clear what the first already
-/// cleared). Neither implies the other.
+/// `cleared_targets` is the whole Replace guard on the direct path, and the
+/// executor is responsible for seeding it durably — see
+/// [`crate::names::CLEARED_TABLE`]. `load_committed_before` answers a
+/// different question (did ANY unit of this load commit) and is used only by
+/// the staged path, where the clear is planned for every Replace table at
+/// once.
 #[derive(Debug, Clone, Copy)]
 pub struct CommitCtx<'a> {
     pub replayed: bool,
@@ -140,10 +141,17 @@ pub fn prepare_target(
     if ctx.stages(mode) || !matches!(mode, WriteMode::Replace) {
         return Vec::new();
     }
-    // Once per (load, target): durably guarded by the receipt log so a
-    // recovery session never re-clears rows an earlier unit published, and
-    // in-process guarded so later units of a live load do not either.
-    if ctx.load_committed_before || ctx.cleared_targets.contains(table) {
+    // Once per (load, target). `cleared_targets` carries BOTH halves now: the
+    // executor seeds it from a durable record before asking, so a
+    // crash-recovery session with fresh memory sees what earlier units did.
+    //
+    // It deliberately does NOT consult `load_committed_before`. That is a
+    // per-LOAD fact, and using it here answered the wrong question: a Replace
+    // table registered in unit 1 but first written in unit 2 found the load
+    // already committed, skipped its clear, and appended to the PREVIOUS
+    // load's rows. Pinned in the postgres crate's
+    // `direct_publish_guarantees` suite.
+    if ctx.cleared_targets.contains(table) {
         return Vec::new();
     }
     vec![Step::ClearTarget {
@@ -553,15 +561,23 @@ mod tests {
         assert_eq!(script.steps, vec![Step::UpsertState, Step::InsertReceipt]);
     }
 
-    /// The two halves of the once-per-load guard, each sufficient on its own.
+    /// The clear guard is per-(load, TARGET), and nothing else suppresses it.
+    ///
+    /// This pin previously asserted that `load_committed_before` also
+    /// suppressed the clear. It does not, and asserting that it did was
+    /// pinning a defect: a Replace table registered in unit 1 but first
+    /// written in unit 2 found the load already committed, skipped its
+    /// TRUNCATE, and appended to the PREVIOUS load's rows. The executor now
+    /// seeds `cleared_targets` from a durable per-target record instead.
     #[test]
-    fn pin_direct_replace_clears_exactly_once_per_load() {
+    fn pin_direct_replace_clears_exactly_once_per_target() {
         let tbls = tables(vec![("events", keyed_schema("events"), WriteMode::Replace)]);
         let (done, staged) = (empty(), empty());
         let cleared_none = empty();
         let cleared_events: BTreeSet<TableName> = [t("events")].into_iter().collect();
 
-        // In-process half: this load already cleared it in an earlier write.
+        // Known cleared — whether from this session or seeded from the durable
+        // record — means no second clear.
         assert!(
             prepare_target(
                 &tbls,
@@ -570,15 +586,16 @@ mod tests {
             )
             .is_empty()
         );
-        // Durable half: an earlier unit of this load committed, so a recovery
-        // session with fresh memory still must not re-clear.
-        assert!(
+        // An earlier unit of this load having committed says NOTHING about
+        // whether THIS target was cleared, so it must not suppress.
+        assert_eq!(
             prepare_target(
                 &tbls,
                 &direct_ctx(false, true, &done, &staged, &cleared_none),
                 &t("events")
-            )
-            .is_empty()
+            ),
+            vec![Step::ClearTarget { table: t("events") }],
+            "a committed unit elsewhere in the load must not skip this target's clear"
         );
     }
 

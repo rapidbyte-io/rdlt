@@ -57,19 +57,23 @@ pub(crate) struct Arena<'s> {
 impl<'s> Arena<'s> {
     /// Pre-size for a slab of `bytes` bytes.
     ///
-    /// Node count scales with the input, so growing three vectors from empty
-    /// means repeated reallocation-and-copy on every push. The divisor is a
-    /// floor on how many bytes the smallest meaningful node costs (`1,` for an
-    /// array item, `"k":1,` for an object entry), so this under-estimates on
-    /// dense input rather than over-allocating on sparse input.
+    /// Growing three vectors from empty means repeated reallocate-and-copy as
+    /// a slab parses, so a starting capacity is worth having. Picking it is
+    /// the delicate part, and the first version of this got the direction
+    /// wrong: it divided by the SMALLEST bytes-per-node (4, for `1,` in an
+    /// array), which is an UPPER bound on node count, and then claimed to
+    /// under-estimate. It over-estimated on everything.
     ///
-    /// CAPPED, and capacity only — never a pre-filled length. A raw push
-    /// carries an arbitrary-size payload (only the file source bounds itself,
-    /// to 8 MiB), and peak RSS is a recorded benchmark metric, so an uncapped
-    /// heuristic would trade a measured number for an unmeasured one.
+    /// Typical JSON runs far sparser than its densest possible encoding — an
+    /// object entry is `"key":value,` — so this divides by a realistic figure
+    /// instead of a floor, and caps hard. Under-shooting costs a doubling or
+    /// two; over-shooting costs resident memory on every push, and peak RSS is
+    /// one of this feature's recorded metrics. Capacity only, never a
+    /// pre-filled length.
     pub(crate) fn sized_for(bytes: usize) -> Self {
-        const MAX_PRESIZE: usize = 1 << 20;
-        let nodes = (bytes / 4).min(MAX_PRESIZE);
+        const BYTES_PER_NODE: usize = 32;
+        const MAX_PRESIZE: usize = 64 * 1024;
+        let nodes = (bytes / BYTES_PER_NODE).min(MAX_PRESIZE);
         Self {
             nodes: Vec::with_capacity(nodes),
             obj_entries: Vec::with_capacity(nodes),
@@ -77,16 +81,6 @@ impl<'s> Arena<'s> {
         }
     }
 
-    /// Parse a raw-JSON push (NDJSON, a top-level array, or a single document)
-    /// into this arena, returning the ROW nodes: top-level arrays flatten into
-    /// their items, and non-object rows are wrapped as `{"value": …}` —
-    /// semantics pinned against an independent `serde_json::Value` oracle in
-    /// this module's tests.
-    ///
-    /// Documents are located zero-copy via `&RawValue` (serde_json's stream
-    /// iterator cannot seed), then each document slice is seed-parsed into the
-    /// arena — serde_json's parser both times, so lexical edge cases match the
-    /// tree path exactly.
     pub(crate) fn parse_rows(&mut self, bytes: &'s [u8]) -> Result<Vec<NodeId>, serde_json::Error> {
         let mut rows = Vec::new();
         for raw in serde_json::Deserializer::from_slice(bytes)

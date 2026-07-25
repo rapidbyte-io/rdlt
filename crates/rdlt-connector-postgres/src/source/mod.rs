@@ -414,16 +414,15 @@ impl Source for PostgresSource {
         // the queries produce. Announce it with the remedy, since the extra
         // streams are otherwise only visible in the row totals.
         if self.config.tables.is_none() && !self.config.queries.is_empty() {
-            let discovered: Vec<&str> = names
-                .iter()
-                .copied()
-                .filter(|n| self.config.query_config(n).is_none())
-                .collect();
-            if !discovered.is_empty() {
+            // `names` was already built with exactly this filter, so
+            // re-deriving it allocated a second Vec and re-scanned `queries`
+            // per table for an identical answer — and read as though it were
+            // removing something, inviting a future edit in one place only.
+            if !names.is_empty() {
                 tracing::warn!(
                     schema = %self.config.schema,
-                    count = discovered.len(),
-                    tables = %discovered.join(", "),
+                    count = names.len(),
+                    tables = %names.join(", "),
                     "`tables` is not set, so schema discovery adds these tables to the \
                      declared queries; set `tables: []` to deliver only the queries, or \
                      list the tables to read"

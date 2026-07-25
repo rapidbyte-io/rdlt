@@ -21,6 +21,21 @@ pub const STATE_TABLE: &str = "_rdlt_state";
 /// Commit receipt table — idempotence key is (load_id, commit_seq).
 pub const COMMITS_TABLE: &str = "_rdlt_commits";
 
+/// Targets a load has already cleared — the durable half of the
+/// once-per-(load, target) Replace guard, for destinations that write full
+/// loads STRAIGHT INTO the target.
+///
+/// A staged destination does not need it: there the clear is planned inside
+/// the publish transaction for every Replace table at once, so "did this load
+/// clear this target" is answered by "did any unit of this load commit".
+/// Writing directly, the clear happens at a target's FIRST WRITE, and those
+/// firsts are spread across commit units — so the question becomes per-target
+/// and needs its own record.
+///
+/// The record is written in the SAME transaction as the TRUNCATE it describes,
+/// so the two cannot disagree: either both are durable or neither happened.
+pub const CLEARED_TABLE: &str = "_rdlt_cleared";
+
 /// Stage table name prefix; destinations append their own scoping/hash
 /// suffixes.
 pub const STAGE_PREFIX: &str = "_rdlt_stage_";

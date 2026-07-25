@@ -145,24 +145,17 @@ impl<'a> ColumnEncoder<'a> {
         column: &str,
         out: &mut BytesMut,
     ) -> Result<(), DestinationError> {
-        /// NULL, or a length-prefixed value whose prefix is backfilled once
-        /// the value's own length is known. Generic over the writer, not
+        /// A length-prefixed value whose prefix is backfilled once the value's
+        /// own length is known. NULL never reaches here — the macro emits its
+        /// bare `-1` and returns — so there is exactly one place that decides
+        /// what a NULL looks like on the wire. Generic over the writer, not
         /// `dyn`: each arm monomorphizes, so the value encoding inlines into
         /// this frame instead of paying an indirect call on every cell.
         #[inline(always)]
-        fn field<W>(
-            out: &mut BytesMut,
-            is_null: bool,
-            column: &str,
-            write: W,
-        ) -> Result<(), DestinationError>
+        fn field<W>(out: &mut BytesMut, column: &str, write: W) -> Result<(), DestinationError>
         where
             W: FnOnce(&mut BytesMut) -> Result<(), DestinationError>,
         {
-            if is_null {
-                out.put_i32(-1);
-                return Ok(());
-            }
             let start = out.len();
             out.put_i32(0); // length placeholder, backfilled below
             write(out)?;
@@ -178,7 +171,7 @@ impl<'a> ColumnEncoder<'a> {
                     out.put_i32(-1);
                     return Ok(());
                 }
-                field(out, false, column, $write)
+                field(out, column, $write)
             }};
         }
 

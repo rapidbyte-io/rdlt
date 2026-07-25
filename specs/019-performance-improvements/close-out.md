@@ -962,6 +962,96 @@ document that came from an isolated A/B says so. The bars currently in
 `bars.toml` are unchanged and conservative; the parquet bar carries its own
 note (D-20) explaining why it is held rather than re-derived.
 
+### D-23 (review) — two confirmed defects in US5's direct publish path
+
+A `/code-review xhigh` pass over the branch found fourteen issues. Two were
+real data-correctness defects in the exactly-once core, both introduced by
+US5, both confirmed by writing a probe before touching anything, and both now
+pinned in `crates/rdlt-connector-postgres/tests/direct_publish_guarantees.rs`.
+
+**A REDELIVERED unit duplicated its rows.** Measured: 6 where 3 were required.
+US5 moved full loads from "COPY into a stage, publish at commit" to "COPY
+straight into the target", which also moved WHEN the rows become the target's
+problem. A replayed unit — one whose `(load_id, commit_seq)` receipt already
+exists because the original committed and the client never learned — had
+already written its rows into the target by the time `commit_inner` computed
+`replayed`, and committed anyway. The staged path never had to think about it:
+redelivered rows landed in a stage the replay branch truncated without
+publishing. The guarantee was STRUCTURAL, and replacing the structure removed
+it silently. A replayed unit now rolls back; the receipt is still returned,
+because the unit did commit — the first time.
+
+**The Replace clear guard asked a per-LOAD question where the answer is
+per-(LOAD, TARGET).** A table registered by `ensure_table` in unit 1 but first
+written in unit 2 found `load_committed_before` already true, skipped its
+TRUNCATE, and appended to the previous load's rows — a Replace that did not
+replace. The staged path did not have this hole: `commit_script` emitted
+`ClearTarget` for every Replace table at unit 1's publish regardless of what
+had staged. Fixed with `_rdlt_cleared (load_id, table_name)`, written in the
+SAME transaction as the TRUNCATE it records, so a rolled-back clear cannot
+leave a record claiming it happened. `pin_direct_replace_clears_exactly_once_per_load`
+had to be re-pinned — it was asserting the defect.
+
+**The crash sweep passed 23/23 through both.** Worth stating plainly, because
+it is the honest limit of that suite: `pg.tx.commit` models the client dying
+BEFORE the COMMIT is sent, so the sweep never produces the state where the
+server committed and the client did not learn. The redelivery pin reaches it
+directly by committing the same `(load_id, commit_seq)` twice, which no crash
+point can currently simulate.
+
+### D-24 (review) — the encoder bench was measuring the wrong wires
+
+`bench_encode` resolved column wires with `column_wire(None, …)`, so the pin
+batch's `c_jsonb` and `c_uuid` columns were benched as PLAIN TEXT. The jsonb
+version byte and the per-character uuid parse — both per-cell work in
+production — contributed nothing to the instruction count, so a regression in
+either would have passed the 3% gate untouched.
+
+Fixed to resolve wires from the same logical types the pin uses. The baseline
+moves 24,469,666 → **31,924,625 (+30.5%)**, and the gate correctly refused it
+until re-recorded. **That is the bench measuring more, not the encoder doing
+more.**
+
+The consequence for US4's recorded result: **−40.3% still stands as measured**,
+because BOTH sides of that comparison used `column_wire(None, …)` — it was
+apples to apples over the text/int/float/timestamp/numeric arms. It simply did
+not cover jsonb or uuid. The new baseline is not comparable to the old 41.3M
+figure, and no attempt is made to restate the improvement against it.
+
+### D-25 (review) — the rest, fixed
+
+- `artifact_bytes_sh` invoked `python3 fixtures/…` against a cwd the harness
+  never sets; the script lives under `benches/`. Every recorded run would have
+  measured nothing, and the sizer's own fail-soft design would have reported
+  "absent" rather than complaining. Now `{{benches}}/fixtures/…`, the absolute
+  substitution `prepare_sh` already used. The companion `.ok()?` that swallowed
+  a spawn failure — the one path with no diagnostic, and the one most likely to
+  hide this — now says so.
+- `ensure_table` runs DDL that joins the unit transaction once one is open, but
+  had no rollback on its error path, so a failure left the connection poisoned
+  in 25P02.
+- `Arena::sized_for` divided by 4 bytes-per-node — the DENSEST possible
+  encoding, an upper bound — while its comment claimed to under-estimate. It
+  over-reserved on everything, up to ~64 MB per push. Now 32 bytes-per-node
+  with a 64 K-node cap; `shred_nested_10k` +0.31%, re-recorded.
+- `BytesMut::split()` hands the used capacity to the chunk, so the "one reused
+  buffer" was rebuilding from near-zero after the second flush. `reserve` after
+  each split.
+- The trends guard could only ever fire for the rdlt row: competitor history
+  lines hard-coded `rows: None`. They now carry the cell's declared total, so a
+  scope correction is flagged on every arm rather than published as a
+  percentage for the competitors.
+- `execute_step`'s `ClearTarget`/`InsertSelect` arms are unreachable in this
+  executor and now say so loudly instead of carrying superseded SQL.
+- `field()`'s dead `is_null` parameter, and a discovery warning that re-derived
+  a list it had already built.
+
+**Not taken: the reviewer's request to merge the two `writer_props.rs`.** They
+are near-identical today, and that is real drift surface. But T068's constraint
+is explicit — the SPI carries no parquet dependency — and neither connector may
+depend on the other, so the only shared home would be a new crate existing to
+hold forty lines of `match`. Recorded as a judgment, not an oversight.
+
 ## Deviations
 
 ### D-01 (T004) — CI at HEAD is not executing, and it is broader than the cold-start gap

@@ -288,12 +288,23 @@ pub mod testhook {
         let schema = batch.schema();
         let mut buf = BytesMut::with_capacity(64 * 1024);
         let mut bytes = 0u64;
+        // Wires come from the SAME logical types the pin uses. Resolving them
+        // from the arrow type alone would bench `c_jsonb` and `c_uuid` as
+        // plain text — so the jsonb version byte and the uuid parser, both
+        // per-cell work in production, would never appear in the instruction
+        // count and a regression in either would pass the 3% gate untouched.
+        let logical = columns();
         let encoders: Vec<ColumnEncoder<'_>> = schema
             .fields()
             .iter()
             .enumerate()
             .map(|(idx, field)| {
-                let wire = column_wire(None, field.data_type()).expect("supported wire");
+                let column = logical
+                    .iter()
+                    .find(|c| c.name == field.name())
+                    .expect("bench batch columns come from `columns()`");
+                let wire = column_wire(column.logical.as_ref(), field.data_type())
+                    .expect("supported wire");
                 ColumnEncoder::new(wire, batch.column(idx).as_ref(), field.name())
                     .expect("column encodable")
             })
@@ -399,9 +410,12 @@ impl Destination for Postgres {
                  SET search_path TO {schema};
                  CREATE TABLE IF NOT EXISTS {state} (pipeline TEXT PRIMARY KEY, doc TEXT);
                  CREATE TABLE IF NOT EXISTS {commits} (
-                     load_id TEXT, commit_seq BIGINT, PRIMARY KEY (load_id, commit_seq));",
+                     load_id TEXT, commit_seq BIGINT, PRIMARY KEY (load_id, commit_seq));
+                 CREATE TABLE IF NOT EXISTS {cleared} (
+                     load_id TEXT, table_name TEXT, PRIMARY KEY (load_id, table_name));",
                 state = rdlt_connector_sqlcore::names::STATE_TABLE,
-                commits = rdlt_connector_sqlcore::names::COMMITS_TABLE
+                commits = rdlt_connector_sqlcore::names::COMMITS_TABLE,
+                cleared = rdlt_connector_sqlcore::names::CLEARED_TABLE
             ))
             .await
             .map_err(transient)?;
