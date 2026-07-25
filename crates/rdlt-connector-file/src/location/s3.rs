@@ -31,6 +31,25 @@ pub struct S3Options {
     /// itself accepts it for most operations).
     #[serde(default = "default_path_style")]
     pub path_style: bool,
+    /// Send `UNSIGNED-PAYLOAD` instead of the body's SHA-256 in the SigV4
+    /// canonical request. **Off by default, and deliberately never inferred.**
+    ///
+    /// Hashing the body is 6.72% of the parquet-to-S3 cell, so this is real
+    /// throughput — but it is a security setting, not a tuning knob, and the
+    /// trade must be made by the person who knows the deployment:
+    ///
+    /// Signing the payload means the request signature covers the BODY. A
+    /// proxy, a compromised intermediary, or a corrupted transfer cannot alter
+    /// the bytes without invalidating the signature. With this on, the
+    /// signature covers only the headers and the request line: the transport
+    /// (TLS) becomes the only thing standing between the body and
+    /// modification in flight.
+    ///
+    /// So: reasonable over HTTPS to an endpoint you trust, on a network you
+    /// control. Not reasonable over plain HTTP, where it removes the last
+    /// integrity check the request had.
+    #[serde(default)]
+    pub unsigned_payload: bool,
 }
 
 pub(crate) fn default_path_style() -> bool {
@@ -53,7 +72,16 @@ impl S3Options {
             access_key: access_key.into(),
             secret_key: secret_key.into(),
             path_style: true,
+            unsigned_payload: false,
         }
+    }
+
+    /// Opt out of payload signing. Read [`Self::unsigned_payload`] before
+    /// calling this — it trades request-body integrity for throughput.
+    #[must_use]
+    pub fn with_unsigned_payload(mut self, unsigned: bool) -> Self {
+        self.unsigned_payload = unsigned;
+        self
     }
 
     pub fn with_region(mut self, region: impl Into<String>) -> Self {
@@ -110,6 +138,9 @@ pub(crate) fn build_store(options: &S3Options) -> Result<AmazonS3, String> {
         .with_access_key_id(options.access_key.reveal())
         .with_secret_access_key(options.secret_key.reveal())
         .with_virtual_hosted_style_request(!options.path_style)
+        // Only ever what the user asked for; `false` is object_store's own
+        // default, so passing it through changes nothing.
+        .with_unsigned_payload(options.unsigned_payload)
         .with_allow_http(true)
         .build()
         .map_err(|e| {

@@ -511,6 +511,7 @@ mod tests {
                 access_key: Secret::new("k"),
                 secret_key: Secret::new("s"),
                 path_style: s3::default_path_style(),
+                unsigned_payload: false,
             }),
         }
     }
@@ -549,6 +550,7 @@ mod tests {
                 access_key: Secret::new("hunter2-access"),
                 secret_key: Secret::new("hunter2-secret"),
                 path_style: true,
+                unsigned_payload: false,
             }),
         };
         let rendered = format!("{options:?}");
