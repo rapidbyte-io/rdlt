@@ -68,231 +68,308 @@ pub(super) fn column_wire(
     })
 }
 
-/// Postgres wire type per column decision.
-pub(super) fn wire_type(wire: ColumnWire) -> Type {
-    match wire {
-        ColumnWire::Bool => Type::BOOL,
-        ColumnWire::Int8 => Type::INT8,
-        ColumnWire::Float8 => Type::FLOAT8,
-        ColumnWire::Text => Type::TEXT,
-        ColumnWire::Bytea => Type::BYTEA,
-        ColumnWire::TimestampTz => Type::TIMESTAMPTZ,
-        ColumnWire::TimestampNaive => Type::TIMESTAMP,
-        ColumnWire::Date => Type::DATE,
-        ColumnWire::Time => Type::TIME,
-        ColumnWire::Numeric { .. } => Type::NUMERIC,
-        ColumnWire::Jsonb => Type::JSONB,
-        ColumnWire::Uuid => Type::UUID,
-    }
+/// One column of a batch, already downcast, ready to encode any row.
+///
+/// Built ONCE per column per batch. The enum arm *is* the encode decision, so
+/// the per-cell path has no `downcast_ref`, no trait object, and no
+/// allocation — the three costs the previous per-cell `Box<dyn ToSql>` design
+/// paid on every one of the ~12M cells a 1M-row load encodes.
+pub(super) enum ColumnEncoder<'a> {
+    Bool(&'a BooleanArray),
+    Int8(&'a Int64Array),
+    Float8(&'a Float64Array),
+    Text(&'a StringArray),
+    Bytea(&'a BinaryArray),
+    TimestampTz(&'a TimestampMicrosecondArray),
+    TimestampNaive(&'a TimestampMicrosecondArray),
+    Date(&'a Date32Array),
+    Time(&'a Time64MicrosecondArray),
+    Numeric {
+        array: &'a Decimal128Array,
+        scale: u8,
+    },
+    Jsonb(&'a StringArray),
+    Uuid(&'a StringArray),
 }
 
-/// One cell as an owned ToSql value for binary COPY. `column` names the
-/// column in typed errors.
-pub(super) fn cell_value(
-    wire: ColumnWire,
-    array: &dyn Array,
-    row: usize,
-    column: &str,
-) -> Result<Box<dyn ToSql + Sync + Send>, DestinationError> {
-    macro_rules! cast {
-        ($ty:ty) => {
-            array
-                .as_any()
-                .downcast_ref::<$ty>()
-                .ok_or_else(|| fatal(format!("column `{column}`: array type mismatch")))?
-        };
-    }
-    if array.is_null(row) {
-        // Binary COPY checks the ToSql type against the column's wire type — a NULL
-        // must still be typed correctly.
-        return Ok(match wire {
-            ColumnWire::Bool => Box::new(Option::<bool>::None),
-            ColumnWire::Int8 => Box::new(Option::<i64>::None),
-            ColumnWire::Float8 => Box::new(Option::<f64>::None),
-            ColumnWire::Text => Box::new(Option::<String>::None),
-            ColumnWire::Bytea => Box::new(Option::<Vec<u8>>::None),
-            ColumnWire::TimestampTz => Box::new(Option::<chrono::DateTime<chrono::Utc>>::None),
-            ColumnWire::TimestampNaive => Box::new(Option::<chrono::NaiveDateTime>::None),
-            ColumnWire::Date => Box::new(Option::<chrono::NaiveDate>::None),
-            ColumnWire::Time => Box::new(Option::<chrono::NaiveTime>::None),
-            ColumnWire::Numeric { .. } => Box::new(Option::<NumericWire>::None),
-            ColumnWire::Jsonb => Box::new(Option::<JsonbWire>::None),
-            ColumnWire::Uuid => Box::new(Option::<UuidWire>::None),
-        });
-    }
-    Ok(match wire {
-        ColumnWire::Bool => Box::new(cast!(BooleanArray).value(row)),
-        ColumnWire::Int8 => Box::new(cast!(Int64Array).value(row)),
-        ColumnWire::Float8 => Box::new(cast!(Float64Array).value(row)),
-        ColumnWire::Text => Box::new(cast!(StringArray).value(row).to_owned()),
-        ColumnWire::Bytea => Box::new(cast!(BinaryArray).value(row).to_owned()),
-        ColumnWire::TimestampTz => {
-            let micros = cast!(TimestampMicrosecondArray).value(row);
-            Box::new(
-                chrono::DateTime::<chrono::Utc>::from_timestamp_micros(micros)
-                    .ok_or_else(|| fatal(format!("column `{column}`: timestamp out of range")))?,
-            )
+impl<'a> ColumnEncoder<'a> {
+    /// Downcast once for the whole column. `column` names the column in typed
+    /// errors.
+    pub(super) fn new(
+        wire: ColumnWire,
+        array: &'a dyn Array,
+        column: &str,
+    ) -> Result<Self, DestinationError> {
+        macro_rules! cast {
+            ($ty:ty) => {
+                array
+                    .as_any()
+                    .downcast_ref::<$ty>()
+                    .ok_or_else(|| fatal(format!("column `{column}`: array type mismatch")))?
+            };
         }
-        ColumnWire::TimestampNaive => {
-            let micros = cast!(TimestampMicrosecondArray).value(row);
-            Box::new(
-                chrono::DateTime::from_timestamp_micros(micros)
+        Ok(match wire {
+            ColumnWire::Bool => Self::Bool(cast!(BooleanArray)),
+            ColumnWire::Int8 => Self::Int8(cast!(Int64Array)),
+            ColumnWire::Float8 => Self::Float8(cast!(Float64Array)),
+            ColumnWire::Text => Self::Text(cast!(StringArray)),
+            ColumnWire::Bytea => Self::Bytea(cast!(BinaryArray)),
+            ColumnWire::TimestampTz => Self::TimestampTz(cast!(TimestampMicrosecondArray)),
+            ColumnWire::TimestampNaive => Self::TimestampNaive(cast!(TimestampMicrosecondArray)),
+            ColumnWire::Date => Self::Date(cast!(Date32Array)),
+            ColumnWire::Time => Self::Time(cast!(Time64MicrosecondArray)),
+            ColumnWire::Numeric { scale } => Self::Numeric {
+                array: cast!(Decimal128Array),
+                scale,
+            },
+            ColumnWire::Jsonb => Self::Jsonb(cast!(StringArray)),
+            ColumnWire::Uuid => Self::Uuid(cast!(StringArray)),
+        })
+    }
+
+    /// Append one cell as a complete binary-COPY *field*: an `i32` byte
+    /// length followed by the value bytes, or `-1` alone for NULL.
+    ///
+    /// Field shape lives here; TUPLE and STREAM framing (field count, header,
+    /// trailer) lives in the caller — the encoder owns how a value looks, the
+    /// session owns how the stream is assembled.
+    ///
+    /// The old design needed a typed NULL (`Option::<i64>::None` and friends)
+    /// because `to_sql_checked` validates the value's type against the
+    /// column's wire type. Writing the field ourselves, a NULL is a bare `-1`
+    /// with no type to get wrong.
+    #[inline]
+    pub(super) fn encode_field(
+        &self,
+        row: usize,
+        column: &str,
+        out: &mut BytesMut,
+    ) -> Result<(), DestinationError> {
+        /// NULL, or a length-prefixed value whose prefix is backfilled once
+        /// the value's own length is known. Generic over the writer, not
+        /// `dyn`: each arm monomorphizes, so the value encoding inlines into
+        /// this frame instead of paying an indirect call on every cell.
+        #[inline(always)]
+        fn field<W>(
+            out: &mut BytesMut,
+            is_null: bool,
+            column: &str,
+            write: W,
+        ) -> Result<(), DestinationError>
+        where
+            W: FnOnce(&mut BytesMut) -> Result<(), DestinationError>,
+        {
+            if is_null {
+                out.put_i32(-1);
+                return Ok(());
+            }
+            let start = out.len();
+            out.put_i32(0); // length placeholder, backfilled below
+            write(out)?;
+            let len = i32::try_from(out.len() - start - 4)
+                .map_err(|_| fatal(format!("column `{column}`: value exceeds 2 GiB")))?;
+            out[start..start + 4].copy_from_slice(&len.to_be_bytes());
+            Ok(())
+        }
+
+        macro_rules! field {
+            ($array:expr, $write:expr) => {{
+                if $array.is_null(row) {
+                    out.put_i32(-1);
+                    return Ok(());
+                }
+                field(out, false, column, $write)
+            }};
+        }
+
+        /// `ToSql::to_sql` on a CONCRETE type: monomorphic, inlinable, and
+        /// the same bytes the driver would have written. Errors are mapped
+        /// through the typed constructor, never matched on.
+        fn sql<T: ToSql>(
+            value: &T,
+            ty: &Type,
+            column: &str,
+            out: &mut BytesMut,
+        ) -> Result<(), DestinationError> {
+            value
+                .to_sql(ty, out)
+                .map(|_| ())
+                .map_err(|e| fatal(format!("column `{column}`: {e}")))
+        }
+
+        match *self {
+            Self::Bool(a) => field!(a, |o: &mut BytesMut| sql(
+                &a.value(row),
+                &Type::BOOL,
+                column,
+                o
+            )),
+            Self::Int8(a) => field!(a, |o: &mut BytesMut| sql(
+                &a.value(row),
+                &Type::INT8,
+                column,
+                o
+            )),
+            Self::Float8(a) => field!(a, |o: &mut BytesMut| sql(
+                &a.value(row),
+                &Type::FLOAT8,
+                column,
+                o
+            )),
+            // Borrowed: no `String::to_owned` per cell (`&str: ToSql` writes
+            // the same UTF-8 bytes an owned String would).
+            Self::Text(a) => field!(a, |o: &mut BytesMut| sql(
+                &a.value(row),
+                &Type::TEXT,
+                column,
+                o
+            )),
+            Self::Bytea(a) => field!(a, |o: &mut BytesMut| sql(
+                &a.value(row),
+                &Type::BYTEA,
+                column,
+                o
+            )),
+            Self::TimestampTz(a) => field!(a, |o: &mut BytesMut| {
+                let micros = a.value(row);
+                let ts = chrono::DateTime::<chrono::Utc>::from_timestamp_micros(micros)
+                    .ok_or_else(|| fatal(format!("column `{column}`: timestamp out of range")))?;
+                sql(&ts, &Type::TIMESTAMPTZ, column, o)
+            }),
+            Self::TimestampNaive(a) => field!(a, |o: &mut BytesMut| {
+                let micros = a.value(row);
+                let ts = chrono::DateTime::from_timestamp_micros(micros)
                     .ok_or_else(|| fatal(format!("column `{column}`: timestamp out of range")))?
-                    .naive_utc(),
-            )
-        }
-        ColumnWire::Date => {
-            let days = cast!(Date32Array).value(row);
-            Box::new(
-                chrono::NaiveDate::from_num_days_from_ce_opt(days + 719_163)
-                    .ok_or_else(|| fatal(format!("column `{column}`: date out of range")))?,
-            )
-        }
-        ColumnWire::Time => {
-            let micros = cast!(Time64MicrosecondArray).value(row) as u64;
-            Box::new(
-                chrono::NaiveTime::from_num_seconds_from_midnight_opt(
+                    .naive_utc();
+                sql(&ts, &Type::TIMESTAMP, column, o)
+            }),
+            Self::Date(a) => field!(a, |o: &mut BytesMut| {
+                let days = a.value(row);
+                let date = chrono::NaiveDate::from_num_days_from_ce_opt(days + 719_163)
+                    .ok_or_else(|| fatal(format!("column `{column}`: date out of range")))?;
+                sql(&date, &Type::DATE, column, o)
+            }),
+            Self::Time(a) => field!(a, |o: &mut BytesMut| {
+                let micros = a.value(row) as u64;
+                let time = chrono::NaiveTime::from_num_seconds_from_midnight_opt(
                     (micros / 1_000_000) as u32,
                     ((micros % 1_000_000) * 1_000) as u32,
                 )
-                .ok_or_else(|| fatal(format!("column `{column}`: time out of range")))?,
-            )
+                .ok_or_else(|| fatal(format!("column `{column}`: time out of range")))?;
+                sql(&time, &Type::TIME, column, o)
+            }),
+            Self::Numeric { array, scale } => field!(array, |o: &mut BytesMut| {
+                write_numeric(array.value(row), scale, o);
+                Ok(())
+            }),
+            Self::Jsonb(a) => field!(a, |o: &mut BytesMut| {
+                // Version byte 1 + the UTF-8 document — the exact byte the
+                // source's `Decode::JsonbText` strips.
+                o.put_u8(1);
+                o.put_slice(a.value(row).as_bytes());
+                Ok(())
+            }),
+            Self::Uuid(a) => field!(a, |o: &mut BytesMut| {
+                let text = a.value(row);
+                let bytes = parse_uuid_text(text).ok_or_else(|| {
+                    fatal(format!(
+                        "column `{column}`: `{text}` is not a canonical uuid"
+                    ))
+                })?;
+                o.put_slice(&bytes);
+                Ok(())
+            }),
         }
-        ColumnWire::Numeric { scale } => Box::new(NumericWire {
-            value: cast!(Decimal128Array).value(row),
-            scale,
-        }),
-        ColumnWire::Jsonb => Box::new(JsonbWire(cast!(StringArray).value(row).to_owned())),
-        ColumnWire::Uuid => {
-            let text = cast!(StringArray).value(row);
-            Box::new(UuidWire(parse_uuid_text(text).ok_or_else(|| {
-                fatal(format!(
-                    "column `{column}`: `{text}` is not a canonical uuid"
-                ))
-            })?))
-        }
-    })
+    }
 }
 
 // ---- Native wire encoders ----
 //
-// Hand-rolled mirrors of the SOURCE's binary-COPY decoders: no tokio-postgres
-// type features, no new dependencies. The source decoder
-// is the round-trip oracle in the tests below.
+// Hand-rolled mirrors of the SOURCE's binary-COPY decoders: no new
+// dependencies. The source decoder is the round-trip oracle in the tests
+// below, and `tests/fixtures/pg_copy_values.hex` pins the bytes literally.
 
 use bytes::{BufMut, BytesMut};
-use tokio_postgres::types::{IsNull, to_sql_checked};
 
 /// Postgres binary `numeric`: i128 at a declared scale → ndigits/weight/
-/// sign/dscale + base-10000 digit groups (canonical: leading/trailing zero
-/// groups stripped).
-#[derive(Debug, Clone, Copy)]
-pub(super) struct NumericWire {
-    pub value: i128,
-    pub scale: u8,
-}
+/// sign/dscale + base-10⁴ digit groups (canonical: leading/trailing zero
+/// groups stripped), appended in place.
+///
+/// Hand-written deliberately: `postgres-protocol` exposes no `numeric_to_sql`;
+/// `rust_decimal`'s 96-bit mantissa cannot hold `Decimal128`'s 38 digits; and
+/// `bigdecimal` allocates per value, which is the cost this exists to remove.
+///
+/// Grouping is by integer divmod, NOT via a decimal string. The obvious
+/// route — multiply by 10^pad to align the fraction to a group boundary,
+/// then take `% 10000` — overflows: a 39-digit i128 times 10³ exceeds
+/// u128::MAX. Instead the pad is folded into the FIRST group only
+/// (`(v % 10^(4−pad)) × 10^pad`, both factors bounded so the product stays
+/// under 10⁴), after which dividing by `10^(4−pad)` leaves a value whose
+/// remaining groups are plain `% 10000` steps. Same digits, no wide
+/// intermediate, no allocation.
+pub(super) fn write_numeric(value: i128, scale: u8, out: &mut BytesMut) {
+    let pad = u32::from(scale) % 4;
+    let pad = (4 - pad) % 4;
+    let low_div = 10u128.pow(4 - pad);
 
-pub(super) fn numeric_wire_bytes(value: i128, scale: u8) -> Vec<u8> {
-    let negative = value < 0;
-    // Overflow-free: a 38-digit i128 times 10^pad exceeds
-    // u128::MAX, so grouping happens in the DECIMAL-STRING domain — append
-    // the pad zeros textually, then read base-10000 groups off the digits.
-    let pad = (4 - (scale as usize % 4)) % 4;
-    let mut text = value.unsigned_abs().to_string();
-    text.extend(std::iter::repeat_n('0', pad));
-    let frac_groups = (scale as usize + pad) / 4;
-    // Left-pad to a whole number of 4-digit groups.
-    let rem = text.len() % 4;
-    if rem != 0 {
-        text.insert_str(0, &"0".repeat(4 - rem));
+    // Base-10⁴ groups, least-significant first. 16 is ample: an i128
+    // magnitude is at most 39 digits, plus 3 pad digits, is 11 groups.
+    let mut groups = [0u16; 16];
+    let mut count = 0usize;
+    let mut v = value.unsigned_abs();
+
+    let first = (v % low_div) * 10u128.pow(pad);
+    groups[count] = u16::try_from(first).expect("a base-10^4 group is < 10000");
+    count += 1;
+    v /= low_div;
+    while v > 0 {
+        groups[count] = u16::try_from(v % 10_000).expect("a base-10^4 group is < 10000");
+        count += 1;
+        v /= 10_000;
     }
-    let mut digits: Vec<u16> = text
-        .as_bytes()
-        .chunks(4)
-        .map(|group| {
-            std::str::from_utf8(group)
-                .expect("decimal digits are ASCII")
-                .parse::<u16>()
-                .expect("4 decimal digits fit u16")
-        })
-        .collect();
-    if digits.iter().all(|d| *d == 0) {
+
+    let scale16 = i16::try_from(scale).unwrap_or(i16::MAX);
+    if count == 1 && groups[0] == 0 {
         // Canonical zero: no digits, weight 0.
-        let mut out = Vec::with_capacity(8);
-        out.extend_from_slice(&0i16.to_be_bytes()); // ndigits
-        out.extend_from_slice(&0i16.to_be_bytes()); // weight
-        out.extend_from_slice(&0u16.to_be_bytes()); // sign (+)
-        out.extend_from_slice(&(scale as i16).to_be_bytes()); // dscale
-        return out;
+        out.put_i16(0); // ndigits
+        out.put_i16(0); // weight
+        out.put_u16(0); // sign (+)
+        out.put_i16(scale16); // dscale
+        return;
     }
+
     // weight = index of the most significant group relative to the decimal
     // point (units group = 0).
-    let mut weight = digits.len() as i32 - 1 - frac_groups as i32;
-    // Canonical form: strip trailing zero groups…
-    while digits.last() == Some(&0) {
-        digits.pop();
-    }
-    // …and leading zero groups (adjusting weight).
-    while digits.first() == Some(&0) {
-        digits.remove(0);
-        weight -= 1;
-    }
-    let mut out = Vec::with_capacity(8 + digits.len() * 2);
-    out.extend_from_slice(&(digits.len() as i16).to_be_bytes());
-    out.extend_from_slice(&(weight as i16).to_be_bytes());
-    out.extend_from_slice(&if negative { 0x4000u16 } else { 0x0000u16 }.to_be_bytes());
-    out.extend_from_slice(&(scale as i16).to_be_bytes());
-    for d in digits {
-        out.extend_from_slice(&d.to_be_bytes());
-    }
-    out
-}
+    let frac_groups = (i32::from(scale) + pad as i32) / 4;
+    let weight = count as i32 - 1 - frac_groups;
 
-impl ToSql for NumericWire {
-    fn to_sql(
-        &self,
-        _ty: &Type,
-        out: &mut BytesMut,
-    ) -> Result<IsNull, Box<dyn std::error::Error + Sync + Send>> {
-        out.put_slice(&numeric_wire_bytes(self.value, self.scale));
-        Ok(IsNull::No)
+    // Canonical form strips trailing zero groups — the LEAST significant end,
+    // which is the FRONT of this array. Leading zero groups cannot occur: the
+    // loop stops as soon as `v` is exhausted, so the last group written is
+    // always non-zero (the all-zero case returned above).
+    let mut lo = 0usize;
+    while lo < count && groups[lo] == 0 {
+        lo += 1;
     }
+    let ndigits = count - lo;
 
-    fn accepts(ty: &Type) -> bool {
-        *ty == Type::NUMERIC
+    out.put_i16(i16::try_from(ndigits).expect("at most 11 groups"));
+    out.put_i16(i16::try_from(weight).unwrap_or(i16::MAX));
+    out.put_u16(if value < 0 { 0x4000 } else { 0x0000 });
+    out.put_i16(scale16);
+    for idx in (lo..count).rev() {
+        out.put_u16(groups[idx]);
     }
-
-    to_sql_checked!();
-}
-
-/// Postgres binary `jsonb`: version byte 1 + the UTF-8 document (the exact
-/// byte the source's `Decode::JsonbText` strips).
-#[derive(Debug, Clone)]
-pub(super) struct JsonbWire(pub String);
-
-impl ToSql for JsonbWire {
-    fn to_sql(
-        &self,
-        _ty: &Type,
-        out: &mut BytesMut,
-    ) -> Result<IsNull, Box<dyn std::error::Error + Sync + Send>> {
-        out.put_u8(1);
-        out.put_slice(self.0.as_bytes());
-        Ok(IsNull::No)
-    }
-
-    fn accepts(ty: &Type) -> bool {
-        *ty == Type::JSONB
-    }
-
-    to_sql_checked!();
 }
 
 /// Postgres binary `uuid`: 16 raw bytes, parsed from the canonical text form
 /// the engine ships (LogicalType::Uuid arrives as Utf8).
-#[derive(Debug, Clone, Copy)]
-pub(super) struct UuidWire(pub [u8; 16]);
-
+///
+/// The `uuid` crate is deliberately NOT adopted: it appears nowhere in the
+/// measured profile, so the "measured-better" test for taking a dependency is
+/// unmet, and `Uuid::try_parse` accepts a strictly narrower set of texts than
+/// both this parser and PostgreSQL's own `uuid_in` — swapping it in would
+/// silently start rejecting rows the server would have accepted.
 pub(super) fn parse_uuid_text(text: &str) -> Option<[u8; 16]> {
     // Accept the same textual forms the SERVER's uuid input accepts:
     // optional urn:uuid: prefix, optional braces, hyphenated or bare hex.
@@ -308,13 +385,18 @@ pub(super) fn parse_uuid_text(text: &str) -> Option<[u8; 16]> {
     let mut idx = 0;
     let mut hi: Option<u8> = None;
     let mut hex_seen = 0usize;
+    let mut hyphen_at: Option<usize> = None;
     for ch in text.bytes() {
         if ch == b'-' {
             // Hyphens only at group boundaries (8-4-4-4-12), matching the
-            // server's grouping rule.
-            if !matches!(hex_seen, 8 | 12 | 16 | 20) {
+            // server's grouping rule — and at most ONE per boundary, so
+            // "550e8400--e29b-…" is rejected the way the server rejects it.
+            // Without the second guard, `hex_seen` alone still reads as a
+            // boundary for the repeat.
+            if !matches!(hex_seen, 8 | 12 | 16 | 20) || hyphen_at == Some(hex_seen) {
                 return None;
             }
+            hyphen_at = Some(hex_seen);
             continue;
         }
         hex_seen += 1;
@@ -332,23 +414,6 @@ pub(super) fn parse_uuid_text(text: &str) -> Option<[u8; 16]> {
         }
     }
     (idx == 16 && hi.is_none()).then_some(bytes)
-}
-
-impl ToSql for UuidWire {
-    fn to_sql(
-        &self,
-        _ty: &Type,
-        out: &mut BytesMut,
-    ) -> Result<IsNull, Box<dyn std::error::Error + Sync + Send>> {
-        out.put_slice(&self.0);
-        Ok(IsNull::No)
-    }
-
-    fn accepts(ty: &Type) -> bool {
-        *ty == Type::UUID
-    }
-
-    to_sql_checked!();
 }
 
 #[cfg(all(test, feature = "source"))]
@@ -381,7 +446,8 @@ mod tests {
             (-123_456_789_012_345_678_901_234_567i128, 9),
             (1_000_000_000_000i128, 12), // exactly 1.000000000000
         ] {
-            let wire = numeric_wire_bytes(value, scale);
+            let mut wire = BytesMut::new();
+            write_numeric(value, scale, &mut wire);
             let decoded = decode_numeric(&wire, scale)
                 .unwrap_or_else(|e| panic!("({value}, {scale}): {}", e.0));
             assert_eq!(decoded, value, "({value}, {scale})");
@@ -402,7 +468,8 @@ mod tests {
             let pad = (4 - (scale as u32 % 4)) % 4;
             let limit = i128::MAX / 10i128.pow(pad);
             let value = value.clamp(-limit, limit);
-            let wire = numeric_wire_bytes(value, scale);
+            let mut wire = BytesMut::new();
+            write_numeric(value, scale, &mut wire);
             prop_assert_eq!(decode_numeric(&wire, scale).unwrap(), value);
         }
     }
@@ -419,7 +486,8 @@ mod tests {
             (i128::MAX, 37),
             (i128::MIN + 1, 1),
         ] {
-            let wire = numeric_wire_bytes(value, scale);
+            let mut wire = BytesMut::new();
+            write_numeric(value, scale, &mut wire);
             let ndigits = i16::from_be_bytes([wire[0], wire[1]]) as usize;
             let weight = i16::from_be_bytes([wire[2], wire[3]]) as i32;
             let sign = u16::from_be_bytes([wire[4], wire[5]]);
@@ -479,6 +547,90 @@ mod tests {
         assert!(parse_uuid_text("{550e8400-e29b-41d4-a716-446655440000}").is_some());
         assert!(parse_uuid_text("{550e8400e29b41d4a716446655440000}").is_some());
         assert!(parse_uuid_text("urn:uuid:{nope}").is_none());
+        // A REPEATED hyphen at one boundary: `hex_seen` alone still reads as
+        // a legal boundary for the second one, so a boundary consumed twice
+        // has to be tracked. The server rejects these; so must we.
+        for repeated in [
+            "550e8400--e29b-41d4-a716-446655440000",
+            "550e8400-e29b--41d4-a716-446655440000",
+            "550e8400-e29b-41d4-a716--446655440000",
+            "550e8400---e29b-41d4-a716-446655440000",
+        ] {
+            assert!(parse_uuid_text(repeated).is_none(), "{repeated}");
+        }
+        // …while one hyphen per boundary stays accepted, including partial
+        // hyphenation, which the server also accepts.
+        assert!(parse_uuid_text("550e8400-e29b41d4a716446655440000").is_some());
+        assert!(parse_uuid_text("550e8400e29b41d4-a716-446655440000").is_some());
         assert!(parse_uuid_text("{550e8400-e29b-41d4-a716-446655440000").is_none());
+    }
+}
+
+/// Encoder tests that need no source decoder, so they run even when the crate
+/// is built with `--no-default-features --features dest`.
+#[cfg(test)]
+mod encoder {
+    use super::*;
+    use arrow_array::{Int64Array, StringArray, TimestampMicrosecondArray};
+
+    fn field_bytes(encoder: &ColumnEncoder<'_>, row: usize) -> Result<BytesMut, DestinationError> {
+        let mut out = BytesMut::new();
+        encoder.encode_field(row, "c", &mut out)?;
+        Ok(out)
+    }
+
+    #[test]
+    fn null_is_a_bare_minus_one_with_no_value_bytes() {
+        let array = Int64Array::from(vec![None, Some(7)]);
+        let encoder = ColumnEncoder::new(ColumnWire::Int8, &array, "c").expect("encoder");
+        assert_eq!(&field_bytes(&encoder, 0).unwrap()[..], &(-1i32).to_be_bytes());
+        // …and a present value carries its length, so NULL and a zero-length
+        // value can never be confused on the wire.
+        let present = field_bytes(&encoder, 1).unwrap();
+        assert_eq!(&present[..4], &8i32.to_be_bytes());
+        assert_eq!(&present[4..], &7i64.to_be_bytes());
+    }
+
+    #[test]
+    fn an_empty_string_is_length_zero_not_null() {
+        let array = StringArray::from(vec![Some(""), None]);
+        let encoder = ColumnEncoder::new(ColumnWire::Text, &array, "c").expect("encoder");
+        assert_eq!(&field_bytes(&encoder, 0).unwrap()[..], &0i32.to_be_bytes());
+        assert_eq!(&field_bytes(&encoder, 1).unwrap()[..], &(-1i32).to_be_bytes());
+    }
+
+    /// FR-021: an unrepresentable value returns a FATAL typed error. The
+    /// caller then drops the `CopyInSink` without `finish()`, which is
+    /// tokio-postgres' abort protocol — so a partially written buffer is
+    /// never anything the server sees.
+    #[test]
+    fn unrepresentable_values_are_fatal_and_name_the_column() {
+        let bad_uuid = StringArray::from(vec![Some("not-a-uuid")]);
+        let encoder = ColumnEncoder::new(ColumnWire::Uuid, &bad_uuid, "c").expect("encoder");
+        // Asserted on the VARIANT, never on the rendered text (Principle V).
+        assert!(matches!(
+            field_bytes(&encoder, 0),
+            Err(DestinationError::Fatal(_))
+        ));
+
+        let far_future = TimestampMicrosecondArray::from(vec![Some(i64::MAX)]);
+        let encoder =
+            ColumnEncoder::new(ColumnWire::TimestampTz, &far_future, "c").expect("encoder");
+        assert!(matches!(
+            field_bytes(&encoder, 0),
+            Err(DestinationError::Fatal(_))
+        ));
+    }
+
+    /// The array a column was downcast from must match the wire decision.
+    /// Caught ONCE per column now instead of once per cell — same error,
+    /// raised earlier.
+    #[test]
+    fn a_column_type_mismatch_is_caught_at_construction() {
+        let array = Int64Array::from(vec![Some(1)]);
+        assert!(matches!(
+            ColumnEncoder::new(ColumnWire::Text, &array, "c").map(|_| ()),
+            Err(DestinationError::Fatal(_))
+        ));
     }
 }

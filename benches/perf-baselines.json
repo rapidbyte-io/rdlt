@@ -1,21 +1,25 @@
 {
   "format_version": 1,
   "toolchain": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+  "codegen": "lto=fat,codegen-units=1,opt-level=3",
   "benches": {
     "identity_keyed_10k": {
-      "instructions": 20538618
+      "instructions": 20078611
     },
     "identity_keyless_10k": {
-      "instructions": 29276639
+      "instructions": 28796632
     },
     "passthrough_10k": {
-      "instructions": 601698
-    },
-    "shred_nested_10k": {
-      "instructions": 362456649
+      "instructions": 607197
     },
     "pg_copy_decode_10k": {
-      "instructions": 21882873
+      "instructions": 20994190
+    },
+    "pg_copy_encode_10k": {
+      "instructions": 24469666
+    },
+    "shred_nested_10k": {
+      "instructions": 310654653
     }
   }
 }
