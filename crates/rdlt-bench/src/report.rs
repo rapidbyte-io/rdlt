@@ -95,33 +95,44 @@ fn rows_for(artifacts: &[&Artifact], bars: &[Bar]) -> Vec<[String; 8]> {
     let mut rows = Vec::with_capacity(artifacts.len());
     for artifact in artifacts {
         let bar = bars.iter().find(|b| b.cell == artifact.cell_id);
-        // "vs baseline" = the bar's competitor when one exists (the gated
-        // pairing), otherwise the first recorded competitor.
-        let bar_competitor = bar.and_then(|b| match &b.kind {
-            BarKind::RatioVs { competitor, .. } | BarKind::RssRatioVs { competitor, .. } => {
-                Some(competitor.as_str())
-            }
-            BarKind::AbsoluteMs { .. } => None,
+        // Every recorded competitor's ratio, LEAST flattering first (that one
+        // gets the bold headline), Missing entries last — a single "vs
+        // baseline" pick would hide a pairing, and the matrix is three-way.
+        let mut entries: Vec<(&String, &CompetitorSide)> = artifact.competitors.iter().collect();
+        entries.sort_by(|(_, a), (_, b)| {
+            let ratio = |side: &CompetitorSide| match side {
+                CompetitorSide::Ok {
+                    median_ms,
+                    ratio_vs_rdlt,
+                    ..
+                } => ratio_vs_rdlt.unwrap_or(median_ms / artifact.rdlt.median_ms),
+                CompetitorSide::Missing { .. } => f64::INFINITY,
+            };
+            ratio(a).total_cmp(&ratio(b))
         });
-        let baseline_entry = bar_competitor
-            .and_then(|id| artifact.competitors.get_key_value(id))
-            .or_else(|| artifact.competitors.iter().next());
-        let baseline = baseline_entry.map(|(id, side)| match side {
-            CompetitorSide::Ok {
-                median_ms,
-                ratio_vs_rdlt,
-                ..
-            } => format!(
-                "{:.1}× ({id}: {})",
-                ratio_vs_rdlt.unwrap_or(median_ms / artifact.rdlt.median_ms),
-                fmt_ms(*median_ms)
-            ),
-            CompetitorSide::Missing { reason } => format!("MISSING ({reason})"),
-        });
+        let ratios: Vec<String> = entries
+            .into_iter()
+            .map(|(id, side)| match side {
+                CompetitorSide::Ok {
+                    median_ms,
+                    ratio_vs_rdlt,
+                    ..
+                } => format!(
+                    "{:.1}× ({id}: {})",
+                    ratio_vs_rdlt.unwrap_or(median_ms / artifact.rdlt.median_ms),
+                    fmt_ms(*median_ms)
+                ),
+                CompetitorSide::Missing { reason } => format!("{id}: MISSING ({reason})"),
+            })
+            .collect();
         rows.push([
             artifact.cell_id.clone(),
             rdlt_cell(artifact),
-            baseline.unwrap_or_else(|| "—".into()),
+            if ratios.is_empty() {
+                "—".into()
+            } else {
+                ratios.join("; ")
+            },
             bar_target(bar),
             status(artifact, bar),
             fmt_opt(artifact.rdlt.rows_per_s, |v| format!("{v:.0}")),

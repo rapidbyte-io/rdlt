@@ -145,9 +145,9 @@ impl CatalogFixture {
         )
         .await;
 
-        // Bucket + catalog + grants via the ONE bootstrap implementation
-        // shared with the bench fixture — a second Rust copy would drift from
-        // benches/fixtures/polaris_bootstrap.py.
+        // Bucket + catalog + grants via the one bootstrap script the crate
+        // ships (tests/fixtures/polaris_bootstrap.py) — a second Rust copy
+        // would drift from it.
         // Host networking: the client and Polaris see the same endpoint.
         bootstrap_catalog(&base, &s3_endpoint);
 
@@ -282,15 +282,12 @@ async fn wait_http_answers(url: &str, attempts: u32, require_success: bool) {
 }
 
 /// One bootstrap implementation for bucket + catalog + grants — the
-/// SAME script the bench fixture runs (benches/fixtures/
-/// polaris_bootstrap.py); under host networking the client-side and
-/// Polaris-side S3 endpoints are identical.
+/// crate-local script tests/fixtures/polaris_bootstrap.py; under host
+/// networking the client-side and Polaris-side S3 endpoints are
+/// identical.
 fn bootstrap_catalog(polaris_base: &str, s3_endpoint: &str) {
     let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("repo root")
-        .join("benches/fixtures/polaris_bootstrap.py");
+        .join("tests/fixtures/polaris_bootstrap.py");
     let output = std::process::Command::new("python3")
         .arg(script)
         .args([
