@@ -4,7 +4,7 @@
 
 **Created**: 2026-07-24
 
-**Status**: Draft
+**Status**: Implemented — see [close-out.md](close-out.md) for the disposition of every requirement.
 
 **Input**: User description: "Workspace-wide refactoring program per REFACTORING.md: fix 12 latent bugs (B1-B12), then execute cross-cutting refactors R1-R13 (comment/citation policy, sqlcore commit-unit protocol extraction, Secret unification, god-file splits, validation decomposition, exactly-once apply-helper sharing, file-crate Location/Store unification, error-taxonomy alignment, panic-path removal, naming unification, arg-struct extraction, dead-code sweep, magic-constant centralization) in the value-per-risk order of Part 4"
 

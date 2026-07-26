@@ -1959,7 +1959,6 @@ dependencies = [
  "chrono",
  "fs4",
  "futures",
- "parquet",
  "rdlt-connector",
  "rdlt-core",
  "serde",

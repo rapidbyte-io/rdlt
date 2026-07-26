@@ -15,7 +15,13 @@
 #     TARGET=prop make test      extended property runs (4096 cases)
 #     TARGET=fuzz make test      fuzz all targets (nightly toolchain; FUZZ_SECONDS each)
 #     TARGET=mutants make test   mutation pass (slow)
-#     TARGET=deep make test      everything scheduled CI runs (prop+sweep+mutants+fuzz)
+#     TARGET=deep make test      every heavy suite: prop + sweep + mutants + fuzz,
+#                                PLUS the RDLT_HEAVY memory_bound claim and the
+#                                RDLT_DEEP Spark read-back. NOTE: no CI schedule
+#                                invokes this verb — deep-checks.yml runs prop,
+#                                sweep and fuzz nightly and mutants weekly, each
+#                                individually, so memory_bound and spark_deep run
+#                                HERE or nowhere.
 #   make bench                 shred microbench (criterion)
 #     TARGET=iai make bench      instruction-count benches + baseline comparison
 #     TARGET=cold make bench     cold-start check (<=40ms); needs hyperfine and
@@ -30,7 +36,26 @@
 #     TARGET=<cell-or-glob> make bench   one cell or a slice, e.g.
 #                                TARGET=pg-to-pg-1m or TARGET='pg-*'
 #                                (cells: cargo run -p rdlt-bench -- list)
-#   make check                 everything a PR must pass (lint + test + sweep + perf gate)
+#   make check                 everything a PR must pass (lint + docs + test + sweep
+#                                + perf gate)
+#                                PREREQUISITES, and they hard-fail rather than skip
+#                                (a missing instrument must never read as a passing
+#                                gate): `hyperfine` and `python3` for the cold-start
+#                                leg, and `valgrind` for the iai instruction-count
+#                                leg. Install them or run the legs individually;
+#                                do NOT soften the failure.
+#   make docs                  build the public documentation with warnings as
+#                                errors — a broken intra-doc link is a defect in
+#                                the published surface, not a cosmetic detail
+#   make coverage              line coverage over the whole workspace; the recorded
+#                                floor is 80%, enforced at feature close-out
+#   make reclaim               remove every container AND volume this workspace
+#                                started (label rdlt-test=1). Safe to run any
+#                                time: it can only match our own label, never
+#                                anything else on the machine. Needed because a
+#                                suite killed mid-run never reaches
+#                                testcontainers' Drop, and the orphaned
+#                                anonymous volumes filled the disk twice in 017.
 #
 # Suites are selected by TARGET; the tools behind them are implementation details.
 
@@ -38,7 +63,7 @@ TARGET ?=
 FUZZ_SECONDS ?= 600
 FUZZ_TARGETS := jsonl_slab cursor_decode file_config arrow_schema_map shred_push pg_copy_decode pg_pgoutput_decode
 
-.PHONY: build release dist lint test bench check coverage
+.PHONY: build release dist lint docs test bench check coverage reclaim
 
 build:
 	cargo build --workspace
@@ -80,7 +105,16 @@ else ifeq ($(TARGET),fuzz)
 else ifeq ($(TARGET),mutants)
 	# --jobs 2 + 2 test threads: runaway mutants (broken backpressure bounds)
 	# balloon EVERY parallel test at once — two host OOMs taught this. --iterate resumes.
-	NEXTEST_TEST_THREADS=2 cargo mutants --iterate --jobs 2
+	#
+	# TMPDIR is pinned onto the repo's own filesystem because cargo-mutants
+	# builds one FULL debug workspace per job in its scratch directory, and the
+	# default /tmp is commonly a tmpfs sized well under that (32 GiB here, ~15
+	# GiB per copy). Overflowing it aborts the run with a bare "Disk quota
+	# exceeded" mid-build, which reads like a host problem rather than a
+	# too-small scratch dir. The path is inside target/, so it is already
+	# gitignored and `cargo clean` reclaims it.
+	mkdir -p target/mutants-tmp
+	TMPDIR=$(CURDIR)/target/mutants-tmp NEXTEST_TEST_THREADS=2 cargo mutants --iterate --jobs 2
 else ifeq ($(TARGET),deep)
 	# RDLT_HEAVY=1: the memory-bound claim must RUN here — missing prereqs
 	# (prlimit, release CLI) hard-fail instead of silently skipping. Not on
@@ -132,14 +166,56 @@ else
 	cargo run -q -p rdlt-bench -- run --filter '$(TARGET)'
 endif
 
-# Feature 011 (contract PM5): measured line coverage for the connector
-# crate — the recorded floor is 80%. NOT part of `check` (no CI gate;
-# 004 governance). Numbers + exclusions live in benches/RESULTS.md.
+# Measured line coverage; the recorded floor is 80%, enforced at feature
+# close-out rather than per-push (no CI gate). The run is WORKSPACE-WIDE —
+# `cargo llvm-cov nextest` takes no package filter here — so the floor is read
+# against the whole tree. Numbers + exclusions live in benches/RESULTS.md.
+# `-D warnings` promotes rustdoc's lints to errors: a dead intra-doc link is a
+# defect in what consumers read, and nothing else in the gate looks at rustdoc.
+# --all-features so cfg-gated public items are documented too.
+docs:
+	RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
+
 coverage:
 	cargo llvm-cov nextest --features failpoints
 
 check: lint
+	$(MAKE) docs
 	$(MAKE) test
 	$(MAKE) test TARGET=sweep
 	$(MAKE) bench TARGET=iai
 	$(MAKE) bench TARGET=cold
+
+# Reclaim leaked test containers and their volumes.
+#
+# Scoped by the `rdlt-test=1` label that every start site in this workspace
+# applies (rdlt-testkit::containers::RECLAIM_LABEL, and `--label` at the two
+# sites that shell out to the CLI). Volumes are removed SEPARATELY because an
+# anonymous volume outlives the container that created it — reaping containers
+# alone is what let the disk fill twice during 017.
+#
+# Whichever engine is present wins; `docker` here may itself be podman's
+# compat CLI, which is why the socket-probing order matches the testkit's.
+reclaim:
+	@engine=""; \
+	for candidate in podman docker; do \
+	  if $$candidate ps >/dev/null 2>&1; then engine=$$candidate; break; fi; \
+	done; \
+	if [ -z "$$engine" ]; then \
+	  echo "reclaim: no working container engine (podman or docker) — nothing to do"; \
+	  exit 0; \
+	fi; \
+	echo "reclaim: using $$engine"; \
+	containers=$$($$engine ps -aq --filter label=rdlt-test=1); \
+	if [ -n "$$containers" ]; then \
+	  echo "$$containers" | xargs $$engine rm -f -v; \
+	else \
+	  echo "reclaim: no labelled containers"; \
+	fi; \
+	volumes=$$($$engine volume ls -q --filter label=rdlt-test=1); \
+	if [ -n "$$volumes" ]; then \
+	  echo "$$volumes" | xargs $$engine volume rm -f; \
+	else \
+	  echo "reclaim: no labelled volumes"; \
+	fi; \
+	echo "reclaim: done"

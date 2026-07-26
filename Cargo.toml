@@ -78,6 +78,8 @@ iceberg-catalog-rest = "=0.10.0"
 iceberg-storage-opendal = { version = "=0.10.0", features = ["opendal-s3"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "gzip"] }
 serde_yaml = "0.9"
+# Already in the tree via hyper (reqwest); a direct edge costs no new entry.
+httpdate = "1"
 duckdb = { version = "1", features = ["bundled", "appender-arrow"] }
 tokio-postgres = { version = "0.7", features = ["with-chrono-0_4"] }
 tokio-postgres-rustls = "0.13"

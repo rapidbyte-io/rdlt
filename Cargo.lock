@@ -4209,6 +4209,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "futures",
+ "httpdate",
  "jsonschema",
  "rdlt-connector",
  "rdlt-connector-duckdb",

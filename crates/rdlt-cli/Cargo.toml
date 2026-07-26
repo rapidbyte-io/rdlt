@@ -1,6 +1,10 @@
 [package]
 name = "rdlt-cli"
-description = "rdlt dev CLI: TOML pipeline spec -> run -> report"
+description = "rdlt CLI: run a YAML pipeline spec, stream events, report the outcome"
+keywords = ["elt", "etl", "pipeline", "cli", "data"]
+categories = ["command-line-utilities", "database"]
+documentation = "https://docs.rs/rdlt-cli"
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

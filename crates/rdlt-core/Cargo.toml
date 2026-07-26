@@ -1,6 +1,10 @@
 [package]
 name = "rdlt-core"
 description = "rdlt vocabulary: pure data contracts and semantic laws (ids, logical types, widening lattice, schemas, cursors, reports)"
+keywords = ["elt", "schema", "arrow", "data", "types"]
+categories = ["database", "data-structures"]
+documentation = "https://docs.rs/rdlt-core"
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

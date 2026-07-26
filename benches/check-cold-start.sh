@@ -15,7 +15,10 @@ set -eu
 
 BENCHES_DIR=$(cd "$(dirname "$0")" && pwd)
 REPO_ROOT=$(cd "$BENCHES_DIR/.." && pwd)
-CLI="$REPO_ROOT/target/release/rdlt"
+# Honour CARGO_TARGET_DIR: a contributor who redirects cargo's output (a
+# shared target dir, a faster disk) otherwise gets "release binary missing"
+# immediately after a successful `make release`.
+CLI="${CARGO_TARGET_DIR:-$REPO_ROOT/target}/release/rdlt"
 BAR_MS=40
 
 if [ ! -x "$CLI" ]; then

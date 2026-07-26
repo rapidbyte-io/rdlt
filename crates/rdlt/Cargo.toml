@@ -1,6 +1,10 @@
 [package]
 name = "rdlt"
 description = "rdlt facade: Pipeline builder, prelude, connector features"
+keywords = ["elt", "etl", "pipeline", "arrow", "data"]
+categories = ["database", "asynchronous"]
+documentation = "https://docs.rs/rdlt"
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

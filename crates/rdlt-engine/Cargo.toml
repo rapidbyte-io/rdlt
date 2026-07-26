@@ -1,6 +1,10 @@
 [package]
 name = "rdlt-engine"
 description = "rdlt engine: shredder, schema registry, WAL, state, runtime, loader (deep module)"
+keywords = ["elt", "etl", "arrow", "schema", "wal"]
+categories = ["database", "asynchronous"]
+documentation = "https://docs.rs/rdlt-engine"
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

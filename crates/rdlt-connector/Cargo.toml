@@ -1,6 +1,10 @@
 [package]
 name = "rdlt-connector"
 description = "rdlt connector SPI: Source/Destination/LoadSession traits, RecordsOut, capabilities, error taxonomy"
+keywords = ["elt", "connector", "spi", "arrow", "data"]
+categories = ["database", "asynchronous"]
+documentation = "https://docs.rs/rdlt-connector"
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

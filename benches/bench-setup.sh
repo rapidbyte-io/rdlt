@@ -18,7 +18,9 @@ cd "$(dirname "$0")/.."
 
 ENGINE=$(command -v podman || command -v docker)
 KC="${KUBECONFIG:-$HOME/.airbyte/abctl/abctl.kubeconfig}"
-KUBECTL=$(command -v kubectl || echo "$HOME/.local/share/mise/installs/kubectl/latest/kubectl")
+# No hardcoded fallback path: a guessed binary location fails later and
+# further from the cause than a clear message here does.
+KUBECTL=$(command -v kubectl || true)
 
 echo "== dlt: building rdlt-baseline image =="
 "$ENGINE" build -q -t rdlt-baseline benches/competitors/dlt/
@@ -52,7 +54,20 @@ trap cleanup EXIT
   -e RUSTFS_ACCESS_KEY=rdlt-bench -e RUSTFS_SECRET_KEY=rdlt-bench-secret \
   docker.io/rustfs/rustfs:1.0.0-beta.11 >/dev/null
 
-until "$ENGINE" exec rdlt-bench-pg pg_isready -U postgres >/dev/null 2>&1; do sleep 1; done
+# Bounded: an unbounded `until` loop against a container that will never
+# become ready hangs the setup with no output at all, which reads as a slow
+# machine rather than a failure. 120s is far beyond a healthy postgres start.
+PG_READY_TIMEOUT=120
+waited=0
+until "$ENGINE" exec rdlt-bench-pg pg_isready -U postgres >/dev/null 2>&1; do
+  if [ "$waited" -ge "$PG_READY_TIMEOUT" ]; then
+    echo "bench-setup: postgres (rdlt-bench-pg) did not become ready within \
+${PG_READY_TIMEOUT}s — inspect it with \`$ENGINE logs rdlt-bench-pg\`" >&2
+    exit 1
+  fi
+  sleep 1
+  waited=$((waited + 1))
+done
 "$ENGINE" exec -i rdlt-bench-pg psql -q -U postgres -f - \
   < benches/fixtures/seed_pg.sql >/dev/null
 python3 benches/fixtures/gen_jsonl.py 200000 "$ROWS"

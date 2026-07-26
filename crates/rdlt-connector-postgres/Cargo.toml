@@ -1,6 +1,10 @@
 [package]
 name = "rdlt-connector-postgres"
 description = "rdlt PostgreSQL connectors: binary-COPY-to-Arrow source and binary-COPY destination, one shared TLS/config home"
+keywords = ["elt", "postgres", "postgresql", "cdc", "arrow"]
+categories = ["database"]
+documentation = "https://docs.rs/rdlt-connector-postgres"
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

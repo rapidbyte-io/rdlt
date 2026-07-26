@@ -4,7 +4,7 @@
 
 **Created**: 2026-07-24
 
-**Status**: Draft
+**Status**: Implemented — see [close-out.md](close-out.md) for the disposition of every requirement.
 
 **Input**: User description: "Benchmark refinement per BENCH_REFINMENT.md (v3): rebuild the benchmark as an e2e-only, three-way-comparable matrix (rdlt/dlt/Airbyte, same conditions) of five cells; delete the gated/scoreboard taxonomy, 19 legacy cells, suites, three run modes, and six fixtures outright (git history is the archive); move cold-start to the instruments track; Airbyte driver competitor kind; presentation rebuild (generated matrix + GOVERNANCE.md split); bars start empty and are set measurement-first; phased P0-P4"
 

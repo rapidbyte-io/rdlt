@@ -1,6 +1,10 @@
 [package]
 name = "rdlt-connector-rest"
 description = "rdlt declarative REST source: YAML-configured pagination, auth, incremental cursors"
+keywords = ["elt", "rest", "api", "pagination", "http"]
+categories = ["database", "web-programming::http-client"]
+documentation = "https://docs.rs/rdlt-connector-rest"
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -14,6 +18,7 @@ async-trait = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
 reqwest = { workspace = true }
+httpdate = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
@@ -21,6 +26,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
+httpdate = { workspace = true }
 rdlt-connector-duckdb = { workspace = true }
 rdlt-engine = { workspace = true }
 tempfile = { workspace = true }

@@ -1,6 +1,10 @@
 [package]
 name = "rdlt-connector-sqlcore"
-description = "Shared merge-planning core for rdlt SQL destinations: options vocabulary, plan shapes, dialect seam"
+description = "rdlt SQL merge core: shared options vocabulary, merge plan shapes, and the dialect seam for SQL destinations"
+keywords = ["elt", "sql", "merge", "upsert", "scd2"]
+categories = ["database"]
+documentation = "https://docs.rs/rdlt-connector-sqlcore"
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

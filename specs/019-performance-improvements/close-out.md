@@ -4,7 +4,9 @@ Every contract clause and every user story gets a row. A row is complete when
 its evidence names a recorded measurement, a test, or a search — never an
 assertion (contract PI1). Zero uncited dispositions at close (Principle VII).
 
-**Status**: IN PROGRESS — Phase 1 complete, Phase 2 in progress.
+**Status**: COMPLETE. All nine stories dispositioned (US9 re-scoped on
+evidence, T089–T095 deliberately not built); the recorded three-way session of
+2026-07-25 is below and all four bars PASS against it.
 
 ---
 
@@ -176,7 +178,7 @@ RESULTS.md is regenerated.
 | PI2 — greenfield replacement, superseded code deleted | **US1+US4+US5 satisfied** | `struct Verify` → map, `VerifyOutcome` → map, `StreamAttribution` + `RdltSide.streams` deleted; the empty-list rejection deleted rather than joined by a second spelling. US4 deleted `BinaryCopyInWriter` use, `cell_value`, three `ToSql` shim types and `wire_type`. US5 deleted the non-merge stage leg outright — no flag keeps it alive — and `pg.stage.copy` was renamed with no alias |
 | PI3 — off the shelf unless a fact says otherwise | **US1+US4 satisfied (no new deps)** | US1 adds no dependency; set difference is `std::collections::BTreeSet`. US4 takes the value encoding from `postgres_types::ToSql` rather than hand-rolling it, and adds no dependency: `postgres-protocol` NOT taken (same bytes, second versioned surface), `uuid` NOT taken (absent from the profile, and `try_parse` accepts strictly less than the server's `uuid_in`), `rust_decimal`/`bigdecimal` NOT taken (96-bit mantissa cannot hold Decimal128; per-value allocation is the cost being removed) |
 | PI4 — frozen values stay frozen; one authorised bump | US1+US2+US4+US6 satisfied | Artifact v2→3 and WAL v1→2, both refuse-and-name-the-reason; the WAL bump is the ONE authorised persisted-format change and carries its migration note in `persisted-formats.md` §2. US4: `tests/fixtures/pg_copy_values.hex` captured from the SHIPPED encoder before any of it was deleted, and the rewritten encoder reproduces it byte for byte. US6: `tests/fixtures/shred_identities.txt` — 23 hazard cases, every emitted identity captured from the pre-change build and unchanged after; plus a cross-view proptest proving arena and tree views agree. **SATISFIED** |
-| PI5 — exactly-once survives every increment | US1+US2+US4+US5 satisfied | Sweep 23/23 green over the four WAL crash points after the rewrite; none changed meaning (the `crash_point!` return-semantics constraint forced the two-hop fsync split rather than being violated). US4 re-ran the sweep over the rewritten `PgSession::write` and the abort-on-drop staging invariant. US5 renamed `pg.stage.copy`→`pg.unit.write` (no alias), narrowed `pg.publish.begin`, and added `pg.unit.begin` + `pg.target.clear`; reachability is now encoded per write mode so the anti-vacuousness pins stay honest — `pg.target.clear` is demanded of the replace arm, which fires it, and not of merge, which cannot. Remaining: T094 |
+| PI5 — exactly-once survives every increment | US1+US2+US4+US5 satisfied | Sweep 23/23 green over the four WAL crash points after the rewrite; none changed meaning (the `crash_point!` return-semantics constraint forced the two-hop fsync split rather than being violated). US4 re-ran the sweep over the rewritten `PgSession::write` and the abort-on-drop staging invariant. US5 renamed `pg.stage.copy`→`pg.unit.write` (no alias), narrowed `pg.publish.begin`, and added `pg.unit.begin` + `pg.target.clear`; reachability is now encoded per write mode so the anti-vacuousness pins stay honest — `pg.target.clear` is demanded of the replace arm, which fires it, and not of merge, which cannot. **CLOSED**: the "Remaining: T094" note is discharged — T094 was re-scoped away with US9 (`tasks.md:234`, T089–T095 not built), so no sweep work remains outstanding under this clause. The redelivery state T094 would have covered is pinned instead by `direct_publish_guarantees.rs`; the sweep's residual blind spot (server committed, client never learned) is recorded as D-23 and is carried into feature 020 as a named item |
 | PI6 — the benchmark measures what it claims | **SATISFIED** | Delivered-vs-declared enforced (`runner.rs`), declared at load time (`cells.rs`), 4 pins incl. one reproducing the exact defect; two further cells corrected; policy entry + bar |
 | PI7 — configuration is expressible and validated | **US1+US7 satisfied** | `tables: []` now expresses "no tables"; two new typed configuration-time rejections with 3 pins. US7 adds `ParquetOptions` with per-field `#[serde(default = "…")]`, `deny_unknown_fields`, and validation split by what each layer can see — codec/level/zero-rows on the options, `parquet`-under-`jsonl` on the destination config where the sibling `format` is in scope |
 | PI8 — the version window is opened deliberately or not at all | **SATISFIED** | `cargo semver-checks --baseline-rev main -p rdlt-core -p rdlt-connector`: **no semver update required**, 196 checks pass each. The recorded 0.2 → 0.3 window STAYS CLOSED across the whole feature — encoder replaced, publish protocol changed, WAL format rewritten, shred path reworked, and `LoadSession` untouched. `ParquetOptions` is additive. Recorded in `benches/GOVERNANCE.md`: an unexercised window is a result, not an omission |
@@ -955,8 +957,11 @@ hard-delete upsert arm T082 changed.
 sweep, lint clean, doc-tests clean, both golden suites, iai baselines recorded
 under the adopted codegen profile.
 
-**T098/T099 are NOT done and are not developer work.** The final recorded
-three-way session and the bar re-derivation that follows it are operator-run:
+**T098/T099 were not developer work — they were operator-run, and they have
+since been run; the session they produced is recorded later in this document
+(all four bars PASS) and supersedes the "currently unchanged" statement in the
+paragraph below.** The final recorded three-way session and the bar
+re-derivation that follows it are operator-run:
 Principle VIII derives a bar from a recorded session, and every number in this
 document that came from an isolated A/B says so. The bars currently in
 `bars.toml` are unchanged and conservative; the parquet bar carries its own

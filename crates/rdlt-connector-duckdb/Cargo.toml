@@ -1,6 +1,10 @@
 [package]
 name = "rdlt-connector-duckdb"
 description = "rdlt DuckDB destination: Arrow ingestion, struct-native lowering, staged atomic commits"
+keywords = ["elt", "duckdb", "arrow", "olap", "sql"]
+categories = ["database"]
+documentation = "https://docs.rs/rdlt-connector-duckdb"
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

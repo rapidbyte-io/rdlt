@@ -4,7 +4,7 @@
 
 **Created**: 2026-07-25
 
-**Status**: Draft
+**Status**: Implemented — see [close-out.md](close-out.md) for the disposition of every requirement.
 
 **Input**: User description: "performance improvements as per PERF_ANALYSIS.md (this is greenfield take so better option should stay and old one cleaned up)"
 
@@ -552,6 +552,24 @@ properties are re-verified under concurrency.
   write mode. No configuration or write mode may disable it.
 - **FR-016**: Recovery-log segment writing MUST NOT block the asynchronous
   runtime thread that drives the load.
+
+  **AMENDED — measurement inverted this requirement's premise, and the shipped
+  code deliberately does not satisfy it as written.** Offloading the segment
+  encode to the blocking pool was implemented and measured at **+7.0% wall,
+  6.7 ms slower per batch** (D-03): the encode is cache-resident work that
+  costs more to move than to do, and the freed thread had nothing else to run.
+  The owner's decision was to write inline and re-scope this requirement to
+  US9, whose parallelism would have given the freed thread work — and US9 was
+  itself then re-scoped on evidence (T088), so its build tasks were never
+  taken and the re-scope target dissolved. The fsyncs and the segment unlink
+  DID move to the blocking pool and remain there.
+
+  **Standing re-trigger**: re-measure the offload only when a freed runtime
+  thread would have concurrent work to do — i.e. if intra-pipeline parallelism
+  is ever built. Absent that, D-03's numbers stand and inline is correct.
+  Feature 020 carries the remaining engine-side blocking site (the *recovery*
+  path, which is unbounded) as a separate item on async-hygiene grounds, with
+  no throughput claim attached.
 - **FR-017**: Exactly one recovery-log segment format MUST exist in the shipped
   code. No reader for the displaced format may remain.
 

@@ -1,6 +1,10 @@
 [package]
 name = "rdlt-connector-iceberg"
 description = "rdlt Iceberg destination: provider-agnostic REST catalog, snapshot-native exactly-once"
+keywords = ["elt", "iceberg", "lakehouse", "parquet", "catalog"]
+categories = ["database"]
+documentation = "https://docs.rs/rdlt-connector-iceberg"
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
