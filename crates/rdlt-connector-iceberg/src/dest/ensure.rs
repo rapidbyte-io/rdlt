@@ -160,11 +160,33 @@ async fn reconcile(
                     .find(|f| f.name == field.name)
                 {
                     Some(current_field) => {
-                        if current_field.field_type != field.field_type {
+                        // Compared STRUCTURALLY. Field ids belong to the
+                        // catalog, which renumbers on create, so comparing the
+                        // types directly reports drift for a stream that never
+                        // changed — see `schema::compare_column`.
+                        if let Err(drift) =
+                            crate::dest::schema::compare_column(field, current_field)
+                        {
+                            let detail = match drift {
+                                crate::dest::schema::Drift::Type { wanted, live } => format!(
+                                    "stream type {wanted} conflicts with the table's {live}"
+                                ),
+                                crate::dest::schema::Drift::NestedFields { wanted, live } => {
+                                    format!(
+                                        "stream shape {wanted} conflicts with the table's {live} \
+                                         — a nested field was added, removed or renamed, which \
+                                         additive evolution cannot express"
+                                    )
+                                }
+                                crate::dest::schema::Drift::Nullability => {
+                                    "the table requires a value this stream may not supply"
+                                        .to_owned()
+                                }
+                            };
                             return Err(fatal(format!(
-                                "{context} column `{}`: stream type {} conflicts with the \
-                                 table's {} — contradictory drift is never applied",
-                                field.name, field.field_type, current_field.field_type
+                                "{context} column `{}`: {detail} — contradictory drift is never \
+                                 applied",
+                                field.name
                             )));
                         }
                     }

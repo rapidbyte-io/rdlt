@@ -41,6 +41,8 @@ impl PipelineBuilder<Missing, Missing> {
 }
 
 impl<S, D> PipelineBuilder<S, D> {
+    /// Set the source. Changes the builder's type, which is how a pipeline
+    /// missing a source fails to compile rather than failing at run time.
     pub fn source<NS: Source>(self, source: NS) -> PipelineBuilder<NS, D> {
         PipelineBuilder {
             config: self.config,
@@ -49,6 +51,8 @@ impl<S, D> PipelineBuilder<S, D> {
         }
     }
 
+    /// Set the destination. Changes the builder's type, so `build()` is only
+    /// callable once both halves are present.
     pub fn destination<ND: Destination>(self, destination: ND) -> PipelineBuilder<S, ND> {
         PipelineBuilder {
             config: self.config,
@@ -184,6 +188,10 @@ pub struct Pipeline {
 }
 
 impl Pipeline {
+    /// Start building a pipeline with this name.
+    ///
+    /// The returned builder is missing both connectors, and its type says so:
+    /// `build()` does not exist until a source and a destination are set.
     pub fn builder(name: impl Into<rdlt_core::PipelineId>) -> PipelineBuilder<Missing, Missing> {
         PipelineBuilder::new(name)
     }

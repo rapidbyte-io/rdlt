@@ -94,7 +94,7 @@ pub(crate) fn lower_batch(
         )?;
     }
     RecordBatch::try_new(Arc::new(arrow::datatypes::Schema::new(fields)), arrays)
-        .map_err(|e| RdltError::config(format!("lowering produced invalid batch: {e}")))
+        .map_err(|e| RdltError::internal(format!("lowering produced invalid batch: {e}")))
 }
 
 fn flatten_array(
@@ -114,7 +114,7 @@ fn flatten_array(
             let struct_array = array
                 .as_any()
                 .downcast_ref::<StructArray>()
-                .ok_or_else(|| RdltError::config("schema says struct, array is not"))?;
+                .ok_or_else(|| RdltError::internal("schema says struct, array is not"))?;
             let parent_nulls = struct_array.nulls().cloned();
             for (i, child_field) in children.iter().enumerate() {
                 let child = with_merged_nulls(struct_array.column(i), parent_nulls.as_ref());
@@ -126,7 +126,7 @@ fn flatten_array(
             let decimals = array
                 .as_any()
                 .downcast_ref::<Decimal128Array>()
-                .ok_or_else(|| RdltError::config("schema says decimal, array is not"))?;
+                .ok_or_else(|| RdltError::internal("schema says decimal, array is not"))?;
             let scale = (*scale).max(0) as u8;
             let rendered: StringArray = decimals
                 .iter()
@@ -357,5 +357,112 @@ mod tests {
         assert_eq!(render_decimal(42, 0), "42");
         assert_eq!(render_decimal(-42, 0), "-42");
         assert_eq!(render_decimal(7, 3), "0.007");
+    }
+
+    /// A batch carrying BOTH a struct and a decimal column, which is the only
+    /// shape that reaches `flatten_array` with one capability on and the other
+    /// off. Every prior batch test used a single-kind batch, so each match guard
+    /// was only ever evaluated with its capability already false — negating it
+    /// changed nothing. Here each guard is exercised in its FALSE state, where
+    /// the mutant lowers a column the destination said it supports.
+    fn mixed_batch() -> RecordBatch {
+        use arrow::array::Decimal128Array;
+        let lat = Int64Array::from(vec![Some(7i64)]);
+        let struct_array = StructArray::new(
+            vec![Field::new("lat", DataType::Int64, true)].into(),
+            vec![Arc::new(lat) as ArrayRef],
+            None,
+        );
+        let price = Decimal128Array::from(vec![Some(1234i128)])
+            .with_precision_and_scale(10, 2)
+            .expect("decimal array");
+        RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("geo", struct_array.data_type().clone(), true),
+                Field::new("price", price.data_type().clone(), true),
+            ])),
+            vec![Arc::new(struct_array), Arc::new(price)],
+        )
+        .expect("mixed batch")
+    }
+
+    #[test]
+    fn mixed_batch_lowers_only_the_unsupported_kind() {
+        // Structs supported, decimal NOT: the struct must survive intact.
+        let lowered = lower_batch(&mixed_batch(), &caps(true, false)).expect("lower");
+        assert_eq!(lowered.num_columns(), 2, "the struct must NOT be flattened");
+        assert_eq!(lowered.schema().field(0).name(), "geo");
+        assert!(
+            matches!(lowered.schema().field(0).data_type(), DataType::Struct(_)),
+            "caps.structs = true: the struct column stays a struct"
+        );
+        assert_eq!(
+            lowered.schema().field(1).data_type(),
+            &DataType::Utf8,
+            "caps.decimal = false: only the decimal lowers"
+        );
+
+        // Decimal supported, structs NOT: the decimal must survive intact.
+        let lowered = lower_batch(&mixed_batch(), &caps(false, true)).expect("lower");
+        assert_eq!(lowered.num_columns(), 2, "struct flattens to one child");
+        assert_eq!(lowered.schema().field(0).name(), "geo__lat");
+        assert_eq!(
+            lowered.schema().field(1).data_type(),
+            &DataType::Decimal128(10, 2),
+            "caps.decimal = true: the decimal is NOT rendered to text"
+        );
+    }
+
+    /// Lowered nullability is `field.is_nullable() || !path.is_empty()`, and the
+    /// two halves need cases that DISAGREE — a batch of all-nullable fields
+    /// cannot distinguish `||` from `&&`. A non-nullable top level (false, false)
+    /// catches dropping the `!`, which would report it nullable; a non-nullable
+    /// struct child (false, true) catches `||`→`&&`, which would report it
+    /// non-nullable even though flattening leaves nowhere to record a
+    /// struct-null row.
+    #[test]
+    fn lowered_nullability_pins_both_halves_of_the_or() {
+        let child = Int64Array::from(vec![Some(1i64)]);
+        let struct_array = StructArray::new(
+            vec![Field::new("lat", DataType::Int64, false)].into(), // non-nullable CHILD
+            vec![Arc::new(child) as ArrayRef],
+            None,
+        );
+        let top = Int64Array::from(vec![Some(9i64)]);
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, false), // non-nullable TOP LEVEL
+                Field::new("geo", struct_array.data_type().clone(), true),
+            ])),
+            vec![Arc::new(top), Arc::new(struct_array)],
+        )
+        .expect("batch");
+
+        let lowered = lower_batch(&batch, &caps(false, true)).expect("lower");
+        assert_eq!(lowered.schema().field(0).name(), "id");
+        assert!(
+            !lowered.schema().field(0).is_nullable(),
+            "a non-nullable top-level field stays non-nullable (its path is empty)"
+        );
+        assert_eq!(lowered.schema().field(1).name(), "geo__lat");
+        assert!(
+            lowered.schema().field(1).is_nullable(),
+            "a flattened child is nullable regardless of its own flag: the parent \
+             struct can be null and flattening has nowhere else to record that"
+        );
+    }
+
+    /// Boundaries chosen so each mutant CHANGES the output. `raw < 0` → `<=`
+    /// differs only at exactly zero. `len - scale` → `len / scale` agrees on the
+    /// short values the test above uses ("12.34": 4-2 == 4/2), so it needs a
+    /// value where they diverge: 6 digits at scale 2 splits at 4 under
+    /// subtraction and at 3 under division.
+    #[test]
+    fn render_decimal_boundaries_zero_and_split_point() {
+        assert_eq!(render_decimal(0, 2), "0.00", "zero is not negative");
+        assert_eq!(render_decimal(123456, 2), "1234.56", "split at len - scale");
+        assert_eq!(render_decimal(-123456, 2), "-1234.56");
+        assert_eq!(render_decimal(1, 2), "0.01", "padding to scale + 1");
+        assert_eq!(render_decimal(i128::MAX, 0), i128::MAX.to_string());
     }
 }

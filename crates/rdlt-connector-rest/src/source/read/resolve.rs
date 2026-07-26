@@ -68,7 +68,50 @@ pub fn collect_parent_values(
     Ok(out)
 }
 
-/// Substitute `{token}` occurrences in a template string.
+/// Substitute `{token}` occurrences into a URL PATH, percent-encoding each
+/// value so data cannot alter the request's structure.
+///
+/// The values come from a parent stream's records — remote data. Substituted
+/// raw, a value containing `/`, `?`, `#` or `%` re-points the child request: an
+/// id of `../admin` walks up a path segment, `x?y=1` starts a query string.
+/// Only the substituted VALUE is encoded; the template's own separators are
+/// structure the operator wrote and must survive.
+///
+/// The escape set is RFC 3986 unreserved (`A-Z a-z 0-9 - . _ ~`), i.e. RFC 6570
+/// simple string expansion — the standard rule for a URI-template variable.
+/// Hand-rolled rather than pulling in a crate: it is nine lines and one table.
+///
+/// With ONE addition the standard rule does not cover: a value that encodes to
+/// exactly `.` or `..` is a DOT SEGMENT, and the URL parser removes it — so
+/// `..` still walks up a path segment even though every character in it is
+/// unreserved. Those two values have their dots escaped as well, which keeps
+/// them a literal segment. Escaping `.` everywhere is not the answer: it is
+/// legitimate and common inside an ordinary id.
+pub(crate) fn substitute_path(template: &str, values: &BTreeMap<String, String>) -> String {
+    let mut out = template.to_owned();
+    for (token, value) in values {
+        let mut encoded = String::with_capacity(value.len());
+        for byte in value.bytes() {
+            match byte {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                    encoded.push(byte as char);
+                }
+                _ => encoded.push_str(&format!("%{byte:02X}")),
+            }
+        }
+        if encoded == "." || encoded == ".." {
+            encoded = encoded.replace('.', "%2E");
+        }
+        out = out.replace(&format!("{{{token}}}"), &encoded);
+    }
+    out
+}
+
+/// Substitute `{token}` occurrences in a template string, VERBATIM.
+///
+/// For query-parameter values and body strings only: `reqwest` and `serde`
+/// encode those themselves, so encoding here would double-encode them. Never
+/// use this for a path — see [`substitute_path`].
 pub fn substitute(template: &str, values: &BTreeMap<String, String>) -> String {
     let mut out = template.to_owned();
     for (token, value) in values {
@@ -189,5 +232,52 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(err.contains("collides"), "{err}");
+    }
+
+    /// Parent values are REMOTE DATA. Substituted raw into a path they can
+    /// re-point the request: `../admin` walks up a segment, `x?y=1` starts a
+    /// query string. Only the value is encoded — the template's own separators
+    /// are structure the operator wrote.
+    #[test]
+    fn a_path_value_cannot_restructure_the_request() {
+        let mut values = BTreeMap::new();
+        values.insert("id".to_owned(), "../admin".to_owned());
+        assert_eq!(
+            substitute_path("/orgs/acme/users/{id}", &values),
+            "/orgs/acme/users/..%2Fadmin"
+        );
+
+        // `.` and `..` are unreserved, so a naive RFC 3986 encoder passes them
+        // through and the URL parser then REMOVES the segment — `..` walks up.
+        for dots in [".", ".."] {
+            let mut values = BTreeMap::new();
+            values.insert("id".to_owned(), dots.to_owned());
+            let out = substitute_path("/orgs/acme/users/{id}", &values);
+            assert!(
+                !out.ends_with("/.") && !out.ends_with("/.."),
+                "`{dots}` must not survive as a dot segment: {out}"
+            );
+        }
+
+        let mut values = BTreeMap::new();
+        values.insert("id".to_owned(), "x?y=1#frag".to_owned());
+        assert_eq!(
+            substitute_path("/users/{id}/events", &values),
+            "/users/x%3Fy%3D1%23frag/events"
+        );
+
+        // Unreserved characters pass through, so ordinary ids stay readable.
+        let mut values = BTreeMap::new();
+        values.insert("id".to_owned(), "abc-123_x.y~z".to_owned());
+        assert_eq!(substitute_path("/u/{id}", &values), "/u/abc-123_x.y~z");
+    }
+
+    /// Query and body values keep going through verbatim — reqwest and serde
+    /// encode those, and encoding here would double-encode them.
+    #[test]
+    fn query_and_body_substitution_stays_verbatim() {
+        let mut values = BTreeMap::new();
+        values.insert("id".to_owned(), "a b&c".to_owned());
+        assert_eq!(substitute("{id}", &values), "a b&c");
     }
 }

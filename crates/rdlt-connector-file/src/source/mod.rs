@@ -74,6 +74,16 @@ pub(crate) fn resolve_files(pattern: &str) -> Result<Vec<FileMeta>, SourceError>
             }
         }
         paths
+    } else if std::path::Path::new(pattern).is_dir() {
+        // A directory is not "missing" — saying so sends the operator looking
+        // for a path that is right there. Naming the pattern they probably
+        // meant is the difference between a dead end and a fix. Expanding it
+        // implicitly is deliberately NOT done: which files a stream reads is
+        // the operator's declaration, not a guess.
+        return Err(SourceError::fatal(format!(
+            "`{pattern}` is a directory, not a file — name a file, or use a \
+             pattern such as `{pattern}/*.jsonl`"
+        )));
     } else {
         return Err(SourceError::fatal(format!(
             "file `{pattern}` does not exist"
@@ -190,9 +200,8 @@ impl Source for FileSource {
                 }
             }
         }
-        if let Some(dir) = fetched_dir {
-            let _ = std::fs::remove_dir_all(dir);
-        }
+        // `fetched_dir` releases its directory when it drops — on every exit
+        // from this function, including the error and cancellation paths above.
         outcome
     }
 }
@@ -204,7 +213,7 @@ struct ResolvedInputs {
     /// object key → local temp path (object-store parquet, fetched before planning).
     read_paths: Option<std::collections::BTreeMap<String, String>>,
     /// temp dir holding object fetches, removed after the run.
-    fetched_dir: Option<std::path::PathBuf>,
+    fetched_dir: Option<FetchDir>,
 }
 
 /// Snapshot the file list once per run (stable list; new files next run). Local
@@ -237,7 +246,7 @@ async fn resolve_inputs(
             let mut metas = Vec::with_capacity(listed.len());
             let mut paths = std::collections::BTreeMap::new();
             for (i, meta) in listed.into_iter().enumerate() {
-                let local = fetch_to_temp(location, &meta.path, &dir, i).await?;
+                let local = fetch_to_temp(location, &meta.path, dir.path(), i).await?;
                 let counted = parquet::resolve_with_row_groups(&local.to_string_lossy())?;
                 let groups = counted.first().map(|m| m.size_units).unwrap_or(0);
                 paths.insert(meta.path.clone(), local.to_string_lossy().into_owned());
@@ -286,7 +295,7 @@ async fn stage_s3_fetches(
     stream: &FileStream,
     tasks: &mut [FileTask],
     read_paths: &Option<std::collections::BTreeMap<String, String>>,
-    fetched_dir: &mut Option<std::path::PathBuf>,
+    fetched_dir: &mut Option<FetchDir>,
 ) -> Result<(), SourceError> {
     if let Some(paths) = read_paths {
         for task in tasks.iter_mut() {
@@ -299,15 +308,13 @@ async fn stage_s3_fetches(
             let needs_local =
                 stream.format == Format::Csv || !crate::formats::codec_of(&task.path).is_plain();
             if needs_local && task.read_path.is_none() {
-                let dir = match fetched_dir {
-                    Some(dir) => dir.clone(),
-                    None => {
-                        let dir = temp_fetch_dir(&stream.name)?;
-                        *fetched_dir = Some(dir.clone());
-                        dir
-                    }
-                };
-                let local = fetch_to_temp(location, &task.path, &dir, i).await?;
+                // Created on first need and owned by the caller, so one
+                // directory serves every fetch and is released exactly once.
+                if fetched_dir.is_none() {
+                    *fetched_dir = Some(temp_fetch_dir(&stream.name)?);
+                }
+                let dir = fetched_dir.as_ref().expect("created above");
+                let local = fetch_to_temp(location, &task.path, dir.path(), i).await?;
                 task.read_path = Some(local.to_string_lossy().into_owned());
             }
         }
@@ -324,13 +331,38 @@ pub fn config_schema() -> serde_json::Value {
 /// Per-READ temp dir for object fetches: unique per call (pid + a
 /// process-wide counter), so concurrent in-process pipelines with
 /// same-named streams can never share or clobber fetch files.
-fn temp_fetch_dir(stream: &str) -> Result<std::path::PathBuf, SourceError> {
+fn temp_fetch_dir(stream: &str) -> Result<FetchDir, SourceError> {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("rdlt-file-{}-{seq}-{stream}", std::process::id()));
-    std::fs::create_dir_all(&dir)
+    let path =
+        std::env::temp_dir().join(format!("rdlt-file-{}-{seq}-{stream}", std::process::id()));
+    std::fs::create_dir_all(&path)
         .map_err(|e| SourceError::fatal(format!("temp dir for object fetch: {e}")))?;
-    Ok(dir)
+    Ok(FetchDir { path })
+}
+
+/// A fetch directory that removes itself.
+///
+/// Ownership, not a cleanup call: the read loop has several failure exits and a
+/// cancellation exit, and a directory released only on the success path leaks
+/// fetched objects — potentially a whole listing's worth — on every one of them.
+#[derive(Debug)]
+pub(crate) struct FetchDir {
+    path: std::path::PathBuf,
+}
+
+impl FetchDir {
+    fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+impl Drop for FetchDir {
+    fn drop(&mut self) {
+        // Best effort by construction: a failure here cannot be reported (Drop
+        // has no channel for it) and must not mask the outcome that unwound us.
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
 }
 
 /// Drain one object into a temp file (bounded buffer).
@@ -366,8 +398,23 @@ mod temp_dir_tests {
     fn temp_fetch_dirs_are_unique_per_call() {
         let a = super::temp_fetch_dir("events").unwrap();
         let b = super::temp_fetch_dir("events").unwrap();
-        assert_ne!(a, b, "concurrent pipelines must never share fetch dirs");
-        let _ = std::fs::remove_dir_all(a);
-        let _ = std::fs::remove_dir_all(b);
+        assert_ne!(
+            a.path(),
+            b.path(),
+            "concurrent pipelines must never share fetch dirs"
+        );
+    }
+
+    /// The directory releases itself, so every exit from the read loop — success,
+    /// typed failure, cancellation — leaves no fetched objects behind.
+    #[test]
+    fn a_fetch_dir_removes_itself_when_dropped() {
+        let path = {
+            let dir = super::temp_fetch_dir("events").unwrap();
+            let path = dir.path().to_path_buf();
+            assert!(path.exists());
+            path
+        };
+        assert!(!path.exists(), "the directory is released on drop");
     }
 }

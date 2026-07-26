@@ -895,6 +895,19 @@ impl PgSession {
             .batch_execute(UNIT_COMMIT)
             .await
             .map_err(transient)?;
+        // The other half of the redelivery window, and the sharper half: the
+        // transaction is COMMITTED and durable, and the client dies before it
+        // can act on that fact. `pg.tx.commit` above covers "the commit may or
+        // may not have landed"; here it definitely landed, so recovery MUST
+        // find the published unit and return its receipt instead of
+        // re-publishing. Nothing below this line has run yet — the unit is
+        // still open and the clear/mark promotions have not applied — so replay
+        // has to reconstruct them from the durable state alone, which is
+        // exactly the property exactly-once rests on.
+        crash_point!(
+            "pg.tx.acked",
+            Err(DestinationError::fatal("injected crash at pg.tx.acked"))
+        );
         // Applied only after the unit's transaction committed (a rolled-back
         // unit never counts). The clears promote for the same reason.
         let unit = self.unit.take().expect("unit open");

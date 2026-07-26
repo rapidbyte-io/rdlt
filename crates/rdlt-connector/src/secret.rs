@@ -19,11 +19,22 @@
 
 use serde::{Deserialize, Serialize};
 
+/// A credential that cannot be printed by accident.
+///
+/// `Debug` and `Display` render `***`, so a secret survives being interpolated
+/// into an error, a log line, or a rendered config without leaking. The only way
+/// to obtain the value is [`Secret::reveal`], which makes that call site the
+/// entire audit surface — the test suite greps rendered output to prove no
+/// secret substring ever reaches it.
+///
+/// `#[serde(transparent)]`: it deserializes from a plain string, so wrapping a
+/// config field in `Secret` changes nothing about the document.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Secret(String);
 
 impl Secret {
+    /// Wrap a credential.
     pub fn new(value: impl Into<String>) -> Self {
         Self(value.into())
     }

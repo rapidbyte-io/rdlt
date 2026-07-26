@@ -29,37 +29,64 @@ use crate::connector::postgres::source::PostgresConfig;
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Spec {
+    /// The pipeline's stable name. State and cursors are persisted under it, so
+    /// renaming it starts a fresh pipeline rather than continuing this one.
     pub pipeline: String,
+    /// Where the write-ahead log lives. Absent means no WAL: recovery still
+    /// works, but degrades to re-extracting from the last committed cursor —
+    /// slower, never wrong.
     #[serde(default)]
     pub workdir: Option<PathBuf>,
     // singleton_map: YAML's natural `write_mode: {merge: {key: […]}}` /
     // `source: postgres: …` singleton-map form for externally-tagged
     // enums (serde_yaml 0.9 otherwise wants `!tag` syntax).
+    /// How rows land at the destination. Absent defaults to `Append`.
     #[serde(default, with = "serde_yaml::with::singleton_map")]
     pub write_mode: Option<WriteModeSpec>,
+    /// Where rows come from.
     #[serde(with = "serde_yaml::with::singleton_map")]
     pub source: SourceSpec,
+    /// Where rows go.
     #[serde(with = "serde_yaml::with::singleton_map")]
     pub destination: DestSpec,
 }
 
+/// The document form of [`WriteMode`].
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WriteModeSpec {
+    /// Add rows, keeping everything already there.
     Append,
+    /// Replace the table's contents with this load's rows, atomically at commit.
     Replace,
-    Merge { key: Vec<String> },
+    /// Merge on an identity, updating matched rows and inserting the rest.
+    Merge {
+        /// The columns identifying a row. Must agree with the stream's declared
+        /// `primary_key` where it has one — a mismatch is refused at plan time.
+        key: Vec<String>,
+    },
 }
 
+/// Which source a document selects, and how it is configured.
+///
+/// Each variant is gated on its connector feature, so a build that excludes a
+/// connector also rejects documents naming it — rather than compiling and
+/// failing at run time.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum SourceSpec {
     /// Path to the declarative REST source YAML.
     #[cfg(feature = "rest")]
-    Rest { config: PathBuf },
+    Rest {
+        /// The REST source document.
+        config: PathBuf,
+    },
     /// Path to the file source YAML (jsonl/parquet streams).
     #[cfg(feature = "file")]
-    File { config: PathBuf },
+    File {
+        /// The file source document.
+        config: PathBuf,
+    },
     /// Postgres source: the config document INLINE (the natural form — the
     /// pipeline is one YAML document), or `config: path` referencing a
     /// reusable YAML/JSON file with the identical shape.
@@ -69,6 +96,9 @@ pub enum SourceSpec {
 
 #[cfg(feature = "postgres-source")]
 #[derive(Debug, Deserialize)]
+/// The two ways a postgres source can be written in a pipeline document.
+///
+/// `untagged`, so the form is inferred from the shape rather than declared.
 #[serde(untagged)]
 pub enum PgSourceSpec {
     /// `source: postgres: {config: source.yaml}` — tried first; strict
@@ -79,33 +109,50 @@ pub enum PgSourceSpec {
     Inline(Box<PostgresConfig>),
 }
 
+/// The path form of a postgres source: `postgres: {config: source.yaml}`.
+///
+/// `deny_unknown_fields`, so mixing `config` with inline fields is a loud error
+/// rather than a document half of which is silently ignored.
 #[cfg(feature = "postgres-source")]
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PgSourceFile {
+    /// The reusable postgres source document.
     pub config: PathBuf,
 }
 
+/// Which destination a document selects, and how it is configured.
+///
+/// Each variant is gated on its connector feature, so a build that excludes a
+/// connector also rejects documents naming it.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum DestSpec {
+    /// A DuckDB database file.
     #[cfg(feature = "duckdb")]
     Duckdb {
+        /// The database file. Created if absent.
         path: PathBuf,
+        /// DuckDB's own `memory_limit` setting (`"4GB"`), passed through.
         memory_limit: Option<String>,
         /// The SAME destination-options vocabulary as postgres — shared
         /// sqlcore types, one YAML shape.
         merge_strategy: Option<crate::connector::duckdb::dest::MergeStrategy>,
+        /// Per-table option overrides, keyed by table name.
         tables: Option<
             std::collections::BTreeMap<String, crate::connector::duckdb::dest::TableOptions>,
         >,
         /// dlt-parity passthrough: extensions to LOAD and `SET` settings.
         extensions: Option<Vec<String>>,
+        /// Raw `SET <key> = <value>` settings applied to the connection.
         settings: Option<std::collections::BTreeMap<String, String>>,
     },
+    /// A PostgreSQL schema.
     #[cfg(feature = "postgres-dest")]
     Postgres {
+        /// libpq connection string.
         conn: String,
+        /// The schema rows land in. Created if absent.
         dataset: String,
         /// Optional TLS block: `tls: {mode: verify_full, root_cert: /ca.pem}`.
         tls: Option<crate::connector::postgres::tls::TlsPolicy>,
@@ -122,14 +169,22 @@ pub enum DestSpec {
     /// The frozen `parquet:` spelling (equivalent to `file: local parquet`);
     /// the parquet destination lives in the file family.
     #[cfg(feature = "file")]
-    Parquet { path: PathBuf },
+    Parquet {
+        /// Output directory.
+        path: PathBuf,
+    },
     /// The full file-destination vocabulary — format (parquet|jsonl),
     /// location (local | s3), partition_by.
     #[cfg(feature = "file")]
     File {
+        /// Output directory (local) or key prefix (object store).
         path: String,
+        /// `parquet` (default) or `jsonl`.
         format: Option<crate::connector::file::dest::DestFormat>,
+        /// Absent = local filesystem; otherwise the object-store location.
         location: Option<crate::connector::file::location::LocationOptions>,
+        /// Optional partition column: one prefix per value, written as the bare
+        /// value rather than Hive-style `column=value`.
         partition_by: Option<String>,
         /// Mirrors `FileDestConfig::parquet`. This enum is a hand-maintained
         /// mirror rebuilt field by field below, so a field added to the

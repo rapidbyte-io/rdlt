@@ -1,10 +1,13 @@
-//! Redelivery and Replace-clear guarantees on the DIRECT publish path.
+//! Redelivery and Replace-clear guarantees on the DIRECT publish path — the
+//! path a non-merge load takes when it writes straight into the target with no
+//! staging table.
 //!
-//! Both tests here were written from code-review findings against feature 019
-//! US5, and both reproduced real defects. The first is fixed and stays as its
-//! regression pin. The second is a CONFIRMED, UNFIXED defect and is
-//! `#[ignore]`d with its reason — visible and runnable, rather than deleted
-//! and forgotten.
+//! Two invariants are pinned here, and both are load-bearing for exactly-once:
+//! a redelivered unit must not duplicate rows, and a Replace target must be
+//! cleared exactly once per load, durably, per target. Neither is currently
+//! reachable through the crash sweep — the sweep cannot produce the state where
+//! the server committed and the client never learned — so these direct pins are
+//! the standing coverage for that state.
 use arrow_array::{Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use rdlt_connector::core::{

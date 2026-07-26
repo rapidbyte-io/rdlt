@@ -43,6 +43,13 @@ impl CommitIdentity {
     }
 
     /// Is this identity already present in the table's snapshot history?
+    ///
+    /// Replay detection is only as durable as that history: this reads the
+    /// snapshots the table metadata currently retains. A catalog or maintenance
+    /// job that expires snapshots (or a `expire_snapshots` action) removes the
+    /// evidence a redelivered commit is recognised by, and an expired identity
+    /// would be re-applied as a fresh commit. Retention must therefore outlive
+    /// the window in which a load can be redelivered.
     pub(crate) fn already_committed(&self, table: &iceberg::table::Table) -> bool {
         table.metadata().snapshots().any(|snapshot| {
             let summary = &snapshot.summary().additional_properties;

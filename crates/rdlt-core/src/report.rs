@@ -13,14 +13,22 @@ use crate::cursor::Cursor;
 use crate::ids::{LoadId, PipelineId, StreamName, TableName};
 use crate::schema::SchemaDelta;
 
+/// Version of the report's serialized shape. Present so a platform persisting
+/// reports across engine upgrades can tell which layout it is reading.
 pub const REPORT_FORMAT_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
+/// One table's totals for the run.
 pub struct TableReport {
+    /// Rows committed to this table.
     pub rows: u64,
+    /// In-memory bytes of the batches written to it.
     pub bytes: u64,
+    /// Whole rows dropped by a Discard* policy. Non-zero means the destination
+    /// holds LESS than the source offered, deliberately.
     pub discarded_rows: u64,
+    /// Individual values nulled by a Discard* policy, with their rows kept.
     pub discarded_values: u64,
 }
 
@@ -48,15 +56,27 @@ pub enum ResumedFrom {
     /// Prior cursors recovered from destination state; source resumed.
     Cursor,
     /// Local WAL replayed (no re-extraction) before continuing.
-    Wal { replayed_batches: u64 },
+    Wal {
+        /// How many batches replay re-applied before the run continued.
+        replayed_batches: u64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
+/// What a run did, in machine-readable form.
+///
+/// The accounting invariant: these totals equal destination-visible reality.
+/// Every retry, widening and discard appears here — if the run did less than was
+/// asked, this says so rather than reporting a clean success.
 pub struct RunReport {
+    /// [`REPORT_FORMAT_VERSION`] at the time of writing.
     pub format_version: u32,
+    /// The pipeline this run belongs to.
     pub pipeline: PipelineId,
+    /// This run's identifier.
     pub load_id: LoadId,
+    /// Per-table totals.
     pub tables: BTreeMap<TableName, TableReport>,
     /// Every schema migration applied during the run, in order.
     pub schema_migrations: Vec<SchemaDelta>,
@@ -64,8 +84,12 @@ pub struct RunReport {
     pub retries: u64,
     /// Final committed cursor per stream.
     pub cursors: BTreeMap<StreamName, Cursor>,
+    /// How this run started relative to previous state.
     pub resumed_from: ResumedFrom,
+    /// How many commits the run published. At least one, even for a no-op run,
+    /// so a fresh pipeline's state document exists afterwards.
     pub commits: u64,
+    /// Wall-clock duration of the run.
     pub elapsed_ms: u64,
 }
 
@@ -87,10 +111,13 @@ impl RunReport {
         }
     }
 
+    /// The mutable entry for a table, created zeroed on first mention.
     pub fn table_mut(&mut self, table: &TableName) -> &mut TableReport {
         self.tables.entry(table.clone()).or_default()
     }
 
+    /// Rows committed across every table. Excludes discards — this is what the
+    /// destination holds, not what the source offered.
     pub fn total_rows(&self) -> u64 {
         self.tables.values().map(|t| t.rows).sum()
     }

@@ -48,9 +48,13 @@ pub enum ParquetCompression {
     /// workload, and what the ecosystem assumes when it reads a parquet file.
     #[default]
     Snappy,
+    /// Widely readable, slower than Snappy; accepts a level.
     Gzip,
+    /// The frame-less LZ4 variant parquet readers expect. No level.
     Lz4Raw,
+    /// Smaller than Snappy at more CPU; accepts a level.
     Zstd,
+    /// Smallest of these at the most CPU; accepts a level.
     Brotli,
 }
 

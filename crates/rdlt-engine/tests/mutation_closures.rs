@@ -21,8 +21,15 @@ fn three_batches() -> Vec<MemoryBatch> {
         .collect()
 }
 
-/// Kills: `+=`→`*=` on report rows/bytes counters; `byte_size`→0/1 (via the
-/// bytes counter being real); Discarded zero-emission (`>`→`>=`).
+/// Kills: `+=`→`*=` on the report's per-table rows/bytes counters; Discarded
+/// zero-emission (`>`→`>=`).
+///
+/// Deliberately NOT `LoadItem::byte_size`: that trait method has exactly one
+/// consumer — the stage channel's permit request — and `table.bytes` below is
+/// read straight off the batch in `Loader::process`, never through the trait.
+/// A constant `byte_size` leaves every counter here correct while removing
+/// backpressure entirely, so it is pinned by its consequence in
+/// `load::tests::byte_size_is_what_makes_backpressure_real`.
 #[tokio::test]
 async fn report_counters_are_exact_and_clean_runs_emit_no_discards() {
     let dest = MemoryDestination::new();
@@ -76,7 +83,9 @@ async fn commit_policy_boundaries_are_exact() {
     );
 
     // EveryBytes(1): every checkpoint boundary sees bytes > threshold → commits
-    // at each of the 3 checkpoints (kills byte_size→0, which would never trigger).
+    // at each of the 3 checkpoints. `bytes_since_commit` is accumulated from the
+    // batch in `Loader::process`, so this pins the POLICY arm, not
+    // `LoadItem::byte_size` (see the note on the test above).
     let dest = MemoryDestination::new();
     let mut config = EngineConfig::new("policy-bytes");
     config.commit_policy = CommitPolicy::EveryBytes(1);

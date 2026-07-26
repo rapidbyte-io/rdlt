@@ -252,6 +252,14 @@ pub struct HistoryLine {
     pub variant: String,
     pub median_ms: f64,
     pub rows: Option<u64>,
+    /// Recorded on a machine that failed the quiet guard.
+    ///
+    /// The artifact carries this flag precisely so a forced number is never
+    /// mistaken for evidence; dropping it here let a forced median into the
+    /// trends table indistinguishable from a recorded-session one — the same
+    /// confusion, one layer over. Optional so existing history files still read.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub forced: bool,
 }
 
 /// Append one line per cell×variant for this recorded invocation (rdlt plus
@@ -264,6 +272,7 @@ pub fn append_history(path: &Path, artifact: &Artifact) -> Result<()> {
         variant: "rdlt".into(),
         median_ms: artifact.rdlt.median_ms,
         rows: artifact.rdlt.rows,
+        forced: artifact.forced,
     }];
     // Every arm of a cell delivers the SAME declared stream set — that is what
     // the delivered-vs-declared check enforces — so the cell's declared total
@@ -283,6 +292,7 @@ pub fn append_history(path: &Path, artifact: &Artifact) -> Result<()> {
                 variant: variant.clone(),
                 median_ms: *median_ms,
                 rows: declared,
+                forced: artifact.forced,
             });
         }
     }

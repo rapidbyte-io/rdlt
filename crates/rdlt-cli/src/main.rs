@@ -14,7 +14,11 @@
 //!
 //! Exit codes mirror `RdltError` variants (stable, scriptable):
 //! 0 success · 2 config · 3 schema contract · 4 source · 5 destination · 6 WAL/disk ·
-//! 7 cancelled · 64 usage.
+//! 7 cancelled · 64 usage · 70 internal defect · 74 file I/O.
+//!
+//! 70 is also the code for any variant this build does not know: `RdltError` is
+//! `#[non_exhaustive]`, and "this binary cannot classify what happened" is a bug
+//! to report, never an instruction to go and edit the pipeline configuration.
 
 mod cdc;
 
@@ -86,6 +90,10 @@ fn main() -> ExitCode {
     };
     match runtime.block_on(run(spec_path, report_path)) {
         Ok(()) => ExitCode::SUCCESS,
+        Err(CliError::Io(message)) => {
+            eprintln!("error: {message}");
+            ExitCode::from(74) // EX_IOERR: the invocation was fine, the filesystem was not
+        }
         Err(CliError::Usage(message)) => {
             eprintln!("error: {message}");
             ExitCode::from(2)
@@ -99,7 +107,11 @@ fn main() -> ExitCode {
                 RdltError::Destination { .. } => 5,
                 RdltError::Wal { .. } => 6,
                 RdltError::Cancelled => 7,
-                _ => 2,
+                RdltError::Internal { .. } => 70,
+                // NOT 2. Falling back to the config code tells a scripting
+                // caller to fix their YAML for something the engine could not
+                // classify, and a future variant would silently join it.
+                _ => 70,
             })
         }
     }
@@ -107,6 +119,9 @@ fn main() -> ExitCode {
 
 enum CliError {
     Usage(String),
+    /// A file the CLI itself could not read or write. Distinct from `Usage`:
+    /// the invocation was well-formed, the filesystem refused.
+    Io(String),
     Run(RdltError),
 }
 
@@ -130,7 +145,7 @@ impl From<SpecError> for CliError {
 
 async fn run(spec_path: PathBuf, report_path: Option<PathBuf>) -> Result<(), CliError> {
     let raw = std::fs::read_to_string(&spec_path)
-        .map_err(|e| CliError::Usage(format!("reading {}: {e}", spec_path.display())))?;
+        .map_err(|e| CliError::Io(format!("reading {}: {e}", spec_path.display())))?;
     let spec: Spec =
         serde_yaml::from_str(&raw).map_err(|e| CliError::Usage(format!("parsing spec: {e}")))?;
 
@@ -187,13 +202,18 @@ async fn drive(pipeline: rdlt::Pipeline, report_path: Option<PathBuf>) -> Result
     });
 
     let report = pipeline.run().await?;
-    let _ = feed.await;
+    // A failed renderer is reported but never fails the run: by this point the
+    // load has succeeded and the report is in hand, so exiting non-zero would
+    // misreport the outcome.
+    if let Err(e) = feed.await {
+        eprintln!("warning: event feed stopped: {e}");
+    }
 
     let json = serde_json::to_string_pretty(&report)
         .map_err(|e| CliError::Usage(format!("encoding report: {e}")))?;
     match report_path {
         Some(path) => std::fs::write(&path, json)
-            .map_err(|e| CliError::Usage(format!("writing {}: {e}", path.display())))?,
+            .map_err(|e| CliError::Io(format!("writing {}: {e}", path.display())))?,
         None => println!("{json}"),
     }
     Ok(())

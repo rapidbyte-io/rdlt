@@ -63,6 +63,7 @@ impl RowIdBuilder {
         self.hasher.update(bytes);
     }
 
+    /// The accumulated row identity.
     pub fn finish(&self) -> RowId {
         RowId::from_bytes(*self.hasher.finalize().as_bytes())
     }
@@ -73,7 +74,10 @@ impl RowIdBuilder {
 /// type widenings of *other* columns.
 #[derive(Debug, Clone, Copy)]
 pub enum FieldValue<'a> {
+    /// An absent value. Hashed distinctly from any byte string, so a NULL and
+    /// the empty string never collide into the same identity.
     Null,
+    /// The value's canonical bytes.
     Bytes(&'a [u8]),
 }
 

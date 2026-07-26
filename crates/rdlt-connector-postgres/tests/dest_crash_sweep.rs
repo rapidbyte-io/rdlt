@@ -78,6 +78,7 @@ fn registry_is_pinned() {
         "pg.unit.write",
         "pg.publish.begin",
         "pg.tx.commit",
+        "pg.tx.acked",
     ];
     expected.sort_unstable();
     assert_eq!(registry, expected, "update BOTH the const and this list");

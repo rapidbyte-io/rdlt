@@ -12,10 +12,14 @@ macro_rules! string_id {
         pub struct $name(String);
 
         impl $name {
+            /// Wrap a value as this identifier. No validation: an identifier is
+            /// whatever the host calls it, and normalization happens later, at
+            /// the destination seam where the rules are known.
             pub fn new(value: impl Into<String>) -> Self {
                 Self(value.into())
             }
 
+            /// The underlying string.
             pub fn as_str(&self) -> &str {
                 &self.0
             }
@@ -65,10 +69,12 @@ macro_rules! hash_id {
         pub struct $name([u8; 32]);
 
         impl $name {
+            /// Wrap 32 raw hash bytes.
             pub fn from_bytes(bytes: [u8; 32]) -> Self {
                 Self(bytes)
             }
 
+            /// The raw hash bytes.
             pub fn as_bytes(&self) -> &[u8; 32] {
                 &self.0
             }
@@ -95,6 +101,9 @@ macro_rules! hash_id {
                 }
             }
 
+            /// Parse the lowercase-hex rendering. Rejects anything that is not
+            /// exactly 64 hex digits, so a truncated or mangled persisted value
+            /// is a typed error rather than a silently different id.
             pub fn from_hex(hex: &str) -> Result<Self, InvalidHexId> {
                 let bytes = hex.as_bytes();
                 if bytes.len() != 64 {

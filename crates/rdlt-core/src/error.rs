@@ -16,22 +16,40 @@ use crate::types::LogicalType;
     column.as_deref().map(|c| format!(" column `{c}`")).unwrap_or_default()
 )]
 pub struct ContractViolation {
+    /// The table whose contract refused the change.
     pub table: TableName,
+    /// The column concerned; `None` for a table-level change such as creation.
     pub column: Option<String>,
     /// Human-readable description of the refused change.
     pub change: String,
     /// The refused widening, if the change was a type change.
     pub from: Option<LogicalType>,
+    /// The type the change would have moved TO, when both ends are scalars.
+    /// Matched by value rather than read out of the rendered message.
     pub to: Option<LogicalType>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, thiserror::Error)]
 #[serde(tag = "error", rename_all = "snake_case")]
 #[non_exhaustive]
+/// The one error taxonomy the whole workspace classifies into.
+///
+/// The variant IS the diagnosis: it says who can act. `Config` means edit the
+/// pipeline, `Internal` means report a bug, `Source`/`Destination` mean look
+/// upstream or downstream. The CLI maps these onto distinct exit codes for
+/// exactly that reason.
+///
+/// Match on the VARIANT, never on the rendered text: the prose is for humans and
+/// is free to change, while the shape is the contract.
+///
+/// `#[non_exhaustive]`: match with a wildcard arm.
 pub enum RdltError {
     /// Operator action: fix the pipeline configuration.
     #[error("configuration error: {message}")]
-    Config { message: String },
+    Config {
+        /// What was wrong with the configuration.
+        message: String,
+    },
 
     /// Operator action: unfreeze or adjust the schema contract.
     #[error(transparent)]
@@ -40,7 +58,9 @@ pub enum RdltError {
     /// Operator action: check the upstream API/source.
     #[error("source error on stream `{stream}`: {message}")]
     Source {
+        /// The stream that failed.
         stream: StreamName,
+        /// What the source reported.
         message: String,
         /// `true` for transient/rate-limited failures the engine may retry by
         /// restarting the run from committed state.
@@ -54,6 +74,7 @@ pub enum RdltError {
     /// Operator action: check the destination/warehouse.
     #[error("destination error: {message}")]
     Destination {
+        /// What the destination reported.
         message: String,
         /// True for transient/rate-limited destination failures: the run
         /// driver restarts from committed state instead of aborting.
@@ -66,14 +87,20 @@ pub enum RdltError {
 
     /// Operator action: check local disk / the work directory.
     #[error("WAL error: {message}")]
-    Wal { message: String },
+    Wal {
+        /// What failed in the write-ahead log or its directory.
+        message: String,
+    },
 
     /// An engine invariant broke — a background task panicked, or an internal
     /// contract was violated. Not operator-actionable: it means a bug to report,
     /// not a pipeline/config/destination change. Additive variant; older clients
     /// that never saw it are unaffected (`#[non_exhaustive]`).
     #[error("internal engine error: {message}")]
-    Internal { message: String },
+    Internal {
+        /// The invariant that broke. Not operator-actionable.
+        message: String,
+    },
 
     /// The run was cancelled; recovery on next run is identical to a crash.
     #[error("run cancelled")]
@@ -81,12 +108,14 @@ pub enum RdltError {
 }
 
 impl RdltError {
+    /// A configuration failure: the operator can fix this by editing the pipeline.
     pub fn config(message: impl Into<String>) -> Self {
         RdltError::Config {
             message: message.into(),
         }
     }
 
+    /// A permanent destination failure. The run aborts.
     pub fn destination(message: impl std::fmt::Display) -> Self {
         RdltError::Destination {
             message: message.to_string(),
@@ -95,6 +124,8 @@ impl RdltError {
         }
     }
 
+    /// A transient destination failure. The run driver restarts from committed
+    /// state rather than aborting, honouring `retry_after` when the server gave one.
     pub fn destination_retryable(
         message: impl std::fmt::Display,
         retry_after: Option<std::time::Duration>,
@@ -107,6 +138,7 @@ impl RdltError {
         }
     }
 
+    /// A permanent source failure on one stream. The run aborts.
     pub fn source(stream: StreamName, message: impl std::fmt::Display) -> Self {
         RdltError::Source {
             stream,
@@ -116,6 +148,8 @@ impl RdltError {
         }
     }
 
+    /// A transient source failure. The run restarts from committed state,
+    /// honouring `retry_after` when the server gave one.
     pub fn source_retryable(
         stream: StreamName,
         message: impl std::fmt::Display,
@@ -131,12 +165,15 @@ impl RdltError {
         }
     }
 
+    /// A write-ahead-log or work-directory failure: check local disk.
     pub fn wal(message: impl std::fmt::Display) -> Self {
         RdltError::Wal {
             message: message.to_string(),
         }
     }
 
+    /// An engine invariant broke. This is a bug to report, not a configuration
+    /// problem — do NOT use it for anything an operator could fix.
     pub fn internal(message: impl Into<String>) -> Self {
         RdltError::Internal {
             message: message.into(),

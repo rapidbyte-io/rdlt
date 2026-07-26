@@ -26,8 +26,8 @@ use rdlt_connector::{
 };
 use rdlt_core::naming::normalize_ident;
 use rdlt_core::{
-    Cursor, LoadId, PipelineEvent, RdltError, ResumedFrom, RunReport, SchemaPolicy, StateDoc,
-    StreamName, TableName, WriteMode,
+    Cursor, LoadId, LogicalType, PipelineEvent, RdltError, ResumedFrom, RunReport, SchemaPolicy,
+    StateDoc, StreamName, TableName, WriteMode,
 };
 use tokio::sync::broadcast;
 use tokio::task::JoinSet;
@@ -192,19 +192,28 @@ async fn run_once(
             stream: spec.name.clone(),
         });
 
-        stream_tasks.spawn(stream_task(
-            spec,
-            Arc::clone(&source),
-            load_tx.clone(),
-            cancel.clone(),
-            caps,
-            since,
-            mode,
-            root_table,
-            config.byte_budget,
-            load_id.clone(),
-            config.schema_policy.clone(),
-            events.clone(),
+        // Instrumented HERE rather than with a guard inside the task. A guard
+        // held across `.await` stays on the worker thread's span stack while
+        // other tasks run on it, so concurrent streams attribute each other's
+        // events; `Instrument` binds the span to the FUTURE, which is what
+        // "this stream's work" actually means.
+        let span = tracing::info_span!("rdlt.extract", stream = %spec.name);
+        stream_tasks.spawn(tracing::Instrument::instrument(
+            stream_task(
+                spec,
+                Arc::clone(&source),
+                load_tx.clone(),
+                cancel.clone(),
+                caps,
+                since,
+                mode,
+                root_table,
+                config.byte_budget,
+                load_id.clone(),
+                config.schema_policy.clone(),
+                events.clone(),
+            ),
+            span,
         ));
     }
     drop(load_tx);
@@ -219,7 +228,13 @@ async fn run_once(
         wal,
         events.clone(),
     );
-    let mut report = drain_loader(loader, load_rx, stream_tasks, &cancel).await?;
+    // The loader is one task; its span binds to that future rather than to
+    // whichever worker thread happens to poll it.
+    let mut report = tracing::Instrument::instrument(
+        drain_loader(loader, load_rx, stream_tasks, &cancel),
+        tracing::info_span!("rdlt.load"),
+    )
+    .await?;
 
     // Clean finish: nothing left to replay.
     if let Some(dir) = &wal_dir {
@@ -257,6 +272,29 @@ fn validate_streams(
                 spec.name,
                 destination.spec().name
             )));
+        }
+        // A hint pins a column's type outright, bypassing the lattice that
+        // guarantees every inferred decimal is representable. An unrepresentable
+        // hint must therefore be refused HERE — the batch builder cannot, and
+        // reaching it with one is a panic.
+        for (column, hint) in &spec.type_hints {
+            if let LogicalType::Decimal { precision, scale } = hint {
+                if *precision == 0 || *precision > rdlt_core::types::DECIMAL_MAX_PRECISION {
+                    return Err(RdltError::config(format!(
+                        "stream `{}` column `{column}`: decimal precision {precision} is out of \
+                         range (1..={})",
+                        spec.name,
+                        rdlt_core::types::DECIMAL_MAX_PRECISION
+                    )));
+                }
+                if scale > precision {
+                    return Err(RdltError::config(format!(
+                        "stream `{}` column `{column}`: decimal scale {scale} exceeds its \
+                         precision {precision}",
+                        spec.name
+                    )));
+                }
+            }
         }
         // Structured streams merge ONLY by a declared key — accepted iff the
         // stream declares a non-empty primary_key AND Merge{key} names exactly
@@ -315,6 +353,11 @@ async fn recover_wal(
     if let Some(wal_dir) = wal_dir {
         match crate::wal::resume::scan(wal_dir) {
             crate::wal::resume::Scan::Nothing => {}
+            // Nothing to replay, but something to clean: a crash before the
+            // first checkpoint leaves a manifest and its segments behind, and a
+            // pipeline that keeps failing there would grow both without bound.
+            // Not a warning — dying before the first checkpoint is ordinary.
+            crate::wal::resume::Scan::Discard => crate::wal::clear(wal_dir),
             crate::wal::resume::Scan::Recover(span) => {
                 resumed_from = replay_span(destination, config, wal_dir, span, caps).await?;
                 crate::wal::clear(wal_dir);
@@ -494,8 +537,6 @@ async fn stream_task(
     events: broadcast::Sender<PipelineEvent>,
 ) -> Result<(), RdltError> {
     let stream_name = spec.name.clone();
-    let span = tracing::info_span!("rdlt.extract", stream = %stream_name);
-    let _guard = span.enter();
 
     let arrow_table = root_table.clone();
     // Single-owner by construction: each blocking method consumes the owner and
@@ -722,5 +763,132 @@ mod backoff_tests {
         assert_eq!(super::backoff(3), Duration::from_millis(800));
         assert_eq!(super::backoff(6), Duration::from_millis(6400));
         assert_eq!(super::backoff(60), Duration::from_millis(6400), "capped");
+    }
+}
+
+#[cfg(test)]
+mod drain_loader_tests {
+    //! `drain_loader`'s outcome precedence, tested directly.
+    //!
+    //! The `saw_cancelled` guard survived mutation because the only tests that
+    //! reached it drove a real source whose cancellation was decided by a sleep
+    //! — so the interesting interleaving was never reliably produced. Calling
+    //! `drain_loader` with a hand-built JoinSet removes the timing entirely.
+    use super::*;
+    use crate::load::Sink;
+    use rdlt_core::{CommitMeta, CommitPolicy, CommitReceipt, PipelineId, TableSchema};
+
+    /// The success path ends in `loader.finish()`, which commits once even for a
+    /// no-op run, so this session must accept a commit.
+    struct AcceptingSession;
+
+    #[async_trait::async_trait]
+    impl LoadSession for AcceptingSession {
+        async fn ensure_table(
+            &mut self,
+            _: &TableSchema,
+            _: &WriteMode,
+        ) -> Result<(), rdlt_connector::DestinationError> {
+            Ok(())
+        }
+        async fn write(
+            &mut self,
+            _: &TableName,
+            _: rdlt_connector::RecordBatch,
+        ) -> Result<(), rdlt_connector::DestinationError> {
+            Ok(())
+        }
+        async fn commit(
+            &mut self,
+            meta: CommitMeta,
+        ) -> Result<CommitReceipt, rdlt_connector::DestinationError> {
+            Ok(CommitReceipt {
+                load_id: meta.load_id,
+                commit_seq: meta.commit_seq,
+            })
+        }
+        async fn read_state(
+            &mut self,
+            _: &PipelineId,
+        ) -> Result<Option<StateDoc>, rdlt_connector::DestinationError> {
+            Ok(None)
+        }
+    }
+
+    fn loader() -> Loader {
+        let (events, _rx) = broadcast::channel(16);
+        let pipeline = PipelineId::new("p");
+        let load_id = LoadId::new("l");
+        Loader::new(
+            Sink {
+                session: Box::new(AcceptingSession),
+                caps: DestinationCapabilities::default(),
+            },
+            RunReport::new(pipeline.clone(), load_id.clone()),
+            StateDoc::new(pipeline, "test"),
+            load_id,
+            CommitPolicy::default(),
+            None,
+            events,
+        )
+    }
+
+    /// Dropping the sender closes the loader's input, so `recv` returns `None`
+    /// immediately and the loader's own result is `Ok`.
+    fn closed_input() -> ByteRx<LoadItem> {
+        let (tx, rx) = byte_channel::<LoadItem>(4096);
+        drop(tx);
+        rx
+    }
+
+    /// A cancelled stream task must NOT be reported as a successful run. The
+    /// loader completes `Ok` here, so the cancellation is the only thing that can
+    /// fail the run — and defeating the guard turns a run whose streams never
+    /// finished into a clean report with a committed cursor.
+    #[tokio::test]
+    async fn a_cancelled_stream_task_defeats_an_otherwise_clean_loader() {
+        let mut tasks: JoinSet<Result<(), RdltError>> = JoinSet::new();
+        tasks.spawn(async { Err(RdltError::Cancelled) });
+
+        let cancel = CancellationToken::new();
+        let result = drain_loader(loader(), closed_input(), tasks, &cancel).await;
+        assert!(
+            matches!(result, Err(RdltError::Cancelled)),
+            "a cancelled stream must surface as Cancelled, not as success: {result:?}"
+        );
+    }
+
+    /// The companion case: with no cancelled task the same shape succeeds, which
+    /// is what makes the assertion above about the guard rather than about
+    /// `drain_loader` always failing.
+    #[tokio::test]
+    async fn a_clean_run_with_no_stream_tasks_reports_success() {
+        let cancel = CancellationToken::new();
+        let report = drain_loader(loader(), closed_input(), JoinSet::new(), &cancel)
+            .await
+            .expect("nothing failed, so the run succeeds");
+        assert_eq!(
+            report.commits, 1,
+            "a no-op run still commits once so a fresh pipeline's state exists"
+        );
+    }
+
+    /// A real stream error outranks an induced cancellation: cancelling is how
+    /// the run TELLS the other streams to stop, so reporting `Cancelled` would
+    /// hide the cause.
+    #[tokio::test]
+    async fn a_real_stream_error_outranks_a_cancellation() {
+        let mut tasks: JoinSet<Result<(), RdltError>> = JoinSet::new();
+        tasks.spawn(async { Err(RdltError::Cancelled) });
+        tasks.spawn(async { Err(RdltError::internal("the real cause")) });
+
+        let cancel = CancellationToken::new();
+        let error = drain_loader(loader(), closed_input(), tasks, &cancel)
+            .await
+            .expect_err("a failing stream fails the run");
+        assert!(
+            matches!(error, RdltError::Internal { .. }),
+            "the real error must be reported, not the cancellation it caused: {error:?}"
+        );
     }
 }

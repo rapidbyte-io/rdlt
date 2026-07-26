@@ -28,9 +28,10 @@ fn fatal(e: impl std::fmt::Display) -> DestinationError {
 }
 
 /// The one store-error rulebook on the WRITE path, mirroring the source's
-/// `classify`: transport-level failures ride the engine's retry budget;
-/// missing objects and auth/permission failures are configuration problems
-/// (fatal, the operator's to fix). Both halves consult `s3::is_recoverable`.
+/// `classify`: only transport-level failures ride the engine's retry budget;
+/// everything determined — missing objects, rejected credentials, unusable
+/// paths, unsupported operations — is fatal and the operator's to fix. Both
+/// halves consult `s3::is_recoverable`, which is the single decision.
 pub(crate) fn store_err(e: object_store::Error) -> DestinationError {
     if s3::is_recoverable(&e) {
         DestinationError::transient(e.to_string())
@@ -297,12 +298,12 @@ impl Location {
         match self {
             Self::Local { root } => walk_local_files(&root.join(table)),
             Self::S3(s3) => {
-                let scope = format!("{table}/");
+                let root = format!("{}/", s3.key_of_table_root(table));
                 let mut tails = Vec::new();
                 for key in s3.list_keys(table).await? {
                     let name = key.to_string();
-                    if let Some(at) = name.rfind(&scope) {
-                        tails.push(name[at + scope.len()..].to_owned());
+                    if let Some(tail) = tail_of_key(&name, &root)? {
+                        tails.push(tail.to_owned());
                     }
                 }
                 Ok(tails)
@@ -351,17 +352,33 @@ fn walk_local_files(base: &Path) -> Result<Vec<String>, DestinationError> {
             Err(e) => return Err(fatal(e)),
         };
         for entry in entries {
-            let path = entry.map_err(fatal)?.path();
-            let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default();
+            let entry = entry.map_err(fatal)?;
+            let path = entry.path();
+            // `file_type()` does NOT follow links, and a symlink is never
+            // something this destination staged or published. Descending one
+            // would let the ownership listing name paths outside the output
+            // root, which Replace truncation then unlinks — deleting data the
+            // destination does not own and cannot restore.
+            let kind = entry.file_type().map_err(fatal)?;
+            if kind.is_symlink() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                // A non-UTF-8 name cannot be addressed as a tail; naming it
+                // empty would report its children at the wrong depth and, at
+                // depth 1, hand truncation a path it never listed.
+                return Err(fatal(format!(
+                    "output directory contains a non-UTF-8 name under `{}`; \
+                     rename it or move it outside the destination",
+                    dir.display()
+                )));
+            };
             let tail = if prefix.is_empty() {
                 name.to_owned()
             } else {
                 format!("{prefix}/{name}")
             };
-            if path.is_dir() {
+            if kind.is_dir() {
                 walk(&path, &tail, out)?;
             } else {
                 out.push(tail);
@@ -461,6 +478,87 @@ pub(crate) fn classify_read_error(context: &str, e: std::io::Error) -> SourceErr
     }
 }
 
+/// The part of a listed object key that sits below the table's root, which is
+/// what ownership and row counting speak in.
+///
+/// The root is STRIPPED, never searched for. A partition value is free to spell
+/// the table's own name, so a key can legitimately contain the root's text more
+/// than once — searching would split at the last occurrence and yield a tail
+/// that names an object which does not exist.
+///
+/// A listed key that is not under the prefix it was listed by means the store
+/// broke segment-prefix listing; that is a typed failure, not a key to skip,
+/// because skipping it would silently under-report what the table owns and a
+/// Replace would leave data behind.
+///
+/// One key legitimately fails that test and is NOT a violation: a zero-byte
+/// directory marker, whose key is the table root itself. Object stores render it
+/// without its trailing separator, so it can never sit under the root — and
+/// consoles, `s3a` and `put-object` on a folder path all create them. It carries
+/// no data, so it is skipped (`Ok(None)`) rather than failing the load.
+fn tail_of_key<'k>(key: &'k str, root: &str) -> Result<Option<&'k str>, DestinationError> {
+    if key == root.trim_end_matches('/') {
+        return Ok(None);
+    }
+    match key.strip_prefix(root) {
+        Some("") => Ok(None),
+        Some(tail) => Ok(Some(tail)),
+        None => Err(fatal(format!(
+            "listing returned key `{key}`, which is not under the prefix `{root}` it was listed by"
+        ))),
+    }
+}
+
+#[cfg(test)]
+mod tail_tests {
+    use super::tail_of_key;
+
+    #[test]
+    fn a_tail_is_the_key_below_the_table_root() {
+        assert_eq!(
+            tail_of_key("raw/events/part-a-1-0.parquet", "raw/events/").unwrap(),
+            Some("part-a-1-0.parquet")
+        );
+        assert_eq!(
+            tail_of_key("raw/events/eu/part-a-1-0.parquet", "raw/events/").unwrap(),
+            Some("eu/part-a-1-0.parquet")
+        );
+    }
+
+    /// A partition value may spell the table's own name. Splitting at the LAST
+    /// occurrence of the root then drops the partition directory from the tail,
+    /// and truncation goes on to address an object that does not exist — the
+    /// commit fails and the real object is never removed.
+    #[test]
+    fn a_partition_value_equal_to_the_table_name_does_not_shift_the_split() {
+        assert_eq!(
+            tail_of_key("raw/events/events/part-a-1-0.parquet", "raw/events/").unwrap(),
+            Some("events/part-a-1-0.parquet"),
+            "the tail keeps its partition directory"
+        );
+    }
+
+    /// A zero-byte directory marker is listed as the table root without its
+    /// trailing separator, so it can never sit under the root. It carries no
+    /// data — skipping it is right; failing on it would brick every Replace for
+    /// the table, and consoles and `s3a` create these routinely.
+    #[test]
+    fn a_directory_marker_is_skipped_not_fatal() {
+        assert_eq!(tail_of_key("raw/events", "raw/events/").unwrap(), None);
+        assert_eq!(tail_of_key("raw/events/", "raw/events/").unwrap(), None);
+    }
+
+    #[test]
+    fn a_key_outside_the_listed_prefix_is_typed_not_skipped() {
+        let error = tail_of_key("other/thing.parquet", "raw/events/")
+            .expect_err("a key outside the prefix is a listing violation");
+        assert!(matches!(
+            error,
+            rdlt_connector::DestinationError::Fatal { .. }
+        ));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use rdlt_connector::Secret;
@@ -488,6 +586,60 @@ mod tests {
         };
         assert!(!s3::is_recoverable(&missing));
         assert!(matches!(store_err(missing), DestinationError::Fatal { .. }));
+
+        // A failure that CANNOT heal must not consume the retry budget: retrying
+        // it burns the budget on a certainty and then reports transient
+        // exhaustion, hiding a configuration or logic error behind a timeout.
+        for deterministic in [
+            object_store::Error::InvalidPath {
+                source: object_store::path::Error::EmptySegment {
+                    path: "a//b".into(),
+                },
+            },
+            object_store::Error::NotSupported {
+                source: "range write".into(),
+            },
+            object_store::Error::NotImplemented,
+            object_store::Error::UnknownConfigurationKey {
+                store: "S3",
+                key: "nope".into(),
+            },
+        ] {
+            let rendered = deterministic.to_string();
+            assert!(
+                !s3::is_recoverable(&deterministic),
+                "`{rendered}` cannot heal on retry"
+            );
+            assert!(
+                matches!(store_err(deterministic), DestinationError::Fatal { .. }),
+                "`{rendered}` must be fatal"
+            );
+        }
+
+        // 409 and 412 are determined answers only to a CONDITIONAL request, and
+        // this connector issues none — so what reaches us is S3's
+        // `OperationAborted`, a retry-me condition. The store's own retry loop
+        // does not cover it (it retries 409 only for its conditional put).
+        for conflict in [
+            object_store::Error::AlreadyExists {
+                path: "x".into(),
+                source: "operation aborted".into(),
+            },
+            object_store::Error::Precondition {
+                path: "x".into(),
+                source: "conflicting operation".into(),
+            },
+        ] {
+            let rendered = conflict.to_string();
+            assert!(
+                s3::is_recoverable(&conflict),
+                "`{rendered}` heals on retry for an unconditional request"
+            );
+            assert!(
+                matches!(store_err(conflict), DestinationError::Transient { .. }),
+                "`{rendered}` must ride the retry budget"
+            );
+        }
 
         // The io seam carries the classification through read_full.
         let reset = std::io::Error::new(std::io::ErrorKind::ConnectionReset, "mid-stream");

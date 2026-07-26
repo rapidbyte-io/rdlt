@@ -94,7 +94,7 @@ impl<'a> SequenceDriver<'a> {
 
     fn base_url(&self) -> String {
         let path = match self.parent {
-            Some(values) => resolve::substitute(&self.stream.path, &values.placeholders),
+            Some(values) => resolve::substitute_path(&self.stream.path, &values.placeholders),
             None => self.stream.path.clone(),
         };
         join_base_url(&self.config.base_url, &path)
@@ -111,14 +111,17 @@ impl<'a> SequenceDriver<'a> {
         }
         let url = self.url_override.clone().unwrap_or_else(|| self.base_url());
 
-        // The same-request guard: fingerprint URL + all params + body,
-        // kept as a u64 hash — O(8 bytes) per page, not the rendered string.
+        // The same-request guard: a u64 fingerprint of everything that VARIES
+        // between the pages of one sequence — the URL override and the
+        // paginator's parameters. The body template and the parent's
+        // placeholder values are fixed for this driver's lifetime, and the seen
+        // set is scoped to the same lifetime, so folding them in cannot change
+        // an outcome; rendering the body per page to hash it only costs work.
         let fingerprint = {
             let mut hasher = DefaultHasher::new();
             url.hash(&mut hasher);
             self.page_params.hash(&mut hasher);
             self.extra_params.hash(&mut hasher);
-            format!("{:?}", self.stream.body).hash(&mut hasher);
             hasher.finish()
         };
         if !self.seen_requests.insert(fingerprint) {
@@ -161,6 +164,12 @@ impl<'a> SequenceDriver<'a> {
 
         let response = response?; // Err = transport-level (no status to match)
         let status = response.status();
+        // Reported to the engine UNCLAMPED, deliberately. `retry_after_cap` bounds
+        // how long this source will wait in-process; it says nothing about how
+        // long the SERVER's window is. The engine sleeps on this number verbatim,
+        // so clamping it here would send the next attempt back inside a window the
+        // server has already said is closed — and with a small cap it would spend
+        // the whole retry budget in milliseconds.
         let retry_after = client::retry_after(&response);
         let headers = response.headers().clone();
         let body = response.bytes().await.map_err(client::classify_reqwest)?;

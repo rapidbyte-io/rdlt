@@ -89,7 +89,14 @@ impl EventStream {
         loop {
             match self.rx.recv().await {
                 Ok(event) => return Some(event),
-                Err(RecvError::Lagged(_)) => continue,
+                // A slow consumer loses events. Skipping silently makes a
+                // partial event stream indistinguishable from a complete one,
+                // so say how many went — the RunReport remains the complete
+                // record either way.
+                Err(RecvError::Lagged(dropped)) => {
+                    tracing::warn!(dropped, "event consumer lagged; events were dropped");
+                    continue;
+                }
                 Err(RecvError::Closed) => return None,
             }
         }

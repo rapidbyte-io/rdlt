@@ -152,6 +152,7 @@ HBA
         );
         let container = PostgresImage::default()
             .with_tag("16-alpine")
+            .with_label(rdlt_testkit::containers::RECLAIM_LABEL, "1")
             .with_copy_to(
                 "/tls-in/server.crt",
                 pki.server_cert_pem.clone().into_bytes(),

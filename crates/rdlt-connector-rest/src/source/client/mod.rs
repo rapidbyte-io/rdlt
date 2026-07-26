@@ -32,6 +32,7 @@ pub struct RestClient {
 impl RestClient {
     pub fn new(
         auth: AuthProvider,
+        http: reqwest::Client,
         default_headers: Vec<(String, String)>,
         default_params: Vec<(String, String)>,
         min_request_interval_ms: u64,
@@ -53,7 +54,7 @@ impl RestClient {
             })
             .collect();
         Self {
-            http: reqwest::Client::new(),
+            http,
             auth,
             default_headers,
             default_params,
@@ -95,7 +96,7 @@ impl RestClient {
         let mut auth_retried = false;
         loop {
             self.pace().await;
-            let request = self.auth.attach(build(&self.http)).await?;
+            let (request, generation) = self.auth.attach(build(&self.http)).await?;
             let mut request = request
                 .build()
                 .map_err(|e| SourceError::fatal(format!("request build: {e}")))?;
@@ -109,7 +110,7 @@ impl RestClient {
             // and the loop retries exactly once; a second 401 is fatal.
             if status == reqwest::StatusCode::UNAUTHORIZED
                 && !auth_retried
-                && self.auth.on_unauthorized().await?
+                && self.auth.on_unauthorized(generation).await?
             {
                 auth_retried = true;
                 continue;
@@ -161,13 +162,30 @@ impl RestClient {
     }
 }
 
+/// The server's own pacing, in either form RFC 9110 allows: delta-seconds, or an
+/// HTTP-date. Several rate limiters send the date form, and reading only the
+/// delta form silently discards the instruction — the caller then falls back to
+/// generic backoff and paces itself worse than the server asked for.
+///
+/// A date at or before now yields `Duration::ZERO`, not `None`. The date form
+/// means "do not retry before this instant"; once it has passed, the reading is
+/// "retry now" — not "there was no instruction". `None` would discard a real
+/// header, and a client clock even slightly ahead of the server's makes that the
+/// COMMON case, not an edge one.
 pub(crate) fn retry_after(response: &reqwest::Response) -> Option<Duration> {
-    response
+    let raw = response
         .headers()
-        .get(reqwest::header::RETRY_AFTER)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse::<u64>().ok())
-        .map(Duration::from_secs)
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?;
+    if let Ok(seconds) = raw.trim().parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+    let at = httpdate::parse_http_date(raw.trim()).ok()?;
+    Some(
+        at.duration_since(std::time::SystemTime::now())
+            .unwrap_or(Duration::ZERO),
+    )
 }
 
 pub(crate) fn classify_reqwest(error: reqwest::Error) -> SourceError {

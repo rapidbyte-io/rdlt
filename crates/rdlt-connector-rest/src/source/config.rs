@@ -51,10 +51,62 @@ pub struct RestConfig {
     /// surfaces to the engine's retry budget.
     #[serde(default = "default_retry_after_cap")]
     pub retry_after_cap_secs: u64,
+    /// Deadline for a single request, end to end — connect, send, and read the
+    /// whole body. A server that accepts a connection and then stalls would
+    /// otherwise block the stream forever: no error, no retry, no progress, and
+    /// nothing for an operator to see.
+    ///
+    /// `0` is REFUSED rather than read as "disabled": the guarantee is that no
+    /// configuration produces an unbounded wait.
+    #[serde(default = "default_request_timeout")]
+    pub request_timeout_secs: u64,
     /// Loop guard: a stream exceeding this many pages is a typed error.
     #[serde(default = "default_max_pages")]
     pub max_pages: u64,
     pub streams: Vec<RestStream>,
+}
+
+/// Page parameters reach a POST request through its BODY, and only a keyed
+/// document has anywhere to put them. With any other body the paginator's
+/// parameters are silently dropped and every page sends the byte-identical
+/// request — which the duplicate-request guard cannot see, because it hashes the
+/// page parameters and those do change. The run then ingests the first page
+/// `max_pages` times and fails citing a page limit that was never the problem.
+///
+/// The four paginators listed here are the ones that produce parameters. `None`
+/// produces a single request, and `NextUrl`/`LinkHeader` carry the next page in
+/// the response rather than in the request — none of them needs the body.
+fn validate_post_body_pagination(stream: &RestStream) -> Result<(), ConfigError> {
+    let carries_params = matches!(
+        stream.pagination,
+        Pagination::Page { .. }
+            | Pagination::Offset { .. }
+            | Pagination::BodyCursor { .. }
+            | Pagination::HeaderCursor { .. }
+    );
+    if stream.method == HttpMethod::Post
+        && carries_params
+        && let Some(body) = &stream.body
+        && !body.is_object()
+    {
+        return Err(ConfigError::Invalid(format!(
+            "stream `{}`: a paginated POST needs an object `body` — page parameters are \
+             merged into it, and a {} body has nowhere to carry them, so every page would \
+             repeat the first request",
+            stream.name,
+            match body {
+                serde_json::Value::Array(_) => "list",
+                serde_json::Value::String(_) => "string",
+                serde_json::Value::Null => "null",
+                _ => "scalar",
+            }
+        )));
+    }
+    Ok(())
+}
+
+fn default_request_timeout() -> u64 {
+    300
 }
 
 fn default_max_concurrency() -> u32 {
@@ -66,7 +118,25 @@ fn default_max_concurrency() -> u32 {
 /// `auth:` block. Returns the rejection message when `name` is one of them,
 /// case-insensitively.
 fn reserved_auth_header(name: &str) -> Option<String> {
-    const RESERVED: [&str; 2] = ["authorization", "x-api-key"];
+    // A slice, so the length is not hand-maintained. EXACT names only, matched
+    // case-insensitively — a substring or suffix rule would reject legitimate
+    // headers like `x-request-token-count`, and a guard that fires on innocent
+    // configuration gets disabled rather than heeded.
+    const RESERVED: &[&str] = &[
+        "authorization",
+        "proxy-authorization",
+        "cookie",
+        "x-api-key",
+        "api-key",
+        "apikey",
+        "x-api-token",
+        "x-auth-token",
+        "x-access-token",
+        "x-amz-security-token",
+        "x-goog-api-key",
+        "private-token",
+        "x-functions-key",
+    ];
     let lower = name.to_ascii_lowercase();
     RESERVED.contains(&lower.as_str()).then(|| {
         format!(
@@ -480,9 +550,17 @@ impl RestConfig {
         if self.max_concurrency == 0 {
             return invalid("max_concurrency must be at least 1".into());
         }
+        if self.request_timeout_secs == 0 {
+            return invalid(
+                "request_timeout_secs must be at least 1 — a request without a deadline can \
+                 stall a stream forever; raise it rather than disabling it"
+                    .into(),
+            );
+        }
         validate_headers(&self.headers, None)?;
         let names: Vec<&str> = self.streams.iter().map(|s| s.name.as_str()).collect();
         for stream in &self.streams {
+            validate_post_body_pagination(stream)?;
             validate_headers(&stream.headers, Some(&stream.name))?;
             validate_stream_aliases(stream)?;
             validate_selectors(stream)?;

@@ -23,6 +23,11 @@
 //! `iceberg`. The bundled connectors live under [`connector`], one module per SYSTEM —
 //! e.g. `rdlt::connector::postgres` carries `source`, `dest`, and `tls` together.
 
+// Warn, not deny: an undocumented public item is a gap to fill, not a
+// reason to fail a contributor's build. `make docs` is where the
+// published surface is held to -D warnings.
+#![warn(missing_docs)]
+
 mod builder;
 pub mod pipeline_spec;
 

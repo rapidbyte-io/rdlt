@@ -41,7 +41,15 @@ impl Drop for ContainerGuard {
     }
 }
 
-fn run_container(prefix: &str, image: &str, envs: &[(String, String)]) -> ContainerGuard {
+/// Start one container, or report that this machine cannot.
+///
+/// `None`, never a panic. The constitution requires container-backed tests to
+/// SKIP when the runtime is absent, and "absent" includes present-but-unusable:
+/// `runtime_available()` probes the container SOCKET while this starts the
+/// container through the `podman` BINARY, and the two can disagree — a wrapper
+/// script that cannot exec satisfies the socket probe and fails here. Panicking
+/// on that turns an environment gap into a red gate that names the wrong cause.
+fn run_container(prefix: &str, image: &str, envs: &[(String, String)]) -> Option<ContainerGuard> {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let name = format!(
         "rdlt-ice-{prefix}-{}-{}",
@@ -49,18 +57,39 @@ fn run_container(prefix: &str, image: &str, envs: &[(String, String)]) -> Contai
         SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     );
     let mut command = std::process::Command::new("podman");
-    command.args(["run", "-d", "--rm", "--name", &name, "--network", "host"]);
+    // `--label rdlt-test=1`: the workspace reclaim convention (see
+    // rdlt-testkit::containers). `--rm` covers a clean exit; the label is what
+    // makes a killed run's leftovers reclaimable.
+    command.args([
+        "run",
+        "-d",
+        "--rm",
+        "--label",
+        "rdlt-test=1",
+        "--name",
+        &name,
+        "--network",
+        "host",
+    ]);
     for (key, value) in envs {
         command.args(["-e", &format!("{key}={value}")]);
     }
     command.arg(image);
-    let output = command.output().expect("podman run");
-    assert!(
-        output.status.success(),
-        "starting {image}: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    ContainerGuard { name }
+    let output = match command.output() {
+        Ok(output) => output,
+        Err(e) => {
+            eprintln!("SKIP: cannot run `podman` ({e}) — iceberg live cell not run");
+            return None;
+        }
+    };
+    if !output.status.success() {
+        eprintln!(
+            "SKIP: starting {image} failed ({}) — iceberg live cell not run",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+        return None;
+    }
+    Some(ContainerGuard { name })
 }
 
 /// A free port from a PID-disjoint range. `bind(:0)` alone races: nextest
@@ -111,7 +140,7 @@ impl CatalogFixture {
                 ("RUSTFS_ACCESS_KEY".into(), S3_KEY.into()),
                 ("RUSTFS_SECRET_KEY".into(), S3_SECRET.into()),
             ],
-        );
+        )?;
         let s3_endpoint = format!("http://127.0.0.1:{s3_port}");
         // Any HTTP answer means RUSTFS is listening (anonymous requests
         // get S3-style error XML — never 2xx).
@@ -134,7 +163,7 @@ impl CatalogFixture {
                 ("AWS_ACCESS_KEY_ID".into(), S3_KEY.into()),
                 ("AWS_SECRET_ACCESS_KEY".into(), S3_SECRET.into()),
             ],
-        );
+        )?;
         let base = format!("http://127.0.0.1:{api_port}");
         // Health must be 2xx: Quarkus answers 503 DOWN while Polaris is
         // still initializing — any-answer is not readiness.

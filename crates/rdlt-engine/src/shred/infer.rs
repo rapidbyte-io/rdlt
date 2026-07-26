@@ -33,6 +33,12 @@ impl ScalarState {
         }
     }
 
+    /// Was this column's type declared rather than inferred? A declared type is
+    /// never rewritten by an observation, whatever shape the value has.
+    pub(crate) fn is_pinned(&self) -> bool {
+        self.pinned
+    }
+
     pub(crate) fn observe<'a, V: JsonView<'a>>(&mut self, value: V) {
         if self.pinned {
             return;
@@ -46,12 +52,15 @@ impl ScalarState {
                 }
                 LogicalType::Int64
             }
-            Kind::UInt(_) => {
-                // u64 beyond i64::MAX: definitely not exactly representable paths
-                // we track; treat as inexact-int territory.
-                self.saw_inexact_int = true;
-                LogicalType::Int64
-            }
+            // A `u64` above `i64::MAX` has no exact Int64 OR Float64
+            // representation, so text is the only type on the lattice that can
+            // carry its digits. Observing Utf8 directly is what makes that
+            // happen: `widen`'s catch-all sends every non-Binary/Json pairing to
+            // Utf8, so the column resolves to text whichever order the values
+            // arrive in. Deciding per value — text only above i64::MAX — would
+            // make the resolved type depend on arrival order, which is the bug
+            // class this lattice exists to prevent.
+            Kind::UInt(_) => LogicalType::Utf8,
             Kind::Float(_) => {
                 self.saw_float = true;
                 LogicalType::Float64
@@ -109,8 +118,13 @@ impl ColState {
             ColState::Unknown => {
                 *self = Self::fresh(value, lists_as_columns);
             }
+            // A shape conflict widens an inferred column to Json — but a PINNED
+            // column was declared by the user, and a value that does not fit the
+            // declaration must not silently rewrite it. The pinned column keeps
+            // its type here and the offending value is nulled and counted at
+            // build time.
             ColState::Scalar(state) => match value.kind() {
-                Kind::Object | Kind::Array => *self = ColState::Json,
+                Kind::Object | Kind::Array if !state.is_pinned() => *self = ColState::Json,
                 _ => state.observe(value),
             },
             ColState::Struct(fields) => match value.kind() {

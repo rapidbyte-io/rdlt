@@ -6,6 +6,10 @@ examine_globs = [
     "crates/rdlt-engine/src/**/*.rs",
     "crates/rdlt-core/src/**/*.rs",
     "crates/rdlt-connector/src/**/*.rs",
+    # The shared merge core (013): every SQL destination's merge/dedup plan is
+    # generated here, so an uncaught mutant is wrong SQL at every one of them at
+    # once — the same "correctness hole, not cosmetic" test the list above applies.
+    "crates/rdlt-connector-sqlcore/src/**/*.rs",
 ]
 
 exclude_globs = [

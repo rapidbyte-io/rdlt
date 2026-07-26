@@ -43,6 +43,17 @@ pub struct FileProgress {
     /// the resume-offset integrity check).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tail_hash: Option<String>,
+    /// blake3 over the FOOTER DESCRIPTION of the consumed row-group prefix
+    /// (parquet only — the row-group analogue of `tail_hash`).
+    ///
+    /// Additive at `CURSOR_FORMAT_VERSION` 1, exactly as `etag` and `tail_hash`
+    /// were: `skip_serializing_if` keeps the emitted document byte-identical for
+    /// the formats that do not set it, and neither this struct nor `FileCursor`
+    /// denies unknown fields, so documents written either side of this change
+    /// stay readable both ways. A parquet entry carries no integrity value until
+    /// the next checkpoint rewrites it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row_groups_hash: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -75,10 +86,21 @@ pub struct FileTask {
     /// Read from THIS local path instead of `path` (object-store parquet
     /// is fetched to a temp file first; the cursor stays keyed by `path`).
     pub read_path: Option<String>,
-    /// Resume-offset integrity check: (window bytes, expected blake3 hex)
-    /// over `[start - window, start)` — present only for resumed tails
-    /// whose progress recorded a tail hash.
-    pub tail_check: Option<(u64, String)>,
+    /// Resume-offset integrity: what the recorded progress expects to find
+    /// before `start`. Present only for a resumed file whose progress recorded
+    /// one; a fresh read and a first-upgrade resume both carry `None`.
+    pub resume_check: Option<ResumeCheck>,
+}
+
+/// What a resumed read must verify before it trusts its start offset. One
+/// variant per cursor unit, because the two units describe a consumed prefix in
+/// different terms: bytes for a record stream, row groups for parquet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResumeCheck {
+    /// Re-read the last `window` bytes before the offset and match `hash`.
+    TailBytes { window: u64, hash: String },
+    /// Re-describe row groups `0..groups` from the footer and match `hash`.
+    RowGroupPrefix { groups: u64, hash: String },
 }
 
 impl FileTask {
@@ -86,7 +108,7 @@ impl FileTask {
     /// mtime, etag), starting at `start` with an optional tail check. The one
     /// place a `FileTask` is stamped from a `FileMeta` — every planner arm goes
     /// through here so no field is ever dropped on the floor.
-    pub fn from_meta(meta: &FileMeta, start: u64, tail_check: Option<(u64, String)>) -> Self {
+    pub fn from_meta(meta: &FileMeta, start: u64, resume_check: Option<ResumeCheck>) -> Self {
         Self {
             path: meta.path.clone(),
             start,
@@ -94,7 +116,7 @@ impl FileTask {
             etag: meta.etag.clone(),
             size_units: meta.size_units,
             read_path: None,
-            tail_check,
+            resume_check,
         }
     }
 

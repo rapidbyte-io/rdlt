@@ -16,21 +16,37 @@ pub const DECIMAL_MAX_PRECISION: u8 = 38;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LogicalType {
+    /// True or false.
     Bool,
+    /// 64-bit signed integer. A value beyond its range widens the column rather
+    /// than wrapping.
     Int64,
+    /// 64-bit float. Reached from `Int64` only where the integer is exactly
+    /// representable (within ±2^53); otherwise the column widens further.
     Float64,
     /// Fixed-point decimal. Never produced by JSON inference; enters via per-column
     /// hints or Arrow-native sources.
     Decimal {
+        /// Total significant digits, at most [`DECIMAL_MAX_PRECISION`].
         precision: u8,
+        /// Digits after the point.
         scale: u8,
     },
+    /// Text. Absorbs every textable type through canonical rendering, which makes
+    /// it the practical meeting point for mixed-type columns.
     Utf8,
+    /// Opaque bytes. Not producible from JSON, and deliberately not textable —
+    /// inventing an encoding silently would be a corruption bug.
     Binary,
+    /// An instant with a timezone offset.
     TimestampTz,
+    /// A date and time with no offset.
     TimestampNaive,
+    /// A calendar date.
     Date,
+    /// A time of day.
     Time,
+    /// A UUID.
     Uuid,
     /// The typed escape hatch: undecomposable values are preserved verbatim here,
     /// never dropped, never exploded into variant columns. Top of the lattice.

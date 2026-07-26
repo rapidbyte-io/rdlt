@@ -38,6 +38,9 @@ impl S3Fixture {
             .with_wait_for(WaitFor::message_on_stdout("Starting"))
             .with_env_var("RUSTFS_ACCESS_KEY", ACCESS_KEY)
             .with_env_var("RUSTFS_SECRET_KEY", SECRET_KEY)
+            // Last in the chain: `with_label` returns a `ContainerRequest`, and
+            // the `GenericImage`-only builders above are unavailable on it.
+            .with_label(rdlt_testkit::containers::RECLAIM_LABEL, "1")
             .start()
             .await
             .expect("start rustfs container (runtime socket present)");

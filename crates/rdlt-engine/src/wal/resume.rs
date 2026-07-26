@@ -47,7 +47,14 @@ pub(crate) struct RecoverySpan {
 /// clears the WAL and falls back to cursor re-extraction.
 #[derive(Debug)]
 pub(crate) enum Scan {
+    /// No manifest on disk: nothing was ever written here.
     Nothing,
+    /// A manifest WAS read, but it holds nothing replayable — a span that never
+    /// reached a checkpoint. Distinct from `Nothing` because the difference is
+    /// what to do next: there is residue on disk, and leaving it means a
+    /// pipeline that keeps dying before its first checkpoint accumulates
+    /// manifest lines and orphaned segments without bound.
+    Discard,
     Recover(RecoverySpan),
     Damaged(String),
     /// The manifest is intact and readable, but was written under a different
@@ -162,7 +169,10 @@ pub(crate) fn scan(dir: &Path) -> Scan {
                 schemas: schemas.into_values().collect(),
             })
         }
-        _ => Scan::Nothing,
+        // A span with no checkpoint has nothing safely replayable — but the
+        // manifest and its segments are on disk, so say so rather than reporting
+        // an empty workdir.
+        _ => Scan::Discard,
     }
 }
 
@@ -381,10 +391,10 @@ mod tests {
     }
 
     /// Mutation-report closure: the on-disk Run header must SERIALIZE the
-    /// current format version (a defaulted/zero version would break forward
-    /// detection), and segment sequence numbers must be strictly monotonic.
+    /// current format version — a defaulted or zero version would break forward
+    /// detection.
     #[test]
-    fn run_header_serializes_current_version_and_segments_are_sequential() {
+    fn run_header_serializes_current_format_version() {
         let record = WalRecord::Run {
             format_version: super::super::WAL_FORMAT_VERSION,
             load_id: LoadId::new("l"),
@@ -436,8 +446,11 @@ mod tests {
             "an older manifest names segments in the previous container and must \
              be refused by version, not discovered unreadable at open time"
         );
-        // Current version: an empty span (no checkpoint) scans to Nothing.
-        assert!(matches!(run(current), Scan::Nothing));
+        // Current version, no checkpoint: nothing is replayable, but a manifest
+        // and its segments ARE on disk — `Discard` so the caller clears them.
+        // `Nothing` would leave residue to accumulate across repeated crashes
+        // before the first checkpoint.
+        assert!(matches!(run(current), Scan::Discard));
     }
 
     /// A manifest predating the versioned header defaults to v1 — and must

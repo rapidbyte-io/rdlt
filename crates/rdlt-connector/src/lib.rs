@@ -12,6 +12,11 @@
 //!
 //! SEMVER-SACRED: gated by `cargo semver-checks` in CI.
 
+// Warn, not deny: an undocumented public item is a gap to fill, not a
+// reason to fail a contributor's build. `make docs` is where the
+// published surface is held to -D warnings.
+#![warn(missing_docs)]
+
 pub mod capabilities;
 pub mod channel;
 pub mod error;
@@ -52,6 +57,11 @@ pub trait Source: Send + Sync + 'static {
     /// Name, version, config JSON-schema.
     fn spec(&self) -> ConnectorSpec;
 
+    /// Discover the streams this source can read.
+    ///
+    /// Called once per run, before any [`Source::read`]. The engine plans table
+    /// ownership from the result, so two streams must not claim the same
+    /// destination table.
     async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError>;
 
     /// Read ONE stream, pushing through `req.out`. The engine schedules streams
@@ -67,6 +77,7 @@ pub trait Source: Send + Sync + 'static {
 /// exists as the compatibility hedge.
 #[derive(Debug)]
 pub struct ReadRequest {
+    /// The one stream this call must read.
     pub stream: StreamSpec,
     /// Last committed cursor; only ever a cursor the destination previously committed.
     pub since: Option<Cursor>,
@@ -75,6 +86,8 @@ pub struct ReadRequest {
 }
 
 impl ReadRequest {
+    /// Build a request. Present so adding a field later is not a breaking change
+    /// for callers who construct through here rather than with a struct literal.
     pub fn new(stream: StreamSpec, since: Option<Cursor>, out: RecordsOut) -> Self {
         Self { stream, since, out }
     }
@@ -83,6 +96,7 @@ impl ReadRequest {
 /// A data destination: capability declaration + session factory.
 #[async_trait]
 pub trait Destination: Send + Sync + 'static {
+    /// Name, version, config JSON-schema.
     fn spec(&self) -> ConnectorSpec;
 
     /// Truthful capability declaration — the engine plans from this and will not
@@ -97,11 +111,18 @@ pub trait Destination: Send + Sync + 'static {
 /// Session context. Exhaustive pub-field struct; [`OpenCtx::new`] as hedge.
 #[derive(Debug, Clone)]
 pub struct OpenCtx {
+    /// Identifies the pipeline whose state this session reads and republishes —
+    /// the key under which `StateDoc` is persisted.
     pub pipeline: PipelineId,
+    /// Identifies THIS run. Half of the `(load_id, commit_seq)` identity that
+    /// makes a re-commit idempotent, and what distinguishes this session's
+    /// staging from a crashed predecessor's.
     pub load_id: LoadId,
 }
 
 impl OpenCtx {
+    /// Build a context. Present so adding a field later is not a breaking change
+    /// for callers who construct through here rather than with a struct literal.
     pub fn new(pipeline: PipelineId, load_id: LoadId) -> Self {
         Self { pipeline, load_id }
     }

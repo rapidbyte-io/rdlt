@@ -117,8 +117,10 @@ impl Loader {
     }
 
     pub(crate) async fn process(&mut self, item: LoadItem) -> Result<(), RdltError> {
-        let span = tracing::info_span!("rdlt.load");
-        let _guard = span.enter();
+        // No `enter()` guard: this function awaits, and a guard held across an
+        // await stays on the worker thread's span stack while other tasks run
+        // there. The loader is a single task, so the span is bound to its future
+        // at the call site instead.
         // Write-ahead: the item is durable-intent before the destination sees it.
         if let Some(wal) = &mut self.wal {
             wal.record(&item).await?;
@@ -163,8 +165,17 @@ impl Loader {
                 self.dirty = true;
             }
             LoadItem::Batch { table, batch } => {
-                // Keyed structured merge (006): merge keys are identities —
-                // a NULL key is a typed error, never a silent mis-merge.
+                // Keyed structured merge: merge keys are identities — a NULL
+                // key is a typed error, never a silent mis-merge.
+                //
+                // This check runs AFTER the item has been recorded to the
+                // recovery log, so a rejected batch is already on disk, and
+                // replay does not repeat the check. That is safe only because
+                // the rejection aborts the run before any checkpoint: a span
+                // with no checkpoint is not replayable, so the bad batch is
+                // discarded rather than replayed past its guard. Any change
+                // that lets this path reach a checkpoint must move the check
+                // ahead of the recovery-log write.
                 if let Some(keys) = self.structured_merge_keys.get(&table) {
                     for key in keys {
                         let column = batch.column_by_name(key).ok_or_else(|| {
@@ -297,5 +308,213 @@ impl Loader {
         self.last_commit_at = Instant::now();
         self.dirty = false;
         Ok(())
+    }
+}
+// T124 + T129 — appended at the END of crates/rdlt-engine/src/load/mod.rs
+// (a child module, so it can read `Loader`'s private fields directly).
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::channel::byte_channel;
+    use rdlt_core::{PipelineId, StreamName};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    fn batch_of(rows: usize) -> RecordBatch {
+        use arrow::array::Int64Array;
+        use arrow::datatypes::{DataType, Field, Schema};
+        let array = Int64Array::from((0..rows as i64).collect::<Vec<_>>());
+        RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)])),
+            vec![Arc::new(array)],
+        )
+        .expect("batch")
+    }
+
+    /// `LoadItem::byte_size` has exactly ONE consumer — the stage channel's
+    /// permit request — so its only observable consequence is backpressure.
+    /// Nothing about the run report can detect a wrong answer: `table.bytes` is
+    /// read straight off the batch in `process`, not through this trait. A
+    /// constant 0 therefore removes backpressure entirely (peak memory would
+    /// scale with input instead of staying capped) while every counter stays
+    /// correct, which is why the mutant survived a suite that asserts counters.
+    #[tokio::test]
+    async fn byte_size_is_what_makes_backpressure_real() {
+        let batch = batch_of(64);
+        let size = batch.get_array_memory_size();
+        assert!(size > 0, "a real batch occupies memory");
+
+        let (tx, mut rx) = byte_channel::<LoadItem>(size);
+        tx.send(LoadItem::Batch {
+            table: TableName::new("t"),
+            batch: batch.clone(),
+        })
+        .await
+        .expect("a batch at exactly the budget sends");
+
+        // Budget exhausted: the next batch MUST park. Under `byte_size → 0` it
+        // sails through; under `→ 1` it also sails through (1 of `size` used).
+        let parked = tokio::time::timeout(
+            Duration::from_millis(100),
+            tx.send(LoadItem::Batch {
+                table: TableName::new("t"),
+                batch: batch.clone(),
+            }),
+        )
+        .await;
+        assert!(
+            parked.is_err(),
+            "the byte budget is exhausted — the producer must park, which IS the backpressure"
+        );
+
+        // Receiving the first item releases its permit, and the parked send completes.
+        let received = rx.recv().await.expect("first item");
+        assert!(matches!(received, LoadItem::Batch { .. }));
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            tx.send(LoadItem::Batch {
+                table: TableName::new("t"),
+                batch,
+            }),
+        )
+        .await
+        .expect("recv released the budget, so this send must complete")
+        .expect("channel still open");
+    }
+
+    /// Markers carry no rows and must never be gated by the byte budget: a
+    /// checkpoint that could not enqueue would stall committing forever. This is
+    /// the other half of the `byte_size` pin — under a constant 1 this send
+    /// never completes on a zero budget.
+    #[tokio::test]
+    async fn zero_sized_markers_pass_a_zero_budget() {
+        let (tx, mut rx) = byte_channel::<LoadItem>(0);
+        for item in [
+            LoadItem::Checkpoint {
+                stream: StreamName::new("s"),
+                cursor: Cursor::new(serde_json::json!({"b": 1})),
+            },
+            LoadItem::Discarded {
+                table: TableName::new("t"),
+                rows: 1,
+                values: 2,
+            },
+        ] {
+            tokio::time::timeout(Duration::from_secs(5), tx.send(item))
+                .await
+                .expect("a zero-byte marker must not wait on the byte budget")
+                .expect("channel still open");
+        }
+        assert!(matches!(rx.recv().await, Some(LoadItem::Checkpoint { .. })));
+        assert!(matches!(rx.recv().await, Some(LoadItem::Discarded { .. })));
+    }
+
+    /// `policy_triggers` is a pure function of the loader's counters and clock;
+    /// no destination call is reachable from it, and this session asserts that by
+    /// refusing every call.
+    struct UnusedSession;
+
+    #[async_trait::async_trait]
+    impl LoadSession for UnusedSession {
+        async fn ensure_table(
+            &mut self,
+            _: &TableSchema,
+            _: &WriteMode,
+        ) -> Result<(), rdlt_connector::DestinationError> {
+            unreachable!("policy_triggers never touches the destination")
+        }
+        async fn write(
+            &mut self,
+            _: &TableName,
+            _: RecordBatch,
+        ) -> Result<(), rdlt_connector::DestinationError> {
+            unreachable!("policy_triggers never touches the destination")
+        }
+        async fn commit(
+            &mut self,
+            _: CommitMeta,
+        ) -> Result<rdlt_core::CommitReceipt, rdlt_connector::DestinationError> {
+            unreachable!("policy_triggers never touches the destination")
+        }
+        async fn read_state(
+            &mut self,
+            _: &PipelineId,
+        ) -> Result<Option<StateDoc>, rdlt_connector::DestinationError> {
+            unreachable!("policy_triggers never touches the destination")
+        }
+    }
+
+    fn loader_with(policy: CommitPolicy) -> Loader {
+        let (events, _rx) = tokio::sync::broadcast::channel(16);
+        let pipeline = PipelineId::new("p");
+        let load_id = LoadId::new("l");
+        Loader::new(
+            Sink {
+                session: Box::new(UnusedSession),
+                caps: DestinationCapabilities::default(),
+            },
+            RunReport::new(pipeline.clone(), load_id.clone()),
+            StateDoc::new(pipeline, "test"),
+            load_id,
+            policy,
+            None,
+            events,
+        )
+    }
+
+    /// The time-based policy compares ELAPSED seconds against the threshold, so
+    /// it is pinned by back-dating `last_commit_at` rather than by sleeping:
+    /// wide margins on both sides, no clock control, no flakiness. `>=` → `<`
+    /// inverts the comparison, which either commits on every checkpoint or never
+    /// commits at all — both caught here.
+    #[test]
+    fn every_seconds_boundary_fires_only_past_the_threshold() {
+        let mut loader = loader_with(CommitPolicy::EverySeconds(30));
+        loader.last_commit_at = Instant::now() - Duration::from_secs(1);
+        assert!(
+            !loader.policy_triggers(),
+            "1s elapsed against a 30s policy must not commit"
+        );
+        loader.last_commit_at = Instant::now() - Duration::from_secs(600);
+        assert!(
+            loader.policy_triggers(),
+            "600s elapsed against a 30s policy must commit"
+        );
+    }
+
+    #[test]
+    fn checkpoint_and_byte_policy_boundaries_are_exact() {
+        let mut loader = loader_with(CommitPolicy::EveryCheckpoints(2));
+        loader.checkpoints_since_commit = 1;
+        assert!(!loader.policy_triggers(), "one short of the threshold");
+        loader.checkpoints_since_commit = 2;
+        assert!(loader.policy_triggers(), "at the threshold, not past it");
+
+        // `n.max(1)` normalizes a zero threshold to one, and what that actually
+        // buys is the ZERO-accumulation case: `0 >= 1` is false where `0 >= 0`
+        // would be true. Today `policy_triggers` is only ever called just after
+        // `checkpoints_since_commit += 1`, so that state is unreachable from the
+        // one call site — which is precisely why the mutant survives a test that
+        // only checks a nonzero count. Pinned as the function's own contract:
+        // with nothing accumulated there is nothing to commit, and a commit
+        // covering no new checkpoint would publish a cursor it does not own.
+        let mut loader = loader_with(CommitPolicy::EveryCheckpoints(0));
+        loader.checkpoints_since_commit = 0;
+        assert!(
+            !loader.policy_triggers(),
+            "no checkpoints accumulated: nothing to commit, even at threshold 0"
+        );
+        loader.checkpoints_since_commit = 1;
+        assert!(
+            loader.policy_triggers(),
+            "EveryCheckpoints(0) behaves as 1, so one checkpoint commits"
+        );
+
+        let mut loader = loader_with(CommitPolicy::EveryBytes(100));
+        loader.bytes_since_commit = 99;
+        assert!(!loader.policy_triggers(), "one byte short");
+        loader.bytes_since_commit = 100;
+        assert!(loader.policy_triggers(), "at the threshold");
     }
 }

@@ -19,6 +19,28 @@ pub enum DestFormat {
 }
 
 impl DestFormat {
+    /// Every format this destination can write. Replace truncation reads this
+    /// rather than the format currently configured: files written by an earlier
+    /// load in a different format are still this destination's to clear.
+    ///
+    /// Completeness is enforced by CONSTRUCTION, not by a length assertion: a
+    /// length check reads the array type and stays true when a variant is added.
+    /// The exhaustive match below names every variant, so a new one fails to
+    /// compile until it is listed here too.
+    pub(crate) const ALL: &'static [DestFormat] = &[Self::Parquet, Self::Jsonl];
+
+    /// Exists solely to make [`Self::ALL`] unmaintainable-by-omission: adding a
+    /// variant breaks this match, and the arm added to fix it names the value
+    /// that must appear in `ALL`.
+    #[cfg(test)]
+    pub(crate) fn in_all(self) -> bool {
+        let listed = match self {
+            Self::Parquet => Self::Parquet,
+            Self::Jsonl => Self::Jsonl,
+        };
+        Self::ALL.contains(&listed)
+    }
+
     pub(crate) fn extension(self) -> &'static str {
         match self {
             Self::Parquet => "parquet",
@@ -48,9 +70,10 @@ pub struct FileDestConfig {
     pub location: Option<LocationOptions>,
     #[serde(default)]
     pub format: DestFormat,
-    /// Optional partition column: one prefix per value
-    /// (`<table>/<column>=<value>/...`; NULLs land under `__null__`). The
-    /// column must exist in the stream's schema at write time (typed).
+    /// Optional partition column: one prefix per value, written as the BARE
+    /// value (`<table>/<value>/part-...`), not Hive-style `<column>=<value>`.
+    /// NULLs land under `__null__`. The column must exist in the stream's
+    /// schema at write time (typed).
     #[serde(default)]
     pub partition_by: Option<String>,
     /// How to write parquet. Absent uses the defaults, which compress —

@@ -227,3 +227,96 @@ async fn replace_truncation_spares_user_files() {
     );
     assert!(table_dir.join("user.jsonl").exists(), "user jsonl survives");
 }
+
+/// A Replace load must clear what THIS destination wrote for the table, even
+/// when the format or partitioning changed since. Exercised through the real
+/// commit path so the frozen-rule selector is in play: unit-testing the
+/// ownership predicate alone passes while this fails, because the default local
+/// parquet config routes through the frozen rule.
+#[tokio::test]
+async fn replace_clears_earlier_loads_written_in_another_shape() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let table_dir = dir.path().join("events");
+    std::fs::create_dir_all(table_dir.join("eu")).expect("mkdir");
+
+    // What earlier loads wrote: partitioned jsonl, and unpartitioned jsonl.
+    std::fs::write(table_dir.join("eu/part-old-1-0.jsonl"), b"{\"old\":1}\n").expect("seed");
+    std::fs::write(table_dir.join("part-old-1-1.jsonl"), b"{\"old\":2}\n").expect("seed");
+    // And an earlier parquet load, partitioned.
+    std::fs::write(table_dir.join("eu/part-old-2-0.parquet"), b"PAR1").expect("seed");
+
+    // Now reconfigured to the DEFAULT: local, parquet, unpartitioned.
+    let pipeline = PipelineId::new("p");
+    let load = LoadId::new("new");
+    let config = FileDestConfig::new(dir.path().to_string_lossy().to_string());
+    let mut s = FileDest::from_config(config)
+        .expect("dest")
+        .open(OpenCtx::new(pipeline.clone(), load.clone()))
+        .await
+        .expect("open");
+    s.ensure_table(&schema_for("events"), &WriteMode::Replace)
+        .await
+        .expect("ensure");
+    s.write(&TableName::new("events"), batch(&[1], &[Some("d1")]))
+        .await
+        .expect("write");
+    s.commit(meta_for(&pipeline, &load, 1))
+        .await
+        .expect("commit");
+
+    for stale in [
+        "eu/part-old-1-0.jsonl",
+        "part-old-1-1.jsonl",
+        "eu/part-old-2-0.parquet",
+    ] {
+        assert!(
+            !table_dir.join(stale).exists(),
+            "`{stale}` was written by this destination and must not survive a Replace"
+        );
+    }
+}
+
+/// The ownership rule must never claim a dataset this destination did not write.
+/// `part-0.parquet` is pyarrow's and Spark's DEFAULT output basename, so a bare
+/// `part-` prefix test deletes a user's own export sitting under the table.
+#[tokio::test]
+async fn replace_never_deletes_a_foreign_dataset() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let table_dir = dir.path().join("events");
+    std::fs::create_dir_all(table_dir.join("spark-export")).expect("mkdir");
+    std::fs::write(table_dir.join("spark-export/part-0.parquet"), b"PAR1").expect("seed");
+    std::fs::write(
+        table_dir.join("spark-export/part-00000-8f3a-c000.snappy.parquet"),
+        b"PAR1",
+    )
+    .expect("seed");
+
+    let pipeline = PipelineId::new("p");
+    let load = LoadId::new("new");
+    let config = FileDestConfig::new(dir.path().to_string_lossy().to_string())
+        .with_format(DestFormat::Jsonl);
+    let mut s = FileDest::from_config(config)
+        .expect("dest")
+        .open(OpenCtx::new(pipeline.clone(), load.clone()))
+        .await
+        .expect("open");
+    s.ensure_table(&schema_for("events"), &WriteMode::Replace)
+        .await
+        .expect("ensure");
+    s.write(&TableName::new("events"), batch(&[1], &[Some("d1")]))
+        .await
+        .expect("write");
+    s.commit(meta_for(&pipeline, &load, 1))
+        .await
+        .expect("commit");
+
+    for foreign in [
+        "spark-export/part-0.parquet",
+        "spark-export/part-00000-8f3a-c000.snappy.parquet",
+    ] {
+        assert!(
+            table_dir.join(foreign).exists(),
+            "`{foreign}` was not written by this destination and must survive"
+        );
+    }
+}

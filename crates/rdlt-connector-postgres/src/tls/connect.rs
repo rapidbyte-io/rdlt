@@ -75,9 +75,7 @@ pub async fn connect(
                 .connect(tokio_postgres::NoTls)
                 .await
                 .map_err(|e| ConnectResult::Connect(classify_connect_error(&e)))?;
-            tokio::spawn(async move {
-                let _ = connection.await;
-            });
+            spawn_driver(connection);
             Ok(client)
         }
         Some(config) => {
@@ -86,9 +84,7 @@ pub async fn connect(
                 .connect(connector)
                 .await
                 .map_err(|e| ConnectResult::Connect(classify_connect_error(&e)))?;
-            tokio::spawn(async move {
-                let _ = connection.await;
-            });
+            spawn_driver(connection);
             Ok(client)
         }
     }
@@ -176,6 +172,26 @@ fn classify_rustls(err: &rustls::Error) -> TlsFailure {
         ) => TlsFailure::ClientCert,
         _ => TlsFailure::Chain,
     }
+}
+
+/// Drive a connection to completion, reporting how it ended.
+///
+/// The driver future owns the socket: when it stops, every later statement on
+/// that client fails with a generic "connection closed" that names nothing.
+/// Discarding its error threw away the only description of WHY — a TLS reset, a
+/// server shutdown, an idle timeout — leaving the operator to guess from the
+/// symptom. Logged rather than propagated: nothing awaits this task, and by the
+/// time it ends the failure has already surfaced through the client.
+fn spawn_driver<F, E>(connection: F)
+where
+    F: std::future::Future<Output = Result<(), E>> + Send + 'static,
+    E: std::fmt::Display + Send + 'static,
+{
+    tokio::spawn(async move {
+        if let Err(e) = connection.await {
+            tracing::warn!(error = %e, "postgres connection driver stopped");
+        }
+    });
 }
 
 #[cfg(test)]

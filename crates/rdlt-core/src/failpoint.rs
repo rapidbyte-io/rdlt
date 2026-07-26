@@ -17,6 +17,13 @@
 #[doc(hidden)]
 pub use fail;
 
+/// Inject a failure at a named point, for crash testing.
+///
+/// Compiles to nothing without the `failpoints` feature, so release builds carry
+/// neither the check nor the dependency. Each point names a real durability
+/// boundary, and the crash sweeps assert that every registered point can
+/// actually FIRE — a dead crash point would otherwise make a sweep look
+/// thorough while testing nothing.
 #[cfg(feature = "failpoints")]
 #[macro_export]
 macro_rules! crash_point {

@@ -37,16 +37,20 @@ pub(super) fn column_wire(
     logical: Option<&ColumnType>,
     dt: &DataType,
 ) -> Result<ColumnWire, DestinationError> {
+    // The logical type is consulted ONLY where it says something the arrow type
+    // cannot: json and uuid are both Utf8 on the wire-representation side, so
+    // without it they would be sent as text.
+    //
+    // Decimal and Time are deliberately NOT here. Their scale and unit live in
+    // the ARRAY — that is the scale the i128 payload is actually stored at — and
+    // reading them from the schema instead would silently multiply or divide
+    // every value by a power of ten whenever the two disagree. The
+    // representation match below reads the array, and additionally refuses a
+    // negative scale rather than wrapping it.
     if let Some(ColumnType::Scalar { scalar }) = logical {
         match (scalar, dt) {
-            (LogicalType::Decimal { scale, .. }, DataType::Decimal128(_, _)) => {
-                return Ok(ColumnWire::Numeric { scale: *scale });
-            }
             (LogicalType::Json, DataType::Utf8) => return Ok(ColumnWire::Jsonb),
             (LogicalType::Uuid, DataType::Utf8) => return Ok(ColumnWire::Uuid),
-            (LogicalType::Time, DataType::Time64(TimeUnit::Microsecond)) => {
-                return Ok(ColumnWire::Time);
-            }
             _ => {} // representation-driven below
         }
     }
@@ -237,13 +241,27 @@ impl<'a> ColumnEncoder<'a> {
                 sql(&ts, &Type::TIMESTAMP, column, o)
             }),
             Self::Date(a) => field!(a, |o: &mut BytesMut| {
-                let days = a.value(row);
-                let date = chrono::NaiveDate::from_num_days_from_ce_opt(days + 719_163)
+                // Checked: the shift overflows i32 near the type's extremes, and
+                // an overflow-checks build would panic rather than refuse.
+                let days = i64::from(a.value(row)) + 719_163;
+                let date = i32::try_from(days)
+                    .ok()
+                    .and_then(chrono::NaiveDate::from_num_days_from_ce_opt)
                     .ok_or_else(|| fatal(format!("column `{column}`: date out of range")))?;
                 sql(&date, &Type::DATE, column, o)
             }),
             Self::Time(a) => field!(a, |o: &mut BytesMut| {
-                let micros = a.value(row) as u64;
+                // Bounds-checked BEFORE the cast. A negative or beyond-24h value
+                // wraps through `as u64` into a plausible time, which would send
+                // a DIFFERENT time rather than refusing the value.
+                const MICROS_PER_DAY: i64 = 86_400_000_000;
+                let raw = a.value(row);
+                if !(0..MICROS_PER_DAY).contains(&raw) {
+                    return Err(fatal(format!(
+                        "column `{column}`: time {raw} µs is outside a day (0..{MICROS_PER_DAY})"
+                    )));
+                }
+                let micros = raw as u64;
                 let time = chrono::NaiveTime::from_num_seconds_from_midnight_opt(
                     (micros / 1_000_000) as u32,
                     ((micros % 1_000_000) * 1_000) as u32,
@@ -347,7 +365,10 @@ pub(super) fn write_numeric(value: i128, scale: u8, out: &mut BytesMut) {
     let ndigits = count - lo;
 
     out.put_i16(i16::try_from(ndigits).expect("at most 11 groups"));
-    out.put_i16(i16::try_from(weight).unwrap_or(i16::MAX));
+    // `expect`, not a substitute value: a weight beyond i16 cannot be encoded,
+    // and silently sending i16::MAX would write a number that is not the one
+    // that was asked for. Unreachable — the digit count is bounded above.
+    out.put_i16(i16::try_from(weight).expect("weight fits i16: at most 11 base-10000 groups"));
     out.put_u16(if value < 0 { 0x4000 } else { 0x0000 });
     out.put_i16(scale16);
     for idx in (lo..count).rev() {

@@ -12,6 +12,14 @@ pub(crate) struct SchemaRegistry {
 }
 
 impl SchemaRegistry {
+    /// Has this stream established any table yet? Distinguishes the drain that
+    /// creates a stream's initial shape from every later one, which is what makes
+    /// a mid-run table creation policeable without treating the bootstrap as
+    /// drift.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.tables.is_empty()
+    }
+
     pub(crate) fn get(&self, table: &TableName) -> Option<&TableSchema> {
         self.tables.get(table)
     }

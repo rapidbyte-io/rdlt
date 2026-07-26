@@ -13,12 +13,22 @@ use crate::types::LogicalType;
 /// System (lineage) column names stamped by the shredder. Present in every schema,
 /// non-evolvable.
 pub mod system_columns {
+    /// The run that wrote the row.
     pub const LOAD_ID: &str = "_rdlt_load_id";
+    /// Row identity, derived from content or a declared key. What `Merge` merges
+    /// on when no structured primary key is declared.
     pub const ID: &str = "_rdlt_id";
+    /// On a child table, the `_rdlt_id` of the row that contained this one.
     pub const PARENT_ID: &str = "_rdlt_parent_id";
+    /// Position within the parent's collection, so list order survives
+    /// normalization into rows.
     pub const POS: &str = "_rdlt_pos";
+    /// The `_rdlt_id` of the ROOT row this one descends from, at any depth. What
+    /// makes replacing a whole nested subtree a single keyed operation.
     pub const ROOT_ID: &str = "_rdlt_root_id";
 
+    /// Is this a system column? System columns are stamped by the shredder and
+    /// never evolve, so schema evolution and contract enforcement skip them.
     pub fn is_system(name: &str) -> bool {
         matches!(name, LOAD_ID | ID | PARENT_ID | POS | ROOT_ID)
     }
@@ -32,8 +42,11 @@ pub mod system_columns {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Provenance {
+    /// Chosen by inference from the observed values.
     Inferred,
+    /// Pinned by a configured type hint, which inference does not override.
     Hinted,
+    /// A lineage column stamped by the shredder.
     System,
 }
 
@@ -43,51 +56,72 @@ pub enum Provenance {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ColumnType {
+    /// A single value.
     Scalar {
+        /// The logical type of the value.
         scalar: LogicalType,
     },
     /// Nested object preserved structurally; fields evolve like top-level columns.
     Struct {
+        /// The nested fields, which evolve exactly like top-level columns.
         fields: Vec<ColumnDef>,
     },
     /// List of scalars (destinations without native lists get a child table instead —
     /// that decision is made at shred planning, so a persisted schema is already
     /// capability-resolved).
     ScalarList {
+        /// The element type; every element shares it, widening as needed.
         item: LogicalType,
     },
 }
 
 impl ColumnType {
+    /// Shorthand for a scalar column of this logical type.
     pub fn scalar(scalar: LogicalType) -> Self {
         ColumnType::Scalar { scalar }
     }
 }
 
+/// One column: its name, shape, nullability, and where its type came from.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ColumnDef {
+    /// Column name as it appears in the schema, before destination
+    /// identifier normalization.
     pub name: String,
     // Wire key stays `type` — the Rust field is `column_type` to read as prose
     // and to avoid the `ty` abbreviation; the serialized format is unchanged.
+    /// The column's shape.
     #[serde(rename = "type")]
     pub column_type: ColumnType,
+    /// Whether the column admits NULL. Only ever widens false → true: a column
+    /// that has seen a missing value can never go back to being required.
     pub nullable: bool,
+    /// Where the type came from. Participates in the content hash.
     pub provenance: Provenance,
 }
 
 /// Link from a child table to its parent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParentLink {
+    /// The immediate parent table.
     pub parent: TableName,
     /// 1 = direct child of the root table.
     pub depth: u32,
 }
 
+/// One version of one table's schema.
+///
+/// This type's serde layout is a PERSISTED FORMAT: it is what
+/// [`TableSchema::content_hash`] hashes and what the WAL records. Changing the
+/// layout is a state-migration event, not a refactor.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TableSchema {
+    /// The table this schema describes.
     pub table: TableName,
     /// `None` for root tables.
     pub parent: Option<ParentLink>,
+    /// Columns in a STABLE order: the engine only ever appends, because column
+    /// order participates in the content hash.
     pub columns: Vec<ColumnDef>,
 }
 
@@ -103,6 +137,7 @@ impl TableSchema {
         SchemaHash::from_bytes(*hasher.finalize().as_bytes())
     }
 
+    /// Find a column by name.
     pub fn column(&self, name: &str) -> Option<&ColumnDef> {
         self.columns.iter().find(|c| c.name == name)
     }
@@ -112,24 +147,44 @@ impl TableSchema {
 /// The only way schemas change.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SchemaDelta {
+    /// The table that evolved.
     pub table: TableName,
+    /// The schema version this step started from; `None` when the table was
+    /// created by this step.
     pub from: Option<SchemaHash>,
+    /// The schema version this step produced.
     pub to: SchemaHash,
+    /// The minimal set of changes between the two versions.
     pub changes: Vec<SchemaChange>,
 }
 
+/// A single schema change, and the complete set of changes rdlt can make.
+///
+/// There is deliberately no drop, no rename, and no narrowing: those lose data
+/// or break readers, so rdlt refuses them rather than performing them. A schema
+/// contract decides whether even these three are allowed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "change", rename_all = "snake_case")]
 pub enum SchemaChange {
+    /// The table did not exist and is being created at this schema.
     CreateTable {
+        /// The initial schema.
         schema: TableSchema,
     },
+    /// A column appeared that the table did not have. Always nullable: existing
+    /// rows have no value for it.
     AddColumn {
+        /// The column being added.
         column: ColumnDef,
     },
+    /// A column's type widened along the lattice to admit a value that did not
+    /// fit the old one.
     WidenColumn {
+        /// The column's name.
         name: String,
+        /// The type before.
         from: ColumnType,
+        /// The type after — always strictly wider.
         to: ColumnType,
     },
 }

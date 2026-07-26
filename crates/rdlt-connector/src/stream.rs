@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 /// hints override inference.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StreamSpec {
+    /// The stream's name, which is also the destination table name it owns.
     pub name: StreamName,
     /// Declared key: `_rdlt_id` becomes a key hash and `Merge` merges on it.
     ///
@@ -31,6 +32,7 @@ pub struct StreamSpec {
 }
 
 impl StreamSpec {
+    /// A stream with no key, no cursor, and no hints — the minimum declaration.
     pub fn new(name: impl Into<StreamName>) -> Self {
         Self {
             name: name.into(),
@@ -47,16 +49,24 @@ impl StreamSpec {
         self
     }
 
+    /// Declare the key that identifies a row. Under `Merge` this must name the
+    /// same columns as the write mode's key — the engine rejects a mismatch at
+    /// plan time rather than picking one.
     pub fn with_primary_key(mut self, key: impl IntoIterator<Item = impl Into<String>>) -> Self {
         self.primary_key = Some(key.into_iter().map(Into::into).collect());
         self
     }
 
+    /// Declare the field carrying the incremental cursor, enabling resumable
+    /// reads for this stream.
     pub fn with_cursor_field(mut self, field: impl Into<String>) -> Self {
         self.cursor_field = Some(field.into());
         self
     }
 
+    /// Pin one column's logical type, overriding what inference would choose.
+    /// Useful where the data alone is ambiguous — an ISO-8601 string that should
+    /// be a timestamp rather than text.
     pub fn with_type_hint(mut self, column: impl Into<String>, ty: LogicalType) -> Self {
         self.type_hints.insert(column.into(), ty);
         self

@@ -209,3 +209,127 @@ async fn discard_row_on_middle_table_cascades_to_grandchildren() {
         "cascade drops are counted, never silent"
     );
 }
+
+/// A frozen table must be frozen against EVERY shape of change, not only against
+/// changes to columns it already has.
+///
+/// A new scalar field aborts the run; a new list-of-objects field creates and
+/// loads a whole new child table. Both are drift on a frozen stream, and treating
+/// only the first as drift makes the contract depend on which shape the new data
+/// happens to have.
+#[tokio::test]
+async fn freeze_refuses_a_child_table_created_mid_run() {
+    let dest = MemoryDestination::new();
+    let mut config = EngineConfig::new("freeze-child");
+    config.schema_policy = SchemaPolicy::evolve().table("t", PolicyAction::Freeze);
+    config.commit_policy = rdlt_core::CommitPolicy::EveryCheckpoints(1);
+
+    // Batch 2 introduces a nested collection, which materialises as a child table.
+    let source = two_batch_source(vec![json!({"id": 2, "v": 20, "items": [{"sku": "a"}]})]);
+    let err = Engine::new(config, source, dest.clone())
+        .run()
+        .await
+        .expect_err("a new child table on a frozen stream is drift");
+    match &err {
+        RdltError::Schema(violation) => {
+            assert!(
+                violation.table.as_str().starts_with("t"),
+                "the violation names the table that would have been created: {violation:?}"
+            );
+            assert_eq!(
+                violation.column, None,
+                "a table creation has no column to name"
+            );
+        }
+        other => panic!("expected Schema(ContractViolation), got {other:?}"),
+    }
+    assert!(
+        !dest.committed_tables().iter().any(|t| t.as_str() != "t"),
+        "no child table is created"
+    );
+}
+
+/// The freeze on a PARENT reaches the child tables its own data creates —
+/// otherwise freezing `t` says nothing about `t`'s nested collections, and the
+/// contract is only as strong as the shape of the first batch.
+#[tokio::test]
+async fn a_frozen_parent_freezes_the_child_tables_it_creates() {
+    let dest = MemoryDestination::new();
+    let mut config = EngineConfig::new("freeze-inherit");
+    config.schema_policy = SchemaPolicy::evolve().table("t", PolicyAction::Freeze);
+    config.commit_policy = rdlt_core::CommitPolicy::EveryCheckpoints(1);
+
+    // Batch 1 establishes BOTH t and its child; batch 2 adds a column to the CHILD.
+    let source = MemorySource::new(vec![MemoryStream::new(
+        rdlt_connector::StreamSpec::new("t"),
+        vec![
+            MemoryBatch::new(vec![json!({"id": 1, "items": [{"sku": "a"}]})]).with_checkpoint(1),
+            MemoryBatch::new(vec![json!({"id": 2, "items": [{"sku": "b", "qty": 3}]})])
+                .with_checkpoint(2),
+        ],
+    )]);
+    let err = Engine::new(config, source, dest.clone())
+        .run()
+        .await
+        .expect_err("the parent's freeze governs its child tables");
+    match &err {
+        RdltError::Schema(violation) => {
+            assert_eq!(violation.column.as_deref(), Some("qty"));
+        }
+        other => panic!("expected Schema(ContractViolation), got {other:?}"),
+    }
+}
+
+/// The bootstrap is not drift: everything the FIRST drain creates is the
+/// pipeline's initial shape, however many tables that is.
+#[tokio::test]
+async fn freeze_allows_the_tables_the_first_drain_establishes() {
+    let dest = MemoryDestination::new();
+    let mut config = EngineConfig::new("freeze-bootstrap");
+    config.schema_policy = SchemaPolicy::evolve().table("t", PolicyAction::Freeze);
+    let source = MemorySource::new(vec![MemoryStream::new(
+        rdlt_connector::StreamSpec::new("t"),
+        vec![
+            MemoryBatch::new(vec![json!({"id": 1, "items": [{"sku": "a"}]})]).with_checkpoint(1),
+            MemoryBatch::new(vec![json!({"id": 2, "items": [{"sku": "b"}]})]).with_checkpoint(2),
+        ],
+    )]);
+    Engine::new(config, source, dest.clone())
+        .run()
+        .await
+        .expect("a frozen stream still establishes its own initial shape");
+    assert_eq!(dest.committed_rows("t").len(), 2);
+}
+
+/// Discard means "load the conforming data and COUNT every discard". A table
+/// created mid-run has no column to null and no prior shape to roll back to, so
+/// discarding its creation means discarding its rows — counted, never silently
+/// creating the table anyway.
+#[tokio::test]
+async fn discard_refuses_a_mid_run_child_table_and_counts_its_rows() {
+    let dest = MemoryDestination::new();
+    let mut config = EngineConfig::new("discard-child");
+    config.schema_policy = SchemaPolicy::evolve().table("t", PolicyAction::DiscardRow);
+    config.commit_policy = rdlt_core::CommitPolicy::EveryCheckpoints(1);
+
+    let source = two_batch_source(vec![
+        json!({"id": 2, "v": 20, "items": [{"sku": "a"}, {"sku": "b"}]}),
+    ]);
+    let report = Engine::new(config, source, dest.clone())
+        .run()
+        .await
+        .expect("discard loads the conforming data");
+
+    assert!(
+        !dest
+            .committed_tables()
+            .iter()
+            .any(|t| t.as_str().contains("items")),
+        "the discarded table is not created: {:?}",
+        dest.committed_tables()
+    );
+    let discarded: u64 = report.tables.values().map(|t| t.discarded_rows).sum();
+    assert_eq!(discarded, 2, "both child rows are counted, never silent");
+    // The parent's own rows are untouched — only the refused table is discarded.
+    assert_eq!(dest.committed_rows("t").len(), 2);
+}

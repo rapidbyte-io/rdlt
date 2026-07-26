@@ -5,9 +5,9 @@
 //! receipt. Receives FLATTENED schemas — `structs: false` makes the
 //! engine lower nested objects at the seam. Depends on the SPI only.
 //!
-//! Module layout (source-mirroring): [`config`] the handle/builder, [`ddl`]
-//! type mapping + table DDL, [`encode`] the binary-COPY wire encoding,
-//! [`commit`] the load-session protocol.
+//! Module layout (source-mirroring, all crate-private): `config` the
+//! handle/builder, `ddl` type mapping + table DDL, `encode` the binary-COPY
+//! wire encoding, `commit` the load-session protocol.
 //!
 //! # What a unit transaction costs
 //!
@@ -343,6 +343,9 @@ pub mod testhook {
 /// - `pg.publish.begin` — at `commit`, before the first publish step
 /// - `pg.tx.commit` — the redelivery window: the client dies without learning
 ///   whether the transaction committed
+/// - `pg.tx.acked` — the same window from the other side: the transaction HAS
+///   committed durably and the client dies before acting on it, so recovery
+///   must return the existing receipt rather than publish a second time
 #[cfg(feature = "failpoints")]
 #[doc(hidden)]
 pub const FAIL_POINTS: &[&str] = &[
@@ -351,6 +354,7 @@ pub const FAIL_POINTS: &[&str] = &[
     "pg.unit.write",
     "pg.publish.begin",
     "pg.tx.commit",
+    "pg.tx.acked",
 ];
 
 /// Render a driver error with its server message + SQLSTATE — the shared

@@ -26,6 +26,18 @@ pub(crate) fn test_table() -> Table {
         ))])
         .build()
         .expect("schema");
+    table_with_schema(schema)
+}
+
+/// A live table carrying `schema`, built the way a catalog builds one.
+///
+/// `from_table_creation` RE-ASSIGNS field ids, which is exactly what a REST
+/// catalog does on create — so a table built here differs from a freshly mapped
+/// schema in precisely the way a real one does. That makes id-sensitivity
+/// reproducible without a container, which matters: a container-gated test
+/// SKIPS when no runtime is present, and a skipping test is green, so it can
+/// never be the evidence that a fix was needed.
+pub(crate) fn table_with_schema(schema: Schema) -> Table {
     let creation = TableCreation::builder()
         .name("events".to_string())
         .location("memory://wh/ns/events".to_string())

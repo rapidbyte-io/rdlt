@@ -301,3 +301,125 @@ pub(crate) fn write_segment(path: &Path, batch: &RecordBatch) -> Result<(), Rdlt
 pub(crate) fn clear(dir: &Path) {
     let _ = std::fs::remove_dir_all(dir);
 }
+// T125 — appended at the END of crates/rdlt-engine/src/wal/mod.rs
+//
+// The claim "segment sequence numbers must be strictly monotonic" used to live
+// in a doc comment on a resume.rs test that only ever asserted the header
+// version. That clause is deleted there and the property is actually tested
+// here, against a real Wal writing real segments.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rdlt_core::TableName;
+    use std::sync::Arc;
+
+    fn batch_of(rows: i64) -> arrow::record_batch::RecordBatch {
+        use arrow::array::Int64Array;
+        use arrow::datatypes::{DataType, Field, Schema};
+        arrow::record_batch::RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)])),
+            vec![Arc::new(Int64Array::from((0..rows).collect::<Vec<_>>()))],
+        )
+        .expect("batch")
+    }
+
+    fn manifest_records(dir: &Path) -> Vec<WalRecord> {
+        let text = std::fs::read_to_string(dir.join("manifest.jsonl")).expect("read manifest");
+        text.lines()
+            .map(|line| serde_json::from_str(line).expect("manifest line"))
+            .collect()
+    }
+
+    fn segment_rows(path: &Path) -> usize {
+        let file = std::fs::File::open(path).expect("open segment");
+        let reader = arrow::ipc::reader::FileReader::try_new(file, None).expect("arrow ipc");
+        reader
+            .map(|b| b.expect("decode batch").num_rows())
+            .sum::<usize>()
+    }
+
+    /// Each recorded batch gets its OWN segment file, and the sequence advances
+    /// by one so no name is ever reused. Under `segment_seq += 1` → `*=` the
+    /// counter stays at zero, both batches write `l-000000.arrow`, and the
+    /// second silently OVERWRITES the first — replay would then load the same
+    /// rows twice and lose the others. Nothing about the counter is asserted
+    /// directly: the pin is the two files and their distinct contents.
+    #[tokio::test]
+    async fn each_recorded_batch_gets_its_own_sequential_segment() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut wal = Wal::open(
+            dir.path().to_path_buf(),
+            &PipelineId::new("p"),
+            &LoadId::new("l"),
+        )
+        .expect("open wal");
+
+        wal.record(&LoadItem::Batch {
+            table: TableName::new("t"),
+            batch: batch_of(3),
+        })
+        .await
+        .expect("record first");
+        wal.record(&LoadItem::Batch {
+            table: TableName::new("t"),
+            batch: batch_of(5),
+        })
+        .await
+        .expect("record second");
+
+        // Two distinct files, named in sequence.
+        let first = dir.path().join("l-000000.arrow");
+        let second = dir.path().join("l-000001.arrow");
+        assert!(first.exists(), "first segment must exist: {first:?}");
+        assert!(
+            second.exists(),
+            "the second segment must be a NEW file, not a reuse of the first"
+        );
+
+        // Each carries its own rows — proof the first was not overwritten.
+        assert_eq!(segment_rows(&first), 3);
+        assert_eq!(segment_rows(&second), 5);
+
+        // And the manifest names them in write order, with matching row counts.
+        let records = manifest_records(dir.path());
+        let segments: Vec<(String, u64)> = records
+            .iter()
+            .filter_map(|r| match r {
+                WalRecord::Segment { file, rows, .. } => Some((file.clone(), *rows)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            segments,
+            vec![
+                ("l-000000.arrow".to_owned(), 3),
+                ("l-000001.arrow".to_owned(), 5)
+            ],
+            "manifest order IS replay order"
+        );
+        assert!(
+            matches!(records.first(), Some(WalRecord::Run { .. })),
+            "the Run header is always the first line"
+        );
+    }
+
+    /// `initial_wal_version` describes HISTORY: a manifest with no version field
+    /// is by definition a v1 one. Defaulting it to the current version would
+    /// claim its parquet segments are Arrow IPC and hand corrupt bytes to the
+    /// reader, so this must stay 1 even as `WAL_FORMAT_VERSION` moves.
+    #[test]
+    fn a_headerless_manifest_version_defaults_to_one_forever() {
+        assert_eq!(initial_wal_version(), 1);
+        let decoded: WalRecord =
+            serde_json::from_str(r#"{"rec":"run","load_id":"l","pipeline":"p"}"#)
+                .expect("a pre-versioning header still decodes");
+        match decoded {
+            WalRecord::Run { format_version, .. } => assert_eq!(
+                format_version, 1,
+                "absent version means v1, never the current version"
+            ),
+            other => panic!("expected a Run header, got {other:?}"),
+        }
+    }
+}

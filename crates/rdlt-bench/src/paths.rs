@@ -35,7 +35,15 @@ impl Paths {
             fixtures_toml: benches.join("fixtures/fixtures.toml"),
             bars_toml: benches.join("bars.toml"),
             results: benches.join("results"),
-            cli: dir.join("target/release/rdlt"),
+            // Honour CARGO_TARGET_DIR: a contributor who redirects cargo's
+            // output (a shared target dir, a faster disk) otherwise gets a
+            // "CLI missing" failure straight after a successful `make release`.
+            // An absolute override is used as-is; a relative one resolves
+            // against the repo root, exactly as cargo itself treats it.
+            cli: match std::env::var_os("CARGO_TARGET_DIR") {
+                Some(target) => dir.join(target).join("release/rdlt"),
+                None => dir.join("target/release/rdlt"),
+            },
             repo: dir,
             benches,
         })

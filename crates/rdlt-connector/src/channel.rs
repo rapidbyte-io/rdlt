@@ -27,10 +27,18 @@ pub struct ChannelClosed;
 /// byte-budget permit, released when the message is dropped.
 #[derive(Debug)]
 pub struct SourcePush {
+    /// What was pushed.
     pub payload: PushPayload,
     _permit: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 
+/// The shapes a source can push.
+///
+/// Three shapes rather than one because the cheapest path differs by source: a
+/// REST body is already JSON bytes, a database read is already Arrow, and a
+/// checkpoint carries no rows at all. Forcing everything through one
+/// representation would mean parsing and re-serializing data that was already in
+/// the right form.
 #[derive(Debug)]
 pub enum PushPayload {
     /// Raw JSON bytes: one document, an array of documents, or NDJSON. The engine's
@@ -85,6 +93,9 @@ impl RecordsOut {
         self.send(PushPayload::RawJson(buf.into()), size).await
     }
 
+    /// Push a source-native Arrow batch, bypassing the shredder — only its
+    /// schema is checked. The cheapest path for a source that already has
+    /// columnar data.
     pub async fn arrow(&mut self, batch: RecordBatch) -> Result<(), ChannelClosed> {
         let size = batch.get_array_memory_size();
         self.send(PushPayload::Arrow(batch), size).await

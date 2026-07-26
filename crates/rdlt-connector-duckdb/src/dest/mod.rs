@@ -7,12 +7,12 @@
 //!
 //! The full destination-options vocabulary (merge strategies, hard_delete,
 //! dedup_sort, merge_scope, scd2) executes through the SHARED sqlcore shapes via
-//! [`dialect::DuckDialect`] — the same plans, validation, and typed errors as
+//! `dialect::DuckDialect` — the same plans, validation, and typed errors as
 //! the postgres destination. `Json` columns land as native DuckDB JSON
 //! (probe-verified, tests/probes.rs).
 //!
-//! Module layout: [`commit`] the load-session protocol + strategy execution,
-//! [`dialect`] the SQL-text seam.
+//! Module layout (both crate-private): `commit` the load-session protocol +
+//! strategy execution, `dialect` the SQL-text seam.
 
 mod commit;
 mod dialect;

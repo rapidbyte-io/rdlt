@@ -86,6 +86,23 @@ pub(crate) fn path_safe(value: &str) -> String {
 /// The receipt log: `(load_id, commit_seq)` pairs proving what has committed.
 /// The DURABLE idempotency guard — replay dedup and the Replace once-per-load
 /// truncation guard both read it.
+///
+/// **Receipts are retained for the life of the destination — deliberately.**
+/// The log grows by one small tuple per commit and is rewritten whole on each
+/// one, which is a real cost on a long-lived output.
+///
+/// It is paid because the SPI's commit contract is UNCONDITIONAL: re-committing
+/// the same `(load_id, commit_seq)` returns the prior receipt without
+/// re-publishing, with no clause about how recently that load ran. Trimming even
+/// a bounded tail makes the guarantee conditional on recency, and a redelivery
+/// of a trimmed load then re-truncates its Replace targets — destroying data a
+/// later load published — and re-publishes under Append. Redelivery of an older
+/// load is reachable through WAL replay from a restored workdir, through two
+/// engines sharing an output prefix, and through any embedder driving
+/// `LoadSession` directly, which is what the SPI is for.
+///
+/// Bounding this safely needs a persisted watermark and a TYPED refusal for a
+/// commit that falls below it — a design, not a trim.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct CommitLog {
     #[serde(default)]

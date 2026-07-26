@@ -92,7 +92,7 @@ fn staged_nonempty(
         [],
         |row| row.get(0),
     )
-    .map_err(fatal)
+    .map_err(classify)
 }
 
 /// Execute one planned [`Step`] in the publish transaction. Every decision +
@@ -204,9 +204,9 @@ impl LoadSession for DuckDbSession {
             let schema = schema.clone();
             self.with_conn(move |conn| {
                 conn.execute_batch(&create_table_sql(schema.table.as_str(), &schema, false))
-                    .map_err(fatal)?;
+                    .map_err(classify)?;
                 conn.execute_batch(&create_table_sql(&stage, &schema, true))
-                    .map_err(fatal)?;
+                    .map_err(classify)?;
                 // Additive schema migration: add new columns; widen changed
                 // ones with a cast — DuckDB's ALTER … SET DATA TYPE migrates
                 // existing rows.
@@ -221,7 +221,7 @@ impl LoadSession for DuckDbSession {
                             quote(&column.name),
                             sql_type(&column.column_type, is_stage)
                         );
-                        conn.execute_batch(&add).map_err(fatal)?;
+                        conn.execute_batch(&add).map_err(classify)?;
                         if let Some(prev) = &previous
                             && let Some(old) = prev.column(&column.name)
                             && old.column_type != column.column_type
@@ -232,7 +232,7 @@ impl LoadSession for DuckDbSession {
                                 quote(&column.name),
                                 sql_type(&column.column_type, is_stage)
                             );
-                            conn.execute_batch(&widen).map_err(fatal)?;
+                            conn.execute_batch(&widen).map_err(classify)?;
                         }
                     }
                 }
@@ -284,7 +284,7 @@ impl LoadSession for DuckDbSession {
                 .collect();
                 self.with_conn(|conn| {
                     for sql in &stmts {
-                        conn.execute_batch(sql).map_err(fatal)?;
+                        conn.execute_batch(sql).map_err(classify)?;
                     }
                     Ok(())
                 })?;
@@ -305,7 +305,7 @@ impl LoadSession for DuckDbSession {
                     let legacy = legacy_unique_index_name(&table_str, &columns);
                     self.with_conn(|conn| {
                         conn.execute_batch(&format!("DROP INDEX IF EXISTS {}", quote(&legacy)))
-                            .map_err(fatal)
+                            .map_err(classify)
                     })?;
                 }
                 // Only an actual constraint violation gets the

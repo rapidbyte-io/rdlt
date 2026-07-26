@@ -177,6 +177,7 @@ pub(crate) async fn read_task(
             mtime_ms: task.mtime_ms,
             etag: task.etag.clone(),
             tail_hash: None, // whole-file units never tail-resume
+            row_groups_hash: None,
         },
     );
     if out.checkpoint(cursor.encode()).await.is_err() {
@@ -241,7 +242,16 @@ fn convert_cell(
         ))
     };
     Ok(match conversion {
-        Conversion::Inferred(CellKind::Bool) => serde_json::Value::Bool(cell == "true"),
+        // Pass 1 infers Bool only when every non-empty cell was `true` or
+        // `false`, so anything else here means the file changed between the
+        // passes — the same condition the Int and Float arms below refuse.
+        // `cell == "true"` would silently answer `false` for "yes", "1", or
+        // any other text a rewrite introduced.
+        Conversion::Inferred(CellKind::Bool) => match cell {
+            "true" => serde_json::Value::Bool(true),
+            "false" => serde_json::Value::Bool(false),
+            _ => return Err(two_pass("bool")),
+        },
         Conversion::Inferred(CellKind::Int) => {
             serde_json::Value::Number(cell.parse::<i64>().map_err(|_| two_pass("int64"))?.into())
         }
@@ -289,4 +299,43 @@ fn convert_cell(
             | HintType::Uuid,
         ) => serde_json::Value::String(cell.to_owned()),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pass 1 infers Bool only when every non-empty cell was `true` or `false`,
+    /// so any other text in pass 2 means the file changed between the two reads.
+    /// It must fail TYPED, exactly as the Int and Float arms do — `cell ==
+    /// "true"` silently answers `false` for "yes", "1", or anything else a
+    /// rewrite introduced, turning a detectable race into wrong data.
+    #[test]
+    fn an_inferred_bool_that_no_longer_parses_is_a_typed_two_pass_failure() {
+        for (cell, expected) in [("true", true), ("false", false)] {
+            let value = convert_cell(
+                cell,
+                Conversion::Inferred(CellKind::Bool),
+                "f.csv",
+                1,
+                "flag",
+            )
+            .expect("a real bool still converts");
+            assert_eq!(value, serde_json::Value::Bool(expected));
+        }
+        for changed in ["yes", "1", "TRUE", "banana", "  true"] {
+            let error = convert_cell(
+                changed,
+                Conversion::Inferred(CellKind::Bool),
+                "f.csv",
+                7,
+                "flag",
+            )
+            .expect_err("a cell pass 1 could not have inferred Bool from must fail");
+            assert!(
+                matches!(error, SourceError::Fatal { .. }),
+                "the two-pass race is fatal, never a silent `false`: {error:?}"
+            );
+        }
+    }
 }

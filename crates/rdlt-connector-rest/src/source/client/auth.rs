@@ -15,8 +15,26 @@ use rdlt_connector::Secret;
 #[derive(Debug)]
 pub struct AuthProvider {
     scheme: Auth,
+    /// The SAME client the data path uses, so the token fetch inherits its
+    /// read deadline. A separate client would leave the credential fetch as the
+    /// one request in the source that can stall forever.
+    http: reqwest::Client,
     /// OAuth2 token cache: single-flight via the async mutex.
-    token: tokio::sync::Mutex<Option<CachedToken>>,
+    token: tokio::sync::Mutex<TokenState>,
+}
+
+/// The cached credential and the generation it belongs to.
+///
+/// The generation is what makes a 401 discriminating. Under fan-out several
+/// requests hold the same credential; the first 401 refreshes it, and the others
+/// then arrive reporting a 401 for a credential that has ALREADY been replaced.
+/// Without a generation each of those drops the fresh token and forces another
+/// round trip — bounded, but pure waste, and it briefly leaves the source with
+/// no credential at all.
+#[derive(Debug, Default)]
+struct TokenState {
+    generation: u64,
+    cached: Option<CachedToken>,
 }
 
 #[derive(Debug, Clone)]
@@ -26,57 +44,71 @@ struct CachedToken {
 }
 
 impl AuthProvider {
-    pub fn new(scheme: Auth) -> Self {
+    pub fn new(scheme: Auth, http: reqwest::Client) -> Self {
         Self {
             scheme,
-            token: tokio::sync::Mutex::new(None),
+            http,
+            token: tokio::sync::Mutex::new(TokenState::default()),
         }
     }
 
     /// Attach credentials to a request (fetching/refreshing OAuth2 tokens as
     /// needed).
+    /// Returns the request and, for a refreshable scheme, the GENERATION of the
+    /// credential it carries — which `on_unauthorized` needs to tell "the token
+    /// I used was rejected" from "someone already replaced it".
     pub async fn attach(
         &self,
         request: reqwest::RequestBuilder,
-    ) -> Result<reqwest::RequestBuilder, SourceError> {
+    ) -> Result<(reqwest::RequestBuilder, Option<u64>), SourceError> {
         match &self.scheme {
-            Auth::None => Ok(request),
-            Auth::Bearer { token } => Ok(request.bearer_auth(token.reveal())),
-            Auth::Header { name, value } => Ok(request.header(name, value.reveal())),
+            Auth::None => Ok((request, None)),
+            Auth::Bearer { token } => Ok((request.bearer_auth(token.reveal()), None)),
+            Auth::Header { name, value } => Ok((request.header(name, value.reveal()), None)),
             Auth::Basic { username, password } => {
-                Ok(request.basic_auth(username, Some(password.reveal())))
+                Ok((request.basic_auth(username, Some(password.reveal())), None))
             }
             Auth::ApiKey {
                 name,
                 key,
                 location,
-            } => Ok(match location {
-                ApiKeyLocation::Header => request.header(name, key.reveal()),
-                ApiKeyLocation::Query => request.query(&[(name, key.reveal())]),
-            }),
+            } => Ok((
+                match location {
+                    ApiKeyLocation::Header => request.header(name, key.reveal()),
+                    ApiKeyLocation::Query => request.query(&[(name, key.reveal())]),
+                },
+                None,
+            )),
             Auth::OAuth2ClientCredentials { .. } => {
-                let token = self.current_token().await?;
-                Ok(request.bearer_auth(token.reveal()))
+                let (token, generation) = self.current_token().await?;
+                Ok((request.bearer_auth(token.reveal()), Some(generation)))
             }
         }
     }
 
     /// 401 hook: refreshable schemes drop their cache and report "retry
     /// once"; everything else reports "no, the 401 is final".
-    pub async fn on_unauthorized(&self) -> Result<bool, SourceError> {
+    /// `failed` names the generation the rejected request carried. If the cache
+    /// has already moved past it, another request refreshed in the meantime and
+    /// the cached credential is not the one that was rejected — so it stays, and
+    /// this request simply retries with it.
+    pub async fn on_unauthorized(&self, failed: Option<u64>) -> Result<bool, SourceError> {
         if !matches!(&self.scheme, Auth::OAuth2ClientCredentials { .. }) {
             return Ok(false);
         }
         let mut guard = self.token.lock().await;
-        if guard.is_none() {
-            // Already dropped by a concurrent 401: don't retry twice.
-            return Ok(false);
+        match failed {
+            Some(generation) if generation != guard.generation => Ok(true),
+            _ if guard.cached.is_none() => Ok(false),
+            _ => {
+                guard.cached = None;
+                guard.generation = guard.generation.wrapping_add(1);
+                Ok(true)
+            }
         }
-        *guard = None;
-        Ok(true)
     }
 
-    async fn current_token(&self) -> Result<Secret, SourceError> {
+    async fn current_token(&self) -> Result<(Secret, u64), SourceError> {
         let Auth::OAuth2ClientCredentials {
             token_url,
             client_id,
@@ -89,10 +121,10 @@ impl AuthProvider {
             unreachable!("current_token is only called for oauth2");
         };
         let mut guard = self.token.lock().await;
-        if let Some(cached) = guard.as_ref()
+        if let Some(cached) = guard.cached.as_ref()
             && cached.expires_at.is_none_or(|at| Instant::now() < at)
         {
-            return Ok(cached.access_token.clone());
+            return Ok((cached.access_token.clone(), guard.generation));
         }
         // Single-flight by construction: the mutex is held across the fetch.
         let mut form: Vec<(&str, String)> = vec![
@@ -106,11 +138,13 @@ impl AuthProvider {
         if let Some(audience) = audience {
             form.push(("audience", audience.clone()));
         }
-        // The token endpoint is fetched with a fresh reqwest client — it does NOT
-        // go through this source's `RestClient`, so it gets no pacing or default
-        // headers. It reuses only the shared error classification: 5xx/network =
-        // transient (engine budget), 4xx = fatal.
-        let response = reqwest::Client::new()
+        // The token endpoint does NOT go through this source's `RestClient`, so
+        // it gets no pacing and no default headers — but it shares the same
+        // underlying client, so it shares the read deadline, and it reuses the
+        // shared error classification: 5xx/network = transient (engine budget),
+        // 4xx = fatal.
+        let response = self
+            .http
             .post(token_url)
             .form(&form)
             .send()
@@ -147,7 +181,84 @@ impl AuthProvider {
             expires_at,
         };
         let out = token.access_token.clone();
-        *guard = Some(token);
-        Ok(out)
+        guard.cached = Some(token);
+        guard.generation = guard.generation.wrapping_add(1);
+        Ok((out, guard.generation))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rdlt_connector::Secret;
+
+    fn oauth_provider() -> AuthProvider {
+        AuthProvider::new(
+            Auth::OAuth2ClientCredentials {
+                token_url: "http://127.0.0.1:1/token".into(),
+                client_id: "id".into(),
+                client_secret: Secret::new("secret"),
+                scopes: Vec::new(),
+                audience: None,
+                expiry_margin_secs: 0,
+            },
+            reqwest::Client::new(),
+        )
+    }
+
+    /// Under fan-out several requests carry the same credential. The first 401
+    /// refreshes it; the others then report a 401 for a credential that has
+    /// ALREADY been replaced, and must NOT drop the fresh one — doing so costs
+    /// another token round trip and briefly leaves the source with none.
+    #[tokio::test]
+    async fn a_stale_401_does_not_evict_a_freshly_refreshed_token() {
+        let provider = oauth_provider();
+        {
+            let mut guard = provider.token.lock().await;
+            guard.cached = Some(CachedToken {
+                access_token: Secret::new("t1"),
+                expires_at: None,
+            });
+            guard.generation = 7;
+        }
+
+        // A request that carried generation 7 is rejected: that IS the cached
+        // credential, so it is dropped and the generation moves on.
+        assert!(provider.on_unauthorized(Some(7)).await.expect("hook"));
+        {
+            let guard = provider.token.lock().await;
+            assert!(guard.cached.is_none(), "the rejected credential is dropped");
+            assert_eq!(guard.generation, 8);
+        }
+
+        // A fresh credential exists again...
+        {
+            let mut guard = provider.token.lock().await;
+            guard.cached = Some(CachedToken {
+                access_token: Secret::new("t2"),
+                expires_at: None,
+            });
+        }
+        // ...and a LATE 401 from the old generation arrives. It must retry
+        // against the new credential, not discard it.
+        assert!(provider.on_unauthorized(Some(7)).await.expect("hook"));
+        let guard = provider.token.lock().await;
+        assert!(
+            guard.cached.is_some(),
+            "a 401 for a superseded credential must not evict the current one"
+        );
+        assert_eq!(guard.generation, 8, "and must not bump the generation");
+    }
+
+    /// A scheme with no refreshable credential reports "the 401 is final".
+    #[tokio::test]
+    async fn a_non_refreshable_scheme_does_not_retry() {
+        let provider = AuthProvider::new(
+            Auth::Bearer {
+                token: Secret::new("static"),
+            },
+            reqwest::Client::new(),
+        );
+        assert!(!provider.on_unauthorized(None).await.expect("hook"));
     }
 }

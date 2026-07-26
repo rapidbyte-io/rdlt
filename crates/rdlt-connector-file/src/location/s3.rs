@@ -258,6 +258,14 @@ impl S3Location {
         self.key(&format!("{table}/{tail}"))
     }
 
+    /// The key prefix every one of a table's objects sits under. Ownership
+    /// listing strips this exactly rather than searching for it: a partition
+    /// value can spell the table's own name, and a search would then split the
+    /// key at the wrong place.
+    pub(crate) fn key_of_table_root(&self, table: &str) -> object_store::path::Path {
+        self.key(table)
+    }
+
     /// Read a full object key's bytes (already resolved by a prior listing).
     pub(crate) async fn get_key(
         &self,
@@ -279,6 +287,11 @@ impl S3Location {
             "{action} `{subject}` (s3 `{}` bucket `{}`)",
             self.endpoint, self.bucket
         );
+        // Severity comes from the ONE rulebook; this match only chooses the
+        // wording, so a message can never disagree with a classification.
+        if is_recoverable(&error) {
+            return SourceError::transient(format!("{name}: {error}"));
+        }
         match &error {
             object_store::Error::NotFound { .. } => {
                 SourceError::fatal(format!("{name}: not found"))
@@ -289,23 +302,38 @@ impl S3Location {
             | object_store::Error::PermissionDenied { .. } => {
                 SourceError::fatal(format!("{name}: unauthorized — check credentials/bucket"))
             }
-            // Everything else at the transport/store level is the engine
-            // budget's business.
-            _ => SourceError::transient(format!("{name}: {error}")),
+            _ => SourceError::fatal(format!("{name}: {error}")),
         }
     }
 }
 
-/// The one store-error recoverability rule, shared by the read and write
-/// paths: missing objects and auth/permission failures are configuration
-/// problems (fatal, the operator's to fix); everything else at the
-/// transport/store level heals on retry and rides the engine budget.
+/// The one store-error recoverability rule, shared by the read and write paths.
+///
+/// An ALLOW-LIST, deliberately. Every variant outside it states a determined
+/// fact about the request or the configuration — a missing object, a rejected
+/// credential, an unusable path, an unsupported operation, an unknown setting —
+/// and retrying one burns the engine's budget on a certainty, then reports
+/// transient exhaustion in place of the real cause. It is also the safe default
+/// for a `#[non_exhaustive]` upstream enum: a variant added by a future release
+/// costs a retry that would not have helped, rather than hiding one that never
+/// will.
+///
+/// Three variants are recoverable:
+///
+/// - `Generic` wraps transport-level failure.
+/// - `AlreadyExists` is what HTTP 409 becomes, and `Precondition` HTTP 412.
+///   Those are determined answers only to a CONDITIONAL request — and this
+///   connector issues none. What a plain put, copy or delete gets a 409 for is
+///   S3's `OperationAborted` ("a conflicting conditional operation is in
+///   progress; try again"), which is a retry-me condition. The store's own retry
+///   loop will not cover it: it retries 409 only when `retry_on_conflict` is
+///   set, which upstream sets solely for its conditional put.
 pub(crate) fn is_recoverable(error: &object_store::Error) -> bool {
-    !matches!(
+    matches!(
         error,
-        object_store::Error::NotFound { .. }
-            | object_store::Error::Unauthenticated { .. }
-            | object_store::Error::PermissionDenied { .. }
+        object_store::Error::Generic { .. }
+            | object_store::Error::AlreadyExists { .. }
+            | object_store::Error::Precondition { .. }
     )
 }
 

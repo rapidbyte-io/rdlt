@@ -8,3 +8,23 @@ max-threads = 3
 [[profile.default.overrides]]
 filter = "package(rdlt-connector-iceberg) and not binary(config_schema)"
 test-group = "iceberg-live"
+
+# The flake-recording profile (feature 020 US8).
+#
+# Six container flakes are recorded across features 015-019, each handled the
+# same ad-hoc way: re-run it, watch it pass, move on. That convention loses the
+# only thing that would settle whether a test is flaky or actually broken — how
+# OFTEN it fails. This profile retries, and `benches/record-flakes.sh` appends
+# nextest's own flaky classifications to a committed log, so the next
+# intermittent failure is a data point rather than a judgement call.
+#
+# Deliberately NOT the default profile: retries in the gate would let a real
+# intermittent bug pass as green, which is the failure mode 019 D-04 warns
+# about. This profile is opt-in (`--profile flake`), and the gate of record
+# still runs zero-retry.
+[profile.flake]
+retries = 2
+fail-fast = false
+
+[profile.flake.junit]
+path = "junit.xml"

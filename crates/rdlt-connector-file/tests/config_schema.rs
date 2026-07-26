@@ -87,3 +87,41 @@ fn dest_schema_valid_corpus_parses() {
         parsed.validate("file destination").expect("validates");
     }
 }
+
+/// T133 — the hand-mirrored `DestSpec::File` parity guard.
+///
+/// `rdlt::pipeline_spec::DestSpec::File` restates this config field by field so
+/// a pipeline document can express it. That mirror is maintained BY HAND, and
+/// the dangerous direction is silent: add a field here and forget the mirror,
+/// and the field compiles, ships, and is simply unreachable from any pipeline
+/// YAML — unconfigurable with no error anywhere.
+///
+/// The assertion cannot live next to `DestSpec` (this crate is a dependency of
+/// the facade, so it cannot see it) and it cannot import it here for the same
+/// reason. So it pins the field set on THIS side and names the required action
+/// in the failure message. It is derived from the schema rather than written as
+/// a struct literal deliberately: US10 may embed `FileDestConfig` into
+/// `DestSpec::File` instead of mirroring it, and a field-set assertion survives
+/// that refactor where a per-field destructure would not.
+#[test]
+fn file_dest_config_field_set_is_mirrored_in_dest_spec() {
+    let schema = schemars::schema_for!(rdlt_connector_file::dest::FileDestConfig);
+    let value = serde_json::to_value(&schema).expect("schema serializes");
+    let mut fields: Vec<String> = value["properties"]
+        .as_object()
+        .expect("FileDestConfig is an object schema")
+        .keys()
+        .cloned()
+        .collect();
+    fields.sort();
+
+    let expected = ["format", "location", "parquet", "partition_by", "path"];
+    assert_eq!(
+        fields, expected,
+        "FileDestConfig's fields changed. `rdlt::pipeline_spec::DestSpec::File` \
+         is a hand-maintained mirror of this struct: add the same field there \
+         (and to the destructure that rebuilds this config from it), then update \
+         this expected list. Skipping the mirror leaves the new field \
+         unreachable from pipeline YAML with no error at all."
+    );
+}

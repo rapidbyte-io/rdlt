@@ -5,6 +5,18 @@
 //! Posture rule: a missing container runtime NEVER panics — `start()` returns
 //! `None` after a visible `SKIP` line, and the caller returns early. Panics
 //! are reserved for real startup failures WITH the runtime present.
+//!
+//! Reclaim convention: EVERY container this workspace starts carries the label
+//! [`RECLAIM_LABEL`], and `make reclaim` removes containers and volumes by it.
+//! Testcontainers' own `Drop` reaps a container that finishes normally, but a
+//! suite killed mid-run (Ctrl-C, an OOM, a hung fixture) never runs `Drop` and
+//! leaves the container AND its anonymous volume behind — twice during feature
+//! 017 that filled the disk. The label exists so reclaiming is one command that
+//! cannot touch anything else on the machine, and so it is a LABEL rather than
+//! a name pattern because volumes do not inherit names from their container.
+//! A new start site MUST carry it, including the ones that shell out to the
+//! container CLI directly (`--label rdlt-test=1`) instead of going through
+//! testcontainers.
 
 use testcontainers_modules::postgres::Postgres as PostgresImage;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
@@ -22,6 +34,12 @@ pub const POSTGRES_TAG: &str = "16-alpine";
 /// Container-internal postgres port (the module maps it to a random host
 /// port, read back at start).
 const POSTGRES_PORT: u16 = 5432;
+
+/// The label every container started by this workspace carries, so `make
+/// reclaim` can remove them (and their volumes) without pattern-matching names
+/// and without touching anything else running on the machine. See the module
+/// doc for why a killed run needs this.
+pub const RECLAIM_LABEL: &str = "rdlt-test";
 
 /// Env override forcing the skip posture ON even where a runtime IS present —
 /// so the skip-not-fail behaviour is verifiable without stopping the runtime.
@@ -91,6 +109,7 @@ impl PgFixture {
         }
         let container = PostgresImage::default()
             .with_tag(POSTGRES_TAG)
+            .with_label(RECLAIM_LABEL, "1")
             .start()
             .await
             .expect("start postgres container (runtime present)");
@@ -154,6 +173,7 @@ impl CdcPgFixture {
         }
         let container = PostgresImage::default()
             .with_tag(POSTGRES_TAG)
+            .with_label(RECLAIM_LABEL, "1")
             .with_cmd([
                 "postgres",
                 "-c",

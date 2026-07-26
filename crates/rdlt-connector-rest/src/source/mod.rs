@@ -38,16 +38,16 @@ pub struct RestSource {
 
 impl RestSource {
     pub fn from_yaml(yaml: &str) -> Result<Self, config::ConfigError> {
-        Ok(Self::build(RestConfig::from_yaml(yaml)?))
+        Self::build(RestConfig::from_yaml(yaml)?)
     }
 
     pub fn from_json(json: &str) -> Result<Self, config::ConfigError> {
-        Ok(Self::build(RestConfig::from_json(json)?))
+        Self::build(RestConfig::from_json(json)?)
     }
 
     /// Embedder entry point (see [`RestConfig::from_value`]).
     pub fn from_value(value: serde_json::Value) -> Result<Self, config::ConfigError> {
-        Ok(Self::build(RestConfig::from_value(value)?))
+        Self::build(RestConfig::from_value(value)?)
     }
 
     /// Construct from an already-parsed [`RestConfig`], validating it first —
@@ -57,14 +57,29 @@ impl RestSource {
     /// nothing downstream has to re-check or paper over them.
     pub fn new(config: RestConfig) -> Result<Self, config::ConfigError> {
         config.validate()?;
-        Ok(Self::build(config))
+        Self::build(config)
     }
 
     /// Wire up the HTTP client for a config already known valid (the `from_*`
     /// text constructors validate as they parse; [`Self::new`] validates too).
-    fn build(config: RestConfig) -> Self {
+    fn build(config: RestConfig) -> Result<Self, config::ConfigError> {
+        // ONE client for the whole source, so the deadline covers the token
+        // fetch as well as the data requests. Its construction is fallible —
+        // `Client::new()` PANICS when the TLS backend cannot initialise, which
+        // is an environment problem an embedder should receive as an error.
+        // `read_timeout`, NOT `timeout`. The bound exists to catch a server that
+        // accepts a connection and then stalls, and `read_timeout` resets after
+        // each successful read — so it bounds every wait without capping a
+        // transfer that is making continuous progress. A total deadline would
+        // kill a large page mid-download, and since that failure is transient the
+        // engine would restart and hit the same wall on every attempt.
+        let http = reqwest::Client::builder()
+            .read_timeout(std::time::Duration::from_secs(config.request_timeout_secs))
+            .build()
+            .map_err(|e| config::ConfigError::Invalid(format!("building the HTTP client: {e}")))?;
         let client = RestClient::new(
-            client::AuthProvider::new(config.auth.clone()),
+            client::AuthProvider::new(config.auth.clone(), http.clone()),
+            http,
             config
                 .headers
                 .iter()
@@ -78,7 +93,7 @@ impl RestSource {
             config.min_request_interval_ms,
             config.retry_after_cap_secs,
         );
-        Self { config, client }
+        Ok(Self { config, client })
     }
 
     fn stream_config(&self, name: &StreamName) -> Option<&RestStream> {

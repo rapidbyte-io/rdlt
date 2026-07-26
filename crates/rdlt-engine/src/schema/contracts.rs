@@ -182,4 +182,127 @@ mod tests {
         assert!(value_fits(&json!([1, 2, null]), &list_ty));
         assert!(!value_fits(&json!([1, "x"]), &list_ty));
     }
+
+    /// `violation_for` had no test at all: the module's tests covered only
+    /// `value_fits`, so `scalar_of` could return `None` for everything and
+    /// nothing noticed. The `from`/`to` fields are asserted BY VALUE here, not
+    /// through the rendered message — a violation is consumed programmatically
+    /// (an operator tool reads which type widened to which), and Principle V
+    /// forbids pinning behaviour to rendered text.
+    #[test]
+    fn violation_for_carries_typed_from_and_to() {
+        use rdlt_core::{ColumnDef, Provenance, TableSchema};
+        let table = TableName::new("t");
+
+        // CreateTable is table-level: no column, no types.
+        let created = violation_for(
+            &table,
+            &SchemaChange::CreateTable {
+                schema: TableSchema {
+                    table: table.clone(),
+                    parent: None,
+                    columns: vec![],
+                },
+            },
+        );
+        assert_eq!(created.table, table);
+        assert_eq!(created.column, None);
+        assert_eq!(created.from, None);
+        assert_eq!(created.to, None);
+
+        // AddColumn: no `from` (the column did not exist), `to` is its type.
+        let added = violation_for(
+            &table,
+            &SchemaChange::AddColumn {
+                column: ColumnDef {
+                    name: "email".into(),
+                    column_type: ColumnType::scalar(LogicalType::Utf8),
+                    nullable: true,
+                    provenance: Provenance::Inferred,
+                },
+            },
+        );
+        assert_eq!(added.column.as_deref(), Some("email"));
+        assert_eq!(added.from, None);
+        assert_eq!(
+            added.to,
+            Some(LogicalType::Utf8),
+            "the added column's type must reach the caller as a value"
+        );
+
+        // WidenColumn: both ends present and distinct.
+        let widened = violation_for(
+            &table,
+            &SchemaChange::WidenColumn {
+                name: "id".into(),
+                from: ColumnType::scalar(LogicalType::Int64),
+                to: ColumnType::scalar(LogicalType::Utf8),
+            },
+        );
+        assert_eq!(widened.column.as_deref(), Some("id"));
+        assert_eq!(widened.from, Some(LogicalType::Int64));
+        assert_eq!(widened.to, Some(LogicalType::Utf8));
+    }
+
+    /// A non-scalar end has no `LogicalType` to report, and that `None` is a
+    /// real answer rather than a missing one — asserted so the scalar arm and
+    /// the fallback arm are distinguishable.
+    #[test]
+    fn violation_for_reports_none_for_non_scalar_ends() {
+        use rdlt_core::{ColumnDef, Provenance};
+        let table = TableName::new("t");
+        let struct_ty = ColumnType::Struct {
+            fields: vec![ColumnDef {
+                name: "city".into(),
+                column_type: ColumnType::scalar(LogicalType::Utf8),
+                nullable: true,
+                provenance: Provenance::Inferred,
+            }],
+        };
+        let widened = violation_for(
+            &table,
+            &SchemaChange::WidenColumn {
+                name: "profile".into(),
+                from: struct_ty.clone(),
+                to: ColumnType::scalar(LogicalType::Json),
+            },
+        );
+        assert_eq!(widened.from, None, "a struct has no single logical type");
+        assert_eq!(widened.to, Some(LogicalType::Json));
+    }
+
+    #[test]
+    fn change_column_addresses_the_right_column() {
+        use rdlt_core::{ColumnDef, Provenance, TableSchema};
+        assert_eq!(
+            change_column(&SchemaChange::CreateTable {
+                schema: TableSchema {
+                    table: TableName::new("t"),
+                    parent: None,
+                    columns: vec![],
+                },
+            }),
+            None,
+            "table creation is table-level, not column-level"
+        );
+        assert_eq!(
+            change_column(&SchemaChange::AddColumn {
+                column: ColumnDef {
+                    name: "email".into(),
+                    column_type: ColumnType::scalar(LogicalType::Utf8),
+                    nullable: true,
+                    provenance: Provenance::Inferred,
+                },
+            }),
+            Some("email")
+        );
+        assert_eq!(
+            change_column(&SchemaChange::WidenColumn {
+                name: "id".into(),
+                from: ColumnType::scalar(LogicalType::Int64),
+                to: ColumnType::scalar(LogicalType::Utf8),
+            }),
+            Some("id")
+        );
+    }
 }

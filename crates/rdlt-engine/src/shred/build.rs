@@ -64,12 +64,24 @@ pub(crate) fn arrow_schema(schema: &TableSchema) -> Schema {
 
 /// Build one table's batch. `source_to_normalized` maps source keys to normalized column names
 /// (the schema speaks normalized; the drained rows speak source).
+///
+/// Returns the batch and the number of MISFITS: cells where a present, non-null
+/// input produced a NULL output because the value could not be represented under
+/// the column's type. Counting them is what keeps the crate's "counted, never
+/// silent" rule true for declared (pinned) columns, whose values are never
+/// observed and so can never reach the policy layer.
+///
+/// The count is POSITIONAL — it compares each input against the cell it
+/// produced. A difference of totals would be wrong: an explicitly-null value in
+/// a scalar-list column produces a valid empty list, so outputs can legitimately
+/// outnumber non-null inputs and the subtraction would underflow.
 pub(crate) fn build_batch<'v, V: JsonView<'v>>(
     schema: &TableSchema,
     source_to_normalized: &[(String, String)],
     rows: &[DrainRow<V>],
     load_id: &LoadId,
-) -> Result<RecordBatch, ArrowError> {
+) -> Result<(RecordBatch, u64), ArrowError> {
+    let mut misfits: u64 = 0;
     let mut arrays: Vec<ArrayRef> = Vec::with_capacity(schema.columns.len());
     for column in &schema.columns {
         let array: ArrayRef = match column.name.as_str() {
@@ -128,12 +140,23 @@ pub(crate) fn build_batch<'v, V: JsonView<'v>>(
                     .unwrap_or(column.name.as_str());
                 let values: Vec<Option<V>> =
                     rows.iter().map(|row| row.get_top(source_key)).collect();
-                build_column(&column.column_type, &values)
+                let array = build_column(&column.column_type, &values);
+                let nulls = array.nulls();
+                misfits += values
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, v)| {
+                        v.as_ref().is_some_and(|v| !v.is_null())
+                            && nulls.is_some_and(|n| n.is_null(*i))
+                    })
+                    .count() as u64;
+                array
             }
         };
         arrays.push(array);
     }
-    RecordBatch::try_new(Arc::new(arrow_schema(schema)), arrays)
+    let batch = RecordBatch::try_new(Arc::new(arrow_schema(schema)), arrays)?;
+    Ok((batch, misfits))
 }
 
 /// Append one lineage id to a string column as lowercase hex, reusing `hex` as scratch
@@ -247,10 +270,12 @@ fn scalar_float64<'v, V: JsonView<'v>>(values: &[Option<V>]) -> ArrayRef {
     let mut b = Float64Builder::new();
     for v in values {
         // Mirrors `Value::as_f64`: any JSON number converts with `as` casts.
+        // No `Kind::UInt` arm: a u64 observation resolves the column to text, so
+        // a UInt can never reach a Float64 column. Converting one here would be
+        // the inexact narrowing the Float64 escalation exists to refuse.
         b.append_option(match view_kind(v) {
             Some(Kind::Float(f)) => Some(f),
             Some(Kind::Int(i)) => Some(i as f64),
-            Some(Kind::UInt(u)) => Some(u as f64),
             _ => None,
         });
     }
@@ -370,7 +395,7 @@ fn scalar_time<'v, V: JsonView<'v>>(values: &[Option<V>]) -> ArrayRef {
 fn scalar_decimal<'v, V: JsonView<'v>>(values: &[Option<V>], precision: u8, scale: u8) -> ArrayRef {
     let mut b = Decimal128Builder::new();
     for v in values {
-        b.append_option(v.and_then(|v| parse_decimal(v, scale)));
+        b.append_option(v.and_then(|v| parse_decimal(v, precision, scale)));
     }
     Arc::new(
         b.finish()
@@ -440,12 +465,17 @@ fn write_compact_json<'v, V: JsonView<'v>>(value: V, out: &mut Vec<u8>) {
 }
 
 /// Exact decimal parsing from integers or decimal strings; `None` (→ null) for
-/// anything inexact — floats are refused by design (no Float64 → Decimal edge).
-fn parse_decimal<'v, V: JsonView<'v>>(value: V, scale: u8) -> Option<i128> {
+/// anything that does not fit the declared type — floats are refused by design
+/// (no Float64 → Decimal edge), a fraction longer than `scale` would truncate,
+/// and a magnitude needing `precision` digits or more cannot be stored at that
+/// precision. The last of these is checked HERE because the array builder does
+/// not: arrow validates the precision/scale PAIR, never a value against it.
+fn parse_decimal<'v, V: JsonView<'v>>(value: V, precision: u8, scale: u8) -> Option<i128> {
     let owned;
     let text = match value.kind() {
         Kind::Int(i) => {
-            return (i as i128).checked_mul(10i128.checked_pow(scale as u32)?);
+            let scaled = (i as i128).checked_mul(10i128.checked_pow(scale as u32)?)?;
+            return fits_precision(scaled, precision);
         }
         // u64 beyond i64 and floats: refused (matches Number::as_i64 semantics).
         Kind::UInt(_) | Kind::Float(_) => return None,
@@ -484,5 +514,141 @@ fn parse_decimal<'v, V: JsonView<'v>>(value: V, scale: u8) -> Option<i128> {
             frac.checked_mul(10i128.checked_pow((scale as usize - frac_part.len()) as u32)?)?,
         )?;
     }
-    Some(sign * result)
+    fits_precision(sign * result, precision)
+}
+
+/// A decimal of `precision` digits holds magnitudes strictly below `10^precision`.
+/// Anything at or beyond that cannot be stored at the declared precision, so it
+/// is refused by the same rule that refuses an over-long fraction.
+fn fits_precision(scaled: i128, precision: u8) -> Option<i128> {
+    let limit = 10i128.checked_pow(precision as u32)?;
+    (scaled.unsigned_abs() < limit.unsigned_abs()).then_some(scaled)
+}
+// T131 — the FIRST test module in crates/rdlt-engine/src/shred/build.rs.
+// Appended at the end of the file.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn dec(value: serde_json::Value, precision: u8, scale: u8) -> Option<i128> {
+        parse_decimal(&value, precision, scale)
+    }
+
+    /// The accepted grammar is: optional leading `-`, then ASCII digits with at
+    /// most one `.`, surrounded by ignorable whitespace. Everything else is
+    /// refused rather than coerced — a decimal column exists precisely because
+    /// the caller wants exact values, so a guess is worse than a refusal.
+    #[test]
+    fn decimal_grammar_accepts_only_exact_fixed_point_text() {
+        // Whole and fractional forms, scaled to the declared scale.
+        assert_eq!(dec(json!("5"), 10, 2), Some(500));
+        assert_eq!(dec(json!("5.00"), 10, 2), Some(500));
+        assert_eq!(dec(json!("5.1"), 10, 2), Some(510), "short fraction pads");
+        assert_eq!(dec(json!("-5.10"), 10, 2), Some(-510));
+        assert_eq!(dec(json!("  5.00  "), 10, 2), Some(500), "whitespace trims");
+
+        // A bare leading or trailing point is still unambiguous.
+        assert_eq!(dec(json!(".5"), 10, 2), Some(50), "\".5\" is 0.50");
+        assert_eq!(dec(json!("5."), 10, 2), Some(500), "\"5.\" is 5.00");
+
+        // Negative zero collapses to zero, not to a distinct value.
+        assert_eq!(dec(json!("-0.00"), 10, 2), Some(0));
+
+        // Refused: the exponent form, an explicit plus, and any non-digit.
+        assert_eq!(dec(json!("1e5"), 10, 2), None, "no exponent form");
+        assert_eq!(dec(json!("+5"), 10, 2), None, "no explicit plus sign");
+        assert_eq!(dec(json!("5,00"), 10, 2), None, "no locale separators");
+        assert_eq!(dec(json!("0x10"), 10, 2), None);
+        assert_eq!(
+            dec(json!("5 00"), 10, 2),
+            None,
+            "inner whitespace is not a digit"
+        );
+
+        // Refused: nothing to parse.
+        assert_eq!(dec(json!(""), 10, 2), None);
+        assert_eq!(dec(json!("."), 10, 2), None, "a lone point has no digits");
+        assert_eq!(dec(json!("-"), 10, 2), None);
+        assert_eq!(dec(json!("--5"), 10, 2), None, "one sign only");
+    }
+
+    /// A fraction longer than the declared scale would have to be truncated, and
+    /// truncating a decimal silently changes the value. Refused, and therefore
+    /// counted as a misfit rather than stored wrong.
+    #[test]
+    fn a_fraction_longer_than_the_scale_is_refused_not_rounded() {
+        assert_eq!(dec(json!("1.23"), 10, 2), Some(123));
+        assert_eq!(dec(json!("1.234"), 10, 2), None, "would truncate to 1.23");
+        assert_eq!(dec(json!("1.200"), 10, 2), None, "even trailing zeros");
+        assert_eq!(dec(json!("1.2"), 10, 0), None, "scale 0 admits no fraction");
+        assert_eq!(dec(json!("7"), 10, 0), Some(7));
+    }
+
+    /// Arrow validates the precision/scale PAIR but never a value against it, so
+    /// this bound is enforced here or nowhere. A decimal of `precision` digits
+    /// holds magnitudes strictly below `10^precision`.
+    #[test]
+    fn a_magnitude_at_or_beyond_the_precision_is_refused() {
+        assert_eq!(
+            dec(json!("99.99"), 4, 2),
+            Some(9999),
+            "the largest that fits"
+        );
+        assert_eq!(dec(json!("100.00"), 4, 2), None, "10^4 needs a 5th digit");
+        assert_eq!(dec(json!("-100.00"), 4, 2), None, "sign does not buy room");
+        assert_eq!(dec(json!("-99.99"), 4, 2), Some(-9999));
+        // Integers take the same bound through the same helper.
+        assert_eq!(dec(json!(99), 4, 2), Some(9900));
+        assert_eq!(dec(json!(100), 4, 2), None);
+    }
+
+    /// JSON numbers: integers scale exactly; floats and out-of-i64 unsigneds are
+    /// refused by design, because a decimal built from a binary float would
+    /// record a value the source never had.
+    #[test]
+    fn numeric_kinds_that_cannot_be_exact_are_refused() {
+        assert_eq!(dec(json!(5), 10, 2), Some(500));
+        assert_eq!(dec(json!(-5), 10, 2), Some(-500));
+        assert_eq!(dec(json!(0), 10, 2), Some(0));
+        assert_eq!(dec(json!(5.1), 10, 2), None, "no Float64 → Decimal edge");
+        assert_eq!(
+            dec(json!(u64::MAX), 38, 0),
+            None,
+            "beyond i64: refused, matching Number::as_i64 semantics"
+        );
+        assert_eq!(dec(json!(true), 10, 2), None, "not a number or a string");
+        assert_eq!(dec(json!(null), 10, 2), None);
+        assert_eq!(dec(json!({"a": 1}), 10, 2), None);
+        assert_eq!(dec(json!([1]), 10, 2), None);
+    }
+
+    /// The i128 arithmetic is all checked, so an unrepresentable scale or a
+    /// magnitude that overflows on the way to being scaled refuses rather than
+    /// wrapping into a plausible wrong number.
+    #[test]
+    fn overflowing_scale_and_magnitude_refuse_rather_than_wrap() {
+        // 10^39 does not fit in i128, so no value can be scaled by it.
+        assert_eq!(dec(json!("1"), 38, 39), None, "10^39 overflows i128");
+        assert_eq!(dec(json!(1), 38, 39), None);
+        // An integer that cannot be scaled into i128 at this scale.
+        assert_eq!(dec(json!(i64::MAX), 38, 38), None);
+        // …but the same integer at a workable scale and precision is exact.
+        assert_eq!(
+            dec(json!(i64::MAX), 38, 0),
+            Some(i64::MAX as i128),
+            "unscaled, i64::MAX is well inside 38 digits"
+        );
+    }
+
+    #[test]
+    fn fits_precision_is_a_strict_bound() {
+        assert_eq!(fits_precision(999, 3), Some(999));
+        assert_eq!(fits_precision(1000, 3), None, "10^3 needs 4 digits");
+        assert_eq!(fits_precision(-999, 3), Some(-999));
+        assert_eq!(fits_precision(-1000, 3), None, "the bound is on magnitude");
+        assert_eq!(fits_precision(0, 1), Some(0));
+        assert_eq!(fits_precision(i128::MIN, 38), None, "no wrap on abs()");
+    }
 }

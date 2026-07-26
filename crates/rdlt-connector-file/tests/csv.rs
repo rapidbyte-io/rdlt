@@ -232,3 +232,28 @@ async fn non_finite_inferred_float_is_typed() {
         "{err}"
     );
 }
+
+/// A pattern naming an existing DIRECTORY is not a missing file, and saying so
+/// sends the operator looking for a path that is right there.
+#[tokio::test]
+async fn a_directory_pattern_is_distinguished_from_a_missing_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let yaml = format!(
+        "streams:\n  - name: events\n    format: csv\n    path: \"{}\"\n",
+        dir.path().display()
+    );
+    let source = FileSource::from_yaml(&yaml).expect("config");
+    let (out, mut input) = records_channel(1 << 20);
+    let spec = source.streams().await.expect("streams")[0].clone();
+    let read = tokio::spawn(async move { source.read(ReadRequest::new(spec, None, out)).await });
+    while input.recv().await.is_some() {}
+    let error = read
+        .await
+        .expect("join")
+        .expect_err("a directory is not readable");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("is a directory"),
+        "the message must name what is actually wrong, not `does not exist`: {rendered}"
+    );
+}

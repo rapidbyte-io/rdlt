@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use rdlt_connector::{Cursor, SourceError};
 use serde::{Deserialize, Serialize};
 
-pub use crate::location::types::{FileMeta, FileProgress, FileTask};
+pub use crate::location::types::{FileMeta, FileProgress, FileTask, ResumeCheck};
 
 pub(crate) const CURSOR_FORMAT_VERSION: u32 = 1;
 
@@ -25,6 +25,23 @@ pub(crate) const CURSOR_FORMAT_VERSION: u32 = 1;
 /// prefix) resumes.
 pub(crate) const TAIL_WINDOW: u64 = 4096;
 
+/// Per-file progress for one stream.
+///
+/// **Entries are retained for the life of the pipeline state — deliberately.**
+/// Every path this stream has ever consumed stays in the document, which is
+/// serialized into every checkpoint and every committed state document. For a
+/// glob over rotating files (daily drops, a log shipper) that grows without
+/// bound: roughly 150–250 bytes per path, so ~10k files is a few megabytes
+/// rewritten on each commit.
+///
+/// Pruning is NOT free, which is why it is not done. A pruned entry whose file
+/// later reappears — a re-uploaded day, a restored archive, a producer that
+/// re-creates a name — reads from zero and DUPLICATES its rows under Append.
+/// Trading unbounded metadata for silent duplication is the wrong trade to make
+/// on the user's behalf.
+///
+/// The operator's levers are to narrow the pattern so old paths stop matching,
+/// or to clear the pipeline state and accept a full re-read.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct FileCursor {
     #[serde(default = "default_version")]
@@ -115,11 +132,14 @@ impl FileCursor {
                         meta.path, progress.done_units
                     )));
                 }
-                let tail_check = progress
-                    .tail_hash
-                    .clone()
-                    .map(|hash| (progress.done_units.min(TAIL_WINDOW), hash));
-                tasks.push(FileTask::from_meta(meta, progress.done_units, tail_check));
+                // Armed only for a genuine resume. `done_units == 0` carries
+                // no consumed prefix to describe, and a check built from one
+                // would compute a window (or a last-group index) below zero.
+                // jsonl has always filtered this way; parquet now shares it.
+                let resume_check = (progress.done_units > 0)
+                    .then(|| Self::resume_check_for(progress))
+                    .flatten();
+                tasks.push(FileTask::from_meta(meta, progress.done_units, resume_check));
             }
             // done == size (+ same mtime): complete and unchanged → skip.
         }
@@ -158,6 +178,29 @@ impl FileCursor {
         Ok(tasks)
     }
 
+    /// The expectation a resumed read must satisfy, derived from what the
+    /// recorded progress actually holds. The two hashes are mutually exclusive
+    /// in practice — a stream has one cursor unit — so the record decides,
+    /// never the caller.
+    fn resume_check_for(progress: &FileProgress) -> Option<ResumeCheck> {
+        match (&progress.tail_hash, &progress.row_groups_hash) {
+            // A record stream records one, a row-group stream the other. Holding
+            // BOTH means the entry was written by two different readers, so
+            // neither value describes what this run will read: preferring either
+            // would silently verify the wrong thing.
+            (Some(_), Some(_)) => None,
+            (Some(hash), None) => Some(ResumeCheck::TailBytes {
+                window: progress.done_units.min(TAIL_WINDOW),
+                hash: hash.clone(),
+            }),
+            (None, Some(hash)) => Some(ResumeCheck::RowGroupPrefix {
+                groups: progress.done_units,
+                hash: hash.clone(),
+            }),
+            (None, None) => None,
+        }
+    }
+
     pub fn record(&mut self, path: &str, progress: FileProgress) {
         self.files.insert(path.to_owned(), progress);
     }
@@ -176,6 +219,25 @@ mod tests {
         }
     }
 
+    /// The retention rule, asserted so an accidental prune fails loudly instead
+    /// of silently duplicating rows: every path ever recorded is still present
+    /// after later rounds record disjoint sets.
+    #[test]
+    fn every_path_ever_recorded_is_retained() {
+        let mut cursor = FileCursor::default();
+        for round in 0..3 {
+            for i in 0..4 {
+                cursor.record(&format!("day-{round}/part-{i}.jsonl"), done(10, 10));
+            }
+        }
+        assert_eq!(
+            cursor.files.len(),
+            12,
+            "entries are retained for the life of the state — pruning one whose file \
+             reappears would re-read it from zero and duplicate under Append"
+        );
+    }
+
     fn done(done: u64, size: u64) -> FileProgress {
         FileProgress {
             done_units: done,
@@ -184,6 +246,7 @@ mod tests {
             mtime_ms: None,
             etag: None,
             tail_hash: None,
+            row_groups_hash: None,
         }
     }
 
@@ -204,7 +267,7 @@ mod tests {
                 etag: None,
                 size_units: 15,
                 read_path: None,
-                tail_check: None,
+                resume_check: None,
             }]
         );
 
@@ -224,6 +287,7 @@ mod tests {
                 mtime_ms: Some(1_000),
                 etag: None,
                 tail_hash: None,
+                row_groups_hash: None,
             },
         );
         // Same size, same mtime: skip.
@@ -260,6 +324,7 @@ mod tests {
                 mtime_ms: None,
                 etag: None,
                 tail_hash: None,
+                row_groups_hash: None,
             },
         );
         let err = cursor.plan(&[meta("a", 20)]).expect_err("mid-record");

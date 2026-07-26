@@ -361,12 +361,20 @@ fn run_container_once(
         if reading.memory_peak.is_some() || reading.cpu_usec.is_some() {
             last = reading;
         }
-        let running = Command::new(engine)
+        // A failed inspect is not evidence the container stopped — it is
+        // evidence we could not ask. Treating the two alike ends the wait early
+        // and reports a job that may still be running as finished.
+        match Command::new(engine)
             .args(["inspect", "--format", "{{.State.Running}}", &name])
             .output()
-            .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "true");
-        if !running {
-            break;
+        {
+            Ok(o) if String::from_utf8_lossy(&o.stdout).trim() == "true" => {}
+            Ok(_) => break,
+            Err(e) => {
+                return Err(BenchError(format!(
+                    "polling container `{name}`: cannot run `{engine} inspect`: {e}"
+                )));
+            }
         }
         std::thread::sleep(Duration::from_millis(250));
     }

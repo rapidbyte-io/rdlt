@@ -16,6 +16,11 @@
 //! on-disk serialization is a compatibility contract that changes only through an
 //! explicit, versioned format migration, never incidentally.
 
+// Warn, not deny: an undocumented public item is a gap to fill, not a
+// reason to fail a contributor's build. `make docs` is where the
+// published surface is held to -D warnings.
+#![warn(missing_docs)]
+
 pub mod commit;
 pub mod cursor;
 pub mod error;

@@ -14,7 +14,7 @@ use rdlt_connector::{RecordsOut, SourceError};
 
 use super::SLAB_BYTES;
 use crate::location::{ByteReader, Location};
-use crate::source::cursor::{FileCursor, FileProgress, FileTask, TAIL_WINDOW};
+use crate::source::cursor::{FileCursor, FileProgress, FileTask, ResumeCheck, TAIL_WINDOW};
 
 /// Fills a caller-provided buffer as far as possible, returning the byte count
 /// (0 = end of stream). One abstraction over the async object-stream reader and
@@ -152,7 +152,19 @@ pub(crate) async fn read_task(
     // Resume-offset integrity: re-read the recorded tail window and
     // compare BEFORE trusting the offset — a rewritten prefix fails loudly;
     // a genuine append verifies and continues from the same open reader.
-    let verify = task.tail_check.as_ref().filter(|_| task.start > 0);
+    // A check of the wrong kind is REFUSED, not ignored: silently skipping it
+    // would disarm verification for a resume whose recorded expectation this
+    // reader cannot evaluate.
+    let verify = match task.resume_check.as_ref() {
+        Some(ResumeCheck::TailBytes { window, hash }) if task.start > 0 => Some((window, hash)),
+        Some(ResumeCheck::TailBytes { .. }) | None => None,
+        Some(ResumeCheck::RowGroupPrefix { .. }) => {
+            return Err(SourceError::fatal(format!(
+                "file `{}` recorded a row-group integrity value but is being read as a record                  stream; refusing to resume without a check this reader can evaluate —                  clear it from the pipeline state",
+                task.path
+            )));
+        }
+    };
     let open_at = match verify {
         Some((window, _)) => task.start - window,
         None => task.start,
@@ -218,6 +230,7 @@ pub(crate) async fn read_task(
                 mtime_ms: task.mtime_ms,
                 etag: task.etag.clone(),
                 tail_hash: Some(blake3::hash(&tail).to_hex().to_string()),
+                row_groups_hash: None,
             },
         );
         if out.checkpoint(cursor.encode()).await.is_err() {
@@ -235,6 +248,7 @@ pub(crate) async fn read_task(
             mtime_ms: task.mtime_ms,
             etag: task.etag.clone(),
             tail_hash: Some(blake3::hash(&tail).to_hex().to_string()),
+            row_groups_hash: None,
         },
     );
     if out.checkpoint(cursor.encode()).await.is_err() {
@@ -304,6 +318,7 @@ pub(crate) async fn read_task_whole(
             mtime_ms: task.mtime_ms,
             etag: task.etag.clone(),
             tail_hash: None, // whole-file units never tail-resume
+            row_groups_hash: None,
         },
     );
     if out.checkpoint(cursor.encode()).await.is_err() {

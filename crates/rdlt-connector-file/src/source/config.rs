@@ -37,15 +37,24 @@ pub struct FileStream {
     /// Explicit file path or glob pattern. An explicitly named missing file is an
     /// error; an empty glob is an empty stream.
     pub path: String,
-    /// Record-stream options (jsonl only; parquet streams are structured and carry
-    /// no per-row identity, so they take no primary key).
+    /// Record-stream identity columns. Honoured for jsonl and csv; declaring it
+    /// on a parquet stream is REFUSED at configuration time (parquet streams are
+    /// structured and carry no per-row identity), so it is never silently
+    /// dropped.
     #[serde(default)]
     pub primary_key: Option<Vec<String>>,
+    /// Per-column type pins. Applied to the record formats — csv reads them
+    /// directly, jsonl carries them into the shredder. They have no effect on a
+    /// parquet stream, whose types come from the file's own schema, and that
+    /// case is currently ACCEPTED AND IGNORED rather than refused.
     #[serde(default)]
     pub type_hints: BTreeMap<String, HintType>,
     /// JSONL only: validate each line before pushing so malformed input fails naming
     /// the file + byte offset (default true; disable for maximum throughput — errors
     /// then surface from the engine with stream-level context only).
+    ///
+    /// On csv and parquet streams this field is ACCEPTED AND IGNORED — it is not
+    /// refused, so setting it there does nothing and says nothing.
     #[serde(default = "default_validate")]
     pub validate: bool,
 }

@@ -251,11 +251,27 @@ fn run_once_subprocess(
 
     let wall_ms = measured_wall_ms(cell, &output, clock_ms)?;
 
-    let report = report_path
-        .exists()
-        .then(|| std::fs::read_to_string(&report_path).ok())
-        .flatten()
-        .and_then(|raw| serde_json::from_str(&raw).ok());
+    // "Absent" must mean genuinely absent. Collapsing a corrupt or unreadable
+    // report into `None` reports the cell as having produced no report at all,
+    // which reads as a harness gap rather than the real failure.
+    let report = if report_path.exists() {
+        let raw = std::fs::read_to_string(&report_path).map_err(|e| {
+            BenchError(format!(
+                "cell `{}`: reading the run report at {}: {e}",
+                cell.id,
+                report_path.display()
+            ))
+        })?;
+        Some(serde_json::from_str(&raw).map_err(|e| {
+            BenchError(format!(
+                "cell `{}`: parsing the run report at {}: {e}",
+                cell.id,
+                report_path.display()
+            ))
+        })?)
+    } else {
+        None
+    };
     Ok(Sample {
         wall_ms,
         detail: RunDetail {

@@ -175,3 +175,54 @@ async fn open_does_not_destroy_another_pipelines_staging_or_state() {
     assert_eq!(state1.expect("p1 state").pipeline, p1);
     assert_eq!(state2.expect("p2 state").pipeline, p2);
 }
+
+/// The commit contract has no recency clause: re-committing the same
+/// `(load_id, commit_seq)` returns the prior receipt without re-publishing,
+/// however many loads have run since.
+///
+/// Bounding the receipt log breaks exactly this. Once the redelivered load's
+/// receipt is gone, the Replace guard concludes the load never committed and
+/// truncates — destroying what LATER loads published — and Append re-publishes
+/// its parts. Both are silent.
+#[tokio::test]
+async fn a_redelivered_commit_is_recognised_after_later_loads_have_run() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let dest = ParquetDir::open(dir.path()).expect("open dest");
+    let pipeline = PipelineId::new("p1");
+    let table = TableName::new("events");
+
+    let commit = |load: LoadId, rows: Vec<i64>| {
+        let dest = dest.clone();
+        let pipeline = pipeline.clone();
+        let table = table.clone();
+        async move {
+            let mut s = dest
+                .open(OpenCtx::new(pipeline.clone(), load.clone()))
+                .await
+                .expect("open");
+            s.ensure_table(&schema_for("events"), &WriteMode::Replace)
+                .await
+                .expect("ensure");
+            s.write(&table, batch_of(&rows)).await.expect("write");
+            s.commit(meta_for(&pipeline, &load, 1))
+                .await
+                .expect("commit")
+        }
+    };
+
+    commit(LoadId::new("load-a"), vec![1, 2, 3]).await;
+    commit(LoadId::new("load-b"), vec![4]).await;
+    commit(LoadId::new("load-c"), vec![5]).await;
+    let settled = dest.count_rows("events").expect("count");
+    assert_eq!(settled, 1, "each Replace load leaves only its own rows");
+
+    // load-a is redelivered — a restored workdir replaying its WAL span, a second
+    // engine sharing the output, or an embedder driving the session directly.
+    commit(LoadId::new("load-a"), vec![1, 2, 3]).await;
+    assert_eq!(
+        dest.count_rows("events").expect("count"),
+        settled,
+        "a redelivered commit must publish nothing and truncate nothing — \
+         load-c's data must survive"
+    );
+}

@@ -26,7 +26,10 @@ impl Default for IdentRules {
 }
 
 /// Suffix length: `_` + 8 hex chars of the source-name hash.
-const SUFFIX_LEN: usize = 9;
+/// `_` + [`HASH_LEN`] hex characters — the suffix a truncated identifier carries.
+const SUFFIX_LEN: usize = HASH_LEN + 1;
+/// Hex characters of source hash appended to a truncated identifier.
+const HASH_LEN: usize = 8;
 
 /// Normalize a source name into a destination-safe identifier: lowercase,
 /// `[a-z0-9_]` charset, no leading digit, truncated (with a disambiguating hash
@@ -48,9 +51,19 @@ pub fn normalize_ident(source: &str, rules: IdentRules) -> String {
     }
     if out.len() > rules.max_len {
         // Truncation can merge distinct names; the hash of the *source* keeps them apart.
-        out.truncate(rules.max_len.saturating_sub(SUFFIX_LEN));
+        //
+        // The suffix is SIZED TO THE BOUND, not fixed: with a `max_len` below the
+        // full suffix, a fixed one produces a name LONGER than the bound the
+        // function documents. `max_len` is a public field, so that is reachable
+        // by any embedder — the hash simply gets shorter, and collision
+        // resistance degrades gracefully instead of the contract breaking.
+        // Sliced locally rather than asking `ident_hash` for a shorter digest:
+        // that helper clamps to 4..64 for its own callers and must keep doing
+        // so, and the clamp is exactly what would push this past the bound.
+        let hash_len = HASH_LEN.min(rules.max_len.saturating_sub(1));
+        out.truncate(rules.max_len.saturating_sub(hash_len + 1));
         out.push('_');
-        out.push_str(&short_hash(source));
+        out.push_str(&short_hash(source)[..hash_len]);
     }
     out
 }
@@ -75,6 +88,7 @@ pub struct UniqueNamer {
 const RESERVED_OWNER: &str = "\0reserved";
 
 impl UniqueNamer {
+    /// A namer with nothing claimed yet, normalizing under these rules.
     pub fn new(rules: IdentRules) -> Self {
         Self {
             rules,
@@ -91,6 +105,12 @@ impl UniqueNamer {
             .insert(normalize_ident(name, self.rules), RESERVED_OWNER.to_owned());
     }
 
+    /// The destination name for a source name, normalized and made unique.
+    ///
+    /// Stable and append-only: the same sequence of source names always yields
+    /// the same destination names, which is what lets a schema be rebuilt
+    /// identically on a later run. Two distinct source names that normalize to
+    /// the same base never merge — the loser gets a hash suffix.
     pub fn name_for(&mut self, source: &str) -> String {
         let base = normalize_ident(source, self.rules);
         match self.taken.get(&base) {
@@ -182,5 +202,28 @@ mod tests {
         let b = normalize_ident(long_b, rules);
         assert!(a.len() <= 20 && b.len() <= 20);
         assert_ne!(a, b);
+    }
+
+    /// The documented bound is the bound. `max_len` is a public field, so an
+    /// embedder can set one smaller than the hash suffix — where a fixed-width
+    /// suffix produced a name LONGER than the limit it was enforcing.
+    #[test]
+    fn a_normalized_identifier_never_exceeds_its_stated_bound() {
+        for max_len in 1..=24usize {
+            let rules = IdentRules { max_len };
+            for source in [
+                "a_very_long_source_column_name_indeed",
+                "Ünïcødé Column!! With Spaces",
+                "9starts_with_a_digit_and_is_long",
+            ] {
+                let out = normalize_ident(source, rules);
+                assert!(
+                    out.len() <= max_len,
+                    "`{source}` at max_len={max_len} produced `{out}` ({} chars)",
+                    out.len()
+                );
+                assert!(!out.is_empty(), "a name is never empty");
+            }
+        }
     }
 }

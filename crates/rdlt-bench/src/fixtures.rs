@@ -335,7 +335,20 @@ fn start_container(
     let name = format!("rdlt-bench-{}", def.id);
     let _ = Command::new(engine).args(["rm", "-f", &name]).output();
     let status = Command::new(engine)
-        .args(["run", "-d", "--name", &name, "-p", &port_map])
+        // `--label rdlt-test=1`: the workspace reclaim convention (see
+        // rdlt-testkit::containers). A bench run killed mid-cell never reaches
+        // its guard's Drop, and an unlabelled leftover is invisible to
+        // `make reclaim`.
+        .args([
+            "run",
+            "-d",
+            "--label",
+            "rdlt-test=1",
+            "--name",
+            &name,
+            "-p",
+            &port_map,
+        ])
         .args(pre_image_args.iter().copied())
         .arg(image)
         .args(&def.container_args)

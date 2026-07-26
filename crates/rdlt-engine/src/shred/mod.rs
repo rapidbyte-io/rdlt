@@ -18,7 +18,10 @@ pub(crate) mod view;
 
 use std::collections::BTreeSet;
 
-use rdlt_core::{LoadId, PolicyAction, RdltError, RowId, SchemaChange, SchemaPolicy, WriteMode};
+use rdlt_core::{
+    LoadId, PolicyAction, RdltError, RowId, SchemaChange, SchemaPolicy, TableName, TableSchema,
+    WriteMode,
+};
 
 use crate::load::LoadItem;
 use crate::schema::contracts::{change_column, value_fits, violation_for};
@@ -106,6 +109,12 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
         })
         .collect();
 
+    // Captured BEFORE any table is applied: everything this drain establishes for
+    // a stream that has none yet is its initial shape, however many tables that
+    // needs. A table appearing after that is a change TO the shape, not the shape
+    // itself.
+    let bootstrapping = registry.is_empty();
+
     for d in &mut drains {
         // Cascade: drop rows whose parent or root was discarded upstream. A
         // cascade-dropped row's OWN id joins the set, so its descendants at any
@@ -153,11 +162,19 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
         let mut discard: Vec<(SchemaChange, PolicyAction)> = Vec::new();
         let mut kept: Vec<SchemaChange> = Vec::new();
         for change in changes {
-            // Table creation is the first version, not evolution — always allowed.
             let action = if matches!(change, SchemaChange::CreateTable { .. }) {
-                PolicyAction::Evolve
+                // Establishing the stream's initial shape is not evolution,
+                // however many tables that shape needs. But a table that appears
+                // LATER is drift — a new nested collection creates one, and
+                // treating it as a bootstrap would make a frozen contract depend
+                // on which shape the first batch happened to have.
+                if bootstrapping {
+                    PolicyAction::Evolve
+                } else {
+                    inherited_action(policy, registry, &observed, None)
+                }
             } else {
-                policy.action_for(&table, change_column(&change))
+                inherited_action(policy, registry, &observed, change_column(&change))
             };
             match action {
                 PolicyAction::Evolve => kept.push(change),
@@ -167,6 +184,27 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
                     return Err(RdltError::Schema(violation_for(&table, &change)));
                 }
                 PolicyAction::DiscardRow | PolicyAction::DiscardValue => {
+                    if matches!(change, SchemaChange::CreateTable { .. }) {
+                        // A table that does not exist yet has no column to null
+                        // and no prior shape to roll back to, so `enforce_discards`
+                        // has nothing to act on and would skip it — silently
+                        // creating the very table the policy refused. Discarding
+                        // a table creation means discarding its rows, counted;
+                        // their ids cascade so descendants go with them.
+                        let dropped = d.rows.len() as u64;
+                        for row in d.rows.iter() {
+                            discarded_ids.insert(row.id);
+                        }
+                        d.rows.clear();
+                        if dropped > 0 {
+                            items.push(LoadItem::Discarded {
+                                table: table.clone(),
+                                rows: dropped,
+                                values: 0,
+                            });
+                        }
+                        continue;
+                    }
                     discard.push((change, action));
                 }
             }
@@ -202,14 +240,26 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
                 .get(&d.buffer.table)
                 .expect("schema registered before building")
                 .clone();
-            let batch = build::build_batch(
+            let (batch, misfits) = build::build_batch(
                 &schema,
                 d.buffer.source_to_normalized(),
                 d.rows.as_slice(),
                 load_id,
             )
-            .map_err(|e| RdltError::config(format!("arrow build: {e}")))?;
+            .map_err(|e| RdltError::internal(format!("arrow build: {e}")))?;
             d.rows.clear();
+            // A value that cannot be represented under its column's type is
+            // nulled by the builder. Declared columns never reach the policy
+            // layer — nothing observes them — so this is the only place such a
+            // loss can be counted, and counting it is what keeps "counted,
+            // never silent" true for them.
+            if misfits > 0 {
+                items.push(LoadItem::Discarded {
+                    table: d.buffer.table.clone(),
+                    rows: 0,
+                    values: misfits,
+                });
+            }
             items.push(LoadItem::Batch {
                 table: d.buffer.table.clone(),
                 batch,
@@ -217,6 +267,63 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
         }
     }
     Ok(items)
+}
+
+/// The policy action governing a table, resolved through its ANCESTRY.
+///
+/// A child table has no configuration of its own unless the operator wrote one:
+/// its existence and shape come from the parent's data, so the parent's contract
+/// is the only one that means anything about it. Freezing `t` has to freeze what
+/// `t`'s own records create, or the contract is only as strong as the shape of
+/// the first batch.
+///
+/// The NEAREST explicit entry wins, walking from the table upward, so an explicit
+/// entry on a child still overrides its parent — inheritance fills a gap, it does
+/// not override a decision. Only when no ancestor has an entry does the default
+/// apply.
+fn inherited_action(
+    policy: &SchemaPolicy,
+    registry: &SchemaRegistry,
+    observed: &TableSchema,
+    column: Option<&str>,
+) -> PolicyAction {
+    if let Some(action) = explicit_action(policy, &observed.table, column) {
+        return action;
+    }
+    // The observed schema carries only its immediate parent; the registry holds
+    // the ancestors, so the chain is walked through it. Bounded by the nesting
+    // depth the shredder produced.
+    let mut next = observed.parent.as_ref().map(|link| link.parent.clone());
+    while let Some(ancestor) = next {
+        if let Some(action) = explicit_action(policy, &ancestor, None) {
+            return action;
+        }
+        next = registry
+            .get(&ancestor)
+            .and_then(|schema| schema.parent.as_ref())
+            .map(|link| link.parent.clone());
+    }
+    policy.default
+}
+
+/// An action the operator wrote for this exact table or column, if any.
+/// Distinct from `SchemaPolicy::action_for`, which cannot tell an explicit entry
+/// from the default it falls back to — the difference inheritance turns on.
+fn explicit_action(
+    policy: &SchemaPolicy,
+    table: &TableName,
+    column: Option<&str>,
+) -> Option<PolicyAction> {
+    if let Some(column) = column {
+        let key = rdlt_core::ColumnRef {
+            table: table.clone(),
+            column: column.to_owned(),
+        };
+        if let Some(action) = policy.per_column.get(&key) {
+            return Some(*action);
+        }
+    }
+    policy.per_table.get(table).copied()
 }
 
 /// Apply Discard* actions for one table: roll offending columns back to their

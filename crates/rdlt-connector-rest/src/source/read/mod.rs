@@ -1,8 +1,8 @@
 //! The per-stream read loop: dispatches a stream to a parentless sequence or
 //! a parent-child fan-out, tracks the incremental cursor, and checkpoints.
-//! The request sequence itself lives in [`driver`]; the fan-out in [`fanout`];
-//! placeholder resolution in [`resolve`]; the paginator families in
-//! [`paginate`]; record extraction in [`extract`].
+//! The request sequence itself lives in `driver`; the fan-out in `fanout`;
+//! placeholder resolution in `resolve`; the paginator families in
+//! `paginate`; record extraction in `extract` (all crate-private).
 
 pub(crate) mod driver;
 pub(crate) mod extract;
