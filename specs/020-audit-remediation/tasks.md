@@ -297,18 +297,18 @@ Four real dependencies override the P1/P2/P3 reading:
 
 **CI cannot run — every CI-only verification lands recorded as unperformed.**
 
-- [ ] T140 [P] [US9] Correct the two wrong package descriptions — `crates/rdlt-cli/Cargo.toml:3` (says TOML; the binary parses YAML at `main.rs:135`) and `crates/rdlt-connector-file/Cargo.toml` (says "file source"; it has been source+dest with CSV and S3 since 015) — plus the one incomplete and one inconsistent description research R10.3 names
-- [ ] T141 [US9] Add `keywords`, `categories` and `documentation` to all 12 publishable `crates/*/Cargo.toml`, and a per-crate `readme` — **not** in `[workspace.package]`, because an inherited `readme` resolves relative to the workspace root, not the crate
-- [ ] T142 [US9] Verify per-crate license inclusion with `cargo package --list -p <crate>` for each publishable crate; a root `LICENSE` satisfies the repository and GitHub detection but **not** the `.crate` tarballs. Add what is missing
-- [ ] T143 [US9] Add `#![warn(missing_docs)]` to `crates/rdlt-core/src/lib.rs`, `crates/rdlt-connector/src/lib.rs` and `crates/rdlt/src/lib.rs` — warn, not deny; per-crate attribute, not `[workspace.lints]` — and document the public items it flags. Record the real count, which only appears when the lint first runs
-- [ ] T144 [US9] Add a `docs` verb to the Makefile running `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features`, list it in the header block, wire it into `check` after `lint`, and fix the broken intra-doc links it surfaces
+- [X] T140 [P] [US9] Correct the two wrong package descriptions — `crates/rdlt-cli/Cargo.toml:3` (says TOML; the binary parses YAML at `main.rs:135`) and `crates/rdlt-connector-file/Cargo.toml` (says "file source"; it has been source+dest with CSV and S3 since 015) — plus the one incomplete and one inconsistent description research R10.3 names
+- [X] T141 [US9] Add `keywords`, `categories` and `documentation` to all 12 publishable `crates/*/Cargo.toml`, and a per-crate `readme` — **not** in `[workspace.package]`, because an inherited `readme` resolves relative to the workspace root, not the crate
+- [X] T142 [US9] Verify per-crate license inclusion with `cargo package --list -p <crate>` for each publishable crate; a root `LICENSE` satisfies the repository and GitHub detection but **not** the `.crate` tarballs. Add what is missing
+- [X] T143 [US9] Add `#![warn(missing_docs)]` to `crates/rdlt-core/src/lib.rs`, `crates/rdlt-connector/src/lib.rs` and `crates/rdlt/src/lib.rs` — warn, not deny; per-crate attribute, not `[workspace.lints]` — and document the public items it flags. Record the real count, which only appears when the lint first runs
+- [X] T144 [US9] Add a `docs` verb to the Makefile running `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features`, list it in the header block, wire it into `check` after `lint`, and fix the broken intra-doc links it surfaces
 - [ ] T145 [US9] Verify each publishable crate builds in its consumer-selectable feature configurations (`crates/rdlt/Cargo.toml`, `crates/rdlt-connector/Cargo.toml`, `crates/rdlt-testkit/Cargo.toml`) (the facade's narrowed connector features, the SPI's `schema`, testkit's `containers`), locally rather than as a CI job; record the method and the result
-- [ ] T146 [P] [US9] Change the CI semver job from `-p rdlt-core -p rdlt-connector` to `--workspace` in `.github/workflows/ci.yml:100-108`. **Record the verification as unperformed** — the job cannot execute (AR7)
-- [ ] T147 [P] [US9] Regenerate `fuzz/Cargo.lock` (a standalone workspace) so it stops recording `parquet` as an rdlt-engine dependency, stale since 019 US2
-- [ ] T148 [P] [US9] Replace the no-op pattern in `tools/interop/.gitignore` with `.venv/` — a slash-containing pattern in a nested ignore file is anchored to that directory and matches nothing
-- [ ] T149 [P] [US9] Honour `CARGO_TARGET_DIR` at both hardcoded sites — `crates/rdlt-bench/src/paths.rs:38` and `benches/check-cold-start.sh:18`
-- [ ] T150 [P] [US9] Bound the readiness wait in `benches/bench-setup.sh:55` with a timeout and a typed failure message, and remove the hardcoded mise kubectl fallback
-- [ ] T151 [P] [US9] Document the `hyperfine` and `python3` prerequisites of `make check` in the Makefile header rather than softening the hard failure
+- [X] T146 [P] [US9] Change the CI semver job from `-p rdlt-core -p rdlt-connector` to `--workspace` in `.github/workflows/ci.yml:100-108`. **Record the verification as unperformed** — the job cannot execute (AR7)
+- [X] T147 [P] [US9] Regenerate `fuzz/Cargo.lock` (a standalone workspace) so it stops recording `parquet` as an rdlt-engine dependency, stale since 019 US2
+- [X] T148 [P] [US9] Replace the no-op pattern in `tools/interop/.gitignore` with `.venv/` — a slash-containing pattern in a nested ignore file is anchored to that directory and matches nothing
+- [X] T149 [P] [US9] Honour `CARGO_TARGET_DIR` at both hardcoded sites — `crates/rdlt-bench/src/paths.rs:38` and `benches/check-cold-start.sh:18`
+- [X] T150 [P] [US9] Bound the readiness wait in `benches/bench-setup.sh:55` with a timeout and a typed failure message, and remove the hardcoded mise kubectl fallback
+- [X] T151 [P] [US9] Document the `hyperfine` and `python3` prerequisites of `make check` in the Makefile header rather than softening the hard failure
 - [ ] T152 [US9] Run the full local gate plus `make docs`; record US9's close-out row, listing every item whose verification is CI-blocked and therefore unperformed
 
 ---
