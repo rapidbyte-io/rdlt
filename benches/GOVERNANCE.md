@@ -142,3 +142,25 @@ Persisted-format changes did occur and are versioned in their own right, not
 through semver: the WAL segment format 1 → 2 (exact-match gate, refuses both
 directions) and the bench artifact 2 → 3 (refuses v2 with its reason). Neither
 is public API.
+
+## The 0.2 → 0.3 window — standing as of feature 020
+
+The window recorded by feature 014 is still the next publish, and it stayed
+**closed** through 019: `cargo semver-checks` reported "no semver update
+required" on both seam crates, 196 checks passing each, and the one addition
+(`ParquetOptions` / `ParquetCompression` in `rdlt-connector::output`) is
+additive.
+
+**Feature 020 opens it, deliberately and once.** US5 removes
+`StateDoc.schema_hashes` — a public field of a public type in the
+semver-sacred `rdlt-core` — because it is written at every commit, read
+nowhere, and being a digest it can only ever prove inequality, which is the
+false-positive trap the cross-run schema contract has to avoid. Deleting it is
+what closes the contract; keeping it beside its replacement would violate the
+greenfield rule.
+
+So the bump at publish is no longer merely the standing publish-time major
+from 014/015: it is **required**, and 020's close-out records it with the
+local `cargo semver-checks` output that flags it. Nothing is published yet, so
+no consumer is broken by the break — which is precisely why taking it now is
+cheaper than taking it later.

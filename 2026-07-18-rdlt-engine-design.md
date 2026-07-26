@@ -292,7 +292,17 @@ semantics, not a bug.
 Schemas are content-hashed; every `SchemaDelta` carries `from_hash → to_hash` (auditable,
 replayable). Contracts per table/column/type: `Evolve | Freeze | DiscardRow | DiscardValue`;
 `Freeze` turns a would-be delta into a typed error before any row is written; discards are
-counted, never silent.
+counted, never silent. A contract governs a table and every table its data creates —
+freezing a stream freezes the child tables its nested collections produce, unless the
+operator writes a contract for one explicitly.
+
+**These contracts are WITHIN-RUN.** The schema registry a policy resolves against is built
+from what the current run observes, so drift is detected against the shape this run has
+established, not against what a previous run wrote. Two consequences, both deliberate:
+a change appearing between runs is applied as additive DDL by the destinations rather than
+refused, and a run whose data legitimately covers fewer columns than the last is never
+reported as drift. Cross-run detection is a separate, additive capability — a REPORT of
+divergence rather than a gate on it — and is not built here.
 
 **Row-id hash decision (feature 003, FR-008 — recorded 2026-07-20):** the
 incumbent blake3 stays. Measured on the iai instruction benches: keyed identity

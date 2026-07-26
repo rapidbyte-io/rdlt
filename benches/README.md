@@ -36,7 +36,7 @@ fails the cell rather than recording a bad number.
 | `competitors/airbyte/` | Driver competitor: `setup.py` + `driver.py` over an abctl kind cluster (its README carries the fairness policy and prerequisites) |
 | `bench-setup.sh` | The `TARGET=setup` implementation (dlt image + Airbyte connections over throwaway seeded fixtures) |
 | `bars.toml` | Enforcement bars — ≤ 1 per cell, each below a recorded session floor, each citing a RESULTS.md policy entry; `rdlt-bench gate` enforces them |
-| `results/` | Committed JSON artifacts (format_version 2), one per cell (`raw/` is gitignored) |
+| `results/` | Committed JSON artifacts (format_version 3), one per cell (`raw/` is gitignored) |
 | `history.jsonl` | Append-only per-session medians; the Trends section renders from it |
 | `RESULTS.md` | Policy log, Caveats, Milestones (narrative) + GENERATED matrix/trends between `rdlt-bench` markers |
 | `GOVERNANCE.md` | Coverage/semver/exclusion records |

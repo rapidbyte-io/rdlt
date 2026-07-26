@@ -1,40 +1,76 @@
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
+`specs/020-audit-remediation/plan.md` (feature: audit remediation —
+PLANNED. Executes NEXT_STEPS.md (repo root, audited 2026-07-26 @
+634222e: 11 analysis lenses, 175 findings, 47 defect claims put through
+adversarial verification — 29 CONFIRMED, 18 REFUTED). The 18
+refutations in its Appendix A are BINDING NON-GOALS; implementing one
+is a defect in this feature. 13 increments delivering 11 stories, in
+value-per-risk order: (1) record+LICENSE (doc-only; the repo declares
+Apache-2.0 and ships no license text); (2) shred value fidelity —
+u64>i64::MAX silently NULLed, hint pins lost to objects, decimal
+precision unchecked, misfits uncounted; (3-5) file family — ownership/
+truncation after a format or partition_by change, grown-parquet stale
+row-group resume, one classification rulebook, retention; (6) REST —
+NO request timeout anywhere (unbounded hang), POST pagination no-op;
+(7) schema contracts — Freeze bypassed at EVERY run boundary,
+schema_hashes write-only; (8) iceberg nested types (drift compare is
+ID-sensitive; CONFIRMED guaranteed, not plausible); (9) 16 sharp
+edges; (10) the gate — mutants.out predates features 006-019 entirely,
+fresh full run (cache dead across 017 renames); (11) publish readiness
+for the recorded 0.2->0.3 window; (12) fired-but-undisposed deferrals
+D17/D18/D19 + lowering parity; (13) the measurement-first perf queue.
+CI REPAIR IS OUT OF SCOPE (E1) — root-caused to GitHub org billing
+("recent account payments have failed"), every job fails in 3-5s with
+zero steps; the LOCAL gate is the gate of record and CI-only
+verifications land recorded as UNPERFORMED, never green, never
+blocking. Publishing is out of scope (E2); readiness is not. PHASE 0
+OVERTURNED THREE DESIGNS — read research.md R0 before touching any of
+them: the cross-run baseline would have fired Freeze on its OWN
+established columns (fix: two diffs per drain, emit vs governed);
+the misfit counter would have PANICKED on an ordinary nullable list
+column (fix: positional count, never a difference of totals); the
+parquet resume hash would have poisoned itself on first upgrade (fix:
+build the descriptor unconditionally, NO CURSOR_FORMAT_VERSION bump —
+etag/tail_hash set the additive precedent). Phase 0 also CORRECTED THE
+AUDIT twice: the type-hint defect creates no child table (it is
+verbatim-JSON -> NULL, worse and in the other direction), and the
+iceberg divergence is guaranteed. StateDoc 1->2 (schemas REPLACES
+unread schema_hashes) is BREAKING on semver-sacred rdlt-core and makes
+the standing 0.3 bump REQUIRED — nothing is published, so no consumer
+breaks. One dependency edge: httpdate, already in Cargo.lock via
+hyper, zero new tree entries. Contract: contracts/audit-remediation.md
+AR1-AR8. Phase 0 + adversarial review: research.md).
+Previous feature 019 for reference:
 `specs/019-performance-improvements/plan.md` (feature: performance
-improvements — PLANNED, not yet implemented. Nine independently
-mergeable increments from PERF_ANALYSIS.md (repo root, measured
-2026-07-25 @ 270c903). Greenfield (D1): the better option REPLACES the
-old one, superseded code DELETED same change. Baseline of record in
-spec.md; dlt re-measured same machine. THE BIG ONE: the dedup cell
-moves 3M rows not 1M (source discovers all tables when `tables` is
-absent) — the committed artifact already says so (rdlt.rows=3000000
-beside verify.actual_rows=1000000); corrected = 14.7s -> 5.07s, a 2.6x
-WIN not a 0.85x loss. Increments: (1) bench integrity, `tables: []`
-redefined to mean NONE, harness compares delivered vs declared stream
-set from RunReport.tables; (2) WAL segments parquet -> arrow IPC FILE
-(zero new deps, arrow-ipc already in lock; parquet DELETED from
-rdlt-engine; WAL_FORMAT_VERSION 1->2 exact-match gate; measured -18/
--21% wall, -28% CPU); (3) [profile.release] lto=fat+cgu1 (no
-profile.bench pin — iai baselines shift once and are re-recorded),
-[profile.dist] strip only, NO panic=abort, NO allocator crate,
-mallopt M_TRIM_THRESHOLD is already glibc's default; (4) COPY encoder
-— ToSql::to_sql on borrowed ColumnView, framing+64KiB chunks ours,
-uuid crate REJECTED (not in profile, narrows accepted input), numeric
-stays hand-rolled (no numeric_to_sql exists; rust_decimal loses
-Decimal128 precision); (5) Replace/Append COPY straight into target
-in one unit tx, no stage table for non-merge; (6) shred — FR-029
-CORRECTED (length-prefix makes streaming hash impossible; only the
-allocation is recoverable), build_batch single-pass scatter, smallvec
-measurement-gated; (7) ParquetOptions in the SPI (Secret precedent),
-snappy + LOWERED dictionary_page_size_limit defaults, pipeline_spec.rs
-mirror enum must change too; (9) parallelism — MEASURE FIRST (FR-039;
-the 3.5x may be the stock postgres:16 fixture), LoadSession does NOT
-change so the 0.2->0.3 semver window STAYS CLOSED, __rdlt_arrival
-BIGSERIAL must become an engine-assigned ordinal, SC-005 re-targeted
-to the MERGE cell because increment 5 removes the staging that
-increment 9's lever needs. Contract: contracts/performance-improvements.md
-PI1-PI8. Phase 0 + adversarial review: research.md).
+improvements — COMPLETE, merged @ 634222e, executing PERF_ANALYSIS.md
+as nine increments. RECORDED 3-WAY SESSION 2026-07-25 on the merged
+tree, all four bars PASS: pg-to-pg-1m 778.8 ms 13.2x vs dlt (bar >=4x),
+pg-to-s3parquet-1m 999.4 ms 1.7x (deliberately UNBARRED — one session
+on a newly-comparable cell is not a basis for a bar), s3jsonl-to-pg-200k
+665.2 ms 95.0x (>=40x), s3jsonl-to-s3parquet-200k 914.1 ms 63.6x
+(>=45x), pg-to-pg-dedup-1m 4.82 s 2.6x (>=2x, new bar). NO LOSSES AND NO
+PARITIES REMAIN. The honest misses, recorded not buried: US2 wall
+-14.3% vs the >=15% floor and RSS -7.5% vs >=8% (attributed to the
+parquet destination's whole-part buffering, which US7 never
+re-measured); US6 cell-CPU -4.9% vs >=10%; T047's context-switch target
+4.0x vs 10x. US9 was RE-SCOPED ON EVIDENCE: T089-T095 NOT built —
+single-pipeline throughput reached 1.19M rows/s (3.3x the rate the
+3.5x target was derived from), 8 concurrent pipelines scale 8.43x, and
+the story's lever addressed only 22.2% of the merge cell, Amdahl-bounded
+at 1.29x against SC-005's required 1.5x. So the 0.2->0.3 semver window
+STAYED CLOSED in 019 (feature 020 US5 reopens it). Persisted-format
+bumps: WAL v1->2 (arrow IPC file segments, parquet DELETED from
+rdlt-engine, exact-match refusal both ways) and bench artifact v2->3.
+[profile.release] fat LTO + cgu1 (-13.2% CPU, binary -16%); [profile.dist]
+strip only, NO panic=abort, NO allocator crate. COPY encoder rewritten
+on ToSql::to_sql over a borrowed ColumnView (-40.3% instructions);
+full-refresh publishes COPY straight into the target in one unit tx.
+Snappy is now the default parquet compression. TWO ALLOCATION REMOVALS
+MEASURED WORSE (D-13, D-21) — treat any counting-argument optimization
+as guilty until measured. Contract: contracts/performance-improvements.md
+PI1-PI8. Outcomes and every deviation: close-out.md).
 Previous feature 018 for reference:
 `specs/018-bench-refinement/plan.md` (feature: benchmark refinement —
 COMPLETE. The benchmark is ONE e2e five-cell THREE-WAY matrix
@@ -53,9 +89,14 @@ setup.py+driver.py over abctl kind on rootless podman; pods reach host
 fixtures at 169.254.1.2; ingress-nginx MUST stay scaled to 0 and node
 pids-limit raised — spike/01; API via supervised port-forward :8600).
 Recorded sessions 2026-07-25: 2-way then 3-way 15/15 arms — rdlt
-1.95/1.62/1.15/0.99/14.60 s; vs dlt 5.3x / 1.0x PARITY / 55.3x /
-60.1x / 0.9x LOSS (dedup merge path = optimization target); Airbyte
-~45-60 s job wall, floor-dominated (Caveats). bars.toml: 3 bars vs
+1.95/1.62/1.15/0.99/14.60 s; vs dlt 5.3x / 1.0x / 55.3x / 60.1x / 0.9x;
+Airbyte ~45-60 s job wall, floor-dominated (Caveats). **THESE 018
+FIGURES ARE SUPERSEDED BY 019 — see the 019 block above for the current
+standing.** The "0.9x LOSS on the dedup cell" that 018 recorded was
+never real: 019 US1 found the cell delivered 3M rows against dlt's 1M
+(the source discovers every table when `tables` is absent), and the
+corrected cell is a 2.6x WIN carrying its own bar. Do not plan against
+the numbers in this paragraph. bars.toml at 018 time: 3 bars vs
 dlt (4x/40x/45x) below recorded floors, policy entries; parity+loss
 cells, RSS, Airbyte ratios, Iceberg cell all deliberately unbarred/
 not-taken (policy log). Close-out + deviations:

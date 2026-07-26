@@ -12,10 +12,20 @@
 # their final values and the archive commit (40841ab). The cold-start absolute
 # check now lives on the instruments track (benches/check-cold-start.sh).
 
-# Bars set 2026-07-25 from the first recorded three-way session (15/15 arms,
-# rowcount-verified; artifacts in benches/results/). One bar per cell, each
-# below its recorded floor; cells at parity (pg-to-s3parquet-1m, 1.0×) or
-# behind (pg-to-pg-dedup-1m, 0.9×) carry NO bar — the matrix reports them.
+# Bars re-derived 2026-07-25 from the post-019 recorded three-way session
+# (15/15 arms, rowcount-verified; artifacts in benches/results/). One bar per
+# cell, each set below its recorded floor.
+#
+# FOUR cells carry a bar: pg-to-pg-1m (13.2× recorded), s3jsonl-to-pg-200k
+# (95.0×), s3jsonl-to-s3parquet-200k (63.6×), and pg-to-pg-dedup-1m (2.6×).
+#
+# pg-to-s3parquet-1m carries NO bar — deliberately. It moved from parity to
+# 1.7× once 019 made the parquet arms like-for-like, and one session on a
+# newly-comparable cell is not a basis for a bar. The matrix reports it.
+#
+# The dedup cell's earlier "0.9× behind" standing is superseded and was never
+# real: the cell delivered 3M rows against the competitor's 1M until 019 US1
+# corrected it.
 
 [[bar]]
 cell = "pg-to-pg-1m"

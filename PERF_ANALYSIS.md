@@ -1,5 +1,31 @@
 # rdlt performance analysis
 
+> **EXECUTED — feature 019.** Every finding below reached a terminal
+> disposition; the authoritative execution record with per-item evidence is
+> `specs/019-performance-improvements/close-out.md` (contract PI1–PI8,
+> `specs/019-performance-improvements/contracts/performance-improvements.md`).
+> This file is preserved as the analysis it was; line numbers and profiles
+> refer to the pre-019 tree at `270c903`.
+>
+> **Four claims in this document were falsified by executing it. Do not plan
+> against them:**
+>
+> - **§3 F3 — "every pipeline runs at under one core."** False on the merged
+>   tree: CPU/wall reached 1.6 on the tmpfs arm, and single-pipeline
+>   throughput went 362k → 1.19M rows/s.
+> - **§3 F3 — the ~3.5× single-pipeline headroom.** Consumed by US1–US8. What
+>   remained was Amdahl-bounded at 1.29× against the 1.5× US9 needed, which is
+>   why US9's build tasks were never taken (T088).
+> - **§3 F8 — the allocator's wall-clock cost.** Refuted by a 2×2 factorial
+>   (D-05); no allocator crate was adopted and `mallopt` bought nothing.
+> - **§3 F6 — "12.41% of the flagship cell is recoverable" from `build_batch`.**
+>   The single-pass scatter measured *worse* and was not taken (D-13). The
+>   12.41% figure will tempt the next reader; it is not available.
+>
+> Two further negatives are worth carrying forward: **removing allocations
+> measured worse twice** (D-13 and D-21), on airtight counting arguments. Treat
+> any allocation-removal proposal as guilty until measured.
+
 **Date**: 2026-07-25 · **Commit**: `270c903` · **Toolchain**: rustc 1.96.0
 **Machine**: 32 cores, 62 GB RAM, Fedora Atomic host, work performed inside a
 fedora-toolbox container · **Fixtures**: the feature-018 bench fixtures,
