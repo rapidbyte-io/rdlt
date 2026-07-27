@@ -66,18 +66,8 @@ fn legacy_unique_index_name(table: &str, columns: &[String]) -> String {
 }
 
 fn create_index_sql(unique: bool, table: &str, columns: &[String]) -> String {
-    let name = rdlt_connector_sqlcore::names::index_name(unique, table, columns);
-    let unique = if unique { "UNIQUE " } else { "" };
-    let cols = columns
-        .iter()
-        .map(|c| quote(c))
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!(
-        "CREATE {unique}INDEX IF NOT EXISTS {} ON {} ({cols})",
-        quote(&name),
-        quote(table)
-    )
+    // The statement is sqlcore's; only the quoting is this destination's.
+    rdlt_connector_sqlcore::names::create_index_sql(unique, table, columns, quote)
 }
 
 fn staged_nonempty(
@@ -317,12 +307,13 @@ impl LoadSession for DuckDbSession {
                 self.with_conn(|conn| {
                     conn.execute_batch(&sql).map_err(|e| {
                         if unique && is_constraint_violation(&e) {
-                            fatal(format!(
-                                "table `{table_str}`: cannot create the unique index the upsert \
-                                 strategy requires — existing rows duplicate the merge key \
-                                 ({}); deduplicate the table or use delete_insert: {e}",
-                                columns.join(", ")
-                            ))
+                            fatal(
+                                rdlt_connector_sqlcore::names::duplicate_merge_key_diagnosis(
+                                    &table_str,
+                                    &columns,
+                                    &e.to_string(),
+                                ),
+                            )
                         } else {
                             fatal(e)
                         }

@@ -50,18 +50,6 @@ pub(super) fn column_def(column: &ColumnDef, target: bool) -> String {
 // ---- Supporting indexes ----
 
 pub(super) fn create_index_sql(unique: bool, table: &str, columns: &[String]) -> String {
-    let cols = columns
-        .iter()
-        .map(|c| super::quote(c))
-        .collect::<Vec<_>>()
-        .join(", ");
-    // Deterministic index name: the shared sqlcore hash formula, idempotent
-    // across sessions.
-    let name = rdlt_connector_sqlcore::names::index_name(unique, table, columns);
-    format!(
-        "CREATE {}INDEX IF NOT EXISTS {} ON {} ({cols})",
-        if unique { "UNIQUE " } else { "" },
-        super::quote(&name),
-        super::quote(table),
-    )
+    // The statement is sqlcore's; only the quoting is this destination's.
+    rdlt_connector_sqlcore::names::create_index_sql(unique, table, columns, super::quote)
 }

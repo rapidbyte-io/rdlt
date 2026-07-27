@@ -626,13 +626,13 @@ impl PgSession {
                         && e.as_db_error()
                             .is_some_and(|db| db.code().code() == "23505")
                     {
-                        return Err(fatal(format!(
-                            "table `{table}`: cannot create the unique index the upsert \
-                             strategy requires — existing rows duplicate the merge key \
-                             ({}); deduplicate the table or use delete_insert: {}",
-                            columns.join(", "),
-                            super::describe(&e)
-                        )));
+                        return Err(fatal(
+                            rdlt_connector_sqlcore::names::duplicate_merge_key_diagnosis(
+                                table,
+                                &columns,
+                                &super::describe(&e),
+                            ),
+                        ));
                     }
                     return Err(classify_stmt(e));
                 }
