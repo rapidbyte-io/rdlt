@@ -1158,6 +1158,45 @@ line, or iceberg-rust moving to 0.13 — at which point `cargo tree -i` should
 show ONE version and this entry can be closed by observation rather than by
 argument.
 
+### D-27 (US8) — the survivor list is inflated by the flag the task specifies, PROVEN
+
+T122 specifies `RDLT_TESTKIT_FORCE_NO_CONTAINERS=1`, which makes the run
+deterministic and roughly halves each mutant's test phase. It also means every
+container-gated leg SKIPS — so a mutant whose only verifying test needs a
+container survives for a reason that has nothing to do with pin quality.
+
+This was flagged as a caveat and is now PROVEN rather than argued. Taking
+`check_hard_delete -> Ok(())` (MISSED in the run), applying it by hand, and
+running the suite WITH containers enabled: **caught**, by
+`rdlt-connector-postgres::dest_conformance
+strategies::child_hard_delete_is_rejected_typed`. One test, container-gated,
+skipped by the flag. The validation function is genuinely pinned; the run simply
+could not see the pin.
+
+**Therefore no survivor may be called a hole on the run's word alone.** Each one
+is re-checked with containers enabled before disposition, and that check is
+cheap because the survivor list is small.
+
+**Keeping the flag is nevertheless the right call**, and the reason is about
+which direction the error runs. Without it, container tests execute under two
+concurrent mutation jobs — the exact load that produced five recorded flakes in
+one suite run (D-24). A flaky failure there would be recorded as **CAUGHT**,
+because cargo-mutants cannot tell a genuine kill from a flake. That is a FALSE
+NEGATIVE: it hides a hole, silently, in the direction the gate exists to
+protect. A false MISSED merely creates triage work, and triage is exactly what
+T123 is. Given a choice of which way to be wrong, be wrong in the direction that
+produces work rather than false confidence.
+
+**First substantive signal from the newly-examined surface.** Adding
+`rdlt-connector-sqlcore` to `examine_globs` (T121) immediately produced 11 of
+the first 14 survivors — including whole validation functions
+(`check_hard_delete`, `check_scd2`) stubbing to `Ok(())`, and
+`flagged_roots` returning `String::new()` or `"xyzzy"`. That is the crate every
+SQL destination plans through, which is precisely the rationale recorded when it
+was added: an uncaught mutant there is wrong SQL at every destination at once.
+Whether each is a real hole or another container-gated skip is T123's job, on
+the evidence above.
+
 ---
 
 ## Item ledger (AR8 — one disposition per item, none silent)
