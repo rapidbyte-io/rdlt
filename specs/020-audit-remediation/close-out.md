@@ -1835,6 +1835,61 @@ partitions. It also had to set `tables: []`, because an absent `tables` makes th
 postgres source discover every table alongside the declared query stream — the
 same trap 019 US1 found behind the phantom "dedup loss".
 
+### D-42 (US11) — WAL recovery off the runtime, and a starvation test that took four tries to become honest
+
+rdlt is an EMBEDDABLE engine, so its futures are polled on someone else's
+runtime. WAL recovery is entirely blocking file I/O — manifest scan, segment
+open, Arrow IPC decode — and all of it ran inline. On a multi-thread runtime
+that occupies one of the host's workers for the whole of recovery; on a
+single-threaded runtime it stalls the host completely. This is async hygiene,
+not throughput: **no timing claim is made and none is asserted.**
+
+All three sites now cross to `spawn_blocking` via one `off_runtime` helper: the
+manifest scan, pass 1's per-segment validation, and pass 2's per-batch decode.
+
+**Pass 2 keeps its documented memory bound, deliberately the harder way.** The
+tidy shape is a channel between a decoding task and the applying loop, but a
+depth-1 channel holds one decoded batch while another is applied — doubling a
+bound this path documents and depends on. Recovery runs when the system is
+already degraded, which is the worst possible moment to start using twice the
+memory. Instead the reader travels onto the blocking thread and back for each
+batch: a task handoff per batch, on a path that only runs after a crash.
+
+Pass 1 needed none of that. No batch escapes its validation, so the whole
+per-segment loop crosses in one piece and stays bounded by construction.
+
+**A panic inside the blocking closure is re-raised, not converted.** Every other
+failure here degrades to re-extraction, and it was tempting to route join
+failures the same way. That would be wrong: the damage arms exist to survive
+corrupt DATA, and a panic in decode logic is a defect. Turning it into "degrade
+to re-extraction" would hide a bug behind a slower correct path forever.
+
+**The test is the part worth recording, because three earlier versions of it
+were worthless and all three passed.**
+
+1. It asserted `Scan::Discard` on a manifest full of checkpoints, which yields
+   `Recover`. It failed for a reason unrelated to starvation — the only one of
+   the four that failed loudly.
+2. The co-tenant slept 1 ms per tick while the scan took ~10 ms. A sleeping
+   tenant measures elapsed time, which is the throughput claim this change does
+   not make. Now it is a tight `yield_now` loop that counts POLLS.
+3. The scan was `await`ed directly inside `block_on`. tokio drives that future
+   on the CALLING thread while spawned tasks run on the worker — so the scan
+   and the tenant never contended, and the test passed with the blocking work
+   fully inline.
+4. With both spawned, the tick snapshot was still taken at spawn time, so it
+   counted the gap before the scanner was scheduled — during which a spinning
+   tenant racks up thousands of ticks and satisfies any `> 0` assertion
+   regardless of behaviour. The scan now signals its true start over a oneshot,
+   and only ticks after that signal are counted.
+
+**Verified by reverting.** With `scan` put back inline the test FAILS; with the
+fix it passes. A starvation test that cannot fail is worse than no test, because
+it reads as coverage — the same lesson D-30 recorded about tautological
+assertions, arrived at from a different direction.
+
+140/140 engine tests, clippy clean.
+
 ---
 
 ## Item ledger (AR8 — one disposition per item, none silent)

@@ -27,6 +27,34 @@ fn open_segment(
     })
 }
 
+/// Run one piece of blocking file work off the async runtime.
+///
+/// Recovery is entirely file I/O — opening segments, decoding Arrow IPC — and
+/// rdlt is an EMBEDDABLE engine, so this future may be polled on a host's
+/// runtime alongside the host's own work. Doing that I/O inline occupies a
+/// worker thread for the whole of recovery; on a single-threaded runtime it
+/// stalls the host completely. Neither is ours to spend.
+///
+/// A panic inside the closure is re-raised on this thread rather than
+/// translated: it is a bug in decode logic, not a damaged WAL, and the damage
+/// arms exist to degrade from corrupt DATA. Turning a panic into "degrade to
+/// re-extraction" would hide a defect behind a slower correct path.
+async fn off_runtime<T, F>(work: F) -> T
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    match tokio::task::spawn_blocking(work).await {
+        Ok(value) => value,
+        Err(joined) => match joined.try_into_panic() {
+            Ok(panic) => std::panic::resume_unwind(panic),
+            // spawn_blocking tasks are never cancelled by this code, so a
+            // non-panic join failure means the runtime itself is shutting down.
+            Err(_) => panic!("WAL recovery task cancelled: runtime is shutting down"),
+        },
+    }
+}
+
 /// The uncommitted tail of a previous run.
 #[derive(Debug)]
 pub(crate) struct RecoverySpan {
@@ -70,6 +98,14 @@ pub(crate) enum Scan {
 
 /// Forward-scan the manifest. A torn FINAL line (crash mid-append) is truncated;
 /// damage anywhere else degrades to re-extraction.
+/// Async wrapper: the scan reads the manifest line by line, which is blocking
+/// file I/O and belongs off an embedder's runtime for the same reason replay's
+/// decoding does.
+pub(crate) async fn scan_off_runtime(dir: &Path) -> Scan {
+    let dir = dir.to_path_buf();
+    off_runtime(move || scan(&dir)).await
+}
+
 pub(crate) fn scan(dir: &Path) -> Scan {
     let path = dir.join("manifest.jsonl");
     let file = match File::open(&path) {
@@ -195,8 +231,21 @@ pub(crate) async fn replay(
     // the reason logged, never swallowed.
     for record in &span.records {
         if let WalRecord::Segment { file, rows, .. } = record {
-            let reader = match open_segment(dir, file) {
-                Ok(reader) => reader,
+            // No batch escapes pass 1, so the whole validation crosses in one
+            // piece — which also means its memory stays bounded by one batch
+            // without any coordination.
+            let (dir_owned, file_owned) = (dir.to_path_buf(), file.clone());
+            let decoded = match off_runtime(move || {
+                let reader = open_segment(&dir_owned, &file_owned)?;
+                let mut decoded: u64 = 0;
+                for batch in reader {
+                    decoded += batch.map_err(|e| e.to_string())?.num_rows() as u64;
+                }
+                Ok::<u64, String>(decoded)
+            })
+            .await
+            {
+                Ok(decoded) => decoded,
                 Err(reason) => {
                     tracing::warn!(segment = %file, %reason, "WAL segment unreadable — degrading to re-extraction");
                     return Ok(None);
@@ -214,16 +263,6 @@ pub(crate) async fn replay(
             // and exactly-once rests on those two agreeing. Degrading to
             // re-extraction is slower and always correct, which is the same
             // trade every other damage arm here makes.
-            let mut decoded: u64 = 0;
-            for batch in reader {
-                match batch {
-                    Ok(batch) => decoded += batch.num_rows() as u64,
-                    Err(e) => {
-                        tracing::warn!(segment = %file, reason = %e, "WAL segment batch undecodable — degrading to re-extraction");
-                        return Ok(None);
-                    }
-                }
-            }
             if decoded != *rows {
                 tracing::warn!(
                     segment = %file,
@@ -260,14 +299,33 @@ pub(crate) async fn replay(
                 state.cursors.insert(stream, cursor);
             }
             WalRecord::Segment { table, file, .. } => {
-                let reader = match open_segment(dir, &file) {
+                let dir_owned = dir.to_path_buf();
+                let opened = {
+                    let file = file.clone();
+                    off_runtime(move || open_segment(&dir_owned, &file)).await
+                };
+                let mut reader = match opened {
                     Ok(reader) => reader,
                     Err(reason) => {
                         tracing::warn!(segment = %file, %reason, "WAL segment vanished mid-replay — degrading to re-extraction");
                         return Ok(None);
                     }
                 };
-                for batch in reader {
+                // The reader travels ONTO the blocking thread for each decode and
+                // back again, one batch at a time. A channel would be tidier but
+                // would hold a decoded batch while another is applied, doubling a
+                // memory bound this path documents and depends on — recovery runs
+                // when the system is already degraded, which is the worst moment
+                // to start using twice the memory. Per-batch handoff costs a task
+                // switch on a path that only runs after a crash.
+                loop {
+                    let (returned, item) = off_runtime(move || {
+                        let item = reader.next();
+                        (reader, item)
+                    })
+                    .await;
+                    reader = returned;
+                    let Some(batch) = item else { break };
                     let Ok(batch) = batch else {
                         tracing::warn!(segment = %file, "WAL segment failed re-read mid-replay — degrading to re-extraction");
                         return Ok(None);
@@ -588,6 +646,106 @@ mod tests {
         assert!(
             matches!(scan(dir.path()), Scan::Unsupported { found: 1, .. }),
             "an unversioned header is a v1 manifest"
+        );
+    }
+}
+
+#[cfg(test)]
+mod starvation_tests {
+    //! Recovery must not monopolise the runtime it is polled on.
+    //!
+    //! These assert PROGRESS OF OTHER WORK, never a duration. rdlt is embedded
+    //! in someone else's runtime, so the property that matters is "the host
+    //! keeps running", and that is what is checked — a timing assertion here
+    //! would be a throughput claim this change does not make, and would go
+    //! flaky on a loaded machine besides.
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// One worker thread: the harshest honest setting. With the blocking work
+    /// inline, that single worker is inside file I/O and the co-tenant task
+    /// cannot be polled at all.
+    fn single_worker_runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("runtime")
+    }
+
+    /// A manifest big enough that scanning it is real work rather than a
+    /// syscall — the co-tenant needs a window in which to be starved.
+    fn big_manifest(dir: &std::path::Path) {
+        let mut records = vec![WalRecord::Run {
+            format_version: super::super::WAL_FORMAT_VERSION,
+            load_id: LoadId::from("starve"),
+            pipeline: rdlt_core::PipelineId::from("p"),
+        }];
+        for seq in 0..20_000u64 {
+            records.push(WalRecord::Checkpoint {
+                stream: rdlt_core::StreamName::from("s"),
+                cursor: rdlt_core::Cursor::new(format!("c{seq}")),
+            });
+        }
+        let mut out = String::new();
+        for record in &records {
+            out.push_str(&serde_json::to_string(record).expect("record json"));
+            out.push('\n');
+        }
+        std::fs::write(dir.join("manifest.jsonl"), out).expect("write manifest");
+    }
+
+    #[test]
+    fn scanning_the_manifest_leaves_the_runtime_able_to_poll_other_work() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        big_manifest(dir.path());
+
+        let runtime = single_worker_runtime();
+        let ticks = Arc::new(AtomicU64::new(0));
+        let (during, scan) = runtime.block_on(async {
+            let ticks_for_tenant = Arc::clone(&ticks);
+            // A tight yield loop, NOT a sleep: it counts how many times the
+            // worker was free to poll it, which is precisely the property at
+            // issue. A sleeping tenant would measure elapsed time instead, and
+            // that is the throughput claim this change does not make.
+            let tenant = tokio::spawn(async move {
+                loop {
+                    ticks_for_tenant.fetch_add(1, Ordering::Relaxed);
+                    tokio::task::yield_now().await;
+                }
+            });
+            // The scan must be SPAWNED, not awaited here: `block_on` drives its
+            // future on the calling thread, which would never contend with the
+            // worker the tenant runs on, and the test would pass either way.
+            //
+            // It also has to SAY when it starts. Snapshotting at spawn time
+            // measures the gap before the task is scheduled, during which the
+            // tenant spins freely — enough to satisfy any `> 0` assertion no
+            // matter how the scan behaves.
+            let path = dir.path().to_path_buf();
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            let scanner = tokio::spawn(async move {
+                let _ = started_tx.send(());
+                scan_off_runtime(&path).await
+            });
+            started_rx.await.expect("scan started");
+            let before = ticks.load(Ordering::Relaxed);
+            let scan = scanner.await.expect("scan task");
+            let during = ticks.load(Ordering::Relaxed) - before;
+            tenant.abort();
+            (during, scan)
+        });
+
+        // A starvation test that passes because the work never happened proves
+        // nothing, so the scan's own result is asserted too.
+        assert!(
+            matches!(scan, Scan::Recover(_)),
+            "the scan itself must still succeed"
+        );
+        assert!(
+            during > 0,
+            "the co-tenant was starved for the whole manifest scan: 0 polls"
         );
     }
 }
