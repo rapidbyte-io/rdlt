@@ -1241,6 +1241,39 @@ re-testing of the survivor backlog, which `--iterate` never excludes because it
 skips only caught and unviable. A future run should exclude confirmed survivors
 by regex to avoid re-grinding them on every resume.
 
+### D-29 (US8) — the survivor list verified against containers: 24 of 97 were never gaps
+
+Every one of the 97 survivors was re-tested with containers ENABLED, because
+D-27 proved the main run's `RDLT_TESTKIT_FORCE_NO_CONTAINERS=1` inflates the
+list. Result: **24 (25%) flip to CAUGHT** — they were pinned all along, by tests
+the main run could not execute. **~73 are real**: 66 missed plus 9 timeouts
+needing individual judgement.
+
+**The distribution refuted the prediction, and the reasoning behind it.** Before
+running it, the expectation recorded here was that false survivors would
+concentrate in sqlcore — which has almost no local tests and is pinned through
+the postgres and DuckDB integration suites — while the engine's survivors would
+be "almost certainly all real, since engine tests drive `MemoryDestination`
+in-process and need no containers."
+
+Backwards. **19 of the 24 false survivors are in `rdlt-engine`; only 5 in
+sqlcore.** The flaw was reasoning about which tests TARGET the engine while
+ignoring `test_workspace = true` in `.cargo/mutants.toml`: every mutant faces
+all 749 tests, and engine code is exercised end-to-end by the postgres, file and
+iceberg suites — all container-gated. The engine has MORE container-dependent
+coverage than sqlcore, not less.
+
+This is the strongest argument in the feature for verifying rather than
+reasoning. Module-structure reasoning produced a confident wrong answer;
+measurement produced the right one. Skipping the pass would have shipped 24
+dispositions instructing someone to pin already-pinned code, concentrated in
+precisely the crate the reasoning was most confident about.
+
+**Real gaps by crate:** rdlt-engine 60, sqlcore 6, rdlt-core 5, rdlt-connector 4.
+The shredder cluster survives verification intact, so the headline of D-28
+stands: the JSON→Arrow hot path is the least-pinned code in the workspace, and
+its unpinned edges are arithmetic and comparisons rather than control flow.
+
 ---
 
 ## Item ledger (AR8 — one disposition per item, none silent)
