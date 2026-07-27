@@ -143,8 +143,15 @@ else ifeq ($(TARGET),mutants)
 	#
 	# mold as the linker, scoped to THIS recipe via RUSTFLAGS rather than
 	# .cargo/config.toml, so ordinary builds and the gate of record keep the
-	# stock toolchain. Linking dominates a debug build of this workspace.
-	RUSTFLAGS="-C link-arg=-fuse-ld=mold" \
+	# stock toolchain.
+	#
+	# `--threads=4` is NOT optional. mold defaults to every core and does NOT
+	# participate in cargo's jobserver, so `--jobserver-tasks` above caps rustc
+	# while leaving linkers unbounded: observed FIVE concurrent ld.mold at
+	# 400-613% CPU each, load 44, and wall throughput collapsing to 0.33
+	# mutants/min against a per-mutant cost of only ~39s of actual work. The
+	# machine was thrashing on linker threads, not linking faster.
+	RUSTFLAGS="-C link-arg=-fuse-ld=mold -C link-arg=-Wl,--threads=4" \
 	  TMPDIR=$(MUTANTS_TMPDIR) NEXTEST_TEST_THREADS=2 \
 	  cargo mutants --iterate --jobs 2 --jobserver-tasks 16 \
 	    --minimum-test-timeout 180 --profile mutants
