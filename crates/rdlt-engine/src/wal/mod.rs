@@ -195,6 +195,22 @@ impl Wal {
     /// move the panic onto a pool thread. `wal.manifest.fsync` sits between the
     /// segment fsyncs and the manifest fsync, so it stays on this side and the
     /// two fsync groups go over separately.
+    /// Mutation note: replacing this body with `Ok(())` is UNKILLABLE by any
+    /// test this suite can run, and that is a property of fsync rather than a
+    /// gap in the pins.
+    ///
+    /// What this method buys is durability across POWER LOSS: without the
+    /// fsyncs the data is still in the page cache, so every read — including a
+    /// full crash-recovery replay after `kill -9` — returns exactly the same
+    /// bytes. The difference appears only when the kernel dies with the cache
+    /// unwritten, which no in-process test can produce. The crash sweep covers
+    /// process death, which is a strictly weaker fault.
+    ///
+    /// Recorded rather than papered over: a test asserting "commit succeeded"
+    /// here would pass with the fsyncs removed and would falsely claim the
+    /// durability barrier is covered. Verifying it needs a different KIND of
+    /// instrument (a fault-injecting filesystem, or hardware), not another
+    /// assertion.
     pub(crate) async fn sync_for_commit(&mut self) -> Result<(), RdltError> {
         crash_point!(
             "wal.segment.fsync",

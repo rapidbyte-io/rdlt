@@ -446,7 +446,7 @@ pub fn render_arm(plan: &MergePlan<'_>, arm: &MergeArm) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::options::{MergeStrategy, TableOptions};
+    use crate::options::{AbsentPolicy, MergeStrategy, Scd2Options, TableOptions};
     use rdlt_connector::core::schema::ColumnDef;
     use rdlt_connector::core::{ColumnType, LogicalType, Provenance};
 
@@ -568,6 +568,57 @@ mod tests {
             "only a full-feed merge is probed: an Append table has no stage \
              semantics to check, and a plain merge is legitimately incremental"
         );
+    }
+
+    /// A single-unit violation names the rule that FIRED, not merely a rule that
+    /// applies.
+    ///
+    /// A scd2 table with `absent: retire` AND a `merge_scope` satisfies both
+    /// conditions, but retirement is the stricter one and it governs — so the
+    /// error must NOT report itself as scoped. That flag is what tells an
+    /// operator which constraint to relax; naming the wrong one sends them to
+    /// change a setting that was never the cause.
+    #[test]
+    fn a_single_unit_violation_names_the_rule_that_fired() {
+        let with = |scope: bool, retire: bool| {
+            let opts = DestOptions {
+                tables: [(
+                    "dims".to_string(),
+                    TableOptions {
+                        merge_strategy: Some(MergeStrategy::Scd2),
+                        merge_scope: scope.then(|| vec!["day".to_string()]),
+                        scd2: Some(Scd2Options {
+                            absent: if retire {
+                                AbsentPolicy::Retire
+                            } else {
+                                AbsentPolicy::Keep
+                            },
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                ..Default::default()
+            };
+            let tbls = tables(vec![("dims", keyed_schema("dims"), merge(&["id"]))]);
+            // Already marked in an earlier unit AND staging again: a second
+            // delivery of what must be a complete feed.
+            let done: BTreeSet<TableName> = [t("dims")].into_iter().collect();
+            let staged: BTreeSet<TableName> = [t("dims")].into_iter().collect();
+            match commit_script(&tbls, &opts, &ctx(false, false, &done, &staged)) {
+                Err(CommitError::SingleUnit { scoped, .. }) => scoped,
+                other => panic!("expected a single-unit violation, got {other:?}"),
+            }
+        };
+
+        assert!(
+            !with(true, true),
+            "retire governs: a scoped scd2 table that also retires is NOT a scope violation"
+        );
+        assert!(with(true, false), "scope alone is a scope violation");
+        assert!(!with(false, true), "retire alone is not scoped");
     }
 
     /// The single-unit MARK requires all three of: full-feed semantics, not
