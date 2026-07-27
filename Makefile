@@ -60,6 +60,7 @@
 # Suites are selected by TARGET; the tools behind them are implementation details.
 
 TARGET ?=
+MUTANTS_TMPDIR ?= $(CURDIR)/target/mutants-tmp
 FUZZ_SECONDS ?= 600
 FUZZ_TARGETS := jsonl_slab cursor_decode file_config arrow_schema_map shred_push pg_copy_decode pg_pgoutput_decode
 
@@ -106,14 +107,21 @@ else ifeq ($(TARGET),mutants)
 	# --jobs 2 + 2 test threads: runaway mutants (broken backpressure bounds)
 	# balloon EVERY parallel test at once — two host OOMs taught this. --iterate resumes.
 	#
-	# TMPDIR is pinned onto the repo's own filesystem because cargo-mutants
-	# builds one FULL debug workspace per job in its scratch directory, and the
-	# default /tmp is commonly a tmpfs sized well under that (32 GiB here, ~15
-	# GiB per copy). Overflowing it aborts the run with a bare "Disk quota
-	# exceeded" mid-build, which reads like a host problem rather than a
-	# too-small scratch dir. The path is inside target/, so it is already
-	# gitignored and `cargo clean` reclaims it.
-	mkdir -p target/mutants-tmp
+	# TMPDIR is pinned onto the repo's own filesystem. cargo-mutants builds a
+	# full workspace per job in its scratch dir, and the default /tmp is
+	# commonly a tmpfs sized well under that — overflowing it aborts the run
+	# with a bare "Disk quota exceeded" (EDQUOT, not ENOSPC) mid-build, which
+	# reads like a host problem rather than a too-small scratch dir.
+	#
+	# TMPFS WAS TRIED ON PURPOSE AND MEASURED WORSE — do not try it a third
+	# time. Under [profile.mutants] the scratch tree is 9.5 GiB (vs 50-60 GiB
+	# under dev), so two jobs DO fit in a 32 GiB tmpfs. But tmpfs pages are RAM:
+	# available memory fell 48 GiB -> 24 GiB, `shared` rose to 24 GiB, swap came
+	# back into use, and throughput did NOT improve. The writes it was supposed
+	# to save were already being absorbed by ~50 GiB of page cache, so the trade
+	# was pure RAM starvation for rustc. Same lesson as the 019 allocation
+	# removals: measure, because the obvious win can be a loss.
+	mkdir -p $(MUTANTS_TMPDIR)
 	#
 	# --jobserver-tasks caps build concurrency ACROSS both jobs. Without it each
 	# job's cargo build claims every core, so two concurrent builds oversubscribe
@@ -127,8 +135,19 @@ else ifeq ($(TARGET),mutants)
 	# from being recorded as a hang. It costs real time on a GENUINE hang, which
 	# is the right trade for a gate whose entire purpose is finding mutants the
 	# suite fails to catch.
-	TMPDIR=$(CURDIR)/target/mutants-tmp NEXTEST_TEST_THREADS=2 \
-	  cargo mutants --iterate --jobs 2 --jobserver-tasks 16 --minimum-test-timeout 180
+	#
+	# --profile mutants: no debug info, no incremental, max codegen units (see
+	# [profile.mutants] in Cargo.toml). A mutation run rebuilds the workspace
+	# once per mutant, so build time IS the run, and nothing here needs a
+	# debuggable binary — the only question asked is whether the suite passes.
+	#
+	# mold as the linker, scoped to THIS recipe via RUSTFLAGS rather than
+	# .cargo/config.toml, so ordinary builds and the gate of record keep the
+	# stock toolchain. Linking dominates a debug build of this workspace.
+	RUSTFLAGS="-C link-arg=-fuse-ld=mold" \
+	  TMPDIR=$(MUTANTS_TMPDIR) NEXTEST_TEST_THREADS=2 \
+	  cargo mutants --iterate --jobs 2 --jobserver-tasks 16 \
+	    --minimum-test-timeout 180 --profile mutants
 else ifeq ($(TARGET),deep)
 	# RDLT_HEAVY=1: the memory-bound claim must RUN here — missing prereqs
 	# (prlimit, release CLI) hard-fail instead of silently skipping. Not on

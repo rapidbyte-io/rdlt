@@ -132,6 +132,38 @@ codegen-units = 1
 inherits = "release"
 strip = "symbols"
 
+# The mutation-testing profile. Mutation runs rebuild the workspace ONCE PER
+# MUTANT — hundreds of times — so build time is the run's dominant cost, and
+# nothing about a mutation run needs a debuggable binary: the only question
+# asked of it is whether the test suite passes.
+#
+# `debug = 0` is the large lever. Full debug info dominated both codegen and
+# link time AND disk: scratch build directories measured 50-60 GiB EACH under
+# the dev profile.
+#
+# `incremental = false` because each mutant patches a DIFFERENT crate, so
+# incremental state rarely hits while always costing disk and bookkeeping.
+#
+# `codegen-units = 16` is rustc's own non-incremental default, and it is a
+# MEASURED choice, not a guess. Setting it to 256 (the incremental default) made
+# builds 3x faster and the TEST phase 2.6x slower — 16s build / 66s test against
+# the dev profile's 48s / 25s — for a net throughput HALVING, because every
+# mutant runs the whole suite and the test phase dominates. Runtime speed is not
+# irrelevant here: it is the larger half of the cost.
+#
+# Deliberately KEPT: `debug-assertions` and `overflow-checks` stay on, because
+# they are part of how mutants get CAUGHT — an arithmetic mutant that trips an
+# overflow check is a kill, and disabling them would quietly weaken the gate to
+# buy speed. `panic` stays `unwind`: the test harness requires it.
+[profile.mutants]
+inherits = "dev"
+debug = 0
+strip = "debuginfo"
+incremental = false
+codegen-units = 16
+debug-assertions = true
+overflow-checks = true
+
 [workspace.lints.rust]
 unsafe_code = "deny"
 missing_debug_implementations = "warn"
