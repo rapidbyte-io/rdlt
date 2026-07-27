@@ -151,7 +151,25 @@ else ifeq ($(TARGET),mutants)
 	# 400-613% CPU each, load 44, and wall throughput collapsing to 0.33
 	# mutants/min against a per-mutant cost of only ~39s of actual work. The
 	# machine was thrashing on linker threads, not linking faster.
-	RUSTFLAGS="-C link-arg=-fuse-ld=mold -C link-arg=-Wl,--threads=4" \
+	# systemd-run confines the run to its OWN memory cgroup, and this is the
+	# mitigation the "two host OOMs" note above asked for but never got.
+	#
+	# The failure is intrinsic to what this gate DOES: a mutant that breaks the
+	# byte-budget backpressure makes the channel queue without limit, and the
+	# facade e2e test then grows until the kernel intervenes. Observed twice in
+	# one day, the same binary each time, at 24 GB anon-rss — and because it was
+	# a GLOBAL oom-kill it took the whole run's session with it, which reads as
+	# "something killed my run" rather than "a mutant did exactly what it was
+	# supposed to do".
+	#
+	# Bounded, the kernel kills only inside this scope: the runaway test dies,
+	# its mutant is recorded CAUGHT (a test that dies is a test that failed),
+	# and the run continues. That is strictly better than surviving the mutant —
+	# unbounded memory growth is precisely the defect the byte budget exists to
+	# prevent, so killing it IS the correct verdict.
+	systemd-run --user --scope --quiet \
+	  -p MemoryMax=24G -p MemorySwapMax=2G \
+	  env RUSTFLAGS="-C link-arg=-fuse-ld=mold -C link-arg=-Wl,--threads=4" \
 	  TMPDIR=$(MUTANTS_TMPDIR) NEXTEST_TEST_THREADS=2 \
 	  cargo mutants --iterate --jobs 2 --jobserver-tasks 16 \
 	    --minimum-test-timeout 180 --profile mutants
