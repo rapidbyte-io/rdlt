@@ -194,7 +194,7 @@ pub(crate) async fn replay(
     // system is already degraded). Damage degrades to re-extraction, with
     // the reason logged, never swallowed.
     for record in &span.records {
-        if let WalRecord::Segment { file, .. } = record {
+        if let WalRecord::Segment { file, rows, .. } = record {
             let reader = match open_segment(dir, file) {
                 Ok(reader) => reader,
                 Err(reason) => {
@@ -202,11 +202,36 @@ pub(crate) async fn replay(
                     return Ok(None);
                 }
             };
+            // The manifest line records how many rows the segment SHOULD hold.
+            // Pass 1 already decodes every batch to prove the segment is
+            // readable, so counting them costs nothing and turns that recorded
+            // number from decoration into a check.
+            //
+            // A mismatch means the manifest and the segment disagree about what
+            // was written — a truncated tail that still decodes, or a line
+            // describing a different file. Both are silent corruption: replay
+            // would apply a DIFFERENT set of rows than the manifest promises,
+            // and exactly-once rests on those two agreeing. Degrading to
+            // re-extraction is slower and always correct, which is the same
+            // trade every other damage arm here makes.
+            let mut decoded: u64 = 0;
             for batch in reader {
-                if let Err(e) = batch {
-                    tracing::warn!(segment = %file, reason = %e, "WAL segment batch undecodable — degrading to re-extraction");
-                    return Ok(None);
+                match batch {
+                    Ok(batch) => decoded += batch.num_rows() as u64,
+                    Err(e) => {
+                        tracing::warn!(segment = %file, reason = %e, "WAL segment batch undecodable — degrading to re-extraction");
+                        return Ok(None);
+                    }
                 }
+            }
+            if decoded != *rows {
+                tracing::warn!(
+                    segment = %file,
+                    recorded = *rows,
+                    decoded,
+                    "WAL segment row count disagrees with its manifest line — degrading to re-extraction"
+                );
+                return Ok(None);
             }
         }
     }
@@ -388,6 +413,102 @@ mod tests {
             out.push('\n');
         }
         std::fs::write(dir.join("manifest.jsonl"), out).expect("write manifest");
+    }
+
+    /// A manifest line that disagrees with its segment degrades to
+    /// re-extraction instead of replaying.
+    ///
+    /// The recorded row count used to be written and never read. It is the only
+    /// independent statement of what a segment SHOULD contain, so checking it
+    /// turns a decoration into the one cross-check recovery has: if the line and
+    /// the file disagree, replay would apply a different set of rows than the
+    /// manifest promises, and exactly-once rests on those two agreeing.
+    ///
+    /// Degrading is slower and always correct — the same trade every other
+    /// damage arm in this module makes.
+    #[tokio::test]
+    async fn a_row_count_mismatch_degrades_to_re_extraction() {
+        use rdlt_core::{TableName, WriteMode};
+
+        use arrow::array::Int64Array;
+        use arrow::datatypes::{DataType, Field, Schema};
+        use arrow::record_batch::RecordBatch;
+        use rdlt_connector::Destination;
+        use std::sync::Arc;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        // A real, fully decodable segment holding THREE rows.
+        let seg = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)])),
+            vec![Arc::new(Int64Array::from(vec![1i64, 2, 3]))],
+        )
+        .expect("batch");
+        crate::wal::write_segment(&dir.path().join("seg.arrow"), &seg).expect("write segment");
+
+        let schema = rdlt_core::TableSchema {
+            table: TableName::new("t"),
+            parent: None,
+            columns: vec![],
+        };
+        let span = |rows: u64| RecoverySpan {
+            load_id: LoadId::new("l"),
+            next_commit_seq: 1,
+            records: vec![
+                WalRecord::Segment {
+                    table: TableName::new("t"),
+                    file: "seg.arrow".to_owned(),
+                    rows,
+                },
+                WalRecord::Checkpoint {
+                    stream: rdlt_core::StreamName::new("s"),
+                    cursor: rdlt_core::Cursor::new(serde_json::json!(1)),
+                },
+            ],
+            schemas: vec![(schema.clone(), WriteMode::Append)],
+        };
+
+        // Truthful line: replay proceeds.
+        let mut session = rdlt_testkit::MemoryDestination::new()
+            .open(rdlt_connector::OpenCtx::new(
+                PipelineId::new("p"),
+                LoadId::new("l"),
+            ))
+            .await
+            .expect("session");
+        let mut state = StateDoc::new(PipelineId::new("p"), "test");
+        let replayed = replay(
+            dir.path(),
+            span(3),
+            &mut *session,
+            &mut state,
+            rdlt_connector::DestinationCapabilities::default(),
+        )
+        .await
+        .expect("replay");
+        assert_eq!(replayed, Some(1), "a truthful manifest line replays");
+
+        // Lying line: the segment really holds 3, the manifest claims 7.
+        let mut session = rdlt_testkit::MemoryDestination::new()
+            .open(rdlt_connector::OpenCtx::new(
+                PipelineId::new("p"),
+                LoadId::new("l"),
+            ))
+            .await
+            .expect("session");
+        let mut state = StateDoc::new(PipelineId::new("p"), "test");
+        let replayed = replay(
+            dir.path(),
+            span(7),
+            &mut *session,
+            &mut state,
+            rdlt_connector::DestinationCapabilities::default(),
+        )
+        .await
+        .expect("replay returns Ok so the caller can degrade");
+        assert_eq!(
+            replayed, None,
+            "a manifest disagreeing with its segment must NOT replay"
+        );
     }
 
     /// Mutation-report closure: the on-disk Run header must SERIALIZE the
