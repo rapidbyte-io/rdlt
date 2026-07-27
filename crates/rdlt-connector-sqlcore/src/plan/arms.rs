@@ -151,13 +151,18 @@ impl MergePlan<'_> {
     /// match.
     fn flagged_roots(&self, hd: &HardDelete) -> String {
         let id = self.quote(system_columns::ID);
-        format!(
-            "(SELECT {id} FROM (SELECT DISTINCT ON ({id}) * FROM {} \
-             ORDER BY {id}, {} DESC) d WHERE {})",
-            self.root_stage_sql,
-            self.dialect.arrival_order(),
-            hd.flagged
-        )
+        // Through the DIALECT seam, not a hand-rolled copy of it. This arm used
+        // to spell `DISTINCT ON` itself, which meant a dialect overriding
+        // `dedup_subquery` — because it has no DISTINCT ON, or spells last-wins
+        // differently — had its override silently ignored HERE while being
+        // honoured everywhere else. One survivor decision, one seam.
+        //
+        // No sort prefix: hard-delete flagging reads the arrival-order last-wins
+        // root, which is what it did before and what the golden pins hold. A
+        // `dedup_sort` would change WHICH row is consulted, so applying it here
+        // is a behaviour change, not a refactor.
+        let deduped = self.dialect.dedup_subquery(&id, "", &self.root_stage_sql);
+        format!("(SELECT {id} FROM {deduped} d WHERE {})", hd.flagged)
     }
 }
 
