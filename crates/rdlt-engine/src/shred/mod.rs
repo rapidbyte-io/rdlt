@@ -196,6 +196,14 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
                             discarded_ids.insert(row.id);
                         }
                         d.rows.clear();
+                        // Mutation note: `dropped == 0` is unreachable here, so
+                        // `> 0` versus `>= 0` is an equivalent mutant. The
+                        // CreateTable change EXISTS because this drain observed
+                        // rows for a table that did not exist; if the cascade
+                        // above had emptied them there would be no observation
+                        // and no change to refuse. Kept as a defensive guard —
+                        // it costs nothing and states that a discard report is
+                        // only ever emitted for a real discard.
                         if dropped > 0 {
                             items.push(LoadItem::Discarded {
                                 table: table.clone(),
@@ -400,6 +408,13 @@ fn enforce_discards<'v, V: JsonView<'v>>(
         keep
     });
 
+    // Mutation note: both comparisons here are equivalent mutants, for the same
+    // structural reason as the creation guard above. `enforce_discards` is only
+    // CALLED when the discard set is non-empty — that is, when a real violation
+    // was found — and acting on a real violation drops at least one row or nulls
+    // at least one value. Reaching this line with both counters at zero is not
+    // constructible. Kept defensive: emitting a zero-valued `Discarded` would
+    // make the event useless to a consumer watching it to detect data loss.
     if dropped_rows > 0 || nulled_values > 0 {
         items.push(LoadItem::Discarded {
             table: table_name,

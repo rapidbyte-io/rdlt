@@ -640,3 +640,147 @@ async fn discarded_value_counter_reaches_the_commit_unit() {
         "the unit's value-discard counter must agree with the report's"
     );
 }
+
+/// Only the table that actually discarded reports a discard.
+///
+/// The guards deciding whether to emit a `Discarded` item sit INSIDE blocks
+/// that already require a discard to have happened somewhere — the cascade
+/// block runs only when some upstream row was dropped, and `enforce_discards`
+/// runs per table. So a fully conforming run never reaches them, and the
+/// interesting state is a run where ONE table drops a row and ANOTHER, walked
+/// in the same drain, drops nothing.
+///
+/// That is the case an always-true guard corrupts: the untouched child table
+/// would report `Discarded { rows: 0, values: 0 }`, and a consumer watching
+/// that event to alert on data loss cannot tell "nothing was dropped here" from
+/// "something was". The fixture therefore discards a row that has NO children,
+/// so the child table sees a non-empty discarded set and still cascades nothing.
+#[tokio::test]
+async fn only_the_table_that_discarded_reports_a_discard() {
+    use rdlt_core::{PolicyAction, SchemaPolicy};
+    let mut config = EngineConfig::new("discard-scoped");
+    config.schema_policy = SchemaPolicy::with_default(PolicyAction::DiscardRow);
+    let batches = vec![
+        // Establishes the root shape AND the child table.
+        MemoryBatch::new(vec![json!({"id": 1, "items": [{"a": 1}]})])
+            .with_checkpoint(json!({"b": 0})),
+        // `surprise` violates the established shape, so row 2 is discarded —
+        // and it has no items, so the child table cascades NOTHING while the
+        // discarded-id set is non-empty. Row 3 conforms and carries a child row.
+        // Row 2 carries a NEW nested collection: the root sees an added column
+        // and is discarded, and the child table `extra` that the collection
+        // would create is therefore a refused CREATION whose rows have ALL
+        // cascaded away — dropped == 0 while the discarded set is non-empty,
+        // which is the only state the creation guard's mutant can corrupt.
+        // Row 3 conforms and carries an ordinary child row.
+        MemoryBatch::new(vec![
+            json!({"id": 2, "surprise": "x", "extra": [{"z": 1}]}),
+            json!({"id": 3, "items": [{"a": 3}]}),
+        ])
+        .with_checkpoint(json!({"b": 1})),
+    ];
+    let engine = Engine::new(
+        config,
+        MemorySource::new(vec![MemoryStream::new(StreamSpec::new("s"), batches)]),
+        MemoryDestination::new(),
+    );
+    let mut events = engine.events();
+    let report = engine.run().await.expect("run");
+
+    let mut reported: Vec<(String, u64, u64)> = Vec::new();
+    while let Some(event) = events.recv().await {
+        if let PipelineEvent::Discarded {
+            table,
+            rows,
+            values,
+            ..
+        } = event
+        {
+            reported.push((table.as_str().to_owned(), rows, values));
+        }
+    }
+
+    // Anti-vacuous: a discard must actually have happened, and there must be a
+    // second table for the guard to wrongly report on.
+    assert!(
+        report.tables.len() > 1,
+        "the fixture needs a child table: {:?}",
+        report.tables.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        reported.iter().any(|(_, rows, _)| *rows > 0),
+        "the fixture must actually discard a row: {reported:?}"
+    );
+    // …and NOTHING may report a zero-valued discard.
+    assert!(
+        reported
+            .iter()
+            .all(|(_, rows, values)| *rows > 0 || *values > 0),
+        "a table that discarded nothing must not report a discard: {reported:?}"
+    );
+}
+
+/// A CONFORMING run under a Discard policy emits no Discarded event at all.
+///
+/// The clean-run test above uses the default Evolve policy, which never reaches
+/// the discard paths — so the guards deciding whether to emit were free to
+/// become always-true, and a zero-valued `Discarded { rows: 0, values: 0 }`
+/// would flow for every batch of every conforming run.
+///
+/// That matters beyond tidiness. `Discarded` is how the engine reports data
+/// loss; a consumer watching for it to alert, or to fail a pipeline, cannot
+/// distinguish "nothing was dropped" from "something was dropped" if the event
+/// arrives either way. An event that always fires carries no information.
+///
+/// Nested rows are used so the CHILD-table cascade paths run too: those decide
+/// separately whether to emit, and a flat fixture never reaches them.
+#[tokio::test]
+async fn a_conforming_run_under_a_discard_policy_emits_no_discards() {
+    use rdlt_core::{PolicyAction, SchemaPolicy};
+
+    for action in [PolicyAction::DiscardRow, PolicyAction::DiscardValue] {
+        let mut config = EngineConfig::new("discard-clean");
+        config.schema_policy = SchemaPolicy::with_default(action);
+        let batches = vec![
+            MemoryBatch::new(vec![json!({"id": 1, "items": [{"a": 1}]})])
+                .with_checkpoint(json!({"b": 0})),
+            MemoryBatch::new(vec![json!({"id": 2, "items": [{"a": 2}]})])
+                .with_checkpoint(json!({"b": 1})),
+        ];
+        let engine = Engine::new(
+            config,
+            MemorySource::new(vec![MemoryStream::new(StreamSpec::new("s"), batches)]),
+            MemoryDestination::new(),
+        );
+        let mut events = engine.events();
+        let report = engine.run().await.expect("run");
+
+        // Anti-vacuous: the fixture has to actually load, and actually create
+        // the child table whose cascade path this is here to reach.
+        assert!(
+            report.total_rows() > 0,
+            "{action:?}: the fixture must load rows"
+        );
+        assert!(
+            report.tables.len() > 1,
+            "{action:?}: nested rows must create a child table, else the cascade \
+             paths never run: {:?}",
+            report.tables.keys().collect::<Vec<_>>()
+        );
+
+        while let Some(event) = events.recv().await {
+            assert!(
+                !matches!(event, PipelineEvent::Discarded { .. }),
+                "{action:?}: a conforming run must emit NO Discarded event, not \
+                 even a zero-valued one: {event:?}"
+            );
+        }
+        for (table, entry) in &report.tables {
+            assert_eq!(
+                (entry.discarded_rows, entry.discarded_values),
+                (0, 0),
+                "{action:?}: {table} discarded nothing"
+            );
+        }
+    }
+}
