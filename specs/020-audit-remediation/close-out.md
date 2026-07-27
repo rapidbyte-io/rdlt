@@ -1668,6 +1668,48 @@ and stays correct — merely as slow as before. Nothing migrates.
 The golden pins are untouched, because they pin `commit_script`'s plan and this
 DDL is emitted by `ensure_table`. 204/204 for the crate.
 
+### D-38 (US11) — D18 disposed on a heap profile: the part buffer is constant, not a leak
+
+D18 has been open since 019 with its trigger fired, naming two things: the file
+destination blocks the executor, and it buffers whole encoded parts. T174 made
+the second one conditional — *if the encode buffer dominates the peak*, evaluate
+streaming it through multipart upload. `valgrind --tool=dhat` on a local parquet
+destination (the same `encode → Vec<u8> → put` path S3 uses, without a container
+in the measurement) answers it:
+
+| | 100k rows | 300k rows |
+|---|---|---|
+| peak heap | 46,399,299 B | 43,546,459 B |
+| source decode buffers (`CopyDecoder::new`) | 15,728,640 B / 13 blocks | 11,534,336 B / 9 blocks |
+| **encode buffer (`ArrowWriter::flush` → `BufWriter::flush_buf`)** | **8,529,920 B / 1 block** | **8,529,920 B / 1 block** |
+| arrow `MutableBuffer` (passthrough) | 5,242,880 B | 4,194,304 B |
+
+**Two facts kill the concern.** The encode buffer is not the peak's largest term
+— the postgres source's decode buffers are, at roughly twice its size. And
+tripling the dataset moved it by **zero bytes**: 8,529,920 both times, to the
+byte. It is O(batch), not O(dataset), because a part IS a batch and batch size
+is already bounded by `byte_budget` — the knob whose documented purpose is to be
+the RSS cap. The buffer is a constant multiplier on a bound the user already
+sets, not an unbounded growth the user cannot see.
+
+So the task's condition is false and, per its own terms, the streaming rewrite is
+not evaluated. **Buffering half of D18: closed, not taken.** Removing it could
+cut peak by at most ~18%, and would cost a restructuring of the staging and
+replay protocol across both location kinds to do it.
+
+**Re-trigger** (so this is a closure, not an omission): a format whose encoded
+size substantially exceeds its in-memory batch, or a deployment raising
+`byte_budget` far enough that one encoded part becomes the dominant term. Either
+makes the constant stop being small, and both are observable by re-running this
+profile.
+
+**The blocking half of D18 is real and is NOT closed by this.** The stack shows
+`ArrowWriter::flush` running inside `FileSession::write`'s future — CPU-bound
+encoding on a runtime thread. That is the same defect class T175 addresses for
+the WAL recovery path, it is async hygiene for embedders rather than a
+throughput claim, and it wants the same treatment and the same kind of
+verification: a starvation test, not a timing.
+
 ---
 
 ## Item ledger (AR8 — one disposition per item, none silent)
