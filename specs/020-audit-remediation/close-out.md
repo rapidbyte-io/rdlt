@@ -1710,6 +1710,81 @@ the WAL recovery path, it is async hygiene for embedders rather than a
 throughput claim, and it wants the same treatment and the same kind of
 verification: a starvation test, not a timing.
 
+### D-39 (US11) — canonical-JSON allocation: the null hypothesis holds, recorded and stopped
+
+T177 named D-13/D-21 as the explicit null hypothesis and set a high bar. The
+candidate is `canonical_json_bytes`, which collects one `Vec<(&str, V)>` per
+object in order to sort its keys — an allocation per object on a path that runs
+for every shredded row.
+
+Callgrind on `shred_nested_10k` (312,269,310 Ir) bounds it without any prototype
+being written:
+
+| | Ir | share |
+|---|---|---|
+| **every allocator symbol in the whole bench** | 19,333,555 | **6.19%** |
+| `canonical_json_bytes`, both instances, entirely | 16,560,006 | **5.30%** |
+
+The second figure is the whole function — recursion, the sort, the serde_json
+key and scalar writes, and the allocation. The per-object `Vec` is a fraction of
+a fraction, and the first figure caps what ANY allocation change in this bench
+can return at 6.19%. Read against D-34's finding that allocation is 3.3% of
+cycles across a whole pipeline, the reachable prize is a rounding error.
+
+**Not taken, and the reason is now at the call site** so a third attempt starts
+from the measurement rather than from the same plausible counting argument. The
+scratch-stack version would also thread a reusable buffer through a recursive
+function, which is a real cost in a reader's time paid for a number that does
+not exist.
+
+### D-40 (US11) — netem UNPERFORMED; the substitute found something better
+
+**The experiment as specified cannot run here, and that is recorded rather than
+worked around.** `tc` is not installed in the build container, and the container
+shares the HOST's network namespace — so a `netem` qdisc on `lo` would not be a
+scoped test fixture, it would be a latency injection into the user's machine,
+outside the repository, for the duration of the run. Recorded UNPERFORMED on the
+same footing as the CI-blocked verifications (E1): never claimed, never green.
+
+**But the question underneath it was answerable another way.** Netem existed to
+decide whether the unit preamble's serial round trips are worth coalescing.
+Rather than simulate latency, count the round trips — `log_statement='all'` at
+database scope (command-line `-c` flags outrank `ALTER SYSTEM`, which is why the
+first attempt silently logged nothing and was caught by re-reading `SHOW`).
+
+One 1M-row merge load, tables already existing with the correct shape:
+
+| statement | count |
+|---|---|
+| **`ALTER TABLE … ADD COLUMN IF NOT EXISTS`** | **26** |
+| `TRUNCATE TABLE` | 2 |
+| `BEGIN` / `SET LOCAL work_mem` / `INSERT … ON CONFLICT` / `COMMIT` | 4 |
+| `CREATE SCHEMA` / `CREATE TABLE` / `CREATE UNLOGGED TABLE` / `CREATE UNIQUE INDEX` (all `IF NOT EXISTS`) | 4 |
+| **total** | **36** |
+
+**26 of 36 round trips — 72% — are no-op `ALTER TABLE`s, issued every run against
+a schema that has not changed.** One per column per table leg. A fresh session
+has no `previous` schema to compare against, so it re-asserts every column
+defensively.
+
+**Why this is invisible in the benchmark and still matters.** 36 round trips
+disappear inside a 4.6 s load of one wide table — the bench matrix's shape. Now
+take the shape ELT actually meets often: 50 narrow tables, few rows each. That
+is ~1,300 serial round trips per run. On loopback, still nothing. At the 2 ms
+RTT netem was going to simulate, it is **2.6 seconds of pure latency before any
+row moves** — and the bench matrix contains no cell that would ever show it.
+
+**Coalescing is NOT taken here, with a quantified trigger instead of a vague
+one.** The shape that fixes it is known — read the table's existing columns once
+after `CREATE TABLE IF NOT EXISTS`, then `ALTER` only what is genuinely missing,
+turning 26 round trips into 2 — but it lands in the migration path that also
+performs widening with `USING` casts, which is a correctness surface, and it
+arrives at the end of a large feature with zero measurable benefit to anything
+this project currently benchmarks. **Trigger: the first many-table or
+non-loopback deployment, or a bench cell whose shape is many narrow tables** —
+either makes the 72% visible, and the measurement above is the before-figure
+already in hand.
+
 ---
 
 ## Item ledger (AR8 — one disposition per item, none silent)

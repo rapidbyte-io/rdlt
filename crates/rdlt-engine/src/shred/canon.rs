@@ -59,6 +59,16 @@ pub(crate) fn canonical_json_bytes<'a, V: JsonView<'a>>(value: V, out: &mut Vec<
     match value.kind() {
         Kind::Object => {
             out.push(b'{');
+            // One Vec per object, to sort the keys. This looks like an obvious
+            // allocation to hoist into a reusable scratch buffer, and it has
+            // been measured rather than argued: in the nested-shred instruction
+            // bench, ALL allocation is 6.19% and this whole function —
+            // recursion, sort, serde writes and allocation together — is 5.30%.
+            // The per-object Vec is a fraction of that fraction, so threading a
+            // scratch stack through the recursion buys a rounding error and
+            // costs the reader a lifetime puzzle. Two allocation removals in
+            // this project have already measured WORSE than the allocation they
+            // removed; treat a counting argument here as guilty until measured.
             let mut entries: Vec<(&str, V)> = value.obj_entries().collect();
             entries.sort_unstable_by_key(|(key, _)| *key);
             for (i, (key, item)) in entries.into_iter().enumerate() {
