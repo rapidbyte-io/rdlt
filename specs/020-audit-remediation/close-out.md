@@ -1096,6 +1096,42 @@ the same tree runs **749/749, 0 skipped, in 21 s** — against 230 s and failure
 under load. Every green claimed in this feature's close-out is from a quiet
 machine, and the mutation run is paused for each one.
 
+### D-25 (US8) — the mutation gate's timeout was manufacturing false results
+
+The recipe auto-derives its per-mutant test timeout from a baseline measured at
+startup, times `timeout_multiplier = 3.0`. With containers forced off the
+baseline test phase is **9s**, so the timeout was auto-set to **28s** — and then
+every mutant ran while TWO concurrent `cargo build` invocations each claimed all
+32 cores. At a load average of 85 the test phase cannot finish in 28s, so
+**73% of mutants were reported TIMEOUT, every one at exactly 28s**.
+
+That is worse than slow, because a timeout is not a neutral outcome: it is
+indistinguishable in the report from a mutant the suite failed to catch, and it
+is recorded as not-caught. The stale committed run's timeout rate was 1%; this
+was 73%. The gate was measuring its own contention.
+
+Two fixes, both in the recipe of record:
+- `--jobserver-tasks 16` caps build concurrency ACROSS jobs, instead of letting
+  each job's build claim every core.
+- `--minimum-test-timeout 180` puts a floor under the auto-derived value, so a
+  merely-loaded test run is not recorded as a hang.
+
+**The fix immediately converted false timeouts into real findings.** Three
+mutants previously reported TIMEOUT at exactly 28s came back MISSED with genuine
+test times of 24–27s — they had never been hanging, and they are uncaught
+mutants the ceiling was HIDING. In the same pass a real hang was correctly
+identified for the first time: `RecordsIn::close` replaced with `()` burned the
+full 180s, which is right — removing the close means the receiver never learns
+the sender finished, and the pipeline deadlocks.
+
+Timeout rate after the fix: 1 in 24, and 12 genuine MISSED mutants surfaced.
+
+**Standing caveat for triage:** the run sets
+`RDLT_TESTKIT_FORCE_NO_CONTAINERS=1`, so container-gated legs skip. A mutant in
+code exercised ONLY by a container test therefore survives for a reason that has
+nothing to do with pin quality. Every survivor in a file this feature touched
+gets checked against that possibility rather than assumed to be a hole.
+
 ---
 
 ## Item ledger (AR8 — one disposition per item, none silent)

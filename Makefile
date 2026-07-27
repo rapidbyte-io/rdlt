@@ -114,7 +114,21 @@ else ifeq ($(TARGET),mutants)
 	# too-small scratch dir. The path is inside target/, so it is already
 	# gitignored and `cargo clean` reclaims it.
 	mkdir -p target/mutants-tmp
-	TMPDIR=$(CURDIR)/target/mutants-tmp NEXTEST_TEST_THREADS=2 cargo mutants --iterate --jobs 2
+	#
+	# --jobserver-tasks caps build concurrency ACROSS both jobs. Without it each
+	# job's cargo build claims every core, so two concurrent builds oversubscribe
+	# the machine ~3x — and the mutant TEST phase, which is what the timeout
+	# actually measures, starves. Measured here: a 9s baseline auto-set a 28s
+	# timeout, and 73% of mutants then "timed out" at exactly 28s while builds
+	# ran. Those are FALSE results, indistinguishable in the report from a
+	# genuinely uncaught mutant.
+	#
+	# --minimum-test-timeout is the floor that stops a merely-loaded test run
+	# from being recorded as a hang. It costs real time on a GENUINE hang, which
+	# is the right trade for a gate whose entire purpose is finding mutants the
+	# suite fails to catch.
+	TMPDIR=$(CURDIR)/target/mutants-tmp NEXTEST_TEST_THREADS=2 \
+	  cargo mutants --iterate --jobs 2 --jobserver-tasks 16 --minimum-test-timeout 180
 else ifeq ($(TARGET),deep)
 	# RDLT_HEAVY=1: the memory-bound claim must RUN here — missing prereqs
 	# (prlimit, release CLI) hard-fail instead of silently skipping. Not on
