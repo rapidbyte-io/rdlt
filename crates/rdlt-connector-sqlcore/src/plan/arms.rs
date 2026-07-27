@@ -355,6 +355,12 @@ pub fn scd2_merge_sql(plan: &MergePlan<'_>, scd2: &Scd2Options) -> Vec<String> {
     // absent active key retires.
     if scd2.absent == AbsentPolicy::Retire {
         let scope_clause = match plan.merge_scope {
+            // Mutation note: the emptiness guard is an equivalent mutant —
+            // validation rejects an empty `merge_scope` before a plan is ever
+            // built ("merge_scope: empty column list"), so `Some(empty)` cannot
+            // reach here. Kept because a scope clause built from no columns
+            // would be malformed SQL, and the guard says so locally rather than
+            // relying on a check three modules away.
             Some(scope) if !scope.is_empty() => {
                 let cols = scope
                     .iter()

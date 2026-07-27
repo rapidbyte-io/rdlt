@@ -341,6 +341,48 @@ fn check_scd2(table: &str, opts: &TableOptions, strategy: MergeStrategy) -> Resu
 mod tests {
     use super::*;
 
+    /// EITHER validity column being blank is an error, not both.
+    ///
+    /// These name the columns scd2 writes its validity window into. A blank one
+    /// produces DDL naming an empty identifier — and the check reads as a pair,
+    /// so it is easy to weaken into "only reject when BOTH are blank", which
+    /// lets exactly the half-configured case through.
+    #[test]
+    fn either_blank_scd2_validity_column_is_refused() {
+        let scd2 = |from: &str, to: &str| Scd2Options {
+            valid_from: from.to_string(),
+            valid_to: to.to_string(),
+            ..Default::default()
+        };
+        let check = |from: &str, to: &str| {
+            let opts = TableOptions {
+                merge_strategy: Some(MergeStrategy::Scd2),
+                scd2: Some(scd2(from, to)),
+                ..Default::default()
+            };
+            let dest = DestOptions {
+                tables: [("dims".to_string(), opts)].into_iter().collect(),
+                ..Default::default()
+            };
+            dest.validate()
+        };
+
+        assert!(
+            check("valid_from", "valid_to").is_ok(),
+            "both named is fine"
+        );
+        assert!(
+            check("", "valid_to").is_err(),
+            "a blank valid_from is refused"
+        );
+        assert!(
+            check("valid_from", "").is_err(),
+            "a blank valid_to is refused"
+        );
+        assert!(check("", "").is_err(), "both blank is refused");
+        assert!(check("   ", "valid_to").is_err(), "whitespace is blank");
+    }
+
     #[test]
     fn validation_matrix_names_the_field() {
         // scd2 options without the strategy.

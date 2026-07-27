@@ -492,3 +492,82 @@ async fn null_in_merge_key_is_a_typed_write_time_error() {
         "error names the key column: {msg}"
     );
 }
+
+/// A refused column is projected AWAY, and its loss is counted per value.
+///
+/// On a structured stream a Discard policy cannot filter rows — the batch is
+/// already columnar — so it projects the refused COLUMN out instead. Two things
+/// about that were unpinned, and both are quiet failures:
+///
+/// The projection predicate decides which columns SURVIVE. Invert it and the
+/// engine keeps exactly the refused column and drops every accepted one — total
+/// data loss, reported as a successful run.
+///
+/// The value count is `rows × refused columns`. It is the only number saying
+/// how much was lost, and any other arithmetic on those two operands still
+/// produces a plausible-looking figure.
+#[tokio::test]
+async fn a_refused_column_is_projected_away_and_counted_per_value() {
+    let dest = MemoryDestination::new();
+    let mut config = EngineConfig::new("passthrough-discard");
+    config.schema_policy = SchemaPolicy::with_default(PolicyAction::DiscardValue);
+
+    // Batch 1 establishes {id, name}. Batch 2 adds TWO refused columns across
+    // four rows: 4 × 2 = 8 lost values. Two columns and a row count that is not
+    // a multiple of it are both deliberate — with one column, `rows * cols` and
+    // `rows / cols` produce the SAME number and the arithmetic is untestable.
+    let wide = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, true),
+            Field::new("name", DataType::Utf8, true),
+            Field::new("extra", DataType::Utf8, true),
+            Field::new("spare", DataType::Utf8, true),
+        ])),
+        vec![
+            Arc::new(Int64Array::from(vec![3i64, 4, 5, 6])),
+            Arc::new(StringArray::from(vec!["c", "d", "e", "f"])),
+            Arc::new(StringArray::from(vec!["x", "y", "z", "w"])),
+            Arc::new(StringArray::from(vec!["p", "q", "r", "s"])),
+        ],
+    )
+    .expect("wide batch");
+    let source = ArrowSource {
+        batches: vec![batch_ab(&[1, 2], &["a", "b"]), wide],
+        declare_structured: true,
+    };
+    let engine = Engine::new(config, source, dest.clone());
+    let mut events = engine.events();
+    let report = engine.run().await.expect("run");
+
+    // The ACCEPTED columns survived and the refused one did not.
+    let rows = dest.committed_rows("metrics");
+    assert_eq!(rows.len(), 6, "every row still loads: {}", rows.len());
+    let schema = dest.schema("metrics").expect("schema");
+    let columns: Vec<&str> = schema.columns.iter().map(|c| c.name.as_str()).collect();
+    assert!(columns.contains(&"id"), "accepted column kept: {columns:?}");
+    assert!(
+        columns.contains(&"name"),
+        "accepted column kept: {columns:?}"
+    );
+    for refused in ["extra", "spare"] {
+        assert!(
+            !columns.contains(&refused),
+            "the refused column `{refused}` must be projected AWAY: {columns:?}"
+        );
+    }
+
+    // …and the loss is counted as rows × refused columns, from the batch that
+    // carried it.
+    let mut counted = 0u64;
+    while let Some(event) = events.recv().await {
+        if let rdlt_core::PipelineEvent::Discarded { values, .. } = event {
+            counted += values;
+        }
+    }
+    assert_eq!(
+        counted, 8,
+        "four rows × two refused columns — neither the sum (6) nor the quotient (2)"
+    );
+    let reported: u64 = report.tables.values().map(|t| t.discarded_values).sum();
+    assert_eq!(reported, 8, "the report agrees with the events");
+}
