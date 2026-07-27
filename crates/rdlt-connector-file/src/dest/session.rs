@@ -3,6 +3,7 @@
 //! publish (+ durability fsync), state/receipt write — each a method below.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -93,14 +94,29 @@ impl FileSession {
             )));
         };
         let values = batch.column(index);
+        // ONE formatter for the column, not one per row. `array_value_to_string`
+        // builds an `ArrayFormatter` — which boxes a `dyn DisplayIndex` — on
+        // every call, and arrow's own documentation says it "is quite
+        // inefficient and is unlikely to be suitable for converting large
+        // arrays", pointing at this type instead. The options match what that
+        // function uses, so rendered values are unchanged.
+        let options = arrow::util::display::FormatOptions::default().with_display_error(true);
+        let formatter =
+            arrow::util::display::ArrayFormatter::try_new(values.as_ref(), &options).map_err(fatal)?;
         let mut groups: BTreeMap<String, Vec<u32>> = BTreeMap::new();
+        // Reused across rows: the rendered value is consumed by `path_safe` and
+        // only the sanitised result needs to outlive the iteration.
+        let mut rendered = String::new();
         for row in 0..batch.num_rows() {
-            let rendered = if values.is_null(row) {
+            let key = if values.is_null(row) {
                 "__null__".to_owned()
             } else {
-                path_safe(&arrow::util::display::array_value_to_string(values, row).map_err(fatal)?)
+                rendered.clear();
+                write!(rendered, "{}", formatter.value(row))
+                    .map_err(|e| fatal(format!("partition value at row {row}: {e}")))?;
+                path_safe(&rendered)
             };
-            groups.entry(rendered).or_default().push(row as u32);
+            groups.entry(key).or_default().push(row as u32);
         }
         let mut out = Vec::with_capacity(groups.len());
         for (value, rows) in groups {

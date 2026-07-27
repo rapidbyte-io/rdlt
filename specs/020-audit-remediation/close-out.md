@@ -1785,6 +1785,56 @@ non-loopback deployment, or a bench cell whose shape is many narrow tables** —
 either makes the 72% visible, and the measurement above is the before-figure
 already in hand.
 
+### D-41 (US11) — the partitioned-write renderer used the API arrow warns against
+
+T179 asked for an iai bench on the per-row partition rendering, then a decision
+from the number. **The bench was not added and a better number was taken
+instead** — recorded here as a deviation rather than a silent substitution.
+
+`perf` on a real partitioned write put the rendering path at ~2.79% of cycles,
+with `make_default_display_index` among the samples — a formatter being
+constructed per ROW. Reading the API settled it without any microbench:
+`array_value_to_string` builds an `ArrayFormatter` (which boxes a
+`dyn DisplayIndex`) on every call, and arrow's own documentation says it "is
+quite inefficient and is unlikely to be suitable for converting large arrays or
+record batches. Please see [`ArrayFormatter`] for a more performant interface."
+
+This was not a speculative micro-optimisation; it was the wrong API for a
+per-row loop, by the library's own account. One formatter is now built per
+column, and the rendered value is written into a reused `String` instead of
+allocating two per row (one from `to_string`, one from `path_safe`).
+
+**Measured end-to-end on a 200k-row, 50-partition write** — three interleaved
+repetitions per arm, whole-process instructions:
+
+| arm | instructions | spread |
+|---|---|---|
+| per-row `array_value_to_string` | 2,241,691,157 | ±0.04% |
+| one `ArrayFormatter` per column | **2,180,681,954** | ±0.04% |
+
+**−2.72%**, matching the profile's 2.79% prediction almost exactly.
+
+**Rendered values are verified identical, not assumed.** The same pipeline run
+under both binaries produced 200 parquet files across all 50 partition
+directories, and the partition values — the thing the renderer decides — match
+exactly. `FormatOptions` are set to what `array_value_to_string` uses
+(`with_display_error(true)`), so nothing about formatting changed. 103/103
+file-connector tests.
+
+**No permanent iai gate is added, and that is the decision the task asked for.**
+It would mean an `iai-callgrind` dependency, a `testhook` module and a seventh
+gated baseline in a crate, to guard a path no bench cell exercises — scaffolding
+out of proportion to a 2.7% figure. The reason the fast API must be used is
+recorded at the call site, where someone editing that loop will read it, rather
+than in a bench they would have to think to run.
+
+**A note on measurement shape.** The first attempt partitioned by `code`, which
+has 65,536 distinct values — one file per ~3 rows. That is a pathology, not a
+workload, and it ran until it was killed. The measurement above uses 50
+partitions. It also had to set `tables: []`, because an absent `tables` makes the
+postgres source discover every table alongside the declared query stream — the
+same trap 019 US1 found behind the phantom "dedup loss".
+
 ---
 
 ## Item ledger (AR8 — one disposition per item, none silent)
