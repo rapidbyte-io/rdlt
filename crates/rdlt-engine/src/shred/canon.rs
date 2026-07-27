@@ -108,6 +108,15 @@ pub(crate) fn canonical_json_bytes<'a, V: JsonView<'a>>(value: V, out: &mut Vec<
 /// common "ordinary string" case cost a few instructions instead of a full
 /// chrono parse attempt (this runs on EVERY observed string and would
 /// otherwise dominate the shred profile).
+/// Mutation note: the LENGTH gate is load-bearing and the digit checks are not.
+/// Everything after `b.len() < 20` indexes the slice, so that condition must
+/// both come first and stop evaluation — rewiring it panics on a one-character
+/// numeric string (pinned by `timestamp_prefilter_is_bounds_safe_on_short_input`).
+/// The four digit comparisons, by contrast, can only cause the filter to admit
+/// MORE candidates, and chrono then rejects them anyway; mutating those `||`s
+/// is measurably equivalent — verified, all four survive a pin that kills the
+/// length gate. They are an optimisation, not a validator, exactly as the doc
+/// above says.
 pub(crate) fn parse_timestamp_tz(s: &str) -> Option<chrono::DateTime<chrono::FixedOffset>> {
     let b = s.as_bytes();
     if b.len() < 20
@@ -127,6 +136,35 @@ pub(crate) fn parse_timestamp_tz(s: &str) -> Option<chrono::DateTime<chrono::Fix
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The RFC 3339 pre-filter runs on EVERY observed string, so it is reached
+    /// with arbitrary short junk constantly — and its guard chain is
+    /// short-circuit-ORDERED, not merely short-circuit-optimised. The length
+    /// check must come first and must stop evaluation, because everything after
+    /// it INDEXES the byte slice: with the chain rewired, a one-character
+    /// numeric string reads b[1..=7] off the end and panics.
+    ///
+    /// Panicking on the string "1" would be an engine crash on ordinary data,
+    /// which is why this is pinned by the shortest inputs rather than by the
+    /// timestamps it exists to recognise.
+    #[test]
+    fn timestamp_prefilter_is_bounds_safe_on_short_input() {
+        for short in ["", "1", "12", "202", "2026", "2026-", "2026-07-27", "x"] {
+            assert!(
+                parse_timestamp_tz(short).is_none(),
+                "{short:?} is not a timestamp — and must not panic reaching that verdict"
+            );
+        }
+        // Exactly at the 20-byte minimum, and past it.
+        assert!(parse_timestamp_tz("2026-07-27T01:02:03Z").is_some());
+        assert!(parse_timestamp_tz("2026-07-27T01:02:03+02:00").is_some());
+        // Long enough to pass the length gate, still not a timestamp.
+        assert!(parse_timestamp_tz("not-a-timestamp-at-all").is_none());
+        assert!(
+            parse_timestamp_tz("2026-13-99T99:99:99Z").is_none(),
+            "chrono is the real validator"
+        );
+    }
 
     #[test]
     fn canonical_json_sorts_keys_recursively() {
