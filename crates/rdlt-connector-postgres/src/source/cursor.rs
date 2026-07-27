@@ -326,6 +326,14 @@ impl Tracker {
             }
             _ => column,
         };
+        // Per row, and `array_value_to_string` rebuilds an `ArrayFormatter` on
+        // every call — the same cost the file destination's partition split was
+        // measured at 2.7% for and moved away from. It is NOT hoisted here,
+        // because the array being formatted VARIES by row: the timestamp arm
+        // above formats a per-row `zoned` temporary rather than `column`, so
+        // one formatter cannot serve the loop without restructuring that
+        // normalisation first. Recorded rather than half-done; this path is
+        // incremental-cursor only and no bench cell exercises it.
         arrow_cast::display::array_value_to_string(column, row).map_err(|e| {
             errors::fatal(
                 Phase::Copy,

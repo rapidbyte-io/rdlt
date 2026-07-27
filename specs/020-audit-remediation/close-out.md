@@ -1973,6 +1973,57 @@ happens when an assertion cannot fail.
 
 108/108 file-connector tests with the live S3 legs running, clippy clean.
 
+### D-45 (Polish) — AR6 verified mechanically, and the sweep found two things
+
+T185 requires a tree-wide search for each replaced implementation, returning zero
+hits. Run against every replacement this feature made:
+
+| searched | hits | verdict |
+|---|---|---|
+| `runtime::channel` (the deleted engine channel) | **0** | gone |
+| `StageClosed` (its error type) | **0** | gone |
+| `arrow-schema` in rdlt-core | **0** | removed; 4 hits remain in crates that genuinely use it |
+| `futures` in rdlt-engine / rdlt-testkit | **0** | removed; 3 hits remain in crates that genuinely use it |
+| `BIGSERIAL` as emitted DDL | **0** | replaced by the identity column; 3 hits are prose |
+| `array_value_to_string` in the partition split | **0** | replaced; 2 hits, see below |
+
+**A mechanical sweep is worth running even when you expect it to be clean,
+because it found two things an eyeball would not have.**
+
+**One stale comment, introduced by this feature.** `dest/dialect.rs` opened by
+describing the arrival column as "the stage's real `__rdlt_arrival` BIGSERIAL".
+D-37 changed that column to an identity column and did not update this file — so
+the feature that spent US1 fixing doc-truth had created a fresh doc-truth defect
+three increments later. Corrected. The lesson is not subtle: a grep for the
+old spelling catches what reading the diff does not, because the stale text is
+in a file the diff never touched.
+
+**One genuine second call site, recorded rather than half-fixed.**
+`source/cursor.rs::render_cell` also calls `array_value_to_string` per row —
+the same API misuse D-41 measured at 2.7%. It is deliberately NOT changed,
+because the hoist does not transfer: the array being formatted VARIES by row
+there (the timestamp arm formats a per-row `zoned` temporary rather than the
+column), so one formatter cannot serve the loop without first restructuring that
+normalisation. The reason is recorded at the site, along with the fact that this
+path is incremental-cursor only and no bench cell exercises it.
+
+### D-46 (Polish) — coverage measured against the recorded floor
+
+`make coverage`, workspace-wide (the run takes no package filter, so the floor
+is read against the whole tree):
+
+| metric | measured | floor |
+|---|---|---|
+| **lines** | **85.64%** (38,257 total, 5,495 uncovered) | 80% |
+| regions | 86.43% | — |
+| functions | 81.40% | — |
+
+Above the floor on every metric. The lowest-covered files are the ones a reader
+should expect and are named rather than averaged away: `rdlt/src/pipeline_spec.rs`
+at 50.61% (a config-deserialisation surface exercised mostly through end-to-end
+specs), `rdlt-testkit/src/conformance/*` at 30–78% (harness code, whose own
+coverage is not the point), and `rdlt-engine/src/shred/passthrough.rs` at 83.05%.
+
 ---
 
 ## Item ledger (AR8 — one disposition per item, none silent)

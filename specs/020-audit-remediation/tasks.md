@@ -367,8 +367,8 @@ Four real dependencies override the P1/P2/P3 reading:
 ## Phase 16: Polish & Close-Out
 
 - [ ] T184 Verify SC-001/SC-002 in `close-out.md`: all 29 confirmed defects have a terminal disposition with a pin demonstrated red on the pre-fix build; **zero** of the 18 refuted claims appear as implemented work, each appearing exactly once as a recorded non-goal
-- [ ] T185 Verify AR6 mechanically and record in `close-out.md`: a tree-wide search for each replaced implementation returns zero hits (the engine channel, the old ownership predicate, the deleted encoder arms, the removed dependencies)
-- [ ] T186 Measure coverage baseline-first with `make coverage`, confirm ≥ 80%, and record it in `close-out.md` (FR-012)
+- [X] T185 Verify AR6 mechanically and record in `close-out.md`: a tree-wide search for each replaced implementation returns zero hits (the engine channel, the old ownership predicate, the deleted encoder arms, the removed dependencies)
+- [X] T186 Measure coverage baseline-first with `make coverage`, confirm ≥ 80%, and record it in `close-out.md` (FR-012)
 - [ ] T187 Complete the close-out matrix: every item from T002's ledger in exactly one terminal state, zero uncited dispositions (AR8, SC-017)
 - [ ] T188 Record the feature's deviations in the close-out — the schema-affecting shred changes, the parquet narrowing, the required 0.3 bump, the corrections to `NEXT_STEPS.md` itself, and every CI-blocked verification recorded as unperformed
 - [ ] T189 Run the full local gate (`make check`) twice clean and record both runs in `close-out.md`; confirm every increment merged green and each is independently revertible (SC-018)
