@@ -1197,6 +1197,50 @@ was added: an uncaught mutant there is wrong SQL at every destination at once.
 Whether each is a real hole or another container-gated skip is T123's job, on
 the evidence above.
 
+### D-28 (US8) — the fresh mutation run, and what its number actually means
+
+**921 mutants, 97 survivors** (87 missed + 10 timeout), 175 caught in the final
+pass alone. The committed run it replaces was 719 mutants / 29 missed and
+predated features 006-019 entirely, so the two numbers are not comparable and
+the close-out does not compare them. Three things changed at once: the codebase
+grew by fourteen features, `rdlt-connector-sqlcore` entered `examine_globs` for
+the first time (T121), and this run forces containers OFF.
+
+**Where the survivors are** is the finding, more than the count:
+
+| module | survivors |
+|---|---|
+| `shred/build.rs` | 15 |
+| `shred/arena.rs` | 11 |
+| `runtime/run.rs` | 10 |
+| `shred/passthrough.rs` | 9 |
+| `shred/table.rs` | 7 |
+| `shred/canon.rs` | 5 |
+| `shred/{infer,mod}.rs`, `view.rs` | 10 |
+| sqlcore (4 files) | 11 |
+| `rdlt-core`, `rdlt-connector` | 9 |
+
+**Over half — 55 of 97 — are in the shredder.** That is the JSON→Arrow hot
+path: the most performance-tuned code in the workspace, repeatedly rewritten
+across 012/019 for throughput, and evidently the least pinned by assertion. It
+is also the code whose defects are hardest to see from the outside, because a
+shredding bug produces plausible data rather than an error. This is a
+better-targeted result than a single coverage percentage: it names the module
+that needs pins, not a number to argue about.
+
+**The count is an upper bound, deliberately.** `RDLT_TESTKIT_FORCE_NO_CONTAINERS=1`
+skips every container-gated leg, and D-27 PROVES that inflates the list. All 97
+are therefore re-tested with containers ENABLED before any disposition is
+written; a survivor that flips to caught was never a gap. The flag stays for the
+main run because the error then runs in the safe direction — see D-27.
+
+**Cost of the run, honestly:** ~2h for the final 329-mutant pass, but many hours
+across restarts, and the restarts were mine — three misdiagnosed OOM kills
+(D-30), a corrupted resume state from the tmpfs experiment, and repeated
+re-testing of the survivor backlog, which `--iterate` never excludes because it
+skips only caught and unviable. A future run should exclude confirmed survivors
+by regex to avoid re-grinding them on every resume.
+
 ---
 
 ## Item ledger (AR8 — one disposition per item, none silent)
