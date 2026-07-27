@@ -1571,6 +1571,39 @@ fidelity work, both were inside the 3% gate the whole time, and `--record`
 rewrites the whole file. The gate's reference point for them is now the
 post-020 tree.
 
+### D-36 (US11) — what the WAL costs when nothing crashes: 8.5%, and the trade stands
+
+The CLI cannot answer this question. Its spec path always resolves a workdir
+(absent means `.rdlt`), so durable recovery is never actually off there;
+`EngineConfig { workdir: None }` is reachable only by not calling
+`PipelineBuilder::workdir`. A throwaway harness built on the facade ran the
+identical pg-to-pg 1M-row pipeline with that one difference and nothing else,
+four interleaved repetitions per arm, **every run rowcount-verified at
+1,000,000** so an arm that silently moved nothing could not pass as fast:
+
+| arm | runs (ms) | mean |
+|---|---|---|
+| workdir set (WAL on) | 741, 737, 734, 748 | **740.0 ms** |
+| workdir unset (no WAL) | 676, 682, 692, 659 | **677.3 ms** |
+
+**The WAL's residual cost is 62.8 ms — 8.5% of the load.** That is the real
+price of durable recovery on the flagship cell, and it was previously a guess.
+
+**No skip is taken, and 019's D2 is why.** The tempting move is to elide the WAL
+automatically when every stream is Replace, on the reasoning that a Replace
+target is rebuilt wholesale anyway. D2 rejected exactly that: without the WAL,
+recovery is a full source re-extraction. Against a rate-limited API, a
+paid-per-request source, or a slow export, re-reading everything costs far more
+than 8.5% — and it costs it precisely when something has already gone wrong.
+The number does not change that argument; it quantifies what the argument buys.
+
+What the number does change is that the trade can now be stated to a user in
+figures rather than adjectives: durability costs about 8.5% on a load of this
+shape, and the alternative on failure is re-reading the source in full.
+
+The harness is deleted with this entry, as its own doc comment said it would be
+— it existed to produce one number, and the number is recorded here.
+
 ---
 
 ## Item ledger (AR8 — one disposition per item, none silent)
