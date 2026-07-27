@@ -530,10 +530,102 @@ fn fits_precision(scaled: i128, precision: u8) -> Option<i128> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow::array::Array;
     use serde_json::json;
 
     fn dec(value: serde_json::Value, precision: u8, scale: u8) -> Option<i128> {
         parse_decimal(&value, precision, scale)
+    }
+
+    /// The temporal builders each parse a string and then do ARITHMETIC on the
+    /// parsed parts, and the arithmetic is what was unpinned: every operator in
+    /// `scalar_time`'s micros computation could be swapped without a test
+    /// noticing. Exact values, chosen so each operator change lands somewhere
+    /// different.
+    #[test]
+    fn time_of_day_converts_to_exact_microseconds() {
+        use arrow::array::Time64MicrosecondArray;
+        // 01:02:03 is 3723 seconds; .456789 is 456_789 microseconds.
+        let a = scalar_time(&[Some(&json!("01:02:03.456789")), Some(&json!("not a time"))]);
+        let t = a
+            .as_any()
+            .downcast_ref::<Time64MicrosecondArray>()
+            .expect("time64 array");
+        assert_eq!(
+            t.value(0),
+            3_723_456_789,
+            "seconds * 1_000_000 + nanos / 1_000"
+        );
+        assert!(t.is_null(1), "an unparseable time is NULL, never a guess");
+
+        // Midnight and the last representable microsecond of the day: the
+        // boundaries the destination encoders refuse outside of.
+        let edges = scalar_time(&[Some(&json!("00:00:00")), Some(&json!("23:59:59.999999"))]);
+        let t = edges
+            .as_any()
+            .downcast_ref::<Time64MicrosecondArray>()
+            .expect("time64 array");
+        assert_eq!(t.value(0), 0);
+        assert_eq!(t.value(1), 86_399_999_999);
+    }
+
+    /// Deleting the string arm in any temporal builder makes EVERY value NULL —
+    /// the column still builds, the run still succeeds, and the data is simply
+    /// gone. Nulls are the shape a silent data-loss defect takes here, so each
+    /// builder needs a non-null assertion.
+    #[test]
+    fn temporal_builders_parse_their_string_forms() {
+        use arrow::array::{Date32Array, TimestampMicrosecondArray};
+
+        let ts = scalar_timestamp_naive(&[
+            Some(&json!("2026-07-27T01:02:03.5")),
+            Some(&json!("nonsense")),
+        ]);
+        let ts = ts
+            .as_any()
+            .downcast_ref::<TimestampMicrosecondArray>()
+            .expect("timestamp array");
+        assert!(!ts.is_null(0), "a valid naive timestamp must parse");
+        assert_eq!(
+            ts.value(0),
+            1_785_114_123_500_000,
+            "micros since the epoch, UTC"
+        );
+        assert!(ts.is_null(1));
+
+        let d = scalar_date(&[Some(&json!("1970-01-02")), Some(&json!("nonsense"))]);
+        let d = d
+            .as_any()
+            .downcast_ref::<Date32Array>()
+            .expect("date array");
+        assert_eq!(d.value(0), 1, "days since the epoch");
+        assert!(d.is_null(1));
+    }
+
+    /// A JSON `null` in a Json column must land as SQL NULL, not as the
+    /// four-character string "null". The guard that decides this is the only
+    /// thing standing between the two, and they are indistinguishable once
+    /// written — a reader cannot tell an absent value from a stored "null".
+    #[test]
+    fn json_null_is_sql_null_and_entries_stay_separated() {
+        use arrow::array::StringArray;
+        let a = scalar_json(&[
+            Some(&json!(null)),
+            Some(&json!({"a": 1, "b": 2})),
+            Some(&json!([1, 2])),
+        ]);
+        let s = a
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("utf8 array");
+        assert!(
+            s.is_null(0),
+            "JSON null is SQL NULL, not the string \"null\""
+        );
+        // Multi-entry containers need their separators: without them the output
+        // is not JSON at all, and nothing downstream would parse it back.
+        assert_eq!(s.value(1), r#"{"a":1,"b":2}"#);
+        assert_eq!(s.value(2), "[1,2]");
     }
 
     /// The accepted grammar is: optional leading `-`, then ASCII digits with at
