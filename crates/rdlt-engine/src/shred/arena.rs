@@ -302,10 +302,6 @@ where
             .push_node(ArenaNode::Str(Cow::Owned(s.to_owned()))))
     }
 
-    fn visit_string<E>(self, s: String) -> Result<NodeId, E> {
-        Ok(self.arena.push_node(ArenaNode::Str(Cow::Owned(s))))
-    }
-
     fn visit_seq<A>(self, mut seq: A) -> Result<NodeId, A::Error>
     where
         A: SeqAccess<'de>,
@@ -364,11 +360,18 @@ where
             fn visit_borrowed_str<E>(self, s: &'de str) -> Result<Self::Value, E> {
                 Ok(Cow::Borrowed(s))
             }
+            /// The ESCAPED-key path: serde_json decodes escapes into a scratch
+            /// buffer and hands it over transiently, so this must copy.
+            ///
+            /// There is deliberately no `visit_string` override here or on the
+            /// value visitor. `from_str`/`from_slice` never produce an owned
+            /// `String` — they borrow or use scratch — so an override is
+            /// unreachable code, and serde's default already forwards
+            /// `visit_string` to this method for any deserializer that does own
+            /// its strings. Verified by probe: a `panic!` in the override never
+            /// fired across the whole engine suite.
             fn visit_str<E>(self, s: &str) -> Result<Self::Value, E> {
                 Ok(Cow::Owned(s.to_owned()))
-            }
-            fn visit_string<E>(self, s: String) -> Result<Self::Value, E> {
-                Ok(Cow::Owned(s))
             }
         }
         deserializer.deserialize_str(V(PhantomData))
@@ -394,6 +397,108 @@ mod tests {
             }
         }
         Ok(rows)
+    }
+
+    /// `sized_for` is a CAPACITY decision, and capacity is the point: the doc
+    /// above records that an earlier version divided by the densest possible
+    /// encoding and over-estimated on everything, and that over-shooting costs
+    /// resident memory on every push — with peak RSS a recorded metric of this
+    /// workspace. Nothing about correctness changes if the arithmetic drifts,
+    /// which is exactly why no test noticed; the deliberate memory trade is
+    /// what needs pinning.
+    #[test]
+    fn sized_for_presizes_by_the_recorded_formula() {
+        // One node per 32 bytes, and arr_items at a quarter of that.
+        let arena = Arena::sized_for(32 * 1000);
+        assert_eq!(arena.nodes.capacity(), 1000);
+        assert_eq!(arena.obj_entries.capacity(), 1000);
+        assert_eq!(arena.arr_items.capacity(), 250);
+
+        // The cap is a HARD ceiling: a huge slab must not presize proportionally,
+        // or a single large input reserves memory the run never gets back.
+        let huge = Arena::sized_for(32 * 1024 * 1024);
+        assert_eq!(huge.nodes.capacity(), 64 * 1024, "capped at MAX_PRESIZE");
+        assert_eq!(huge.arr_items.capacity(), (64 * 1024) / 4);
+
+        // Small inputs presize small rather than paying the ceiling.
+        let small = Arena::sized_for(320);
+        assert_eq!(small.nodes.capacity(), 10);
+        assert!(
+            small.nodes.capacity() < 64 * 1024,
+            "a 320-byte slab must not reserve the cap"
+        );
+    }
+
+    /// The array iterator must ADVANCE. `self.next += 1` is the only thing
+    /// moving it, and holding it still yields the first element forever — a
+    /// hang rather than a wrong answer, which is why it needs an iterator that
+    /// is actually driven to completion.
+    #[test]
+    fn array_iteration_advances_and_terminates() {
+        // Inside an object: `parse_rows` unwraps a TOP-LEVEL array into one row
+        // per element and wraps any non-object row in `{"value": …}`, so a bare
+        // `[[…]]` would not leave an array node at the row.
+        let input = br#"{"xs":[10,20,30]}"#;
+        let mut arena = Arena::default();
+        let rows = arena.parse_rows(input).expect("parse");
+        let (_, xs) = arena
+            .node(rows[0])
+            .obj_entries()
+            .find(|(k, _)| *k == "xs")
+            .expect("xs entry");
+        // BOUNDED on purpose. The defect this pins is "the cursor never
+        // advances", which makes the iterator INFINITE rather than wrong — and
+        // an unbounded `collect()` on an infinite iterator exhausts memory and
+        // takes the machine down instead of failing the test. (Learned the hard
+        // way: the first version of this pin OOM-killed the host.) `take` past
+        // the expected length still proves termination, because a correct
+        // iterator stops on its own well inside the bound.
+        let items: Vec<i64> = xs
+            .arr_items()
+            .take(16)
+            .map(|v| match v.kind() {
+                Kind::Int(i) => i,
+                other => panic!("expected Int, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            items,
+            vec![10, 20, 30],
+            "each element exactly once, in order"
+        );
+    }
+
+    /// serde hands an OWNED `String` — reaching `visit_string`/`visit_str`
+    /// rather than the borrowed path — only when the JSON contains escapes, so
+    /// every test using plain strings exercises the borrowed arm alone. These
+    /// inputs force the owned arms for both a VALUE and a KEY.
+    #[test]
+    fn escaped_strings_take_the_owned_visitor_arms() {
+        // `\n` and `\t` here are JSON escape SEQUENCES in the raw byte string —
+        // two characters each — which is exactly what makes serde produce an
+        // owned String instead of borrowing from the slab.
+        let input = br#"{"a\nb":"x\ty","plain":"z"}"#;
+        let mut arena = Arena::default();
+        let rows = arena.parse_rows(input).expect("parse");
+        let node = arena.node(rows[0]);
+        let entries: Vec<(String, String)> = node
+            .obj_entries()
+            .map(|(k, v)| {
+                let value = match v.kind() {
+                    Kind::Str(s) => s.to_owned(),
+                    other => panic!("expected Str, got {other:?}"),
+                };
+                (k.to_owned(), value)
+            })
+            .collect();
+        assert_eq!(
+            entries,
+            vec![
+                ("a\nb".to_owned(), "x\ty".to_owned()),
+                ("plain".to_owned(), "z".to_owned()),
+            ],
+            "the escaped key and value must survive the owned visitor arms"
+        );
     }
 
     /// Duplicate keys keep FIRST-occurrence POSITION with LAST-occurrence value
