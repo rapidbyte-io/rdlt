@@ -1384,6 +1384,133 @@ with a terminal disposition, none of them silent:
 Alongside them, 017's eight verified-but-cut residuals were triaged rather than
 carried: three taken, one folded, four re-recorded with triggers (D-21).
 
+### D-33 (US11) — the owed merge-arm plan, captured; and what it says about the rest of the queue
+
+FR-077's condition was "no change is proposed against that path until the plan
+is in hand." The plan is now in hand, captured with `auto_explain` on a
+postgres:16 fixture seeded from `benches/fixtures/seed_pg.sql` — content hashes
+`e840f517…` / `7e208273…`, identical to the recorded bench dataset — running the
+real `pg-to-pg-dedup-1m` specs through the release CLI. rdlt-bench was NOT
+extended.
+
+**Where the 4756 ms cell actually goes:**
+
+| node | actual | share of cell |
+|---|---|---|
+| `COPY (SELECT … FROM events_v2) TO STDOUT (BINARY)` — the source read | 529.9 ms (Seq Scan 149.2 ms) | 11.1% |
+| `INSERT … ON CONFLICT DO UPDATE` — the merge | **3820.2 ms** | **80.3%** |
+|  ⤷ of which the dedup subquery (Sort → Unique → Seq Scan) | 461.5 ms | 9.7% |
+|  ⤷ of which **the upsert itself** | **~3359 ms** | **~70.6%** |
+
+The merge node verbatim, from `auto_explain` (`log_analyze`, `log_buffers`,
+`log_wal`):
+
+```
+Insert on events_merged  (cost=177805.99..181258.12 rows=0 width=0)
+                         (actual time=3820.180..3820.182 rows=0 loops=1)
+  Conflict Resolution: UPDATE
+  Conflict Arbiter Indexes: rdlt_ux_2e283ca583d39c5b
+  Tuples Inserted: 0
+  Conflicting Tuples: 1000000
+  Buffers: shared hit=11048224 read=37157 dirtied=50133 written=62625,
+           temp read=21229 written=21232
+  WAL: records=4013669 fpi=18266 bytes=556468731
+  ->  Subquery Scan on deduped  (actual time=205.918..461.452 rows=1000000)
+        ->  Unique  (actual time=202.525..373.043 rows=1000000)
+              ->  Sort  (actual time=202.522..305.737 rows=1000000)
+                    Sort Key: id, __rdlt_arrival DESC
+                    Sort Method: external merge  Disk: 169832kB
+                    ->  Seq Scan on _rdlt_stage_…  (actual time=0.041..67.108)
+```
+
+**The dominant cost is not rdlt's to optimize.** 4,013,669 WAL records and
+**556 bytes of WAL per row** — against a source row about 121 bytes wide — is
+what an `ON CONFLICT DO UPDATE` costs: a new heap tuple version plus a new index
+entry per row, all of it logged. 11.05M buffer hits for 1M rows is ~11 buffer
+touches each. This was checked for a redundant-index cause and there is none:
+`events_merged` carries exactly ONE index, the arbiter `rdlt_ux…(id)`, with the
+heap at 351 MB against 43 MB of indexes.
+
+**That is the number the rest of US11 must be judged against.** Roughly 71% of
+this cell is Postgres doing MVCC and index maintenance. Every remaining lever in
+the queue — allocator, COPY encoder fast path, canonical-JSON allocation — is
+competing for the ~20% that is not the upsert and not the source read. Not a
+reason to skip them; a denominator for reading their results, and it was
+unknown before this measurement.
+
+**One assumption in the code is falsified, and one change is measured and NOT
+taken.** `UNIT_WORK_MEM` sets `SET LOCAL work_mem = '64MB'`, and its comment
+said Postgres's 4 MB default "makes that spill to disk on any load worth
+benchmarking" — implying 64 MB does not. It does: `external merge Disk:
+169832kB` at the project's own flagship scale. The obvious fix was A/B'd on an
+isolated stage-shaped probe of the same 1M rows:
+
+| work_mem | sort method | execution |
+|---|---|---|
+| 64MB | external merge, Disk 50824kB | 259.1 ms |
+| 128MB | quicksort, Memory 68535kB | 214.5 ms |
+| 256MB | quicksort, Memory 165198kB | 234.0 ms |
+| 512MB | quicksort, Memory 165198kB | 231.3 ms |
+
+**Not taken.** The spill is worth at most ~45 ms against a 4756 ms cell — under
+1% — and past 128 MB the number stops improving. Against that, the comment's own
+stated reason for keeping the value modest still holds: this is a destination
+that may be one of several against the same server, and work_mem is charged per
+sort operation, not per transaction. Buying under 1% with a doubled per-sort
+memory reservation on shared infrastructure is a bad trade.
+
+**And the 45 ms is an upper bound that probably overstates the real gain**, which
+is the kind of thing worth saying out loud: the isolated probe planned with two
+parallel workers, while the real sort runs inside an `INSERT` and therefore
+cannot go parallel. The measured delta comes from a plan shape the production
+path does not have.
+
+The false half of the comment is corrected in place — it now records that the
+sort DOES spill at 1M rows, that this was measured, and what it was measured to
+be worth — so the next reader does not re-run this experiment expecting a prize.
+
+### D-34 (US11) — the allocator follow-up: its own stop condition fired, so it stops
+
+The mimalloc/jemalloc question has been carried since 019 D-05 with a recorded
+precondition (US4 + US6 landed) that is now met. T170 wrote the stop condition
+BEFORE the measurement, which is the only way a negative result stays honest:
+*if libc allocator symbols are under ~10% of cycles, record the negative and
+stop; only if they still rank, run the A/B.*
+
+`perf record -F 999 --call-graph=dwarf` on the release CLI over two cells,
+summing every glibc allocator symbol (`malloc`, `cfree`, `_int_malloc`,
+`_int_free_*`, `realloc`, `calloc`, `arena_get2`, tcache):
+
+| cell | allocator share of cycles |
+|---|---|
+| pg-to-pg-1m | **3.29%** |
+| pg-to-pg-dedup-1m | **3.41%** |
+
+Both are a third of the threshold. **The A/B is not run.** Swapping allocators
+cannot return more than the 3.3% the allocator costs in total, and it would add
+a dependency, change the RSS profile, and put the memory edge over dlt — a
+headline result — at risk for a prize bounded at three points. The question is
+closed by measurement rather than left open for a third feature to rediscover.
+
+**What the same profiles say about where the CPU actually is**, which is worth
+more than the negative:
+
+| symbol | pg-to-pg-1m | pg-to-pg-dedup-1m |
+|---|---|---|
+| `ColumnEncoder::encode_field` | 21.13% | 16.76% |
+| `CopyDecoder::feed` | 11.32% | 15.53% |
+| `__memmove_avx512_unaligned_erms` | 14.18% | 11.35% |
+| `bytes::bytes_mut::shared_v_drop` | 8.32% | 6.55% |
+| `PgSession::write_inner` | 4.30% | 7.57% |
+| `copy_decode::uuid_text` | 6.18% | 2.72% |
+
+The COPY encoder is the single largest rdlt-side symbol on both cells, which is
+independent confirmation of 019's D-08 recording (41.6% of the encoder is bytes
+plumbing) and makes T172 the best-supported candidate left in the queue. Note
+also that this is CLIENT-side CPU: read against D-33, roughly 71% of the dedup
+cell's WALL time is Postgres executing the upsert, so a win here is a win
+against the remaining fifth.
+
 ---
 
 ## Item ledger (AR8 — one disposition per item, none silent)

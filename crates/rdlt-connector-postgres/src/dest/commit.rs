@@ -163,6 +163,17 @@ impl PgSession {
         // Merge dedup sorts the staged rows, and Postgres's default work_mem
         // of 4 MB makes that spill to disk on any load worth benchmarking.
         //
+        // 64 MB does NOT stop the spill at a million rows — measured, not
+        // assumed: the dedup sort reports `external merge Disk: 169832kB`
+        // there. Raising it was A/B'd on that exact shape and is deliberately
+        // not done. Going to 128 MB keeps the sort in memory and buys about
+        // 45 ms against a 4.8 s load — under 1% — and past 128 MB the number
+        // stops moving at all. That measurement also flatters the change,
+        // because the probe planned with parallel workers while the real sort
+        // runs inside an INSERT and cannot. Under 1% is not worth doubling a
+        // per-sort memory reservation on a server this destination may be
+        // sharing.
+        //
         // `SET LOCAL` is the whole reason this is safe to do unasked: it is
         // scoped to THIS transaction and reverts at COMMIT or ROLLBACK, so it
         // cannot affect another session, another pipeline sharing the
