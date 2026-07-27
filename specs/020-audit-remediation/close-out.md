@@ -1274,6 +1274,58 @@ The shredder cluster survives verification intact, so the headline of D-28
 stands: the JSON→Arrow hot path is the least-pinned code in the workspace, and
 its unpinned edges are arithmetic and comparisons rather than control flow.
 
+### D-30 (US8) — all 75 verified gaps dispositioned
+
+Every survivor that outlived the container re-check now has a terminal
+disposition. **51 killed** by pins each verified RED under its hand-applied
+mutation, **18 equivalent** with the argument recorded at the call site, **3
+dead-code deletions**, 2 cosmetic, 1 untestable by construction, and **1 real
+defect fixed**.
+
+**The defect.** `UniqueNamer::name_for` could spin forever. `suffixed` truncates
+to `max_len - SUFFIX_LEN` BEFORE appending, so once a base reaches that bound
+`suffixed(suffixed(x)) == suffixed(x)` — verified idempotent at three bounds —
+and the collision loop stopped making progress. The comment three lines above
+claimed it "extends deterministically rather than loop forever"; it has been
+wrong since it was written. Each probe now hashes a distinct input and the loop
+is bounded by the number of names taken. Found only because two mutants HUNG
+rather than failed, which is a different signal from "missed" and was worth
+chasing.
+
+**The 18 equivalents matter as much as the 51 kills.** Taking the brief
+literally would have meant 75 new assertions, but a quarter of these mutants
+cannot fail any test — and a test that cannot fail is worse than none, because
+it reads as coverage. Four recurring reasons, each recorded where it applies:
+a guard redundant with the function it guards (`is_pinned`, the `is_object` /
+`is_array` projections); a validator upstream making the state unreachable (the
+empty `merge_scope`); a fast-path filter whose authority is downstream (the RFC
+3339 digit checks — chrono decides); and a counter that cannot be zero where it
+is read (`enforce_discards` is only called when something WILL be discarded).
+
+**Two pieces of dead code, proven dead rather than argued.** `visit_string` on
+both arena visitors — a `panic!` there never fired across the whole engine
+suite, because `from_str`/`from_slice` borrow or use scratch and never produce
+an owned `String`. And `fresh`'s `Kind::Null` arm, whose only caller returns
+early on null three lines before dispatching.
+
+**One untestable by construction, written down rather than papered over.**
+Replacing the WAL's `sync_for_commit` with `Ok(())` passes every test this suite
+can run: without the fsyncs the data is still in the page cache, so every read —
+including a full recovery replay after `kill -9` — returns the same bytes. Only
+a kernel death with the cache unwritten distinguishes them. A test asserting
+"commit succeeded" would pass with the barrier removed and falsely claim it
+covered.
+
+**The recurring defect in the pins themselves was the tautology**: an assertion
+that reads a value from the code under test and compares it to itself. The
+parquet dictionary-page limit had one (`assert_eq!(parsed.x, THE_CONSTANT)`),
+and so did two assertions written DURING this work — including an anti-vacuous
+guard whose `||` let it pass on one counter while the other compared zero to
+zero. Mutation testing finds these reliably; review does not, because they look
+exactly like real assertions.
+
+Suite grew 749 → 780.
+
 ---
 
 ## Item ledger (AR8 — one disposition per item, none silent)
