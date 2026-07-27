@@ -135,7 +135,19 @@ fn flatten_array(
             fields.push(arrow::datatypes::Field::new(
                 namer.name_for(&full_path.join("__")),
                 DataType::Utf8,
-                true,
+                // The SAME rule as every other lowered field, and as the schema
+                // side in `lower_column`. This arm hardcoded `true`, so a
+                // NON-nullable decimal lowered to a nullable column while the
+                // schema said otherwise — the two halves of lowering disagreeing
+                // about one field.
+                //
+                // Latent rather than live: reaching it needs a non-nullable
+                // decimal at the TOP level (a nested one is nullable under both
+                // rules anyway), and inference never produces one — only a
+                // declared hint on a required column would. Recorded at its real
+                // severity instead of promoted: the parity property test below
+                // is what makes it stay fixed.
+                field.is_nullable() || !path.is_empty(),
             ));
             out.push(Arc::new(rendered));
             Ok(())
@@ -464,5 +476,118 @@ mod tests {
         assert_eq!(render_decimal(-123456, 2), "-1234.56");
         assert_eq!(render_decimal(1, 2), "0.01", "padding to scale + 1");
         assert_eq!(render_decimal(i128::MAX, 0), i128::MAX.to_string());
+    }
+}
+
+#[cfg(test)]
+mod parity_tests {
+    //! The two halves of lowering must agree, checked by machine rather than by
+    //! hand.
+    //!
+    //! `lower_schema` tells the destination what columns to CREATE;
+    //! `lower_batch` decides what columns actually ARRIVE. They are written
+    //! separately — one walks `ColumnDef`s, the other walks arrow `Field`s — and
+    //! every rule has to be stated twice. A disagreement is not a compile error
+    //! and usually not a test failure either: the destination creates one shape
+    //! and receives another, and what happens next depends on the destination.
+    //!
+    //! That is exactly how the decimal arm drifted, hardcoding `true` for
+    //! nullability while the schema side computed it. This property closes the
+    //! whole class: over generated schemas × every capability combination, the
+    //! arrow schema of the lowered SCHEMA must equal the schema of the lowered
+    //! BATCH — field for field, including names, types, nullability and order.
+    //!
+    //! Zero-row batches on purpose: the question is entirely about shape, and no
+    //! row is needed to ask it.
+    use super::*;
+    use crate::shred::build::arrow_schema;
+    use proptest::prelude::*;
+    use rdlt_core::{Provenance, TableName};
+
+    fn caps(structs: bool, decimal: bool) -> DestinationCapabilities {
+        DestinationCapabilities {
+            structs,
+            decimal,
+            ..DestinationCapabilities::default()
+        }
+    }
+
+    fn scalar_type() -> impl Strategy<Value = ColumnType> {
+        prop_oneof![
+            Just(ColumnType::scalar(LogicalType::Bool)),
+            Just(ColumnType::scalar(LogicalType::Int64)),
+            Just(ColumnType::scalar(LogicalType::Float64)),
+            Just(ColumnType::scalar(LogicalType::Utf8)),
+            Just(ColumnType::scalar(LogicalType::TimestampTz)),
+            Just(ColumnType::scalar(LogicalType::Json)),
+            // The decimal arm is the one that drifted; give it real weight.
+            (1u8..=38u8).prop_flat_map(|p| {
+                (0u8..=p).prop_map(move |s| {
+                    ColumnType::scalar(LogicalType::Decimal {
+                        precision: p,
+                        scale: s,
+                    })
+                })
+            }),
+        ]
+    }
+
+    fn column(depth: u32) -> impl Strategy<Value = ColumnDef> {
+        let leaf = ("[a-z][a-z0-9_]{0,7}", scalar_type(), any::<bool>()).prop_map(
+            |(name, column_type, nullable)| ColumnDef {
+                name,
+                column_type,
+                nullable,
+                provenance: Provenance::Inferred,
+            },
+        );
+        leaf.prop_recursive(depth, 8, 3, |inner| {
+            (
+                "[a-z][a-z0-9_]{0,7}",
+                prop::collection::vec(inner, 1..3),
+                any::<bool>(),
+            )
+                .prop_map(|(name, fields, nullable)| ColumnDef {
+                    name,
+                    column_type: ColumnType::Struct { fields },
+                    nullable,
+                    provenance: Provenance::Inferred,
+                })
+        })
+    }
+
+    fn schema() -> impl Strategy<Value = TableSchema> {
+        prop::collection::vec(column(2), 1..5).prop_map(|columns| TableSchema {
+            table: TableName::new("t"),
+            parent: None,
+            columns,
+        })
+    }
+
+    /// An empty batch in the shape the engine would hand the loader.
+    fn empty_batch(schema: &TableSchema) -> RecordBatch {
+        let arrow = arrow_schema(schema);
+        RecordBatch::new_empty(Arc::new(arrow))
+    }
+
+    proptest! {
+        #[test]
+        fn lowered_schema_and_lowered_batch_agree(schema in schema()) {
+            for (structs, decimal) in [(true, true), (true, false), (false, true), (false, false)] {
+                let c = caps(structs, decimal);
+                let expected = arrow_schema(&lower_schema(&schema, &c));
+                let actual = lower_batch(&empty_batch(&schema), &c)
+                    .expect("lowering an empty batch cannot fail")
+                    .schema();
+                prop_assert_eq!(
+                    &expected,
+                    actual.as_ref(),
+                    "structs={} decimal={}: the schema the destination CREATES must \
+                     equal the schema it RECEIVES",
+                    structs,
+                    decimal
+                );
+            }
+        }
     }
 }

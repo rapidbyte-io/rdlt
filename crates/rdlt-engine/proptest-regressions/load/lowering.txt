@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 26fe914c5b6d3d99dd9f2b5c2bccc5cd4309c5535729f157618cd8264114dd85 # shrinks to schema = TableSchema { table: TableName("t"), parent: None, columns: [ColumnDef { name: "a", column_type: Scalar { scalar: Decimal { precision: 1, scale: 0 } }, nullable: false, provenance: Inferred }] }
