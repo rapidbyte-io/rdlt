@@ -1132,6 +1132,32 @@ code exercised ONLY by a container test therefore survives for a reason that has
 nothing to do with pin quality. Every survivor in a file this feature touched
 gets checked against that possibility rather than assumed to be a hole.
 
+### D-26 (US11) — the reqwest double tree: REJECTED, with the reason and a re-trigger
+
+Two major versions of reqwest are in the tree, and neither is ours to choose:
+
+- **0.12.28** ← `iceberg 0.10.0`, `iceberg-catalog-rest 0.10.0`, `object_store
+  0.12.5`, and our own `rdlt-connector-rest` (the workspace pins `"0.12"`).
+- **0.13.4** ← `opendal-core 0.57.0` ← `opendal 0.57.0` ←
+  `iceberg-storage-opendal 0.10.0`.
+
+Both arrive through the Iceberg destination, but along different upstream
+chains that pin different reqwest MAJORS. Cargo cannot unify across a major, so
+deduplicating requires iceberg-rust and opendal to agree on one — an upstream
+change, not one available to us. Pinning either side down would mean forking or
+downgrading a dependency to win a build-size argument, which is a bad trade
+against a working Iceberg destination.
+
+Two facts that bound the cost, and are the reason this is rejected rather than
+merely deferred: the duplication is **entirely gated behind the `iceberg`
+feature** (a facade built without it pulls reqwest zero times), and it costs
+build time and binary size only — no correctness or runtime surface.
+
+**Re-trigger:** `iceberg-storage-opendal` (or opendal) moving to reqwest 0.13's
+line, or iceberg-rust moving to 0.13 — at which point `cargo tree -i` should
+show ONE version and this entry can be closed by observation rather than by
+argument.
+
 ---
 
 ## Item ledger (AR8 — one disposition per item, none silent)

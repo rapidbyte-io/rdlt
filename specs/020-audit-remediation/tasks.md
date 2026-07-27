@@ -357,7 +357,7 @@ Four real dependencies override the P1/P2/P3 reading:
 - [ ] T177 [P] [US11] Probe the canonical-JSON per-object allocation (`crates/rdlt-engine/src/shred/canon.rs`) with D-13/D-21 as the explicit null hypothesis and a high bar to take; record the result either way
 - [ ] T178 [P] [US11] Price the merge stage's 1M `nextval()` calls server-side, recording the number in `close-out.md` (two stage-shaped tables, with and without the serial column) and record the number with its expected not-taken disposition
 - [ ] T179 [P] [US11] Add an iai bench under `benches/` for the partitioned-write per-row string rendering (`crates/rdlt-connector-file/src/dest/session.rs`), then decide from the number
-- [ ] T180 [P] [US11] Record in `close-out.md` the reqwest 0.12/0.13 double tree as **rejected with reason** — verified impossible to deduplicate without an upstream version change — with a re-trigger
+- [X] T180 [P] [US11] Record in `close-out.md` the reqwest 0.12/0.13 double tree as **rejected with reason** — verified impossible to deduplicate without an upstream version change — with a re-trigger
 - [ ] T181 [US11] Dispose every remaining smaller performance item in the close-out, three of them without new measurement; confirm the count closed by assertion or omission is **zero** (SC-015)
 - [ ] T182 [US11] Verify all four enforcement bars in `benches/bars.toml` still pass and no cell is worse than its standing of record (`make bench TARGET=gate`); record the matrix (FR-082, SC-016)
 - [ ] T183 [US11] Record US11's close-out rows as D-entries following the 019 pattern, with a site comment at each negative so it is not attempted a third time
