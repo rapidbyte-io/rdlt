@@ -446,3 +446,197 @@ async fn retry_budget_terminates_at_exactly_five_attempts() {
         "exactly MAX_RUN_ATTEMPTS read attempts"
     );
 }
+
+/// A destination that records the `CommitCounters` it is handed.
+///
+/// `CommitMeta.counters` is the per-commit-unit accounting the engine publishes
+/// alongside the data, and NOTHING in the suite looked at it — the report's
+/// per-table counters are asserted, but those are a different accumulator. So
+/// every `+=` feeding the commit counters could become `*=`, leaving them
+/// permanently zero, while every existing assertion still passed.
+#[derive(Clone)]
+struct CountersDest {
+    inner: MemoryDestination,
+    seen: std::sync::Arc<std::sync::Mutex<Vec<rdlt_core::CommitCounters>>>,
+}
+
+#[async_trait::async_trait]
+impl rdlt_connector::Destination for CountersDest {
+    fn spec(&self) -> rdlt_connector::ConnectorSpec {
+        self.inner.spec()
+    }
+    fn capabilities(&self) -> rdlt_connector::DestinationCapabilities {
+        self.inner.capabilities()
+    }
+    async fn open(
+        &self,
+        ctx: rdlt_connector::OpenCtx,
+    ) -> Result<Box<dyn rdlt_connector::LoadSession>, rdlt_connector::DestinationError> {
+        Ok(Box::new(CountersSession {
+            inner: self.inner.open(ctx).await?,
+            seen: std::sync::Arc::clone(&self.seen),
+        }))
+    }
+}
+
+struct CountersSession {
+    inner: Box<dyn rdlt_connector::LoadSession>,
+    seen: std::sync::Arc<std::sync::Mutex<Vec<rdlt_core::CommitCounters>>>,
+}
+
+#[async_trait::async_trait]
+impl rdlt_connector::LoadSession for CountersSession {
+    async fn ensure_table(
+        &mut self,
+        schema: &rdlt_core::TableSchema,
+        mode: &rdlt_core::WriteMode,
+    ) -> Result<(), rdlt_connector::DestinationError> {
+        self.inner.ensure_table(schema, mode).await
+    }
+    async fn write(
+        &mut self,
+        table: &rdlt_core::TableName,
+        batch: rdlt_connector::RecordBatch,
+    ) -> Result<(), rdlt_connector::DestinationError> {
+        self.inner.write(table, batch).await
+    }
+    async fn commit(
+        &mut self,
+        meta: rdlt_connector::CommitMeta,
+    ) -> Result<rdlt_connector::CommitReceipt, rdlt_connector::DestinationError> {
+        self.seen.lock().expect("seen").push(meta.counters);
+        self.inner.commit(meta).await
+    }
+    async fn read_state(
+        &mut self,
+        pipeline: &rdlt_core::PipelineId,
+    ) -> Result<Option<rdlt_core::StateDoc>, rdlt_connector::DestinationError> {
+        self.inner.read_state(pipeline).await
+    }
+}
+
+/// The counters a destination is HANDED must describe the work it was handed.
+///
+/// A destination uses these to reconcile what it published — an accounting that
+/// silently reads zero is worse than no accounting, because it looks like a
+/// clean unit that moved nothing.
+#[tokio::test]
+async fn commit_counters_describe_the_unit_they_publish() {
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let dest = CountersDest {
+        inner: MemoryDestination::new(),
+        seen: std::sync::Arc::clone(&seen),
+    };
+    // One commit per checkpoint: three units, two rows each.
+    let report = Engine::new(
+        EngineConfig::new("counters"),
+        MemorySource::new(vec![MemoryStream::new(
+            StreamSpec::new("s"),
+            three_batches(),
+        )]),
+        dest,
+    )
+    .run()
+    .await
+    .expect("run");
+
+    let units = seen.lock().expect("seen").clone();
+    assert!(!units.is_empty(), "at least one commit unit");
+    let rows: u64 = units.iter().map(|c| c.rows).sum();
+    let bytes: u64 = units.iter().map(|c| c.bytes).sum();
+    assert_eq!(
+        rows,
+        report.total_rows(),
+        "commit counters must total the rows the report says were loaded"
+    );
+    assert!(bytes > 0, "byte accounting is real, not a constant zero");
+    // Every unit that carried rows carried bytes with them.
+    for unit in units.iter().filter(|c| c.rows > 0) {
+        assert!(unit.bytes > 0, "a unit with rows has bytes: {unit:?}");
+    }
+}
+
+/// Discards are counted into the commit unit too, not just into the report.
+#[tokio::test]
+async fn discard_counters_reach_the_commit_unit() {
+    use rdlt_core::{PolicyAction, SchemaPolicy};
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let dest = CountersDest {
+        inner: MemoryDestination::new(),
+        seen: std::sync::Arc::clone(&seen),
+    };
+    // Freeze the shape after the first batch, then send a row with a NEW column
+    // under DiscardRow: the extra row is dropped and must be COUNTED.
+    let mut config = EngineConfig::new("discard-counters");
+    config.schema_policy = SchemaPolicy::with_default(PolicyAction::DiscardRow);
+    let batches = vec![
+        MemoryBatch::new(vec![json!({"id": 1})]).with_checkpoint(json!({"b": 0})),
+        MemoryBatch::new(vec![json!({"id": 2, "surprise": "x"})]).with_checkpoint(json!({"b": 1})),
+    ];
+    let report = Engine::new(
+        config,
+        MemorySource::new(vec![MemoryStream::new(StreamSpec::new("s"), batches)]),
+        dest,
+    )
+    .run()
+    .await
+    .expect("run");
+
+    let units = seen.lock().expect("seen").clone();
+    let discarded_rows: u64 = units.iter().map(|c| c.discarded_rows).sum();
+    let discarded_values: u64 = units.iter().map(|c| c.discarded_values).sum();
+    let reported_rows: u64 = report.tables.values().map(|t| t.discarded_rows).sum();
+    let reported_values: u64 = report.tables.values().map(|t| t.discarded_values).sum();
+    // ANTI-VACUOUS, and note the `&&`: an `||` here would let this pass on rows
+    // alone while `discarded_values` stayed 0 == 0 — a comparison of two zeros,
+    // which is exactly the tautology this guard exists to prevent. Both
+    // counters must be exercised, so the policy below discards VALUES too.
+    assert!(
+        reported_rows > 0,
+        "the fixture must discard whole rows: {reported_rows}"
+    );
+    assert_eq!(
+        (discarded_rows, discarded_values),
+        (reported_rows, reported_values),
+        "the unit's discard counters must agree with the report's"
+    );
+}
+
+/// The value-level discard counter, which `DiscardRow` never exercises.
+#[tokio::test]
+async fn discarded_value_counter_reaches_the_commit_unit() {
+    use rdlt_core::{PolicyAction, SchemaPolicy};
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let dest = CountersDest {
+        inner: MemoryDestination::new(),
+        seen: std::sync::Arc::clone(&seen),
+    };
+    // DiscardValue keeps the row and NULLs the non-conforming value, so the
+    // value counter moves while the row counter does not.
+    let mut config = EngineConfig::new("discard-values");
+    config.schema_policy = SchemaPolicy::with_default(PolicyAction::DiscardValue);
+    let batches = vec![
+        MemoryBatch::new(vec![json!({"id": 1})]).with_checkpoint(json!({"b": 0})),
+        MemoryBatch::new(vec![json!({"id": 2, "surprise": "x"})]).with_checkpoint(json!({"b": 1})),
+    ];
+    let report = Engine::new(
+        config,
+        MemorySource::new(vec![MemoryStream::new(StreamSpec::new("s"), batches)]),
+        dest,
+    )
+    .run()
+    .await
+    .expect("run");
+
+    let units = seen.lock().expect("seen").clone();
+    let unit_values: u64 = units.iter().map(|c| c.discarded_values).sum();
+    let reported_values: u64 = report.tables.values().map(|t| t.discarded_values).sum();
+    assert!(
+        reported_values > 0,
+        "the fixture must discard VALUES, not just rows: {reported_values}"
+    );
+    assert_eq!(
+        unit_values, reported_values,
+        "the unit's value-discard counter must agree with the report's"
+    );
+}

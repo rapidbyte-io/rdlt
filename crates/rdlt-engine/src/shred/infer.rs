@@ -123,6 +123,14 @@ impl ColState {
             // declaration must not silently rewrite it. The pinned column keeps
             // its type here and the offending value is nulled and counted at
             // build time.
+            //
+            // Mutation note: this guard is REDUNDANT with `observe`, and
+            // measurably so — forcing it either way is an equivalent mutant.
+            // `ScalarState::observe` already returns early when pinned AND maps
+            // `Object | Array` to `Json`, so both arms reach the same resolved
+            // type by different routes. Kept because it states the rule where
+            // the rule matters, rather than leaving a reader to find it inside
+            // the scalar observer.
             ColState::Scalar(state) => match value.kind() {
                 Kind::Object | Kind::Array if !state.is_pinned() => *self = ColState::Json,
                 _ => state.observe(value),
@@ -174,9 +182,15 @@ impl ColState {
         }
     }
 
+    /// Decide an initial state from the FIRST non-null value.
+    ///
+    /// Null is deliberately absent from this match: `observe` — the only caller
+    /// — returns early on a null, so a null cannot reach here. An arm for it
+    /// would be unreachable code, and its mutant unkillable for that reason
+    /// rather than for lack of a test. A null leaves the column `Unknown` by
+    /// never calling this at all, which is the same outcome by a shorter route.
     fn fresh<'a, V: JsonView<'a>>(value: V, lists_as_columns: bool) -> Self {
         match value.kind() {
-            Kind::Null => ColState::Unknown,
             Kind::Object => {
                 let mut fields = Vec::new();
                 for (key, item) in value.obj_entries() {
@@ -291,6 +305,95 @@ mod tests {
             state.observe(v, true);
         }
         state
+    }
+
+    /// A leading NULL must not DECIDE the column. `fresh` maps a null to
+    /// `Unknown` precisely so the first real value picks the type; without that
+    /// arm a null falls through to the scalar branch and the column is decided
+    /// by the absence of data.
+    #[test]
+    fn a_leading_null_leaves_the_column_undecided() {
+        let state = observe_all(&[json!(null)]);
+        assert_eq!(state.resolve(), None, "null alone decides nothing");
+
+        // …and the first real value still gets to choose, from either order.
+        let state = observe_all(&[json!(null), json!(7)]);
+        assert_eq!(
+            state.resolve(),
+            Some(ColumnType::scalar(LogicalType::Int64))
+        );
+        let state = observe_all(&[json!(null), json!("text")]);
+        assert_eq!(state.resolve(), Some(ColumnType::scalar(LogicalType::Utf8)));
+
+        // The CONTAINER case is what actually distinguishes `Unknown` from a
+        // scalar state that merely resolves to nothing: `Unknown` re-runs
+        // `fresh` on the next value and gets a Struct, while a scalar state
+        // treats the object as a shape conflict and escapes to Json. Following
+        // a null with scalars alone cannot tell those apart.
+        let state = observe_all(&[json!(null), json!({"a": 1})]);
+        assert!(
+            matches!(state.resolve(), Some(ColumnType::Struct { .. })),
+            "a null then an object must infer a STRUCT, not the Json escape hatch: {:?}",
+            state.resolve()
+        );
+    }
+
+    /// A list of scalars stays a list. Dropping the array arm sends it to the
+    /// Json escape hatch instead — the column still loads, but every row is
+    /// stored as opaque text rather than a typed list, and nothing downstream
+    /// can index it.
+    #[test]
+    fn a_scalar_list_stays_a_scalar_list() {
+        let state = observe_all(&[json!([1, 2]), json!([3])]);
+        assert_eq!(
+            state.resolve(),
+            Some(ColumnType::ScalarList {
+                item: LogicalType::Int64
+            }),
+            "repeated scalar arrays stay a typed list"
+        );
+        // Widening within the list still happens on the item lattice.
+        let state = observe_all(&[json!([1]), json!(["x"])]);
+        assert_eq!(
+            state.resolve(),
+            Some(ColumnType::ScalarList {
+                item: LogicalType::Utf8
+            })
+        );
+        // A list that later holds objects is irreconcilable and escapes to Json.
+        let state = observe_all(&[json!([1]), json!([{"a": 1}])]);
+        assert_eq!(state.resolve(), Some(ColumnType::scalar(LogicalType::Json)));
+    }
+
+    /// An INFERRED scalar that later sees a container widens to Json; a PINNED
+    /// one keeps its declared type and the offending value is nulled and counted
+    /// at build time. Both halves matter: forcing `is_pinned` true freezes every
+    /// column and inference stops working, and forcing the guard false rewrites
+    /// a type the user declared.
+    #[test]
+    fn shape_conflict_widens_inferred_columns_but_never_pinned_ones() {
+        // Inferred: an object arriving after an int escalates to Json.
+        let state = observe_all(&[json!(1), json!({"a": 1})]);
+        assert_eq!(
+            state.resolve(),
+            Some(ColumnType::scalar(LogicalType::Json)),
+            "an inferred scalar widens on a shape conflict"
+        );
+        let state = observe_all(&[json!(1), json!([1, 2])]);
+        assert_eq!(state.resolve(), Some(ColumnType::scalar(LogicalType::Json)));
+
+        // Pinned: the declared type survives the same conflicts untouched. This
+        // is the half that a `!state.is_pinned()` guard forced false would
+        // destroy — the object would rewrite a type the user declared.
+        let mut pinned = ColState::Scalar(ScalarState::pinned(LogicalType::Int64));
+        pinned.observe(&json!({"a": 1}), true);
+        pinned.observe(&json!([1, 2]), true);
+        pinned.observe(&json!("text"), true);
+        assert_eq!(
+            pinned.resolve(),
+            Some(ColumnType::scalar(LogicalType::Int64)),
+            "a declared type is never rewritten by an observation"
+        );
     }
 
     #[test]
