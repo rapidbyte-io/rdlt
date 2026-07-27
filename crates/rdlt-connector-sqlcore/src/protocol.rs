@@ -525,6 +525,120 @@ mod tests {
         BTreeSet::new()
     }
 
+    /// Which tables get a staged-emptiness PROBE, and which get MARKED as
+    /// single-unit, are two different conjunctions — and every term in them was
+    /// unpinned.
+    ///
+    /// The probe exists to answer "did this table's full feed arrive in one
+    /// unit?", which is only a question for a merge whose semantics read the
+    /// stage as the complete truth. Widening either conjunction to a disjunction
+    /// makes ordinary Append and plain-merge tables get probed and marked, which
+    /// turns a correct multi-unit load into a single-unit VIOLATION and fails a
+    /// run that should succeed.
+    #[test]
+    fn only_full_feed_merges_are_probed() {
+        let opts = DestOptions {
+            tables: [(
+                "scoped".to_string(),
+                TableOptions {
+                    merge_scope: Some(vec!["day".to_string()]),
+                    ..Default::default()
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        let tbls = tables(vec![
+            // Full-feed merge: scoped, so the stage must be the whole truth.
+            ("scoped", keyed_schema("scoped"), merge(&["id"])),
+            // Merge WITHOUT scope or retire: an ordinary incremental merge.
+            ("plain", keyed_schema("plain"), merge(&["id"])),
+            // Not a merge at all.
+            ("events", keyed_schema("events"), WriteMode::Append),
+        ]);
+
+        let targets: Vec<String> = staged_probe_targets(&tbls, &opts)
+            .into_iter()
+            .map(|t| t.as_str().to_owned())
+            .collect();
+        assert_eq!(
+            targets,
+            vec!["scoped".to_string()],
+            "only a full-feed merge is probed: an Append table has no stage \
+             semantics to check, and a plain merge is legitimately incremental"
+        );
+    }
+
+    /// The single-unit MARK requires all three of: full-feed semantics, not
+    /// already marked in an earlier unit, and something actually staged.
+    ///
+    /// Each term removes a different false positive. Drop the "already done"
+    /// term and a table is re-marked every unit; drop the "staged non-empty"
+    /// term and an empty unit marks a table that delivered nothing, which then
+    /// reads as its complete feed.
+    #[test]
+    fn the_single_unit_mark_needs_every_term() {
+        let opts = DestOptions {
+            tables: [(
+                "scoped".to_string(),
+                TableOptions {
+                    merge_scope: Some(vec!["day".to_string()]),
+                    ..Default::default()
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        let tbls = tables(vec![
+            ("scoped", keyed_schema("scoped"), merge(&["id"])),
+            ("plain", keyed_schema("plain"), merge(&["id"])),
+            ("events", keyed_schema("events"), WriteMode::Append),
+        ]);
+
+        // Staged and not yet done: the one table that gets marked.
+        let done = empty();
+        let staged: BTreeSet<TableName> =
+            [t("scoped"), t("plain"), t("events")].into_iter().collect();
+        let script = commit_script(&tbls, &opts, &ctx(false, false, &done, &staged)).unwrap();
+        assert_eq!(
+            script.marks,
+            vec![t("scoped")],
+            "only the full-feed table is marked, even though all three staged"
+        );
+
+        // Nothing staged for it: nothing to call a complete feed.
+        let empty_staged = empty();
+        let script = commit_script(&tbls, &opts, &ctx(false, false, &done, &empty_staged)).unwrap();
+        assert!(
+            script.marks.is_empty(),
+            "an empty unit marks nothing: {:?}",
+            script.marks
+        );
+
+        // THE REPLAY PATH keeps its own copy of this conjunction, and it is the
+        // one that matters most: a redelivered unit must still count toward the
+        // single-unit discipline without re-running any merge SQL. Marking a
+        // plain incremental merge here would make a later legitimate unit look
+        // like a second delivery of a complete feed.
+        let script = commit_script(&tbls, &opts, &ctx(true, true, &done, &staged)).unwrap();
+        assert_eq!(
+            script.marks,
+            vec![t("scoped")],
+            "on replay too, only the full-feed table is marked"
+        );
+
+        // …and a table already marked in an earlier unit is not marked twice.
+        let already: BTreeSet<TableName> = [t("scoped")].into_iter().collect();
+        let script = commit_script(&tbls, &opts, &ctx(true, true, &already, &staged)).unwrap();
+        assert!(
+            script.marks.is_empty(),
+            "an already-counted table is not re-marked: {:?}",
+            script.marks
+        );
+    }
+
     // ---- Direct-to-target pins (feature 019 US5). ADDITIVE: every staged pin
     // above keeps its exact expected program, because a destination that
     // stages is unaffected by this option existing. ----
