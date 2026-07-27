@@ -86,6 +86,31 @@ impl schemars::JsonSchema for Secret {
 mod tests {
     use super::*;
 
+    /// The generated schema must say STRING.
+    ///
+    /// A config schema is what a platform renders a form from and validates
+    /// against, so a `Secret` field that loses its type stops being an input a
+    /// UI can offer and stops rejecting a wrong-typed value. Nothing asserted
+    /// the generated shape, so the whole impl could have returned an empty
+    /// schema while every other test passed.
+    #[cfg(feature = "schema")]
+    #[test]
+    fn the_generated_schema_declares_a_string() {
+        let schema = schemars::schema_for!(Secret);
+        let json = serde_json::to_value(&schema).expect("schema serializes");
+        assert_eq!(
+            json.get("type").and_then(|t| t.as_str()),
+            Some("string"),
+            "a Secret is a string on the wire: {json}"
+        );
+        assert!(
+            json.get("description")
+                .and_then(|d| d.as_str())
+                .is_some_and(|d| d.contains("never rendered")),
+            "the schema carries the never-rendered warning: {json}"
+        );
+    }
+
     #[test]
     fn debug_and_display_never_render_the_value() {
         let secret = Secret::new("hunter2-super-secret");

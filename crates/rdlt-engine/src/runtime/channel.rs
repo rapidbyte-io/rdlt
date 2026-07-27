@@ -65,6 +65,10 @@ impl<T: ByteSized> ByteTx<T> {
             .min(self.budget_max)
             .try_into()
             .unwrap_or(u32::MAX);
+        // Mutation note: `> 0` versus `>= 0` is EQUIVALENT here for the same
+        // reason as the SPI channel — acquiring zero permits always succeeds.
+        // Kept as the cheaper path and as a statement that zero-byte markers
+        // are not budgeted.
         let permit = if permits > 0 {
             Some(
                 Arc::clone(&self.budget)

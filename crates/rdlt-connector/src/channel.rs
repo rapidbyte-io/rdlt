@@ -110,6 +110,13 @@ impl RecordsOut {
         // A single oversized message may not exceed the whole budget or it would
         // deadlock; it degrades to "budget fully drained" instead.
         let permits = size.min(self.budget_max).try_into().unwrap_or(u32::MAX);
+        // Mutation note: `> 0` versus `>= 0` here is an EQUIVALENT mutant, and
+        // verified so. `acquire_many_owned(0)` succeeds immediately on any
+        // semaphore — including a drained or closed one, where the send that
+        // follows reports `ChannelClosed` either way — so taking the branch for
+        // a zero-byte item changes nothing observable. The comparison is kept
+        // because skipping the acquire is the cheaper path and says plainly
+        // that markers are not budgeted.
         let permit = if permits > 0 {
             Some(
                 Arc::clone(&self.budget)
@@ -191,5 +198,72 @@ mod budget_tests {
         out.raw_json(bytes::Bytes::from_static(b"2"))
             .await
             .expect("freed budget");
+    }
+}
+
+#[cfg(test)]
+mod close_tests {
+    //! `RecordsIn::close` is how a host tells a source to STOP.
+    //!
+    //! Without it a source blocked on the byte budget never learns the host is
+    //! gone: it waits on a permit that will never be released. That is a hang,
+    //! not a wrong answer, which is why it reached the survivor list as a
+    //! timeout rather than a miss — and why these assertions are bounded.
+    use super::*;
+    use std::time::Duration;
+
+    const BOUND: Duration = Duration::from_secs(5);
+
+    #[tokio::test]
+    async fn close_wakes_a_source_parked_on_the_byte_budget() {
+        // Budget of 8 bytes: the first push takes it, the second must park.
+        let (mut out, mut input) = records_channel(8);
+        out.raw_json(bytes::Bytes::from_static(b"12345678"))
+            .await
+            .expect("first push fits the budget");
+
+        // Park a second push, then close from the host side.
+        let parked =
+            tokio::spawn(async move { out.raw_json(bytes::Bytes::from_static(b"12345678")).await });
+        // Give it a moment to actually block on the semaphore.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        input.close();
+
+        let result = tokio::time::timeout(BOUND, parked)
+            .await
+            .expect("close must WAKE the parked source, not leave it waiting")
+            .expect("task joins");
+        assert_eq!(
+            result,
+            Err(ChannelClosed),
+            "a woken source learns the host is gone, and says so"
+        );
+    }
+
+    #[tokio::test]
+    async fn close_stops_further_pushes() {
+        let (mut out, mut input) = records_channel(1024);
+        input.close();
+        let result =
+            tokio::time::timeout(BOUND, out.raw_json(bytes::Bytes::from_static(b"{\"a\":1}")))
+                .await
+                .expect("a closed channel refuses promptly");
+        assert_eq!(result, Err(ChannelClosed));
+    }
+
+    #[tokio::test]
+    async fn zero_sized_pushes_do_not_consume_budget() {
+        // A checkpoint carries no rows, so it must not be gated by the byte
+        // budget — on a zero budget it still has to get through, or committing
+        // stalls forever.
+        let (mut out, mut input) = records_channel(0);
+        tokio::time::timeout(
+            BOUND,
+            out.checkpoint(rdlt_core::Cursor::new(serde_json::json!(1))),
+        )
+        .await
+        .expect("a zero-byte marker must not wait on the budget")
+        .expect("channel open");
+        assert!(input.recv().await.is_some(), "the marker arrives");
     }
 }

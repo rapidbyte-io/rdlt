@@ -122,3 +122,33 @@ impl RunReport {
         self.tables.values().map(|t| t.rows).sum()
     }
 }
+
+#[cfg(test)]
+mod projection_tests {
+    //! `From<CommitCounters> for TableReport` is a field-for-field projection,
+    //! and nothing asserted it — so it could have returned `Default::default()`
+    //! (all zeros) while every other test passed. A destination or host that
+    //! projects a unit's totals into report shape would then report a unit that
+    //! moved nothing.
+    use super::*;
+
+    #[test]
+    fn commit_counters_project_field_for_field() {
+        let counters = CommitCounters {
+            rows: 7,
+            bytes: 1_234,
+            discarded_rows: 2,
+            discarded_values: 5,
+        };
+        let report: TableReport = counters.into();
+        assert_eq!(report.rows, 7);
+        assert_eq!(report.bytes, 1_234);
+        assert_eq!(report.discarded_rows, 2);
+        assert_eq!(report.discarded_values, 5);
+
+        // Distinct values per field on purpose: equal ones would let a
+        // transposed projection pass.
+        assert_ne!(report.rows, report.bytes);
+        assert_ne!(report.discarded_rows, report.discarded_values);
+    }
+}

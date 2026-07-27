@@ -244,6 +244,17 @@ mod tests {
             parsed.dictionary_page_size_limit, DEFAULT_DICTIONARY_PAGE_SIZE_LIMIT,
             "must not deserialize to 0"
         );
+        // …and the default is that LITERAL size. Comparing the parsed value to
+        // the constant is tautological — it holds whatever the constant becomes
+        // — so the chosen number is asserted directly. 64 KiB is a measured
+        // decision (the top of the flat region; 4 and 16 KiB are no faster, and
+        // a smaller cap abandons dictionary encoding for medium-cardinality
+        // columns), which is exactly the kind of choice that should not drift
+        // silently.
+        assert_eq!(
+            DEFAULT_DICTIONARY_PAGE_SIZE_LIMIT, 65_536,
+            "64 KiB, chosen by measurement — change it deliberately"
+        );
     }
 
     /// Partial blocks keep the defaults for what they leave out.
