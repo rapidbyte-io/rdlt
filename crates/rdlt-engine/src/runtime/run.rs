@@ -753,6 +753,51 @@ fn classify_source_error(stream: StreamName, e: &SourceError) -> RdltError {
 }
 
 #[cfg(test)]
+mod hint_validation_tests {
+    //! The decimal type-hint bounds, at their EDGES.
+    //!
+    //! These are refused here or nowhere: the batch builder cannot check a
+    //! precision it was handed, and reaching it with an out-of-range one is a
+    //! panic. Both comparisons are strict for a reason — `precision == MAX` is
+    //! the largest decimal the engine represents and must be ACCEPTED, and
+    //! `scale == precision` is an ordinary all-fractional decimal (0.99 at
+    //! precision 2, scale 2), not an error. Every off-by-one here rejects a
+    //! legitimate configuration at plan time, which is a refusal the operator
+    //! cannot work around.
+    use super::*;
+    use rdlt_testkit::MemoryDestination;
+
+    fn check(precision: u8, scale: u8) -> Result<(), RdltError> {
+        let spec = StreamSpec::new("s")
+            .with_type_hint("amount", LogicalType::Decimal { precision, scale });
+        let dest = MemoryDestination::new();
+        validate_streams(
+            &EngineConfig::new("hints"),
+            std::slice::from_ref(&spec),
+            dest.capabilities(),
+            &dest,
+        )
+    }
+
+    #[test]
+    fn decimal_hint_bounds_are_inclusive_at_their_edges() {
+        let max = rdlt_core::types::DECIMAL_MAX_PRECISION;
+
+        // The largest representable decimal is legal, as is an all-fractional
+        // one, as is the smallest.
+        assert!(check(max, 0).is_ok(), "precision == MAX must be accepted");
+        assert!(check(max, max).is_ok(), "scale == precision is 0.999…");
+        assert!(check(1, 1).is_ok(), "the smallest all-fractional decimal");
+        assert!(check(10, 2).is_ok(), "an ordinary decimal");
+
+        // And the genuinely out-of-range cases stay refused.
+        assert!(check(0, 0).is_err(), "precision 0 has no digits");
+        assert!(check(max + 1, 0).is_err(), "beyond 128-bit precision");
+        assert!(check(5, 6).is_err(), "scale exceeding precision");
+    }
+}
+
+#[cfg(test)]
 mod backoff_tests {
     // Mutation-report closure: the retry backoff curve, by value.
     #[test]

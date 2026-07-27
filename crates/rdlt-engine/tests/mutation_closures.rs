@@ -350,3 +350,99 @@ async fn transient_destination_failures_retry_and_are_bounded() {
         "terminal error keeps its classification: {err:?}"
     );
 }
+
+/// The retry budget must TERMINATE, and terminate at an exact count.
+///
+/// The two tests above prove a transient failure is retried and that the budget
+/// eventually gives up with its classification intact. Neither pins the thing
+/// the guard actually decides: HOW MANY attempts. That left every arithmetic
+/// and boolean edge of `attempt + 1 < MAX_RUN_ATTEMPTS && !cancel.is_cancelled()`
+/// free to drift — off-by-one, `&&` to `||`, and the increment itself — while
+/// both tests still passed.
+///
+/// Two failure shapes, so this pin has to catch both:
+///
+/// - **Wrong count.** `<` to `<=`, or `attempt + 1` to `attempt * 1`, buys one
+///   extra attempt. The run still exhausts and still returns the same error, so
+///   only counting attempts can see it.
+/// - **No termination.** Forcing the guard true, or `&&` to `||` (which makes
+///   "not cancelled" alone sufficient), retries FOREVER. That does not fail a
+///   test — it hangs it, and a hung test is indistinguishable from a slow
+///   machine until someone kills it. The `timeout` is therefore load-bearing,
+///   not decoration: it converts an unbounded loop into a fast, legible failure.
+///
+/// The bound is generous on purpose. Five attempts with the backoff curve
+/// (100ms doubling, capped) cost roughly three seconds, so 45s cannot fire for
+/// a correct run on any machine this suite runs on.
+#[tokio::test]
+async fn retry_budget_terminates_at_exactly_five_attempts() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
+
+    const BOUND: Duration = Duration::from_secs(45);
+
+    // ---- destination side: every commit fails transiently, forever ----
+    let remaining = std::sync::Arc::new(AtomicU64::new(u64::MAX));
+    let dest = TransientCommitDest {
+        inner: MemoryDestination::new(),
+        remaining: std::sync::Arc::clone(&remaining),
+    };
+    let source = MemorySource::new(vec![MemoryStream::new(
+        StreamSpec::new("s"),
+        three_batches(),
+    )]);
+    let err = tokio::time::timeout(
+        BOUND,
+        Engine::new(EngineConfig::new("dest-bounded"), source, dest).run(),
+    )
+    .await
+    .expect("the retry budget must TERMINATE — an unbounded guard hangs here")
+    .expect_err("budget exhausted");
+    assert!(
+        matches!(
+            err,
+            RdltError::Destination {
+                retryable: true,
+                ..
+            }
+        ),
+        "terminal error keeps its classification: {err:?}"
+    );
+    // `remaining` counts down once per failed commit, so the distance travelled
+    // IS the number of run attempts.
+    assert_eq!(
+        u64::MAX - remaining.load(Ordering::SeqCst),
+        5,
+        "exactly MAX_RUN_ATTEMPTS commit attempts, no more and no fewer"
+    );
+
+    // ---- source side: every read fails transiently, forever ----
+    let source = MemorySource::new(vec![
+        MemoryStream::new(StreamSpec::new("s"), three_batches()).transient_start_failures(u32::MAX),
+    ]);
+    let since_log = source.since_log();
+    let err = tokio::time::timeout(
+        BOUND,
+        Engine::new(
+            EngineConfig::new("source-bounded"),
+            source,
+            MemoryDestination::new(),
+        )
+        .run(),
+    )
+    .await
+    .expect("the retry budget must TERMINATE on the source side too")
+    .expect_err("budget exhausted");
+    assert!(matches!(
+        err,
+        RdltError::Source {
+            retryable: true,
+            ..
+        }
+    ));
+    assert_eq!(
+        since_log.lock().expect("log").len(),
+        5,
+        "exactly MAX_RUN_ATTEMPTS read attempts"
+    );
+}
