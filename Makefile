@@ -167,8 +167,25 @@ else ifeq ($(TARGET),mutants)
 	# and the run continues. That is strictly better than surviving the mutant —
 	# unbounded memory growth is precisely the defect the byte budget exists to
 	# prevent, so killing it IS the correct verdict.
-	systemd-run --user --scope --quiet \
-	  -p MemoryMax=24G -p MemorySwapMax=2G \
+	#
+	# MemoryMax is sized from LEGITIMATE peak (two rustc plus two test suites,
+	# comfortably under 10G), NOT from the pathology. A first attempt set it to
+	# 24G because that is where the runaway was observed — which meant the
+	# cgroup had to reach 24G before the kernel acted, starving the host on the
+	# way there. Cap just above normal use and a runaway dies early and cheaply.
+	#
+	# OOMPolicy=continue is what keeps the RUN alive: without it systemd stops
+	# the whole scope when any process in it is OOM-killed, so containing the
+	# blast radius still ended the run. With it, only the runaway test dies.
+	# NOT --quiet: when this silently fails to create the scope the run proceeds
+	# UNBOUNDED, which looks identical to success until the host OOMs. Observed:
+	# launched from inside a tmux session the processes stayed in the caller's
+	# `tmux-spawn-*.scope` and no limit applied. If that happens, bound the live
+	# cgroup instead:
+	#   systemctl --user set-property <scope> MemoryMax=12G MemorySwapMax=2G
+	# reading <scope> from /proc/<pid>/cgroup.
+	systemd-run --user --scope \
+	  -p MemoryMax=12G -p MemorySwapMax=2G -p OOMPolicy=continue \
 	  env RUSTFLAGS="-C link-arg=-fuse-ld=mold -C link-arg=-Wl,--threads=4" \
 	  TMPDIR=$(MUTANTS_TMPDIR) NEXTEST_TEST_THREADS=2 \
 	  cargo mutants --iterate --jobs 2 --jobserver-tasks 16 \
