@@ -35,7 +35,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::EngineConfig;
 use crate::load::{LoadItem, Loader};
-use crate::runtime::channel::{ByteRx, ByteTx, byte_channel};
+use rdlt_connector::channel::{ByteRx, ByteTx, Permitted, byte_channel};
+
+use crate::runtime::STAGE_MSG_CAPACITY;
 use crate::schema::registry::SchemaRegistry;
 use crate::shred::TapeShredder;
 use crate::shred::tape::PushError;
@@ -174,7 +176,7 @@ async fn run_once(
     report.retries = prior_retries;
 
     // ---- Wire the graph ----
-    let (load_tx, load_rx) = byte_channel::<LoadItem>(config.byte_budget);
+    let (load_tx, load_rx) = byte_channel::<LoadItem>(config.byte_budget, STAGE_MSG_CAPACITY);
     let mut stream_tasks: JoinSet<Result<(), RdltError>> = JoinSet::new();
 
     for spec in streams {
@@ -663,7 +665,10 @@ async fn drain_loader(
         // cancellation is observed — keeps failure semantics deterministic.
         let item = tokio::select! {
             biased;
-            item = load_rx.recv() => item,
+            // The permit is released here, at receipt: the byte budget bounds
+            // what is QUEUED, and accounting for anything derived downstream
+            // belongs to that stage's own channel.
+            item = load_rx.recv() => item.map(Permitted::into_value),
             _ = cancel.cancelled() => break Err(RdltError::Cancelled),
         };
         match item {
@@ -881,7 +886,7 @@ mod drain_loader_tests {
     /// Dropping the sender closes the loader's input, so `recv` returns `None`
     /// immediately and the loader's own result is `Ok`.
     fn closed_input() -> ByteRx<LoadItem> {
-        let (tx, rx) = byte_channel::<LoadItem>(4096);
+        let (tx, rx) = byte_channel::<LoadItem>(4096, STAGE_MSG_CAPACITY);
         drop(tx);
         rx
     }

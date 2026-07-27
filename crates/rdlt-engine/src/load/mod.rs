@@ -16,7 +16,7 @@ use rdlt_core::{
     StateDoc, StreamName, TableName, TableSchema, WriteMode,
 };
 
-use crate::runtime::channel::ByteSized;
+use rdlt_connector::channel::ByteSized;
 use crate::wal::Wal;
 use rdlt_core::crash_point;
 
@@ -316,7 +316,9 @@ impl Loader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::channel::byte_channel;
+    use rdlt_connector::channel::{Permitted, byte_channel};
+
+    use crate::runtime::STAGE_MSG_CAPACITY;
     use rdlt_core::{PipelineId, StreamName};
     use std::sync::Arc;
     use std::time::Duration;
@@ -345,7 +347,7 @@ mod tests {
         let size = batch.get_array_memory_size();
         assert!(size > 0, "a real batch occupies memory");
 
-        let (tx, mut rx) = byte_channel::<LoadItem>(size);
+        let (tx, mut rx) = byte_channel::<LoadItem>(size, STAGE_MSG_CAPACITY);
         tx.send(LoadItem::Batch {
             table: TableName::new("t"),
             batch: batch.clone(),
@@ -369,7 +371,7 @@ mod tests {
         );
 
         // Receiving the first item releases its permit, and the parked send completes.
-        let received = rx.recv().await.expect("first item");
+        let received = rx.recv().await.map(Permitted::into_value).expect("first item");
         assert!(matches!(received, LoadItem::Batch { .. }));
         tokio::time::timeout(
             Duration::from_secs(5),
@@ -389,7 +391,7 @@ mod tests {
     /// never completes on a zero budget.
     #[tokio::test]
     async fn zero_sized_markers_pass_a_zero_budget() {
-        let (tx, mut rx) = byte_channel::<LoadItem>(0);
+        let (tx, mut rx) = byte_channel::<LoadItem>(0, STAGE_MSG_CAPACITY);
         for item in [
             LoadItem::Checkpoint {
                 stream: StreamName::new("s"),
@@ -406,8 +408,14 @@ mod tests {
                 .expect("a zero-byte marker must not wait on the byte budget")
                 .expect("channel still open");
         }
-        assert!(matches!(rx.recv().await, Some(LoadItem::Checkpoint { .. })));
-        assert!(matches!(rx.recv().await, Some(LoadItem::Discarded { .. })));
+        assert!(matches!(
+            rx.recv().await.map(Permitted::into_value),
+            Some(LoadItem::Checkpoint { .. })
+        ));
+        assert!(matches!(
+            rx.recv().await.map(Permitted::into_value),
+            Some(LoadItem::Discarded { .. })
+        ));
     }
 
     /// `policy_triggers` is a pure function of the loader's counters and clock;

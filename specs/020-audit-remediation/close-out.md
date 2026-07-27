@@ -32,9 +32,9 @@ Executes `NEXT_STEPS.md` (audited 2026-07-26 @ `634222e`). Contract:
 | US5 — schema contracts | **COMPLETE, SCOPE REVERSED ON EVIDENCE** | T086–T096 superseded; see D-10. Within-run enforcement + inheritance; NO persisted-format change, NO semver break. Gate: 718/718, lint, sweep 6/6 |
 | US6 — iceberg nested types | **COMPLETE** | T098–T106; T097 unperformed (no working container runtime). See D-11. Gate: **722/722 with containers ENABLED** — the merge-base red is fixed, not worked around |
 | US7 — sharp edges | **COMPLETE** | T107–T120, 16 fixes. Gate: 723/723 twice clean (containers enabled), lint, sweep 6/6, doc-tests |
-| US8 — the gate | NOT STARTED | |
-| US9 — publish readiness | NOT STARTED | |
-| US10 — recorded deferrals | NOT STARTED | |
+| US8 — the gate | **COMPLETE** | T121–T139; see D-25, D-27 through D-30. Fresh full run: **921 mutants, 97 survivors**, every one re-checked WITH containers (24 were never gaps). All 75 verified gaps dispositioned: 51 killed by red-verified pins, 18 equivalent with the argument at the call site, 3 dead-code deletions, 2 cosmetic, 1 untestable by construction, **1 real defect fixed** (`UniqueNamer::name_for` could spin forever). Suite 749 → 780 |
+| US9 — publish readiness | **COMPLETE** | T140–T152. 220 undocumented public items documented; `make docs` added as a gate verb and wired into `check`, catching **14 dead intra-doc links** on its first run (D-19). Publish metadata, crates.io descriptions, feature-matrix and packaging checks recorded. CI-only verifications land **UNPERFORMED**, never green — E1 stands |
+| US10 — recorded deferrals | **COMPLETE** | T153–T167; see D-20 through D-23, D-31, D-32. D17 taken (one byte-budget channel, engine copy deleted, AR6 verified); lowering parity now a machine-checked property over generated schemas × 4 capability combos; `DestSpec::File` embeds its config; `create_index_sql` and the duplicate-key diagnosis moved into sqlcore **with the golden pin they lacked**; `WalRecord::Segment.rows` given a consumer (no format bump); 4 dependencies removed. **Fired-but-undisposed deferrals: zero** (SC-014). Gate: 785/785, 0 skipped |
 | US11 — performance queue | NOT STARTED | |
 
 ---
@@ -1325,6 +1325,64 @@ zero. Mutation testing finds these reliably; review does not, because they look
 exactly like real assertions.
 
 Suite grew 749 → 780.
+
+### D-31 (US10) — one byte-budget channel, and the deadlock the unification caused
+
+D17 fired in 019 and was never taken: the byte-bounded channel existed twice —
+in the SPI specialised to source pushes, and inside the engine generic over its
+stage items. Same semaphore-permit accounting, same oversized-item degradation,
+same close-wake, maintained in parallel. The SPI copy is now the only one; the
+engine's `runtime/channel.rs` is **deleted**, and a tree-wide search for its
+module path and its `StageClosed` type returns zero hits (AR6).
+
+**The two copies disagreed on one thing, and it was not cosmetic.** The engine's
+`recv()` returned the value and released the byte budget at receipt; the SPI's
+returned a `SourcePush` that carries the permit onward, so the budget stays spent
+while the host works. A shared core cannot pick a side without changing one
+caller's backpressure, so `recv()` now returns `Permitted<T>` — the value with
+its permit still attached — and each caller states its own policy: the engine
+calls `into_value()` (release now), the SPI calls `into_parts()` and re-wraps.
+Neither behaviour changed.
+
+**That type change then deadlocked two tests, which is the finding worth
+recording.** The engine's two core tests were carried over verbatim, and
+`let _first = rx.recv().await.unwrap();` silently changed meaning: under the old
+contract that binding was a throwaway, under the new one it HOLDS 80 bytes of a
+100-byte budget, so the pending 80-byte send could never proceed. Both hung on a
+futex for 25 minutes rather than failing. Nothing in the type system can catch
+this — both versions compile, and only the runtime lifetime of a permit moved.
+The tests now `drop()` explicitly, and a new pin,
+`a_held_permit_keeps_the_budget_spent`, asserts the rule outright so the next
+reader meets it as a documented contract instead of a hang.
+
+**A second source of truth went with it.** `RecordsOut::send` took a `size`
+argument that four call sites each computed independently — `bytes.len()`,
+`buf.len()`, `get_array_memory_size()`, and a literal `0`. With
+`ByteSized for PushPayload` answering that question once, the parameter is a
+number that can disagree with the payload it describes; it is deleted rather
+than left as a hazard.
+
+Gate: **785/785, 0 skipped, 21.8 s** on a quiet machine (load 1.7); clippy
+`--all-targets --all-features` clean; `make docs` 0 errors; doc-tests green; the
+28 golden/pin assertions byte-identical.
+
+### D-32 (US10) — US10 closes with zero fired-but-undisposed deferrals (SC-014)
+
+The three recorded deferrals whose triggers had fired all end this increment
+with a terminal disposition, none of them silent:
+
+- **D17** (SPI/engine channel duplication) — **TAKEN**, see D-31.
+- **D18** (file-dest blocking + whole-part buffering) — **MOVED, not dropped**:
+  it is a throughput and RSS claim, so it belongs to the measurement-first queue
+  (US11), not to cleanup. This project has twice measured an "obvious"
+  allocation win as a LOSS (019 D-13, D-21), and D18 is exactly that shape.
+- **D19** (config-plumbing trio) — **REJECTED** with its reason recorded in
+  D-20: its premise changed. It is a quartet, not a trio, and the code it names
+  is not a correctness invariant. The shape that would close it and the new
+  trigger are named there.
+
+Alongside them, 017's eight verified-but-cut residuals were triaged rather than
+carried: three taken, one folded, four re-recorded with triggers (D-21).
 
 ---
 

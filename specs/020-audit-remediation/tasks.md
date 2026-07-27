@@ -319,8 +319,8 @@ Four real dependencies override the P1/P2/P3 reading:
 
 **Independent test**: for each named deferral the repository contains either the taken change or a fresh record with a new trigger.
 
-- [ ] T153 [US10] Add the generic byte-budget channel core to `crates/rdlt-connector/src/channel.rs` — `ByteSized`, `ByteTx<T>`, `ByteRx<T>`, `Permitted<T>` — parameterizing the message cap, sender `Clone`, `ByteSized` sizing and the close-wake
-- [ ] T154 [US10] Rewire the engine to the SPI core and **DELETE** `crates/rdlt-engine/src/runtime/channel.rs` in the same change (D17, greenfield). Verify a tree-wide search for the deleted implementation returns zero hits (AR6)
+- [X] T153 [US10] Add the generic byte-budget channel core to `crates/rdlt-connector/src/channel.rs` — `ByteSized`, `ByteTx<T>`, `ByteRx<T>`, `Permitted<T>` — parameterizing the message cap, sender `Clone`, `ByteSized` sizing and the close-wake
+- [X] T154 [US10] Rewire the engine to the SPI core and **DELETE** `crates/rdlt-engine/src/runtime/channel.rs` in the same change (D17, greenfield). Verify a tree-wide search for the deleted implementation returns zero hits (AR6)
 - [X] T155 [US10] Fix the drifted nullability at `crates/rdlt-engine/src/load/lowering.rs:138` (hardcoded `true`) to the schema side's rule, and record the severity honestly as latent-unreachable rather than promoting it
 - [X] T156 [US10] Add the lowering parity property test in `crates/rdlt-engine/src/load/lowering.rs`: over generated `TableSchema` × the four capability combinations, using zero-row batches, assert exact `arrow::datatypes::Schema` equality between `lower_batch(batch).schema()` and the arrow schema of `lower_schema(schema)` — converting a hand-maintained parity into a machine-checked invariant
 - [X] T157 [US10] Replace `DestSpec::File`'s struct variant with a newtype embedding `Box<FileDestConfig>` in `crates/rdlt/src/pipeline_spec.rs`, and replace the field-by-field rebuild at `:397-419` with construction from the embedded config — the shape the Iceberg arm already uses
@@ -333,7 +333,7 @@ Four real dependencies override the P1/P2/P3 reading:
 - [X] T164 [US10] Give `WalRecord::Segment.rows` a consumer in `crates/rdlt-engine/src/wal/resume.rs` rather than deleting it: a pass-1 replay cross-check accumulating decoded rows and, on mismatch, warning and degrading to source re-extraction as the existing damage arms do. **No `WAL_FORMAT_VERSION` bump.** Pin the mismatch path
 - [X] T165 [P] [US10] Rewrite the 13 tagged comments across the 8 test files under `crates/rdlt-connector-duckdb/tests/` so each states what the file covers, with no feature number, story number, task ID or contract clause ID (Principle VI)
 - [X] T166 [US10] Triage 017's eight verified-but-cut review residuals (`specs/017-workspace-refactoring/close-out.md:222-225`): take three, fold one, re-record four with new triggers
-- [ ] T167 [US10] Run the full local gate plus both golden suites; record US10's close-out row and confirm the count of fired-but-undisposed deferrals is **zero** (SC-014)
+- [X] T167 [US10] Run the full local gate plus both golden suites; record US10's close-out row and confirm the count of fired-but-undisposed deferrals is **zero** (SC-014)
 
 ---
 
