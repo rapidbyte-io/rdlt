@@ -10,16 +10,16 @@
       "instructions": 28796632
     },
     "passthrough_10k": {
-      "instructions": 607197
+      "instructions": 617325
     },
     "pg_copy_decode_10k": {
       "instructions": 20994190
     },
     "pg_copy_encode_10k": {
-      "instructions": 31924625
+      "instructions": 30047887
     },
     "shred_nested_10k": {
-      "instructions": 311619196
+      "instructions": 312269310
     }
   }
 }

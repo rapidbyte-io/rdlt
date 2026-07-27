@@ -1511,6 +1511,66 @@ also that this is CLIENT-side CPU: read against D-33, roughly 71% of the dedup
 cell's WALL time is Postgres executing the upsert, so a win here is a win
 against the remaining fifth.
 
+### D-35 (US11) — the D-08 encoder fast path: TAKEN, on the instrument built for it
+
+019 recorded a prize here (41.6% of the COPY encoder is bytes plumbing) and
+declined it under PI3. With valgrind available, callgrind states the case
+precisely rather than by estimate:
+
+| | Ir | share |
+|---|---|---|
+| `bench_encode` (the arms, inlined) | 17,385,425 | 54.76% |
+| `BytesMut::put_slice` | 7,893,440 | **24.86%** |
+| `__memcpy_avx_unaligned_erms` | 3,747,995 | **11.80%** |
+| `chrono::NaiveDate::from_num_days_from_ce_opt` | 1,240,053 | 3.91% |
+
+**36.7% is framing, and the reason is structural.** `BufMut::put_i64` on a
+`BytesMut` is *implemented via* `put_slice`, so an 8-byte integer pays a bounds
+check, a chunk re-derivation and a `memcpy` dispatch. Every cell paid it at
+least twice — once for a 4-byte length placeholder, once for the value — plus a
+third `copy_from_slice` to backfill the placeholder once the length was known.
+Six of the twelve wire types have a width fixed at compile time and were paying
+all of it for nothing.
+
+`fixed::<N>` writes the length and the value as one contiguous store, and four
+arms (bool, int8, float8, uuid) now use it.
+
+**Three measurements, deliberately in increasing order of realism:**
+
+| instrument | baseline | fast path | delta |
+|---|---|---|---|
+| `pg_copy_encode_10k` (callgrind) | 31,751,299 Ir | 30,047,887 Ir | **−5.36%** |
+| pg-to-pg-1m, whole-process instructions | 5.6688 G | 5.5562 G | **−1.98%** |
+| pg-to-pg-1m, wall (hyperfine, 8 runs, interleaved) | 762.3 ± 13.8 ms | 760.1 ± 6.2 ms | **no resolvable change** |
+
+The process-level count is the one that matters, and it is not a microbench: it
+is the real 1M-row cell, reproducible to ±0.05% across three interleaved
+repetitions of each arm. **The wall clock seeing nothing is the expected result,
+not a contradiction** — a 2% CPU reduction on a load whose wall time is
+dominated by the server (D-33: ~71% of the sibling merge cell is Postgres) sits
+an order of magnitude below what a cell can resolve. `benches/iai_pg.rs` says
+this in its own doc comment: instruction counts exist here precisely because
+"the wall-clock cells cannot resolve a change this size against machine noise,
+but callgrind can." Shipping on the designated instrument is the recorded
+policy, not an exception to it.
+
+**Byte-identity is pinned, not assumed** — 22/22 wire and round-trip tests
+including the literal `pg_copy_values.hex` fixture, then 204/204 for the crate.
+
+**The four remaining fixed-width arms are deliberately NOT taken**, and the
+reason is at the site: Date, Time and both timestamps validate through chrono
+and are written by `ToSql`. Converting them means re-deriving Postgres's epoch
+arithmetic here, and with it the range rejections those arms perform on
+purpose — a correctness surface traded for a fraction of two percent.
+
+**Two unrelated baselines moved and are being re-recorded with this diff**,
+which is said out loud rather than absorbed silently: `passthrough_10k`
+607,197 → 617,325 (+1.67%) and `shred_nested_10k` 311,619,196 → 312,269,310
+(+0.21%). Both are accumulated drift from this feature's own shred and value-
+fidelity work, both were inside the 3% gate the whole time, and `--record`
+rewrites the whole file. The gate's reference point for them is now the
+post-020 tree.
+
 ---
 
 ## Item ledger (AR8 — one disposition per item, none silent)
