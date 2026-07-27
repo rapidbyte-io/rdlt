@@ -156,7 +156,7 @@ impl Source for FileSource {
             matched,
             read_paths,
             mut fetched_dir,
-        } = resolve_inputs(&location, stream).await?;
+        } = resolve_inputs(&location, stream, &cursor).await?;
         rdlt_connector::core::crash_point!(
             "file.list",
             Err(SourceError::fatal("injected crash at file.list"))
@@ -223,6 +223,7 @@ struct ResolvedInputs {
 async fn resolve_inputs(
     location: &crate::location::Location,
     stream: &FileStream,
+    cursor: &FileCursor,
 ) -> Result<ResolvedInputs, SourceError> {
     use crate::location::Location;
     let plain = |matched| ResolvedInputs {
@@ -246,6 +247,22 @@ async fn resolve_inputs(
             let mut metas = Vec::with_capacity(listed.len());
             let mut paths = std::collections::BTreeMap::new();
             for (i, meta) in listed.into_iter().enumerate() {
+                // An object the last run finished, whose etag still matches, has
+                // nothing left to read — and downloading it only to count row
+                // groups and then plan zero tasks is the whole cost for none of
+                // the benefit. Its unit count is recovered from the recorded
+                // progress instead, which is what a fetch would have produced.
+                //
+                // Both etags must be PRESENT and equal. A missing etag on either
+                // side proves nothing, and the point of this skip is to act only
+                // where the object is provably unchanged; anything less falls
+                // through to the fetch and meets the ordinary rewrite tripwires
+                // in `plan` untouched.
+                if let Some(size_units) = recorded_completion(cursor, &meta) {
+                    SKIPPED_FETCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    metas.push(FileMeta { size_units, ..meta });
+                    continue;
+                }
                 let local = fetch_to_temp(location, &meta.path, dir.path(), i).await?;
                 let counted = parquet::resolve_with_row_groups(&local.to_string_lossy())?;
                 let groups = counted.first().map(|m| m.size_units).unwrap_or(0);
@@ -262,6 +279,52 @@ async fn resolve_inputs(
             })
         }
     }
+}
+
+
+
+/// Fetches skipped because the recorded progress already covered the object.
+///
+/// An optimisation that silently stops engaging is indistinguishable from one
+/// that was never written: the behaviour is identical either way, so a test can
+/// only prove the skip HAPPENED by counting it. Cheap enough to leave in — one
+/// relaxed increment per listed object on a path that then performs a network
+/// round trip, or doesn't.
+static SKIPPED_FETCHES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Test-only view of [`SKIPPED_FETCHES`], for asserting that a second run over
+/// unchanged objects downloaded nothing.
+#[doc(hidden)]
+pub fn skipped_fetches() -> u64 {
+    SKIPPED_FETCHES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The unit count to use for an object that needs no fetch, or `None` if it
+/// must be downloaded.
+///
+/// Downloading an object the last run finished, only to count its row groups
+/// and then plan zero tasks, is the entire cost of the fetch for none of its
+/// benefit. When the object is provably unchanged the count is already recorded,
+/// and it is exactly what the fetch would have produced.
+///
+/// **Provably** is the load-bearing word, and it is why this is conservative in
+/// three separate ways:
+///
+/// - Both etags must be PRESENT and equal. A missing etag on either side proves
+///   nothing about the content, so it is not treated as agreement.
+/// - The recorded progress must be COMPLETE. A partially-read object still has
+///   row groups to deliver, and skipping it would silently drop them.
+/// - Anything that fails these falls through to the fetch and meets the
+///   ordinary shrink and rewrite-in-place tripwires in `FileCursor::plan`
+///   untouched. This function can cause an object to be fetched needlessly; it
+///   can never cause one to be trusted that `plan` would have rejected.
+fn recorded_completion(cursor: &FileCursor, meta: &FileMeta) -> Option<u64> {
+    let progress = cursor.files.get(&meta.path)?;
+    if progress.done_units != progress.size_units {
+        return None;
+    }
+    let (recorded, listed) = (progress.etag.as_deref()?, meta.etag.as_deref()?);
+    (recorded == listed).then_some(progress.size_units)
 }
 
 /// Plan per the format's incremental unit: parquet = row groups (tail), csv and
@@ -416,5 +479,98 @@ mod temp_dir_tests {
             path
         };
         assert!(!path.exists(), "the directory is released on drop");
+    }
+}
+
+#[cfg(test)]
+mod skip_fetch_tests {
+    //! When an already-downloaded object may be left un-downloaded.
+    //!
+    //! Container-free by design: the risk in the skip is the DECISION, not the
+    //! transfer, and a decision is testable without a bucket. The live S3 legs
+    //! cover the end-to-end path.
+    use super::*;
+    use crate::location::types::FileProgress;
+
+    fn meta(path: &str, etag: Option<&str>) -> FileMeta {
+        FileMeta {
+            path: path.to_owned(),
+            size_units: 4,
+            mtime_ms: None,
+            etag: etag.map(str::to_owned),
+        }
+    }
+
+    fn cursor_with(path: &str, done: u64, size: u64, etag: Option<&str>) -> FileCursor {
+        let mut cursor = FileCursor::default();
+        cursor.files.insert(
+            path.to_owned(),
+            FileProgress {
+                done_units: done,
+                size_units: size,
+                ended_at_record_boundary: true,
+                mtime_ms: None,
+                etag: etag.map(str::to_owned),
+                tail_hash: None,
+                row_groups_hash: None,
+            },
+        );
+        cursor
+    }
+
+    #[test]
+    fn a_finished_object_with_a_matching_etag_needs_no_fetch() {
+        let cursor = cursor_with("pq/a.parquet", 4, 4, Some("abc"));
+        assert_eq!(
+            recorded_completion(&cursor, &meta("pq/a.parquet", Some("abc"))),
+            Some(4),
+            "the recorded unit count is what the fetch would have produced"
+        );
+    }
+
+    #[test]
+    fn a_partially_read_object_is_still_fetched() {
+        // The remaining row groups are real data; skipping here would drop them.
+        let cursor = cursor_with("pq/a.parquet", 2, 4, Some("abc"));
+        assert_eq!(
+            recorded_completion(&cursor, &meta("pq/a.parquet", Some("abc"))),
+            None
+        );
+    }
+
+    #[test]
+    fn a_changed_etag_is_fetched_so_the_rewrite_tripwire_still_fires() {
+        // The safety-critical case: the skip must never be the reason a
+        // rewritten object escapes `plan`'s rewrite detection.
+        let cursor = cursor_with("pq/a.parquet", 4, 4, Some("abc"));
+        assert_eq!(
+            recorded_completion(&cursor, &meta("pq/a.parquet", Some("zzz"))),
+            None
+        );
+    }
+
+    #[test]
+    fn an_absent_etag_on_either_side_proves_nothing_and_is_fetched() {
+        let recorded_only = cursor_with("pq/a.parquet", 4, 4, Some("abc"));
+        assert_eq!(
+            recorded_completion(&recorded_only, &meta("pq/a.parquet", None)),
+            None,
+            "the listing offered no etag to compare against"
+        );
+        let listed_only = cursor_with("pq/a.parquet", 4, 4, None);
+        assert_eq!(
+            recorded_completion(&listed_only, &meta("pq/a.parquet", Some("abc"))),
+            None,
+            "the recorded progress carries no etag to compare"
+        );
+    }
+
+    #[test]
+    fn an_object_with_no_recorded_progress_is_fetched() {
+        let cursor = cursor_with("pq/other.parquet", 4, 4, Some("abc"));
+        assert_eq!(
+            recorded_completion(&cursor, &meta("pq/a.parquet", Some("abc"))),
+            None
+        );
     }
 }

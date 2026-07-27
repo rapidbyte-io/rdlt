@@ -289,7 +289,12 @@ async fn parquet_objects_load_through_the_engine() {
     assert_eq!(report.total_rows(), 3);
     assert_eq!(dest.count_rows("metrics").expect("count"), 3);
 
-    // A second run re-lists and skips the completed object entirely.
+    // A second run re-lists and skips the completed object entirely — WITHOUT
+    // downloading it. Reading zero rows proves only that nothing was planned;
+    // the object could still have been fetched and then found to have nothing
+    // left, which is exactly the wasted transfer this path exists to avoid. The
+    // counter is what tells those two apart.
+    let skipped_before = rdlt_connector_file::source::skipped_fetches();
     let report = Engine::new(
         EngineConfig::new("s3-pq"),
         FileSource::from_yaml(&yaml).expect("config"),
@@ -299,6 +304,11 @@ async fn parquet_objects_load_through_the_engine() {
     .await
     .expect("run 2");
     assert_eq!(report.total_rows(), 0, "completed object skipped");
+    assert_eq!(
+        rdlt_connector_file::source::skipped_fetches() - skipped_before,
+        1,
+        "the completed object must be skipped WITHOUT being downloaded"
+    );
 }
 
 fn write_parquet(path: &std::path::Path, ids: &[i64]) {

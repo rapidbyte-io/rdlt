@@ -1890,6 +1890,89 @@ assertions, arrived at from a different direction.
 
 140/140 engine tests, clippy clean.
 
+### D-43 (US11) — blocked-time attribution: RE-SCOPED ON EVIDENCE, not skipped
+
+T169 asked for a throwaway build instrumenting the ~6 await sites in
+`runtime/run.rs` and `load/mod.rs`, to decide **whether further CPU reductions
+buy wall time or only headroom** (FR-078). That question has since been answered
+by a measurement the task did not anticipate, so the instrumentation is not
+built. This follows 019 US9's precedent: re-scope when the evidence arrives, and
+say why in the record rather than letting a task quietly lapse.
+
+**D-33 answers it directly.** On the merge cell, 80.3% of wall time is one
+`INSERT … ON CONFLICT` node and ~71% is the upsert alone — 4,013,669 WAL records
+and 556 bytes of WAL per row, which is Postgres doing MVCC and index
+maintenance. The client is not the constraint there, so a client-side CPU
+reduction buys headroom, not wall.
+
+**Three independent measurements in this feature already demonstrate the
+pattern**, which is stronger evidence than an await-site histogram would have
+been:
+
+- D-35: the COPY encoder fast path cut whole-process instructions by 1.98% on
+  the real pg-to-pg cell and moved wall by **nothing resolvable** (762.3 → 760.1
+  ms, inside noise).
+- D-34: the allocator is 3.29–3.41% of cycles — a ceiling, measured, not
+  argued.
+- D-37 is the counter-example that proves the rule and is worth stating: the
+  sequence-cache change moved wall by a clear 3.3%, because it removed **server**
+  work, not client work.
+
+That is the finding T169 was after, arrived at from the workload rather than
+from instrumentation: **on these cells, wall time moves when server work is
+removed and does not move when client CPU is.**
+
+**What is NOT claimed.** This says nothing about cells where the client is the
+constraint — the s3jsonl legs, where no database is doing MVCC, are a different
+shape and were not measured this way. **Re-trigger:** a cell whose profile is
+client-dominated, or a destination without the merge cell's write amplification;
+there the await-site instrumentation would answer something D-33 cannot.
+
+### D-44 (US11) — the S3 skip-fetch, and proving an optimisation actually engages
+
+The object-store parquet arm downloaded EVERY listed object before planning, to
+count its row groups. For an object the previous run finished, that is the whole
+cost of the transfer for none of its benefit: it is fetched, counted, and then
+planned into zero tasks.
+
+It is now skipped when the object is **provably** unchanged, with the unit count
+recovered from the recorded progress — which is exactly what the fetch would
+have produced.
+
+**The decision is deliberately conservative in three ways**, extracted into
+`recorded_completion` so each is testable rather than tangled in the fetch loop:
+
+- Both etags must be PRESENT and equal; a missing etag on either side proves
+  nothing about content and is not treated as agreement.
+- The recorded progress must be COMPLETE; a partially-read object still has row
+  groups to deliver.
+- Everything else falls through to the fetch and meets the ordinary shrink and
+  rewrite-in-place tripwires in `FileCursor::plan`, untouched.
+
+The invariant, stated at the site: this can cause a needless fetch, and can
+never cause an object to be trusted that `plan` would have rejected.
+
+**Five container-free pins** cover the decision — complete-and-matching, partial,
+changed etag, etag absent on either side, and no recorded progress. The
+changed-etag case is the safety-critical one: the skip must never be the reason
+a rewritten object escapes detection.
+
+**And the part worth recording as method.** The pre-existing live test asserted
+that a second run reads zero rows — and that assertion passes whether or not the
+fetch is skipped, because an object that is downloaded and then found to have
+nothing left also reads zero rows. **The optimisation and its absence are
+behaviourally identical**, which is precisely why a test could not see it.
+
+So the skip is counted. `SKIPPED_FETCHES` increments where the fetch is avoided,
+and the live parquet leg now asserts the second run skipped exactly one download
+rather than merely read nothing from it. **Verified by reverting**: with
+`recorded_completion` forced to `None` the live test FAILS; with the skip it
+passes. An optimisation that silently stops engaging is indistinguishable from
+one that was never written, and this feature has already recorded (D-30) what
+happens when an assertion cannot fail.
+
+108/108 file-connector tests with the live S3 legs running, clippy clean.
+
 ---
 
 ## Item ledger (AR8 — one disposition per item, none silent)
