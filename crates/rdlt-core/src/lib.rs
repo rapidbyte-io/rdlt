@@ -7,9 +7,10 @@
 //!
 //! **Charter**: pure data + pure functions only. If it needs tokio, I/O, or arrow
 //! compute, it does not belong here. Dependencies stay narrow — serde/serde_json for
-//! serialization, arrow-schema for schema types, blake3 for hashing, thiserror for the
-//! error taxonomy, and an optional `fail` dependency used only for crash-point injection
-//! in tests (the `failpoints` feature, never in release builds).
+//! serialization, blake3 for hashing, thiserror for the error taxonomy, and an optional
+//! `fail` dependency used only for crash-point injection in tests (the `failpoints`
+//! feature, never in release builds). Notably NOT arrow: the schema vocabulary here is
+//! rdlt's own, and mapping it onto arrow types is the engine's job, not this crate's.
 //!
 //! This crate is SEMVER-SACRED: `cargo semver-checks` gates it in CI, and the persisted
 //! formats it defines (`StateDoc`, schema hashes, `RunReport`) are byte-stable — their

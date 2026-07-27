@@ -5,7 +5,7 @@
 //! aborting the run.
 
 use rdlt_connector::DestinationError;
-use rdlt_connector_duckdb::DuckDb;
+use rdlt_connector_duckdb::dest::DuckDb;
 
 /// A message that merely CONTAINS violation-adjacent words (here: a table
 /// name) is not a constraint violation. The duplicate-merge-key diagnosis

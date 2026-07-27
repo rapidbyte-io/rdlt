@@ -70,24 +70,33 @@ pub async fn connect(
         pg.ssl_mode(SslMode::Disable);
     }
     match client_config(policy).map_err(ConnectResult::Config)? {
-        None => {
-            let (client, connection) = pg
-                .connect(tokio_postgres::NoTls)
-                .await
-                .map_err(|e| ConnectResult::Connect(classify_connect_error(&e)))?;
-            spawn_driver(connection);
-            Ok(client)
-        }
+        None => connect_with(&pg, tokio_postgres::NoTls).await,
         Some(config) => {
-            let connector = tokio_postgres_rustls::MakeRustlsConnect::new(config);
-            let (client, connection) = pg
-                .connect(connector)
-                .await
-                .map_err(|e| ConnectResult::Connect(classify_connect_error(&e)))?;
-            spawn_driver(connection);
-            Ok(client)
+            connect_with(&pg, tokio_postgres_rustls::MakeRustlsConnect::new(config)).await
         }
     }
+}
+
+/// Connect with a chosen TLS maker, generic so the plaintext and rustls paths
+/// are ONE path.
+///
+/// They were two copies differing only in the connector value, which meant
+/// error classification and driver spawning had to be kept in step by hand — the
+/// same shape as the defect where two executors classified a shared plan's
+/// errors oppositely because only one was updated.
+async fn connect_with<T>(pg: &tokio_postgres::Config, tls: T) -> Result<Client, ConnectResult>
+where
+    T: tokio_postgres::tls::MakeTlsConnect<tokio_postgres::Socket>,
+    T::Stream: Send + 'static,
+    T::TlsConnect: Send,
+    <T::TlsConnect as tokio_postgres::tls::TlsConnect<tokio_postgres::Socket>>::Future: Send,
+{
+    let (client, connection) = pg
+        .connect(tls)
+        .await
+        .map_err(|e| ConnectResult::Connect(classify_connect_error(&e)))?;
+    spawn_driver(connection);
+    Ok(client)
 }
 
 /// Classify a driver error's TLS meaning by walking its source chain for

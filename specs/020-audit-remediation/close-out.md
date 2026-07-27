@@ -920,6 +920,182 @@ once then passes — nextest reported `FLAKY 2/3` and the observation was append
 a clean run appended nothing. The probe and its synthetic log line were then
 deleted, because the log is evidence and must hold only real observations.
 
+### D-18 (US9) — the license the repo declared but never shipped
+
+Every `Cargo.toml` said `license = "Apache-2.0"` and the repository contained
+no license text at all. Fixed at the root AND in all 12 publishable crates,
+byte-identical (sha256 `a60eea81…`), because a root `LICENSE` satisfies GitHub
+and the repository but **NOT the `.crate` tarballs** — verified per crate with
+`cargo package --list`, which showed the README arriving and no LICENSE before
+the fix and 12/12 carrying both after it.
+
+`readme` is set PER CRATE rather than inherited from `[workspace.package]`: an
+inherited `readme` resolves against the workspace root, so every crate would
+have shipped the root README as its crates.io front page. Seven crates had no
+README; they have one now.
+
+Four descriptions were wrong or off-convention. The CLI said TOML and parses
+YAML (`main.rs:150`); the file connector still said "source" though it has been
+source AND destination, with CSV and S3, since 015; the testkit omitted the
+container fixtures it has carried since 017; and sqlcore was the only
+description not naming rdlt first.
+
+### D-19 (US9) — 220 undocumented public items, and a docs gate that found 14 dead links
+
+`#![warn(missing_docs)]` on the three semver-sacred crates — warn rather than
+deny, and a per-crate attribute rather than `[workspace.lints]`, so an
+undocumented item is a gap to fill and not a broken contributor build. The real
+count only exists once the lint runs: **220** (rdlt-core 147, rdlt-connector 40,
+rdlt 33). All 220 are now documented, and the counts are 0/0/0.
+
+`make docs` (rustdoc under `-D warnings`, wired into `check`) earned its place
+on first run by failing with **14 broken intra-doc links** across three crates:
+public module documentation linking PRIVATE modules, so the link was dead for
+every reader not building with `--document-private-items`. Demoted to code
+spans. Making the modules public to satisfy the links would have widened the
+public surface to fix a documentation defect — the wrong direction under
+Principle I.
+
+**T145 feature matrix, verified by building rather than by inspection**
+(research R10.7 had judged the facade narrowing-safe by reading it): 20
+configurations, all OK — the facade with no default features and with each of
+`rest`, `duckdb`, `file`, `parquet`, `iceberg`, `postgres-source`,
+`postgres-dest`, `postgres`, and `--all-features`; the SPI bare, `+schema`,
+`+failpoints`; the testkit bare and `+containers`; core bare and `+failpoints`;
+the postgres connector's own `source`/`dest` narrowing; and the file and
+sqlcore crates.
+
+**CI-blocked, recorded UNPERFORMED (AR7):** the semver job now covers
+`--workspace` instead of 2 of 12 crates, and cannot be observed running.
+
+### D-20 (US10, partial) — the mirror removed rather than guarded
+
+`DestSpec::File` was a struct variant restating `FileDestConfig` field by
+field, with a rebuild that reassembled it through builder calls. It now EMBEDS
+`Box<FileDestConfig>`, the shape the Iceberg arm already used.
+
+The hazard it removes is one-directional and silent: a field added to the
+connector's config and not added to the mirror compiled fine, and was simply
+unreachable from any pipeline document — configurable through the library,
+invisible from YAML, with no error anywhere. Embedding makes that impossible
+rather than detectable. The document shape is unchanged, proven by the existing
+parse and build-parity suites passing untouched.
+
+**The pin written for this in US8 survived the refactor, and its ADVICE did
+not.** T133's field-set assertion was designed to outlive the embedding, and it
+did — but its failure message still told the reader to update a mirror that no
+longer exists. Rewritten to the property that remains true: the field set IS
+the document vocabulary now, and vocabulary changes are user-facing (017's
+`merge_key` → `merge_scope` broke real pipelines), so the assertion forces the
+change to be deliberate. A test that passes while giving wrong instructions is
+a Principle VI defect, not a passing test.
+
+**pg and duckdb CANNOT follow, and are re-recorded rather than left implied.**
+Neither connector has a deserializable destination config: `Postgres` derives
+`Debug, Clone` and `DuckDb` derives `Clone`, because both are handle types
+holding live connections. There is nothing to embed. Their `DestOptions` leg —
+the part that IS a config vocabulary — already carries a schemars round-trip
+guard in the postgres `config_schema` suite. **New trigger:** either connector
+growing a deserializable destination config type.
+
+**D19 is REJECTED, with its reason.** Its premise changed: it named a trio and
+the code is now a quartet, and what it names is not a correctness invariant —
+so "fix it" would be churn against a moving target with no defect behind it.
+The shape that WOULD close it: one config-plumbing seam the connectors share,
+rather than each threading its own. **New trigger:** a fifth member appearing,
+or any member of the set acquiring a correctness obligation.
+
+**The `ensure_table` choreography extraction is re-recorded** with the trigger
+"the next feature that adds a third SQL destination, or that changes the
+index-ensure protocol in either executor" — two implementations that agree
+today are cheap to keep in step; three are not.
+
+### D-21 (US10) — three of 017's eight residuals taken, on evidence
+
+**Taken.** *Dead duckdb root re-exports* — the crate re-exported four types at
+its root "to keep the old import paths working", which is precisely the compat
+shim [[greenfield]] forbids; the single real consumer was repointed at the
+canonical `dest` path and the re-exports DELETED, with `--all-targets` clean.
+*TLS connect-arm twins* — the plaintext and rustls arms were four identical
+lines differing only in the connector value, so error classification and driver
+spawning had to be kept in step BY HAND; that is the exact shape of 017's own
+F3, where two executors classified a shared plan's errors oppositely because
+only one was updated. Folded into one generic `connect_with`, verified by the
+live TLS matrix (25/25, both arms). *`is_local` durability-gating spread* — the
+five call sites serve TWO concepts, and the reason was restated or implied at
+each; the four durability/crash sites now read `filesystem_protocol()`, whose
+doc says once why the stage → rename → fsync protocol and its crash points
+exist only on a filesystem. The ownership rule deliberately still reads
+`is_local()`, because it is a statement about which files may be DELETED, not
+about durability. 105/105 file-connector tests including the S3 live legs.
+
+**Folded:** the duplicated unique-index diagnosis folds into the sqlcore move,
+which adds the golden pin it lacks today.
+
+**Re-recorded with triggers:** scope-membership SQL duplication (the
+`flagged_roots` half is taken separately; the remainder waits on a third
+dialect), ShredOwner wrapper + retry-arm duplication, `clear_table`
+DELETE-vs-TRUNCATE on persistent targets, and sequential per-part S3 publishes
+— the last belongs to the measurement-first queue, not to cleanup, because it
+is a throughput claim and this project has twice measured an "obvious"
+allocation win as a LOSS.
+
+### D-22 (US10) — the Principle VI sweep of the duckdb suite
+
+Thirteen comments across eight test files cited planning IDs — `T057`,
+`contract SM6`, `feature 013 US1`, `MR1/MR2`, `the 009 lesson`. A citation
+tells a reader where a requirement came from and never what the file covers,
+and it ages the moment its plan is archived. All rewritten to state the
+behaviour and the reason on their own terms; zero citation IDs remain in that
+directory. 43/43 green.
+
+### D-23 (US10) — dependency hygiene, and one claim checked before acting on it
+
+Removed after verifying each is genuinely unreferenced: `arrow-schema` from
+rdlt-core, `futures` from rdlt-engine, `bytes` and `futures` from rdlt-testkit.
+`tokio` is demoted to a dev-dependency of the facade, whose own source never
+names it; `tokio-util` stays, because `cancellation_token()` hands one out.
+Note the honest limit of that last change — tokio still reaches a consumer
+TRANSITIVELY through rdlt-engine, which genuinely runs on it. What changed is
+that the facade no longer DECLARES a runtime it does not use.
+
+rdlt-core's library dependency tree is now exactly blake3 + serde + serde_json
++ thiserror, which is what its charter claims — and the charter itself was
+wrong: it listed "arrow-schema for schema types" for a dependency the crate does
+not use. Corrected, and it now says the sharper thing: arrow is deliberately
+absent, because the schema vocabulary here is rdlt's own and mapping it onto
+arrow types is the engine's job.
+
+**One audit claim was checked and initially appeared false.** A strict grep put
+two `bytes` hits in rdlt-testkit's source. They are a local binding NAMED
+`bytes` in a `PushPayload::RawJson(bytes)` pattern, not the crate — `bytes::`
+and `use bytes` both find nothing. The claim held, and confirming it cost one
+command; removing a dependency that turned out to be used would have cost a
+great deal more.
+
+### D-24 (US10) — the gate was lying, and the flake recorder proved it
+
+Three suite runs failed on THREE DIFFERENT container tests while the mutation
+run held the machine. Each failure passed in isolation, which is the signature
+of resource starvation rather than a defect — and the timings settled it:
+`absent_retire_closes_missing_keys` took **154.9 s** against its usual ~5 s, at
+a load average of **88–99 on 32 cores**, roughly 3x oversubscribed.
+
+The flake recorder built in US8 earned its keep here on its first real outing,
+capturing **five genuine observations** in one run — three in the S3 live legs
+(one needing TWO retries), one CDC, one DuckDB differential. Every one is
+container-backed, which gives the recorded flake class a shape it did not have
+when it was six anecdotes: it is contention on container startup and I/O, not
+a scatter of unrelated bugs. The observations are committed WITH the confound
+stated, because a datum with a known confound is worth more than an anecdote
+without one.
+
+**The consequence for how this feature reports its gate:** a full-suite run
+concurrent with the mutation run is not evidence. Paused, on a quiet machine,
+the same tree runs **749/749, 0 skipped, in 21 s** — against 230 s and failures
+under load. Every green claimed in this feature's close-out is from a quiet
+machine, and the mutation run is paused for each one.
+
 ---
 
 ## Item ledger (AR8 — one disposition per item, none silent)

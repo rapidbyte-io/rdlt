@@ -16,8 +16,6 @@ rdlt-core = { workspace = true }
 rdlt-connector = { workspace = true }
 arrow = { workspace = true, features = ["json"] }
 async-trait = { workspace = true }
-bytes = { workspace = true }
-futures = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 # Container fixtures (behind `containers`): non-dev so consumers reach them

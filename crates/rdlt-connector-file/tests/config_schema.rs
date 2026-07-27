@@ -88,23 +88,21 @@ fn dest_schema_valid_corpus_parses() {
     }
 }
 
-/// T133 — the hand-mirrored `DestSpec::File` parity guard.
+/// This struct's field set IS the file destination's public YAML vocabulary.
 ///
-/// `rdlt::pipeline_spec::DestSpec::File` restates this config field by field so
-/// a pipeline document can express it. That mirror is maintained BY HAND, and
-/// the dangerous direction is silent: add a field here and forget the mirror,
-/// and the field compiles, ships, and is simply unreachable from any pipeline
-/// YAML — unconfigurable with no error anywhere.
+/// It guarded a hand-maintained mirror until `DestSpec::File` was changed to
+/// EMBED this config rather than restate it field by field. That hazard — a
+/// field added here, forgotten there, and silently unreachable from any
+/// pipeline document — is now impossible by construction rather than caught by
+/// this test, so the assertion has outlived its original purpose.
 ///
-/// The assertion cannot live next to `DestSpec` (this crate is a dependency of
-/// the facade, so it cannot see it) and it cannot import it here for the same
-/// reason. So it pins the field set on THIS side and names the required action
-/// in the failure message. It is derived from the schema rather than written as
-/// a struct literal deliberately: US10 may embed `FileDestConfig` into
-/// `DestSpec::File` instead of mirroring it, and a field-set assertion survives
-/// that refactor where a per-field destructure would not.
+/// It is kept for the weaker property that remains true and still matters: a
+/// change to these fields is a change to what users may write in a pipeline
+/// document, and config vocabulary is user-facing (017 renamed `merge_key` to
+/// `merge_scope` and broke real pipelines). Failing here forces that change to
+/// be deliberate rather than incidental.
 #[test]
-fn file_dest_config_field_set_is_mirrored_in_dest_spec() {
+fn file_dest_config_field_set_is_the_document_vocabulary() {
     let schema = schemars::schema_for!(rdlt_connector_file::dest::FileDestConfig);
     let value = serde_json::to_value(&schema).expect("schema serializes");
     let mut fields: Vec<String> = value["properties"]
@@ -118,10 +116,9 @@ fn file_dest_config_field_set_is_mirrored_in_dest_spec() {
     let expected = ["format", "location", "parquet", "partition_by", "path"];
     assert_eq!(
         fields, expected,
-        "FileDestConfig's fields changed. `rdlt::pipeline_spec::DestSpec::File` \
-         is a hand-maintained mirror of this struct: add the same field there \
-         (and to the destructure that rebuilds this config from it), then update \
-         this expected list. Skipping the mirror leaves the new field \
-         unreachable from pipeline YAML with no error at all."
+        "FileDestConfig's fields changed, which changes what a pipeline \
+         document may contain — `destination: file:` deserializes straight into \
+         this struct. Confirm the vocabulary change is intended (and documented \
+         for users), then update this expected list."
     );
 }

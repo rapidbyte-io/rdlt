@@ -1,6 +1,9 @@
-//! Feature 013 US2 (T009): `Json` columns land as NATIVE DuckDB JSON — the
-//! capability flip's behavior proof (probe: tests/probes.rs
-//! `probe_bundled_json_extension`).
+//! `Json` columns land as NATIVE DuckDB JSON rather than as text.
+//!
+//! This is the behavioural half of the `json_type` capability: the probe in
+//! `probes.rs` proves the bundled build HAS a JSON type, and these cells prove
+//! the destination actually uses it — a capability declared but not exercised
+//! would let the engine plan around a type that never materializes.
 
 use rdlt_connector::StreamSpec;
 use rdlt_connector_duckdb::dest::DuckDb;

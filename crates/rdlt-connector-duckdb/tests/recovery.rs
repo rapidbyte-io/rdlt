@@ -1,8 +1,11 @@
-//! Crash-recovery regression (feature 003 review): the Replace-mode
-//! truncate-once guard must be DURABLE — a crash between commits of one load
-//! recovers into a fresh session, which must NOT re-truncate rows an earlier
-//! commit already published (the parquet twin was the feature-002 review's
-//! confirmed data-loss finding; DuckDB carried the same latent pattern).
+//! The Replace-mode truncate-once guard must be DURABLE.
+//!
+//! A crash between two commits of one load recovers into a FRESH session, and
+//! that session must not re-truncate rows the earlier commit already published.
+//! This is a regression pin for confirmed data loss: the file destination had
+//! exactly this bug, and DuckDB carried the same latent pattern — an
+//! in-memory-only guard looks correct until recovery constructs a new session
+//! that has forgotten it.
 
 use rdlt_connector::core::{LoadId, PipelineId, TableName, WriteMode};
 use rdlt_connector::{Destination, OpenCtx};

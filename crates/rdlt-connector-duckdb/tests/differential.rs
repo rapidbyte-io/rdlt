@@ -1,10 +1,14 @@
-//! Feature 013 US3 (T011): the CROSS-DESTINATION differential oracle
-//! (contract SM6). Identical feeds run through the postgres destination
-//! (testcontainers) and the DuckDB destination (temp file); equivalence =
-//! identical canonical per-table rows and identical typed-error classes.
+//! The cross-destination differential oracle: identical feeds run through the
+//! postgres destination (a live container) and the DuckDB destination (a temp
+//! file), and the two must agree on canonical per-table rows AND on typed-error
+//! classes.
 //!
-//! Type-affinity table (the ONLY sanctioned representation differences —
-//! SM6; the canonicalizer below normalizes exactly these):
+//! This is the strongest check the suite has on the shared merge core. Each
+//! destination's own cells can only prove it is self-consistent; only running
+//! both against one feed can catch the two dialects quietly diverging.
+//!
+//! Type-affinity table — the ONLY sanctioned representation differences, which
+//! the canonicalizer below normalizes exactly:
 //!
 //! | Logical    | postgres        | DuckDB          | canonical form        |
 //! |---|---|---|---|

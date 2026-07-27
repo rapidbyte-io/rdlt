@@ -1,8 +1,12 @@
-//! Feature 013 US1 (T007): the 008 merge-strategy contract on DuckDB —
-//! destination-visible outcomes through the engine, mirroring the postgres
-//! cells' claims (contract SM5: same options, same behavior, same typed
-//! errors). Keyed STRUCTURED streams (the shape the strategies apply to) via
-//! the shared Arrow driver in tests/common.
+//! The merge strategies on DuckDB — delete_insert, upsert and scd2 — asserted
+//! by their destination-visible outcomes rather than by the SQL that produced
+//! them.
+//!
+//! The same options must yield the same behaviour and the same typed errors as
+//! on postgres, because both destinations plan through one shared core; these
+//! cells are how "same" is checked rather than assumed. Keyed STRUCTURED
+//! streams are the shape strategies apply to, driven through the shared Arrow
+//! helper in `tests/common`.
 
 mod common;
 
@@ -120,7 +124,7 @@ async fn upsert_updates_in_place_and_composes_with_hard_delete() {
 }
 
 /// M2/M7: upsert on a shredded (keyless) stream is a typed error — identical
-/// wording to postgres (shared validator, contract SM5).
+/// wording to postgres (one shared validator serves both).
 #[tokio::test(flavor = "multi_thread")]
 async fn upsert_on_shredded_stream_is_typed() {
     let dir = tempfile::tempdir().unwrap();
@@ -322,7 +326,7 @@ async fn upsert_over_preexisting_duplicates_is_typed() {
     );
 }
 
-/// 013 G1 (MR6 amended): with a merge_scope, scd2 retirement is SCOPED —
+/// With a merge_scope, scd2 retirement is SCOPED —
 /// absent keys retire only within delivered scopes; other scopes keep their
 /// active versions untouched.
 #[tokio::test(flavor = "multi_thread")]

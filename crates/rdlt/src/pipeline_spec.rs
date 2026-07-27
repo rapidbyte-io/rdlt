@@ -174,26 +174,18 @@ pub enum DestSpec {
         path: PathBuf,
     },
     /// The full file-destination vocabulary — format (parquet|jsonl),
-    /// location (local | s3), partition_by.
+    /// location (local | s3), partition_by, parquet options.
+    ///
+    /// The connector's own config type IS the document shape, embedded rather
+    /// than mirrored. Previously this was a struct variant restating each field
+    /// by hand, which failed silently in one direction: a field added to
+    /// `FileDestConfig` and not added here compiled fine and was simply
+    /// unreachable from any pipeline document — configurable in the library,
+    /// invisible from YAML, with no error anywhere. Embedding removes the
+    /// possibility rather than guarding against it. Boxed because the config
+    /// dwarfs the other variants.
     #[cfg(feature = "file")]
-    File {
-        /// Output directory (local) or key prefix (object store).
-        path: String,
-        /// `parquet` (default) or `jsonl`.
-        format: Option<crate::connector::file::dest::DestFormat>,
-        /// Absent = local filesystem; otherwise the object-store location.
-        location: Option<crate::connector::file::location::LocationOptions>,
-        /// Optional partition column: one prefix per value, written as the bare
-        /// value rather than Hive-style `column=value`.
-        partition_by: Option<String>,
-        /// Mirrors `FileDestConfig::parquet`. This enum is a hand-maintained
-        /// mirror rebuilt field by field below, so a field added to the
-        /// destination config and NOT added here compiles fine and is simply
-        /// unreachable from a pipeline document — silently unconfigurable.
-        /// The reverse direction is safe: adding here forces the destructure
-        /// below to be updated.
-        parquet: Option<crate::connector::file::dest::ParquetOptions>,
-    },
+    File(Box<crate::connector::file::dest::FileDestConfig>),
     /// The Iceberg destination — the crate's full config vocabulary inline
     /// (catalog/auth, namespace, storage override, per-stream tables with
     /// partition_by).
@@ -449,27 +441,8 @@ fn build_with<S: rdlt_connector::Source>(
             Ok(builder.destination(dest).build()?)
         }
         #[cfg(feature = "file")]
-        DestSpec::File {
-            path,
-            format,
-            location,
-            partition_by,
-            parquet,
-        } => {
-            let mut config = crate::connector::file::dest::FileDestConfig::new(path.clone());
-            if let Some(format) = format {
-                config = config.with_format(*format);
-            }
-            if let Some(location) = location {
-                config = config.with_location(location.clone());
-            }
-            if let Some(column) = partition_by {
-                config = config.with_partition_by(column.clone());
-            }
-            if let Some(parquet) = parquet {
-                config = config.with_parquet(parquet.clone());
-            }
-            let dest = crate::connector::file::dest::FileDest::from_config(config)
+        DestSpec::File(config) => {
+            let dest = crate::connector::file::dest::FileDest::from_config((**config).clone())
                 .map_err(|e| SpecError::resolve(format!("file destination: {e}")))?;
             Ok(builder.destination(dest).build()?)
         }

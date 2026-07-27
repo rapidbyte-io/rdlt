@@ -508,18 +508,17 @@ destination:
 "#,
         );
         match &file.destination {
-            DestSpec::File {
-                format,
-                location,
-                partition_by,
-                ..
-            } => {
+            DestSpec::File(config) => {
+                // The document deserializes straight into the connector's own
+                // config, so these assertions now read the SAME type the
+                // destination is built from — there is no mirror in between to
+                // disagree with it.
                 assert!(matches!(
-                    format,
-                    Some(rdlt::connector::file::dest::DestFormat::Jsonl)
+                    config.format,
+                    rdlt::connector::file::dest::DestFormat::Jsonl
                 ));
-                assert!(location.is_some());
-                assert_eq!(partition_by.as_deref(), Some("day"));
+                assert!(config.location.is_some());
+                assert_eq!(config.partition_by.as_deref(), Some("day"));
             }
             other => panic!("expected file destination, got {other:?}"),
         }

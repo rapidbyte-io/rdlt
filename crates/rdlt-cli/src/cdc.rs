@@ -70,7 +70,7 @@ pub fn cdc_composition_warnings(spec: &Spec, config: &PostgresConfig) -> Vec<Str
         }
         DestSpec::Duckdb { .. }
         | DestSpec::Parquet { .. }
-        | DestSpec::File { .. }
+        | DestSpec::File(_)
         | DestSpec::Iceberg(_) => {
             warnings.push(format!(
                 "cdc: this destination has no hard-delete support — the \

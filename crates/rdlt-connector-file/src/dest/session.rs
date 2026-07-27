@@ -120,10 +120,26 @@ impl FileSession {
         }
     }
 
+    /// Is the filesystem publish protocol in play?
+    ///
+    /// Names, once, why several places test the location kind: the
+    /// stage → rename → fsync-the-directory sequence and the crash points that
+    /// punctuate it exist ONLY on a filesystem. An object store has no
+    /// directory to fsync and no rename to make atomic, so firing those points
+    /// there would inject a crash into a protocol that is not running — and its
+    /// own failure surface is swept separately through `S3_FAIL_POINTS`.
+    ///
+    /// Deliberately NOT used for the frozen truncation rule below: that one
+    /// tests `is_local()` because its scope is a statement about OWNERSHIP
+    /// (which files this destination may delete), not about durability.
+    fn filesystem_protocol(&self) -> bool {
+        self.location.is_local()
+    }
+
     /// Phase 2 (truncate): clear each Replace-mode table's owned files, ONCE per
     /// load. The crash point fires before any deletion (local protocol only).
     async fn truncate_replace_tables(&self) -> Result<(), DestinationError> {
-        if self.location.is_local() {
+        if self.filesystem_protocol() {
             crash_point!(
                 "pq.replace.truncate",
                 Err(DestinationError::fatal(
@@ -167,7 +183,7 @@ impl FileSession {
             let from = staging_tail(&self.scope, &self.load_id, &part.name);
             self.location.publish_part(&from, &to).await?;
         }
-        if self.location.is_local() {
+        if self.filesystem_protocol() {
             crash_point!(
                 "pq.dir.fsync",
                 Err(DestinationError::fatal("injected crash at pq.dir.fsync"))
@@ -201,7 +217,7 @@ impl FileSession {
         log: &mut CommitLog,
         key: (String, u64),
     ) -> Result<(), DestinationError> {
-        if self.location.is_local() {
+        if self.filesystem_protocol() {
             crash_point!(
                 "pq.state.write",
                 Err(DestinationError::fatal("injected crash at pq.state.write"))
@@ -212,7 +228,7 @@ impl FileSession {
             .await?;
         log.format_version = LAYOUT_FORMAT_VERSION;
         log.receipts.push(key);
-        if self.location.is_local() {
+        if self.filesystem_protocol() {
             crash_point!(
                 "pq.receipt.write",
                 Err(DestinationError::fatal(

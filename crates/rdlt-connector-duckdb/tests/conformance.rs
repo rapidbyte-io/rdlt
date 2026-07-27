@@ -1,5 +1,7 @@
-//! T057: DuckDB destination — in-process integration (end-to-end through the engine)
-//! plus the public destination conformance suite (the certification gate).
+//! DuckDB destination end to end: through the engine into a real database
+//! file, plus the public destination conformance suite — the suite is the
+//! certification gate, so a change that breaks the SPI contract fails here
+//! rather than in a consumer's pipeline.
 
 use async_trait::async_trait;
 use rdlt_connector_duckdb::dest::DuckDb;

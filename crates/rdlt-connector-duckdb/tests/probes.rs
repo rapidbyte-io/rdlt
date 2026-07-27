@@ -1,9 +1,11 @@
-//! Dialect-feasibility probes (feature 013 R4/R5/R6, contract SM3).
+//! Dialect-feasibility probes: each pins ONE assumption a DuckDB dialect arm
+//! depends on, asserted against the bundled DuckDB itself rather than against
+//! its documentation.
 //!
-//! Each probe pins ONE assumption a DuckDB dialect arm depends on, against
-//! the bundled DuckDB itself. A probe that fails converts its dependent arm
-//! into a TYPED capability gap — never a silent approximation. Probe results
-//! are recorded as matrix rows (T013).
+//! A probe that fails converts its dependent arm into a TYPED capability gap —
+//! never a silent approximation. That is the whole point of probing before
+//! relying: an assumption that turns out false becomes a refusal the caller can
+//! see, instead of SQL that runs and means something subtly different.
 
 use duckdb::Connection;
 
@@ -12,7 +14,7 @@ fn conn() -> Connection {
 }
 
 /// R4: postgres-style `DISTINCT ON` with multi-column ORDER BY — the shared
-/// dedup/survivor shape (MR1/MR2). Survivor = first row per identity group
+/// dedup/survivor shape. Survivor = first row per identity group
 /// under (sort, arrival DESC).
 #[test]
 fn probe_distinct_on_ordering_semantics() {

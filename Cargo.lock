@@ -4241,7 +4241,6 @@ dependencies = [
 name = "rdlt-core"
 version = "0.2.0"
 dependencies = [
- "arrow-schema",
  "blake3",
  "fail",
  "proptest",
@@ -4260,7 +4259,6 @@ dependencies = [
  "chrono",
  "criterion",
  "fs4",
- "futures",
  "iai-callgrind",
  "proptest",
  "rdlt-connector",
@@ -4283,8 +4281,6 @@ version = "0.2.0"
 dependencies = [
  "arrow",
  "async-trait",
- "bytes",
- "futures",
  "rdlt-connector",
  "rdlt-core",
  "serde_json",

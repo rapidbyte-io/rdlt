@@ -35,7 +35,9 @@ rdlt-connector-duckdb = { workspace = true, optional = true }
 rdlt-connector-file = { workspace = true, optional = true }
 rdlt-connector-iceberg = { workspace = true, optional = true }
 rdlt-connector-postgres = { workspace = true, optional = true }
-tokio = { workspace = true }
+# tokio-util only: `cancellation_token()` hands one out. tokio itself is a
+# DEV dependency — the facade's own source never names it, and a library that
+# pulls in a runtime it does not use forces that cost on every consumer.
 tokio-util = { workspace = true }
 # The shared pipeline_spec model: serde derive + serde_yaml's singleton_map
 # with-module, and serde_json for the postgres inline `from_value` gate.
@@ -45,7 +47,7 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 rdlt-testkit = { workspace = true }
-rdlt-connector = { workspace = true }
+tokio = { workspace = true }
 
 [lints]
 workspace = true

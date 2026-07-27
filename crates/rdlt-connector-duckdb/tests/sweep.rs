@@ -1,7 +1,13 @@
-//! Feature 013 US3 (T012): crash sweeps for the STRATEGY arms — every fail
-//! point × action × strategy, armed-fire pinned, crash/rerun convergence
-//! proven per strategy (contract SM7; the D4 clauses extended to the new
-//! arms). One test fn: fail points are process-global (the 009 lesson).
+//! Crash sweeps for the STRATEGY arms: every fail point × action × strategy,
+//! with armed-fire pins and crash/rerun convergence proven per strategy.
+//!
+//! The armed-fire pins are the anti-vacuousness instrument — a sweep that
+//! tolerates a crash point which never fires proves nothing, so each point must
+//! demonstrably fail an armed attempt before its recovery is credited.
+//!
+//! ONE test function, deliberately: fail points are process-global, so
+//! splitting these across tests lets one test's armed point fire inside
+//! another running concurrently.
 //!
 //! Run with `--features failpoints` (the `make test TARGET=sweep` gate).
 
@@ -19,7 +25,7 @@ use rdlt_engine::{Engine, EngineConfig};
 
 fn feed() -> StructuredSource {
     // One commit unit (single batch): scoped/scd2 tables need their full
-    // feed in one unit (MR5/S6) — the sweep exercises crash edges, not the
+    // feed in one unit — the sweep exercises crash edges, not the
     // split-feed rejection (tests/refinements.rs pins that).
     one_unit(
         "kv",

@@ -1,6 +1,10 @@
-//! Feature 013 US1 (T008): the 010 merge refinements on DuckDB — dedup_sort
-//! ordered survivor selection and merge_scope replacement, mirroring the
-//! postgres cells' claims (contracts MR1–MR6 through the shared core).
+//! Merge refinements on DuckDB: ordered survivor selection (`dedup_sort`) and
+//! wholesale scope replacement (`merge_scope`).
+//!
+//! Both are decided by the SHARED merge core, so these cells assert the same
+//! destination-visible outcomes the postgres cells do. Equal outcomes across
+//! two dialects is the evidence that the shared planning is genuinely shared
+//! and not two implementations that happen to agree today.
 
 mod common;
 
@@ -55,7 +59,7 @@ fn kday(rows: &[(Option<i64>, Option<i64>, Option<&str>)]) -> StructuredSource {
     )
 }
 
-/// MR1/MR2: dedup_sort picks the ordered survivor within one load — values
+/// dedup_sort picks the ordered survivor within one load — values
 /// beat NULL, ties keep deterministic arrival last-wins.
 #[tokio::test(flavor = "multi_thread")]
 async fn dedup_sort_orders_survivors_values_beat_null() {
@@ -92,7 +96,7 @@ async fn dedup_sort_orders_survivors_values_beat_null() {
     }
 }
 
-/// MR3/MR4: merge_scope replaces DELIVERED scopes wholesale, leaves other
+/// merge_scope replaces DELIVERED scopes wholesale, leaves other
 /// scopes untouched, and NULL is not a scope.
 #[tokio::test(flavor = "multi_thread")]
 async fn merge_scope_scope_replacement() {
@@ -141,11 +145,11 @@ async fn merge_scope_scope_replacement() {
     assert_eq!(
         dest.query_string("SELECT v FROM kv WHERE k = 4").unwrap(),
         "no-scope",
-        "NULL is not a scope (MR4)"
+        "NULL is not a scope"
     );
 }
 
-/// MR5 (shared single-unit rule): a scoped table whose feed spans TWO commit
+/// The shared single-unit rule: a scoped table whose feed spans TWO commit
 /// units is a typed error on the second unit — same message as postgres.
 #[tokio::test(flavor = "multi_thread")]
 async fn merge_scope_split_feed_is_typed_on_the_second_unit() {
@@ -185,7 +189,7 @@ async fn merge_scope_split_feed_is_typed_on_the_second_unit() {
     );
 }
 
-/// MR6 typed matrix (shared validator — identical wording to postgres):
+/// The typed-rejection matrix (shared validator — identical wording to postgres):
 /// keyless dedup, missing columns, key-constant dedup.
 #[tokio::test(flavor = "multi_thread")]
 async fn refinement_option_misuse_is_typed() {
