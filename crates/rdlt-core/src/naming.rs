@@ -120,15 +120,38 @@ impl UniqueNamer {
             }
             Some(owner) if owner == source => base,
             Some(_) => {
+                // A repeat collision can only come from an (astronomically
+                // unlikely) short-hash clash, and each probe therefore hashes a
+                // DIFFERENT input so the candidate genuinely changes.
+                //
+                // The previous version re-suffixed the CANDIDATE and claimed
+                // that "extends deterministically". It does not: `suffixed`
+                // truncates to `max_len - SUFFIX_LEN` BEFORE appending, so for
+                // any base already at that bound `suffixed(suffixed(x))` equals
+                // `suffixed(x)` — the candidate stops changing and the loop
+                // spins forever, with no diagnostic and no bound. The trigger
+                // is rare enough never to have been observed, which is exactly
+                // what makes a silent hang the wrong failure mode.
+                //
+                // `\u{1}` separates the probe counter from the source name: it
+                // cannot occur in a normalized identifier, so probe inputs can
+                // never alias a real source name.
                 let mut candidate = suffixed(&base, source, self.rules);
-                // Suffixes are derived from the source name, so a repeat collision can
-                // only come from a (astronomically unlikely) short-hash clash; extend
-                // deterministically rather than loop forever.
+                let mut probe = 0usize;
                 while let Some(owner) = self.taken.get(&candidate) {
                     if owner == source {
                         return candidate;
                     }
-                    candidate = suffixed(&candidate, source, self.rules);
+                    probe += 1;
+                    // At most `taken.len()` names are occupied, so a correct
+                    // probe sequence finds a free one within that many steps.
+                    // Exceeding it means the probes stopped being distinct —
+                    // a loud failure beats the unbounded spin it replaced.
+                    assert!(
+                        probe <= self.taken.len() + 1,
+                        "identifier probe exhausted for `{source}`: candidates stopped changing"
+                    );
+                    candidate = suffixed(&base, &format!("{source}\u{1}{probe}"), self.rules);
                 }
                 self.taken.insert(candidate.clone(), source.to_owned());
                 candidate
@@ -158,6 +181,75 @@ pub fn ident_hash(input: &str, hex_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Colliding sources must each get a DISTINCT name, and getting there must
+    /// terminate.
+    ///
+    /// Three sources are the minimum that exercises the probe loop: the first
+    /// takes the base, the second takes the suffixed form, and the third finds
+    /// the suffixed form already owned by someone else and has to probe. A
+    /// `suffixed` that returns a constant makes every probe identical — which
+    /// used to spin forever and now trips the probe bound instead.
+    #[test]
+    fn colliding_sources_get_distinct_names_and_terminate() {
+        let rules = IdentRules { max_len: 20 };
+        let mut namer = UniqueNamer::new(rules);
+        // All three normalize to the same base.
+        let names: Vec<String> = ["a b", "a-b", "a.b"]
+            .iter()
+            .map(|s| namer.name_for(s))
+            .collect();
+
+        let unique: std::collections::BTreeSet<&String> = names.iter().collect();
+        assert_eq!(
+            unique.len(),
+            3,
+            "distinct sources must not merge: {names:?}"
+        );
+        for name in &names {
+            assert!(name.len() <= rules.max_len, "within the bound: {name}");
+            assert!(!name.is_empty(), "a name is never empty");
+        }
+        // Stable: asking again for the same source returns the same name.
+        assert_eq!(namer.name_for("a-b"), names[1], "append-only and stable");
+    }
+
+    /// The same, at a bound tight enough that every base is TRUNCATED — the
+    /// regime where the old probe was idempotent and looped forever.
+    #[test]
+    fn truncating_bound_still_terminates_and_stays_distinct() {
+        let rules = IdentRules { max_len: 12 };
+        let mut namer = UniqueNamer::new(rules);
+        let sources: Vec<String> = (0..24)
+            .map(|i| format!("a very long column name {i}"))
+            .collect();
+        let names: Vec<String> = sources.iter().map(|s| namer.name_for(s)).collect();
+
+        let unique: std::collections::BTreeSet<&String> = names.iter().collect();
+        assert_eq!(unique.len(), sources.len(), "no two sources share a name");
+        for name in &names {
+            assert!(name.len() <= rules.max_len, "{name} exceeds max_len");
+        }
+    }
+
+    /// `SUFFIX_LEN` must be exactly the suffix `suffixed` writes — an underscore
+    /// plus `HASH_LEN` hex characters. If the constant and the writer disagree,
+    /// truncation reserves the wrong amount and the result overruns the bound
+    /// the caller asked for.
+    #[test]
+    fn suffix_length_matches_what_is_written() {
+        assert_eq!(SUFFIX_LEN, HASH_LEN + 1, "underscore plus the hash");
+        let rules = IdentRules { max_len: 32 };
+        let out = suffixed("a_base_name_long_enough_to_truncate", "src", rules);
+        assert_eq!(
+            out.len(),
+            rules.max_len,
+            "a truncated name fills the bound exactly"
+        );
+        let (_, hash) = out.rsplit_once('_').expect("suffix separator");
+        assert_eq!(hash.len(), HASH_LEN, "the hash is HASH_LEN hex chars");
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+    }
 
     #[test]
     fn distinct_sources_colliding_after_normalize_stay_distinct() {
