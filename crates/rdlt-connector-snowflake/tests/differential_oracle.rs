@@ -174,7 +174,11 @@ async fn postgres_rows(conn: &str, dataset: &str) -> std::collections::BTreeSet<
         .collect()
 }
 
-async fn run_snowflake(config: &SnowflakeConfig, pipeline: &str, batches: [arrow_array::RecordBatch; 2]) {
+async fn run_snowflake(
+    config: &SnowflakeConfig,
+    pipeline: &str,
+    batches: [arrow_array::RecordBatch; 2],
+) {
     for (index, batch) in batches.into_iter().enumerate() {
         let dest = Snowflake::new(config.clone()).expect("valid config");
         let mut engine_config = EngineConfig::new(format!("{pipeline}-{index}"));

@@ -106,7 +106,12 @@ impl Stage {
         // which point two different pipelines can sanitise to the same scope
         // and start deleting each other's parts.
         let scope = ident_hash(pipeline, 12);
-        let root = match options.prefix.as_deref().map(str::trim).map(|p| p.trim_matches('/')) {
+        let root = match options
+            .prefix
+            .as_deref()
+            .map(str::trim)
+            .map(|p| p.trim_matches('/'))
+        {
             Some(prefix) if !prefix.is_empty() => format!("{prefix}/{scope}"),
             _ => scope,
         };
@@ -144,7 +149,10 @@ impl Stage {
     /// points at the bucket rather than at the stale definition. A stage holds
     /// no data, so replacing it costs nothing.
     pub(super) fn create_sql(&self, qualified_name: &str) -> (String, Vec<String>) {
-        let mut sql = format!("CREATE OR REPLACE STAGE {qualified_name} URL = '{}'", self.url);
+        let mut sql = format!(
+            "CREATE OR REPLACE STAGE {qualified_name} URL = '{}'",
+            self.url
+        );
         let mut secrets = Vec::new();
         match &self.storage_integration {
             Some(integration) => {
@@ -182,16 +190,11 @@ impl Stage {
         // wrote it. Without it every session of a pipeline names its first
         // part identically, and a second session's reclaim deletes a part the
         // first is still about to load — a file the COPY then cannot find.
-        let tail = format!(
-            "{}/{}/{:08}.parquet",
-            self.load,
-            ident_hash(table, 16),
-            {
-                let n = self.next_part;
-                self.next_part += 1;
-                n
-            }
-        );
+        let tail = format!("{}/{}/{:08}.parquet", self.load, ident_hash(table, 16), {
+            let n = self.next_part;
+            self.next_part += 1;
+            n
+        });
         crash_point!(
             "sf.stage.write",
             Err(DestinationError::fatal("injected crash at sf.stage.write"))
@@ -333,7 +336,11 @@ mod tests {
     use rdlt_connector::Secret;
 
     fn options() -> S3Stage {
-        S3Stage::new("parts", Secret::from("AK-SECRET"), Secret::from("SK-SECRET"))
+        S3Stage::new(
+            "parts",
+            Secret::from("AK-SECRET"),
+            Secret::from("SK-SECRET"),
+        )
     }
 
     fn stage() -> Stage {
@@ -353,17 +360,28 @@ mod tests {
 
     #[test]
     fn a_configured_prefix_contains_the_scope() {
-        let stage = Stage::connect(&options().with_prefix("/warehouse/rdlt/"), "sales", "load-1")
-            .expect("connect");
+        let stage = Stage::connect(
+            &options().with_prefix("/warehouse/rdlt/"),
+            "sales",
+            "load-1",
+        )
+        .expect("connect");
         assert!(stage.root.starts_with("warehouse/rdlt/"), "{}", stage.root);
-        assert!(stage.url.starts_with("s3://parts/warehouse/rdlt/"), "{}", stage.url);
+        assert!(
+            stage.url.starts_with("s3://parts/warehouse/rdlt/"),
+            "{}",
+            stage.url
+        );
         assert!(stage.url.ends_with('/'), "a stage URL names a prefix");
     }
 
     #[test]
     fn the_stage_definition_carries_credentials_and_reports_them_as_secrets() {
         let (sql, secrets) = stage().create_sql("\"DB\".\"S\".\"ST\"");
-        assert!(sql.starts_with("CREATE OR REPLACE STAGE \"DB\".\"S\".\"ST\""), "{sql}");
+        assert!(
+            sql.starts_with("CREATE OR REPLACE STAGE \"DB\".\"S\".\"ST\""),
+            "{sql}"
+        );
         assert!(sql.contains("AWS_KEY_ID = 'AK-SECRET'"), "{sql}");
         // Every secret in the text must be declared, or redaction misses it.
         for secret in ["AK-SECRET", "SK-SECRET"] {
@@ -376,8 +394,12 @@ mod tests {
 
     #[test]
     fn a_storage_integration_keeps_the_keys_out_of_the_definition() {
-        let stage = Stage::connect(&options().with_storage_integration("RDLT_INT"), "sales", "load-1")
-            .expect("connect");
+        let stage = Stage::connect(
+            &options().with_storage_integration("RDLT_INT"),
+            "sales",
+            "load-1",
+        )
+        .expect("connect");
         let (sql, secrets) = stage.create_sql("\"ST\"");
         assert!(sql.contains("STORAGE_INTEGRATION = RDLT_INT"), "{sql}");
         assert!(!sql.contains("SK-SECRET"), "no key material: {sql}");
@@ -413,7 +435,9 @@ mod tests {
         #[async_trait::async_trait]
         impl super::super::client::Executor for Echo {
             async fn execute(&self, sql: &str) -> Result<(), DestinationError> {
-                Err(DestinationError::fatal(format!("SQL compilation error: {sql}")))
+                Err(DestinationError::fatal(format!(
+                    "SQL compilation error: {sql}"
+                )))
             }
             async fn scalar_u64(&self, _: &str, _: &[&str]) -> Result<u64, DestinationError> {
                 Ok(0)
@@ -451,12 +475,20 @@ mod tests {
         let mut first = Stage::connect(&options(), "sales", "load-1").expect("connect");
         let mut second = Stage::connect(&options(), "sales", "load-2").expect("connect");
         assert_eq!(first.root, second.root, "same pipeline, same scope");
-        assert_ne!(first.load, second.load, "different loads, different segment");
+        assert_ne!(
+            first.load, second.load,
+            "different loads, different segment"
+        );
 
         let key_of = |stage: &mut Stage| {
             let n = stage.next_part;
             stage.next_part += 1;
-            format!("{}/{}/{:08}.parquet", stage.load, ident_hash("events", 16), n)
+            format!(
+                "{}/{}/{:08}.parquet",
+                stage.load,
+                ident_hash("events", 16),
+                n
+            )
         };
         assert_ne!(
             key_of(&mut first),
@@ -489,15 +521,24 @@ mod tests {
     #[test]
     fn the_copy_names_its_files_and_forces_past_the_load_history() {
         let parts = vec![
-            Part { tail: "aa/00000000.parquet".into(), rows: 3 },
-            Part { tail: "aa/00000001.parquet".into(), rows: 2 },
+            Part {
+                tail: "aa/00000000.parquet".into(),
+                rows: 3,
+            },
+            Part {
+                tail: "aa/00000001.parquet".into(),
+                rows: 2,
+            },
         ];
         let sql = copy_sql("\"DB\".\"S\".\"EVENTS\"", "\"DB\".\"S\".\"ST\"", &parts);
         assert!(
             sql.contains("FILES = ('aa/00000000.parquet', 'aa/00000001.parquet')"),
             "the load is limited to this unit's parts: {sql}"
         );
-        assert!(sql.contains("MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE"), "{sql}");
+        assert!(
+            sql.contains("MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE"),
+            "{sql}"
+        );
         assert!(
             sql.contains("FORCE = TRUE"),
             "a rolled-back unit must be able to load the same parts again: {sql}"
@@ -514,8 +555,15 @@ mod tests {
         // should not have to work out which is which.
         let stage = stage_object_name("sales");
         assert!(stage.starts_with(rdlt_connector_sqlcore::names::STAGE_PREFIX));
-        assert_ne!(stage, rdlt_connector_sqlcore::names::stage_table("sales", "events"));
+        assert_ne!(
+            stage,
+            rdlt_connector_sqlcore::names::stage_table("sales", "events")
+        );
         assert!(stage.contains("ext_"), "{stage}");
-        assert_eq!(stage, stage_object_name("sales"), "deterministic across runs");
+        assert_eq!(
+            stage,
+            stage_object_name("sales"),
+            "deterministic across runs"
+        );
     }
 }

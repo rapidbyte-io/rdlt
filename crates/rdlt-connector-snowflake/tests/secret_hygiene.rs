@@ -148,8 +148,14 @@ fn the_programmatic_constructors_redact_as_the_parsed_ones_do() {
     // document, and a constructor that stored a plain String would be a leak
     // reachable only from the library API — where no document test would look.
     let built = [
-        format!("{:?}", Auth::key_pair(KeyPair::new(KEY_PEM).with_passphrase(PASSPHRASE))),
-        format!("{:?}", Auth::password(Password::new(PASSWORD).with_passcode(PASSCODE))),
+        format!(
+            "{:?}",
+            Auth::key_pair(KeyPair::new(KEY_PEM).with_passphrase(PASSPHRASE))
+        ),
+        format!(
+            "{:?}",
+            Auth::password(Password::new(PASSWORD).with_passcode(PASSCODE))
+        ),
         format!("{:?}", Auth::oauth_token(OAUTH)),
         format!("{:?}", Auth::pat(PAT)),
         format!(

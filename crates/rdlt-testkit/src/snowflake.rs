@@ -414,9 +414,7 @@ mod tests {
         assert!(stage_credentials_with(&partial).is_none());
         // And the stage gate is independent of the account gate: one missing
         // must not take the other's legs with it.
-        assert!(
-            stage_credentials_with(&Fake::with(&[("RDLT_SNOWFLAKE_ACCOUNT", "A")])).is_none()
-        );
+        assert!(stage_credentials_with(&Fake::with(&[("RDLT_SNOWFLAKE_ACCOUNT", "A")])).is_none());
     }
 
     #[test]

@@ -163,12 +163,9 @@ pub(super) fn parquet_part(
         .set_compression(parquet::basic::Compression::SNAPPY)
         .build();
     let mut buf = Vec::new();
-    let mut writer = parquet::arrow::ArrowWriter::try_new(
-        &mut buf,
-        projected.schema(),
-        Some(properties),
-    )
-    .map_err(DestinationError::fatal)?;
+    let mut writer =
+        parquet::arrow::ArrowWriter::try_new(&mut buf, projected.schema(), Some(properties))
+            .map_err(DestinationError::fatal)?;
     writer.write(&projected).map_err(DestinationError::fatal)?;
     writer.close().map_err(DestinationError::fatal)?;
     Ok(buf)
@@ -537,8 +534,8 @@ mod tests {
         let batch =
             RecordBatch::try_new(arrow, vec![Arc::new(Int64Array::from(rows))]).expect("batch");
         // A budget small enough that this narrow batch must split.
-        let sql = insert_statements_chunked("\"T\"", &schema_of(&["id"]), &batch, 4_096)
-            .expect("sql");
+        let sql =
+            insert_statements_chunked("\"T\"", &schema_of(&["id"]), &batch, 4_096).expect("sql");
         assert!(sql.len() > 1, "the budget must split the batch");
         for statement in &sql {
             assert!(

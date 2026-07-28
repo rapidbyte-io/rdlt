@@ -97,7 +97,10 @@ pub(crate) fn code_in(err: &DestinationError) -> Option<String> {
     // context this crate added — an error that gained a sentence naming the
     // account must not thereby lose the code its handling keys on.
     while let Some(error) = source {
-        if let Some(code) = error.downcast_ref::<SfError>().and_then(SfError::snowflake_code) {
+        if let Some(code) = error
+            .downcast_ref::<SfError>()
+            .and_then(SfError::snowflake_code)
+        {
             return Some(code.to_owned());
         }
         source = error.source();

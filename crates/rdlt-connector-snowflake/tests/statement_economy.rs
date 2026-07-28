@@ -61,10 +61,7 @@ fn schema_of(table: &str, columns: &[&str]) -> TableSchema {
 /// The catalog as it stands once a table exists with these columns.
 fn catalog_holding(table: &str, columns: &[&str]) -> Catalog {
     let mut catalog = Catalog::default();
-    catalog.observe(
-        table,
-        columns.iter().map(|c| c.to_uppercase()).collect(),
-    );
+    catalog.observe(table, columns.iter().map(|c| c.to_uppercase()).collect());
     catalog
 }
 
@@ -179,6 +176,10 @@ fn a_new_table_costs_one_create_and_the_image_then_settles() {
 
     // Once the catalog holds it, the same ensure emits nothing — the session's
     // second call to ensure_table for an unchanged stream is free.
-    let settled = ensure(&schema, Some(&schema), &catalog_holding("EVENTS", &["id", "note"]));
+    let settled = ensure(
+        &schema,
+        Some(&schema),
+        &catalog_holding("EVENTS", &["id", "note"]),
+    );
     assert!(settled.is_empty(), "{settled:?}");
 }

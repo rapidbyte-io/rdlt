@@ -111,9 +111,10 @@ async fn the_standard_boolean_predicate_is_rejected_and_the_null_safe_one_is_not
             ],
         )
         .await?;
-        let rejected = connect_and_run_script(&config, &["SELECT count(*) FROM T WHERE DELETED IS TRUE"])
-            .await
-            .is_err();
+        let rejected =
+            connect_and_run_script(&config, &["SELECT count(*) FROM T WHERE DELETED IS TRUE"])
+                .await
+                .is_err();
         // The flag set, and the NULL-safe complement: a NULL flag means "not
         // deleted", so it must fall on the KEEP side.
         let set = connect_and_run_script(&config, &["SELECT count(*) FROM T WHERE DELETED = TRUE"])

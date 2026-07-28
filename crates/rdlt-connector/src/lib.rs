@@ -20,9 +20,9 @@
 pub mod capabilities;
 pub mod channel;
 pub mod error;
-pub mod output;
 #[cfg(feature = "object-store")]
 pub mod objects;
+pub mod output;
 pub mod pem;
 pub mod secret;
 pub mod spec;

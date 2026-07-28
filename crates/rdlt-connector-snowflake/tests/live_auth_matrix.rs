@@ -65,10 +65,7 @@ async fn load_through(method: &str, auth: Auth) {
     let dest = Snowflake::new(config.clone()).expect("valid config");
     let opened = rdlt_connector::Destination::open(
         &dest,
-        rdlt_connector::OpenCtx::new(
-            PipelineId::from("auth-matrix"),
-            LoadId::from("auth-matrix"),
-        ),
+        rdlt_connector::OpenCtx::new(PipelineId::from("auth-matrix"), LoadId::from("auth-matrix")),
     )
     .await;
 

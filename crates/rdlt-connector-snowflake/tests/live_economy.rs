@@ -6,8 +6,8 @@
 //! somewhere other than the ensure path.
 
 use rdlt_connector::StreamSpec;
-use rdlt_connector_snowflake::dest::{Snowflake, SnowflakeConfig};
 use rdlt_connector_snowflake::dest::testhook::connect_and_run;
+use rdlt_connector_snowflake::dest::{Snowflake, SnowflakeConfig};
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::memory::{MemoryBatch, MemorySource, MemoryStream};
 use rdlt_testkit::snowflake::{credentials, scratch_schema};

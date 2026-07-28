@@ -72,7 +72,8 @@ where
     // past the cleanup below is exactly the case cleanup exists for: a failing
     // assertion is when a schema gets left behind. It is re-raised afterwards
     // so the test still fails.
-    let outcome = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(body(config))).await;
+    let outcome =
+        futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(body(config))).await;
 
     // Drop through a raw statement: there is no destination API for it, and
     // leaving the schema would be debris.

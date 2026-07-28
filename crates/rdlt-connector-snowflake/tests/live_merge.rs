@@ -213,27 +213,34 @@ async fn an_upsert_converges_on_the_key_and_leaves_no_duplicates() {
 
 #[tokio::test]
 async fn last_wins_within_one_load_without_a_unique_constraint_to_lean_on() {
-    in_scratch_schema("lastwins", json!({"merge_strategy": "upsert"}), |config| async move {
-        // The same key three times in ONE batch. Postgres would raise a
-        // cardinality error from an unqualified MERGE; the survivor subquery
-        // is what prevents that, and QUALIFY is how it is spelled here.
-        merge_load(
-            &config,
-            "sf-lastwins",
-            batch(&[(7, "oldest"), (7, "middle"), (7, "newest")]),
-        )
-        .await;
-        assert_eq!(scalar(&config, "SELECT count(*) FROM \"EVENTS\"").await, "1");
-        assert_eq!(
-            scalar(
+    in_scratch_schema(
+        "lastwins",
+        json!({"merge_strategy": "upsert"}),
+        |config| async move {
+            // The same key three times in ONE batch. Postgres would raise a
+            // cardinality error from an unqualified MERGE; the survivor subquery
+            // is what prevents that, and QUALIFY is how it is spelled here.
+            merge_load(
                 &config,
-                "SELECT count(*) FROM \"EVENTS\" WHERE \"NOTE\" = 'newest'"
+                "sf-lastwins",
+                batch(&[(7, "oldest"), (7, "middle"), (7, "newest")]),
             )
-            .await,
-            "1",
-            "arrival order decides the survivor"
-        );
-    })
+            .await;
+            assert_eq!(
+                scalar(&config, "SELECT count(*) FROM \"EVENTS\"").await,
+                "1"
+            );
+            assert_eq!(
+                scalar(
+                    &config,
+                    "SELECT count(*) FROM \"EVENTS\" WHERE \"NOTE\" = 'newest'"
+                )
+                .await,
+                "1",
+                "arrival order decides the survivor"
+            );
+        },
+    )
     .await;
 }
 
@@ -249,14 +256,12 @@ async fn delete_insert_replaces_the_delivered_keys() {
                 batch(&[(1, "keep"), (2, "replace-me")]),
             )
             .await;
-            merge_load(
-                &config,
-                "sf-delins-b",
-                batch(&[(2, "replaced")]),
-            )
-            .await;
+            merge_load(&config, "sf-delins-b", batch(&[(2, "replaced")])).await;
 
-            assert_eq!(scalar(&config, "SELECT count(*) FROM \"EVENTS\"").await, "2");
+            assert_eq!(
+                scalar(&config, "SELECT count(*) FROM \"EVENTS\"").await,
+                "2"
+            );
             assert_eq!(
                 scalar(
                     &config,
@@ -294,12 +299,7 @@ async fn a_hard_delete_flag_removes_the_row_rather_than_keeping_it_flagged() {
                 flagged_batch(&[(1, "alive", false), (2, "doomed", false)]),
             )
             .await;
-            merge_load(
-                &config,
-                "sf-hd-b",
-                flagged_batch(&[(2, "doomed", true)]),
-            )
-            .await;
+            merge_load(&config, "sf-hd-b", flagged_batch(&[(2, "doomed", true)])).await;
 
             assert_eq!(
                 scalar(&config, "SELECT count(*) FROM \"EVENTS\"").await,
@@ -317,38 +317,45 @@ async fn a_hard_delete_flag_removes_the_row_rather_than_keeping_it_flagged() {
 
 #[tokio::test]
 async fn scd2_versions_meet_exactly_because_the_unit_shares_one_instant() {
-    in_scratch_schema("scd2", json!({"merge_strategy": "scd2"}), |config| async move {
-        merge_load(&config, "sf-scd2-a", batch(&[(1, "v1")])).await;
-        merge_load(&config, "sf-scd2-b", batch(&[(1, "v2")])).await;
+    in_scratch_schema(
+        "scd2",
+        json!({"merge_strategy": "scd2"}),
+        |config| async move {
+            merge_load(&config, "sf-scd2-a", batch(&[(1, "v1")])).await;
+            merge_load(&config, "sf-scd2-b", batch(&[(1, "v2")])).await;
 
-        // Two versions, one current.
-        assert_eq!(scalar(&config, "SELECT count(*) FROM \"EVENTS\"").await, "2");
-        assert_eq!(
-            scalar(
-                &config,
-                "SELECT count(*) FROM \"EVENTS\" WHERE \"_RDLT_VALID_TO\" IS NULL"
-            )
-            .await,
-            "1",
-            "exactly one version is current"
-        );
-        // The retired version's end must equal the new version's start. The
-        // clock moves between statements here, so this only holds because the
-        // unit captured one instant and both statements read it — a gap would
-        // mean the entity had no current version for that interval.
-        assert_eq!(
-            scalar(
-                &config,
-                "SELECT count(*) FROM \"EVENTS\" old JOIN \"EVENTS\" new \
+            // Two versions, one current.
+            assert_eq!(
+                scalar(&config, "SELECT count(*) FROM \"EVENTS\"").await,
+                "2"
+            );
+            assert_eq!(
+                scalar(
+                    &config,
+                    "SELECT count(*) FROM \"EVENTS\" WHERE \"_RDLT_VALID_TO\" IS NULL"
+                )
+                .await,
+                "1",
+                "exactly one version is current"
+            );
+            // The retired version's end must equal the new version's start. The
+            // clock moves between statements here, so this only holds because the
+            // unit captured one instant and both statements read it — a gap would
+            // mean the entity had no current version for that interval.
+            assert_eq!(
+                scalar(
+                    &config,
+                    "SELECT count(*) FROM \"EVENTS\" old JOIN \"EVENTS\" new \
                    ON old.\"ID\" = new.\"ID\" \
                  WHERE old.\"_RDLT_VALID_TO\" IS NOT NULL \
                    AND new.\"_RDLT_VALID_TO\" IS NULL \
                    AND old.\"_RDLT_VALID_TO\" <> new.\"_RDLT_VALID_FROM\""
-            )
-            .await,
-            "0",
-            "the retired version's end must be the new version's start exactly"
-        );
-    })
+                )
+                .await,
+                "0",
+                "the retired version's end must be the new version's start exactly"
+            );
+        },
+    )
     .await;
 }

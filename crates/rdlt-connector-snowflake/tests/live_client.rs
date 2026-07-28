@@ -12,10 +12,10 @@
 //! wrong password, a missing table, or a duplicate merge key.
 
 use rdlt_connector::DestinationError;
+use rdlt_connector::PemSource;
 use rdlt_connector_snowflake::dest::testhook::{
     DUPLICATE_ROW_IN_DML, classify_live_error, connect_and_run,
 };
-use rdlt_connector::PemSource;
 use rdlt_connector_snowflake::dest::{Auth, KeyPair, Password, SnowflakeConfig};
 use rdlt_testkit::snowflake::{TokenKind, credentials, scratch_schema, token};
 
@@ -128,11 +128,8 @@ async fn a_suspended_warehouse_resumes_within_the_statement() {
     // must stay inside the connector's own timeouts rather than surfacing as
     // a transient error the engine then retries against a warehouse that is
     // already resuming.
-    let suspend = connect_and_run(
-        &config,
-        &format!("ALTER WAREHOUSE \"{warehouse}\" SUSPEND"),
-    )
-    .await;
+    let suspend =
+        connect_and_run(&config, &format!("ALTER WAREHOUSE \"{warehouse}\" SUSPEND")).await;
     // Suspending an already-suspended warehouse is an error, and an
     // unprivileged role cannot suspend at all; neither says anything about
     // the property under test, so the resume is what is asserted.

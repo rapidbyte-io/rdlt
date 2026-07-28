@@ -5,7 +5,6 @@ use rdlt_connector::{
     core::naming::IdentRules,
 };
 
-
 pub(crate) mod client;
 mod config;
 mod ddl;
@@ -86,7 +85,12 @@ pub mod testhook {
         batch: &rdlt_connector::RecordBatch,
         rows_per_statement: usize,
     ) -> Result<Vec<String>, DestinationError> {
-        super::encode::insert_statements_chunked(qualified_target, schema, batch, rows_per_statement)
+        super::encode::insert_statements_chunked(
+            qualified_target,
+            schema,
+            batch,
+            rows_per_statement,
+        )
     }
 
     /// Run one statement through the UNIT executor — the one that refuses DDL.
@@ -260,7 +264,8 @@ impl Destination for Snowflake {
         let stage = match self.config.s3_stage() {
             None => None,
             Some(options) => {
-                let stage = stage::Stage::connect(options, ctx.pipeline.as_str(), ctx.load_id.as_str())?;
+                let stage =
+                    stage::Stage::connect(options, ctx.pipeline.as_str(), ctx.load_id.as_str())?;
                 // Parts staged by a session that died are unreachable — no
                 // receipt names them — so a fresh load reclaims its own scope
                 // before writing into it. Scoped to THIS pipeline: a sibling

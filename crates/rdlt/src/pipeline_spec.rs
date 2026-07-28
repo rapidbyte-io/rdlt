@@ -463,9 +463,8 @@ fn build_with<S: rdlt_connector::Source>(
         }
         #[cfg(feature = "snowflake")]
         DestSpec::Snowflake(config) => {
-            let dest =
-                crate::connector::snowflake::dest::Snowflake::new((**config).clone())
-                    .map_err(|e| SpecError::resolve(format!("snowflake destination: {e}")))?;
+            let dest = crate::connector::snowflake::dest::Snowflake::new((**config).clone())
+                .map_err(|e| SpecError::resolve(format!("snowflake destination: {e}")))?;
             Ok(builder.destination(dest).build()?)
         }
         #[allow(unreachable_patterns)]

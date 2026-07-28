@@ -250,7 +250,10 @@ mod tests {
     #[test]
     fn the_boundary_instant_is_read_from_the_unit_not_from_the_clock() {
         assert_eq!(SnowflakeDialect.tx_timestamp(), "$rdlt_tx_ts");
-        assert_eq!(capture_tx_timestamp(), "SET rdlt_tx_ts = CURRENT_TIMESTAMP()");
+        assert_eq!(
+            capture_tx_timestamp(),
+            "SET rdlt_tx_ts = CURRENT_TIMESTAMP()"
+        );
         // The capture must not be classified as DDL, or the unit executor
         // would refuse the statement the unit needs to run first.
         assert!(!super::super::client::is_ddl(&capture_tx_timestamp()));

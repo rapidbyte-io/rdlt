@@ -97,10 +97,7 @@ async fn timed_load(label: &str, total: i64, staged: bool) -> Option<f64> {
             MemoryBatch::new(rows(from, count)).with_checkpoint(from)
         })
         .collect();
-    let source = MemorySource::new(vec![MemoryStream::new(
-        StreamSpec::new("events"),
-        batches,
-    )]);
+    let source = MemorySource::new(vec![MemoryStream::new(StreamSpec::new("events"), batches)]);
 
     let started = std::time::Instant::now();
     let report = Engine::new(EngineConfig::new("sf-session"), source, dest)
@@ -131,7 +128,10 @@ async fn record_the_crossover_and_the_scaling_behaviour() {
     let has_bucket = stage_credentials().is_some();
 
     println!("\n=== INSERT vs COPY: where the answer flips ===");
-    println!("  {:>9}  {:>10}  {:>10}  {:>8}", "rows", "insert s", "copy s", "winner");
+    println!(
+        "  {:>9}  {:>10}  {:>10}  {:>8}",
+        "rows", "insert s", "copy s", "winner"
+    );
     let mut crossover: Option<i64> = None;
     for total in [100_i64, 250, 500, 1_000, 2_500, 5_000, 10_000] {
         let insert = timed_load("xinsert", total, false).await;

@@ -18,8 +18,8 @@ use rdlt_connector::{
 };
 use rdlt_connector_sqlcore::plan::scope_replace_sql;
 use rdlt_connector_sqlcore::protocol::{
-    CommitCtx, FullLoadPublish, MergeArm, Step, build_merge_plan, commit_script,
-    insert_select_sql, prepare_target, render_arm, staged_probe_targets, unit,
+    CommitCtx, FullLoadPublish, MergeArm, Step, build_merge_plan, commit_script, insert_select_sql,
+    prepare_target, render_arm, staged_probe_targets, unit,
 };
 use rdlt_connector_sqlcore::{MergeDialect as _, column_list_with};
 
@@ -59,9 +59,7 @@ const COPY_ROWS_LOADED: &str = "rows_loaded";
 #[cfg(feature = "failpoints")]
 fn crash_at(name: &str) -> Option<DestinationError> {
     rdlt_connector::core::failpoint::fail::fail_point!(name, |_| {
-        Some(DestinationError::fatal(format!(
-            "injected crash at {name}"
-        )))
+        Some(DestinationError::fatal(format!("injected crash at {name}")))
     });
     None
 }
@@ -322,7 +320,11 @@ impl SnowflakeSession {
     ///
     /// Recognised by CODE, never by message text: the wording is the service's
     /// to change.
-    fn explain_merge_failure(&self, table: &TableName, error: DestinationError) -> DestinationError {
+    fn explain_merge_failure(
+        &self,
+        table: &TableName,
+        error: DestinationError,
+    ) -> DestinationError {
         let key = match self.tables.get(table) {
             Some((_, WriteMode::Merge { key })) => key.as_slice(),
             _ => &[],
@@ -345,7 +347,9 @@ impl SnowflakeSession {
         arm: &MergeArm,
     ) -> Result<Vec<String>, DestinationError> {
         let (schema, mode) = self.tables.get(table).ok_or_else(|| {
-            DestinationError::fatal(format!("snowflake: merge arm planned for unknown `{table}`"))
+            DestinationError::fatal(format!(
+                "snowflake: merge arm planned for unknown `{table}`"
+            ))
         })?;
         let WriteMode::Merge { key } = mode else {
             return Err(DestinationError::fatal(format!(

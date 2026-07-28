@@ -29,9 +29,7 @@ use rdlt_connector::core::{
     ColumnDef, ColumnType, LogicalType, Provenance, TableName, TableSchema,
 };
 use rdlt_connector_snowflake::dest::SnowflakeConfig;
-use rdlt_connector_snowflake::dest::testhook::{
-    apply, connect_and_run, insert_statements_chunked,
-};
+use rdlt_connector_snowflake::dest::testhook::{apply, connect_and_run, insert_statements_chunked};
 use rdlt_testkit::snowflake::{credentials, scratch_schema};
 use serde_json::json;
 
@@ -130,9 +128,17 @@ fn batch() -> arrow_array::RecordBatch {
             Arc::new(Int64Array::from(ids.clone())),
             text(&|id| format!("customer-{id}")),
             text(&|id| format!("user{id}@example.invalid")),
-            text(&|id| if id % 3 == 0 { "emea".into() } else { "amer".into() }),
+            text(&|id| {
+                if id % 3 == 0 {
+                    "emea".into()
+                } else {
+                    "amer".into()
+                }
+            }),
             Arc::new(Float64Array::from(
-                ids.iter().map(|id| (id % 997) as f64 / 7.0).collect::<Vec<_>>(),
+                ids.iter()
+                    .map(|id| (id % 997) as f64 / 7.0)
+                    .collect::<Vec<_>>(),
             )),
             Arc::new(Int64Array::from(
                 ids.iter().map(|id| id % 13).collect::<Vec<_>>(),
@@ -195,7 +201,10 @@ async fn sweep_the_rows_per_statement_knee() {
         let started = std::time::Instant::now();
         for sql in &statements {
             apply(&config, sql).await.unwrap_or_else(|e| {
-                panic!("budget {budget} ({} statements, widest {widest}B): {e:?}", statements.len())
+                panic!(
+                    "budget {budget} ({} statements, widest {widest}B): {e:?}",
+                    statements.len()
+                )
             });
         }
         let elapsed = started.elapsed().as_secs_f64();
@@ -203,7 +212,11 @@ async fn sweep_the_rows_per_statement_knee() {
         let landed = connect_and_run(&config, &format!("SELECT count(*) FROM {target}"))
             .await
             .expect("count");
-        assert_eq!(landed, ROWS.to_string(), "every row must land at budget {budget}");
+        assert_eq!(
+            landed,
+            ROWS.to_string(),
+            "every row must land at budget {budget}"
+        );
 
         let rate = ROWS as f64 / elapsed;
         results.push((budget, rate, statements.len(), widest));
