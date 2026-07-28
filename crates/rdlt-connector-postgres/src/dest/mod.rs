@@ -68,6 +68,37 @@ pub mod sqlgen {
         scope_replace_sql,
     };
     pub use rdlt_connector_sqlcore::{HardDelete, MergePlan};
+
+    use rdlt_connector::core::{PipelineId, TableSchema, WriteMode};
+    use rdlt_connector_sqlcore::plan::ValidateError;
+
+    use super::config::DestOptions;
+
+    /// The table-ensure statements, in emission order.
+    pub fn ensure_table_sql(
+        pipeline: &PipelineId,
+        schema: &TableSchema,
+        mode: &WriteMode,
+        previous: Option<&TableSchema>,
+    ) -> Vec<String> {
+        super::ddl::table_ddl_stmts(pipeline, schema, mode, previous)
+    }
+
+    /// One ensure statement and, when it creates a unique index, that index's
+    /// key columns — the distinction the duplicate-key diagnosis depends on.
+    pub type EnsureStatement = (String, Option<Vec<String>>);
+
+    /// The post-table ensure statements, in emission order.
+    pub fn ensure_merge_sql(
+        options: &DestOptions,
+        schema: &TableSchema,
+        mode: &WriteMode,
+    ) -> Result<Vec<EnsureStatement>, ValidateError> {
+        Ok(super::ddl::merge_ensure_stmts(options, schema, mode)?
+            .into_iter()
+            .map(|s| (s.sql, s.unique_index))
+            .collect())
+    }
 }
 
 /// Encoding seam, exposed ONLY for the byte-identity pin and the gated
