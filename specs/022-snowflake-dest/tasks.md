@@ -269,13 +269,13 @@ timings, configuration; every shipped default cites a measurement.
   batch sizes (rows × bytes) on the bench-shaped dataset, medians of
   repeated runs, pick the knee, replace T012's placeholder constant WITH
   the citation at the site; record the sweep in close-out.md.
-- [ ] T036 [US5] Recorded ingestion session: pg→snowflake, bench-shaped
+- [X] T036 [US5] Recorded ingestion session: pg→snowflake, bench-shaped
   1M×12 dataset, BOTH paths (INSERT and external-stage COPY), wall +
   rows/s + statement counts + configuration recorded in close-out.md;
   determine the INSERT-vs-COPY crossover and encode it as the documented
   default selection rule (with its numbers); UNBARRED — verify
   `make bench TARGET=gate` untouched and green (SC-007).
-- [ ] T037 [US5] US5 gate: full gate; close-out row; every declined
+- [X] T037 [US5] US5 gate: full gate; close-out row; every declined
   optimization carries its number (the D-13/D-21 null hypothesis stands).
 
 ## Phase 8: Polish & close-out

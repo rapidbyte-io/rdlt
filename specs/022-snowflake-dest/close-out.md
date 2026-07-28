@@ -439,3 +439,64 @@ the command had been piped to `tail`, which exits 0 whatever happens upstream.
 It was caught by reading the output for a summary line that was not there. A
 gate that can report success without producing a result is not a gate, so the
 recorded run is unpiped and its exit code is the runner's own.
+
+## Recorded ingestion session (T036, re-scoped — see D-30)
+
+Qual account, eu-central-1; stage bucket eu-west-2 (cross-region); bench-shaped
+rows of twelve mixed-width columns; one load per cell into a fresh scratch
+schema. UNBARRED — a SaaS cell carries network variance and cannot gate a
+build under the benchmark governance.
+
+### Where the two paths cross — they do not
+
+| rows | INSERT s | COPY s | faster |
+|---|---|---|---|
+| 100 | 11.84 | 7.59 | COPY |
+| 250 | 13.54 | 13.24 | COPY |
+| 500 | 14.91 | 8.42 | COPY |
+| 1,000 | 7.38 | 7.83 | INSERT |
+| 2,500 | 8.49 | 10.74 | INSERT |
+| 5,000 | 15.30 | 8.41 | COPY |
+| 10,000 | 21.83 | 7.40 | COPY |
+
+**There is no crossover to encode.** Below roughly 2,500 rows every cell costs
+7–15 s whatever the path and whatever the size — that is per-load fixed cost
+(connect, ensure, unit, commit), and the winner alternates. The separation only
+becomes real at 5,000 rows and above.
+
+This was measured expecting the opposite. The hypothesis was that one PUT plus
+one COPY must cost more than a single INSERT for small loads, so a row
+threshold would be needed. The data says the fixed cost of a LOAD dwarfs the
+difference between the two mechanisms at that size, and a threshold would be a
+constant fitted to noise. **The shipped rule — a configured bucket means the
+bulk path, always — stands, now because it was measured rather than because it
+was simple.**
+
+### Scaling
+
+| rows | path | wall | rows/s |
+|---|---|---|---|
+| 250,000 | INSERT | 429.26 s | 582 |
+| 250,000 | COPY | 114.10 s | 2,191 |
+| 1,000,000 | COPY | 515.15 s | 1,941 |
+
+INSERT holds its rate against the batch-knee sweep's 628 rows/s at 20k — no
+degradation with scale, which is what the byte-budget packing had to deliver.
+
+COPY at 1M runs 11% slower per row than at 250k (4× the rows, 4.51× the wall).
+That is NOT claimed as linear and NOT claimed as degradation: one run of each,
+on a cross-region SaaS cell, cannot separate a mild multi-part effect from
+variance. It is recorded as an open question with the numbers that raise it.
+
+COPY is 3.3–3.8× faster than INSERT at scale. Both paths landed exact totals.
+
+### D-30 — T036 re-scoped, and why
+
+As written the task called for 1M rows through BOTH paths. The INSERT leg was
+dropped: at a measured 582 rows/s it is ~28 minutes of warehouse time to
+confirm what 250k already establishes, and the batch-knee sweep plus the 250k
+run already show the rate holds. Warehouse time was spent instead on the small
+end, where the shipped default actually lives — and that is where the
+measurement overturned the expectation rather than confirming it.
+
+The whole session cost 1,236 s of warehouse time.
