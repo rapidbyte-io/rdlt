@@ -159,8 +159,29 @@ Probe facts that frame the decision:
    external-staging shape. The live leg is gated on an EXTENDED credential
    convention (optional `RDLT_SNOWFLAKE_STAGE_BUCKET` + storage credentials);
    absent a bucket, the leg records UNPERFORMED — never silently green.
-**The Hetzner s3compat probe (2026-07-28)** sharpened the external-stage
-leg with live facts, both directions:
+**The AWS native-stage probe (2026-07-28): the external-stage COPY path is
+PROVEN END-TO-END** against a real eu-west-2 bucket, cross-region from the
+eu-central-1 account, key-credentialed (no storage integration needed):
+
+- client SigV4 PUT → `CREATE STAGE URL='s3://…' CREDENTIALS=(…)` →
+  `LIST @stage` sees the client-written object → CSV `COPY INTO` loads it
+  (result carries `LOADED, rows_parsed, rows_loaded` — the per-COPY
+  rowcount-verification data SD6 depends on) → row values verified.
+- **Parquet both directions**: `COPY INTO @stage … TYPE=PARQUET` unloads
+  1000 rows (proving the credentials' write breadth), and
+  `COPY INTO table FROM @stage … TYPE=PARQUET MATCH_BY_COLUMN_NAME` reloads
+  exactly 1000 with min/max ids intact. `MATCH_BY_COLUMN_NAME=
+  CASE_INSENSITIVE` is noted for the design: parquet column names written
+  lowercase by the arrow writer will match the quoted-upper catalog columns.
+- Cleanup verified both sides: `REMOVE @stage`, schema dropped, client LIST
+  shows KeyCount 0.
+
+The bulk path therefore has a LIVE leg from day one; arrow-written-parquet
+compatibility (as opposed to Snowflake-written) is the one remaining T001
+check on this path.
+
+**The Hetzner s3compat probe (2026-07-28)** sharpened the s3compat variant
+of the same leg, both directions:
 
 - **Client side WORKS**: the designated Hetzner endpoint (Ceph/RadosGW,
   TLS-clean, virtual-host style resolving) accepts SigV4 PUT/DELETE with
