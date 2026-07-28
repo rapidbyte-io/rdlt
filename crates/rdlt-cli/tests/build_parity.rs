@@ -70,7 +70,7 @@ async fn every_parity_document_builds_a_pipeline() {
         drop(pipeline);
         count += 1;
     }
-    assert_eq!(count, 5, "fixture covers every destination kind");
+    assert_eq!(count, 6, "fixture covers every destination kind");
 }
 
 /// Construction failures surface as typed Resolve errors naming the

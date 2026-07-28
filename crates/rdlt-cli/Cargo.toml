@@ -18,7 +18,7 @@ path = "src/main.rs"
 [dependencies]
 libc = { workspace = true }
 # postgres implies postgres-source; parquet implies file (see crates/rdlt features).
-rdlt = { workspace = true, features = ["rest", "duckdb", "postgres", "parquet", "iceberg"] }
+rdlt = { workspace = true, features = ["rest", "duckdb", "postgres", "parquet", "iceberg", "snowflake"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

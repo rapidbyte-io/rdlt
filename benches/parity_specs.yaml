@@ -93,3 +93,35 @@ destination:
           - column: id
             transform:
               bucket: 16
+---
+# Fictional account, user and bucket throughout: this fixture is parsed and
+# built, never connected, and a real account identifier has no business in a
+# committed file.
+pipeline: parity-snowflake
+source:
+  postgres:
+    config: pg-source.yaml
+destination:
+  snowflake:
+    account: MYORG-MYACCT
+    user: LOADER
+    auth:
+      key_pair:
+        private_key: /etc/rdlt/snowflake.p8
+        passphrase: parity-passphrase
+    database: ANALYTICS
+    schema: RAW
+    warehouse: LOADING_WH
+    role: LOADER_ROLE
+    table_type: transient
+    query_tag: rdlt-parity
+    session_parameters:
+      TIMEZONE: UTC
+    stage:
+      s3:
+        bucket: parity-stage
+        prefix: rdlt/parts
+        region: eu-west-2
+        access_key: parity-access
+        secret_key: parity-secret
+    merge_strategy: upsert

@@ -68,10 +68,16 @@ pub fn cdc_composition_warnings(spec: &Spec, config: &PostgresConfig) -> Vec<Str
                 }
             }
         }
+        // Snowflake sits here only while its merge dialect is unbuilt: it
+        // accepts the shared options vocabulary, so once merges execute it
+        // belongs with the arm above, checking merge_strategy and hard_delete.
+        // Until then it genuinely cannot remove a flagged row, and saying so
+        // is the honest warning.
         DestSpec::Duckdb { .. }
         | DestSpec::Parquet { .. }
         | DestSpec::File(_)
-        | DestSpec::Iceberg(_) => {
+        | DestSpec::Iceberg(_)
+        | DestSpec::Snowflake(_) => {
             warnings.push(format!(
                 "cdc: this destination has no hard-delete support — the \
                  deletion flag `{}` lands as data (soft delete); deletes are \

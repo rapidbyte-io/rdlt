@@ -150,7 +150,7 @@ new rows; kill at each crash point and converge duplicate-free.
   read, replay check), stale-staged-artifact cleanup on open (only THIS
   pipeline's), typed error when neither config nor server default supplies
   a warehouse.
-- [ ] T015 [P] [US1] Pipeline-spec + CLI wiring: `destination: snowflake:`
+- [X] T015 [P] [US1] Pipeline-spec + CLI wiring: `destination: snowflake:`
   block in `crates/rdlt/src/pipeline_spec.rs` (embedding the crate's
   config type — the 020 DestSpec::File precedent) + spec-parse pin; CLI
   feature plumbing in `crates/rdlt-cli/`.

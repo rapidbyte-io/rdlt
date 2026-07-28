@@ -244,7 +244,7 @@ mod tests {
             assert!(!parsed_spec.pipeline.is_empty());
             parsed += 1;
         }
-        assert_eq!(parsed, 5, "fixture covers every destination kind");
+        assert_eq!(parsed, 6, "fixture covers every destination kind");
     }
 
     /// The iceberg destination block parses the crate's full vocabulary from
@@ -281,6 +281,71 @@ destination:
             !format!("{config:?}").contains("hunter2-cli"),
             "secret redacted"
         );
+    }
+
+    /// The snowflake destination block parses the crate's full vocabulary
+    /// from the pipeline YAML with zero CLI code — including the staging
+    /// bucket and the shared merge options — and no credential renders.
+    #[test]
+    fn snowflake_spec_parses_from_the_yaml() {
+        let parsed = spec(
+            r#"
+pipeline: p
+source:
+  postgres: {config: src.yaml}
+destination:
+  snowflake:
+    account: MYORG-MYACCT
+    user: LOADER
+    auth:
+      key_pair: {private_key: /k.p8, passphrase: hunter2-sf}
+    database: ANALYTICS
+    schema: RAW
+    warehouse: WH
+    table_type: transient
+    stage:
+      s3: {bucket: parts, region: eu-west-2, access_key: AK, secret_key: hunter2-bucket}
+    merge_strategy: upsert
+"#,
+        );
+        let DestSpec::Snowflake(config) = parsed.destination else {
+            panic!("expected snowflake dest");
+        };
+        assert_eq!(config.host(), "myorg-myacct.snowflakecomputing.com");
+        assert!(config.auth.key_pair.is_some());
+        assert!(config.options.merge_strategy.is_some());
+        assert!(config.stage.is_some(), "the bulk path rides the same block");
+        assert!(config.validate().is_ok());
+        let rendered = format!("{config:?}");
+        for secret in ["hunter2-sf", "hunter2-bucket"] {
+            assert!(!rendered.contains(secret), "secret rendered: {rendered}");
+        }
+    }
+
+    /// A destination document whose account is a pasted console URL is refused
+    /// at spec load, where the user can still act on it — not at connect time
+    /// with a name that resolves to nothing.
+    #[test]
+    fn an_invalid_snowflake_document_is_typed_at_spec_load() {
+        let parsed = spec(
+            r#"
+pipeline: p
+source:
+  postgres: {config: src.yaml}
+destination:
+  snowflake:
+    account: https://myorg-myacct.snowflakecomputing.com
+    user: LOADER
+    auth: {pat: tok}
+    database: D
+    schema: S
+"#,
+        );
+        let DestSpec::Snowflake(config) = parsed.destination else {
+            panic!("expected snowflake dest");
+        };
+        let err = config.validate().expect_err("a URL is not an identifier");
+        assert!(format!("{err}").contains("account"), "{err}");
     }
 
     /// The per-table destination options ride the pipeline YAML with zero CLI
