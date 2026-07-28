@@ -2,61 +2,48 @@
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
 `specs/022-snowflake-dest/plan.md` (feature: Snowflake destination
-connector — PLANNED on branch `022-snowflake-dest`, spec + plan + research
-committed, tasks NOT yet generated. Feature 021 is RESERVED for the publish
-feature and does not exist yet. New THIN crate rdlt-connector-snowflake
-(facade rdlt::connector::snowflake, feature `snowflake`, CLI
-`destination: snowflake:`) — the THIRD SQL destination. Survey RESOLVED at
-plan time with registry facts + a LIVE probe against the qual account
-(credentials local-only: env RDLT_SNOWFLAKE_* or ~/.config/rdlt/snowflake/
-incl. `passphrase` file — the key is an ENCRYPTED p8; account identity is
-deliberately in NO committed file, SC-005 verifies mechanically). DRIVER (owner decision):
-ADOPT snowflake-connector-rs 1.1.0 at ONE boundary (duckdb-rs precedent) —
-source-verified fit: snowflake_code()/ErrorKind structured errors,
-encrypted-PKCS#8 key-pair auth, persistent sessions (real cross-statement
-transactions), SessionConfig wh/db/schema/role, NO arrow dep; verified GAP:
-internal-stage PUT unreachable (wire types pub(crate), parser skips
-uploadInfo keys; HEAD 4b3905247335) → PUT DEFERRED on upstream trigger
-(issue filed; contributing recorded as the route), NO sidecar stack.
-Ingestion v1 = batched INSERT (universal, measured batch knee) +
-external-stage COPY INTO from a USER bucket (plain SQL, file-family parquet
-+ object_store). The COPY path is PROVEN END-TO-END at plan time against
-the qual AWS bucket (client SigV4 PUT -> CREATE STAGE s3:// -> LIST ->
-CSV COPY with LOADED/rowcount verification -> parquet BOTH directions;
-MATCH_BY_COLUMN_NAME=CASE_INSENSITIVE noted for arrow-lowercase vs
-quoted-upper columns); live leg reads ~/.config/rdlt/snowflake/stage.env,
-absent -> UNPERFORMED. s3-COMPATIBLE endpoints (probed): Snowflake needs a
-per-account Support allowlist (001075, no self-service param) — README
-caveat for such users, REJECTED as qual target. Costs recorded: reqwest 0.13 second major
-(feature-gated, D-26 shape); dlt-parity gap on internal staging SURFACED in
-the parity matrix. snowflake-api 0.14 REJECTED (arrow ^57 vs workspace 58);
-hand-rolled session client = designed, escalated fallback. AUTH (owner-expanded): the FULL unattended vocabulary ships — key-pair +
-password(+MFA passcode) + OAuth token + PAT (PAT-rides-password probed at
-T001); external-browser SSO typed-unsupported; owner provisions PAT +
-password test user + OAuth integration ON REQUEST when each leg is built
-(PAT at T001, password/OAuth at T030) — ASK, don't assume present; each
-live leg gates on ITS OWN credential. Completeness fields: table_type transient|permanent,
-session_parameters + QUERY_TAG, host override (PrivateLink, mock-only).
-PROVEN LIVE: key-pair JWT auth end-to-end (SF 10.26.101);
-unquoted idents fold UPPER and `EVENTS`/`events` COEXIST → policy =
-quoted-UPPERCASE everywhere; MERGE INTO + QUALIFY ROW_NUMBER() DESC=1
-delivers last-wins dedup; duplicate-merge-key = STRUCTURED code 100090 (the
-23505 analogue); DDL AUTO-COMMITS an open transaction (proven: INSERT
-survived ROLLBACK after CREATE TABLE) → the atomic unit is PURE DML with a
-code-level guard refusing DDL inside units; pure-DML BEGIN/COMMIT/ROLLBACK
-atomic incl. multi-statement; PUT refused by SQL API (391911) → internal
-stage upload REQUIRES the session protocol; account is AWS (EU_CENTRAL_1);
-local RUSTFS is unreachable from SaaS — the qual stage is a real AWS
-bucket (eu-west-2, cross-region proven). BOTH fired sqlcore triggers TAKEN as separate
-increments BEFORE the snowflake consumer (ensure choreography + session
-protocol extractions), pg/duckdb golden pins BYTE-IDENTICAL throughout.
-Live legs gate skip-not-fail on credential presence (container posture);
-fakesnow 0.11 server-mode = T001 fidelity probe, adopt-or-reject recorded;
-recorded ingestion session UNBARRED (no SaaS bar ever). Type mapping
-closed: Json→VARIANT, Decimal→NUMBER(p,s) p<=38, Uuid→VARCHAR(36),
-TIMESTAMP_TZ/NTZ. Semver purely ADDITIVE. Contract:
-contracts/snowflake-dest.md SD1-SD8. Research decisions D1-D10:
-research.md).
+connector — US1-US5 DELIVERED on branch `022-snowflake-dest`; 35/43 tasks,
+close-out written with SD1-SD8 all MET and zero uncited dispositions.
+Feature 021 is RESERVED for the publish feature and does not exist yet.
+Crate rdlt-connector-snowflake (facade rdlt::connector::snowflake, feature
+`snowflake`, CLI `destination: snowflake:` embedding SnowflakeConfig) — the
+THIRD SQL destination, on snowflake-connector-rs 1.1.0 wrapped at ONE
+boundary (src/dest/client.rs).
+THREE SERVICE FACTS shape everything and are each pinned by a live test:
+(1) DDL AUTO-COMMITS an open transaction, so all schema work precedes the
+unit and the unit executor REFUSES DDL in code (Replace clears with DELETE,
+never TRUNCATE); (2) NOTHING enforces uniqueness (PKs informational), so
+merge correctness rests on the SQL alone and every merge test reads the
+result back; (3) CURRENT_TIMESTAMP is per-STATEMENT not per-transaction
+(measured 2,938ms drift), so each unit captures one instant into a session
+variable — safe because SET does NOT commit, also pinned.
+Identifiers: quoted-UPPERCASE everywhere (EVENTS and events coexist as
+distinct objects). MERGE INTO + QUALIFY ROW_NUMBER() replace ON CONFLICT and
+DISTINCT ON. Duplicate merge key = structured code 100090 → the SHARED
+diagnosis. INGESTION: batched INSERT (default, no infrastructure) packed
+against a MEASURED 400KB BYTE budget — not a row count, because a row count
+tuned on one shape becomes a multi-megabyte statement on another (close-out
+D-28); plus external-stage COPY INTO from a user S3 bucket (proven live
+cross-region). Internal-stage PUT UNREACHABLE via the SQL API and the
+driver — the one dlt parity gap, deferred with a named upstream trigger
+(specs/022-snowflake-dest/parity.md).
+AUTH: key-pair + PAT proven LIVE; password + OAuth implemented with their
+live legs WRITTEN and skipping visibly — recorded UNPERFORMED by owner
+decision (D-24). External-browser SSO typed-unsupported.
+SEAMS WIDENED IN SQLCORE (D-20): UpsertAction replaces a `DO UPDATE SET …`
+string literal, `column_list_with` takes the dialect quoting, and
+flag_set/flag_unset replace a hardcoded `IS TRUE` that compiles NOWHERE on
+Snowflake. `is_recoverable` moved to rdlt-connector::objects behind an
+`object-store` feature so the file connector and this one share ONE
+recoverability rule. pg/duckdb golden SQL BYTE-IDENTICAL throughout.
+A REAL LEAK was found and fixed: PemSource's derived Debug printed inline
+private keys in full (D-21). Semver: rdlt-core and rdlt-connector need no
+update (0.2→0.3 stays closed); sqlcore DOES need a major, which costs
+nothing because nothing is published (D-27).
+Live legs gate skip-not-fail on credential presence and ANNOUNCE the skip
+(D-25). Credentials LOCAL-ONLY in ~/.config/rdlt/snowflake/ + stage.env;
+SC-005 sweep clean. fakesnow REJECTED (C-02). Contract:
+contracts/snowflake-dest.md SD1-SD8; deviations D-20..D-28 in close-out.md).
 Previous feature 020 for reference:
 `specs/020-audit-remediation/plan.md` (feature: audit remediation —
 COMPLETE on branch `020-audit-remediation`, NOT merged and NOT pushed.
