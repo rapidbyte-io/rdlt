@@ -1,7 +1,7 @@
 {
   "format_version": 3,
   "cell_id": "pg-to-pg-dedup-1m",
-  "recorded_at": "2026-07-25",
+  "recorded_at": "2026-07-28",
   "fingerprint": {
     "cpu_model": "AMD RYZEN AI MAX+ 395 w/ Radeon 8060S",
     "kernel": "7.0.12-201.fc44.x86_64",
@@ -14,105 +14,85 @@
     "dataset_hashes": {
       "pg:seed_output": "dataset  |  rows   |           content_md5 | -----------+---------+---------------------------------- | events    | 1000000 | e840f51738a6b4b15f9f085ea85e3df8 | events_v2 | 1000000 | 7e208273f4d5333658fff2fa1c9839d9 | (2 rows)"
     },
-    "loadavg_at_start": 1.7,
+    "loadavg_at_start": 2.28,
     "quiet_note": null
   },
   "workload": {},
   "rdlt": {
     "runs_ms": [
-      4817.800731,
-      4937.602637,
-      4778.034707,
-      4859.746297,
-      4819.050758
+      4426.232253,
+      4381.13893,
+      4507.030132,
+      4392.53352,
+      4361.583589000001
     ],
-    "median_ms": 4819.050758,
-    "p95_ms": 4937.602637,
+    "median_ms": 4392.53352,
+    "p95_ms": 4507.030132,
     "rows": 1000000,
-    "bytes": 198890768,
-    "rows_per_s": 207509.74625862198,
-    "mb_per_s": 39.35982971273656,
+    "bytes": 198849808,
+    "rows_per_s": 227659.04812036586,
+    "mb_per_s": 43.17279625720741,
     "cpu": {
-      "mean_util": 0.09752958074155234,
-      "peak_util": 1.1666666666666667,
-      "user_sys_ms": 470,
+      "mean_util": 0.11005177138197451,
+      "peak_util": 1.1688311688311688,
+      "user_sys_ms": 480,
       "note": "process TREE sampled at 50ms (root VmHWM exact; tree spikes between polls can be missed; cpu undercounts up to one interval)"
     },
     "rss": {
-      "peak_bytes": 117215232,
+      "peak_bytes": 105512960,
       "note": "process TREE sampled at 50ms (root VmHWM exact; tree spikes between polls can be missed; cpu undercounts up to one interval)"
     }
   },
   "competitors": {
     "airbyte": {
-      "status": "ok",
-      "runs_ms": [
-        45376.6820889432,
-        45383.47779400647,
-        60446.679872926325
-      ],
-      "median_ms": 45383.47779400647,
-      "self_timed": true,
-      "cpu": {
-        "mean_util": null,
-        "peak_util": null,
-        "user_sys_ms": null,
-        "note": "driver-run external system — no per-process CPU accounting"
-      },
-      "rss": {
-        "peak_bytes": 24114778112,
-        "note": "driver-reported (the module states which system statistic this is)"
-      },
-      "ratio_vs_rdlt": 9.417513961368087,
-      "extra": {
-        "sync_s": 45.0
-      }
+      "status": "missing",
+      "reason": "prerequisite failed for `airbyte`: abctl cluster unreachable (kubectl get ns airbyte-abctl)"
     },
     "dlt": {
       "status": "ok",
       "runs_ms": [
-        12984.79827598203,
-        12500.822389964014,
-        12759.489106014373,
-        12756.377939949743,
-        12752.537276013754
+        12392.208391000167,
+        12524.609942999632,
+        12593.890487999945,
+        12605.052935000003,
+        12536.325913000384
       ],
-      "median_ms": 12756.377939949743,
+      "median_ms": 12536.325913000384,
       "self_timed": true,
       "cpu": {
-        "mean_util": 0.8485900727005345,
+        "mean_util": 0.8659394467477131,
         "peak_util": null,
-        "user_sys_ms": 21579,
+        "user_sys_ms": 21629,
         "note": "cgroup v2 cpu.stat, last poll before exit"
       },
       "rss": {
-        "peak_bytes": 815562752,
+        "peak_bytes": 811229184,
         "note": "self-reported ru_maxrss — the recorded statistic (bar derivation)"
       },
-      "ratio_vs_rdlt": 2.6470727494980544
+      "ratio_vs_rdlt": 2.854008024280344
     },
     "dlt-pyarrow": {
       "status": "ok",
       "runs_ms": [
-        21458.660756004974,
-        20509.357549948614,
-        20571.8753420515,
-        20305.94689492136,
-        20583.378176088445
+        20956.22394799966,
+        20771.924059000412,
+        20909.03869399972,
+        20688.962158999857,
+        20807.73531299974
       ],
-      "median_ms": 20571.8753420515,
+      "median_ms": 20807.73531299974,
       "self_timed": true,
       "cpu": {
-        "mean_util": 0.8879468569282296,
+        "mean_util": 0.9065317497992194,
         "peak_util": null,
-        "user_sys_ms": 35880,
+        "user_sys_ms": 36722,
         "note": "cgroup v2 cpu.stat, last poll before exit"
       },
       "rss": {
-        "peak_bytes": 529768448,
+        "peak_bytes": 515633152,
         "note": "self-reported ru_maxrss — the recorded statistic (bar derivation)"
       },
-      "ratio_vs_rdlt": 4.268864632293109
+      "ratio_vs_rdlt": 4.737069214898043
     }
   },
   "verify": {

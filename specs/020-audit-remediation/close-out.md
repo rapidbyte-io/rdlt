@@ -35,7 +35,7 @@ Executes `NEXT_STEPS.md` (audited 2026-07-26 @ `634222e`). Contract:
 | US8 — the gate | **COMPLETE** | T121–T139; see D-25, D-27 through D-30. Fresh full run: **921 mutants, 97 survivors**, every one re-checked WITH containers (24 were never gaps). All 75 verified gaps dispositioned: 51 killed by red-verified pins, 18 equivalent with the argument at the call site, 3 dead-code deletions, 2 cosmetic, 1 untestable by construction, **1 real defect fixed** (`UniqueNamer::name_for` could spin forever). Suite 749 → 780 |
 | US9 — publish readiness | **COMPLETE** | T140–T152. 220 undocumented public items documented; `make docs` added as a gate verb and wired into `check`, catching **14 dead intra-doc links** on its first run (D-19). Publish metadata, crates.io descriptions, feature-matrix and packaging checks recorded. CI-only verifications land **UNPERFORMED**, never green — E1 stands |
 | US10 — recorded deferrals | **COMPLETE** | T153–T167; see D-20 through D-23, D-31, D-32. D17 taken (one byte-budget channel, engine copy deleted, AR6 verified); lowering parity now a machine-checked property over generated schemas × 4 capability combos; `DestSpec::File` embeds its config; `create_index_sql` and the duplicate-key diagnosis moved into sqlcore **with the golden pin they lacked**; `WalRecord::Segment.rows` given a consumer (no format bump); 4 dependencies removed. **Fired-but-undisposed deferrals: zero** (SC-014). Gate: 785/785, 0 skipped |
-| US11 — performance queue | **COMPLETE except the gate session** | T168–T181, T183; see D-33 through D-44. **Eight measurements, four taken and four declined, every disposition decided against a number**: taken — the COPY encoder fast path (−1.98% process instructions, D-35), the stage sequence cache (−3.3% of the merge cell, D-37), the partition formatter hoist (−2.72%, D-41), the S3 skip-fetch (D-44, proven to fire); declined — the allocator (3.3% ceiling, D-34), the WAL skip (8.5% measured, 019 D2 binds, D-36), the file-dest buffering (constant, not O(dataset), D-38), the canonical-JSON allocation (6.19% ceiling, D-39). Plus the owed merge plan (D-33) and WAL recovery moved off the embedder's runtime (D-42). **T182 (bars) and T189 (`make check` ×2) are deliberately NOT run here** — they require a quiet machine, and D-24 recorded that a loaded one produces false gate results |
+| US11 — performance queue | **COMPLETE** | T168–T183; see D-33 through D-44 and D-49. **Eight measurements, four taken and four declined, every disposition decided against a number**: taken — COPY encoder fast path (−1.98% process instructions, D-35), stage sequence cache (−3.3% of the merge cell, D-37), partition formatter hoist (−2.72%, D-41), S3 skip-fetch (proven to fire, D-44); declined — allocator (3.3% ceiling, D-34), WAL skip (8.5% measured, 019 D2 binds, D-36), file-dest buffering (constant, not O(dataset), D-38), canonical-JSON allocation (6.19% ceiling, D-39). Plus the owed merge plan (D-33) and WAL recovery off the embedder's runtime (D-42). **Bars gate: all four PASS on a recorded session, no cell worse than its standing — every one faster (D-49)** |
 
 ---
 
@@ -2117,6 +2117,39 @@ cost of keeping one record per feature instead of one per increment, and it is
 the right trade — but it means "revert the increment" is a code operation, and
 the record is then edited by hand. Said out loud so nobody discovers it during
 an incident.
+
+### D-49 (US11) — the bars gate: all four PASS, and every cell beat its 019 standing
+
+Recorded session on the rebooted machine, same conditions as D-48's `make check`
+runs. 2-way (rdlt vs dlt): the abctl cluster is unreachable, so **every Airbyte
+arm records `Missing{reason}` rather than being silently omitted** — the bars are
+ratios against dlt and are unaffected.
+
+| cell | this session | 019 standing | bar | ratio vs dlt | verdict |
+|---|---|---|---|---|---|
+| pg-to-pg-1m | **749.8 ms** | 778.8 ms | ≥ 4x | **13.7x** | PASS |
+| s3jsonl-to-pg-200k | **649.9 ms** | 665.2 ms | ≥ 40x | **101.1x** | PASS |
+| s3jsonl-to-s3parquet-200k | **872.4 ms** | 914.1 ms | ≥ 45x | **69.1x** | PASS |
+| pg-to-pg-dedup-1m | **4392.5 ms** | 4.82 s | ≥ 2x | **2.9x** | PASS |
+| pg-to-s3parquet-1m (deliberately unbarred) | **937.4 ms** | 999.4 ms | — | — | — |
+
+`gate: all bars met`, tolerance 0%. **No cell is worse than its standing of
+record** — every one of the five is faster, which satisfies T182's second
+requirement as well as its first.
+
+**Two figures deserve a caveat rather than a victory lap.** `s3jsonl-to-pg-200k`
+reads 101.1x against a recorded floor of 55.3x, and the dedup cell 2.9x against
+2.5x. Those are ratios, so they move when the COMPETITOR moves: dlt's arm took
+65.7 s here. A single session is not evidence that the ratio doubled — it is
+evidence that the bar is met with room. **The bars are deliberately NOT tightened
+on this session**, which is the same discipline 018 applied when it declined to
+bar the parquet cell on one session's number.
+
+The four measured wins in this feature are consistent with the cell medians but
+are NOT claimed as their cause: US11's changes were measured in instructions
+precisely because wall-clock cells cannot resolve effects of that size (D-35),
+and attributing a 29 ms cell improvement to them would be exactly the reasoning
+this feature spent eight measurements refusing to do.
 
 ---
 
