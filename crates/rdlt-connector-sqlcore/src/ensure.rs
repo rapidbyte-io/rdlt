@@ -1,0 +1,297 @@
+//! What a destination must make true about a table before rows are written to
+//! it — as an ordered list of DECISIONS, never as SQL.
+//!
+//! The three SQL destinations do not share a statement program and never
+//! will: two of them re-assert every column on every load while a third reads
+//! the catalog once and emits nothing when nothing is missing, and only two
+//! of them have indexes at all. What they do share is *which facts must
+//! hold*, and in what order. That is what lives here; each destination lowers
+//! these steps to its own grammar.
+//!
+//! The split matters beyond tidiness. A rule that lives in one planner is
+//! stated once and inherited; the same rule copied into three executors
+//! drifts silently, which is exactly how a stage table and a commit plan come
+//! to disagree about whether a table is staged at all.
+
+use rdlt_connector::core::{TableSchema, WriteMode};
+
+use crate::options::{DestOptions, MergeStrategy};
+use crate::plan::{
+    IndexSpec, TableFacts, ValidateError, index_plan, validate_merge, validate_non_merge,
+};
+use crate::protocol::FullLoadPublish;
+
+/// Which physical relation a step concerns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Leg {
+    /// The published table a reader queries.
+    Target,
+    /// The staging twin rows land in first.
+    Stage,
+}
+
+/// One scd2 validity column, in emission order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Validity {
+    /// When the version became current.
+    From,
+    /// When it stopped being current; open on the active row.
+    To,
+}
+
+/// One thing that must be true before rows are written. `column` indexes
+/// `schema.columns`, so a step stays valid only against the schema it was
+/// planned from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum EnsureStep {
+    /// This leg's relation must exist, carrying every column of the schema.
+    Table { leg: Leg },
+    /// This column must exist on this leg.
+    Column { leg: Leg, column: usize },
+    /// This column's type changed WITHIN this session and must widen.
+    Widen { leg: Leg, column: usize },
+    /// An scd2 validity column, on the target only — the stage carries the
+    /// stream's shape, not the history's.
+    Validity(Validity),
+    /// A supporting or arbiter index, on the target only.
+    Index(IndexSpec),
+}
+
+/// Whether a table round-trips through a stage relation.
+///
+/// The commit planner and the ensure planner MUST agree on this: a table the
+/// commit plan publishes from a stage but ensure never created a stage for
+/// fails at write time, and the reverse builds a stage that is written,
+/// truncated, and never read. One rule, consulted twice.
+pub fn stages(mode: &WriteMode, full_load_publish: FullLoadPublish) -> bool {
+    matches!(mode, WriteMode::Merge { .. }) || full_load_publish == FullLoadPublish::Staged
+}
+
+/// Phase 1 — the relations and their columns.
+///
+/// Deliberately infallible and deliberately separate from the option
+/// validation in [`merge_plan`]: today's destinations create tables BEFORE
+/// checking options, so a planner that validated first would move where a bad
+/// configuration fails.
+///
+/// `previous` is the schema THIS SESSION last ensured, never the live catalog.
+/// That is what makes widening a within-run rule: a type that changed between
+/// runs is the catalog's business, and a type that changed mid-run is this
+/// session's.
+pub fn table_plan(
+    schema: &TableSchema,
+    mode: &WriteMode,
+    full_load_publish: FullLoadPublish,
+    previous: Option<&TableSchema>,
+) -> Vec<EnsureStep> {
+    let mut legs = vec![Leg::Target];
+    if stages(mode, full_load_publish) {
+        legs.push(Leg::Stage);
+    }
+    let mut out = Vec::new();
+    for leg in legs {
+        out.push(EnsureStep::Table { leg });
+        for (column, def) in schema.columns.iter().enumerate() {
+            out.push(EnsureStep::Column { leg, column });
+            if let Some(prev) = previous
+                && let Some(old) = prev.column(&def.name)
+                && old.column_type != def.column_type
+            {
+                out.push(EnsureStep::Widen { leg, column });
+            }
+        }
+    }
+    out
+}
+
+/// Phase 2 — option validation, then the scd2 validity columns and the index
+/// plan. Runs only after phase 1 has been APPLIED.
+///
+/// A non-merge mode still validates: the merge-only options are refused here,
+/// with the same typed error on every destination.
+pub fn merge_plan(
+    options: &DestOptions,
+    schema: &TableSchema,
+    mode: &WriteMode,
+) -> Result<Vec<EnsureStep>, ValidateError> {
+    let table = schema.table.as_str();
+    let WriteMode::Merge { key } = mode else {
+        validate_non_merge(options, table)?;
+        return Ok(Vec::new());
+    };
+    let facts = TableFacts::of(schema);
+    validate_merge(options, table, key, &facts)?;
+    let mut out = Vec::new();
+    if options.strategy_for(table) == MergeStrategy::Scd2 {
+        out.push(EnsureStep::Validity(Validity::From));
+        out.push(EnsureStep::Validity(Validity::To));
+    }
+    out.extend(
+        index_plan(options, table, key, facts.has_identity, facts.is_child)
+            .into_iter()
+            .map(EnsureStep::Index),
+    );
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rdlt_connector::core::{ColumnDef, ColumnType, LogicalType, Provenance, TableName};
+
+    fn col(name: &str, scalar: LogicalType) -> ColumnDef {
+        ColumnDef {
+            name: name.to_owned(),
+            column_type: ColumnType::Scalar { scalar },
+            nullable: true,
+            provenance: Provenance::Inferred,
+        }
+    }
+
+    fn schema(columns: Vec<ColumnDef>) -> TableSchema {
+        TableSchema {
+            table: TableName::from("events"),
+            parent: None,
+            columns,
+        }
+    }
+
+    fn merge() -> WriteMode {
+        WriteMode::Merge {
+            key: vec!["id".to_owned()],
+        }
+    }
+
+    #[test]
+    fn append_on_a_direct_destination_plans_one_leg() {
+        let plan = table_plan(
+            &schema(vec![col("id", LogicalType::Int64)]),
+            &WriteMode::Append,
+            FullLoadPublish::DirectToTarget,
+            None,
+        );
+        assert_eq!(
+            plan,
+            vec![
+                EnsureStep::Table { leg: Leg::Target },
+                EnsureStep::Column {
+                    leg: Leg::Target,
+                    column: 0
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn append_on_a_staged_destination_plans_both_legs() {
+        // The same mode, a different publish path — and the stage leg appears.
+        // This is the rule the commit planner also consults; they must agree.
+        let plan = table_plan(
+            &schema(vec![col("id", LogicalType::Int64)]),
+            &WriteMode::Append,
+            FullLoadPublish::Staged,
+            None,
+        );
+        assert_eq!(
+            plan.iter()
+                .filter(|s| matches!(s, EnsureStep::Table { .. }))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn merge_always_stages_whatever_the_publish_path() {
+        for publish in [FullLoadPublish::DirectToTarget, FullLoadPublish::Staged] {
+            assert!(stages(&merge(), publish), "merge stages under {publish:?}");
+        }
+    }
+
+    #[test]
+    fn a_changed_type_plans_a_widen_directly_after_its_column() {
+        let before = schema(vec![col("id", LogicalType::Int64)]);
+        let after = schema(vec![col("id", LogicalType::Utf8)]);
+        let plan = table_plan(
+            &after,
+            &WriteMode::Append,
+            FullLoadPublish::DirectToTarget,
+            Some(&before),
+        );
+        assert_eq!(
+            plan,
+            vec![
+                EnsureStep::Table { leg: Leg::Target },
+                EnsureStep::Column {
+                    leg: Leg::Target,
+                    column: 0
+                },
+                EnsureStep::Widen {
+                    leg: Leg::Target,
+                    column: 0
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn an_unchanged_type_plans_no_widen() {
+        let same = schema(vec![col("id", LogicalType::Int64)]);
+        let plan = table_plan(
+            &same,
+            &WriteMode::Append,
+            FullLoadPublish::DirectToTarget,
+            Some(&same),
+        );
+        assert!(!plan.iter().any(|s| matches!(s, EnsureStep::Widen { .. })));
+    }
+
+    #[test]
+    fn scd2_plans_both_validity_columns_before_any_index() {
+        let options = DestOptions {
+            merge_strategy: Some(MergeStrategy::Scd2),
+            ..DestOptions::default()
+        };
+        let plan = merge_plan(
+            &options,
+            &schema(vec![col("id", LogicalType::Int64)]),
+            &merge(),
+        )
+        .expect("valid options");
+        let from = plan
+            .iter()
+            .position(|s| matches!(s, EnsureStep::Validity(Validity::From)))
+            .expect("valid_from");
+        let to = plan
+            .iter()
+            .position(|s| matches!(s, EnsureStep::Validity(Validity::To)))
+            .expect("valid_to");
+        let first_index = plan
+            .iter()
+            .position(|s| matches!(s, EnsureStep::Index(_)))
+            .unwrap_or(usize::MAX);
+        assert!(from < to && to < first_index, "{plan:?}");
+    }
+
+    #[test]
+    fn a_non_merge_mode_plans_nothing_but_still_validates() {
+        let plan = merge_plan(
+            &DestOptions::default(),
+            &schema(vec![col("id", LogicalType::Int64)]),
+            &WriteMode::Append,
+        )
+        .expect("default options are valid");
+        assert!(plan.is_empty());
+
+        let refused = DestOptions {
+            merge_strategy: Some(MergeStrategy::Upsert),
+            ..DestOptions::default()
+        };
+        merge_plan(
+            &refused,
+            &schema(vec![col("id", LogicalType::Int64)]),
+            &WriteMode::Append,
+        )
+        .expect_err("a merge strategy under Append is a config error");
+    }
+}

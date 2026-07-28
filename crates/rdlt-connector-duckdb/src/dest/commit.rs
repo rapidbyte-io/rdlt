@@ -15,13 +15,12 @@ use async_trait::async_trait;
 use duckdb::Connection;
 use rdlt_connector::{
     CommitMeta, CommitReceipt, DestinationError, LoadSession, RecordBatch, WriteMode,
-    core::{PipelineId, StateDoc, TableName, TableSchema, crash_point, schema::system_columns},
+    core::{PipelineId, StateDoc, TableName, TableSchema, crash_point},
 };
-use rdlt_connector_sqlcore::plan::{
-    self as sqlplan, IndexSpec, TableFacts, ValidateError, scope_replace_sql,
-};
+use rdlt_connector_sqlcore::ensure::{self, EnsureStep, Leg, Validity};
+use rdlt_connector_sqlcore::plan::{ValidateError, scope_replace_sql};
 use rdlt_connector_sqlcore::{
-    CommitCtx, DestOptions, FullLoadPublish, MergeDialect, MergeStrategy, Step, build_merge_plan,
+    CommitCtx, DestOptions, FullLoadPublish, MergeDialect, Step, build_merge_plan,
     commit_script, insert_select_sql, render_arm, staged_probe_targets,
 };
 
@@ -103,35 +102,42 @@ impl EnsureStmt {
 /// `previous` is the schema THIS SESSION last ensured, never the live catalog
 /// — that is what makes the widen a within-run rule.
 pub(crate) fn table_ddl_stmts(schema: &TableSchema, previous: Option<&TableSchema>) -> Vec<String> {
+    // Every write mode here publishes through a stage, which is what
+    // `Staged` says — so both legs exist regardless of mode, unlike the
+    // postgres destination.
+    let plan = ensure::table_plan(
+        schema,
+        &WriteMode::Append,
+        rdlt_connector_sqlcore::protocol::FullLoadPublish::Staged,
+        previous,
+    );
     let stage = stage_name(&schema.table);
-    let mut out = vec![
-        create_table_sql(schema.table.as_str(), schema, false),
-        create_table_sql(&stage, schema, true),
-    ];
-    // Additive schema migration: add new columns; widen changed ones with a
-    // cast — DuckDB's ALTER … SET DATA TYPE migrates existing rows.
-    for (target, is_stage) in [
-        (schema.table.as_str().to_owned(), false),
-        (stage.clone(), true),
-    ] {
-        for column in &schema.columns {
-            out.push(format!(
-                "ALTER TABLE {} ADD COLUMN IF NOT EXISTS {} {}",
-                quote(&target),
-                quote(&column.name),
-                sql_type(&column.column_type, is_stage)
-            ));
-            if let Some(prev) = previous
-                && let Some(old) = prev.column(&column.name)
-                && old.column_type != column.column_type
-            {
-                out.push(format!(
-                    "ALTER TABLE {} ALTER COLUMN {} SET DATA TYPE {}",
-                    quote(&target),
-                    quote(&column.name),
-                    sql_type(&column.column_type, is_stage)
-                ));
+    let leg_name = |leg: Leg| match leg {
+        Leg::Target => schema.table.as_str().to_owned(),
+        Leg::Stage => stage.clone(),
+    };
+    let mut out = Vec::new();
+    for step in plan {
+        match step {
+            EnsureStep::Table { leg } => {
+                out.push(create_table_sql(&leg_name(leg), schema, leg == Leg::Stage))
             }
+            // Additive schema migration: add new columns; widen changed ones
+            // with a cast — DuckDB's ALTER … SET DATA TYPE migrates existing
+            // rows, so no USING clause is needed or accepted.
+            EnsureStep::Column { leg, column } => out.push(format!(
+                "ALTER TABLE {} ADD COLUMN IF NOT EXISTS {} {}",
+                quote(&leg_name(leg)),
+                quote(&schema.columns[column].name),
+                sql_type(&schema.columns[column].column_type, leg == Leg::Stage)
+            )),
+            EnsureStep::Widen { leg, column } => out.push(format!(
+                "ALTER TABLE {} ALTER COLUMN {} SET DATA TYPE {}",
+                quote(&leg_name(leg)),
+                quote(&schema.columns[column].name),
+                sql_type(&schema.columns[column].column_type, leg == Leg::Stage)
+            )),
+            _ => unreachable!("phase 1 plans relations and columns only"),
         }
     }
     out
@@ -146,61 +152,44 @@ pub(crate) fn merge_ensure_stmts(
     mode: &WriteMode,
 ) -> Result<Vec<EnsureStmt>, ValidateError> {
     let table = schema.table.as_str();
-    // The option-vs-mode rules live in sqlcore — one rule set, identical
-    // typed errors on every SQL destination.
-    let WriteMode::Merge { key } = mode else {
-        sqlplan::validate_non_merge(options, table)?;
-        return Ok(Vec::new());
-    };
-    let has_identity = schema.columns.iter().any(|c| c.name == system_columns::ID);
-    let is_child = schema.parent.is_some();
-    sqlplan::validate_merge(
-        options,
-        table,
-        key,
-        &TableFacts {
-            schema,
-            has_identity,
-            is_child,
-        },
-    )?;
+    let scd2 = options.scd2_for(table);
     let mut out = Vec::new();
-    if options.strategy_for(table) == MergeStrategy::Scd2 {
-        let scd2 = options.scd2_for(table);
-        // Validity columns on the TARGET only (the stage carries the stream's
-        // shape); additive for pre-existing scd2 tables. DDL difference vs
-        // postgres: DuckDB rejects ADD COLUMN with a NOT NULL constraint. The
-        // insert arm always supplies the boundary value, so the constraint was
-        // belt only; DEFAULT now() still backfills pre-existing rows on a
-        // table adopting scd2.
-        for (col, extra) in [
-            (&scd2.valid_from, "TIMESTAMPTZ DEFAULT now()"),
-            (&scd2.valid_to, "TIMESTAMPTZ"),
-        ] {
-            out.push(EnsureStmt::plain(format!(
-                "ALTER TABLE {} ADD COLUMN IF NOT EXISTS {} {extra}",
-                quote(table),
-                quote(col)
-            )));
+    for step in ensure::merge_plan(options, schema, mode)? {
+        match step {
+            // Validity columns on the TARGET only (the stage carries the
+            // stream's shape); additive for pre-existing scd2 tables. DDL
+            // difference vs postgres: DuckDB rejects ADD COLUMN with a NOT
+            // NULL constraint. The insert arm always supplies the boundary
+            // value, so the constraint was belt only; DEFAULT now() still
+            // backfills pre-existing rows on a table adopting scd2.
+            EnsureStep::Validity(which) => {
+                let (col, extra) = match which {
+                    Validity::From => (&scd2.valid_from, "TIMESTAMPTZ DEFAULT now()"),
+                    Validity::To => (&scd2.valid_to, "TIMESTAMPTZ"),
+                };
+                out.push(EnsureStmt::plain(format!(
+                    "ALTER TABLE {} ADD COLUMN IF NOT EXISTS {} {extra}",
+                    quote(table),
+                    quote(col)
+                )));
+            }
+            EnsureStep::Index(spec) => {
+                if spec.unique {
+                    // A unique index this destination created under an older
+                    // naming scheme would otherwise survive beside the current
+                    // one.
+                    out.push(EnsureStmt::plain(format!(
+                        "DROP INDEX IF EXISTS {}",
+                        quote(&legacy_unique_index_name(table, &spec.columns))
+                    )));
+                }
+                out.push(EnsureStmt {
+                    sql: create_index_sql(spec.unique, table, &spec.columns),
+                    unique_index: spec.unique.then_some(spec.columns),
+                });
+            }
+            _ => unreachable!("phase 2 plans validity columns and indexes only"),
         }
-    }
-    // Index plan (identity indexes + scope index) — shared shape; this
-    // destination owns only the SQL text.
-    for IndexSpec { unique, columns } in
-        sqlplan::index_plan(options, table, key, has_identity, is_child)
-    {
-        if unique {
-            // A unique index this destination created under an older naming
-            // scheme would otherwise survive beside the current one.
-            out.push(EnsureStmt::plain(format!(
-                "DROP INDEX IF EXISTS {}",
-                quote(&legacy_unique_index_name(table, &columns))
-            )));
-        }
-        out.push(EnsureStmt {
-            sql: create_index_sql(unique, table, &columns),
-            unique_index: unique.then_some(columns),
-        });
     }
     Ok(out)
 }

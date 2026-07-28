@@ -11,6 +11,7 @@
 //! here that alters emitted SQL is caught there.
 
 pub mod dialect;
+pub mod ensure;
 pub mod names;
 pub mod options;
 pub mod plan;

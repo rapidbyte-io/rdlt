@@ -18,6 +18,25 @@ pub struct TableFacts<'a> {
     pub is_child: bool,
 }
 
+impl<'a> TableFacts<'a> {
+    /// Read the facts off the schema itself.
+    ///
+    /// Both derivations were copied into every destination: an identity table
+    /// is one carrying the shredder's id column, and a child is one naming a
+    /// parent. Neither is a per-destination decision, so neither should be a
+    /// per-destination line of code.
+    pub fn of(schema: &'a TableSchema) -> Self {
+        Self {
+            schema,
+            has_identity: schema
+                .columns
+                .iter()
+                .any(|c| c.name == rdlt_connector::core::schema::system_columns::ID),
+            is_child: schema.parent.is_some(),
+        }
+    }
+}
+
 /// A rejected destination-option configuration — every variant names the
 /// offender, and `Display` renders the exact frozen text.
 #[derive(Debug, Clone, PartialEq, Eq)]
