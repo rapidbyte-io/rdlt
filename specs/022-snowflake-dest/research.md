@@ -465,3 +465,71 @@ Resolution order verified working: environment (`RDLT_SNOWFLAKE_*`) first,
 then `~/.config/rdlt/snowflake/` files. Entries now in use: `account`,
 `user`, `warehouse`, `database`, `rdlt_qual_key.p8`, `passphrase`, `pat`,
 `stage.env`. Every one is 0600 and local-only; none is committed.
+
+## D12 — the two sqlcore extractions are NARROWED, on structural evidence
+
+D7 committed to TAKING both fired triggers and named the fallback: "extract
+only the shared shapes and re-record the remainder with a named trigger —
+never a silent partial". A four-way structural survey of both destinations
+(full reasoning: `extraction-plan.md`) says the fallback is the correct
+call for T003 and the ONLY available call for T004. Both are narrowed, both
+with triggers, neither silently.
+
+**T004 cannot be a shared execute skeleton — a type-system fact, not taste.**
+`DuckDbSession::commit` runs its whole body inside `with_conn(move |conn| …)`:
+a SYNCHRONOUS `FnOnce` holding a `MutexGuard<Connection>`, inside which
+`conn.transaction()` borrows `&mut Connection` for the guard's lifetime. The
+postgres session is an `async fn` over an owned client, and Snowflake's will
+be async too. Unifying them needs either an async trait in sqlcore — and
+`async-trait` is not a sqlcore dependency, which the shared core's own
+contract forbids adding — or a rebuild of DuckDB's concurrency model. Both
+are redesigns. **Extracted instead: six pure items** — the receipt-existence
+and load-committed probes, the staged-emptiness probe, `roots_of`, a
+`load_guard`, and the one item worth the whole task:
+
+**`ReplayDisposition`.** The redelivered-unit outcome is INVERTED between
+the two destinations for a structural reason — direct-to-target must roll
+back and return, staged must run the truncate program and commit — and
+today that invariant exists ONLY as prose in two comments. Typing it is how
+Snowflake inherits it correctly instead of rediscovering it as duplicate
+rows. `load_guard` is landed but deliberately NOT wired to duckdb, whose
+`open` discards the load id: adopting it there is a behaviour ADDITION and
+gets its own recorded decision.
+
+**T003 extracts DECISIONS, not SQL.** The third destination does not share
+the statement program at all: pg and duckdb both emit blind
+`ADD COLUMN IF NOT EXISTS` for every column every time, while Snowflake is
+describe-once, emits nothing when nothing is missing, and creates no indexes
+at all. So the surface common to three destinations is a desired-state list,
+never a statement list. sqlcore gains a pure `ensure` planner returning an
+ordered `Vec<EnsureStep>` (Table / Column / Widen / Validity / Index) — the
+structural twin of the existing commit-script planner — and every byte of
+SQL stays in each destination's own `ddl.rs`.
+
+**No `DdlDialect` trait is added**, and the reason is arithmetic: of the five
+hooks such a trait would need, FOUR have no shared body across the three
+destinations (create-table, ensure-column, widen, validity-column all differ
+in grammar or arity) and the fifth — index DDL — was already extracted in an
+earlier feature. A five-hook trait with zero shared defaults is a vtable tax,
+not a seam.
+
+**A mechanical fact that makes this safe to do at all**: no test anywhere
+pins ensure DDL text (verified by tree-wide search for the emitted literals).
+That is also why the edit order below is non-negotiable — **the pins must be
+created before anything crosses a crate boundary**: hoist rendering out of
+execution WITHIN each destination first, pin the rendered statement vectors
+container-free, and only then move the decision logic to sqlcore.
+
+**One live trap this survey caught before it could be written.** Snowflake's
+`TRUNCATE TABLE` is DDL and therefore auto-commits the open transaction —
+precisely the hazard the pure-DML unit exists to avoid — and the Replace
+clear runs INSIDE the unit. `SnowflakeDialect::clear_table` must return
+`DELETE FROM`, exactly as the duckdb dialect already does. The existing
+dialect seam covers it; no new machinery. Recorded here so the implementation
+cannot forget it.
+
+**Trigger for the remainder** (a shared execute skeleton, the DuckDB
+load-guard wiring, and any further ensure sharing): a destination whose
+session is async AND owns its connection the way postgres does — i.e. the
+FOURTH SQL destination, or a rebuild of the duckdb session's concurrency
+model, whichever comes first.

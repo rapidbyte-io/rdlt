@@ -33,7 +33,9 @@ recorded UNPERFORMED with the reason, never as green.
 |---|---|---|
 | T001 environment gate | **DONE** | six probes; two plan corrections (A1 reqwest cost, A7 fakesnow); research.md addenda A1–A8 |
 | T002 close-out skeleton | **DONE** | this file |
-| T003–T043 | OPEN | |
+| T003 ensure extraction | **NARROWED** (in progress) | D12 — decision planner, not SQL text; no DdlDialect trait |
+| T004 session extraction | **NARROWED** (in progress) | D12 — six pure items, not a skeleton; a shared async skeleton is type-system-impossible here |
+| T005–T043 | OPEN | |
 
 ## Deviations and corrections
 
@@ -60,6 +62,31 @@ here. Its SQL semantics were fine (DDL, DML, BEGIN/ROLLBACK, and
 re-trigger is precise: fakesnow honouring a JSON result format, or the
 crate gaining arrow support. No hermetic protocol leg is adopted; the mock
 executor seam covers protocol-shaped tests.
+
+### C-03 (T003/T004) — both extractions narrowed, with the reason and the trigger
+
+The tasks committed to TAKING both fired sqlcore triggers. A four-way
+structural survey (`extraction-plan.md`) found that a shared async execute
+skeleton is not writable: the duckdb session commits inside a synchronous
+closure holding a `MutexGuard<Connection>` while postgres is async over an
+owned client, and reconciling them needs a dependency the shared core's
+contract forbids or a redesign of duckdb's concurrency. The narrowing was
+pre-authorized by the task text ("extract only the shared shapes and
+re-record the remainder with a named trigger — never a silent partial") and
+is exercised here rather than forced. What IS extracted is chosen for value,
+not volume: `ReplayDisposition` alone converts an inverted, comment-only
+invariant into a typed decision the third destination inherits by
+construction. Full reasoning and the ordered edit plan: D12 +
+`extraction-plan.md`. Trigger for the remainder is recorded in D12.
+
+### C-04 (T003/T004 survey) — a Snowflake exactly-once trap caught before it was written
+
+`TRUNCATE TABLE` is DDL on Snowflake and auto-commits the open transaction —
+the exact hazard the pure-DML unit exists to prevent — and the Replace clear
+runs inside the unit. `SnowflakeDialect::clear_table` must therefore emit
+`DELETE FROM`, as the duckdb dialect already does. Found by the extraction
+survey, not by a failing test, and recorded before the implementation could
+inherit the bug.
 
 ## Unperformed verifications
 
