@@ -10,8 +10,9 @@ A new thin destination crate `rdlt-connector-snowflake` — the third SQL
 destination — built on the adopted `snowflake-connector-rs 1.1.0` session
 layer, wrapped at one boundary exactly as duckdb-rs is (owner decision;
 research D1 records the survey, the source-verified PUT gap, and the
-designed hand-rolled fallback). Key-pair JWT auth only, proven live against
-the qual account. Full sqlcore merge-vocabulary parity through a new dialect
+designed hand-rolled fallback). The full unattended auth vocabulary —
+key-pair (proven live), password, OAuth token, PAT — each live-certified
+against its own qual credential; external-browser SSO typed-unsupported. Full sqlcore merge-vocabulary parity through a new dialect
 whose merge is `MERGE INTO` + `QUALIFY` dedup (proven live, including the
 structured duplicate-diagnosis code 100090), with the existing
 postgres/duckdb golden pins byte-identical. Ingestion ships two paths —
@@ -73,7 +74,9 @@ structured Snowflake error codes (100090 duplicate-row, 391911-class API
 refusals, auth vs permission vs transient); DDL-never-inside-unit invariant
 (guarded); existing golden pins byte-identical; purely additive semver.
 
-**Scale/Scope**: one new crate (config/boundary/dest modules + tests), two
+**Scale/Scope**: one new crate (config/boundary/dest modules + tests) incl.
+the auth matrix and the deployment-completeness fields (transient tables,
+session parameters/query tag, host override), two
 sqlcore extractions (ensure choreography, session protocol) with
 byte-identity proofs, facade/CLI/pipeline-spec wiring, docs. No engine
 changes expected.

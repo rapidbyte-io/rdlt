@@ -30,7 +30,12 @@ measure-then-take (research D10).
   bucket, `COPY INTO … MATCH_BY_COLUMN_NAME=CASE_INSENSITIVE`, verify
   rowcount — the one remaining unknown on the proven stage path; (e)
   verify `~/.config/rdlt/snowflake/` convention resolves (key, passphrase,
-  stage.env) and record the exact resolution order.
+  stage.env) and record the exact resolution order; (f) PAT probe: mint a
+  PAT for the qual user (owner-provisioned), authenticate through the
+  crate's password channel with it, and record whether the
+  PAT-rides-password assumption holds — the `pat` config arm commits only
+  on this verdict; note the password test user and OAuth integration the
+  owner provisions, and their credential-convention entries (research D8).
 - [ ] T002 [P] Create `specs/022-snowflake-dest/close-out.md` skeleton:
   contract matrix SD1–SD8 (all OPEN), story matrix (US1–US5 NOT STARTED),
   deviations section, and the ledger conventions from the 020 pattern
@@ -62,14 +67,23 @@ measure-then-take (research D10).
   feature `snowflake` + `rdlt::connector::snowflake` module alias in
   `crates/rdlt/src/lib.rs`; compiles empty with the feature on and off.
 - [ ] T006 [P] Config vocabulary: `src/config.rs` per data-model §1 —
-  account/user/`private_key` (Secret, PEM-or-`path:`)/`key_passphrase`
-  (Secret, optional)/role/warehouse/database/schema + the shared
+  account/user + the closed `auth` enum (key_pair {private_key Secret
+  PEM-or-`path:`, key_passphrase}, password {password, mfa_passcode},
+  oauth {token}, pat {token} — every secret Secret-wrapped)/role/
+  warehouse/database/schema + `table_type` (transient|permanent),
+  `session_parameters` map, `query_tag`, `host` override + the shared
   `DestOptions` vocabulary; eager typed validation naming the field;
   `#[non_exhaustive]`; schemars schema; from_yaml/from_json/from_value;
   tests in `tests/config_schema.rs` (round-trip corpus, unknown-field
-  rejection, validation matrix, Secret grep-proof for key AND passphrase).
+  rejection, validation matrix, Secret grep-proof for EVERY secret field: key,
+  passphrase, password, passcode, oauth token, PAT).
 - [ ] T007 [P] The one boundary: `src/boundary.rs` — Client/Session
-  construction from config (`KeyPairConfig::from_pem`/`from_encrypted_pem`),
+  construction from config mapping the FULL auth vocabulary
+  (`KeyPairConfig::from_pem`/`from_encrypted_pem`,
+  `AuthConfig::password` + passcode, `AuthConfig::oauth`, PAT via the
+  T001-probed channel; external-browser SSO typed-unsupported),
+  `EndpointConfig` host override, session parameters + QUERY_TAG applied
+  at session open,
   an internal executor seam over the crate's `Session` (mockable for
   statement-count and retry tests), and error translation in ONE place:
   `Error::snowflake_code()` + `ErrorKind` → SPI taxonomy (Auth /
@@ -219,7 +233,12 @@ live legs run with credentials present; tree mechanically clean of secrets.
 
 - [ ] T030 [US4] Conformance certification: wire the testkit
   dest-conformance harness in `tests/live_dest.rs` (credential-gated) and
-  pass every clause; deviations (if any) typed and recorded.
+  pass every clause; deviations (if any) typed and recorded. PLUS the
+  auth-matrix live cells: one load per auth method — key-pair, PAT,
+  password (test user), OAuth token — each gated on ITS OWN credential
+  entry (skip-not-fail independently), each asserting the same typed
+  auth-failure shape on a corrupted secret with zero secret material in
+  the rendered error.
 - [ ] T031 [P] [US4] Gating posture tests: credentials absent → every
   snowflake live test reports skipped-with-reason and the workspace suite
   is green; suite-timeout audit so SaaS latency (warehouse resume, WAN)
@@ -258,8 +277,9 @@ timings, configuration; every shipped default cites a measurement.
 ## Phase 8: Polish & close-out
 
 - [ ] T038 [P] Crate README: closed type mapping table, identifier policy,
-  auth setup walk (key generation → ALTER USER → rdlt config), credential
-  convention, s3-compatible-endpoint allowlist caveat (research D6),
+  auth setup walk for EVERY method (key generation → ALTER USER; PAT
+  minting; password caveats — MFA enforcement, TYPE=SERVICE refusal;
+  OAuth integration sketch), credential convention, s3-compatible-endpoint allowlist caveat (research D6),
   internal-stage PUT status; `make docs` clean (missing_docs on all public
   items).
 - [ ] T039 [P] Quickstart verified verbatim against the qual account

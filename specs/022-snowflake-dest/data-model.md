@@ -13,13 +13,20 @@ programmatically; schemars-generated schema; `#[non_exhaustive]` enums).
 |---|---|---|
 | `account` | String | required; the account identifier as it appears in the host (`<acct>.snowflakecomputing.com`); validated non-empty, no dots/scheme |
 | `user` | String | required; login name |
-| `private_key` | Secret | required; PEM text or `path:`-resolved file; encrypted PKCS#8 accepted |
-| `key_passphrase` | Secret (optional) | required iff the key is encrypted; inline or `path:`-resolved (the qual convention uses a 0600 file beside the key) |
+| `auth` | AuthMethod | required; exactly one of the closed vocabulary below |
+| — `key_pair` | `{ private_key: Secret, key_passphrase: Option<Secret> }` | PEM text or `path:`-resolved; encrypted PKCS#8 accepted, passphrase required iff encrypted |
+| — `password` | `{ password: Secret, mfa_passcode: Option<Secret> }` | ships with the documented Snowflake caveats (MFA enforcement; TYPE=SERVICE users refuse passwords) |
+| — `oauth` | `{ token: Secret }` | caller-supplied access token; refresh is the caller's concern |
+| — `pat` | `{ token: Secret }` | programmatic access token; rides the password channel (T001-probed) |
 | `role` | Option<String> | optional; server default honored when absent |
 | `warehouse` | Option<String> | optional; server default honored when absent; loads FAIL typed if neither is set server-side |
 | `database` | String | required — three-part naming is always explicit so a changed server default cannot retarget a pipeline |
 | `schema` | String | required; same reason (the engine's `dataset` vocabulary maps here) |
 | `options` | DestOptions | the shared sqlcore vocabulary (strategy, hard_delete, dedup_sort, merge_scope, scd2 fields) — validation identical to the other SQL destinations |
+| `table_type` | enum, default `permanent` | `transient` opts out of fail-safe; applied to destination AND `_rdlt_` tables consistently |
+| `session_parameters` | Option<map<String,String>> | validated passthrough applied at session open |
+| `query_tag` | Option<String> | QUERY_TAG for attribution in QUERY_HISTORY |
+| `host` | Option<String> | PrivateLink-style override of the derived hostname; mock-verified |
 
 Validation is eager and typed, naming the field. Unknown fields are errors.
 Secret fields are grep-proofed (Debug/serialize/error paths).
@@ -28,7 +35,7 @@ Secret fields are grep-proofed (Debug/serialize/error paths).
 
 | item | notes |
 |---|---|
-| wrapped library | `snowflake-connector-rs 1.1.0` — Client/Session construction, key-pair auth (incl. encrypted PKCS#8 + passphrase), statement execution, binds |
+| wrapped library | `snowflake-connector-rs 1.1.0` — Client/Session construction, the full `AuthConfig` mapping (key_pair / password+passcode / oauth; PAT via the password channel), `EndpointConfig` host override, session parameters, statement execution, binds |
 | session lifecycle | crate-managed (persistent session; renewal internal to the crate); a session-expiry error mid-unit classifies Transient and the unit retries per driver policy |
 | statement seam | one internal executor trait over the crate's `Session` — the mock transport for statement-count and retry-class tests plugs here; the DDL-inside-unit refusal is asserted here |
 | error translation | `Error::snowflake_code()` + `ErrorKind` → SPI taxonomy at this boundary only: Auth, Permission, Transient (Network/SessionExpired/Timeout/throttle codes), Fatal (SQL/schema/oversized; code 100090 carries the duplicate-merge-key diagnosis shape) |

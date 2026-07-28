@@ -27,9 +27,10 @@ snowflake:` block naming account, user, key file, role, warehouse, database
 and schema. The run lands exact totals into Snowflake tables, a re-run of a
 committed load publishes nothing (replay is detected from the destination's
 own records), and a crash at any point between staging and commit converges
-to exactly-once on the next run. Authentication is by key pair only; the
-private key never appears in logs, error messages, debug output, or any
-committed file.
+to exactly-once on the next run. Authentication is by key pair in this
+story (the other supported methods are certified in the verification
+story); no secret — key, passphrase, password, or token — ever appears in
+logs, error messages, debug output, or any committed file.
 
 **Why this priority**: this is the MVP — an Append/Replace destination with
 exactly-once semantics and typed errors is independently useful before any
@@ -259,19 +260,27 @@ number.
   (error classification + the session/commit seam); no library type
   crosses the public surface. If no candidate passes, the plan STOPS and
   escalates — the fallback is not improvised.
-- **FR-003 (auth: key pair only)**: v1 authenticates exclusively by
-  key-pair JWT. The private key is accepted as a file path or inline PEM,
-  Secret-wrapped from the moment of parse, grep-proofed by test (debug
-  output, error text, serialized config). Password and OAuth flows are
-  typed-unsupported with a clear message, never silently ignored. Auth
-  failures are their own error class, distinguishable from network and
+- **FR-003 (auth: the full unattended vocabulary)**: the connector
+  supports every Snowflake authentication method suitable for unattended
+  use — **key-pair JWT** (encrypted or plain PKCS#8, passphrase source),
+  **password** (with Snowflake's MFA/user-TYPE caveats documented and an
+  optional MFA passcode field), **OAuth access token**
+  (caller-supplied; refresh is the caller's concern), and **programmatic
+  access tokens (PAT)**. Every secret (key, passphrase, password,
+  passcode, token) is Secret-wrapped from parse and grep-proofed (debug
+  output, error text, serialized config). Interactive external-browser
+  SSO is typed-unsupported with a clear message — an embedded engine
+  cannot open a browser. Each auth method has a LIVE verification leg
+  gated on its own credential presence (skip-not-fail); auth failures
+  remain their own error class, distinguishable from network and
   permission failures by shape.
-- **FR-004 (config vocabulary)**: closed config — `account`, `user`,
-  `private_key` (path or PEM, Secret), `role`, `warehouse`, `database`,
-  `schema`, plus the destination options vocabulary of FR-007. Eager
-  typed validation naming the field; generated schema; `from_yaml`/
-  `from_json`/`from_value` entry points; CLI pipeline-spec round-trip
-  including a spec-parse pin. Unknown fields are errors.
+- **FR-004 (config vocabulary)**: closed config — `account`, `user`, an
+  `auth` block naming exactly one method (FR-003), `role`, `warehouse`,
+  `database`, `schema`, plus the destination options vocabulary of
+  FR-007 and the completeness fields of FR-019. Eager typed validation
+  naming the field; generated schema; `from_yaml`/`from_json`/
+  `from_value` entry points; CLI pipeline-spec round-trip including a
+  spec-parse pin. Unknown fields are errors.
 - **FR-005 (closed type mapping)**: every engine logical type maps to a
   documented service type or is typed-unsupported — nothing silently
   degrades. JSON documents land as native semi-structured values;
@@ -374,6 +383,16 @@ number.
   known service-semantics caveats; a config-only quickstart walked
   verbatim; public items documented to the workspace `missing_docs`
   standard; the docs gate stays clean.
+- **FR-019 (deployment completeness)**: the connector covers the
+  deployment surface a real estate demands — **transient tables**
+  (per-destination `table_type` choosing transient vs permanent, the
+  fail-safe cost lever), **session parameters** (a validated passthrough
+  map applied at session open) and a **query tag** (observability;
+  every rdlt statement attributable in the account's query history), and
+  a **host override** for PrivateLink-style deployments (custom hostname
+  replacing the derived one; mock-verified — no PrivateLink test
+  environment exists and its live leg is recorded UNPERFORMED). Each is
+  config-only, typed, and defaulted to today's behavior when absent.
 - **FR-018 (delivery discipline)**: independently mergeable increments in
   value-per-risk order; the full local gate green at every merge; a
   close-out matrix with zero uncited dispositions; every deviation,
@@ -447,6 +466,12 @@ number.
   service user, key-pair authentication configured, and rights to create
   and drop schemas/tables in a dedicated test database; test datasets are
   small enough that credit consumption is not a constraint.
+- The owner provisions the additional auth credentials on the qual
+  account for live verification: a PAT for the qual user, a
+  password-capable test user (a TYPE that permits passwords), and an
+  OAuth security integration with a token-mint path. Any of the three
+  arriving late gates only its own live leg (skip-not-fail), never the
+  feature.
 - Credentials (account identifier, user, key pair) live ONLY in the local
   environment — the documented convention is environment variables and/or
   the user's local config directory; the committed tree records the
@@ -468,8 +493,14 @@ number.
 - A Snowflake SOURCE (reads, CDC, streams/tasks) — destination only.
 - Streaming ingestion (the service's streaming-ingest channel APIs) —
   recorded as a phase-2 door with its trigger, not built.
-- Password, OAuth, SSO, or MFA authentication flows — key pair only;
-  others are typed-unsupported.
+- Interactive external-browser SSO — the one auth flow an embedded
+  engine cannot honestly offer; typed-unsupported.
+- Internal-stage PUT ingestion — unreachable through the adopted library
+  (source-verified); deferred with BOTH closure routes recorded: an
+  upstream contribution, or a maintained fork if upstream stalls. The
+  owner chose to skip it for this feature.
+- GCS and Azure external stages — no live-verification story on this
+  machine; S3-family only, deferral recorded.
 - A gated benchmark bar for any SaaS cell — recorded sessions and
   scoreboard entries only, under the standing bench governance.
 - Iceberg-format or external tables on Snowflake, dynamic tables,

@@ -54,7 +54,7 @@ renewal, and error mapping beside the crate's own, the two-stacks shape.
   the crate proves unfit at T001 (login shapes, renewal under long loads,
   bind limits) — escalated, never improvised.
 
-## D2 — Auth: key-pair JWT, proven live
+## D2 — Auth: the full unattended vocabulary (owner-expanded scope), key-pair proven live
 
 The full chain was proven against the qual account with nothing but openssl
 and the SQL API: fingerprint = base64(SHA256(DER(public key))), JWT
@@ -65,6 +65,21 @@ DEFAULT role, warehouse, and database applied server-side. In the
 implementation this chain belongs to the adopted crate
 (`KeyPairConfig::from_pem` / `from_encrypted_pem`); the probe proves the
 account-side configuration and the key itself are good.
+
+**Scope expansion (owner decision, 2026-07-28)**: v1 ships every
+unattended method, not key-pair alone. Crate support verified in source:
+`AuthConfig::password` (README documents Snowflake's MFA enforcement on
+password sign-ins — the caveat ships in OUR docs too, with an optional MFA
+passcode field), `AuthConfig::oauth` (caller-supplied access token; refresh
+is the caller's concern), `AuthConfig::key_pair`. **PATs** ride the
+password channel in Snowflake's drivers — T001 probes that assumption
+through the crate before the config commits to it. External-browser SSO
+stays typed-unsupported (interactive; experimental in the crate; wrong for
+an embedded engine). The owner provisions live credentials for all three
+new paths on the qual account (PAT via Snowsight; a password-capable test
+user — note Snowflake refuses passwords on TYPE=SERVICE users; an OAuth
+security integration); each live leg gates on ITS OWN credential presence
+and skips-not-fails independently.
 
 Facts that shape the design:
 
@@ -231,7 +246,11 @@ environment first, config-dir fallback —
   (or `…_PASSPHRASE` inline), `RDLT_SNOWFLAKE_DATABASE`,
   `RDLT_SNOWFLAKE_WAREHOUSE`, `RDLT_SNOWFLAKE_ROLE`;
 - fallback dir `~/.config/rdlt/snowflake/`: `rdlt_qual_key.p8`,
-  `rdlt_qual_key.pub`, `passphrase` (0600);
+  `rdlt_qual_key.pub`, `passphrase` (0600); per-method additions:
+  `RDLT_SNOWFLAKE_PAT` (or `pat` file), `RDLT_SNOWFLAKE_PASSWORD` +
+  `RDLT_SNOWFLAKE_PASSWORD_USER` (or `password.env` file),
+  `RDLT_SNOWFLAKE_OAUTH_TOKEN` (or `oauth-token` file) — each new auth
+  path's live leg gates on its own entry;
 - OPTIONAL, for the external-stage live leg only: `stage.env` beside the
   key (0600) or the equivalent environment variables —
   `RDLT_SNOWFLAKE_STAGE_ENDPOINT`, `RDLT_SNOWFLAKE_STAGE_BUCKET`,
@@ -255,6 +274,25 @@ hand-rolled client, it becomes the hermetic container-free leg for
 protocol-level tests (venv pattern like pyiceberg); if not, it is rejected
 with the probe transcript recorded. Either way the qual account remains the
 leg of record, and no gate depends on fakesnow fidelity.
+
+## D11 — Deployment completeness (owner-expanded scope)
+
+Three config-only capabilities that make the connector deployable in real
+estates, each defaulting to today's behavior when absent:
+
+- **Transient tables**: `table_type: transient | permanent` (default
+  permanent) — `CREATE [TRANSIENT] TABLE` at ensure; the fail-safe cost
+  lever; live-verifiable (SHOW TABLES reports kind). Applies to
+  destination tables AND the `_rdlt_` bookkeeping tables consistently.
+- **Session parameters + query tag**: a validated string map applied at
+  session open via the crate's `with_session_parameters`, plus
+  `query_tag` (Snowflake QUERY_TAG) so every rdlt statement is
+  attributable in QUERY_HISTORY — which the statement-economy live check
+  already reads. Live-verifiable.
+- **Host override**: optional `host` replacing the derived
+  `<account>.snowflakecomputing.com` for PrivateLink-style deployments,
+  wired through the crate's `EndpointConfig`. Mock-verified only — no
+  PrivateLink test environment exists; recorded UNPERFORMED live.
 
 ## D9 — Type mapping (closed, with the plan-time decisions made)
 
