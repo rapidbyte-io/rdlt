@@ -33,7 +33,7 @@ recorded UNPERFORMED with the reason, never as green.
 |---|---|---|
 | T001 environment gate | **DONE** | six probes; two plan corrections (A1 reqwest cost, A7 fakesnow); research.md addenda A1–A8 |
 | T002 close-out skeleton | **DONE** | this file |
-| T003 ensure extraction | **NARROWED** (in progress) | D12 — decision planner, not SQL text; no DdlDialect trait |
+| T003 ensure extraction | **DONE (narrowed)** | D12 + D13 — `sqlcore::ensure` plans decisions, both destinations lower them; 18 ensure pins written first and green after; no DdlDialect trait; golden suites byte-identical; 816/816 |
 | T004 session extraction | **NARROWED** (in progress) | D12 — six pure items, not a skeleton; a shared async skeleton is type-system-impossible here |
 | T005–T043 | OPEN | |
 
@@ -113,6 +113,41 @@ resolvable. Iceberg suite now 56/56 with **0 skipped**; workspace 800/800.
 Recorded here rather than in 016's close-out because it was found by this
 feature's environment work; the fix is a test correction, not a behaviour
 change.
+
+### D13 (T003) — how the extraction was made safe, and what it actually shared
+
+No test pinned ensure DDL text before this feature, so the extraction could
+not have been verified after the fact. The order was therefore forced and is
+worth recording as method: **hoist rendering out of execution WITHIN each
+destination first, pin the rendered statement vectors container-free, and
+only then move the decision logic across a crate boundary.** Red-before-green
+applied to a refactor.
+
+The 18 pins were each demonstrated able to FAIL before being trusted —
+`CACHE 32` → `64`, reordering a widen before its `ADD COLUMN`, removing
+duckdb's legacy index drop, and adding `NOT NULL` to duckdb's validity column
+(i.e. "harmonizing" it with postgres, which DuckDB rejects outright). Two of
+them caught defects in themselves while being written: a wrong assumption
+that the DEFAULT merge strategy is upsert (it is delete-insert, whose index
+is supporting, not arbiter), and a filter matching the scd2 INDEX because it
+names a validity column.
+
+**What the extraction actually shared**, after the survey ruled out sharing
+SQL: leg selection, the within-session widen predicate, scd2 validity
+ordering, index planning, and `TableFacts::of` — both destinations derived
+`has_identity` and `is_child` with identical code.
+
+**The `stages` rule is the item that justifies the task.** Ensure and commit
+must agree on whether a table round-trips through a stage: a table the commit
+plan publishes from a stage but ensure never created one for fails at write
+time, and the reverse builds a stage that is written, truncated and never
+read. That rule was derived independently at each site and free to drift; it
+is now one function consulted twice.
+
+One real defect was introduced and caught en route: the new duckdb module
+landed between `#[cfg(feature = "failpoints")]` and `FAIL_POINTS`, silently
+moving the guard onto the wrong item. Reattached, and named here because a
+mis-scoped cfg is invisible in a green build.
 
 ## Unperformed verifications
 

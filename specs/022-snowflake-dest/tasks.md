@@ -44,7 +44,7 @@ measure-then-take (research D10).
 
 ## Phase 2: Foundational (blocking all stories)
 
-- [ ] T003 sqlcore ensure-choreography extraction (the fired 020 trigger):
+- [X] T003 sqlcore ensure-choreography extraction (the fired 020 trigger):
   move the shared table-legs / column-ensure / index-ensure choreography
   from `crates/rdlt-connector-postgres/src/dest/commit.rs` and
   `crates/rdlt-connector-duckdb/src/dest/` into
