@@ -37,7 +37,7 @@ measure-then-take (research D10).
   config arm commits only on this verdict. The password test user and
   OAuth integration are NOT requested here — they are requested when
   their live cells are built (T030).
-- [ ] T002 [P] Create `specs/022-snowflake-dest/close-out.md` skeleton:
+- [X] T002 [P] Create `specs/022-snowflake-dest/close-out.md` skeleton:
   contract matrix SD1–SD8 (all OPEN), story matrix (US1–US5 NOT STARTED),
   deviations section, and the ledger conventions from the 020 pattern
   (every disposition cited, none silent).
