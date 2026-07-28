@@ -30,12 +30,13 @@ measure-then-take (research D10).
   bucket, `COPY INTO … MATCH_BY_COLUMN_NAME=CASE_INSENSITIVE`, verify
   rowcount — the one remaining unknown on the proven stage path; (e)
   verify `~/.config/rdlt/snowflake/` convention resolves (key, passphrase,
-  stage.env) and record the exact resolution order; (f) PAT probe: mint a
-  PAT for the qual user (owner-provisioned), authenticate through the
-  crate's password channel with it, and record whether the
-  PAT-rides-password assumption holds — the `pat` config arm commits only
-  on this verdict; note the password test user and OAuth integration the
-  owner provisions, and their credential-convention entries (research D8).
+  stage.env) and record the exact resolution order; (f) PAT probe: **ASK THE
+  OWNER at this point** to mint a PAT for the qual user (Snowsight, ~2
+  min), then authenticate through the crate's password channel with it
+  and record whether the PAT-rides-password assumption holds — the `pat`
+  config arm commits only on this verdict. The password test user and
+  OAuth integration are NOT requested here — they are requested when
+  their live cells are built (T030).
 - [ ] T002 [P] Create `specs/022-snowflake-dest/close-out.md` skeleton:
   contract matrix SD1–SD8 (all OPEN), story matrix (US1–US5 NOT STARTED),
   deviations section, and the ledger conventions from the 020 pattern
@@ -238,7 +239,10 @@ live legs run with credentials present; tree mechanically clean of secrets.
   password (test user), OAuth token — each gated on ITS OWN credential
   entry (skip-not-fail independently), each asserting the same typed
   auth-failure shape on a corrupted secret with zero secret material in
-  the rendered error.
+  the rendered error. **ASK THE OWNER at this point** for the password
+  test user and the OAuth integration + token-mint details (research D8
+  names the env/file entries); legs whose credentials have not arrived
+  skip with reason and are recorded as such.
 - [ ] T031 [P] [US4] Gating posture tests: credentials absent → every
   snowflake live test reports skipped-with-reason and the workspace suite
   is green; suite-timeout audit so SaaS latency (warehouse resume, WAN)

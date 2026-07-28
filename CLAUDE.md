@@ -33,8 +33,9 @@ the parity matrix. snowflake-api 0.14 REJECTED (arrow ^57 vs workspace 58);
 hand-rolled session client = designed, escalated fallback. AUTH (owner-expanded): the FULL unattended vocabulary ships — key-pair +
 password(+MFA passcode) + OAuth token + PAT (PAT-rides-password probed at
 T001); external-browser SSO typed-unsupported; owner provisions PAT +
-password test user + OAuth integration on qual, each live leg gates on ITS
-OWN credential. Completeness fields: table_type transient|permanent,
+password test user + OAuth integration ON REQUEST when each leg is built
+(PAT at T001, password/OAuth at T030) — ASK, don't assume present; each
+live leg gates on ITS OWN credential. Completeness fields: table_type transient|permanent,
 session_parameters + QUERY_TAG, host override (PrivateLink, mock-only).
 PROVEN LIVE: key-pair JWT auth end-to-end (SF 10.26.101);
 unquoted idents fold UPPER and `EVENTS`/`events` COEXIST → policy =

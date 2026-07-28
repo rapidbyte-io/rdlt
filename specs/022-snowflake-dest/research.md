@@ -75,11 +75,13 @@ is the caller's concern), `AuthConfig::key_pair`. **PATs** ride the
 password channel in Snowflake's drivers — T001 probes that assumption
 through the crate before the config commits to it. External-browser SSO
 stays typed-unsupported (interactive; experimental in the crate; wrong for
-an embedded engine). The owner provisions live credentials for all three
-new paths on the qual account (PAT via Snowsight; a password-capable test
-user — note Snowflake refuses passwords on TYPE=SERVICE users; an OAuth
-security integration); each live leg gates on ITS OWN credential presence
-and skips-not-fails independently.
+an embedded engine). Live credentials for the three
+new paths are provisioned by the owner ON REQUEST, at the point each leg
+is built — the PAT at T001's probe, the password test user (a TYPE that
+permits passwords — Snowflake refuses them on TYPE=SERVICE) and the OAuth
+security integration at the auth-matrix cells (T030). Each live leg gates
+on ITS OWN credential presence and skips-not-fails independently; nothing
+blocks on a credential that has not arrived.
 
 Facts that shape the design:
 
