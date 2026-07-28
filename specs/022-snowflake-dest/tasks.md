@@ -200,7 +200,7 @@ canonical-row-equal results vs the postgres destination for every strategy.
   `tests/live_dest.rs`: upsert / delete_insert / scd2 × hard_delete /
   dedup_sort / merge_scope land exact totals with last-wins semantics on
   the qual account; scd2 single-unit violation typed.
-- [ ] T024 [US2] Differential oracle vs postgres: canonical-row equality
+- [X] T024 [US2] Differential oracle vs postgres: canonical-row equality
   incl. SCD2 HISTORY OPENNESS on identical seeded inputs for the full
   matrix (gated on credentials AND the pg container; lives in
   `tests/live_dest.rs` beside the strategy matrix).

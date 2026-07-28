@@ -32,7 +32,10 @@ bytes = { workspace = true }
 futures = { workspace = true }
 
 [dev-dependencies]
-rdlt-testkit = { workspace = true }
+rdlt-testkit = { workspace = true, features = ["containers"] }
+rdlt-connector-postgres = { workspace = true, features = ["dest"] }
+tokio-postgres = { workspace = true }
+arrow-schema = { workspace = true }
 tempfile = { workspace = true }
 futures = { workspace = true }
 rdlt-engine = { workspace = true }

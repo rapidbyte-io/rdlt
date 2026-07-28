@@ -64,6 +64,17 @@ pub mod testhook {
         Ok(last)
     }
 
+    /// Read a query's first column as a set of strings.
+    ///
+    /// The scalar hook parses its answer as a count, which silently limits it
+    /// to numeric columns — fine for probes, useless for reading rows back.
+    pub async fn read_column(
+        config: &SnowflakeConfig,
+        sql: &str,
+    ) -> Result<std::collections::BTreeSet<String>, DestinationError> {
+        client::connect(config).await?.column_names(sql, &[]).await
+    }
+
     /// Run one statement through the UNIT executor — the one that refuses DDL.
     pub async fn run_in_unit(config: &SnowflakeConfig, sql: &str) -> Result<(), DestinationError> {
         let executor = client::connect(config).await?;
