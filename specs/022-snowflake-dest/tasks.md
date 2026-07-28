@@ -111,14 +111,14 @@ key-pair auth, replay publishes nothing, crashes converge.
 **Independent test**: pg→snowflake pipeline, exact rowcount; re-run = zero
 new rows; kill at each crash point and converge duplicate-free.
 
-- [ ] T009 [US1] Identifier policy + describe-once ensure: `src/dest/ddl.rs`
+- [X] T009 [US1] Identifier policy + describe-once ensure: `src/dest/ddl.rs`
   — ONE emission function producing quoted-uppercase identifiers (research
   D3); ensure reads existing structure once per session (DESCRIBE or
   INFORMATION_SCHEMA, one read), creates tables, emits additive
   `ADD COLUMN` only when the column is genuinely absent; `_rdlt_` tables
   via the sqlcore constants uppercased at emission only; hostile-identifier
   round-trip pins (mixed case, reserved words, quoted specials) in-file.
-- [ ] T010 [P] [US1] Closed type mapping: enforce research D9 in ddl +
+- [X] T010 [P] [US1] Closed type mapping: enforce research D9 in ddl +
   batch encoding — Json→VARIANT, Decimal→NUMBER(p,s) with p≤38 refused
   typed at write when exceeded, VARIANT >16MB refused typed,
   Uuid→VARCHAR(36), TIMESTAMP_TZ/NTZ split; unmappable columns typed at

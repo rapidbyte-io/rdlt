@@ -177,3 +177,123 @@ async fn ddl_is_refused_inside_a_unit_before_it_reaches_the_service() {
     .expect("catalog query");
     assert_eq!(count.trim(), "0", "the refused DDL must not have executed");
 }
+
+#[tokio::test]
+async fn ensure_reads_the_catalog_once_and_then_emits_nothing() {
+    // The requirement the whole ddl module exists for, checked against the
+    // real catalog rather than a hand-built image: a steady-state load must
+    // issue ZERO schema statements.
+    use rdlt_connector::core::{
+        ColumnDef, ColumnType, LogicalType, Provenance, TableName, TableSchema, WriteMode,
+    };
+    use rdlt_connector_snowflake::dest::TableType;
+    use rdlt_connector_snowflake::dest::testhook::{
+        Catalog, apply, ensure_table_sql, read_catalog,
+    };
+
+    let Some(base) = key_pair_config() else {
+        return;
+    };
+    let schema_name = scratch_schema("ensure");
+    connect_and_run(&base, &format!("CREATE SCHEMA {schema_name}"))
+        .await
+        .expect("scratch schema");
+
+    let mut config = key_pair_config().expect("credentials");
+    config.schema = schema_name.clone();
+
+    let table = TableSchema {
+        table: TableName::from("events"),
+        parent: None,
+        columns: vec![
+            ColumnDef {
+                name: "id".to_owned(),
+                column_type: ColumnType::scalar(LogicalType::Int64),
+                nullable: false,
+                provenance: Provenance::Inferred,
+            },
+            ColumnDef {
+                name: "note".to_owned(),
+                column_type: ColumnType::scalar(LogicalType::Utf8),
+                nullable: true,
+                provenance: Provenance::Inferred,
+            },
+        ],
+    };
+
+    let result = async {
+        // First ensure: the catalog knows nothing, so the table is created.
+        let mut catalog = Catalog::default();
+        catalog.observe("events", read_catalog(&config, "events").await?);
+        let first = ensure_table_sql(
+            "p",
+            &table,
+            &WriteMode::Append,
+            TableType::Permanent,
+            None,
+            &catalog,
+        );
+        assert_eq!(first.len(), 1, "one CREATE: {first:?}");
+        for sql in &first {
+            apply(&config, sql).await?;
+        }
+
+        // Second ensure, reading the catalog fresh: the table now matches, so
+        // there is nothing to emit at all.
+        let mut catalog = Catalog::default();
+        let columns = read_catalog(&config, "events").await?;
+        assert!(
+            columns.contains("ID") && columns.contains("NOTE"),
+            "the catalog reports the columns upper case: {columns:?}"
+        );
+        catalog.observe("events", columns);
+        let second = ensure_table_sql(
+            "p",
+            &table,
+            &WriteMode::Append,
+            TableType::Permanent,
+            None,
+            &catalog,
+        );
+        assert!(
+            second.is_empty(),
+            "a steady-state ensure issues no statements: {second:?}"
+        );
+
+        // A grown schema emits exactly the one missing column.
+        let mut grown = table.clone();
+        grown.columns.push(ColumnDef {
+            name: "added".to_owned(),
+            column_type: ColumnType::scalar(LogicalType::Bool),
+            nullable: true,
+            provenance: Provenance::Inferred,
+        });
+        let third = ensure_table_sql(
+            "p",
+            &grown,
+            &WriteMode::Append,
+            TableType::Permanent,
+            None,
+            &catalog,
+        );
+        assert_eq!(third.len(), 1, "exactly the missing column: {third:?}");
+        assert!(third[0].contains("\"ADDED\""), "{}", third[0]);
+        apply(&config, &third[0]).await?;
+
+        // And the unquoted name a user would type resolves to what was
+        // written — the reason identifiers are emitted quoted-UPPER.
+        let count = connect_and_run(
+            &config,
+            &format!("SELECT count(*) FROM {schema_name}.events"),
+        )
+        .await?;
+        assert_eq!(count, "0");
+        Ok::<(), rdlt_connector::DestinationError>(())
+    }
+    .await;
+
+    connect_and_run(&base, &format!("DROP SCHEMA IF EXISTS {schema_name}"))
+        .await
+        .expect("cleanup");
+    result.expect("the ensure sequence succeeds");
+}

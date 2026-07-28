@@ -42,7 +42,7 @@ pub const UNIT_WORK_MEM: &str = "SET LOCAL work_mem = '64MB'";
 /// Arrival-order column on STAGE tables only: makes merge dedup deterministic
 /// ("last wins" for real). Excluded from publish column lists because it
 /// is not part of the logical schema.
-pub const ARRIVAL_COL: &str = "__rdlt_arrival";
+pub use rdlt_connector_sqlcore::names::ARRIVAL_COL;
 
 /// Stage names are pipeline-scoped and hashed: scoping stops one pipeline's `open`
 /// from truncating another's live staged rows in a shared schema, and
@@ -57,11 +57,7 @@ pub(super) fn stage_prefix(pipeline: &PipelineId) -> String {
 }
 
 pub(super) fn stage_name(pipeline: &PipelineId, table: &TableName) -> String {
-    format!(
-        "{}{}",
-        stage_prefix(pipeline),
-        rdlt_connector::core::naming::ident_hash(table.as_str(), 16)
-    )
+    rdlt_connector_sqlcore::names::stage_table(pipeline.as_str(), table.as_str())
 }
 
 /// Quoted, comma-joined logical columns — the shared sqlcore rule; publishes

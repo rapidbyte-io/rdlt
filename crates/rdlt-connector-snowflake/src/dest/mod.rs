@@ -2,6 +2,7 @@
 
 pub(crate) mod client;
 mod config;
+mod ddl;
 
 pub use config::{Auth, ConfigError, KeyPair, Password, SnowflakeConfig, TableType, config_schema};
 
@@ -12,8 +13,10 @@ pub use config::{Auth, ConfigError, KeyPair, Password, SnowflakeConfig, TableTyp
 pub mod testhook {
     use rdlt_connector::DestinationError;
 
+    use rdlt_connector::core::{TableSchema, WriteMode};
+
     use super::client::{self, DmlOnly, Executor};
-    use super::config::SnowflakeConfig;
+    use super::config::{SnowflakeConfig, TableType};
 
     /// Connect and run one statement, returning its first scalar as text.
     pub async fn connect_and_run(
@@ -43,4 +46,51 @@ pub mod testhook {
     /// names the same constant the merge path will key on rather than
     /// repeating a magic number.
     pub const DUPLICATE_ROW_IN_DML: &str = client::DUPLICATE_ROW_IN_DML;
+
+    /// What the catalog was observed to hold, so a cell can drive the
+    /// describe-once decision without a service.
+    pub use super::ddl::Catalog;
+
+    /// The ensure statements for a schema, given what the catalog holds.
+    ///
+    /// The pin seam: the emitted DDL is compared as data, exactly as the other
+    /// SQL destinations' ensure suites do, because executing it needs an
+    /// account but comparing it needs nothing.
+    pub fn ensure_table_sql(
+        pipeline: &str,
+        schema: &TableSchema,
+        mode: &WriteMode,
+        table_type: TableType,
+        previous: Option<&TableSchema>,
+        catalog: &Catalog,
+    ) -> Vec<String> {
+        super::ddl::table_ddl_stmts(pipeline, schema, mode, table_type, previous, catalog)
+    }
+
+    /// The post-table ensure statements (scd2 validity columns; no indexes).
+    pub fn ensure_merge_sql(
+        options: &rdlt_connector_sqlcore::options::DestOptions,
+        schema: &TableSchema,
+        mode: &WriteMode,
+        catalog: &Catalog,
+    ) -> Result<Vec<String>, rdlt_connector_sqlcore::plan::ValidateError> {
+        super::ddl::merge_ensure_stmts(options, schema, mode, catalog)
+    }
+
+    /// The catalog read for one table, and the columns it reports.
+    ///
+    /// Live cells use this to prove the read-then-emit-nothing loop against a
+    /// real account rather than against a hand-built catalog image.
+    pub async fn read_catalog(
+        config: &SnowflakeConfig,
+        table: &str,
+    ) -> Result<std::collections::BTreeSet<String>, DestinationError> {
+        let executor = client::connect(config).await?;
+        super::ddl::observe_table(&executor, &config.database, &config.schema, table).await
+    }
+
+    /// Run one ensure statement against the account.
+    pub async fn apply(config: &SnowflakeConfig, sql: &str) -> Result<(), DestinationError> {
+        client::connect(config).await?.execute(sql).await
+    }
 }

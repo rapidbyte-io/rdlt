@@ -129,6 +129,14 @@ pub(crate) trait Executor: Send + Sync {
     /// Run a statement and read one integer from the first column of the
     /// first row — the shape every probe in the commit protocol needs.
     async fn scalar_u64(&self, sql: &str, binds: &[&str]) -> Result<u64, DestinationError>;
+
+    /// Run a statement and read its first column as a set of names — the
+    /// shape the catalog read needs.
+    async fn column_names(
+        &self,
+        sql: &str,
+        binds: &[&str],
+    ) -> Result<std::collections::BTreeSet<String>, DestinationError>;
 }
 
 /// A live session.
@@ -147,29 +155,7 @@ impl Executor for SessionExecutor {
     }
 
     async fn scalar_u64(&self, sql: &str, binds: &[&str]) -> Result<u64, DestinationError> {
-        // Binds are positional and rendered by the caller's placeholder
-        // closure, so the SQL and its values are built in one place. The
-        // library's builder is a typestate — the first bind changes the
-        // statement's type — so the first is applied before the rest, and the
-        // values are owned before the await because a borrowed bind cannot
-        // outlive the frame the future is polled from.
-        let owned: Vec<String> = binds.iter().map(|b| (*b).to_owned()).collect();
-        let statement = snowflake_connector_rs::Statement::from(sql.to_owned());
-        let cursor = match owned.split_first() {
-            None => self.session.query(statement).await,
-            Some((first, rest)) => {
-                let mut bound = statement.bind(first.clone());
-                for bind in rest {
-                    bound = bound.bind(bind.clone());
-                }
-                self.session.query(bound).await
-            }
-        };
-        let table = cursor
-            .map_err(classify)?
-            .collect_table()
-            .await
-            .map_err(classify)?;
+        let table = self.query(sql, binds).await?;
         let value = table
             .rows::<DynamicRow>()
             .map_err(classify)?
@@ -183,6 +169,56 @@ impl Executor for SessionExecutor {
             ))
         })
     }
+
+    async fn column_names(
+        &self,
+        sql: &str,
+        binds: &[&str],
+    ) -> Result<std::collections::BTreeSet<String>, DestinationError> {
+        let table = self.query(sql, binds).await?;
+        let mut out = std::collections::BTreeSet::new();
+        for row in table.rows::<DynamicRow>().map_err(classify)? {
+            let row = row.map_err(classify)?;
+            if let Ok(cell) = row.value_at(0)
+                && let Some(name) = cell_as_text(cell)
+            {
+                out.insert(name);
+            }
+        }
+        Ok(out)
+    }
+}
+
+impl SessionExecutor {
+    /// Run a query and collect its result.
+    ///
+    /// Binds are positional. The library's builder is a typestate — the first
+    /// bind changes the statement's type — so the first is applied before the
+    /// rest, and the values are owned before the await because a borrowed bind
+    /// cannot outlive the frame the future is polled from.
+    async fn query(
+        &self,
+        sql: &str,
+        binds: &[&str],
+    ) -> Result<snowflake_connector_rs::ResultTable, DestinationError> {
+        let owned: Vec<String> = binds.iter().map(|b| (*b).to_owned()).collect();
+        let statement = snowflake_connector_rs::Statement::from(sql.to_owned());
+        let cursor = match owned.split_first() {
+            None => self.session.query(statement).await,
+            Some((first, rest)) => {
+                let mut bound = statement.bind(first.clone());
+                for bind in rest {
+                    bound = bound.bind(bind.clone());
+                }
+                self.session.query(bound).await
+            }
+        };
+        cursor
+            .map_err(classify)?
+            .collect_table()
+            .await
+            .map_err(classify)
+    }
 }
 
 /// Read a cell as an unsigned count.
@@ -190,6 +226,14 @@ impl Executor for SessionExecutor {
 /// Counts arrive as Snowflake NUMBERs, which the library may hand back as an
 /// integer or as a fixed-point decimal depending on the query; both are read
 /// here so a probe never fails on the representation.
+fn cell_as_text(cell: &snowflake_connector_rs::CellValue) -> Option<String> {
+    use snowflake_connector_rs::CellValue;
+    match cell {
+        CellValue::String(s) => Some(s.clone()),
+        _ => None,
+    }
+}
+
 fn cell_as_u64(cell: &snowflake_connector_rs::CellValue) -> Option<u64> {
     use snowflake_connector_rs::CellValue;
     match cell {
@@ -222,6 +266,17 @@ impl Executor for DmlOnly<'_> {
             return Err(ddl_in_unit(sql));
         }
         self.0.scalar_u64(sql, binds).await
+    }
+
+    async fn column_names(
+        &self,
+        sql: &str,
+        binds: &[&str],
+    ) -> Result<std::collections::BTreeSet<String>, DestinationError> {
+        if is_ddl(sql) {
+            return Err(ddl_in_unit(sql));
+        }
+        self.0.column_names(sql, binds).await
     }
 }
 
@@ -376,6 +431,14 @@ mod tests {
         async fn scalar_u64(&self, sql: &str, _: &[&str]) -> Result<u64, DestinationError> {
             self.seen.lock().expect("lock").push(sql.to_owned());
             Ok(0)
+        }
+        async fn column_names(
+            &self,
+            sql: &str,
+            _: &[&str],
+        ) -> Result<std::collections::BTreeSet<String>, DestinationError> {
+            self.seen.lock().expect("lock").push(sql.to_owned());
+            Ok(std::collections::BTreeSet::new())
         }
     }
 

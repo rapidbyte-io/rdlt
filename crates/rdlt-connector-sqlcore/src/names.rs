@@ -40,6 +40,30 @@ pub const CLEARED_TABLE: &str = "_rdlt_cleared";
 /// suffixes.
 pub const STAGE_PREFIX: &str = "_rdlt_stage_";
 
+/// Arrival-order column on STAGE tables: what makes merge dedup deterministic
+/// ("last wins" for real). Excluded from publish column lists because it is
+/// not part of the logical schema.
+///
+/// A persisted identity like the table names above — a destination that
+/// spelled it differently would not find its own staged order after a
+/// restart.
+pub const ARRIVAL_COL: &str = "__rdlt_arrival";
+
+/// A stage table's name: pipeline-scoped and hashed.
+///
+/// Scoping stops one pipeline's open from truncating another's live staged
+/// rows in a shared schema. Hashing bounds the identifier under the tightest
+/// destination limit (Postgres allows 63 bytes), where silent truncation would
+/// otherwise cut off exactly the disambiguating suffix and make two pipelines
+/// collide precisely when their names are most similar.
+pub fn stage_table(pipeline: &str, table: &str) -> String {
+    format!(
+        "{STAGE_PREFIX}{}_{}",
+        rdlt_connector::core::naming::ident_hash(pipeline, 8),
+        rdlt_connector::core::naming::ident_hash(table, 16)
+    )
+}
+
 /// Merge-identity index prefixes (auto-ensured per load): plain and unique.
 pub const INDEX_PREFIX: &str = "rdlt_ix";
 pub const UNIQUE_INDEX_PREFIX: &str = "rdlt_ux";
