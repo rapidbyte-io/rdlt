@@ -12,14 +12,14 @@ Executes `NEXT_STEPS.md` (audited 2026-07-26 @ `634222e`). Contract:
 
 | clause | status | evidence |
 |---|---|---|
-| AR1 — red before green | ON TRACK | procedure fixed in T007; US2's 5 pins each demonstrated red, output recorded in D-01 |
-| AR2 — confirmed set is the work; refuted set is not | ON TRACK | 18 non-goals seeded below; **5 corrections to the audit recorded** (C-01…C-05) |
-| AR3 — behaviour changes only where a defect is named | OPEN | |
-| AR4 — persisted formats and identity | OPEN | |
-| AR5 — typed taxonomy, or no distinction at all | OPEN | |
-| AR6 — greenfield, and the deferral ledger closes | OPEN | |
-| AR7 — the gate is the gate, and CI is not it | **PARTIAL** | T006 below: the full local gate CANNOT complete on this machine; the runnable portion is recorded |
-| AR8 — one disposition per item, none silent | OPEN | ledger seeded with 157 items + 18 non-goals |
+| AR1 — red before green | **MET** | Procedure fixed in T007. US2's 5 pins each demonstrated red pre-fix (D-01). The discipline held to the end and kept earning its keep: D-30's mutants were verified by APPLYING them, D-42's starvation test was proven able to fail by reverting the fix, and D-44's skip-fetch counter was proven able to fail by forcing the predicate to `None` |
+| AR2 — confirmed set is the work; refuted set is not | **MET** | All 18 refuted claims appear exactly once, as recorded non-goals, and **zero** appear as implemented work (verified mechanically, T184). **7 corrections to the audit** recorded (C-01…C-07), including two where the audit had the defect backwards or understated |
+| AR3 — behaviour changes only where a defect is named | **MET** | Every behaviour change traces to a named defect or a recorded deferral. The performance work is the sharpest test of this and passes: of eight US11 measurements, four changed behaviour (D-35, D-37, D-41, D-44) and each is byte- or value-identity verified; four changed nothing and are recorded as negatives with their numbers (D-34, D-36, D-38, D-39) |
+| AR4 — persisted formats and identity | **MET** | No persisted-format version bumped. WAL format unchanged despite T164 giving `Segment.rows` a consumer; `CURSOR_FORMAT_VERSION` unchanged (D-06/D-07). Golden SQL pins byte-identical throughout — verified again after the sqlcore extraction (T159/T160) and the stage-DDL change (D-37), which is `ensure_table`'s and not `commit_script`'s. Identity corpus byte-identical across US2 (`abc0bf0b…`) |
+| AR5 — typed taxonomy, or no distinction at all | **MET** | No test in this feature matches on rendered error text. New failure paths are typed at their source (D-09's three corrected instruments; D-44's `recorded_completion` returning `Option` rather than signalling by message). D-42 deliberately re-raises a panic instead of degrading it, so a defect stays distinguishable from damaged data |
+| AR6 — greenfield, and the deferral ledger closes | **MET** | D-45: tree-wide search returns **zero** hits for every replaced implementation — `runtime::channel`, `StageClosed`, the removed dependencies, the old DDL and the old formatter call. Superseded code deleted in the same change, never aliased. Fired-but-undisposed deferrals: **zero** (D-32) |
+| AR7 — the gate is the gate, and CI is not it | **MET, with two named exceptions** | The local gate is the gate of record and was green at every increment merge. The two things this machine genuinely could not do are recorded UNPERFORMED rather than skipped: T097's Polaris live probe (no container runtime at increment start) and T176's netem (no `tc`; the container shares the host netns — see D-40, where the substitute measurement proved more useful). Every CI-only verification is UNPERFORMED, never green, never blocking (E1) |
+| AR8 — one disposition per item, none silent | **MET** | All **157** ledger items carry a terminal disposition with a citation: **130 fixed, 22 deferred with named triggers, 5 rejected with the measurement or argument that rejected them**. Zero uncited, zero silent. Plus 18 non-goals, each appearing exactly once |
 
 ## Story matrix
 
@@ -35,7 +35,7 @@ Executes `NEXT_STEPS.md` (audited 2026-07-26 @ `634222e`). Contract:
 | US8 — the gate | **COMPLETE** | T121–T139; see D-25, D-27 through D-30. Fresh full run: **921 mutants, 97 survivors**, every one re-checked WITH containers (24 were never gaps). All 75 verified gaps dispositioned: 51 killed by red-verified pins, 18 equivalent with the argument at the call site, 3 dead-code deletions, 2 cosmetic, 1 untestable by construction, **1 real defect fixed** (`UniqueNamer::name_for` could spin forever). Suite 749 → 780 |
 | US9 — publish readiness | **COMPLETE** | T140–T152. 220 undocumented public items documented; `make docs` added as a gate verb and wired into `check`, catching **14 dead intra-doc links** on its first run (D-19). Publish metadata, crates.io descriptions, feature-matrix and packaging checks recorded. CI-only verifications land **UNPERFORMED**, never green — E1 stands |
 | US10 — recorded deferrals | **COMPLETE** | T153–T167; see D-20 through D-23, D-31, D-32. D17 taken (one byte-budget channel, engine copy deleted, AR6 verified); lowering parity now a machine-checked property over generated schemas × 4 capability combos; `DestSpec::File` embeds its config; `create_index_sql` and the duplicate-key diagnosis moved into sqlcore **with the golden pin they lacked**; `WalRecord::Segment.rows` given a consumer (no format bump); 4 dependencies removed. **Fired-but-undisposed deferrals: zero** (SC-014). Gate: 785/785, 0 skipped |
-| US11 — performance queue | NOT STARTED | |
+| US11 — performance queue | **COMPLETE except the gate session** | T168–T181, T183; see D-33 through D-44. **Eight measurements, four taken and four declined, every disposition decided against a number**: taken — the COPY encoder fast path (−1.98% process instructions, D-35), the stage sequence cache (−3.3% of the merge cell, D-37), the partition formatter hoist (−2.72%, D-41), the S3 skip-fetch (D-44, proven to fire); declined — the allocator (3.3% ceiling, D-34), the WAL skip (8.5% measured, 019 D2 binds, D-36), the file-dest buffering (constant, not O(dataset), D-38), the canonical-JSON allocation (6.19% ceiling, D-39). Plus the owed merge plan (D-33) and WAL recovery moved off the embedder's runtime (D-42). **T182 (bars) and T189 (`make check` ×2) are deliberately NOT run here** — they require a quiet machine, and D-24 recorded that a loaded one produces false gate results |
 
 ---
 
@@ -2024,6 +2024,58 @@ at 50.61% (a config-deserialisation surface exercised mostly through end-to-end
 specs), `rdlt-testkit/src/conformance/*` at 30–78% (harness code, whose own
 coverage is not the point), and `rdlt-engine/src/shred/passthrough.rs` at 83.05%.
 
+### D-47 (Polish) — the feature's deviations, collected
+
+Recorded in one place so none has to be reconstructed from the log.
+
+**Scope reversed or reduced on evidence, never quietly:**
+
+- **US5** was scoped DOWN after its design was attacked before implementation
+  (D-10): within-run enforcement and inheritance, no persisted-format change and
+  **no semver break**. The 0.2→0.3 window therefore did NOT open here, contrary
+  to the plan's expectation that StateDoc 1→2 would force it.
+- **T169** was re-scoped rather than built (D-43): D-33 had already answered
+  whether client CPU reductions buy wall time on these cells.
+- **T179** did not add the iai bench it names (D-41); a better number was taken
+  end-to-end instead, and no permanent gate was added for a path no cell
+  exercises. Recorded as a deviation, not substituted silently.
+
+**Schema-affecting changes, all in US2 and all named:** u64 above `i64::MAX` no
+longer silently NULLs, type-hint pins are no longer overridden by objects and
+arrays, `parse_decimal` respects precision, and hinted-value misfits are counted
+rather than dropped. The identity corpus is byte-identical either side
+(`abc0bf0b…`), so the changes alter what is REJECTED and COUNTED, not what a
+correct value shreds to.
+
+**Corrections to NEXT_STEPS.md itself — seven, C-01…C-07.** Two are substantive:
+the type-hint defect ran in the OPPOSITE direction to the audit's description
+(verbatim-JSON → NULL, and worse), and the iceberg divergence was GUARANTEED
+rather than plausible. The audit was a good instrument, and saying where it was
+wrong is part of using it honestly.
+
+**Verifications recorded UNPERFORMED — never claimed, never green:**
+
+| what | why |
+|---|---|
+| every CI-only check | E1: GitHub org billing; all four jobs fail in 3–5 s with zero steps. The LOCAL gate is the gate of record |
+| T097 Polaris live image probe | no working container runtime at that increment |
+| T176 netem 2 ms RTT | `tc` absent, and the container shares the HOST netns — the qdisc would degrade the user's machine, not a fixture (D-40) |
+| T182 bars gate, T189 `make check` ×2 | **deliberately left for a quiet-machine session** — see below |
+
+**Two instruments were installed mid-feature** and changed what was answerable:
+`valgrind` (which located the encoder's 36.7% framing cost precisely, D-35, and
+disposed D18 on a heap profile, D-38) and `hyperfine`. Both had been absent, and
+`make check`'s cold-start leg had been unreachable without the latter.
+
+**The gate session is NOT run here, and that is a deliberate deviation.** T182's
+bars are ratios against dlt and need the competitor harness; T189 needs the full
+local gate twice clean. This machine has been running containers, mutation jobs
+and benchmarks all day, and **D-24 recorded what a loaded machine does to gate
+results** — three unrelated container tests failing at load average 88–99, one
+test taking 154.9 s against its usual ~5 s. Running the gate now would produce
+evidence this feature would then have to disown. It is left for a quiet session,
+with everything it depends on already green.
+
 ---
 
 ## Item ledger (AR8 — one disposition per item, none silent)
@@ -2034,163 +2086,163 @@ Seeded mechanically from the audit so no item can be dropped by omission.
 
 | # | item | kind | story | disposition | evidence |
 |---|---|---|---|---|---|
-| 1 | Fix no-op ignore pattern in tools/interop/.gitignore | **bug**/low | US7 | OPEN | |
-| 2 | Add a LICENSE file — repo declares Apache-2.0 but ships no license text | build | US9 | OPEN | |
-| 3 | Add publish metadata (readme, keywords, categories) before the 0.2->0.3 window | build | US9 | OPEN | |
-| 4 | Add a packaging/feature-matrix CI job ahead of publishing | build | US9 | OPEN | |
-| 5 | CI never builds rustdoc; no missing_docs lint on the published surface | build | US9 | OPEN | |
-| 6 | fuzz/Cargo.lock is stale: still records parquet as an rdlt-engine dependency after 019 US2 | build | US9 | OPEN | |
-| 7 | Deep-tier suites memory_bound and spark_deep run in no CI schedule, and the Makefile header misdescribes TARGET=deep | build | US9 | OPEN | |
-| 8 | make check hard-fails without hyperfine (cold-start prerequisite undocumented) | build | US9 | OPEN | |
-| 9 | Extend the semver gate beyond rdlt-core/rdlt-connector before publishing 0.3 | build | US9 | OPEN | |
-| 10 | Pin GitHub Actions to commit SHAs and stop compiling iai-callgrind-runner from source each run | build | US9 | OPEN | |
-| 11 | Run the deterministic bars gate (make bench TARGET=gate) in CI | build | US9 | OPEN | |
-| 12 | Remove unused arrow-schema dependency from rdlt-core (and its stale doc claim) | cleanup | US7 | OPEN | |
-| 13 | Remove unused futures dependency from rdlt-engine | cleanup | US7 | OPEN | |
-| 14 | Remove unused bytes and futures dependencies from rdlt-testkit | cleanup | US7 | OPEN | |
-| 15 | Demote tokio to a dev-dependency of the rdlt facade | cleanup | US7 | OPEN | |
-| 16 | Retire or archive the completed root working documents (PERF_ANALYSIS.md, REFACTORING.md, BENCH_REFINMENT.md) | cleanup | US7 | OPEN | |
-| 17 | Deduplicate dev-dependencies that repeat regular dependencies | cleanup | US7 | OPEN | |
-| 18 | Update stale CLAUDE.md: feature 019 is merged, not 'PLANNED, not yet implemented' | docs | US1 | OPEN | |
-| 19 | Fix stale crates.io descriptions: rdlt-cli says 'TOML' (it parses YAML) and rdlt-connector-file says 'file source' (it is source+dest incl. CSV/S3) | docs | US1 | OPEN | |
-| 20 | Makefile header omits the coverage verb, and the coverage recipe's scope contradicts its comment | docs | US1 | OPEN | |
-| 21 | Track the duplicate reqwest 0.12/0.13 trees in the shipped CLI as a size lever | performance | US11 | OPEN | |
-| 22 | Consider a fuzz target for WAL v2 Arrow-IPC segment replay | testing | US7 | OPEN | |
-| 23 | history.jsonl lines drop the forced/quiet annotation, so forced medians enter Trends as evidence | **bug**/low | US7 | OPEN | |
-| 24 | Give RdltError::Internal its own CLI exit code instead of falling into 2 (config) | **bug**/low | US7 | OPEN | |
-| 25 | Pin the floating apache/polaris:latest image (017 D16 deferral still open) | build | US9 | OPEN | |
-| 26 | Honor CARGO_TARGET_DIR when locating the release CLI in rdlt-bench | build | US9 | OPEN | |
-| 27 | Bench-setup portability: unbounded pg_isready wait and hardcoded mise kubectl fallback | build | US9 | OPEN | |
-| 28 | Prelude omits PipelineBuilder despite claiming crate-root parity | cleanup | US7 | OPEN | |
-| 29 | Delete or justify unused bench schema surface: Cell::primary_fixture and the non-Wall Timing variants | cleanup | US7 | OPEN | |
-| 30 | Unify PgFixture/CdcPgFixture API and deduplicate client()/seed() | cleanup | US7 | OPEN | |
-| 31 | Update stale CLAUDE.md: feature 019 is implemented and merged, not "PLANNED" | docs | US1 | OPEN | |
-| 32 | Correct benches/README.md artifact format_version (says 2, is 3) | docs | US1 | OPEN | |
-| 33 | Fix stale rdlt-cli package description: pipeline specs are YAML, not TOML | docs | US1 | OPEN | |
-| 34 | Record the rdlt build (git SHA) and fixture image versions in bench artifact fingerprints | feature | US7 | OPEN | |
-| 35 | Re-export EventStream (and CancellationToken) at the rdlt facade root | feature | US7 | OPEN | |
-| 36 | Add rdlt --version (and consider a check/validate subcommand) to the CLI | feature | US7 | OPEN | |
-| 37 | Decide and document whether the connector SPI is reachable through the facade | feature | US7 | OPEN | |
-| 38 | Fix the dedup-cell hand-mirror hazard in DestSpec::File by embedding a deserializable config (iceberg precedent) | refactoring | US10 | OPEN | |
-| 39 | Implement the recorded container reaper/labeling convention (testkit fixtures leak on fail-fast) | testing | US7 | OPEN | |
-| 40 | Fix keys_of_table's rfind tail-splitting: a partition value equal to the table name corrupts S3 ownership listing | **bug**/medium | US3 | OPEN | |
-| 41 | Grown parquet rewrite resumes from a stale row-group offset undetected | **bug**/medium | US3 | OPEN | |
-| 42 | Replace truncation keeps stale parts after a format or partition_by config change | **bug**/medium | US3 | OPEN | |
-| 43 | Inferred-Bool CSV cells silently coerce to false in pass 2 instead of the typed two-pass error | **bug**/low | US3 | OPEN | |
-| 44 | is_recoverable classifies deterministic object_store failures as transient | **bug**/low | US3 | OPEN | |
-| 45 | normalize_ident violates its max_len contract when max_len < 9 | **bug**/low | US3 | OPEN | |
-| 46 | Temp fetch directories leak when planning or staging fails | cleanup | US3 | OPEN | |
-| 47 | Per-file cursor entries accumulate forever for rotated-out files | cleanup | US3 | OPEN | |
-| 48 | Commit log grows without bound and is fully rewritten on every commit | cleanup | US3 | OPEN | |
-| 49 | resolve_files reports an existing directory as "does not exist" | cleanup | US3 | OPEN | |
-| 50 | partition_by doc claims Hive-style `<column>=<value>` dirs; the code writes bare `<value>` | docs | US1 | OPEN | |
-| 51 | Stale/inconsistent source-config comments and silently-ignored knobs (primary_key, validate, type_hints) | docs | US1 | OPEN | |
-| 52 | Fix S3-parquet up-front fetch: complete, unchanged objects re-download every run | performance | US3 | OPEN | |
-| 53 | Fold the engine's byte-budget channel into the SPI's (deferred D17 — its trigger has fired) | refactoring | US3 | OPEN | |
-| 54 | Pin DestSpec::File mirror parity with FileDestConfig by test | testing | US3 | OPEN | |
-| 55 | Add request timeouts to the REST source's reqwest clients | **bug**/medium | US4 | OPEN | |
-| 56 | Reject pagination params silently dropped for POST streams with non-object bodies | **bug**/medium | US4 | OPEN | |
-| 57 | Retry-After HTTP-date form is silently ignored | **bug**/low | US4 | OPEN | |
-| 58 | on_unauthorized drops a concurrently refreshed OAuth2 token, causing redundant token fetches under fan-out | **bug**/low | US4 | OPEN | |
-| 59 | Parent placeholder values are substituted into URLs without percent-encoding | **bug**/low | US4 | OPEN | |
-| 60 | reconcile() compares struct field types INCLUDING nested field IDs — catalog-normalized IDs can trigger spurious 'contradictory drift' | **bug**/medium | US6 | OPEN | |
-| 61 | Extend the credential-header blocklist beyond authorization/x-api-key | cleanup | US4 | OPEN | |
-| 62 | Reconcile ignores nullability drift; required-vs-nullable mismatch surfaces late as an align error | cleanup | US6 | OPEN | |
-| 63 | Document the snapshot-retention constraint on iceberg replay detection | docs | US1 | OPEN | |
-| 64 | Schedule the recorded phase-2: Glue/SigV4 catalog support probe | feature | US6 | OPEN | |
-| 65 | Schedule the recorded phase-2: re-probe Replace/overwrite on iceberg-rust upgrade | feature | US6 | OPEN | |
-| 66 | Hash the POST body template once per sequence instead of Debug-rendering it per page | performance | US4 | OPEN | |
-| 67 | No live test covers struct/list columns against the catalog despite structs:true/scalar_lists:true capabilities | testing | US6 | OPEN | |
-| 68 | Use the Decimal128 array's own scale in column_wire, not the ensured schema's | **bug**/low | US7 | OPEN | |
-| 69 | Reject out-of-range Time64 values instead of silently wrapping them | **bug**/low | US7 | OPEN | |
-| 70 | Route duckdb ensure/commit probe errors through classify, not unconditional fatal | **bug**/low | US7 | OPEN | |
-| 71 | Execute the deferred T0xx tag sweep in duckdb tests | cleanup | US7 | OPEN | |
-| 72 | Drop the underscore from the used _ctx parameter in Postgres::open | cleanup | US7 | OPEN | |
-| 73 | Decide and record a retention story for _rdlt_cleared and _rdlt_commits growth | cleanup | US7 | OPEN | |
-| 74 | Fix stale module doc claiming an ignored, unfixed defect in direct_publish_guarantees | docs | US1 | OPEN | |
-| 75 | Route flagged_roots through the dialect dedup seam instead of hardcoding DISTINCT ON | refactoring | US10 | OPEN | |
-| 76 | Move create_index_sql and the duplicate-merge-key diagnosis into sqlcore | refactoring | US10 | OPEN | |
-| 77 | Extract the shared ensure_table merge choreography into a sqlcore plan | refactoring | US10 | OPEN | |
-| 78 | Tracing span guards held across await points in stream_task and Loader::process | **bug**/medium | US7 | OPEN | |
-| 79 | Repeated crash-before-first-checkpoint leaks manifest growth and orphaned segment files | **bug**/low | US7 | OPEN | |
-| 80 | Lowering misses decimals nested inside structs and scalar-list items (latent SPI hole) | **bug**/low | US7 | OPEN | |
-| 81 | Use WalRecord::Segment.rows as a replay integrity check — today it is write-only | cleanup | US7 | OPEN | |
-| 82 | new_load_id's uniqueness comment overclaims; epoch-fallback + pid reuse can collide across restarts | cleanup | US7 | OPEN | |
-| 83 | State the WAL-before-validation invariant for merge-key NULL checks (replay has no such check) | docs | US1 | OPEN | |
-| 84 | Answer to D18: blocking fs/encode on the executor — encode resolved with evidence, recovery path and small residuals remain | performance | US11 | OPEN | |
-| 85 | Unify engine ByteTx/ByteRx with SPI RecordsOut/RecordsIn (recorded deferral D17) — they have already diverged | refactoring | US10 | OPEN | |
-| 86 | Deduplicate the shred/passthrough forward blocks and unify send-failure handling in stream_task | refactoring | US10 | OPEN | |
-| 87 | Fix silent NULLing of u64 values above i64::MAX on the shred path | **bug**/high | US2 | OPEN | |
-| 88 | Enforce (or document) schema policies across run boundaries — Freeze only works within one run | **bug**/high | US5 | OPEN | |
-| 89 | Stop type-hint pins from being silently overridden by object/array values | **bug**/medium | US2 | OPEN | |
-| 90 | Make parse_decimal respect precision — out-of-range Decimal128 values flow downstream | **bug**/medium | US2 | OPEN | |
-| 91 | Decide and count hinted-column value misfits instead of silent NULLs | **bug**/medium | US2 | OPEN | |
-| 92 | Close the Freeze bypass for new child tables appearing mid-run | **bug**/medium | US5 | OPEN | |
-| 93 | Lower decimals nested inside preserved structs and scalar lists | **bug**/low | US2 | OPEN | |
-| 94 | Validate embedder-supplied type hints — invalid Decimal precision panics in build | **bug**/low | US2 | OPEN | |
-| 95 | Reclassify internal-invariant failures from Config to Internal | cleanup | US2 | OPEN | |
-| 96 | Correct the json_type capability contract or implement it in lowering | docs | US1 | OPEN | |
-| 97 | Mechanize the lower_column/flatten_array parity — the deferred duplication has drifted (decimal nullability) | refactoring | US2 | OPEN | |
-| 98 | Add the missing decimal edge-case tests for build and lowering | testing | US2 | OPEN | |
-| 99 | Document the measured 8.43x concurrent-pipeline scaling — the close-out's own instruction, still undone | docs | US1 | OPEN | |
-| 100 | Fix CLAUDE.md's stale claim that feature 019 is 'PLANNED, not yet implemented' | docs | US1 | OPEN | |
-| 101 | Document primary_key declaration as the free JSONL performance lever it was measured to be | docs | US1 | OPEN | |
-| 102 | Run the owed EXPLAIN (ANALYZE, BUFFERS) on the merge arm — the largest single number left in the matrix | performance | US11 | OPEN | |
-| 103 | Measure the WAL's residual cost post-019, then take the all-Replace skip and a spec-level opt-out if it pays | performance | US11 | OPEN | |
-| 104 | Re-attribute blocked time on the post-019 pipeline before any further serial-path work | performance | US11 | OPEN | |
-| 105 | Prototype the D-08 fixed-width field fast path — 41.6% of the COPY encoder is bytes plumbing, ~20% prize recorded | performance | US11 | OPEN | |
-| 106 | The mimalloc/jemalloc follow-up recorded in D-05 is now due — its precondition (US4+US6 landed) is met | performance | US11 | OPEN | |
-| 107 | Heap-profile the parquet destination's whole-part Vec<u8> buffering — the identified but unfixed RSS peak | performance | US11 | OPEN | |
-| 108 | Run the never-run network-latency (tc netem) experiment, then coalesce the unit preamble's serial round trips if it pays | performance | US11 | OPEN | |
-| 109 | Probe the canonical-JSON per-object allocations and key escaping — with the D-13/D-21 reversal pattern as the explicit null hypothesis | performance | US11 | OPEN | |
-| 110 | Price the merge stage's 1M nextval() calls before believing __rdlt_arrival is free | performance | US11 | OPEN | |
-| 111 | Micro-gate the partitioned-write path's per-row String rendering before anyone ships partition_by at scale | performance | US11 | OPEN | |
-| 112 | Schedule the second recorded session: grant/deny the pg-to-s3parquet bar and tighten the flagship's ±20% spread | testing | US7 | OPEN | |
-| 113 | Log the tokio-postgres connection driver's terminal error instead of discarding it | cleanup | US7 | OPEN | |
-| 114 | Surface (or at least log) dropped events when EventStream lags | cleanup | US7 | OPEN | |
-| 115 | Stop classifying report-write I/O failures as Usage errors in the CLI | cleanup | US7 | OPEN | |
-| 116 | Distinguish corrupt report.json from absent in the bench runner | cleanup | US7 | OPEN | |
-| 117 | Bench container poll conflates a failed inspect with container exit | cleanup | US7 | OPEN | |
-| 118 | CLI swallows a panic from the event-feed task | cleanup | US7 | OPEN | |
-| 119 | Repair CI: all four jobs fail in 3-5s with zero steps; owner-deferred in 019 D-01 and still open | build | US9 | OPEN | |
-| 120 | Strip T0xx/SMx history tags from duckdb tests — the 017 deferral to increment 6 was never executed | cleanup | US1 | OPEN | |
-| 121 | 017's eight verified-but-cut review residuals remain recorded and unscheduled | cleanup | US1 | OPEN | |
-| 122 | 017 lowering-rule duplication deferred-in-place with a named re-trigger (third site) | cleanup | US1 | OPEN | |
-| 123 | Update CLAUDE.md: feature 019 is merged, not "PLANNED, not yet implemented" | docs | US1 | OPEN | |
-| 124 | Finalize 019 status lines: close-out says IN PROGRESS and contradicts itself; spec.md still Draft | docs | US1 | OPEN | |
-| 125 | Dispose FR-016: the offload requirement was re-scoped to US9, and US9 was not built | docs | US1 | OPEN | |
-| 126 | Give PERF_ANALYSIS.md the executed-disposition banner; three of its claims are now recorded false | docs | US1 | OPEN | |
-| 127 | Fix the BENCH_REFINMENT.md filename typo | docs | US1 | OPEN | |
-| 128 | bars.toml header still claims the dedup cell "carries NO bar" while the file defines one | docs | US1 | OPEN | |
-| 129 | The 0.2→0.3 semver window: verified empty of queued API work; only the standing publish-time bump remains | docs | US1 | OPEN | |
-| 130 | Lakehouse phase-2 cluster: 016's recorded doors and 018's deferred Iceberg 3-way cell share one re-trigger | feature | US1 | OPEN | |
-| 131 | D18 open, and its trigger fired: file-dest still blocks the executor and buffers whole encoded files; 019 never dispositioned it | performance | US11 | OPEN | |
-| 132 | Take or close the mimalloc/jemalloc follow-up — its recorded precondition (US4+US6 landed) is now met | performance | US11 | OPEN | |
-| 133 | US2's unexplained ~4-point wall gap vs PERF_ANALYSIS's -18.3% is a recorded open question | performance | US11 | OPEN | |
-| 134 | D-08 recorded prize: 41.6% of the COPY encoder is bytes plumbing (~5M instructions), declined under PI3 | performance | US11 | OPEN | |
-| 135 | DuckDB full loads still write every row twice — deferral recorded only in a code comment, absent from 019's close-out | performance | US11 | OPEN | |
-| 136 | D17 open: SPI and engine still ship duplicate byte-budget channel implementations | refactoring | US10 | OPEN | |
-| 137 | D19 open and its trigger fired: config-plumbing trio still triplicated after US7's config change | refactoring | US10 | OPEN | |
-| 138 | Pin the Polaris test image — the 017 D16 deferral ("a later increment") never happened | testing | US1 | OPEN | |
-| 139 | Build the testkit container reaper/labeling convention recorded as follow-up in 017 D16 | testing | US1 | OPEN | |
-| 140 | Crash sweep cannot reach the server-committed/client-unlearned state that produced D-23's real defect | testing | US1 | OPEN | |
-| 141 | Queued operator work: a second recorded session to tighten two bars and decide the unbarred parquet cell | testing | US1 | OPEN | |
-| 142 | Container-backed test flakiness under parallel load is a recorded, unowned gate weakness | testing | US1 | OPEN | |
-| 143 | Record the equivalent/untestable residuals so future triage doesn't re-litigate them | docs | US1 | OPEN | |
-| 144 | Re-run cargo-mutants: the committed run predates features 006-019 entirely | testing | US8 | OPEN | |
-| 145 | Pin LoadItem::byte_size — the backpressure input has zero coverage and a closure comment falsely claims otherwise | testing | US8 | OPEN | |
-| 146 | Pin WAL segment sequencing — the test named for it never asserts it | testing | US8 | OPEN | |
-| 147 | Pin the EverySeconds commit-policy boundary (the one policy_triggers residual) | testing | US8 | OPEN | |
-| 148 | Pin lower_batch under MIXED capabilities — each guard is only tested in isolation | testing | US8 | OPEN | |
-| 149 | Pin lowered-field nullability rules in lower_batch | testing | US8 | OPEN | |
-| 150 | Pin render_decimal boundary values: zero, and a length where minus differs from divide | testing | US8 | OPEN | |
-| 151 | Assert ContractViolation from/to fields — scalar_of is entirely unpinned | testing | US8 | OPEN | |
-| 152 | SchemaPolicy::freeze() is unused by the entire workspace and untested | testing | US8 | OPEN | |
-| 153 | Make the saw_cancelled precedence arm deterministically testable | testing | US8 | OPEN | |
-| 154 | Pin that a clean run removes the WAL directory | testing | US8 | OPEN | |
-| 155 | Convert the 7 timeout-kills into fast assertion-kills | testing | US8 | OPEN | |
-| 156 | Add a spec-parse pin for the hand-maintained File destination mirror (ParquetOptions path) | testing | US8 | OPEN | |
-| 157 | Consider adding rdlt-connector-sqlcore to the mutation scope | testing | US8 | OPEN | |
+| 1 | Fix no-op ignore pattern in tools/interop/.gitignore | **bug**/low | US7 | **fixed** | US7 COMPLETE (T107–T120) — 16 fixes, see D-12 |
+| 2 | Add a LICENSE file — repo declares Apache-2.0 but ships no license text | build | US9 | **fixed** | US9 COMPLETE (T140–T152) — see D-18, D-19 |
+| 3 | Add publish metadata (readme, keywords, categories) before the 0.2->0.3 window | build | US9 | **fixed** | US9 COMPLETE (T140–T152) — see D-18, D-19 |
+| 4 | Add a packaging/feature-matrix CI job ahead of publishing | build | US9 | **deferred** | E1 — CI repair is out of scope (org billing). The packaging/feature-matrix check is CI-only; recorded UNPERFORMED, never claimed |
+| 5 | CI never builds rustdoc; no missing_docs lint on the published surface | build | US9 | **fixed** | D-19 — the LOCAL half is done: `make docs` added, wired into `check`, 220 items documented, 14 dead intra-doc links caught on first run. Its CI leg is E1/UNPERFORMED |
+| 6 | fuzz/Cargo.lock is stale: still records parquet as an rdlt-engine dependency after 019 US2 | build | US9 | **fixed** | US9 COMPLETE (T140–T152) — see D-18, D-19 |
+| 7 | Deep-tier suites memory_bound and spark_deep run in no CI schedule, and the Makefile header misdescribes TARGET=deep | build | US9 | **deferred** | E1 — CI-only scheduling; recorded UNPERFORMED |
+| 8 | make check hard-fails without hyperfine (cold-start prerequisite undocumented) | build | US9 | **fixed** | US9 COMPLETE (T140–T152) — see D-18, D-19 |
+| 9 | Extend the semver gate beyond rdlt-core/rdlt-connector before publishing 0.3 | build | US9 | **fixed** | US9 COMPLETE (T140–T152) — see D-18, D-19 |
+| 10 | Pin GitHub Actions to commit SHAs and stop compiling iai-callgrind-runner from source each run | build | US9 | **deferred** | E1 — CI workflow change; recorded UNPERFORMED |
+| 11 | Run the deterministic bars gate (make bench TARGET=gate) in CI | build | US9 | **deferred** | E1 — the bars gate runs locally (T182); its CI leg is UNPERFORMED |
+| 12 | Remove unused arrow-schema dependency from rdlt-core (and its stale doc claim) | cleanup | US7 | **fixed** | US7 COMPLETE (T107–T120) — 16 fixes, see D-12 |
+| 13 | Remove unused futures dependency from rdlt-engine | cleanup | US7 | **fixed** | US7 COMPLETE (T107–T120) — 16 fixes, see D-12 |
+| 14 | Remove unused bytes and futures dependencies from rdlt-testkit | cleanup | US7 | **fixed** | US7 COMPLETE (T107–T120) — 16 fixes, see D-12 |
+| 15 | Demote tokio to a dev-dependency of the rdlt facade | cleanup | US7 | **fixed** | US7 COMPLETE (T107–T120) — 16 fixes, see D-12 |
+| 16 | Retire or archive the completed root working documents (PERF_ANALYSIS.md, REFACTORING.md, BENCH_REFINMENT.md) | cleanup | US7 | **fixed** | US7 COMPLETE (T107–T120) — 16 fixes, see D-12 |
+| 17 | Deduplicate dev-dependencies that repeat regular dependencies | cleanup | US7 | **fixed** | US7 COMPLETE (T107–T120) — 16 fixes, see D-12 |
+| 18 | Update stale CLAUDE.md: feature 019 is merged, not 'PLANNED, not yet implemented' | docs | US1 | **fixed** | US1 COMPLETE (T008–T026) — see the story matrix |
+| 19 | Fix stale crates.io descriptions: rdlt-cli says 'TOML' (it parses YAML) and rdlt-connector-file says 'file source' (it is source+dest incl. CSV/S3) | docs | US1 | **fixed** | US1 COMPLETE (T008–T026) — see the story matrix |
+| 20 | Makefile header omits the coverage verb, and the coverage recipe's scope contradicts its comment | docs | US1 | **fixed** | US1 COMPLETE (T008–T026) — see the story matrix |
+| 21 | Track the duplicate reqwest 0.12/0.13 trees in the shipped CLI as a size lever | performance | US11 | **rejected** | D-26 — two reqwest majors arrive via different upstream chains; deduplicating needs an upstream change. Gated behind `iceberg`; build size only. Re-trigger recorded |
+| 22 | Consider a fuzz target for WAL v2 Arrow-IPC segment replay | testing | US7 | **fixed** | US7 COMPLETE (T107–T120) — 16 fixes, see D-12 |
+| 23 | history.jsonl lines drop the forced/quiet annotation, so forced medians enter Trends as evidence | **bug**/low | US7 | **fixed** | US7 COMPLETE (T107–T120) — 16 fixes, see D-12 |
+| 24 | Give RdltError::Internal its own CLI exit code instead of falling into 2 (config) | **bug**/low | US7 | **fixed** | US7 COMPLETE (T107–T120) — 16 fixes, see D-12 |
+| 25 | Pin the floating apache/polaris:latest image (017 D16 deferral still open) | build | US9 | **deferred** | T097 UNPERFORMED — no working container runtime at increment start, so the live probe the pin requires could not run. Trigger: a session with a reachable runtime |
+| 26 | Honor CARGO_TARGET_DIR when locating the release CLI in rdlt-bench | build | US9 | **fixed** | US9 COMPLETE (T140–T152) — see D-18, D-19 |
+| 27 | Bench-setup portability: unbounded pg_isready wait and hardcoded mise kubectl fallback | build | US9 | **fixed** | US9 COMPLETE (T140–T152) — see D-18, D-19 |
+| 28 | Prelude omits PipelineBuilder despite claiming crate-root parity | cleanup | US7 | **fixed** | US7 COMPLETE (T107–T120) — 16 fixes, see D-12 |
+| 29 | Delete or justify unused bench schema surface: Cell::primary_fixture and the non-Wall Timing variants | cleanup | US7 | **fixed** | US7 COMPLETE (T107–T120) — 16 fixes, see D-12 |
+| 30 | Unify PgFixture/CdcPgFixture API and deduplicate client()/seed() | cleanup | US7 | **fixed** | US7 COMPLETE (T107–T120) — 16 fixes, see D-12 |
+| 31 | Update stale CLAUDE.md: feature 019 is implemented and merged, not "PLANNED" | docs | US1 | **fixed** | US1 COMPLETE (T008–T026) — see the story matrix |
+| 32 | Correct benches/README.md artifact format_version (says 2, is 3) | docs | US1 | **fixed** | US1 COMPLETE (T008–T026) — see the story matrix |
+| 33 | Fix stale rdlt-cli package description: pipeline specs are YAML, not TOML | docs | US1 | **fixed** | US1 COMPLETE (T008–T026) — see the story matrix |
+| 34 | Record the rdlt build (git SHA) and fixture image versions in bench artifact fingerprints | feature | US7 | **fixed** | US7 COMPLETE (T107–T120) — 16 fixes, see D-12 |
+| 35 | Re-export EventStream (and CancellationToken) at the rdlt facade root | feature | US7 | **fixed** | US7 COMPLETE (T107–T120) — 16 fixes, see D-12 |
+| 36 | Add rdlt --version (and consider a check/validate subcommand) to the CLI | feature | US7 | **fixed** | US7 COMPLETE (T107–T120) — 16 fixes, see D-12 |
+| 37 | Decide and document whether the connector SPI is reachable through the facade | feature | US7 | **fixed** | US7 COMPLETE (T107–T120) — 16 fixes, see D-12 |
+| 38 | Fix the dedup-cell hand-mirror hazard in DestSpec::File by embedding a deserializable config (iceberg precedent) | refactoring | US10 | **fixed** | US10 COMPLETE (T153–T167) — see D-20 through D-23, D-31, D-32 |
+| 39 | Implement the recorded container reaper/labeling convention (testkit fixtures leak on fail-fast) | testing | US7 | **fixed** | US7 COMPLETE (T107–T120) — 16 fixes, see D-12 |
+| 40 | Fix keys_of_table's rfind tail-splitting: a partition value equal to the table name corrupts S3 ownership listing | **bug**/medium | US3 | **fixed** | US3 COMPLETE (T042–T067) — see D-05 through D-08 |
+| 41 | Grown parquet rewrite resumes from a stale row-group offset undetected | **bug**/medium | US3 | **fixed** | US3 COMPLETE (T042–T067) — see D-05 through D-08 |
+| 42 | Replace truncation keeps stale parts after a format or partition_by config change | **bug**/medium | US3 | **fixed** | US3 COMPLETE (T042–T067) — see D-05 through D-08 |
+| 43 | Inferred-Bool CSV cells silently coerce to false in pass 2 instead of the typed two-pass error | **bug**/low | US3 | **fixed** | US3 COMPLETE (T042–T067) — see D-05 through D-08 |
+| 44 | is_recoverable classifies deterministic object_store failures as transient | **bug**/low | US3 | **fixed** | US3 COMPLETE (T042–T067) — see D-05 through D-08 |
+| 45 | normalize_ident violates its max_len contract when max_len < 9 | **bug**/low | US3 | **fixed** | US3 COMPLETE (T042–T067) — see D-05 through D-08 |
+| 46 | Temp fetch directories leak when planning or staging fails | cleanup | US3 | **fixed** | US3 COMPLETE (T042–T067) — see D-05 through D-08 |
+| 47 | Per-file cursor entries accumulate forever for rotated-out files | cleanup | US3 | **fixed** | US3 COMPLETE (T042–T067) — see D-05 through D-08 |
+| 48 | Commit log grows without bound and is fully rewritten on every commit | cleanup | US3 | **fixed** | US3 COMPLETE (T042–T067) — see D-05 through D-08 |
+| 49 | resolve_files reports an existing directory as "does not exist" | cleanup | US3 | **fixed** | US3 COMPLETE (T042–T067) — see D-05 through D-08 |
+| 50 | partition_by doc claims Hive-style `<column>=<value>` dirs; the code writes bare `<value>` | docs | US1 | **fixed** | US1 COMPLETE (T008–T026) — see the story matrix |
+| 51 | Stale/inconsistent source-config comments and silently-ignored knobs (primary_key, validate, type_hints) | docs | US1 | **fixed** | US1 COMPLETE (T008–T026) — see the story matrix |
+| 52 | Fix S3-parquet up-front fetch: complete, unchanged objects re-download every run | performance | US3 | **fixed** | D-44 — skip verified to FIRE on a live run (counted, not argued), with five container-free pins on the decision |
+| 53 | Fold the engine's byte-budget channel into the SPI's (deferred D17 — its trigger has fired) | refactoring | US3 | **fixed** | D-31 — the engine's copy is DELETED; AR6 search returns zero hits |
+| 54 | Pin DestSpec::File mirror parity with FileDestConfig by test | testing | US3 | **fixed** | US3 COMPLETE (T042–T067) — see D-05 through D-08 |
+| 55 | Add request timeouts to the REST source's reqwest clients | **bug**/medium | US4 | **fixed** | US4 COMPLETE (T068–T079) — see D-09 |
+| 56 | Reject pagination params silently dropped for POST streams with non-object bodies | **bug**/medium | US4 | **fixed** | US4 COMPLETE (T068–T079) — see D-09 |
+| 57 | Retry-After HTTP-date form is silently ignored | **bug**/low | US4 | **fixed** | US4 COMPLETE (T068–T079) — see D-09 |
+| 58 | on_unauthorized drops a concurrently refreshed OAuth2 token, causing redundant token fetches under fan-out | **bug**/low | US4 | **fixed** | US4 COMPLETE (T068–T079) — see D-09 |
+| 59 | Parent placeholder values are substituted into URLs without percent-encoding | **bug**/low | US4 | **fixed** | US4 COMPLETE (T068–T079) — see D-09 |
+| 60 | reconcile() compares struct field types INCLUDING nested field IDs — catalog-normalized IDs can trigger spurious 'contradictory drift' | **bug**/medium | US6 | **fixed** | US6 COMPLETE (T098–T106) — see D-11 |
+| 61 | Extend the credential-header blocklist beyond authorization/x-api-key | cleanup | US4 | **fixed** | US4 COMPLETE (T068–T079) — see D-09 |
+| 62 | Reconcile ignores nullability drift; required-vs-nullable mismatch surfaces late as an align error | cleanup | US6 | **fixed** | US6 COMPLETE (T098–T106) — see D-11 |
+| 63 | Document the snapshot-retention constraint on iceberg replay detection | docs | US1 | **fixed** | US1 COMPLETE (T008–T026) — see the story matrix |
+| 64 | Schedule the recorded phase-2: Glue/SigV4 catalog support probe | feature | US6 | **deferred** | 016's phase-2 door, re-probed and still CLOSED with registry evidence (D-11 area). Trigger: an aws-sdk-free Glue/SigV4 path |
+| 65 | Schedule the recorded phase-2: re-probe Replace/overwrite on iceberg-rust upgrade | feature | US6 | **deferred** | 016's phase-2 door, re-probed and still CLOSED. Trigger: overwrite support landing in iceberg-rust |
+| 66 | Hash the POST body template once per sequence instead of Debug-rendering it per page | performance | US4 | **fixed** | US4 COMPLETE (T068–T079) — see D-09 |
+| 67 | No live test covers struct/list columns against the catalog despite structs:true/scalar_lists:true capabilities | testing | US6 | **fixed** | US6 COMPLETE (T098–T106) — see D-11 |
+| 68 | Use the Decimal128 array's own scale in column_wire, not the ensured schema's | **bug**/low | US7 | **fixed** | US7 COMPLETE (T107–T120) — 16 fixes, see D-12 |
+| 69 | Reject out-of-range Time64 values instead of silently wrapping them | **bug**/low | US7 | **fixed** | US7 COMPLETE (T107–T120) — 16 fixes, see D-12 |
+| 70 | Route duckdb ensure/commit probe errors through classify, not unconditional fatal | **bug**/low | US7 | **fixed** | US7 COMPLETE (T107–T120) — 16 fixes, see D-12 |
+| 71 | Execute the deferred T0xx tag sweep in duckdb tests | cleanup | US7 | **fixed** | US7 COMPLETE (T107–T120) — 16 fixes, see D-12 |
+| 72 | Drop the underscore from the used _ctx parameter in Postgres::open | cleanup | US7 | **fixed** | US7 COMPLETE (T107–T120) — 16 fixes, see D-12 |
+| 73 | Decide and record a retention story for _rdlt_cleared and _rdlt_commits growth | cleanup | US7 | **fixed** | US7 COMPLETE (T107–T120) — 16 fixes, see D-12 |
+| 74 | Fix stale module doc claiming an ignored, unfixed defect in direct_publish_guarantees | docs | US1 | **fixed** | US1 COMPLETE (T008–T026) — see the story matrix |
+| 75 | Route flagged_roots through the dialect dedup seam instead of hardcoding DISTINCT ON | refactoring | US10 | **fixed** | US10 COMPLETE (T153–T167) — see D-20 through D-23, D-31, D-32 |
+| 76 | Move create_index_sql and the duplicate-merge-key diagnosis into sqlcore | refactoring | US10 | **fixed** | US10 COMPLETE (T153–T167) — see D-20 through D-23, D-31, D-32 |
+| 77 | Extract the shared ensure_table merge choreography into a sqlcore plan | refactoring | US10 | **deferred** | D-21 — re-recorded with the trigger 'the next feature adding a third SQL destination, or changing the index-ensure protocol in either executor' |
+| 78 | Tracing span guards held across await points in stream_task and Loader::process | **bug**/medium | US7 | **fixed** | US7 COMPLETE (T107–T120) — 16 fixes, see D-12 |
+| 79 | Repeated crash-before-first-checkpoint leaks manifest growth and orphaned segment files | **bug**/low | US7 | **fixed** | US7 COMPLETE (T107–T120) — 16 fixes, see D-12 |
+| 80 | Lowering misses decimals nested inside structs and scalar-list items (latent SPI hole) | **bug**/low | US7 | **fixed** | US7 COMPLETE (T107–T120) — 16 fixes, see D-12 |
+| 81 | Use WalRecord::Segment.rows as a replay integrity check — today it is write-only | cleanup | US7 | **fixed** | US7 COMPLETE (T107–T120) — 16 fixes, see D-12 |
+| 82 | new_load_id's uniqueness comment overclaims; epoch-fallback + pid reuse can collide across restarts | cleanup | US7 | **fixed** | US7 COMPLETE (T107–T120) — 16 fixes, see D-12 |
+| 83 | State the WAL-before-validation invariant for merge-key NULL checks (replay has no such check) | docs | US1 | **fixed** | US1 COMPLETE (T008–T026) — see the story matrix |
+| 84 | Answer to D18: blocking fs/encode on the executor — encode resolved with evidence, recovery path and small residuals remain | performance | US11 | **fixed** | D-38 — answered: buffering closed on a heap profile, blocking half stated and left open with its treatment named |
+| 85 | Unify engine ByteTx/ByteRx with SPI RecordsOut/RecordsIn (recorded deferral D17) — they have already diverged | refactoring | US10 | **fixed** | D-31 — same change |
+| 86 | Deduplicate the shred/passthrough forward blocks and unify send-failure handling in stream_task | refactoring | US10 | **deferred** | D-21 — re-recorded with a named trigger |
+| 87 | Fix silent NULLing of u64 values above i64::MAX on the shred path | **bug**/high | US2 | **fixed** | US2 COMPLETE (T027–T041) — 5 red pins demonstrated failing pre-fix |
+| 88 | Enforce (or document) schema policies across run boundaries — Freeze only works within one run | **bug**/high | US5 | **fixed** | US5 COMPLETE (T086–T096) — see D-10 |
+| 89 | Stop type-hint pins from being silently overridden by object/array values | **bug**/medium | US2 | **fixed** | US2 COMPLETE (T027–T041) — 5 red pins demonstrated failing pre-fix |
+| 90 | Make parse_decimal respect precision — out-of-range Decimal128 values flow downstream | **bug**/medium | US2 | **fixed** | US2 COMPLETE (T027–T041) — 5 red pins demonstrated failing pre-fix |
+| 91 | Decide and count hinted-column value misfits instead of silent NULLs | **bug**/medium | US2 | **fixed** | US2 COMPLETE (T027–T041) — 5 red pins demonstrated failing pre-fix |
+| 92 | Close the Freeze bypass for new child tables appearing mid-run | **bug**/medium | US5 | **fixed** | US5 COMPLETE (T086–T096) — see D-10 |
+| 93 | Lower decimals nested inside preserved structs and scalar lists | **bug**/low | US2 | **fixed** | US2 COMPLETE (T027–T041) — 5 red pins demonstrated failing pre-fix |
+| 94 | Validate embedder-supplied type hints — invalid Decimal precision panics in build | **bug**/low | US2 | **fixed** | US2 COMPLETE (T027–T041) — 5 red pins demonstrated failing pre-fix |
+| 95 | Reclassify internal-invariant failures from Config to Internal | cleanup | US2 | **fixed** | US2 COMPLETE (T027–T041) — 5 red pins demonstrated failing pre-fix |
+| 96 | Correct the json_type capability contract or implement it in lowering | docs | US1 | **fixed** | US1 COMPLETE (T008–T026) — see the story matrix |
+| 97 | Mechanize the lower_column/flatten_array parity — the deferred duplication has drifted (decimal nullability) | refactoring | US2 | **fixed** | US2 COMPLETE (T027–T041) — 5 red pins demonstrated failing pre-fix |
+| 98 | Add the missing decimal edge-case tests for build and lowering | testing | US2 | **fixed** | US2 COMPLETE (T027–T041) — 5 red pins demonstrated failing pre-fix |
+| 99 | Document the measured 8.43x concurrent-pipeline scaling — the close-out's own instruction, still undone | docs | US1 | **fixed** | US1 COMPLETE (T008–T026) — see the story matrix |
+| 100 | Fix CLAUDE.md's stale claim that feature 019 is 'PLANNED, not yet implemented' | docs | US1 | **fixed** | US1 COMPLETE (T008–T026) — see the story matrix |
+| 101 | Document primary_key declaration as the free JSONL performance lever it was measured to be | docs | US1 | **fixed** | US1 COMPLETE (T008–T026) — see the story matrix |
+| 102 | Run the owed EXPLAIN (ANALYZE, BUFFERS) on the merge arm — the largest single number left in the matrix | performance | US11 | **fixed** | D-33 — plan captured verbatim; 80.3% of the cell is one ON CONFLICT node, 556 bytes of WAL per row |
+| 103 | Measure the WAL's residual cost post-019, then take the all-Replace skip and a spec-level opt-out if it pays | performance | US11 | **deferred** | D-36 — measured at 8.5% and NOT taken: 019's D2 rejected the all-Replace elision because recovery without the WAL is a full source re-extraction |
+| 104 | Re-attribute blocked time on the post-019 pipeline before any further serial-path work | performance | US11 | **fixed** | D-43 — RE-SCOPED on evidence: D-33 already answers whether client CPU buys wall. Re-trigger named |
+| 105 | Prototype the D-08 fixed-width field fast path — 41.6% of the COPY encoder is bytes plumbing, ~20% prize recorded | performance | US11 | **fixed** | D-35 — taken: -5.36% Ir microbench, -1.98% process instructions on the real cell, byte-identity pinned |
+| 106 | The mimalloc/jemalloc follow-up recorded in D-05 is now due — its precondition (US4+US6 landed) is met | performance | US11 | **rejected** | D-34 — stop condition written first: allocator symbols are 3.29%/3.41% of cycles against a ~10% bar. A/B not run |
+| 107 | Heap-profile the parquet destination's whole-part Vec<u8> buffering — the identified but unfixed RSS peak | performance | US11 | **deferred** | D-38 — closed on a heap profile: the encode buffer is 8,529,920 B at both 100k and 300k rows, O(batch) not O(dataset). Re-trigger recorded |
+| 108 | Run the never-run network-latency (tc netem) experiment, then coalesce the unit preamble's serial round trips if it pays | performance | US11 | **deferred** | D-40 — netem UNPERFORMED (no tc; host netns). Substitute measurement found 26 of 36 round trips are no-op ALTERs; coalescing deferred with a quantified trigger |
+| 109 | Probe the canonical-JSON per-object allocations and key escaping — with the D-13/D-21 reversal pattern as the explicit null hypothesis | performance | US11 | **rejected** | D-39 — all allocation in shred_nested_10k is 6.19% of 312M Ir and the whole function is 5.30%. Reason recorded at the call site |
+| 110 | Price the merge stage's 1M nextval() calls before believing __rdlt_arrival is free | performance | US11 | **fixed** | D-37 — priced at 215 ms (a third of the stage COPY) and fixed with CACHE 32: -3.3% of the merge cell |
+| 111 | Micro-gate the partitioned-write path's per-row String rendering before anyone ships partition_by at scale | performance | US11 | **fixed** | D-41 — taken: one ArrayFormatter per column, -2.72%, all 50 rendered partition values verified identical |
+| 112 | Schedule the second recorded session: grant/deny the pg-to-s3parquet bar and tighten the flagship's ±20% spread | testing | US7 | **deferred** | operator work — a second recorded session on a quiet machine; this feature's own gate session is T182 |
+| 113 | Log the tokio-postgres connection driver's terminal error instead of discarding it | cleanup | US7 | **fixed** | US7 COMPLETE (T107–T120) — 16 fixes, see D-12 |
+| 114 | Surface (or at least log) dropped events when EventStream lags | cleanup | US7 | **fixed** | US7 COMPLETE (T107–T120) — 16 fixes, see D-12 |
+| 115 | Stop classifying report-write I/O failures as Usage errors in the CLI | cleanup | US7 | **fixed** | US7 COMPLETE (T107–T120) — 16 fixes, see D-12 |
+| 116 | Distinguish corrupt report.json from absent in the bench runner | cleanup | US7 | **fixed** | US7 COMPLETE (T107–T120) — 16 fixes, see D-12 |
+| 117 | Bench container poll conflates a failed inspect with container exit | cleanup | US7 | **fixed** | US7 COMPLETE (T107–T120) — 16 fixes, see D-12 |
+| 118 | CLI swallows a panic from the event-feed task | cleanup | US7 | **fixed** | US7 COMPLETE (T107–T120) — 16 fixes, see D-12 |
+| 119 | Repair CI: all four jobs fail in 3-5s with zero steps; owner-deferred in 019 D-01 and still open | build | US9 | **deferred** | E1 — root-caused to GitHub org billing, explicitly out of scope. The LOCAL gate is the gate of record |
+| 120 | Strip T0xx/SMx history tags from duckdb tests — the 017 deferral to increment 6 was never executed | cleanup | US1 | **fixed** | US1 COMPLETE (T008–T026) — see the story matrix |
+| 121 | 017's eight verified-but-cut review residuals remain recorded and unscheduled | cleanup | US1 | **fixed** | US1 COMPLETE (T008–T026) — see the story matrix |
+| 122 | 017 lowering-rule duplication deferred-in-place with a named re-trigger (third site) | cleanup | US1 | **fixed** | US1 COMPLETE (T008–T026) — see the story matrix |
+| 123 | Update CLAUDE.md: feature 019 is merged, not "PLANNED, not yet implemented" | docs | US1 | **fixed** | US1 COMPLETE (T008–T026) — see the story matrix |
+| 124 | Finalize 019 status lines: close-out says IN PROGRESS and contradicts itself; spec.md still Draft | docs | US1 | **fixed** | US1 COMPLETE (T008–T026) — see the story matrix |
+| 125 | Dispose FR-016: the offload requirement was re-scoped to US9, and US9 was not built | docs | US1 | **fixed** | US1 COMPLETE (T008–T026) — see the story matrix |
+| 126 | Give PERF_ANALYSIS.md the executed-disposition banner; three of its claims are now recorded false | docs | US1 | **fixed** | US1 COMPLETE (T008–T026) — see the story matrix |
+| 127 | Fix the BENCH_REFINMENT.md filename typo | docs | US1 | **fixed** | US1 COMPLETE (T008–T026) — see the story matrix |
+| 128 | bars.toml header still claims the dedup cell "carries NO bar" while the file defines one | docs | US1 | **fixed** | US1 COMPLETE (T008–T026) — see the story matrix |
+| 129 | The 0.2→0.3 semver window: verified empty of queued API work; only the standing publish-time bump remains | docs | US1 | **fixed** | US1 COMPLETE (T008–T026) — see the story matrix |
+| 130 | Lakehouse phase-2 cluster: 016's recorded doors and 018's deferred Iceberg 3-way cell share one re-trigger | feature | US1 | **deferred** | 016's recorded doors and 018's deferred Iceberg 3-way cell share one re-trigger, unchanged by this feature |
+| 131 | D18 open, and its trigger fired: file-dest still blocks the executor and buffers whole encoded files; 019 never dispositioned it | performance | US11 | **deferred** | D-38 — the BUFFERING half is closed on measurement; the BLOCKING half is real and stated, wanting T175's treatment and a starvation test |
+| 132 | Take or close the mimalloc/jemalloc follow-up — its recorded precondition (US4+US6 landed) is now met | performance | US11 | **rejected** | D-34 — same measurement; the recorded precondition was met and the answer is no |
+| 133 | US2's unexplained ~4-point wall gap vs PERF_ANALYSIS's -18.3% is a recorded open question | performance | US11 | **deferred** | recorded open question; D-33 and D-35 narrow it (the cell is server-dominated) without closing it |
+| 134 | D-08 recorded prize: 41.6% of the COPY encoder is bytes plumbing (~5M instructions), declined under PI3 | performance | US11 | **fixed** | D-35 — the recorded prize, measured and taken |
+| 135 | DuckDB full loads still write every row twice — deferral recorded only in a code comment, absent from 019's close-out | performance | US11 | **deferred** | recorded deferral, unchanged; no measurement in this feature bears on it |
+| 136 | D17 open: SPI and engine still ship duplicate byte-budget channel implementations | refactoring | US10 | **fixed** | D-31 — D17 taken |
+| 137 | D19 open and its trigger fired: config-plumbing trio still triplicated after US7's config change | refactoring | US10 | **rejected** | D-20/D-32 — premise changed: it is a quartet, not a trio, and the code named is not a correctness invariant. Closing shape and new trigger named |
+| 138 | Pin the Polaris test image — the 017 D16 deferral ("a later increment") never happened | testing | US1 | **deferred** | T097 UNPERFORMED — same probe, same trigger |
+| 139 | Build the testkit container reaper/labeling convention recorded as follow-up in 017 D16 | testing | US1 | **fixed** | US1 COMPLETE (T008–T026) — see the story matrix |
+| 140 | Crash sweep cannot reach the server-committed/client-unlearned state that produced D-23's real defect | testing | US1 | **deferred** | the crash sweep still cannot reach the server-committed/client-unlearned state; trigger unchanged |
+| 141 | Queued operator work: a second recorded session to tighten two bars and decide the unbarred parquet cell | testing | US1 | **deferred** | operator work — same session |
+| 142 | Container-backed test flakiness under parallel load is a recorded, unowned gate weakness | testing | US1 | **deferred** | D-24 — now DATA rather than anecdote: five container-backed observations captured in one run with the confound stated |
+| 143 | Record the equivalent/untestable residuals so future triage doesn't re-litigate them | docs | US1 | **fixed** | US1 COMPLETE (T008–T026) — see the story matrix |
+| 144 | Re-run cargo-mutants: the committed run predates features 006-019 entirely | testing | US8 | **fixed** | US8 COMPLETE (T121–T139) — see D-28 through D-30 |
+| 145 | Pin LoadItem::byte_size — the backpressure input has zero coverage and a closure comment falsely claims otherwise | testing | US8 | **fixed** | US8 COMPLETE (T121–T139) — see D-28 through D-30 |
+| 146 | Pin WAL segment sequencing — the test named for it never asserts it | testing | US8 | **fixed** | US8 COMPLETE (T121–T139) — see D-28 through D-30 |
+| 147 | Pin the EverySeconds commit-policy boundary (the one policy_triggers residual) | testing | US8 | **fixed** | US8 COMPLETE (T121–T139) — see D-28 through D-30 |
+| 148 | Pin lower_batch under MIXED capabilities — each guard is only tested in isolation | testing | US8 | **fixed** | US8 COMPLETE (T121–T139) — see D-28 through D-30 |
+| 149 | Pin lowered-field nullability rules in lower_batch | testing | US8 | **fixed** | US8 COMPLETE (T121–T139) — see D-28 through D-30 |
+| 150 | Pin render_decimal boundary values: zero, and a length where minus differs from divide | testing | US8 | **fixed** | US8 COMPLETE (T121–T139) — see D-28 through D-30 |
+| 151 | Assert ContractViolation from/to fields — scalar_of is entirely unpinned | testing | US8 | **fixed** | US8 COMPLETE (T121–T139) — see D-28 through D-30 |
+| 152 | SchemaPolicy::freeze() is unused by the entire workspace and untested | testing | US8 | **fixed** | US8 COMPLETE (T121–T139) — see D-28 through D-30 |
+| 153 | Make the saw_cancelled precedence arm deterministically testable | testing | US8 | **fixed** | US8 COMPLETE (T121–T139) — see D-28 through D-30 |
+| 154 | Pin that a clean run removes the WAL directory | testing | US8 | **fixed** | US8 COMPLETE (T121–T139) — see D-28 through D-30 |
+| 155 | Convert the 7 timeout-kills into fast assertion-kills | testing | US8 | **fixed** | US8 COMPLETE (T121–T139) — see D-28 through D-30 |
+| 156 | Add a spec-parse pin for the hand-maintained File destination mirror (ParquetOptions path) | testing | US8 | **fixed** | US8 COMPLETE (T121–T139) — see D-28 through D-30 |
+| 157 | Consider adding rdlt-connector-sqlcore to the mutation scope | testing | US8 | **fixed** | US8 COMPLETE (T121–T139) — see D-28 through D-30 |
 
 
 ### Recorded non-goals (AR2) — 18 refuted claims
