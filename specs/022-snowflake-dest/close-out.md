@@ -377,6 +377,30 @@ A single row over budget still ships rather than being refused: splitting one
 row is impossible, and refusing it here would turn a service limit into a
 client-side dead end with no way forward.
 
+### D-29 (T013, found in review) — the scope wipe could delete a live load's parts
+
+`clear_scope` originally deleted EVERY object under the pipeline prefix when
+a session opened. The justification recorded at the time was that the engine
+does not run two loads of one pipeline concurrently — which is an assumption
+about the CALLER, not something this crate enforces or can check.
+
+Where it breaks: two sessions of one pipeline overlapping at all — a retry
+starting while the previous attempt is still staging, or two runs launched
+close together. The second session's open deletes the first's live parts, and
+the first's `COPY INTO … FILES = (…)` then fails on a file that existed when
+the statement was built. The failure surfaces on the INNOCENT session, as a
+missing-file error naming a key nobody can explain.
+
+Fixed by making part keys load-scoped and reclamation conditional: a session
+removes its OWN leftovers unconditionally, and anything else only once it is
+older than an hour. Orphans are unreachable either way — no receipt names them
+— so collecting them is housekeeping, and doing housekeeping eagerly is what
+turned it into a bug.
+
+Recorded because the original reasoning was written down and looked sound:
+"the engine does not allow this" is a claim about a component that was free to
+change, defended by nothing.
+
 ## Unperformed verifications
 
 | what | reason |
