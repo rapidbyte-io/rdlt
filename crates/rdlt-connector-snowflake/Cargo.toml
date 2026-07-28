@@ -20,6 +20,11 @@ serde_json = { workspace = true }
 schemars = { workspace = true }
 snowflake-connector-rs = { workspace = true }
 serde_yaml = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+rdlt-testkit = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]
 workspace = true

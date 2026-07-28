@@ -106,7 +106,76 @@ pub struct Auth {
     pub pat: Option<Secret>,
 }
 
+impl KeyPair {
+    /// Key-pair auth from a key that needs no passphrase.
+    pub fn new(private_key: impl Into<PemSource>) -> Self {
+        Self {
+            private_key: private_key.into(),
+            passphrase: None,
+        }
+    }
+
+    /// Supply the passphrase for an encrypted key.
+    pub fn with_passphrase(mut self, passphrase: impl Into<Secret>) -> Self {
+        self.passphrase = Some(passphrase.into());
+        self
+    }
+}
+
+impl Password {
+    /// Password auth without an MFA passcode.
+    pub fn new(password: impl Into<Secret>) -> Self {
+        Self {
+            password: password.into(),
+            passcode: None,
+        }
+    }
+
+    /// Supply the MFA passcode the account requires.
+    pub fn with_passcode(mut self, passcode: impl Into<Secret>) -> Self {
+        self.passcode = Some(passcode.into());
+        self
+    }
+}
+
 impl Auth {
+    /// Authenticate by key pair — the recommended method for unattended use.
+    ///
+    /// These constructors exist because the vocabulary is `#[non_exhaustive]`,
+    /// so a new scheme stays additive; without them an embedding application
+    /// could deserialize a config but never build one, and the library API is
+    /// meant to reach everything the CLI reaches.
+    pub fn key_pair(key_pair: KeyPair) -> Self {
+        Self {
+            key_pair: Some(key_pair),
+            ..Self::default()
+        }
+    }
+
+    /// Authenticate by password, with the caveats on [`Password`].
+    pub fn password(password: Password) -> Self {
+        Self {
+            password: Some(password),
+            ..Self::default()
+        }
+    }
+
+    /// Authenticate with a caller-supplied OAuth access token.
+    pub fn oauth_token(token: impl Into<Secret>) -> Self {
+        Self {
+            oauth_token: Some(token.into()),
+            ..Self::default()
+        }
+    }
+
+    /// Authenticate with a programmatic access token.
+    pub fn pat(token: impl Into<Secret>) -> Self {
+        Self {
+            pat: Some(token.into()),
+            ..Self::default()
+        }
+    }
+
     /// Reject anything but exactly one method.
     ///
     /// Zero is a document that cannot connect; more than one is a document

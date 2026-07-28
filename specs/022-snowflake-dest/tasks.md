@@ -78,7 +78,7 @@ measure-then-take (research D10).
   tests in `tests/config_schema.rs` (round-trip corpus, unknown-field
   rejection, validation matrix, Secret grep-proof for EVERY secret field: key,
   passphrase, password, passcode, oauth token, PAT).
-- [ ] T007 [P] The one boundary: `src/boundary.rs` — Client/Session
+- [X] T007 [P] The one boundary: `src/boundary.rs` — Client/Session
   construction from config mapping the FULL auth vocabulary
   (`KeyPairConfig::from_pem`/`from_encrypted_pem`,
   `AuthConfig::password` + passcode, `AuthConfig::oauth`, PAT via the
@@ -93,7 +93,7 @@ measure-then-take (research D10).
   unit-scoped executor REFUSES DDL statement kinds (SD3 — the guard is
   code, not convention). Unit tests over the mock seam incl. the full
   classification matrix; no substring matching anywhere.
-- [ ] T008 [P] Testkit credential probe: `snowflake_available()` in
+- [X] T008 [P] Testkit credential probe: `snowflake_available()` in
   `crates/rdlt-testkit/src/` — env-first
   (`RDLT_SNOWFLAKE_*`), config-dir fallback, Option-returning
   skip-not-fail (the container posture with credential presence in place

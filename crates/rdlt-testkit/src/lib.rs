@@ -10,6 +10,7 @@ pub mod containers;
 pub mod crash;
 pub mod fixtures;
 pub mod memory;
+pub mod snowflake;
 pub(crate) mod util;
 
 pub use conformance::{
