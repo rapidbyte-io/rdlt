@@ -17,11 +17,11 @@ pub mod options;
 pub mod plan;
 pub mod protocol;
 
-pub use dialect::{MergeDialect, quote_ident};
+pub use dialect::{MergeDialect, Upsert, UpsertAction, quote_ident};
 pub use options::{
     AbsentPolicy, DedupSort, DestOptions, MergeStrategy, Scd2Options, SortOrder, TableOptions,
 };
-pub use plan::{HardDelete, MergeCtx, MergePlan, column_list, root_of};
+pub use plan::{HardDelete, MergeCtx, MergePlan, column_list, column_list_with, root_of};
 pub use protocol::{
     CommitCtx, CommitError, CommitScript, FullLoadPublish, MergeArm, Step, build_merge_plan,
     commit_script, insert_select_sql, prepare_target, render_arm, staged_probe_targets,

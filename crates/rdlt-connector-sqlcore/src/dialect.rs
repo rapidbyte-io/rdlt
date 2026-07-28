@@ -68,20 +68,104 @@ pub trait MergeDialect: Send + Sync {
         )
     }
 
-    /// The upsert statement: insert the surviving rows, updating matched
-    /// keys in place. `action` is `DO UPDATE SET …` or `DO NOTHING`.
-    fn upsert_stmt(
-        &self,
-        target: &str,
-        cols: &str,
-        deduped: &str,
-        keep: &str,
-        key_list: &str,
-        action: &str,
-    ) -> String {
+    /// Is this boolean flag SET? A NULL flag is not set.
+    ///
+    /// `IS TRUE` reads as standard and is not universally accepted — Snowflake
+    /// rejects it outright — so the spelling belongs to the dialect. Both this
+    /// and [`MergeDialect::flag_unset`] must stay NULL-safe: the flag arrives
+    /// from user data and is free to be NULL, and a predicate that evaluated
+    /// to NULL there would silently match nothing.
+    fn flag_set(&self, column: &str) -> String {
+        format!("{column} IS TRUE")
+    }
+
+    /// Is this boolean flag NOT set? NULL counts as not set.
+    fn flag_unset(&self, column: &str) -> String {
+        format!("{column} IS NOT TRUE")
+    }
+
+    /// How the incoming row is referred to in an update assignment.
+    ///
+    /// `EXCLUDED` is the pseudo-table an `ON CONFLICT … DO UPDATE` exposes. A
+    /// dialect with no such clause names its source relation instead, and the
+    /// assignment list is built from THIS rather than from the assumption that
+    /// every dialect has Postgres's spelling.
+    fn incoming_ref(&self) -> &'static str {
+        "EXCLUDED"
+    }
+
+    /// The upsert statement: insert the surviving rows, updating matched keys
+    /// in place.
+    ///
+    /// The default is the `ON CONFLICT` form the first two destinations share.
+    /// A dialect without it — Snowflake has no `ON CONFLICT`, and no enforced
+    /// unique constraint for one to key on — overrides this with `MERGE INTO`.
+    fn upsert_stmt(&self, upsert: &Upsert<'_>) -> String {
+        let Upsert {
+            target,
+            cols_sql,
+            source,
+            keep,
+            key_list,
+            ..
+        } = upsert;
+        let action = match &upsert.action {
+            UpsertAction::Nothing => "DO NOTHING".to_owned(),
+            UpsertAction::Update { set } => format!("DO UPDATE SET {set}"),
+        };
         format!(
-            "INSERT INTO {target} ({cols}) SELECT {cols} FROM {deduped} deduped{keep} \
+            "INSERT INTO {target} ({cols_sql}) SELECT {cols_sql} FROM {source} deduped{keep} \
              ON CONFLICT ({key_list}) {action}"
         )
     }
+}
+
+/// What an upsert does with a row whose key is already present.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpsertAction<'a> {
+    /// Overwrite the non-key columns from the incoming row.
+    ///
+    /// `set` is a rendered assignment list built through
+    /// [`MergeDialect::incoming_ref`], so it already speaks the dialect's own
+    /// name for the incoming row.
+    Update {
+        /// `"col" = <incoming>."col", …`
+        set: &'a str,
+    },
+    /// Keep the row that is already there.
+    ///
+    /// Arises when every column is part of the merge key: there is nothing
+    /// left to update, and a dialect must express that rather than emitting an
+    /// assignment list that happens to be empty.
+    Nothing,
+}
+
+/// Everything a dialect needs to render an upsert.
+///
+/// A struct rather than eight positional arguments, and — the point — the
+/// DECISION rather than another dialect's syntax. The action used to arrive as
+/// the literal text `DO UPDATE SET …`, which a dialect without `ON CONFLICT`
+/// could only consume by taking that string apart: pattern-matching one
+/// dialect's SQL to produce another's, with nothing to catch the day the
+/// wording changed.
+#[derive(Debug)]
+pub struct Upsert<'a> {
+    /// The target table, quoted.
+    pub target: &'a str,
+    /// Publish columns, quoted, in order.
+    pub columns: &'a [String],
+    /// The same columns, comma-joined.
+    pub cols_sql: &'a str,
+    /// The relation holding the surviving rows — a subquery or a materialized
+    /// name; both accept an alias.
+    pub source: &'a str,
+    /// A trailing `WHERE …` restricting which survivors are inserted (the
+    /// hard-delete keep predicate), or empty.
+    pub keep: &'a str,
+    /// Merge-key columns, quoted.
+    pub keys: &'a [String],
+    /// The same keys, comma-joined.
+    pub key_list: &'a str,
+    /// What to do about a key that already exists.
+    pub action: UpsertAction<'a>,
 }

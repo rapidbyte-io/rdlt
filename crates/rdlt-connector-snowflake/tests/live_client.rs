@@ -15,7 +15,8 @@ use rdlt_connector::DestinationError;
 use rdlt_connector_snowflake::dest::testhook::{
     DUPLICATE_ROW_IN_DML, classify_live_error, connect_and_run,
 };
-use rdlt_connector_snowflake::dest::{Auth, Password, SnowflakeConfig};
+use rdlt_connector::PemSource;
+use rdlt_connector_snowflake::dest::{Auth, KeyPair, Password, SnowflakeConfig};
 use rdlt_testkit::snowflake::{TokenKind, credentials, scratch_schema, token};
 
 /// A config for the qual account, authenticating by key pair.
@@ -72,6 +73,75 @@ async fn a_wrong_secret_is_fatal_and_never_echoes_the_secret() {
         !rendered.contains(WRONG),
         "the credential must not reach the error text: {rendered}"
     );
+}
+
+#[tokio::test]
+async fn a_rotated_key_is_fatal_naming_the_identity_and_never_the_key() {
+    let Some(mut config) = key_pair_config() else {
+        return;
+    };
+    // A well-formed key the account has never seen — a rotated key, from the
+    // pipeline's point of view. Generated here rather than committed: a real
+    // key in the repository is exactly what the credential convention exists
+    // to prevent, even a discarded one.
+    const STRANGER: &str = "-----BEGIN PRIVATE KEY-----\n\
+        MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg8vMlKRUAAAAAAAAAA\n\
+        -----END PRIVATE KEY-----\n";
+    config.auth = Auth::key_pair(KeyPair::new(PemSource::from(STRANGER)));
+
+    let err = connect_and_run(&config, "SELECT 1")
+        .await
+        .expect_err("a key the account does not know is refused");
+    assert!(
+        matches!(err, DestinationError::Fatal(_)),
+        "a rotated key cannot heal on retry: {err:?}"
+    );
+    let rendered = format!("{err}");
+    // WHICH credential to fix is the operator's next question, and the answer
+    // is in the configuration rather than in the service's reply.
+    assert!(
+        rendered.contains(&config.user) && rendered.contains(&config.account),
+        "the failure must name the identity it was attempted under: {rendered}"
+    );
+    // And the key itself must be nowhere near it.
+    for fragment in ["BEGIN PRIVATE KEY", "MIGHAgEAMBMGByqGSM49"] {
+        assert!(
+            !rendered.contains(fragment),
+            "key material reached the error text: {rendered}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_suspended_warehouse_resumes_within_the_statement() {
+    let Some(config) = key_pair_config() else {
+        return;
+    };
+    let Some(warehouse) = config.warehouse.clone() else {
+        // No warehouse configured means the account default applies and this
+        // cell has nothing to suspend; skipping is honest, unlike suspending
+        // something the pipeline does not use.
+        return;
+    };
+    // Suspension is the state a cost-managed account spends most of its time
+    // in. Auto-resume makes the next statement slow, not failed — and "slow"
+    // must stay inside the connector's own timeouts rather than surfacing as
+    // a transient error the engine then retries against a warehouse that is
+    // already resuming.
+    let suspend = connect_and_run(
+        &config,
+        &format!("ALTER WAREHOUSE \"{warehouse}\" SUSPEND"),
+    )
+    .await;
+    // Suspending an already-suspended warehouse is an error, and an
+    // unprivileged role cannot suspend at all; neither says anything about
+    // the property under test, so the resume is what is asserted.
+    drop(suspend);
+
+    let answer = connect_and_run(&config, "SELECT 1")
+        .await
+        .expect("a suspended warehouse resumes rather than failing the statement");
+    assert_eq!(answer, "1");
 }
 
 #[tokio::test]

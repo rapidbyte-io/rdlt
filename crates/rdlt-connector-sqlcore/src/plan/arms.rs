@@ -7,7 +7,7 @@
 
 use rdlt_connector::core::{TableSchema, schema::system_columns};
 
-use crate::dialect::MergeDialect;
+use crate::dialect::{MergeDialect, Upsert, UpsertAction};
 use crate::options::{AbsentPolicy, DedupSort, Scd2Options, SortOrder};
 
 /// Hard-delete flag semantics: boolean columns compare `IS TRUE`,
@@ -30,8 +30,8 @@ impl HardDelete {
         let col = dialect.quote(column);
         if is_bool {
             Self {
-                flagged: format!("{col} IS TRUE"),
-                keep: format!("{col} IS NOT TRUE"),
+                flagged: dialect.flag_set(&col),
+                keep: dialect.flag_unset(&col),
             }
         } else {
             Self {
@@ -138,7 +138,13 @@ impl MergePlan<'_> {
             .columns
             .iter()
             .filter(|c| !identity.contains(&c.name))
-            .map(|c| format!("{q} = EXCLUDED.{q}", q = self.quote(&c.name)))
+            .map(|c| {
+                format!(
+                    "{q} = {incoming}.{q}",
+                    q = self.quote(&c.name),
+                    incoming = self.dialect.incoming_ref()
+                )
+            })
             .collect::<Vec<_>>()
             .join(", ")
     }
@@ -244,14 +250,27 @@ pub fn keyed_upsert_sql(plan: &MergePlan<'_>) -> Vec<String> {
         .unwrap_or_default();
     let set = plan.update_set(plan.key);
     let action = if set.is_empty() {
-        "DO NOTHING".to_string()
+        UpsertAction::Nothing
     } else {
-        format!("DO UPDATE SET {set}")
+        UpsertAction::Update { set: &set }
     };
-    out.push(
-        plan.dialect
-            .upsert_stmt(target, cols, &deduped, &keep, &key_list, &action),
-    );
+    let columns: Vec<String> = plan
+        .schema
+        .columns
+        .iter()
+        .map(|c| plan.quote(&c.name))
+        .collect();
+    let keys: Vec<String> = plan.key.iter().map(|k| plan.quote(k)).collect();
+    out.push(plan.dialect.upsert_stmt(&Upsert {
+        target,
+        columns: &columns,
+        cols_sql: cols,
+        source: &deduped,
+        keep: &keep,
+        keys: &keys,
+        key_list: &key_list,
+        action,
+    }));
     out
 }
 

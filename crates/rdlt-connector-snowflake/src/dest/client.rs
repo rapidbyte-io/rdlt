@@ -54,7 +54,19 @@ const TRANSIENT_SERVER_CODES: &[&str] = &[
 /// code — never the rendered message, which is free to change with a service
 /// release and would take the retry policy with it.
 pub(crate) fn classify(err: SfError) -> DestinationError {
-    let transient = match err.kind() {
+    if is_transient(&err) {
+        DestinationError::transient(err)
+    } else {
+        DestinationError::fatal(err)
+    }
+}
+
+/// Is another attempt worth making?
+///
+/// Separate from [`classify`] because the connect path adds context before
+/// classifying, and the RULE must not be restated to do that.
+fn is_transient(err: &SfError) -> bool {
+    match err.kind() {
         // A dropped connection, a timeout, or a session the service retired:
         // the work is unchanged and the next attempt is a fresh one.
         ErrorKind::Network | ErrorKind::Timeout | ErrorKind::SessionExpired => true,
@@ -66,11 +78,6 @@ pub(crate) fn classify(err: SfError) -> DestinationError {
         // pre-SQL and carries no server code, which is why kind — not code —
         // has to be the discriminator.
         _ => false,
-    };
-    if transient {
-        DestinationError::transient(err)
-    } else {
-        DestinationError::fatal(err)
     }
 }
 
@@ -81,15 +88,51 @@ pub(crate) fn classify(err: SfError) -> DestinationError {
 /// which is what lets the merge path recognise a duplicate key by code rather
 /// than by matching text.
 pub(crate) fn code_in(err: &DestinationError) -> Option<String> {
-    let source: &(dyn std::error::Error + 'static) = match err {
-        DestinationError::Fatal(e) | DestinationError::Transient(e) => e.as_ref(),
-        DestinationError::RateLimited { source, .. } => source.as_ref(),
-        _ => return None,
+    let mut source: Option<&(dyn std::error::Error + 'static)> = match err {
+        DestinationError::Fatal(e) | DestinationError::Transient(e) => Some(e.as_ref()),
+        DestinationError::RateLimited { source, .. } => Some(source.as_ref()),
+        _ => None,
     };
-    source
-        .downcast_ref::<SfError>()
-        .and_then(|e| e.snowflake_code())
-        .map(str::to_owned)
+    // Walked rather than read off the top, because a failure may be wrapped in
+    // context this crate added — an error that gained a sentence naming the
+    // account must not thereby lose the code its handling keys on.
+    while let Some(error) = source {
+        if let Some(code) = error.downcast_ref::<SfError>().and_then(SfError::snowflake_code) {
+            return Some(code.to_owned());
+        }
+        source = error.source();
+    }
+    None
+}
+
+/// A connection failure, with the identity it was attempted under.
+///
+/// Snowflake's own authentication errors say what went wrong but not who was
+/// trying: an operator reading a failed load needs the account and login name
+/// to know WHICH credential to fix, and those live in the configuration rather
+/// than in the service's reply. Neither is a secret — and the key material
+/// that IS one appears nowhere here, which the live cells assert.
+#[derive(Debug)]
+struct ConnectFailure {
+    account: String,
+    user: String,
+    source: SfError,
+}
+
+impl std::fmt::Display for ConnectFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "snowflake: connecting as user `{}` on account `{}` failed: {}",
+            self.user, self.account, self.source
+        )
+    }
+}
+
+impl std::error::Error for ConnectFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
 }
 
 /// Does this statement commit the open transaction as a side effect?
@@ -368,9 +411,24 @@ pub(crate) async fn connect(
         session = session.with_session_parameter("QUERY_TAG", tag.clone().into());
     }
 
-    let client = Client::new(client.with_session(session)).map_err(classify)?;
+    // Both steps carry the identity: whichever fails, the operator learns
+    // which credential to fix without reading the pipeline document.
+    let named = |err: SfError| {
+        let transient = is_transient(&err);
+        let failure = ConnectFailure {
+            account: config.account.clone(),
+            user: config.user.clone(),
+            source: err,
+        };
+        if transient {
+            DestinationError::transient(failure)
+        } else {
+            DestinationError::fatal(failure)
+        }
+    };
+    let client = Client::new(client.with_session(session)).map_err(named)?;
     Ok(Box::new(SessionExecutor {
-        session: client.create_session().await.map_err(classify)?,
+        session: client.create_session().await.map_err(named)?,
     }))
 }
 

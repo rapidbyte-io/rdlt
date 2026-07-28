@@ -9,6 +9,7 @@ use rdlt_connector::{
 pub(crate) mod client;
 mod config;
 mod ddl;
+mod dialect;
 mod encode;
 mod session;
 mod stage;
@@ -40,6 +41,27 @@ pub mod testhook {
         } else {
             executor.execute(sql).await.map(|()| String::new())
         }
+    }
+
+    /// Run several statements on ONE session, returning the last scalar.
+    ///
+    /// A session per statement — which is what running them separately gives —
+    /// cannot observe anything transactional, so any property that only holds
+    /// WITHIN a transaction is invisible to it.
+    pub async fn connect_and_run_script(
+        config: &SnowflakeConfig,
+        script: &[&str],
+    ) -> Result<String, DestinationError> {
+        let executor = client::connect(config).await?;
+        let mut last = String::new();
+        for sql in script {
+            if sql.trim_start().to_ascii_uppercase().starts_with("SELECT") {
+                last = executor.scalar_u64(sql, &[]).await?.to_string();
+            } else {
+                executor.execute(sql).await?;
+            }
+        }
+        Ok(last)
     }
 
     /// Run one statement through the UNIT executor — the one that refuses DDL.
@@ -106,6 +128,21 @@ pub mod testhook {
     }
 }
 
+/// The crash points this destination arms, as a pinned registry.
+///
+/// Exported so the sweep iterates exactly this list rather than a copy of it:
+/// a point added to the code and not to the sweep is a protocol edge nobody
+/// ever crashes at, and the failure mode of that is silence.
+pub const FAIL_POINTS: &[&str] = &[
+    // A staged part is being written to the bucket — before the service has
+    // been told anything about it.
+    "sf.stage.write",
+    // The unit's rows, receipt and state are written and none are durable.
+    "sf.unit.publish",
+    // Durable, and the caller is about to be told otherwise.
+    "sf.receipt.visible",
+];
+
 /// The Snowflake destination.
 #[derive(Debug, Clone)]
 pub struct Snowflake {
@@ -139,10 +176,7 @@ impl Destination for Snowflake {
 
     fn capabilities(&self) -> DestinationCapabilities {
         DestinationCapabilities {
-            // Merge arrives with the dialect; until then the engine must not
-            // plan merges it would fail to execute. Declaring it early is the
-            // one lie the engine never re-checks.
-            merge: false,
+            merge: true,
             // Nested shapes are lowered before they arrive: VARIANT could
             // carry them, but claiming so without the read-back proof would
             // be a capability this crate has not verified.
@@ -222,6 +256,7 @@ impl Destination for Snowflake {
             tables: std::collections::BTreeMap::new(),
             cleared: std::collections::BTreeSet::new(),
             unit_open: false,
+            single_unit_done: std::collections::BTreeSet::new(),
             stage,
             pending: std::collections::BTreeMap::new(),
             spent: Vec::new(),

@@ -128,6 +128,21 @@ async fn an_append_load_lands_exact_totals_and_replays_without_republishing() {
         .await
         .expect("count");
         assert_eq!(count, "5", "no row was published twice");
+
+        // The receipt is what makes a redelivered unit a no-op rather than a
+        // second publish, so the property is that no unit ever has two. Both
+        // runs commit — the second moved no rows but still had to make the
+        // resumed cursor durable — so counting receipts would only pin how
+        // many loads ran, which is not the invariant.
+        let doubled = rdlt_connector_snowflake::dest::testhook::connect_and_run(
+            &config,
+            "SELECT count(*) FROM ( \
+               SELECT \"LOAD_ID\", \"COMMIT_SEQ\" FROM \"_RDLT_COMMITS\" \
+               GROUP BY 1, 2 HAVING count(*) > 1 )",
+        )
+        .await
+        .expect("receipts");
+        assert_eq!(doubled, "0", "no commit unit was receipted twice");
     })
     .await;
 }

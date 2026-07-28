@@ -154,7 +154,7 @@ new rows; kill at each crash point and converge duplicate-free.
   block in `crates/rdlt/src/pipeline_spec.rs` (embedding the crate's
   config type — the 020 DestSpec::File precedent) + spec-parse pin; CLI
   feature plumbing in `crates/rdlt-cli/`.
-- [ ] T016 [US1] Live smoke leg (credential-gated) in `tests/live_dest.rs`:
+- [X] T016 [US1] Live smoke leg (credential-gated) in `tests/live_dest.rs`:
   the five US1 acceptance scenarios — fresh Append exact totals + receipt;
   replay publishes nothing; Replace never observed cleared-but-unfilled;
   wrong/rotated key → typed auth error naming account+user, zero key
@@ -177,14 +177,14 @@ postgres, on a dialect with no ON CONFLICT / DISTINCT ON / enforced uniques.
 **Independent test**: differential oracle — identical seeded inputs land
 canonical-row-equal results vs the postgres destination for every strategy.
 
-- [ ] T019 [US2] `SnowflakeDialect` on the sqlcore MergeDialect seam:
+- [X] T019 [US2] `SnowflakeDialect` on the sqlcore MergeDialect seam:
   `src/dest/dialect.rs` — dedup via `QUALIFY ROW_NUMBER() OVER (PARTITION
   BY key ORDER BY __rdlt_arrival DESC) = 1` inside the USING subquery
   (proven live, research D4); `MERGE INTO` upsert, delete_insert, scd2
   statement sets (validity windows, markers, absent keep/retire with the
   recorded single-unit rule), merge_scope replacement, hard_delete;
   informational PRIMARY KEY declared, never relied on.
-- [ ] T020 [US2] Golden pins: `tests/golden_sql.rs` — every emitted
+- [X] T020 [US2] Golden pins: `tests/golden_sql.rs` — every emitted
   statement for every strategy × options arm pinned byte-for-byte; AND
   re-run the postgres + duckdb golden suites proving their pins
   byte-identical through T003/T004/T019 (SD4 both halves).

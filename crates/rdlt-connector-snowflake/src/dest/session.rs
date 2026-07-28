@@ -16,13 +16,17 @@ use rdlt_connector::{
     CommitMeta, CommitReceipt, DestinationError, LoadSession, RecordBatch,
     core::{LoadId, PipelineId, StateDoc, TableName, TableSchema, WriteMode},
 };
+use rdlt_connector_sqlcore::plan::scope_replace_sql;
 use rdlt_connector_sqlcore::protocol::{
-    CommitCtx, FullLoadPublish, Step, commit_script, prepare_target, unit,
+    CommitCtx, FullLoadPublish, MergeArm, Step, build_merge_plan, commit_script,
+    insert_select_sql, prepare_target, render_arm, staged_probe_targets, unit,
 };
+use rdlt_connector_sqlcore::{MergeDialect as _, column_list_with};
 
 use super::client::{DmlOnly, Executor};
 use super::config::SnowflakeConfig;
 use super::ddl::{self, Catalog, quote};
+use super::dialect::{self, SnowflakeDialect};
 use super::encode;
 use super::stage::{self, Part, Stage};
 
@@ -45,6 +49,28 @@ const UNIT_ROLLBACK: &str = "ROLLBACK";
 /// The column a `COPY` result reports its per-file loaded rowcount in.
 const COPY_ROWS_LOADED: &str = "rows_loaded";
 
+/// An injected crash, as a VALUE rather than an early return.
+///
+/// The usual macro returns straight out of the enclosing function, which is
+/// wrong at the two unit edges: a crash there has cleanup to do first — the
+/// transaction to abandon, the staged parts to drop — and a bare return would
+/// leave the session holding an open transaction the test then blames on the
+/// protocol rather than on the injection.
+#[cfg(feature = "failpoints")]
+fn crash_at(name: &str) -> Option<DestinationError> {
+    rdlt_connector::core::failpoint::fail::fail_point!(name, |_| {
+        Some(DestinationError::fatal(format!(
+            "injected crash at {name}"
+        )))
+    });
+    None
+}
+
+#[cfg(not(feature = "failpoints"))]
+fn crash_at(_name: &str) -> Option<DestinationError> {
+    None
+}
+
 pub(super) struct SnowflakeSession {
     pub(super) config: SnowflakeConfig,
     pub(super) executor: Box<dyn Executor>,
@@ -59,6 +85,13 @@ pub(super) struct SnowflakeSession {
     pub(super) cleared: BTreeSet<TableName>,
     /// Whether a unit transaction is currently open.
     pub(super) unit_open: bool,
+    /// Tables whose full-feed unit has already committed.
+    ///
+    /// The single-unit discipline is per table: a full-feed merge delivers a
+    /// table's whole contents in ONE unit, and a second non-empty unit for the
+    /// same table means the feed disagrees with its own declaration. Marked
+    /// only AFTER the unit commits.
+    pub(super) single_unit_done: BTreeSet<TableName>,
     /// The bulk path, when a bucket is configured. Absent, rows travel inside
     /// statements.
     pub(super) stage: Option<Stage>,
@@ -94,6 +127,12 @@ impl SnowflakeSession {
         if !self.unit_open {
             self.executor.execute(UNIT_BEGIN).await?;
             self.unit_open = true;
+            // The unit's instant, captured once. Every statement that needs a
+            // boundary reads this rather than calling the clock again, which
+            // moves between statements here.
+            self.executor
+                .execute(&dialect::capture_tx_timestamp())
+                .await?;
         }
         Ok(())
     }
@@ -234,14 +273,87 @@ impl SnowflakeSession {
                     ))
                     .await
             }
-            // The staged-publish steps cannot arise on a direct-publish
-            // destination, and the merge arms belong to the merge dialect,
-            // which this increment does not yet ship.
+            Step::InsertSelect { table } => {
+                let (schema, _) = &self.tables[table];
+                unit_executor
+                    .execute(&insert_select_sql(
+                        &self.qualified(table.as_str()),
+                        &column_list_with(schema, quote),
+                        &self.qualified(&ddl::stage_name(self.pipeline.as_str(), table)),
+                    ))
+                    .await
+            }
+            Step::ScopeReplace { table, scope } => {
+                unit_executor
+                    .execute(&scope_replace_sql(
+                        &SnowflakeDialect,
+                        &self.qualified(table.as_str()),
+                        &self.qualified(&ddl::stage_name(self.pipeline.as_str(), table)),
+                        scope,
+                    ))
+                    .await
+            }
+            Step::MergeArm { table, arm } => {
+                for sql in self.merge_statements(table, arm)? {
+                    unit_executor.execute(&sql).await?;
+                }
+                Ok(())
+            }
+            Step::TruncateStage { table } => {
+                unit_executor
+                    .execute(&SnowflakeDialect.clear_table(
+                        &self.qualified(&ddl::stage_name(self.pipeline.as_str(), table)),
+                    ))
+                    .await
+            }
             other => Err(DestinationError::fatal(format!(
                 "snowflake: the commit planner emitted {other:?}, which this \
-                 destination does not execute yet"
+                 destination does not execute"
             ))),
         }
+    }
+
+    /// The statements one merge arm becomes.
+    ///
+    /// Every decision — which arm, which survivor, which columns — is the
+    /// shared planner's; only the spelling is this dialect's. Building the plan
+    /// here rather than in the executor keeps the borrow of `self.tables`
+    /// contained.
+    fn merge_statements(
+        &self,
+        table: &TableName,
+        arm: &MergeArm,
+    ) -> Result<Vec<String>, DestinationError> {
+        let (schema, mode) = self.tables.get(table).ok_or_else(|| {
+            DestinationError::fatal(format!("snowflake: merge arm planned for unknown `{table}`"))
+        })?;
+        let WriteMode::Merge { key } = mode else {
+            return Err(DestinationError::fatal(format!(
+                "snowflake: merge arm planned for non-merge table `{table}`"
+            )));
+        };
+        let roots = unit::roots_of(&self.tables);
+        let root = roots.get(table).unwrap_or(table).clone();
+        let pipeline = self.pipeline.as_str();
+        // Bound to locals: the plan borrows every one of these, so building
+        // them inline would leave it holding references to temporaries.
+        let target = self.qualified(table.as_str());
+        let stage = self.qualified(&ddl::stage_name(pipeline, table));
+        let columns = column_list_with(schema, quote);
+        let plan = build_merge_plan(
+            &SnowflakeDialect,
+            &self.config.options,
+            table,
+            schema,
+            key,
+            &target,
+            &stage,
+            &columns,
+            &root,
+            self.qualified(&ddl::stage_name(pipeline, &root)),
+            self.tables.get(&root).map(|(s, _)| s),
+        );
+        Ok(render_arm(&plan, arm))
     }
 }
 
@@ -305,12 +417,22 @@ impl LoadSession for SnowflakeSession {
         table: &TableName,
         batch: RecordBatch,
     ) -> Result<(), DestinationError> {
-        let Some(schema) = self.tables.get(table).map(|(schema, _)| schema.clone()) else {
+        let Some((schema, mode)) = self.tables.get(table).cloned() else {
             return Err(DestinationError::fatal(format!(
                 "snowflake: `{table}` was written before it was ensured"
             )));
         };
         self.begin_unit().await?;
+
+        // A merge's rows land in the STAGE table, never the target: its arms
+        // join the delivered rows against what is already there, and rows
+        // written straight to the target would be both sides of that join.
+        let staged_merge = matches!(mode, WriteMode::Merge { .. });
+        let destination_table = if staged_merge {
+            ddl::stage_name(self.pipeline.as_str(), table)
+        } else {
+            table.as_str().to_owned()
+        };
 
         // Replace clears its target once per load, inside the unit and ahead
         // of the first row — the direct-publish counterpart of the staged
@@ -353,13 +475,16 @@ impl LoadSession for SnowflakeSession {
                 .stage
                 .as_mut()
                 .expect("checked")
-                .put_part(table.as_str(), bytes, rows)
+                .put_part(&destination_table, bytes, rows)
                 .await?;
-            self.pending.entry(table.clone()).or_default().push(part);
+            self.pending
+                .entry(TableName::from(destination_table.as_str()))
+                .or_default()
+                .push(part);
             return Ok(());
         }
 
-        let target = self.qualified(table.as_str());
+        let target = self.qualified(&destination_table);
         for sql in encode::insert_statements(&target, &schema, &batch)? {
             DmlOnly(&*self.executor).execute(&sql).await?;
         }
@@ -389,20 +514,6 @@ impl LoadSession for SnowflakeSession {
                 > 0
         };
 
-        let script = commit_script(
-            &self.tables,
-            &self.config.options,
-            &CommitCtx {
-                replayed,
-                load_committed_before: false,
-                single_unit_done: &BTreeSet::new(),
-                staged_nonempty: &BTreeSet::new(),
-                full_load_publish: PUBLISH,
-                cleared_targets: &self.cleared,
-            },
-        )
-        .map_err(DestinationError::fatal)?;
-
         // A redelivered unit's rows are already durable in the target, and
         // this attempt's copies sit in the transaction still open. What to do
         // about that is the shared planner's decision, not this executor's
@@ -414,14 +525,42 @@ impl LoadSession for SnowflakeSession {
             return Ok(receipt);
         }
 
-        // The staged parts land BEFORE the publish steps, in the same
-        // transaction: the receipt this unit is about to write claims those
-        // rows are durable, so it must not be written first.
+        // The staged parts land BEFORE anything asks what the stages hold —
+        // and before the publish steps, in the same transaction, because the
+        // receipt this unit is about to write claims those rows are durable.
         if let Err(e) = self.load_staged_parts().await {
             self.rollback_unit().await;
             self.discard_staged().await;
             return Err(e);
         }
+
+        // Which full-feed stages actually received rows. Probed here rather
+        // than remembered: a merge's rows may have arrived through either
+        // ingestion path, and the stage table is the one place both agree.
+        let mut staged_nonempty = BTreeSet::new();
+        for table in staged_probe_targets(&self.tables, &self.config.options) {
+            let stage = self.qualified(&ddl::stage_name(self.pipeline.as_str(), table));
+            let nonempty = DmlOnly(&*self.executor)
+                .scalar_u64(&unit::stage_nonempty_sql(&stage), &[])
+                .await?;
+            if nonempty > 0 {
+                staged_nonempty.insert(table.clone());
+            }
+        }
+
+        let script = commit_script(
+            &self.tables,
+            &self.config.options,
+            &CommitCtx {
+                replayed,
+                load_committed_before: false,
+                single_unit_done: &self.single_unit_done,
+                staged_nonempty: &staged_nonempty,
+                full_load_publish: PUBLISH,
+                cleared_targets: &self.cleared,
+            },
+        )
+        .map_err(DestinationError::fatal)?;
 
         for step in &script.steps {
             let executor = DmlOnly(&*self.executor);
@@ -431,8 +570,30 @@ impl LoadSession for SnowflakeSession {
                 return Err(e);
             }
         }
+        // Everything the unit publishes is written but nothing is durable: the
+        // transaction is still open, so recovery must find the target exactly
+        // as it was before this attempt.
+        if let Some(injected) = crash_at("sf.unit.publish") {
+            self.rollback_unit().await;
+            self.discard_staged().await;
+            return Err(injected);
+        }
+
         self.executor.execute(UNIT_COMMIT).await?;
         self.unit_open = false;
+        // Marked only now: a table whose unit did not commit has not had its
+        // one full feed, and marking before the commit would refuse the retry.
+        self.single_unit_done.extend(staged_nonempty);
+
+        // The redelivery window: the data IS durable and the caller is about
+        // to be told it failed. Recovery has to find the receipt and publish
+        // nothing rather than re-running the unit — the one crash that cannot
+        // be handled by undoing anything.
+        if let Some(injected) = crash_at("sf.receipt.visible") {
+            self.discard_staged().await;
+            return Err(injected);
+        }
+
         // Only after the commit: a part removed before it is durable in the
         // target is a part no recovery could re-read.
         self.discard_staged().await;

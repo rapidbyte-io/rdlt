@@ -48,10 +48,21 @@ pub fn root_of<V>(tables: &BTreeMap<TableName, (TableSchema, V)>, table: &TableN
 /// persistent target's column order is historical while the stage carries this
 /// run's order, so a positional `SELECT *` would corrupt or break on drift.
 pub fn column_list(schema: &TableSchema) -> String {
+    column_list_with(schema, quote_ident)
+}
+
+/// The publish column list under a destination's OWN quoting.
+///
+/// [`column_list`] bakes in the double-quote rule the first two destinations
+/// share, which reads as neutral and is not: a destination that folds
+/// identifiers to upper case, or quotes differently at all, would get a list
+/// that disagrees with every other statement it emits — and the disagreement
+/// would surface as a missing-column error at run time, far from the cause.
+pub fn column_list_with(schema: &TableSchema, quote: impl Fn(&str) -> String) -> String {
     schema
         .columns
         .iter()
-        .map(|c| quote_ident(&c.name))
+        .map(|c| quote(&c.name))
         .collect::<Vec<_>>()
         .join(", ")
 }
