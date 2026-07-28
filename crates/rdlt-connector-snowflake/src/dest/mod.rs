@@ -11,8 +11,11 @@ mod config;
 mod ddl;
 mod encode;
 mod session;
+mod stage;
 
-pub use config::{Auth, ConfigError, KeyPair, Password, SnowflakeConfig, TableType, config_schema};
+pub use config::{
+    Auth, ConfigError, KeyPair, Password, S3Stage, SnowflakeConfig, Stage, TableType, config_schema,
+};
 
 /// Client seam, exposed ONLY for the live cells: they must provoke real
 /// service errors to check how this crate classifies them, and a mock cannot
@@ -193,6 +196,23 @@ impl Destination for Snowflake {
             executor.execute(&sql).await?;
         }
 
+        // The bulk path, when a bucket is configured. Both steps are DDL or
+        // object-store work and belong here, outside any unit.
+        let stage = match self.config.s3_stage() {
+            None => None,
+            Some(options) => {
+                let stage = stage::Stage::connect(options, ctx.pipeline.as_str())?;
+                // Parts staged by a session that died are unreachable — no
+                // receipt names them — so a fresh load reclaims its own scope
+                // before writing into it. Scoped to THIS pipeline: a sibling
+                // sharing the bucket keeps its live parts.
+                stage.clear_scope().await?;
+                let (sql, secrets) = stage.create_sql(&qualified(stage.name()));
+                stage::execute_redacted(executor.as_ref(), &sql, &secrets).await?;
+                Some(stage)
+            }
+        };
+
         Ok(Box::new(session::SnowflakeSession {
             config: self.config.clone(),
             executor,
@@ -202,6 +222,9 @@ impl Destination for Snowflake {
             tables: std::collections::BTreeMap::new(),
             cleared: std::collections::BTreeSet::new(),
             unit_open: false,
+            stage,
+            pending: std::collections::BTreeMap::new(),
+            spent: Vec::new(),
         }))
     }
 }

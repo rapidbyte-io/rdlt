@@ -24,6 +24,7 @@ use super::client::{DmlOnly, Executor};
 use super::config::SnowflakeConfig;
 use super::ddl::{self, Catalog, quote};
 use super::encode;
+use super::stage::{self, Part, Stage};
 
 /// This destination publishes straight into the target.
 ///
@@ -41,6 +42,9 @@ const UNIT_BEGIN: &str = "BEGIN";
 const UNIT_COMMIT: &str = "COMMIT";
 const UNIT_ROLLBACK: &str = "ROLLBACK";
 
+/// The column a `COPY` result reports its per-file loaded rowcount in.
+const COPY_ROWS_LOADED: &str = "rows_loaded";
+
 pub(super) struct SnowflakeSession {
     pub(super) config: SnowflakeConfig,
     pub(super) executor: Box<dyn Executor>,
@@ -55,6 +59,17 @@ pub(super) struct SnowflakeSession {
     pub(super) cleared: BTreeSet<TableName>,
     /// Whether a unit transaction is currently open.
     pub(super) unit_open: bool,
+    /// The bulk path, when a bucket is configured. Absent, rows travel inside
+    /// statements.
+    pub(super) stage: Option<Stage>,
+    /// Parts written but not yet loaded, per table.
+    ///
+    /// The `COPY` waits for the commit rather than running per batch: one
+    /// statement can name every part a table accumulated, and the round trip
+    /// to a SaaS warehouse is the cost that matters here.
+    pub(super) pending: BTreeMap<TableName, Vec<Part>>,
+    /// Parts loaded by units this session already committed, awaiting removal.
+    pub(super) spent: Vec<Part>,
 }
 
 impl SnowflakeSession {
@@ -92,6 +107,65 @@ impl SnowflakeSession {
         if self.unit_open {
             let _ = self.executor.execute(UNIT_ROLLBACK).await;
             self.unit_open = false;
+        }
+    }
+
+    /// Load every staged part into its table, inside the open unit.
+    ///
+    /// One `COPY` per table rather than one per batch: the statement names
+    /// every part the table accumulated, and a round trip to a SaaS warehouse
+    /// is the cost worth spending once.
+    ///
+    /// The loaded rowcount is checked against what was written. Nothing should
+    /// be able to make them differ — the parts are named explicitly and errors
+    /// abort the statement — which is exactly why a difference means an
+    /// assumption is wrong and the unit must not commit on it.
+    async fn load_staged_parts(&mut self) -> Result<(), DestinationError> {
+        let Some(stage) = &self.stage else {
+            return Ok(());
+        };
+        let pending = std::mem::take(&mut self.pending);
+        let mut loaded_parts = Vec::new();
+        for (table, parts) in pending {
+            if parts.is_empty() {
+                continue;
+            }
+            let sql = stage::copy_sql(
+                &self.qualified(table.as_str()),
+                &self.qualified(stage.name()),
+                &parts,
+            );
+            let expected: u64 = parts.iter().map(|part| part.rows).sum();
+            let loaded = DmlOnly(&*self.executor)
+                .sum_column(&sql, COPY_ROWS_LOADED)
+                .await?;
+            if loaded != expected {
+                return Err(DestinationError::fatal(format!(
+                    "snowflake: loading `{table}` staged {expected} rows in {} part(s) but the \
+                     service reported {loaded} loaded; the unit is abandoned rather than \
+                     committed short",
+                    parts.len()
+                )));
+            }
+            loaded_parts.extend(parts);
+        }
+        self.spent.extend(loaded_parts);
+        Ok(())
+    }
+
+    /// Remove every part this session staged, loaded or not.
+    ///
+    /// Best effort by design: the objects are dead either way — a part is
+    /// named by exactly one `COPY`, and a unit that did not commit will never
+    /// name them again — and a cleanup failure must not fail a load that
+    /// committed. The scope wipe at the next open collects the remainder.
+    async fn discard_staged(&mut self) {
+        let mut parts: Vec<Part> = std::mem::take(&mut self.spent);
+        for table_parts in std::mem::take(&mut self.pending).into_values() {
+            parts.extend(table_parts);
+        }
+        if let Some(stage) = &self.stage {
+            stage.remove(&parts).await;
         }
     }
 
@@ -231,7 +305,7 @@ impl LoadSession for SnowflakeSession {
         table: &TableName,
         batch: RecordBatch,
     ) -> Result<(), DestinationError> {
-        let Some((schema, mode)) = self.tables.get(table).cloned() else {
+        let Some(schema) = self.tables.get(table).map(|(schema, _)| schema.clone()) else {
             return Err(DestinationError::fatal(format!(
                 "snowflake: `{table}` was written before it was ensured"
             )));
@@ -262,6 +336,27 @@ impl LoadSession for SnowflakeSession {
             if let Step::ClearTarget { table } = step {
                 self.cleared.insert(table);
             }
+        }
+
+        // With a bucket the rows leave as parquet and the service loads them
+        // at commit; without one they travel inside the statements themselves.
+        // The choice is the user's configuration, not a size heuristic: a
+        // threshold would be a guessed constant, and the crossover is a
+        // measurement this feature takes rather than assumes.
+        if self.stage.is_some() {
+            let rows = batch.num_rows() as u64;
+            if rows == 0 {
+                return Ok(());
+            }
+            let bytes = encode::parquet_part(&schema, &batch)?;
+            let part = self
+                .stage
+                .as_mut()
+                .expect("checked")
+                .put_part(table.as_str(), bytes, rows)
+                .await?;
+            self.pending.entry(table.clone()).or_default().push(part);
+            return Ok(());
         }
 
         let target = self.qualified(table.as_str());
@@ -315,18 +410,32 @@ impl LoadSession for SnowflakeSession {
         // unit, which discards exactly what this attempt wrote.
         if replayed && unit::replay_disposition(PUBLISH) == unit::ReplayDisposition::DiscardUnit {
             self.rollback_unit().await;
+            self.discard_staged().await;
             return Ok(receipt);
+        }
+
+        // The staged parts land BEFORE the publish steps, in the same
+        // transaction: the receipt this unit is about to write claims those
+        // rows are durable, so it must not be written first.
+        if let Err(e) = self.load_staged_parts().await {
+            self.rollback_unit().await;
+            self.discard_staged().await;
+            return Err(e);
         }
 
         for step in &script.steps {
             let executor = DmlOnly(&*self.executor);
             if let Err(e) = self.execute_step(&executor, &meta, step).await {
                 self.rollback_unit().await;
+                self.discard_staged().await;
                 return Err(e);
             }
         }
         self.executor.execute(UNIT_COMMIT).await?;
         self.unit_open = false;
+        // Only after the commit: a part removed before it is durable in the
+        // target is a part no recovery could re-read.
+        self.discard_staged().await;
         Ok(receipt)
     }
 

@@ -47,27 +47,15 @@ pub(super) fn insert_statements(
     if batch.num_rows() == 0 {
         return Ok(Vec::new());
     }
-    let columns: Vec<&str> = schema.columns.iter().map(|c| c.name.as_str()).collect();
-    let column_list = columns
+    let column_list = schema
+        .columns
         .iter()
-        .map(|name| quote(name))
+        .map(|c| quote(&c.name))
         .collect::<Vec<_>>()
         .join(", ");
 
-    // Resolve each schema column to its position in the batch ONCE. A column
-    // the batch does not carry is a contract violation, not a NULL: the engine
-    // guarantees the batch conforms to the ensured schema.
-    let indices: Vec<usize> = columns
-        .iter()
-        .map(|name| {
-            batch.schema().index_of(name).map_err(|_| {
-                DestinationError::fatal(format!(
-                    "snowflake: batch for `{}` is missing column `{name}`",
-                    schema.table
-                ))
-            })
-        })
-        .collect::<Result<_, _>>()?;
+    // Resolved ONCE, not per row.
+    let indices = column_indices(schema, batch)?;
 
     let mut out = Vec::new();
     for chunk_start in (0..batch.num_rows()).step_by(ROWS_PER_STATEMENT) {
@@ -86,6 +74,64 @@ pub(super) fn insert_statements(
         ));
     }
     Ok(out)
+}
+
+/// One batch as a parquet part, projected to the ensured schema.
+///
+/// Projected rather than written as-delivered because the load matches columns
+/// BY NAME: a column the target does not have would fail the `COPY` for the
+/// whole file, and the batch is free to carry more than the schema ensured.
+/// The column NAMES are written as the schema spells them — the load is
+/// case-insensitive, so the catalog's upper-case form matches either way.
+///
+/// Snappy, matching the workspace's parquet default: the part exists for one
+/// network hop and one read, so decompression speed is worth more than ratio.
+pub(super) fn parquet_part(
+    schema: &TableSchema,
+    batch: &RecordBatch,
+) -> Result<Vec<u8>, DestinationError> {
+    let indices = column_indices(schema, batch)?;
+    let projected = batch.project(&indices).map_err(|e| {
+        DestinationError::fatal(format!(
+            "snowflake: projecting batch for `{}`: {e}",
+            schema.table
+        ))
+    })?;
+    let properties = parquet::file::properties::WriterProperties::builder()
+        .set_compression(parquet::basic::Compression::SNAPPY)
+        .build();
+    let mut buf = Vec::new();
+    let mut writer = parquet::arrow::ArrowWriter::try_new(
+        &mut buf,
+        projected.schema(),
+        Some(properties),
+    )
+    .map_err(DestinationError::fatal)?;
+    writer.write(&projected).map_err(DestinationError::fatal)?;
+    writer.close().map_err(DestinationError::fatal)?;
+    Ok(buf)
+}
+
+/// Where each ensured column sits in the batch.
+///
+/// A column the batch does not carry is a contract violation, not a NULL: the
+/// engine guarantees the batch conforms to the ensured schema.
+fn column_indices(
+    schema: &TableSchema,
+    batch: &RecordBatch,
+) -> Result<Vec<usize>, DestinationError> {
+    schema
+        .columns
+        .iter()
+        .map(|column| {
+            batch.schema().index_of(&column.name).map_err(|_| {
+                DestinationError::fatal(format!(
+                    "snowflake: batch for `{}` is missing column `{}`",
+                    schema.table, column.name
+                ))
+            })
+        })
+        .collect()
 }
 
 /// Render one cell as a SQL literal.

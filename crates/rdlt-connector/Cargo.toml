@@ -17,6 +17,7 @@ arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
+object_store = { workspace = true, optional = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -33,3 +34,7 @@ failpoints = ["rdlt-core/failpoints"]
 # Opt-in `schemars::JsonSchema` for `Secret`, so the SPI carries no mandatory
 # schemars dependency; connectors that generate config schemas enable it.
 schema = ["dep:schemars"]
+# Opt-in object-store vocabulary (the one recoverability rule), for the
+# connectors that reach an object store; the SPI carries no mandatory
+# dependency on it.
+object-store = ["dep:object_store"]

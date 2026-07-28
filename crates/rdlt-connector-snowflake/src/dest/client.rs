@@ -130,6 +130,12 @@ pub(crate) trait Executor: Send + Sync {
     /// first row — the shape every probe in the commit protocol needs.
     async fn scalar_u64(&self, sql: &str, binds: &[&str]) -> Result<u64, DestinationError>;
 
+    /// Run a statement and total a named column across every row it returns.
+    ///
+    /// The shape a `COPY` verification needs: the result carries one row per
+    /// file loaded, and what has to be checked is the total.
+    async fn sum_column(&self, sql: &str, column: &str) -> Result<u64, DestinationError>;
+
     /// Run a statement and read its first column as a set of names — the
     /// shape the catalog read needs.
     async fn column_names(
@@ -168,6 +174,37 @@ impl Executor for SessionExecutor {
                 "snowflake: expected one integer from `{sql}`, got nothing usable"
             ))
         })
+    }
+
+    async fn sum_column(&self, sql: &str, column: &str) -> Result<u64, DestinationError> {
+        let table = self.query(sql, &[]).await?;
+        let mut total = 0;
+        for row in table.rows::<DynamicRow>().map_err(classify)? {
+            let row = row.map_err(classify)?;
+            // Resolved case-insensitively: the service names a result's own
+            // columns in its own case, and pinning that case here would make
+            // the check silently total nothing if it ever changed.
+            let index = row
+                .schema()
+                .columns()
+                .iter()
+                .find(|c| c.name().eq_ignore_ascii_case(column))
+                .map(|c| c.index())
+                .ok_or_else(|| {
+                    DestinationError::fatal(format!(
+                        "snowflake: the result of `{sql}` carries no `{column}` column"
+                    ))
+                })?;
+            let cell = row.value_at(index).map_err(|e| {
+                DestinationError::fatal(format!("snowflake: reading `{column}`: {e}"))
+            })?;
+            total += cell_as_u64(cell).ok_or_else(|| {
+                DestinationError::fatal(format!(
+                    "snowflake: `{column}` is not a count in the result of `{sql}`"
+                ))
+            })?;
+        }
+        Ok(total)
     }
 
     async fn column_names(
@@ -266,6 +303,13 @@ impl Executor for DmlOnly<'_> {
             return Err(ddl_in_unit(sql));
         }
         self.0.scalar_u64(sql, binds).await
+    }
+
+    async fn sum_column(&self, sql: &str, column: &str) -> Result<u64, DestinationError> {
+        if is_ddl(sql) {
+            return Err(ddl_in_unit(sql));
+        }
+        self.0.sum_column(sql, column).await
     }
 
     async fn column_names(
@@ -431,6 +475,10 @@ mod tests {
             Ok(())
         }
         async fn scalar_u64(&self, sql: &str, _: &[&str]) -> Result<u64, DestinationError> {
+            self.seen.lock().expect("lock").push(sql.to_owned());
+            Ok(0)
+        }
+        async fn sum_column(&self, sql: &str, _: &str) -> Result<u64, DestinationError> {
             self.seen.lock().expect("lock").push(sql.to_owned());
             Ok(0)
         }

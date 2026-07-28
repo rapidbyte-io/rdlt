@@ -31,9 +31,9 @@ fn fatal(e: impl std::fmt::Display) -> DestinationError {
 /// `classify`: only transport-level failures ride the engine's retry budget;
 /// everything determined — missing objects, rejected credentials, unusable
 /// paths, unsupported operations — is fatal and the operator's to fix. Both
-/// halves consult `s3::is_recoverable`, which is the single decision.
+/// halves consult the SPI's `is_recoverable`, which is the single decision.
 pub(crate) fn store_err(e: object_store::Error) -> DestinationError {
-    if s3::is_recoverable(&e) {
+    if rdlt_connector::objects::is_recoverable(&e) {
         DestinationError::transient(e.to_string())
     } else {
         DestinationError::fatal(e.to_string())
@@ -575,7 +575,7 @@ mod tests {
             store: "S3",
             source: "connection reset by peer".into(),
         };
-        assert!(s3::is_recoverable(&transport));
+        assert!(rdlt_connector::objects::is_recoverable(&transport));
         assert!(matches!(
             store_err(transport),
             DestinationError::Transient { .. }
@@ -584,7 +584,7 @@ mod tests {
             path: "x".into(),
             source: "gone".into(),
         };
-        assert!(!s3::is_recoverable(&missing));
+        assert!(!rdlt_connector::objects::is_recoverable(&missing));
         assert!(matches!(store_err(missing), DestinationError::Fatal { .. }));
 
         // A failure that CANNOT heal must not consume the retry budget: retrying
@@ -607,7 +607,7 @@ mod tests {
         ] {
             let rendered = deterministic.to_string();
             assert!(
-                !s3::is_recoverable(&deterministic),
+                !rdlt_connector::objects::is_recoverable(&deterministic),
                 "`{rendered}` cannot heal on retry"
             );
             assert!(
@@ -632,7 +632,7 @@ mod tests {
         ] {
             let rendered = conflict.to_string();
             assert!(
-                s3::is_recoverable(&conflict),
+                rdlt_connector::objects::is_recoverable(&conflict),
                 "`{rendered}` heals on retry for an unconditional request"
             );
             assert!(

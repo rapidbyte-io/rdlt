@@ -12,7 +12,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-rdlt-connector = { workspace = true, features = ["schema"] }
+rdlt-connector = { workspace = true, features = ["schema", "object-store"] }
 rdlt-connector-sqlcore = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }
@@ -23,9 +23,17 @@ serde_yaml = { workspace = true }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 tokio = { workspace = true }
+# The bulk path only: parts are written as parquet to the user's own bucket
+# and read back by the service's COPY. Both are inert until a stage is
+# configured.
+parquet = { workspace = true }
+object_store = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
 
 [dev-dependencies]
 rdlt-testkit = { workspace = true }
+futures = { workspace = true }
 rdlt-engine = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 

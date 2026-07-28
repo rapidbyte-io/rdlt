@@ -12,7 +12,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-rdlt-connector = { workspace = true, features = ["schema"] }
+rdlt-connector = { workspace = true, features = ["schema", "object-store"] }
 arrow = { workspace = true }
 blake3 = { workspace = true }
 schemars = { workspace = true }

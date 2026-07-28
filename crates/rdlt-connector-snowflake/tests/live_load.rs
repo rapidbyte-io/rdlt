@@ -68,8 +68,11 @@ where
     .await
     .expect("the scratch schema is created by open");
 
-    let result = std::panic::AssertUnwindSafe(body(config)).await;
-    drop(result);
+    // The panic is CAUGHT rather than allowed to unwind, because unwinding
+    // past the cleanup below is exactly the case cleanup exists for: a failing
+    // assertion is when a schema gets left behind. It is re-raised afterwards
+    // so the test still fails.
+    let outcome = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(body(config))).await;
 
     // Drop through a raw statement: there is no destination API for it, and
     // leaving the schema would be debris.
@@ -82,6 +85,10 @@ where
         ),
     )
     .await;
+
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
 }
 
 #[tokio::test]

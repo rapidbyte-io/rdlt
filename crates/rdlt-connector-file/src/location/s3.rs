@@ -289,7 +289,7 @@ impl S3Location {
         );
         // Severity comes from the ONE rulebook; this match only chooses the
         // wording, so a message can never disagree with a classification.
-        if is_recoverable(&error) {
+        if rdlt_connector::objects::is_recoverable(&error) {
             return SourceError::transient(format!("{name}: {error}"));
         }
         match &error {
@@ -305,36 +305,6 @@ impl S3Location {
             _ => SourceError::fatal(format!("{name}: {error}")),
         }
     }
-}
-
-/// The one store-error recoverability rule, shared by the read and write paths.
-///
-/// An ALLOW-LIST, deliberately. Every variant outside it states a determined
-/// fact about the request or the configuration — a missing object, a rejected
-/// credential, an unusable path, an unsupported operation, an unknown setting —
-/// and retrying one burns the engine's budget on a certainty, then reports
-/// transient exhaustion in place of the real cause. It is also the safe default
-/// for a `#[non_exhaustive]` upstream enum: a variant added by a future release
-/// costs a retry that would not have helped, rather than hiding one that never
-/// will.
-///
-/// Three variants are recoverable:
-///
-/// - `Generic` wraps transport-level failure.
-/// - `AlreadyExists` is what HTTP 409 becomes, and `Precondition` HTTP 412.
-///   Those are determined answers only to a CONDITIONAL request — and this
-///   connector issues none. What a plain put, copy or delete gets a 409 for is
-///   S3's `OperationAborted` ("a conflicting conditional operation is in
-///   progress; try again"), which is a retry-me condition. The store's own retry
-///   loop will not cover it: it retries 409 only when `retry_on_conflict` is
-///   set, which upstream sets solely for its conditional put.
-pub(crate) fn is_recoverable(error: &object_store::Error) -> bool {
-    matches!(
-        error,
-        object_store::Error::Generic { .. }
-            | object_store::Error::AlreadyExists { .. }
-            | object_store::Error::Precondition { .. }
-    )
 }
 
 impl S3Location {
@@ -456,7 +426,7 @@ impl S3Reader {
                         // a mid-stream transport failure keeps a retryable
                         // kind so consumers classify it transient instead
                         // of failing the whole run.
-                        let kind = if is_recoverable(&e) {
+                        let kind = if rdlt_connector::objects::is_recoverable(&e) {
                             std::io::ErrorKind::ConnectionReset
                         } else {
                             std::io::ErrorKind::Other

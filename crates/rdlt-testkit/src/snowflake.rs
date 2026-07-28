@@ -124,6 +124,76 @@ pub fn credentials_with(lookup: &dyn Lookup) -> Option<SnowflakeCreds> {
     })
 }
 
+/// Everything a bulk-path leg needs: a bucket this process can write and the
+/// account can read.
+///
+/// Separate from [`SnowflakeCreds`] and gated separately, because staging is
+/// infrastructure a contributor may not have even with a working account —
+/// missing it must skip the bulk legs alone, not the whole suite.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct StageCreds {
+    /// The bucket.
+    pub bucket: String,
+    /// Its region.
+    pub region: Option<String>,
+    /// An endpoint override, for S3-compatible storage.
+    pub endpoint: Option<String>,
+    /// A key prefix to stay within.
+    pub prefix: Option<String>,
+    /// Access key.
+    pub access_key: String,
+    /// Secret key.
+    pub secret_key: String,
+}
+
+/// Resolve the stage credentials, or `None` when no bucket is configured.
+pub fn stage_credentials() -> Option<StageCreds> {
+    stage_credentials_with(&RealLookup)
+}
+
+/// [`stage_credentials`] against a supplied lookup — the testable form.
+///
+/// The bucket's settings arrive together in one `stage.env` rather than as a
+/// file each: they are a single coherent credential, and splitting them across
+/// files invites a half-configured bucket that fails mid-load instead of
+/// skipping.
+pub fn stage_credentials_with(lookup: &dyn Lookup) -> Option<StageCreds> {
+    if lookup.env(FORCE_NO_SNOWFLAKE).is_some() {
+        return None;
+    }
+    let file = lookup.file("stage.env").map(|text| dotenv(&text));
+    let entry = |var: &str| {
+        lookup.env(var).or_else(|| {
+            file.as_ref()
+                .and_then(|map| map.get(var).cloned())
+                .filter(|value| !value.is_empty())
+        })
+    };
+    Some(StageCreds {
+        bucket: entry("RDLT_SNOWFLAKE_STAGE_BUCKET")?,
+        region: entry("RDLT_SNOWFLAKE_STAGE_REGION"),
+        endpoint: entry("RDLT_SNOWFLAKE_STAGE_ENDPOINT"),
+        prefix: entry("RDLT_SNOWFLAKE_STAGE_PREFIX"),
+        access_key: entry("RDLT_SNOWFLAKE_STAGE_ACCESS_KEY")?,
+        secret_key: entry("RDLT_SNOWFLAKE_STAGE_SECRET_KEY")?,
+    })
+}
+
+/// Parse `KEY=VALUE` lines, skipping blanks and comments.
+fn dotenv(text: &str) -> std::collections::BTreeMap<String, String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .filter_map(|line| line.split_once('='))
+        .map(|(key, value)| {
+            // A quoted value is a shell habit, not part of the credential.
+            let value = value.trim().trim_matches(['"', '\'']).to_owned();
+            (key.trim().to_owned(), value)
+        })
+        .collect()
+}
+
 /// An additional token credential, for the auth-matrix legs.
 ///
 /// Each auth method gates on its OWN entry, so a missing PAT skips only the
@@ -275,6 +345,59 @@ mod tests {
         assert!(token_with(&pat_only, TokenKind::Pat).is_some());
         assert!(token_with(&pat_only, TokenKind::OauthToken).is_none());
         assert!(token_with(&pat_only, TokenKind::Password).is_none());
+    }
+
+    #[test]
+    fn the_stage_gate_reads_one_env_file_and_the_environment_overrides_it() {
+        let file = "# a bucket\n\
+                    RDLT_SNOWFLAKE_STAGE_BUCKET=from-file\n\
+                    RDLT_SNOWFLAKE_STAGE_REGION=\"eu-west-2\"\n\
+                    \n\
+                    RDLT_SNOWFLAKE_STAGE_ACCESS_KEY=AK\n\
+                    RDLT_SNOWFLAKE_STAGE_SECRET_KEY=SK\n";
+        let creds = stage_credentials_with(&Fake::with(&[("stage.env", file)]))
+            .expect("a complete stage.env resolves");
+        assert_eq!(creds.bucket, "from-file");
+        assert_eq!(
+            creds.region.as_deref(),
+            Some("eu-west-2"),
+            "a quoted value is a shell habit, not part of the credential"
+        );
+        assert!(creds.endpoint.is_none(), "absent means AWS");
+
+        let overridden = stage_credentials_with(&Fake::with(&[
+            ("stage.env", file),
+            ("RDLT_SNOWFLAKE_STAGE_BUCKET", "from-env"),
+        ]))
+        .expect("resolves");
+        assert_eq!(overridden.bucket, "from-env");
+    }
+
+    #[test]
+    fn a_half_configured_bucket_skips_rather_than_failing_mid_load() {
+        // A bucket with no secret key would connect and fail on the first
+        // part, long after the leg reported itself running.
+        let partial = Fake::with(&[(
+            "stage.env",
+            "RDLT_SNOWFLAKE_STAGE_BUCKET=b\nRDLT_SNOWFLAKE_STAGE_ACCESS_KEY=AK\n",
+        )]);
+        assert!(stage_credentials_with(&partial).is_none());
+        // And the stage gate is independent of the account gate: one missing
+        // must not take the other's legs with it.
+        assert!(
+            stage_credentials_with(&Fake::with(&[("RDLT_SNOWFLAKE_ACCOUNT", "A")])).is_none()
+        );
+    }
+
+    #[test]
+    fn the_force_flag_covers_the_stage_gate_too() {
+        let forced = Fake::with(&[
+            (FORCE_NO_SNOWFLAKE, "1"),
+            ("RDLT_SNOWFLAKE_STAGE_BUCKET", "b"),
+            ("RDLT_SNOWFLAKE_STAGE_ACCESS_KEY", "AK"),
+            ("RDLT_SNOWFLAKE_STAGE_SECRET_KEY", "SK"),
+        ]);
+        assert!(stage_credentials_with(&forced).is_none());
     }
 
     #[test]

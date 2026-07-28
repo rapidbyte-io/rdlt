@@ -137,7 +137,7 @@ new rows; kill at each crash point and converge duplicate-free.
   (comment says so); NULL-in-merge-key typed write-time refusal (house
   rule); arrival column assigned at insert (mechanism per D4, cost noted
   for T037).
-- [ ] T013 [US1] External-stage COPY ingestion path: `src/dest/ingest.rs` +
+- [X] T013 [US1] External-stage COPY ingestion path: `src/dest/ingest.rs` +
   `src/dest/stage.rs` — parquet parts via the file-family writer under a
   pipeline-scoped prefix in the configured stage bucket (`object_store`),
   `CREATE STAGE` (DDL, outside units) + `COPY INTO …
