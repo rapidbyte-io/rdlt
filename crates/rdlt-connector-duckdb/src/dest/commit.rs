@@ -17,7 +17,9 @@ use rdlt_connector::{
     CommitMeta, CommitReceipt, DestinationError, LoadSession, RecordBatch, WriteMode,
     core::{PipelineId, StateDoc, TableName, TableSchema, crash_point, schema::system_columns},
 };
-use rdlt_connector_sqlcore::plan::{self as sqlplan, IndexSpec, TableFacts, scope_replace_sql};
+use rdlt_connector_sqlcore::plan::{
+    self as sqlplan, IndexSpec, TableFacts, ValidateError, scope_replace_sql,
+};
 use rdlt_connector_sqlcore::{
     CommitCtx, DestOptions, FullLoadPublish, MergeDialect, MergeStrategy, Step, build_merge_plan,
     commit_script, insert_select_sql, render_arm, staged_probe_targets,
@@ -68,6 +70,139 @@ fn legacy_unique_index_name(table: &str, columns: &[String]) -> String {
 fn create_index_sql(unique: bool, table: &str, columns: &[String]) -> String {
     // The statement is sqlcore's; only the quoting is this destination's.
     rdlt_connector_sqlcore::names::create_index_sql(unique, table, columns, quote)
+}
+
+// ---- Ensure: rendering, separated from execution ----
+//
+// These build the exact statement sequence `ensure_table` runs, in order, and
+// touch no connection. Separating them is what makes the emitted DDL testable
+// at all: executing it needs a live database, but comparing it needs nothing.
+
+/// One ensure statement plus what the caller must know to classify its
+/// failure. A unique-index failure is the only one carrying a special
+/// diagnosis, so it is the only kind distinguished here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EnsureStmt {
+    pub(crate) sql: String,
+    pub(crate) unique_index: Option<Vec<String>>,
+}
+
+impl EnsureStmt {
+    fn plain(sql: String) -> Self {
+        Self {
+            sql,
+            unique_index: None,
+        }
+    }
+}
+
+/// Phase 1 — the table statements: create BOTH legs, then add and widen their
+/// columns. Unlike the postgres destination this always builds a stage leg,
+/// because every write mode here publishes through one.
+///
+/// `previous` is the schema THIS SESSION last ensured, never the live catalog
+/// — that is what makes the widen a within-run rule.
+pub(crate) fn table_ddl_stmts(schema: &TableSchema, previous: Option<&TableSchema>) -> Vec<String> {
+    let stage = stage_name(&schema.table);
+    let mut out = vec![
+        create_table_sql(schema.table.as_str(), schema, false),
+        create_table_sql(&stage, schema, true),
+    ];
+    // Additive schema migration: add new columns; widen changed ones with a
+    // cast — DuckDB's ALTER … SET DATA TYPE migrates existing rows.
+    for (target, is_stage) in [
+        (schema.table.as_str().to_owned(), false),
+        (stage.clone(), true),
+    ] {
+        for column in &schema.columns {
+            out.push(format!(
+                "ALTER TABLE {} ADD COLUMN IF NOT EXISTS {} {}",
+                quote(&target),
+                quote(&column.name),
+                sql_type(&column.column_type, is_stage)
+            ));
+            if let Some(prev) = previous
+                && let Some(old) = prev.column(&column.name)
+                && old.column_type != column.column_type
+            {
+                out.push(format!(
+                    "ALTER TABLE {} ALTER COLUMN {} SET DATA TYPE {}",
+                    quote(&target),
+                    quote(&column.name),
+                    sql_type(&column.column_type, is_stage)
+                ));
+            }
+        }
+    }
+    out
+}
+
+/// Phase 2 — option validation, then the scd2 validity columns and the index
+/// plan. Runs AFTER phase 1 has been applied, preserving today's failure
+/// point. Non-merge modes validate and return nothing to execute.
+pub(crate) fn merge_ensure_stmts(
+    options: &DestOptions,
+    schema: &TableSchema,
+    mode: &WriteMode,
+) -> Result<Vec<EnsureStmt>, ValidateError> {
+    let table = schema.table.as_str();
+    // The option-vs-mode rules live in sqlcore — one rule set, identical
+    // typed errors on every SQL destination.
+    let WriteMode::Merge { key } = mode else {
+        sqlplan::validate_non_merge(options, table)?;
+        return Ok(Vec::new());
+    };
+    let has_identity = schema.columns.iter().any(|c| c.name == system_columns::ID);
+    let is_child = schema.parent.is_some();
+    sqlplan::validate_merge(
+        options,
+        table,
+        key,
+        &TableFacts {
+            schema,
+            has_identity,
+            is_child,
+        },
+    )?;
+    let mut out = Vec::new();
+    if options.strategy_for(table) == MergeStrategy::Scd2 {
+        let scd2 = options.scd2_for(table);
+        // Validity columns on the TARGET only (the stage carries the stream's
+        // shape); additive for pre-existing scd2 tables. DDL difference vs
+        // postgres: DuckDB rejects ADD COLUMN with a NOT NULL constraint. The
+        // insert arm always supplies the boundary value, so the constraint was
+        // belt only; DEFAULT now() still backfills pre-existing rows on a
+        // table adopting scd2.
+        for (col, extra) in [
+            (&scd2.valid_from, "TIMESTAMPTZ DEFAULT now()"),
+            (&scd2.valid_to, "TIMESTAMPTZ"),
+        ] {
+            out.push(EnsureStmt::plain(format!(
+                "ALTER TABLE {} ADD COLUMN IF NOT EXISTS {} {extra}",
+                quote(table),
+                quote(col)
+            )));
+        }
+    }
+    // Index plan (identity indexes + scope index) — shared shape; this
+    // destination owns only the SQL text.
+    for IndexSpec { unique, columns } in
+        sqlplan::index_plan(options, table, key, has_identity, is_child)
+    {
+        if unique {
+            // A unique index this destination created under an older naming
+            // scheme would otherwise survive beside the current one.
+            out.push(EnsureStmt::plain(format!(
+                "DROP INDEX IF EXISTS {}",
+                quote(&legacy_unique_index_name(table, &columns))
+            )));
+        }
+        out.push(EnsureStmt {
+            sql: create_index_sql(unique, table, &columns),
+            unique_index: unique.then_some(columns),
+        });
+    }
+    Ok(out)
 }
 
 fn staged_nonempty(
@@ -187,139 +322,42 @@ impl LoadSession for DuckDbSession {
         schema: &TableSchema,
         mode: &WriteMode,
     ) -> Result<(), DestinationError> {
+        // Rendering lives beside the other DDL helpers; this drives it. The
+        // split is what makes the emitted sequence testable without a
+        // database — the statements are compared as data, and only their
+        // execution needs a connection.
         let table = schema.table.clone();
-        let stage = stage_name(&table);
         let previous = self.tables.get(&table).map(|(s, _)| s.clone());
-        {
-            let schema = schema.clone();
+        let table_stmts = table_ddl_stmts(schema, previous.as_ref());
+        self.with_conn(move |conn| {
+            for sql in &table_stmts {
+                conn.execute_batch(sql).map_err(classify)?;
+            }
+            Ok(())
+        })?;
+        let table_str = table.as_str().to_owned();
+        for stmt in merge_ensure_stmts(&self.options, schema, mode).map_err(fatal)? {
+            let table_str = table_str.clone();
             self.with_conn(move |conn| {
-                conn.execute_batch(&create_table_sql(schema.table.as_str(), &schema, false))
-                    .map_err(classify)?;
-                conn.execute_batch(&create_table_sql(&stage, &schema, true))
-                    .map_err(classify)?;
-                // Additive schema migration: add new columns; widen changed
-                // ones with a cast — DuckDB's ALTER … SET DATA TYPE migrates
-                // existing rows.
-                for (target, is_stage) in [
-                    (schema.table.as_str().to_owned(), false),
-                    (stage.clone(), true),
-                ] {
-                    for column in &schema.columns {
-                        let add = format!(
-                            "ALTER TABLE {} ADD COLUMN IF NOT EXISTS {} {}",
-                            quote(&target),
-                            quote(&column.name),
-                            sql_type(&column.column_type, is_stage)
-                        );
-                        conn.execute_batch(&add).map_err(classify)?;
-                        if let Some(prev) = &previous
-                            && let Some(old) = prev.column(&column.name)
-                            && old.column_type != column.column_type
-                        {
-                            let widen = format!(
-                                "ALTER TABLE {} ALTER COLUMN {} SET DATA TYPE {}",
-                                quote(&target),
-                                quote(&column.name),
-                                sql_type(&column.column_type, is_stage)
-                            );
-                            conn.execute_batch(&widen).map_err(classify)?;
-                        }
+                conn.execute_batch(&stmt.sql).map_err(|e| {
+                    // Only an actual constraint violation gets the
+                    // duplicate-keys diagnosis — classified on the library
+                    // error BEFORE wrapping, so an unrelated failure whose
+                    // message merely mentions violations (a table name, a
+                    // quoted value) can never be misdiagnosed; anything else
+                    // (locks, disk, I/O) surfaces as itself.
+                    match &stmt.unique_index {
+                        Some(columns) if is_constraint_violation(&e) => fatal(
+                            rdlt_connector_sqlcore::names::duplicate_merge_key_diagnosis(
+                                &table_str,
+                                columns,
+                                &e.to_string(),
+                            ),
+                        ),
+                        _ => fatal(e),
                     }
-                }
-                Ok(())
-            })?;
-        }
-        // The option-vs-mode rules live in sqlcore — one rule set, identical
-        // typed errors on every SQL destination.
-        if !matches!(mode, WriteMode::Merge { .. }) {
-            sqlplan::validate_non_merge(&self.options, schema.table.as_str()).map_err(fatal)?;
-        }
-        if let WriteMode::Merge { key } = mode {
-            let table_str = schema.table.as_str().to_owned();
-            let strategy = self.options.strategy_for(&table_str);
-            let has_identity = schema.columns.iter().any(|c| c.name == system_columns::ID);
-            let is_child = schema.parent.is_some();
-            sqlplan::validate_merge(
-                &self.options,
-                &table_str,
-                key,
-                &TableFacts {
-                    schema,
-                    has_identity,
-                    is_child,
-                },
-            )
-            .map_err(fatal)?;
-            if strategy == MergeStrategy::Scd2 {
-                let scd2 = self.options.scd2_for(&table_str);
-                // Validity columns on the TARGET only (the stage carries the
-                // stream's shape); additive for pre-existing scd2 tables.
-                // DDL difference vs postgres: DuckDB rejects ADD COLUMN with a
-                // NOT NULL constraint. The insert arm always supplies the
-                // boundary value, so the constraint was belt only; DEFAULT
-                // now() still backfills pre-existing rows on a table adopting
-                // scd2.
-                let stmts: Vec<String> = [
-                    (&scd2.valid_from, "TIMESTAMPTZ DEFAULT now()"),
-                    (&scd2.valid_to, "TIMESTAMPTZ"),
-                ]
-                .into_iter()
-                .map(|(col, extra)| {
-                    format!(
-                        "ALTER TABLE {} ADD COLUMN IF NOT EXISTS {} {extra}",
-                        quote(&table_str),
-                        quote(col)
-                    )
                 })
-                .collect();
-                self.with_conn(|conn| {
-                    for sql in &stmts {
-                        conn.execute_batch(sql).map_err(classify)?;
-                    }
-                    Ok(())
-                })?;
-            }
-            // Index plan (identity indexes + scope index) — shared shape;
-            // this destination owns only the SQL text. Pre-existing duplicate
-            // keys under upsert surface as the typed naming error.
-            let index_stmts: Vec<(bool, Vec<String>, String)> =
-                sqlplan::index_plan(&self.options, &table_str, key, has_identity, is_child)
-                    .into_iter()
-                    .map(|IndexSpec { unique, columns }| {
-                        let sql = create_index_sql(unique, &table_str, &columns);
-                        (unique, columns, sql)
-                    })
-                    .collect();
-            for (unique, columns, sql) in index_stmts {
-                if unique {
-                    let legacy = legacy_unique_index_name(&table_str, &columns);
-                    self.with_conn(|conn| {
-                        conn.execute_batch(&format!("DROP INDEX IF EXISTS {}", quote(&legacy)))
-                            .map_err(classify)
-                    })?;
-                }
-                // Only an actual constraint violation gets the
-                // duplicate-keys diagnosis — classified on the library
-                // error BEFORE wrapping, so an unrelated failure whose
-                // message merely mentions violations (a table name, a
-                // quoted value) can never be misdiagnosed; anything else
-                // (locks, disk, I/O) surfaces as itself.
-                self.with_conn(|conn| {
-                    conn.execute_batch(&sql).map_err(|e| {
-                        if unique && is_constraint_violation(&e) {
-                            fatal(
-                                rdlt_connector_sqlcore::names::duplicate_merge_key_diagnosis(
-                                    &table_str,
-                                    &columns,
-                                    &e.to_string(),
-                                ),
-                            )
-                        } else {
-                            fatal(e)
-                        }
-                    })
-                })?;
-            }
+            })?;
         }
         self.tables.insert(table, (schema.clone(), mode.clone()));
         Ok(())

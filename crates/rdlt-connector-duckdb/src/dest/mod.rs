@@ -223,6 +223,38 @@ fn apply_setup(conn: &Connection, stmt: &SetupStmt) -> Result<(), DestinationErr
     }
 }
 
+/// SQL-generation seam, exposed ONLY for the ensure pin suite: the pins bind
+/// the exact statement text so a refactor cannot change what a user's
+/// database receives. Not a public API.
+#[doc(hidden)]
+pub mod sqlgen {
+    use rdlt_connector::core::{TableSchema, WriteMode};
+    use rdlt_connector_sqlcore::plan::ValidateError;
+
+    use super::DestOptions;
+
+    /// One ensure statement and, when it creates a unique index, that index's
+    /// key columns — the distinction the duplicate-key diagnosis depends on.
+    pub type EnsureStatement = (String, Option<Vec<String>>);
+
+    /// The table-ensure statements, in emission order.
+    pub fn ensure_table_sql(schema: &TableSchema, previous: Option<&TableSchema>) -> Vec<String> {
+        super::commit::table_ddl_stmts(schema, previous)
+    }
+
+    /// The post-table ensure statements, in emission order.
+    pub fn ensure_merge_sql(
+        options: &DestOptions,
+        schema: &TableSchema,
+        mode: &WriteMode,
+    ) -> Result<Vec<EnsureStatement>, ValidateError> {
+        Ok(super::commit::merge_ensure_stmts(options, schema, mode)?
+            .into_iter()
+            .map(|s| (s.sql, s.unique_index))
+            .collect())
+    }
+}
+
 /// Fail-point registry for crash-sweep tests; coarse by design — DuckDB's own
 /// transaction is one atomic step. Macro defined once in `rdlt_core::failpoint`.
 #[cfg(feature = "failpoints")]
