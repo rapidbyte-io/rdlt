@@ -286,10 +286,10 @@ timings, configuration; every shipped default cites a measurement.
   OAuth integration sketch), credential convention, s3-compatible-endpoint allowlist caveat (research D6),
   internal-stage PUT status; `make docs` clean (missing_docs on all public
   items).
-- [ ] T039 [P] Quickstart verified verbatim against the qual account
+- [X] T039 [P] Quickstart verified verbatim against the qual account
   (SC-006), corrections folded back into
   `specs/022-snowflake-dest/quickstart.md`.
-- [ ] T040 dlt-parity matrix with named deviations (internal-stage PUT gap
+- [X] T040 dlt-parity matrix with named deviations (internal-stage PUT gap
   foremost) in `specs/022-snowflake-dest/parity.md`; file the upstream
   `snowflake-connector-rs` issue for PUT/raw-response support and record
   its URL as the deferral's trigger reference in close-out.md.

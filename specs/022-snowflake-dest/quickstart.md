@@ -41,13 +41,19 @@ destination:
   snowflake:
     account: "MYORG-MYACCT"            # <acct> in <acct>.snowflakecomputing.com
     user: "MY_LOADER"
-    private_key: "path:~/.config/rdlt/snowflake/rdlt_key.p8"
-    key_passphrase: "path:~/.config/rdlt/snowflake/passphrase"
+    auth:
+      key_pair:
+        # A PATH to the key. A value carrying PEM armour is taken as the key
+        # material itself; anything else is a filename.
+        private_key: "/home/you/.config/rdlt/snowflake/rdlt_key.p8"
+        passphrase: "your-passphrase"
     database: "ANALYTICS"
     schema: "RAW"
     # role/warehouse optional — the user's server-side defaults apply
     merge_strategy: upsert
 ```
+
+`~` is not expanded — write the path out, or supply the key inline.
 
 ## 3. Run
 
@@ -56,12 +62,30 @@ rdlt run pipeline.yaml
 ```
 
 First run: the destination creates `"ORDERS"` (quoted-uppercase — plain
-`select * from orders` works in a worksheet), stages parquet parts to an
-internal named stage, `COPY INTO`s them, merges by `id` with last-wins
-dedup, and commits receipt + state atomically. Re-running the same load
-publishes nothing (replay). Subsequent runs merge only what the source
-cursor delivers, and — with an unchanged schema — issue zero schema
-statements.
+`select * from orders` works in a worksheet), sends the rows as batched
+`INSERT` statements, merges by `id` with last-wins dedup, and commits
+receipt + state atomically. Re-running the same load publishes nothing
+(replay). Subsequent runs merge only what the source cursor delivers, and —
+with an unchanged schema — issue zero schema statements.
+
+### Optional: bulk loading through your own bucket
+
+With a bucket the rows leave as parquet and Snowflake loads them itself.
+Nothing else in the document changes:
+
+```yaml
+    stage:
+      s3:
+        bucket: "my-staging-bucket"
+        prefix: "rdlt/parts"
+        region: "eu-west-2"
+        access_key: "AKIA..."
+        secret_key: "..."
+```
+
+Internal named stages are **not** supported — `PUT` is unreachable over the
+SQL API — so bulk loading needs a bucket you own. Without one the `INSERT`
+path above needs no infrastructure at all.
 
 ## 4. Verify in Snowflake
 
@@ -73,7 +97,14 @@ SELECT * FROM ANALYTICS.RAW._RDLT_COMMITS ORDER BY 1 DESC LIMIT 3;
 ## Live-test convention (contributors)
 
 Tests skip unless credentials resolve, in this order: `RDLT_SNOWFLAKE_*`
-environment variables, then `~/.config/rdlt/snowflake/` (key, optional
-passphrase file). With credentials present the live legs (conformance,
-strategy matrix, differential oracle, crash sweep) run in the standard gate
-against a per-run scratch schema that is dropped afterward.
+environment variables, then `~/.config/rdlt/snowflake/` — files named
+`account`, `user`, `database`, `warehouse`, `role`, `passphrase`, `pat`, the
+key file `rdlt_qual_key.p8`, and `stage.env` for the bulk-path legs. A skip
+is ANNOUNCED once per test binary, so a suite that skipped and one that ran
+can be told apart.
+
+With credentials present the live legs (conformance, merge matrix,
+differential oracle, crash sweep, auth matrix) run in the standard gate
+against a per-run scratch schema that is dropped afterward — including on the
+failure path, since a panicking test is exactly when a schema gets left
+behind.
