@@ -13,7 +13,7 @@ measure-then-take (research D10).
 
 ## Phase 1: Setup
 
-- [ ] T001 Environment gate + capability probes (record ALL verdicts as
+- [X] T001 Environment gate + capability probes (record ALL verdicts as
   research.md addenda, correcting assumptions): (a) pin
   `snowflake-connector-rs = "1.1"` in a scratch member and record the lock
   impact (the reqwest 0.13 tree arrives feature-gated — the recorded

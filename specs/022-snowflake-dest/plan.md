@@ -33,9 +33,9 @@ is a T001 fidelity probe, adopted or rejected on its transcript.
 `rust-toolchain.toml` + workspace `rust-version`)
 
 **Primary Dependencies**: `snowflake-connector-rs 1.1.0` (default
-features: key-pair auth; wrapped at one boundary; brings `reqwest 0.13` — a
-second reqwest major behind the `snowflake` feature, the recorded
-0.12/0.13-double-tree shape), `object_store` (existing) for external-stage
+features: key-pair auth; wrapped at one boundary; +18 lock crates, all the
+RustCrypto key stack — and NO new reqwest, since 0.13 is already in the
+tree via opendal/iceberg: measured, research A1), `object_store` (existing) for external-stage
 parquet placement, the workspace parquet writer via the file family's
 format machinery, `rdlt-connector-sqlcore` for options/planning/dialect. NO
 arrow version change (the single arrow 58 tree stands). The hand-rolled

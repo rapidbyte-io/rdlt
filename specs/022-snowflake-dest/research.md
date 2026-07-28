@@ -45,9 +45,11 @@ renewal, and error mapping beside the crate's own, the two-stacks shape.
 
 **Costs accepted with eyes open**:
 
-- `reqwest ^0.13` — a second reqwest major wherever the `iceberg` feature is
-  off. Same shape as the recorded reqwest 0.12/0.13 double tree (feature-
-  gated, build cost only); recorded, not hidden.
+- `reqwest ^0.13` — **measured at T001 (addendum A1) and smaller than this
+  entry first claimed**: reqwest 0.13 is ALREADY in the workspace tree via
+  opendal ← iceberg, so the lock gains no reqwest at all; the true cost is
+  that a `snowflake`-on / `iceberg`-off build gets the 0.13 line from
+  snowflake instead. Build cost only, feature-gated, recorded.
 - The alternatives stand as recorded: `snowflake-api` 0.14 rejected on the
   arrow ^57-vs-58 major conflict; ODBC/ADBC rejected on packaging/FFI
   grounds; the hand-rolled session client remains the DESIGNED FALLBACK if
@@ -329,3 +331,137 @@ drift: engine policy verdicts, typed errors, unchanged.
 - Every optimization beyond the shipped defaults follows
   measure-then-take-only-if-it-wins; the D-13/D-21 reversal precedent and
   020's four declined-with-numbers entries are the standing null hypothesis.
+
+---
+
+## T001 addenda — implementation-time probes (2026-07-28)
+
+Run against the live qual account through a throwaway workspace member
+(deleted after; every probe object dropped, every staged object removed).
+These are the verdicts the plan owed, and two of them CORRECT plan-time
+claims.
+
+### A1 — lock impact: smaller than recorded, and NO new reqwest (corrects D1)
+
+Adding `snowflake-connector-rs = "1.1"` to a workspace member takes the
+lock from **629 to 647 crates (+18)**, all of them the RustCrypto stack the
+encrypted-PKCS#8 key path needs: `rsa`, `pkcs1`, `pkcs5`, `pkcs8`,
+`pem-rfc7468`, `pbkdf2`, `scrypt`, `salsa20`, `cbc`, `block-padding`,
+`num-bigint-dig`, `signature`, `spin`, plus the crate and its derive.
+
+**The recorded reqwest cost is WRONG and is corrected here.** D1 said the
+crate brings "a second reqwest major"; the lock says otherwise —
+**reqwest 0.13.4 was ALREADY in the tree** (opendal ← iceberg-storage-opendal
+← the iceberg destination), so the workspace-level cost is **zero new
+reqwest**. The narrower true statement: in a build with `snowflake` enabled
+and `iceberg` disabled, snowflake is what pulls the 0.13 line into an
+otherwise-0.12 build. In this workspace's own lock, nothing changes.
+Compiles clean in-workspace.
+
+### A2 — the crate's session IS a session (the commit protocol's premise)
+
+The plan-time probe used the SQL API, which bundles statements per request
+and therefore could NOT answer whether the crate's `query()` calls share a
+Snowflake session. Probed directly:
+
+| property | result |
+|---|---|
+| key-pair auth through the crate (encrypted PKCS#8 + passphrase) | **OK** — Snowflake 10.26.101 |
+| `SELECT CURRENT_SESSION()` twice on one `Session` | **identical** (`1475398575812618`) — one real session |
+| `BEGIN` / `INSERT` / `ROLLBACK` as three separate `query()` calls | **count = 0** — transactions genuinely span calls |
+| same, with a `CREATE TABLE` before the `ROLLBACK` | **count = 1** — DDL auto-committed the open transaction |
+
+The first three make SD3's pure-DML unit implementable on this crate; the
+fourth re-proves the auto-commit hazard through the crate itself, so the
+DDL-refusal guard is justified by evidence twice over, on two different
+transports.
+
+**A false alarm worth recording.** The first attempt reported the probe
+table "does not exist" and looked like a session-scoping failure. It was
+`090106: This session does not have a current schema` — the qual database
+has **no `PUBLIC` schema**, so `SessionConfig::with_schema("PUBLIC")`
+established nothing. Fully-qualified three-part names worked immediately.
+That is an accidental validation of D2's decision to always name
+database+schema explicitly rather than lean on session context, and it is
+why the ensure path must never assume a `PUBLIC` schema exists. (A `PUBLIC`
+schema was subsequently created on the qual account for convenience; the
+connector must not depend on one.)
+
+### A3 — PAT rides the PASSWORD channel, confirmed (the `pat` arm commits)
+
+| channel | result |
+|---|---|
+| `AuthConfig::password(pat)` | **OK** — authenticated, `CURRENT_USER()` = the qual user |
+| `AuthConfig::oauth(pat)` | **rejected**, `kind = Auth` |
+
+The assumption the `pat` config arm rested on is now a measurement: PATs
+authenticate through the password channel and NOT through the OAuth one.
+The config arm ships, and its implementation maps `pat` → password.
+
+### A4 — error taxonomy inputs are real, and secrets do not leak
+
+A deliberately invalid password produced `kind = Auth` with **no Snowflake
+code** (auth failures are pre-SQL, so code-based classification must not be
+the ONLY discriminator — `ErrorKind` carries auth), and the rendered error
+was checked programmatically for the secret substring: **not present**.
+SD2's "distinguishable by shape" and the grep-proof requirement both have
+live evidence.
+
+### A5 — arrow-written parquet loads through COPY (the last bulk-path unknown)
+
+A parquet file written by the WORKSPACE's own arrow writer (lowercase
+columns `id`, `v`; 744 bytes; a NULL in the middle) was uploaded to the
+qual stage bucket and loaded into a quoted-upper table
+`"EVENTS"("ID","V")`:
+
+```
+COPY INTO "EVENTS" FROM @stage/t001.parquet
+  FILE_FORMAT=(TYPE=PARQUET) MATCH_BY_COLUMN_NAME=CASE_INSENSITIVE
+→ LOADED, rows_parsed=3, rows_loaded=3, errors=0
+→ (1,'a'), (2,NULL), (3,'c')
+```
+
+Arrow's lowercase names bind to the quoted-upper catalog columns, NULLs
+survive, and the COPY result carries the `rows_loaded` figure SD6's
+verification depends on. **The external-stage bulk path is now proven
+end-to-end with our own writer**, not merely with Snowflake-written files.
+
+### A6 — session parameters and QUERY_TAG work; the host override is PROVEN, not mock-only
+
+`SessionConfig::with_session_parameter("QUERY_TAG", …)` applies at login and
+is visible via `SHOW PARAMETERS LIKE 'QUERY_TAG' IN SESSION`. Separately,
+`EndpointConfig::custom_base_url` — the same seam FR-019's PrivateLink host
+override uses — was exercised by pointing the crate at a local HTTP server
+and completing a **successful login through it**. D11 recorded the host
+override as mock-verified only; it now has a real integration proof of the
+seam, with only PrivateLink-specific behaviour still unverifiable here.
+
+### A7 — fakesnow: REJECTED, with the incompatibility pinned on both sides
+
+fakesnow 0.11.11 server mode was installed and probed through the crate.
+Two gaps, in order of discovery:
+
+1. **Login payload**: fakesnow reads `data.SESSION_PARAMETERS`
+   unconditionally, while the crate omits the key when no session
+   parameters are set (`skip_serializing_if`). Satisfiable — setting one
+   parameter bridges it, and login then succeeds.
+2. **Result format — fatal**: fakesnow hardcodes
+   `"queryResultFormat": "arrow"` in every success response. The crate is
+   **JSON-only by design**: it rejects any other format, and ships a unit
+   test asserting exactly `"unsupported result format: arrow"`. Neither
+   side is configurable from our position.
+
+fakesnow executes the SQL correctly (its DuckDB backend answered DDL, DML,
+`BEGIN`/`ROLLBACK`, and `MERGE … QUALIFY` — 200 OK on every route), so the
+rejection is about the transport envelope, not semantics. **No hermetic
+protocol leg is adopted**; the mock executor seam (T007) covers
+protocol-shaped tests and the qual account remains the leg of record.
+Re-trigger: fakesnow honouring a JSON result format, or the crate gaining
+arrow support — either alone closes it.
+
+### A8 — credential convention, resolved and extended
+
+Resolution order verified working: environment (`RDLT_SNOWFLAKE_*`) first,
+then `~/.config/rdlt/snowflake/` files. Entries now in use: `account`,
+`user`, `warehouse`, `database`, `rdlt_qual_key.p8`, `passphrase`, `pat`,
+`stage.env`. Every one is 0600 and local-only; none is committed.
