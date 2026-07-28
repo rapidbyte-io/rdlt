@@ -60,7 +60,6 @@ fn options(strategy: Option<MergeStrategy>, table: Option<TableOptions>) -> Dest
         tables: table
             .map(|opts| [("events".to_string(), opts)].into_iter().collect())
             .unwrap_or_default(),
-        ..DestOptions::default()
     }
 }
 

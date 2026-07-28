@@ -489,18 +489,21 @@ impl LoadSession for SnowflakeSession {
         // The choice is the user's configuration, not a size heuristic: a
         // threshold would be a guessed constant, and the crossover is a
         // measurement this feature takes rather than assumes.
-        if self.stage.is_some() {
-            let rows = batch.num_rows() as u64;
-            if rows == 0 {
-                return Ok(());
+        // The part is written inside the borrow of the stage and recorded
+        // outside it: `pending` belongs to the session, and holding the stage
+        // across that insert would borrow the session twice.
+        let staged_part = match &mut self.stage {
+            None => None,
+            Some(stage) => {
+                let rows = batch.num_rows() as u64;
+                if rows == 0 {
+                    return Ok(());
+                }
+                let bytes = encode::parquet_part(&schema, &batch)?;
+                Some(stage.put_part(&destination_table, bytes, rows).await?)
             }
-            let bytes = encode::parquet_part(&schema, &batch)?;
-            let part = self
-                .stage
-                .as_mut()
-                .expect("checked")
-                .put_part(&destination_table, bytes, rows)
-                .await?;
+        };
+        if let Some(part) = staged_part {
             self.pending
                 .entry(TableName::from(destination_table.as_str()))
                 .or_default()

@@ -186,5 +186,15 @@ mod debug_tests {
             key: PemSource::from("-----BEGIN PRIVATE KEY-----\nSECRET-BYTES\n"),
         };
         assert!(!format!("{holder:?}").contains("SECRET-BYTES"));
+        // The field still READS as the material it holds — redaction is a
+        // property of how it renders, not of what it stores.
+        assert!(holder.key.is_inline());
+        assert!(
+            holder
+                .key
+                .read_to_string()
+                .expect("inline")
+                .contains("SECRET-BYTES")
+        );
     }
 }
