@@ -34,7 +34,7 @@ recorded UNPERFORMED with the reason, never as green.
 | T001 environment gate | **DONE** | six probes; two plan corrections (A1 reqwest cost, A7 fakesnow); research.md addenda A1–A8 |
 | T002 close-out skeleton | **DONE** | this file |
 | T003 ensure extraction | **DONE (narrowed)** | D12 + D13 — `sqlcore::ensure` plans decisions, both destinations lower them; 18 ensure pins written first and green after; no DdlDialect trait; golden suites byte-identical; 816/816 |
-| T004 session extraction | **NARROWED** (in progress) | D12 — six pure items, not a skeleton; a shared async skeleton is type-system-impossible here |
+| T004 session extraction | **DONE (narrowed)** | D12 + D14 — `protocol::unit` carries six pure items, `ReplayDisposition` foremost; both destinations wired; behaviour unchanged, 821/821 |
 | T005–T043 | OPEN | |
 
 ## Deviations and corrections
@@ -148,6 +148,50 @@ One real defect was introduced and caught en route: the new duckdb module
 landed between `#[cfg(feature = "failpoints")]` and `FAIL_POINTS`, silently
 moving the guard onto the wrong item. Reattached, and named here because a
 mis-scoped cfg is invisible in a green build.
+
+### D14 (T004) — the invariant that was only ever prose
+
+The extraction shipped as six pure items in `sqlcore::protocol::unit`, and
+one of them is the reason the task was worth doing at all.
+
+**`ReplayDisposition`.** What a redelivered unit owes is INVERTED between
+publish paths: a direct-to-target destination must roll back (its
+redelivered rows are already in the target, inside the open transaction, so
+committing lands them twice), while a staged destination must run the
+planner's truncate program and commit (its redelivered rows sit in stages
+that reached no reader). Before this change that rule existed ONLY as two
+long comments in two executors, stating opposite things, with nothing
+binding them and nothing a third destination could inherit. It is now one
+function with the reasoning attached to each variant, and both executors
+consult it instead of restating it.
+
+Also shared: the receipt-existence and load-committed probes (identical
+apart from placeholder dialect, which is now a closure), the
+staged-emptiness probe (identical text everywhere), `roots_of`, and
+`load_mismatch`.
+
+**One item was written and then deliberately rebuilt.** `roots_of` first
+walked the parent links itself — and sqlcore already had `plan::root_of`
+doing exactly that walk. Two implementations of one traversal, free to
+disagree about depth bounds and cycle handling, is precisely the drift this
+module exists to prevent, so it was rewritten to call the existing function.
+Worth recording because the mistake is easy to make while extracting: the
+duplication you are removing can be re-created by the removal.
+
+**`load_mismatch` is landed but NOT wired to duckdb**, whose `open`
+discards the load id it would need. Adopting it there is a behaviour
+ADDITION, not a refactor, and gets its own decision rather than riding in on
+this one.
+
+**No shared execute skeleton exists, by design** (D12): the transaction
+driving, placeholder binding, error mappers, crash points and failpoint
+registries stay in each destination, because they are structure rather than
+logic and the two structures cannot be unified without a redesign.
+
+**Housekeeping taken while in the file**: `protocol.rs` + `protocol/` was
+the only split-file module in the workspace — every other multi-file module
+uses `mod.rs`, and the new submodule had created the inconsistency. Moved to
+`protocol/mod.rs`.
 
 ## Unperformed verifications
 

@@ -13,6 +13,7 @@ use rdlt_connector::{
 use tokio_postgres::Client;
 
 use rdlt_connector_sqlcore::plan::scope_replace_sql;
+use rdlt_connector_sqlcore::protocol::unit;
 use rdlt_connector_sqlcore::{
     CommitCtx, FullLoadPublish, MergeDialect, Step, build_merge_plan, commit_script,
     prepare_target, render_arm, staged_probe_targets,
@@ -699,10 +700,7 @@ impl PgSession {
         // Idempotence by (load_id, commit_seq).
         let replayed = tx
             .query_one(
-                &format!(
-                    "SELECT count(*) FROM {} WHERE load_id = $1 AND commit_seq = $2",
-                    rdlt_connector_sqlcore::names::COMMITS_TABLE
-                ),
+                &unit::receipt_exists_sql(|n| format!("${n}")),
                 &[&meta.load_id.as_str(), &(meta.commit_seq as i64)],
             )
             .await
@@ -717,7 +715,7 @@ impl PgSession {
         for table in staged_probe_targets(&self.tables, &self.options) {
             let stage = quote(&stage_name(&self.pipeline, table));
             let staged: bool = tx
-                .query_one(&format!("SELECT EXISTS (SELECT 1 FROM {stage})"), &[])
+                .query_one(&unit::stage_nonempty_sql(&stage), &[])
                 .await
                 .map_err(transient)?
                 .get(0);
@@ -741,29 +739,26 @@ impl PgSession {
 
         // A REDELIVERED unit must be thrown away, not published.
         //
-        // `replayed` means a receipt for this exact (load_id, commit_seq)
-        // already exists — the original unit committed, and its rows are
-        // already durable in the target. This unit then re-delivered the same
-        // rows: `write` COPYed them straight into the target (or, for merge,
-        // into the stage) inside the transaction that is still open. Committing
-        // now would land them a SECOND time.
+        // What a redelivered unit owes depends on WHERE its rows are, and the
+        // answer is inverted between publish paths — so it is the shared
+        // planner's to state, not this executor's to remember.
         //
-        // Rolling back discards exactly what this unit wrote — target rows and
-        // staged rows alike, since both went through the one transaction — and
-        // leaves the earlier commit standing. The receipt is returned as
-        // success, because from the caller's side the unit did commit; it just
-        // committed the first time.
-        //
-        // This is the direct-publish path's version of a guarantee the staged
-        // path got structurally: there, redelivered rows landed in a stage the
-        // replay branch truncated without ever publishing, so nothing reached
-        // the target. Writing into the target directly moves that guarantee
-        // from "never published" to "published once, and this attempt is
-        // discarded".
+        // On this path `write` COPYed the redelivered rows straight into the
+        // target (or, for merge, into the stage) inside the transaction still
+        // open, so committing would land them a SECOND time. Rolling back
+        // discards exactly what this unit wrote — target rows and staged rows
+        // alike, since both went through the one transaction — and leaves the
+        // earlier commit standing. The receipt is returned as success, because
+        // from the caller's side the unit did commit; it just committed the
+        // first time.
         //
         // The single-unit marks are still applied: a full-feed unit whose
-        // outcome the client never learned still counts against the discipline.
-        if replayed {
+        // outcome the client never learned still counts against the
+        // discipline.
+        if replayed
+            && unit::replay_disposition(FullLoadPublish::DirectToTarget)
+                == unit::ReplayDisposition::DiscardUnit
+        {
             self.rollback_unit().await;
             self.single_unit_done.extend(script.marks);
             return Ok(receipt);

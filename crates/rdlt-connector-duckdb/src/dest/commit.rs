@@ -19,9 +19,10 @@ use rdlt_connector::{
 };
 use rdlt_connector_sqlcore::ensure::{self, EnsureStep, Leg, Validity};
 use rdlt_connector_sqlcore::plan::{ValidateError, scope_replace_sql};
+use rdlt_connector_sqlcore::protocol::unit;
 use rdlt_connector_sqlcore::{
-    CommitCtx, DestOptions, FullLoadPublish, MergeDialect, Step, build_merge_plan,
-    commit_script, insert_select_sql, render_arm, staged_probe_targets,
+    CommitCtx, DestOptions, FullLoadPublish, MergeDialect, Step, build_merge_plan, commit_script,
+    insert_select_sql, render_arm, staged_probe_targets,
 };
 
 use super::dialect::DuckDialect;
@@ -199,10 +200,7 @@ fn staged_nonempty(
     table: &TableName,
 ) -> Result<bool, DestinationError> {
     tx.query_row(
-        &format!(
-            "SELECT EXISTS (SELECT 1 FROM {})",
-            quote(&stage_name(table))
-        ),
+        &unit::stage_nonempty_sql(&quote(&stage_name(table))),
         [],
         |row| row.get(0),
     )
@@ -393,10 +391,7 @@ impl LoadSession for DuckDbSession {
             // Idempotence key: (load_id, commit_seq).
             let already: u64 = tx
                 .query_row(
-                    &format!(
-                        "SELECT count(*) FROM {} WHERE load_id = ? AND commit_seq = ?",
-                        rdlt_connector_sqlcore::names::COMMITS_TABLE
-                    ),
+                    &unit::receipt_exists_sql(|_| "?".to_owned()),
                     duckdb::params![meta.load_id.as_str(), meta.commit_seq as i64],
                     |row| row.get(0),
                 )
@@ -407,10 +402,7 @@ impl LoadSession for DuckDbSession {
             // published.
             let load_committed_before: u64 = tx
                 .query_row(
-                    &format!(
-                        "SELECT count(*) FROM {} WHERE load_id = ?",
-                        rdlt_connector_sqlcore::names::COMMITS_TABLE
-                    ),
+                    &unit::load_committed_sql(|_| "?".to_owned()),
                     duckdb::params![meta.load_id.as_str()],
                     |row| row.get(0),
                 )
@@ -453,6 +445,16 @@ impl LoadSession for DuckDbSession {
             )
             .map_err(fatal)?;
 
+            // A redelivered unit on the STAGED path runs the planner's
+            // program — which for a replay is stage truncation and nothing
+            // else — and commits it. That is what reclaims the redelivered
+            // rows; they reached no reader, so there is nothing to roll back.
+            // The inverse choice belongs to direct-publish destinations, and
+            // the shared planner is what keeps the two from being confused.
+            debug_assert_eq!(
+                unit::replay_disposition(FullLoadPublish::Staged),
+                unit::ReplayDisposition::RunScript
+            );
             for step in &script.steps {
                 execute_step(&tx, &tables, &options, &roots, &meta, &state_json, step)?;
             }

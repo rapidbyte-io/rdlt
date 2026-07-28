@@ -11,6 +11,8 @@
 //! (the tests below) freeze the emitted script for the representative plan
 //! matrix.
 
+pub mod unit;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 

@@ -52,7 +52,7 @@ measure-then-take (research D10).
   with BOTH executors' emitted SQL proven byte-identical (golden pins +
   full suites green before/after). Record the trigger's terminal
   disposition in close-out.md.
-- [ ] T004 sqlcore session-protocol extraction (the fired 013 trigger):
+- [X] T004 sqlcore session-protocol extraction (the fired 013 trigger):
   extract the commit/receipt/state execute-side choreography shared by the
   postgres and duckdb sessions into
   `crates/rdlt-connector-sqlcore/src/protocol/execute.rs` (planner's
