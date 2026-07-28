@@ -16,8 +16,8 @@ use rdlt_core::{
     StateDoc, StreamName, TableName, TableSchema, WriteMode,
 };
 
-use rdlt_connector::channel::ByteSized;
 use crate::wal::Wal;
+use rdlt_connector::channel::ByteSized;
 use rdlt_core::crash_point;
 
 /// One unit of work flowing shred → load. Per-table order within the channel is the
@@ -371,7 +371,11 @@ mod tests {
         );
 
         // Receiving the first item releases its permit, and the parked send completes.
-        let received = rx.recv().await.map(Permitted::into_value).expect("first item");
+        let received = rx
+            .recv()
+            .await
+            .map(Permitted::into_value)
+            .expect("first item");
         assert!(matches!(received, LoadItem::Batch { .. }));
         tokio::time::timeout(
             Duration::from_secs(5),

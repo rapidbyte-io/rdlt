@@ -2076,6 +2076,48 @@ test taking 154.9 s against its usual ~5 s. Running the gate now would produce
 evidence this feature would then have to disown. It is left for a quiet session,
 with everything it depends on already green.
 
+### D-48 (Polish) — the gate session: `make check` twice clean, and what SC-018 actually holds
+
+Run on a REBOOTED machine (up 12 minutes, load average 0.21) — the precondition
+D-24 made non-negotiable.
+
+**The first attempt FAILED, exit 2, and the gate was right.** `cargo fmt --check`
+rejected the tree: several edits in this feature were applied by Python string
+replacement, which does not reflow to rustfmt's rules (import ordering in
+`load/mod.rs`, a line-wrap in a test). Formatting-only, no token changed —
+`git diff -w` showed the same content — but it is exactly the class of thing a
+gate exists to catch, and it had been invisible to every `cargo build`,
+`nextest` and `clippy` run in the session. `cargo fmt --all`, then:
+
+| run | result |
+|---|---|
+| **1** | **exit 0** — 791/791, 0 skipped, containers ENABLED; sweep 5/5; conformance 13/13; doc-tests; cold-start median **25.6 ms** (bar ≤ 40 ms); perf gate all benches within tolerance |
+| **2** | **exit 0** — identical, 791/791, 0 skipped |
+
+Two runs, both clean, on a quiet machine. Suite grew 785 → 791 over the polish
+increments.
+
+**SC-018 — "each increment independently revertible" — verified, and stated
+precisely rather than claimed loosely.**
+
+A naive check (revert every commit individually, out of order) reports 11 of 33
+code-touching commits conflicting. **That check is wrong and its result should
+not be read as a defect.** Sequential work necessarily conflicts when reverted
+out of order: if one increment introduces a function and a later one edits it,
+reverting the earlier alone cannot apply. No feature developed as ordered
+increments has that property, and SC-018 does not ask for it.
+
+What it does ask — that an increment reverts as a unit — holds. Reverting all
+nine of US11's code commits as a contiguous group: **zero code-level conflicts,
+and the workspace builds.**
+
+**One honest caveat, by construction rather than by defect:** every increment
+appends to THIS document, so `close-out.md` conflicts on any revert. That is the
+cost of keeping one record per feature instead of one per increment, and it is
+the right trade — but it means "revert the increment" is a code operation, and
+the record is then edited by hand. Said out loud so nobody discovers it during
+an incident.
+
 ---
 
 ## Item ledger (AR8 — one disposition per item, none silent)

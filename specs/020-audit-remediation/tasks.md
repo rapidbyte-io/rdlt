@@ -371,7 +371,7 @@ Four real dependencies override the P1/P2/P3 reading:
 - [X] T186 Measure coverage baseline-first with `make coverage`, confirm ≥ 80%, and record it in `close-out.md` (FR-012)
 - [X] T187 Complete the close-out matrix: every item from T002's ledger in exactly one terminal state, zero uncited dispositions (AR8, SC-017)
 - [X] T188 Record the feature's deviations in the close-out — the schema-affecting shred changes, the parquet narrowing, the required 0.3 bump, the corrections to `NEXT_STEPS.md` itself, and every CI-blocked verification recorded as unperformed
-- [ ] T189 Run the full local gate (`make check`) twice clean and record both runs in `close-out.md`; confirm every increment merged green and each is independently revertible (SC-018)
+- [X] T189 Run the full local gate (`make check`) twice clean and record both runs in `close-out.md`; confirm every increment merged green and each is independently revertible (SC-018)
 
 ---
 

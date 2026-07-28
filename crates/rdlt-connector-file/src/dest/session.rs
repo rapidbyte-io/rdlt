@@ -101,8 +101,8 @@ impl FileSession {
         // arrays", pointing at this type instead. The options match what that
         // function uses, so rendered values are unchanged.
         let options = arrow::util::display::FormatOptions::default().with_display_error(true);
-        let formatter =
-            arrow::util::display::ArrayFormatter::try_new(values.as_ref(), &options).map_err(fatal)?;
+        let formatter = arrow::util::display::ArrayFormatter::try_new(values.as_ref(), &options)
+            .map_err(fatal)?;
         let mut groups: BTreeMap<String, Vec<u32>> = BTreeMap::new();
         // Reused across rows: the rendered value is consumed by `path_safe` and
         // only the sanitised result needs to outlive the iteration.

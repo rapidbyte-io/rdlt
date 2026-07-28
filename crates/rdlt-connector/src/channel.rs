@@ -454,7 +454,10 @@ mod core_tests {
         tx.send(Blob(100)).await.expect("exactly the budget");
         let pending =
             tokio::time::timeout(std::time::Duration::from_millis(50), tx.send(Blob(1))).await;
-        assert!(pending.is_err(), "budget exhausted: the next send must wait");
+        assert!(
+            pending.is_err(),
+            "budget exhausted: the next send must wait"
+        );
         // Dropping the received item releases its permit; the budget is what is
         // HELD, not what was ever sent.
         drop(rx.recv().await.expect("item"));

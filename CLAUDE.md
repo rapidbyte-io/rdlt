@@ -2,46 +2,44 @@
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
 `specs/020-audit-remediation/plan.md` (feature: audit remediation —
-PLANNED. Executes NEXT_STEPS.md (repo root, audited 2026-07-26 @
-634222e: 11 analysis lenses, 175 findings, 47 defect claims put through
-adversarial verification — 29 CONFIRMED, 18 REFUTED). The 18
-refutations in its Appendix A are BINDING NON-GOALS; implementing one
-is a defect in this feature. 13 increments delivering 11 stories, in
-value-per-risk order: (1) record+LICENSE (doc-only; the repo declares
-Apache-2.0 and ships no license text); (2) shred value fidelity —
-u64>i64::MAX silently NULLed, hint pins lost to objects, decimal
-precision unchecked, misfits uncounted; (3-5) file family — ownership/
-truncation after a format or partition_by change, grown-parquet stale
-row-group resume, one classification rulebook, retention; (6) REST —
-NO request timeout anywhere (unbounded hang), POST pagination no-op;
-(7) schema contracts — Freeze bypassed at EVERY run boundary,
-schema_hashes write-only; (8) iceberg nested types (drift compare is
-ID-sensitive; CONFIRMED guaranteed, not plausible); (9) 16 sharp
-edges; (10) the gate — mutants.out predates features 006-019 entirely,
-fresh full run (cache dead across 017 renames); (11) publish readiness
-for the recorded 0.2->0.3 window; (12) fired-but-undisposed deferrals
-D17/D18/D19 + lowering parity; (13) the measurement-first perf queue.
-CI REPAIR IS OUT OF SCOPE (E1) — root-caused to GitHub org billing
-("recent account payments have failed"), every job fails in 3-5s with
-zero steps; the LOCAL gate is the gate of record and CI-only
-verifications land recorded as UNPERFORMED, never green, never
-blocking. Publishing is out of scope (E2); readiness is not. PHASE 0
-OVERTURNED THREE DESIGNS — read research.md R0 before touching any of
-them: the cross-run baseline would have fired Freeze on its OWN
-established columns (fix: two diffs per drain, emit vs governed);
-the misfit counter would have PANICKED on an ordinary nullable list
-column (fix: positional count, never a difference of totals); the
-parquet resume hash would have poisoned itself on first upgrade (fix:
-build the descriptor unconditionally, NO CURSOR_FORMAT_VERSION bump —
-etag/tail_hash set the additive precedent). Phase 0 also CORRECTED THE
-AUDIT twice: the type-hint defect creates no child table (it is
-verbatim-JSON -> NULL, worse and in the other direction), and the
-iceberg divergence is guaranteed. StateDoc 1->2 (schemas REPLACES
-unread schema_hashes) is BREAKING on semver-sacred rdlt-core and makes
-the standing 0.3 bump REQUIRED — nothing is published, so no consumer
-breaks. One dependency edge: httpdate, already in Cargo.lock via
-hyper, zero new tree entries. Contract: contracts/audit-remediation.md
-AR1-AR8. Phase 0 + adversarial review: research.md).
+COMPLETE on branch `020-audit-remediation`, NOT merged and NOT pushed.
+Executed NEXT_STEPS.md (audited 2026-07-26 @ 634222e: 11 lenses, 175
+findings, 47 defect claims adversarially verified — 29 CONFIRMED, 18
+REFUTED). All 11 stories delivered; close-out CLOSED: contract matrix
+AR1-AR8 all MET; all 157 ledger items carry a terminal disposition
+(130 fixed, 22 deferred with named triggers, 5 rejected with the
+measurement that rejected them, zero uncited); the 18 refutations
+verified absent from implemented work. Gate of record: `make check`
+TWICE CLEAN on a rebooted machine — 791/791 0 skipped with containers,
+cold-start 25.6 ms (bar <=40), perf gate within tolerance; coverage
+85.64% lines (floor 80). The 18 refutations in Appendix A REMAIN
+BINDING NON-GOALS. THE 0.2->0.3 WINDOW DID NOT OPEN: US5's design was
+attacked before implementation (research R0 / close-out D-10) and
+scoped down to within-run enforcement + inheritance — no StateDoc
+bump, no persisted-format change, no semver break; the standing
+publish-time bump is still owed but nothing in 020 forces it. CI
+REPAIR REMAINS OUT OF SCOPE (E1, org billing); every CI-only
+verification is recorded UNPERFORMED, never green. TWO OTHER
+verifications are UNPERFORMED and say so: T097's Polaris live image
+probe (no container runtime at that increment) and T176's netem (no
+`tc`, and the container shares the HOST netns — a qdisc on lo would
+degrade the real machine; D-40's substitute measurement proved more
+useful). THE DURABLE PERF FACT: pg-to-pg-dedup-1m is ~71% SERVER-side
+(80.3% of wall is one INSERT..ON CONFLICT node; 4,013,669 WAL records
+= 556 bytes of WAL per row against a ~121-byte source row, one index
+on the table), so client-CPU wins buy headroom, not wall — read any
+future perf claim on this shape against that denominator. Eight US11
+measurements, four TAKEN (COPY encoder fast path -1.98% process
+instructions D-35; stage sequence CACHE 32 -3.3% of the merge cell
+D-37; partition ArrayFormatter hoisted out of the row loop -2.72%
+D-41; S3 skip-fetch for finished etag-matched objects D-44) and four
+DECLINED WITH NUMBERS (allocator 3.3% ceiling D-34; WAL residual 8.5%
+but 019's D2 binds D-36; file-dest buffering constant not O(dataset)
+D-38; canonical-JSON allocation 6.19% ceiling D-39). D17 taken (one
+byte-budget channel; the engine's copy DELETED, AR6 verified); D18
+buffering half closed on a heap profile, blocking half still open;
+D19 rejected, premise changed. Contract: contracts/audit-remediation.md
+AR1-AR8. Deviations, negatives and every disposition: close-out.md).
 Previous feature 019 for reference:
 `specs/019-performance-improvements/plan.md` (feature: performance
 improvements — COMPLETE, merged @ 634222e, executing PERF_ANALYSIS.md

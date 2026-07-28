@@ -281,8 +281,6 @@ async fn resolve_inputs(
     }
 }
 
-
-
 /// Fetches skipped because the recorded progress already covered the object.
 ///
 /// An optimisation that silently stops engaging is indistinguishable from one
