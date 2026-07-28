@@ -428,6 +428,10 @@ recorded with what it actually covered rather than as a checkmark.
 | cold start | 26.3 ms median (bar <= 40 ms) |
 | lint / docs | clean |
 
+Run TWICE, both clean, on the pinned toolchain: 966/966 both times; perf gate
+6 benches 0 regressed both times; cold start 26.3 ms then 25.9 ms against a
+40 ms bar.
+
 Two earlier sweep runs were DISCARDED rather than recorded, and why matters:
 both had a second sweep running concurrently against the same account, which
 is the very collision D-29 describes — two sessions of one pipeline sharing a

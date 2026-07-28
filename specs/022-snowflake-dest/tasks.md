@@ -300,7 +300,7 @@ timings, configuration; every shipped default cites a measurement.
   complete, zero uncited dispositions, both extraction triggers
   dispositioned (SC-008), every UNPERFORMED verification named with its
   reason.
-- [ ] T043 Final `make check` twice clean on a quiet machine, recorded in
+- [X] T043 Final `make check` twice clean on a quiet machine, recorded in
   close-out.md with the SC-005 mechanical sweep re-run at the final
   commit.
 
