@@ -1,6 +1,6 @@
 # Close-out: Snowflake Destination Connector (022)
 
-**Status**: IN PROGRESS. Every claim here cites the evidence that produced
+**Status**: US1–US4 DELIVERED; US5 measurement in progress. Every claim here cites the evidence that produced
 it; no disposition is silent. Verifications this machine cannot perform are
 recorded UNPERFORMED with the reason, never as green.
 
@@ -8,24 +8,24 @@ recorded UNPERFORMED with the reason, never as green.
 
 | clause | status | evidence |
 |---|---|---|
-| SD1 — one library, one boundary | OPEN | |
+| SD1 — one library, one boundary | **MET** | every library type stops in `dest/client.rs`; what crosses out is an `Executor`, SPI errors and strings. Replacing the library is a change to one file. |
 | SD2 — full unattended auth vocabulary, every secret guarded | ON TRACK | T001 A3 (PAT rides the password channel, oauth rejects it), A4 (invalid secret → `kind = Auth`, secret provably absent from the rendered error) |
 | SD3 — the atomic unit is pure DML, DDL strictly outside | ON TRACK | T001 A2: `CURRENT_SESSION()` identical across `query()` calls; BEGIN/INSERT/ROLLBACK across three separate calls yields count 0; the same sequence with a CREATE in the middle yields count 1 — DDL auto-commit proven a second time, on a second transport |
-| SD4 — merge without enforced constraints | OPEN | |
+| SD4 — merge without enforced constraints | **MET** | `SnowflakeDialect` on the shared seam: `MERGE INTO` for upsert (no `ON CONFLICT` exists), `QUALIFY ROW_NUMBER()` for survivor selection (no `DISTINCT ON`). All five strategies proven live; key uniqueness ASSERTED after each merge because nothing in the database enforces it. |
 | SD5 — identifier policy is total | ON TRACK | T001 A2 false alarm: the qual database has no `PUBLIC` schema, so session-context reliance failed and fully-qualified three-part names worked — D2's decision validated by accident |
 | SD6 — ingestion verified on every shipped path | ON TRACK | T001 A5: parquet written by the workspace's OWN arrow writer (lowercase columns, embedded NULL) loaded into a quoted-upper table via `MATCH_BY_COLUMN_NAME=CASE_INSENSITIVE`, 3/3 rows, `rows_loaded` present for SD6's verification |
-| SD7 — crash discipline + statement economy | OPEN | |
-| SD8 — house verification standard | OPEN | |
+| SD7 — crash discipline + statement economy | **MET** | three crash points × three actions × two write modes × both ingestion paths, each crashed twice and required to converge duplicate-free, with an armed-fire pin that fails if a crash site goes dead. Economy: unchanged schema → zero statements; one added column → exactly one `ALTER`; cost independent of column count (200-column table costs what a 3-column one does); 13 statements per load measured server-side. |
+| SD8 — house verification standard | **MET** | shared conformance suite passes live; differential oracle vs postgres on whole rows; option-validation parity in the shared core's own words; secret hygiene across Debug/errors/constructors; skips announced rather than silent. |
 
 ## Story matrix
 
 | story | status | evidence |
 |---|---|---|
-| US1 — exactly-once loads, one document | NOT STARTED | |
-| US2 — full merge parity | NOT STARTED | |
-| US3 — frugal with round trips | NOT STARTED | |
-| US4 — verified like the other connectors | NOT STARTED | |
-| US5 — recorded performance standing | NOT STARTED | |
+| US1 — exactly-once loads, one document | **DELIVERED** | Append/Replace land exact totals live; a replay publishes nothing; awkward values survive both ingestion paths; crash sweep converges. `destination: snowflake:` carries the whole vocabulary from YAML. |
+| US2 — full merge parity | **DELIVERED** | five strategies live; differential oracle agrees with postgres row-for-row across four strategy × hard-delete combinations; refusals carry the shared core's wording, and acceptances match too. |
+| US3 — frugal with round trips | **DELIVERED** | economy pinned unit-side and measured server-side; one optimization built, measured and DECLINED with its numbers (D-22). |
+| US4 — verified like the other connectors | **DELIVERED** | conformance live; auth matrix wired for all four methods (two proven live, two UNPERFORMED by owner decision); a real secret leak found and fixed (D-21). |
+| US5 — recorded performance standing | **IN PROGRESS** | batch-knee instrument built and corrected after its first design measured the wrong thing (D-23). |
 
 ## Task ledger
 
@@ -35,7 +35,14 @@ recorded UNPERFORMED with the reason, never as green.
 | T002 close-out skeleton | **DONE** | this file |
 | T003 ensure extraction | **DONE (narrowed)** | D12 + D13 — `sqlcore::ensure` plans decisions, both destinations lower them; 18 ensure pins written first and green after; no DdlDialect trait; golden suites byte-identical; 816/816 |
 | T004 session extraction | **DONE (narrowed)** | D12 + D14 — `protocol::unit` carries six pure items, `ReplayDisposition` foremost; both destinations wired; behaviour unchanged, 821/821 |
-| T005–T043 | OPEN | |
+| T005–T016 | **DONE** | crate, config, boundary, ddl, session, both ingestion paths, Destination impl, pipeline-spec wiring, live smoke |
+| T017 crash sweep | **DONE** | full matrix, live |
+| T019–T024 | **DONE** | dialect, option parity, duplicate-key advice, live strategy matrix, differential oracle |
+| T026–T028 | **DONE** | economy instrumentation, pins, live server-side count |
+| T030–T033 | **DONE** | conformance + auth matrix; gating posture; fakesnow already dispositioned (C-02); secret hygiene |
+| T035 batch knee | **DONE (instrument corrected)** | see D-23 |
+| T038–T040 | **DONE** | README, quickstart (corrected and compiled), parity matrix |
+| T018 / T025 / T029 / T034 / T037 story gates | **DONE** | full local gate green at each increment; every commit ran it |
 
 ## Deviations and corrections
 
@@ -193,6 +200,115 @@ the only split-file module in the workspace — every other multi-file module
 uses `mod.rs`, and the new submodule had created the inconsistency. Moved to
 `protocol/mod.rs`.
 
+### D-20 (T019) — three seams that were only ever one dialect
+
+Snowflake is the first destination that cannot ride the shared trait's
+defaults, and it found three places where "shared" meant "Postgres, spelled
+neutrally". Each is recorded because each would have been a silent trap for
+the NEXT destination too:
+
+**The upsert action arrived as the literal text `DO UPDATE SET …`.** A
+dialect without `ON CONFLICT` could only consume that by taking the string
+apart — pattern-matching one dialect's SQL to produce another's, with nothing
+to catch the day the wording changed. Now `UpsertAction`, and the incoming
+row's name comes from the dialect rather than being assumed to be `EXCLUDED`.
+
+**`column_list` baked in the double-quote rule.** A destination folding
+identifiers to upper case gets a column list disagreeing with every other
+statement it emits, surfacing as a missing-column error far from the cause.
+
+**The hard-delete predicate spelled a boolean flag `IS TRUE`.** It reads as
+standard SQL and compiles NOWHERE on Snowflake — and the service reports the
+syntax error at the enclosing subquery, pointing away from its cause. Found
+by a live merge failing, bisected against the account across six candidate
+shapes, and now a dialect method whose Snowflake form is NULL-safe.
+
+pg/duckdb golden SQL stayed byte-identical throughout all three.
+
+### D-21 (T033) — an inline private key rendered in full through Debug
+
+The secret-hygiene matrix found a real leak on its first run. `PemSource`
+derived `Debug`, so a private key supplied INLINE rather than as a path
+printed verbatim, while every secret beside it in the same struct rendered as
+`***`. `Debug` is what a panic, a log line and an error report all reach for.
+
+Fixed in the SPI, where the type lives: a path renders as itself (it is not a
+credential, and hiding it makes "cannot read the key" unactionable), inline
+material as a placeholder. Pinned three ways including nested inside a derived
+`Debug`, which is how the guarantee would quietly be lost.
+
+**One expectation of the test was wrong and was corrected rather than
+enforced**: serialization deliberately keeps the values, because serde IS the
+document. A config that redacted on the way out could be parsed once and never
+written back, and the placeholder would then load as the credential. That is
+precisely why `Debug` — not serde — is the guarded channel.
+
+### D-22 (T028) — an optimization measured, and declined at one statement
+
+`open` issues three idempotent `IF NOT EXISTS` statements per load. Replacing
+them with a single catalog read plus conditional creates was BUILT and
+MEASURED: 13 → 12 statements on a repeat load. One statement, against a cost
+that grows with neither the data nor the table count.
+
+Declined. The standing rule is that a counting-argument optimization is guilty
+until measured; this one was measured and stayed guilty. The numbers are
+recorded at the measurement site in place of the change.
+
+### D-23 (T035) — the first knee instrument measured the wrong thing
+
+The batch-knee sweep was first written to vary the batch size the ENGINE
+delivers, with a checkpoint on every batch. Throughput rose monotonically
+from 25 to 628 rows/s across 100 → 10,000 rows per batch and located no knee
+at all — because what it actually measured was **commit frequency**, which on
+a SaaS destination dominates everything else. Each batch carried its own
+commit unit of roughly seven statements.
+
+That is a real and useful number (fewer commits win, monotonically, on this
+service) but it is not the rows-per-statement knee, and reporting it as one
+would have set a shipped constant from a measurement of something else.
+
+The instrument was rebuilt to time exactly what the constant controls: the
+same rows, split into statements different ways, executed against a real
+table with no engine and no commit in the loop. A measurement seam
+(`insert_statements_chunked`) makes the chunk size varyable by the instrument
+WITHOUT becoming configuration — shipping a knob in order to tune it would
+leave every user holding a decision that belongs to whoever measured it.
+
+### D-24 (T030) — two auth legs UNPERFORMED by owner decision
+
+Password and OAuth are implemented, unit-tested, and their live legs are
+WRITTEN — they skip with a printed reason on an account that has not
+provisioned them. The owner decided not to provision a password test user or
+an OAuth security integration for this feature.
+
+Recorded rather than left absent, because a leg that was never written and a
+leg that could not run look identical from a green suite. Key-pair and PAT
+are proven live, and the bad-credential SHAPE is asserted for every method
+including the two whose happy paths are unperformed.
+
+### D-25 (T031) — a green suite that could not be told from a skipped one
+
+With credentials absent the crate's suite reported 104/104 passing in two
+seconds, and nothing distinguished that from a run where every live leg
+executed. The gate's own doc comment names this hazard; the gate itself had
+it.
+
+Skips are now announced once per test binary with the reason. The count still
+reads as passes — that is how the harness works — but a reader can now tell
+"green because it ran" from "green because it did not".
+
+### D-26 (environment) — the toolbox lost its C toolchain twice mid-feature
+
+The development container was recreated twice during this feature, each time
+losing gcc/make/cmake and failing every build script with `linker cc not
+found`. Reinstalled both times. Recorded because two long live measurements
+were killed by it and their partial results discarded rather than reported.
+
+Separately, podman exhausted its 2048-lock table with 1,799 orphaned
+anonymous test volumes; only the 64-hex anonymous ones were removed, leaving
+the named project volumes untouched, since a blanket prune would have
+destroyed unrelated data.
+
 ## Unperformed verifications
 
 | what | reason |
@@ -200,3 +316,8 @@ uses `mod.rs`, and the new submodule had created the inconsistency. Moved to
 | hermetic protocol leg | no fidelity-compatible emulator exists today (C-02) |
 | PrivateLink-specific host-override behaviour | no PrivateLink environment; the SEAM itself is proven (T001 A6 — a real login completed through `custom_base_url`) |
 | CI-only checks | the recorded external blocker stands; never claimed green |
+| password auth, live | no password user provisioned on the qual account; owner decision (D-24). Implemented, unit-tested, live leg written and skipping with reason. |
+| OAuth auth, live | no security integration on the qual account; owner decision (D-24). Same posture as password. |
+| internal-stage `PUT` | unreachable through the SQL API and the adopted driver; deferred with a named upstream trigger (parity.md) |
+| GCS / Azure external stages | no such bucket available; the Snowflake side is storage-agnostic, the client writer and config are S3-shaped |
+| duplicate-merge-key diagnosis, live provocation | the survivor subquery makes a duplicate source key unreachable through the normal path — the mapping is unit-tested and the CODE is confirmed live by a raw provocation |
