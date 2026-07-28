@@ -293,7 +293,9 @@ fn ddl_in_unit(sql: &str) -> DestinationError {
 ///
 /// Every authentication method the config vocabulary accepts is mapped here,
 /// and nowhere else.
-pub(crate) async fn connect(config: &SnowflakeConfig) -> Result<impl Executor, DestinationError> {
+pub(crate) async fn connect(
+    config: &SnowflakeConfig,
+) -> Result<Box<dyn Executor>, DestinationError> {
     let auth = auth_config(&config.auth)?;
     let mut client = ClientConfig::new(config.user.clone(), config.account.clone(), auth);
 
@@ -323,9 +325,9 @@ pub(crate) async fn connect(config: &SnowflakeConfig) -> Result<impl Executor, D
     }
 
     let client = Client::new(client.with_session(session)).map_err(classify)?;
-    Ok(SessionExecutor {
+    Ok(Box::new(SessionExecutor {
         session: client.create_session().await.map_err(classify)?,
-    })
+    }))
 }
 
 /// Map the config's auth block onto the library's.

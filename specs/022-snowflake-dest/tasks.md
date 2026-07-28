@@ -124,14 +124,14 @@ new rows; kill at each crash point and converge duplicate-free.
   Uuid→VARCHAR(36), TIMESTAMP_TZ/NTZ split; unmappable columns typed at
   ensure naming the column; unit cells in-file; the mapping table goes in
   the crate README (T041 finalizes).
-- [ ] T011 [US1] Commit protocol on the sqlcore execute skeleton:
+- [X] T011 [US1] Commit protocol on the sqlcore execute skeleton:
   `src/dest/commit.rs` — pure-DML unit transaction (publish + receipt +
   state in ONE explicit txn through the T004 skeleton), replay of a
   receipted (load, seq) publishes nothing and returns the prior receipt,
   rowcount-verification hook (INSERT counts now; COPY results in T013),
   crash points `sf.stage.write` / `sf.unit.publish` /
   `sf.receipt.visible` behind the failpoints feature.
-- [ ] T012 [US1] INSERT ingestion path: `src/dest/ingest.rs` — batched
+- [X] T012 [US1] INSERT ingestion path: `src/dest/ingest.rs` — batched
   multi-row INSERT through the boundary's bind machinery inside the unit;
   batch size a named constant with its measurement deferred to T037
   (comment says so); NULL-in-merge-key typed write-time refusal (house
@@ -145,7 +145,7 @@ new rows; kill at each crash point and converge duplicate-free.
   `rows_loaded` verified against staged counts (mismatch fails the unit
   typed, SD6), `REMOVE`/object cleanup idempotent and ownership-precise
   (part-name shape); stage config optional — absent means INSERT-only.
-- [ ] T014 [US1] Destination impl + open wiring: `src/dest/mod.rs` —
+- [X] T014 [US1] Destination impl + open wiring: `src/dest/mod.rs` —
   `Snowflake` Destination entry, session open (context statements, state
   read, replay check), stale-staged-artifact cleanup on open (only THIS
   pipeline's), typed error when neither config nor server default supplies

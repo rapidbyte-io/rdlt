@@ -1,8 +1,16 @@
 //! The Snowflake destination.
 
+use rdlt_connector::{
+    ConnectorSpec, Destination, DestinationCapabilities, DestinationError, LoadSession, OpenCtx,
+    core::naming::IdentRules,
+};
+
+
 pub(crate) mod client;
 mod config;
 mod ddl;
+mod encode;
+mod session;
 
 pub use config::{Auth, ConfigError, KeyPair, Password, SnowflakeConfig, TableType, config_schema};
 
@@ -34,7 +42,7 @@ pub mod testhook {
     /// Run one statement through the UNIT executor — the one that refuses DDL.
     pub async fn run_in_unit(config: &SnowflakeConfig, sql: &str) -> Result<(), DestinationError> {
         let executor = client::connect(config).await?;
-        DmlOnly(&executor).execute(sql).await
+        DmlOnly(executor.as_ref()).execute(sql).await
     }
 
     /// The structured Snowflake code carried by a classified error, if any.
@@ -86,11 +94,114 @@ pub mod testhook {
         table: &str,
     ) -> Result<std::collections::BTreeSet<String>, DestinationError> {
         let executor = client::connect(config).await?;
-        super::ddl::observe_table(&executor, &config.database, &config.schema, table).await
+        super::ddl::observe_table(executor.as_ref(), &config.database, &config.schema, table).await
     }
 
     /// Run one ensure statement against the account.
     pub async fn apply(config: &SnowflakeConfig, sql: &str) -> Result<(), DestinationError> {
         client::connect(config).await?.execute(sql).await
+    }
+}
+
+/// The Snowflake destination.
+#[derive(Debug, Clone)]
+pub struct Snowflake {
+    config: SnowflakeConfig,
+}
+
+impl Snowflake {
+    /// Build a destination from a validated configuration.
+    pub fn new(config: SnowflakeConfig) -> Result<Self, ConfigError> {
+        config.validate()?;
+        Ok(Self { config })
+    }
+
+    /// Build from a YAML document.
+    pub fn from_yaml(yaml: &str) -> Result<Self, String> {
+        Ok(Self {
+            config: SnowflakeConfig::from_yaml(yaml)?,
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl Destination for Snowflake {
+    fn spec(&self) -> ConnectorSpec {
+        ConnectorSpec {
+            name: "snowflake".into(),
+            version: env!("CARGO_PKG_VERSION").into(),
+            config_schema: Some(config_schema()),
+        }
+    }
+
+    fn capabilities(&self) -> DestinationCapabilities {
+        DestinationCapabilities {
+            // Merge arrives with the dialect; until then the engine must not
+            // plan merges it would fail to execute. Declaring it early is the
+            // one lie the engine never re-checks.
+            merge: false,
+            // Nested shapes are lowered before they arrive: VARIANT could
+            // carry them, but claiming so without the read-back proof would
+            // be a capability this crate has not verified.
+            structs: false,
+            scalar_lists: false,
+            json_type: true,
+            decimal: true,
+            ident_rules: IdentRules::default(),
+        }
+    }
+
+    async fn open(&self, ctx: OpenCtx) -> Result<Box<dyn LoadSession>, DestinationError> {
+        let executor = client::connect(&self.config).await?;
+
+        // The bookkeeping tables, created OUTSIDE any unit — they are DDL, and
+        // DDL here commits whatever transaction is open.
+        let qualified = |table: &str| {
+            format!(
+                "{}.{}.{}",
+                ddl::quote(&self.config.database),
+                ddl::quote(&self.config.schema),
+                ddl::quote(table)
+            )
+        };
+        let transient = match self.config.table_type {
+            TableType::Transient => "TRANSIENT ",
+            TableType::Permanent => "",
+        };
+        for sql in [
+            format!(
+                "CREATE SCHEMA IF NOT EXISTS {}.{}",
+                ddl::quote(&self.config.database),
+                ddl::quote(&self.config.schema)
+            ),
+            format!(
+                "CREATE {transient}TABLE IF NOT EXISTS {} ({} VARCHAR PRIMARY KEY, {} VARCHAR)",
+                qualified(rdlt_connector_sqlcore::names::STATE_TABLE),
+                ddl::quote("pipeline"),
+                ddl::quote("doc")
+            ),
+            format!(
+                "CREATE {transient}TABLE IF NOT EXISTS {} ({} VARCHAR, {} NUMBER, \
+                 PRIMARY KEY ({}, {}))",
+                qualified(rdlt_connector_sqlcore::names::COMMITS_TABLE),
+                ddl::quote("load_id"),
+                ddl::quote("commit_seq"),
+                ddl::quote("load_id"),
+                ddl::quote("commit_seq")
+            ),
+        ] {
+            executor.execute(&sql).await?;
+        }
+
+        Ok(Box::new(session::SnowflakeSession {
+            config: self.config.clone(),
+            executor,
+            pipeline: ctx.pipeline,
+            load_id: ctx.load_id,
+            catalog: ddl::Catalog::default(),
+            tables: std::collections::BTreeMap::new(),
+            cleared: std::collections::BTreeSet::new(),
+            unit_open: false,
+        }))
     }
 }
