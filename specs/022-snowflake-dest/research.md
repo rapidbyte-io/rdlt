@@ -159,6 +159,25 @@ Probe facts that frame the decision:
    external-staging shape. The live leg is gated on an EXTENDED credential
    convention (optional `RDLT_SNOWFLAKE_STAGE_BUCKET` + storage credentials);
    absent a bucket, the leg records UNPERFORMED — never silently green.
+**The Hetzner s3compat probe (2026-07-28)** sharpened the external-stage
+leg with live facts, both directions:
+
+- **Client side WORKS**: the designated Hetzner endpoint (Ceph/RadosGW,
+  TLS-clean, virtual-host style resolving) accepts SigV4 PUT/DELETE with
+  region `fsn1` — our parquet-part placement path is proven.
+- **Snowflake side is POLICY-BLOCKED, not protocol-blocked**: `CREATE STAGE
+  … URL='s3compat://…' ENDPOINT='…'` fails with structured code 001075
+  "Endpoint … not allowed". S3-COMPATIBLE endpoints require a per-account
+  allowlist enabled by Snowflake Support (their published s3compat
+  compliance suite + a support case); probing `SHOW PARAMETERS … IN
+  ACCOUNT` confirmed no self-service parameter exists. Until the endpoint
+  is allowlisted (operator action, external turnaround), the s3compat live
+  leg records UNPERFORMED with this exact reason. Native `s3://` stages on
+  real AWS buckets need no allowlist — a plain AWS bucket remains the
+  fastest route to a live bulk leg, and the SHIPPED feature is unaffected
+  (external stages on AWS/GCS/Azure work out of the box; s3compat users
+  carry a documented allowlist prerequisite).
+
 3. **Internal-stage PUT: DEFERRED**, named trigger = upstream
    `snowflake-connector-rs` gaining PUT support or a raw-response escape
    hatch (issue filed as part of this feature; contributing the
@@ -199,10 +218,14 @@ environment first, config-dir fallback —
   `RDLT_SNOWFLAKE_WAREHOUSE`, `RDLT_SNOWFLAKE_ROLE`;
 - fallback dir `~/.config/rdlt/snowflake/`: `rdlt_qual_key.p8`,
   `rdlt_qual_key.pub`, `passphrase` (0600);
-- OPTIONAL, for the external-stage live leg only:
-  `RDLT_SNOWFLAKE_STAGE_BUCKET` (+ the family-standard S3 credential
-  variables) naming a real cloud bucket both the runner and the account can
-  reach. Absent → that leg records UNPERFORMED with reason.
+- OPTIONAL, for the external-stage live leg only: `stage.env` beside the
+  key (0600) or the equivalent environment variables —
+  `RDLT_SNOWFLAKE_STAGE_ENDPOINT`, `RDLT_SNOWFLAKE_STAGE_BUCKET`,
+  `RDLT_SNOWFLAKE_STAGE_ACCESS_KEY`, `RDLT_SNOWFLAKE_STAGE_SECRET_KEY` —
+  naming a bucket both the runner and the account can reach. The designated
+  qual target is a Hetzner s3compat bucket, PENDING the Snowflake-side
+  endpoint allowlist (see D6); absent or blocked → the leg records
+  UNPERFORMED with reason.
 
 Live tests resolve the convention through one testkit-style probe
 (`snowflake_available()` returning `Option`), skip-not-fail with a stated
