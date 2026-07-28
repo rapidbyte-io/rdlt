@@ -308,10 +308,6 @@ impl SnowflakeSession {
                     ))
                     .await
             }
-            other => Err(DestinationError::fatal(format!(
-                "snowflake: the commit planner emitted {other:?}, which this \
-                 destination does not execute"
-            ))),
         }
     }
 

@@ -280,7 +280,7 @@ timings, configuration; every shipped default cites a measurement.
 
 ## Phase 8: Polish & close-out
 
-- [ ] T038 [P] Crate README: closed type mapping table, identifier policy,
+- [X] T038 [P] Crate README: closed type mapping table, identifier policy,
   auth setup walk for EVERY method (key generation → ALTER USER; PAT
   minting; password caveats — MFA enforcement, TYPE=SERVICE refusal;
   OAuth integration sketch), credential convention, s3-compatible-endpoint allowlist caveat (research D6),
