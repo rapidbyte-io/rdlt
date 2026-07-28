@@ -10,13 +10,21 @@ feature and does not exist yet. New THIN crate rdlt-connector-snowflake
 plan time with registry facts + a LIVE probe against the qual account
 (credentials local-only: env RDLT_SNOWFLAKE_* or ~/.config/rdlt/snowflake/
 incl. `passphrase` file — the key is an ENCRYPTED p8; account identity is
-deliberately in NO committed file, SC-005 verifies mechanically). DRIVER:
-both crates REJECTED (snowflake-api 0.14: arrow ^57 vs workspace 58;
-snowflake-connector-rs 1.1: no PUT/stage API so the ingestion path is
-unreachable, reqwest 0.13 second major) — HAND-ROLL a thin session-protocol
-client at ONE boundary over workspace reqwest 0.12 + jsonwebtoken-over-ring
-(fallback recorded: SQL API v2 + batched INSERT, typed narrowing,
-escalated). PROVEN LIVE: key-pair JWT auth end-to-end (SF 10.26.101);
+deliberately in NO committed file, SC-005 verifies mechanically). DRIVER (owner decision):
+ADOPT snowflake-connector-rs 1.1.0 at ONE boundary (duckdb-rs precedent) —
+source-verified fit: snowflake_code()/ErrorKind structured errors,
+encrypted-PKCS#8 key-pair auth, persistent sessions (real cross-statement
+transactions), SessionConfig wh/db/schema/role, NO arrow dep; verified GAP:
+internal-stage PUT unreachable (wire types pub(crate), parser skips
+uploadInfo keys; HEAD 4b3905247335) → PUT DEFERRED on upstream trigger
+(issue filed; contributing recorded as the route), NO sidecar stack.
+Ingestion v1 = batched INSERT (universal, measured batch knee) +
+external-stage COPY INTO from a USER bucket (plain SQL, file-family parquet
++ object_store; live leg gated on optional RDLT_SNOWFLAKE_STAGE_BUCKET,
+absent -> UNPERFORMED). Costs recorded: reqwest 0.13 second major
+(feature-gated, D-26 shape); dlt-parity gap on internal staging SURFACED in
+the parity matrix. snowflake-api 0.14 REJECTED (arrow ^57 vs workspace 58);
+hand-rolled session client = designed, escalated fallback. PROVEN LIVE: key-pair JWT auth end-to-end (SF 10.26.101);
 unquoted idents fold UPPER and `EVENTS`/`events` COEXIST → policy =
 quoted-UPPERCASE everywhere; MERGE INTO + QUALIFY ROW_NUMBER() DESC=1
 delivers last-wins dedup; duplicate-merge-key = STRUCTURED code 100090 (the
@@ -24,12 +32,8 @@ delivers last-wins dedup; duplicate-merge-key = STRUCTURED code 100090 (the
 survived ROLLBACK after CREATE TABLE) → the atomic unit is PURE DML with a
 code-level guard refusing DDL inside units; pure-DML BEGIN/COMMIT/ROLLBACK
 atomic incl. multi-statement; PUT refused by SQL API (391911) → internal
-stage upload REQUIRES the session protocol; account is AWS (EU_CENTRAL_1)
-so PUT = vended-cred S3 upload + client-side AES (aes/sha2/ring in lock,
-cbc new). INGESTION: parquet parts → internal named stage → COPY INTO as
-the bulk path (only bucket-free live-testable one; local RUSTFS is
-unreachable from SaaS), batched INSERT for small loads, crossover MEASURED
-on the qual account. BOTH fired sqlcore triggers TAKEN as separate
+stage upload REQUIRES the session protocol; account is AWS (EU_CENTRAL_1);
+local RUSTFS is unreachable from SaaS so stage legs need a REAL bucket. BOTH fired sqlcore triggers TAKEN as separate
 increments BEFORE the snowflake consumer (ensure choreography + session
 protocol extractions), pg/duckdb golden pins BYTE-IDENTICAL throughout.
 Live legs gate skip-not-fail on credential presence (container posture);

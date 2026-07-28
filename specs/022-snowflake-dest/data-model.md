@@ -24,15 +24,15 @@ programmatically; schemars-generated schema; `#[non_exhaustive]` enums).
 Validation is eager and typed, naming the field. Unknown fields are errors.
 Secret fields are grep-proofed (Debug/serialize/error paths).
 
-## Client (the one boundary)
+## Boundary (the one wrapped library)
 
 | item | notes |
 |---|---|
-| `Client` | owns transport (workspace reqwest 0.12 + rustls), base URL derived from `account`, session token + renew token, JWT re-issue |
-| session token lifecycle | `Fresh → Active(token) → Renewing → Active' → Closed`; renewal is transparent to callers; a renew failure mid-unit is Transient |
-| `execute(stmts, txn_scope)` | single or multi-statement; the DDL-inside-unit invariant is asserted HERE (a unit-scoped executor refuses DDL statement kinds) |
-| `put_upload_info(stage, path)` | parses the PUT response: cloud location, vended credentials, encryption material (AWS); no library type escapes |
-| `SnowflakeError` | structured code + classified SPI taxonomy at this boundary only: Auth, Permission, Transient (network/renew/resume/throttle), Fatal (SQL, schema, oversized, 100090 duplicate-diagnosis carries its own shape for the merge path) |
+| wrapped library | `snowflake-connector-rs 1.1.0` — Client/Session construction, key-pair auth (incl. encrypted PKCS#8 + passphrase), statement execution, binds |
+| session lifecycle | crate-managed (persistent session; renewal internal to the crate); a session-expiry error mid-unit classifies Transient and the unit retries per driver policy |
+| statement seam | one internal executor trait over the crate's `Session` — the mock transport for statement-count and retry-class tests plugs here; the DDL-inside-unit refusal is asserted here |
+| error translation | `Error::snowflake_code()` + `ErrorKind` → SPI taxonomy at this boundary only: Auth, Permission, Transient (Network/SessionExpired/Timeout/throttle codes), Fatal (SQL/schema/oversized; code 100090 carries the duplicate-merge-key diagnosis shape) |
+| not reachable | internal-stage PUT (source-verified gap) — no sidecar stack; deferred on the upstream trigger |
 
 ## SnowflakeSession (LoadSession impl)
 
@@ -40,12 +40,12 @@ Secret fields are grep-proofed (Debug/serialize/error paths).
 |---|---|
 | `Opened` | after login + context statements; reads state doc; replays receipt check |
 | `Ensured(tables)` | describe-once per table; DDL (create/add-column/stage create) all here, strictly BEFORE any unit; quoted-upper identifiers |
-| `Staged(parts)` | parquet parts written via file-family writer, encrypted per upload material, PUT to the internal named stage (pipeline-scoped stage name from sqlcore constants) |
+| `Staged(parts)` | INSERT path: batches buffered per measured batch size. COPY path (bucket configured): parquet parts written via file-family writer to the user bucket under a pipeline-scoped prefix |
 | `Unit(open txn)` | pure DML: `COPY INTO` stage-table verification counts, merge/publish statements, receipt insert, state update — one explicit transaction |
 | `Committed(receipt)` | COMMIT observed; staged parts removed (post-commit cleanup is idempotent, crash-safe) |
 | `Replayed` | (load, seq) already receipted → publish nothing, return prior receipt |
 
-Crash points: `sf.stage.put` (after part upload begins), `sf.unit.publish`
+Crash points: `sf.stage.write` (after part/batch staging begins), `sf.unit.publish`
 (inside the unit before COMMIT), `sf.receipt.visible` (after COMMIT before
 cleanup). Each swept with armed-fire pins.
 
@@ -53,7 +53,7 @@ cleanup). Each swept with armed-fire pins.
 
 | item | rule |
 |---|---|
-| stage name | pipeline-scoped, from sqlcore naming constants (uppercased at emission); one named internal stage per pipeline |
+| external stage identity | pipeline-scoped prefix in the user bucket, from sqlcore naming constants; the COPY statement references it as an external location/stage |
 | part name | `part-<load>-<seq>-<index>.parquet` — the file-family shape, giving ownership-precise cleanup |
 | cleanup | on open: remove any parts belonging to THIS pipeline whose (load, seq) is not the live one; never touches foreign files |
 | COPY verification | rows loaded per COPY result must equal staged part rowcounts; mismatch fails the unit typed |

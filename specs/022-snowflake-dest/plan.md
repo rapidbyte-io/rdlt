@@ -7,41 +7,43 @@
 ## Summary
 
 A new thin destination crate `rdlt-connector-snowflake` — the third SQL
-destination — built on a hand-rolled session-protocol client at one boundary
-(both driver crates disqualified at survey: one on an arrow-major conflict,
-one on an unreachable ingestion path; research D1). Key-pair JWT auth only,
-proven live against the qual account. Full sqlcore merge-vocabulary parity
-through a new dialect whose merge is `MERGE INTO` + `QUALIFY` dedup (proven
-live, including the structured duplicate-diagnosis code 100090), with the
-existing postgres/duckdb golden pins byte-identical. Ingestion is internal
-stage + `COPY INTO` parquet (the only bucket-free live-testable bulk path;
-PUT is session-protocol-only — proven), with batched INSERT as the
-small-load path and the crossover measured, not guessed. The commit protocol
-is pure-DML transactions with all DDL strictly outside the unit — DDL
-auto-commit was proven live, so this is a guarded invariant, not a
-convention. Both fired sqlcore extraction triggers are TAKEN (ensure
-choreography and session protocol), with pin byte-identity as the
-non-negotiable constraint. Live legs gate skip-not-fail on the credential
-convention; fakesnow server mode is a T001 fidelity probe, adopted or
-rejected on its transcript.
+destination — built on the adopted `snowflake-connector-rs 1.1.0` session
+layer, wrapped at one boundary exactly as duckdb-rs is (owner decision;
+research D1 records the survey, the source-verified PUT gap, and the
+designed hand-rolled fallback). Key-pair JWT auth only, proven live against
+the qual account. Full sqlcore merge-vocabulary parity through a new dialect
+whose merge is `MERGE INTO` + `QUALIFY` dedup (proven live, including the
+structured duplicate-diagnosis code 100090), with the existing
+postgres/duckdb golden pins byte-identical. Ingestion ships two paths —
+batched INSERT as the universal default, external-stage `COPY INTO` (user
+bucket, plain SQL through the crate) as the bulk option — with the
+internal-stage PUT path DEFERRED on a named upstream trigger and the
+crossover measured, not guessed. The commit protocol is pure-DML
+transactions with all DDL strictly outside the unit — DDL auto-commit was
+proven live, so this is a guarded invariant, not a convention. Both fired
+sqlcore extraction triggers are TAKEN (ensure choreography and session
+protocol), with pin byte-identity as the non-negotiable constraint. Live
+legs gate skip-not-fail on the credential convention; fakesnow server mode
+is a T001 fidelity probe, adopted or rejected on its transcript.
 
 ## Technical Context
 
 **Language/Version**: Rust, workspace toolchain 1.96.0 (pinned;
 `rust-toolchain.toml` + workspace `rust-version`)
 
-**Primary Dependencies**: workspace `reqwest 0.12` + rustls (existing tree;
-no second reqwest major), `jsonwebtoken` (RS256 over the `ring` already in
-the lock; fallback `rsa`+`pkcs8` recorded), `aes`/`sha2` (in lock) + `cbc`
-(new, pure Rust) for the AWS internal-stage upload encryption,
-`object_store` (existing) for vended-credential S3 upload, the workspace
-parquet writer via the file family's format machinery,
-`rdlt-connector-sqlcore` for options/planning/dialect. NO driver crate
-(research D1); NO arrow version change (the single arrow 58 tree stands).
+**Primary Dependencies**: `snowflake-connector-rs 1.1.0` (default
+features: key-pair auth; wrapped at one boundary; brings `reqwest 0.13` — a
+second reqwest major behind the `snowflake` feature, the recorded
+0.12/0.13-double-tree shape), `object_store` (existing) for external-stage
+parquet placement, the workspace parquet writer via the file family's
+format machinery, `rdlt-connector-sqlcore` for options/planning/dialect. NO
+arrow version change (the single arrow 58 tree stands). The hand-rolled
+session client is the recorded fallback, not a dependency.
 
 **Storage**: Snowflake (SaaS; qual account AWS_EU_CENTRAL_1) — destination
-tables, `_rdlt_`-prefixed state/receipt tables, internal named stages for
-staged parquet parts. No persisted-format changes anywhere in rdlt.
+tables, `_rdlt_`-prefixed state/receipt tables; optional user-owned cloud
+bucket as the external stage for bulk COPY. No persisted-format changes
+anywhere in rdlt.
 
 **Testing**: `cargo nextest run` (doc-tests via `cargo test --doc`);
 credential-gated live legs (skip-not-fail, testkit-style
@@ -58,17 +60,20 @@ connector itself is platform-neutral Rust.
 feature `snowflake` + CLI `destination: snowflake:` block.
 
 **Performance Goals**: recorded (UNBARRED) ingestion session on the
-bench-shaped 1M×12 dataset; statement economy — zero schema-mutation
-statements at steady state, statements-per-load constant per table;
-INSERT-vs-COPY crossover measured on the qual account.
+bench-shaped 1M×12 dataset over whichever shipped paths the session's
+credentials allow (INSERT always; external-stage COPY iff a bucket is
+provided), saying which ran; statement economy — zero schema-mutation
+statements at steady state, statements-per-load constant per table; INSERT
+batch-size knee and the INSERT-vs-COPY crossover measured on the qual
+account.
 
 **Constraints**: workspace denies `unsafe_code`; one-boundary wrapping
-(Principle III) around the hand-rolled protocol module; typed taxonomy by
+(Principle III) around the adopted crate; typed taxonomy by
 structured Snowflake error codes (100090 duplicate-row, 391911-class API
 refusals, auth vs permission vs transient); DDL-never-inside-unit invariant
 (guarded); existing golden pins byte-identical; purely additive semver.
 
-**Scale/Scope**: one new crate (~config/client/dest modules + tests), two
+**Scale/Scope**: one new crate (config/boundary/dest modules + tests), two
 sqlcore extractions (ensure choreography, session protocol) with
 byte-identity proofs, facade/CLI/pipeline-spec wiring, docs. No engine
 changes expected.
@@ -86,11 +91,12 @@ after Phase 1 design — PASS, no Complexity Tracking entries needed.*
   crash sweep).
 - **II. Library-First, Thin CLI**: PASS — all capability in the crate behind
   the facade; the CLI block only parses into the same public config.
-- **III. One-Boundary Wrapping**: PASS — the hand-rolled protocol client IS
-  the boundary (`client/` module: transport, auth, statements, PUT
-  upload-info, error mapping); no transport/protocol type crosses the crate's
-  public surface. The rejected alternative (driver crate + sidecar PUT
-  stack) would have violated this principle; recorded in research D1.
+- **III. One-Boundary Wrapping**: PASS — `snowflake-connector-rs` is
+  wrapped at exactly one module boundary (the duckdb-rs precedent): its
+  types never cross the crate's public surface, and error translation
+  (`snowflake_code()`/`ErrorKind` → SPI taxonomy) happens there and nowhere
+  else. The rejected sidecar-PUT stack would have violated this principle;
+  recorded in research D1.
 - **IV. Exactly-Once Is Sacred**: PASS — receipts/state/replay per the
   established pattern; DML-only unit transaction with the DDL-outside
   invariant guarded in code; crash points at stage-write, publish, and
@@ -135,28 +141,27 @@ specs/022-snowflake-dest/
 
 ```text
 crates/rdlt-connector-snowflake/
-├── Cargo.toml               # feature-gated; no default features beyond auth
+├── Cargo.toml               # feature-gated; snowflake-connector-rs at one boundary
 ├── README.md                # type mapping, identifier policy, auth walk, caveats
 ├── src/
 │   ├── lib.rs               # thin façade: config + Snowflake destination entry
 │   ├── config.rs            # account/user/key/role/warehouse/database/schema
 │   │                        # + DestOptions vocabulary; schemars; Secret key
-│   ├── client/              # ONE BOUNDARY — the session-protocol client
-│   │   ├── mod.rs           # Client: login, execute, renew; typed SnowflakeError
-│   │   ├── auth.rs          # key-pair JWT (fingerprint, RS256, expiry/renew)
-│   │   ├── protocol.rs      # request/response shapes; multi-statement batches
-│   │   ├── put.rs           # PUT upload-info parse; AES encrypt; object_store S3 put
-│   │   └── errors.rs        # structured-code classification → SPI taxonomy
+│   ├── boundary.rs          # ONE BOUNDARY — client construction, session
+│   │                        # lifecycle, statement execution seam, typed
+│   │                        # SnowflakeError from snowflake_code()/ErrorKind;
+│   │                        # the DDL-inside-unit refusal lives here
 │   └── dest/
 │       ├── mod.rs           # Snowflake (Destination impl), open/session wiring
 │       ├── ddl.rs           # describe-once ensure; quoted-upper identifiers
 │       ├── dialect.rs       # sqlcore MergeDialect: MERGE INTO + QUALIFY dedup
-│       ├── stage.rs         # parquet part staging via internal named stage
+│       ├── ingest.rs        # batched INSERT path; external-stage COPY path
+│       │                    # (parquet parts to the user bucket via object_store)
 │       └── commit.rs        # DML-only unit tx; receipts/state; replay; COPY verify
 └── tests/
     ├── golden_sql.rs        # snowflake dialect pins (byte-for-byte)
     ├── config_schema.rs     # schema + round-trip + secret grep-proof
-    ├── protocol_mock.rs     # mock transport: statement counts, retry classes
+    ├── boundary_mock.rs     # mock statement seam: statement counts, retry classes
     ├── live_dest.rs         # credential-gated: conformance, strategies, differential
     └── crash_sweep.rs       # armed-fire pins at sf.* crash points
 
@@ -175,8 +180,9 @@ consumer exists.
 
 ## Complexity Tracking
 
-No constitution violations to justify. The one deliberate scope note:
-hand-rolling the protocol client adds owned code where a crate was hoped
-for, but the survey disqualified both candidates on recorded grounds
-(research D1) and the constitution's presumptive answer for unreachable or
-conflicting dependencies is exactly this shape at exactly one boundary.
+No constitution violations to justify. The one deliberate scope note: the
+adopted crate cannot reach internal-stage PUT (verified in source), so the
+bucket-free bulk path is a NAMED deferral on an upstream trigger rather
+than a shipped capability — recorded in research D1/D6, surfaced in the
+dlt-parity matrix, never silent. The second reqwest major it brings is
+feature-gated and recorded (the established double-tree shape).

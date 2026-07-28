@@ -6,41 +6,53 @@ absent from this document — credentials follow the local convention recorded
 in D8. Probe transcripts ran from a scratchpad; every probe object was
 created in a dedicated scratch schema and dropped at the end.
 
-## D1 — Driver: hand-rolled thin session-protocol client, at one boundary
+## D1 — Driver: `snowflake-connector-rs`, adopted (owner decision), with the one gap verified in source
 
-**Decision**: implement a THIN Snowflake session-protocol client inside
-`rdlt-connector-snowflake` (login, statement execution, token renew, PUT
-upload-info, error mapping), over the workspace's existing `reqwest 0.12` +
-rustls stack. No Snowflake driver crate is adopted.
+**Decision**: adopt `snowflake-connector-rs 1.1.0` (estie-inc) as the
+session/statement layer, wrapped at one boundary exactly as duckdb-rs is.
+The owner chose off-the-shelf over the hand-rolled client this survey
+initially leaned to; the survey facts below are what that choice buys and
+what it defers.
 
-**Rationale** — the registry survey disqualified both real candidates:
+**Fitness, verified against source at upstream HEAD `4b3905247335`
+(2026-07-19), not just the docs surface**:
 
-| candidate | version | facts | verdict |
-|---|---|---|---|
-| `snowflake-api` | 0.14.0 (2025-10-23) | `arrow-array/ipc/schema ^57` against the workspace's single arrow 58 tree — the recorded design-changing conflict class (016 FR-002 disqualifier); adds reqwest-middleware/retry tree; 9 months stale | **rejected: arrow major conflict** |
-| `snowflake-connector-rs` | 1.1.0 (2026-07-19) | actively maintained; no arrow dep; key-pair auth built in; persistent sessions. But: **no PUT / stage-upload API and no raw-response escape hatch** — the performance-defining ingestion path (internal stage + COPY, the dlt-parity path) is unreachable through its public surface; `reqwest ^0.13` adds a second reqwest major wherever the `iceberg` feature is off | **rejected: cannot carry the ingestion path** |
-| ODBC (arrow-odbc + Snowflake ODBC) | — | proprietary driver install on every consumer of a crate being prepared for publish | rejected (packaging, presumptive per spec) |
-| ADBC (Go driver via FFI) | — | foreign-runtime FFI tree | rejected (the Glue/aws-sdk precedent, presumptive per spec) |
+- **Structured error codes are exposed**: `Error::snowflake_code()` plus a
+  typed `ErrorKind` (Auth / Network / Server / SessionExpired / Timeout /
+  Cancelled / Protocol / Decode) — Principle V classification works,
+  including the duplicate-merge-key diagnosis by code 100090.
+- **Key-pair auth built in**, including encrypted PKCS#8
+  (`KeyPairConfig::from_encrypted_pem`) — matching the qual key's shape.
+- **Persistent sessions** — `BEGIN`/`COMMIT` across `query()` calls are real
+  transactions in one Snowflake session (stronger than the SQL API's
+  single-request bundling the probe used).
+- **`SessionConfig`** carries warehouse/database/schema/role and session
+  parameters; rich bind support for batched INSERT.
+- Maintenance: released 2026-07-19; no arrow dependency (the single arrow 58
+  tree stands untouched).
 
-Bolting a second session stack beside `snowflake-connector-rs` for PUT alone
-would violate one-boundary wrapping (Principle III). The protocol surface
-actually needed is small and is precedented as a hand-roll in this project
-(the pgoutput parser in 009, the OAuth/pagination client in 014): a login
-request, a statement-execution request, token renewal, and the PUT
-upload-info response. `snowflake-api`'s implementation serves as a
-feasibility reference for the PUT flow (read, not depended on).
+**The verified gap**: no PUT / internal-stage upload, and no escape hatch to
+reach it — `ApiContext`, session tokens, and the statement wire types are
+all `pub(crate)`, and the response parser deliberately skips unknown keys,
+which is exactly where a PUT response carries its `uploadInfo`/encryption
+material. Internal-stage ingestion is therefore NOT reachable through this
+crate today. Consequence: the ingestion design in D6 is re-cut around that
+fact, and the internal-stage door is deferred with a named upstream trigger
+(PUT support or a raw-response API landing upstream — an issue is filed as
+part of this feature; contributing the implementation is a recorded option).
+A sidecar session stack for PUT alone is rejected: it would duplicate login,
+renewal, and error mapping beside the crate's own, the two-stacks shape.
 
-**JWT**: `jsonwebtoken` (RS256) rides the `ring` already present in the lock
-via rustls; the key is parsed once and Secret-wrapped. Alternative
-(`rsa`+`pkcs8`+`sha2` pure-RustCrypto) recorded as fallback if `jsonwebtoken`'s
-key-format handling disappoints at T001.
+**Costs accepted with eyes open**:
 
-**Fallback (designed, not improvised)**: if T001 falsifies the protocol
-survey — login or PUT upload-info materially deeper than surveyed — v1
-narrows to the SQL API v2 (`/api/v2/statements`, proven live in this
-research) with batched-INSERT ingestion, recorded as a typed narrowing, and
-the internal-stage door is re-recorded with what T001 learned. The switch is
-an escalation to the owner, not a silent substitution.
+- `reqwest ^0.13` — a second reqwest major wherever the `iceberg` feature is
+  off. Same shape as the recorded reqwest 0.12/0.13 double tree (feature-
+  gated, build cost only); recorded, not hidden.
+- The alternatives stand as recorded: `snowflake-api` 0.14 rejected on the
+  arrow ^57-vs-58 major conflict; ODBC/ADBC rejected on packaging/FFI
+  grounds; the hand-rolled session client remains the DESIGNED FALLBACK if
+  the crate proves unfit at T001 (login shapes, renewal under long loads,
+  bind limits) — escalated, never improvised.
 
 ## D2 — Auth: key-pair JWT, proven live
 
@@ -49,7 +61,10 @@ and the SQL API: fingerprint = base64(SHA256(DER(public key))), JWT
 `iss = ACCOUNT.USER.SHA256:<fp>`, `sub = ACCOUNT.USER`, RS256, one-hour
 expiry; header `X-Snowflake-Authorization-Token-Type: KEYPAIR_JWT`.
 `SELECT CURRENT_VERSION(), …` returned (Snowflake 10.26.101) with the user's
-DEFAULT role, warehouse, and database applied server-side.
+DEFAULT role, warehouse, and database applied server-side. In the
+implementation this chain belongs to the adopted crate
+(`KeyPairConfig::from_pem` / `from_encrypted_pem`); the probe proves the
+account-side configuration and the key itself are good.
 
 Facts that shape the design:
 
@@ -117,34 +132,43 @@ runs strictly before the unit opens. A debug assertion in the session guards
 the invariant: no DDL statement may be issued while a unit transaction is
 open.
 
-## D6 — Ingestion: internal stage + COPY INTO as the design target, measured before shipped
+## D6 — Ingestion: batched INSERT as the universal path; external-stage COPY as the bulk option; internal stage deferred on an upstream trigger
 
 Probe facts that frame the decision:
 
-- `PUT` is refused by the SQL API with structured code 391911 — internal
-  stage upload REQUIRES the session protocol (PUT statement returns vended
-  upload credentials; the client uploads directly to cloud storage and, on
-  AWS, encrypts files client-side per the returned encryption material).
-- The qual account is **AWS-backed** (`AWS_EU_CENTRAL_1`), so the PUT upload
-  half is: parse upload-info → AES-encrypt staged file → S3 PUT with vended
-  creds → `COPY INTO` from the internal stage. `aes` and `sha2` are already
-  in the workspace lock; `cbc` is a small pure-Rust addition.
-- The workspace's parquet writer (file family) produces the staged files;
-  `object_store` (already a dependency) performs the vended-credential S3
-  upload. A LOCAL RUSTFS bucket is unreachable from the SaaS side, so
-  external-stage cells cannot be tested live without a real cloud bucket —
-  internal stages are the only bucket-free, live-testable path.
-- Server-side bulk generation (100k rows via GENERATOR) ran in ~2 s; the
-  client-shipped INSERT path's real throughput over WAN is unknown and is
-  measured at implementation time, not assumed.
+- `PUT` is refused by the SQL API (code 391911) and is unreachable through
+  the adopted crate (D1) — internal-stage upload is off the table for v1.
+- The qual account is AWS-backed (`AWS_EU_CENTRAL_1`). A LOCAL RUSTFS bucket
+  is unreachable from the SaaS side, so any stage-based live leg needs a
+  REAL cloud bucket.
+- Server-side bulk generation (100k rows) ran in ~2 s; client-shipped INSERT
+  throughput over WAN is unknown and is measured, not assumed.
 
-**Decision**: v1 ships internal-stage PUT + `COPY INTO` (parquet) as the
-bulk path — it is the dlt-parity path and the only live-testable bucket-free
-one — with batched INSERT as the small-load/fallback path. The crossover
-threshold between INSERT and stage+COPY is MEASURED on the qual account
-(rows and bytes), not guessed; both paths' numbers land in the close-out.
-COPY result rowcounts are verified against staged counts (the rowcount
-tripwire from the spec's edge cases).
+**Decision — two shipped paths, one deferral**:
+
+1. **Batched INSERT (universal default)**: multi-row inserts through the
+   crate's bind/statement machinery inside the DML unit. Works for every
+   user with zero extra infrastructure; fully live-testable on the qual
+   account; batch size is measured on the qual account (rows × bytes knee),
+   not guessed.
+2. **External-stage COPY INTO (the bulk option)**: for users with a cloud
+   bucket — the workspace's file-family machinery writes parquet parts to
+   the USER'S bucket via `object_store` (existing dependency), then
+   `COPY INTO` from an external stage/location executes as plain SQL through
+   the crate, with per-COPY loaded-rowcount verification. This is dlt's
+   external-staging shape. The live leg is gated on an EXTENDED credential
+   convention (optional `RDLT_SNOWFLAKE_STAGE_BUCKET` + storage credentials);
+   absent a bucket, the leg records UNPERFORMED — never silently green.
+3. **Internal-stage PUT: DEFERRED**, named trigger = upstream
+   `snowflake-connector-rs` gaining PUT support or a raw-response escape
+   hatch (issue filed as part of this feature; contributing the
+   implementation upstream is the recorded route to closing it). This is the
+   bucket-free bulk path and remains the parity gap vs dlt's default —
+   recorded in the parity matrix, not buried.
+
+The INSERT-vs-COPY crossover and both paths' numbers land in the close-out;
+the recorded 1M session runs on whichever paths the session's credentials
+allow and says which ran.
 
 ## D7 — sqlcore triggers: both TAKEN
 
@@ -174,7 +198,11 @@ environment first, config-dir fallback —
   (or `…_PASSPHRASE` inline), `RDLT_SNOWFLAKE_DATABASE`,
   `RDLT_SNOWFLAKE_WAREHOUSE`, `RDLT_SNOWFLAKE_ROLE`;
 - fallback dir `~/.config/rdlt/snowflake/`: `rdlt_qual_key.p8`,
-  `rdlt_qual_key.pub`, `passphrase` (0600).
+  `rdlt_qual_key.pub`, `passphrase` (0600);
+- OPTIONAL, for the external-stage live leg only:
+  `RDLT_SNOWFLAKE_STAGE_BUCKET` (+ the family-standard S3 credential
+  variables) naming a real cloud bucket both the runner and the account can
+  reach. Absent → that leg records UNPERFORMED with reason.
 
 Live tests resolve the convention through one testkit-style probe
 (`snowflake_available()` returning `Option`), skip-not-fail with a stated
