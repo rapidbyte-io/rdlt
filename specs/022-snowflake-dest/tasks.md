@@ -160,11 +160,11 @@ new rows; kill at each crash point and converge duplicate-free.
   wrong/rotated key → typed auth error naming account+user, zero key
   material in the rendered error (asserted); suspended-warehouse
   auto-resume absorbed by timeouts.
-- [ ] T017 [US1] Crash sweep in `tests/crash_sweep.rs`: `sf.*` points × 3
+- [X] T017 [US1] Crash sweep in `tests/crash_sweep.rs`: `sf.*` points × 3
   actions against the live qual account (credential-gated), each point
   proven ARMED (armed-fire pins), converging to exactly-once totals with
   zero duplicate publishes — both ingestion paths covered (SD7).
-- [ ] T018 [US1] US1 gate: full local gate green; close-out story row +
+- [X] T018 [US1] US1 gate: full local gate green; close-out story row +
   SD-clause progress recorded; any deviation cited.
 
 **Checkpoint**: MVP — a correct, crash-disciplined Snowflake destination
@@ -204,7 +204,7 @@ canonical-row-equal results vs the postgres destination for every strategy.
   incl. SCD2 HISTORY OPENNESS on identical seeded inputs for the full
   matrix (gated on credentials AND the pg container; lives in
   `tests/live_dest.rs` beside the strategy matrix).
-- [ ] T025 [US2] US2 gate: full gate + both golden suites; close-out row.
+- [X] T025 [US2] US2 gate: full gate + both golden suites; close-out row.
 
 **Checkpoint**: merge parity delivered and PROVEN equal, not asserted.
 
@@ -224,7 +224,7 @@ run issues zero schema-mutation statements; totals constant per table.
 - [X] T028 [US3] Live verification: run the same load twice on the qual
   account, count statements server-side (QUERY_HISTORY) and client-side,
   record both counts in close-out.md (SC-004).
-- [ ] T029 [US3] US3 gate: full gate; close-out row.
+- [X] T029 [US3] US3 gate: full gate; close-out row.
 
 ## Phase 6: User Story 4 — Verified like the other connectors (P2)
 
@@ -256,7 +256,7 @@ live legs run with credentials present; tree mechanically clean of secrets.
   passphrase, and stage secret across Debug/serialize/error/log output;
   plus the SC-005 mechanical tree search (account identifier, user name,
   key markers → zero hits) as a repeatable script recorded in close-out.
-- [ ] T034 [US4] US4 gate: full gate with and without credentials present;
+- [X] T034 [US4] US4 gate: full gate with and without credentials present;
   close-out row.
 
 ## Phase 7: User Story 5 — Recorded performance standing (P3)

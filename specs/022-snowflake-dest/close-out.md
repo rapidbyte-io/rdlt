@@ -413,3 +413,29 @@ change, defended by nothing.
 | internal-stage `PUT` | unreachable through the SQL API and the adopted driver; deferred with a named upstream trigger (parity.md) |
 | GCS / Azure external stages | no such bucket available; the Snowflake side is storage-agnostic, the client writer and config are S3-shaped |
 | duplicate-merge-key diagnosis, live provocation | the survivor subquery makes a duplicate source key unreachable through the normal path — the mapping is unit-tested and the CODE is confirmed live by a raw provocation |
+
+## Gate of record
+
+The crash sweep is the evidence US1's exactly-once claim rests on, so it is
+recorded with what it actually covered rather than as a checkmark.
+
+| | |
+|---|---|
+| crash sweep | **2/2 PASS**, 4,308 s — every registered point × 3 actions × Append/Replace × both ingestion paths; each cell crashes, crashes AGAIN during recovery, then converges to exact totals |
+| armed-fire pin | every crash site fired on the path that can reach it; a site gone dead fails here rather than passing silently |
+| workspace | **966/966**, 1 skipped — the skip is `batch_knee`, an `#[ignore]`d measurement instrument, not a gated cell |
+| lint / docs | clean |
+
+Two earlier sweep runs were DISCARDED rather than recorded, and why matters:
+both had a second sweep running concurrently against the same account, which
+is the very collision D-29 describes — two sessions of one pipeline sharing a
+part key and a wipe. The first of those runs is what surfaced D-29 at all; its
+failure was real evidence of a real defect, but it was not a valid gate
+result, and the run that IS recorded here was uninterrupted with exactly one
+instance.
+
+One near-miss worth recording: an interrupted run reported exit code 0 because
+the command had been piped to `tail`, which exits 0 whatever happens upstream.
+It was caught by reading the output for a summary line that was not there. A
+gate that can report success without producing a result is not a gate, so the
+recorded run is unpiped and its exit code is the runner's own.
