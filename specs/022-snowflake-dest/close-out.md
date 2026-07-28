@@ -423,7 +423,9 @@ recorded with what it actually covered rather than as a checkmark.
 |---|---|
 | crash sweep | **2/2 PASS**, 4,308 s — every registered point × 3 actions × Append/Replace × both ingestion paths; each cell crashes, crashes AGAIN during recovery, then converges to exact totals |
 | armed-fire pin | every crash site fired on the path that can reach it; a site gone dead fails here rather than passing silently |
-| workspace | **966/966**, 1 skipped — the skip is `batch_knee`, an `#[ignore]`d measurement instrument, not a gated cell |
+| workspace | **966/966**, 2 skipped — both skips are `#[ignore]`d measurement instruments (`batch_knee`, `ingestion_session`), not gated cells that quietly stopped running |
+| perf gate | 6 benches, 0 regressed, all within tolerance |
+| cold start | 26.3 ms median (bar <= 40 ms) |
 | lint / docs | clean |
 
 Two earlier sweep runs were DISCARDED rather than recorded, and why matters:
@@ -433,6 +435,24 @@ part key and a wipe. The first of those runs is what surfaced D-29 at all; its
 failure was real evidence of a real defect, but it was not a valid gate
 result, and the run that IS recorded here was uninterrupted with exactly one
 instance.
+
+### The toolchain the gate ran on
+
+The recorded gate runs on **1.96.0**, the version `rust-toolchain.toml` pins
+and the version the perf baselines were recorded with.
+
+Getting there took finding that `RUSTUP_TOOLCHAIN=1.97.1` was set in the
+environment, which silently overrides the file — every build and test earlier
+in this feature ran on 1.97.1 without the pin applying, and 1.96.0 was not
+installed at all. The perf gate is what caught it: the benchmarks themselves
+passed with zero regressions, and `compare-iai.sh` still refused, because
+instruction counts recorded under one compiler say nothing about a build from
+another.
+
+The baselines were NOT re-recorded, though the gate offers that as the way
+through. Re-recording would move the project's perf reference onto an
+unpinned toolchain — a decision, not a cleanup step. The pinned toolchain was
+installed and the override dropped for the run instead.
 
 One near-miss worth recording: an interrupted run reported exit code 0 because
 the command had been piped to `tail`, which exits 0 whatever happens upstream.
