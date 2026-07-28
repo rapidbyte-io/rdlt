@@ -16,13 +16,40 @@ use rdlt_connector::core::TableSchema;
 
 use super::ddl::quote;
 
-/// Rows per statement.
+/// How much rendered VALUES text one statement carries, in bytes.
 ///
-/// A placeholder pending measurement (US5 sweeps it against the qual account):
-/// it is a real trade — larger statements amortise the round trip, and
-/// Snowflake caps statement text, so the knee is a property of the data's
-/// width, not a constant to guess at. Recorded here rather than tuned blind.
-const ROWS_PER_STATEMENT: usize = 1_000;
+/// Measured against the qual account, 20,000 rows × 12 columns, timing the
+/// same rows split into statements different ways:
+///
+/// ```text
+///   100 rows/stmt → 200 statements,  20 KB each,  101 rows/s
+///   500 rows/stmt →  40 statements, 101 KB each,  405 rows/s
+///  2000 rows/stmt →  10 statements, 405 KB each,  659 rows/s
+///  5000 rows/stmt →   4 statements, 1.0 MB each,  612 rows/s
+/// 20000 rows/stmt →   1 statement,  4.0 MB,      1064 rows/s
+/// ```
+///
+/// Throughput rises 6.5× from 100 to 2,000 rows per statement and then goes
+/// flat and noisy — the 5,000 point measured SLOWER than 2,000. So the knee is
+/// around 400 KB, and the gains past it are not worth the risk beside it.
+///
+/// The budget is in BYTES rather than rows because that is what the trade is
+/// actually about. Rows were the obvious unit and the wrong one: this shape
+/// reaches 400 KB at 2,000 rows, while a hundred-column table would reach it
+/// at a few hundred — and a row-count constant tuned on one shape becomes a
+/// multi-megabyte statement on the other. Snowflake documents a 1 MB limit for
+/// a single statement (a 4 MB statement was nonetheless accepted through the
+/// driver in the sweep above, so the effective cap is higher than the
+/// documented one — which is a reason to stay under the documented one, not to
+/// rely on the observed one).
+const STATEMENT_VALUE_BUDGET: usize = 400 * 1024;
+
+/// Rows per statement, when the budget cannot decide.
+///
+/// A ceiling, not a target: it bounds the per-statement row count for
+/// pathologically narrow rows, where the byte budget alone would put millions
+/// of them in one statement and make a single failure expensive to retry.
+const MAX_ROWS_PER_STATEMENT: usize = 20_000;
 
 /// Escape a string for use inside single quotes.
 ///
@@ -44,19 +71,25 @@ pub(super) fn insert_statements(
     schema: &TableSchema,
     batch: &RecordBatch,
 ) -> Result<Vec<String>, DestinationError> {
-    insert_statements_chunked(qualified_target, schema, batch, ROWS_PER_STATEMENT)
+    insert_statements_chunked(qualified_target, schema, batch, STATEMENT_VALUE_BUDGET)
 }
 
-/// [`insert_statements`] at a caller-chosen chunk size.
+/// [`insert_statements`] against a caller-chosen byte budget.
 ///
-/// Exists so the chunk size can be MEASURED without becoming configuration:
+/// Exists so the budget can be MEASURED without becoming configuration:
 /// shipping a knob in order to tune it would leave every user holding a
 /// decision that belongs to whoever measured it.
+///
+/// Rows are rendered once and packed until the budget is reached, so a wide
+/// row simply yields fewer rows per statement — no shape needs its own
+/// constant. A single row over budget still gets its own statement rather
+/// than being refused: splitting it is not possible, and a row too large for
+/// the service is the service's error to report, with its own limit named.
 pub(super) fn insert_statements_chunked(
     qualified_target: &str,
     schema: &TableSchema,
     batch: &RecordBatch,
-    rows_per_statement: usize,
+    value_budget: usize,
 ) -> Result<Vec<String>, DestinationError> {
     if batch.num_rows() == 0 {
         return Ok(Vec::new());
@@ -72,16 +105,31 @@ pub(super) fn insert_statements_chunked(
     let indices = column_indices(schema, batch)?;
 
     let mut out = Vec::new();
-    for chunk_start in (0..batch.num_rows()).step_by(rows_per_statement) {
-        let chunk_end = (chunk_start + rows_per_statement).min(batch.num_rows());
-        let mut rows = Vec::with_capacity(chunk_end - chunk_start);
-        for row in chunk_start..chunk_end {
-            let mut values = Vec::with_capacity(indices.len());
-            for &index in &indices {
-                values.push(render(batch.column(index).as_ref(), row)?);
-            }
-            rows.push(format!("({})", values.join(", ")));
+    let mut rows: Vec<String> = Vec::new();
+    let mut bytes = 0usize;
+    for row in 0..batch.num_rows() {
+        let mut values = Vec::with_capacity(indices.len());
+        for &index in &indices {
+            values.push(render(batch.column(index).as_ref(), row)?);
         }
+        let rendered = format!("({})", values.join(", "));
+
+        // Flushed BEFORE adding, so a statement never exceeds the budget by a
+        // whole row — and never before it holds anything, so an oversized row
+        // still ships rather than producing an empty statement forever.
+        let would_be = bytes + rendered.len() + 2;
+        if !rows.is_empty() && (would_be > value_budget || rows.len() >= MAX_ROWS_PER_STATEMENT) {
+            out.push(format!(
+                "INSERT INTO {qualified_target} ({column_list}) VALUES {}",
+                rows.join(", ")
+            ));
+            rows.clear();
+            bytes = 0;
+        }
+        bytes += rendered.len() + 2;
+        rows.push(rendered);
+    }
+    if !rows.is_empty() {
         out.push(format!(
             "INSERT INTO {qualified_target} ({column_list}) VALUES {}",
             rows.join(", ")
@@ -479,17 +527,94 @@ mod tests {
     }
 
     #[test]
-    fn a_batch_larger_than_the_chunk_becomes_several_statements() {
+    fn a_batch_over_the_budget_becomes_several_statements() {
         let arrow = Arc::new(ArrowSchema::new(vec![Field::new(
             "id",
             DataType::Int64,
             false,
         )]));
-        let rows: Vec<i64> = (0..ROWS_PER_STATEMENT as i64 + 1).collect();
+        let rows: Vec<i64> = (0..5_000).collect();
         let batch =
             RecordBatch::try_new(arrow, vec![Arc::new(Int64Array::from(rows))]).expect("batch");
-        let sql = insert_statements("\"T\"", &schema_of(&["id"]), &batch).expect("sql");
-        assert_eq!(sql.len(), 2, "the chunk boundary splits the batch");
+        // A budget small enough that this narrow batch must split.
+        let sql = insert_statements_chunked("\"T\"", &schema_of(&["id"]), &batch, 4_096)
+            .expect("sql");
+        assert!(sql.len() > 1, "the budget must split the batch");
+        for statement in &sql {
+            assert!(
+                statement.len() < 8_192,
+                "no statement may run far past the budget: {} bytes",
+                statement.len()
+            );
+        }
+    }
+
+    #[test]
+    fn a_wide_row_yields_fewer_rows_per_statement_than_a_narrow_one() {
+        // The property a row-count constant could not have: the SAME budget
+        // packs fewer wide rows than narrow ones, so no shape needs its own
+        // tuning. A row-count constant tuned on a narrow table becomes a
+        // multi-megabyte statement on a wide one.
+        let narrow = {
+            let arrow = Arc::new(ArrowSchema::new(vec![Field::new(
+                "id",
+                DataType::Int64,
+                false,
+            )]));
+            RecordBatch::try_new(
+                arrow,
+                vec![Arc::new(Int64Array::from((0..2_000).collect::<Vec<i64>>()))],
+            )
+            .expect("batch")
+        };
+        let wide = {
+            let arrow = Arc::new(ArrowSchema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("note", DataType::Utf8, true),
+            ]));
+            RecordBatch::try_new(
+                arrow,
+                vec![
+                    Arc::new(Int64Array::from((0..2_000).collect::<Vec<i64>>())),
+                    Arc::new(StringArray::from(
+                        (0..2_000).map(|_| "x".repeat(200)).collect::<Vec<_>>(),
+                    )),
+                ],
+            )
+            .expect("batch")
+        };
+
+        let narrow_sql =
+            insert_statements_chunked("\"T\"", &schema_of(&["id"]), &narrow, 32_768).expect("sql");
+        let wide_sql =
+            insert_statements_chunked("\"T\"", &schema_of(&["id", "note"]), &wide, 32_768)
+                .expect("sql");
+        assert!(
+            wide_sql.len() > narrow_sql.len(),
+            "the same budget must pack fewer wide rows: {} wide statements vs {} narrow",
+            wide_sql.len(),
+            narrow_sql.len()
+        );
+    }
+
+    #[test]
+    fn a_single_row_over_budget_still_ships() {
+        // Splitting one row is impossible, and refusing it here would turn a
+        // service limit into a client-side dead end with no way forward. The
+        // service reports its own limit, naming it.
+        let arrow = Arc::new(ArrowSchema::new(vec![Field::new(
+            "note",
+            DataType::Utf8,
+            true,
+        )]));
+        let batch = RecordBatch::try_new(
+            arrow,
+            vec![Arc::new(StringArray::from(vec!["y".repeat(10_000)]))],
+        )
+        .expect("batch");
+        let sql =
+            insert_statements_chunked("\"T\"", &schema_of(&["note"]), &batch, 128).expect("sql");
+        assert_eq!(sql.len(), 1, "the oversized row is emitted, not dropped");
     }
 
     #[test]

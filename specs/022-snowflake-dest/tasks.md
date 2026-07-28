@@ -265,7 +265,7 @@ live legs run with credentials present; tree mechanically clean of secrets.
 **Independent test**: close-out contains the session with dataset identity,
 timings, configuration; every shipped default cites a measurement.
 
-- [ ] T035 [US5] INSERT batch-knee measurement on the qual account: sweep
+- [X] T035 [US5] INSERT batch-knee measurement on the qual account: sweep
   batch sizes (rows × bytes) on the bench-shaped dataset, medians of
   repeated runs, pick the knee, replace T012's placeholder constant WITH
   the citation at the site; record the sweep in close-out.md.
@@ -293,10 +293,10 @@ timings, configuration; every shipped default cites a measurement.
   foremost) in `specs/022-snowflake-dest/parity.md`; file the upstream
   `snowflake-connector-rs` issue for PUT/raw-response support and record
   its URL as the deferral's trigger reference in close-out.md.
-- [ ] T041 Coverage ≥80% baseline-first (`make coverage`, workspace-wide,
+- [X] T041 Coverage ≥80% baseline-first (`make coverage`, workspace-wide,
   recorded) and semver additive-proof (`cargo semver-checks` on rdlt-core
   + rdlt-connector: "no update required") at the final increment.
-- [ ] T042 Close-out matrix complete: SD1–SD8 all terminal, story matrix
+- [X] T042 Close-out matrix complete: SD1–SD8 all terminal, story matrix
   complete, zero uncited dispositions, both extraction triggers
   dispositioned (SC-008), every UNPERFORMED verification named with its
   reason.

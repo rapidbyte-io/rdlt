@@ -5,8 +5,9 @@
 //! data's width and of the network between here and the account, so it is
 //! measured on the real thing.
 //!
-//! What this times is EXACTLY what the constant controls: the same rows, split
-//! into statements different ways, executed against a real table. Deliberately
+//! What this times is EXACTLY what the constant controls: the same rows,
+//! packed into statements against different byte budgets, executed against a
+//! real table. Deliberately
 //! not through the engine — an engine-level sweep varies how often a load
 //! COMMITS, which on a SaaS destination dominates everything else and answers
 //! a different question. (It was run that way first, and did: throughput rose
@@ -37,8 +38,18 @@ use serde_json::json;
 /// Rows per measured run — enough that per-run fixed cost does not dominate.
 const ROWS: usize = 20_000;
 
-/// The chunk sizes swept.
-const CHUNKS: &[usize] = &[100, 250, 500, 1_000, 2_000, 5_000, 10_000, 20_000];
+/// The byte budgets swept, and the rows-per-statement each produced on the
+/// 12-column shape when the sweep was first run against a row count.
+const CHUNKS: &[usize] = &[
+    16 * 1024,
+    64 * 1024,
+    128 * 1024,
+    256 * 1024,
+    400 * 1024,
+    1024 * 1024,
+    2048 * 1024,
+    4096 * 1024,
+];
 
 fn config_in(schema: &str) -> Option<SnowflakeConfig> {
     let creds = credentials()?;
@@ -162,7 +173,7 @@ async fn sweep_the_rows_per_statement_knee() {
     println!("\n=== rows-per-statement sweep ({ROWS} rows × 12 columns) ===");
     let mut results: Vec<(usize, f64, usize, usize)> = Vec::new();
 
-    for &chunk in CHUNKS {
+    for &budget in CHUNKS {
         // A fresh table per chunk size, so no run pays for another's rows.
         apply(
             &config,
@@ -177,14 +188,14 @@ async fn sweep_the_rows_per_statement_knee() {
         .await
         .expect("target table");
 
-        let statements = insert_statements_chunked(&target, &table_schema, &batch, chunk)
+        let statements = insert_statements_chunked(&target, &table_schema, &batch, budget)
             .expect("statements render");
         let widest = statements.iter().map(String::len).max().unwrap_or(0);
 
         let started = std::time::Instant::now();
         for sql in &statements {
             apply(&config, sql).await.unwrap_or_else(|e| {
-                panic!("chunk {chunk} ({} statements, widest {widest}B): {e:?}", statements.len())
+                panic!("budget {budget} ({} statements, widest {widest}B): {e:?}", statements.len())
             });
         }
         let elapsed = started.elapsed().as_secs_f64();
@@ -192,12 +203,13 @@ async fn sweep_the_rows_per_statement_knee() {
         let landed = connect_and_run(&config, &format!("SELECT count(*) FROM {target}"))
             .await
             .expect("count");
-        assert_eq!(landed, ROWS.to_string(), "every row must land at chunk {chunk}");
+        assert_eq!(landed, ROWS.to_string(), "every row must land at budget {budget}");
 
         let rate = ROWS as f64 / elapsed;
-        results.push((chunk, rate, statements.len(), widest));
+        results.push((budget, rate, statements.len(), widest));
         println!(
-            "  {chunk:>6} rows/stmt: {:>3} statements, widest {:>8}B, {elapsed:>6.2}s, {rate:>8.0} rows/s",
+            "  {:>5}KB budget: {:>3} statements, widest {:>8}B, {elapsed:>6.2}s, {rate:>8.0} rows/s",
+            budget / 1024,
             statements.len(),
             widest
         );
@@ -214,7 +226,10 @@ async fn sweep_the_rows_per_statement_knee() {
         .max_by(|a, b| a.1.total_cmp(&b.1))
         .expect("a sweep produced results");
     println!(
-        "  → fastest: {} rows/statement at {:.0} rows/s ({} statements, widest {}B)\n",
-        best.0, best.1, best.2, best.3
+        "  → fastest: {}KB budget at {:.0} rows/s ({} statements, widest {}B)\n",
+        best.0 / 1024,
+        best.1,
+        best.2,
+        best.3
     );
 }

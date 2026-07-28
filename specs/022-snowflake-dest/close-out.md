@@ -25,7 +25,7 @@ recorded UNPERFORMED with the reason, never as green.
 | US2 — full merge parity | **DELIVERED** | five strategies live; differential oracle agrees with postgres row-for-row across four strategy × hard-delete combinations; refusals carry the shared core's wording, and acceptances match too. |
 | US3 — frugal with round trips | **DELIVERED** | economy pinned unit-side and measured server-side; one optimization built, measured and DECLINED with its numbers (D-22). |
 | US4 — verified like the other connectors | **DELIVERED** | conformance live; auth matrix wired for all four methods (two proven live, two UNPERFORMED by owner decision); a real secret leak found and fixed (D-21). |
-| US5 — recorded performance standing | **IN PROGRESS** | batch-knee instrument built and corrected after its first design measured the wrong thing (D-23). |
+| US5 — recorded performance standing | **DELIVERED** | the knee measured (D-23), and the constant it produced changed UNIT as a result (D-28): bytes, not rows. |
 
 ## Task ledger
 
@@ -308,6 +308,74 @@ Separately, podman exhausted its 2048-lock table with 1,799 orphaned
 anonymous test volumes; only the 64-hex anonymous ones were removed, leaving
 the named project volumes untouched, since a blanket prune would have
 destroyed unrelated data.
+
+### D-27 (T041) — semver: the two crates that matter are clean; sqlcore is not, and it costs nothing
+
+`cargo semver-checks --baseline-rev main`:
+
+- **rdlt-core**: no semver update required.
+- **rdlt-connector**: no semver update required — the new `objects` module is
+  additive behind a feature, and `PemSource`'s hand-written `Debug` replaces a
+  derived one without changing the API surface.
+- **rdlt-connector-sqlcore**: **requires a major.**
+  `MergeDialect::upsert_stmt` went from six positional parameters to one
+  struct, which is a breaking change for any external implementor of the
+  trait.
+
+The requirement was that this feature must not force the 0.2→0.3 window. It
+does not, and the reason is worth stating plainly rather than leaving as an
+inference: **nothing in this workspace has been published.** All four crates
+are absent from crates.io — the first semver-checks invocation failed for
+exactly that reason before being re-run against a git baseline. There is no
+released 0.2 for anyone to depend on, so there is no compatibility to
+preserve and no window to open.
+
+The alternative — keeping the old six-parameter method alongside the new one
+— was rejected on the standing greenfield rule: two ways to spell one
+decision is how a seam drifts, and it is precisely the shape this feature
+spent three deviations removing (D-20).
+
+Recorded so that whoever runs the publish feature knows the sqlcore seam
+changed shape in this window and does not read "no update required" for two
+crates as covering all four.
+
+### D-28 (T035) — the measurement changed the constant's UNIT, not just its value
+
+The corrected instrument, 20,000 rows × 12 columns against the qual account,
+timing the same rows packed into statements different ways:
+
+```text
+  100 rows/stmt → 200 statements,  20 KB each,  101 rows/s
+  250 rows/stmt →  80 statements,  50 KB each,  215 rows/s
+  500 rows/stmt →  40 statements, 101 KB each,  405 rows/s
+ 1000 rows/stmt →  20 statements, 203 KB each,  426 rows/s
+ 2000 rows/stmt →  10 statements, 405 KB each,  659 rows/s
+ 5000 rows/stmt →   4 statements, 1.0 MB each,  612 rows/s
+10000 rows/stmt →   2 statements, 2.0 MB each,  801 rows/s
+20000 rows/stmt →   1 statement,  4.0 MB,      1064 rows/s
+```
+
+Throughput rises 6.5× from 100 to 2,000 rows and then goes flat and noisy —
+5,000 measured SLOWER than 2,000. The knee is around **400 KB**.
+
+The finding that mattered was not the number but the UNIT. A row count is the
+obvious constant and the wrong one: this shape reaches 400 KB at 2,000 rows,
+while a hundred-column table reaches it at a few hundred — so a row count
+tuned here becomes a multi-megabyte statement there. The shipped constant is
+now a BYTE budget, and rows are packed until it is reached, so no table shape
+needs its own tuning.
+
+Snowflake documents a 1 MB limit for a single statement. The sweep's 4 MB
+statement was nonetheless accepted through the driver, which means the
+effective cap is higher than the documented one — a reason to stay under the
+documented one rather than to rely on the observed one. A row-count ceiling
+remains as a backstop for pathologically narrow rows, where the byte budget
+alone would put millions in one statement and make a single failure expensive
+to retry.
+
+A single row over budget still ships rather than being refused: splitting one
+row is impossible, and refusing it here would turn a service limit into a
+client-side dead end with no way forward.
 
 ## Unperformed verifications
 
