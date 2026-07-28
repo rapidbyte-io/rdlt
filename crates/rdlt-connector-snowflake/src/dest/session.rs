@@ -23,7 +23,7 @@ use rdlt_connector_sqlcore::protocol::{
 };
 use rdlt_connector_sqlcore::{MergeDialect as _, column_list_with};
 
-use super::client::{DmlOnly, Executor};
+use super::client::{self, DmlOnly, Executor};
 use super::config::SnowflakeConfig;
 use super::ddl::{self, Catalog, quote};
 use super::dialect::{self, SnowflakeDialect};
@@ -295,7 +295,9 @@ impl SnowflakeSession {
             }
             Step::MergeArm { table, arm } => {
                 for sql in self.merge_statements(table, arm)? {
-                    unit_executor.execute(&sql).await?;
+                    if let Err(e) = unit_executor.execute(&sql).await {
+                        return Err(self.explain_merge_failure(table, e));
+                    }
                 }
                 Ok(())
             }
@@ -310,6 +312,28 @@ impl SnowflakeSession {
                 "snowflake: the commit planner emitted {other:?}, which this \
                  destination does not execute"
             ))),
+        }
+    }
+
+    /// Turn a merge failure into advice where the service gave a reason.
+    ///
+    /// A merge whose source holds two rows for one target key is the
+    /// unique-violation analogue here — the difference being that no
+    /// constraint could have caught it earlier, because this service enforces
+    /// none. The service reports it as a structured code; the ADVICE is the
+    /// shared one every SQL destination gives, so an operator meeting this on
+    /// Snowflake reads the same sentence they would have read on Postgres.
+    ///
+    /// Recognised by CODE, never by message text: the wording is the service's
+    /// to change.
+    fn explain_merge_failure(&self, table: &TableName, error: DestinationError) -> DestinationError {
+        let key = match self.tables.get(table) {
+            Some((_, WriteMode::Merge { key })) => key.as_slice(),
+            _ => &[],
+        };
+        match merge_diagnosis(table.as_str(), key, client::code_in(&error).as_deref()) {
+            Some(diagnosis) => DestinationError::fatal(diagnosis),
+            None => error,
         }
     }
 
@@ -657,6 +681,22 @@ fn column_of_add(sql: &str) -> Option<String> {
     Some(name.trim_matches('"').to_owned())
 }
 
+/// The shared advice for a merge failure, when the code says it applies.
+///
+/// Split from the error plumbing so the DECISION — which code earns the
+/// diagnosis, and what the diagnosis says — is testable without a service
+/// error to carry it. Nothing here reads a message: the code is the signal,
+/// and the wording around it is the service's to change.
+fn merge_diagnosis(table: &str, key: &[String], code: Option<&str>) -> Option<String> {
+    (code? == client::DUPLICATE_ROW_IN_DML).then(|| {
+        rdlt_connector_sqlcore::names::duplicate_merge_key_diagnosis(
+            table,
+            key,
+            &format!("Snowflake error {}", client::DUPLICATE_ROW_IN_DML),
+        )
+    })
+}
+
 /// A meta for the clear step, which reads none of it.
 ///
 /// `ClearTarget` names its own table and needs no load identity or state; the
@@ -669,5 +709,50 @@ fn clear_meta(load_id: &LoadId, pipeline: &PipelineId) -> CommitMeta {
         commit_seq: 0,
         state: StateDoc::new(pipeline.clone(), ""),
         counters: Default::default(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A duplicate merge key earns the SHARED advice, keyed on the code.
+    ///
+    /// The same sentence every SQL destination gives: which strategy needs the
+    /// uniqueness, which columns collide, and the two ways out. An operator
+    /// meeting this on Snowflake reads what they would have read on Postgres —
+    /// and the service's own wording is kept as the cause rather than replacing
+    /// the advice.
+    #[test]
+    fn the_duplicate_key_code_becomes_the_shared_diagnosis() {
+        let key = vec!["id".to_string(), "day".to_string()];
+        let diagnosis = merge_diagnosis("orders", &key, Some(client::DUPLICATE_ROW_IN_DML))
+            .expect("the duplicate code earns advice");
+        assert_eq!(
+            diagnosis,
+            rdlt_connector_sqlcore::names::duplicate_merge_key_diagnosis(
+                "orders",
+                &key,
+                &format!("Snowflake error {}", client::DUPLICATE_ROW_IN_DML)
+            ),
+            "the advice must be the shared one, not a Snowflake paraphrase"
+        );
+        assert!(diagnosis.contains("id, day"), "{diagnosis}");
+        assert!(diagnosis.contains("delete_insert"), "{diagnosis}");
+    }
+
+    /// Every other failure passes through untouched.
+    ///
+    /// Replacing an unrelated error with merge advice would send an operator
+    /// looking for a duplicate key that is not there — worse than saying
+    /// nothing, because it reads as a diagnosis.
+    #[test]
+    fn an_unrelated_failure_keeps_its_own_error() {
+        for code in [None, Some("000904"), Some("002003")] {
+            assert!(
+                merge_diagnosis("orders", &["id".to_string()], code).is_none(),
+                "{code:?} must not be rewritten as a duplicate-key diagnosis"
+            );
+        }
     }
 }

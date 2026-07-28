@@ -188,15 +188,15 @@ canonical-row-equal results vs the postgres destination for every strategy.
   statement for every strategy × options arm pinned byte-for-byte; AND
   re-run the postgres + duckdb golden suites proving their pins
   byte-identical through T003/T004/T019 (SD4 both halves).
-- [ ] T021 [P] [US2] Options validation parity: matrix test asserting every
+- [X] T021 [P] [US2] Options validation parity: matrix test asserting every
   strategy × options combination accepts/rejects identically to the other
   SQL destinations with the identical shared-core error text (spec US2
   scenario 2).
-- [ ] T022 [US2] Duplicate-merge-key diagnosis: map structured code 100090
+- [X] T022 [US2] Duplicate-merge-key diagnosis: map structured code 100090
   at the boundary into the shared diagnosis (columns + both remedies, same
   text as the other destinations); typed-shape test via the mock seam AND
   one live provocation cell (undeduped duplicate source rows).
-- [ ] T023 [US2] Live strategy matrix (credential-gated) in
+- [X] T023 [US2] Live strategy matrix (credential-gated) in
   `tests/live_dest.rs`: upsert / delete_insert / scd2 × hard_delete /
   dedup_sort / merge_scope land exact totals with last-wins semantics on
   the qual account; scd2 single-unit violation typed.
@@ -214,10 +214,10 @@ canonical-row-equal results vs the postgres destination for every strategy.
 **Independent test**: same load twice against an unchanged schema — second
 run issues zero schema-mutation statements; totals constant per table.
 
-- [ ] T026 [US3] Statement-count instrumentation on the executor seam:
+- [X] T026 [US3] Statement-count instrumentation on the executor seam:
   `tests/boundary_mock.rs` — counts by class (schema-read / schema-mutate /
   DML / control) recorded per load through the mock transport.
-- [ ] T027 [US3] Economy pins (mock): unchanged schema → ZERO mutations and
+- [X] T027 [US3] Economy pins (mock): unchanged schema → ZERO mutations and
   exactly one schema READ per table per session; one added nullable column
   → exactly one `ADD COLUMN` and nothing else; total statements constant
   in table count, independent of column count (spec US3 scenarios).
