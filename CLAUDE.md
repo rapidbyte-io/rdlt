@@ -20,8 +20,14 @@ uploadInfo keys; HEAD 4b3905247335) → PUT DEFERRED on upstream trigger
 (issue filed; contributing recorded as the route), NO sidecar stack.
 Ingestion v1 = batched INSERT (universal, measured batch knee) +
 external-stage COPY INTO from a USER bucket (plain SQL, file-family parquet
-+ object_store; live leg gated on optional RDLT_SNOWFLAKE_STAGE_BUCKET,
-absent -> UNPERFORMED). Costs recorded: reqwest 0.13 second major
++ object_store). The COPY path is PROVEN END-TO-END at plan time against
+the qual AWS bucket (client SigV4 PUT -> CREATE STAGE s3:// -> LIST ->
+CSV COPY with LOADED/rowcount verification -> parquet BOTH directions;
+MATCH_BY_COLUMN_NAME=CASE_INSENSITIVE noted for arrow-lowercase vs
+quoted-upper columns); live leg reads ~/.config/rdlt/snowflake/stage.env,
+absent -> UNPERFORMED. s3-COMPATIBLE endpoints (probed): Snowflake needs a
+per-account Support allowlist (001075, no self-service param) — README
+caveat for such users, REJECTED as qual target. Costs recorded: reqwest 0.13 second major
 (feature-gated, D-26 shape); dlt-parity gap on internal staging SURFACED in
 the parity matrix. snowflake-api 0.14 REJECTED (arrow ^57 vs workspace 58);
 hand-rolled session client = designed, escalated fallback. PROVEN LIVE: key-pair JWT auth end-to-end (SF 10.26.101);
@@ -33,7 +39,8 @@ survived ROLLBACK after CREATE TABLE) → the atomic unit is PURE DML with a
 code-level guard refusing DDL inside units; pure-DML BEGIN/COMMIT/ROLLBACK
 atomic incl. multi-statement; PUT refused by SQL API (391911) → internal
 stage upload REQUIRES the session protocol; account is AWS (EU_CENTRAL_1);
-local RUSTFS is unreachable from SaaS so stage legs need a REAL bucket. BOTH fired sqlcore triggers TAKEN as separate
+local RUSTFS is unreachable from SaaS — the qual stage is a real AWS
+bucket (eu-west-2, cross-region proven). BOTH fired sqlcore triggers TAKEN as separate
 increments BEFORE the snowflake consumer (ensure choreography + session
 protocol extractions), pg/duckdb golden pins BYTE-IDENTICAL throughout.
 Live legs gate skip-not-fail on credential presence (container posture);

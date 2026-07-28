@@ -60,9 +60,9 @@ connector itself is platform-neutral Rust.
 feature `snowflake` + CLI `destination: snowflake:` block.
 
 **Performance Goals**: recorded (UNBARRED) ingestion session on the
-bench-shaped 1M×12 dataset over whichever shipped paths the session's
-credentials allow (INSERT always; external-stage COPY iff a bucket is
-provided), saying which ran; statement economy — zero schema-mutation
+bench-shaped 1M×12 dataset over both shipped paths — batched INSERT and
+external-stage COPY against the qual AWS bucket (the full COPY path was
+proven end-to-end at plan time, parquet included); statement economy — zero schema-mutation
 statements at steady state, statements-per-load constant per table; INSERT
 batch-size knee and the INSERT-vs-COPY crossover measured on the qual
 account.

@@ -180,24 +180,17 @@ The bulk path therefore has a LIVE leg from day one; arrow-written-parquet
 compatibility (as opposed to Snowflake-written) is the one remaining T001
 check on this path.
 
-**The Hetzner s3compat probe (2026-07-28)** sharpened the s3compat variant
-of the same leg, both directions:
-
-- **Client side WORKS**: the designated Hetzner endpoint (Ceph/RadosGW,
-  TLS-clean, virtual-host style resolving) accepts SigV4 PUT/DELETE with
-  region `fsn1` — our parquet-part placement path is proven.
-- **Snowflake side is POLICY-BLOCKED, not protocol-blocked**: `CREATE STAGE
-  … URL='s3compat://…' ENDPOINT='…'` fails with structured code 001075
-  "Endpoint … not allowed". S3-COMPATIBLE endpoints require a per-account
-  allowlist enabled by Snowflake Support (their published s3compat
-  compliance suite + a support case); probing `SHOW PARAMETERS … IN
-  ACCOUNT` confirmed no self-service parameter exists. Until the endpoint
-  is allowlisted (operator action, external turnaround), the s3compat live
-  leg records UNPERFORMED with this exact reason. Native `s3://` stages on
-  real AWS buckets need no allowlist — a plain AWS bucket remains the
-  fastest route to a live bulk leg, and the SHIPPED feature is unaffected
-  (external stages on AWS/GCS/Azure work out of the box; s3compat users
-  carry a documented allowlist prerequisite).
+**s3-COMPATIBLE endpoints (recorded negative, probed)**: a non-AWS
+S3-compatible bucket was also probed as a candidate target. Client-side it
+behaves (TLS, virtual-host style, SigV4 PUT/DELETE all fine), but
+Snowflake-side `CREATE STAGE … URL='s3compat://…'` fails with structured
+code 001075 "Endpoint not allowed": S3-compatible endpoints require a
+per-account allowlist that only Snowflake Support can enable, and probing
+`SHOW PARAMETERS … IN ACCOUNT` confirmed no self-service parameter exists.
+REJECTED as the qual target on that turnaround; the qual stage target is
+the AWS bucket above. For USERS on s3-compatible storage this is a
+documented prerequisite (their endpoint must be allowlisted by Snowflake
+Support), not an rdlt defect — it goes in the README caveats.
 
 3. **Internal-stage PUT: DEFERRED**, named trigger = upstream
    `snowflake-connector-rs` gaining PUT support or a raw-response escape
@@ -243,10 +236,10 @@ environment first, config-dir fallback —
   key (0600) or the equivalent environment variables —
   `RDLT_SNOWFLAKE_STAGE_ENDPOINT`, `RDLT_SNOWFLAKE_STAGE_BUCKET`,
   `RDLT_SNOWFLAKE_STAGE_ACCESS_KEY`, `RDLT_SNOWFLAKE_STAGE_SECRET_KEY` —
-  naming a bucket both the runner and the account can reach. The designated
-  qual target is a Hetzner s3compat bucket, PENDING the Snowflake-side
-  endpoint allowlist (see D6); absent or blocked → the leg records
-  UNPERFORMED with reason.
+  naming a bucket both the runner and the account can reach. The qual
+  target is a real AWS bucket, and the full COPY path against it is
+  already proven (D6); credentials absent → the leg records UNPERFORMED
+  with reason.
 
 Live tests resolve the convention through one testkit-style probe
 (`snowflake_available()` returning `Option`), skip-not-fail with a stated
