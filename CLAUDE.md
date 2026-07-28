@@ -1,6 +1,45 @@
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
+`specs/022-snowflake-dest/plan.md` (feature: Snowflake destination
+connector — PLANNED on branch `022-snowflake-dest`, spec + plan + research
+committed, tasks NOT yet generated. Feature 021 is RESERVED for the publish
+feature and does not exist yet. New THIN crate rdlt-connector-snowflake
+(facade rdlt::connector::snowflake, feature `snowflake`, CLI
+`destination: snowflake:`) — the THIRD SQL destination. Survey RESOLVED at
+plan time with registry facts + a LIVE probe against the qual account
+(credentials local-only: env RDLT_SNOWFLAKE_* or ~/.config/rdlt/snowflake/
+incl. `passphrase` file — the key is an ENCRYPTED p8; account identity is
+deliberately in NO committed file, SC-005 verifies mechanically). DRIVER:
+both crates REJECTED (snowflake-api 0.14: arrow ^57 vs workspace 58;
+snowflake-connector-rs 1.1: no PUT/stage API so the ingestion path is
+unreachable, reqwest 0.13 second major) — HAND-ROLL a thin session-protocol
+client at ONE boundary over workspace reqwest 0.12 + jsonwebtoken-over-ring
+(fallback recorded: SQL API v2 + batched INSERT, typed narrowing,
+escalated). PROVEN LIVE: key-pair JWT auth end-to-end (SF 10.26.101);
+unquoted idents fold UPPER and `EVENTS`/`events` COEXIST → policy =
+quoted-UPPERCASE everywhere; MERGE INTO + QUALIFY ROW_NUMBER() DESC=1
+delivers last-wins dedup; duplicate-merge-key = STRUCTURED code 100090 (the
+23505 analogue); DDL AUTO-COMMITS an open transaction (proven: INSERT
+survived ROLLBACK after CREATE TABLE) → the atomic unit is PURE DML with a
+code-level guard refusing DDL inside units; pure-DML BEGIN/COMMIT/ROLLBACK
+atomic incl. multi-statement; PUT refused by SQL API (391911) → internal
+stage upload REQUIRES the session protocol; account is AWS (EU_CENTRAL_1)
+so PUT = vended-cred S3 upload + client-side AES (aes/sha2/ring in lock,
+cbc new). INGESTION: parquet parts → internal named stage → COPY INTO as
+the bulk path (only bucket-free live-testable one; local RUSTFS is
+unreachable from SaaS), batched INSERT for small loads, crossover MEASURED
+on the qual account. BOTH fired sqlcore triggers TAKEN as separate
+increments BEFORE the snowflake consumer (ensure choreography + session
+protocol extractions), pg/duckdb golden pins BYTE-IDENTICAL throughout.
+Live legs gate skip-not-fail on credential presence (container posture);
+fakesnow 0.11 server-mode = T001 fidelity probe, adopt-or-reject recorded;
+recorded ingestion session UNBARRED (no SaaS bar ever). Type mapping
+closed: Json→VARIANT, Decimal→NUMBER(p,s) p<=38, Uuid→VARCHAR(36),
+TIMESTAMP_TZ/NTZ. Semver purely ADDITIVE. Contract:
+contracts/snowflake-dest.md SD1-SD8. Research decisions D1-D10:
+research.md).
+Previous feature 020 for reference:
 `specs/020-audit-remediation/plan.md` (feature: audit remediation —
 COMPLETE on branch `020-audit-remediation`, NOT merged and NOT pushed.
 Executed NEXT_STEPS.md (audited 2026-07-26 @ 634222e: 11 lenses, 175
