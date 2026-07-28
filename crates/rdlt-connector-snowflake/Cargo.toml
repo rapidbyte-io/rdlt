@@ -30,6 +30,7 @@ parquet = { workspace = true }
 object_store = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
+chrono = { workspace = true }
 
 [dev-dependencies]
 rdlt-testkit = { workspace = true, features = ["containers"] }

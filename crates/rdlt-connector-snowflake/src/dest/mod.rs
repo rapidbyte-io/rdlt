@@ -260,7 +260,7 @@ impl Destination for Snowflake {
         let stage = match self.config.s3_stage() {
             None => None,
             Some(options) => {
-                let stage = stage::Stage::connect(options, ctx.pipeline.as_str())?;
+                let stage = stage::Stage::connect(options, ctx.pipeline.as_str(), ctx.load_id.as_str())?;
                 // Parts staged by a session that died are unreachable — no
                 // receipt names them — so a fresh load reclaims its own scope
                 // before writing into it. Scoped to THIS pipeline: a sibling

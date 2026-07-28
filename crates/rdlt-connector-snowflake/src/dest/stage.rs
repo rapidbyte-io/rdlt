@@ -60,14 +60,31 @@ pub(super) struct Stage {
     storage_integration: Option<String>,
     /// The stage object's unqualified name.
     name: String,
+    /// This load's segment under the scope — what makes a part name unique to
+    /// the session that wrote it.
+    load: String,
     /// Never reset within a session, so a part written after a commit cannot
     /// take the name of one whose cleanup failed.
     next_part: u64,
 }
 
+/// How stale another load's leftovers must be before a fresh load reclaims
+/// them.
+///
+/// Orphans are unreachable — no receipt names them — so collecting them is
+/// housekeeping rather than correctness, and doing it EAGERLY is what turns
+/// housekeeping into a bug: a session that deleted every other load's parts on
+/// sight would delete a live one's the moment two ran close together. An hour
+/// is far longer than any load's staging window and far shorter than "never".
+const ORPHAN_AGE: std::time::Duration = std::time::Duration::from_secs(3600);
+
 impl Stage {
     /// Connect to the bucket and derive this pipeline's scope within it.
-    pub(super) fn connect(options: &S3Stage, pipeline: &str) -> Result<Self, DestinationError> {
+    pub(super) fn connect(
+        options: &S3Stage,
+        pipeline: &str,
+        load: &str,
+    ) -> Result<Self, DestinationError> {
         let mut builder = AmazonS3Builder::new()
             .with_bucket_name(&options.bucket)
             .with_region(options.region.as_deref().unwrap_or("us-east-1"))
@@ -107,6 +124,7 @@ impl Stage {
             secret_key: options.secret_key.reveal().to_owned(),
             storage_integration: options.storage_integration.clone(),
             name: stage_object_name(pipeline),
+            load: ident_hash(load, 12),
             next_part: 0,
         })
     }
@@ -160,8 +178,13 @@ impl Stage {
     ) -> Result<Part, DestinationError> {
         // Hashed for the same reason the scope is: a table name is free text,
         // and two tables must never resolve to one key.
+        // The LOAD segment is what makes this key unique to the session that
+        // wrote it. Without it every session of a pipeline names its first
+        // part identically, and a second session's reclaim deletes a part the
+        // first is still about to load — a file the COPY then cannot find.
         let tail = format!(
-            "{}/{:08}.parquet",
+            "{}/{}/{:08}.parquet",
+            self.load,
             ident_hash(table, 16),
             {
                 let n = self.next_part;
@@ -189,20 +212,34 @@ impl Stage {
         }
     }
 
-    /// Delete everything under this pipeline's scope.
+    /// Reclaim leftovers this pipeline owns, without touching live work.
     ///
-    /// Run at open, against exactly one pipeline's prefix: parts staged by a
-    /// session that died are unreachable — no receipt names them — and a
-    /// sibling pipeline's live parts are outside the prefix entirely.
+    /// Two different things are collected, and the difference is the whole
+    /// point. THIS load's own leftovers are deleted outright: a previous
+    /// attempt of the same load staged them, no receipt names them, and the
+    /// attempt about to run will write its own. Another load's are deleted
+    /// only once they are demonstrably stale, because "another load" and "a
+    /// load still running" look identical from here — and a reclaim that
+    /// cannot tell them apart is how a running load loses its parts.
     pub(super) async fn clear_scope(&self) -> Result<(), DestinationError> {
         let prefix = ObjectPath::from(self.root.clone());
+        let mine = format!("{}/{}/", self.root, self.load);
+        let cutoff = std::time::SystemTime::now().checked_sub(ORPHAN_AGE);
         let mut listing = self.store.list(Some(&prefix));
         while let Some(entry) = listing.next().await {
             let meta = entry.map_err(|e| store_err(e, &self.root))?;
+            let key = meta.location.as_ref();
+            let reclaimable = key.starts_with(mine.as_str())
+                || cutoff.is_some_and(|cutoff| {
+                    meta.last_modified < chrono::DateTime::<chrono::Utc>::from(cutoff)
+                });
+            if !reclaimable {
+                continue;
+            }
             self.store
                 .delete(&meta.location)
                 .await
-                .map_err(|e| store_err(e, meta.location.as_ref()))?;
+                .map_err(|e| store_err(e, key))?;
         }
         Ok(())
     }
@@ -300,7 +337,7 @@ mod tests {
     }
 
     fn stage() -> Stage {
-        Stage::connect(&options(), "sales").expect("connect")
+        Stage::connect(&options(), "sales", "load-1").expect("connect")
     }
 
     #[test]
@@ -308,15 +345,15 @@ mod tests {
         // Sanitising free text into a key is what makes this dangerous:
         // `a/b` and `a_b` would sanitise to one prefix, and the scope wipe at
         // open would then delete the other pipeline's parts.
-        let a = Stage::connect(&options(), "a/b").expect("connect");
-        let b = Stage::connect(&options(), "a_b").expect("connect");
+        let a = Stage::connect(&options(), "a/b", "load-1").expect("connect");
+        let b = Stage::connect(&options(), "a_b", "load-1").expect("connect");
         assert_ne!(a.root, b.root);
         assert!(!a.root.contains('/'), "the hash needs no sanitising");
     }
 
     #[test]
     fn a_configured_prefix_contains_the_scope() {
-        let stage = Stage::connect(&options().with_prefix("/warehouse/rdlt/"), "sales")
+        let stage = Stage::connect(&options().with_prefix("/warehouse/rdlt/"), "sales", "load-1")
             .expect("connect");
         assert!(stage.root.starts_with("warehouse/rdlt/"), "{}", stage.root);
         assert!(stage.url.starts_with("s3://parts/warehouse/rdlt/"), "{}", stage.url);
@@ -339,7 +376,7 @@ mod tests {
 
     #[test]
     fn a_storage_integration_keeps_the_keys_out_of_the_definition() {
-        let stage = Stage::connect(&options().with_storage_integration("RDLT_INT"), "sales")
+        let stage = Stage::connect(&options().with_storage_integration("RDLT_INT"), "sales", "load-1")
             .expect("connect");
         let (sql, secrets) = stage.create_sql("\"ST\"");
         assert!(sql.contains("STORAGE_INTEGRATION = RDLT_INT"), "{sql}");
@@ -351,7 +388,7 @@ mod tests {
     fn an_endpoint_switches_the_url_scheme_and_names_the_host() {
         let mut options = options();
         options.endpoint = Some("https://storage.example.com".to_owned());
-        let stage = Stage::connect(&options, "sales").expect("connect");
+        let stage = Stage::connect(&options, "sales", "load-1").expect("connect");
         assert!(stage.url.starts_with("s3compat://parts/"), "{}", stage.url);
         let (sql, _) = stage.create_sql("\"ST\"");
         assert!(
@@ -402,6 +439,32 @@ mod tests {
         assert!(rendered.contains("****"), "{rendered}");
     }
 
+    /// Two sessions of one pipeline never name a part the same.
+    ///
+    /// The defect this pins: part numbering restarts per session, so without
+    /// the load segment every session's FIRST part is `00000000.parquet` under
+    /// one shared scope — and the reclaim at open then deletes a part another
+    /// session is still about to load, which surfaces as the service failing
+    /// to find a file the COPY named.
+    #[test]
+    fn two_loads_of_one_pipeline_cannot_collide_on_a_part_key() {
+        let mut first = Stage::connect(&options(), "sales", "load-1").expect("connect");
+        let mut second = Stage::connect(&options(), "sales", "load-2").expect("connect");
+        assert_eq!(first.root, second.root, "same pipeline, same scope");
+        assert_ne!(first.load, second.load, "different loads, different segment");
+
+        let key_of = |stage: &mut Stage| {
+            let n = stage.next_part;
+            stage.next_part += 1;
+            format!("{}/{}/{:08}.parquet", stage.load, ident_hash("events", 16), n)
+        };
+        assert_ne!(
+            key_of(&mut first),
+            key_of(&mut second),
+            "the first part of each session must not share a key"
+        );
+    }
+
     #[test]
     fn part_keys_are_unique_per_table_and_never_reused_within_a_session() {
         let mut stage = stage();
@@ -409,7 +472,8 @@ mod tests {
         for table in ["events", "orders"] {
             for _ in 0..3 {
                 let tail = format!(
-                    "{}/{:08}.parquet",
+                    "{}/{}/{:08}.parquet",
+                    stage.load,
                     ident_hash(table, 16),
                     stage.next_part
                 );
