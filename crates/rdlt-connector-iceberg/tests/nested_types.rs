@@ -32,10 +32,15 @@ async fn a_nested_stream_loads_twice_without_reporting_drift() {
         ]
     };
     for attempt in 1..=2 {
-        let source = MemorySource::new(vec![MemoryStream::new(
-            StreamSpec::new("events"),
-            vec![MemoryBatch::new(rows()).with_checkpoint(attempt)],
-        )]);
+        // Every batch this stream has EVER produced, not just the new one: the
+        // engine resumes by finding the committed cursor among them and
+        // delivering what follows. A source offering only the newest batch
+        // cannot resolve the cursor its own previous run committed, and the
+        // harness refuses that rather than silently restarting from zero.
+        let batches = (1..=attempt)
+            .map(|seq| MemoryBatch::new(rows()).with_checkpoint(seq))
+            .collect();
+        let source = MemorySource::new(vec![MemoryStream::new(StreamSpec::new("events"), batches)]);
         Engine::new(EngineConfig::new("ice-nested"), source, dest.clone())
             .run()
             .await

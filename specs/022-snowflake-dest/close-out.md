@@ -88,6 +88,32 @@ runs inside the unit. `SnowflakeDialect::clear_table` must therefore emit
 survey, not by a failing test, and recorded before the implementation could
 inherit the bug.
 
+### C-05 (T003 step 1) — the podman shim fix un-skipped a test that had been green by absence
+
+Repairing the host-exec shim (the session bridge had assumed distrobox
+inside a toolbox) made the iceberg Polaris fixture reachable for the first
+time in this session — and one nested-types cell immediately FAILED with
+`unknown resume cursor Cursor(Number(1))`.
+
+**Not a regression, and proven so**: the identical failure reproduces on the
+pre-change tree in a scratch worktree, so the postgres refactor is innocent.
+The cell built a fresh source per attempt carrying only the NEWEST batch, so
+the second load could not resolve the cursor its own first load had
+committed. The harness refuses that rather than silently restarting from
+zero — correctly, per the recorded rule that test sources must honour resume
+cursors.
+
+**The file's own doc comment warns about exactly this hazard** ("a
+container-gated test skips when no runtime is present, and a skipping test
+is green") and then fell into it: the defect was invisible for as long as
+the fixture could not start. Fixed by giving the stream every batch it has
+ever produced, which is what a real source has and what makes the cursor
+resolvable. Iceberg suite now 56/56 with **0 skipped**; workspace 800/800.
+
+Recorded here rather than in 016's close-out because it was found by this
+feature's environment work; the fix is a test correction, not a behaviour
+change.
+
 ## Unperformed verifications
 
 | what | reason |
