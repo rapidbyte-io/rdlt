@@ -44,6 +44,20 @@ pub(super) fn insert_statements(
     schema: &TableSchema,
     batch: &RecordBatch,
 ) -> Result<Vec<String>, DestinationError> {
+    insert_statements_chunked(qualified_target, schema, batch, ROWS_PER_STATEMENT)
+}
+
+/// [`insert_statements`] at a caller-chosen chunk size.
+///
+/// Exists so the chunk size can be MEASURED without becoming configuration:
+/// shipping a knob in order to tune it would leave every user holding a
+/// decision that belongs to whoever measured it.
+pub(super) fn insert_statements_chunked(
+    qualified_target: &str,
+    schema: &TableSchema,
+    batch: &RecordBatch,
+    rows_per_statement: usize,
+) -> Result<Vec<String>, DestinationError> {
     if batch.num_rows() == 0 {
         return Ok(Vec::new());
     }
@@ -58,8 +72,8 @@ pub(super) fn insert_statements(
     let indices = column_indices(schema, batch)?;
 
     let mut out = Vec::new();
-    for chunk_start in (0..batch.num_rows()).step_by(ROWS_PER_STATEMENT) {
-        let chunk_end = (chunk_start + ROWS_PER_STATEMENT).min(batch.num_rows());
+    for chunk_start in (0..batch.num_rows()).step_by(rows_per_statement) {
+        let chunk_end = (chunk_start + rows_per_statement).min(batch.num_rows());
         let mut rows = Vec::with_capacity(chunk_end - chunk_start);
         for row in chunk_start..chunk_end {
             let mut values = Vec::with_capacity(indices.len());

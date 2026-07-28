@@ -232,7 +232,7 @@ run issues zero schema-mutation statements; totals constant per table.
 **Independent test**: suite green with credentials absent (visible skips);
 live legs run with credentials present; tree mechanically clean of secrets.
 
-- [ ] T030 [US4] Conformance certification: wire the testkit
+- [X] T030 [US4] Conformance certification: wire the testkit
   dest-conformance harness in `tests/live_dest.rs` (credential-gated) and
   pass every clause; deviations (if any) typed and recorded. PLUS the
   auth-matrix live cells: one load per auth method — key-pair, PAT,

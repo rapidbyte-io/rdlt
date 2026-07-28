@@ -75,6 +75,20 @@ pub mod testhook {
         client::connect(config).await?.column_names(sql, &[]).await
     }
 
+    /// The INSERT statements for a batch at a chosen chunk size.
+    ///
+    /// The measurement seam for the rows-per-statement constant: varying it
+    /// here keeps the shipped value a decision someone measured rather than a
+    /// knob every user has to hold.
+    pub fn insert_statements_chunked(
+        qualified_target: &str,
+        schema: &TableSchema,
+        batch: &rdlt_connector::RecordBatch,
+        rows_per_statement: usize,
+    ) -> Result<Vec<String>, DestinationError> {
+        super::encode::insert_statements_chunked(qualified_target, schema, batch, rows_per_statement)
+    }
+
     /// Run one statement through the UNIT executor — the one that refuses DDL.
     pub async fn run_in_unit(config: &SnowflakeConfig, sql: &str) -> Result<(), DestinationError> {
         let executor = client::connect(config).await?;
