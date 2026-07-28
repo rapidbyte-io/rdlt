@@ -7,8 +7,17 @@ Read them from git history if a reference below sends you looking.
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
 `specs/022-snowflake-dest/plan.md` (feature: Snowflake destination
-connector — US1-US5 DELIVERED on branch `022-snowflake-dest`; 35/43 tasks,
-close-out written with SD1-SD8 all MET and zero uncited dispositions.
+connector — COMPLETE at 43/43 and MERGED into local main @ 42a6da42, NOT
+pushed (origin/main still 1076398b). Gate of record: `make check` TWICE CLEAN
+on the PINNED 1.96.0 toolchain — 966/966 with 2 skips (both #[ignore]d
+measurement instruments), 13/13 crash sweeps, 6 benches 0 regressed, cold
+start 26.3/25.9 ms against a 40 ms bar. SD1-SD8 all MET, zero uncited
+dispositions.
+BEWARE: `RUSTUP_TOOLCHAIN=1.97.1` in the shell environment SILENTLY overrides
+rust-toolchain.toml — every earlier run in 022 was unpinned, and the perf gate
+is what caught it (it refused the comparison even though the benches showed
+zero regressions). Run gates with `env -u RUSTUP_TOOLCHAIN`, or fix the
+variable at its source.
 Feature 021 is RESERVED for the publish feature and does not exist yet.
 Crate rdlt-connector-snowflake (facade rdlt::connector::snowflake, feature
 `snowflake`, CLI `destination: snowflake:` embedding SnowflakeConfig) — the
