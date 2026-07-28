@@ -94,8 +94,30 @@ pub fn credentials() -> Option<SnowflakeCreds> {
     credentials_with(&RealLookup)
 }
 
+/// Say once, out loud, that the live legs are not running.
+///
+/// Without this a skipped suite and an executed one look identical: both
+/// report every test passing. The notice is what lets a contributor tell
+/// "green because it ran" from "green because it did not" — and it is printed
+/// ONCE per process rather than per call, so it stays a notice rather than
+/// noise.
+fn announce_skip(reason: &str) {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        eprintln!("SKIP: snowflake live legs — {reason}");
+    });
+}
+
 /// [`credentials`] against a supplied lookup — the testable form.
 pub fn credentials_with(lookup: &dyn Lookup) -> Option<SnowflakeCreds> {
+    let resolved = resolve_credentials(lookup);
+    if resolved.is_none() {
+        announce_skip("no account credentials in the environment or ~/.config/rdlt/snowflake/");
+    }
+    resolved
+}
+
+fn resolve_credentials(lookup: &dyn Lookup) -> Option<SnowflakeCreds> {
     if lookup.env(FORCE_NO_SNOWFLAKE).is_some() {
         return None;
     }
@@ -159,6 +181,14 @@ pub fn stage_credentials() -> Option<StageCreds> {
 /// files invites a half-configured bucket that fails mid-load instead of
 /// skipping.
 pub fn stage_credentials_with(lookup: &dyn Lookup) -> Option<StageCreds> {
+    let resolved = resolve_stage(lookup);
+    if resolved.is_none() {
+        announce_skip("no staging bucket configured (stage.env or RDLT_SNOWFLAKE_STAGE_*)");
+    }
+    resolved
+}
+
+fn resolve_stage(lookup: &dyn Lookup) -> Option<StageCreds> {
     if lookup.env(FORCE_NO_SNOWFLAKE).is_some() {
         return None;
     }

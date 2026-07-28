@@ -20,10 +20,32 @@
 use serde::{Deserialize, Serialize};
 
 /// PEM material: inline text, or a filesystem path to a file containing it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(transparent)]
 pub struct PemSource(pub String);
+
+/// Renders a PATH as itself and INLINE material as a placeholder.
+///
+/// The distinction is the whole point. A path is not a credential — it is
+/// exactly what an operator needs to see to fix a misconfiguration, and
+/// hiding it would make every "unreadable key" report useless. Inline material
+/// may BE the private key, and this type is used for private keys.
+///
+/// Derived `Debug` printed the value either way, which meant a config holding
+/// an inline key rendered the key in full while every neighbouring secret was
+/// redacted — and `Debug` is what error reports, panics and logs reach for.
+impl std::fmt::Debug for PemSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.is_inline() {
+            // Named rather than starred so the reader knows WHAT is hidden and
+            // that the value is present at all.
+            f.write_str("PemSource(<inline PEM>)")
+        } else {
+            write!(f, "PemSource({:?})", self.0)
+        }
+    }
+}
 
 impl PemSource {
     /// Is the material inline rather than a path?
@@ -121,5 +143,48 @@ mod tests {
             serde_json::to_string(&source).expect("render"),
             "\"/k.pem\""
         );
+    }
+}
+
+#[cfg(test)]
+mod debug_tests {
+    use super::*;
+
+    /// Inline material never renders; a path always does.
+    ///
+    /// The asymmetry is deliberate and each half matters. This type carries
+    /// private keys, and `Debug` is what a panic, a log line and an error
+    /// report all reach for — so inline bytes must not survive it. A path is
+    /// not a credential, and redacting it would make "cannot read the key"
+    /// unactionable.
+    #[test]
+    fn inline_material_is_hidden_and_a_path_is_not() {
+        let key = PemSource::from("-----BEGIN PRIVATE KEY-----\nSECRET-BYTES\n");
+        let rendered = format!("{key:?}");
+        assert!(!rendered.contains("SECRET-BYTES"), "{rendered}");
+        assert!(rendered.contains("inline"), "{rendered}");
+
+        let path = PemSource::from("/etc/rdlt/key.p8");
+        assert!(format!("{path:?}").contains("/etc/rdlt/key.p8"));
+    }
+
+    /// A certificate is hidden too — the type cannot tell which it holds.
+    #[test]
+    fn any_inline_pem_is_hidden_not_just_keys() {
+        let cert = PemSource::from("-----BEGIN CERTIFICATE-----\nPUBLIC-ENOUGH\n");
+        assert!(!format!("{cert:?}").contains("PUBLIC-ENOUGH"));
+    }
+
+    /// Nesting keeps the guarantee: a struct deriving Debug delegates here.
+    #[test]
+    fn the_guarantee_survives_being_nested_in_a_derived_debug() {
+        #[derive(Debug)]
+        struct Holder {
+            key: PemSource,
+        }
+        let holder = Holder {
+            key: PemSource::from("-----BEGIN PRIVATE KEY-----\nSECRET-BYTES\n"),
+        };
+        assert!(!format!("{holder:?}").contains("SECRET-BYTES"));
     }
 }

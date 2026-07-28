@@ -243,16 +243,16 @@ live legs run with credentials present; tree mechanically clean of secrets.
   test user and the OAuth integration + token-mint details (research D8
   names the env/file entries); legs whose credentials have not arrived
   skip with reason and are recorded as such.
-- [ ] T031 [P] [US4] Gating posture tests: credentials absent → every
+- [X] T031 [P] [US4] Gating posture tests: credentials absent → every
   snowflake live test reports skipped-with-reason and the workspace suite
   is green; suite-timeout audit so SaaS latency (warehouse resume, WAN)
   fits without weakening container-leg timings.
-- [ ] T032 [US4] fakesnow hermetic leg — CONDITIONAL on T001's verdict:
+- [X] T032 [US4] fakesnow hermetic leg — CONDITIONAL on T001's verdict:
   if ADOPTED, wire the server fixture (venv pattern) and move
   protocol-level tests onto it in the standard gate; if REJECTED, record
   the rejection + transcript as the task's terminal disposition in
   close-out.md (either way the qual account remains the leg of record).
-- [ ] T033 [P] [US4] Secret + identity hygiene: grep-proof cells for key,
+- [X] T033 [P] [US4] Secret + identity hygiene: grep-proof cells for key,
   passphrase, and stage secret across Debug/serialize/error/log output;
   plus the SC-005 mechanical tree search (account identifier, user name,
   key markers → zero hits) as a repeatable script recorded in close-out.
