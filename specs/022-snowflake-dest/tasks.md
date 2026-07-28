@@ -221,7 +221,7 @@ run issues zero schema-mutation statements; totals constant per table.
   exactly one schema READ per table per session; one added nullable column
   → exactly one `ADD COLUMN` and nothing else; total statements constant
   in table count, independent of column count (spec US3 scenarios).
-- [ ] T028 [US3] Live verification: run the same load twice on the qual
+- [X] T028 [US3] Live verification: run the same load twice on the qual
   account, count statements server-side (QUERY_HISTORY) and client-side,
   record both counts in close-out.md (SC-004).
 - [ ] T029 [US3] US3 gate: full gate; close-out row.
