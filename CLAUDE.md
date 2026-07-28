@@ -1,4 +1,9 @@
 <!-- SPECKIT START -->
+The root driver documents those earlier features executed — REFACTORING.md,
+PERF_ANALYSIS.md, NEXT_STEPS.md, BENCH_REFINMENT.md — were DELETED once
+executed; the features' own specs/ directories carry what they concluded.
+Read them from git history if a reference below sends you looking.
+
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
 `specs/022-snowflake-dest/plan.md` (feature: Snowflake destination
