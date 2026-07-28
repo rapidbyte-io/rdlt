@@ -18,7 +18,7 @@ dest = []
 failpoints = ["rdlt-connector/failpoints"]
 
 [dependencies]
-rdlt-connector = { workspace = true }
+rdlt-connector = { workspace = true, features = ["schema"] }
 rdlt-connector-sqlcore = { workspace = true }
 schemars = { workspace = true }
 arrow-array = { workspace = true }

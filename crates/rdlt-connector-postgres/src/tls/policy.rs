@@ -31,12 +31,11 @@ impl TlsMode {
     }
 }
 
-/// A PEM input — trust root, client certificate, or client key: a filesystem
-/// path to a PEM file, or the PEM text inline (config strings starting with
-/// `-----BEGIN` are treated as inline).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(transparent)]
-pub struct PemSource(pub String);
+/// A PEM input — trust root, client certificate, or client key.
+///
+/// The shared SPI type: one statement of the path-or-inline rule for every
+/// connector that takes PEM material.
+pub use rdlt_connector::PemSource;
 
 /// The per-connection TLS posture shared by source and destination.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]

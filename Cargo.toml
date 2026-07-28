@@ -14,6 +14,7 @@ members = [
     "crates/rdlt-cli",
     "crates/rdlt-bench",
     "crates/rdlt-connector-sqlcore",
+    "crates/rdlt-connector-snowflake",
 ]
 
 [workspace.package]
@@ -36,6 +37,7 @@ rdlt = { path = "crates/rdlt", version = "0.2.0" }
 rdlt-testkit = { path = "crates/rdlt-testkit", version = "0.2.0" }
 rdlt-connector-rest = { path = "crates/rdlt-connector-rest", version = "0.2.0" }
 rdlt-connector-duckdb = { path = "crates/rdlt-connector-duckdb", version = "0.2.0" }
+rdlt-connector-snowflake = { path = "crates/rdlt-connector-snowflake", version = "0.2.0" }
 rdlt-connector-file = { path = "crates/rdlt-connector-file", version = "0.2.0" }
 rdlt-connector-iceberg = { path = "crates/rdlt-connector-iceberg", version = "0.2.0" }
 rdlt-connector-postgres = { path = "crates/rdlt-connector-postgres", version = "0.2.0", default-features = false }
@@ -81,6 +83,10 @@ serde_yaml = "0.9"
 # Already in the tree via hyper (reqwest); a direct edge costs no new entry.
 httpdate = "1"
 duckdb = { version = "1", features = ["bundled", "appender-arrow"] }
+# Snowflake session protocol. Default features carry key-pair auth; the
+# interactive external-browser SSO flow is deliberately NOT enabled — an
+# embedded engine cannot open a browser.
+snowflake-connector-rs = { version = "1.1", default-features = false, features = ["key-pair-auth"] }
 tokio-postgres = { version = "0.7", features = ["with-chrono-0_4"] }
 tokio-postgres-rustls = "0.13"
 rustls = { version = "0.23", features = ["ring"] }

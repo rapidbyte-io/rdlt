@@ -66,6 +66,9 @@ pub mod connector {
 
     #[cfg(feature = "rest")]
     pub use rdlt_connector_rest as rest;
+
+    #[cfg(feature = "snowflake")]
+    pub use rdlt_connector_snowflake as snowflake;
 }
 
 /// Glob-import target for pipeline authors.

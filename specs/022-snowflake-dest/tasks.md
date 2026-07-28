@@ -61,13 +61,13 @@ measure-then-take (research D10).
   byte-identical. If byte-identity proves endangered, extract only the
   shared shapes and re-record the remainder with a named trigger — never a
   silent partial (research D7).
-- [ ] T005 Crate skeleton + workspace wiring:
+- [X] T005 Crate skeleton + workspace wiring:
   `crates/rdlt-connector-snowflake/` (workspace member;
   `snowflake-connector-rs` pinned per T001; `[features] failpoints`;
   workspace lints incl. `unsafe_code` deny), thin `src/lib.rs`; facade
   feature `snowflake` + `rdlt::connector::snowflake` module alias in
   `crates/rdlt/src/lib.rs`; compiles empty with the feature on and off.
-- [ ] T006 [P] Config vocabulary: `src/config.rs` per data-model §1 —
+- [X] T006 [P] Config vocabulary: `src/config.rs` per data-model §1 —
   account/user + the closed `auth` enum (key_pair {private_key Secret
   PEM-or-`path:`, key_passphrase}, password {password, mfa_passcode},
   oauth {token}, pat {token} — every secret Secret-wrapped)/role/

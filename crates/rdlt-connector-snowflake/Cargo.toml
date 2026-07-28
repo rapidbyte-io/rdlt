@@ -1,0 +1,28 @@
+[package]
+name = "rdlt-connector-snowflake"
+description = "rdlt Snowflake destination: key-pair auth, merge parity, staged and batched ingestion"
+keywords = ["elt", "snowflake", "warehouse", "sql", "arrow"]
+categories = ["database"]
+documentation = "https://docs.rs/rdlt-connector-snowflake"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rdlt-connector = { workspace = true, features = ["schema"] }
+rdlt-connector-sqlcore = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+snowflake-connector-rs = { workspace = true }
+serde_yaml = { workspace = true }
+
+[lints]
+workspace = true
+
+[features]
+failpoints = ["rdlt-connector/failpoints"]

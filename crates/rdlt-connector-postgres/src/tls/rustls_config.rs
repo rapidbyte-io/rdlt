@@ -11,18 +11,22 @@ use rustls::RootCertStore;
 use super::policy::{PemSource, TlsConfigError, TlsMode, TlsPolicy, validate_credentials};
 use crate::tls_verify::{AcceptAnyCert, ChainOnly, provider};
 
-/// Resolve a `PemSource`-shaped input (path or inline PEM) to labeled bytes.
+/// Resolve PEM material to bytes plus a label safe to put in an error — the
+/// label must never be the material itself, so an inline key cannot reach a
+/// log line through a failure path.
 fn pem_bytes(source: &PemSource, kind: &str) -> Result<(String, Vec<u8>), TlsConfigError> {
-    let PemSource(source) = source;
-    if source.trim_start().starts_with("-----BEGIN") {
-        Ok((format!("<inline {kind} pem>"), source.clone().into_bytes()))
+    let label = if source.is_inline() {
+        format!("<inline {kind} pem>")
     } else {
-        let bytes = std::fs::read(source).map_err(|e| TlsConfigError::ClientCredential {
-            input: source.clone(),
+        source.0.clone()
+    };
+    let bytes = source
+        .read()
+        .map_err(|e| TlsConfigError::ClientCredential {
+            input: label.clone(),
             detail: format!("unreadable: {e}"),
         })?;
-        Ok((source.clone(), bytes))
-    }
+    Ok((label, bytes))
 }
 
 /// Load the client credential when configured: certificate chain + private
@@ -75,19 +79,16 @@ fn client_credential(
 fn root_store(policy: &TlsPolicy) -> Result<RootCertStore, TlsConfigError> {
     let mut store = RootCertStore::empty();
     match &policy.root_cert {
-        Some(PemSource(source)) => {
-            let (label, pem_bytes): (String, Vec<u8>) =
-                if source.trim_start().starts_with("-----BEGIN") {
-                    ("<inline pem>".into(), source.clone().into_bytes())
-                } else {
-                    (
-                        source.clone(),
-                        std::fs::read(source).map_err(|e| TlsConfigError::Setup {
-                            subject: format!("root_cert `{source}`"),
-                            detail: format!("unreadable: {e}"),
-                        })?,
-                    )
-                };
+        Some(source) => {
+            let label = if source.is_inline() {
+                "<inline pem>".to_owned()
+            } else {
+                source.0.clone()
+            };
+            let pem_bytes = source.read().map_err(|e| TlsConfigError::Setup {
+                subject: format!("root_cert `{label}`"),
+                detail: format!("unreadable: {e}"),
+            })?;
             let mut cursor = std::io::Cursor::new(pem_bytes);
             let mut added = 0usize;
             for item in rustls_pemfile::certs(&mut cursor) {

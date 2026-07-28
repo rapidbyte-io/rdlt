@@ -21,6 +21,7 @@ pub mod capabilities;
 pub mod channel;
 pub mod error;
 pub mod output;
+pub mod pem;
 pub mod secret;
 pub mod spec;
 pub mod stream;
@@ -36,6 +37,7 @@ pub use error::{BoxError, DestinationError, SourceError};
 /// the SPI. Connectors re-export it from their own config paths and translate
 /// it into `WriterProperties` at their own boundary.
 pub use output::{ParquetCompression, ParquetOptions};
+pub use pem::PemSource;
 /// The rdlt vocabulary. Connectors MUST take these types from here (single-version
 /// identity across the workspace).
 pub use rdlt_core as core;
