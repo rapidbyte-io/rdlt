@@ -251,3 +251,42 @@ during research and are kept for reference. They are **not** wired in and are
 should treat them as a starting point to verify and test, not as finished work —
 and they live under this feature's directory rather than in the repository's
 tool directory precisely so nothing mistakes them for shipped.
+
+---
+
+## Addendum A1 (T002) — the dependency-tree delta, measured after adoption
+
+Recorded because the constitution requires dependency-tree compatibility with
+the workspace pins to be established rather than assumed, and because a git
+dependency cannot offer registry metadata in its place.
+
+**The `put` feature adds**: `aes 0.9.2`, `cbc 0.2.1`, `md-5 0.10.6`,
+`base64 0.22.1`, `getrandom 0.4.3`, and their supporting RustCrypto traits.
+
+**It also DUPLICATES four crates**, which is the finding:
+
+| crate | already present, via | added by `put` |
+|---|---|---|
+| `aes` | 0.8.4 — `rsa → pkcs8 → pkcs5`, the encrypted-PEM path key-pair auth already needs | 0.9.2 |
+| `cbc` | 0.1.2 | 0.2.1 |
+| `block-buffer` | 0.10.4 | 0.12.1 |
+| `block-padding` | 0.3.3 | 0.4.2 |
+
+The fork targets a newer RustCrypto generation than the one `rsa`/`pkcs8`
+already pull in. Two AES implementations therefore compile into any build with
+the Snowflake connector enabled.
+
+**Disposition**: accepted, not blocking. It costs compile time and binary size,
+not correctness — the two copies are used by unrelated code paths (one unwraps
+an encrypted private key, the other encrypts a staged part). No version
+*conflict* exists; cargo resolves both.
+
+**Carried to the upstream contribution**: aligning the fork's crypto crates
+with the generation `rsa` already requires would remove the duplication for
+every consumer. That is a better fix than anything this repository can do
+locally, and it belongs in the upstream conversation rather than in a patch
+here.
+
+**Not taken**: pinning the fork's crypto crates down to 0.8 from this side.
+That would mean patching a dependency's dependencies to save binary size, which
+buys less than it costs in a tree nobody can then reproduce.

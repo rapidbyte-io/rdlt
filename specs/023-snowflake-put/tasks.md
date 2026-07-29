@@ -19,18 +19,18 @@ The new path is built and cut over first; the old paths are removed after.
 
 ## Phase 1: Setup
 
-- [ ] T001 Adopt the fork in the workspace: set `snowflake-connector-rs` at
+- [X] T001 Adopt the fork in the workspace: set `snowflake-connector-rs` at
   `Cargo.toml:89` to `{ git = "https://github.com/rapidbyte-io/snowflake-connector-rs.git", rev = "<40-char rev of feat/put-file-upload>", default-features = false, features = ["key-pair-auth", "put"] }` —
   the `version` key DELIBERATELY OMITTED, because a dependency carrying both
   publishes silently with the git source stripped (verified). Record the exact
   revision. Confirm the workspace builds and the existing 022 suite is
   unaffected.
-- [ ] T002 Verify the fork's feature surface against the workspace: confirm
+- [X] T002 Verify the fork's feature surface against the workspace: confirm
   `put` exists as a feature in the fork's manifest, that `default-features =
   false` still yields a working key-pair session, and that no new transitive
   dependency conflicts with the workspace pins (`cargo tree -d`). Record the
   dependency-tree delta in research.md as an addendum.
-- [ ] T003 Correct the `Cargo.toml:32` comment "Internal crates (path deps;
+- [X] T003 Correct the `Cargo.toml:32` comment "Internal crates (path deps;
   version for future publishing)" — it becomes false for the snowflake/facade/
   CLI chain while the git dependency stands. State the exception and point at
   `tools/allowed-git-deps.toml`.
