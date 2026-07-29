@@ -45,7 +45,7 @@ Offline: 299/299 on the other SQL destinations, golden pins byte-identical.
 | T047–T049 | The recorded ingestion session against 022's figures (582 rows/s INSERT, 2,191 bucket at 250k; 1,941 at 1M). ~17 min of warehouse time. |
 | T050–T052, T054 | Coverage, semver note, close-out finalisation, final gate. |
 
-Deferred by owner decision 2026-07-29, already written up as close-out D-33:
+Deferred by owner decision 2026-07-29, already written up as close-out D-35:
 T036, T037, T039 — password and OAuth stay UNPERFORMED. The legs are written
 and announce their skip; adding the credential entries turns them green with
 no code change.

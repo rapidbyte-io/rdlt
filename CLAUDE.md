@@ -44,8 +44,8 @@ NOT usable (doubles the prefix -> 091016) and is lowercased. Column matching
 stays CASE_INSENSITIVE — 022 pinned it deliberately (lowercase arrow names
 vs upper catalog); a research pass proposed reversing it and would have
 broken every load.
-TWO DEFECTS THE ACCOUNT CAUGHT that no reading would have (close-out D-30,
-D-31): MATCH_BY_COLUMN_NAME sets an absent target column to NULL rather than
+TWO DEFECTS THE ACCOUNT CAUGHT that no reading would have (close-out D-32,
+D-33): MATCH_BY_COLUMN_NAME sets an absent target column to NULL rather than
 its DEFAULT, which nulled the stage table's arrival column and made every
 merge survivor ARBITRARY — so columns are now projected EXPLICITLY. Then the
 projection itself: `$1:"COL"` into a staged file is CASE-SENSITIVE, so the

@@ -13,7 +13,7 @@ this document, not a detail.
 | **SP1** — one path, one boundary | MET | The path-selection branch is deleted, not disabled: the session's staging handle is no longer an `Option`, so no value exists that could mean "some other mechanism". Mechanical residue search for the removed renderers, constants, config types and testkit gates returns nothing (T034). The fork is consumed at the same single boundary — `src/dest/client.rs` — and no library type crosses the crate's public surface. |
 | **SP2** — per-part verification | MET | Every returned row's status is inspected and any non-`UPLOADED` value abandons the unit naming the part and carrying the service's message (`src/dest/stage.rs`). Rows loaded are separately checked against rows staged. The partial-failure hazard is real and measured, not defensive: a multi-file upload returns success overall while an individual file failed, and no test in the fork covers it. |
 | **SP3** — the unit is pure DML and still atomic | MET | Pinned live: uploading does not commit an open transaction (`live_semantics.rs`), creating the staging object inside a unit is safe while dropping it is not, and setting a session variable does not commit. All schema work precedes the unit; the unit executor still refuses DDL in code. |
-| **SP4** — names derived, never echoed | MET | The file list is built from the upload's REPORTED target relative to the load statement's prefix. Two live defects found and fixed here — see D-30 and D-31 — both of which made a plausible-looking name silently wrong. Part names are load-scoped; reclamation is unconditional for this load and age-gated for any other. |
+| **SP4** — names derived, never echoed | MET | The file list is built from the upload's REPORTED target relative to the load statement's prefix. Two live defects found and fixed here — see D-32 and D-33 — both of which made a plausible-looking name silently wrong. Part names are load-scoped; reclamation is unconditional for this load and age-gated for any other. |
 | **SP5** — deletion complete and simultaneous | MET | Both superseded paths and every artefact serving only them removed in the same change: config types, renderers, the measured statement budget and row ceiling, `tests/live_stage.rs`, `tests/batch_knee.rs`, the testkit bucket gate, the bench fixture block, the CLI parse pin, and four dependencies. No shims, aliases or tombstone fields. The SPI's `object-store` feature and its shared recoverability rule STAY — the file connector has seven call sites (T033). |
 | **SP6** — local files owned, bounded, typed | MET | One part is built, uploaded and deleted before the next, so peak local usage is one part rather than proportional to the unit. Local failures classify by condition — out of space, read-only, permission — never a bare I/O error, with the transient/fatal reasoning at the site. |
 | **SP7** — exactly-once re-proven | MET | See the sweep section below. |
@@ -25,13 +25,18 @@ this document, not a detail.
 |---|---|---|
 | US1 — rows land through service storage with nothing configured | DELIVERED | A load runs against the account with no ingestion configuration present. |
 | US2 — the configuration surface shrinks, visibly | DELIVERED | A document carrying the removed block is refused BY NAME; one without it runs; the generated schema holds no storage vocabulary. |
-| US3 — the auth matrix completes | PARTIAL by owner decision — see D-33 | Key-pair and PAT proven live, as in 022. Password and OAuth remain UNPERFORMED; their legs are written and announce their skip. The wrong-credential shape is now covered for all four methods, including both of key-pair's. |
+| US3 — the auth matrix completes | PARTIAL by owner decision — see D-35 | Key-pair and PAT proven live, as in 022. Password and OAuth remain UNPERFORMED; their legs are written and announce their skip. The wrong-credential shape is now covered for all four methods, including both of key-pair's. |
 | US4 — the record says what is true | DELIVERED | Every ingestion claim in README, quickstart, parity and the contracts checked against behaviour. |
 | US5 — the path that ships is the one measured | DELIVERED | The comparison against 022's recorded figures, with dataset identity stated and gating nothing. |
 
 ## Deviations and corrections
 
-### D-29 — The dependency form is load-bearing, and its failure mode is silence
+Numbered from D-31, continuing after 022's D-30, so that a reference in either
+document means exactly one thing — this feature amends 022 and cites it by
+number, and a shared D-29 would have made both ambiguous. References to another
+feature's ledger are written with that feature's name attached.
+
+### D-31 — The dependency form is load-bearing, and its failure mode is silence
 
 A git dependency compiles, tests, lints and benchmarks exactly like a registry
 one. It announces itself only at `cargo publish`, long after a design has
@@ -58,7 +63,7 @@ installs. The publish feature inherits this and is told. Exits: a published
 fork consumed under a `package =` rename (zero Rust source changes), or an
 upstreamed contribution once the fork is validated in use here.
 
-### D-30 — `MATCH_BY_COLUMN_NAME` nulls what it cannot find, and that broke merge silently
+### D-32 — `MATCH_BY_COLUMN_NAME` nulls what it cannot find, and that broke merge silently
 
 A target column absent from a staged file is set to NULL rather than to its
 default. The staging table's arrival column is exactly such a column, so every
@@ -69,7 +74,7 @@ Fixed by projecting columns explicitly, which also states the case
 correspondence instead of delegating it to a matching mode. Found by running
 against the account; no amount of reading would have surfaced it.
 
-### D-31 — and then the projection was wrong in the other direction
+### D-33 — and then the projection was wrong in the other direction
 
 The accessor into a staged file is CASE-SENSITIVE. Quoting the projection with
 the target's upper case looked symmetrical and found nothing: every column
@@ -80,7 +85,7 @@ The target list is the catalog's case; the projection is the file's. Recorded
 at the emission site so the symmetrical-looking version is not "restored"
 later.
 
-### D-32 — Non-finite floats now travel, and the loosening is pinned
+### D-34 — Non-finite floats now travel, and the loosening is pinned
 
 The deleted encoder REFUSED NaN and the infinities, because no numeric literal
 spells them. A parquet file carries them natively and the service's float type
@@ -88,7 +93,7 @@ accepts them, so the refusal was a fact about the transport rather than about
 the data — it goes with the transport. A test says so, so the change is not
 later read as an oversight.
 
-### D-33 — Password and OAuth remain UNPERFORMED, by the same decision as 022
+### D-35 — Password and OAuth remain UNPERFORMED, by the same decision as 022
 
 Both are implemented and unit-tested, with live legs written that announce
 their skip. Turning them green needs provisioning on the account — a
@@ -108,7 +113,7 @@ pair now has both of its wrong-credential shapes covered — material this host
 cannot parse, and a well-formed key the account never registered — where
 before it had neither.
 
-### D-34 — Remote reclaim was absent and is now at parity, on the service's clock
+### D-36 — Remote reclaim was absent and is now at parity, on the service's clock
 
 The deleted path reclaimed stale objects by modification time; the internal
 path shipped with no remote reclaim at all, so a load that died after uploading
@@ -123,7 +128,7 @@ blast radius. The threshold is a day — generous deliberately, because being
 wrong in the tight direction deletes parts out from under a live load. Both
 halves are proven live: a fresh part survives, a stale one goes.
 
-### D-35 — The sweep gains a mode while losing cells
+### D-37 — The sweep gains a mode while losing cells
 
 Research Q3 asked whether the local-write and upload moments are
 distinguishable to any durable observer. They are: one leaves a file on this
@@ -136,6 +141,48 @@ Research Q4 asked whether the sweep should gain Merge. It does, at
 running it at points Append already covers would buy warehouse time instead of
 coverage. The rule is stated in code (`modes_for`) so a point added later has
 to answer the question.
+
+## The crash sweep, and SC-012's half-miss
+
+SC-012 required the sweep's cell count **and** wall-clock time to be lower than
+before, recorded as numbers. **The cell count falls; the wall clock does not.**
+The miss is recorded here rather than resolved by amending the criterion.
+
+| | 022 | 023 |
+|---|---|---|
+| cells | 30 | 27 |
+| axes | points × 3 actions × 2 modes × **2 ingestion paths** | points × 3 actions × modes-that-reach-the-point |
+| crash points | 3 | 4 |
+| write modes covered | Append, Replace | Append, Replace, **Merge** |
+| wall clock per run | 4,308 s (71.8 min) | SWEEP_WALL |
+
+So the matrix got smaller while covering strictly more: a fourth crash point,
+and Merge swept for the first time since it shipped in 022.
+
+**Why the time went the other way.** The sweep's loads are 40 rows in four
+batches. At that size a statement is one round trip, while an upload is a
+stage-info call, an HTTPS transfer to object storage, and then a load
+statement — plus two more round trips per session open for the remote reclaim
+this feature added. Each cell runs three loads, so the per-cell cost rose faster
+than the cell count fell.
+
+The criterion conflated two things that turned out to move in opposite
+directions: the SIZE of the matrix, which collapsing two paths into one
+controls, and the COST of a cell, which is set by the mechanism the cells
+exercise. Only the first was ever in this feature's gift. **The path that ships
+is faster where the data is** — 3.24× INSERT at 250k, measured below — **and
+slower where the data is not**, which is exactly the regime a 40-row crash cell
+occupies. Nothing here suggests a problem with the shipped path; it says the
+criterion measured the wrong thing.
+
+What is NOT done about it: SC-012 is not rewritten to match the outcome.
+Changing a criterion because it was missed has to be a deliberate decision on
+the argument above, and it is left to the owner rather than taken quietly here.
+
+One related fact, recorded because it was briefly mis-read during
+implementation: `make check` does **not** run this sweep. The Makefile's sweep
+target has never had a Snowflake line — 022 ran it by hand, twice. The gate's
+cost is therefore unaffected by any of the above.
 
 ## Recorded ingestion session (T047–T049)
 
@@ -250,14 +297,14 @@ than a silent acceptance, which is the part that matters to a user upgrading.
 The standing 0.2 → 0.3 bump owed at first publish (recorded in 014, ridden by
 015, still unclaimed) is NOT taken here. Nothing in this feature forces it, and
 taking it would spend a one-time major on a crate that cannot currently be
-published at all — see D-29.
+published at all — see D-31.
 
 ## Unperformed verifications
 
 | verification | why |
 |---|---|
-| Password auth, live | No password-capable user provisioned on the account (D-33). The leg is written and announces its skip. |
-| OAuth auth, live | No OAuth security integration provisioned (D-33). Same. |
+| Password auth, live | No password-capable user provisioned on the account (D-35). The leg is written and announces its skip. |
+| OAuth auth, live | No OAuth security integration provisioned (D-35). Same. |
 | Egress failure observed directly | Blocking the storage host would require a firewall rule, and this process shares the machine's network namespace — the rule would degrade the real host. The account's own allowlist establishes the prerequisite instead: three S3 hosts tagged `STAGE`, none under `snowflakecomputing.com` (T042). |
 | CI | E1 stands: CI repair is out of scope, and every CI-only verification is recorded UNPERFORMED, never green. |
 
@@ -266,8 +313,8 @@ published at all — see D-29.
 | # | question | disposition |
 |---|---|---|
 | 1 | Per-part size bound across sources | Answered — research addendum A2. |
-| 2 | Reclamation of staged objects | Answered live; reclaim implemented at parity (D-34). |
-| 3 | Crash-point set and observability | Two points, each with an assertion the sweep makes (D-35). |
-| 4 | Whether the sweep gains merge | Yes, at the publish only; total still falls (D-35). |
+| 2 | Reclamation of staged objects | Answered live; reclaim implemented at parity (D-36). |
+| 3 | Crash-point set and observability | Two points, each with an assertion the sweep makes (D-37). |
+| 4 | Whether the sweep gains merge | Yes, at the publish only; total still falls (D-37). |
 | 5 | The upstream issue | Resolved at T004 — recorded as never filed. |
-| 6 | Implicit workspace members | The check reads `cargo metadata`, not the members list (D-29). |
+| 6 | Implicit workspace members | The check reads `cargo metadata`, not the members list (D-31). |
