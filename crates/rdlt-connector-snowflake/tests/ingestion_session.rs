@@ -1,22 +1,19 @@
-//! The recorded ingestion session: where the two paths cross, and whether
-//! either degrades with scale.
+//! The recorded ingestion session: what the single path costs, against what
+//! the two it replaced cost.
 //!
-//! Two questions, and only one of them is about speed.
+//! The claim this feature rests on is that uploading to the service's own
+//! storage supersedes both removed paths. The paths that were deleted carry
+//! recorded numbers, so replacing them on assertion would be a regression in
+//! method for a project whose previous feature overturned its own expectation
+//! by measuring.
 //!
-//! **Where does COPY start beating INSERT?** The shipped rule — a configured
-//! bucket means the bulk path — is a decision, and a decision about which of
-//! two mechanisms to use deserves the row count at which the answer flips.
-//! That crossover sits at the SMALL end, where one PUT plus one COPY costs
-//! more than one INSERT statement.
+//! The row shape is 022's, byte for byte, and must not be "improved": the
+//! recorded figures refer to it, and changing it destroys the comparison
+//! rather than refining it.
 //!
-//! **Does anything degrade non-linearly?** A sweep over small batches cannot
-//! see a per-statement accumulation or a multi-part COPY misbehaving with
-//! dozens of parts rather than two. That is a robustness question, and it is
-//! why a larger run earns its warehouse time.
-//!
-//! `#[ignore]` by default: an instrument, not a gate. Numbers from a SaaS
-//! destination carry network variance and cannot gate a build under the
-//! benchmark governance — they are recorded, never barred.
+//! `#[ignore]` by default: an INSTRUMENT, not a gate. Numbers from a hosted
+//! service carry network variance and cannot gate a build under the benchmark
+//! governance — they are recorded, never barred.
 //!
 //! ```text
 //! cargo nextest run -p rdlt-connector-snowflake --test ingestion_session \
@@ -24,44 +21,43 @@
 //! ```
 
 use rdlt_connector::StreamSpec;
-use rdlt_connector_snowflake::dest::{S3Stage, Snowflake, SnowflakeConfig, Stage};
+use rdlt_connector_snowflake::dest::{Snowflake, SnowflakeConfig};
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::memory::{MemoryBatch, MemorySource, MemoryStream};
-use rdlt_testkit::snowflake::{credentials, scratch_schema, stage_credentials};
+use rdlt_testkit::snowflake::{credentials, scratch_schema};
 use serde_json::json;
 
-/// Rows the engine hands over at a time. Large enough that the connector's own
-/// byte-budget packing is what decides statement size, rather than the source
-/// dribbling rows in.
+/// What 022 recorded, on this exact row shape, for the two removed paths.
+const RECORDED_INSERT_250K: f64 = 582.0;
+const RECORDED_COPY_250K: f64 = 2_191.0;
+const RECORDED_COPY_1M: f64 = 1_941.0;
+
+/// Rows the engine hands over at a time — unchanged from 022, and load-bearing
+/// rather than incidental: the connector writes ONE part per delivered batch,
+/// so this is what decides how many parts a load produces.
 const ROWS_PER_BATCH: usize = 10_000;
 
-fn config_in(schema: &str, staged: bool) -> Option<SnowflakeConfig> {
+fn config_in(schema: &str) -> Option<SnowflakeConfig> {
     let creds = credentials()?;
-    let mut doc = json!({
-        "account": creds.account,
-        "user": creds.user,
-        "database": creds.database,
-        "schema": schema,
-        "warehouse": creds.warehouse,
-        "role": creds.role,
-        "auth": {"key_pair": {
-            "private_key": creds.private_key_path,
-            "passphrase": creds.passphrase,
-        }},
-    });
-    if staged {
-        let stage = stage_credentials()?;
-        let mut s3 = S3Stage::new(stage.bucket, stage.access_key, stage.secret_key);
-        s3.region = stage.region;
-        s3.endpoint = stage.endpoint;
-        s3.prefix = stage.prefix;
-        doc["stage"] = serde_json::to_value(Stage::s3(s3)).expect("the stage serializes");
-    }
-    Some(SnowflakeConfig::from_value(doc).expect("valid config"))
+    Some(
+        SnowflakeConfig::from_value(json!({
+            "account": creds.account,
+            "user": creds.user,
+            "database": creds.database,
+            "schema": schema,
+            "warehouse": creds.warehouse,
+            "role": creds.role,
+            "auth": {"key_pair": {
+                "private_key": creds.private_key_path,
+                "passphrase": creds.passphrase,
+            }},
+        }))
+        .expect("valid config"),
+    )
 }
 
-/// A bench-shaped row: a dozen columns of mixed width, so a statement grows the
-/// way real data makes it grow rather than the way one integer column does.
+/// 022's bench row: a dozen columns of mixed width, so a part grows the way
+/// real data makes it grow rather than the way one integer column does.
 fn rows(from: i64, count: i64) -> Vec<serde_json::Value> {
     (from..from + count)
         .map(|id| {
@@ -83,17 +79,17 @@ fn rows(from: i64, count: i64) -> Vec<serde_json::Value> {
         .collect()
 }
 
-/// One load of `total` rows through `staged` or not; returns seconds elapsed.
-async fn timed_load(label: &str, total: i64, staged: bool) -> Option<f64> {
-    let admin = config_in("PUBLIC", false)?;
+/// One load of `total` rows; returns seconds elapsed.
+async fn timed_load(label: &str, total: i64, rows_per_batch: usize) -> Option<f64> {
+    let admin = config_in("PUBLIC")?;
     let schema = scratch_schema(label);
-    let config = config_in(&schema, staged)?;
+    let config = config_in(&schema)?;
     let dest = Snowflake::new(config.clone()).expect("valid config");
 
     let batches: Vec<MemoryBatch> = (0..total)
-        .step_by(ROWS_PER_BATCH)
+        .step_by(rows_per_batch)
         .map(|from| {
-            let count = (ROWS_PER_BATCH as i64).min(total - from);
+            let count = (rows_per_batch as i64).min(total - from);
             MemoryBatch::new(rows(from, count)).with_checkpoint(from)
         })
         .collect();
@@ -121,58 +117,59 @@ async fn timed_load(label: &str, total: i64, staged: bool) -> Option<f64> {
 
 #[tokio::test]
 #[ignore = "measurement instrument: costs warehouse time, gates nothing"]
-async fn record_the_crossover_and_the_scaling_behaviour() {
+async fn record_the_single_path_against_what_it_replaced() {
     if credentials().is_none() {
         return;
     }
-    let has_bucket = stage_credentials().is_some();
 
-    println!("\n=== INSERT vs COPY: where the answer flips ===");
+    println!("\n=== the single path, against 022's recorded figures ===");
+    println!("  row shape: 022's 12-column bench row, unchanged");
     println!(
-        "  {:>9}  {:>10}  {:>10}  {:>8}",
-        "rows", "insert s", "copy s", "winner"
+        "  {:>9}  {:>8}  {:>10}  {:>26}",
+        "rows", "wall s", "rows/s", "022 recorded"
     );
-    let mut crossover: Option<i64> = None;
-    for total in [100_i64, 250, 500, 1_000, 2_500, 5_000, 10_000] {
-        let insert = timed_load("xinsert", total, false).await;
-        let copy = if has_bucket {
-            timed_load("xcopy", total, true).await
-        } else {
-            None
+
+    for (total, recorded_insert, recorded_copy) in [
+        (
+            250_000_i64,
+            Some(RECORDED_INSERT_250K),
+            Some(RECORDED_COPY_250K),
+        ),
+        (1_000_000, None, Some(RECORDED_COPY_1M)),
+    ] {
+        let Some(elapsed) = timed_load("session", total, ROWS_PER_BATCH).await else {
+            return;
         };
-        match (insert, copy) {
-            (Some(i), Some(c)) => {
-                let winner = if c < i { "COPY" } else { "INSERT" };
-                if c < i && crossover.is_none() {
-                    crossover = Some(total);
-                }
-                println!("  {total:>9}  {i:>10.2}  {c:>10.2}  {winner:>8}");
-            }
-            (Some(i), None) => println!("  {total:>9}  {i:>10.2}  {:>10}  {:>8}", "-", "INSERT"),
-            _ => {}
-        }
-    }
-    match crossover {
-        Some(rows) => println!("  → COPY first wins at {rows} rows"),
-        None => println!("  → INSERT won at every size measured"),
+        let rate = total as f64 / elapsed;
+        let against = match (recorded_insert, recorded_copy) {
+            (Some(i), Some(c)) => format!("insert {i:.0} / bucket {c:.0}"),
+            (None, Some(c)) => format!("bucket {c:.0}"),
+            _ => String::new(),
+        };
+        println!("  {total:>9}  {elapsed:>8.2}  {rate:>10.0}  {against:>26}");
     }
 
-    // The scaling question. A per-statement accumulation, or a multi-part COPY
-    // that misbehaves with dozens of parts rather than two, is invisible below
-    // this size — and is a correctness signal rather than a speed one.
-    println!("\n=== scaling ===");
-    for (total, staged) in [(250_000_i64, false), (250_000, true), (1_000_000, true)] {
-        if staged && !has_bucket {
-            continue;
-        }
-        let path = if staged { "copy" } else { "insert" };
-        let Some(elapsed) = timed_load("scale", total, staged).await else {
-            continue;
+    // The open question 022 could not answer: its bucket path ran 11% slower
+    // per row at 1M than at 250k, on ONE run of each, which cannot separate a
+    // multi-part effect from ordinary variance. Repeating the smaller size
+    // gives a spread to judge that 11% against — if the spread is wider than
+    // the gap, the gap was never evidence of anything.
+    println!("\n=== repeat runs at 250k, to size the variance ===");
+    let mut rates = Vec::new();
+    for run in 1..=3 {
+        let Some(elapsed) = timed_load("variance", 250_000, ROWS_PER_BATCH).await else {
+            return;
         };
-        println!(
-            "  {total:>9} rows via {path:<6}: {elapsed:>8.2}s  {:>9.0} rows/s",
-            total as f64 / elapsed
-        );
+        let rate = 250_000.0 / elapsed;
+        rates.push(rate);
+        println!("  run {run}: {elapsed:>8.2}s  {rate:>9.0} rows/s");
     }
-    println!();
+    let (lo, hi) = (
+        rates.iter().cloned().fold(f64::MAX, f64::min),
+        rates.iter().cloned().fold(0.0, f64::max),
+    );
+    println!(
+        "  spread across identical runs: {:.1}%  (022's unexplained gap was 11%)\n",
+        (hi - lo) / lo * 100.0
+    );
 }

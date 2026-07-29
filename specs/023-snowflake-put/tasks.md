@@ -107,43 +107,43 @@ storage credential, no mode and no threshold.
 **Independent test**: a load with a configuration carrying no storage settings
 lands exact totals; a re-run publishes nothing; awkward values survive.
 
-- [ ] T012 [US1] Resolve open question 1 (per-part size bound) before writing
+- [X] T012 [US1] Resolve open question 1 (per-part size bound) before writing
   the backend: determine what bounds a part across sources, not just the one
   whose byte budget cuts batches. Read the engine's batching and the
   connector's `write()`. If the transfer's per-file ceiling is reachable,
   decide the enforcement and make its refusal name something the user can
   change. Record the answer in research.md.
-- [ ] T013 [US1] Internal staging backend in
+- [X] T013 [US1] Internal staging backend in
   `crates/rdlt-connector-snowflake/src/dest/stage.rs`: build one part at a time
   into a per-load local directory, upload it, delete the local file
   immediately, retain only the staged name. Peak local usage is ONE part.
   Preserve the load-scoped ownership discipline the deleted path arrived at the
   hard way — two loads of one pipeline must never derive the same name.
-- [ ] T014 [US1] Name the staging object per pipeline and create it as schema
+- [X] T014 [US1] Name the staging object per pipeline and create it as schema
   work, strictly before any unit opens. A named object is required: the
   per-user area has no scoping at all and the per-table area can only load its
   own table (both measured). Teardown never runs inside a unit, because
   dropping the object commits one.
-- [ ] T015 [US1] Build the file list from the upload's REPORTED target, relative
+- [X] T015 [US1] Build the file list from the upload's REPORTED target, relative
   to the prefix the load statement names — never the local name, never the
   listing's name (which doubles the prefix and is lower-cased). Retain
   case-insensitive column matching: parts carry lower-case encoded names
   against an upper-case catalog, and 022 pinned this deliberately.
-- [ ] T016 [US1] Per-part verification per SP2 in
+- [X] T016 [US1] Per-part verification per SP2 in
   `crates/rdlt-connector-snowflake/src/dest/session.rs`: inspect EVERY returned
   row's status; any non-success abandons the unit with a typed error naming the
   part and carrying the service's message. Keep the existing rows-loaded
   verification; both must hold.
-- [ ] T017 [US1] Typed local-storage failures per SP6: map out-of-space,
+- [X] T017 [US1] Typed local-storage failures per SP6: map out-of-space,
   read-only filesystem, permission denied and path-length conditions to the SPI
   taxonomy, each naming the condition. Decide transient versus fatal per
   condition and justify at the site — out-of-space is arguable and the reasoning
   belongs in the code.
-- [ ] T018 [US1] Local reclamation: a later run removes its OWN load's residue
+- [X] T018 [US1] Local reclamation: a later run removes its OWN load's residue
   unconditionally and another load's only when demonstrably stale, mirroring the
   discipline the deleted path needed. Prove two concurrent loads of one pipeline
   cannot delete each other's in-flight files.
-- [ ] T019 [US1] Cut over: the internal path becomes the path `write()` uses.
+- [X] T019 [US1] Cut over: the internal path becomes the path `write()` uses.
   The old paths remain compiled but unreachable at this point — deletion is the
   next story, so this increment is independently reviewable and revertible.
 - [ ] T020 [US1] Live acceptance in
@@ -185,13 +185,13 @@ refused by name.
 **Independent test**: a document with the removed block is refused naming it; a
 document without it runs; the generated schema contains no storage vocabulary.
 
-- [ ] T026 [US2] Delete the storage configuration from
+- [X] T026 [US2] Delete the storage configuration from
   `crates/rdlt-connector-snowflake/src/dest/config.rs`: the `stage` field, the
   `Stage` and `S3Stage` types, their constructors, validation and accessor, and
   every test exercising them. No tombstone field — the existing rejection of
   unknown fields already refuses the removed block by name, and a tombstone
   would leave the vocabulary in the generated schema.
-- [ ] T027 [US2] Delete the external-stage machinery from
+- [X] T027 [US2] Delete the external-stage machinery from
   `src/dest/stage.rs`: the object-store handle, the credentialed create
   statement and its redaction path, the bucket reclaim, and the S3 error
   classification. Retain what the internal path needs — the part record, the
@@ -201,29 +201,29 @@ document without it runs; the generated schema contains no storage vocabulary.
   helper, the statement builders and the measured byte budget. CHECK FIRST
   whether the escaping helper is used by the state and receipt statements in
   `session.rs` — if it is, it stays and only its INSERT callers go.
-- [ ] T029 [US2] Delete the path-selection branch in `src/dest/session.rs`, so
+- [X] T029 [US2] Delete the path-selection branch in `src/dest/session.rs`, so
   no branch exists that could select among mechanisms (SC-003), and the
   testhook entries in `src/dest/mod.rs` that exist only for deleted paths.
-- [ ] T030 [P] [US2] Delete `tests/live_stage.rs` and `tests/batch_knee.rs`
+- [X] T030 [P] [US2] Delete `tests/live_stage.rs` and `tests/batch_knee.rs`
   entirely; edit `tests/ingestion_session.rs`, `tests/differential_oracle.rs`,
   `tests/conformance.rs`, `tests/live_economy.rs` and `tests/secret_hygiene.rs`
   to the single path. Verify each edit by reading the file — do not apply line
   ranges from the research drafts, which were found wrong.
-- [ ] T031 [P] [US2] Delete the bucket credential gate from
+- [X] T031 [P] [US2] Delete the bucket credential gate from
   `crates/rdlt-testkit/src/snowflake.rs`: `StageCreds`, its resolver, the
   dotenv parsing and their tests. The account gate and the skip announcement
   stay.
-- [ ] T032 [P] [US2] Remove the storage block from `benches/parity_specs.yaml`
+- [X] T032 [P] [US2] Remove the storage block from `benches/parity_specs.yaml`
   and the CLI parse pin in `crates/rdlt-cli/src/main.rs`; verify both fixtures
   still parse and build (they are pinned by count assertions — read the file
   before editing).
-- [ ] T033 [US2] Drop the dependencies that fall out of
+- [X] T033 [US2] Drop the dependencies that fall out of
   `crates/rdlt-connector-snowflake/Cargo.toml`, each verified by use-search
   first: object store, bytes, futures, chrono. Keep parquet and the arrow
   crates. DO NOT remove the SPI's `object-store` feature or its shared
   recoverability rule — the file connector still uses them (verify at its call
   sites and say so in the commit).
-- [ ] T034 [US2] Refusal and schema checks: a document carrying the removed
+- [X] T034 [US2] Refusal and schema checks: a document carrying the removed
   block is refused naming it; the generated schema contains zero storage
   vocabulary; and a mechanical residue search finds no configuration type,
   renderer, constant, test or dependency that existed only for the deleted
@@ -294,7 +294,7 @@ behaviour and matches.
 **Independent test**: the close-out carries the comparison with dataset identity
 and configuration.
 
-- [ ] T046 [US5] Rewrite `crates/rdlt-connector-snowflake/tests/ingestion_session.rs`
+- [X] T046 [US5] Rewrite `crates/rdlt-connector-snowflake/tests/ingestion_session.rs`
   for the single path, keeping 022's 12-column row shape BYTE-FOR-BYTE — the
   recorded figures refer to it, and "improving" it destroys the comparison.
 - [ ] T047 [US5] Record the session against 022's figures (582 rows/s for

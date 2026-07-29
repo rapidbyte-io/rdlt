@@ -5,9 +5,7 @@
 //! matter most and are the easiest to forget — a config never leaves the
 //! process, while an error is printed, logged, and pasted into an issue.
 
-use rdlt_connector_snowflake::dest::{
-    Auth, KeyPair, Password, S3Stage, Snowflake, SnowflakeConfig, Stage,
-};
+use rdlt_connector_snowflake::dest::{Auth, KeyPair, Password, Snowflake, SnowflakeConfig};
 use serde_json::json;
 
 /// A marker per credential field, so a leak names which one leaked.
@@ -17,8 +15,6 @@ const PASSWORD: &str = "LEAK-PASSWORD";
 const PASSCODE: &str = "LEAK-PASSCODE";
 const OAUTH: &str = "LEAK-OAUTH-TOKEN";
 const PAT: &str = "LEAK-PAT";
-const STAGE_ACCESS: &str = "LEAK-STAGE-ACCESS";
-const STAGE_SECRET: &str = "LEAK-STAGE-SECRET";
 
 const EVERY_SECRET: &[&str] = &[
     "LEAK-KEY-MATERIAL",
@@ -27,8 +23,6 @@ const EVERY_SECRET: &[&str] = &[
     PASSCODE,
     OAUTH,
     PAT,
-    STAGE_ACCESS,
-    STAGE_SECRET,
 ];
 
 fn config_with(auth: serde_json::Value) -> SnowflakeConfig {
@@ -38,11 +32,6 @@ fn config_with(auth: serde_json::Value) -> SnowflakeConfig {
         "database": "D",
         "schema": "S",
         "auth": auth,
-        "stage": {"s3": {
-            "bucket": "parts",
-            "access_key": STAGE_ACCESS,
-            "secret_key": STAGE_SECRET,
-        }},
     }))
     .expect("valid config")
 }
@@ -114,16 +103,13 @@ fn no_secret_survives_a_validation_failure() {
     // config error is FOR — so the refusal path needs the same guarantee as
     // the success path.
     for (method, auth) in every_auth() {
-        let mut doc = json!({
+        let doc = json!({
             "account": "https://not-an-identifier.example",
             "user": "LOADER",
             "database": "D",
             "schema": "S",
             "auth": auth,
         });
-        doc["stage"] = json!({"s3": {
-            "bucket": "parts", "access_key": STAGE_ACCESS, "secret_key": STAGE_SECRET,
-        }});
         let err = SnowflakeConfig::from_value(doc).expect_err("a URL is not an identifier");
         assert_clean("a validation error", method, &err);
     }
@@ -158,10 +144,6 @@ fn the_programmatic_constructors_redact_as_the_parsed_ones_do() {
         ),
         format!("{:?}", Auth::oauth_token(OAUTH)),
         format!("{:?}", Auth::pat(PAT)),
-        format!(
-            "{:?}",
-            Stage::s3(S3Stage::new("parts", STAGE_ACCESS, STAGE_SECRET))
-        ),
     ];
     for rendered in built {
         assert_clean("a programmatic constructor", "library API", &rendered);

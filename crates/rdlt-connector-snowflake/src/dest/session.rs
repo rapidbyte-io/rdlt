@@ -98,7 +98,11 @@ pub(super) struct SnowflakeSession {
     /// The `COPY` waits for the commit rather than running per batch: one
     /// statement can name every part a table accumulated, and the round trip
     /// to a SaaS warehouse is the cost that matters here.
-    pub(super) pending: BTreeMap<TableName, Vec<Part>>,
+    /// Parts written but not yet loaded, per destination table, together with
+    /// the columns they carry — recorded when the part is built, because that
+    /// is where the schema is known and reverse-deriving it later from a
+    /// derived stage-table name would be guesswork.
+    pub(super) pending: BTreeMap<TableName, (Vec<String>, Vec<Part>)>,
     /// Parts loaded by units this session already committed, awaiting removal.
     pub(super) spent: Vec<Part>,
 }
@@ -163,13 +167,14 @@ impl SnowflakeSession {
         };
         let pending = std::mem::take(&mut self.pending);
         let mut loaded_parts = Vec::new();
-        for (table, parts) in pending {
+        for (table, (columns, parts)) in pending {
             if parts.is_empty() {
                 continue;
             }
             let sql = stage::copy_sql(
                 &self.qualified(table.as_str()),
                 &self.qualified(stage.name()),
+                &columns,
                 &parts,
             );
             let expected: u64 = parts.iter().map(|part| part.rows).sum();
@@ -198,11 +203,12 @@ impl SnowflakeSession {
     /// committed. The scope wipe at the next open collects the remainder.
     async fn discard_staged(&mut self) {
         let mut parts: Vec<Part> = std::mem::take(&mut self.spent);
-        for table_parts in std::mem::take(&mut self.pending).into_values() {
+        for (_, table_parts) in std::mem::take(&mut self.pending).into_values() {
             parts.extend(table_parts);
         }
         if let Some(stage) = &self.stage {
-            stage.remove(&parts).await;
+            let qualified_stage = self.qualified(stage.name());
+            stage.remove(&*self.executor, &qualified_stage).await;
         }
     }
 
@@ -484,30 +490,56 @@ impl LoadSession for SnowflakeSession {
             }
         }
 
-        // With a bucket the rows leave as parquet and the service loads them
-        // at commit; without one they travel inside the statements themselves.
-        // The choice is the user's configuration, not a size heuristic: a
-        // threshold would be a guessed constant, and the crossover is a
-        // measurement this feature takes rather than assumes.
-        // The part is written inside the borrow of the stage and recorded
-        // outside it: `pending` belongs to the session, and holding the stage
-        // across that insert would borrow the session twice.
-        let staged_part = match &mut self.stage {
-            None => None,
-            Some(stage) => {
-                let rows = batch.num_rows() as u64;
-                if rows == 0 {
-                    return Ok(());
+        // The rows leave as a parquet part, uploaded to storage the service
+        // provides. The part is built and uploaded inside the borrow of the
+        // stage and recorded outside it: `pending` belongs to the session, and
+        // holding the stage across that insert would borrow the session twice.
+        //
+        // The fields are split rather than reached through `self`, because the
+        // upload needs the executor and the staging state at the same time and
+        // they are both the session's.
+        let staged_part = {
+            let Self {
+                stage,
+                executor,
+                config,
+                ..
+            } = self;
+            match stage {
+                None => None,
+                Some(stage) => {
+                    let rows = batch.num_rows() as u64;
+                    if rows == 0 {
+                        return Ok(());
+                    }
+                    let qualified_stage = format!(
+                        "{}.{}.{}",
+                        quote(&config.database),
+                        quote(&config.schema),
+                        quote(stage.name())
+                    );
+                    let bytes = encode::parquet_part(&schema, &batch)?;
+                    Some(
+                        stage
+                            .put_part(
+                                &**executor,
+                                &qualified_stage,
+                                &destination_table,
+                                bytes,
+                                rows,
+                            )
+                            .await?,
+                    )
                 }
-                let bytes = encode::parquet_part(&schema, &batch)?;
-                Some(stage.put_part(&destination_table, bytes, rows).await?)
             }
         };
         if let Some(part) = staged_part {
-            self.pending
+            let columns = schema.columns.iter().map(|c| c.name.clone()).collect();
+            let entry = self
+                .pending
                 .entry(TableName::from(destination_table.as_str()))
-                .or_default()
-                .push(part);
+                .or_insert_with(|| (columns, Vec::new()));
+            entry.1.push(part);
             return Ok(());
         }
 

@@ -208,150 +208,6 @@ impl Auth {
     }
 }
 
-/// Where bulk parts are staged for `COPY INTO`.
-///
-/// A struct of optional kinds rather than an enum, matching the connector
-/// family's `location:` convention — a second store is then an ADDITIVE field.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-#[non_exhaustive]
-pub struct Stage {
-    /// An S3 bucket the pipeline can write and the account can read.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub s3: Option<S3Stage>,
-}
-
-/// An S3 bucket used as an external stage.
-///
-/// The credentials are needed on BOTH sides: this process writes the parts,
-/// and the account reads them back. `storage_integration` changes only the
-/// second half — the client still writes with these keys.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-#[non_exhaustive]
-pub struct S3Stage {
-    /// The bucket.
-    pub bucket: String,
-    /// A key prefix inside it. rdlt scopes its own keys beneath this, so a
-    /// bucket shared with other data stays safe.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub prefix: Option<String>,
-    /// The region. Defaults to `us-east-1`, which is what the signing code
-    /// falls back to when a bucket's region is not stated.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub region: Option<String>,
-    /// An endpoint override, for S3-compatible storage.
-    ///
-    /// Snowflake reads such a bucket only after the endpoint is allowlisted
-    /// for the account, which only Snowflake Support can do — there is no
-    /// self-service parameter. Absent that, `CREATE STAGE` is refused and the
-    /// load fails with the service's own reason.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub endpoint: Option<String>,
-    /// Path-style addressing (`host/bucket/key`).
-    ///
-    /// Defaults OFF, unlike the file family's own S3 block: that one defaults
-    /// on because it is usually pointed at a local test server, while a stage
-    /// is by construction a cloud bucket the service must also reach.
-    #[serde(default)]
-    pub path_style: bool,
-    /// Access key for writing the parts, and for the account to read them
-    /// unless `storage_integration` supersedes that half.
-    pub access_key: Secret,
-    /// The matching secret key.
-    pub secret_key: Secret,
-    /// An account-level `STORAGE INTEGRATION` to read the bucket with.
-    ///
-    /// Preferred where it exists: without it the stage definition carries the
-    /// key pair, which then lives in the account's metadata and in its query
-    /// history. Creating one needs privileges a pipeline does not have, so it
-    /// is referenced, never created.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub storage_integration: Option<String>,
-}
-
-impl S3Stage {
-    /// A stage on a bucket reachable with these keys.
-    pub fn new(
-        bucket: impl Into<String>,
-        access_key: impl Into<Secret>,
-        secret_key: impl Into<Secret>,
-    ) -> Self {
-        Self {
-            bucket: bucket.into(),
-            prefix: None,
-            region: None,
-            endpoint: None,
-            path_style: false,
-            access_key: access_key.into(),
-            secret_key: secret_key.into(),
-            storage_integration: None,
-        }
-    }
-
-    /// Scope rdlt's keys under a prefix inside the bucket.
-    pub fn with_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.prefix = Some(prefix.into());
-        self
-    }
-
-    /// Name the bucket's region.
-    pub fn with_region(mut self, region: impl Into<String>) -> Self {
-        self.region = Some(region.into());
-        self
-    }
-
-    /// Read the bucket through an account-level storage integration, keeping
-    /// the key pair out of the stage definition.
-    pub fn with_storage_integration(mut self, name: impl Into<String>) -> Self {
-        self.storage_integration = Some(name.into());
-        self
-    }
-
-    fn validate(&self) -> Result<(), ConfigError> {
-        if self.bucket.trim().is_empty() {
-            return Err(ConfigError::Missing {
-                field: "stage.s3.bucket",
-            });
-        }
-        // A bucket NAME, for the same reason `account` is an identifier: the
-        // URL form would be pasted into the stage definition and fail on the
-        // service side with a message far from the cause.
-        if self.bucket.contains("://") || self.bucket.contains('/') {
-            return Err(ConfigError::Invalid {
-                field: "stage.s3.bucket",
-                detail: "is the bucket name alone, not a URL or a path".to_owned(),
-            });
-        }
-        if let Some(endpoint) = &self.endpoint
-            && !endpoint.contains("://")
-        {
-            return Err(ConfigError::Invalid {
-                field: "stage.s3.endpoint",
-                detail: "must name a scheme (`https://…`)".to_owned(),
-            });
-        }
-        Ok(())
-    }
-}
-
-impl Stage {
-    /// A stage on S3.
-    pub fn s3(s3: S3Stage) -> Self {
-        Self { s3: Some(s3) }
-    }
-
-    fn validate(&self) -> Result<(), ConfigError> {
-        let Some(s3) = &self.s3 else {
-            return Err(ConfigError::Invalid {
-                field: "stage",
-                detail: "names no storage kind (expected `s3`)".to_owned(),
-            });
-        };
-        s3.validate()
-    }
-}
-
 /// Whether tables are created transient.
 ///
 /// Transient tables carry no fail-safe period, which is the cost lever most
@@ -412,14 +268,6 @@ pub struct SnowflakeConfig {
     /// deployments that front the account with their own name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
-    /// A bucket to stage bulk parts in. Absent, rows are inserted directly.
-    ///
-    /// Optional because it is infrastructure the user supplies: with a bucket
-    /// the rows travel as parquet and the service loads them itself; without
-    /// one they travel inside statements, which needs nothing but works the
-    /// same.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stage: Option<Stage>,
     /// The destination-option vocabulary shared by every SQL destination:
     /// merge strategy, hard delete, dedup sort, merge scope, scd2 columns.
     #[serde(default, flatten)]
@@ -477,15 +325,7 @@ impl SnowflakeConfig {
             });
         }
         self.auth.validate()?;
-        if let Some(stage) = &self.stage {
-            stage.validate()?;
-        }
         Ok(())
-    }
-
-    /// The S3 stage this configuration names, if any.
-    pub(super) fn s3_stage(&self) -> Option<&S3Stage> {
-        self.stage.as_ref()?.s3.as_ref()
     }
 
     /// The host this configuration addresses.
@@ -655,78 +495,6 @@ mod tests {
         doc["merge_strategy"] = serde_json::json!("upsert");
         let config = SnowflakeConfig::from_value(doc).expect("valid");
         assert!(config.options.merge_strategy.is_some());
-    }
-
-    #[test]
-    fn a_stage_is_optional_and_absent_means_no_bulk_path() {
-        let config = SnowflakeConfig::from_value(minimal()).expect("valid");
-        assert!(
-            config.s3_stage().is_none(),
-            "no bucket configured, so no bulk path"
-        );
-    }
-
-    #[test]
-    fn a_configured_stage_parses_with_its_optional_parts_defaulted() {
-        let mut doc = minimal();
-        doc["stage"] = serde_json::json!({
-            "s3": {"bucket": "parts", "access_key": "AK", "secret_key": "SK"}
-        });
-        let config = SnowflakeConfig::from_value(doc).expect("valid");
-        let s3 = config.s3_stage().expect("stage");
-        assert_eq!(s3.bucket, "parts");
-        assert!(s3.prefix.is_none());
-        assert!(
-            !s3.path_style,
-            "a stage is a cloud bucket the service must reach, so virtual-hosted by default"
-        );
-        assert!(s3.storage_integration.is_none());
-    }
-
-    #[test]
-    fn a_stage_that_names_no_kind_is_refused_rather_than_ignored() {
-        // An empty `stage:` block reads as "use the bulk path" but configures
-        // nothing; silently falling back to inserts would hide the mistake.
-        let mut doc = minimal();
-        doc["stage"] = serde_json::json!({});
-        let err = SnowflakeConfig::from_value(doc).expect_err("no kind");
-        assert!(err.contains("stage"), "{err}");
-    }
-
-    #[test]
-    fn a_bucket_url_is_refused_where_a_bucket_name_belongs() {
-        for wrong in ["s3://parts", "parts/prefix"] {
-            let mut doc = minimal();
-            doc["stage"] = serde_json::json!({
-                "s3": {"bucket": wrong, "access_key": "AK", "secret_key": "SK"}
-            });
-            let err = SnowflakeConfig::from_value(doc).expect_err("not a bucket name");
-            assert!(err.contains("bucket"), "{err}");
-        }
-    }
-
-    #[test]
-    fn an_endpoint_without_a_scheme_is_refused() {
-        let mut doc = minimal();
-        doc["stage"] = serde_json::json!({
-            "s3": {"bucket": "parts", "access_key": "AK", "secret_key": "SK",
-                   "endpoint": "storage.example.com"}
-        });
-        let err = SnowflakeConfig::from_value(doc).expect_err("no scheme");
-        assert!(err.contains("endpoint"), "{err}");
-    }
-
-    #[test]
-    fn stage_keys_never_render() {
-        let mut doc = minimal();
-        doc["stage"] = serde_json::json!({
-            "s3": {"bucket": "parts", "access_key": "AK-LEAK", "secret_key": "SK-LEAK"}
-        });
-        let config = SnowflakeConfig::from_value(doc).expect("valid");
-        let rendered = format!("{config:?}");
-        for leak in ["AK-LEAK", "SK-LEAK"] {
-            assert!(!rendered.contains(leak), "{leak} rendered: {rendered}");
-        }
     }
 
     #[test]

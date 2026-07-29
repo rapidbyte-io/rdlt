@@ -290,3 +290,47 @@ here.
 **Not taken**: pinning the fork's crypto crates down to 0.8 from this side.
 That would mean patching a dependency's dependencies to save binary size, which
 buys less than it costs in a tree nobody can then reproduce.
+
+---
+
+## Addendum A2 (T012) — what bounds a part, answered
+
+**Open question 1 is closed, and not the way the research assumed.**
+
+The research argued from one source's byte budget and concluded no
+configuration was needed. That reasoning does not hold, for a reason visible in
+the engine rather than in any source.
+
+**What was established, with citations**:
+
+- `EngineConfig::byte_budget` (`crates/rdlt-engine/src/lib.rs:39`) defaults to
+  **64 MiB** and is documented as *"Bound on in-flight bytes per stage channel
+  — this is the RSS cap."*
+- It does **not** bound a single message. `channel.rs:223-234`: *"An item larger
+  than the WHOLE budget degrades to 'drain the budget' rather than
+  deadlocking"* — the permit request is capped with `.min`, so one oversized
+  batch passes through rather than blocking forever.
+- The transfer's ceiling is **256 MiB**, enforced by the fork
+  (`put.rs:30  MAX_UPLOAD_BYTES`).
+
+**Therefore**: a part's size is bounded by whatever batch a source chooses to
+emit, and nothing in the engine caps it. A source that materialises one very
+large batch produces one very large part, and at 256 MiB the upload refuses.
+
+**Decision**: enforce nothing new, and let the transfer's own refusal stand —
+but ensure it is *legible*. Adding a second ceiling in this connector would put
+a number in a third place that must agree with two others, and the connector
+cannot make a batch smaller once it has been handed one.
+
+**What the refusal must say**, because the earlier draft named a lever that
+does not exist for most pipelines: the part's actual size, the ceiling it
+exceeded, the table it belongs to, and that the source delivered a batch that
+large — so the reader knows the fix is on the source side rather than in this
+destination's configuration. Parquet compression gives real headroom (an
+encoded part is materially smaller than the arrow bytes it came from), which is
+why this is a legibility requirement rather than an expected event.
+
+**Not taken**: splitting an oversized batch into several parts. It would work,
+and it would make the connector silently succeed where the engine handed it
+something unreasonable — hiding a source misconfiguration that the operator
+should see once rather than pay for on every load.

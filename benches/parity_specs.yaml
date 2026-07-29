@@ -117,11 +117,4 @@ destination:
     query_tag: rdlt-parity
     session_parameters:
       TIMEZONE: UTC
-    stage:
-      s3:
-        bucket: parity-stage
-        prefix: rdlt/parts
-        region: eu-west-2
-        access_key: parity-access
-        secret_key: parity-secret
     merge_strategy: upsert

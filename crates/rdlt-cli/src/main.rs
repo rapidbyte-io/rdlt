@@ -303,8 +303,6 @@ destination:
     schema: RAW
     warehouse: WH
     table_type: transient
-    stage:
-      s3: {bucket: parts, region: eu-west-2, access_key: AK, secret_key: hunter2-bucket}
     merge_strategy: upsert
 "#,
         );
@@ -314,12 +312,15 @@ destination:
         assert_eq!(config.host(), "myorg-myacct.snowflakecomputing.com");
         assert!(config.auth.key_pair.is_some());
         assert!(config.options.merge_strategy.is_some());
-        assert!(config.stage.is_some(), "the bulk path rides the same block");
+        // No storage vocabulary remains to configure: rows travel through
+        // storage the service provides, and a document still carrying the old
+        // block is refused rather than quietly ignored.
         assert!(config.validate().is_ok());
         let rendered = format!("{config:?}");
-        for secret in ["hunter2-sf", "hunter2-bucket"] {
-            assert!(!rendered.contains(secret), "secret rendered: {rendered}");
-        }
+        assert!(
+            !rendered.contains("hunter2-sf"),
+            "secret rendered: {rendered}"
+        );
     }
 
     /// A destination document whose account is a pasted console URL is refused

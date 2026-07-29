@@ -22,6 +22,9 @@ merge_strategy: upsert
 "#;
 
 /// And the optional bulk-path block the same section adds.
+/// The block a 022 document carried. Kept verbatim as the thing that must now
+/// be REFUSED — a removal nobody can test is a removal that quietly becomes
+/// acceptance again.
 const QUICKSTART_WITH_STAGE: &str = r#"
 account: "MYORG-MYACCT"
 user: "MY_LOADER"
@@ -60,9 +63,40 @@ fn the_quickstart_document_is_a_valid_configuration() {
     );
 }
 
+/// A document still carrying the removed storage block is REFUSED, by name.
+///
+/// The point of US2, and the reason the removal is not merely a deletion:
+/// accepting the block and ignoring it would leave a user believing their data
+/// travels through a bucket they configured, when it no longer does. The
+/// configuration already refuses unknown fields, so the deletion alone
+/// produces the refusal — no tombstone field is kept, which would put the
+/// removed vocabulary back into the generated schema.
 #[test]
-fn the_documented_bulk_path_block_is_a_valid_configuration() {
-    let config =
-        SnowflakeConfig::from_yaml(QUICKSTART_WITH_STAGE).expect("the stage block must parse");
-    assert!(config.stage.is_some(), "the bulk path is configured");
+fn a_document_carrying_the_removed_storage_block_is_refused_by_name() {
+    let err = SnowflakeConfig::from_yaml(QUICKSTART_WITH_STAGE)
+        .expect_err("the storage block no longer exists");
+    assert!(
+        err.contains("stage"),
+        "the refusal must NAME the field, or a reader cannot tell which line to \
+         delete: {err}"
+    );
+}
+
+/// And the generated schema carries none of that vocabulary either.
+#[test]
+fn the_generated_schema_has_no_storage_vocabulary_left() {
+    let rendered = serde_json::to_string(&rdlt_connector_snowflake::dest::config_schema())
+        .expect("the schema renders");
+    for gone in [
+        "stage",
+        "bucket",
+        "access_key",
+        "secret_key",
+        "storage_integration",
+    ] {
+        assert!(
+            !rendered.contains(gone),
+            "`{gone}` still appears in the published configuration schema"
+        );
+    }
 }
