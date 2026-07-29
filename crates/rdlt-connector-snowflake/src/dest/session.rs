@@ -486,6 +486,16 @@ impl LoadSession for SnowflakeSession {
             }
         }
 
+        // An empty batch buys nothing by being staged: the part would carry no
+        // rows and the load statement would name a file to read nothing out of.
+        // Returning here is safe only because it comes AFTER the steps above —
+        // a Replace still clears its target, and the unit still commits the
+        // position, so an empty run does not make the next one re-read.
+        let rows = batch.num_rows() as u64;
+        if rows == 0 {
+            return Ok(());
+        }
+
         // The rows leave as a parquet part, uploaded to storage the service
         // provides. The part is built and uploaded inside a borrow of the
         // stage and recorded outside it: `pending` belongs to the session, and
@@ -494,10 +504,6 @@ impl LoadSession for SnowflakeSession {
         // The fields are split rather than reached through `self`, because the
         // upload needs the executor and the staging state at the same time and
         // they are both the session's.
-        let rows = batch.num_rows() as u64;
-        if rows == 0 {
-            return Ok(());
-        }
         let part = {
             let Self {
                 stage,
