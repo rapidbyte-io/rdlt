@@ -6,58 +6,69 @@ Read them from git history if a reference below sends you looking.
 
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
-`specs/022-snowflake-dest/plan.md` (feature: Snowflake destination
-connector — COMPLETE at 43/43 and MERGED into local main @ 42a6da42, NOT
-pushed (origin/main still 1076398b). Gate of record: `make check` TWICE CLEAN
-on the PINNED 1.96.0 toolchain — 966/966 with 2 skips (both #[ignore]d
-measurement instruments), 13/13 crash sweeps, 6 benches 0 regressed, cold
-start 26.3/25.9 ms against a 40 ms bar. SD1-SD8 all MET, zero uncited
-dispositions.
-BEWARE: `RUSTUP_TOOLCHAIN=1.97.1` in the shell environment SILENTLY overrides
-rust-toolchain.toml — every earlier run in 022 was unpinned, and the perf gate
-is what caught it (it refused the comparison even though the benches showed
-zero regressions). Run gates with `env -u RUSTUP_TOOLCHAIN`, or fix the
-variable at its source.
-Feature 021 is RESERVED for the publish feature and does not exist yet.
-Crate rdlt-connector-snowflake (facade rdlt::connector::snowflake, feature
-`snowflake`, CLI `destination: snowflake:` embedding SnowflakeConfig) — the
-THIRD SQL destination, on snowflake-connector-rs 1.1.0 wrapped at ONE
-boundary (src/dest/client.rs).
-THREE SERVICE FACTS shape everything and are each pinned by a live test:
-(1) DDL AUTO-COMMITS an open transaction, so all schema work precedes the
-unit and the unit executor REFUSES DDL in code (Replace clears with DELETE,
-never TRUNCATE); (2) NOTHING enforces uniqueness (PKs informational), so
-merge correctness rests on the SQL alone and every merge test reads the
-result back; (3) CURRENT_TIMESTAMP is per-STATEMENT not per-transaction
-(measured 2,938ms drift), so each unit captures one instant into a session
-variable — safe because SET does NOT commit, also pinned.
-Identifiers: quoted-UPPERCASE everywhere (EVENTS and events coexist as
-distinct objects). MERGE INTO + QUALIFY ROW_NUMBER() replace ON CONFLICT and
-DISTINCT ON. Duplicate merge key = structured code 100090 → the SHARED
-diagnosis. INGESTION: batched INSERT (default, no infrastructure) packed
-against a MEASURED 400KB BYTE budget — not a row count, because a row count
-tuned on one shape becomes a multi-megabyte statement on another (close-out
-D-28); plus external-stage COPY INTO from a user S3 bucket (proven live
-cross-region). Internal-stage PUT UNREACHABLE via the SQL API and the
-driver — the one dlt parity gap, deferred with a named upstream trigger
-(specs/022-snowflake-dest/parity.md).
-AUTH: key-pair + PAT proven LIVE; password + OAuth implemented with their
-live legs WRITTEN and skipping visibly — recorded UNPERFORMED by owner
-decision (D-24). External-browser SSO typed-unsupported.
-SEAMS WIDENED IN SQLCORE (D-20): UpsertAction replaces a `DO UPDATE SET …`
-string literal, `column_list_with` takes the dialect quoting, and
-flag_set/flag_unset replace a hardcoded `IS TRUE` that compiles NOWHERE on
-Snowflake. `is_recoverable` moved to rdlt-connector::objects behind an
-`object-store` feature so the file connector and this one share ONE
-recoverability rule. pg/duckdb golden SQL BYTE-IDENTICAL throughout.
-A REAL LEAK was found and fixed: PemSource's derived Debug printed inline
-private keys in full (D-21). Semver: rdlt-core and rdlt-connector need no
-update (0.2→0.3 stays closed); sqlcore DOES need a major, which costs
-nothing because nothing is published (D-27).
-Live legs gate skip-not-fail on credential presence and ANNOUNCE the skip
-(D-25). Credentials LOCAL-ONLY in ~/.config/rdlt/snowflake/ + stage.env;
-SC-005 sweep clean. fakesnow REJECTED (C-02). Contract:
-contracts/snowflake-dest.md SD1-SD8; deviations D-20..D-28 in close-out.md).
+`specs/023-snowflake-put/plan.md` (feature: Snowflake internal-stage
+ingestion as the SINGLE path — SPEC + PLAN written, NOT implemented, on
+branch `023-snowflake-put`. Makes the service's own recommended mechanism
+the ONLY one and DELETES both 022 workarounds: batched INSERT and the
+external S3 stage, with their config, credentials, encoders, constants,
+suites and four dependencies. Contract contracts/snowflake-put.md SP1-SP8,
+which AMENDS 022's SD1 and SD6 explicitly.
+THE DEPENDENCY IS THE HARD PART, not the code. The upload comes from a FORK
+(rapidbyte-io/snowflake-connector-rs, feat/put-file-upload) pinned by REV
+with the `version` key DELIBERATELY OMITTED — verified locally: a dep
+carrying BOTH git AND version PUBLISHES SILENTLY with the git source
+stripped, shipping a crate that resolves upstream (no PUT), compiles, and
+fails at runtime with 391911; git-without-version makes packaging REFUSE,
+which is the safe form. Blast radius: rdlt, rdlt-cli,
+rdlt-connector-snowflake unpublishable until upstreamed or the fork is
+published under its own name (a `package =` rename needs ZERO source
+changes). This VIOLATES the constitution's "dependencies resolvable at plan
+time with registry facts" — recorded in plan.md Complexity Tracking with
+its exits, not waved through.
+FOUR SERVICE FACTS MEASURED LIVE with the fork before design froze, each to
+be pinned: (1) PUT does NOT commit an open transaction (rolled-back count 0,
+txid IDENTICAL across the PUT, COMMIT-instead kept the row) so staging stays
+INSIDE the unit; (2) CREATE STAGE does not commit but DROP STAGE DOES (3/3
+each) so teardown stays outside; (3) snappy arrow parquet passes through
+untouched, no .gz, +12 bytes of encryption padding only; (4) a multi-file
+PUT returns Ok with a MIXED rowset — Err ONLY when every row failed — so
+EVERY row's `status` must be inspected or data is lost silently.
+NAMING TRAP: FILES=() must use PUT's reported `target` (basename + any
+compression suffix), relative to the FROM prefix. LIST's `name` column is
+NOT usable (doubles the prefix -> 091016) and is lowercased. Column matching
+stays CASE_INSENSITIVE — 022 pinned it deliberately (lowercase arrow names
+vs upper catalog); a research pass proposed reversing it and would have
+broken every load.
+Named stage required: @~ has NO scoping (visible across schemas/databases),
+@%TABLE can only load its OWN table (001023).
+Open questions carried deliberately into implementation (plan.md risk
+table): per-part size bound across sources, staged-object reclaim strength,
+whether two crash moments earn one point or two, the drafted distribution
+check missing implicit workspace members, and whether the sweep gains merge
+mode. drafts/ holds unadopted, unverified research output.
+Previous feature 022 for reference:
+`specs/022-snowflake-dest/plan.md` (Snowflake destination — COMPLETE 43/43,
+merged @ 1ef4860b. Gate TWICE CLEAN on the PINNED 1.96.0 toolchain: 966/966
+(2 skips, both #[ignore]d instruments), 13/13 crash sweeps, 6 benches 0
+regressed, cold start 26.3/25.9 ms vs a 40 ms bar. SD1-SD8 MET, zero uncited
+dispositions. Three service facts pinned: DDL auto-commits; nothing enforces
+uniqueness (PKs informational, so merge correctness rests on the SQL and
+every merge test reads back); CURRENT_TIMESTAMP is per-STATEMENT not
+per-transaction (2,938 ms drift) so each unit captures one instant into a
+session variable — safe because SET does NOT commit. Identifiers
+quoted-UPPERCASE. MERGE INTO + QUALIFY ROW_NUMBER() replace ON CONFLICT and
+DISTINCT ON. `IS TRUE` COMPILES NOWHERE on Snowflake — flag_set/flag_unset
+are dialect methods. Seams widened in sqlcore: UpsertAction replaces a
+postgres-syntax string, column_list_with takes the quoting. A REAL LEAK was
+found and fixed: PemSource's derived Debug printed inline private keys
+(D-21). Measured and DECLINED: an open() round-trip saving of 1 statement
+(D-22). No INSERT/COPY crossover exists — below ~2,500 rows path choice is
+noise (D-30).
+BEWARE: `RUSTUP_TOOLCHAIN=1.97.1` in the shell environment SILENTLY
+overrides rust-toolchain.toml — run gates with `env -u RUSTUP_TOOLCHAIN`.
+The perf gate is the ONLY thing that catches it, by refusing a comparison
+whose benches showed zero regressions; never re-record baselines to clear
+that refusal.
 Previous feature 020 for reference:
 `specs/020-audit-remediation/plan.md` (feature: audit remediation —
 COMPLETE on branch `020-audit-remediation`, NOT merged and NOT pushed.

@@ -1,0 +1,39 @@
+# Git dependencies this workspace deliberately carries, and what each one costs
+# us in distribution. Enforced by tools/check-git-deps.sh, which runs in
+# `make lint`.
+#
+# An entry here permits exactly ONE arrangement: a git dependency with NO
+# `version` key ("MODE B"). That form makes `cargo package` and `cargo publish`
+# refuse, loudly, before anything is uploaded.
+#
+# A git dependency that ALSO carries `version` ("MODE A") cannot be allowed
+# here and the check will not read an entry for it. That form publishes
+# SUCCESSFULLY: cargo drops the git source, keeps the version, and the crate
+# users install is built against the registry rather than the fork. Allowing it
+# would be allowing a crate to claim it contains code it does not contain.
+#
+# Every field is required.
+#
+#   dependency    the key as it appears in the manifest
+#   manifest      the manifest that DECLARES it, repo-relative. For a dependency
+#                 members take with `{ workspace = true }` this is the root
+#                 Cargo.toml — that is where the fix goes, and a member's own
+#                 `version` key is silently ignored by cargo anyway.
+#   table         the dependency table within that manifest, e.g.
+#                 "workspace.dependencies", "dependencies", "dev-dependencies"
+#   git           the repository URL, matched exactly against the manifest
+#   rev           the exact 40-character revision, matched exactly against the
+#                 manifest. `branch` and `tag` are rejected: they move under the
+#                 build, so two checkouts of one commit could compile different
+#                 code.
+#   reason        why the fork is required
+#   exit          the named event that retires this entry — not a date, an event
+#   unpublishable the crates that cannot be published to crates.io while this
+#                 stands, matched exactly against the set the check computes
+#                 from the graph. If the graph moves, the check fails until the
+#                 record is brought back into line. The list is what FR-017
+#                 means by recording the arrangement "together with its
+#                 consequences for distribution".
+#
+# The file is empty until a feature adds an entry. Feature 023 adds one, for
+# the snowflake-connector-rs fork that carries internal-stage PUT.
