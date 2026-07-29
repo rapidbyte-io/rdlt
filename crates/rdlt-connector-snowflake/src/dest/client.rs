@@ -189,6 +189,23 @@ pub(crate) trait Executor: Send + Sync {
         sql: &str,
         binds: &[&str],
     ) -> Result<std::collections::BTreeSet<String>, DestinationError>;
+
+    /// Run a statement and read named columns from EVERY row it returns.
+    ///
+    /// The shape an upload verification needs, and the reason none of the
+    /// methods above can serve it: an upload reports one row per file, and
+    /// whether the whole thing succeeded is a property of every row rather
+    /// than of the first one, a total, or a set. A partial failure returns
+    /// SUCCESS overall with one row saying otherwise — so a caller that cannot
+    /// see individual rows cannot tell that data is missing.
+    ///
+    /// Values come back as owned strings, not as library types, because this
+    /// is the crate's one boundary and nothing behind it may cross out.
+    /// Columns are resolved case-insensitively, since the service names a
+    /// result's own columns in its own case and pinning that case here would
+    /// make the check silently read nothing if it ever changed.
+    async fn rows(&self, sql: &str, columns: &[&str])
+    -> Result<Vec<Vec<String>>, DestinationError>;
 }
 
 /// A live session.
@@ -251,6 +268,45 @@ impl Executor for SessionExecutor {
             })?;
         }
         Ok(total)
+    }
+
+    async fn rows(
+        &self,
+        sql: &str,
+        columns: &[&str],
+    ) -> Result<Vec<Vec<String>>, DestinationError> {
+        let table = self.query(sql, &[]).await?;
+        let mut out = Vec::new();
+        for row in table.rows::<DynamicRow>().map_err(classify)? {
+            let row = row.map_err(classify)?;
+            // Resolved once per row against that row's own schema, for the same
+            // reason the totalling read does: the service names a result's
+            // columns in its own case.
+            let mut values = Vec::with_capacity(columns.len());
+            for wanted in columns {
+                let index = row
+                    .schema()
+                    .columns()
+                    .iter()
+                    .find(|c| c.name().eq_ignore_ascii_case(wanted))
+                    .map(|c| c.index())
+                    .ok_or_else(|| {
+                        DestinationError::fatal(format!(
+                            "snowflake: the result of `{sql}` carries no `{wanted}` column"
+                        ))
+                    })?;
+                let cell = row.value_at(index).map_err(|e| {
+                    DestinationError::fatal(format!("snowflake: reading `{wanted}`: {e}"))
+                })?;
+                // Rendered rather than typed: every column an upload reports is
+                // either text already or a size, and a caller comparing a
+                // status against a known word does not want a number type in
+                // the way.
+                values.push(cell_as_display(cell));
+            }
+            out.push(values);
+        }
+        Ok(out)
     }
 
     async fn column_names(
@@ -317,6 +373,25 @@ fn cell_as_text(cell: &snowflake_connector_rs::CellValue) -> Option<String> {
     }
 }
 
+/// Render a cell as text, whatever it holds.
+///
+/// The upload's result mixes text and sizes in one row, and a caller comparing
+/// a status word against a known value should not have to care which is which.
+/// A null renders as the empty string: an absent message is not an error, and
+/// the caller keys on the status column rather than on the message's presence.
+fn cell_as_display(cell: &snowflake_connector_rs::CellValue) -> String {
+    use snowflake_connector_rs::CellValue;
+    match cell {
+        CellValue::Null => String::new(),
+        CellValue::String(s) => s.clone(),
+        CellValue::Integer(v) => v.to_string(),
+        CellValue::Decimal(d) => d.to_string(),
+        CellValue::Boolean(b) => b.to_string(),
+        CellValue::Float(f) => f.to_string(),
+        other => format!("{other:?}"),
+    }
+}
+
 fn cell_as_u64(cell: &snowflake_connector_rs::CellValue) -> Option<u64> {
     use snowflake_connector_rs::CellValue;
     match cell {
@@ -356,6 +431,17 @@ impl Executor for DmlOnly<'_> {
             return Err(ddl_in_unit(sql));
         }
         self.0.sum_column(sql, column).await
+    }
+
+    async fn rows(
+        &self,
+        sql: &str,
+        columns: &[&str],
+    ) -> Result<Vec<Vec<String>>, DestinationError> {
+        if is_ddl(sql) {
+            return Err(ddl_in_unit(sql));
+        }
+        self.0.rows(sql, columns).await
     }
 
     async fn column_names(
@@ -542,6 +628,10 @@ mod tests {
         async fn sum_column(&self, sql: &str, _: &str) -> Result<u64, DestinationError> {
             self.seen.lock().expect("lock").push(sql.to_owned());
             Ok(0)
+        }
+        async fn rows(&self, sql: &str, _: &[&str]) -> Result<Vec<Vec<String>>, DestinationError> {
+            self.seen.lock().expect("lock").push(sql.to_owned());
+            Ok(Vec::new())
         }
         async fn column_names(
             &self,

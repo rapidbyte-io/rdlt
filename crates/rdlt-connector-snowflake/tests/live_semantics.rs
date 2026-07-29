@@ -204,3 +204,170 @@ async fn setting_a_session_variable_does_not_commit_the_unit() {
         "the rolled-back row survived, so `SET` committed the unit"
     );
 }
+
+/// Uploading does NOT end an open transaction, unlike schema work.
+///
+/// The fact that lets staging live inside the commit unit. Schema statements
+/// here commit whatever transaction is open — that is pinned elsewhere and the
+/// whole protocol is shaped around it — so whether an upload behaves the same
+/// way decides where staging can happen at all.
+///
+/// A count of zero would NOT establish this on its own: a statement that
+/// silently aborted the unit would also leave zero rows. So the transaction id
+/// is read either side, and a committing control is run in the same shape.
+#[tokio::test]
+async fn uploading_does_not_commit_the_open_unit() {
+    let Some(admin) = config_in("PUBLIC") else {
+        return;
+    };
+    let schema = scratch_schema("putcommit");
+    let database = admin.database.to_uppercase();
+    connect_and_run_script(
+        &admin,
+        &[&format!("CREATE SCHEMA \"{database}\".\"{schema}\"")],
+    )
+    .await
+    .expect("scratch schema");
+    let config = config_in(&schema).expect("credentials");
+
+    let dir = std::env::temp_dir().join(format!("rdlt-put-txn-{schema}"));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let file = dir.join("probe.csv");
+    std::fs::write(&file, b"1,alpha\n").expect("write");
+
+    let outcome = async {
+        connect_and_run_script(
+            &config,
+            &["CREATE TABLE T (ID NUMBER)", "CREATE STAGE TXN_PROBE"],
+        )
+        .await?;
+        // The transaction id either side of the upload, and the row count after
+        // abandoning the unit. If the upload had committed, the row survives;
+        // if it had aborted the unit, the id would change.
+        let ids = rdlt_connector_snowflake::dest::testhook::script_rows(
+            &config,
+            &[
+                "BEGIN",
+                "INSERT INTO T VALUES (1)",
+                &format!(
+                    "PUT 'file://{}' @TXN_PROBE AUTO_COMPRESS=FALSE",
+                    file.display()
+                ),
+            ],
+            "SELECT CURRENT_TRANSACTION() AS TXID",
+            &["TXID"],
+        )
+        .await?;
+        let after = connect_and_run_script(
+            &config,
+            &[
+                "BEGIN",
+                "INSERT INTO T VALUES (2)",
+                &format!(
+                    "PUT 'file://{}' @TXN_PROBE AUTO_COMPRESS=FALSE OVERWRITE=TRUE",
+                    file.display()
+                ),
+                "ROLLBACK",
+                "SELECT count(*) FROM T",
+            ],
+        )
+        .await?;
+        Ok::<_, rdlt_connector::DestinationError>((ids, after))
+    }
+    .await;
+
+    std::fs::remove_dir_all(&dir).ok();
+    let _ = connect_and_run_script(
+        &admin,
+        &[&format!(
+            "DROP SCHEMA IF EXISTS \"{database}\".\"{schema}\""
+        )],
+    )
+    .await;
+
+    let (ids, after) = outcome.expect("the probe runs");
+    assert!(
+        ids.first().is_some_and(|row| !row[0].is_empty()),
+        "the unit is still live AFTER the upload — an empty transaction id would \
+         mean the upload ended it, which is what schema work does here: {ids:?}"
+    );
+    assert_eq!(
+        after, "0",
+        "the rolled-back row survived, so the upload committed the unit — staging \
+         cannot stay inside the unit if this is ever true"
+    );
+}
+
+/// Creating the staging object is safe inside a unit; DROPPING it is not.
+///
+/// Two statements that read as the same kind of thing and are not. The create
+/// behaves like data manipulation for transaction purposes, while the drop
+/// commits whatever is open — so teardown can never sit inside a unit, and
+/// knowing which is which is the difference between a clean protocol and a
+/// silently published half-load.
+#[tokio::test]
+async fn creating_a_staging_object_is_safe_inside_a_unit_but_dropping_is_not() {
+    let Some(admin) = config_in("PUBLIC") else {
+        return;
+    };
+    let schema = scratch_schema("stagecommit");
+    let database = admin.database.to_uppercase();
+    connect_and_run_script(
+        &admin,
+        &[&format!("CREATE SCHEMA \"{database}\".\"{schema}\"")],
+    )
+    .await
+    .expect("scratch schema");
+    let config = config_in(&schema).expect("credentials");
+
+    let outcome = async {
+        connect_and_run_script(&config, &["CREATE TABLE T (ID NUMBER)"]).await?;
+        // CREATE: the row must NOT survive the rollback.
+        let after_create = connect_and_run_script(
+            &config,
+            &[
+                "BEGIN",
+                "INSERT INTO T VALUES (1)",
+                "CREATE STAGE S_CREATE",
+                "ROLLBACK",
+                "SELECT count(*) FROM T",
+            ],
+        )
+        .await?;
+        // DROP: the row IS expected to survive, because the drop commits.
+        let after_drop = connect_and_run_script(
+            &config,
+            &[
+                "CREATE STAGE S_DROP",
+                "BEGIN",
+                "INSERT INTO T VALUES (2)",
+                "DROP STAGE S_DROP",
+                "ROLLBACK",
+                "SELECT count(*) FROM T",
+            ],
+        )
+        .await?;
+        Ok::<_, rdlt_connector::DestinationError>((after_create, after_drop))
+    }
+    .await;
+
+    let _ = connect_and_run_script(
+        &admin,
+        &[&format!(
+            "DROP SCHEMA IF EXISTS \"{database}\".\"{schema}\""
+        )],
+    )
+    .await;
+
+    let (after_create, after_drop) = outcome.expect("the probe runs");
+    assert_eq!(
+        after_create, "0",
+        "creating the staging object committed the unit; if this becomes true, \
+         creation must move out of the unit alongside every other schema statement"
+    );
+    assert_ne!(
+        after_drop, "0",
+        "dropping the staging object did NOT commit the unit — the teardown could \
+         then move inside it, but that must be a decision rather than an accident"
+    );
+}

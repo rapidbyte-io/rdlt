@@ -72,14 +72,14 @@ boundary method and service-fact pins are what every later task builds on.
   required, the named EXIT that retires it, and the crates it renders
   unpublishable — the last being a claim the check verifies against the
   resolved graph, not a comment.
-- [ ] T009 Extend the ONE library boundary in
+- [X] T009 Extend the ONE library boundary in
   `crates/rdlt-connector-snowflake/src/dest/client.rs`: the `Executor` trait
   gains a method that runs a statement and returns named columns per row as
   plain strings. The existing four methods (`execute`, `scalar_u64`,
   `sum_column`, `column_names`) cannot carry an upload's per-row outcome —
   verified. Keep library types behind the boundary; the new method returns
   owned strings. Update `SessionExecutor`, `DmlOnly` and the test `Recorder`.
-- [ ] T010 [P] Pin the measured service facts as live checks in
+- [X] T010 [P] Pin the measured service facts as live checks in
   `crates/rdlt-connector-snowflake/tests/live_semantics.rs`, each failing by
   NAMING the assumption if the service changes: (a) the upload does not commit
   an open transaction — assert the rolled-back count is zero AND the
@@ -88,7 +88,7 @@ boundary method and service-fact pins are what every later task builds on.
   staging object does not commit the unit while DROPPING it does; (c) an
   already-compressed part passes through untouched (no `.gz` suffix, reported
   compression unchanged).
-- [ ] T011 [P] Pin the partial-failure shape in
+- [X] T011 [P] Pin the partial-failure shape in
   `crates/rdlt-connector-snowflake/tests/live_client.rs`: an upload matching
   two files where one is unreadable returns SUCCESS with a mixed result set
   (one uploaded, one error), and returns an error only when every part failed.

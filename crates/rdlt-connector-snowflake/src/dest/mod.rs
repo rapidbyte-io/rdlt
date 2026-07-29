@@ -93,6 +93,36 @@ pub mod testhook {
         )
     }
 
+    /// Run a statement and read named columns from every row.
+    ///
+    /// The seam the upload verification is built on: an upload reports one row
+    /// per file, and whether it all succeeded is a property of every row.
+    pub async fn rows(
+        config: &SnowflakeConfig,
+        sql: &str,
+        columns: &[&str],
+    ) -> Result<Vec<Vec<String>>, DestinationError> {
+        client::connect(config).await?.rows(sql, columns).await
+    }
+
+    /// Run a statement and read named columns from every row, on a session that
+    /// stays open across the whole script.
+    ///
+    /// Anything transactional needs one session; a session per statement cannot
+    /// observe a transaction at all.
+    pub async fn script_rows(
+        config: &SnowflakeConfig,
+        setup: &[&str],
+        sql: &str,
+        columns: &[&str],
+    ) -> Result<Vec<Vec<String>>, DestinationError> {
+        let executor = client::connect(config).await?;
+        for statement in setup {
+            executor.execute(statement).await?;
+        }
+        executor.rows(sql, columns).await
+    }
+
     /// Run one statement through the UNIT executor — the one that refuses DDL.
     pub async fn run_in_unit(config: &SnowflakeConfig, sql: &str) -> Result<(), DestinationError> {
         let executor = client::connect(config).await?;

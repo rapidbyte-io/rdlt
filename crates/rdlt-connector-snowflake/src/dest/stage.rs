@@ -445,6 +445,13 @@ mod tests {
             async fn sum_column(&self, _: &str, _: &str) -> Result<u64, DestinationError> {
                 Ok(0)
             }
+            async fn rows(
+                &self,
+                _: &str,
+                _: &[&str],
+            ) -> Result<Vec<Vec<String>>, DestinationError> {
+                Ok(Vec::new())
+            }
             async fn column_names(
                 &self,
                 _: &str,

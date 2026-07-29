@@ -364,3 +364,83 @@ async fn ensure_reads_the_catalog_once_and_then_emits_nothing() {
         .expect("cleanup");
     result.expect("the ensure sequence succeeds");
 }
+
+/// An upload that partly fails reports SUCCESS overall.
+///
+/// The hazard the per-part verification exists for, and the one the fork has no
+/// test covering. A transfer matching several files returns an error only when
+/// EVERY file failed; when some succeed and some do not, it returns success
+/// with the failure visible only in an individual row. A caller that runs the
+/// statement and discards its rows — which is the shape of every other
+/// statement this connector issues — would lose data and report none.
+#[tokio::test]
+async fn a_partly_failed_upload_reports_success_and_hides_the_failure_in_a_row() {
+    let Some(config) = key_pair_config() else {
+        return;
+    };
+    let schema = scratch_schema("putpartial");
+    let database = config.database.to_uppercase();
+    let mut scoped = config.clone();
+    scoped.schema = schema.clone();
+
+    // Two local files, one of them unreadable. The glob matches both, so the
+    // transfer has something to succeed at and something to fail at.
+    let dir = std::env::temp_dir().join(format!("rdlt-put-partial-{schema}"));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let good = dir.join("a_readable.csv");
+    let bad = dir.join("b_unreadable.csv");
+    std::fs::write(&good, b"1,alpha\n").expect("write");
+    std::fs::write(&bad, b"2,beta\n").expect("write");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&bad, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+    }
+
+    let outcome = async {
+        connect_and_run(
+            &config,
+            &format!("CREATE SCHEMA \"{database}\".\"{schema}\""),
+        )
+        .await?;
+        connect_and_run(&scoped, "CREATE STAGE PARTIAL_PROBE").await?;
+        rdlt_connector_snowflake::dest::testhook::rows(
+            &scoped,
+            &format!(
+                "PUT 'file://{}/*.csv' @PARTIAL_PROBE AUTO_COMPRESS=FALSE",
+                dir.display()
+            ),
+            &["source", "status", "message"],
+        )
+        .await
+    }
+    .await;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _ = std::fs::set_permissions(&bad, std::fs::Permissions::from_mode(0o600));
+    }
+    std::fs::remove_dir_all(&dir).ok();
+    let _ = connect_and_run(
+        &config,
+        &format!("DROP SCHEMA IF EXISTS \"{database}\".\"{schema}\""),
+    )
+    .await;
+
+    let rows = outcome.expect(
+        "a partly failed upload must return SUCCESS — if this now returns an error, the \
+         per-part verification can be simplified, but that must be a decision rather than \
+         a surprise",
+    );
+    assert_eq!(rows.len(), 2, "both files are reported: {rows:?}");
+    let statuses: Vec<&str> = rows.iter().map(|r| r[1].as_str()).collect();
+    assert!(
+        statuses.contains(&"UPLOADED"),
+        "one file uploaded: {rows:?}"
+    );
+    assert!(
+        statuses.iter().any(|s| *s != "UPLOADED"),
+        "one file failed, and ONLY the row says so: {rows:?}"
+    );
+}
