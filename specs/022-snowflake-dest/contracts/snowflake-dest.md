@@ -1,5 +1,19 @@
 # Contract: Snowflake Destination Rules (SD1–SD8)
 
+> **AMENDED BY FEATURE 023.** SD1 and SD6 are superseded in part by
+> `specs/023-snowflake-put/contracts/snowflake-put.md` (SP1–SP8). The amendment
+> is stated in both places on purpose: a clause changed only in the file that
+> replaces it is a clause whose readers never learn it changed.
+>
+> - **SD1** deferred the internal-stage gap on a named upstream trigger and
+>   asserted the issue was filed. The gap is CLOSED via the maintained-fork
+>   route `spec.md:499-501` also authorised. The "issue filed" assertion was
+>   unevidenced — see close-out C-03 and 023's SP8.
+> - **SD6** required verification of two shipped ingestion paths and asserted
+>   the connector never claims a bulk path it does not have. Both paths are
+>   RETIRED; there is exactly one, it is the bulk path, and SP1/SP2 govern it.
+>   The clause below is historical from that point forward.
+
 | # | Rule |
 |---|---|
 | SD1 | One library, one boundary: the destination speaks Snowflake ONLY through `snowflake-connector-rs`, wrapped at exactly one module boundary (the duckdb-rs precedent) — session lifecycle, statement execution, and error translation (`snowflake_code()`/`ErrorKind` → SPI taxonomy) live behind it; no library type crosses the crate's public surface. The internal-stage PUT gap is source-verified and deferred on a named upstream trigger; the issue was NOT filed (close-out C-03 records the correction), and 023 closes the gap via the maintained-fork route spec.md:499-501 also authorised; the hand-rolled session client is the designed, escalated fallback — never an improvised sidecar beside the crate. |

@@ -528,3 +528,54 @@ async fn stale_staged_parts_are_reclaimed_and_fresh_ones_are_spared() {
     assert_eq!(after_fresh, 1, "a fresh part is NOT reclaimed");
     assert_eq!(after_stale, 0, "a stale part IS reclaimed");
 }
+
+/// The network reach an upload needs, read from the account itself.
+///
+/// Uploading a part does NOT go through the account host: it goes to the cloud
+/// storage endpoint backing the account. A network that allows only
+/// `*.snowflakecomputing.com` therefore authenticates, runs statements, creates
+/// the staging area, and then cannot upload — the failure arrives late and
+/// looks like anything but a firewall rule.
+///
+/// The account publishes the hosts it needs. This reads them and asserts a
+/// storage entry is among them, which is the evidence behind the README's
+/// prerequisite. Blocking the host to observe the failure directly is NOT done
+/// here: this process shares the host's network namespace, so a rule added for
+/// a test would degrade the real machine.
+#[tokio::test]
+async fn the_account_publishes_a_storage_host_distinct_from_its_own() {
+    let Some(config) = config_in("PUBLIC") else {
+        return;
+    };
+    let listed = rdlt_connector_snowflake::dest::testhook::script_rows(
+        &config,
+        &[],
+        "SELECT SYSTEM$ALLOWLIST() AS \"allowlist\"",
+        &["allowlist"],
+    )
+    .await
+    .expect("the allowlist query runs");
+
+    let entries: Vec<serde_json::Value> =
+        serde_json::from_str(&listed[0][0]).expect("the allowlist is JSON");
+    let stage_hosts: Vec<&str> = entries
+        .iter()
+        .filter(|e| e["type"] == "STAGE")
+        .filter_map(|e| e["host"].as_str())
+        .collect();
+
+    assert!(
+        !stage_hosts.is_empty(),
+        "the account names a storage host: {entries:?}"
+    );
+    // The point of the prerequisite: the storage host is NOT the account host,
+    // so allowing the account host alone is not enough.
+    for host in &stage_hosts {
+        assert!(
+            !host.ends_with("snowflakecomputing.com"),
+            "a storage host outside the account domain is what makes the \
+             prerequisite real, but {host} is inside it"
+        );
+    }
+    println!("storage hosts an upload must reach: {stage_hosts:?}");
+}

@@ -14,7 +14,7 @@
 use rdlt_connector::DestinationError;
 use rdlt_connector::core::{LoadId, PipelineId};
 use rdlt_connector_snowflake::dest::testhook::connect_and_run;
-use rdlt_connector_snowflake::dest::{Auth, Password, Snowflake, SnowflakeConfig};
+use rdlt_connector_snowflake::dest::{Auth, KeyPair, Password, Snowflake, SnowflakeConfig};
 use rdlt_testkit::snowflake::{TokenKind, credentials, scratch_schema, token};
 use serde_json::json;
 
@@ -175,4 +175,94 @@ async fn every_method_fails_fatally_and_silently_on_a_bad_credential() {
             }
         }
     }
+}
+
+/// A key pair's two ways of being wrong, both silent and both fatal.
+///
+/// The other methods carry one secret each, so one bad value covers them. A key
+/// pair fails in two DIFFERENT places: material this host cannot parse fails
+/// locally, and a well-formed key the account never registered fails remotely.
+/// The second is the one that matters operationally — it is what a rotated or
+/// mistyped key looks like — and it exercises code the first never reaches.
+///
+/// The unregistered-key half needs a real RSA key. It is generated here rather
+/// than committed: a private key in the repository is a private key in every
+/// clone and every secret scanner's report, and this one would be worthless
+/// only until someone reused the pattern for one that was not. Where no
+/// generator exists the half announces its skip instead of silently shrinking.
+#[tokio::test]
+async fn a_key_pair_fails_fatally_and_silently_when_it_cannot_authenticate() {
+    let Some(creds) = credentials() else {
+        return;
+    };
+
+    let assert_shape = |method: &str, secret: &str, e: DestinationError| {
+        assert!(
+            matches!(e, DestinationError::Fatal(_)),
+            "{method}: a rejected key is not retryable: {e:?}"
+        );
+        let rendered = format!("{e}");
+        assert!(
+            !rendered.contains(secret),
+            "{method}: key material reached the error text: {rendered}"
+        );
+        assert!(
+            rendered.contains(&creds.user) && rendered.contains(&creds.account),
+            "{method}: the failure must name the identity: {rendered}"
+        );
+    };
+
+    // Unparseable material: it never leaves this host.
+    const MALFORMED: &str =
+        "-----BEGIN PRIVATE KEY-----\nnot-base64-at-all\n-----END PRIVATE KEY-----\n";
+    let config = config_with(Auth::key_pair(KeyPair::new(MALFORMED.to_owned())), "PUBLIC")
+        .expect("credentials");
+    match connect_and_run(&config, "SELECT 1").await {
+        Ok(_) => panic!("malformed key: unparseable material was accepted"),
+        Err(e) => assert_shape("malformed key", "not-base64-at-all", e),
+    }
+
+    // Well-formed and unregistered: the ACCOUNT rejects it.
+    let Some(unregistered) = generated_rsa_key() else {
+        println!(
+            "SKIP: no RSA generator on this host — the unregistered-key half is \
+             UNPERFORMED. The malformed half above still ran."
+        );
+        return;
+    };
+    let config = config_with(Auth::key_pair(KeyPair::new(unregistered.clone())), "PUBLIC")
+        .expect("credentials");
+    match connect_and_run(&config, "SELECT 1").await {
+        Ok(_) => panic!("unregistered key: a key the account never registered was accepted"),
+        Err(e) => {
+            // The whole PEM is too long to appear intact, so the check is on a
+            // distinctive slice of the base64 body — which is what would leak.
+            let body: String = unregistered
+                .lines()
+                .filter(|l| !l.starts_with("-----"))
+                .collect::<String>()
+                .chars()
+                .take(32)
+                .collect();
+            assert_shape("unregistered key", &body, e);
+        }
+    }
+}
+
+/// A throwaway RSA private key, or `None` where nothing can make one.
+fn generated_rsa_key() -> Option<String> {
+    let out = std::process::Command::new("openssl")
+        .args([
+            "genpkey",
+            "-algorithm",
+            "RSA",
+            "-pkeyopt",
+            "rsa_keygen_bits:2048",
+        ])
+        .output()
+        .ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8(out.stdout).ok())
+        .flatten()
 }

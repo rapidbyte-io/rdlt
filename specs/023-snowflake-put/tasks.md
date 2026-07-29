@@ -248,7 +248,7 @@ absent that one alone skips, announces, and the suite stays green.
 - [ ] T037 [US3] Turn the two written-but-skipping legs green in
   `crates/rdlt-connector-snowflake/tests/live_auth_matrix.rs`: one load per
   method, each gated on its OWN credential entry.
-- [ ] T038 [P] [US3] Corrupted-secret shape per method: a deliberately wrong
+- [X] T038 [P] [US3] Corrupted-secret shape per method: a deliberately wrong
   secret fails with an error naming the account and login and containing no
   secret material.
 - [ ] T039 [US3] Close the two unperformed entries in 022's close-out table,
@@ -262,25 +262,25 @@ absent that one alone skips, announces, and the suite stays green.
 **Independent test**: each ingestion claim in the documents is checked against
 behaviour and matches.
 
-- [ ] T040 [US4] Rewrite `specs/022-snowflake-dest/parity.md`: the internal-stage
+- [X] T040 [US4] Rewrite `specs/022-snowflake-dest/parity.md`: the internal-stage
   row is no longer a gap; line 18's claim that "dlt requires a stage; rdlt's
   default path needs no infrastructure at all" becomes false and is replaced by
   the honest distinction — no bucket is needed, but cloud-storage egress is.
-- [ ] T041 [US4] Amend the contract explicitly: SP1–SP8 supersede 022's SD1 and
+- [X] T041 [US4] Amend the contract explicitly: SP1–SP8 supersede 022's SD1 and
   SD6, stated in `specs/023-snowflake-put/contracts/snowflake-put.md` and
   cross-referenced from 022's contract so a reader of either finds the
   amendment.
-- [ ] T042 [US4] Resolve open question 5's documentation half — the egress
+- [X] T042 [US4] Resolve open question 5's documentation half — the egress
   probe: run the allowlist query, identify which entries are storage hosts, and
   establish what a network permitting only the account host experiences. Do NOT
   apply firewall rules: this session shares the host network namespace. If no
   safe in-session method exists, say so and record what the allowlist alone
   establishes.
-- [ ] T043 [US4] Rewrite the crate README for one path: delete the two-path
+- [X] T043 [US4] Rewrite the crate README for one path: delete the two-path
   table and the bucket configuration; add the egress prerequisite beside the
   existing s3-compatible allowlist caveat; add the upgrade note telling a user
   with a storage block to delete it and why.
-- [ ] T044 [US4] Verify `quickstart.md` verbatim against the account and fold
+- [X] T044 [US4] Verify `quickstart.md` verbatim against the account and fold
   corrections back; `make docs` clean.
 - [ ] T045 [US4] US4 gate: every ingestion claim in README, quickstart,
   parity.md, the contracts and CLAUDE.md checked against behaviour; close-out

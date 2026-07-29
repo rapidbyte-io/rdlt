@@ -8,21 +8,22 @@
 
 use rdlt_connector_snowflake::dest::SnowflakeConfig;
 
-/// Lifted verbatim from `specs/022-snowflake-dest/quickstart.md`.
+/// Lifted verbatim from the `destination:` block of
+/// `specs/023-snowflake-put/quickstart.md`.
 const QUICKSTART_DESTINATION: &str = r#"
-account: "MYORG-MYACCT"
-user: "MY_LOADER"
+account: MYORG-MYACCT
+user: LOADER
 auth:
   key_pair:
-    private_key: "/home/you/.config/rdlt/snowflake/rdlt_key.p8"
-    passphrase: "your-passphrase"
-database: "ANALYTICS"
-schema: "RAW"
-merge_strategy: upsert
+    private_key: /etc/rdlt/snowflake.p8
+    passphrase: ${SNOWFLAKE_KEY_PASSPHRASE}
+database: ANALYTICS
+schema: RAW
+warehouse: LOADING_WH
+role: LOADER_ROLE
 "#;
 
-/// And the optional bulk-path block the same section adds.
-/// The block a 022 document carried. Kept verbatim as the thing that must now
+/// The block a previous document carried. Kept verbatim as the thing that must now
 /// be REFUSED — a removal nobody can test is a removal that quietly becomes
 /// acceptance again.
 const QUICKSTART_WITH_STAGE: &str = r#"
@@ -37,10 +38,8 @@ schema: "RAW"
 merge_strategy: upsert
 stage:
   s3:
-    bucket: "my-staging-bucket"
-    prefix: "rdlt/parts"
-    region: "eu-west-2"
-    access_key: "AKIA..."
+    bucket: my-staging-bucket
+    access_key: "..."
     secret_key: "..."
 "#;
 
@@ -50,7 +49,22 @@ fn the_quickstart_document_is_a_valid_configuration() {
         .expect("the documented document must parse");
     assert_eq!(config.host(), "myorg-myacct.snowflakecomputing.com");
     assert!(config.auth.key_pair.is_some());
-    assert!(config.options.merge_strategy.is_some());
+    assert_eq!(config.warehouse.as_deref(), Some("LOADING_WH"));
+    assert_eq!(config.role.as_deref(), Some("LOADER_ROLE"));
+    // The walkthrough shows the WHOLE configuration and claims there is no
+    // ingestion setting in it. Asserted rather than trusted: a field that
+    // reappeared would make the sentence beside this document false.
+    let rendered = serde_json::to_value(&config).expect("the config serializes");
+    let fields: Vec<&String> = rendered
+        .as_object()
+        .expect("a document")
+        .keys()
+        .filter(|k| rendered[*k] != serde_json::Value::Null)
+        .collect();
+    assert!(
+        !fields.iter().any(|k| k.contains("stage")),
+        "no ingestion vocabulary survives: {fields:?}"
+    );
     // The documented key value is a PATH, not inline material — the comment
     // beside it in the walkthrough says so, and this is what proves it.
     assert!(

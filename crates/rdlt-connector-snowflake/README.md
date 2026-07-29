@@ -147,41 +147,49 @@ auth:
 External-browser SSO is deliberately unsupported: it requires a human at a
 browser, which a pipeline does not have.
 
-## Ingestion: two paths
+## Ingestion: one path, nothing to configure
 
-**Batched `INSERT` (default).** Rows travel inside the statements themselves.
-Works for every user with no extra infrastructure.
+Rows leave as parquet parts, uploaded to a named stage in your own schema and
+loaded with `COPY INTO`. There is nothing to configure, no bucket to provision,
+no threshold to predict and no second mechanism that might be chosen instead.
+The stage is created at open, scoped to the pipeline, and its parts are removed
+once the load commits.
 
-**`COPY INTO` from an external stage (opt-in).** Configure a bucket and rows
-leave as parquet, which the service loads itself:
+Earlier versions offered a batched `INSERT` path and an external-bucket path.
+Both are gone: the bucket path existed only because uploading to the service's
+own storage was not reachable through the driver, and `INSERT` was slower at
+every size measured. Neither has a configuration to migrate — a document that
+still carries a `stage:` block is refused by name.
 
-```yaml
-    stage:
-      s3:
-        bucket: my-staging-bucket
-        prefix: rdlt/parts
-        region: eu-west-2
-        access_key: ${AWS_ACCESS_KEY_ID}
-        secret_key: ${AWS_SECRET_ACCESS_KEY}
-        # Preferred where it exists — keeps the key pair out of the stage
-        # definition and therefore out of the account's query history.
-        storage_integration: RDLT_STAGE_INT
+### Prerequisite: egress to your account's cloud storage
+
+**This is a network requirement, and it is the one thing that can stop the
+connector working in an otherwise healthy environment.** Uploading a part goes
+directly to the cloud storage endpoint — S3, GCS or Azure Blob, whichever your
+Snowflake account was provisioned on — and NOT through
+`*.snowflakecomputing.com`. A network that allowlists only the Snowflake host
+will authenticate, run statements, create the stage, and then fail to upload.
+
+Ask your account for the hosts to allow:
+
+```sql
+SELECT SYSTEM$ALLOWLIST();
 ```
 
-The credentials are needed on both sides: this process writes the parts and the
-account reads them back. rdlt scopes its keys under a pipeline-specific prefix,
-so a bucket shared with other data is safe, and removes them after the load
-commits.
+The result names every host the account needs, tagged by `type`. The `STAGE`
+entries are the storage ones, and on an AWS-backed account they look like:
 
-**S3-compatible storage** (MinIO, Ceph, and other non-AWS endpoints) needs the
-endpoint allowlisted for your account by Snowflake Support — there is no
-self-service parameter, and `CREATE STAGE` is refused until it is done. Set
-`endpoint:` once that is in place.
+```text
+sfc-<region>-<n>-customer-stage.s3.amazonaws.com
+sfc-<region>-<n>-customer-stage.s3.<region>.amazonaws.com
+```
 
-**Internal stages are not supported.** `PUT` is unreachable over the SQL API and
-through the driver this connector wraps, so the bucket-free bulk path is not
-available. This is the one parity gap against dlt's default; the batched
-`INSERT` path covers the same ground without a bucket, more slowly.
+Note the domain: these are NOT `snowflakecomputing.com`, which is exactly why
+allowing the account host alone is not enough. Allow the `STAGE` entries too.
+
+This is not a regression against other tools: dlt's Snowflake destination also
+loads through a stage and needs the same reach. What rdlt no longer offers is a
+fallback that avoided it.
 
 ## Merge
 
@@ -231,7 +239,6 @@ suite stays green. Credentials are read from the environment first, then from
 | warehouse | `RDLT_SNOWFLAKE_WAREHOUSE` | `warehouse` |
 | role | `RDLT_SNOWFLAKE_ROLE` | `role` |
 | PAT | `RDLT_SNOWFLAKE_PAT` | `pat` |
-| bulk-path bucket | `RDLT_SNOWFLAKE_STAGE_*` | `stage.env` |
 
 No account identifier, user name or key material appears anywhere in this
 repository, and a mechanical sweep of the tree verifies it.
