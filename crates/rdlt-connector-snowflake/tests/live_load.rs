@@ -186,6 +186,12 @@ async fn values_survive_the_round_trip_including_the_awkward_ones() {
             json!({"id": 2, "note": "back\\slash", "ok": false}),
             json!({"id": 3, "note": "'; DROP TABLE events; --", "ok": true}),
             json!({"id": 4, "note": null, "ok": null}),
+            // Multi-byte text, across scripts and outside the BMP. A part is
+            // written and read back by two different pieces of software, and a
+            // width assumption in either would surface here rather than in a
+            // user's data.
+            json!({"id": 5, "note": "zażółć gęślą jaźń", "ok": true}),
+            json!({"id": 6, "note": "日本語 مرحبا 🚀", "ok": true}),
         ];
         let source = MemorySource::new(vec![MemoryStream::new(
             StreamSpec::new("events"),
@@ -211,6 +217,86 @@ async fn values_survive_the_round_trip_including_the_awkward_ones() {
         .await
         .expect("count");
         assert_eq!(nulls, "1", "a null stayed null rather than becoming text");
+
+        let multibyte = rdlt_connector_snowflake::dest::testhook::connect_and_run(
+            &config,
+            "SELECT count(*) FROM \"EVENTS\" \
+             WHERE \"NOTE\" IN ('zażółć gęślą jaźń', \
+                             '日本語 مرحبا 🚀')",
+        )
+        .await
+        .expect("count");
+        assert_eq!(multibyte, "2", "multi-byte text survived byte for byte");
+    })
+    .await;
+}
+
+/// A load with nothing to deliver still commits where it got to.
+///
+/// The connector returns early for an empty batch rather than writing a part
+/// nobody would read. That shortcut sits in the middle of the write path, so
+/// it is exactly the kind of thing that can skip the position with the data —
+/// after which an empty run makes the NEXT run re-read from an older point.
+#[tokio::test]
+async fn a_load_delivering_no_rows_still_commits_its_position() {
+    in_scratch_schema("emptyload", |config| async move {
+        let pipeline = "sf-empty";
+        // One real row first, so there is a position worth advancing past.
+        let seeded = MemorySource::new(vec![MemoryStream::new(
+            StreamSpec::new("events"),
+            vec![MemoryBatch::new(vec![json!({"id": 1, "note": "seed"})]).with_checkpoint(1)],
+        )]);
+        Engine::new(
+            EngineConfig::new(pipeline),
+            seeded,
+            Snowflake::new(config.clone()).expect("valid config"),
+        )
+        .run()
+        .await
+        .expect("the seed load settles");
+
+        // Then a load that delivers an empty batch at a LATER checkpoint. The
+        // already-consumed batch stays in the list because resuming means
+        // "after the batch that produced this cursor" — a list that omitted it
+        // could not locate the cursor at all.
+        let empty = MemorySource::new(vec![MemoryStream::new(
+            StreamSpec::new("events"),
+            vec![
+                MemoryBatch::new(vec![json!({"id": 1, "note": "seed"})]).with_checkpoint(1),
+                MemoryBatch::new(vec![]).with_checkpoint(2),
+            ],
+        )]);
+        Engine::new(
+            EngineConfig::new(pipeline),
+            empty,
+            Snowflake::new(config.clone()).expect("valid config"),
+        )
+        .run()
+        .await
+        .expect("the empty load settles");
+
+        let rows = rdlt_connector_snowflake::dest::testhook::connect_and_run(
+            &config,
+            "SELECT count(*) FROM \"EVENTS\"",
+        )
+        .await
+        .expect("count");
+        assert_eq!(rows, "1", "the empty load added nothing");
+
+        // The position it committed is the empty load's, not the seed's.
+        let state = rdlt_connector_snowflake::dest::testhook::script_rows(
+            &config,
+            &[],
+            "SELECT \"DOC\" FROM \"_RDLT_STATE\"",
+            &["DOC"],
+        )
+        .await
+        .expect("the state document");
+        assert!(
+            state[0][0].contains('2'),
+            "the empty load's position was committed: {}",
+            state[0][0]
+        );
     })
     .await;
 }

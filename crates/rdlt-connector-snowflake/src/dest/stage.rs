@@ -290,7 +290,7 @@ impl Stage {
                 &format!(
                     "SELECT \"name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) \
                      WHERE TO_TIMESTAMP_TZ(\"last_modified\", \
-                     \'DY, DD MON YYYY HH24:MI:SS TZD\') \
+                     'DY, DD MON YYYY HH24:MI:SS TZD') \
                      < DATEADD(hour, -{stale_after_hours}, CURRENT_TIMESTAMP())",
                 ),
                 &["name"],
@@ -303,18 +303,17 @@ impl Stage {
         // removal wants the path RELATIVE to the stage, so the leading segment
         // comes off. A name that does not look like that is left alone rather
         // than guessed at.
-        let mut scopes: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        //
+        // Removed one object at a time rather than by the scope they share: a
+        // load that ran longer than the window would have both stale and fresh
+        // parts under one scope, and removing the scope would take the fresh
+        // ones with it. Only what the filter actually named is deleted.
         for row in &rows {
-            let Some((_, tail)) = row[0].split_once('/') else {
+            let Some((_, relative)) = row[0].split_once('/') else {
                 continue;
             };
-            if let Some((scope, _)) = tail.split_once('/') {
-                scopes.insert(scope);
-            }
-        }
-        for scope in scopes {
             let _ = executor
-                .execute(&format!("REMOVE @{qualified_stage}/{scope}/"))
+                .execute(&format!("REMOVE @{qualified_stage}/{relative}"))
                 .await;
         }
     }
