@@ -137,6 +137,29 @@ running it at points Append already covers would buy warehouse time instead of
 coverage. The rule is stated in code (`modes_for`) so a point added later has
 to answer the question.
 
+## SC-010 — the secret sweep, and why it is not only a substring search
+
+| term | tracked files containing it |
+|---|---|
+| account identifier | 0 |
+| login name | 0 |
+| key material (base64 body under any PEM marker) | 0 |
+| passphrase, in a credential-shaped context | 0 |
+
+**The passphrase needed a different method, and saying so is the point.** It is
+four characters, so searching the tree for it as a substring returns 493 files
+— every one a coincidence, none a leak. A sweep that reports 493 hits is a
+sweep whose output nobody reads, which is worse than no sweep. It is therefore
+matched only adjacent to an assignment and a credential word, which is the
+shape an actual leak would have.
+
+Key material is checked the same way, by SHAPE rather than by value. Seven
+files contain a `BEGIN … PRIVATE KEY` marker; every one is a placeholder, a
+redaction string, or the deliberately malformed key the auth tests use. The
+check that separates them looks for a base64 BODY line, because that is what
+distinguishes a real key from the word "key" — and unlike a value search, it
+would catch a key that was never on this machine.
+
 ## Semver
 
 `cargo semver-checks check-release --baseline-rev main` on both
