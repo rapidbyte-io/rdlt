@@ -241,17 +241,17 @@ document without it runs; the generated schema contains no storage vocabulary.
 **Independent test**: with all credentials present all four run; with any one
 absent that one alone skips, announces, and the suite stays green.
 
-- [ ] T036 [US3] Provision on the qual account: a password-capable test user
+- [~] T036 [US3] NOT DONE by owner decision 2026-07-29 (close-out D-33): provision on the qual account: a password-capable test user
   (not a service-type user, which refuses passwords) and an OAuth security
   integration with a token. Record ONLY the convention in committed files —
   never the values.
-- [ ] T037 [US3] Turn the two written-but-skipping legs green in
+- [~] T037 [US3] BLOCKED by T036, recorded UNPERFORMED (D-33): turn the two written-but-skipping legs green in
   `crates/rdlt-connector-snowflake/tests/live_auth_matrix.rs`: one load per
   method, each gated on its OWN credential entry.
 - [X] T038 [P] [US3] Corrupted-secret shape per method: a deliberately wrong
   secret fails with an error naming the account and login and containing no
   secret material.
-- [ ] T039 [US3] Close the two unperformed entries in 022's close-out table,
+- [~] T039 [US3] The two entries STAND rather than closing (D-33): close the two unperformed entries in 022's close-out table,
   citing the runs; US3 gate.
 
 ---
