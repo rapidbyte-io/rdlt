@@ -90,9 +90,9 @@ pub(super) struct SnowflakeSession {
     /// same table means the feed disagrees with its own declaration. Marked
     /// only AFTER the unit commits.
     pub(super) single_unit_done: BTreeSet<TableName>,
-    /// The bulk path, when a bucket is configured. Absent, rows travel inside
-    /// statements.
-    pub(super) stage: Option<Stage>,
+    /// Where rows travel: parquet parts uploaded to storage the service
+    /// provides. Not optional — there is no second mechanism to fall back to.
+    pub(super) stage: Stage,
     /// Parts written but not yet loaded, per table.
     ///
     /// The `COPY` waits for the commit rather than running per batch: one
@@ -162,9 +162,7 @@ impl SnowflakeSession {
     /// abort the statement — which is exactly why a difference means an
     /// assumption is wrong and the unit must not commit on it.
     async fn load_staged_parts(&mut self) -> Result<(), DestinationError> {
-        let Some(stage) = &self.stage else {
-            return Ok(());
-        };
+        let stage = &self.stage;
         let pending = std::mem::take(&mut self.pending);
         let mut loaded_parts = Vec::new();
         for (table, (columns, parts)) in pending {
@@ -206,10 +204,8 @@ impl SnowflakeSession {
         for (_, table_parts) in std::mem::take(&mut self.pending).into_values() {
             parts.extend(table_parts);
         }
-        if let Some(stage) = &self.stage {
-            let qualified_stage = self.qualified(stage.name());
-            stage.remove(&*self.executor, &qualified_stage).await;
-        }
+        let qualified_stage = self.qualified(self.stage.name());
+        self.stage.remove(&*self.executor, &qualified_stage).await;
     }
 
     /// Read a table's columns unless this session already has.
@@ -491,62 +487,47 @@ impl LoadSession for SnowflakeSession {
         }
 
         // The rows leave as a parquet part, uploaded to storage the service
-        // provides. The part is built and uploaded inside the borrow of the
+        // provides. The part is built and uploaded inside a borrow of the
         // stage and recorded outside it: `pending` belongs to the session, and
         // holding the stage across that insert would borrow the session twice.
         //
         // The fields are split rather than reached through `self`, because the
         // upload needs the executor and the staging state at the same time and
         // they are both the session's.
-        let staged_part = {
+        let rows = batch.num_rows() as u64;
+        if rows == 0 {
+            return Ok(());
+        }
+        let part = {
             let Self {
                 stage,
                 executor,
                 config,
                 ..
             } = self;
-            match stage {
-                None => None,
-                Some(stage) => {
-                    let rows = batch.num_rows() as u64;
-                    if rows == 0 {
-                        return Ok(());
-                    }
-                    let qualified_stage = format!(
-                        "{}.{}.{}",
-                        quote(&config.database),
-                        quote(&config.schema),
-                        quote(stage.name())
-                    );
-                    let bytes = encode::parquet_part(&schema, &batch)?;
-                    Some(
-                        stage
-                            .put_part(
-                                &**executor,
-                                &qualified_stage,
-                                &destination_table,
-                                bytes,
-                                rows,
-                            )
-                            .await?,
-                    )
-                }
-            }
+            let qualified_stage = format!(
+                "{}.{}.{}",
+                quote(&config.database),
+                quote(&config.schema),
+                quote(stage.name())
+            );
+            let bytes = encode::parquet_part(&schema, &batch)?;
+            stage
+                .put_part(
+                    &**executor,
+                    &qualified_stage,
+                    &destination_table,
+                    bytes,
+                    rows,
+                )
+                .await?
         };
-        if let Some(part) = staged_part {
-            let columns = schema.columns.iter().map(|c| c.name.clone()).collect();
-            let entry = self
-                .pending
-                .entry(TableName::from(destination_table.as_str()))
-                .or_insert_with(|| (columns, Vec::new()));
-            entry.1.push(part);
-            return Ok(());
-        }
-
-        let target = self.qualified(&destination_table);
-        for sql in encode::insert_statements(&target, &schema, &batch)? {
-            DmlOnly(&*self.executor).execute(&sql).await?;
-        }
+        let columns = schema.columns.iter().map(|c| c.name.clone()).collect();
+        self.pending
+            .entry(TableName::from(destination_table.as_str()))
+            .or_insert_with(|| (columns, Vec::new()))
+            .1
+            .push(part);
         Ok(())
     }
 

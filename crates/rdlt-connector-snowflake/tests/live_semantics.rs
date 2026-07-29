@@ -371,3 +371,160 @@ async fn creating_a_staging_object_is_safe_inside_a_unit_but_dropping_is_not() {
          then move inside it, but that must be a decision rather than an accident"
     );
 }
+
+/// What the staging area's listing says about a part's AGE.
+///
+/// A load that dies after uploading a part leaves an object no statement will
+/// ever name. Reclaiming it needs a rule for deciding what is dead, and the
+/// only safe rule that does not depend on knowing every live load is age: an
+/// object older than any plausible in-flight load cannot belong to one.
+///
+/// So the question is whether the listing exposes age at all. It is answered
+/// here rather than assumed, because the reclaim design rests on the answer,
+/// and the mechanism this replaced got age from a different system entirely.
+#[tokio::test]
+async fn the_staging_listing_exposes_a_parts_age() {
+    let Some(admin) = config_in("PUBLIC") else {
+        return;
+    };
+    let schema = scratch_schema("listage");
+    let database = admin.database.to_uppercase();
+    connect_and_run_script(
+        &admin,
+        &[&format!("CREATE SCHEMA \"{database}\".\"{schema}\"")],
+    )
+    .await
+    .expect("scratch schema");
+    let config = config_in(&schema).expect("credentials");
+
+    let dir = std::env::temp_dir().join(format!("rdlt-list-age-{schema}"));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let file = dir.join("aged.csv");
+    std::fs::write(&file, b"1,alpha\n").expect("write");
+
+    let outcome = async {
+        let listed = rdlt_connector_snowflake::dest::testhook::script_rows(
+            &config,
+            &[
+                "CREATE STAGE AGE_PROBE",
+                &format!(
+                    "PUT 'file://{}' @AGE_PROBE/scope/ AUTO_COMPRESS = FALSE OVERWRITE = TRUE",
+                    file.display()
+                ),
+            ],
+            "LIST @AGE_PROBE",
+            &["name", "last_modified"],
+        )
+        .await?;
+        Ok::<_, rdlt_connector::DestinationError>(listed)
+    }
+    .await;
+
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = rdlt_connector_snowflake::dest::testhook::apply(
+        &admin,
+        &format!("DROP SCHEMA IF EXISTS \"{database}\".\"{schema}\""),
+    )
+    .await;
+
+    let listed = outcome.expect("the listing runs");
+    assert_eq!(listed.len(), 1, "one part staged: {listed:?}");
+    let (name, modified) = (&listed[0][0], &listed[0][1]);
+    assert!(
+        name.contains("scope/aged.csv"),
+        "the listing names the part under its prefix: {name}"
+    );
+    // The value's FORMAT is the service's, not ours — asserting a shape would
+    // pin something we do not control. What matters is that a timestamp is
+    // there to compare against, which a blank or a placeholder would not be.
+    assert!(
+        modified.len() > 8 && modified.chars().any(|c| c.is_ascii_digit()),
+        "age is exposed and is usable for a staleness rule: {modified:?}"
+    );
+    println!("LIST exposes last_modified = {modified:?}");
+}
+
+/// Stale parts are reclaimed and fresh ones are not — both halves, live.
+///
+/// The rule decides what to DELETE from a shared area, so proving only that it
+/// removes something would leave the dangerous half untested: a rule that
+/// removed everything would pass that check and destroy a concurrent load.
+#[tokio::test]
+async fn stale_staged_parts_are_reclaimed_and_fresh_ones_are_spared() {
+    let Some(admin) = config_in("PUBLIC") else {
+        return;
+    };
+    let schema = scratch_schema("reclaim");
+    let database = admin.database.to_uppercase();
+    connect_and_run_script(
+        &admin,
+        &[&format!("CREATE SCHEMA \"{database}\".\"{schema}\"")],
+    )
+    .await
+    .expect("scratch schema");
+    let config = config_in(&schema).expect("credentials");
+    let qualified = format!("\"{database}\".\"{schema}\".\"RECLAIM_PROBE\"");
+
+    let dir = std::env::temp_dir().join(format!("rdlt-reclaim-{schema}"));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let file = dir.join("part.csv");
+    std::fs::write(&file, b"1,alpha\n").expect("write");
+
+    let count_staged = |config: SnowflakeConfig, qualified: String| async move {
+        rdlt_connector_snowflake::dest::testhook::script_rows(
+            &config,
+            &[&format!("LIST @{qualified}")],
+            "SELECT \"name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+            &["name"],
+        )
+        .await
+        .map(|rows| rows.len())
+    };
+
+    let outcome = async {
+        connect_and_run_script(
+            &config,
+            &[
+                "CREATE STAGE RECLAIM_PROBE",
+                &format!(
+                    "PUT 'file://{}' @RECLAIM_PROBE/deadscope/ AUTO_COMPRESS = FALSE \
+                     OVERWRITE = TRUE",
+                    file.display()
+                ),
+            ],
+        )
+        .await?;
+        let staged = count_staged(config.clone(), qualified.clone()).await?;
+
+        // The shipped threshold: the part was uploaded seconds ago, so nothing
+        // may be touched. This is the half that protects a live load.
+        rdlt_connector_snowflake::dest::testhook::reclaim_staged_older_than(
+            &config, "p", "l", &qualified, 24,
+        )
+        .await?;
+        let after_fresh = count_staged(config.clone(), qualified.clone()).await?;
+
+        // Zero hours makes every part stale by definition, which is the only
+        // way to reach the removing half without waiting a day.
+        rdlt_connector_snowflake::dest::testhook::reclaim_staged_older_than(
+            &config, "p", "l", &qualified, 0,
+        )
+        .await?;
+        let after_stale = count_staged(config.clone(), qualified.clone()).await?;
+
+        Ok::<_, rdlt_connector::DestinationError>((staged, after_fresh, after_stale))
+    }
+    .await;
+
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = rdlt_connector_snowflake::dest::testhook::apply(
+        &admin,
+        &format!("DROP SCHEMA IF EXISTS \"{database}\".\"{schema}\""),
+    )
+    .await;
+
+    let (staged, after_fresh, after_stale) = outcome.expect("the probe runs");
+    assert_eq!(staged, 1, "the part staged");
+    assert_eq!(after_fresh, 1, "a fresh part is NOT reclaimed");
+    assert_eq!(after_stale, 0, "a stale part IS reclaimed");
+}

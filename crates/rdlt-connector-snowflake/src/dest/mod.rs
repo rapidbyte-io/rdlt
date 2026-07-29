@@ -72,23 +72,34 @@ pub mod testhook {
         client::connect(config).await?.column_names(sql, &[]).await
     }
 
-    /// The INSERT statements for a batch at a chosen chunk size.
+    /// Reclaim staged parts older than a chosen age, and report what went.
     ///
-    /// The measurement seam for the rows-per-statement constant: varying it
-    /// here keeps the shipped value a decision someone measured rather than a
-    /// knob every user has to hold.
-    pub fn insert_statements_chunked(
-        qualified_target: &str,
-        schema: &TableSchema,
-        batch: &rdlt_connector::RecordBatch,
-        rows_per_statement: usize,
-    ) -> Result<Vec<String>, DestinationError> {
-        super::encode::insert_statements_chunked(
-            qualified_target,
-            schema,
-            batch,
-            rows_per_statement,
-        )
+    /// The shipped rule waits a day, which no test can sit out. Exposing the
+    /// age lets a test prove BOTH outcomes — stale parts removed, fresh parts
+    /// untouched — instead of only the half that a fixed threshold allows.
+    pub async fn reclaim_staged_older_than(
+        config: &SnowflakeConfig,
+        pipeline: &str,
+        load: &str,
+        qualified_stage: &str,
+        stale_after_hours: u32,
+    ) -> Result<(), DestinationError> {
+        let executor = client::connect(config).await?;
+        super::stage::Stage::new(pipeline, load)
+            .reclaim_remote_older_than(&*executor, qualified_stage, stale_after_hours)
+            .await;
+        Ok(())
+    }
+
+    /// Where a load's parts wait locally between being written and uploaded.
+    ///
+    /// The sweep asserts this directory is empty once a load has settled. A
+    /// crash between the write and the upload leaves a file here, and the
+    /// claim that a later run clears it is worth checking rather than trusting.
+    pub fn local_part_dir(pipeline: &str, load: &str) -> std::path::PathBuf {
+        super::stage::Stage::new(pipeline, load)
+            .local_dir()
+            .to_path_buf()
     }
 
     /// Run a statement and read named columns from every row.
@@ -191,9 +202,15 @@ pub mod testhook {
 /// a point added to the code and not to the sweep is a protocol edge nobody
 /// ever crashes at, and the failure mode of that is silence.
 pub const FAIL_POINTS: &[&str] = &[
-    // A staged part is being written to the bucket — before the service has
-    // been told anything about it.
+    // A part exists on the local disk and nowhere else. Its residue is local,
+    // and only the load that wrote it may reclaim it.
     "sf.stage.write",
+    // The upload succeeded and the session has not yet recorded the part.
+    // Its residue is REMOTE — an object in the staging area that no load
+    // statement will ever name — which is why this is a point of its own
+    // rather than a second name for the moment above: the two leave different
+    // debris behind, in different places, reclaimed by different code.
+    "sf.stage.upload",
     // The unit's rows, receipt and state are written and none are durable.
     "sf.unit.publish",
     // Durable, and the caller is about to be told otherwise.
@@ -300,7 +317,12 @@ impl Destination for Snowflake {
         // clean up. Another load's directory is left alone: from here a
         // concurrent load and an abandoned one look identical.
         stage.reclaim_local();
-        let stage = Some(stage);
+        // Remote residue from loads that died before they could clean up. Only
+        // parts old enough that no live load could still own them, so a
+        // concurrent load of the same pipeline is never disturbed.
+        stage
+            .reclaim_remote(&*executor, &qualified(stage.name()))
+            .await;
 
         Ok(Box::new(session::SnowflakeSession {
             config: self.config.clone(),

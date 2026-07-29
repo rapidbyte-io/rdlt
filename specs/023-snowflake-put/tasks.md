@@ -150,13 +150,13 @@ lands exact totals; a re-run publishes nothing; awkward values survive.
   `crates/rdlt-connector-snowflake/tests/live_load.rs`: exact totals; a re-run
   publishes nothing; awkward values (quotes, backslashes, multi-byte text,
   NULLs) survive; a load delivering no rows still commits its position.
-- [ ] T021 [US1] Resolve open question 3 (crash-point set): decide whether the
+- [X] T021 [US1] Resolve open question 3 (crash-point set): decide whether the
   local-write and upload moments are distinguishable to any durable observer.
   If not, they earn ONE point, not two. Any point that exists must carry an
   assertion the sweep can actually make — verify the plumbing exists before
   proposing it. Update `FAIL_POINTS` in `src/dest/mod.rs` and the pinned
   registry list in `tests/crash_sweep.rs` together.
-- [ ] T022 [US1] Resolve open question 2 (staged-object reclaim): determine what
+- [X] T022 [US1] Resolve open question 2 (staged-object reclaim): determine what
   the listing exposes about age for the new staging area. If reclaim is weaker
   than the deleted path's modification-time rule, record the cost rather than
   claiming parity.
@@ -167,7 +167,7 @@ lands exact totals; a re-run publishes nothing; awkward values survive.
   each point fired. Delete `reachable()` if one path makes it an identity
   function. Record the new cell count against today's 30 and the new wall clock
   against 72 minutes (SC-012 requires both to fall).
-- [ ] T024 [US1] Decide open question 4 explicitly: whether the sweep gains
+- [X] T024 [US1] Decide open question 4 explicitly: whether the sweep gains
   Merge mode (shipped in 022, absent from the sweep). Cost it in cells against
   SC-012's requirement that the total fall, and record the decision either way.
 - [ ] T025 [US1] US1 gate: full local gate green; close-out story row; any
@@ -196,7 +196,7 @@ document without it runs; the generated schema contains no storage vocabulary.
   statement and its redaction path, the bucket reclaim, and the S3 error
   classification. Retain what the internal path needs — the part record, the
   file-list construction, the load-scoped naming.
-- [ ] T028 [US2] Delete the statement-rendering path from
+- [X] T028 [US2] Delete the statement-rendering path from
   `src/dest/encode.rs`: the value renderers, the decimal literal, the escaping
   helper, the statement builders and the measured byte budget. CHECK FIRST
   whether the escaping helper is used by the state and receipt statements in

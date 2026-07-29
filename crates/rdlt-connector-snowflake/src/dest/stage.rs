@@ -53,6 +53,14 @@ const UPLOAD_STATUS: &str = "status";
 const UPLOAD_TARGET: &str = "target";
 const UPLOAD_MESSAGE: &str = "message";
 
+/// How long a staged part must sit untouched before a later load may remove it.
+///
+/// A day, deliberately far beyond any load this connector is built for: the
+/// window only needs to exceed the longest run that could still be in flight,
+/// and being wrong in the tight direction deletes parts out from under a live
+/// load.
+const STALE_AFTER_HOURS: u32 = 24;
+
 /// The one status that means a file arrived.
 ///
 /// Anything else is treated as failure, because a part the load statement names
@@ -137,11 +145,14 @@ impl Stage {
         std::fs::create_dir_all(&self.local).map_err(|e| local_err(&self.local, "creating", e))?;
         let path = self.local.join(&file_name);
 
+        std::fs::write(&path, &bytes).map_err(|e| local_err(&path, "writing", e))?;
+        // The part is on the local disk and nowhere else. Crashing here leaves
+        // a file the next run of THIS load must clear; another load's file
+        // must survive, because from here the two are indistinguishable.
         crash_point!(
             "sf.stage.write",
             Err(DestinationError::fatal("injected crash at sf.stage.write"))
         );
-        std::fs::write(&path, &bytes).map_err(|e| local_err(&path, "writing", e))?;
 
         let outcome = self
             .upload(executor, &path, qualified_stage, &prefix, &file_name)
@@ -149,6 +160,13 @@ impl Stage {
         // Removed whether the upload worked or not.
         let _ = std::fs::remove_file(&path);
         outcome?;
+        // Uploaded, and the session has not yet recorded it. Crashing here
+        // leaves an object no load statement will name — the remote debris the
+        // scope wipe collects, as distinct from the local file above.
+        crash_point!(
+            "sf.stage.upload",
+            Err(DestinationError::fatal("injected crash at sf.stage.upload"))
+        );
 
         Ok(Part {
             tail: format!("{prefix}/{file_name}"),
@@ -224,6 +242,83 @@ impl Stage {
             .await;
     }
 
+    /// Drop parts left behind by loads that died before they could clean up.
+    ///
+    /// A load removes its OWN parts when it settles, so anything still present
+    /// belongs to a load that crashed — or to one running right now, and from
+    /// here those two are indistinguishable by name. Age is what separates
+    /// them, which is why [`STALE_AFTER_HOURS`] is generous rather than tight:
+    /// deleting a live load's parts would make it commit short, while leaving a
+    /// dead load's parts one more day costs a few objects of storage.
+    ///
+    /// The comparison runs on the SERVICE's clock, in SQL, rather than by
+    /// parsing the timestamp here. Two reasons, both load-bearing: this host's
+    /// clock has no defined relationship to the one that stamped the object,
+    /// and hand-parsing a date format nobody controls to decide what to DELETE
+    /// is a bug with an expensive blast radius.
+    ///
+    /// Best effort throughout. Failing to reclaim is a storage cost; failing a
+    /// load that would have worked is a correctness cost, and the two are not
+    /// worth trading.
+    pub(super) async fn reclaim_remote(&self, executor: &dyn Executor, qualified_stage: &str) {
+        self.reclaim_remote_older_than(executor, qualified_stage, STALE_AFTER_HOURS)
+            .await
+    }
+
+    /// [`reclaim_remote`](Self::reclaim_remote) against a chosen age.
+    ///
+    /// The age is a parameter only so a test can prove the rule BOTH ways —
+    /// that a stale part goes and a fresh one stays. A shipped threshold no
+    /// test can move is a threshold whose two outcomes are never both checked.
+    pub(super) async fn reclaim_remote_older_than(
+        &self,
+        executor: &dyn Executor,
+        qualified_stage: &str,
+        stale_after_hours: u32,
+    ) {
+        // The listing has to run first: the filter reads its result set, which
+        // only exists as the PREVIOUS query of this same session.
+        if executor
+            .execute(&format!("LIST @{qualified_stage}"))
+            .await
+            .is_err()
+        {
+            return;
+        }
+        let Ok(rows) = executor
+            .rows(
+                &format!(
+                    "SELECT \"name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) \
+                     WHERE TO_TIMESTAMP_TZ(\"last_modified\", \
+                     \'DY, DD MON YYYY HH24:MI:SS TZD\') \
+                     < DATEADD(hour, -{stale_after_hours}, CURRENT_TIMESTAMP())",
+                ),
+                &["name"],
+            )
+            .await
+        else {
+            return;
+        };
+        // The listing names objects with the stage's own name prefixed; the
+        // removal wants the path RELATIVE to the stage, so the leading segment
+        // comes off. A name that does not look like that is left alone rather
+        // than guessed at.
+        let mut scopes: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        for row in &rows {
+            let Some((_, tail)) = row[0].split_once('/') else {
+                continue;
+            };
+            if let Some((scope, _)) = tail.split_once('/') {
+                scopes.insert(scope);
+            }
+        }
+        for scope in scopes {
+            let _ = executor
+                .execute(&format!("REMOVE @{qualified_stage}/{scope}/"))
+                .await;
+        }
+    }
+
     /// Reclaim local residue this load left behind.
     ///
     /// Only THIS load's directory, and unconditionally: a previous attempt of
@@ -232,6 +327,16 @@ impl Stage {
     /// because from here a concurrent load and an abandoned one look identical.
     pub(super) fn reclaim_local(&self) {
         let _ = std::fs::remove_dir_all(&self.local);
+    }
+
+    /// Where this load's parts are written while they wait to be uploaded.
+    ///
+    /// Exposed so a caller can assert the directory is EMPTY once a load has
+    /// settled: a crash between writing a part and uploading it leaves a file
+    /// here, and "the next run cleans it up" is a claim worth checking rather
+    /// than assuming.
+    pub(super) fn local_dir(&self) -> &Path {
+        &self.local
     }
 }
 
