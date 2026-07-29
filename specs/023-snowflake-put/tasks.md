@@ -297,16 +297,16 @@ and configuration.
 - [X] T046 [US5] Rewrite `crates/rdlt-connector-snowflake/tests/ingestion_session.rs`
   for the single path, keeping 022's 12-column row shape BYTE-FOR-BYTE — the
   recorded figures refer to it, and "improving" it destroys the comparison.
-- [ ] T047 [US5] Record the session against 022's figures (582 rows/s for
+- [X] T047 [US5] Record the session against 022's figures (582 rows/s for
   statements; 2,191 rows/s at 250k and 1,941 at 1M for the bucket path), with
   dataset identity, configuration, wall clock and rows/s. Record whatever comes
   out, including a result that does not favour the new path.
-- [ ] T048 [US5] Resolve or honestly re-record 022's open question: the bucket
+- [X] T048 [US5] Resolve or honestly re-record 022's open question: the bucket
   path at 1M ran 11% slower per row than at 250k on one run each, which cannot
   separate a multi-part effect from variance. Determine what actually controls
   part count before designing the comparison — do not assume the engine config
   exposes it. If the instrument cannot separate them, say so.
-- [ ] T049 [US5] Confirm the measurement gates nothing: no bar proposed, the
+- [X] T049 [US5] Confirm the measurement gates nothing: no bar proposed, the
   bench gate untouched and green (Principle VIII); US5 gate.
 
 ---

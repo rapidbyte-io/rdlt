@@ -137,6 +137,77 @@ running it at points Append already covers would buy warehouse time instead of
 coverage. The rule is stated in code (`modes_for`) so a point added later has
 to answer the question.
 
+## Recorded ingestion session (T047–T049)
+
+Qual account, eu-central-1; 022's twelve-column bench row BYTE-FOR-BYTE; 10,000
+rows per delivered batch; one load per cell into a fresh scratch schema.
+**UNBARRED** — a SaaS cell carries network variance and cannot gate a build
+under the benchmark governance (T049: no bar proposed, no bench cell added,
+`bars.toml` and the harness untouched).
+
+**What controls part count** (T048 asked this first, and it is not the engine
+config): the connector writes ONE part per delivered batch, so the SOURCE's
+batch size decides it. At 10,000 rows per batch, 250k is 25 parts and 1M is 100
+parts — the comparison therefore holds part SIZE constant and varies part
+COUNT, which is the only arrangement that can speak to a multi-part effect.
+
+| rows | wall s | rows/s | 022 recorded |
+|---|---|---|---|
+| 250,000 | 132.65 | 1,885 | INSERT 582 / bucket 2,191 |
+| 1,000,000 | 488.73 | 2,046 | bucket 1,941 |
+
+### The spread, and what it disqualifies
+
+Three runs of the IDENTICAL 250k configuration:
+
+| | wall s | rows/s |
+|---|---|---|
+| a | 132.65 | 1,885 |
+| b | 103.47 | 2,416 |
+| c | 139.25 | 1,795 |
+
+**Spread across identical runs: 34.6%.** That number is what the rest of this
+section is judged against, and it changes two conclusions.
+
+**Supersession of INSERT is REAL.** 582 rows/s is nowhere near the band —
+1,885 is 3.24× it, and the gap is an order of magnitude beyond the noise.
+
+**Supersession of the external bucket is NOT ESTABLISHED, in either
+direction.** The bucket's 2,191 at 250k and 1,941 at 1M both fall INSIDE the
+34.6% band, as does this feature's own 2,046 at 1M. Taken alone, the headline
+250k figure looks 14% WORSE than the bucket path — and it would have been easy,
+and wrong, to record that as a regression. Three runs say the two mechanisms are
+indistinguishable at this sample size.
+
+So the honest claim is narrower than the plan assumed: this feature replaced one
+mechanism that was measurably slower and one that was not measurably different.
+**The bucket path's removal rests on simplification and on eliminating user
+infrastructure and credentials — NOT on throughput**, and no document claims
+otherwise (README says only that INSERT "was slower at every size measured",
+which the figures support).
+
+### 022's open question, RESOLVED
+
+022 recorded its bucket path running 11% slower per row at 1M than at 250k, on
+one run each, and explicitly declined to call it either a multi-part effect or
+variance. **It was variance.** The spread on identical runs here is 34.6% —
+three times the gap in question — so the 11% never carried information.
+
+Two further reasons it can now be closed rather than re-recorded. This feature's
+own figures move in the OPPOSITE direction across the same size step (2,046 at
+1M against 1,885 at 250k, i.e. FASTER per row at four times the rows and four
+times the parts), and a 4× increase in part count produced no penalty a 34.6%
+band could detect. A per-row cost that grows with part count would have shown
+the same sign in both features; it showed neither consistently.
+
+### What was NOT measured
+
+The third variance run was interrupted when the session's process exited, so the
+spread rests on three 250k measurements rather than the four the instrument
+emits. It is reported as three. This does not weaken the conclusions: every
+figure being judged already falls inside the band, and a fourth run can only
+widen it.
+
 ## SC-010 — the secret sweep, and why it is not only a substring search
 
 | term | tracked files containing it |
