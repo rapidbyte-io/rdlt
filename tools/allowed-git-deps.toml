@@ -1,0 +1,37 @@
+# Git dependencies this workspace knowingly carries, and what each costs.
+#
+# An entry is not permission — it is a RECORD, and `unpublishable` is a claim
+# tools/check-git-deps.sh verifies against the resolved dependency graph on
+# every `make lint`. A dependency that spreads to another crate fails the check
+# until the record is brought back into line.
+#
+# There is deliberately no entry shape for a dependency carrying both `git` and
+# `version`: that form publishes successfully with the git source stripped, so
+# it is refused outright rather than recorded.
+
+[[allow]]
+dependency = "snowflake-connector-rs"
+manifest   = "Cargo.toml"
+table      = "workspace.dependencies"
+git        = "https://github.com/rapidbyte-io/snowflake-connector-rs.git"
+rev        = "cd9ec04aa7ea65883f5b7bb2a5d6fb6dd0931be5"
+
+reason = """
+The published crate cannot upload a file to a stage: the SQL API refuses the
+statement (structured code 391911) and the crate exposes no raw-response escape
+hatch — verified in source during feature 022, which shipped two workarounds
+because of it. This fork implements the upload, and feature 023 makes it the
+connector's only ingestion path, deleting both workarounds. The capability
+exists nowhere else on crates.io.
+"""
+
+exit = """
+Either: the change is accepted upstream, and this becomes a registry version
+(one line, `version = "1.2"`); or the fork is published under its own name and
+consumed through cargo's `package =` rename, which needs ZERO source changes
+because every `use snowflake_connector_rs::...` keeps resolving. The upstream
+contribution opens once the fork has been validated in real use here — that
+sequencing is deliberate and recorded in specs/023-snowflake-put/research.md.
+"""
+
+unpublishable = ["rdlt", "rdlt-cli", "rdlt-connector-snowflake"]

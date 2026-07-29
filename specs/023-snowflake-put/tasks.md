@@ -54,7 +54,7 @@ boundary method and service-fact pins are what every later task builds on.
   upstream stalls) while `parity.md:15` narrowed it to upstream only. Record
   the narrowing as a correction in 022's close-out, so the fork route is
   authorised by the record rather than by this feature's assertion.
-- [ ] T006 Harden and wire the distribution check: take
+- [X] T006 Harden and wire the distribution check: take
   `specs/023-snowflake-put/drafts/check-git-deps.sh` and
   `drafts/allowed-git-deps.toml` into `tools/`, FIX the known gap (implicit
   workspace members are never scanned — the precise silent pass the check
@@ -63,11 +63,11 @@ boundary method and service-fact pins are what every later task builds on.
   silently against the registry); an unrecorded git dep; a moving reference
   (branch/tag rather than rev); a stale allowlist entry; and a recorded blast
   radius that no longer matches the graph.
-- [ ] T007 Prove the check catches what it claims, with cases: construct a
+- [X] T007 Prove the check catches what it claims, with cases: construct a
   scratch member carrying each failure form and assert the check fails naming
   it; assert it passes on the recorded arrangement from T001. Include an
   implicit-member case, since that is the gap T006 fixes.
-- [ ] T008 Record the arrangement in `tools/allowed-git-deps.toml`: dependency,
+- [X] T008 Record the arrangement in `tools/allowed-git-deps.toml`: dependency,
   declaring manifest and table, git URL, exact rev, the REASON the fork is
   required, the named EXIT that retires it, and the crates it renders
   unpublishable — the last being a claim the check verifies against the
@@ -323,7 +323,7 @@ and configuration.
   deviation cited, every unperformed verification named with its reason, and
   every one of research.md's six open questions carried to a terminal
   disposition.
-- [ ] T053 Delete `specs/023-snowflake-put/drafts/` once its content is either
+- [X] T053 Delete `specs/023-snowflake-put/drafts/` once its content is either
   adopted into `tools/` or rejected with a reason — an unverified draft left in
   the tree is exactly what it was moved out of `tools/` to avoid.
 - [ ] T054 Final gate: `env -u RUSTUP_TOOLCHAIN make check` TWICE clean on a

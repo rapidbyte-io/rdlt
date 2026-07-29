@@ -77,8 +77,14 @@ release:
 dist:
 	cargo build --profile dist -p rdlt-cli
 
+# check-git-deps.sh is the distribution gate. It runs AHEAD of clippy
+# deliberately: it costs under a second, builds nothing, and answers a question
+# no other check here asks — whether this workspace can still be published. A
+# manifest that cannot ship should not wait behind a multi-minute compile to
+# say so. Needs python3 3.11+ (stdlib tomllib).
 lint:
 	cargo fmt --all --check
+	tools/check-git-deps.sh
 	cargo clippy --workspace --all-targets -- -D warnings
 
 test:
