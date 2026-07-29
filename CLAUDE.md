@@ -7,11 +7,16 @@ Read them from git history if a reference below sends you looking.
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
 `specs/023-snowflake-put/plan.md` (feature: Snowflake internal-stage
-ingestion as the SINGLE path — SPEC + PLAN written, NOT implemented, on
-branch `023-snowflake-put`. Makes the service's own recommended mechanism
-the ONLY one and DELETES both 022 workarounds: batched INSERT and the
-external S3 stage, with their config, credentials, encoders, constants,
-suites and four dependencies. Contract contracts/snowflake-put.md SP1-SP8,
+ingestion as the SINGLE path — IMPLEMENTED and near-closed on branch
+`023-snowflake-put`, NOT merged. US1/US2/US4 delivered and proven live;
+US3 PARTIAL by owner decision (password + OAuth stay UNPERFORMED, the same
+call 022 made — legs written, skip announced, credential entries turn them
+green with zero code change); US5 measured. Remaining: the sweep re-run,
+coverage, and the final gate. `specs/023-snowflake-put/close-out.md` is
+authoritative for every disposition; RESUME.md tracks what is open.
+It makes the service's own recommended mechanism the ONLY one and DELETED
+both 022 workarounds: batched INSERT and the external S3 stage, with their
+config, credentials, encoders, constants, suites and four dependencies. Contract contracts/snowflake-put.md SP1-SP8,
 which AMENDS 022's SD1 and SD6 explicitly.
 THE DEPENDENCY IS THE HARD PART, not the code. The upload comes from a FORK
 (rapidbyte-io/snowflake-connector-rs, feat/put-file-upload) pinned by REV
@@ -39,13 +44,41 @@ NOT usable (doubles the prefix -> 091016) and is lowercased. Column matching
 stays CASE_INSENSITIVE — 022 pinned it deliberately (lowercase arrow names
 vs upper catalog); a research pass proposed reversing it and would have
 broken every load.
+TWO DEFECTS THE ACCOUNT CAUGHT that no reading would have (close-out D-30,
+D-31): MATCH_BY_COLUMN_NAME sets an absent target column to NULL rather than
+its DEFAULT, which nulled the stage table's arrival column and made every
+merge survivor ARBITRARY — so columns are now projected EXPLICITLY. Then the
+projection itself: `$1:"COL"` into a staged file is CASE-SENSITIVE, so the
+symmetrical-looking upper-case form found nothing and every column arrived
+NULL. Target list = catalog's case; projection = the FILE's case. Do not
+"restore" the symmetrical version.
+MEASURED, and it NARROWED the plan's premise: three identical 250k runs span
+34.6%. INSERT at 582 rows/s is far outside that band so its supersession is
+REAL (1,885 = 3.24x); the external bucket's 2,191/1,941 fall INSIDE it, so
+that supersession is NOT ESTABLISHED EITHER WAY — the bucket's removal rests
+on simplification and deleting user credentials, NOT throughput. Never claim
+a speed win over the bucket. This also RESOLVED 022's open 11% question: it
+was variance (spread is 3x the gap, and 023's figures move the opposite way
+across the same size step).
+SC-012 MISSED BY HALF and recorded, not amended: sweep cells fell 30 -> 27
+(Merge newly covered at the publish) but wall clock roughly DOUBLES, because
+the sweep's loads are 40 rows and an upload costs far more round trips than
+a statement at that size. The criterion conflated matrix size with time.
+NOTE the Makefile's sweep target has NO snowflake line and never has — this
+sweep is run BY HAND (022 did it twice at 4,308 s), so `make check` cost is
+unaffected.
 Named stage required: @~ has NO scoping (visible across schemas/databases),
 @%TABLE can only load its OWN table (001023).
-Open questions carried deliberately into implementation (plan.md risk
-table): per-part size bound across sources, staged-object reclaim strength,
-whether two crash moments earn one point or two, the drafted distribution
-check missing implicit workspace members, and whether the sweep gains merge
-mode. drafts/ holds unadopted, unverified research output.
+All six research open questions are now TERMINAL (close-out): part bound
+answered in research A2; LIST exposes `last_modified` so remote reclaim
+ships at parity with the deleted path, comparing in SQL on the SERVICE's
+clock (a local clock has no defined relation to the stamping one, and
+hand-parsing a date to decide what to DELETE is an expensive bug) with a
+deliberately generous 24 h window; the local-write and upload moments earn a
+point EACH because they leave different debris in different places reclaimed
+by different code; the sweep DOES gain Merge, at the publish only; the
+upstream issue was never filed; and the distribution check reads `cargo
+metadata` so implicit members cannot slip through.
 Previous feature 022 for reference:
 `specs/022-snowflake-dest/plan.md` (Snowflake destination — COMPLETE 43/43,
 merged @ 1ef4860b. Gate TWICE CLEAN on the PINNED 1.96.0 toolchain: 966/966
