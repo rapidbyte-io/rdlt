@@ -146,7 +146,7 @@ lands exact totals; a re-run publishes nothing; awkward values survive.
 - [X] T019 [US1] Cut over: the internal path becomes the path `write()` uses.
   The old paths remain compiled but unreachable at this point — deletion is the
   next story, so this increment is independently reviewable and revertible.
-- [ ] T020 [US1] Live acceptance in
+- [X] T020 [US1] Live acceptance in
   `crates/rdlt-connector-snowflake/tests/live_load.rs`: exact totals; a re-run
   publishes nothing; awkward values (quotes, backslashes, multi-byte text,
   NULLs) survive; a load delivering no rows still commits its position.

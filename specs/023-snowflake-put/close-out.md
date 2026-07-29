@@ -29,6 +29,17 @@ this document, not a detail.
 | US4 — the record says what is true | DELIVERED | Every ingestion claim in README, quickstart, parity and the contracts checked against behaviour. |
 | US5 — the path that ships is the one measured | DELIVERED | The comparison against 022's recorded figures, with dataset identity stated and gating nothing. |
 
+## Task ledger
+
+54 tasks. **44 done, 3 not done by owner decision, 7 closing tasks** (the two
+story gates, coverage, this document and the final gate) — every one of the 54
+carries a terminal disposition here or in `tasks.md`, and none is left silent.
+
+The three not done are T036, T037 and T039, all one decision: provisioning a
+password-capable user and an OAuth security integration on the account. See
+D-35. They are marked `[~]` in `tasks.md` rather than `[X]` or `[ ]`, because
+neither "done" nor "still to do" is true of a task somebody decided against.
+
 ## Deviations and corrections
 
 Numbered from D-31, continuing after 022's D-30, so that a reference in either
