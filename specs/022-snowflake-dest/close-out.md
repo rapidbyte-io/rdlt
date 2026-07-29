@@ -524,3 +524,49 @@ end, where the shipped default actually lives — and that is where the
 measurement overturned the expectation rather than confirming it.
 
 The whole session cost 1,236 s of warehouse time.
+
+## Corrections recorded after close (during 023)
+
+Two defects in this feature's own record, found while 023 established its
+authorisation. Recorded here rather than in 023, because they are 022's to own.
+
+### C-03 — T040 was marked complete with half of it undone
+
+T040 required two things: the parity matrix, and *"file the upstream
+`snowflake-connector-rs` issue for PUT/raw-response support and record its URL
+as the deferral's trigger reference in close-out.md."*
+
+The matrix was written. **The issue was never filed, and no URL exists anywhere
+in this feature's record** — searched across close-out.md, parity.md,
+research.md and spec.md. The task was nevertheless marked `[X]`.
+
+That makes SD1's assertion — the gap is *"deferred on a named upstream trigger
+with the issue filed"* — **unevidenced**. SD1 is therefore corrected: the
+trigger was named, the issue was not filed.
+
+Why it matters beyond tidiness: `spec.md:499-501` recorded two closure routes,
+the second being *"a maintained fork if upstream stalls"*. Nobody can claim
+upstream stalled against an issue that was never opened. 023 consumes a fork,
+and its authorisation rests on `spec.md`'s second route being available on its
+own terms — not on a stall that was never demonstrated. Stating that plainly is
+cheaper than defending a fork against a record that half-claims otherwise.
+
+The disposition is not "file it now and backdate the citation". It is: the
+issue was not filed, this is what the record says from here, and 023 opens the
+upstream contribution when the fork has been validated in use — which is the
+sequence the owner chose deliberately.
+
+### C-04 — parity.md narrowed spec.md's two routes to one
+
+`spec.md:499-501` recorded **both** closure routes. `parity.md:15` records only
+one: *"Contributing it upstream is the recorded route."*
+
+The narrowing was never a decision — no deviation cites it — so it is a drafting
+loss rather than a change of position. Corrected: both routes stand as
+`spec.md` recorded them, and 023 takes the second.
+
+Worth naming the general shape, because this project has a rule about it: a
+later, narrower document silently replacing an earlier, broader one is how a
+recorded option disappears without anyone deciding to remove it. The rule that
+every disposition cites its evidence exists to catch exactly this, and here it
+did — one feature later than it should have.

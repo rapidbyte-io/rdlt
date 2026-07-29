@@ -42,14 +42,14 @@ The new path is built and cut over first; the old paths are removed after.
 **These block every user story.** The record repair authorises the work; the
 boundary method and service-fact pins are what every later task builds on.
 
-- [ ] T004 Record repair, part one — the uncited claim: 022's SD1 asserts the
+- [X] T004 Record repair, part one — the uncited claim: 022's SD1 asserts the
   internal-stage gap was deferred "with the issue filed" and T040 required the
   issue URL in `specs/022-snowflake-dest/close-out.md`; no URL exists anywhere.
   Either cite it or record in close-out.md that it was never filed. Do this
   FIRST: `spec.md:499-501` conditions the fork route on upstream having
   stalled, and "stalled" cannot be claimed against an issue that cannot be
   cited.
-- [ ] T005 Record repair, part two — the narrowing: `specs/022-snowflake-dest/spec.md:499-501`
+- [X] T005 Record repair, part two — the narrowing: `specs/022-snowflake-dest/spec.md:499-501`
   authorised BOTH closure routes (upstream contribution OR a maintained fork if
   upstream stalls) while `parity.md:15` narrowed it to upstream only. Record
   the narrowing as a correction in 022's close-out, so the fork route is

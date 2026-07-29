@@ -12,7 +12,7 @@ research window (2026-07).
 
 | capability | dlt | rdlt | disposition |
 |---|---|---|---|
-| Internal named stage (`PUT` + `COPY`) | yes, the default | **no** | **DEFERRED — the one substantive gap.** `PUT` is unreachable: the SQL API refuses it (structured code 391911) and the adopted driver exposes no raw-response escape hatch. Trigger: `snowflake-connector-rs` gaining `PUT` support or raw-response access. Contributing it upstream is the recorded route. |
+| Internal named stage (`PUT` + `COPY`) | yes, the default | **no** | **DEFERRED — the one substantive gap.** `PUT` is unreachable: the SQL API refuses it (structured code 391911) and the adopted driver exposes no raw-response escape hatch. Trigger: `snowflake-connector-rs` gaining `PUT` support or raw-response access. `spec.md:499-501` recorded TWO closure routes — an upstream contribution, or a maintained fork if upstream stalls; this row previously named only the first, corrected in close-out C-04. **CLOSED in 023** via the fork route. |
 | External stage `COPY INTO` (S3) | yes | yes | Parity. Proven end to end against a real cross-region bucket. |
 | External stage (GCS / Azure) | yes | no | Deferred. The path is storage-agnostic on the Snowflake side; only the client-side writer and the config vocabulary are S3-shaped. Trigger: a user with a GCS or Azure bucket. |
 | Batched `INSERT` without any bucket | no | **yes** | rdlt does more. dlt requires a stage; rdlt's default path needs no infrastructure at all. Slower — measured, recorded in close-out — but it works for a user who cannot provision a bucket. |
