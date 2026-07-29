@@ -137,6 +137,27 @@ running it at points Append already covers would buy warehouse time instead of
 coverage. The rule is stated in code (`modes_for`) so a point added later has
 to answer the question.
 
+## Semver
+
+`cargo semver-checks check-release --baseline-rev main` on both
+semver-sacred crates: **no semver update required** (196 checks pass, 57 skip,
+each). Neither `rdlt-core` nor `rdlt-connector` has a source change on this
+branch — the SPI's `object-store` feature and its shared recoverability rule
+stay exactly as they were, and this connector simply stopped requesting a
+feature it no longer uses.
+
+The connector's own configuration change IS breaking: a document setting the
+removed storage block no longer parses. That costs nothing to carry, for two
+reasons stated rather than assumed — the crate is 0.2.x and nothing in this
+workspace has ever been published, so no version in anyone's lockfile can
+observe the break. It is surfaced as a typed refusal naming the field rather
+than a silent acceptance, which is the part that matters to a user upgrading.
+
+The standing 0.2 → 0.3 bump owed at first publish (recorded in 014, ridden by
+015, still unclaimed) is NOT taken here. Nothing in this feature forces it, and
+taking it would spend a one-time major on a crate that cannot currently be
+published at all — see D-29.
+
 ## Unperformed verifications
 
 | verification | why |

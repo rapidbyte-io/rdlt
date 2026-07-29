@@ -315,7 +315,7 @@ and configuration.
 
 - [ ] T050 [P] Coverage at or above the 80% floor, measured baseline-first and
   recorded.
-- [ ] T051 [P] Semver: confirm the SPI and core need no change; record that the
+- [X] T051 [P] Semver: confirm the SPI and core need no change; record that the
   connector's configuration change is breaking, that nothing is published, and
   that the distribution constraint from the git dependency is inherited by the
   publish feature.

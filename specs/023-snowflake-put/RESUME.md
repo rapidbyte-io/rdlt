@@ -67,17 +67,13 @@ the data is; the sweep exercises it where the data is not. The criterion
 conflated "smaller matrix" with "less time", and only the first was ever in
 this feature's control.
 
-The knock-on: `make check` runs the sweep, so T054's "twice clean" is now
-roughly five hours of warehouse time.
+**Correction to an earlier reading of the cost.** `make check` does NOT run
+this sweep — `Makefile` has no Snowflake line in its sweep target and never
+has. 022 ran it by hand, twice, at 4,308 s (71.8 min) each. So T054's
+"twice clean" gate is ordinary length, and the sweep's cost is its own
+separate decision, exactly as it was in 022.
 
-Three ways forward, none of them free:
-
-1. **Record the miss and run the gate twice anyway.** Honest, expensive,
-   matches how 019 handled its own misses.
-2. **Record the miss and run the full gate once**, with the sweep run once
-   separately. Cheaper; departs from the twice-clean discipline, which would
-   itself need recording.
-3. **Amend SC-012** to require the cell count to fall and the wall clock to be
-   recorded, on the argument above. Changing a criterion because it was missed
-   needs to be a deliberate decision, not a convenience — which is why it is
-   listed but not taken.
+That leaves the recording question only. The miss is recorded either way; what
+is NOT taken is amending SC-012 to match the outcome. Changing a criterion
+because it was missed has to be a deliberate decision on the argument above,
+not a convenience — so it is noted here and left to the owner.
