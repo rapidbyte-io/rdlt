@@ -402,6 +402,61 @@ the defects cannot show that the search was exhaustive.
 
 ---
 
+## R11 — THE SCANNER CANNOT ASSUME ONE ARMING IDIOM (found while writing tasks)
+
+A gap in R4, found by counting sites per crate before writing the tasks and
+noticing an arithmetic mismatch: `rdlt-connector-snowflake` declares **four**
+registry entries but contains only **two** `crash_point!` invocations.
+
+Surveyed across every crate that arms points:
+
+| crate | `crash_point!` | `crash_at("…")` |
+|---|---|---|
+| rdlt-engine | 7 | 0 |
+| rdlt-connector-postgres | 14 | 0 |
+| rdlt-connector-file | 11 | 0 |
+| rdlt-connector-rest | 4 | 0 |
+| rdlt-connector-iceberg | 3 | 0 |
+| rdlt-connector-duckdb | 2 | 0 |
+| **rdlt-connector-snowflake** | **2** | **2** |
+
+Snowflake's other two points are armed through a local helper
+(`src/dest/session.rs:60`) that wraps `fail_point!` and returns
+`Option<DestinationError>` instead of returning early — because a crash at the
+two unit edges has cleanup to do first, and a bare early return would leave the
+session holding an open transaction that the test would then blame on the
+protocol rather than on the injection. The helper is deliberate and correct; it
+is simply a second spelling.
+
+**Why this matters more than a missing case.** A scanner recognising only
+`crash_point!(` would find 2 sites in snowflake against a 4-entry registry and
+report a divergence. The plausible "fix" for that divergence is to shrink the
+registry to the two names the scanner can see — which would REMOVE two crash
+points from the sweep matrix while every assertion passed. That is the same
+fail-open hazard R4 identifies for a drifting scanner, arriving by a different
+route, and it would be introduced BY the check meant to prevent it.
+
+**Decision**: the shared helper takes the set of arming patterns to recognise,
+defaulting to both spellings, and it FAILS LOUDLY when it finds zero sites in a
+crate whose registry is non-empty — because "scanned nothing and matched nothing"
+must never read as agreement. Its doc comment states that adding a third arming
+idiom requires updating the helper, and the loud-on-zero behaviour is what makes
+that failure visible rather than silent.
+
+**Alternatives considered.** Rewriting snowflake's two `crash_at` sites into
+`crash_point!` so one pattern suffices: rejected — the helper exists for a stated
+correctness reason (cleanup before the crash propagates) and rewriting it to suit
+a test scanner inverts the dependency. Scanning for the registry's own string
+literals instead of the arming call: rejected as circular in the R4 sense — it
+would find the names in the registry declaration itself and always agree.
+
+**Also noted for the audit (R10)**: this asymmetry means a per-crate site count
+is a useful cross-check on the scanner itself. Recorded expected counts at this
+commit: engine 7, postgres 14, file 11, rest 4, iceberg 3, duckdb 2,
+snowflake 2 + 2.
+
+---
+
 ## Open questions carried into implementation
 
 None blocking. Two judgement calls are deliberately deferred to the increment
