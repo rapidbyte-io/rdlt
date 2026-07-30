@@ -6,8 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use rdlt_core::schema::system_columns;
-use rdlt_core::{CommitPolicy, Cursor, RdltError, ResumedFrom, TableName};
+use rdlt_core::{CommitPolicy, Cursor, RdltError, ResumedFrom, TableName, schema::system_columns};
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{
     CrashDestination, FaultPoint, MemoryBatch, MemoryDestination, MemorySource, MemoryStream,

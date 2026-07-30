@@ -5,8 +5,10 @@
 
 use std::sync::Arc;
 
-use arrow::array::{Int64Array, RecordBatch};
-use arrow::datatypes::{DataType, Field, Schema};
+use arrow::{
+    array::{Int64Array, RecordBatch},
+    datatypes::{DataType, Field, Schema},
+};
 use async_trait::async_trait;
 use rdlt_connector::{ConnectorSpec, ReadRequest, Source, SourceError, StreamSpec};
 use rdlt_core::RdltError;

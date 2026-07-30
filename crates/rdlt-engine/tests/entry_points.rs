@@ -6,8 +6,10 @@
 
 use std::sync::Arc;
 
-use arrow::array::{Int64Array, RecordBatch};
-use arrow::datatypes::{DataType, Field, Schema};
+use arrow::{
+    array::{Int64Array, RecordBatch},
+    datatypes::{DataType, Field, Schema},
+};
 use rdlt_engine::fuzzing;
 
 #[test]

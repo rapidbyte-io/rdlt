@@ -5,9 +5,11 @@
 
 use std::sync::Arc;
 
-use arrow::array::{Int64Array, StringArray};
-use arrow::datatypes::{DataType, Field, Schema};
-use arrow::record_batch::RecordBatch;
+use arrow::{
+    array::{Int64Array, StringArray},
+    datatypes::{DataType, Field, Schema},
+    record_batch::RecordBatch,
+};
 use async_trait::async_trait;
 use rdlt_connector::{ConnectorSpec, Cursor, ReadRequest, Source, SourceError, StreamSpec};
 use rdlt_core::{PolicyAction, RdltError, SchemaPolicy, TableName};

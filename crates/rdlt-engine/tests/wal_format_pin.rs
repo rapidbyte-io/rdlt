@@ -22,8 +22,10 @@
 //! RDLT_REPIN=1 cargo nextest run -p rdlt-engine --test wal_format_pin
 //! ```
 
-use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
+use std::{
+    fmt::Write as _,
+    path::{Path, PathBuf},
+};
 
 use rdlt_connector::StreamSpec;
 use rdlt_core::CommitPolicy;
@@ -84,12 +86,8 @@ fn render_committed(dest: &MemoryDestination) -> String {
     let mut out = String::new();
     for (table, rows) in dest.snapshot() {
         for row in rows {
-            writeln!(
-                out,
-                "{table}\t{}",
-                serde_json::Value::Object(row.clone())
-            )
-            .expect("render row");
+            writeln!(out, "{table}\t{}", serde_json::Value::Object(row.clone()))
+                .expect("render row");
         }
     }
     out

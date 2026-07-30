@@ -30,9 +30,8 @@ use crate::{
         registry::SchemaRegistry,
     },
 };
-use infer::ColumnState;
-use table::TableBuffer;
-use view::JsonView;
+
+use self::{infer::ColumnState, table::TableBuffer, view::JsonView};
 
 pub(crate) use tape::TapeShredder;
 

@@ -14,8 +14,7 @@
 use std::path::Path;
 
 use rdlt_connector::{Destination, StreamSpec};
-use rdlt_core::WriteMode;
-use rdlt_core::failpoint::fail;
+use rdlt_core::{WriteMode, failpoint::fail};
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{MemoryBatch, MemoryDestination, MemorySource, MemoryStream};
 use serde_json::json;

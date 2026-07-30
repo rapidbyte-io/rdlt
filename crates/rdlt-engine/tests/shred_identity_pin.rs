@@ -51,9 +51,7 @@
 //! whether it arrived as a `serde_json::Value` or as bytes in the arena —
 //! lives in `src/shred/table.rs`, because the arena view is crate-private.
 
-use std::collections::BTreeMap;
-use std::fmt::Write as _;
-use std::path::PathBuf;
+use std::{collections::BTreeMap, fmt::Write as _, path::PathBuf};
 
 use rdlt_connector::{DestinationCapabilities, StreamSpec};
 use rdlt_core::schema::system_columns;
