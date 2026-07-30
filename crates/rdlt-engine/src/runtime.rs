@@ -2,8 +2,15 @@
 //! All `pub(crate)` — the engine is one deep module whose only public surface
 //! is `Engine`/`EngineConfig` at the crate root.
 
+mod classify;
+mod drain;
+mod extract;
 pub(crate) mod lock;
+mod recover;
 pub(crate) mod run;
+mod validate;
+
+pub(crate) use classify::classify_dest_error;
 
 /// Secondary message-count bound on a stage channel. The byte budget is the primary
 /// backpressure; this hard cap keeps zero-byte items (markers) from queueing without
