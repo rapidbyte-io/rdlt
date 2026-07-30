@@ -165,10 +165,17 @@ The miss is recorded here rather than resolved by amending the criterion.
 | axes | points × 3 actions × 2 modes × **2 ingestion paths** | points × 3 actions × modes-that-reach-the-point |
 | crash points | 3 | 4 |
 | write modes covered | Append, Replace | Append, Replace, **Merge** |
-| wall clock per run | 4,308 s (71.8 min) | SWEEP_WALL |
+| wall clock per run | 4,308 s (71.8 min) | **6,092 s (101.5 min)** — +41.4% |
 
 So the matrix got smaller while covering strictly more: a fourth crash point,
-and Merge swept for the first time since it shipped in 022.
+and Merge swept for the first time since it shipped in 022. Per cell that is
+144 s → 226 s, up 57% — the cell count fell 10% and the cost of a cell rose
+more than five times as much, which is the whole of the miss.
+
+Result: **2/2 PASS, 0 failed.** Every point converged to exactly-once totals
+under repeated failure including failure during recovery; every point is proven
+to have fired; and every cell's local part directory was empty once its load
+settled.
 
 **Why the time went the other way.** The sweep's loads are 40 rows in four
 batches. At that size a statement is one round trip, while an upload is a

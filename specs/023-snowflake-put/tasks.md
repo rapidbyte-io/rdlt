@@ -160,7 +160,7 @@ lands exact totals; a re-run publishes nothing; awkward values survive.
   the listing exposes about age for the new staging area. If reclaim is weaker
   than the deleted path's modification-time rule, record the cost rather than
   claiming parity.
-- [ ] T023 [US1] Crash sweep on the single path in
+- [X] T023 [US1] Crash sweep on the single path in
   `crates/rdlt-connector-snowflake/tests/crash_sweep.rs`: every point × three
   actions × Append and Replace, each cell crashing, crashing AGAIN during
   recovery, then running clean to exact totals, with the armed-fire pin proving
