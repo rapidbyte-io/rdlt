@@ -318,8 +318,6 @@ pub(crate) fn write_segment(path: &Path, batch: &RecordBatch) -> Result<(), Rdlt
 pub(crate) fn clear(dir: &Path) {
     let _ = std::fs::remove_dir_all(dir);
 }
-// T125 — appended at the END of crates/rdlt-engine/src/wal/mod.rs
-//
 // The claim "segment sequence numbers must be strictly monotonic" used to live
 // in a doc comment on a resume.rs test that only ever asserted the header
 // version. That clause is deleted there and the property is actually tested

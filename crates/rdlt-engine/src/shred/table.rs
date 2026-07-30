@@ -1,6 +1,6 @@
 //! Shared shredding state: per-table naming, shape observation, lineage
 //! identity, and schema resolution — everything the tape traversal (`tape.rs`)
-//! and the drain (`mod.rs`) build on.
+//! and the drain (`shred.rs`, the module root) build on.
 
 use rdlt_core::{
     ColumnDef, ParentLink, Provenance, RowId, TableName, TableSchema,

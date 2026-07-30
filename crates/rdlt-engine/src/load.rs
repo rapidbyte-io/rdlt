@@ -308,8 +308,8 @@ impl Loader {
         Ok(())
     }
 }
-// T124 + T129 — appended at the END of crates/rdlt-engine/src/load/mod.rs
-// (a child module, so it can read `Loader`'s private fields directly).
+// Inline rather than in `tests/`: a child module can read `Loader`'s private
+// fields directly, which these pins need.
 
 #[cfg(test)]
 mod tests {
