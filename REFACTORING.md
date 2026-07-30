@@ -335,6 +335,11 @@ None of those three is fixed by reordering alone. They are fixed by Wave 0.
 
 Every item is test-only, tooling-only or document-only. Nothing here has a `src/` diff outside item **P7**.
 
+**Ships as two features — see §3.7.** P2, P3, P4, P5 and P7 are standing defects
+worth landing on their own merits (**Feature A, test-gate integrity**); P1, P6
+and P8 exist only to make this refactor provable and belong with it
+(**Feature B, house style**).
+
 - **P1 — sqlcore gets a `tests/` directory.** Lift `src/protocol/mod.rs:455–1087` (the 15 `pin_*` functions) verbatim into a new `crates/rdlt-connector-sqlcore/tests/protocol_pins.rs`, switching `use super::*` to public `rdlt_connector_sqlcore::` paths and nothing else. Verified liftable as-is: the module calls only public API (`commit_script`, `prepare_target`, `staged_probe_targets`, `CommitError`; zero references to the private `check_single_unit` or `select_arm`, and `AbsentPolicy`/`MergeStrategy`/`Scd2Options`/`TableOptions` are all `pub`). Do the same for the inline modules in `ensure.rs`, `options.rs`, `names.rs`, `protocol/unit.rs`. **Proof: identical test names, identical count, zero `src/` behavior diff.** This single file is what makes wave 3 legal.
 - **P2 — test selection stops lying.** Drop `--no-tests=pass` from every line whose target binary is known to exist (all nine: engine `crash_sweep`; postgres `crash_sweep`/`dest_crash_sweep`/`cdc_crash_sweep`/`memory_bound`; duckdb, rest, file, iceberg `sweep`; iceberg `spark_deep`; `binary(/e2e/)`), or replace it with a minimum-count assertion. Re-spell the iceberg override positively (`binary(catalog_live) or binary(conflict) or …`). Add `test TARGET=e2e` to `check`. Commit a per-binary **test-count and skip-count** baseline for `make check`, `make test TARGET=sweep` and the hand-run snowflake sweep; every wave diffs against it.
 - **P3 — assertive gating mode in testkit.** Env flags that make `containers::runtime_available()`, `PgFixture::start()` and `snowflake::credentials()` **fail** instead of returning unavailable/None, plus `crates/rdlt-testkit/tests/gating_pin.rs` asserting each probe's decision against a forced environment. Every wave from 1 on runs its verification with assertive mode set, so a skip is never mistaken for a pass.
@@ -349,7 +354,7 @@ Every item is test-only, tooling-only or document-only. Nothing here has a `src/
 - **P7 — snowflake stops being invisible.** Add a snowflake line to the `sweep` target (or at minimum `cargo clippy -p rdlt-connector-snowflake --all-targets --features failpoints -- -D warnings` to `lint`) so `crash_sweep.rs` is at least type-checked per increment, and codify in the `coverage` target the `-E 'not (package(rdlt-connector-snowflake) and binary(crash_sweep))'` exclusion that `close-out.md:311–313` records as having been used but which exists in no Makefile, script or config. This is the only `src`-adjacent item in Wave 0 and it is Makefile-only.
 - **P8 — rulebook corrections.** (a) **Narrow S4 to one named site.** `crates/rdlt-connector-snowflake/src/dest/client.rs` contains **zero** `Deserialize` (verified) — the forked `snowflake-connector-rs` owns the wire, and that file's own module doc already declares it the crate's one boundary with the library, i.e. Principle III does S4's job by wrapping instead of by naming. The only serde in snowflake's `src` is `dest/config.rs`, frozen by C3. S4's single legitimate site in 54k lines is `crates/rdlt-connector-postgres/src/source/cdc/pgoutput.rs` (`TupleData`, `TupleValue`, `RelationColumn`, `Relation`, `Message` — literally the pgoutput logical-replication format). **Delete §4.6's `wire/` + `Wire*` instruction**; left standing, the cheapest thing an executing AI can find to rename `Wire*` is the config or state types, a C1/C3 violation discovered at wave 7 on the most expensive net in the repo. (b) **Write §4.14 rdlt-connector-iceberg** — Part 4 has sections 4.1–4.13 covering 13 of 14 crates and iceberg is the omission, so Part 3's prompt-assembly instruction ("paste the one crate section from Part 4") cannot be executed for it. Include the S9 consolidation **exemption** with both failure directions from §3.1. (c) **Write the S9 `tests/cases/common.rs` template as a concrete file here.** §4.2 asks testkit to establish it; testkit cannot — its `tests/` is two files (`conformance_memory.rs` 38 lines, `conformance_negative.rs` 133) with no expensive resource to share behind a `OnceCell`. The cheap half is validated at wave 1 (rest, wiremock); the expensive half at wave 4 (duckdb's container). (d) Amend this Part: **one WAVE = one gate cycle**, and add the `make reclaim` + TIME_WAIT drain ritual to the prompt so back-to-back gates do not die on podman `rootlessport bind`.
 
-**Wave 0 exit:** `env -u RUSTUP_TOOLCHAIN make check` green with the new legs; the skip-count baseline committed and reproducing on a second run; `make semver` reporting no update required against the recorded sha; the remaining §3.6 decisions (2, 4, 5, 6) recorded in writing — §3.6.1 is already decided (window CLOSED, 2026-07-30) and §3.6.3 is already satisfied (023 merged to main at `15f17c65`).
+**Wave 0 exit:** `env -u RUSTUP_TOOLCHAIN make check` green with the new legs; the skip-count baseline committed and reproducing on a second run; `make semver` reporting no update required against the recorded sha; all six §3.6 decisions recorded (they are — 2026-07-30), so nothing in waves 1–9 waits on an answer.
 
 ### 3.3 The order
 
@@ -393,7 +398,7 @@ Every item is test-only, tooling-only or document-only. Nothing here has a `src/
 - **Wave 9 is batched:** cli and bench share no surface, but the facade's commits land first.
 - **Not parallelizable, contrary to the draft's wave 3:** rest, file and iceberg are independent in the graph but rest's and file's suites both import `rdlt_connector_duckdb::dest::DuckDb` (file at seven sites across `e2e_duckdb.rs`, `s3_live.rs`, `sweep.rs`), so none of them may run concurrently with duckdb's wave. Waves 3, 6, 7 and 8 are strictly serial.
 
-### 3.6 Decisions that are the owner's, not the executor's
+### 3.6 Owner decisions — ALL RECORDED 2026-07-30
 
 1. **The 0.2→0.3 window: DECIDED — CLOSED.** Owner decision, 2026-07-30.
    `rdlt-core` and `rdlt-connector` take **internal reshapes only** for the
@@ -409,7 +414,7 @@ Every item is test-only, tooling-only or document-only. Nothing here has a `src/
    endured. Consequence, and the reason deciding it now mattered: nothing in
    waves 1–9 may edit a call site *because* of a sacred-crate rename, so wave
    2's ripple is zero by construction and its position is free.
-2. **Is one 101.5-min hand sweep bracketed (≈3.4 h total, two runs) budgeted for wave 7, with the credentialed live legs?** **Recommendation: yes.** Cost of no: snowflake must be dropped from the program entirely (a structural refactor of 3,979 lines with no admissible proof is not a refactor), or accepted unproven with the risk of silently restoring D-32/D-33 — the two defects only the live account caught.
+2. **The wave-7 sweep budget: ACCEPTED, 2026-07-30.** One 101.5-min hand sweep bracketed before and after the reshape (≈3.4 h, two runs) plus the credentialed live legs. Cost of no: snowflake must be dropped from the program entirely (a structural refactor of 3,979 lines with no admissible proof is not a refactor), or accepted unproven with the risk of silently restoring D-32/D-33 — the two defects only the live account caught.
 3. **023 merged before wave 1: DONE.** Fast-forwarded to `main` at `15f17c65`
    on 2026-07-30 (28 commits, +4,364/−2,259), verified on the merged tree:
    `make lint` exit 0 including the distribution gate, `make test` 948/948 with
@@ -419,11 +424,71 @@ Every item is test-only, tooling-only or document-only. Nothing here has a `src/
    decision: wave 7 no longer rebases across a wholesale rewrite of the crate
    it reshapes, so `git diff --find-renames` — C6's only cheap verification for
    move-only commits — keeps working.
-4. **May `make check` grow?** Wave 0 adds `TARGET=e2e`, `make semver`, a snowflake failpoints clippy leg, and removes nine `--no-tests=pass`. **Recommendation: yes.** Cost: a few minutes per gate cycle × 10 cycles. Cost of no: an emptied filter reads as a passing gate, and wave 2's only net does not exist.
-5. **One wave = one gate cycle (10 tolls) or one crate = one increment (13)?** **Recommendation: batch.** C6's commit taxonomy already keeps reviewability intact; the saving is three full workspace cycles including containers, valgrind, hyperfine and the reclaim ritual.
-6. **Confirm the C10 freeze lists (P6) as binding**, including the `dest::sqlgen` exemption — i.e. accept that this program will leave a handful of test-facing paths un-idealised and route them through a later, owner-visible change. **Recommendation: yes.** Cost of no: waves 6 and 8 become multi-crate commits and the postgres golden pins have to be relocated inside the commit that reshapes what they pin, which forfeits the extraction's only evidence.
+4. **`make check` may grow: ACCEPTED, 2026-07-30.** Wave 0 adds `TARGET=e2e`, `make semver` and a snowflake failpoints clippy leg, and removes nine `--no-tests=pass`. Cost: a few minutes per gate cycle × 10 cycles. Cost of no: an emptied filter reads as a passing gate, and wave 2's only net does not exist.
+5. **Batching: ACCEPTED, 2026-07-30.** One WAVE = one gate cycle (10 tolls), not one crate = one increment (13). C6's commit taxonomy already keeps reviewability intact; the saving is three full workspace cycles including containers, valgrind, hyperfine and the reclaim ritual.
+6. **C10 freeze lists: BINDING, 2026-07-30.** Including the `dest::sqlgen` exemption — this program deliberately leaves a handful of test-facing paths un-idealised and routes them through a later, owner-visible change. Cost of no: waves 6 and 8 become multi-crate commits and the postgres golden pins have to be relocated inside the commit that reshapes what they pin, which forfeits the extraction's only evidence.
 
-### 3.7 Corrections to facts stated elsewhere in this document
+### 3.7 The execution vehicle — one speckit feature, waves as stories
+
+**Not one feature per crate.** This repo has already answered this twice:
+feature 017 executed the previous `REFACTORING.md` end-to-end as ONE speckit
+feature with 12 independently-mergeable increments, and feature 020 executed
+`NEXT_STEPS.md` as ONE feature with 11 stories. Both produced the standard
+artifact set once and a single close-out carrying a row per item — 017's has 130
+rows, zero empty, zero deferrals. That is the shape this document wants.
+
+Running `/speckit-specify` per crate would produce ten features × seven
+artifacts ≈ 65 documents, and for a refactor with **zero behavior change** most
+of them have nothing to say: there are no requirements to elicit, no data model
+(nothing new exists), no quickstart (no user-visible change), and no contract
+beyond "byte-identical". Ceremony without content is how an audit trail stops
+being read.
+
+**The recommended split is TWO features, not one**, because Wave 0 is not
+actually refactor pre-work — it is a set of standing defects that happen to
+block the refactor:
+
+- **Feature A — test-gate integrity** (Wave 0 items P2, P3, P4, P5, P7). Nine
+  `--no-tests=pass` flags let an emptied selection read as a pass; five
+  connectors cannot detect a *dropped* crash point because they assert only
+  `fired == FAIL_POINTS` against a constant in the file being changed;
+  `cargo semver-checks` has no Makefile verb and CI runs it against a
+  73-commit-stale baseline; snowflake's `crash_sweep.rs` is behind a feature no
+  gate enables, so nothing type-checks it. **Every one of those is a defect
+  today, independent of any refactor**, and each is worth landing on its own
+  merits. Small, no `src/` changes outside the Makefile.
+- **Feature B — house style** (Wave 0 items P1, P6, P8 + waves 1–9). P1 (the
+  sqlcore pin lift) and P6 (the C10 freeze lists) exist only to make this
+  refactor provable, so they belong here, not in A.
+
+For Feature B the mapping onto speckit is direct:
+
+| speckit artifact | content |
+|---|---|
+| `spec.md` user stories | the waves — US1 pilot (rest), US2 shared vocabulary, US3 sqlcore, … US9 leaves. Each story's "independent test" is that wave's EXIT condition from §3.4 |
+| `contracts/house-style.md` | HS1–HS8: the rulebook's *testable* invariants — no `mod.rs` holds logic; positive `binary()` selections non-empty and counts matching; skip-count identical under assertive gating; golden pins byte-identical; `make semver` clean; commit history separates move/rename/reshape |
+| `research.md` | already largely written — cite this document's §3.0–§3.7 and the measured facts; the residual research is per-crate SEAM decisions (does `cursor.rs` split honestly? does `schema.rs`?) which are genuinely unknown until read |
+| `data-model.md` | **N/A and say so** — no entity is created, changed or removed. An artifact that says "not applicable, because C1" is worth more than a padded one |
+| `quickstart.md` | **N/A and say so** — zero user-visible change is the whole point |
+| `tasks.md` | one phase per wave, tasks per crate, with each wave's entry condition as its phase gate |
+| `close-out.md` | ONE matrix: a row per crate × per rule, plus every C10 freeze honoured, plus the closing rename-proposal list |
+
+**How the per-crate prompt assembly composes with this.** §3.3's "paste Part 1 +
+Part 2 + the one crate section from Part 4" is the *execution* mechanism inside
+a wave; speckit is the *accounting* mechanism around all of them. They do not
+compete: `/speckit-implement` works the wave's tasks, and each crate's work is
+dispatched with the assembled prompt.
+
+**On parallel agents.** Dispatching one agent per crate is tempting and mostly
+wrong here: the gate is workspace-wide, so two agents cannot verify
+simultaneously, and container fixtures collide (see the podman
+`rootlessport bind` / TIME_WAIT ritual in C5). Agents may PREPARE a crate in a
+git worktree, but gating is serialized. Only wave 5 (file ‖ iceberg) is
+genuinely parallel, and only because Wave 0 already made every shared-file edit
+— otherwise concurrent branches conflict on the Makefile and
+`.config/nextest.toml` and every rebase re-runs a container gate.
+
+### 3.8 Corrections to facts stated elsewhere in this document
 
 - sqlcore's external pins are **four** files in **two** crates: `postgres/tests/{golden_sql.rs, golden_unit_sql.rs, golden_ensure_sql.rs}` and `duckdb/tests/golden_ensure_sql.rs`. §4.8's "golden pins are the safety net" is true and is an argument for scheduling sqlcore **before** the crates that hold them.
 - Part 4 has **no iceberg section** (4.1–4.13 cover the other 13 crates), so Part 3's prompt-assembly instruction cannot be executed for it as written. P8(b) fixes this.
