@@ -11,7 +11,7 @@ use rdlt_core::LoadId;
 
 use crate::wal::WalRecord;
 
-use super::off_runtime;
+use super::blocking::off_runtime;
 
 /// The uncommitted tail of a previous run.
 #[derive(Debug)]

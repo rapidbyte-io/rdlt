@@ -8,7 +8,7 @@ use rdlt_core::{CommitMeta, RdltError, StateDoc};
 
 use crate::wal::WalRecord;
 
-use super::{off_runtime, scan::RecoverySpan};
+use super::{blocking::off_runtime, scan::RecoverySpan};
 
 /// Open one WAL segment for streaming decode; the error text names the
 /// failure so degradation to re-extraction is diagnosable from logs.

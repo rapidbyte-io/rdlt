@@ -1,11 +1,4 @@
-//! WAL resume: single forward scan of the manifest, replay of the uncommitted span,
-//! degradation to re-extraction on any damage (slower, never wrong).
-
-mod replay;
-mod scan;
-
-pub(crate) use replay::replay;
-pub(crate) use scan::{RecoverySpan, ScanOutcome, scan_off_runtime};
+//! Recovery's one seam onto the blocking pool.
 
 /// Run one piece of blocking file work off the async runtime.
 ///
@@ -19,7 +12,7 @@ pub(crate) use scan::{RecoverySpan, ScanOutcome, scan_off_runtime};
 /// translated: it is a bug in decode logic, not a damaged WAL, and the damage
 /// arms exist to degrade from corrupt DATA. Turning a panic into "degrade to
 /// re-extraction" would hide a defect behind a slower correct path.
-async fn off_runtime<T, F>(work: F) -> T
+pub(super) async fn off_runtime<T, F>(work: F) -> T
 where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,

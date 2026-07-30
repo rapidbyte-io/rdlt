@@ -1,20 +1,6 @@
-//! The shredder: raw JSON → typed, lineage-stamped Arrow batches, under the
-//! schema-change policy.
-//!
-//! The tape path (`tape`: slab arena, no per-row trees) feeds [`drain_tables`]
-//! — the generic resolve/policy/build pipeline over the [`view::JsonView`]
-//! seam. The seam stays generic even with one production
-//! path: the `&serde_json::Value` view backs the unit tests, and everything
-//! semantics-bearing remains representation-independent by construction.
-
-pub(crate) mod arena;
-pub(crate) mod build;
-pub(crate) mod canon;
-pub(crate) mod infer;
-pub(crate) mod passthrough;
-pub(crate) mod table;
-pub(crate) mod tape;
-pub(crate) mod view;
+//! The drain: cascade filtering, schema resolution, policy enforcement,
+//! registry diff/apply, Arrow building — the shared back half of both shred
+//! paths.
 
 use std::collections::BTreeSet;
 
@@ -31,9 +17,7 @@ use crate::{
     },
 };
 
-use self::{infer::ColumnState, table::TableBuffer, view::JsonView};
-
-pub(crate) use tape::TapeShredder;
+use super::{build, infer::ColumnState, table, table::TableBuffer, view::JsonView};
 
 /// The per-batch shred context: the mutable schema registry plus the run-scoped
 /// load id, write mode, and schema policy. One bundle, one field order — shared
