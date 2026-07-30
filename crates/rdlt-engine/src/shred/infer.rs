@@ -11,7 +11,7 @@ use rdlt_core::types::{LogicalType, int64_fits_in_f64, widen};
 use rdlt_core::{ColumnDef, ColumnType, Provenance};
 
 use super::canon::parse_timestamp_tz;
-use super::view::{JsonView, Kind};
+use super::view::{JsonView, ValueKind};
 
 /// Observation state for a scalar position (column, struct field, or list item).
 #[derive(Debug, Default, Clone)]
@@ -44,9 +44,9 @@ impl ScalarState {
             return;
         }
         let observed = match value.kind() {
-            Kind::Null => return,
-            Kind::Bool(_) => LogicalType::Bool,
-            Kind::Int(i) => {
+            ValueKind::Null => return,
+            ValueKind::Bool(_) => LogicalType::Bool,
+            ValueKind::Int(i) => {
                 if !int64_fits_in_f64(i) {
                     self.saw_inexact_int = true;
                 }
@@ -60,12 +60,12 @@ impl ScalarState {
             // arrive in. Deciding per value — text only above i64::MAX — would
             // make the resolved type depend on arrival order, which is the bug
             // class this lattice exists to prevent.
-            Kind::UInt(_) => LogicalType::Utf8,
-            Kind::Float(_) => {
+            ValueKind::UInt(_) => LogicalType::Utf8,
+            ValueKind::Float(_) => {
                 self.saw_float = true;
                 LogicalType::Float64
             }
-            Kind::Str(s) => {
+            ValueKind::Str(s) => {
                 if parse_timestamp_tz(s).is_some() {
                     LogicalType::TimestampTz
                 } else {
@@ -73,7 +73,7 @@ impl ScalarState {
                 }
             }
             // Non-scalars reaching a scalar position are a shape conflict → Json.
-            Kind::Object | Kind::Array => LogicalType::Json,
+            ValueKind::Object | ValueKind::Array => LogicalType::Json,
         };
         let joined = match self.ty {
             None => observed,
@@ -95,12 +95,12 @@ impl ScalarState {
 
 /// Observation state for one column position, tracking shape as well as type.
 #[derive(Debug, Clone)]
-pub(crate) enum ColState {
+pub(crate) enum ColumnState {
     /// Only nulls seen so far.
     Unknown,
     Scalar(ScalarState),
     /// Nested object: fields in first-seen order (order is part of the schema hash).
-    Struct(Vec<(String, ColState)>),
+    Struct(Vec<(String, ColumnState)>),
     ScalarList(ScalarState),
     /// List of objects — rows live in a child table; the column itself vanishes.
     ChildTable,
@@ -108,14 +108,14 @@ pub(crate) enum ColState {
     Json,
 }
 
-impl ColState {
+impl ColumnState {
     pub(crate) fn observe<'a, V: JsonView<'a>>(&mut self, value: V, lists_as_columns: bool) {
         if value.is_null() {
             return;
         }
         match self {
-            ColState::Json => {}
-            ColState::Unknown => {
+            ColumnState::Json => {}
+            ColumnState::Unknown => {
                 *self = Self::fresh(value, lists_as_columns);
             }
             // A shape conflict widens an inferred column to Json — but a PINNED
@@ -131,43 +131,43 @@ impl ColState {
             // type by different routes. Kept because it states the rule where
             // the rule matters, rather than leaving a reader to find it inside
             // the scalar observer.
-            ColState::Scalar(state) => match value.kind() {
-                Kind::Object | Kind::Array if !state.is_pinned() => *self = ColState::Json,
+            ColumnState::Scalar(state) => match value.kind() {
+                ValueKind::Object | ValueKind::Array if !state.is_pinned() => *self = ColumnState::Json,
                 _ => state.observe(value),
             },
-            ColState::Struct(fields) => match value.kind() {
-                Kind::Object => {
+            ColumnState::Struct(fields) => match value.kind() {
+                ValueKind::Object => {
                     for (key, item) in value.obj_entries() {
                         match fields.iter_mut().find(|(name, _)| name == key) {
                             Some((_, state)) => state.observe(item, lists_as_columns),
                             None => {
-                                let mut state = ColState::Unknown;
+                                let mut state = ColumnState::Unknown;
                                 state.observe(item, lists_as_columns);
                                 fields.push((key.to_owned(), state));
                             }
                         }
                     }
                 }
-                _ => *self = ColState::Json,
+                _ => *self = ColumnState::Json,
             },
-            ColState::ScalarList(item_state) => match value.kind() {
-                Kind::Array => {
+            ColumnState::ScalarList(item_state) => match value.kind() {
+                ValueKind::Array => {
                     if value.arr_items().any(|item| item.is_object()) {
                         // scalars-then-objects in the same list position: irreconcilable
-                        *self = ColState::Json;
+                        *self = ColumnState::Json;
                     } else {
                         for item in value.arr_items() {
                             if item.is_array() {
-                                *self = ColState::Json; // nested lists: v1 escape hatch
+                                *self = ColumnState::Json; // nested lists: v1 escape hatch
                                 return;
                             }
                             item_state.observe(item);
                         }
                     }
                 }
-                _ => *self = ColState::Json,
+                _ => *self = ColumnState::Json,
             },
-            ColState::ChildTable => {
+            ColumnState::ChildTable => {
                 // Empty lists and further lists (of objects or scalars — scalar items
                 // become {"value": …} child rows) are fine. A non-array or a mixed
                 // list is a shape conflict: the column becomes Json for conflicting
@@ -176,7 +176,7 @@ impl ColState {
                     array_shape(value),
                     ArrayShape::Objects | ArrayShape::Scalars | ArrayShape::Empty
                 ) {
-                    *self = ColState::Json;
+                    *self = ColumnState::Json;
                 }
             }
         }
@@ -191,35 +191,35 @@ impl ColState {
     /// never calling this at all, which is the same outcome by a shorter route.
     fn fresh<'a, V: JsonView<'a>>(value: V, lists_as_columns: bool) -> Self {
         match value.kind() {
-            Kind::Object => {
+            ValueKind::Object => {
                 let mut fields = Vec::new();
                 for (key, item) in value.obj_entries() {
-                    let mut state = ColState::Unknown;
+                    let mut state = ColumnState::Unknown;
                     state.observe(item, lists_as_columns);
                     fields.push((key.to_owned(), state));
                 }
-                ColState::Struct(fields)
+                ColumnState::Struct(fields)
             }
-            Kind::Array => match array_shape(value) {
-                ArrayShape::Empty => ColState::Unknown, // decide when data arrives
-                ArrayShape::Objects => ColState::ChildTable,
+            ValueKind::Array => match array_shape(value) {
+                ArrayShape::Empty => ColumnState::Unknown, // decide when data arrives
+                ArrayShape::Objects => ColumnState::ChildTable,
                 ArrayShape::Scalars => {
                     if lists_as_columns {
                         let mut item_state = ScalarState::default();
                         for item in value.arr_items() {
                             item_state.observe(item);
                         }
-                        ColState::ScalarList(item_state)
+                        ColumnState::ScalarList(item_state)
                     } else {
-                        ColState::ChildTable
+                        ColumnState::ChildTable
                     }
                 }
-                ArrayShape::Mixed => ColState::Json,
+                ArrayShape::Mixed => ColumnState::Json,
             },
             _ => {
                 let mut state = ScalarState::default();
                 state.observe(value);
-                ColState::Scalar(state)
+                ColumnState::Scalar(state)
             }
         }
     }
@@ -228,13 +228,13 @@ impl ColState {
     /// (child tables) or never got data.
     pub(crate) fn resolve(&self) -> Option<ColumnType> {
         match self {
-            ColState::Unknown | ColState::ChildTable => None,
-            ColState::Json => Some(ColumnType::scalar(LogicalType::Json)),
-            ColState::Scalar(s) => Some(ColumnType::scalar(s.resolve())),
-            ColState::ScalarList(item) => Some(ColumnType::ScalarList {
+            ColumnState::Unknown | ColumnState::ChildTable => None,
+            ColumnState::Json => Some(ColumnType::scalar(LogicalType::Json)),
+            ColumnState::Scalar(s) => Some(ColumnType::scalar(s.resolve())),
+            ColumnState::ScalarList(item) => Some(ColumnType::ScalarList {
                 item: item.resolve(),
             }),
-            ColState::Struct(fields) => {
+            ColumnState::Struct(fields) => {
                 let resolved: Vec<ColumnDef> = fields
                     .iter()
                     .filter_map(|(name, state)| {
@@ -256,7 +256,7 @@ impl ColState {
     }
 
     pub(crate) fn is_child_table(&self) -> bool {
-        matches!(self, ColState::ChildTable)
+        matches!(self, ColumnState::ChildTable)
     }
 }
 
@@ -299,8 +299,8 @@ mod tests {
     use super::*;
     use serde_json::{Value, json};
 
-    fn observe_all(values: &[Value]) -> ColState {
-        let mut state = ColState::Unknown;
+    fn observe_all(values: &[Value]) -> ColumnState {
+        let mut state = ColumnState::Unknown;
         for v in values {
             state.observe(v, true);
         }
@@ -385,7 +385,7 @@ mod tests {
         // Pinned: the declared type survives the same conflicts untouched. This
         // is the half that a `!state.is_pinned()` guard forced false would
         // destroy — the object would rewrite a type the user declared.
-        let mut pinned = ColState::Scalar(ScalarState::pinned(LogicalType::Int64));
+        let mut pinned = ColumnState::Scalar(ScalarState::pinned(LogicalType::Int64));
         pinned.observe(&json!({"a": 1}), true);
         pinned.observe(&json!([1, 2]), true);
         pinned.observe(&json!("text"), true);

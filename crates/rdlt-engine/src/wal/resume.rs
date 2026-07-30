@@ -71,10 +71,10 @@ pub(crate) struct RecoverySpan {
     pub(crate) schemas: Vec<(rdlt_core::TableSchema, rdlt_core::WriteMode)>,
 }
 
-/// Scan outcome. `Damaged` means segments/manifest can't support replay — the caller
+/// ScanOutcome outcome. `Damaged` means segments/manifest can't support replay — the caller
 /// clears the WAL and falls back to cursor re-extraction.
 #[derive(Debug)]
-pub(crate) enum Scan {
+pub(crate) enum ScanOutcome {
     /// No manifest on disk: nothing was ever written here.
     Nothing,
     /// A manifest WAS read, but it holds nothing replayable — a span that never
@@ -101,16 +101,16 @@ pub(crate) enum Scan {
 /// Async wrapper: the scan reads the manifest line by line, which is blocking
 /// file I/O and belongs off an embedder's runtime for the same reason replay's
 /// decoding does.
-pub(crate) async fn scan_off_runtime(dir: &Path) -> Scan {
+pub(crate) async fn scan_off_runtime(dir: &Path) -> ScanOutcome {
     let dir = dir.to_path_buf();
     off_runtime(move || scan(&dir)).await
 }
 
-pub(crate) fn scan(dir: &Path) -> Scan {
+pub(crate) fn scan(dir: &Path) -> ScanOutcome {
     let path = dir.join("manifest.jsonl");
     let file = match File::open(&path) {
         Ok(f) => f,
-        Err(_) => return Scan::Nothing,
+        Err(_) => return ScanOutcome::Nothing,
     };
     let mut records: Vec<WalRecord> = Vec::new();
     let mut damaged: Option<String> = None;
@@ -138,7 +138,7 @@ pub(crate) fn scan(dir: &Path) -> Scan {
         }
     }
     if let Some(reason) = damaged {
-        return Scan::Damaged(reason);
+        return ScanOutcome::Damaged(reason);
     }
 
     // Find the uncommitted tail: records after the last Committed, within the last Run.
@@ -167,7 +167,7 @@ pub(crate) fn scan(dir: &Path) -> Scan {
                     // trusted to read; an older one names segments in a
                     // container this build no longer decodes. Neither is
                     // guessable — degrade to cursor re-extraction.
-                    return Scan::Unsupported {
+                    return ScanOutcome::Unsupported {
                         found: format_version,
                         supported: super::WAL_FORMAT_VERSION,
                     };
@@ -198,7 +198,7 @@ pub(crate) fn scan(dir: &Path) -> Scan {
     match (load_id, last_checkpoint) {
         (Some(load_id), Some(idx)) => {
             span.truncate(idx + 1);
-            Scan::Recover(RecoverySpan {
+            ScanOutcome::Recover(RecoverySpan {
                 load_id,
                 next_commit_seq: max_committed_seq + 1,
                 records: span,
@@ -208,7 +208,7 @@ pub(crate) fn scan(dir: &Path) -> Scan {
         // A span with no checkpoint has nothing safely replayable — but the
         // manifest and its segments are on disk, so say so rather than reporting
         // an empty workdir.
-        _ => Scan::Discard,
+        _ => ScanOutcome::Discard,
     }
 }
 
@@ -615,12 +615,12 @@ mod tests {
         };
         let current = super::super::WAL_FORMAT_VERSION;
         assert!(
-            matches!(run(current + 1), Scan::Unsupported { found, supported }
+            matches!(run(current + 1), ScanOutcome::Unsupported { found, supported }
                      if found == current + 1 && supported == current),
             "a newer manifest must be refused by version"
         );
         assert!(
-            matches!(run(current - 1), Scan::Unsupported { found, supported }
+            matches!(run(current - 1), ScanOutcome::Unsupported { found, supported }
                      if found == current - 1 && supported == current),
             "an older manifest names segments in the previous container and must \
              be refused by version, not discovered unreadable at open time"
@@ -629,7 +629,7 @@ mod tests {
         // and its segments ARE on disk — `Discard` so the caller clears them.
         // `Nothing` would leave residue to accumulate across repeated crashes
         // before the first checkpoint.
-        assert!(matches!(run(current), Scan::Discard));
+        assert!(matches!(run(current), ScanOutcome::Discard));
     }
 
     /// A manifest predating the versioned header defaults to v1 — and must
@@ -644,7 +644,7 @@ mod tests {
         )
         .expect("write manifest");
         assert!(
-            matches!(scan(dir.path()), Scan::Unsupported { found: 1, .. }),
+            matches!(scan(dir.path()), ScanOutcome::Unsupported { found: 1, .. }),
             "an unversioned header is a v1 manifest"
         );
     }
@@ -740,7 +740,7 @@ mod starvation_tests {
         // A starvation test that passes because the work never happened proves
         // nothing, so the scan's own result is asserted too.
         assert!(
-            matches!(scan, Scan::Recover(_)),
+            matches!(scan, ScanOutcome::Recover(_)),
             "the scan itself must still succeed"
         );
         assert!(

@@ -8,7 +8,7 @@ use rdlt_core::schema::system_columns;
 use rdlt_core::{ColumnDef, ParentLink, Provenance, RowId, TableName, TableSchema};
 
 use super::canon::{canonical_json_bytes, render_scalar};
-use super::infer::ColState;
+use super::infer::ColumnState;
 use super::view::JsonView;
 
 /// One table's persistent shredding state: naming, shape observation, lineage —
@@ -18,7 +18,7 @@ pub(crate) struct TableBuffer {
     pub(crate) table: TableName,
     pub(crate) parent: Option<ParentLink>,
     /// Column observation states in first-seen order; source key → state.
-    pub(crate) columns: Vec<(String, ColState)>,
+    pub(crate) columns: Vec<(String, ColumnState)>,
     /// Source key → normalized column/child name mapping (collision-safe).
     namer: UniqueNamer,
     names: Vec<(String, String)>,
@@ -81,7 +81,7 @@ impl TableBuffer {
     pub(crate) fn revert_column(
         &mut self,
         source_key: &str,
-        rollback_snapshot: Option<&[(String, ColState)]>,
+        rollback_snapshot: Option<&[(String, ColumnState)]>,
     ) {
         let prior = rollback_snapshot.and_then(|columns| {
             columns
@@ -110,12 +110,12 @@ impl TableBuffer {
         normalized
     }
 
-    pub(crate) fn state_mut(&mut self, source_key: &str) -> &mut ColState {
+    pub(crate) fn state_mut(&mut self, source_key: &str) -> &mut ColumnState {
         if let Some(idx) = self.columns.iter().position(|(k, _)| k == source_key) {
             &mut self.columns[idx].1
         } else {
             self.columns
-                .push((source_key.to_owned(), ColState::Unknown));
+                .push((source_key.to_owned(), ColumnState::Unknown));
             &mut self.columns.last_mut().expect("just pushed").1
         }
     }

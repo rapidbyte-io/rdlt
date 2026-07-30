@@ -26,7 +26,7 @@ use rdlt_core::{
 
 use crate::load::LoadItem;
 use crate::schema::contracts::{change_column, violation_for};
-use crate::shred::ShredCtx;
+use crate::shred::ShredContext;
 use crate::shred::build::{arrow_column_type, arrow_schema};
 
 /// Process one structured batch: schema mapping, policy enforcement, load-id
@@ -34,10 +34,10 @@ use crate::shred::build::{arrow_column_type, arrow_schema};
 pub(crate) fn passthrough_items(
     batch: &RecordBatch,
     table: &TableName,
-    ctx: ShredCtx,
+    ctx: ShredContext,
     caps: DestinationCapabilities,
 ) -> Result<Vec<LoadItem>, RdltError> {
-    let ShredCtx {
+    let ShredContext {
         registry,
         load_id,
         mode,

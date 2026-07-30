@@ -19,10 +19,10 @@ use rdlt_core::naming::child_table_name;
 use rdlt_core::{ParentLink, RdltError, RowId, TableName};
 
 use super::arena::{Arena, NodeId};
-use super::infer::{ColState, ScalarState};
+use super::infer::{ColumnState, ScalarState};
 use super::table::{TableBuffer, content_hash_with, row_identity};
 use super::view::JsonView;
-use super::{DrainRow, ShredCtx, drain_tables};
+use super::{DrainRow, ShredContext, drain_tables};
 use crate::load::LoadItem;
 
 /// A shred-path error: JSON errors format at the call site exactly like the
@@ -64,7 +64,7 @@ pub(crate) struct TapeShredder {
     /// the tree path).
     tables: Vec<TableBuffer>,
     /// Rollback point for Discard* policy enforcement.
-    rollback_snapshot: Vec<Vec<(String, ColState)>>,
+    rollback_snapshot: Vec<Vec<(String, ColumnState)>>,
 }
 
 impl TapeShredder {
@@ -76,7 +76,7 @@ impl TapeShredder {
         let mut root = TableBuffer::new(root_table, None, caps.ident_rules);
         // Hints pin root-level scalar columns (they win over inference).
         for (column, ty) in &spec.type_hints {
-            *root.state_mut(column) = ColState::Scalar(ScalarState::pinned(*ty));
+            *root.state_mut(column) = ColumnState::Scalar(ScalarState::pinned(*ty));
         }
         Self {
             spec,
@@ -92,7 +92,7 @@ impl TapeShredder {
     pub(crate) fn push_and_drain(
         &mut self,
         bytes: &[u8],
-        ctx: ShredCtx,
+        ctx: ShredContext,
     ) -> Result<Vec<LoadItem>, PushError> {
         // Snapshot observation states: Discard* enforcement rolls offending
         // columns back to exactly this point.

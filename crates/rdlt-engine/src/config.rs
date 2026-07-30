@@ -89,7 +89,7 @@ impl EngineConfig {
         &self.write_modes
     }
 
-    pub(crate) fn mode_for(&self, stream: &StreamName) -> WriteMode {
+    pub(crate) fn write_mode_for(&self, stream: &StreamName) -> WriteMode {
         self.write_modes
             .get(stream)
             .cloned()

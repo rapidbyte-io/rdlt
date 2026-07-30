@@ -180,7 +180,7 @@ async fn run_once(
     let mut stream_tasks: JoinSet<Result<(), RdltError>> = JoinSet::new();
 
     for spec in streams {
-        let mode = config.mode_for(&spec.name);
+        let mode = config.write_mode_for(&spec.name);
         // Replace streams are full-refresh by definition: they never resume from a
         // cursor (and full-refresh sources typically have none to honor).
         let since = if matches!(mode, WriteMode::Replace) {
@@ -268,7 +268,7 @@ fn validate_streams(
                 spec.name
             )));
         }
-        if matches!(config.mode_for(&spec.name), WriteMode::Merge { .. }) && !caps.merge {
+        if matches!(config.write_mode_for(&spec.name), WriteMode::Merge { .. }) && !caps.merge {
             return Err(RdltError::config(format!(
                 "stream `{}` requests Merge but destination `{}` does not support it",
                 spec.name,
@@ -303,7 +303,7 @@ fn validate_streams(
         // that key (the destination's merge capability was checked above).
         // Keyless structured streams keep the original rejection.
         if spec.structured
-            && let WriteMode::Merge { key } = config.mode_for(&spec.name)
+            && let WriteMode::Merge { key } = config.write_mode_for(&spec.name)
         {
             let declared = spec.primary_key.clone().unwrap_or_default();
             if declared.is_empty() {
@@ -354,21 +354,21 @@ async fn recover_wal(
     let mut resumed_from = None;
     if let Some(wal_dir) = wal_dir {
         match crate::wal::resume::scan_off_runtime(wal_dir).await {
-            crate::wal::resume::Scan::Nothing => {}
+            crate::wal::resume::ScanOutcome::Nothing => {}
             // Nothing to replay, but something to clean: a crash before the
             // first checkpoint leaves a manifest and its segments behind, and a
             // pipeline that keeps failing there would grow both without bound.
             // Not a warning — dying before the first checkpoint is ordinary.
-            crate::wal::resume::Scan::Discard => crate::wal::clear(wal_dir),
-            crate::wal::resume::Scan::Recover(span) => {
+            crate::wal::resume::ScanOutcome::Discard => crate::wal::clear(wal_dir),
+            crate::wal::resume::ScanOutcome::Recover(span) => {
                 resumed_from = replay_span(destination, config, wal_dir, span, caps).await?;
                 crate::wal::clear(wal_dir);
             }
-            crate::wal::resume::Scan::Damaged(reason) => {
+            crate::wal::resume::ScanOutcome::Damaged(reason) => {
                 tracing::warn!(%reason, "WAL manifest damaged; re-extracting from cursors");
                 crate::wal::clear(wal_dir);
             }
-            crate::wal::resume::Scan::Unsupported { found, supported } => {
+            crate::wal::resume::ScanOutcome::Unsupported { found, supported } => {
                 tracing::warn!(
                     found,
                     supported,
@@ -470,7 +470,7 @@ impl ShredOwner {
         tokio::task::spawn_blocking(move || {
             let span = tracing::info_span!("rdlt.shred");
             let _guard = span.enter();
-            let ctx = crate::shred::ShredCtx {
+            let ctx = crate::shred::ShredContext {
                 registry: &mut self.registry,
                 load_id: &load_id,
                 mode: &mode,
@@ -506,7 +506,7 @@ impl ShredOwner {
         tokio::task::spawn_blocking(move || {
             let span = tracing::info_span!("rdlt.passthrough");
             let _guard = span.enter();
-            let ctx = crate::shred::ShredCtx {
+            let ctx = crate::shred::ShredContext {
                 registry: &mut self.registry,
                 load_id: &load_id,
                 mode: &mode,

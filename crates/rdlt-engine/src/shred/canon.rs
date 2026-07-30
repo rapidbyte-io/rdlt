@@ -15,7 +15,7 @@
 
 use std::borrow::Cow;
 
-use super::view::{JsonView, Kind};
+use super::view::{JsonView, ValueKind};
 
 /// Canonical text of a JSON scalar. `None` for null and for non-scalars.
 /// - strings: verbatim
@@ -35,12 +35,12 @@ use super::view::{JsonView, Kind};
 /// empty string does not — pinned in `tests/shred_identity_pin.rs`.
 pub(crate) fn render_scalar<'a, V: JsonView<'a>>(value: V) -> Option<Cow<'a, str>> {
     match value.kind() {
-        Kind::Null | Kind::Object | Kind::Array => None,
-        Kind::Str(s) => Some(Cow::Borrowed(s)),
-        Kind::Bool(b) => Some(Cow::Borrowed(if b { "true" } else { "false" })),
-        Kind::Int(i) => Some(Cow::Owned(i.to_string())),
-        Kind::UInt(u) => Some(Cow::Owned(u.to_string())),
-        Kind::Float(f) => Some(Cow::Owned(f.to_string())),
+        ValueKind::Null | ValueKind::Object | ValueKind::Array => None,
+        ValueKind::Str(s) => Some(Cow::Borrowed(s)),
+        ValueKind::Bool(b) => Some(Cow::Borrowed(if b { "true" } else { "false" })),
+        ValueKind::Int(i) => Some(Cow::Owned(i.to_string())),
+        ValueKind::UInt(u) => Some(Cow::Owned(u.to_string())),
+        ValueKind::Float(f) => Some(Cow::Owned(f.to_string())),
     }
 }
 
@@ -57,7 +57,7 @@ pub(crate) fn render_scalar<'a, V: JsonView<'a>>(value: V) -> Option<Cow<'a, str
 /// bytes one flag away from a silent change. Mirror any shared-rule edit in both.
 pub(crate) fn canonical_json_bytes<'a, V: JsonView<'a>>(value: V, out: &mut Vec<u8>) {
     match value.kind() {
-        Kind::Object => {
+        ValueKind::Object => {
             out.push(b'{');
             // One Vec per object, to sort the keys. This looks like an obvious
             // allocation to hoist into a reusable scratch buffer, and it has
@@ -82,7 +82,7 @@ pub(crate) fn canonical_json_bytes<'a, V: JsonView<'a>>(value: V, out: &mut Vec<
             }
             out.push(b'}');
         }
-        Kind::Array => {
+        ValueKind::Array => {
             out.push(b'[');
             for (i, item) in value.arr_items().enumerate() {
                 if i > 0 {
@@ -92,16 +92,16 @@ pub(crate) fn canonical_json_bytes<'a, V: JsonView<'a>>(value: V, out: &mut Vec<
             }
             out.push(b']');
         }
-        Kind::Null => out.extend_from_slice(b"null"),
-        Kind::Bool(b) => out.extend_from_slice(if b { b"true" } else { b"false" }),
-        Kind::Str(s) => serde_json::to_writer(&mut *out, s).expect("string serialization"),
+        ValueKind::Null => out.extend_from_slice(b"null"),
+        ValueKind::Bool(b) => out.extend_from_slice(if b { b"true" } else { b"false" }),
+        ValueKind::Str(s) => serde_json::to_writer(&mut *out, s).expect("string serialization"),
         // Numbers reconstruct the exact serde_json::Number a Value would hold, so
         // the serialized bytes match the tree path digit-for-digit (itoa/ryu).
-        Kind::Int(i) => serde_json::to_writer(&mut *out, &serde_json::Number::from(i))
+        ValueKind::Int(i) => serde_json::to_writer(&mut *out, &serde_json::Number::from(i))
             .expect("number serialization"),
-        Kind::UInt(u) => serde_json::to_writer(&mut *out, &serde_json::Number::from(u))
+        ValueKind::UInt(u) => serde_json::to_writer(&mut *out, &serde_json::Number::from(u))
             .expect("number serialization"),
-        Kind::Float(f) => serde_json::to_writer(
+        ValueKind::Float(f) => serde_json::to_writer(
             &mut *out,
             &serde_json::Number::from_f64(f).expect("finite by JSON grammar"),
         )

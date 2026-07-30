@@ -17,7 +17,7 @@ use std::marker::PhantomData;
 
 use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
 
-use super::view::{JsonView, Kind};
+use super::view::{JsonView, ValueKind};
 
 /// Index of a node within its arena.
 pub(crate) type NodeId = u32;
@@ -146,40 +146,40 @@ impl fmt::Debug for Node<'_, '_> {
 }
 
 impl<'a, 's: 'a> JsonView<'a> for Node<'a, 's> {
-    type ObjIter = ObjIter<'a, 's>;
-    type ArrIter = ArrIter<'a, 's>;
+    type ObjectIter = ObjectIter<'a, 's>;
+    type ArrayIter = ArrayIter<'a, 's>;
 
-    fn kind(self) -> Kind<'a> {
+    fn kind(self) -> ValueKind<'a> {
         match &self.arena.nodes[self.id as usize] {
-            ArenaNode::Null => Kind::Null,
-            ArenaNode::Bool(b) => Kind::Bool(*b),
-            ArenaNode::Int(i) => Kind::Int(*i),
-            ArenaNode::UInt(u) => Kind::UInt(*u),
-            ArenaNode::Float(f) => Kind::Float(*f),
-            ArenaNode::Str(s) => Kind::Str(s.as_ref()),
-            ArenaNode::Obj(..) => Kind::Object,
-            ArenaNode::Arr(..) => Kind::Array,
+            ArenaNode::Null => ValueKind::Null,
+            ArenaNode::Bool(b) => ValueKind::Bool(*b),
+            ArenaNode::Int(i) => ValueKind::Int(*i),
+            ArenaNode::UInt(u) => ValueKind::UInt(*u),
+            ArenaNode::Float(f) => ValueKind::Float(*f),
+            ArenaNode::Str(s) => ValueKind::Str(s.as_ref()),
+            ArenaNode::Obj(..) => ValueKind::Object,
+            ArenaNode::Arr(..) => ValueKind::Array,
         }
     }
 
-    fn obj_entries(self) -> Self::ObjIter {
+    fn obj_entries(self) -> Self::ObjectIter {
         let (start, end) = match self.arena.nodes[self.id as usize] {
             ArenaNode::Obj(start, end) => (start, end),
             _ => (0, 0),
         };
-        ObjIter {
+        ObjectIter {
             arena: self.arena,
             next: start,
             end,
         }
     }
 
-    fn arr_items(self) -> Self::ArrIter {
+    fn arr_items(self) -> Self::ArrayIter {
         let (start, end) = match self.arena.nodes[self.id as usize] {
             ArenaNode::Arr(start, end) => (start, end),
             _ => (0, 0),
         };
-        ArrIter {
+        ArrayIter {
             arena: self.arena,
             next: start,
             end,
@@ -197,13 +197,13 @@ impl<'a, 's: 'a> JsonView<'a> for Node<'a, 's> {
     }
 }
 
-pub(crate) struct ObjIter<'a, 's> {
+pub(crate) struct ObjectIter<'a, 's> {
     arena: &'a Arena<'s>,
     next: u32,
     end: u32,
 }
 
-impl<'a, 's: 'a> Iterator for ObjIter<'a, 's> {
+impl<'a, 's: 'a> Iterator for ObjectIter<'a, 's> {
     type Item = (&'a str, Node<'a, 's>);
     fn next(&mut self) -> Option<Self::Item> {
         if self.next >= self.end {
@@ -215,13 +215,13 @@ impl<'a, 's: 'a> Iterator for ObjIter<'a, 's> {
     }
 }
 
-pub(crate) struct ArrIter<'a, 's> {
+pub(crate) struct ArrayIter<'a, 's> {
     arena: &'a Arena<'s>,
     next: u32,
     end: u32,
 }
 
-impl<'a, 's: 'a> Iterator for ArrIter<'a, 's> {
+impl<'a, 's: 'a> Iterator for ArrayIter<'a, 's> {
     type Item = Node<'a, 's>;
     fn next(&mut self) -> Option<Self::Item> {
         if self.next >= self.end {
@@ -348,8 +348,8 @@ where
     where
         D: serde::Deserializer<'de>,
     {
-        struct V<'s>(PhantomData<&'s ()>);
-        impl<'de, 's: 'de> Visitor<'de> for V<'s>
+        struct KeyVisitor<'s>(PhantomData<&'s ()>);
+        impl<'de, 's: 'de> Visitor<'de> for KeyVisitor<'s>
         where
             'de: 's,
         {
@@ -374,7 +374,7 @@ where
                 Ok(Cow::Owned(s.to_owned()))
             }
         }
-        deserializer.deserialize_str(V(PhantomData))
+        deserializer.deserialize_str(KeyVisitor(PhantomData))
     }
 }
 
@@ -457,7 +457,7 @@ mod tests {
             .arr_items()
             .take(16)
             .map(|v| match v.kind() {
-                Kind::Int(i) => i,
+                ValueKind::Int(i) => i,
                 other => panic!("expected Int, got {other:?}"),
             })
             .collect();
@@ -485,7 +485,7 @@ mod tests {
             .obj_entries()
             .map(|(k, v)| {
                 let value = match v.kind() {
-                    Kind::Str(s) => s.to_owned(),
+                    ValueKind::Str(s) => s.to_owned(),
                     other => panic!("expected Str, got {other:?}"),
                 };
                 (k.to_owned(), value)

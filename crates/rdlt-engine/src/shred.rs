@@ -26,7 +26,7 @@ use rdlt_core::{
 use crate::load::LoadItem;
 use crate::schema::contracts::{change_column, value_fits, violation_for};
 use crate::schema::registry::SchemaRegistry;
-use infer::ColState;
+use infer::ColumnState;
 use table::TableBuffer;
 pub(crate) use tape::TapeShredder;
 use view::JsonView;
@@ -36,7 +36,7 @@ use view::JsonView;
 /// by the tape shred path (`TapeShredder::push_and_drain`) and the structured
 /// passthrough path (`passthrough::passthrough_items`), which previously threaded
 /// these same four values in two different argument orders.
-pub(crate) struct ShredCtx<'a> {
+pub(crate) struct ShredContext<'a> {
     pub(crate) registry: &'a mut SchemaRegistry,
     pub(crate) load_id: &'a LoadId,
     pub(crate) mode: &'a WriteMode,
@@ -58,7 +58,7 @@ pub(crate) struct DrainRow<V> {
 
 impl<V: Copy> DrainRow<V> {
     /// Top-level field extraction honoring the DiscardValue overlay.
-    pub(crate) fn get_top<'a>(&self, key: &str) -> Option<V>
+    pub(crate) fn top_level<'a>(&self, key: &str) -> Option<V>
     where
         V: JsonView<'a>,
     {
@@ -78,7 +78,7 @@ struct TableDrain<'a, V> {
     rows: &'a mut Vec<DrainRow<V>>,
     /// Column snapshot to roll back to on Discard*; `None` for a table that did
     /// not exist before this batch (nothing to revert to).
-    rollback_snapshot: Option<&'a [(String, ColState)]>,
+    rollback_snapshot: Option<&'a [(String, ColumnState)]>,
 }
 
 /// The shared drain: cascade filtering, schema resolution, policy enforcement,
@@ -86,7 +86,7 @@ struct TableDrain<'a, V> {
 pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
     tables: &mut [TableBuffer],
     rows: &mut [Vec<DrainRow<V>>],
-    rollback_snapshot: &[Vec<(String, ColState)>],
+    rollback_snapshot: &[Vec<(String, ColumnState)>],
     registry: &mut SchemaRegistry,
     load_id: &LoadId,
     mode: &WriteMode,
@@ -341,7 +341,7 @@ fn explicit_action(
 fn enforce_discards<'v, V: JsonView<'v>>(
     buffer: &mut TableBuffer,
     rows: &mut Vec<DrainRow<V>>,
-    rollback_snapshot: Option<&[(String, ColState)]>,
+    rollback_snapshot: Option<&[(String, ColumnState)]>,
     discard: &[(SchemaChange, PolicyAction)],
     discarded_ids: &mut BTreeSet<RowId>,
     items: &mut Vec<LoadItem>,
@@ -382,7 +382,7 @@ fn enforce_discards<'v, V: JsonView<'v>>(
     rows.retain_mut(|row| {
         let mut keep = true;
         for offense in &offenses {
-            let value = row.get_top(&offense.source_key);
+            let value = row.top_level(&offense.source_key);
             let offends = match (&value, &offense.must_fit) {
                 (None, _) => false,
                 (Some(v), None) => !v.is_null(),

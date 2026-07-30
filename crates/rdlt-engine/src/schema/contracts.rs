@@ -8,15 +8,15 @@ use rdlt_core::types::int64_fits_in_f64;
 use rdlt_core::{ColumnType, ContractViolation, LogicalType, SchemaChange, TableName};
 
 use crate::shred::canon::parse_timestamp_tz;
-use crate::shred::view::{JsonView, Kind};
+use crate::shred::view::{JsonView, ValueKind};
 
 /// Does `value` conform to `ty` without requiring any schema change?
 /// (`true` = storable as-is; `false` = this value is what forced the widening.)
 pub(crate) fn value_fits<'a, V: JsonView<'a>>(value: V, ty: &ColumnType) -> bool {
     match (value.kind(), ty) {
-        (Kind::Null, _) => true,
+        (ValueKind::Null, _) => true,
         (_, ColumnType::Scalar { scalar }) => scalar_fits(value, *scalar),
-        (Kind::Object, ColumnType::Struct { fields }) => {
+        (ValueKind::Object, ColumnType::Struct { fields }) => {
             value
                 .obj_entries()
                 .all(|(key, item)| match fields.iter().find(|f| f.name == key) {
@@ -24,7 +24,7 @@ pub(crate) fn value_fits<'a, V: JsonView<'a>>(value: V, ty: &ColumnType) -> bool
                     None => item.is_null(), // a new nested field forced an evolution
                 })
         }
-        (Kind::Array, ColumnType::ScalarList { item }) => {
+        (ValueKind::Array, ColumnType::ScalarList { item }) => {
             let ty = ColumnType::scalar(*item);
             value.arr_items().all(|i| value_fits(i, &ty))
         }
@@ -36,26 +36,26 @@ fn scalar_fits<'a, V: JsonView<'a>>(value: V, scalar: LogicalType) -> bool {
     let kind = value.kind();
     match scalar {
         LogicalType::Json => true, // Json holds anything
-        LogicalType::Bool => matches!(kind, Kind::Bool(_)),
-        LogicalType::Int64 => matches!(kind, Kind::Int(_)),
+        LogicalType::Bool => matches!(kind, ValueKind::Bool(_)),
+        LogicalType::Int64 => matches!(kind, ValueKind::Int(_)),
         LogicalType::Float64 => match kind {
-            Kind::Int(i) => int64_fits_in_f64(i),
-            Kind::Float(_) => true,
+            ValueKind::Int(i) => int64_fits_in_f64(i),
+            ValueKind::Float(_) => true,
             _ => false,
         },
         // Utf8 absorbs every textable scalar (canonical renderings).
         LogicalType::Utf8 | LogicalType::Uuid => matches!(
             kind,
-            Kind::Str(_) | Kind::Int(_) | Kind::UInt(_) | Kind::Float(_) | Kind::Bool(_)
+            ValueKind::Str(_) | ValueKind::Int(_) | ValueKind::UInt(_) | ValueKind::Float(_) | ValueKind::Bool(_)
         ),
         LogicalType::TimestampTz => match kind {
-            Kind::Str(s) => parse_timestamp_tz(s).is_some(),
+            ValueKind::Str(s) => parse_timestamp_tz(s).is_some(),
             _ => false,
         },
         LogicalType::TimestampNaive | LogicalType::Date | LogicalType::Time => {
-            matches!(kind, Kind::Str(_))
+            matches!(kind, ValueKind::Str(_))
         }
-        LogicalType::Decimal { .. } => matches!(kind, Kind::Int(_) | Kind::Str(_)),
+        LogicalType::Decimal { .. } => matches!(kind, ValueKind::Int(_) | ValueKind::Str(_)),
         LogicalType::Binary => false, // not producible from JSON
     }
 }

@@ -26,7 +26,7 @@ use serde_json::Value;
 
 /// One JSON value's shape + scalar payload, decomposed for observation.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) enum Kind<'a> {
+pub(crate) enum ValueKind<'a> {
     Null,
     Bool(bool),
     Int(i64),
@@ -39,61 +39,61 @@ pub(crate) enum Kind<'a> {
 }
 
 pub(crate) trait JsonView<'a>: Copy {
-    type ObjIter: Iterator<Item = (&'a str, Self)>;
-    type ArrIter: Iterator<Item = Self>;
+    type ObjectIter: Iterator<Item = (&'a str, Self)>;
+    type ArrayIter: Iterator<Item = Self>;
 
-    fn kind(self) -> Kind<'a>;
+    fn kind(self) -> ValueKind<'a>;
     /// Entries in NATIVE order — first-occurrence position, last-occurrence
     /// value (see the view contract above); canonicalization sorts separately.
-    fn obj_entries(self) -> Self::ObjIter;
-    fn arr_items(self) -> Self::ArrIter;
+    fn obj_entries(self) -> Self::ObjectIter;
+    fn arr_items(self) -> Self::ArrayIter;
     /// Top-level object lookup (last duplicate wins); `None` off objects.
     fn obj_get(self, key: &str) -> Option<Self>;
 
     fn is_null(self) -> bool {
-        matches!(self.kind(), Kind::Null)
+        matches!(self.kind(), ValueKind::Null)
     }
     fn is_object(self) -> bool {
-        matches!(self.kind(), Kind::Object)
+        matches!(self.kind(), ValueKind::Object)
     }
     fn is_array(self) -> bool {
-        matches!(self.kind(), Kind::Array)
+        matches!(self.kind(), ValueKind::Array)
     }
 }
 
 // ---- the tree view: `&serde_json::Value` ----
 
 impl<'a> JsonView<'a> for &'a Value {
-    type ObjIter = ValueObjIter<'a>;
-    type ArrIter = std::slice::Iter<'a, Value>;
+    type ObjectIter = ValueObjectIter<'a>;
+    type ArrayIter = std::slice::Iter<'a, Value>;
 
-    fn kind(self) -> Kind<'a> {
+    fn kind(self) -> ValueKind<'a> {
         match self {
-            Value::Null => Kind::Null,
-            Value::Bool(b) => Kind::Bool(*b),
+            Value::Null => ValueKind::Null,
+            Value::Bool(b) => ValueKind::Bool(*b),
             Value::Number(n) => {
                 if let Some(i) = n.as_i64() {
-                    Kind::Int(i)
+                    ValueKind::Int(i)
                 } else if let Some(u) = n.as_u64() {
-                    Kind::UInt(u)
+                    ValueKind::UInt(u)
                 } else {
-                    Kind::Float(n.as_f64().expect("JSON numbers are i64/u64/f64"))
+                    ValueKind::Float(n.as_f64().expect("JSON numbers are i64/u64/f64"))
                 }
             }
-            Value::String(s) => Kind::Str(s),
-            Value::Object(_) => Kind::Object,
-            Value::Array(_) => Kind::Array,
+            Value::String(s) => ValueKind::Str(s),
+            Value::Object(_) => ValueKind::Object,
+            Value::Array(_) => ValueKind::Array,
         }
     }
 
-    fn obj_entries(self) -> Self::ObjIter {
+    fn obj_entries(self) -> Self::ObjectIter {
         match self {
-            Value::Object(map) => ValueObjIter(map.iter()),
-            _ => ValueObjIter(EMPTY_MAP.iter()),
+            Value::Object(map) => ValueObjectIter(map.iter()),
+            _ => ValueObjectIter(EMPTY_MAP.iter()),
         }
     }
 
-    fn arr_items(self) -> Self::ArrIter {
+    fn arr_items(self) -> Self::ArrayIter {
         match self {
             Value::Array(items) => items.iter(),
             _ => [].iter(),
@@ -108,9 +108,9 @@ impl<'a> JsonView<'a> for &'a Value {
 static EMPTY_MAP: std::sync::LazyLock<serde_json::Map<String, Value>> =
     std::sync::LazyLock::new(serde_json::Map::new);
 
-pub(crate) struct ValueObjIter<'a>(serde_json::map::Iter<'a>);
+pub(crate) struct ValueObjectIter<'a>(serde_json::map::Iter<'a>);
 
-impl<'a> Iterator for ValueObjIter<'a> {
+impl<'a> Iterator for ValueObjectIter<'a> {
     type Item = (&'a str, &'a Value);
     fn next(&mut self) -> Option<Self::Item> {
         self.0.next().map(|(k, v)| (k.as_str(), v))

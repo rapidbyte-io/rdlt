@@ -27,7 +27,7 @@ pub fn shred_slab(bytes: &[u8]) {
     );
     let items = shredder.push_and_drain(
         bytes,
-        crate::shred::ShredCtx {
+        crate::shred::ShredContext {
             registry: &mut registry,
             load_id: &load_id,
             mode: &mode,
@@ -71,7 +71,7 @@ pub fn bench_shred_bytes(bytes: &[u8]) -> u64 {
     let items = shredder
         .push_and_drain(
             bytes,
-            crate::shred::ShredCtx {
+            crate::shred::ShredContext {
                 registry: &mut registry,
                 load_id: &load_id,
                 mode: &mode,
@@ -99,7 +99,7 @@ pub fn bench_passthrough(batch: &arrow::record_batch::RecordBatch) -> u64 {
     let items = crate::shred::passthrough::passthrough_items(
         batch,
         &TableName::new("bench"),
-        crate::shred::ShredCtx {
+        crate::shred::ShredContext {
             registry: &mut registry,
             load_id: &load_id,
             mode: &mode,

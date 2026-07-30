@@ -21,7 +21,7 @@ use rdlt_core::{ColumnDef, ColumnType, LoadId, LogicalType, RowId, TableSchema};
 
 use super::DrainRow;
 use super::canon::parse_timestamp_tz;
-use super::view::{JsonView, Kind};
+use super::view::{JsonView, ValueKind};
 
 /// Arrow physical type for a logical type.
 fn arrow_scalar_type(ty: LogicalType) -> DataType {
@@ -139,7 +139,7 @@ pub(crate) fn build_batch<'v, V: JsonView<'v>>(
                     .map(|(source, _)| source.as_str())
                     .unwrap_or(column.name.as_str());
                 let values: Vec<Option<V>> =
-                    rows.iter().map(|row| row.get_top(source_key)).collect();
+                    rows.iter().map(|row| row.top_level(source_key)).collect();
                 let array = build_column(&column.column_type, &values);
                 let nulls = array.nulls();
                 misfits += values
@@ -219,8 +219,8 @@ fn build_column<'v, V: JsonView<'v>>(ty: &ColumnType, values: &[Option<V>]) -> A
     }
 }
 
-/// The observed [`Kind`] of an optional view cell — `None` for an absent cell.
-fn view_kind<'v, V: JsonView<'v>>(v: &Option<V>) -> Option<Kind<'v>> {
+/// The observed [`ValueKind`] of an optional view cell — `None` for an absent cell.
+fn view_kind<'v, V: JsonView<'v>>(v: &Option<V>) -> Option<ValueKind<'v>> {
     v.map(JsonView::kind)
 }
 
@@ -248,7 +248,7 @@ fn scalar_bool<'v, V: JsonView<'v>>(values: &[Option<V>]) -> ArrayRef {
     let mut b = BooleanBuilder::new();
     for v in values {
         b.append_option(match view_kind(v) {
-            Some(Kind::Bool(x)) => Some(x),
+            Some(ValueKind::Bool(x)) => Some(x),
             _ => None,
         });
     }
@@ -259,7 +259,7 @@ fn scalar_int64<'v, V: JsonView<'v>>(values: &[Option<V>]) -> ArrayRef {
     let mut b = Int64Builder::new();
     for v in values {
         b.append_option(match view_kind(v) {
-            Some(Kind::Int(i)) => Some(i),
+            Some(ValueKind::Int(i)) => Some(i),
             _ => None,
         });
     }
@@ -270,12 +270,12 @@ fn scalar_float64<'v, V: JsonView<'v>>(values: &[Option<V>]) -> ArrayRef {
     let mut b = Float64Builder::new();
     for v in values {
         // Mirrors `Value::as_f64`: any JSON number converts with `as` casts.
-        // No `Kind::UInt` arm: a u64 observation resolves the column to text, so
+        // No `ValueKind::UInt` arm: a u64 observation resolves the column to text, so
         // a UInt can never reach a Float64 column. Converting one here would be
         // the inexact narrowing the Float64 escalation exists to refuse.
         b.append_option(match view_kind(v) {
-            Some(Kind::Float(f)) => Some(f),
-            Some(Kind::Int(i)) => Some(i as f64),
+            Some(ValueKind::Float(f)) => Some(f),
+            Some(ValueKind::Int(i)) => Some(i as f64),
             _ => None,
         });
     }
@@ -289,27 +289,27 @@ fn scalar_utf8<'v, V: JsonView<'v>>(values: &[Option<V>]) -> ArrayRef {
     let mut scratch = String::new();
     for v in values {
         match view_kind(v) {
-            Some(Kind::Str(s)) => b.append_value(s),
-            Some(Kind::Bool(x)) => b.append_value(if x { "true" } else { "false" }),
-            Some(Kind::Int(i)) => {
+            Some(ValueKind::Str(s)) => b.append_value(s),
+            Some(ValueKind::Bool(x)) => b.append_value(if x { "true" } else { "false" }),
+            Some(ValueKind::Int(i)) => {
                 scratch.clear();
                 std::fmt::Write::write_fmt(&mut scratch, format_args!("{i}"))
                     .expect("write to String");
                 b.append_value(&scratch);
             }
-            Some(Kind::UInt(u)) => {
+            Some(ValueKind::UInt(u)) => {
                 scratch.clear();
                 std::fmt::Write::write_fmt(&mut scratch, format_args!("{u}"))
                     .expect("write to String");
                 b.append_value(&scratch);
             }
-            Some(Kind::Float(f)) => {
+            Some(ValueKind::Float(f)) => {
                 scratch.clear();
                 std::fmt::Write::write_fmt(&mut scratch, format_args!("{f}"))
                     .expect("write to String");
                 b.append_value(&scratch);
             }
-            Some(Kind::Null | Kind::Object | Kind::Array) | None => b.append_null(),
+            Some(ValueKind::Null | ValueKind::Object | ValueKind::Array) | None => b.append_null(),
         }
     }
     Arc::new(b.finish())
@@ -334,7 +334,7 @@ fn scalar_timestamp_tz<'v, V: JsonView<'v>>(values: &[Option<V>]) -> ArrayRef {
     let mut b = TimestampMicrosecondBuilder::new();
     for v in values {
         let micros = match view_kind(v) {
-            Some(Kind::Str(s)) => parse_timestamp_tz(s).map(|dt| dt.timestamp_micros()),
+            Some(ValueKind::Str(s)) => parse_timestamp_tz(s).map(|dt| dt.timestamp_micros()),
             _ => None,
         };
         b.append_option(micros);
@@ -346,7 +346,7 @@ fn scalar_timestamp_naive<'v, V: JsonView<'v>>(values: &[Option<V>]) -> ArrayRef
     let mut b = TimestampMicrosecondBuilder::new();
     for v in values {
         let micros = match view_kind(v) {
-            Some(Kind::Str(s)) => chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f")
+            Some(ValueKind::Str(s)) => chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f")
                 .ok()
                 .map(|dt| dt.and_utc().timestamp_micros()),
             _ => None,
@@ -360,7 +360,7 @@ fn scalar_date<'v, V: JsonView<'v>>(values: &[Option<V>]) -> ArrayRef {
     let mut b = Date32Builder::new();
     for v in values {
         let days = match view_kind(v) {
-            Some(Kind::Str(s)) => chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
+            Some(ValueKind::Str(s)) => chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
                 .ok()
                 .map(|d| {
                     d.signed_duration_since(
@@ -379,7 +379,7 @@ fn scalar_time<'v, V: JsonView<'v>>(values: &[Option<V>]) -> ArrayRef {
     let mut b = Time64MicrosecondBuilder::new();
     for v in values {
         let micros = match view_kind(v) {
-            Some(Kind::Str(s)) => chrono::NaiveTime::parse_from_str(s, "%H:%M:%S%.f")
+            Some(ValueKind::Str(s)) => chrono::NaiveTime::parse_from_str(s, "%H:%M:%S%.f")
                 .ok()
                 .map(|t| {
                     i64::from(chrono::Timelike::num_seconds_from_midnight(&t)) * 1_000_000
@@ -427,7 +427,7 @@ fn scalar_binary<'v, V: JsonView<'v>>(values: &[Option<V>]) -> ArrayRef {
 /// purpose. Any edit to the shared rules must be mirrored in both.
 fn write_compact_json<'v, V: JsonView<'v>>(value: V, out: &mut Vec<u8>) {
     match value.kind() {
-        Kind::Object => {
+        ValueKind::Object => {
             out.push(b'{');
             for (i, (key, item)) in value.obj_entries().enumerate() {
                 if i > 0 {
@@ -439,7 +439,7 @@ fn write_compact_json<'v, V: JsonView<'v>>(value: V, out: &mut Vec<u8>) {
             }
             out.push(b'}');
         }
-        Kind::Array => {
+        ValueKind::Array => {
             out.push(b'[');
             for (i, item) in value.arr_items().enumerate() {
                 if i > 0 {
@@ -449,14 +449,14 @@ fn write_compact_json<'v, V: JsonView<'v>>(value: V, out: &mut Vec<u8>) {
             }
             out.push(b']');
         }
-        Kind::Null => out.extend_from_slice(b"null"),
-        Kind::Bool(b) => out.extend_from_slice(if b { b"true" } else { b"false" }),
-        Kind::Str(s) => serde_json::to_writer(&mut *out, s).expect("string serialization"),
-        Kind::Int(i) => serde_json::to_writer(&mut *out, &serde_json::Number::from(i))
+        ValueKind::Null => out.extend_from_slice(b"null"),
+        ValueKind::Bool(b) => out.extend_from_slice(if b { b"true" } else { b"false" }),
+        ValueKind::Str(s) => serde_json::to_writer(&mut *out, s).expect("string serialization"),
+        ValueKind::Int(i) => serde_json::to_writer(&mut *out, &serde_json::Number::from(i))
             .expect("number serialization"),
-        Kind::UInt(u) => serde_json::to_writer(&mut *out, &serde_json::Number::from(u))
+        ValueKind::UInt(u) => serde_json::to_writer(&mut *out, &serde_json::Number::from(u))
             .expect("number serialization"),
-        Kind::Float(f) => serde_json::to_writer(
+        ValueKind::Float(f) => serde_json::to_writer(
             &mut *out,
             &serde_json::Number::from_f64(f).expect("finite by JSON grammar"),
         )
@@ -473,13 +473,13 @@ fn write_compact_json<'v, V: JsonView<'v>>(value: V, out: &mut Vec<u8>) {
 fn parse_decimal<'v, V: JsonView<'v>>(value: V, precision: u8, scale: u8) -> Option<i128> {
     let owned;
     let text = match value.kind() {
-        Kind::Int(i) => {
+        ValueKind::Int(i) => {
             let scaled = (i as i128).checked_mul(10i128.checked_pow(scale as u32)?)?;
             return fits_precision(scaled, precision);
         }
         // u64 beyond i64 and floats: refused (matches Number::as_i64 semantics).
-        Kind::UInt(_) | Kind::Float(_) => return None,
-        Kind::Str(s) => {
+        ValueKind::UInt(_) | ValueKind::Float(_) => return None,
+        ValueKind::Str(s) => {
             owned = s;
             owned.trim()
         }
