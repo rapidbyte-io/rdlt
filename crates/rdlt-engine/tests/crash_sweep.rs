@@ -201,36 +201,12 @@ async fn sweep_duckdb_destination() {
 /// ENGINE_POINTS, count-exact.
 #[test]
 fn sweep_covers_entire_registry() {
-    // Engine side: grep the sources.
+    // Engine side: read the sources, not the const. The scanner is shared with
+    // every connector that arms crash points, because a copied scanner fails
+    // OPEN — it finds fewer sites and the assertion still passes, so one
+    // implementation is the only arrangement where fixing it fixes every user.
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut found: Vec<String> = Vec::new();
-    let mut stack = vec![src];
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).expect("read src dir") {
-            let path = entry.expect("dir entry").path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.extension().is_some_and(|e| e == "rs") {
-                let text = std::fs::read_to_string(&path).expect("read source");
-                let mut rest = text.as_str();
-                while let Some(idx) = rest.find("crash_point!(") {
-                    rest = &rest[idx + "crash_point!(".len()..];
-                    let name_start = rest.find('"').expect("crash_point! name literal") + 1;
-                    let name_end = name_start + rest[name_start..].find('"').expect("name close");
-                    found.push(rest[name_start..name_end].to_owned());
-                    rest = &rest[name_end..];
-                }
-            }
-        }
-    }
-    found.sort_unstable();
-    let mut engine: Vec<String> = ENGINE_POINTS.iter().map(|s| s.to_string()).collect();
-    engine.sort_unstable();
-    assert_eq!(
-        found, engine,
-        "engine `crash_point!` sites and ENGINE_POINTS diverged — every \
-         instrumented boundary must be swept (gate G2.2)"
-    );
+    rdlt_testkit::assert_registry_is_armed(&src, &[ENGINE_POINTS]);
 
     // Destination side: the exported registries, pinned against this list.
     // (The Postgres registry is pinned in ITS crate's crash_sweep test — the

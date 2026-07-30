@@ -5,7 +5,10 @@
 //! extract child tables at any depth, assign lineage identities — rows are
 //! arena node ids borrowing the slab. Everything downstream (observation,
 //! canonicalization, identity, policy, build) is the generic `JsonView` core;
-//! the behavioral invariants are pinned by `tests/shred_property.rs` and the
+//! the behavioral invariants are pinned by the `shred_property` test BINARY (whose
+//! one test is `shred_invariants_hold` — a distinction that mattered: the gate
+//! selected it by test name for a while, matched nothing, and reported success)
+//! and the
 //! hazard cases in `arena.rs`/`tests/passthrough.rs`.
 
 use std::collections::VecDeque;

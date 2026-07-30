@@ -18,7 +18,7 @@ pub use conformance::{
     source::verify_source,
 };
 #[cfg(feature = "containers")]
-pub use containers::{CdcPgFixture, PgFixture, runtime_available};
+pub use containers::{CdcPgFixture, PgFixture, decide_availability, runtime_available};
 pub use crash::{CrashDestination, FaultPoint, assert_registry_is_armed, scan_arming_sites};
 pub use fixtures::{batch_of, meta_for, schema_for};
 pub use memory::{MemoryBatch, MemoryDestination, MemorySource, MemoryStream, Row};

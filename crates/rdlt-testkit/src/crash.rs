@@ -215,7 +215,7 @@ pub fn assert_registry_is_armed(src_dir: &std::path::Path, registries: &[&[&str]
     // mistyped path, a moved module, or an unrecognised arming spelling produces
     // an empty set that only agrees with an empty registry.
     assert!(
-        !(armed.is_empty() && !registry.is_empty()),
+        !armed.is_empty() || registry.is_empty(),
         "no crash-point sites found under {} while the registry declares {} — \
          either the scan path is wrong or an arming spelling is unrecognised; \
          recognised spellings are {ARMING_PATTERNS:?}",
@@ -224,7 +224,10 @@ pub fn assert_registry_is_armed(src_dir: &std::path::Path, registries: &[&[&str]
     );
 
     // Direction 1: armed ⊆ declared.
-    let undeclared: Vec<&String> = armed.iter().filter(|a| !registry.contains(&a.as_str())).collect();
+    let undeclared: Vec<&String> = armed
+        .iter()
+        .filter(|a| !registry.contains(&a.as_str()))
+        .collect();
     assert!(
         undeclared.is_empty(),
         "armed in {} but absent from the registry: {undeclared:?} — an instrumented \
@@ -236,13 +239,15 @@ pub fn assert_registry_is_armed(src_dir: &std::path::Path, registries: &[&[&str]
     // declaration. Indirect arming puts that literal at the constructor rather
     // than beside the macro, which is why this is a text search over the crate
     // rather than a lookup in `armed`.
-    // A name is ARMED if its literal appears anywhere beyond the single
-    // occurrence inside the registry declaration itself. Counting rather than
-    // locating keeps this simple to reason about: the declaration contributes
-    // exactly one occurrence, so a total of one means the name arms nothing.
+    // A name is ARMED if its literal appears somewhere that is not a registry
+    // DECLARATION. Declaration blocks are located and excluded rather than
+    // counted, because a registry may be declared inside the scanned tree (every
+    // connector) or outside it (the engine declares its list in its test), and a
+    // count-based rule silently means different things in those two cases.
+    let armed_literals = literals_outside_declarations(src_dir);
     let dead: Vec<&&str> = registry
         .iter()
-        .filter(|name| count_literal(src_dir, &format!("\"{name}\"")) < 2)
+        .filter(|name| !armed_literals.contains(**name))
         .collect();
     assert!(
         dead.is_empty(),
@@ -253,27 +258,59 @@ pub fn assert_registry_is_armed(src_dir: &std::path::Path, registries: &[&[&str]
     );
 }
 
-/// How many times a literal appears across every `.rs` file under `dir`.
-fn count_literal(dir: &std::path::Path, needle: &str) -> usize {
-    let mut total = 0;
+/// Every string literal under `dir` that is NOT inside a crash-point registry
+/// declaration.
+///
+/// This is what breaks the circularity. A registry compared against itself always
+/// agrees; a registry whose every entry must also appear somewhere that is not a
+/// declaration cannot. Declaration blocks are recognised by their shape —
+/// `pub const NAME: &[&str] = &[ … ];` — and their contents removed from
+/// consideration, so a name that exists only in a list arms nothing and says so.
+fn literals_outside_declarations(dir: &std::path::Path) -> std::collections::BTreeSet<String> {
+    const DECL: &str = ": &[&str] = &[";
+    let mut out = std::collections::BTreeSet::new();
     let mut stack = vec![dir.to_path_buf()];
     while let Some(next) = stack.pop() {
-        let entries = match std::fs::read_dir(&next) {
-            Ok(e) => e,
-            Err(e) => panic!("scanning {}: {e}", next.display()),
-        };
+        let entries =
+            std::fs::read_dir(&next).unwrap_or_else(|e| panic!("scanning {}: {e}", next.display()));
         for entry in entries {
             let path = entry.expect("directory entry").path();
             if path.is_dir() {
                 stack.push(path);
-            } else if path.extension().is_some_and(|e| e == "rs") {
-                let text = std::fs::read_to_string(&path)
-                    .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
-                total += text.matches(needle).count();
+                continue;
+            }
+            if path.extension().is_none_or(|e| e != "rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
+            // Blank out every declaration block, then harvest what remains.
+            let mut remaining = String::with_capacity(text.len());
+            let mut rest = text.as_str();
+            while let Some(at) = rest.find(DECL) {
+                remaining.push_str(&rest[..at]);
+                let after = &rest[at + DECL.len()..];
+                // The block ends at the first `];` — registry declarations are flat
+                // slices of literals, so no nesting can hide the terminator.
+                match after.find("];") {
+                    Some(end) => rest = &after[end + 2..],
+                    None => {
+                        rest = "";
+                        break;
+                    }
+                }
+            }
+            remaining.push_str(rest);
+            let mut chars = remaining.as_str();
+            while let Some(open) = chars.find('"') {
+                let after = &chars[open + 1..];
+                let Some(close) = after.find('"') else { break };
+                out.insert(after[..close].to_owned());
+                chars = &after[close + 1..];
             }
         }
     }
-    total
+    out
 }
 
 /// Every crash-point name armed beside an arming call under `dir`, sorted and
@@ -309,10 +346,15 @@ pub fn scan_arming_sites(dir: &std::path::Path) -> Vec<String> {
                     // is a string literal we can read it; when it is a variable
                     // the site is armed indirectly and its literal lives at the
                     // constructor that supplies it, so nothing is recorded here.
-                    let head: String = rest.chars().take_while(|c| *c != ',' && *c != ')').collect();
+                    let head: String = rest
+                        .chars()
+                        .take_while(|c| *c != ',' && *c != ')')
+                        .collect();
                     let Some(open) = head.find('"') else { continue };
                     let after = &head[open + 1..];
-                    let Some(close) = after.find('"') else { continue };
+                    let Some(close) = after.find('"') else {
+                        continue;
+                    };
                     found.push(after[..close].to_owned());
                 }
             }

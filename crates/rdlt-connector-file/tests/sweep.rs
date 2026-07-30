@@ -167,3 +167,27 @@ async fn file_dest_s3_path_survives_crash_sweep() {
         .collect();
     assert_eq!(fired, expected, "armed-fire pin diverged");
 }
+
+/// The registry names exactly the crash points armed in this crate's sources.
+///
+/// The sweep's own `fired == registry` check cannot establish this: it compares
+/// the registry against itself, so deleting a point from BOTH the code and the
+/// list leaves it true while the matrix quietly shrinks. This reads the sources
+/// instead, which is the only way a dropped point becomes visible.
+///
+/// THREE registries over one source tree, checked against their union: a single
+/// one compared against this scope would report its siblings' points as
+/// undeclared, and the shape of that false failure invites widening the registry
+/// being checked — which is the opposite of what this protects.
+#[test]
+fn the_registry_matches_the_sources() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    rdlt_testkit::assert_registry_is_armed(
+        &src,
+        &[
+            rdlt_connector_file::dest::FAIL_POINTS,
+            rdlt_connector_file::dest::S3_FAIL_POINTS,
+            rdlt_connector_file::source::FAIL_POINTS,
+        ],
+    );
+}

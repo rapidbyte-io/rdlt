@@ -498,3 +498,31 @@ async fn sweep_postgres_destination_refined_merge() {
          refined arm never crossed that boundary"
     );
 }
+
+/// The registry names exactly the crash points armed in this crate's sources.
+///
+/// The sweep's own `fired == registry` check cannot establish this: it compares
+/// the registry against itself, so deleting a point from BOTH the code and the
+/// list leaves it true while the matrix quietly shrinks. This reads the sources
+/// instead, which is the only way a dropped point becomes visible.
+///
+/// THREE registries over one source tree, checked against their union.
+///
+/// This crate is why the check has two directions rather than set equality:
+/// three of its points are armed INDIRECTLY, with the name supplied by a
+/// constructor rather than written beside the macro. A set-equality scanner
+/// reports those three as missing, and the plausible reading is "the registry is
+/// too big" — shrinking it, and removing points from the sweep while every
+/// assertion passes.
+#[test]
+fn the_registry_matches_the_sources() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    rdlt_testkit::assert_registry_is_armed(
+        &src,
+        &[
+            rdlt_connector_postgres::dest::FAIL_POINTS,
+            rdlt_connector_postgres::source::FAIL_POINTS,
+            rdlt_connector_postgres::source::CDC_FAIL_POINTS,
+        ],
+    );
+}

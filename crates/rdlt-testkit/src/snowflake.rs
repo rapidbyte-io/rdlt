@@ -17,6 +17,14 @@ use std::path::PathBuf;
 /// them — the same escape hatch the container probe carries.
 const FORCE_NO_SNOWFLAKE: &str = "RDLT_TESTKIT_FORCE_NO_SNOWFLAKE";
 
+/// Env override DEMANDING credentials: absence becomes a failure, not a skip.
+///
+/// The counterpart to [`FORCE_NO_SNOWFLAKE`]. Skip-not-fail is the right default
+/// — nobody without an account should be blocked from the gate — but it makes a
+/// credential-gated leg that silently stopped running look exactly like one that
+/// passed. Setting this says "I have the account; tell me if a leg did not run."
+const REQUIRE_SNOWFLAKE: &str = "RDLT_TESTKIT_REQUIRE_SNOWFLAKE";
+
 /// Where the file form of the convention lives.
 fn config_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config/rdlt/snowflake"))
@@ -110,8 +118,28 @@ fn announce_skip(reason: &str) {
 
 /// [`credentials`] against a supplied lookup — the testable form.
 pub fn credentials_with(lookup: &dyn Lookup) -> Option<SnowflakeCreds> {
+    let demanded = lookup.env(REQUIRE_SNOWFLAKE).is_some();
+    let forced_absent = lookup.env(FORCE_NO_SNOWFLAKE).is_some();
+
+    // Contradictory invocation, not a precedence puzzle: demanding credentials
+    // while pretending there are none is a mistake in how the run was invoked,
+    // and honouring either silently would hide it.
+    assert!(
+        !(demanded && forced_absent),
+        "{REQUIRE_SNOWFLAKE} and {FORCE_NO_SNOWFLAKE} are both set — one demands \
+         credentials and the other pretends there are none; pick one"
+    );
+
     let resolved = resolve_credentials(lookup);
     if resolved.is_none() {
+        // Demanded means a missing credential is a failure naming what is
+        // missing, rather than a skip that reads as green.
+        assert!(
+            !demanded,
+            "{REQUIRE_SNOWFLAKE} is set but no account credentials were found in \
+             the environment or ~/.config/rdlt/snowflake/ — the live legs cannot \
+             run, and this run asked to be told rather than to skip"
+        );
         announce_skip("no account credentials in the environment or ~/.config/rdlt/snowflake/");
     }
     resolved

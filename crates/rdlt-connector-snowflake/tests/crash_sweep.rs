@@ -238,3 +238,19 @@ async fn last_load_id(config: &SnowflakeConfig) -> String {
     .await
     .unwrap_or_default()
 }
+
+/// The registry names exactly the crash points armed in this crate's sources.
+///
+/// The sweep's own `fired == registry` check cannot establish this: it compares
+/// the registry against itself, so deleting a point from BOTH the code and the
+/// list leaves it true while the matrix quietly shrinks. This reads the sources
+/// instead, which is the only way a dropped point becomes visible.
+///
+/// Two of this crate's four points are armed through a local helper rather than
+/// the macro, because a crash at the unit edges has cleanup to do before it
+/// propagates. A scanner recognising one spelling would find two of four here.
+#[test]
+fn the_registry_matches_the_sources() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    rdlt_testkit::assert_registry_is_armed(&src, &[rdlt_connector_snowflake::dest::FAIL_POINTS]);
+}

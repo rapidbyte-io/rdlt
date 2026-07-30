@@ -168,3 +168,17 @@ async fn strategy_arms_survive_crash_sweep() {
     }
     assert_eq!(fired, expected_fired, "armed-fire pin diverged");
 }
+
+/// The registry names exactly the crash points armed in this crate's sources.
+///
+/// The sweep's own `fired == registry` check cannot establish this: it compares
+/// the registry against itself, so deleting a point from BOTH the code and the
+/// list leaves it true while the matrix quietly shrinks. This reads the sources
+/// instead, which is the only way a dropped point becomes visible.
+///
+/// One registry here, so the union is itself.
+#[test]
+fn the_registry_matches_the_sources() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    rdlt_testkit::assert_registry_is_armed(&src, &[rdlt_connector_duckdb::dest::FAIL_POINTS]);
+}

@@ -45,6 +45,15 @@ pub const RECLAIM_LABEL: &str = "rdlt-test";
 /// so the skip-not-fail behaviour is verifiable without stopping the runtime.
 const FORCE_NO_CONTAINERS: &str = "RDLT_TESTKIT_FORCE_NO_CONTAINERS";
 
+/// Env override DEMANDING a runtime: absence becomes a failure instead of a skip.
+///
+/// The counterpart to [`FORCE_NO_CONTAINERS`], and the reason both exist. Skip-
+/// not-fail is the right default — a contributor without a runtime must still be
+/// able to run the gate — but it makes a wrongly-skipping suite indistinguishable
+/// from a passing one. Setting this says "I am on a machine where the runtime is
+/// present; tell me if a leg did not run."
+const REQUIRE_CONTAINERS: &str = "RDLT_TESTKIT_REQUIRE_CONTAINERS";
+
 /// Conn string the fixtures hand out — the module's default credentials over
 /// `127.0.0.1` at the mapped port.
 fn conn_string(port: u16) -> String {
@@ -54,11 +63,49 @@ fn conn_string(port: u16) -> String {
 /// Is a container runtime reachable? The single probe for the whole
 /// workspace (testcontainers speaks the docker API; podman needs its socket).
 pub fn runtime_available() -> bool {
-    // 1. Explicit override: any value forces the skip posture, so the
-    //    skip-not-fail path is testable on a machine that DOES have a runtime.
-    if std::env::var_os(FORCE_NO_CONTAINERS).is_some() {
+    decide_availability(
+        std::env::var_os(REQUIRE_CONTAINERS).is_some(),
+        std::env::var_os(FORCE_NO_CONTAINERS).is_some(),
+        probe_for_runtime,
+    )
+}
+
+/// The decision, separated from where the answers come from.
+///
+/// Split out so the two overrides and their interaction are testable without
+/// mutating the process environment — which this workspace cannot do anyway,
+/// because `unsafe_code` is denied and `set_var` is unsafe. Taking the probe as a
+/// parameter also means the demand-and-fail path can be exercised on a machine
+/// that HAS a runtime, which is the machine a maintainer would be on.
+pub fn decide_availability(demanded: bool, forced_absent: bool, probe: impl Fn() -> bool) -> bool {
+    // Contradictory invocation, not a precedence puzzle: a run that both forces
+    // absence and demands presence is a mistake in how it was invoked, and
+    // quietly honouring either one would hide it.
+    assert!(
+        !(demanded && forced_absent),
+        "{REQUIRE_CONTAINERS} and {FORCE_NO_CONTAINERS} are both set — one demands \
+         a container runtime and the other pretends there is none; pick one"
+    );
+
+    if forced_absent {
         return false;
     }
+
+    let found = probe();
+
+    // Every probe said no. If the caller DEMANDED a runtime, that is a failure
+    // naming what is missing rather than a skip nobody reads.
+    assert!(
+        found || !demanded,
+        "{REQUIRE_CONTAINERS} is set but no container runtime was found: no \
+         DOCKER_HOST, no podman user socket under XDG_RUNTIME_DIR, no \
+         /var/run/docker.sock, and `podman ps` did not succeed"
+    );
+    found
+}
+
+/// Ask the machine whether a container runtime is reachable.
+fn probe_for_runtime() -> bool {
     // 2. An explicitly configured docker endpoint is authoritative.
     if std::env::var_os("DOCKER_HOST").is_some() {
         return true;

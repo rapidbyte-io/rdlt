@@ -105,21 +105,21 @@ suite that had been silently empty runs.
 **Independent test**: enumerate every test binary; for each, show the gate path
 that runs it or the recorded exemption with its reason.
 
-- [ ] T010 [US2] Add `$(MAKE) test TARGET=e2e` to the `check` target in
+- [X] T010 [US2] Add `$(MAKE) test TARGET=e2e` to the `check` target in
   `Makefile` (currently 263–268), between `test` and `test TARGET=sweep`. Its two
   binaries — `crates/rdlt-connector-file/tests/{e2e_copy.rs,e2e_duckdb.rs}` — are
   currently invoked by no target reachable from any gate (research R3: `deep`
   does not invoke `e2e` either).
-- [ ] T011 [US2] Build the exhaustive suite enumeration in
+- [X] T011 [US2] Build the exhaustive suite enumeration in
   `specs/024-gate-integrity/evidence/suite-reachability.md`: every
   `crates/*/tests/*.rs` binary, and for each the gate path that invokes it or a
   named exemption with its reason — and its MEASURED cost where cost is the
   reason. Derive the list mechanically (`ls crates/*/tests/*.rs` against
   `cargo nextest list` per gate target), never by hand.
-- [ ] T012 [US2] For every exemption T011 finds, write the reason at the site that
+- [X] T012 [US2] For every exemption T011 finds, write the reason at the site that
   excludes it — not only in the evidence file. An exemption a reader finds only in
   a spec directory is prose; one at the `Makefile` or config site is a decision.
-- [ ] T013 [US2] **Detection demonstration (FR-015)**: add a throwaway test binary
+- [X] T013 [US2] **Detection demonstration (FR-015)**: add a throwaway test binary
   that no gate path invokes, run T011's enumeration, observe it reported as
   unreachable, delete the binary. Record in
   `specs/024-gate-integrity/evidence/demo-us2.md`.
@@ -140,7 +140,7 @@ so a dropped point fails.
 together and observe failure; add a site to source alone and observe failure;
 restore and observe pass.
 
-- [ ] T016 [US3] Add the shared scanner to `crates/rdlt-testkit/src/crash.rs`,
+- [X] T016 [US3] Add the shared scanner to `crates/rdlt-testkit/src/crash.rs`,
   modelled on `crates/rdlt-engine/tests/crash_sweep.rs:196-233` (which walks
   `src/`, extracts each arming call's first string literal, sorts, and asserts
   set-equality — deliberately NOT deriving from the registry, because that is
@@ -156,32 +156,32 @@ restore and observe pass.
   - Document in the doc comment that a third arming idiom requires updating this
     helper, and state the decision on commented-out arming calls (research open
     question 2 — decide here and say which).
-- [ ] T017 [P] [US3] Assert `rdlt-connector-postgres`'s three registries against
+- [X] T017 [P] [US3] Assert `rdlt-connector-postgres`'s three registries against
   their sources: `dest::FAIL_POINTS` (`src/dest/mod.rs:382`),
   `source::FAIL_POINTS` (`src/source/mod.rs:40`), `CDC_FAIL_POINTS`
   (`src/source/mod.rs:51`). 14 sites total; scope each scan so the three
   registries are checked separately, not against the union.
-- [ ] T018 [P] [US3] Assert `rdlt-connector-file`'s three registries:
+- [X] T018 [P] [US3] Assert `rdlt-connector-file`'s three registries:
   `dest::FAIL_POINTS` (`src/dest/mod.rs:56`), `S3_FAIL_POINTS`
   (`src/dest/mod.rs:67`), `source::FAIL_POINTS` (`src/source/mod.rs:21`). 11
   sites total.
-- [ ] T019 [P] [US3] Assert `rdlt-connector-snowflake`'s `FAIL_POINTS`
+- [X] T019 [P] [US3] Assert `rdlt-connector-snowflake`'s `FAIL_POINTS`
   (`src/dest/mod.rs:204`) — the crate that proves the two-idiom requirement: 2
   `crash_point!` in `src/dest/stage.rs` plus 2 `crash_at` in
   `src/dest/session.rs`, against a 4-entry registry. A scanner seeing only the
   macro would demand the registry shrink to 2, silently removing two points from
   the sweep matrix.
-- [ ] T020 [P] [US3] Assert `rdlt-connector-rest`'s `FAIL_POINTS`
+- [X] T020 [P] [US3] Assert `rdlt-connector-rest`'s `FAIL_POINTS`
   (`src/source/mod.rs:31`), 4 sites.
-- [ ] T021 [P] [US3] Assert `rdlt-connector-iceberg`'s `ICE_FAIL_POINTS`
+- [X] T021 [P] [US3] Assert `rdlt-connector-iceberg`'s `ICE_FAIL_POINTS`
   (`src/dest/session.rs:40`), 3 sites.
-- [ ] T022 [P] [US3] Assert `rdlt-connector-duckdb`'s `FAIL_POINTS`
+- [X] T022 [P] [US3] Assert `rdlt-connector-duckdb`'s `FAIL_POINTS`
   (`src/dest/mod.rs:262`), 2 sites.
-- [ ] T023 [US3] Migrate `rdlt-engine`'s existing in-test scanner to call the
+- [X] T023 [US3] Migrate `rdlt-engine`'s existing in-test scanner to call the
   shared helper, so one implementation serves all eleven registries. Its
   assertion must stay behaviourally identical — it is the model the others copy,
   and a regression here would be invisible.
-- [ ] T024 [US3] **Detection demonstration (FR-015)**, per registry — ten
+- [X] T024 [US3] **Detection demonstration (FR-015)**, per registry — ten
   demonstrations recorded in
   `specs/024-gate-integrity/evidence/demo-us3.md`: remove one site from source
   AND registry, observe failure; add a site to source only, observe failure;
@@ -200,34 +200,34 @@ stops running shows as a difference.
 **Independent test**: force a probe absent with resources present and observe a
 count difference; run in demanding mode and observe outright failure.
 
-- [ ] T026 [US4] Add `RDLT_TESTKIT_REQUIRE_CONTAINERS` to
+- [X] T026 [US4] Add `RDLT_TESTKIT_REQUIRE_CONTAINERS` to
   `crates/rdlt-testkit/src/containers.rs`, mirroring the existing
   `FORCE_NO_CONTAINERS` at line 46: when set, `runtime_available()` panics naming
   the missing runtime instead of returning false. Setting both FORCE_NO and
   REQUIRE is itself an error — a run that forces absence and demands presence is a
   mistake in the invocation, and honouring either silently would hide it.
-- [ ] T027 [US4] Add `RDLT_TESTKIT_REQUIRE_SNOWFLAKE` to
+- [X] T027 [US4] Add `RDLT_TESTKIT_REQUIRE_SNOWFLAKE` to
   `crates/rdlt-testkit/src/snowflake.rs`, mirroring `FORCE_NO_SNOWFLAKE` at line
   18, with the same both-set-is-an-error rule.
-- [ ] T028 [US4] Add `crates/rdlt-testkit/tests/gating_pin.rs` asserting each
+- [X] T028 [US4] Add `crates/rdlt-testkit/tests/gating_pin.rs` asserting each
   probe's decision under each forced environment: resource present, absent,
   forced-absent, demanded-and-present, demanded-and-absent, and
   both-set-is-an-error. This is the test that makes the probe's behaviour a pinned
   contract rather than an implementation detail eight crates depend on.
-- [ ] T029 [US4] Produce the count baseline for the gate AS THIS FEATURE LEAVES
+- [X] T029 [US4] Produce the count baseline for the gate AS THIS FEATURE LEAVES
   IT — per binary, tests run and tests skipped — and commit it. Decide its
   location and granularity now that a real diff is visible (research open
   question 1) and record which was chosen and why.
-- [ ] T030 [US4] Add a `make` verb that emits the current counts in the baseline's
+- [X] T030 [US4] Add a `make` verb that emits the current counts in the baseline's
   exact shape, so comparison is a diff rather than a manual read. It reports; it
   does NOT fail on a difference — a check that fails on every legitimate test
   addition trains maintainers to bump it unread, which is how a pin stops
   pinning (GI5).
-- [ ] T031 [US4] Document in `crates/rdlt-testkit/README.md` how to read a count
+- [X] T031 [US4] Document in `crates/rdlt-testkit/README.md` how to read a count
   difference by direction: run-count up = a test was added; run-count down with
   skip-count up = a suite lost its resource or a probe regressed; run-count down
   with skip-count flat = tests disappeared.
-- [ ] T032 [US4] **Detection demonstration (FR-015)**: with a runtime present, set
+- [X] T032 [US4] **Detection demonstration (FR-015)**: with a runtime present, set
   `FORCE_NO_CONTAINERS`, run the gate, observe the skip-count difference against
   the baseline; then set `REQUIRE_CONTAINERS` with the runtime absent and observe
   outright failure naming it. Record in
@@ -243,7 +243,7 @@ count difference; run in demanding mode and observe outright failure.
 
 **Independent test**: run the named commands and reproduce the recorded figures.
 
-- [ ] T034 [US5] Add a `semver` target to `Makefile` running
+- [X] T034 [US5] Add a `semver` target to `Makefile` running
   `cargo semver-checks` on `rdlt-core` and `rdlt-connector` against the recorded
   baseline `34ccd379`, with the sha and its derivation
   (`git merge-base main 024-gate-integrity`) in a comment at the site. Explain
@@ -251,20 +251,20 @@ count difference; run in demanding mode and observe outright failure.
   advances with every merge forgives the break it just accepted, and CI's
   `origin/main` is 73 commits stale so its result carries no information
   (research R5).
-- [ ] T035 [US5] Wire `$(MAKE) semver` into `check`.
-- [ ] T036 [US5] Add the snowflake type-check leg to the `lint` target:
+- [X] T035 [US5] Wire `$(MAKE) semver` into `check`.
+- [X] T036 [US5] Add the snowflake type-check leg to the `lint` target:
   `cargo clippy -p rdlt-connector-snowflake --all-targets --features failpoints
   -- -D warnings`, with a comment stating that its `crash_sweep.rs` is
   `#![cfg(feature = "failpoints")]` and was compiled by no gate command — which is
   how it broke against deleted APIs during an earlier feature while the gate
   reported green. Do NOT add the feature to the workspace-wide clippy invocation:
   that would change what compiles in seven other crates (research R6).
-- [ ] T037 [US5] Codify the coverage exclusion in the `coverage` target:
+- [X] T037 [US5] Codify the coverage exclusion in the `coverage` target:
   `-E 'not (package(rdlt-connector-snowflake) and binary(crash_sweep))'`, with
   the reason and the measured 101.5-minute cost at the site. This is the
   exclusion the recorded 87.22% figure was actually measured with, existing until
   now only as prose in a close-out (research R9).
-- [ ] T038 [US5] Pin the runner group membership in
+- [X] T038 [US5] Pin the runner group membership in
   `crates/rdlt-connector-iceberg/tests/config_schema.rs`: assert the set of test
   binaries in the crate, partitioned into "inside the live group" (the 10 using
   the shared fixture) and "outside it" (`config_schema` alone). Keep
@@ -272,7 +272,7 @@ count difference; run in demanding mode and observe outright failure.
   positively, because a positive list of ten fails the OTHER way when an eleventh
   live binary is added and not listed. Both spellings fail silently; the defect is
   that membership is implicit, so a test makes it explicit.
-- [ ] T039 [US5] Execute the FR-014 audit and record it in
+- [X] T039 [US5] Execute the FR-014 audit and record it in
   `specs/024-gate-integrity/evidence/gate-audit.md` with a disposition for EVERY
   check examined, including those found SOUND — a list of only the defects cannot
   show the search was exhaustive. Scope per research R10: every `cargo nextest`
@@ -281,7 +281,7 @@ count difference; run in demanding mode and observe outright failure.
   already-clean exit-swallowing class (pre-audited: zero occurrences), and the
   `docs`, `bench` and `coverage` targets, which were not among the original eight
   and remain unexamined.
-- [ ] T040 [US5] **Detection demonstration (FR-015)**: introduce a deliberate
+- [X] T040 [US5] **Detection demonstration (FR-015)**: introduce a deliberate
   public-surface break in `rdlt-connector`, observe `make semver` catch it,
   revert; deliberately break `snowflake/tests/crash_sweep.rs`, observe the new
   lint leg catch it, revert; add an unlisted iceberg test binary, observe the
@@ -297,7 +297,7 @@ count difference; run in demanding mode and observe outright failure.
 
 ## Phase 8: Polish & Cross-Cutting Concerns
 
-- [ ] T043 [P] Update `crates/rdlt-testkit/README.md` and the root `README.md`
+- [X] T043 [P] Update `crates/rdlt-testkit/README.md` and the root `README.md`
   where either describes how the gate is run, so the documented procedure matches
   the one that now exists.
 - [ ] T044 [P] Correct the two source comments that cite the property suite by a

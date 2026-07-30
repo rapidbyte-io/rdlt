@@ -6,7 +6,7 @@
 //!
 //! Before this file the repository had **no oracle for that**. There was not a
 //! single literal 64-hex identity checked in anywhere, and the closest thing —
-//! `shred_property.rs`'s referential-integrity check — provably cannot catch a
+//! the `shred_property` binary's referential-integrity check — provably cannot catch a
 //! shift: child ids are derived from the root id via `child_row_id`, so when a
 //! root id moves every child moves consistently and referential integrity
 //! still holds. The whole suite stays green while every persisted id changes.

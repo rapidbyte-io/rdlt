@@ -265,3 +265,89 @@ namespace: raw
     ));
     assert!(invalid.is_err(), "validation runs at construction");
 }
+
+/// The nextest execution group's membership, pinned.
+///
+/// `.config/nextest.toml` bounds this crate's live cells to three threads with a
+/// NEGATIVE filter — every binary in the package EXCEPT this one. That spelling
+/// encodes the right thing today (of eleven binaries, ten boot a Polaris JVM plus
+/// object storage; only this one is container-free), but it leaves membership
+/// implicit, and implicit membership breaks in BOTH directions:
+///
+/// - fold this binary into another and the one cheap test is dragged INTO the
+///   three-thread bound, a gate-time regression that a non-empty check passes;
+/// - name a live binary `config_schema` and it ESCAPES the bound, starting six or
+///   more JVMs whose health checks then time out.
+///
+/// Re-spelling the filter positively was considered and rejected: a positive list
+/// of ten fails the second way the moment an eleventh live binary is added and
+/// nobody updates the list. Both spellings fail silently, so the fix is to assert
+/// the membership rather than to choose a spelling.
+///
+/// This test is the assertion. It lives in the one binary outside the group,
+/// which is also thematically where a configuration invariant belongs.
+#[test]
+fn the_live_group_membership_is_pinned() {
+    let tests_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+
+    /// Binaries that boot the live fixture and MUST stay inside the bound.
+    const IN_GROUP: &[&str] = &[
+        "auth_probe",
+        "catalog_live",
+        "conflict",
+        "exactly_once",
+        "interop",
+        "nested_types",
+        "partitioning",
+        "providers",
+        "spark_deep",
+        "sweep",
+    ];
+    /// The container-free binary the filter deliberately excludes.
+    const OUTSIDE_GROUP: &[&str] = &["config_schema"];
+
+    let mut actual: Vec<String> = std::fs::read_dir(&tests_dir)
+        .expect("reading the tests directory")
+        .filter_map(|e| {
+            let path = e.expect("directory entry").path();
+            (path.extension()? == "rs")
+                .then(|| path.file_stem()?.to_str().map(str::to_owned))
+                .flatten()
+        })
+        .collect();
+    actual.sort();
+
+    let mut expected: Vec<String> = IN_GROUP
+        .iter()
+        .chain(OUTSIDE_GROUP)
+        .map(|s| (*s).to_owned())
+        .collect();
+    expected.sort();
+
+    assert_eq!(
+        actual, expected,
+        "this crate's test binaries changed, so the three-thread live-group bound \
+         in .config/nextest.toml may no longer cover what it should. Add the new \
+         binary to IN_GROUP if it boots the live fixture, or to OUTSIDE_GROUP if it \
+         is container-free — and check the filter still selects what you intend."
+    );
+
+    // The excluded binary must genuinely be the container-free one: if this file
+    // ever declares the shared live fixture, the filter starts excluding a JVM
+    // cell rather than a cheap one.
+    //
+    // Matched at the START of a line, not anywhere in the text. A `contains`
+    // check here is self-referential — the search term appears in the check
+    // itself, so the assertion fails on its own source. That was not a
+    // hypothetical: it is what the first version of this test did.
+    let this_file = std::fs::read_to_string(tests_dir.join("config_schema.rs"))
+        .expect("reading this test file");
+    let declares_fixture = this_file.lines().any(|l| {
+        l.trim_start().starts_with("mod common") || l.trim_start().starts_with("use common")
+    });
+    assert!(
+        !declares_fixture,
+        "config_schema.rs now declares the shared live fixture, so excluding it \
+         from the three-thread bound releases a JVM cell from the limit"
+    );
+}

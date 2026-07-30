@@ -86,6 +86,13 @@ lint:
 	cargo fmt --all --check
 	tools/check-git-deps.sh
 	cargo clippy --workspace --all-targets -- -D warnings
+	# The snowflake crash sweep is `#![cfg(feature = "failpoints")]` and no gate
+	# command enabled that feature for this crate, so the file was never compiled
+	# by any pipeline — it once broke against deleted APIs with every gate green.
+	# Type-checked here, not RUN: the sweep itself costs 101.5 min and needs live
+	# credentials. The feature is enabled for this crate ALONE, because turning it
+	# on workspace-wide changes what compiles in seven others.
+	cargo clippy -p rdlt-connector-snowflake --all-targets --features failpoints -- -D warnings
 
 test:
 ifeq ($(TARGET),)
@@ -267,12 +274,53 @@ docs:
 	RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
 
 coverage:
-	cargo llvm-cov nextest --features failpoints
+	# The snowflake crash sweep is excluded, and that exclusion is what the
+	# recorded coverage figure was actually measured with — it existed only as
+	# prose in a close-out until now, so reproducing the number required knowing
+	# to look for it. The sweep costs 101.5 min against live credentials and is
+	# run separately; every other crate's sweep still runs here, at seconds each.
+	cargo llvm-cov nextest --features failpoints \
+	  -E 'not (package(rdlt-connector-snowflake) and binary(crash_sweep))'
+
+# Public-surface comparison for the two semver-sacred crates.
+#
+# The baseline is PINNED, not a moving branch. A baseline that advanced with every
+# merge would silently forgive the break it just accepted; and the automated
+# pipeline compares against `origin/main`, which trails local main by dozens of
+# commits, so its verdict mixes intended history with a genuine break and can be
+# read neither way.
+#
+# Re-derive the sha with: git merge-base main 024-gate-integrity
+SEMVER_BASELINE ?= 34ccd379b3f8c7adcd19ecf827fed3ed133073d9
+
+# Per-binary counts of tests run and skipped, in the shape of the committed
+# baseline, so drift is a diff rather than a manual read.
+#
+# It REPORTS; it does not fail on a difference. Adding a test legitimately changes
+# the numbers, and a check that failed on every legitimate addition would train
+# everyone to update the baseline without reading it — which is exactly how a
+# pinned number stops pinning. Read a difference by direction: run-count up means
+# a test was added; run-count down with skip-count up means a suite lost its
+# resource or a probe regressed; run-count down with skip-count flat means tests
+# disappeared.
+counts:
+	@cargo nextest run --workspace --no-fail-fast 2>&1 \
+	  | grep -oE '[A-Za-z0-9_-]+::[A-Za-z0-9_]+ ' \
+	  | awk '{print $$1}' | sed 's/::.*//' | sort | uniq -c \
+	  | awk '{printf "%-32s %s\n", $$2, $$1}'
+
+semver:
+	cargo semver-checks check-release -p rdlt-core -p rdlt-connector \
+	  --baseline-rev $(SEMVER_BASELINE)
 
 check: lint
 	$(MAKE) docs
 	$(MAKE) test
+	# e2e was reachable from NO target: it is not in `deep` either, so its two
+	# suites were gated by nothing while looking like coverage in the tree.
+	$(MAKE) test TARGET=e2e
 	$(MAKE) test TARGET=sweep
+	$(MAKE) semver
 	$(MAKE) bench TARGET=iai
 	$(MAKE) bench TARGET=cold
 
