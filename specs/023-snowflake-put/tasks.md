@@ -319,14 +319,14 @@ and configuration.
   connector's configuration change is breaking, that nothing is published, and
   that the distribution constraint from the git dependency is inherited by the
   publish feature.
-- [ ] T052 Close-out matrix: SP1–SP8 all terminal, story matrix complete, every
+- [X] T052 Close-out matrix: SP1–SP8 all terminal, story matrix complete, every
   deviation cited, every unperformed verification named with its reason, and
   every one of research.md's six open questions carried to a terminal
   disposition.
 - [X] T053 Delete `specs/023-snowflake-put/drafts/` once its content is either
   adopted into `tools/` or rejected with a reason — an unverified draft left in
   the tree is exactly what it was moved out of `tools/` to avoid.
-- [ ] T054 Final gate: `env -u RUSTUP_TOOLCHAIN make check` TWICE clean on a
+- [X] T054 Final gate: `env -u RUSTUP_TOOLCHAIN make check` TWICE clean on a
   quiet machine, with the SC-005 secret sweep re-run at the final commit and
   both results recorded in close-out.md.
 

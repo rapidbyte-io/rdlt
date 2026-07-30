@@ -6,6 +6,14 @@ What shipped, what deviated from the plan, and what was not done — each with
 the evidence that settled it. A disposition without a citation is a defect in
 this document, not a detail.
 
+## Standing
+
+**Closed.** 51 tasks done, 3 not done by owner decision, none open. Gate twice
+clean. Two recorded misses, neither hidden and neither amended away: SC-012's
+wall-clock half and the one sentence of SP7 that repeats it. Both have the same
+cause and the same diagnosis, and rewriting either to match the outcome is a
+decision left to the owner rather than taken here.
+
 ## Contract matrix (SP1–SP8)
 
 | clause | status | evidence |
@@ -380,10 +388,10 @@ refusal like that is never cleared by re-recording baselines.
 
 | | |
 |---|---|
-| `make check` | **run 1 CLEAN** / GATE2 |
-| workspace tests | **948/948, 2 skipped** — both the `#[ignore]`d instruments, named under Coverage |
-| perf gate | 6 benches, **0 regressed**, all within tolerance |
-| cold start | **23.8 ms** median (24.3 ± 1.8 over 20 runs), bar ≤ 40 ms absolute |
+| `make check` | **TWICE CLEAN** — run 1 and run 2 both green, run 2 after the reclaim described below |
+| workspace tests | **948/948, 2 skipped** both runs — both skips are the `#[ignore]`d instruments, named under Coverage |
+| perf gate | 6 benches, **0 regressed**, within tolerance on both runs |
+| cold start | **23.8 ms** / **23.3 ms** median, bar ≤ 40 ms absolute |
 | crash sweep (Snowflake, run separately) | **2/2 PASS**, 27 cells, 6,092 s — see the sweep section |
 | coverage | 87.22% lines, floor 80 |
 | distribution gate | `git-deps: OK (1 git dependency, all recorded)` |
