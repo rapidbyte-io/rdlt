@@ -28,12 +28,12 @@ use std::{
 };
 
 use rdlt_connector::StreamSpec;
-use rdlt_core::CommitPolicy;
+use rdlt_core::{CommitPolicy, schema::system_columns};
 use rdlt_engine::{Engine, EngineConfig};
-use rdlt_testkit::{
-    CrashDestination, FaultPoint, MemoryBatch, MemoryDestination, MemorySource, MemoryStream,
-};
+use rdlt_testkit::{CrashDestination, FaultPoint, MemoryBatch, MemoryDestination, MemorySource};
 use serde_json::json;
+
+use super::common::stream_with_batches;
 
 fn fixture_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/wal_v2")
@@ -55,7 +55,7 @@ fn corpus_source() -> MemorySource {
         ])
         .with_checkpoint(json!({"batch": 1})),
     ];
-    MemorySource::new(vec![MemoryStream::new(StreamSpec::new("items"), batches)])
+    stream_with_batches(StreamSpec::new("items"), batches)
 }
 
 fn config(workdir: &Path) -> EngineConfig {
@@ -126,7 +126,7 @@ fn committed_load_ids(dest: &MemoryDestination) -> Vec<String> {
         .snapshot()
         .values()
         .flatten()
-        .filter_map(|row| row.get("_rdlt_load_id"))
+        .filter_map(|row| row.get(system_columns::LOAD_ID))
         .filter_map(|v| v.as_str().map(str::to_owned))
         .collect();
     ids.sort();
@@ -176,7 +176,7 @@ async fn a_v2_wal_replays_to_identical_rows_and_ids() {
     let actual = render_committed(&dest);
 
     assert!(
-        actual.contains("_rdlt_id"),
+        actual.contains(system_columns::ID),
         "replayed rows must carry their persisted identity columns:\n{actual}"
     );
     assert_eq!(

@@ -9,7 +9,7 @@ use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{MemoryBatch, MemoryDestination, MemorySource, MemoryStream};
 use serde_json::json;
 
-use super::common::{evolving_batches, three_batches};
+use super::common::{evolving_batches, three_batch_source, three_batches};
 
 /// Kills: retry-attempt arithmetic (`attempt + 1`→`*`, `<`→`<=` in the retry
 /// guard) — the attempt COUNT is asserted, not just eventual success/failure.
@@ -51,7 +51,7 @@ async fn transient_failures_retry_exactly_and_are_counted() {
     assert_eq!(
         since_log.lock().expect("log").len(),
         5,
-        "MAX_SOURCE_ATTEMPTS is a hard ceiling"
+        "MAX_RUN_ATTEMPTS is a hard ceiling"
     );
 }
 
@@ -217,10 +217,7 @@ async fn transient_destination_failures_retry_and_are_bounded() {
         inner: inner.clone(),
         remaining: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(2)),
     };
-    let source = MemorySource::new(vec![MemoryStream::new(
-        StreamSpec::new("s"),
-        three_batches(),
-    )]);
+    let source = three_batch_source();
     let report = Engine::new(EngineConfig::new("dest-retry"), source, dest)
         .run()
         .await
@@ -232,10 +229,7 @@ async fn transient_destination_failures_retry_and_are_bounded() {
         inner: MemoryDestination::new(),
         remaining: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX)),
     };
-    let source = MemorySource::new(vec![MemoryStream::new(
-        StreamSpec::new("s"),
-        three_batches(),
-    )]);
+    let source = three_batch_source();
     let err = Engine::new(EngineConfig::new("dest-retry-out"), source, dest)
         .run()
         .await
@@ -288,10 +282,7 @@ async fn retry_budget_terminates_at_exactly_five_attempts() {
         inner: MemoryDestination::new(),
         remaining: std::sync::Arc::clone(&remaining),
     };
-    let source = MemorySource::new(vec![MemoryStream::new(
-        StreamSpec::new("s"),
-        three_batches(),
-    )]);
+    let source = three_batch_source();
     let err = tokio::time::timeout(
         BOUND,
         Engine::new(EngineConfig::new("dest-bounded"), source, dest).run(),

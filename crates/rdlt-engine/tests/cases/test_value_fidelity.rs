@@ -10,18 +10,17 @@
 use rdlt_connector::StreamSpec;
 use rdlt_core::LogicalType;
 use rdlt_engine::{Engine, EngineConfig};
-use rdlt_testkit::{MemoryBatch, MemoryDestination, MemorySource, MemoryStream};
+use rdlt_testkit::{MemoryBatch, MemoryDestination, MemorySource};
 use serde_json::json;
+
+use super::common::stream_with_batches;
 
 fn discarded_values(report: &rdlt_core::RunReport) -> u64 {
     report.tables.values().map(|t| t.discarded_values).sum()
 }
 
 fn one_batch(spec: StreamSpec, rows: Vec<serde_json::Value>) -> MemorySource {
-    MemorySource::new(vec![MemoryStream::new(
-        spec,
-        vec![MemoryBatch::new(rows).with_checkpoint(1)],
-    )])
+    stream_with_batches(spec, vec![MemoryBatch::new(rows).with_checkpoint(1)])
 }
 
 /// A `u64` above `i64::MAX` has no exact `Int64` or `Float64` representation, so

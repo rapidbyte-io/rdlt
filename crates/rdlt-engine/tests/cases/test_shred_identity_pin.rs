@@ -39,7 +39,7 @@
 //!   a multi-field key catches it, and only when both fields render through
 //!   the buffer.
 //! - **key order in `primary_key` is load-bearing**, while the Merge-key
-//!   validation in `runtime/run.rs` compares order-insensitively — so nothing
+//!   validation in `runtime/validate.rs` compares order-insensitively — so nothing
 //!   else in the engine defends it.
 //! - **null slots in a child list consume positions** — `enumerate` runs over
 //!   the full sequence and the null skip happens after it. Any

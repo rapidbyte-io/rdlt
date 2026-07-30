@@ -12,7 +12,7 @@ use arrow::{
 };
 use async_trait::async_trait;
 use rdlt_connector::{ConnectorSpec, Cursor, ReadRequest, Source, SourceError, StreamSpec};
-use rdlt_core::{PolicyAction, RdltError, SchemaPolicy, TableName};
+use rdlt_core::{PolicyAction, RdltError, SchemaPolicy, TableName, schema::system_columns};
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{CrashDestination, FaultPoint, MemoryDestination};
 use serde_json::json;
@@ -113,11 +113,11 @@ async fn passthrough_preserves_data_and_stamps_load_id() {
     );
     assert_eq!(rows[1]["name"], json!("b"));
     assert!(
-        rows[0]["_rdlt_load_id"].as_str().is_some(),
+        rows[0][system_columns::LOAD_ID].as_str().is_some(),
         "run provenance stamped"
     );
     assert!(
-        !rows[0].contains_key("_rdlt_id"),
+        !rows[0].contains_key(system_columns::ID),
         "structured streams carry NO per-row identity (clause E7)"
     );
 }
@@ -275,7 +275,7 @@ async fn input_column_named_like_system_column_is_suffixed() {
     let batch = RecordBatch::try_new(
         Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int64, false),
-            Field::new("_rdlt_load_id", DataType::Utf8, true),
+            Field::new(system_columns::LOAD_ID, DataType::Utf8, true),
         ])),
         vec![
             Arc::new(Int64Array::from(vec![1])),
@@ -295,7 +295,7 @@ async fn input_column_named_like_system_column_is_suffixed() {
     let rows = dest.committed_rows("metrics");
     let row = &rows[0];
     // The system column holds OUR load id; the upstream value lives in a suffixed column.
-    assert_ne!(row["_rdlt_load_id"], json!("upstream-value"));
+    assert_ne!(row[system_columns::LOAD_ID], json!("upstream-value"));
     let suffixed: Vec<&String> = row
         .keys()
         .filter(|k| k.starts_with("_rdlt_load_id_"))

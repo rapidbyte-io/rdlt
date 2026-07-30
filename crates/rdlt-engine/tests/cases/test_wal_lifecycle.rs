@@ -10,24 +10,13 @@
 
 use std::path::Path;
 
-use rdlt_connector::StreamSpec;
 use rdlt_engine::{Engine, EngineConfig};
-use rdlt_testkit::{
-    CrashDestination, FaultPoint, MemoryBatch, MemoryDestination, MemorySource, MemoryStream,
-};
-use serde_json::json;
+use rdlt_testkit::{CrashDestination, FaultPoint, MemoryDestination, MemorySource};
+
+use super::common::three_batch_source;
 
 fn source() -> MemorySource {
-    let batches = (0..3)
-        .map(|b| {
-            MemoryBatch::new(vec![
-                json!({"id": b * 2, "name": format!("r{b}a")}),
-                json!({"id": b * 2 + 1, "name": format!("r{b}b")}),
-            ])
-            .with_checkpoint(json!({"batch": b}))
-        })
-        .collect();
-    MemorySource::new(vec![MemoryStream::new(StreamSpec::new("s"), batches)])
+    three_batch_source()
 }
 
 fn config(workdir: &Path) -> EngineConfig {

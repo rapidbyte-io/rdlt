@@ -8,18 +8,15 @@
 use rdlt_connector::StreamSpec;
 use rdlt_core::{PipelineEvent, TableName};
 use rdlt_engine::{Engine, EngineConfig};
-use rdlt_testkit::{MemoryBatch, MemoryDestination, MemorySource, MemoryStream};
+use rdlt_testkit::{MemoryBatch, MemoryDestination};
 use serde_json::json;
 
-use super::common::{evolving_batches, three_batches};
+use super::common::{evolving_batches, stream_with_batches, three_batch_source};
 
 #[tokio::test]
 async fn events_are_causally_ordered_and_report_matches_reality() {
     let dest = MemoryDestination::new();
-    let source = MemorySource::new(vec![MemoryStream::new(
-        rdlt_connector::StreamSpec::new("s"),
-        evolving_batches(),
-    )]);
+    let source = stream_with_batches(rdlt_connector::StreamSpec::new("s"), evolving_batches());
     let mut config = EngineConfig::new("obs");
     config = config.with_commit_policy(rdlt_core::CommitPolicy::EveryCheckpoints(1));
 
@@ -90,10 +87,7 @@ async fn report_counters_are_exact_and_clean_runs_emit_no_discards() {
     let dest = MemoryDestination::new();
     let engine = Engine::new(
         EngineConfig::new("exact"),
-        MemorySource::new(vec![MemoryStream::new(
-            StreamSpec::new("s"),
-            three_batches(),
-        )]),
+        three_batch_source(),
         dest.clone(),
     );
     let mut events = engine.events();
@@ -194,17 +188,10 @@ async fn commit_counters_describe_the_unit_they_publish() {
         seen: std::sync::Arc::clone(&seen),
     };
     // One commit per checkpoint: three units, two rows each.
-    let report = Engine::new(
-        EngineConfig::new("counters"),
-        MemorySource::new(vec![MemoryStream::new(
-            StreamSpec::new("s"),
-            three_batches(),
-        )]),
-        dest,
-    )
-    .run()
-    .await
-    .expect("run");
+    let report = Engine::new(EngineConfig::new("counters"), three_batch_source(), dest)
+        .run()
+        .await
+        .expect("run");
 
     let units = seen.lock().expect("seen").clone();
     assert!(!units.is_empty(), "at least one commit unit");
@@ -241,7 +228,7 @@ async fn discard_counters_reach_the_commit_unit() {
     ];
     let report = Engine::new(
         config,
-        MemorySource::new(vec![MemoryStream::new(StreamSpec::new("s"), batches)]),
+        stream_with_batches(StreamSpec::new("s"), batches),
         dest,
     )
     .run()
@@ -287,7 +274,7 @@ async fn discarded_value_counter_reaches_the_commit_unit() {
     ];
     let report = Engine::new(
         config,
-        MemorySource::new(vec![MemoryStream::new(StreamSpec::new("s"), batches)]),
+        stream_with_batches(StreamSpec::new("s"), batches),
         dest,
     )
     .run()
@@ -347,7 +334,7 @@ async fn only_the_table_that_discarded_reports_a_discard() {
     ];
     let engine = Engine::new(
         config,
-        MemorySource::new(vec![MemoryStream::new(StreamSpec::new("s"), batches)]),
+        stream_with_batches(StreamSpec::new("s"), batches),
         MemoryDestination::new(),
     );
     let mut events = engine.events();
@@ -415,7 +402,7 @@ async fn a_conforming_run_under_a_discard_policy_emits_no_discards() {
         ];
         let engine = Engine::new(
             config,
-            MemorySource::new(vec![MemoryStream::new(StreamSpec::new("s"), batches)]),
+            stream_with_batches(StreamSpec::new("s"), batches),
             MemoryDestination::new(),
         );
         let mut events = engine.events();

@@ -3,26 +3,17 @@
 //! `structured` is a contract violation, and the host must surface it even
 //! while the source sits parked on the byte budget mid-push.
 
-use std::sync::Arc;
-
-use arrow::{
-    array::{Int64Array, RecordBatch},
-    datatypes::{DataType, Field, Schema},
-};
+use arrow::array::RecordBatch;
 use async_trait::async_trait;
 use rdlt_connector::{ConnectorSpec, ReadRequest, Source, SourceError, StreamSpec};
 use rdlt_core::RdltError;
 use rdlt_engine::{Engine, EngineConfig};
-use rdlt_testkit::MemoryDestination;
+use rdlt_testkit::{MemoryDestination, batch_of};
 
 struct ArrowOnUnstructured;
 
 fn batch() -> RecordBatch {
-    RecordBatch::try_new(
-        Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)])),
-        vec![Arc::new(Int64Array::from(vec![1, 2, 3]))],
-    )
-    .expect("batch")
+    batch_of(&[1, 2, 3])
 }
 
 #[async_trait]

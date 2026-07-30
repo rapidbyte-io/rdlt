@@ -8,14 +8,7 @@ use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{MemoryBatch, MemoryDestination, MemorySource, MemoryStream};
 use serde_json::json;
 
-use super::common::three_batches;
-
-fn stream_with_batches(
-    spec: rdlt_connector::StreamSpec,
-    batches: Vec<MemoryBatch>,
-) -> MemorySource {
-    MemorySource::new(vec![MemoryStream::new(spec, batches)])
-}
+use super::common::{stream_with_batches, three_batch_source};
 
 /// Scenario 1: a second run resumes from the last committed cursor — the source is
 /// never asked to re-read completed ranges.
@@ -201,10 +194,7 @@ async fn replace_mode_replaces_per_run_not_per_commit() {
 #[tokio::test]
 async fn fresh_run_reads_with_no_cursor() {
     let dest = MemoryDestination::new();
-    let source = MemorySource::new(vec![MemoryStream::new(
-        StreamSpec::new("s"),
-        three_batches(),
-    )]);
+    let source = three_batch_source();
     let since_log = source.since_log();
     Engine::new(EngineConfig::new("fresh"), source, dest)
         .run()

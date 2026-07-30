@@ -2,12 +2,11 @@
 //! boundaries are exact. Mutation-report closure; the doc names the mutant
 //! class it kills.
 
-use rdlt_connector::StreamSpec;
 use rdlt_core::CommitPolicy;
 use rdlt_engine::{Engine, EngineConfig};
-use rdlt_testkit::{MemoryDestination, MemorySource, MemoryStream};
+use rdlt_testkit::MemoryDestination;
 
-use super::common::three_batches;
+use super::common::three_batch_source;
 
 /// Kills: `policy_triggers` `>=`→`<` boundaries and `EveryCheckpoints` counting.
 /// 3 checkpoints under EveryCheckpoints(2): commit fires at checkpoint 2, the
@@ -17,17 +16,10 @@ async fn commit_policy_boundaries_are_exact() {
     let dest = MemoryDestination::new();
     let mut config = EngineConfig::new("policy");
     config = config.with_commit_policy(CommitPolicy::EveryCheckpoints(2));
-    let report = Engine::new(
-        config,
-        MemorySource::new(vec![MemoryStream::new(
-            StreamSpec::new("s"),
-            three_batches(),
-        )]),
-        dest.clone(),
-    )
-    .run()
-    .await
-    .expect("run");
+    let report = Engine::new(config, three_batch_source(), dest.clone())
+        .run()
+        .await
+        .expect("run");
     assert_eq!(
         report.commits, 2,
         "checkpoint 2 commits; finish() commits the tail"
@@ -41,17 +33,10 @@ async fn commit_policy_boundaries_are_exact() {
     let dest = MemoryDestination::new();
     let mut config = EngineConfig::new("policy-bytes");
     config = config.with_commit_policy(CommitPolicy::EveryBytes(1));
-    let report = Engine::new(
-        config,
-        MemorySource::new(vec![MemoryStream::new(
-            StreamSpec::new("s"),
-            three_batches(),
-        )]),
-        dest.clone(),
-    )
-    .run()
-    .await
-    .expect("run");
+    let report = Engine::new(config, three_batch_source(), dest.clone())
+        .run()
+        .await
+        .expect("run");
     assert_eq!(
         report.commits, 3,
         "byte policy triggers at every checkpoint"

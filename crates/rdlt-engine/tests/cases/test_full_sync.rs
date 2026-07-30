@@ -8,10 +8,6 @@ use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{MemoryBatch, MemoryDestination, MemorySource, MemoryStream};
 use serde_json::json;
 
-fn scalar(ty: LogicalType) -> ColumnType {
-    ColumnType::scalar(ty)
-}
-
 /// Scenario 1 + 2 + 3 in one run, plus mid-run evolution across two source batches.
 #[tokio::test]
 async fn full_sync_infers_types_splits_children_and_stamps_lineage() {
@@ -74,17 +70,20 @@ async fn full_sync_infers_types_splits_children_and_stamps_lineage() {
             .column_type
             .clone()
     };
-    assert_eq!(ty("id"), scalar(LogicalType::Int64));
-    assert_eq!(ty("ratio"), scalar(LogicalType::Float64));
-    assert_eq!(ty("created_at"), scalar(LogicalType::TimestampTz));
-    assert_eq!(ty("note"), scalar(LogicalType::Utf8));
+    assert_eq!(ty("id"), ColumnType::scalar(LogicalType::Int64));
+    assert_eq!(ty("ratio"), ColumnType::scalar(LogicalType::Float64));
+    assert_eq!(
+        ty("created_at"),
+        ColumnType::scalar(LogicalType::TimestampTz)
+    );
+    assert_eq!(ty("note"), ColumnType::scalar(LogicalType::Utf8));
     // Nested object preserved as a struct column with its own evolved fields.
     match ty("profile") {
         ColumnType::Struct { fields } => {
             let zip = fields.iter().find(|f| f.name == "zip").expect("zip field");
             assert_eq!(
                 zip.column_type,
-                scalar(LogicalType::Utf8),
+                ColumnType::scalar(LogicalType::Utf8),
                 "Int64 ⊔ Utf8 → Utf8"
             );
         }
@@ -99,7 +98,7 @@ async fn full_sync_infers_types_splits_children_and_stamps_lineage() {
     // ---- Scenario 2: value-checked widening, one column, no variants ----
     assert_eq!(
         ty("score"),
-        scalar(LogicalType::Utf8),
+        ColumnType::scalar(LogicalType::Utf8),
         "big int under Float64 → Utf8"
     );
     assert!(
@@ -117,7 +116,7 @@ async fn full_sync_infers_types_splits_children_and_stamps_lineage() {
     );
 
     // ---- Scenario 3: irreconcilable conflict → Json, values preserved verbatim ----
-    assert_eq!(ty("blob"), scalar(LogicalType::Json));
+    assert_eq!(ty("blob"), ColumnType::scalar(LogicalType::Json));
     let blobs: Vec<&str> = root_rows
         .iter()
         .map(|r| r["blob"].as_str().expect("json text"))

@@ -6,17 +6,19 @@
 
 use rdlt_core::{PolicyAction, RdltError, SchemaPolicy, TableName};
 use rdlt_engine::{Engine, EngineConfig};
-use rdlt_testkit::{MemoryBatch, MemoryDestination, MemorySource, MemoryStream};
+use rdlt_testkit::{MemoryBatch, MemoryDestination, MemorySource};
 use serde_json::json;
 
+use super::common::stream_with_batches;
+
 fn two_batch_source(batch2_rows: Vec<serde_json::Value>) -> MemorySource {
-    MemorySource::new(vec![MemoryStream::new(
+    stream_with_batches(
         rdlt_connector::StreamSpec::new("t"),
         vec![
             MemoryBatch::new(vec![json!({"id": 1, "v": 10})]).with_checkpoint(1),
             MemoryBatch::new(batch2_rows).with_checkpoint(2),
         ],
-    )])
+    )
 }
 
 /// Scenario 1: default evolve — a new mid-run column lands; earlier rows read null.
@@ -173,7 +175,7 @@ async fn discard_row_on_middle_table_cascades_to_grandchildren() {
         SchemaPolicy::evolve().table("orders__items", PolicyAction::DiscardRow),
     );
 
-    let source = MemorySource::new(vec![MemoryStream::new(
+    let source = stream_with_batches(
         rdlt_connector::StreamSpec::new("orders"),
         vec![
             // Batch 1 establishes the items schema (no `bad` column).
@@ -188,7 +190,7 @@ async fn discard_row_on_middle_table_cascades_to_grandchildren() {
                 "items": [{"sku": "b", "bad": 1, "tags": [{"t": "y"}]}]
             })]),
         ],
-    )]);
+    );
     let report = Engine::new(config, source, dest.clone())
         .run()
         .await
@@ -265,14 +267,14 @@ async fn a_frozen_parent_freezes_the_child_tables_it_creates() {
     config = config.with_commit_policy(rdlt_core::CommitPolicy::EveryCheckpoints(1));
 
     // Batch 1 establishes BOTH t and its child; batch 2 adds a column to the CHILD.
-    let source = MemorySource::new(vec![MemoryStream::new(
+    let source = stream_with_batches(
         rdlt_connector::StreamSpec::new("t"),
         vec![
             MemoryBatch::new(vec![json!({"id": 1, "items": [{"sku": "a"}]})]).with_checkpoint(1),
             MemoryBatch::new(vec![json!({"id": 2, "items": [{"sku": "b", "qty": 3}]})])
                 .with_checkpoint(2),
         ],
-    )]);
+    );
     let err = Engine::new(config, source, dest.clone())
         .run()
         .await
@@ -292,13 +294,13 @@ async fn freeze_allows_the_tables_the_first_drain_establishes() {
     let dest = MemoryDestination::new();
     let mut config = EngineConfig::new("freeze-bootstrap");
     config = config.with_schema_policy(SchemaPolicy::evolve().table("t", PolicyAction::Freeze));
-    let source = MemorySource::new(vec![MemoryStream::new(
+    let source = stream_with_batches(
         rdlt_connector::StreamSpec::new("t"),
         vec![
             MemoryBatch::new(vec![json!({"id": 1, "items": [{"sku": "a"}]})]).with_checkpoint(1),
             MemoryBatch::new(vec![json!({"id": 2, "items": [{"sku": "b"}]})]).with_checkpoint(2),
         ],
-    )]);
+    );
     Engine::new(config, source, dest.clone())
         .run()
         .await

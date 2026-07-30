@@ -6,14 +6,14 @@
 
 use std::collections::BTreeMap;
 
-use rdlt_core::{CommitPolicy, Cursor, RdltError, ResumedFrom, TableName, schema::system_columns};
+use rdlt_core::{CommitPolicy, Cursor, RdltError, ResumedFrom, TableName};
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{
-    CrashDestination, FaultPoint, MemoryBatch, MemoryDestination, MemorySource, MemoryStream,
+    CrashDestination, FaultPoint, MemoryBatch, MemoryDestination, MemorySource, MemoryStream, Row,
 };
 use serde_json::json;
 
-use super::common::three_batches;
+use super::common::{stream_with_batches, three_batches, without_load_id};
 
 fn batches() -> Vec<MemoryBatch> {
     vec![
@@ -24,10 +24,7 @@ fn batches() -> Vec<MemoryBatch> {
 }
 
 fn source() -> MemorySource {
-    MemorySource::new(vec![MemoryStream::new(
-        rdlt_connector::StreamSpec::new("events"),
-        batches(),
-    )])
+    stream_with_batches(rdlt_connector::StreamSpec::new("events"), batches())
 }
 
 fn config(workdir: &std::path::Path) -> EngineConfig {
@@ -37,25 +34,7 @@ fn config(workdir: &std::path::Path) -> EngineConfig {
     config
 }
 
-type Snapshot = BTreeMap<TableName, Vec<serde_json::Map<String, serde_json::Value>>>;
-
-/// Destination content with run-scoped noise removed (`_rdlt_load_id` names the run).
-fn comparable(dest: &MemoryDestination) -> Snapshot {
-    dest.snapshot()
-        .into_iter()
-        .map(|(t, rows)| {
-            (
-                t,
-                rows.into_iter()
-                    .map(|mut r| {
-                        r.remove(system_columns::LOAD_ID);
-                        r
-                    })
-                    .collect(),
-            )
-        })
-        .collect()
-}
+type Snapshot = BTreeMap<TableName, Vec<Row>>;
 
 /// The ground truth: what an uninterrupted run produces.
 async fn uninterrupted() -> Snapshot {
@@ -65,7 +44,7 @@ async fn uninterrupted() -> Snapshot {
         .run()
         .await
         .expect("clean run");
-    comparable(&dest)
+    without_load_id(&dest)
 }
 
 /// Crash-matrix row 1: died during extraction. Restart resumes from the last
@@ -96,7 +75,7 @@ async fn row1_source_crash_mid_extraction() {
         "resume from committed cursor"
     );
     assert_eq!(report.total_rows(), 3, "only seq 3..=5 re-extracted");
-    assert_eq!(comparable(&dest), uninterrupted().await);
+    assert_eq!(without_load_id(&dest), uninterrupted().await);
 }
 
 /// Row 2: WAL written, crash before the destination commit. Restart replays the WAL
@@ -136,7 +115,7 @@ async fn row2_crash_before_commit_replays_wal() {
         Some(Cursor::new(2)),
         "source resumes past WAL span"
     );
-    assert_eq!(comparable(&inner), uninterrupted().await);
+    assert_eq!(without_load_id(&inner), uninterrupted().await);
 }
 
 /// Row 3: crash MID-commit — the destination committed but the receipt was lost.
@@ -163,7 +142,11 @@ async fn row3_crash_mid_commit_hits_idempotence() {
         .await
         .expect("recovery run");
     let _ = report;
-    assert_eq!(comparable(&inner), uninterrupted().await, "no double-apply");
+    assert_eq!(
+        without_load_id(&inner),
+        uninterrupted().await,
+        "no double-apply"
+    );
 }
 
 /// Row 4: the WAL is lost entirely after a crash. Recovery degrades to
@@ -194,7 +177,7 @@ async fn row4_wal_lost_reextracts_from_cursor() {
         Some(Cursor::new(1)),
         "re-extract from cursor 1"
     );
-    assert_eq!(comparable(&inner), uninterrupted().await);
+    assert_eq!(without_load_id(&inner), uninterrupted().await);
 }
 
 /// Row 2 variant: crash between WAL append and the destination write.
@@ -214,7 +197,7 @@ async fn row2_variant_crash_before_write() {
         .await
         .expect("recovery run");
     let _ = report;
-    assert_eq!(comparable(&inner), uninterrupted().await);
+    assert_eq!(without_load_id(&inner), uninterrupted().await);
 }
 
 /// Cancellation is a crash we chose (invariant 4): cancel mid-run via the token,
@@ -245,7 +228,7 @@ async fn cancellation_recovers_like_a_crash() {
         .await
         .expect("recovery run");
     let _ = report;
-    assert_eq!(comparable(&dest), uninterrupted().await);
+    assert_eq!(without_load_id(&dest), uninterrupted().await);
 }
 
 /// Dropping the run future mid-flight (task abort) recovers identically.
@@ -267,7 +250,7 @@ async fn dropped_run_recovers_like_a_crash() {
         .await
         .expect("recovery run");
     let _ = report;
-    assert_eq!(comparable(&dest), uninterrupted().await);
+    assert_eq!(without_load_id(&dest), uninterrupted().await);
 }
 
 /// Review finding #2 regression: a destination failure while the byte-budget channel

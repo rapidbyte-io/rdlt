@@ -18,6 +18,7 @@ use std::collections::BTreeSet;
 
 use proptest::prelude::*;
 use rdlt_connector::StreamSpec;
+use rdlt_core::schema::system_columns;
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{MemoryBatch, MemoryDestination, MemorySource, MemoryStream};
 use serde_json::{Map, Value, json};
@@ -200,7 +201,7 @@ proptest! {
         // (2) Lineage integrity + (4) naming safety.
         let root_ids: BTreeSet<String> = root_rows
             .iter()
-            .map(|r| r["_rdlt_id"].as_str().expect("root id").to_owned())
+            .map(|r| r[system_columns::ID].as_str().expect("root id").to_owned())
             .collect();
         for table in &tables {
             let schema = dest.schema(table.as_str()).expect("schema");
@@ -213,13 +214,13 @@ proptest! {
             let parent_ids: BTreeSet<String> = dest
                 .committed_rows(parent.parent.as_str())
                 .iter()
-                .map(|r| r["_rdlt_id"].as_str().expect("parent id").to_owned())
+                .map(|r| r[system_columns::ID].as_str().expect("parent id").to_owned())
                 .collect();
             for row in dest.committed_rows(table.as_str()) {
-                let pid = row["_rdlt_parent_id"].as_str().expect("parent id present");
+                let pid = row[system_columns::PARENT_ID].as_str().expect("parent id present");
                 prop_assert!(parent_ids.contains(pid),
                     "orphan `_rdlt_parent_id` in `{table}`");
-                let rid = row["_rdlt_root_id"].as_str().expect("root id present");
+                let rid = row[system_columns::ROOT_ID].as_str().expect("root id present");
                 prop_assert!(root_ids.contains(rid),
                     "dangling `_rdlt_root_id` in `{table}`");
             }

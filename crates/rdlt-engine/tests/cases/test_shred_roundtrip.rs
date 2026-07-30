@@ -6,10 +6,11 @@
 //! 3. **Scalar fidelity**: homogeneous scalar columns survive untouched.
 
 use proptest::prelude::*;
-use rdlt_core::schema::system_columns;
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{MemoryDestination, MemorySource};
 use serde_json::{Value, json};
+
+use super::common::without_load_id;
 
 /// Arbitrary JSON values, depth-limited, with object keys that exercise
 /// normalization.
@@ -53,23 +54,6 @@ async fn run_once(rows: Vec<Value>) -> MemoryDestination {
     dest
 }
 
-/// Snapshot with run-scoped noise (`_rdlt_load_id`) removed.
-fn comparable(dest: &MemoryDestination) -> Vec<(String, Vec<serde_json::Map<String, Value>>)> {
-    dest.snapshot()
-        .into_iter()
-        .map(|(table, rows)| {
-            let cleaned = rows
-                .into_iter()
-                .map(|mut row| {
-                    row.remove(system_columns::LOAD_ID);
-                    row
-                })
-                .collect();
-            (table.as_str().to_owned(), cleaned)
-        })
-        .collect()
-}
-
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
 
@@ -87,7 +71,7 @@ proptest! {
             (a, b)
         });
         // Determinism: identical input → identical destination content.
-        prop_assert_eq!(comparable(&a), comparable(&b));
+        prop_assert_eq!(without_load_id(&a), without_load_id(&b));
         // Conservation: every input row exactly once in the root table.
         prop_assert_eq!(a.committed_rows("t").len(), row_count);
     }
