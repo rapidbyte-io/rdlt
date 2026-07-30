@@ -1,0 +1,19 @@
+Recorded figures reproduced with their now-named commands (GI7, SC-006).
+
+  FIGURE                             RECORDED       REPRODUCED     READING
+  coverage, lines                    87.22%         87.25%         agrees; +0.03pp from 13 new tests
+  coverage, functions                83.79%         83.74%         agrees within noise
+  coverage, regions                  88.21%         88.22%         agrees
+  semver, rdlt-core                  no update req. no update req. =
+  semver, rdlt-connector             no update req. no update req. =
+  cold start median                  23.8 / 23.3 ms 23.9 ms        bar 40, within noise
+  perf gate                          0 regressed    0 regressed    =
+
+  The coverage figure is the one that MATTERED to reproduce. 023 recorded 87.22%
+  measured with the snowflake sweep excluded, and that exclusion existed only as
+  prose in a close-out — so anyone running `make coverage` got either a
+  101.5-minute surprise or a number not comparable with the record. The exclusion
+  is now in the target with its reason and its cost, and the figure reproduces.
+
+  87.25% against a floor of 80. The rise is 13 new gate-verification tests; the
+  floor was never at risk.

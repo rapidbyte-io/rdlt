@@ -12,49 +12,46 @@ integrity first (this feature), house style second.
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
 `specs/024-gate-integrity/plan.md` (feature: TEST-GATE INTEGRITY — make the
-gate incapable of passing silently. SPEC + PLAN written, NOT implemented, on
-branch `024-gate-integrity` off main @ 34ccd379. Eight measured defects let
-`make check` report green while verifying less than it appears to. Contract
-contracts/gate-integrity.md GI1-GI8; five increments, US1 FIRST because until
-an empty selection fails, any later fix can silently regress.
-THE CHEAP SURPRISE: `--no-tests` ALREADY DEFAULTS TO FAIL (nextest 0.9.135),
-so the dominant fix is DELETING nine `--no-tests=pass` flags, not building
-tooling. `--no-tests` governs SELECTION, not execution — the flags were added
-conflating "an empty selection" with "tests that self-skip", and 8 of the 9
-selectors resolve non-empty today, so those 8 flags protect nothing and hide
-a rename tomorrow.
-A LIVE DEFECT FOUND WHILE RESEARCHING (research R0): `make test TARGET=prop`
-selects `test(shred_property)` — a test-NAME filter. The binary is
-`shred_property`; the test inside is `shred_invariants_hold`. It matches ZERO
-tests, `--no-tests=pass` makes that exit 0, and the 4,096-case property run
-has been green while running nothing. The FILE exists and works (an
-intermediate reading wrongly concluded it was missing — a truncated listing);
-only the selector kind is wrong.
-TEN crash-point registries across SIX connector crates, and only rdlt-engine
-scans its own sources (`tests/crash_sweep.rs:196-233`, deliberately NOT
-deriving from the registry because that is circular). A first pass using
-`read_dir` as the signal false-positived on file and snowflake — those read
-DESTINATION dirs to verify output. Fix = ONE shared scanner in rdlt-testkit
-(already a dev-dep of all 8 consumers), because a copied scanner FAILS OPEN:
-it finds fewer sites and the assertion still passes.
-THE ICEBERG FILTER IS NEGATIVE (`.config/nextest.toml:9`), and re-spelling it
-positively was INVESTIGATED AND REJECTED — 10 of 11 binaries use the live
-fixture, so a positive list of 10 fails the other way when an 11th is added
-and not listed. Fix = PIN the group membership with a test so drift in either
-direction fails.
-Semver's only invocation is CI against `main`, and origin/main is 73 commits
-STALE — so a green run diffs against a pre-001..023 surface and carries no
-information. Fix = `make semver` against a RECORDED sha (34ccd379,
-re-derivable via `git merge-base`), pinned deliberately because a baseline
-that advances with every merge forgives the break it just accepted.
-Pre-audited SOUND: zero `|| true`, `2>/dev/null` or `-` prefixes in the
-Makefile — a class already clean, recorded as such so the audit shows it
-searched rather than stayed silent.
-FR-015 IS THE CRITERION THAT KEEPS THIS HONEST: every fixed defect needs an
-OBSERVED failure-then-recovery with output recorded. A gate-hardening feature
-verified only by "the gate still passes" IS the vacuous verification it
-exists to remove. FR-013 is one-way: no change may make the gate easier to
-pass.)
+gate incapable of passing silently. IMPLEMENTED on branch `024-gate-integrity`
+off main @ 34ccd379, NOT merged. All five stories delivered; GI1-GI8 all MET;
+gate exit 0 with every new leg green. Contract contracts/gate-integrity.md.
+WHAT THE GATE NOW GUARANTEES that it did not: an empty test selection FAILS
+(nine `--no-tests=pass` flags deleted — the runner already defaults to fail, so
+the flags protected nothing and hid renames); every one of 107 test binaries is
+invoked or exempt BY NAME; ten crash-point registries across six crates verify
+against their own SOURCES rather than themselves; a file compiled by no gate
+command is now type-checked; a resource probe can be DEMANDED
+(`RDLT_TESTKIT_REQUIRE_CONTAINERS` / `_REQUIRE_SNOWFLAKE`, both-set is an
+error) so a skip stops reading as a pass; `make semver` exists at all.
+THE FIGURE THAT SUMS IT UP: `make test TARGET=prop` went 0.000s/0 tests ->
+38.026s/1 test. Its selector was `test(shred_property)` — a test-NAME filter —
+while `shred_property` is the BINARY and its test is `shred_invariants_hold`.
+The 4,096-case property run had been green while executing nothing. A
+zero-second pass is the signature of this whole defect class.
+DO NOT "SIMPLIFY" THE REGISTRY SCANNER (rdlt-testkit crash.rs). Three designs
+were overturned by measurement and each wrong one FAILS OPEN: (1) set equality
+breaks because THREE postgres points are armed indirectly (macro takes a
+variable, literal sits at the constructor) and reporting them missing invites
+SHRINKING the registry; (2) counting occurrences assumed the declaration lives
+in the scanned tree — six connectors satisfy that by coincidence, the ENGINE
+does not (ENGINE_POINTS is in its test file), so declaration blocks are located
+by SHAPE and excluded; (3) one assertion per registry fails where a crate has
+three over one tree (file, postgres) — it is one per CRATE against the union.
+Two arming spellings are recognised (`crash_point!`, `crash_at`); a third needs
+adding to ARMING_PATTERNS, and the vacuity guard is what makes a missing
+spelling fail rather than agree.
+THE ICEBERG NEXTEST FILTER STAYS NEGATIVE — re-spelling it positively was
+investigated and REJECTED (a positive list of ten fails the other way when an
+eleventh live binary is added). Membership is asserted by a test instead.
+US2's guarantee is deliberately WEAKER than the rest (close-out D-4): the
+reachability enumeration is derived from the filesystem but nothing FAILS on an
+unreachable binary — that needs the gate to model its own target graph.
+GATE WORKFLOW, learned the hard way THREE times (close-out D-7): `make check`
+spawns sub-makes that RE-READ the Makefile, so editing anything during a run
+measures a mixture — make all edits, then run one untouched gate. And do not
+wait on a PID from `pgrep -f 'make check'`: the pattern matches the waiting
+shell. Wait on a completion marker in the log.
+close-out.md is authoritative for every disposition.)
 Previous feature 023 for reference:
 `specs/023-snowflake-put/plan.md` (feature: Snowflake internal-stage
 ingestion as the SINGLE path — COMPLETE 51/54 on branch `023-snowflake-put`,

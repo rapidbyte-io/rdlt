@@ -123,10 +123,10 @@ that runs it or the recorded exemption with its reason.
   that no gate path invokes, run T011's enumeration, observe it reported as
   unreachable, delete the binary. Record in
   `specs/024-gate-integrity/evidence/demo-us2.md`.
-- [ ] T014 [US2] Measure and record the wall-clock cost `TARGET=e2e` adds to
+- [X] T014 [US2] Measure and record the wall-clock cost `TARGET=e2e` adds to
   `check`, with and without a container runtime present, in
   `specs/024-gate-integrity/evidence/gate-cost.md` (SC-010's first entry).
-- [ ] T015 [US2] US2 gate: full gate green; zero unreachable-and-unexplained
+- [X] T015 [US2] US2 gate: full gate green; zero unreachable-and-unexplained
   suites; close-out row.
 
 ---
@@ -187,7 +187,7 @@ restore and observe pass.
   AND registry, observe failure; add a site to source only, observe failure;
   restore, observe pass. The snowflake case additionally demonstrates that
   removing only the `crash_at` sites is caught.
-- [ ] T025 [US3] US3 gate: full gate green; all ten registries asserted; the
+- [X] T025 [US3] US3 gate: full gate green; all ten registries asserted; the
   per-crate site counts match T003's record; close-out row.
 
 ---
@@ -232,7 +232,7 @@ count difference; run in demanding mode and observe outright failure.
   the baseline; then set `REQUIRE_CONTAINERS` with the runtime absent and observe
   outright failure naming it. Record in
   `specs/024-gate-integrity/evidence/demo-us4.md`.
-- [ ] T033 [US4] US4 gate: full gate green in default mode; green in demanding
+- [X] T033 [US4] US4 gate: full gate green in default mode; green in demanding
   mode on this host (resources present); close-out row.
 
 ---
@@ -287,11 +287,11 @@ count difference; run in demanding mode and observe outright failure.
   lint leg catch it, revert; add an unlisted iceberg test binary, observe the
   membership pin fail, revert. Record in
   `specs/024-gate-integrity/evidence/demo-us5.md`.
-- [ ] T041 [US5] Reproduce each recorded figure with its now-named command and
+- [X] T041 [US5] Reproduce each recorded figure with its now-named command and
   confirm agreement — the coverage figure against the recorded 87.22% in
   particular (SC-006). Record any disagreement with its explanation rather than
   adjusting the figure.
-- [ ] T042 [US5] US5 gate: full gate green; close-out row.
+- [X] T042 [US5] US5 gate: full gate green; close-out row.
 
 ---
 
@@ -300,22 +300,22 @@ count difference; run in demanding mode and observe outright failure.
 - [X] T043 [P] Update `crates/rdlt-testkit/README.md` and the root `README.md`
   where either describes how the gate is run, so the documented procedure matches
   the one that now exists.
-- [ ] T044 [P] Correct the two source comments that cite the property suite by a
+- [X] T044 [P] Correct the two source comments that cite the property suite by a
   name the selector could not reach — `crates/rdlt-engine/src/shred/tape.rs:8`
   and `crates/rdlt-engine/tests/shred_identity_pin.rs:9` — so a reader is not
   sent looking for `shred_property.rs` under a filter that never matched it.
-- [ ] T045 Coverage at or above the 80% floor, measured with the now-codified
+- [X] T045 Coverage at or above the 80% floor, measured with the now-codified
   exclusion, recorded with the before/after pair.
-- [ ] T046 Record the gate's total added wall-clock cost in
+- [X] T046 Record the gate's total added wall-clock cost in
   `specs/024-gate-integrity/evidence/gate-cost.md` — before/after from T001 —
   so the price of the added integrity is a known quantity (SC-010).
-- [ ] T047 Close-out matrix in `specs/024-gate-integrity/close-out.md`: GI1–GI8
+- [X] T047 Close-out matrix in `specs/024-gate-integrity/close-out.md`: GI1–GI8
   all terminal; story matrix complete; every one of the counted items carrying a
   disposition (9 selectors, 10 registries, 1 orphaned target, 1 uncompiled file,
   1 group, 2 probe families, 2 recorded practices); every detection demonstration
   cited with its observed output; every unperformed verification named with its
   reason.
-- [ ] T048 SC-005 secret sweep at the final commit: account identifier, login
+- [X] T048 SC-005 secret sweep at the final commit: account identifier, login
   name, and key material absent from every tracked file, checked by shape as well
   as by value (a credential file committed from another machine passes every
   value check).
