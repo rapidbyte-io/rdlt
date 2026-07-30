@@ -6,6 +6,10 @@
 //! by `UniqueNamer`). Decimals lower to canonical text when unsupported.
 //! Names are a pure function of the engine schema (first-seen order, append-only), so
 //! they are stable across batches and runs.
+//!
+//! The schema half and the batch half MUST agree field-for-field, and the
+//! `parity_tests` module below proves it by machine — which is why both halves
+//! and their proof live in one file.
 
 use std::sync::Arc;
 

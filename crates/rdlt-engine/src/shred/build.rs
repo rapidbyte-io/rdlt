@@ -4,6 +4,10 @@
 //!
 //! Generic over [`JsonView`]: the tree and streaming paths
 //! build through the SAME code — identical arrays, bit for bit.
+//!
+//! One concept despite its length: the closed type lattice needs one builder
+//! arm per logical type, and splitting arms across files would put the lattice
+//! in two places with nothing to keep them agreeing.
 
 use std::sync::Arc;
 
