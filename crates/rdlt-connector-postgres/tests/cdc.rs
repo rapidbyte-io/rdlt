@@ -407,10 +407,10 @@ impl CdcRig {
 
     async fn run(&self, tables: &[&str], key: &str) -> u64 {
         let mut config = EngineConfig::new(self.pipeline.as_str());
-        config.workdir = Some(self.workdir.clone());
-        config.write_mode = rdlt_connector::WriteMode::Merge {
+        config = config.with_workdir(self.workdir.clone());
+        config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
             key: vec![key.into()],
-        };
+        });
         let report = Engine::new(config, self.source(tables), self.dest(tables))
             .run()
             .await
@@ -420,10 +420,10 @@ impl CdcRig {
 
     async fn run_expect_err(&self, tables: &[&str], key: &str) -> String {
         let mut config = EngineConfig::new(self.pipeline.as_str());
-        config.workdir = Some(self.workdir.clone());
-        config.write_mode = rdlt_connector::WriteMode::Merge {
+        config = config.with_workdir(self.workdir.clone());
+        config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
             key: vec![key.into()],
-        };
+        });
         Engine::new(config, self.source(tables), self.dest(tables))
             .run()
             .await
@@ -706,10 +706,10 @@ async fn tail_applies_bursts_cancels_cleanly_and_resumes() {
     ))
     .expect("tail config");
     let mut config = EngineConfig::new("cdc-tail");
-    config.workdir = Some(rig.workdir.clone());
-    config.write_mode = rdlt_connector::WriteMode::Merge {
+    config = config.with_workdir(rig.workdir.clone());
+    config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
         key: vec!["id".into()],
-    };
+    });
     let engine = Engine::new(config, source, rig.dest(&["orders"]));
     let cancel = engine.cancellation_token();
     let tail = tokio::spawn(engine.run());
@@ -1208,10 +1208,10 @@ async fn ack_off_never_advances_the_slot() {
     };
     let run = || async {
         let mut config = EngineConfig::new("cdc-ack-off");
-        config.workdir = Some(rig.workdir.clone());
-        config.write_mode = rdlt_connector::WriteMode::Merge {
+        config = config.with_workdir(rig.workdir.clone());
+        config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
             key: vec!["id".into()],
-        };
+        });
         Engine::new(
             config,
             source(&rig.fixture.conn_url()),
@@ -1286,10 +1286,10 @@ async fn custom_flag_column_flows_end_to_end() {
     };
     let run = || async {
         let mut config = EngineConfig::new("cdc-flag-name");
-        config.workdir = Some(rig.workdir.clone());
-        config.write_mode = rdlt_connector::WriteMode::Merge {
+        config = config.with_workdir(rig.workdir.clone());
+        config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
             key: vec!["id".into()],
-        };
+        });
         Engine::new(config, source(&rig.fixture.conn_url()), dest())
             .run()
             .await
@@ -1337,10 +1337,10 @@ async fn declared_key_mismatch_under_default_identity_is_typed() {
     ))
     .expect("config");
     let mut config = EngineConfig::new("cdc-key-mismatch");
-    config.workdir = Some(rig.workdir.clone());
-    config.write_mode = rdlt_connector::WriteMode::Merge {
+    config = config.with_workdir(rig.workdir.clone());
+    config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
         key: vec!["code".into()],
-    };
+    });
     let err = Engine::new(config, source, rig.dest(&["orders"]))
         .run()
         .await

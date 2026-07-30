@@ -158,7 +158,7 @@ async fn a_replace_load_leaves_only_the_newest_rows() {
                 vec![MemoryBatch::new(rows(first, count)).with_checkpoint(1)],
             )]);
             let mut engine_config = EngineConfig::new(pipeline);
-            engine_config.write_mode = rdlt_connector::WriteMode::Replace;
+            engine_config = engine_config.with_write_mode(rdlt_connector::WriteMode::Replace);
             Engine::new(engine_config, source, dest.clone())
                 .run()
                 .await

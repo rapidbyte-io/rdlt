@@ -51,7 +51,7 @@ async fn file_source_read_path_survives_crash_sweep() {
         let source = FileSource::from_yaml(yaml).expect("config");
         let dest = DuckDb::open(db).map_err(|e| e.to_string())?;
         let mut config = EngineConfig::new("file-sweep");
-        config.workdir = Some(workdir.to_path_buf());
+        config = config.with_workdir(workdir.to_path_buf());
         match tokio::spawn(Engine::new(config, source, dest).run()).await {
             Ok(Ok(_)) => Ok(()),
             Ok(Err(e)) => Err(e.to_string()),
@@ -128,7 +128,7 @@ async fn file_dest_s3_path_survives_crash_sweep() {
                     )
                     .map_err(|e| e.to_string())?;
                     let mut config = EngineConfig::new("file-s3-sweep");
-                    config.workdir = Some(workdir);
+                    config = config.with_workdir(workdir);
                     match tokio::spawn(Engine::new(config, source, dest).run()).await {
                         Ok(Ok(_)) => Ok(()),
                         Ok(Err(e)) => Err(e.to_string()),

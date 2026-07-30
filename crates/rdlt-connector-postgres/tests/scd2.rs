@@ -83,9 +83,9 @@ fn scd2_dest(conn: &str, dataset: &str, absent: AbsentPolicy) -> Postgres {
 
 async fn run(dest: Postgres, rows: &[(i64, &str)]) {
     let mut config = EngineConfig::new("scd2");
-    config.write_mode = rdlt_connector::WriteMode::Merge {
+    config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
         key: vec!["id".into()],
-    };
+    });
     Engine::new(config, DimSource { batch: batch(rows) }, dest)
         .run()
         .await
@@ -343,9 +343,9 @@ async fn rejections_are_typed_at_ensure() {
         })
         .expect("options parse");
     let mut config = EngineConfig::new("bad");
-    config.write_mode = rdlt_connector::WriteMode::Merge {
+    config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
         key: vec!["id".into()],
-    };
+    });
     let err = Engine::new(
         config,
         DimSource {
@@ -370,9 +370,9 @@ async fn rejections_are_typed_at_ensure() {
         })
         .expect("options parse");
     let mut config = EngineConfig::new("badsh");
-    config.write_mode = rdlt_connector::WriteMode::Merge {
+    config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
         key: vec!["id".into()],
-    };
+    });
     let source = MemorySource::single_stream(
         StreamSpec::new("users").with_primary_key(["id"]),
         vec![json!({"id": 1})],

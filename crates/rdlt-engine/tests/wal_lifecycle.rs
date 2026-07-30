@@ -32,7 +32,7 @@ fn source() -> MemorySource {
 
 fn config(workdir: &Path) -> EngineConfig {
     let mut config = EngineConfig::new("wal-lifecycle");
-    config.workdir = Some(workdir.to_path_buf());
+    config = config.with_workdir(workdir.to_path_buf());
     config
 }
 

@@ -30,7 +30,7 @@ async fn second_run_resumes_from_committed_cursor() {
     let source1 = stream_with_batches(rdlt_connector::StreamSpec::new("events"), batches());
     let log1 = source1.since_log();
     let mut config = EngineConfig::new("incr");
-    config.commit_policy = CommitPolicy::EveryCheckpoints(1);
+    config = config.with_commit_policy(CommitPolicy::EveryCheckpoints(1));
     let report1 = Engine::new(config.clone(), source1, dest.clone())
         .run()
         .await
@@ -77,9 +77,9 @@ async fn merge_replaces_whole_subtree() {
     let spec = || rdlt_connector::StreamSpec::new("users").with_primary_key(["id"]);
     let dest = MemoryDestination::new();
     let mut config = EngineConfig::new("merge");
-    config.write_mode = WriteMode::Merge {
+    config = config.with_write_mode(WriteMode::Merge {
         key: vec!["id".into()],
-    };
+    });
 
     // Run 1: user 1 has two emails; user 2 has one.
     let source = MemorySource::single_stream(
@@ -129,7 +129,7 @@ async fn merge_replaces_whole_subtree() {
 async fn keyless_merge_dedups_identical_rows() {
     let dest = MemoryDestination::new();
     let mut config = EngineConfig::new("dedup");
-    config.write_mode = WriteMode::Merge { key: vec![] }; // keyless: content-hash id
+    config = config.with_write_mode(WriteMode::Merge { key: vec![] }); // keyless: content-hash id
     // NOTE: empty key is engine-legal for content dedup; the facade requires an
     // explicit key and that stays — this exercises the engine layer directly.
 
@@ -160,8 +160,8 @@ async fn keyless_merge_dedups_identical_rows() {
 async fn replace_mode_replaces_per_run_not_per_commit() {
     let dest = MemoryDestination::new();
     let mut config = EngineConfig::new("replace");
-    config.write_mode = WriteMode::Replace;
-    config.commit_policy = CommitPolicy::EveryCheckpoints(1);
+    config = config.with_write_mode(WriteMode::Replace);
+    config = config.with_commit_policy(CommitPolicy::EveryCheckpoints(1));
 
     let batches = vec![
         MemoryBatch::new(vec![json!({"v": "run1-a"})]).with_checkpoint(1),

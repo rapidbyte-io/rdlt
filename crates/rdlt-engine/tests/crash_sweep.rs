@@ -53,8 +53,8 @@ fn source() -> MemorySource {
 
 fn config(workdir: &Path, mode: &WriteMode) -> EngineConfig {
     let mut config = EngineConfig::new("sweep");
-    config.workdir = Some(workdir.to_path_buf());
-    config.write_mode = mode.clone();
+    config = config.with_workdir(workdir.to_path_buf());
+    config = config.with_write_mode(mode.clone());
     config
 }
 

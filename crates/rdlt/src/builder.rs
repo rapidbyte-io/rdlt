@@ -63,37 +63,37 @@ impl<S, D> PipelineBuilder<S, D> {
 
     /// Default write disposition for every stream (default: `Append`).
     pub fn write_mode(mut self, mode: WriteMode) -> Self {
-        self.config.write_mode = mode;
+        self.config = self.config.with_write_mode(mode);
         self
     }
 
     /// Per-stream override.
     pub fn write_mode_for(mut self, stream: impl Into<StreamName>, mode: WriteMode) -> Self {
-        self.config.write_modes.insert(stream.into(), mode);
+        self.config = self.config.with_write_mode_for(stream.into(), mode);
         self
     }
 
     /// Schema-change policy (default: evolve).
     pub fn schema_policy(mut self, policy: SchemaPolicy) -> Self {
-        self.config.schema_policy = policy;
+        self.config = self.config.with_schema_policy(policy);
         self
     }
 
     /// Commit grouping policy (default: every checkpoint).
     pub fn commit_policy(mut self, policy: CommitPolicy) -> Self {
-        self.config.commit_policy = policy;
+        self.config = self.config.with_commit_policy(policy);
         self
     }
 
     /// Local work directory (holds the WAL). Default: `.rdlt`.
     pub fn workdir(mut self, dir: impl Into<PathBuf>) -> Self {
-        self.config.workdir = Some(dir.into());
+        self.config = self.config.with_workdir(dir.into());
         self
     }
 
     /// Cap on in-flight bytes per stage channel — the memory bound.
     pub fn byte_budget(mut self, bytes: usize) -> Self {
-        self.config.byte_budget = bytes;
+        self.config = self.config.with_byte_budget(bytes);
         self
     }
 }
@@ -104,7 +104,7 @@ impl<S: Source, D: Destination> PipelineBuilder<S, D> {
     /// against the declared destination capabilities.
     pub fn build(self) -> Result<Pipeline, RdltError> {
         let caps = self.destination.capabilities();
-        let merge = merge_streams(&self.config.write_mode, &self.config.write_modes);
+        let merge = merge_streams(self.config.write_mode(), self.config.write_modes());
         if !caps.merge && merge.any() {
             return Err(RdltError::config(format!(
                 "destination `{}` does not support Merge (requested {})",
@@ -131,7 +131,7 @@ impl<S: Source, D: Destination> PipelineBuilder<S, D> {
         // once the source's streams are known. `build` runs before any stream
         // exists, so it can only enforce the stream-agnostic half: a Merge
         // write mode must carry at least one key column.
-        for (stream, mode) in &self.config.write_modes {
+        for (stream, mode) in self.config.write_modes() {
             if let WriteMode::Merge { key } = mode
                 && key.is_empty()
             {
@@ -140,7 +140,7 @@ impl<S: Source, D: Destination> PipelineBuilder<S, D> {
                 )));
             }
         }
-        if let WriteMode::Merge { key } = &self.config.write_mode
+        if let WriteMode::Merge { key } = self.config.write_mode()
             && key.is_empty()
         {
             return Err(RdltError::config("Merge requires at least one key column"));

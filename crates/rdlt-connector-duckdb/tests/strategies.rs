@@ -19,9 +19,9 @@ use serde_json::json;
 
 fn merge_config(name: &str, key: &[&str]) -> EngineConfig {
     let mut config = EngineConfig::new(name);
-    config.write_mode = WriteMode::Merge {
+    config = config.with_write_mode(WriteMode::Merge {
         key: key.iter().map(|k| k.to_string()).collect(),
-    };
+    });
     config
 }
 

@@ -182,9 +182,9 @@ async fn run_snowflake(
     for (index, batch) in batches.into_iter().enumerate() {
         let dest = Snowflake::new(config.clone()).expect("valid config");
         let mut engine_config = EngineConfig::new(format!("{pipeline}-{index}"));
-        engine_config.write_mode = WriteMode::Merge {
+        engine_config = engine_config.with_write_mode(WriteMode::Merge {
             key: vec!["id".into()],
-        };
+        });
         Engine::new(engine_config, KeyedSource { batch }, dest)
             .run()
             .await
@@ -195,9 +195,9 @@ async fn run_snowflake(
 async fn run_postgres(dest: &Postgres, pipeline: &str, batches: [arrow_array::RecordBatch; 2]) {
     for (index, batch) in batches.into_iter().enumerate() {
         let mut engine_config = EngineConfig::new(format!("{pipeline}-{index}"));
-        engine_config.write_mode = WriteMode::Merge {
+        engine_config = engine_config.with_write_mode(WriteMode::Merge {
             key: vec!["id".into()],
-        };
+        });
         Engine::new(engine_config, KeyedSource { batch }, dest.clone())
             .run()
             .await

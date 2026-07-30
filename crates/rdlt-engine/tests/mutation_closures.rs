@@ -65,7 +65,7 @@ async fn report_counters_are_exact_and_clean_runs_emit_no_discards() {
 async fn commit_policy_boundaries_are_exact() {
     let dest = MemoryDestination::new();
     let mut config = EngineConfig::new("policy");
-    config.commit_policy = CommitPolicy::EveryCheckpoints(2);
+    config = config.with_commit_policy(CommitPolicy::EveryCheckpoints(2));
     let report = Engine::new(
         config,
         MemorySource::new(vec![MemoryStream::new(
@@ -88,7 +88,7 @@ async fn commit_policy_boundaries_are_exact() {
     // `LoadItem::byte_size` (see the note on the test above).
     let dest = MemoryDestination::new();
     let mut config = EngineConfig::new("policy-bytes");
-    config.commit_policy = CommitPolicy::EveryBytes(1);
+    config = config.with_commit_policy(CommitPolicy::EveryBytes(1));
     let report = Engine::new(
         config,
         MemorySource::new(vec![MemoryStream::new(
@@ -568,7 +568,7 @@ async fn discard_counters_reach_the_commit_unit() {
     // Freeze the shape after the first batch, then send a row with a NEW column
     // under DiscardRow: the extra row is dropped and must be COUNTED.
     let mut config = EngineConfig::new("discard-counters");
-    config.schema_policy = SchemaPolicy::with_default(PolicyAction::DiscardRow);
+    config = config.with_schema_policy(SchemaPolicy::with_default(PolicyAction::DiscardRow));
     let batches = vec![
         MemoryBatch::new(vec![json!({"id": 1})]).with_checkpoint(json!({"b": 0})),
         MemoryBatch::new(vec![json!({"id": 2, "surprise": "x"})]).with_checkpoint(json!({"b": 1})),
@@ -614,7 +614,7 @@ async fn discarded_value_counter_reaches_the_commit_unit() {
     // DiscardValue keeps the row and NULLs the non-conforming value, so the
     // value counter moves while the row counter does not.
     let mut config = EngineConfig::new("discard-values");
-    config.schema_policy = SchemaPolicy::with_default(PolicyAction::DiscardValue);
+    config = config.with_schema_policy(SchemaPolicy::with_default(PolicyAction::DiscardValue));
     let batches = vec![
         MemoryBatch::new(vec![json!({"id": 1})]).with_checkpoint(json!({"b": 0})),
         MemoryBatch::new(vec![json!({"id": 2, "surprise": "x"})]).with_checkpoint(json!({"b": 1})),
@@ -659,7 +659,7 @@ async fn discarded_value_counter_reaches_the_commit_unit() {
 async fn only_the_table_that_discarded_reports_a_discard() {
     use rdlt_core::{PolicyAction, SchemaPolicy};
     let mut config = EngineConfig::new("discard-scoped");
-    config.schema_policy = SchemaPolicy::with_default(PolicyAction::DiscardRow);
+    config = config.with_schema_policy(SchemaPolicy::with_default(PolicyAction::DiscardRow));
     let batches = vec![
         // Establishes the root shape AND the child table.
         MemoryBatch::new(vec![json!({"id": 1, "items": [{"a": 1}]})])
@@ -740,7 +740,7 @@ async fn a_conforming_run_under_a_discard_policy_emits_no_discards() {
 
     for action in [PolicyAction::DiscardRow, PolicyAction::DiscardValue] {
         let mut config = EngineConfig::new("discard-clean");
-        config.schema_policy = SchemaPolicy::with_default(action);
+        config = config.with_schema_policy(SchemaPolicy::with_default(action));
         let batches = vec![
             MemoryBatch::new(vec![json!({"id": 1, "items": [{"a": 1}]})])
                 .with_checkpoint(json!({"b": 0})),

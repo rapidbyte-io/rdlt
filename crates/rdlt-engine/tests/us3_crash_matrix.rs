@@ -31,8 +31,8 @@ fn source() -> MemorySource {
 
 fn config(workdir: &std::path::Path) -> EngineConfig {
     let mut config = EngineConfig::new("crash");
-    config.commit_policy = CommitPolicy::EveryCheckpoints(1);
-    config.workdir = Some(workdir.to_path_buf());
+    config = config.with_commit_policy(CommitPolicy::EveryCheckpoints(1));
+    config = config.with_workdir(workdir.to_path_buf());
     config
 }
 
@@ -288,7 +288,7 @@ async fn loader_failure_with_saturated_channel_errors_instead_of_hanging() {
             .collect(),
     )]);
     let mut config = EngineConfig::new("deadlock");
-    config.byte_budget = 4096;
+    config = config.with_byte_budget(4096);
 
     let outcome = tokio::time::timeout(
         std::time::Duration::from_secs(10),

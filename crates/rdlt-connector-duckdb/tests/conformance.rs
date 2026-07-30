@@ -46,7 +46,7 @@ async fn end_to_end_nested_sync_into_duckdb() {
     );
 
     let mut config = EngineConfig::new("duck-e2e");
-    config.workdir = Some(dir.path().join("work"));
+    config = config.with_workdir(dir.path().join("work"));
     let report = Engine::new(config, source, dest.clone())
         .run()
         .await
@@ -117,9 +117,9 @@ async fn merge_in_batch_dedup_is_last_wins() {
         vec![json!({"k": 1, "v": "old"}), json!({"k": 1, "v": "new"})],
     );
     let mut config = EngineConfig::new("dedup");
-    config.write_mode = rdlt_connector::WriteMode::Merge {
+    config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
         key: vec!["k".into()],
-    };
+    });
     Engine::new(config, source, dest.clone())
         .run()
         .await

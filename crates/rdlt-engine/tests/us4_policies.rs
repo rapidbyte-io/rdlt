@@ -41,8 +41,8 @@ async fn evolve_applies_new_columns() {
 async fn freeze_fails_fast_and_publishes_nothing_from_violating_batch() {
     let dest = MemoryDestination::new();
     let mut config = EngineConfig::new("freeze");
-    config.schema_policy = SchemaPolicy::evolve().table("t", PolicyAction::Freeze);
-    config.commit_policy = rdlt_core::CommitPolicy::EveryCheckpoints(1);
+    config = config.with_schema_policy(SchemaPolicy::evolve().table("t", PolicyAction::Freeze));
+    config = config.with_commit_policy(rdlt_core::CommitPolicy::EveryCheckpoints(1));
 
     // Batch 2 both adds a column AND widens `v` — either alone must trip the freeze.
     let source = two_batch_source(vec![json!({"id": 2, "v": "not a number"})]);
@@ -68,7 +68,7 @@ async fn freeze_fails_fast_and_publishes_nothing_from_violating_batch() {
 async fn freeze_allows_conforming_data() {
     let dest = MemoryDestination::new();
     let mut config = EngineConfig::new("freeze-ok");
-    config.schema_policy = SchemaPolicy::evolve().table("t", PolicyAction::Freeze);
+    config = config.with_schema_policy(SchemaPolicy::evolve().table("t", PolicyAction::Freeze));
     let source = two_batch_source(vec![json!({"id": 2, "v": 20})]);
     let report = Engine::new(config, source, dest.clone())
         .run()
@@ -83,7 +83,7 @@ async fn freeze_allows_conforming_data() {
 async fn discard_row_drops_and_counts() {
     let dest = MemoryDestination::new();
     let mut config = EngineConfig::new("discard-row");
-    config.schema_policy = SchemaPolicy::evolve().table("t", PolicyAction::DiscardRow);
+    config = config.with_schema_policy(SchemaPolicy::evolve().table("t", PolicyAction::DiscardRow));
 
     let source = two_batch_source(vec![
         json!({"id": 2, "v": "bad type"}),     // widens v → discarded
@@ -117,7 +117,7 @@ async fn discard_row_drops_and_counts() {
 async fn discard_value_nulls_and_counts() {
     let dest = MemoryDestination::new();
     let mut config = EngineConfig::new("discard-value");
-    config.schema_policy = SchemaPolicy::evolve().table("t", PolicyAction::DiscardValue);
+    config = config.with_schema_policy(SchemaPolicy::evolve().table("t", PolicyAction::DiscardValue));
 
     let source = two_batch_source(vec![
         json!({"id": 2, "v": "bad type", "extra": "x"}),
@@ -145,9 +145,9 @@ async fn discard_value_nulls_and_counts() {
 async fn per_column_policy_overrides_table_policy() {
     let dest = MemoryDestination::new();
     let mut config = EngineConfig::new("column-override");
-    config.schema_policy = SchemaPolicy::evolve()
+    config = config.with_schema_policy(SchemaPolicy::evolve()
         .table("t", PolicyAction::Freeze)
-        .column("t", "extra", PolicyAction::Evolve);
+        .column("t", "extra", PolicyAction::Evolve));
 
     // Adding `extra` is allowed by the column override even though `t` is frozen.
     let source = two_batch_source(vec![json!({"id": 2, "v": 20, "extra": "ok"})]);
@@ -166,7 +166,7 @@ async fn per_column_policy_overrides_table_policy() {
 async fn discard_row_on_middle_table_cascades_to_grandchildren() {
     let dest = MemoryDestination::new();
     let mut config = EngineConfig::new("cascade");
-    config.schema_policy = SchemaPolicy::evolve().table("orders__items", PolicyAction::DiscardRow);
+    config = config.with_schema_policy(SchemaPolicy::evolve().table("orders__items", PolicyAction::DiscardRow));
 
     let source = MemorySource::new(vec![MemoryStream::new(
         rdlt_connector::StreamSpec::new("orders"),
@@ -221,8 +221,8 @@ async fn discard_row_on_middle_table_cascades_to_grandchildren() {
 async fn freeze_refuses_a_child_table_created_mid_run() {
     let dest = MemoryDestination::new();
     let mut config = EngineConfig::new("freeze-child");
-    config.schema_policy = SchemaPolicy::evolve().table("t", PolicyAction::Freeze);
-    config.commit_policy = rdlt_core::CommitPolicy::EveryCheckpoints(1);
+    config = config.with_schema_policy(SchemaPolicy::evolve().table("t", PolicyAction::Freeze));
+    config = config.with_commit_policy(rdlt_core::CommitPolicy::EveryCheckpoints(1));
 
     // Batch 2 introduces a nested collection, which materialises as a child table.
     let source = two_batch_source(vec![json!({"id": 2, "v": 20, "items": [{"sku": "a"}]})]);
@@ -256,8 +256,8 @@ async fn freeze_refuses_a_child_table_created_mid_run() {
 async fn a_frozen_parent_freezes_the_child_tables_it_creates() {
     let dest = MemoryDestination::new();
     let mut config = EngineConfig::new("freeze-inherit");
-    config.schema_policy = SchemaPolicy::evolve().table("t", PolicyAction::Freeze);
-    config.commit_policy = rdlt_core::CommitPolicy::EveryCheckpoints(1);
+    config = config.with_schema_policy(SchemaPolicy::evolve().table("t", PolicyAction::Freeze));
+    config = config.with_commit_policy(rdlt_core::CommitPolicy::EveryCheckpoints(1));
 
     // Batch 1 establishes BOTH t and its child; batch 2 adds a column to the CHILD.
     let source = MemorySource::new(vec![MemoryStream::new(
@@ -286,7 +286,7 @@ async fn a_frozen_parent_freezes_the_child_tables_it_creates() {
 async fn freeze_allows_the_tables_the_first_drain_establishes() {
     let dest = MemoryDestination::new();
     let mut config = EngineConfig::new("freeze-bootstrap");
-    config.schema_policy = SchemaPolicy::evolve().table("t", PolicyAction::Freeze);
+    config = config.with_schema_policy(SchemaPolicy::evolve().table("t", PolicyAction::Freeze));
     let source = MemorySource::new(vec![MemoryStream::new(
         rdlt_connector::StreamSpec::new("t"),
         vec![
@@ -309,8 +309,8 @@ async fn freeze_allows_the_tables_the_first_drain_establishes() {
 async fn discard_refuses_a_mid_run_child_table_and_counts_its_rows() {
     let dest = MemoryDestination::new();
     let mut config = EngineConfig::new("discard-child");
-    config.schema_policy = SchemaPolicy::evolve().table("t", PolicyAction::DiscardRow);
-    config.commit_policy = rdlt_core::CommitPolicy::EveryCheckpoints(1);
+    config = config.with_schema_policy(SchemaPolicy::evolve().table("t", PolicyAction::DiscardRow));
+    config = config.with_commit_policy(rdlt_core::CommitPolicy::EveryCheckpoints(1));
 
     let source = two_batch_source(vec![
         json!({"id": 2, "v": 20, "items": [{"sku": "a"}, {"sku": "b"}]}),

@@ -65,10 +65,10 @@ impl Rig {
 
     async fn attempt(&self, conn: &str) -> Result<rdlt_engine::RunReport, String> {
         let mut config = EngineConfig::new("cdc-sweep");
-        config.workdir = Some(self.workdir.clone());
-        config.write_mode = rdlt_connector::WriteMode::Merge {
+        config = config.with_workdir(self.workdir.clone());
+        config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
             key: vec!["id".into()],
-        };
+        });
         let engine = Engine::new(config, Self::source(conn), Self::dest(conn));
         match tokio::spawn(engine.run()).await {
             Ok(Ok(report)) => Ok(report),
@@ -246,10 +246,10 @@ async fn container_kill_mid_catch_up_is_typed_and_preserves_commits() {
                dest: rdlt_connector_duckdb::dest::DuckDb,
                workdir: std::path::PathBuf| async move {
         let mut config = EngineConfig::new("cdc-kill");
-        config.workdir = Some(workdir);
-        config.write_mode = rdlt_connector::WriteMode::Merge {
+        config = config.with_workdir(workdir);
+        config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
             key: vec!["id".into()],
-        };
+        });
         let engine = Engine::new(config, Rig::source(&src_conn), dest);
         engine.run().await.map_err(|e| e.to_string())
     };

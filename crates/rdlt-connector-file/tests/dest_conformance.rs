@@ -38,9 +38,9 @@ async fn merge_still_rejected_by_capability_even_with_declared_key() {
         vec![MemoryBatch::new(vec![json!({"id": 1})])],
     )]);
     let mut config = EngineConfig::new("pq-merge");
-    config.write_mode = rdlt_connector::WriteMode::Merge {
+    config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
         key: vec!["id".into()],
-    };
+    });
     let err = Engine::new(config, source, dest)
         .run()
         .await

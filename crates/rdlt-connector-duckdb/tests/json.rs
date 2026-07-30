@@ -59,9 +59,9 @@ async fn json_columns_merge_by_key() {
     let dir = tempfile::tempdir().unwrap();
     let dest = DuckDb::open(dir.path().join("jsonm.duckdb")).unwrap();
     let mut config = EngineConfig::new("jsonm");
-    config.write_mode = rdlt_connector::WriteMode::Merge {
+    config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
         key: vec!["id".into()],
-    };
+    });
     let first = MemorySource::single_stream(
         StreamSpec::new("docs").with_primary_key(["id"]),
         vec![json!({"id": 1, "matrix": [[1]]})],

@@ -60,8 +60,8 @@ impl Rig {
         mode: &rdlt_connector::core::WriteMode,
     ) -> Result<rdlt_engine::RunReport, String> {
         let mut config = EngineConfig::new("pg-src-sweep");
-        config.workdir = Some(self.workdir.clone());
-        config.write_mode = mode.clone();
+        config = config.with_workdir(self.workdir.clone());
+        config = config.with_write_mode(mode.clone());
         let engine = Engine::new(config, source(conn), self.dest.clone());
         match tokio::spawn(engine.run()).await {
             Ok(Ok(report)) => Ok(report),

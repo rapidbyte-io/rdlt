@@ -67,9 +67,9 @@ async fn end_to_end_flattened_sync_into_postgres() {
         ],
     );
     let mut config = EngineConfig::new("pg-e2e");
-    config.write_mode = rdlt_connector::WriteMode::Merge {
+    config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
         key: vec!["id".into()],
-    };
+    });
     let report = Engine::new(config, source, dest.clone())
         .run()
         .await
@@ -114,9 +114,9 @@ async fn end_to_end_flattened_sync_into_postgres() {
         ],
     );
     let mut config = EngineConfig::new("pg-e2e");
-    config.write_mode = rdlt_connector::WriteMode::Merge {
+    config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
         key: vec!["id".into()],
-    };
+    });
     Engine::new(config, source, dest.clone())
         .run()
         .await
@@ -195,9 +195,9 @@ async fn keyed_structured_merge_into_postgres() {
     let dest = Postgres::connect(&conn).dataset("raw");
     let merge_config = || {
         let mut config = EngineConfig::new("pg-kmerge");
-        config.write_mode = rdlt_connector::WriteMode::Merge {
+        config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
             key: vec!["id".into()],
-        };
+        });
         config
     };
 
@@ -711,9 +711,9 @@ mod strategies {
 
     async fn run_merge(dest: Postgres, rows: &[(i64, &str, Option<bool>)]) {
         let mut config = EngineConfig::new("strat");
-        config.write_mode = rdlt_connector::WriteMode::Merge {
+        config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
             key: vec!["id".into()],
-        };
+        });
         Engine::new(config, FlaggedSource { batch: batch(rows) }, dest)
             .run()
             .await
@@ -817,9 +817,9 @@ mod strategies {
                 .expect("dup table");
         }
         let mut config = EngineConfig::new("dup");
-        config.write_mode = rdlt_connector::WriteMode::Merge {
+        config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
             key: vec!["id".into()],
-        };
+        });
         let err = Engine::new(
             config,
             FlaggedSource {
@@ -857,9 +857,9 @@ mod strategies {
             })
             .expect("options");
         let mut config = EngineConfig::new("shup");
-        config.write_mode = rdlt_connector::WriteMode::Merge {
+        config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
             key: vec!["id".into()],
-        };
+        });
         let source = MemorySource::single_stream(
             rdlt_connector::StreamSpec::new("users").with_primary_key(["id"]),
             vec![json!({"id": 1, "name": "ada"})],
@@ -903,9 +903,9 @@ mod strategies {
             })
             .expect("options");
         let mut config = EngineConfig::new("recreate");
-        config.write_mode = rdlt_connector::WriteMode::Merge {
+        config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
             key: vec!["id".into()],
-        };
+        });
         // One load, same key twice: flagged first, re-created after (arrival
         // order matters — last wins).
         let source = MemorySource::single_stream(
@@ -964,9 +964,9 @@ mod strategies {
             })
             .expect("options");
         let mut config = EngineConfig::new("childhd");
-        config.write_mode = rdlt_connector::WriteMode::Merge {
+        config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
             key: vec!["id".into()],
-        };
+        });
         let source = MemorySource::single_stream(
             rdlt_connector::StreamSpec::new("users").with_primary_key(["id"]),
             vec![json!({"id": 1, "tags": [{"label": "x"}]})],
@@ -1102,9 +1102,9 @@ mod refinements {
 
     async fn run(conn: &str, dataset: &str, opts: Opts, units: Vec<Vec<Row>>) {
         let mut config = EngineConfig::new(format!("mr-{dataset}"));
-        config.write_mode = rdlt_connector::WriteMode::Merge {
+        config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
             key: vec!["id".into()],
-        };
+        });
         let units = units.iter().map(|u| batch(u)).collect();
         Engine::new(config, UnitsSource { units }, dest(conn, dataset, opts))
             .run()
@@ -1156,9 +1156,9 @@ mod refinements {
 
     async fn run_expect_err(conn: &str, dataset: &str, opts: Opts, units: Vec<Vec<Row>>) -> String {
         let mut config = EngineConfig::new(format!("mr-{dataset}"));
-        config.write_mode = rdlt_connector::WriteMode::Merge {
+        config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
             key: vec!["id".into()],
-        };
+        });
         let units = units.iter().map(|u| batch(u)).collect();
         Engine::new(config, UnitsSource { units }, dest(conn, dataset, opts))
             .run()
@@ -1628,7 +1628,7 @@ mod refinements {
         // Review F5: the options under a non-merge write mode are rejected,
         // never silently inert (the 008 F6 lesson).
         let mut config = EngineConfig::new("mr-inert");
-        config.write_mode = rdlt_connector::WriteMode::Append;
+        config = config.with_write_mode(rdlt_connector::WriteMode::Append);
         let units = one_row.iter().map(|u| batch(u)).collect();
         let err = Engine::new(
             config,
@@ -1687,9 +1687,9 @@ mod refinements {
                 })
                 .expect("options");
             let mut config = EngineConfig::new(dataset);
-            config.write_mode = rdlt_connector::WriteMode::Merge {
+            config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
                 key: vec!["id".into()],
-            };
+            });
             let source = MemorySource::single_stream(
                 rdlt_connector::StreamSpec::new("users").with_primary_key(["id"]),
                 vec![json!({"id": 1, "seq": 2, "day": 3})],
@@ -1935,7 +1935,7 @@ mod param_matrix {
                 .options(options)
                 .expect("options");
             let mut config = EngineConfig::new("r5");
-            config.write_mode = mode;
+            config = config.with_write_mode(mode);
             Engine::new(config, source(), dest).run()
         };
 
@@ -2060,9 +2060,9 @@ mod param_matrix {
             .expect("options");
         let run = |rows: &[(i64, &str, Option<i64>)]| {
             let mut config = EngineConfig::new("nbhd");
-            config.write_mode = rdlt_connector::WriteMode::Merge {
+            config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
                 key: vec!["id".into()],
-            };
+            });
             Engine::new(config, TsFlagged { batch: batch(rows) }, dest.clone()).run()
         };
         run(&[(1, "a", None), (2, "b", None)]).await.expect("seed");

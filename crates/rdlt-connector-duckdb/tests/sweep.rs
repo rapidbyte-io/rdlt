@@ -48,10 +48,10 @@ fn feed() -> StructuredSource {
 
 async fn attempt(workdir: &Path, dest: &DuckDb) -> Result<(), String> {
     let mut config = EngineConfig::new("sweep");
-    config.write_mode = WriteMode::Merge {
+    config = config.with_write_mode(WriteMode::Merge {
         key: vec!["k".into()],
-    };
-    config.workdir = Some(workdir.to_path_buf());
+    });
+    config = config.with_workdir(workdir.to_path_buf());
     // Spawned: the "panic" action must land as a JoinError, not abort the
     // test (the engine crash_sweep harness pattern).
     let engine = Engine::new(config, feed(), dest.clone());

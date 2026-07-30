@@ -73,7 +73,7 @@ async fn parent_child_reads_through_the_engine() {
     let dir = tempfile::tempdir().unwrap();
     let dest = DuckDb::open(dir.path().join("nested.duckdb")).unwrap();
     let mut config = EngineConfig::new("nested");
-    config.workdir = Some(dir.path().join("work"));
+    config = config.with_workdir(dir.path().join("work"));
     Engine::new(config, source, dest.clone())
         .run()
         .await
@@ -242,7 +242,7 @@ async fn composed_example_runs_through_the_engine() {
     let dir = tempfile::tempdir().unwrap();
     let dest = DuckDb::open(dir.path().join("composed.duckdb")).unwrap();
     let mut config = EngineConfig::new("composed");
-    config.workdir = Some(dir.path().join("work"));
+    config = config.with_workdir(dir.path().join("work"));
     Engine::new(config, source, dest.clone())
         .run()
         .await

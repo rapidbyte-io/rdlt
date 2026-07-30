@@ -65,7 +65,7 @@ async fn attempt(workdir: &Path, db: &Path, base: &str) -> Result<(), String> {
     let source = RestSource::from_yaml(&yaml(base)).expect("config");
     let dest = DuckDb::open(db).map_err(|e| e.to_string())?;
     let mut config = EngineConfig::new("rest-sweep");
-    config.workdir = Some(workdir.to_path_buf());
+    config = config.with_workdir(workdir.to_path_buf());
     let engine = Engine::new(config, source, dest);
     match tokio::spawn(engine.run()).await {
         Ok(Ok(_)) => Ok(()),

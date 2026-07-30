@@ -300,9 +300,9 @@ async fn merge_by_declared_key_converges_and_keyless_is_rejected() {
 
     let merge_config = |pipeline: &str| {
         let mut config = EngineConfig::new(pipeline);
-        config.write_mode = rdlt_connector::core::WriteMode::Merge {
+        config = config.with_write_mode(rdlt_connector::core::WriteMode::Merge {
             key: vec!["id".into()],
-        };
+        });
         config
     };
     let run_merge = |src: PostgresSource| {
@@ -354,9 +354,9 @@ async fn merge_by_declared_key_converges_and_keyless_is_rejected() {
     let dir = tempfile::tempdir().expect("tempdir");
     let dest = DuckDb::open(dir.path().join("nokey.duckdb")).expect("open db");
     let mut config = merge_config("inc-merge-nokey");
-    config.write_mode = rdlt_connector::core::WriteMode::Merge {
+    config = config.with_write_mode(rdlt_connector::core::WriteMode::Merge {
         key: vec!["x".into()],
-    };
+    });
     let err = Engine::new(config, keyless, dest)
         .run()
         .await
@@ -388,9 +388,9 @@ async fn lag_captures_late_arrivals_with_exact_totals_under_merge() {
         let dest = rig.dest.clone();
         async move {
             let mut config = EngineConfig::new("inc-lag");
-            config.write_mode = rdlt_connector::core::WriteMode::Merge {
+            config = config.with_write_mode(rdlt_connector::core::WriteMode::Merge {
                 key: vec!["id".into()],
-            };
+            });
             Engine::new(config, src, dest)
                 .run()
                 .await
@@ -692,9 +692,9 @@ async fn magnitude_lag_for_integer_cursors() {
     let merge = "int-lag";
     let run = |src| {
         let mut config = EngineConfig::new(merge);
-        config.write_mode = rdlt_connector::WriteMode::Merge {
+        config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
             key: vec!["id".into()],
-        };
+        });
         Engine::new(config, src, rig.dest.clone())
     };
     run(source(&fixture.conn_url())).run().await.expect("run 1");

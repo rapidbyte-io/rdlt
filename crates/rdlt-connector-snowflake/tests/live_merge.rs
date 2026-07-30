@@ -161,9 +161,9 @@ fn flagged_batch(rows: &[(i64, &str, bool)]) -> arrow_array::RecordBatch {
 async fn merge_load(config: &SnowflakeConfig, pipeline: &str, batch: arrow_array::RecordBatch) {
     let dest = Snowflake::new(config.clone()).expect("valid config");
     let mut engine_config = EngineConfig::new(pipeline);
-    engine_config.write_mode = WriteMode::Merge {
+    engine_config = engine_config.with_write_mode(WriteMode::Merge {
         key: vec!["id".into()],
-    };
+    });
     Engine::new(engine_config, KeyedSource { batch }, dest)
         .run()
         .await

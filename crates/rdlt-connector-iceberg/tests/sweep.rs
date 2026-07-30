@@ -36,7 +36,7 @@ fn source() -> MemorySource {
 async fn attempt(fixture: &CatalogFixture, namespace: &str, workdir: &Path) -> Result<(), String> {
     let dest = IcebergDest::from_config(fixture.config(namespace)).map_err(|e| e.to_string())?;
     let mut config = EngineConfig::new("ice-sweep");
-    config.workdir = Some(workdir.to_path_buf());
+    config = config.with_workdir(workdir.to_path_buf());
     match tokio::spawn(Engine::new(config, source(), dest).run()).await {
         Ok(Ok(_)) => Ok(()),
         Ok(Err(e)) => Err(e.to_string()),

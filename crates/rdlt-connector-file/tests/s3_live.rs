@@ -644,7 +644,7 @@ async fn s3_replace_never_deletes_user_files() {
     Engine::new(
         {
             let mut c = EngineConfig::new("s3-replace-preserve");
-            c.write_mode = WriteMode::Replace;
+            c = c.with_write_mode(WriteMode::Replace);
             c
         },
         source,

@@ -56,8 +56,8 @@ async fn attempt(
     mode: &WriteMode,
 ) -> Result<(), String> {
     let mut config = EngineConfig::new("pg-sweep");
-    config.workdir = Some(workdir.to_path_buf());
-    config.write_mode = mode.clone();
+    config = config.with_workdir(workdir.to_path_buf());
+    config = config.with_write_mode(mode.clone());
     let engine = Engine::new(config, source(), dest.clone());
     match tokio::spawn(engine.run()).await {
         Ok(Ok(_)) => Ok(()),
@@ -250,10 +250,10 @@ fn with_strategy(
 
 async fn attempt_keyed(workdir: &std::path::Path, dest: &Postgres) -> Result<(), String> {
     let mut config = EngineConfig::new("pg-sweep-keyed");
-    config.workdir = Some(workdir.to_path_buf());
-    config.write_mode = WriteMode::Merge {
+    config = config.with_workdir(workdir.to_path_buf());
+    config = config.with_write_mode(WriteMode::Merge {
         key: vec!["id".into()],
-    };
+    });
     let engine = Engine::new(config, KeyedArrowSource, dest.clone());
     match tokio::spawn(engine.run()).await {
         Ok(Ok(_)) => Ok(()),
@@ -398,10 +398,10 @@ impl Source for RefinedArrowSource {
 
 async fn attempt_refined(workdir: &std::path::Path, dest: &Postgres) -> Result<(), String> {
     let mut config = EngineConfig::new("pg-sweep-refined");
-    config.workdir = Some(workdir.to_path_buf());
-    config.write_mode = WriteMode::Merge {
+    config = config.with_workdir(workdir.to_path_buf());
+    config = config.with_write_mode(WriteMode::Merge {
         key: vec!["id".into()],
-    };
+    });
     let engine = Engine::new(config, RefinedArrowSource, dest.clone());
     match tokio::spawn(engine.run()).await {
         Ok(Ok(_)) => Ok(()),

@@ -151,8 +151,8 @@ async fn passthrough_freeze_rejects_before_publication() {
         declare_structured: true,
     };
     let mut config = EngineConfig::new("pt-freeze");
-    config.schema_policy = SchemaPolicy::evolve().table("metrics", PolicyAction::Freeze);
-    config.commit_policy = rdlt_core::CommitPolicy::EveryCheckpoints(1);
+    config = config.with_schema_policy(SchemaPolicy::evolve().table("metrics", PolicyAction::Freeze));
+    config = config.with_commit_policy(rdlt_core::CommitPolicy::EveryCheckpoints(1));
 
     let err = Engine::new(config, source, dest.clone())
         .run()
@@ -198,8 +198,8 @@ async fn structured_segments_replay_from_wal() {
     let inner = MemoryDestination::new();
     let flaky = CrashDestination::new(inner.clone(), FaultPoint::BeforeCommit(2));
     let mut config = EngineConfig::new("pt-crash");
-    config.workdir = Some(dir.path().to_path_buf());
-    config.commit_policy = rdlt_core::CommitPolicy::EveryCheckpoints(1);
+    config = config.with_workdir(dir.path().to_path_buf());
+    config = config.with_commit_policy(rdlt_core::CommitPolicy::EveryCheckpoints(1));
 
     let source = ArrowSource {
         batches: vec![batch_ab(&[1], &["a"]), batch_ab(&[2], &["b"])],
@@ -241,9 +241,9 @@ async fn merge_on_structured_stream_rejected_before_any_io() {
         declare_structured: true,
     };
     let mut config = EngineConfig::new("pt-merge");
-    config.write_mode = rdlt_core::WriteMode::Merge {
+    config = config.with_write_mode(rdlt_core::WriteMode::Merge {
         key: vec!["id".into()],
-    };
+    });
     let err = Engine::new(config, source, dest.clone())
         .run()
         .await
@@ -386,9 +386,9 @@ impl Source for KeyedArrowSource {
 
 fn merge_config(pipeline: &str, key: &[&str]) -> EngineConfig {
     let mut config = EngineConfig::new(pipeline);
-    config.write_mode = rdlt_core::WriteMode::Merge {
+    config = config.with_write_mode(rdlt_core::WriteMode::Merge {
         key: key.iter().map(|k| (*k).to_string()).collect(),
-    };
+    });
     config
 }
 
@@ -510,7 +510,7 @@ async fn null_in_merge_key_is_a_typed_write_time_error() {
 async fn a_refused_column_is_projected_away_and_counted_per_value() {
     let dest = MemoryDestination::new();
     let mut config = EngineConfig::new("passthrough-discard");
-    config.schema_policy = SchemaPolicy::with_default(PolicyAction::DiscardValue);
+    config = config.with_schema_policy(SchemaPolicy::with_default(PolicyAction::DiscardValue));
 
     // Batch 1 establishes {id, name}. Batch 2 adds TWO refused columns across
     // four rows: 4 × 2 = 8 lost values. Two columns and a row count that is not

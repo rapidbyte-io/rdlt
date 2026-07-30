@@ -47,7 +47,7 @@ streams:
     let dir = tempfile::tempdir().unwrap();
     let dest = DuckDb::open(dir.path().join("poke.duckdb")).unwrap();
     let mut config = EngineConfig::new("pokeapi");
-    config.workdir = Some(dir.path().join("work"));
+    config = config.with_workdir(dir.path().join("work"));
     Engine::new(config, source, dest.clone())
         .run()
         .await
@@ -93,7 +93,7 @@ streams:
     let dir = tempfile::tempdir().unwrap();
     let dest = DuckDb::open(dir.path().join("colors.duckdb")).unwrap();
     let mut config = EngineConfig::new("poke-colors");
-    config.workdir = Some(dir.path().join("work"));
+    config = config.with_workdir(dir.path().join("work"));
     Engine::new(config, source, dest.clone())
         .run()
         .await

@@ -72,8 +72,8 @@ async fn attempt(
 ) -> Result<(), String> {
     let dest = Snowflake::new(config.clone()).expect("valid config");
     let mut engine_config = EngineConfig::new(PIPELINE);
-    engine_config.workdir = Some(workdir.to_path_buf());
-    engine_config.write_mode = mode.clone();
+    engine_config = engine_config.with_workdir(workdir.to_path_buf());
+    engine_config = engine_config.with_write_mode(mode.clone());
     match tokio::spawn(Engine::new(engine_config, source(), dest).run()).await {
         Ok(Ok(_)) => Ok(()),
         Ok(Err(e)) => Err(e.to_string()),

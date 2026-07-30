@@ -198,8 +198,8 @@ async fn both(
             .options(DestOptions::from_value(options.clone()).expect("options"))
             .unwrap();
         let mut config = EngineConfig::new(format!("diff-{name}"));
-        config.write_mode = mode.clone();
-        config.workdir = Some(duck_dir.path().join("pg-work"));
+        config = config.with_write_mode(mode.clone());
+        config = config.with_workdir(duck_dir.path().join("pg-work"));
         if let Err(e) = Engine::new(config, feed.clone(), dest).run().await {
             pg_result = Err(e.to_string());
             break;
@@ -207,8 +207,8 @@ async fn both(
     }
     for feed in &feeds {
         let mut config = EngineConfig::new(format!("diff-{name}-duck"));
-        config.write_mode = mode.clone();
-        config.workdir = Some(duck_dir.path().join("duck-work"));
+        config = config.with_write_mode(mode.clone());
+        config = config.with_workdir(duck_dir.path().join("duck-work"));
         if let Err(e) = Engine::new(config, feed.clone(), duck.clone()).run().await {
             duck_result = Err(e.to_string());
             break;
