@@ -2,10 +2,13 @@
 //!
 //! Second runs move only new data; merge replaces a record's whole subtree.
 
+use rdlt_connector::StreamSpec;
 use rdlt_core::{CommitPolicy, Cursor, WriteMode};
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{MemoryBatch, MemoryDestination, MemorySource, MemoryStream};
 use serde_json::json;
+
+use super::common::three_batches;
 
 fn stream_with_batches(
     spec: rdlt_connector::StreamSpec,
@@ -191,4 +194,68 @@ async fn replace_mode_replaces_per_run_not_per_commit() {
     let rows = dest.committed_rows("t");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["v"], json!("run2"));
+}
+
+/// Kills: the fresh-run resume guard (`!state.cursors.is_empty()`→true) — a
+/// pipeline with NO committed state must pass `since: None`.
+#[tokio::test]
+async fn fresh_run_reads_with_no_cursor() {
+    let dest = MemoryDestination::new();
+    let source = MemorySource::new(vec![MemoryStream::new(
+        StreamSpec::new("s"),
+        three_batches(),
+    )]);
+    let since_log = source.since_log();
+    Engine::new(EngineConfig::new("fresh"), source, dest)
+        .run()
+        .await
+        .expect("run");
+    let log = since_log.lock().expect("log");
+    assert_eq!(log.len(), 1);
+    assert!(
+        log[0].1.is_none(),
+        "fresh pipeline must not invent a cursor"
+    );
+}
+
+/// Kills: the resumed-from guard (`!state.cursors.is_empty()`→true) — a
+/// recovered state whose cursors are EMPTY (first run never checkpointed) must
+/// report `Fresh`, not `Cursor`.
+#[tokio::test]
+async fn empty_cursor_state_reports_fresh_resume() {
+    use rdlt_core::ResumedFrom;
+    let dest = MemoryDestination::new();
+    // No checkpoints: state commits with an empty cursor map.
+    let stream = MemoryStream::new(
+        StreamSpec::new("s"),
+        vec![MemoryBatch::new(vec![json!({"id": 1})])],
+    );
+    let report = Engine::new(
+        EngineConfig::new("nocursor"),
+        MemorySource::new(vec![stream]),
+        dest.clone(),
+    )
+    .run()
+    .await
+    .expect("run 1");
+    assert_eq!(report.resumed_from, ResumedFrom::Fresh);
+
+    // Second run recovers a StateDoc — but with no cursors it is still Fresh.
+    let stream = MemoryStream::new(
+        StreamSpec::new("s"),
+        vec![MemoryBatch::new(vec![json!({"id": 2})])],
+    );
+    let report = Engine::new(
+        EngineConfig::new("nocursor"),
+        MemorySource::new(vec![stream]),
+        dest,
+    )
+    .run()
+    .await
+    .expect("run 2");
+    assert_eq!(
+        report.resumed_from,
+        ResumedFrom::Fresh,
+        "empty cursors must never report a cursor resume"
+    );
 }

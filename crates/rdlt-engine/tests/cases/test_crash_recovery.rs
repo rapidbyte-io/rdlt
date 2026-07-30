@@ -13,6 +13,8 @@ use rdlt_testkit::{
 };
 use serde_json::json;
 
+use super::common::three_batches;
+
 fn batches() -> Vec<MemoryBatch> {
     vec![
         MemoryBatch::new(vec![json!({"seq": 1}), json!({"seq": 2})]).with_checkpoint(1),
@@ -299,4 +301,22 @@ async fn loader_failure_with_saturated_channel_errors_instead_of_hanging() {
         matches!(outcome, Err(RdltError::Destination { .. })),
         "expected the destination error to surface, got {outcome:?}"
     );
+}
+
+/// Kills: the cancellation error-precedence guard (`saw_cancelled`→false) —
+/// a cancelled run must surface EXACTLY `RdltError::Cancelled`.
+#[tokio::test(flavor = "multi_thread")]
+async fn cancellation_surfaces_the_cancelled_error() {
+    let dest = MemoryDestination::new();
+    let source = MemorySource::new(vec![
+        MemoryStream::new(rdlt_connector::StreamSpec::new("s"), three_batches())
+            .batch_delay(std::time::Duration::from_millis(200)),
+    ]);
+    let engine = Engine::new(EngineConfig::new("cancel"), source, dest);
+    let token = engine.cancellation_token();
+    let run = tokio::spawn(engine.run());
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    token.cancel();
+    let err = run.await.expect("join").expect_err("cancelled");
+    assert!(matches!(err, RdltError::Cancelled), "got: {err:?}");
 }

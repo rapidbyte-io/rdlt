@@ -1,0 +1,13 @@
+mod common;
+mod test_commit_policy;
+mod test_crash_recovery;
+mod test_full_sync;
+mod test_incremental;
+mod test_misbehaving_source;
+mod test_passthrough;
+mod test_retry;
+mod test_run_report;
+mod test_schema_policy;
+mod test_shred_roundtrip;
+mod test_value_fidelity;
+mod test_wal_lifecycle;
