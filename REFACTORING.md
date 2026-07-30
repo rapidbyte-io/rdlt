@@ -236,8 +236,9 @@ These override the rulebook wherever they conflict.
   variants and semantics in `rdlt-connector` do not change shape. `rdlt-core`
   and `rdlt-connector` are SEMVER-SACRED: any public rename there fails the
   `cargo semver-checks` gate against `main` and requires an explicit owner
-  decision (the standing 0.2→0.3 bump recorded since 014 is the vehicle if
-  taken). Default: internal reorganization only; public renames in these two
+  decision. **That decision was taken on 2026-07-30: the window stays CLOSED
+  for this program** (§3.6.1), so public renames in these two crates are
+  recorded as PROPOSALS and never applied here. Default: internal reorganization only; public renames in these two
   crates are proposed in the increment's notes, not applied.
 - **C3. User vocabulary is frozen.** YAML/JSON config field names, CLI
   arguments, feature names, crate names, error *rendering* users may have
@@ -343,12 +344,12 @@ Every item is test-only, tooling-only or document-only. Nothing here has a `src/
   - `rdlt_engine::{Engine, EngineConfig, EventStream, RdltError, RunReport}` — 4 root paths covering all 58 consumer reference lines.
   - `rdlt_connector_duckdb::dest::{DuckDb, DuckDb::open, FAIL_POINTS}` and the `failpoints` feature name (consumed by engine, postgres, rest, file; `rest/Cargo.toml` chains `rdlt-connector-duckdb/failpoints`).
   - `rdlt_connector_file::dest::FAIL_POINTS`, `rdlt_connector_file::ParquetDir::open` (engine `crash_sweep.rs:155,161,165`).
-  - `rdlt_connector_postgres::dest::Postgres` (duckdb `differential.rs`, snowflake `differential_oracle.rs`) **and** the nine items `postgres/tests/golden_sql.rs` imports across `dest::sqlgen` — `{HardDelete, MergePlan, PgDialect, identity_delete_insert_sql, keyed_delete_insert_sql, keyed_upsert_sql, scd2_merge_sql, scope_replace_sql}` plus `dest::{DedupSort, Scd2Options, SortOrder}`. Narrowing `dest::sqlgen` forces the pins inline, which destroys the only evidence the extraction was behavior-free; that file's own header already states the rule. Any narrowing proposal is a separate, later, owner-visible change.
+  - `rdlt_connector_postgres::dest::Postgres` (duckdb `differential.rs`, snowflake `differential_oracle.rs`) **and** the nine items `postgres/tests/golden_sql.rs` imports across `dest::sqlgen` — `{HardDelete, MergePlan, PgDialect, identity_delete_insert_sql, keyed_delete_insert_sql, keyed_upsert_sql, scd2_merge_sql, scope_replace_sql}` plus `dest::{DedupSort, Scd2Options, SortOrder}`. Narrowing `dest::sqlgen` forces the pins inline, which destroys the only evidence the extraction was behavior-free; that file's own header already states the rule. Any narrowing proposal is a separate, later, owner-visible change — and with the window closed, so is every sacred-crate rename.
   - **Explicitly NOT frozen, and why:** sqlcore (30 module-qualified consumer paths, double-spelled) and testkit (19, double-spelled). Those two are unfreezable without gutting their waves, which is precisely why they go early.
 - **P7 — snowflake stops being invisible.** Add a snowflake line to the `sweep` target (or at minimum `cargo clippy -p rdlt-connector-snowflake --all-targets --features failpoints -- -D warnings` to `lint`) so `crash_sweep.rs` is at least type-checked per increment, and codify in the `coverage` target the `-E 'not (package(rdlt-connector-snowflake) and binary(crash_sweep))'` exclusion that `close-out.md:311–313` records as having been used but which exists in no Makefile, script or config. This is the only `src`-adjacent item in Wave 0 and it is Makefile-only.
 - **P8 — rulebook corrections.** (a) **Narrow S4 to one named site.** `crates/rdlt-connector-snowflake/src/dest/client.rs` contains **zero** `Deserialize` (verified) — the forked `snowflake-connector-rs` owns the wire, and that file's own module doc already declares it the crate's one boundary with the library, i.e. Principle III does S4's job by wrapping instead of by naming. The only serde in snowflake's `src` is `dest/config.rs`, frozen by C3. S4's single legitimate site in 54k lines is `crates/rdlt-connector-postgres/src/source/cdc/pgoutput.rs` (`TupleData`, `TupleValue`, `RelationColumn`, `Relation`, `Message` — literally the pgoutput logical-replication format). **Delete §4.6's `wire/` + `Wire*` instruction**; left standing, the cheapest thing an executing AI can find to rename `Wire*` is the config or state types, a C1/C3 violation discovered at wave 7 on the most expensive net in the repo. (b) **Write §4.14 rdlt-connector-iceberg** — Part 4 has sections 4.1–4.13 covering 13 of 14 crates and iceberg is the omission, so Part 3's prompt-assembly instruction ("paste the one crate section from Part 4") cannot be executed for it. Include the S9 consolidation **exemption** with both failure directions from §3.1. (c) **Write the S9 `tests/cases/common.rs` template as a concrete file here.** §4.2 asks testkit to establish it; testkit cannot — its `tests/` is two files (`conformance_memory.rs` 38 lines, `conformance_negative.rs` 133) with no expensive resource to share behind a `OnceCell`. The cheap half is validated at wave 1 (rest, wiremock); the expensive half at wave 4 (duckdb's container). (d) Amend this Part: **one WAVE = one gate cycle**, and add the `make reclaim` + TIME_WAIT drain ritual to the prompt so back-to-back gates do not die on podman `rootlessport bind`.
 
-**Wave 0 exit:** `env -u RUSTUP_TOOLCHAIN make check` green with the new legs; the skip-count baseline committed and reproducing on a second run; `make semver` reporting no update required against the recorded sha; owner decisions §3.6 recorded in writing.
+**Wave 0 exit:** `env -u RUSTUP_TOOLCHAIN make check` green with the new legs; the skip-count baseline committed and reproducing on a second run; `make semver` reporting no update required against the recorded sha; the remaining §3.6 decisions (2, 4, 5, 6) recorded in writing — §3.6.1 is already decided (window CLOSED, 2026-07-30) and §3.6.3 is already satisfied (023 merged to main at `15f17c65`).
 
 ### 3.3 The order
 
@@ -369,7 +370,7 @@ Every item is test-only, tooling-only or document-only. Nothing here has a `src/
 
 **Wave 1 — rest.** *Entry:* Wave 0 on main; assertive mode on; `cargo nextest list -p rdlt-connector-rest` snapshotted. *Exit:* `tests/config_schema.rs` green with the generated schema **byte-identical** and the documented example still validating and parsing; `binary(sweep)` non-empty and its count matching baseline; the S9 idiom and the S3 visibility recipe written back into Part 1 as this wave's non-code deliverable; increment-size answer recorded; `make check` green.
 
-**Wave 2 — core + connector.** *Entry:* owner's §3.6 answer recorded; `make semver` (P5) working. *Exit:* `make semver` reports **no update required** — or the owner has taken the 0.2→0.3 window and the renames plus their call sites (7 `objects::` sites, all in `crates/rdlt-connector-file/src/location/{mod.rs,s3.rs}`; 4 `rdlt_core::identity::` sites) land in this wave; `tests/object_safe.rs` green; secret sweep clean.
+**Wave 2 — core + connector.** *Entry:* `make semver` (P5) working against the recorded local baseline sha. The window is CLOSED (§3.6.1), so this wave is internal-only: docs, visibility tightening, `mod.rs` de-logic-ing, and S14 finalisation of `rdlt-core/src/naming.rs` before eleven later crates route identifier work through it. *Exit:* `make semver` reports **no update required** — a single required outcome, no branch; `tests/object_safe.rs` green; secret sweep clean; every rename this wave *wanted* and could not take appended to the closing proposal list with its measured ripple.
 
 **Wave 3 — sqlcore.** *Entry:* `git diff main -- crates/rdlt-connector-postgres/tests/golden_sql.rs crates/rdlt-connector-postgres/tests/golden_unit_sql.rs crates/rdlt-connector-postgres/tests/golden_ensure_sql.rs crates/rdlt-connector-duckdb/tests/golden_ensure_sql.rs` **empty** (those four files are sqlcore's entire external net; note there are four, in two crates); `tests/protocol_pins.rs` from P1 green and its name set snapshotted; the root-vs-module rule for `DestOptions`/`quote_ident`/`column_list` decided up front (today duckdb and postgres import from the root, snowflake from `options::` — one spelling wins). *Exit:* all 85 reference lines plus the 3 `impl MergeDialect` sites (`duckdb/src/dest/dialect.rs:14`, `postgres/src/dest/dialect.rs:11`, `snowflake/src/dest/dialect.rs:47`) rewritten in the same commit; the four golden files **byte-identical**; `protocol_pins.rs` name set identical, not merely green; all three consumers' suites pass unchanged.
 
@@ -394,9 +395,30 @@ Every item is test-only, tooling-only or document-only. Nothing here has a `src/
 
 ### 3.6 Decisions that are the owner's, not the executor's
 
-1. **Does the standing 0.2→0.3 window open for this program?** It gates two named renames: `objects` → `object_store` (`rdlt-connector/src/lib.rs:24`, ripple = 3 production + 4 inline-test call sites, all in `crates/rdlt-connector-file/src/location/`) and `identity.rs` → `row_identity.rs` (4 external `rdlt_core::identity::` sites). **Recommendation: NO — keep the window closed, but answer the question at Wave 0 rather than at wave 9.** Cost of NO: two documented S1 violations persist, carried forward on the proposal list to whatever feature next needs a real break; zero code. Cost of YES: ~11 call sites plus a MAJOR bump on the two sacred crates — cheap in code, but it spends the single recorded vehicle (untaken since feature 014, across nine features) on cosmetics, and no persisted format or SPI shape is changing here. Note the asymmetry that argues the other way if the owner wants it: `rdlt`, `rdlt-cli` and `rdlt-connector-snowflake` are already unpublishable while 023's git-without-version fork dep stands, so a bump is unusually cheap **right now**. Either answer is fine; **deciding late is not** — wave 9 placement structurally forbids the renames from reaching the eleven crates refactored earlier.
+1. **The 0.2→0.3 window: DECIDED — CLOSED.** Owner decision, 2026-07-30.
+   `rdlt-core` and `rdlt-connector` take **internal reshapes only** for the
+   whole program; `cargo semver-checks` reporting "no update required" is wave
+   2's exit condition with no alternative branch. The two renames this gated —
+   `objects` → `object_store` (`rdlt-connector/src/lib.rs:24`; ripple = 3
+   production + 4 inline-test sites, all in
+   `crates/rdlt-connector-file/src/location/`) and `identity.rs` →
+   `row_identity.rs` (4 external `rdlt_core::identity::` sites) — **do not
+   happen here.** They go on the closing proposal list, carried to whatever
+   feature next needs a real break, and both files keep module docs stating
+   their scope in line one so the ambiguity is documented rather than merely
+   endured. Consequence, and the reason deciding it now mattered: nothing in
+   waves 1–9 may edit a call site *because* of a sacred-crate rename, so wave
+   2's ripple is zero by construction and its position is free.
 2. **Is one 101.5-min hand sweep bracketed (≈3.4 h total, two runs) budgeted for wave 7, with the credentialed live legs?** **Recommendation: yes.** Cost of no: snowflake must be dropped from the program entirely (a structural refactor of 3,979 lines with no admissible proof is not a refactor), or accepted unproven with the risk of silently restoring D-32/D-33 — the two defects only the live account caught.
-3. **Is 023 merged to main before wave 1?** **Recommendation: merge it** (its two deliberately un-amended misses are recorded and independent of this program). Cost of not merging: wave 7 rebases across a wholesale rewrite; `git diff --find-renames` review, which is C6's only cheap verification method for move-only commits, stops working.
+3. **023 merged before wave 1: DONE.** Fast-forwarded to `main` at `15f17c65`
+   on 2026-07-30 (28 commits, +4,364/−2,259), verified on the merged tree:
+   `make lint` exit 0 including the distribution gate, `make test` 948/948 with
+   2 named instrument skips. Its two deliberately un-amended misses (SC-012's
+   wall-clock half and the SP7 sentence repeating it) are recorded and
+   independent of this program. This removes the hazard that made it a
+   decision: wave 7 no longer rebases across a wholesale rewrite of the crate
+   it reshapes, so `git diff --find-renames` — C6's only cheap verification for
+   move-only commits — keeps working.
 4. **May `make check` grow?** Wave 0 adds `TARGET=e2e`, `make semver`, a snowflake failpoints clippy leg, and removes nine `--no-tests=pass`. **Recommendation: yes.** Cost: a few minutes per gate cycle × 10 cycles. Cost of no: an emptied filter reads as a passing gate, and wave 2's only net does not exist.
 5. **One wave = one gate cycle (10 tolls) or one crate = one increment (13)?** **Recommendation: batch.** C6's commit taxonomy already keeps reviewability intact; the saving is three full workspace cycles including containers, valgrind, hyperfine and the reclaim ritual.
 6. **Confirm the C10 freeze lists (P6) as binding**, including the `dest::sqlgen` exemption — i.e. accept that this program will leave a handful of test-facing paths un-idealised and route them through a later, owner-visible change. **Recommendation: yes.** Cost of no: waves 6 and 8 become multi-crate commits and the postgres golden pins have to be relocated inside the commit that reshapes what they pin, which forfeits the extraction's only evidence.
@@ -641,7 +663,10 @@ the pair `ids.rs` / `identity.rs`.
 - S6/S7 polish freely (docs are not semver). Internal `pub(crate)` tightening
   is allowed where semver-checks proves it invisible.
 - Ship the accumulated public-rename proposals from all waves as a single
-  decision list for the owner (the 0.2→0.3 vehicle).
+  decision list for a FUTURE feature. The 0.2→0.3 window is closed for this
+  program (§3.6.1), so nothing on that list is applied here — including
+  `identity.rs` → `row_identity.rs`, whose four external call sites are
+  measured and recorded on the list rather than edited.
 
 ### 4.13 rdlt-connector (SEMVER-SACRED — internal only)
 
@@ -650,9 +675,13 @@ Current: 10 files; the taxonomy in `error.rs` (frozen, C2); `objects.rs`.
 - `objects.rs` is the S1 failure the reference would not ship: it holds the
   object-store recoverability rule behind the `object-store` feature, and its
   name says neither. The module is declared `pub mod objects` (lib.rs:24), so
-  renaming it IS a public-surface change: it goes on the proposal list
-  (`objects` → `object_store`, matching the feature name), not into this
-  increment. The file connector's seven call sites are the ripple.
+  renaming it IS a public-surface change, and the window is CLOSED (§3.6.1):
+  it goes on the proposal list (`objects` → `object_store`, matching the
+  feature name), never into this program. The ripple is measured and recorded
+  there — 3 production + 4 inline-test sites, all in
+  `crates/rdlt-connector-file/src/location/{mod.rs,s3.rs}`. What this wave DOES
+  do is state the module's actual job in its doc line one, so the misleading
+  name is at least contradicted by the documentation.
 - S7: the lib.rs is already close to reference-grade; add the missing
   runnable example (implementing a toy Source against the SPI, `no_run`).
 - Everything else: doc polish, visibility tightening proven invisible by
@@ -735,9 +764,9 @@ Wave 0, before any crate is touched:
 Workspace, at the end:
 
 - [ ] All 14 crate READMEs re-checked against the moved reality
-- [ ] `cargo semver-checks` on rdlt-core + rdlt-connector: "no update
-      required" — or the owner has explicitly taken the rename list with the
-      0.2→0.3 bump
+- [ ] `cargo semver-checks` on rdlt-core + rdlt-connector: **"no update
+      required"** — the only acceptable outcome; the 0.2→0.3 window is CLOSED
+      for this program by owner decision of 2026-07-30 (§3.6.1)
 - [ ] The public-rename proposal list delivered as one document
 - [ ] This file deleted, its conclusions recorded in the executing feature's
       close-out (the 017/REFACTORING.md precedent)
