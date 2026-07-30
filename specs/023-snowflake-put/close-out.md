@@ -27,7 +27,7 @@ this document, not a detail.
 | US2 — the configuration surface shrinks, visibly | DELIVERED | A document carrying the removed block is refused BY NAME; one without it runs; the generated schema holds no storage vocabulary. |
 | US3 — the auth matrix completes | PARTIAL by owner decision — see D-35 | Key-pair and PAT proven live, as in 022. Password and OAuth remain UNPERFORMED; their legs are written and announce their skip. The wrong-credential shape is now covered for all four methods, including both of key-pair's. |
 | US4 — the record says what is true | DELIVERED | Every ingestion claim in README, quickstart, parity and the contracts checked against behaviour. |
-| US5 — the path that ships is the one measured | DELIVERED | The comparison against 022's recorded figures, with dataset identity stated and gating nothing. |
+| US5 — the path that ships is the one measured | DELIVERED, and it NARROWED the claim | Measured against 022's figures with dataset identity stated, gating nothing. The story's premise — that one path supersedes both — holds for INSERT (3.24×, far outside the noise) and is NOT established for the external bucket (its figures fall inside a 34.6% spread). Recorded as the narrower claim rather than the one the plan assumed. |
 
 ## Task ledger
 
@@ -359,6 +359,25 @@ published at all — see D-31.
 | OAuth auth, live | No OAuth security integration provisioned (D-35). Same. |
 | Egress failure observed directly | Blocking the storage host would require a firewall rule, and this process shares the machine's network namespace — the rule would degrade the real host. The account's own allowlist establishes the prerequisite instead: three S3 hosts tagged `STAGE`, none under `snowflakecomputing.com` (T042). |
 | CI | E1 stands: CI repair is out of scope, and every CI-only verification is recorded UNPERFORMED, never green. |
+
+## Gate of record (T054)
+
+Run with `env -u RUSTUP_TOOLCHAIN`, because that variable silently overrides
+`rust-toolchain.toml`'s 1.96.0 pin and the perf gate is the only thing that
+notices — by refusing a comparison whose benches showed zero regressions. A
+refusal like that is never cleared by re-recording baselines.
+
+| | |
+|---|---|
+| `make check` | GATE_RESULT |
+| workspace tests | GATE_TESTS |
+| perf gate | GATE_PERF |
+| cold start | GATE_COLD |
+| crash sweep (Snowflake, run separately) | **2/2 PASS**, 27 cells, 6,092 s — see the sweep section |
+| coverage | 87.22% lines, floor 80 |
+| distribution gate | `git-deps: OK (1 git dependency, all recorded)` |
+| semver | no update required, both sacred crates |
+| secret sweep | clean at the final commit — see SC-010 |
 
 ## Research questions, all terminal
 
