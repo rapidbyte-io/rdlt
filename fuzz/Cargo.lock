@@ -1866,6 +1866,7 @@ dependencies = [
  "arrow-schema",
  "async-trait",
  "bytes",
+ "object_store",
  "rdlt-core",
  "schemars",
  "serde",
@@ -1943,7 +1944,6 @@ dependencies = [
 name = "rdlt-core"
 version = "0.2.0"
 dependencies = [
- "arrow-schema",
  "blake3",
  "serde",
  "serde_json",
@@ -1958,12 +1958,10 @@ dependencies = [
  "bytes",
  "chrono",
  "fs4",
- "futures",
  "rdlt-connector",
  "rdlt-core",
  "serde",
  "serde_json",
- "thiserror",
  "tokio",
  "tokio-util",
  "tracing",
