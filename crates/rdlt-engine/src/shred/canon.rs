@@ -2,8 +2,8 @@
 //! represent this value" — used for `Utf8` widening output AND for `_rdlt_id` hashing,
 //! so identity stays stable across type widenings of other columns.
 //!
-//! Generic over [`JsonView`]: the tree and streaming paths
-//! render through the SAME functions — identical bytes, identical hashes.
+//! Generic over [`JsonView`]: the tape path and the `&serde_json::Value` test
+//! view render through the SAME functions — identical bytes, identical hashes.
 //!
 //! Two float renderings coexist ON PURPOSE, exactly as they always have:
 //! `render_scalar` uses Rust's `to_string` while `canonical_json_bytes`
@@ -32,7 +32,7 @@ use super::view::{JsonView, ValueKind};
 ///
 /// `None` covers null, objects and arrays alike. The caller turns that into
 /// `FieldValue::Null`, so those four inputs share a keyed identity while an
-/// empty string does not — pinned in `tests/shred_identity_pin.rs`.
+/// empty string does not — pinned in `tests/cases/test_shred_identity_pin.rs`.
 pub(crate) fn render_scalar<'a, V: JsonView<'a>>(value: V) -> Option<Cow<'a, str>> {
     match value.kind() {
         ValueKind::Null | ValueKind::Object | ValueKind::Array => None,
@@ -96,7 +96,7 @@ pub(crate) fn canonical_json_bytes<'a, V: JsonView<'a>>(value: V, out: &mut Vec<
         ValueKind::Bool(b) => out.extend_from_slice(if b { b"true" } else { b"false" }),
         ValueKind::Str(s) => serde_json::to_writer(&mut *out, s).expect("string serialization"),
         // Numbers reconstruct the exact serde_json::Number a Value would hold, so
-        // the serialized bytes match the tree path digit-for-digit (itoa/ryu).
+        // the serialized bytes match serde_json's own rendering digit-for-digit (itoa/ryu).
         ValueKind::Int(i) => serde_json::to_writer(&mut *out, &serde_json::Number::from(i))
             .expect("number serialization"),
         ValueKind::UInt(u) => serde_json::to_writer(&mut *out, &serde_json::Number::from(u))

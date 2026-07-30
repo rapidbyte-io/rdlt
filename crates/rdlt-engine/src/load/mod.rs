@@ -5,7 +5,7 @@
 pub(crate) mod apply;
 mod item;
 mod loader;
-pub(crate) mod lowering;
+mod lowering;
 
 pub(crate) use item::LoadItem;
 pub(crate) use loader::{Loader, Sink};

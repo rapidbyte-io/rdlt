@@ -1,8 +1,8 @@
-//! Slab arena: the streaming shred path's JSON representation.
+//! Slab arena: the tape shred path's JSON representation.
 //!
 //! One arena per pushed slab. Parsing goes through serde_json's OWN parser via a
 //! `DeserializeSeed` — every lexical edge case (escapes, surrogates, number
-//! grammar, depth limits) behaves exactly as the tree path's `Value` parse —
+//! grammar, depth limits) behaves exactly as a `serde_json::Value` parse —
 //! but lands in three flat vectors instead of per-row allocated trees:
 //! nodes, object entries, array items. Strings and keys borrow from the slab
 //! whenever they contain no escapes.
@@ -124,7 +124,7 @@ impl<'s> Arena<'s> {
     }
 }
 
-/// A borrowed view of one arena node — the streaming path's `JsonView`.
+/// A borrowed view of one arena node — the tape path's `JsonView`.
 #[derive(Clone, Copy)]
 pub(crate) struct Node<'a, 's> {
     arena: &'a Arena<'s>,

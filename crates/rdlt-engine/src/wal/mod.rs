@@ -11,7 +11,7 @@ pub(crate) mod resume;
 mod writer;
 
 pub(crate) use record::{WAL_FORMAT_VERSION, WalRecord};
-pub(crate) use writer::{Wal, clear};
+pub(crate) use writer::{Wal, clear, dir_in};
 
 #[cfg(test)]
 pub(crate) use writer::write_segment;

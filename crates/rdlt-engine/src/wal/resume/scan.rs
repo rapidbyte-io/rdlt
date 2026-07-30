@@ -29,7 +29,7 @@ pub(crate) struct RecoverySpan {
     pub(crate) schemas: Vec<(rdlt_core::TableSchema, rdlt_core::WriteMode)>,
 }
 
-/// ScanOutcome outcome. `Damaged` means segments/manifest can't support replay — the caller
+/// Scan outcome. `Damaged` means segments/manifest can't support replay — the caller
 /// clears the WAL and falls back to cursor re-extraction.
 #[derive(Debug)]
 pub(crate) enum ScanOutcome {
@@ -64,7 +64,7 @@ pub(crate) async fn scan_off_runtime(dir: &Path) -> ScanOutcome {
     off_runtime(move || scan(&dir)).await
 }
 
-pub(crate) fn scan(dir: &Path) -> ScanOutcome {
+fn scan(dir: &Path) -> ScanOutcome {
     let path = dir.join("manifest.jsonl");
     let file = match File::open(&path) {
         Ok(f) => f,

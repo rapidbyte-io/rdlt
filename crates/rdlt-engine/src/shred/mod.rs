@@ -11,9 +11,9 @@ pub(crate) mod arena;
 pub(crate) mod build;
 pub(crate) mod canon;
 mod drain;
-pub(crate) mod infer;
+mod infer;
 pub(crate) mod passthrough;
-pub(crate) mod table;
+mod table;
 pub(crate) mod tape;
 pub(crate) mod view;
 

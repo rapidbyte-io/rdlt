@@ -2,8 +2,8 @@
 //! schema. Values land directly in typed arrays; the `Json` column type stores the
 //! verbatim serialized subtree (never dropped, never exploded).
 //!
-//! Generic over [`JsonView`]: the tree and streaming paths
-//! build through the SAME code — identical arrays, bit for bit.
+//! Generic over [`JsonView`]: the tape path and the `&serde_json::Value` test
+//! view build through the SAME code — identical arrays, bit for bit.
 //!
 //! One concept despite its length: the closed type lattice needs one builder
 //! arm per logical type, and splitting arms across files would put the lattice
@@ -29,6 +29,7 @@ use rdlt_core::{
 use super::{
     DrainRow,
     canon::parse_timestamp_tz,
+    table::TableBuffer,
     view::{JsonView, ValueKind},
 };
 
@@ -142,10 +143,7 @@ pub(crate) fn build_batch<'v, V: JsonView<'v>>(
                 Arc::new(b.finish())
             }
             _ => {
-                let source_key = source_to_normalized
-                    .iter()
-                    .find(|(_, normalized)| normalized == &column.name)
-                    .map(|(source, _)| source.as_str())
+                let source_key = TableBuffer::source_key_in(source_to_normalized, &column.name)
                     .unwrap_or(column.name.as_str());
                 let values: Vec<Option<V>> =
                     rows.iter().map(|row| row.top_level(source_key)).collect();
@@ -536,9 +534,6 @@ fn fits_precision(scaled: i128, precision: u8) -> Option<i128> {
     let limit = 10i128.checked_pow(precision as u32)?;
     (scaled.unsigned_abs() < limit.unsigned_abs()).then_some(scaled)
 }
-// T131 — the FIRST test module in crates/rdlt-engine/src/shred/build.rs.
-// Appended at the end of the file.
-
 #[cfg(test)]
 mod tests {
     use super::*;

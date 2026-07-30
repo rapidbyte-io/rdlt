@@ -4,15 +4,12 @@
 
 use std::collections::BTreeSet;
 
-use rdlt_core::{
-    LoadId, PolicyAction, RdltError, RowId, SchemaChange, SchemaPolicy, TableName, TableSchema,
-    WriteMode,
-};
+use rdlt_core::{LoadId, PolicyAction, RdltError, RowId, SchemaChange, SchemaPolicy, WriteMode};
 
 use crate::{
     load::LoadItem,
     schema::{
-        contracts::{change_column, value_fits, violation_for},
+        contracts::{change_column, inherited_action, value_fits, violation_for},
         registry::SchemaRegistry,
     },
 };
@@ -75,11 +72,14 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
     tables: &mut [TableBuffer],
     rows: &mut [Vec<DrainRow<V>>],
     rollback_snapshot: &[Vec<(String, ColumnState)>],
-    registry: &mut SchemaRegistry,
-    load_id: &LoadId,
-    mode: &WriteMode,
-    policy: &SchemaPolicy,
+    ctx: ShredContext,
 ) -> Result<Vec<LoadItem>, RdltError> {
+    let ShredContext {
+        registry,
+        load_id,
+        mode,
+        policy,
+    } = ctx;
     let mut items = Vec::new();
     // Rows discarded in earlier (parent) tables cascade into their descendants.
     let mut discarded_ids: BTreeSet<RowId> = BTreeSet::new();
@@ -234,10 +234,9 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
         if !d.rows.is_empty() {
             let schema = registry
                 .get(&d.buffer.table)
-                .expect("schema registered before building")
-                .clone();
+                .expect("schema registered before building");
             let (batch, misfits) = build::build_batch(
-                &schema,
+                schema,
                 d.buffer.source_to_normalized(),
                 d.rows.as_slice(),
                 load_id,
@@ -263,63 +262,6 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
         }
     }
     Ok(items)
-}
-
-/// The policy action governing a table, resolved through its ANCESTRY.
-///
-/// A child table has no configuration of its own unless the operator wrote one:
-/// its existence and shape come from the parent's data, so the parent's contract
-/// is the only one that means anything about it. Freezing `t` has to freeze what
-/// `t`'s own records create, or the contract is only as strong as the shape of
-/// the first batch.
-///
-/// The NEAREST explicit entry wins, walking from the table upward, so an explicit
-/// entry on a child still overrides its parent — inheritance fills a gap, it does
-/// not override a decision. Only when no ancestor has an entry does the default
-/// apply.
-fn inherited_action(
-    policy: &SchemaPolicy,
-    registry: &SchemaRegistry,
-    observed: &TableSchema,
-    column: Option<&str>,
-) -> PolicyAction {
-    if let Some(action) = explicit_action(policy, &observed.table, column) {
-        return action;
-    }
-    // The observed schema carries only its immediate parent; the registry holds
-    // the ancestors, so the chain is walked through it. Bounded by the nesting
-    // depth the shredder produced.
-    let mut next = observed.parent.as_ref().map(|link| link.parent.clone());
-    while let Some(ancestor) = next {
-        if let Some(action) = explicit_action(policy, &ancestor, None) {
-            return action;
-        }
-        next = registry
-            .get(&ancestor)
-            .and_then(|schema| schema.parent.as_ref())
-            .map(|link| link.parent.clone());
-    }
-    policy.default
-}
-
-/// An action the operator wrote for this exact table or column, if any.
-/// Distinct from `SchemaPolicy::action_for`, which cannot tell an explicit entry
-/// from the default it falls back to — the difference inheritance turns on.
-fn explicit_action(
-    policy: &SchemaPolicy,
-    table: &TableName,
-    column: Option<&str>,
-) -> Option<PolicyAction> {
-    if let Some(column) = column {
-        let key = rdlt_core::ColumnRef {
-            table: table.clone(),
-            column: column.to_owned(),
-        };
-        if let Some(action) = policy.per_column.get(&key) {
-            return Some(*action);
-        }
-    }
-    policy.per_table.get(table).copied()
 }
 
 /// Apply Discard* actions for one table: roll offending columns back to their

@@ -1,6 +1,6 @@
 //! Shared shredding state: per-table naming, shape observation, lineage
 //! identity, and schema resolution — everything the tape traversal (`tape.rs`)
-//! and the drain (`shred.rs`, the module root) build on.
+//! and the drain (`drain.rs`) build on.
 
 use rdlt_core::{
     ColumnDef, ParentLink, Provenance, RowId, TableName, TableSchema,
@@ -72,12 +72,21 @@ impl TableBuffer {
         &self.names
     }
 
-    /// Reverse lookup: normalized column name → source key.
-    pub(crate) fn source_key_for(&self, normalized: &str) -> Option<&str> {
-        self.names
+    /// Reverse lookup over a `source_to_normalized` slice, for callers holding
+    /// the slice rather than the buffer (the batch builder receives exactly it).
+    pub(crate) fn source_key_in<'a>(
+        names: &'a [(String, String)],
+        normalized: &str,
+    ) -> Option<&'a str> {
+        names
             .iter()
             .find(|(_, n)| n == normalized)
             .map(|(source, _)| source.as_str())
+    }
+
+    /// Reverse lookup: normalized column name → source key.
+    pub(crate) fn source_key_for(&self, normalized: &str) -> Option<&str> {
+        Self::source_key_in(&self.names, normalized)
     }
 
     /// Policy enforcement: revert one column's observation state to its pre-batch
@@ -238,7 +247,7 @@ mod identity_cross_view {
     //! in flat side-tables, the tree stores an owned `Map` — and either could
     //! diverge in entry order, in how a duplicate key resolves, or in how a
     //! non-object root is wrapped. The byte-exact corpus in
-    //! `tests/shred_identity_pin.rs` pins the VALUES; this pins their
+    //! `tests/cases/test_shred_identity_pin.rs` pins the VALUES; this pins their
     //! AGREEMENT across the two views, over arbitrary documents.
 
     use proptest::prelude::*;

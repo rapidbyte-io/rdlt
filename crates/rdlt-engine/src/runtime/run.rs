@@ -22,10 +22,7 @@ use std::{
 };
 
 use rdlt_connector::{Destination, Source, channel::byte_channel};
-use rdlt_core::{
-    LoadId, PipelineEvent, RdltError, RunReport, StreamName, TableName, WriteMode,
-    naming::normalize_ident,
-};
+use rdlt_core::{LoadId, PipelineEvent, RdltError, RunReport, StreamName, WriteMode};
 use tokio::{sync::broadcast, task::JoinSet};
 use tokio_util::sync::CancellationToken;
 
@@ -35,8 +32,11 @@ use crate::{
 };
 
 use super::{
-    classify::classify_source_error, drain::drain_loader, extract::stream_task,
-    recover::recover_wal, validate::validate_streams,
+    classify::classify_source_error,
+    drain::drain_loader,
+    extract::{StreamPlan, stream_task},
+    recover::recover_wal,
+    validate::{root_table, validate_streams},
 };
 
 /// Secondary message-count bound on a stage channel. The byte budget is the primary
@@ -85,7 +85,6 @@ pub(crate) async fn run(
     events: broadcast::Sender<PipelineEvent>,
 ) -> Result<RunReport, RdltError> {
     let mut attempt: u32 = 0;
-    let mut retries: u64 = 0;
     loop {
         let attempt_cancel = cancel.child_token();
         let result = run_once(
@@ -94,7 +93,7 @@ pub(crate) async fn run(
             Arc::clone(&destination),
             attempt_cancel,
             events.clone(),
-            retries,
+            u64::from(attempt),
         )
         .await;
         // Retryable failures from EITHER side restart the run from
@@ -119,7 +118,6 @@ pub(crate) async fn run(
             other => return other,
         };
         attempt += 1;
-        retries += 1;
         let delay = retry_after_ms
             .map(std::time::Duration::from_millis)
             .unwrap_or_else(|| backoff(attempt));
@@ -155,11 +153,12 @@ async fn run_once(
     validate_streams(config, &streams, capabilities, destination.as_ref())?;
 
     // ---- Workdir lock (one process per pipeline). Held for the whole run. ----
-    let _lock = match &config.workdir {
-        Some(dir) => Some(crate::runtime::lock::WorkdirLock::acquire(dir)?),
-        None => None,
-    };
-    let wal_dir = config.workdir.as_ref().map(|d| d.join("wal"));
+    let _lock = config
+        .workdir
+        .as_deref()
+        .map(super::lock::WorkdirLock::acquire)
+        .transpose()?;
+    let wal_dir = config.workdir.as_deref().map(crate::wal::dir_in);
 
     // ---- Session open + state recovery + WAL replay ----
     let (session, base_state, resumed_from) = recover_wal(
@@ -171,14 +170,10 @@ async fn run_once(
     )
     .await?;
 
-    let wal = match &wal_dir {
-        Some(dir) => Some(crate::wal::Wal::open(
-            dir.clone(),
-            &config.pipeline,
-            &load_id,
-        )?),
-        None => None,
-    };
+    let wal = wal_dir
+        .as_ref()
+        .map(|dir| crate::wal::Wal::open(dir.clone(), &config.pipeline, &load_id))
+        .transpose()?;
 
     let mut report = RunReport::new(config.pipeline.clone(), load_id.clone());
     report.resumed_from = resumed_from;
@@ -197,10 +192,7 @@ async fn run_once(
         } else {
             base_state.cursors.get(&spec.name).cloned()
         };
-        let root_table = TableName::new(normalize_ident(
-            spec.name.as_str(),
-            capabilities.ident_rules,
-        ));
+        let root_table = root_table(&spec.name, capabilities.ident_rules);
 
         let _ = events.send(rdlt_core::PipelineEvent::StreamStarted {
             stream: spec.name.clone(),
@@ -212,19 +204,22 @@ async fn run_once(
         // events; `Instrument` binds the span to the FUTURE, which is what
         // "this stream's work" actually means.
         let span = tracing::info_span!("rdlt.extract", stream = %spec.name);
+        let plan = StreamPlan {
+            spec,
+            capabilities,
+            since,
+            mode,
+            root_table,
+            byte_budget: config.byte_budget,
+            load_id: load_id.clone(),
+            policy: config.schema_policy.clone(),
+        };
         stream_tasks.spawn(tracing::Instrument::instrument(
             stream_task(
-                spec,
+                plan,
                 Arc::clone(&source),
                 load_tx.clone(),
                 cancel.clone(),
-                capabilities,
-                since,
-                mode,
-                root_table,
-                config.byte_budget,
-                load_id.clone(),
-                config.schema_policy.clone(),
                 events.clone(),
             ),
             span,

@@ -9,6 +9,15 @@ use rdlt_core::{
 
 use crate::EngineConfig;
 
+/// The destination table a stream owns, by name normalization.
+///
+/// One decision with two consumers that must agree by construction: validation
+/// asserts the mapping is injective, and the run wiring builds each stream's
+/// shredder against the same mapping.
+pub(super) fn root_table(stream: &StreamName, rules: rdlt_core::naming::IdentRules) -> TableName {
+    TableName::new(normalize_ident(stream.as_str(), rules))
+}
+
 /// Build-time validation over the discovered streams: one owning stream per
 /// destination table (two streams writing one table would interleave
 /// unowned rows), Merge only where the destination supports it,
@@ -22,10 +31,7 @@ pub(super) fn validate_streams(
 ) -> Result<(), RdltError> {
     let mut root_tables: BTreeMap<TableName, StreamName> = BTreeMap::new();
     for spec in streams {
-        let table = TableName::new(normalize_ident(
-            spec.name.as_str(),
-            capabilities.ident_rules,
-        ));
+        let table = root_table(&spec.name, capabilities.ident_rules);
         if let Some(owner) = root_tables.insert(table.clone(), spec.name.clone()) {
             // Clause E2: exactly one stream owns a table.
             return Err(RdltError::config(format!(

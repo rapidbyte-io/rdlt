@@ -96,24 +96,39 @@ impl ShredOwner {
     }
 }
 
+/// Everything `run_once` plans for one stream, bundled so the task takes the
+/// plan whole instead of eight loose values.
+pub(super) struct StreamPlan {
+    pub(super) spec: StreamSpec,
+    pub(super) capabilities: DestinationCapabilities,
+    pub(super) since: Option<Cursor>,
+    pub(super) mode: WriteMode,
+    pub(super) root_table: TableName,
+    pub(super) byte_budget: usize,
+    pub(super) load_id: LoadId,
+    pub(super) policy: SchemaPolicy,
+}
+
 /// One stream's task: read from the source, shred (or pass structured batches
 /// through), forward the emitted load items, and classify the source outcome.
 /// Classification only — the retry decision lives in `run` (run-level).
-#[allow(clippy::too_many_arguments)]
 pub(super) async fn stream_task(
-    spec: StreamSpec,
+    plan: StreamPlan,
     source: Arc<dyn Source>,
     tx: ByteTx<LoadItem>,
     cancel: CancellationToken,
-    capabilities: DestinationCapabilities,
-    since: Option<Cursor>,
-    mode: WriteMode,
-    root_table: TableName,
-    byte_budget: usize,
-    load_id: LoadId,
-    policy: SchemaPolicy,
     events: broadcast::Sender<PipelineEvent>,
 ) -> Result<(), RdltError> {
+    let StreamPlan {
+        spec,
+        capabilities,
+        since,
+        mode,
+        root_table,
+        byte_budget,
+        load_id,
+        policy,
+    } = plan;
     let stream_name = spec.name.clone();
 
     let arrow_table = root_table.clone();

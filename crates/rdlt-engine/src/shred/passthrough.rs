@@ -124,7 +124,7 @@ pub(crate) fn passthrough_items(
     }
 
     // ---- Assemble the outgoing batch against the CURRENT registry schema ----
-    let current = registry.get(table).expect("registered above").clone();
+    let current = registry.get(table).expect("registered above");
     let rows = batch.num_rows();
     let mut arrays: Vec<ArrayRef> = Vec::with_capacity(current.columns.len());
     for column in &current.columns {
@@ -157,7 +157,7 @@ pub(crate) fn passthrough_items(
         };
         arrays.push(array);
     }
-    let out = RecordBatch::try_new(Arc::new(arrow_schema(&current)), arrays)
+    let out = RecordBatch::try_new(Arc::new(arrow_schema(current)), arrays)
         .map_err(|e| RdltError::internal(format!("passthrough batch assembly: {e}")))?;
     items.push(LoadItem::Batch {
         table: table.clone(),

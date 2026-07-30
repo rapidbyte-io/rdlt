@@ -20,6 +20,13 @@ use crate::load::LoadItem;
 
 use super::record::{WAL_FORMAT_VERSION, WalRecord};
 
+/// The WAL's directory inside a pipeline workdir — the one piece of the
+/// on-disk layout, alongside the manifest and segment names below, that the
+/// WAL owns rather than its callers.
+pub(crate) fn dir_in(workdir: &Path) -> PathBuf {
+    workdir.join("wal")
+}
+
 #[derive(Debug)]
 pub(crate) struct Wal {
     dir: PathBuf,
@@ -255,11 +262,6 @@ pub(crate) fn write_segment(path: &Path, batch: &RecordBatch) -> Result<(), Rdlt
 pub(crate) fn clear(dir: &Path) {
     let _ = std::fs::remove_dir_all(dir);
 }
-// The claim "segment sequence numbers must be strictly monotonic" used to live
-// in a doc comment on a resume.rs test that only ever asserted the header
-// version. That clause is deleted there and the property is actually tested
-// here, against a real Wal writing real segments.
-
 #[cfg(test)]
 mod tests {
     use super::*;

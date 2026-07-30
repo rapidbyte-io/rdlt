@@ -5,12 +5,16 @@
 //! silent.
 
 use rdlt_core::{
-    ColumnType, ContractViolation, LogicalType, SchemaChange, TableName, types::int64_fits_in_f64,
+    ColumnType, ContractViolation, LogicalType, PolicyAction, SchemaChange, SchemaPolicy,
+    TableName, TableSchema, types::int64_fits_in_f64,
 };
 
-use crate::shred::{
-    canon::parse_timestamp_tz,
-    view::{JsonView, ValueKind},
+use crate::{
+    schema::registry::SchemaRegistry,
+    shred::{
+        canon::parse_timestamp_tz,
+        view::{JsonView, ValueKind},
+    },
 };
 
 /// Does `value` conform to `ty` without requiring any schema change?
@@ -108,6 +112,63 @@ pub(crate) fn change_column(change: &SchemaChange) -> Option<&str> {
         SchemaChange::AddColumn { column } => Some(&column.name),
         SchemaChange::WidenColumn { name, .. } => Some(name),
     }
+}
+
+/// The policy action governing a table, resolved through its ANCESTRY.
+///
+/// A child table has no configuration of its own unless the operator wrote one:
+/// its existence and shape come from the parent's data, so the parent's contract
+/// is the only one that means anything about it. Freezing `t` has to freeze what
+/// `t`'s own records create, or the contract is only as strong as the shape of
+/// the first batch.
+///
+/// The NEAREST explicit entry wins, walking from the table upward, so an explicit
+/// entry on a child still overrides its parent — inheritance fills a gap, it does
+/// not override a decision. Only when no ancestor has an entry does the default
+/// apply.
+pub(crate) fn inherited_action(
+    policy: &SchemaPolicy,
+    registry: &SchemaRegistry,
+    observed: &TableSchema,
+    column: Option<&str>,
+) -> PolicyAction {
+    if let Some(action) = explicit_action(policy, &observed.table, column) {
+        return action;
+    }
+    // The observed schema carries only its immediate parent; the registry holds
+    // the ancestors, so the chain is walked through it. Bounded by the nesting
+    // depth the shredder produced.
+    let mut next = observed.parent.as_ref().map(|link| link.parent.clone());
+    while let Some(ancestor) = next {
+        if let Some(action) = explicit_action(policy, &ancestor, None) {
+            return action;
+        }
+        next = registry
+            .get(&ancestor)
+            .and_then(|schema| schema.parent.as_ref())
+            .map(|link| link.parent.clone());
+    }
+    policy.default
+}
+
+/// An action the operator wrote for this exact table or column, if any.
+/// Distinct from `SchemaPolicy::action_for`, which cannot tell an explicit entry
+/// from the default it falls back to — the difference inheritance turns on.
+fn explicit_action(
+    policy: &SchemaPolicy,
+    table: &TableName,
+    column: Option<&str>,
+) -> Option<PolicyAction> {
+    if let Some(column) = column {
+        let key = rdlt_core::ColumnRef {
+            table: table.clone(),
+            column: column.to_owned(),
+        };
+        if let Some(action) = policy.per_column.get(&key) {
+            return Some(*action);
+        }
+    }
+    policy.per_table.get(table).copied()
 }
 
 #[cfg(test)]

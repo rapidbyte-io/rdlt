@@ -9,7 +9,7 @@
 //! one test is `shred_invariants_hold` — a distinction that mattered: the gate
 //! selected it by test name for a while, matched nothing, and reported success)
 //! and the
-//! hazard cases in `arena.rs`/`tests/passthrough.rs`.
+//! hazard cases in `arena.rs`/`tests/cases/test_passthrough.rs`.
 
 use std::collections::VecDeque;
 
@@ -28,8 +28,8 @@ use super::{
 };
 use crate::load::LoadItem;
 
-/// A shred-path error: JSON errors format at the call site exactly like the
-/// tree path's `push_bytes` errors do.
+/// A shred-path error: invalid JSON from the source (classified per stream at
+/// the call site), or an engine error passing through unchanged.
 pub(crate) enum PushError {
     Json(serde_json::Error),
     Engine(RdltError),
@@ -63,11 +63,8 @@ struct Queued {
 pub(crate) struct TapeShredder {
     spec: StreamSpec,
     capabilities: DestinationCapabilities,
-    /// Root first, children after, in first-seen order (shared state type with
-    /// the tree path).
+    /// Root first, children after, in first-seen order.
     tables: Vec<TableBuffer>,
-    /// Rollback point for Discard* policy enforcement.
-    rollback_snapshot: Vec<Vec<(String, ColumnState)>>,
 }
 
 impl TapeShredder {
@@ -85,13 +82,11 @@ impl TapeShredder {
             spec,
             capabilities,
             tables: vec![root],
-            rollback_snapshot: Vec::new(),
         }
     }
 
     /// Shred one raw push END-TO-END: parse into a slab arena, traverse and
-    /// observe, then run the shared drain. One call replaces the tree path's
-    /// `push_bytes` + `drain_batch` pair (the arena cannot outlive the call).
+    /// observe, then run the shared drain (the arena cannot outlive the call).
     pub(crate) fn push_and_drain(
         &mut self,
         bytes: &[u8],
@@ -99,7 +94,8 @@ impl TapeShredder {
     ) -> Result<Vec<LoadItem>, PushError> {
         // Snapshot observation states: Discard* enforcement rolls offending
         // columns back to exactly this point.
-        self.rollback_snapshot = self.tables.iter().map(|t| t.columns.clone()).collect();
+        let rollback_snapshot: Vec<Vec<(String, ColumnState)>> =
+            self.tables.iter().map(|t| t.columns.clone()).collect();
 
         let mut arena = Arena::sized_for(bytes.len());
         let roots = arena.parse_rows(bytes).map_err(PushError::Json)?;
@@ -136,16 +132,8 @@ impl TapeShredder {
                     .collect()
             })
             .collect();
-        drain_tables(
-            &mut self.tables,
-            &mut drain_rows,
-            &self.rollback_snapshot,
-            ctx.registry,
-            ctx.load_id,
-            ctx.mode,
-            ctx.policy,
-        )
-        .map_err(PushError::Engine)
+        drain_tables(&mut self.tables, &mut drain_rows, &rollback_snapshot, ctx)
+            .map_err(PushError::Engine)
     }
 
     /// Breadth-first traversal of one root document: observe every field at every
@@ -202,7 +190,7 @@ impl TapeShredder {
 
     /// Enqueue the child rows discovered under one node: each non-null list item
     /// becomes a queued row in its child table (scalar items wrapped as
-    /// `{"value": …}`), position counting null slots like the tree path.
+    /// `{"value": …}`), position counting null slots.
     fn enqueue_children(
         &mut self,
         child_lists: Vec<(String, Vec<NodeId>)>,

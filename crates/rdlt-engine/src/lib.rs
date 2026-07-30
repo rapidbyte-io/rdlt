@@ -32,7 +32,8 @@
 //!
 //! Everything below `lib.rs` is `pub(crate)`: unit-tested privately, free to change
 //! without semver cost. The public surface is [`Engine`] and [`EngineConfig`] plus the
-//! vocabulary re-exported from `rdlt_core`.
+//! vocabulary re-exported from `rdlt_core` — the one exception is the doc-hidden
+//! [`fuzzing`] module, the bench/fuzz seam, which carries no semver guarantee.
 
 mod config;
 mod engine;

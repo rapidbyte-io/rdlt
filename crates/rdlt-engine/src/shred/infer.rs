@@ -4,8 +4,8 @@
 //! know about: an `Int64` beyond ±2^53 meeting `Float64` escalates the column to
 //! `Utf8` — losslessness is enforced at runtime, never assumed.
 //!
-//! Generic over [`JsonView`]: the tree and streaming paths
-//! observe through the SAME logic — one lattice, one escalation rule.
+//! Generic over [`JsonView`]: the tape path and the `&serde_json::Value` test
+//! view observe through the SAME logic — one lattice, one escalation rule.
 
 use rdlt_core::{
     ColumnDef, ColumnType, Provenance,
