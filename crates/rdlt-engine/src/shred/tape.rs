@@ -14,15 +14,18 @@
 use std::collections::VecDeque;
 
 use rdlt_connector::{DestinationCapabilities, StreamSpec};
-use rdlt_core::identity::child_row_id;
-use rdlt_core::naming::child_table_name;
-use rdlt_core::{ParentLink, RdltError, RowId, TableName};
+use rdlt_core::{
+    ParentLink, RdltError, RowId, TableName, identity::child_row_id, naming::child_table_name,
+};
 
-use super::arena::{Arena, NodeId};
-use super::infer::{ColumnState, ScalarState};
-use super::table::{TableBuffer, content_hash_with, row_identity};
-use super::view::JsonView;
-use super::{DrainRow, ShredContext, drain_tables};
+use super::{
+    DrainRow, ShredContext,
+    arena::{Arena, NodeId},
+    drain_tables,
+    infer::{ColumnState, ScalarState},
+    table::{TableBuffer, content_hash_with, row_identity},
+    view::JsonView,
+};
 use crate::load::LoadItem;
 
 /// A shred-path error: JSON errors format at the call site exactly like the

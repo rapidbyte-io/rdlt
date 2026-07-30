@@ -4,11 +4,14 @@
 //! batch is written; `Discard*` filters data down to the frozen shape — counted, never
 //! silent.
 
-use rdlt_core::types::int64_fits_in_f64;
-use rdlt_core::{ColumnType, ContractViolation, LogicalType, SchemaChange, TableName};
+use rdlt_core::{
+    ColumnType, ContractViolation, LogicalType, SchemaChange, TableName, types::int64_fits_in_f64,
+};
 
-use crate::shred::canon::parse_timestamp_tz;
-use crate::shred::view::{JsonView, ValueKind};
+use crate::shred::{
+    canon::parse_timestamp_tz,
+    view::{JsonView, ValueKind},
+};
 
 /// Does `value` conform to `ty` without requiring any schema change?
 /// (`true` = storable as-is; `false` = this value is what forced the widening.)
@@ -46,7 +49,11 @@ fn scalar_fits<'a, V: JsonView<'a>>(value: V, scalar: LogicalType) -> bool {
         // Utf8 absorbs every textable scalar (canonical renderings).
         LogicalType::Utf8 | LogicalType::Uuid => matches!(
             kind,
-            ValueKind::Str(_) | ValueKind::Int(_) | ValueKind::UInt(_) | ValueKind::Float(_) | ValueKind::Bool(_)
+            ValueKind::Str(_)
+                | ValueKind::Int(_)
+                | ValueKind::UInt(_)
+                | ValueKind::Float(_)
+                | ValueKind::Bool(_)
         ),
         LogicalType::TimestampTz => match kind {
             ValueKind::Str(s) => parse_timestamp_tz(s).is_some(),

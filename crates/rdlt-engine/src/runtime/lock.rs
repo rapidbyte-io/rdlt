@@ -3,8 +3,10 @@
 //! OS advisory locks release automatically on process death — a crashed run never
 //! blocks its own recovery (a lock *file* existence check would).
 
-use std::fs::{File, OpenOptions};
-use std::path::Path;
+use std::{
+    fs::{File, OpenOptions},
+    path::Path,
+};
 
 use fs4::fs_std::FileExt;
 use rdlt_core::RdltError;

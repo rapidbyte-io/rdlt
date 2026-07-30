@@ -12,22 +12,26 @@
 
 use std::sync::Arc;
 
-use arrow::array::{ArrayRef, StringArray, new_null_array};
-use arrow::compute::cast;
-use arrow::datatypes::{DataType, TimeUnit};
-use arrow::record_batch::RecordBatch;
+use arrow::{
+    array::{ArrayRef, StringArray, new_null_array},
+    compute::cast,
+    datatypes::{DataType, TimeUnit},
+    record_batch::RecordBatch,
+};
 use rdlt_connector::DestinationCapabilities;
-use rdlt_core::naming::UniqueNamer;
-use rdlt_core::schema::system_columns;
 use rdlt_core::{
     ColumnDef, ColumnType, LogicalType, PolicyAction, Provenance, RdltError, SchemaChange,
-    TableName, TableSchema,
+    TableName, TableSchema, naming::UniqueNamer, schema::system_columns,
 };
 
-use crate::load::LoadItem;
-use crate::schema::contracts::{change_column, violation_for};
-use crate::shred::ShredContext;
-use crate::shred::build::{arrow_column_type, arrow_schema};
+use crate::{
+    load::LoadItem,
+    schema::contracts::{change_column, violation_for},
+    shred::{
+        ShredContext,
+        build::{arrow_column_type, arrow_schema},
+    },
+};
 
 /// Process one structured batch: schema mapping, policy enforcement, load-id
 /// stamping. Emits the standard Delta/Discarded/Batch items.

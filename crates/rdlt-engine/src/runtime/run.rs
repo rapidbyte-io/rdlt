@@ -13,34 +13,37 @@
 //! in place would leave rows staged after the last checkpoint and publish them
 //! twice on re-extraction — the exactly-once bug the crash path exists to prevent.
 
-use std::collections::BTreeMap;
-use std::path::Path;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
+use std::{
+    collections::BTreeMap,
+    path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Instant,
+};
 
 use bytes::Bytes;
 use rdlt_connector::{
     Destination, DestinationCapabilities, LoadSession, OpenCtx, PushPayload, ReadRequest, Source,
-    SourceError, StreamSpec, records_channel,
+    SourceError, StreamSpec,
+    channel::{ByteRx, ByteTx, Permitted, byte_channel},
+    records_channel,
 };
-use rdlt_core::naming::normalize_ident;
 use rdlt_core::{
     Cursor, LoadId, LogicalType, PipelineEvent, RdltError, ResumedFrom, RunReport, SchemaPolicy,
-    StateDoc, StreamName, TableName, WriteMode,
+    StateDoc, StreamName, TableName, WriteMode, naming::normalize_ident,
 };
-use tokio::sync::broadcast;
-use tokio::task::JoinSet;
+use tokio::{sync::broadcast, task::JoinSet};
 use tokio_util::sync::CancellationToken;
 
-use crate::EngineConfig;
-use crate::load::{LoadItem, Loader};
-use rdlt_connector::channel::{ByteRx, ByteTx, Permitted, byte_channel};
-
-use crate::runtime::STAGE_MSG_CAPACITY;
-use crate::schema::registry::SchemaRegistry;
-use crate::shred::TapeShredder;
-use crate::shred::tape::PushError;
+use crate::{
+    EngineConfig,
+    load::{LoadItem, Loader},
+    runtime::STAGE_MSG_CAPACITY,
+    schema::registry::SchemaRegistry,
+    shred::{TapeShredder, tape::PushError},
+};
 
 static LOAD_COUNTER: AtomicU64 = AtomicU64::new(0);
 

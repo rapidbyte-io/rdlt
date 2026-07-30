@@ -5,20 +5,18 @@
 //! work): committing mid-span would publish rows the committed cursor doesn't cover,
 //! and a crash would then re-extract them as duplicates.
 
-use std::time::Instant;
-
 pub(crate) mod apply;
 pub(crate) mod lowering;
 
-use rdlt_connector::{DestinationCapabilities, LoadSession, RecordBatch};
+use std::time::Instant;
+
+use rdlt_connector::{DestinationCapabilities, LoadSession, RecordBatch, channel::ByteSized};
 use rdlt_core::{
     CommitCounters, CommitMeta, CommitPolicy, Cursor, LoadId, RdltError, RunReport, SchemaDelta,
-    StateDoc, StreamName, TableName, TableSchema, WriteMode,
+    StateDoc, StreamName, TableName, TableSchema, WriteMode, crash_point,
 };
 
 use crate::wal::Wal;
-use rdlt_connector::channel::ByteSized;
-use rdlt_core::crash_point;
 
 /// One unit of work flowing shred → load. Per-table order within the channel is the
 /// ordering guarantee (delta before first batch at the new version).

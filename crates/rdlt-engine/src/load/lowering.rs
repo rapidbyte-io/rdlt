@@ -9,12 +9,13 @@
 
 use std::sync::Arc;
 
-use arrow::array::{Array, ArrayRef, Decimal128Array, StringArray, StructArray};
-use arrow::buffer::NullBuffer;
-use arrow::record_batch::RecordBatch;
+use arrow::{
+    array::{Array, ArrayRef, Decimal128Array, StringArray, StructArray},
+    buffer::NullBuffer,
+    record_batch::RecordBatch,
+};
 use rdlt_connector::DestinationCapabilities;
-use rdlt_core::naming::UniqueNamer;
-use rdlt_core::{ColumnDef, ColumnType, LogicalType, RdltError, TableSchema};
+use rdlt_core::{ColumnDef, ColumnType, LogicalType, RdltError, TableSchema, naming::UniqueNamer};
 
 fn needs_lowering(caps: &DestinationCapabilities) -> bool {
     !caps.structs || !caps.decimal

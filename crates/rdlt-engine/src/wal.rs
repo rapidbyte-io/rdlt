@@ -14,19 +14,20 @@
 
 pub(crate) mod resume;
 
-use std::fs::{File, OpenOptions};
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::{
+    fs::{File, OpenOptions},
+    io::Write,
+    path::{Path, PathBuf},
+};
 
 use rdlt_connector::RecordBatch;
 use rdlt_core::{
     Cursor, LoadId, PipelineId, RdltError, SchemaDelta, StreamName, TableName, TableSchema,
-    WriteMode,
+    WriteMode, crash_point,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::load::LoadItem;
-use rdlt_core::crash_point;
 
 /// WAL format version, covering the manifest record shapes AND the segment
 /// container together — they are one format, because a manifest line is only

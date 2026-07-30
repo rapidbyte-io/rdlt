@@ -1,9 +1,11 @@
 //! WAL resume: single forward scan of the manifest, replay of the uncommitted span,
 //! degradation to re-extraction on any damage (slower, never wrong).
 
-use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::{
+    fs::File,
+    io::{BufRead, BufReader},
+    path::Path,
+};
 
 use rdlt_connector::LoadSession;
 use rdlt_core::{CommitMeta, LoadId, RdltError, StateDoc};

@@ -1,5 +1,4 @@
-use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::{collections::BTreeMap, path::PathBuf};
 
 use rdlt_core::{CommitPolicy, PipelineId, SchemaPolicy, StreamName, WriteMode};
 

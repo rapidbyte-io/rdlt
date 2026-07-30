@@ -117,7 +117,8 @@ async fn discard_row_drops_and_counts() {
 async fn discard_value_nulls_and_counts() {
     let dest = MemoryDestination::new();
     let mut config = EngineConfig::new("discard-value");
-    config = config.with_schema_policy(SchemaPolicy::evolve().table("t", PolicyAction::DiscardValue));
+    config =
+        config.with_schema_policy(SchemaPolicy::evolve().table("t", PolicyAction::DiscardValue));
 
     let source = two_batch_source(vec![
         json!({"id": 2, "v": "bad type", "extra": "x"}),
@@ -145,9 +146,11 @@ async fn discard_value_nulls_and_counts() {
 async fn per_column_policy_overrides_table_policy() {
     let dest = MemoryDestination::new();
     let mut config = EngineConfig::new("column-override");
-    config = config.with_schema_policy(SchemaPolicy::evolve()
-        .table("t", PolicyAction::Freeze)
-        .column("t", "extra", PolicyAction::Evolve));
+    config = config.with_schema_policy(
+        SchemaPolicy::evolve()
+            .table("t", PolicyAction::Freeze)
+            .column("t", "extra", PolicyAction::Evolve),
+    );
 
     // Adding `extra` is allowed by the column override even though `t` is frozen.
     let source = two_batch_source(vec![json!({"id": 2, "v": 20, "extra": "ok"})]);
@@ -166,7 +169,9 @@ async fn per_column_policy_overrides_table_policy() {
 async fn discard_row_on_middle_table_cascades_to_grandchildren() {
     let dest = MemoryDestination::new();
     let mut config = EngineConfig::new("cascade");
-    config = config.with_schema_policy(SchemaPolicy::evolve().table("orders__items", PolicyAction::DiscardRow));
+    config = config.with_schema_policy(
+        SchemaPolicy::evolve().table("orders__items", PolicyAction::DiscardRow),
+    );
 
     let source = MemorySource::new(vec![MemoryStream::new(
         rdlt_connector::StreamSpec::new("orders"),

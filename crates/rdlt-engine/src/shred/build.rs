@@ -7,21 +7,26 @@
 
 use std::sync::Arc;
 
-use arrow::array::{
-    ArrayRef, BinaryBuilder, BooleanBuilder, Date32Builder, Decimal128Builder, Float64Builder,
-    Int64Builder, ListArray, StringBuilder, StructArray, Time64MicrosecondBuilder,
-    TimestampMicrosecondBuilder,
+use arrow::{
+    array::{
+        ArrayRef, BinaryBuilder, BooleanBuilder, Date32Builder, Decimal128Builder, Float64Builder,
+        Int64Builder, ListArray, StringBuilder, StructArray, Time64MicrosecondBuilder,
+        TimestampMicrosecondBuilder,
+    },
+    buffer::{NullBuffer, OffsetBuffer},
+    datatypes::{DataType, Field, Fields, Schema, TimeUnit},
+    error::ArrowError,
+    record_batch::RecordBatch,
 };
-use arrow::buffer::{NullBuffer, OffsetBuffer};
-use arrow::datatypes::{DataType, Field, Fields, Schema, TimeUnit};
-use arrow::error::ArrowError;
-use arrow::record_batch::RecordBatch;
-use rdlt_core::schema::system_columns;
-use rdlt_core::{ColumnDef, ColumnType, LoadId, LogicalType, RowId, TableSchema};
+use rdlt_core::{
+    ColumnDef, ColumnType, LoadId, LogicalType, RowId, TableSchema, schema::system_columns,
+};
 
-use super::DrainRow;
-use super::canon::parse_timestamp_tz;
-use super::view::{JsonView, ValueKind};
+use super::{
+    DrainRow,
+    canon::parse_timestamp_tz,
+    view::{JsonView, ValueKind},
+};
 
 /// Arrow physical type for a logical type.
 fn arrow_scalar_type(ty: LogicalType) -> DataType {
@@ -346,9 +351,11 @@ fn scalar_timestamp_naive<'v, V: JsonView<'v>>(values: &[Option<V>]) -> ArrayRef
     let mut b = TimestampMicrosecondBuilder::new();
     for v in values {
         let micros = match view_kind(v) {
-            Some(ValueKind::Str(s)) => chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f")
-                .ok()
-                .map(|dt| dt.and_utc().timestamp_micros()),
+            Some(ValueKind::Str(s)) => {
+                chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f")
+                    .ok()
+                    .map(|dt| dt.and_utc().timestamp_micros())
+            }
             _ => None,
         };
         b.append_option(micros);
@@ -359,17 +366,18 @@ fn scalar_timestamp_naive<'v, V: JsonView<'v>>(values: &[Option<V>]) -> ArrayRef
 fn scalar_date<'v, V: JsonView<'v>>(values: &[Option<V>]) -> ArrayRef {
     let mut b = Date32Builder::new();
     for v in values {
-        let days = match view_kind(v) {
-            Some(ValueKind::Str(s)) => chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
-                .ok()
-                .map(|d| {
-                    d.signed_duration_since(
-                        chrono::NaiveDate::from_ymd_opt(1970, 1, 1).expect("epoch"),
-                    )
-                    .num_days() as i32
-                }),
-            _ => None,
-        };
+        let days =
+            match view_kind(v) {
+                Some(ValueKind::Str(s)) => chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
+                    .ok()
+                    .map(|d| {
+                        d.signed_duration_since(
+                            chrono::NaiveDate::from_ymd_opt(1970, 1, 1).expect("epoch"),
+                        )
+                        .num_days() as i32
+                    }),
+                _ => None,
+            };
         b.append_option(days);
     }
     Arc::new(b.finish())

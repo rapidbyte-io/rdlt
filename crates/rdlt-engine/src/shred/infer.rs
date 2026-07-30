@@ -7,11 +7,15 @@
 //! Generic over [`JsonView`]: the tree and streaming paths
 //! observe through the SAME logic — one lattice, one escalation rule.
 
-use rdlt_core::types::{LogicalType, int64_fits_in_f64, widen};
-use rdlt_core::{ColumnDef, ColumnType, Provenance};
+use rdlt_core::{
+    ColumnDef, ColumnType, Provenance,
+    types::{LogicalType, int64_fits_in_f64, widen},
+};
 
-use super::canon::parse_timestamp_tz;
-use super::view::{JsonView, ValueKind};
+use super::{
+    canon::parse_timestamp_tz,
+    view::{JsonView, ValueKind},
+};
 
 /// Observation state for a scalar position (column, struct field, or list item).
 #[derive(Debug, Default, Clone)]
@@ -132,7 +136,9 @@ impl ColumnState {
             // the rule matters, rather than leaving a reader to find it inside
             // the scalar observer.
             ColumnState::Scalar(state) => match value.kind() {
-                ValueKind::Object | ValueKind::Array if !state.is_pinned() => *self = ColumnState::Json,
+                ValueKind::Object | ValueKind::Array if !state.is_pinned() => {
+                    *self = ColumnState::Json
+                }
                 _ => state.observe(value),
             },
             ColumnState::Struct(fields) => match value.kind() {

@@ -23,13 +23,18 @@ use rdlt_core::{
     WriteMode,
 };
 
-use crate::load::LoadItem;
-use crate::schema::contracts::{change_column, value_fits, violation_for};
-use crate::schema::registry::SchemaRegistry;
+use crate::{
+    load::LoadItem,
+    schema::{
+        contracts::{change_column, value_fits, violation_for},
+        registry::SchemaRegistry,
+    },
+};
 use infer::ColumnState;
 use table::TableBuffer;
-pub(crate) use tape::TapeShredder;
 use view::JsonView;
+
+pub(crate) use tape::TapeShredder;
 
 /// The per-batch shred context: the mutable schema registry plus the run-scoped
 /// load id, write mode, and schema policy. One bundle, one field order — shared

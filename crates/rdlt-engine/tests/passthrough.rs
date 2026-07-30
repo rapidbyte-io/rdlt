@@ -151,7 +151,8 @@ async fn passthrough_freeze_rejects_before_publication() {
         declare_structured: true,
     };
     let mut config = EngineConfig::new("pt-freeze");
-    config = config.with_schema_policy(SchemaPolicy::evolve().table("metrics", PolicyAction::Freeze));
+    config =
+        config.with_schema_policy(SchemaPolicy::evolve().table("metrics", PolicyAction::Freeze));
     config = config.with_commit_policy(rdlt_core::CommitPolicy::EveryCheckpoints(1));
 
     let err = Engine::new(config, source, dest.clone())

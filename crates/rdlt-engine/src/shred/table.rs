@@ -2,14 +2,18 @@
 //! identity, and schema resolution — everything the tape traversal (`tape.rs`)
 //! and the drain (`mod.rs`) build on.
 
-use rdlt_core::identity::{FieldValue, RowIdBuilder};
-use rdlt_core::naming::{IdentRules, UniqueNamer};
-use rdlt_core::schema::system_columns;
-use rdlt_core::{ColumnDef, ParentLink, Provenance, RowId, TableName, TableSchema};
+use rdlt_core::{
+    ColumnDef, ParentLink, Provenance, RowId, TableName, TableSchema,
+    identity::{FieldValue, RowIdBuilder},
+    naming::{IdentRules, UniqueNamer},
+    schema::system_columns,
+};
 
-use super::canon::{canonical_json_bytes, render_scalar};
-use super::infer::ColumnState;
-use super::view::JsonView;
+use super::{
+    canon::{canonical_json_bytes, render_scalar},
+    infer::ColumnState,
+    view::JsonView,
+};
 
 /// One table's persistent shredding state: naming, shape observation, lineage —
 /// everything EXCEPT the buffered rows (those are per-batch and path-specific).

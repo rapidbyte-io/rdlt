@@ -11,9 +11,7 @@
 //! (first-occurrence position, last-occurrence value) at parse time, so
 //! [`Node`]'s `JsonView` satisfies the view contract with plain slices.
 
-use std::borrow::Cow;
-use std::fmt;
-use std::marker::PhantomData;
+use std::{borrow::Cow, fmt, marker::PhantomData};
 
 use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
 
