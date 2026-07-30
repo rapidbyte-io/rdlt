@@ -16,7 +16,7 @@ this document, not a detail.
 | **SP4** — names derived, never echoed | MET | The file list is built from the upload's REPORTED target relative to the load statement's prefix. Two live defects found and fixed here — see D-32 and D-33 — both of which made a plausible-looking name silently wrong. Part names are load-scoped; reclamation is unconditional for this load and age-gated for any other. |
 | **SP5** — deletion complete and simultaneous | MET | Both superseded paths and every artefact serving only them removed in the same change: config types, renderers, the measured statement budget and row ceiling, `tests/live_stage.rs`, `tests/batch_knee.rs`, the testkit bucket gate, the bench fixture block, the CLI parse pin, and four dependencies. No shims, aliases or tombstone fields. The SPI's `object-store` feature and its shared recoverability rule STAY — the file connector has seven call sites (T033). |
 | **SP6** — local files owned, bounded, typed | MET | One part is built, uploaded and deleted before the next, so peak local usage is one part rather than proportional to the unit. Local failures classify by condition — out of space, read-only, permission — never a bare I/O error, with the transient/fatal reasoning at the site. |
-| **SP7** — exactly-once re-proven | MET | See the sweep section below. |
+| **SP7** — exactly-once re-proven | **MET EXCEPT ONE SENTENCE** | Everything about exactly-once holds: 27 cells, 2/2 PASS, every point converging under repeated failure including failure during recovery, every point proven to have fired, and every point carrying an assertion the sweep actually makes (the two staging moments were separated on exactly that test). Conformance, the differential oracle against postgres, the merge matrix, secret hygiene and options parity all pass on the single path. **The clause also requires the cell count and wall clock to be "recorded and lower than before". Both are recorded; only the cell count is lower.** 30 → 27 cells, 4,308 s → 6,092 s. Same failure as SC-012 and the same diagnosis — see the sweep section. Not restated as MET, because a clause that is 90% satisfied is not satisfied. |
 | **SP8** — the record matches reality | MET | Parity rewritten (T040), 022's contract amended where a reader of THAT file finds it (T041), the egress prerequisite documented in advance with the host shape from the account's own allowlist (T042), the dependency arrangement recorded with its consequences and guarded by a check that fails when it changes unnoticed (T006), and 022's uncited "issue filed" assertion resolved (T004). |
 
 ## Story matrix
@@ -315,6 +315,7 @@ crate's sweep DOES run under coverage, because those are seconds each.
 | login name | 0 |
 | key material (base64 body under any PEM marker) | 0 |
 | passphrase, in a credential-shaped context | 0 |
+| tracked files matching `*.p8` / `*.pem` / `*.env` / `credentials` | 0 |
 
 **The passphrase needed a different method, and saying so is the point.** It is
 four characters, so searching the tree for it as a substring returns 493 files
@@ -322,6 +323,16 @@ four characters, so searching the tree for it as a substring returns 493 files
 sweep whose output nobody reads, which is worse than no sweep. It is therefore
 matched only adjacent to an assignment and a credential word, which is the
 shape an actual leak would have.
+
+Re-run at the final commit with the same result. The file-name check is there
+because the value checks all assume the secret is one this machine holds — a
+credential file committed from anywhere else would pass every one of them and
+fail this.
+
+Re-run at the final commit with the same result. The file-NAME check exists
+because every value check above assumes the secret is one this machine holds: a
+credential file committed from some other machine would pass all of them and be
+caught only by this one.
 
 Key material is checked the same way, by SHAPE rather than by value. Seven
 files contain a `BEGIN … PRIVATE KEY` marker; every one is a placeholder, a
@@ -369,15 +380,20 @@ refusal like that is never cleared by re-recording baselines.
 
 | | |
 |---|---|
-| `make check` | GATE_RESULT |
-| workspace tests | GATE_TESTS |
-| perf gate | GATE_PERF |
-| cold start | GATE_COLD |
+| `make check` | **run 1 CLEAN** / GATE2 |
+| workspace tests | **948/948, 2 skipped** — both the `#[ignore]`d instruments, named under Coverage |
+| perf gate | 6 benches, **0 regressed**, all within tolerance |
+| cold start | **23.8 ms** median (24.3 ± 1.8 over 20 runs), bar ≤ 40 ms absolute |
 | crash sweep (Snowflake, run separately) | **2/2 PASS**, 27 cells, 6,092 s — see the sweep section |
 | coverage | 87.22% lines, floor 80 |
 | distribution gate | `git-deps: OK (1 git dependency, all recorded)` |
 | semver | no update required, both sacred crates |
 | secret sweep | clean at the final commit — see SC-010 |
+
+The six in-gate sweep suites (engine, postgres, duckdb, rest, file, iceberg)
+all passed inside `make check`; the Snowflake sweep is not in that target and
+never has been, so it is reported separately above rather than folded in as if
+the gate had covered it.
 
 ## Research questions, all terminal
 

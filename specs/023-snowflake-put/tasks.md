@@ -170,7 +170,7 @@ lands exact totals; a re-run publishes nothing; awkward values survive.
 - [X] T024 [US1] Decide open question 4 explicitly: whether the sweep gains
   Merge mode (shipped in 022, absent from the sweep). Cost it in cells against
   SC-012's requirement that the total fall, and record the decision either way.
-- [ ] T025 [US1] US1 gate: full local gate green; close-out story row; any
+- [X] T025 [US1] US1 gate: full local gate green; close-out story row; any
   deviation cited.
 
 **Checkpoint**: MVP — rows land through service storage with nothing
@@ -228,7 +228,7 @@ document without it runs; the generated schema contains no storage vocabulary.
   vocabulary; and a mechanical residue search finds no configuration type,
   renderer, constant, test or dependency that existed only for the deleted
   paths (SC-007).
-- [ ] T035 [US2] US2 gate: full gate green; the other SQL destinations' golden
+- [X] T035 [US2] US2 gate: full gate green; the other SQL destinations' golden
   pins byte-identical; close-out row.
 
 **Checkpoint**: one path, one configuration, no residue.
@@ -282,7 +282,7 @@ behaviour and matches.
   with a storage block to delete it and why.
 - [X] T044 [US4] Verify `quickstart.md` verbatim against the account and fold
   corrections back; `make docs` clean.
-- [ ] T045 [US4] US4 gate: every ingestion claim in README, quickstart,
+- [X] T045 [US4] US4 gate: every ingestion claim in README, quickstart,
   parity.md, the contracts and CLAUDE.md checked against behaviour; close-out
   row.
 
