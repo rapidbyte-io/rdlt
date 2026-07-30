@@ -43,6 +43,31 @@ settled it. A disposition without a citation is a defect in this document.
 | snowflake failpoints | **compiled by nothing** | clean |
 | perf / cold start | 0 regressed / 23.8 ms | 0 regressed / 23.9 ms |
 
+## Gate of record
+
+**`env -u RUSTUP_TOOLCHAIN make check` TWICE CLEAN**, both runs exit 0.
+
+| | run 1 | run 2 |
+|---|---|---|
+| workspace tests | 961 / 961, 2 skipped | 961 / 961, 2 skipped |
+| `TARGET=e2e` (added here) | 2 / 2 | 2 / 2 |
+| sweeps: engine / postgres / duckdb / rest / file / iceberg | 5 / 14 / 2 / 2 / 3 / 2 | 5 / 14 / 2 / 2 / 3 / 2 |
+| `make semver` (added here) | no update required ×2 | no update required ×2 |
+| perf gate | 6 benches, 0 regressed | 6 benches, 0 regressed |
+| cold start | 23.5 ms | 23.9 ms (bar ≤ 40) |
+| failures | 0 | 0 |
+
+Both skips are the `#[ignore]`d measurement instruments, named rather than
+counted: "2 skipped" is the shape a silently-disabled test hides in.
+
+Run 2 failed on its FIRST attempt with a container port collision and was re-run;
+that failure and what it corrected are D-9. It is reported rather than replaced,
+because a gate whose failures are silently re-rolled is not a gate — which is the
+thesis of this entire feature.
+
+Coverage **87.25%** (floor 80), reproducing the recorded 87.22% with the exclusion
+that is now codified rather than prose. Secret sweep clean at the final commit.
+
 ## Deviations and corrections
 
 Numbered from D-1: this feature starts its own ledger rather than continuing 023's.
@@ -146,6 +171,49 @@ What this costs: if the combined run had failed, attribution would have been
 across four stories instead of one. It did not fail, so the cost was not paid —
 but it was a risk taken, not an absence of one, and recording it as "gate green
 per increment" would have been false.
+
+### D-9 — The container flake is INTRA-run contention, correcting an earlier diagnosis
+
+The final gate's run 2 failed on its first attempt:
+
+```text
+file_dest_s3_path_survives_crash_sweep
+  start rustfs container: rootlessport listen tcp 0.0.0.0:40503:
+  bind: address already in use
+```
+
+That is the flake 023 recorded, and its recorded mitigation — `make reclaim` plus
+draining `TIME_WAIT` — **had been performed**, and was not sufficient. So the
+diagnosis carried forward from 023 is incomplete, and the evidence here says why.
+
+Measured immediately after the failure:
+
+| | |
+|---|---|
+| labelled containers up | 0 |
+| orphan `rootlessport` processes | 0 |
+| sockets in `TIME_WAIT` | 0 |
+
+Nothing was left over. 023 attributed the collision to residue from a previous run
+(containers left up by fail-fast, plus `TIME_WAIT` occupancy), and that mechanism
+is real — it was measured there at 713 sockets. But it is not the only one, and it
+is not what happened here.
+
+**The remaining mechanism is contention WITHIN a single run.** The runner executes
+container-starting tests concurrently, several ask podman for a port at once, and
+rootlessport picks colliding ones. Reclaiming beforehand cannot help, because
+there is nothing to reclaim.
+
+**Not fixed here, and the reason is scope rather than difficulty.** The fix is a
+concurrency bound on container-starting tests — exactly what `.config/nextest.toml`
+already does for the iceberg JVM group. Adding one is a reliability improvement,
+and this feature is about the gate not passing VACUOUSLY: a spurious container
+failure makes the gate fail, which is the safe direction. Fixing it would be
+welcome and belongs in its own change, where the bound can be chosen against
+measured contention rather than guessed at the end of an unrelated feature.
+
+Recorded so the next `rootlessport bind` failure is not met with a reclaim that
+cannot work, followed by a re-roll and a shrug.
 
 ## Unperformed verifications
 

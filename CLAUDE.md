@@ -12,9 +12,11 @@ integrity first (this feature), house style second.
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
 `specs/024-gate-integrity/plan.md` (feature: TEST-GATE INTEGRITY — make the
-gate incapable of passing silently. IMPLEMENTED on branch `024-gate-integrity`
-off main @ 34ccd379, NOT merged. All five stories delivered; GI1-GI8 all MET;
-gate exit 0 with every new leg green. Contract contracts/gate-integrity.md.
+gate incapable of passing silently. COMPLETE 49/49 on branch
+`024-gate-integrity` off main @ 34ccd379, NOT merged. All five stories
+delivered; GI1-GI8 all MET; gate TWICE CLEAN (961/961 both runs, 2 named
+instrument skips, six sweep suites, semver clean, 6 benches 0 regressed, cold
+start 23.5/23.9 ms); coverage 87.25% reproducing 023's recorded 87.22%. Contract contracts/gate-integrity.md.
 WHAT THE GATE NOW GUARANTEES that it did not: an empty test selection FAILS
 (nine `--no-tests=pass` flags deleted — the runner already defaults to fail, so
 the flags protected nothing and hid renames); every one of 107 test binaries is

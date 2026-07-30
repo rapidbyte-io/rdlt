@@ -319,7 +319,7 @@ count difference; run in demanding mode and observe outright failure.
   name, and key material absent from every tracked file, checked by shape as well
   as by value (a credential file committed from another machine passes every
   value check).
-- [ ] T049 Final gate: `env -u RUSTUP_TOOLCHAIN make check` TWICE clean on a
+- [X] T049 Final gate: `env -u RUSTUP_TOOLCHAIN make check` TWICE clean on a
   quiet machine, with test and skip counts matching the committed baseline on
   both runs; both results recorded in close-out.
 
