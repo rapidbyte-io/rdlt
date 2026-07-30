@@ -19,7 +19,7 @@
 //! written by shipped builds no longer replays on this one:
 //!
 //! ```text
-//! RDLT_REPIN=1 cargo nextest run -p rdlt-engine --test wal_format_pin
+//! RDLT_REPIN=1 cargo nextest run -p rdlt-engine --test integration -E 'test(wal_format_pin)'
 //! ```
 
 use std::{

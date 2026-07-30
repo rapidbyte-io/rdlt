@@ -18,7 +18,7 @@
 //! already exist in users' warehouses no longer match what rdlt now emits:
 //!
 //! ```text
-//! RDLT_REPIN=1 cargo nextest run -p rdlt-engine --test shred_identity_pin
+//! RDLT_REPIN=1 cargo nextest run -p rdlt-engine --test integration -E 'test(shred_identity_pin)'
 //! ```
 //!
 //! # Why these cases
