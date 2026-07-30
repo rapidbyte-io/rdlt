@@ -31,16 +31,16 @@ editing**, because earlier tasks in this feature move lines in `Makefile`.
 
 ## Phase 1: Setup (Shared Infrastructure)
 
-- [ ] T001 Record the pre-change baseline: run `env -u RUSTUP_TOOLCHAIN make check`
+- [X] T001 Record the pre-change baseline: run `env -u RUSTUP_TOOLCHAIN make check`
   and capture per-binary test and skip counts, plus total wall clock, into
   `specs/024-gate-integrity/evidence/baseline-before.txt`. This is the "before"
   half of every SC-010 and SC-008 comparison and cannot be reconstructed later.
-- [ ] T002 [P] Capture the nine permissive-selector match counts into
+- [X] T002 [P] Capture the nine permissive-selector match counts into
   `specs/024-gate-integrity/evidence/selector-counts-before.txt`, using
   `cargo nextest list` per selector (the eight non-empty results and the one zero
   from research R0). This is the evidence FR-002's dispositions are judged
   against.
-- [ ] T003 [P] Capture per-crate crash-site counts into
+- [X] T003 [P] Capture per-crate crash-site counts into
   `specs/024-gate-integrity/evidence/crash-sites-before.txt` for all seven crates
   that arm points, counting BOTH arming idioms per research R11 (engine 7,
   postgres 14, file 11, rest 4, iceberg 3, duckdb 2, snowflake 2+2). This is the
@@ -64,32 +64,32 @@ is a set of deletions rather than a construction.
 **Independent test**: rename a selected test binary, run the gate, observe it
 fail naming the empty selector; restore and observe it pass.
 
-- [ ] T004 [US1] Fix the dead selector in `Makefile` (the `TARGET=prop` line,
+- [X] T004 [US1] Fix the dead selector in `Makefile` (the `TARGET=prop` line,
   currently 107): `test(shred_property)` → `binary(shred_property)`. The binary is
   `shred_property`; the single test inside it is `shred_invariants_hold`, so the
   test-name filter matches nothing (research R0). Verify with
   `cargo nextest list -p rdlt-engine -E 'binary(shred_property)'` returning 1.
-- [ ] T005 [US1] Remove `--no-tests=pass` from all nine `Makefile` lines
+- [X] T005 [US1] Remove `--no-tests=pass` from all nine `Makefile` lines
   (currently 97, 99, 101, 102, 103, 104, 105, 107, 205). The runner's default is
   already `fail` (research R1), so this is a deletion, not a replacement — do NOT
   add `--no-tests=fail`, which would be nine tokens asserting the status quo.
-- [ ] T006 [US1] Add a comment above the sweep-target block in `Makefile` stating
+- [X] T006 [US1] Add a comment above the sweep-target block in `Makefile` stating
   the distinction the deleted flags conflated: `--no-tests` governs which tests
   the runner SELECTS, not whether they then skip. These binaries are selected and
   self-skip internally when a container runtime or credentials are absent, so
   removing the flag cannot fail a contributor's build for lacking resources.
-- [ ] T007 [US1] Record each of the nine dispositions in
+- [X] T007 [US1] Record each of the nine dispositions in
   `specs/024-gate-integrity/evidence/selector-dispositions.md`: selector, its
   measured match count before, and its disposition (all nine expected STRICT — if
   any turns out to need `warn`, the reason goes at the `Makefile` site AND here,
   per FR-002).
-- [ ] T008 [US1] **Detection demonstration (FR-015)**: with the flags removed,
+- [X] T008 [US1] **Detection demonstration (FR-015)**: with the flags removed,
   temporarily rename one selected test binary file, run the gate, capture the
   failure output, revert, re-run and capture the pass. Record both in
   `specs/024-gate-integrity/evidence/demo-us1.md`. Then repeat for the R0 defect
   specifically: restore `test(shred_property)`, observe the gate now FAIL where it
   previously passed silently, revert.
-- [ ] T009 [US1] US1 gate: `env -u RUSTUP_TOOLCHAIN make check` green; the
+- [X] T009 [US1] US1 gate: `env -u RUSTUP_TOOLCHAIN make check` green; the
   4,096-case property run now executes (confirm `make test TARGET=prop` reports 1
   test, not zero); close-out row.
 

@@ -1,0 +1,30 @@
+Crash-point arming sites per crate, measured BEFORE any change.
+Commit: 6ee0e796 (branch 024-gate-integrity).
+Purpose: the cross-check on the shared scanner built in US3. If the scanner
+reports a different count for a crate, the scanner is wrong — not the registry.
+
+TWO ARMING IDIOMS EXIST (research R11). A scanner recognising only the macro
+finds 2 of snowflake's 4 points, and the plausible "fix" for that divergence is
+to shrink the registry — removing points from the sweep matrix while every
+assertion passes.
+
+  crate                       crash_point!(  crash_at("  total  registries
+  rdlt-engine                 7              0           7      0
+  rdlt-connector-postgres     14             0           14     2
+  rdlt-connector-file         11             0           11     2
+  rdlt-connector-rest         4              0           4      1
+  rdlt-connector-iceberg      3              0           3      1
+  rdlt-connector-duckdb       2              0           2      1
+  rdlt-connector-snowflake    2              2           4      1
+
+Registry declarations:
+  rdlt-connector-file/src/source/mod.rs:21:pub const FAIL_POINTS: &[&str] = &["file.list", "file.read"];
+  rdlt-connector-snowflake/src/dest/mod.rs:204:pub const FAIL_POINTS: &[&str] = &[
+  rdlt-connector-duckdb/src/dest/mod.rs:262:pub const FAIL_POINTS: &[&str] = &["duck.append", "duck.tx.commit"];
+  rdlt-connector-postgres/src/source/mod.rs:40:pub const FAIL_POINTS: &[&str] = &[
+  rdlt-connector-postgres/src/source/mod.rs:51:pub const CDC_FAIL_POINTS: &[&str] = &[
+  rdlt-connector-iceberg/src/dest/session.rs:40:pub const ICE_FAIL_POINTS: &[&str] = &["ice.files.write", "ice.commit", "ice.receipt.visible"];
+  rdlt-connector-file/src/dest/mod.rs:56:pub const FAIL_POINTS: &[&str] = &[
+  rdlt-connector-file/src/dest/mod.rs:67:pub const S3_FAIL_POINTS: &[&str] = &[
+  rdlt-connector-postgres/src/dest/mod.rs:382:pub const FAIL_POINTS: &[&str] = &[
+  rdlt-connector-rest/src/source/mod.rs:31:pub const FAIL_POINTS: &[&str] = &["rest.request", "rest.decode", "rest.checkpoint"];

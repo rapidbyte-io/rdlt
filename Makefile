@@ -94,17 +94,26 @@ ifeq ($(TARGET),)
 else ifeq ($(TARGET),unit)
 	cargo nextest run --workspace
 else ifeq ($(TARGET),e2e)
-	cargo nextest run --workspace -E 'binary(/e2e/)' --no-tests=pass
+	cargo nextest run --workspace -E 'binary(/e2e/)'
 else ifeq ($(TARGET),sweep)
-	cargo nextest run -p rdlt-engine --features failpoints -E 'binary(crash_sweep)' --no-tests=pass
+	# No `--no-tests=pass` on any line below, and that distinction is the point:
+	# `--no-tests` governs which tests the runner SELECTS, not whether they then
+	# skip. These binaries are always selected and self-skip internally when a
+	# container runtime or credentials are absent, so an empty SELECTION only
+	# ever means a binary was renamed, deleted, or misspelled here — which must
+	# fail. nextest's default is already `fail`; relying on it is deliberate.
+	cargo nextest run -p rdlt-engine --features failpoints -E 'binary(crash_sweep)'
 	# Postgres sweeps self-skip without a container runtime (G2.1).
-	cargo nextest run -p rdlt-connector-postgres --features failpoints -E 'binary(crash_sweep) or binary(dest_crash_sweep) or binary(cdc_crash_sweep)' --no-tests=pass
-	cargo nextest run -p rdlt-connector-duckdb --features failpoints -E 'binary(sweep)' --no-tests=pass
-	cargo nextest run -p rdlt-connector-rest --features failpoints -E 'binary(sweep)' --no-tests=pass
-	cargo nextest run -p rdlt-connector-file --features failpoints -E 'binary(sweep)' --no-tests=pass
-	cargo nextest run -p rdlt-connector-iceberg --features failpoints -E 'binary(sweep)' --no-tests=pass
+	cargo nextest run -p rdlt-connector-postgres --features failpoints -E 'binary(crash_sweep) or binary(dest_crash_sweep) or binary(cdc_crash_sweep)'
+	cargo nextest run -p rdlt-connector-duckdb --features failpoints -E 'binary(sweep)'
+	cargo nextest run -p rdlt-connector-rest --features failpoints -E 'binary(sweep)'
+	cargo nextest run -p rdlt-connector-file --features failpoints -E 'binary(sweep)'
+	cargo nextest run -p rdlt-connector-iceberg --features failpoints -E 'binary(sweep)'
 else ifeq ($(TARGET),prop)
-	PROPTEST_CASES=4096 cargo nextest run -p rdlt-engine -E 'test(shred_property)' --no-tests=pass
+	# `binary(...)`, not `test(...)`: shred_property is the BINARY; the test
+	# inside it is shred_invariants_hold. A test-name filter matched nothing
+	# here, and the run reported success having executed zero cases.
+	PROPTEST_CASES=4096 cargo nextest run -p rdlt-engine -E 'binary(shred_property)'
 else ifeq ($(TARGET),fuzz)
 	cd fuzz && for t in $(FUZZ_TARGETS); do \
 		cargo +nightly fuzz run $$t -- -timeout=10 -max_total_time=$(FUZZ_SECONDS) || exit 1; \
@@ -202,7 +211,7 @@ else ifeq ($(TARGET),deep)
 	# sweep: sweep is part of the PR gate, which stays container-optional.
 	RDLT_HEAVY=1 cargo nextest run -p rdlt-connector-postgres -E 'binary(memory_bound)'
 	# Spark read-back (016): heavyweight JVM leg, deep tier only.
-	RDLT_DEEP=1 cargo nextest run -p rdlt-connector-iceberg -E 'binary(spark_deep)' --no-tests=pass
+	RDLT_DEEP=1 cargo nextest run -p rdlt-connector-iceberg -E 'binary(spark_deep)'
 	$(MAKE) test TARGET=prop
 	$(MAKE) test TARGET=sweep
 	$(MAKE) test TARGET=mutants
