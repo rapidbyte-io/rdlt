@@ -390,6 +390,40 @@ refusal like that is never cleared by re-recording baselines.
 | semver | no update required, both sacred crates |
 | secret sweep | clean at the final commit — see SC-010 |
 
+**Run 2 failed twice before it passed, on the same host-level cause, and the
+diagnosis is recorded because "re-run it and move on" is what this project
+already decided loses the only useful information.**
+
+Both failures were a container that could not start:
+
+```text
+rootlessport listen tcp 0.0.0.0:46509: bind: address already in use   (postgres)
+rootlessport listen tcp 0.0.0.0:34687: bind: address already in use   (rustfs)
+```
+
+Different containers, different ports, one mechanism. Podman's rootless port
+forwarder picks a port and binds it; a port already held fails the start. Two
+things were feeding that:
+
+1. **A failed run leaves containers up.** Fail-fast skips the fixture `Drop`, so
+   the first failure left four containers live holding their ports. Eleven
+   labelled containers were present. `make reclaim` cleared them — and the
+   second attempt still failed, which is what showed leftovers were not the
+   whole story.
+2. **`TIME_WAIT` residue.** After a full run there were **713 sockets in
+   `TIME_WAIT`** against an ephemeral range of 32768–60999. Each gate run starts
+   dozens of containers, so even a couple of percent occupancy makes a collision
+   likely across a run rather than unlikely per container.
+
+Reclaiming and then waiting for `TIME_WAIT` to reach 0 — about twenty seconds of
+quiet — was enough. The recorded run 2 is that attempt.
+
+**This is a property of running the gate back-to-back on this host, not of the
+change under test.** Nothing in either failure touched this feature's code; the
+failing cells were postgres and file, and both pass in isolation. It is written
+here so the next person who sees `address already in use` reclaims and waits
+instead of re-rolling until it passes and wondering whether it meant anything.
+
 The six in-gate sweep suites (engine, postgres, duckdb, rest, file, iceberg)
 all passed inside `make check`; the Snowflake sweep is not in that target and
 never has been, so it is reported separately above rather than folded in as if
