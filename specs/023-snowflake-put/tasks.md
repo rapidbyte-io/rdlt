@@ -313,7 +313,7 @@ and configuration.
 
 ## Phase 8: Polish & Close-out
 
-- [ ] T050 [P] Coverage at or above the 80% floor, measured baseline-first and
+- [X] T050 [P] Coverage at or above the 80% floor, measured baseline-first and
   recorded.
 - [X] T051 [P] Semver: confirm the SPI and core need no change; record that the
   connector's configuration change is breaking, that nothing is published, and

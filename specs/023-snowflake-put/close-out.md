@@ -273,6 +273,40 @@ emits. It is reported as three. This does not weaken the conclusions: every
 figure being judged already falls inside the band, and a fourth run can only
 widen it.
 
+## Coverage (T050)
+
+**87.22% lines** workspace-wide (83.79% functions, 88.21% regions) against an
+80% floor, over **969/969 passing, 2 skipped**. Up from the 85.64% 022 recorded,
+which is the direction a feature that deletes more code than it adds should move.
+
+Both skips are the `#[ignore]`d instruments — the measurement session and the
+scratch reclaim — not gated cells that quietly stopped running. Named here
+because "2 skipped" is exactly the shape a silently-disabled test hides in.
+
+The code this feature wrote, per file:
+
+| file | lines |
+|---|---|
+| `dest/config.rs` | 98.80% |
+| `dest/encode.rs` | 96.49% |
+| `dest/stage.rs` | 91.50% |
+| `dest/mod.rs` | 89.51% |
+| `dest/session.rs` | 80.45% |
+| `dest/client.rs` | 75.79% |
+
+`client.rs` is the lowest and the reason is structural: it is the error-
+translation boundary, and most of its branches map service conditions that a
+healthy account does not produce on demand. That is a known shape rather than a
+gap someone forgot.
+
+**One deliberate exclusion, recorded rather than silent.** The Snowflake crash
+sweep is excluded from the coverage run
+(`-E 'not (package(rdlt-connector-snowflake) and binary(crash_sweep))'`). It
+takes 101.5 minutes, and it was run separately to completion with its own result
+above — including it would have added an hour and a half to every coverage
+measurement to re-walk paths the other live tests already reach. Every other
+crate's sweep DOES run under coverage, because those are seconds each.
+
 ## SC-010 — the secret sweep, and why it is not only a substring search
 
 | term | tracked files containing it |
