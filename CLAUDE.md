@@ -7,13 +7,18 @@ Read them from git history if a reference below sends you looking.
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
 `specs/023-snowflake-put/plan.md` (feature: Snowflake internal-stage
-ingestion as the SINGLE path — IMPLEMENTED and near-closed on branch
-`023-snowflake-put`, NOT merged. US1/US2/US4 delivered and proven live;
-US3 PARTIAL by owner decision (password + OAuth stay UNPERFORMED, the same
-call 022 made — legs written, skip announced, credential entries turn them
-green with zero code change); US5 measured. Remaining: the sweep re-run,
-coverage, and the final gate. `specs/023-snowflake-put/close-out.md` is
-authoritative for every disposition; RESUME.md tracks what is open.
+ingestion as the SINGLE path — COMPLETE 51/54 on branch `023-snowflake-put`,
+NOT merged and NOT pushed. Gate TWICE CLEAN on the pinned 1.96.0 toolchain:
+948/948 (2 skips, both #[ignore]d instruments), six in-gate sweep suites,
+6 benches 0 regressed, cold start 23.8/23.3 ms vs a 40 ms bar; Snowflake's
+own sweep separately 2/2 at 27 cells; coverage 87.22% (floor 80); semver no
+update required. US1/US2/US4/US5 delivered; US3 PARTIAL by owner decision
+(password + OAuth stay UNPERFORMED, the same call 022 made — legs written,
+skip announced, credential entries turn them green with zero code change).
+TWO MISSES RECORDED AND DELIBERATELY NOT AMENDED — SC-012's wall-clock half
+and the one sentence of SP7 repeating it; rewriting either is the owner's
+call. `specs/023-snowflake-put/close-out.md` is authoritative for every
+disposition.
 It makes the service's own recommended mechanism the ONLY one and DELETED
 both 022 workarounds: batched INSERT and the external S3 stage, with their
 config, credentials, encoders, constants, suites and four dependencies. Contract contracts/snowflake-put.md SP1-SP8,
