@@ -35,7 +35,7 @@ pub(crate) async fn replay(
     span: RecoverySpan,
     session: &mut dyn LoadSession,
     state: &mut StateDoc,
-    caps: rdlt_connector::DestinationCapabilities,
+    capabilities: rdlt_connector::DestinationCapabilities,
 ) -> Result<Option<u64>, RdltError> {
     // Pass 1 — validate: every segment must fully decode BEFORE any write
     // reaches the session. Batches are decoded one at a time and dropped,
@@ -94,7 +94,7 @@ pub(crate) async fn replay(
     // register publishable tables per session, and a span's delta may have committed
     // in an earlier span (spans would be silently lost otherwise).
     for (schema, mode) in &span.schemas {
-        crate::load::apply::apply_delta(&mut *session, state, &caps, schema, mode).await?;
+        crate::load::apply::apply_delta(&mut *session, state, &capabilities, schema, mode).await?;
     }
 
     // Pass 2 — stream, in WAL order (delta-before-batch survives crashes):
@@ -107,8 +107,14 @@ pub(crate) async fn replay(
         match record {
             WalRecord::Delta { schema, mode, .. } => {
                 // Same lowering seam as the live loader.
-                crate::load::apply::apply_delta(&mut *session, state, &caps, &schema, &mode)
-                    .await?;
+                crate::load::apply::apply_delta(
+                    &mut *session,
+                    state,
+                    &capabilities,
+                    &schema,
+                    &mode,
+                )
+                .await?;
             }
             WalRecord::Checkpoint { stream, cursor } => {
                 state.cursors.insert(stream, cursor);
@@ -146,7 +152,8 @@ pub(crate) async fn replay(
                         return Ok(None);
                     };
                     batches += 1;
-                    crate::load::apply::apply_batch(&mut *session, &caps, &table, &batch).await?;
+                    crate::load::apply::apply_batch(&mut *session, &capabilities, &table, &batch)
+                        .await?;
                 }
             }
             WalRecord::Run { .. } | WalRecord::Committed { .. } => {}

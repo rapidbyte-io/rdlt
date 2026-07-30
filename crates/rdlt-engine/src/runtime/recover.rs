@@ -19,7 +19,7 @@ pub(super) async fn recover_wal(
     config: &EngineConfig,
     load_id: &LoadId,
     wal_dir: Option<&Path>,
-    caps: DestinationCapabilities,
+    capabilities: DestinationCapabilities,
 ) -> Result<(Box<dyn LoadSession>, StateDoc, ResumedFrom), RdltError> {
     // Replay runs on its OWN session, opened under the CRASHED run's load id —
     // scanning therefore has to happen before any session exists. A session's
@@ -39,7 +39,8 @@ pub(super) async fn recover_wal(
             // Not a warning — dying before the first checkpoint is ordinary.
             crate::wal::resume::ScanOutcome::Discard => crate::wal::clear(wal_dir),
             crate::wal::resume::ScanOutcome::Recover(span) => {
-                resumed_from = replay_span(destination, config, wal_dir, span, caps).await?;
+                resumed_from =
+                    replay_span(destination, config, wal_dir, span, capabilities).await?;
                 crate::wal::clear(wal_dir);
             }
             crate::wal::resume::ScanOutcome::Damaged(reason) => {
@@ -101,7 +102,7 @@ async fn replay_span(
     config: &EngineConfig,
     wal_dir: &Path,
     span: crate::wal::resume::RecoverySpan,
-    caps: DestinationCapabilities,
+    capabilities: DestinationCapabilities,
 ) -> Result<Option<ResumedFrom>, RdltError> {
     let mut session = destination
         .open(OpenCtx::new(config.pipeline.clone(), span.load_id.clone()))
@@ -112,7 +113,7 @@ async fn replay_span(
         .unwrap_or_else(|| StateDoc::new(config.pipeline.clone(), env!("CARGO_PKG_VERSION")));
 
     let replayed =
-        crate::wal::resume::replay(wal_dir, span, &mut *session, &mut state, caps).await?;
+        crate::wal::resume::replay(wal_dir, span, &mut *session, &mut state, capabilities).await?;
     match replayed {
         Some(replayed_batches) => {
             tracing::info!(replayed_batches, "recovered WAL span into destination");

@@ -39,7 +39,7 @@ pub(crate) fn passthrough_items(
     batch: &RecordBatch,
     table: &TableName,
     ctx: ShredContext,
-    caps: DestinationCapabilities,
+    capabilities: DestinationCapabilities,
 ) -> Result<Vec<LoadItem>, RdltError> {
     let ShredContext {
         registry,
@@ -48,7 +48,7 @@ pub(crate) fn passthrough_items(
         policy,
     } = ctx;
     // ---- Map the arrow schema onto the logical schema ----
-    let (mut observed, normalized_to_index) = schema_from_arrow(batch, table, caps)?;
+    let (mut observed, normalized_to_index) = schema_from_arrow(batch, table, capabilities)?;
 
     // ---- Join with the registry's current types (widening lattice) ----
     // The shredder's observation states join implicitly; passthrough must do it
@@ -171,9 +171,9 @@ pub(crate) fn passthrough_items(
 fn schema_from_arrow(
     batch: &RecordBatch,
     table: &TableName,
-    caps: DestinationCapabilities,
+    capabilities: DestinationCapabilities,
 ) -> Result<(TableSchema, Vec<(String, usize)>), RdltError> {
-    let mut namer = UniqueNamer::new(caps.ident_rules);
+    let mut namer = UniqueNamer::new(capabilities.ident_rules);
     namer.reserve(system_columns::LOAD_ID); // even a literal `_rdlt_load_id` input suffixes
 
     let mut columns = vec![ColumnDef {

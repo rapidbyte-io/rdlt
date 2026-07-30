@@ -17,19 +17,22 @@ use arrow::{
 use rdlt_connector::DestinationCapabilities;
 use rdlt_core::{ColumnDef, ColumnType, LogicalType, RdltError, TableSchema, naming::UniqueNamer};
 
-fn needs_lowering(caps: &DestinationCapabilities) -> bool {
-    !caps.structs || !caps.decimal
+fn needs_lowering(capabilities: &DestinationCapabilities) -> bool {
+    !capabilities.structs || !capabilities.decimal
 }
 
 /// Lower a schema for the destination's capabilities.
-pub(crate) fn lower_schema(schema: &TableSchema, caps: &DestinationCapabilities) -> TableSchema {
-    if !needs_lowering(caps) {
+pub(crate) fn lower_schema(
+    schema: &TableSchema,
+    capabilities: &DestinationCapabilities,
+) -> TableSchema {
+    if !needs_lowering(capabilities) {
         return schema.clone();
     }
-    let mut namer = UniqueNamer::new(caps.ident_rules);
+    let mut namer = UniqueNamer::new(capabilities.ident_rules);
     let mut columns: Vec<ColumnDef> = Vec::new();
     for column in &schema.columns {
-        lower_column(column, &[], caps, &mut namer, &mut columns);
+        lower_column(column, &[], capabilities, &mut namer, &mut columns);
     }
     TableSchema {
         table: schema.table.clone(),
@@ -41,23 +44,23 @@ pub(crate) fn lower_schema(schema: &TableSchema, caps: &DestinationCapabilities)
 fn lower_column(
     column: &ColumnDef,
     path: &[&str],
-    caps: &DestinationCapabilities,
+    capabilities: &DestinationCapabilities,
     namer: &mut UniqueNamer,
     out: &mut Vec<ColumnDef>,
 ) {
     let mut full_path: Vec<&str> = path.to_vec();
     full_path.push(&column.name);
     match &column.column_type {
-        ColumnType::Struct { fields } if !caps.structs => {
+        ColumnType::Struct { fields } if !capabilities.structs => {
             for field in fields {
-                lower_column(field, &full_path, caps, namer, out);
+                lower_column(field, &full_path, capabilities, namer, out);
             }
         }
         ty => {
             let lowered_ty = match ty {
                 ColumnType::Scalar {
                     scalar: LogicalType::Decimal { .. },
-                } if !caps.decimal => ColumnType::scalar(LogicalType::Utf8),
+                } if !capabilities.decimal => ColumnType::scalar(LogicalType::Utf8),
                 other => other.clone(),
             };
             out.push(ColumnDef {
@@ -75,12 +78,12 @@ fn lower_column(
 /// Field names/paths are identical to `lower_schema`'s inputs → identical names out.
 pub(crate) fn lower_batch(
     batch: &RecordBatch,
-    caps: &DestinationCapabilities,
+    capabilities: &DestinationCapabilities,
 ) -> Result<RecordBatch, RdltError> {
-    if !needs_lowering(caps) {
+    if !needs_lowering(capabilities) {
         return Ok(batch.clone());
     }
-    let mut namer = UniqueNamer::new(caps.ident_rules);
+    let mut namer = UniqueNamer::new(capabilities.ident_rules);
     let mut fields: Vec<arrow::datatypes::Field> = Vec::new();
     let mut arrays: Vec<ArrayRef> = Vec::new();
     for (idx, field) in batch.schema().fields().iter().enumerate() {
@@ -88,7 +91,7 @@ pub(crate) fn lower_batch(
             field,
             &[],
             Arc::clone(batch.column(idx)),
-            caps,
+            capabilities,
             &mut namer,
             &mut fields,
             &mut arrays,
@@ -102,7 +105,7 @@ fn flatten_array(
     field: &arrow::datatypes::Field,
     path: &[&str],
     array: ArrayRef,
-    caps: &DestinationCapabilities,
+    capabilities: &DestinationCapabilities,
     namer: &mut UniqueNamer,
     fields: &mut Vec<arrow::datatypes::Field>,
     out: &mut Vec<ArrayRef>,
@@ -111,7 +114,7 @@ fn flatten_array(
     let mut full_path: Vec<&str> = path.to_vec();
     full_path.push(field.name());
     match field.data_type() {
-        DataType::Struct(children) if !caps.structs => {
+        DataType::Struct(children) if !capabilities.structs => {
             let struct_array = array
                 .as_any()
                 .downcast_ref::<StructArray>()
@@ -119,11 +122,19 @@ fn flatten_array(
             let parent_nulls = struct_array.nulls().cloned();
             for (i, child_field) in children.iter().enumerate() {
                 let child = with_merged_nulls(struct_array.column(i), parent_nulls.as_ref());
-                flatten_array(child_field, &full_path, child, caps, namer, fields, out)?;
+                flatten_array(
+                    child_field,
+                    &full_path,
+                    child,
+                    capabilities,
+                    namer,
+                    fields,
+                    out,
+                )?;
             }
             Ok(())
         }
-        DataType::Decimal128(_, scale) if !caps.decimal => {
+        DataType::Decimal128(_, scale) if !capabilities.decimal => {
             let decimals = array
                 .as_any()
                 .downcast_ref::<Decimal128Array>()
@@ -204,7 +215,7 @@ mod tests {
     use arrow::datatypes::{DataType, Field, Schema};
     use rdlt_core::{Provenance, TableName};
 
-    fn caps(structs: bool, decimal: bool) -> DestinationCapabilities {
+    fn capabilities(structs: bool, decimal: bool) -> DestinationCapabilities {
         DestinationCapabilities {
             structs,
             decimal,
@@ -257,20 +268,23 @@ mod tests {
 
     #[test]
     fn needs_lowering_tracks_each_capability() {
-        assert!(!needs_lowering(&caps(true, true)));
-        assert!(needs_lowering(&caps(false, true)));
-        assert!(needs_lowering(&caps(true, false)));
+        assert!(!needs_lowering(&capabilities(true, true)));
+        assert!(needs_lowering(&capabilities(false, true)));
+        assert!(needs_lowering(&capabilities(true, false)));
     }
 
     #[test]
     fn full_capabilities_lower_to_identity() {
         let schema = schema_with_struct_and_decimal();
-        assert_eq!(lower_schema(&schema, &caps(true, true)), schema);
+        assert_eq!(lower_schema(&schema, &capabilities(true, true)), schema);
     }
 
     #[test]
     fn structs_off_flattens_recursively_and_children_go_nullable() {
-        let lowered = lower_schema(&schema_with_struct_and_decimal(), &caps(false, true));
+        let lowered = lower_schema(
+            &schema_with_struct_and_decimal(),
+            &capabilities(false, true),
+        );
         let names: Vec<&str> = lowered.columns.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(
             names,
@@ -291,7 +305,10 @@ mod tests {
 
     #[test]
     fn decimal_off_lowers_to_utf8_leaving_structs() {
-        let lowered = lower_schema(&schema_with_struct_and_decimal(), &caps(true, false));
+        let lowered = lower_schema(
+            &schema_with_struct_and_decimal(),
+            &capabilities(true, false),
+        );
         assert_eq!(
             lowered.columns[2].column_type,
             ColumnType::scalar(LogicalType::Utf8)
@@ -323,7 +340,7 @@ mod tests {
         )
         .expect("batch");
 
-        let lowered = lower_batch(&batch, &caps(false, true)).expect("lower");
+        let lowered = lower_batch(&batch, &capabilities(false, true)).expect("lower");
         assert_eq!(lowered.schema().field(0).name(), "geo__lat");
         let column = lowered
             .column(0)
@@ -351,7 +368,7 @@ mod tests {
             vec![Arc::new(decimals)],
         )
         .expect("batch");
-        let lowered = lower_batch(&batch, &caps(true, false)).expect("lower");
+        let lowered = lower_batch(&batch, &capabilities(true, false)).expect("lower");
         let strings = lowered
             .column(0)
             .as_any()
@@ -361,7 +378,7 @@ mod tests {
         assert_eq!(strings.value(1), "-0.50");
         assert!(strings.is_null(2));
         // Full capabilities: the batch passes through unchanged.
-        let same = lower_batch(&batch, &caps(true, true)).expect("identity");
+        let same = lower_batch(&batch, &capabilities(true, true)).expect("identity");
         assert_eq!(same, batch);
     }
 
@@ -402,27 +419,27 @@ mod tests {
     #[test]
     fn mixed_batch_lowers_only_the_unsupported_kind() {
         // Structs supported, decimal NOT: the struct must survive intact.
-        let lowered = lower_batch(&mixed_batch(), &caps(true, false)).expect("lower");
+        let lowered = lower_batch(&mixed_batch(), &capabilities(true, false)).expect("lower");
         assert_eq!(lowered.num_columns(), 2, "the struct must NOT be flattened");
         assert_eq!(lowered.schema().field(0).name(), "geo");
         assert!(
             matches!(lowered.schema().field(0).data_type(), DataType::Struct(_)),
-            "caps.structs = true: the struct column stays a struct"
+            "capabilities.structs = true: the struct column stays a struct"
         );
         assert_eq!(
             lowered.schema().field(1).data_type(),
             &DataType::Utf8,
-            "caps.decimal = false: only the decimal lowers"
+            "capabilities.decimal = false: only the decimal lowers"
         );
 
         // Decimal supported, structs NOT: the decimal must survive intact.
-        let lowered = lower_batch(&mixed_batch(), &caps(false, true)).expect("lower");
+        let lowered = lower_batch(&mixed_batch(), &capabilities(false, true)).expect("lower");
         assert_eq!(lowered.num_columns(), 2, "struct flattens to one child");
         assert_eq!(lowered.schema().field(0).name(), "geo__lat");
         assert_eq!(
             lowered.schema().field(1).data_type(),
             &DataType::Decimal128(10, 2),
-            "caps.decimal = true: the decimal is NOT rendered to text"
+            "capabilities.decimal = true: the decimal is NOT rendered to text"
         );
     }
 
@@ -451,7 +468,7 @@ mod tests {
         )
         .expect("batch");
 
-        let lowered = lower_batch(&batch, &caps(false, true)).expect("lower");
+        let lowered = lower_batch(&batch, &capabilities(false, true)).expect("lower");
         assert_eq!(lowered.schema().field(0).name(), "id");
         assert!(
             !lowered.schema().field(0).is_nullable(),
@@ -505,7 +522,7 @@ mod parity_tests {
     use proptest::prelude::*;
     use rdlt_core::{Provenance, TableName};
 
-    fn caps(structs: bool, decimal: bool) -> DestinationCapabilities {
+    fn capabilities(structs: bool, decimal: bool) -> DestinationCapabilities {
         DestinationCapabilities {
             structs,
             decimal,
@@ -575,7 +592,7 @@ mod parity_tests {
         #[test]
         fn lowered_schema_and_lowered_batch_agree(schema in schema()) {
             for (structs, decimal) in [(true, true), (true, false), (false, true), (false, false)] {
-                let c = caps(structs, decimal);
+                let c = capabilities(structs, decimal);
                 let expected = arrow_schema(&lower_schema(&schema, &c));
                 let actual = lower_batch(&empty_batch(&schema), &c)
                     .expect("lowering an empty batch cannot fail")

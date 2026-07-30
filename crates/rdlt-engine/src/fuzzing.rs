@@ -16,9 +16,12 @@ pub fn parse_slab(bytes: &[u8]) {
 /// The FULL (tape) shred path over arbitrary bytes: parse, observe, resolve,
 /// build. Asserts the cheap invariants inline (unique destination names).
 pub fn shred_slab(bytes: &[u8]) {
-    let caps = DestinationCapabilities::default();
-    let mut shredder =
-        crate::shred::TapeShredder::new(StreamSpec::new("fuzz"), caps, TableName::new("fuzz"));
+    let capabilities = DestinationCapabilities::default();
+    let mut shredder = crate::shred::TapeShredder::new(
+        StreamSpec::new("fuzz"),
+        capabilities,
+        TableName::new("fuzz"),
+    );
     let mut registry = crate::schema::registry::SchemaRegistry::default();
     let (load_id, mode, policy) = (
         LoadId::new("fuzz-load"),
@@ -59,9 +62,12 @@ pub fn map_arrow_type(dt: &arrow::datatypes::DataType) {
 
 /// Production (tape) shred path over one raw slab; returns emitted row count.
 pub fn bench_shred_bytes(bytes: &[u8]) -> u64 {
-    let caps = DestinationCapabilities::default();
-    let mut shredder =
-        crate::shred::TapeShredder::new(StreamSpec::new("bench"), caps, TableName::new("bench"));
+    let capabilities = DestinationCapabilities::default();
+    let mut shredder = crate::shred::TapeShredder::new(
+        StreamSpec::new("bench"),
+        capabilities,
+        TableName::new("bench"),
+    );
     let mut registry = crate::schema::registry::SchemaRegistry::default();
     let (load_id, mode, policy) = (
         LoadId::new("bench-load"),

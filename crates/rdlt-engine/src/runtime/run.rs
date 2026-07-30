@@ -134,14 +134,14 @@ async fn run_once(
 ) -> Result<RunReport, RdltError> {
     let started = Instant::now();
     let load_id = new_load_id();
-    let caps = destination.capabilities();
+    let capabilities = destination.capabilities();
 
     // ---- Discovery & build-time validation ----
     let streams = source
         .streams()
         .await
         .map_err(|e| classify_source_error(StreamName::new("<discovery>"), &e))?;
-    validate_streams(config, &streams, caps, destination.as_ref())?;
+    validate_streams(config, &streams, capabilities, destination.as_ref())?;
 
     // ---- Workdir lock (one process per pipeline). Held for the whole run. ----
     let _lock = match &config.workdir {
@@ -156,7 +156,7 @@ async fn run_once(
         config,
         &load_id,
         wal_dir.as_deref(),
-        caps,
+        capabilities,
     )
     .await?;
 
@@ -186,7 +186,10 @@ async fn run_once(
         } else {
             base_state.cursors.get(&spec.name).cloned()
         };
-        let root_table = TableName::new(normalize_ident(spec.name.as_str(), caps.ident_rules));
+        let root_table = TableName::new(normalize_ident(
+            spec.name.as_str(),
+            capabilities.ident_rules,
+        ));
 
         let _ = events.send(rdlt_core::PipelineEvent::StreamStarted {
             stream: spec.name.clone(),
@@ -204,7 +207,7 @@ async fn run_once(
                 Arc::clone(&source),
                 load_tx.clone(),
                 cancel.clone(),
-                caps,
+                capabilities,
                 since,
                 mode,
                 root_table,
@@ -220,7 +223,10 @@ async fn run_once(
 
     // ---- Loader: drain the channel, join the streams, commit the tail ----
     let loader = Loader::new(
-        crate::load::Sink { session, caps },
+        crate::load::Sink {
+            session,
+            capabilities,
+        },
         report,
         base_state,
         load_id.clone(),

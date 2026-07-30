@@ -62,7 +62,7 @@ struct Queued {
 /// tree is ever materialized.
 pub(crate) struct TapeShredder {
     spec: StreamSpec,
-    caps: DestinationCapabilities,
+    capabilities: DestinationCapabilities,
     /// Root first, children after, in first-seen order (shared state type with
     /// the tree path).
     tables: Vec<TableBuffer>,
@@ -73,17 +73,17 @@ pub(crate) struct TapeShredder {
 impl TapeShredder {
     pub(crate) fn new(
         spec: StreamSpec,
-        caps: DestinationCapabilities,
+        capabilities: DestinationCapabilities,
         root_table: TableName,
     ) -> Self {
-        let mut root = TableBuffer::new(root_table, None, caps.ident_rules);
+        let mut root = TableBuffer::new(root_table, None, capabilities.ident_rules);
         // Hints pin root-level scalar columns (they win over inference).
         for (column, ty) in &spec.type_hints {
             *root.state_mut(column) = ColumnState::Scalar(ScalarState::pinned(*ty));
         }
         Self {
             spec,
-            caps,
+            capabilities,
             tables: vec![root],
             rollback_snapshot: Vec::new(),
         }
@@ -107,7 +107,7 @@ impl TapeShredder {
         // Buffered rows per table, index-aligned with `self.tables`.
         let mut rows: Vec<Vec<TapeRow>> = self.tables.iter().map(|_| Vec::new()).collect();
 
-        let lists_as_columns = self.caps.scalar_lists;
+        let lists_as_columns = self.capabilities.scalar_lists;
         let mut hash_scratch = Vec::new();
         for root in roots {
             self.shred_root(
@@ -261,7 +261,11 @@ impl TapeShredder {
             .parent
             .as_ref()
             .map_or(0, |p| p.depth);
-        let name = child_table_name(parent_table.as_str(), source_key, self.caps.ident_rules);
+        let name = child_table_name(
+            parent_table.as_str(),
+            source_key,
+            self.capabilities.ident_rules,
+        );
         let table = TableName::new(name);
         // On a miss the scan still runs: distinct source keys can normalize to
         // one table, so "not in the memo" does not mean "not yet created".
@@ -274,7 +278,7 @@ impl TapeShredder {
                         parent: parent_table,
                         depth: parent_depth + 1,
                     }),
-                    self.caps.ident_rules,
+                    self.capabilities.ident_rules,
                 ));
                 rows.push(Vec::new());
                 self.tables.len() - 1

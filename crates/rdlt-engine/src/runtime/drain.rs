@@ -142,7 +142,7 @@ mod drain_loader_tests {
         Loader::new(
             Sink {
                 session: Box::new(AcceptingSession),
-                caps: DestinationCapabilities::default(),
+                capabilities: DestinationCapabilities::default(),
             },
             RunReport::new(pipeline.clone(), load_id.clone()),
             StateDoc::new(pipeline, "test"),

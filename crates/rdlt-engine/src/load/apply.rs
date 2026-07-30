@@ -19,11 +19,11 @@ use super::lowering;
 pub(crate) async fn apply_delta(
     session: &mut dyn LoadSession,
     state: &mut StateDoc,
-    caps: &DestinationCapabilities,
+    capabilities: &DestinationCapabilities,
     schema: &TableSchema,
     mode: &WriteMode,
 ) -> Result<(), RdltError> {
-    let lowered = lowering::lower_schema(schema, caps);
+    let lowered = lowering::lower_schema(schema, capabilities);
     session
         .ensure_table(&lowered, mode)
         .await
@@ -40,11 +40,11 @@ pub(crate) async fn apply_delta(
 /// replay.
 pub(crate) async fn apply_batch(
     session: &mut dyn LoadSession,
-    caps: &DestinationCapabilities,
+    capabilities: &DestinationCapabilities,
     table: &TableName,
     batch: &RecordBatch,
 ) -> Result<(), RdltError> {
-    let lowered = lowering::lower_batch(batch, caps)?;
+    let lowered = lowering::lower_batch(batch, capabilities)?;
     session
         .write(table, lowered)
         .await

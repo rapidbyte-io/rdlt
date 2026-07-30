@@ -1,6 +1,6 @@
 //! Byte-exact pin of the WAL v2 on-disk format: a committed fixture (manifest
-//! + Arrow IPC file segments) that every future build must replay to identical
-//! rows and identical `_rdlt_id`s.
+//! plus Arrow IPC file segments) that every future build must replay to
+//! identical rows and identical `_rdlt_id`s.
 //!
 //! The WAL format is PERSISTED: a process that dies mid-run leaves v2 bytes on
 //! disk, and whatever build starts next — possibly a newer one — must replay

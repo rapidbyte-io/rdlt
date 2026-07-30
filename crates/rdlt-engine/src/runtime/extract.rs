@@ -76,7 +76,7 @@ impl ShredOwner {
         load_id: LoadId,
         mode: WriteMode,
         policy: SchemaPolicy,
-        caps: DestinationCapabilities,
+        capabilities: DestinationCapabilities,
     ) -> Result<(Self, Result<Vec<LoadItem>, RdltError>), RdltError> {
         tokio::task::spawn_blocking(move || {
             let span = tracing::info_span!("rdlt.passthrough");
@@ -87,7 +87,8 @@ impl ShredOwner {
                 mode: &mode,
                 policy: &policy,
             };
-            let items = crate::shred::passthrough::passthrough_items(&batch, &table, ctx, caps);
+            let items =
+                crate::shred::passthrough::passthrough_items(&batch, &table, ctx, capabilities);
             (self, items)
         })
         .await
@@ -104,7 +105,7 @@ pub(super) async fn stream_task(
     source: Arc<dyn Source>,
     tx: ByteTx<LoadItem>,
     cancel: CancellationToken,
-    caps: DestinationCapabilities,
+    capabilities: DestinationCapabilities,
     since: Option<Cursor>,
     mode: WriteMode,
     root_table: TableName,
@@ -119,7 +120,7 @@ pub(super) async fn stream_task(
     // Single-owner by construction: each blocking method consumes the owner and
     // returns it, so it is moved out and reassigned in place — never absent.
     let mut owner = ShredOwner {
-        shredder: TapeShredder::new(spec.clone(), caps, root_table),
+        shredder: TapeShredder::new(spec.clone(), capabilities, root_table),
         registry: SchemaRegistry::default(),
     };
 
@@ -175,7 +176,7 @@ pub(super) async fn stream_task(
                         load_id.clone(),
                         mode.clone(),
                         policy.clone(),
-                        caps,
+                        capabilities,
                     )
                     .await?;
                 owner = returned;

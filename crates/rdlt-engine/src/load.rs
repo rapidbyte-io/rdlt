@@ -55,7 +55,7 @@ impl ByteSized for LoadItem {
 /// travel as one.
 pub(crate) struct Sink {
     pub(crate) session: Box<dyn LoadSession>,
-    pub(crate) caps: DestinationCapabilities,
+    pub(crate) capabilities: DestinationCapabilities,
 }
 
 pub(crate) struct Loader {
@@ -134,7 +134,7 @@ impl Loader {
                 apply::apply_delta(
                     &mut *self.sink.session,
                     &mut self.state,
-                    &self.sink.caps,
+                    &self.sink.capabilities,
                     &schema,
                     &mode,
                 )
@@ -191,8 +191,13 @@ impl Loader {
                 }
                 let rows = batch.num_rows() as u64;
                 let bytes = batch.get_array_memory_size() as u64;
-                apply::apply_batch(&mut *self.sink.session, &self.sink.caps, &table, &batch)
-                    .await?;
+                apply::apply_batch(
+                    &mut *self.sink.session,
+                    &self.sink.capabilities,
+                    &table,
+                    &batch,
+                )
+                .await?;
                 crash_point!(
                     "session.after_write",
                     Err(RdltError::config("injected crash after write (failpoint)",))
@@ -462,7 +467,7 @@ mod tests {
         Loader::new(
             Sink {
                 session: Box::new(UnusedSession),
-                caps: DestinationCapabilities::default(),
+                capabilities: DestinationCapabilities::default(),
             },
             RunReport::new(pipeline.clone(), load_id.clone()),
             StateDoc::new(pipeline, "test"),

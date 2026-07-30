@@ -17,12 +17,15 @@ use crate::EngineConfig;
 pub(super) fn validate_streams(
     config: &EngineConfig,
     streams: &[StreamSpec],
-    caps: DestinationCapabilities,
+    capabilities: DestinationCapabilities,
     destination: &dyn Destination,
 ) -> Result<(), RdltError> {
     let mut root_tables: BTreeMap<TableName, StreamName> = BTreeMap::new();
     for spec in streams {
-        let table = TableName::new(normalize_ident(spec.name.as_str(), caps.ident_rules));
+        let table = TableName::new(normalize_ident(
+            spec.name.as_str(),
+            capabilities.ident_rules,
+        ));
         if let Some(owner) = root_tables.insert(table.clone(), spec.name.clone()) {
             // Clause E2: exactly one stream owns a table.
             return Err(RdltError::config(format!(
@@ -30,7 +33,9 @@ pub(super) fn validate_streams(
                 spec.name
             )));
         }
-        if matches!(config.write_mode_for(&spec.name), WriteMode::Merge { .. }) && !caps.merge {
+        if matches!(config.write_mode_for(&spec.name), WriteMode::Merge { .. })
+            && !capabilities.merge
+        {
             return Err(RdltError::config(format!(
                 "stream `{}` requests Merge but destination `{}` does not support it",
                 spec.name,
