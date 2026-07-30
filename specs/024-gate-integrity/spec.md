@@ -96,10 +96,12 @@ reason.
 
 Exactly-once delivery is the project's most load-bearing guarantee, and the
 evidence for it is a set of crash sweeps that deliberately fail at instrumented
-points and require recovery to converge. Five of those sweeps verify their point
+points and require recovery to converge. All but one of those sweeps verify their point
 registry **against itself**: they check that every point in the list fired,
 which stays true if a point is removed from both the code and the list. The
-matrix quietly shrinks and every sweep still passes.
+matrix quietly shrinks and every sweep still passes. Measured during planning,
+the exposure is wider than first stated: **ten registries across six crates**,
+not five.
 
 One sweep does it correctly: it scans its own sources for instrumented points
 and requires the found set to match the registry exactly, precisely because
@@ -112,9 +114,9 @@ sacred, and the current check cannot distinguish "all points swept" from "fewer
 points exist". Equal priority with US1/US2 because a gate that is complete and
 non-vacuous can still be verifying a shrunken matrix.
 
-**Independent Test**: Delete an instrumented point from a crate's source *and*
-from its registry, run that crate's sweep, and observe it fail. Restore both and
-observe it pass.
+**Independent Test**: For each registry, delete an instrumented point from the
+source *and* from the registry, run that crate's verification, and observe it
+fail. Restore both and observe it pass.
 
 **Acceptance Scenarios**:
 
@@ -277,9 +279,10 @@ check.
   selectors falls from nine to zero.
 - **SC-002**: Every test suite in the repository is reachable from the routine
   gate or carries a recorded exemption — zero suites unreachable and unexplained.
-- **SC-003**: For every crate that arms crash points, removing one point from
-  both its source and its registry causes that crate's verification to fail;
-  demonstrated per crate, where five of six currently cannot detect it.
+- **SC-003**: For every crash-point registry, removing one point from both its
+  source and the registry causes verification to fail; demonstrated per
+  registry. Ten registries across six crates currently cannot detect it; one
+  (the engine's) already can and is the model.
 - **SC-004**: A file compiled only under a non-default configuration is
   type-checked by the routine gate, demonstrated by a deliberate break being
   caught.

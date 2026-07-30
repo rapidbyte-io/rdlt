@@ -4,8 +4,58 @@ PERF_ANALYSIS.md, NEXT_STEPS.md, BENCH_REFINMENT.md — were DELETED once
 executed; the features' own specs/ directories carry what they concluded.
 Read them from git history if a reference below sends you looking.
 
+NOTE: root REFACTORING.md is a LIVE driver document (house-style refactor,
+14 crates, waves 1-9 + a Wave 0) — NOT yet executed. Its Part 3 carries the
+order, the six recorded owner decisions, and the two-feature split: gate
+integrity first (this feature), house style second.
+
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
+`specs/024-gate-integrity/plan.md` (feature: TEST-GATE INTEGRITY — make the
+gate incapable of passing silently. SPEC + PLAN written, NOT implemented, on
+branch `024-gate-integrity` off main @ 34ccd379. Eight measured defects let
+`make check` report green while verifying less than it appears to. Contract
+contracts/gate-integrity.md GI1-GI8; five increments, US1 FIRST because until
+an empty selection fails, any later fix can silently regress.
+THE CHEAP SURPRISE: `--no-tests` ALREADY DEFAULTS TO FAIL (nextest 0.9.135),
+so the dominant fix is DELETING nine `--no-tests=pass` flags, not building
+tooling. `--no-tests` governs SELECTION, not execution — the flags were added
+conflating "an empty selection" with "tests that self-skip", and 8 of the 9
+selectors resolve non-empty today, so those 8 flags protect nothing and hide
+a rename tomorrow.
+A LIVE DEFECT FOUND WHILE RESEARCHING (research R0): `make test TARGET=prop`
+selects `test(shred_property)` — a test-NAME filter. The binary is
+`shred_property`; the test inside is `shred_invariants_hold`. It matches ZERO
+tests, `--no-tests=pass` makes that exit 0, and the 4,096-case property run
+has been green while running nothing. The FILE exists and works (an
+intermediate reading wrongly concluded it was missing — a truncated listing);
+only the selector kind is wrong.
+TEN crash-point registries across SIX connector crates, and only rdlt-engine
+scans its own sources (`tests/crash_sweep.rs:196-233`, deliberately NOT
+deriving from the registry because that is circular). A first pass using
+`read_dir` as the signal false-positived on file and snowflake — those read
+DESTINATION dirs to verify output. Fix = ONE shared scanner in rdlt-testkit
+(already a dev-dep of all 8 consumers), because a copied scanner FAILS OPEN:
+it finds fewer sites and the assertion still passes.
+THE ICEBERG FILTER IS NEGATIVE (`.config/nextest.toml:9`), and re-spelling it
+positively was INVESTIGATED AND REJECTED — 10 of 11 binaries use the live
+fixture, so a positive list of 10 fails the other way when an 11th is added
+and not listed. Fix = PIN the group membership with a test so drift in either
+direction fails.
+Semver's only invocation is CI against `main`, and origin/main is 73 commits
+STALE — so a green run diffs against a pre-001..023 surface and carries no
+information. Fix = `make semver` against a RECORDED sha (34ccd379,
+re-derivable via `git merge-base`), pinned deliberately because a baseline
+that advances with every merge forgives the break it just accepted.
+Pre-audited SOUND: zero `|| true`, `2>/dev/null` or `-` prefixes in the
+Makefile — a class already clean, recorded as such so the audit shows it
+searched rather than stayed silent.
+FR-015 IS THE CRITERION THAT KEEPS THIS HONEST: every fixed defect needs an
+OBSERVED failure-then-recovery with output recorded. A gate-hardening feature
+verified only by "the gate still passes" IS the vacuous verification it
+exists to remove. FR-013 is one-way: no change may make the gate easier to
+pass.)
+Previous feature 023 for reference:
 `specs/023-snowflake-put/plan.md` (feature: Snowflake internal-stage
 ingestion as the SINGLE path — COMPLETE 51/54 on branch `023-snowflake-put`,
 NOT merged and NOT pushed. Gate TWICE CLEAN on the pinned 1.96.0 toolchain:
