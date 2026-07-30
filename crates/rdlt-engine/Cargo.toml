@@ -32,12 +32,12 @@ serde = { workspace = true }
 serde_json = { workspace = true, features = [
     "raw_value",
 ] }
-thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 
 [features]
+# Arms the crash_point! sites for the crash sweep. Test-only: no gate ships it.
 failpoints = [
     "rdlt-core/failpoints",
 ]
