@@ -300,13 +300,55 @@ transient. detail(): db errors render message + SQLSTATE + COPY `where_`
 context; non-db render the whole source chain. GUC profiles: CdcControl =
 `SET datestyle = 'ISO'; SET bytea_output = 'hex'`.
 
-**§Types** — Kind set: derive from old `type_map.rs` (Task 4 Step 1 records
-it here). UUID accepts urn:/braced/bare-hex server forms; numeric text-domain
-end-to-end (38-digit u128 wrap lesson); timestamps µs precision; `rdlt::lossy`
-warn once per column per read; hint vocabulary = the closed "decimal(p,s)"
-string table; binary decode single-pass + bounded (memory_bound proves);
-encode borrowed views + 64 KiB flush; text parse and literal render round-trip
-per Kind; encoder↔decoder round-trip oracle.
+**§Types** — Kind set (v2 names; old `Decode` in parens): Bool, Int16(Int2),
+Int32(Int4), Int64(Int8), Float32(Float4), Float64(Float8),
+Decimal{precision,scale}, Text(Utf8), Jsonb(JsonbText), Uuid(UuidText),
+Bytea, TimestampTz/TimestampNaive(Timestamp{tz}), Date, Time. Arrow: ints →
+Int64, floats → Float64, Decimal → Decimal128(p,s), Text/Jsonb/Uuid → Utf8,
+Bytea → Binary, timestamps → Timestamp(µs, Some("UTC")/None), Date → Date32,
+Time → Time64(µs). Mapping (old `map_type`): policy shapes FIRST —
+typcategory 'A' or typtype c/r/m → CastJsonbText [lossy]; typtype 'e' →
+CastText [lossy]; then by OID (16 bool, 21/23/20 ints cursor-capable, 700/701
+floats, 1700 numeric → Decimal iff 1≤p≤38 ∧ 0≤s≤p else CastText [lossy],
+25/1043/1042/19 text cursor-capable, 17 bytea, 1184/1114 timestamps
+cursor-capable, 1082 date, 1083 time, 2950 uuid cursor-capable, 114 json,
+3802 jsonb); fallback CastText [lossy]. Cursor-capable: ints, constrained
+numeric, text family, uuid, timestamps, date, time — NOT bool/floats/bytea/
+json(b). numeric typmod: packed = typmod−4, precision = (packed>>16)&0xFFFF,
+scale = ((packed&0x7FF)^1024)−1024 (PG15 negative scales). Hint table
+(CLOSED; `apply_hint`): utf8 = universal (keeps CastJsonbText shape, else
+CastText, cursor-capable, lossy); int64←text; float64←text/int/numeric
+(numeric lossy); decimal(p,s)←text/int/float/numeric (float lossy; 1≤p≤38,
+s≤p); bool←text/int; timestamp_tz←text/timestamp/date (timestamp lossy);
+timestamp_naive←text/timestamptz/date (timestamptz lossy); date←text/
+timestamps (timestamps lossy); time←text; uuid←text; json←text (casts
+jsonb); binary←text (casts bytea); hints apply only to plain base scalars
+(typtype 'b', category ≠ 'A'). Binary wire (frozen): 19-byte header
+`PGCOPY\n\xff\r\n\0` + flags(4) + extension len(4); per tuple i16 field
+count (−1 = trailer) then per field i32 length (−1 = NULL) + bytes; errors:
+bad signature, drift (field count ≠ plan), NULL on NOT NULL, data after
+trailer, truncated stream; per-kind: bool 1 byte; ints/floats fixed-width
+BE; numeric NBASE-10000 {ndigits,weight,sign(0x0000/0x4000; 0xC000 NaN and
+0xD000/0xF000 ±Inf = typed errors),dscale,digits<10000} → i128 rescaled to
+declared scale exactly (excess wire fraction = drift error, checked
+arithmetic throughout); jsonb version byte must be 1, stripped; uuid 16
+bytes → canonical lowercase hyphenated; timestamps/dates rebase from PG
+epoch (µs 946_684_800_000_000 / days 10_957) with ±infinity (i64/i32
+MAX/MIN) saturating, never NULL; per-row ranges Vec deliberately LOCAL
+(hoisting measured +2.9%). Text forms (frozen): bool t/f; float via Rust
+parse (accepts NaN/±Infinity spellings); decimal plain literal, excess
+fraction refused, NaN refused; bytea `\x` hex; timestamptz
+`%Y-%m-%d %H:%M:%S%.f%#z` (+00/+05:30/+0530), naive without zone, both
+saturate ±infinity; date `%Y-%m-%d` (±infinity saturates); time
+`%H:%M:%S%.f`. Config-literal (lenient) timestamp parse: RFC3339 first,
+then space/T naive forms; time accepts bare `%H:%M`; uuid lowercased on
+intake. Scalar SQL literals (injection-safe, typed): `{v}::int8`,
+`'{decimal_text}'::numeric`, `'{escaped}'::text`, `'{escaped}'::uuid`,
+`(TIMESTAMPTZ 'epoch' + {µs}::int8 * INTERVAL '1 microsecond')`, naive/date/
+time same epoch-anchored integer arithmetic — never float round-trips;
+decimal_text pads to scale with sign preserved. `rdlt::lossy` warn once per
+column per read; encoder (Task 5) borrowed views + 64 KiB flush; decoder is
+the encoder's oracle.
 
 **§Source** — streams always `.with_structured()`; validation facts, once
 each: cursor column selected + cursor-capable post-hints; lag requires

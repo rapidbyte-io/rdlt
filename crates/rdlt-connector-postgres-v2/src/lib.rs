@@ -21,9 +21,7 @@
 
 pub(crate) mod session;
 pub mod tls;
-
-// Substrate still to land:
-//   mod types;    — the Postgres type rulebook
+pub(crate) mod types;
 // Directions:
 //   mod source;       (feature `source`)
 //   mod destination;  (feature `destination`)
