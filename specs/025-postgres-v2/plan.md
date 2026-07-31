@@ -26,36 +26,42 @@ may not grow beyond the old crate's.
 
 ## STATUS (update as work lands — the durable record)
 
-Done through commit `6ca4f7f6`: Tasks 0–5 complete; Task 6 src complete
-(non-CDC source, 69 lib tests); fixtures.rs + testsupport/{data,source,
-session,destination} pulled forward; tests scaffolding (integration.rs,
-cases/mod.rs, cases/common.rs) written; TWO BACKGROUND AGENTS are porting
-the source integration suites (offline batch: test_config,
-test_config_schema — test_option_edges was destination-scoped and dropped
-from cases/mod.rs; container batch: test_reflect, test_native_types,
-test_incremental, test_query_streams, test_source_conformance,
-test_tls_matrix with dest-parts omitted). Task 7 destination src COMPLETE
-(catalog/unit/executor/load/write/connector/config incl. NEW
-document entry points + config_schema; 73 lib tests green).
-REMAINING: agents' suite ports land + fix/commit tests; port destination
-suites (goldens byte-identical, dest_conformance→test_destination_*,
-merge_strategies, merge_refinements, scd2, unit_isolation, direct_publish,
-differential, dest_recovery, copy_wire_pin, option_edges, tls_matrix dest
-parts); Task 8 CDC (replace source/cdc/mod.rs placeholder; wire
-Profile::CdcControl; add CDC_FAIL_POINTS + testsupport fuzz_pgoutput_decode);
-Task 9 sweeps (source_crash_sweep/destination_crash_sweep/cdc_crash_sweep/
-memory_bound) + benches/iai.rs; Task 10 gate wiring (Makefile + 024
-enumeration) + naming audit + docs/README + front-page doctest; Task 11
-parity measurement + full gate twice.
+Done through `e4c1495f`: ALL of src/ complete — tls, session, types (+encode),
+source (+CDC real, placeholder gone), destination, fixtures, testsupport
+(source/session/destination seams incl. golden-pin + encode-pin + bench
+bodies + both fuzz entries), benches/iai.rs (decode/encode pair, hand-run
+parity only), lib.rs front page with RUNNING doctest (both halves from
+YAML), 79 lib tests + doctest green, zero library warnings. src naming audit
+CLEAN. CDC_FAIL_POINTS + destination FAIL_POINTS registries carry
+generation-1 crash-point IDs verbatim.
 
-Key API facts for continuation: source::Postgres/source::Config
-(YAML `conn:` frozen via serde rename to field `connection`);
-destination::{Postgres (new/schema/tls/options/from_yaml…), Config,
-config_schema}; tls::{Policy,Mode,ConfigError}; session pub via
-testsupport::session; fixtures::PostgresContainer::{start,start_for_cdc}
-field connection_string; testsupport::destination has the golden-pin seams
-(table_ddl_statements, merge_ensure_statements, Dialect, UNIT_* literals,
-stage_name/prefix). Old crate UNTOUCHED.
+FIVE background agents own tests/ + README right now:
+1. port-offline: test_config, test_config_schema (files present).
+2. port-container: test_reflect, test_native_types, test_incremental,
+   test_query_streams, test_source_conformance, test_tls_matrix (files
+   present). Extended common.rs with Probe (TableProbe impl).
+3. port-destination: goldens x3, destination_{conformance,recovery},
+   merge_strategies, merge_refinements, scd2, unit_isolation,
+   direct_publish, differential (+proptest-regressions + fixtures hex),
+   option_edges, dest-TLS appends to test_tls_matrix.rs.
+4. port-cdc-sweeps: cdc_rig + 4 CDC suites; NEW binaries
+   tests/{source_crash_sweep,destination_crash_sweep,cdc_crash_sweep,
+   memory_bound}.rs. WATCH: if old memory_bound shells out to the rdlt CLI,
+   v2 (not in facade) needs a library-mode variant or a recorded exemption.
+5. write-readme: full v2 README from the gen-1 reference.
+
+AFTER agents land: fix residual failures, fmt, COMMIT tests+README; then
+Makefile wiring (two lines, prepared): under TARGET=sweep after the
+gen-1 postgres line add
+`cargo nextest run -p rdlt-connector-postgres-v2 --features failpoints -E 'binary(source_crash_sweep) or binary(destination_crash_sweep) or binary(cdc_crash_sweep)'`
+and under TARGET=deep after the gen-1 memory_bound line add
+`RDLT_HEAVY=1 cargo nextest run -p rdlt-connector-postgres-v2 -E 'binary(memory_bound)'`
+(024 D-4: reachability enumeration is structural, nothing else to register;
+coverage target picks v2 sweeps up automatically via --features failpoints).
+Then: tests-side naming audit; clippy --all-targets -D warnings + docs leg
+(`RUSTDOCFLAGS="-D warnings" cargo doc`); iai parity vs gen-1 iai_pg (hand
+compare); full `env -u RUSTUP_TOOLCHAIN make check` from repo root, TWICE,
+untouched while running. Merge = owner's call.
 
 ## Decision record
 
