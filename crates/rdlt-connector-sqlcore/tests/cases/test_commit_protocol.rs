@@ -163,7 +163,7 @@ mod tests {
             // delivery of what must be a complete feed.
             let done: BTreeSet<TableName> = [t("dims")].into_iter().collect();
             let staged: BTreeSet<TableName> = [t("dims")].into_iter().collect();
-            match commit_script(&tbls, &opts, &ctx(false, false, &done, &staged)) {
+            match plan_commit(&tbls, &opts, &ctx(false, false, &done, &staged)) {
                 Err(CommitError::SingleUnit { scoped, .. }) => scoped,
                 other => panic!("expected a single-unit violation, got {other:?}"),
             }
@@ -208,7 +208,7 @@ mod tests {
         let done = empty();
         let staged: BTreeSet<TableName> =
             [t("scoped"), t("plain"), t("events")].into_iter().collect();
-        let script = commit_script(&tbls, &opts, &ctx(false, false, &done, &staged)).unwrap();
+        let script = plan_commit(&tbls, &opts, &ctx(false, false, &done, &staged)).unwrap();
         assert_eq!(
             script.marks,
             vec![t("scoped")],
@@ -217,7 +217,7 @@ mod tests {
 
         // Nothing staged for it: nothing to call a complete feed.
         let empty_staged = empty();
-        let script = commit_script(&tbls, &opts, &ctx(false, false, &done, &empty_staged)).unwrap();
+        let script = plan_commit(&tbls, &opts, &ctx(false, false, &done, &empty_staged)).unwrap();
         assert!(
             script.marks.is_empty(),
             "an empty unit marks nothing: {:?}",
@@ -229,7 +229,7 @@ mod tests {
         // single-unit discipline without re-running any merge SQL. Marking a
         // plain incremental merge here would make a later legitimate unit look
         // like a second delivery of a complete feed.
-        let script = commit_script(&tbls, &opts, &ctx(true, true, &done, &staged)).unwrap();
+        let script = plan_commit(&tbls, &opts, &ctx(true, true, &done, &staged)).unwrap();
         assert_eq!(
             script.marks,
             vec![t("scoped")],
@@ -238,7 +238,7 @@ mod tests {
 
         // …and a table already marked in an earlier unit is not marked twice.
         let already: BTreeSet<TableName> = [t("scoped")].into_iter().collect();
-        let script = commit_script(&tbls, &opts, &ctx(true, true, &already, &staged)).unwrap();
+        let script = plan_commit(&tbls, &opts, &ctx(true, true, &already, &staged)).unwrap();
         assert!(
             script.marks.is_empty(),
             "an already-counted table is not re-marked: {:?}",
@@ -255,7 +255,7 @@ mod tests {
         let tbls = tables(vec![("events", keyed_schema("events"), WriteMode::Append)]);
         let opts = DestinationOptions::default();
         let (done, staged, cleared) = (empty(), empty(), empty());
-        let script = commit_script(
+        let script = plan_commit(
             &tbls,
             &opts,
             &direct_ctx(false, false, &done, &staged, &cleared),
@@ -280,7 +280,7 @@ mod tests {
             vec![Step::ClearTarget { table: t("events") }]
         );
         // …and therefore not for the publish, which carries no data step.
-        let script = commit_script(&tbls, &opts, &ctx).unwrap();
+        let script = plan_commit(&tbls, &opts, &ctx).unwrap();
         assert_eq!(script.steps, vec![Step::UpsertState, Step::InsertReceipt]);
     }
 
@@ -343,13 +343,13 @@ mod tests {
         let tbls = tables(vec![("events", keyed_schema("events"), merge(&["id"]))]);
         let opts = DestinationOptions::default();
         let (done, staged, cleared) = (empty(), empty(), empty());
-        let direct = commit_script(
+        let direct = plan_commit(
             &tbls,
             &opts,
             &direct_ctx(false, false, &done, &staged, &cleared),
         )
         .unwrap();
-        let stagedd = commit_script(&tbls, &opts, &ctx(false, false, &done, &staged)).unwrap();
+        let stagedd = plan_commit(&tbls, &opts, &ctx(false, false, &done, &staged)).unwrap();
         assert_eq!(direct.steps, stagedd.steps);
         assert!(
             prepare_target(
@@ -371,7 +371,7 @@ mod tests {
         ]);
         let opts = DestinationOptions::default();
         let (done, staged, cleared) = (empty(), empty(), empty());
-        let script = commit_script(
+        let script = plan_commit(
             &tbls,
             &opts,
             &direct_ctx(false, false, &done, &staged, &cleared),
@@ -400,7 +400,7 @@ mod tests {
         ]);
         let opts = DestinationOptions::default();
         let (done, staged, cleared) = (empty(), empty(), empty());
-        let script = commit_script(
+        let script = plan_commit(
             &tbls,
             &opts,
             &direct_ctx(true, false, &done, &staged, &cleared),
@@ -414,7 +414,7 @@ mod tests {
         let tbls = tables(vec![("events", keyed_schema("events"), WriteMode::Append)]);
         let opts = DestinationOptions::default();
         let (done, staged) = (empty(), empty());
-        let script = commit_script(&tbls, &opts, &ctx(false, false, &done, &staged)).unwrap();
+        let script = plan_commit(&tbls, &opts, &ctx(false, false, &done, &staged)).unwrap();
         assert_eq!(
             script.steps,
             vec![
@@ -433,7 +433,7 @@ mod tests {
         let opts = DestinationOptions::default();
         let (done, staged) = (empty(), empty());
         // First unit of the load: clear the target once.
-        let first = commit_script(&tbls, &opts, &ctx(false, false, &done, &staged)).unwrap();
+        let first = plan_commit(&tbls, &opts, &ctx(false, false, &done, &staged)).unwrap();
         assert_eq!(
             first.steps,
             vec![
@@ -445,7 +445,7 @@ mod tests {
             ]
         );
         // A later unit (load already committed once): NO clear.
-        let later = commit_script(&tbls, &opts, &ctx(false, true, &done, &staged)).unwrap();
+        let later = plan_commit(&tbls, &opts, &ctx(false, true, &done, &staged)).unwrap();
         assert_eq!(
             later.steps,
             vec![
@@ -476,7 +476,7 @@ mod tests {
             ("dims", keyed_schema("dims"), merge(&["id"])),
         ]);
         let (done, staged) = (empty(), empty());
-        let script = commit_script(&tbls, &opts, &ctx(false, false, &done, &staged)).unwrap();
+        let script = plan_commit(&tbls, &opts, &ctx(false, false, &done, &staged)).unwrap();
         assert_eq!(
             script.steps,
             vec![
@@ -514,7 +514,7 @@ mod tests {
         let tbls = tables(vec![("events", keyed_schema("events"), merge(&["id"]))]);
         let done = empty();
         let staged: BTreeSet<TableName> = [t("events")].into_iter().collect();
-        let script = commit_script(&tbls, &opts, &ctx(false, false, &done, &staged)).unwrap();
+        let script = plan_commit(&tbls, &opts, &ctx(false, false, &done, &staged)).unwrap();
         assert_eq!(
             script.steps,
             vec![
@@ -550,7 +550,7 @@ mod tests {
         };
         let tbls = tables(vec![("events", keyed_schema("events"), merge(&["id"]))]);
         let (done, staged) = (empty(), empty()); // stage empty this unit
-        let script = commit_script(&tbls, &opts, &ctx(false, false, &done, &staged)).unwrap();
+        let script = plan_commit(&tbls, &opts, &ctx(false, false, &done, &staged)).unwrap();
         // No publish for the skipped table — just the stage truncate + persist.
         assert_eq!(
             script.steps,
@@ -580,7 +580,7 @@ mod tests {
         let tbls = tables(vec![("events", keyed_schema("events"), merge(&["id"]))]);
         let done: BTreeSet<TableName> = [t("events")].into_iter().collect(); // already published
         let staged: BTreeSet<TableName> = [t("events")].into_iter().collect();
-        let err = commit_script(&tbls, &opts, &ctx(false, false, &done, &staged)).unwrap_err();
+        let err = plan_commit(&tbls, &opts, &ctx(false, false, &done, &staged)).unwrap_err();
         assert_eq!(
             err,
             CommitError::SingleUnit {
@@ -609,7 +609,7 @@ mod tests {
         let tbls = tables(vec![("events", keyed_schema("events"), merge(&["id"]))]);
         let done = empty();
         let staged: BTreeSet<TableName> = [t("events")].into_iter().collect();
-        let script = commit_script(&tbls, &opts, &ctx(true, true, &done, &staged)).unwrap();
+        let script = plan_commit(&tbls, &opts, &ctx(true, true, &done, &staged)).unwrap();
         // Replay: only stage truncation, no publish/state/receipt; the
         // redelivered full-feed unit is still counted.
         assert_eq!(
@@ -629,7 +629,7 @@ mod tests {
         };
         let tbls = tables(vec![("events", schema, merge(&[]))]);
         let (done, staged) = (empty(), empty());
-        let err = commit_script(&tbls, &opts, &ctx(false, false, &done, &staged)).unwrap_err();
+        let err = plan_commit(&tbls, &opts, &ctx(false, false, &done, &staged)).unwrap_err();
         assert_eq!(
             err,
             CommitError::ArmUnsupported {

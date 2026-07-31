@@ -22,7 +22,7 @@ use rdlt_connector_sqlcore::plan::{ValidateError, scope_replace_sql};
 use rdlt_connector_sqlcore::protocol::unit;
 use rdlt_connector_sqlcore::{
     CommitContext, DestinationOptions, FullLoadPublish, MergeDialect, Step, build_merge_plan,
-    commit_script, insert_select_sql, render_arm, staged_probe_targets,
+    insert_select_sql, plan_commit, render_arm, staged_probe_targets,
 };
 
 use super::dialect::DuckDialect;
@@ -106,7 +106,7 @@ pub(crate) fn table_ddl_stmts(schema: &TableSchema, previous: Option<&TableSchem
     // Every write mode here publishes through a stage, which is what
     // `Staged` says — so both legs exist regardless of mode, unlike the
     // postgres destination.
-    let plan = ensure::table_plan(
+    let plan = ensure::schema_steps(
         schema,
         &WriteMode::Append,
         rdlt_connector_sqlcore::FullLoadPublish::Staged,
@@ -155,7 +155,7 @@ pub(crate) fn merge_ensure_stmts(
     let table = schema.table.as_str();
     let scd2 = options.scd2_for(table);
     let mut out = Vec::new();
-    for step in ensure::merge_plan(options, schema, mode)? {
+    for step in ensure::merge_steps(options, schema, mode)? {
         match step {
             // Validity columns on the TARGET only (the stage carries the
             // stream's shape); additive for pre-existing scd2 tables. DDL
@@ -422,7 +422,7 @@ impl LoadSession for DuckDbSession {
 
             // The planner owns every decision + the ordering; this session
             // executes.
-            let script = commit_script(
+            let script = plan_commit(
                 &tables,
                 &options,
                 &CommitContext {

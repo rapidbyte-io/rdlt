@@ -1,6 +1,6 @@
 //! The planner: from session tables, destination options, and the
 //! transaction facts, decide the exact ordered step program a publish
-//! executes. [`commit_script`] is PURE — no driver types cross into it — and
+//! executes. [`plan_commit`] is PURE — no driver types cross into it — and
 //! the single-unit discipline and scope-replacement ordering are decided HERE;
 //! an executor may not reorder or re-decide them.
 
@@ -42,8 +42,8 @@ pub struct CommitContext<'a> {
 impl CommitContext<'_> {
     /// Whether `table` still round-trips through a stage table — the ensure
     /// planner's rule, consulted here so the two planners cannot drift.
-    fn stages(&self, mode: &WriteMode) -> bool {
-        crate::ensure::stages(mode, self.full_load_publish)
+    fn uses_stage(&self, mode: &WriteMode) -> bool {
+        crate::ensure::uses_stage(mode, self.full_load_publish)
     }
 }
 
@@ -64,7 +64,7 @@ pub fn prepare_target(
     let Some((_, mode)) = tables.get(table) else {
         return Vec::new();
     };
-    if ctx.stages(mode) || !matches!(mode, WriteMode::Replace) {
+    if ctx.uses_stage(mode) || !matches!(mode, WriteMode::Replace) {
         return Vec::new();
     }
     // Once per (load, target). `cleared_targets` carries BOTH halves now: the
@@ -195,7 +195,7 @@ fn select_arm(
 /// Plan the ordered step program for a commit unit — the ONE place the
 /// commit-unit decisions and ordering live. Pure: given the same tables,
 /// options, and facts, it emits the same script byte-for-byte.
-pub fn commit_script(
+pub fn plan_commit(
     tables: &BTreeMap<TableName, (TableSchema, WriteMode)>,
     options: &DestinationOptions,
     ctx: &CommitContext<'_>,
@@ -220,7 +220,7 @@ pub fn commit_script(
             }
         }
         for (table, (_, mode)) in tables {
-            if ctx.stages(mode) {
+            if ctx.uses_stage(mode) {
                 steps.push(Step::TruncateStage {
                     table: table.clone(),
                 });
@@ -242,8 +242,8 @@ pub fn commit_script(
             // rows are already in the target and the clear (Replace only)
             // happened as the unit transaction's first statement, via
             // `prepare_target`. See `FullLoadPublish`.
-            WriteMode::Append if !ctx.stages(mode) => {}
-            WriteMode::Replace if !ctx.stages(mode) => {}
+            WriteMode::Append if !ctx.uses_stage(mode) => {}
+            WriteMode::Replace if !ctx.uses_stage(mode) => {}
             WriteMode::Append => steps.push(Step::InsertSelect {
                 table: table.clone(),
             }),
@@ -311,7 +311,7 @@ pub fn commit_script(
     // the ROOT's stage for their delete-by-root-id subquery. Tables that never
     // staged have no stage to truncate.
     for (table, (_, mode)) in tables {
-        if ctx.stages(mode) {
+        if ctx.uses_stage(mode) {
             steps.push(Step::TruncateStage {
                 table: table.clone(),
             });

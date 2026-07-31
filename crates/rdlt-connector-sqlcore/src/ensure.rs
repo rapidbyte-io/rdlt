@@ -64,14 +64,14 @@ pub enum EnsureStep {
 /// commit plan publishes from a stage but ensure never created a stage for
 /// fails at write time, and the reverse builds a stage that is written,
 /// truncated, and never read. One rule, consulted twice.
-pub fn stages(mode: &WriteMode, full_load_publish: FullLoadPublish) -> bool {
+pub fn uses_stage(mode: &WriteMode, full_load_publish: FullLoadPublish) -> bool {
     matches!(mode, WriteMode::Merge { .. }) || full_load_publish == FullLoadPublish::Staged
 }
 
 /// Phase 1 — the relations and their columns.
 ///
 /// Deliberately infallible and deliberately separate from the option
-/// validation in [`merge_plan`]: today's destinations create tables BEFORE
+/// validation in [`merge_steps`]: today's destinations create tables BEFORE
 /// checking options, so a planner that validated first would move where a bad
 /// configuration fails.
 ///
@@ -79,14 +79,14 @@ pub fn stages(mode: &WriteMode, full_load_publish: FullLoadPublish) -> bool {
 /// That is what makes widening a within-run rule: a type that changed between
 /// runs is the catalog's business, and a type that changed mid-run is this
 /// session's.
-pub fn table_plan(
+pub fn schema_steps(
     schema: &TableSchema,
     mode: &WriteMode,
     full_load_publish: FullLoadPublish,
     previous: Option<&TableSchema>,
 ) -> Vec<EnsureStep> {
     let mut legs = vec![Leg::Target];
-    if stages(mode, full_load_publish) {
+    if uses_stage(mode, full_load_publish) {
         legs.push(Leg::Stage);
     }
     let mut out = Vec::new();
@@ -110,7 +110,7 @@ pub fn table_plan(
 ///
 /// A non-merge mode still validates: the merge-only options are refused here,
 /// with the same typed error on every destination.
-pub fn merge_plan(
+pub fn merge_steps(
     options: &DestinationOptions,
     schema: &TableSchema,
     mode: &WriteMode,

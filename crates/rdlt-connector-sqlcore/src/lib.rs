@@ -15,7 +15,7 @@
 //! everything else is reached by its module path. Do not import a root item
 //! through its module.
 //!
-//! The primary workflow is planning a commit unit. [`commit_script`] is a
+//! The primary workflow is planning a commit unit. [`plan_commit`] is a
 //! PURE function, so the whole flow runs without a database: describe the
 //! session tables, resolve the options, state the transaction facts, and
 //! receive the exact ordered step program the destination will execute:
@@ -25,7 +25,7 @@
 //!
 //! use rdlt_connector::WriteMode;
 //! use rdlt_connector::core::{TableName, TableSchema};
-//! use rdlt_connector_sqlcore::{CommitContext, DestinationOptions, FullLoadPublish, Step, commit_script};
+//! use rdlt_connector_sqlcore::{CommitContext, DestinationOptions, FullLoadPublish, Step, plan_commit};
 //!
 //! let mut tables = BTreeMap::new();
 //! tables.insert(
@@ -36,7 +36,7 @@
 //!     ),
 //! );
 //! let empty = BTreeSet::new();
-//! let script = commit_script(
+//! let script = plan_commit(
 //!     &tables,
 //!     &DestinationOptions::default(),
 //!     &CommitContext {
@@ -75,5 +75,5 @@ pub use options::{
 pub use plan::{HardDelete, MergeContext, MergePlan, column_list, column_list_with, root_of};
 pub use protocol::{
     CommitContext, CommitError, CommitScript, FullLoadPublish, MergeArm, Step, build_merge_plan,
-    commit_script, insert_select_sql, prepare_target, render_arm, staged_probe_targets,
+    insert_select_sql, plan_commit, prepare_target, render_arm, staged_probe_targets,
 };

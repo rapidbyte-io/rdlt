@@ -15,7 +15,7 @@ use tokio_postgres::Client;
 use rdlt_connector_sqlcore::plan::scope_replace_sql;
 use rdlt_connector_sqlcore::protocol::unit;
 use rdlt_connector_sqlcore::{
-    CommitContext, FullLoadPublish, MergeDialect, Step, build_merge_plan, commit_script,
+    CommitContext, FullLoadPublish, MergeDialect, Step, build_merge_plan, plan_commit,
     prepare_target, render_arm, staged_probe_targets,
 };
 
@@ -726,7 +726,7 @@ impl PgSession {
             .union(&self.unit.as_ref().expect("unit open").cleared)
             .cloned()
             .collect();
-        let script = commit_script(
+        let script = plan_commit(
             &self.tables,
             &self.options,
             &self.ctx(replayed, &staged_nonempty, &cleared),

@@ -16,8 +16,8 @@ use rdlt_connector_postgres::dest::sqlgen::{
     PgDialect, UNIT_BEGIN, UNIT_COMMIT, UNIT_ROLLBACK, UNIT_WORK_MEM,
 };
 use rdlt_connector_sqlcore::{
-    CommitContext, DestinationOptions, FullLoadPublish, Step, column_list, commit_script,
-    insert_select_sql, prepare_target, quote_identifier,
+    CommitContext, DestinationOptions, FullLoadPublish, Step, column_list, insert_select_sql,
+    plan_commit, prepare_target, quote_identifier,
 };
 
 use rdlt_connector_sqlcore::MergeDialect;
@@ -115,7 +115,7 @@ fn the_direct_path_emits_no_insert_select() {
     let cleared = BTreeSet::new();
     for mode in [WriteMode::Append, WriteMode::Replace] {
         let tbls = tables(mode);
-        let script = commit_script(
+        let script = plan_commit(
             &tbls,
             &DestinationOptions::default(),
             &direct(&cleared, false),

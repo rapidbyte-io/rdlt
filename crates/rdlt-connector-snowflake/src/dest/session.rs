@@ -20,7 +20,7 @@ use rdlt_connector_sqlcore::plan::scope_replace_sql;
 use rdlt_connector_sqlcore::protocol::unit;
 use rdlt_connector_sqlcore::{
     CommitContext, FullLoadPublish, MergeArm, MergeDialect as _, Step, build_merge_plan,
-    column_list_with, commit_script, insert_select_sql, prepare_target, render_arm,
+    column_list_with, insert_select_sql, plan_commit, prepare_target, render_arm,
     staged_probe_targets,
 };
 
@@ -595,7 +595,7 @@ impl LoadSession for SnowflakeSession {
             }
         }
 
-        let script = commit_script(
+        let script = plan_commit(
             &self.tables,
             &self.config.options,
             &CommitContext {

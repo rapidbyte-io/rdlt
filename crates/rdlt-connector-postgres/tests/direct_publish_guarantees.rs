@@ -111,7 +111,7 @@ async fn probe_redelivered_unit_does_not_duplicate() {
 /// in unit 1 and first written in unit 2 finds the guard already set, skips
 /// its TRUNCATE, and appends to the previous load's rows.
 ///
-/// The staged path did not have this hole — `commit_script` emitted
+/// The staged path did not have this hole — `plan_commit` emitted
 /// `ClearTarget` for every Replace table at unit 1's publish regardless of
 /// whether it had staged anything.
 ///

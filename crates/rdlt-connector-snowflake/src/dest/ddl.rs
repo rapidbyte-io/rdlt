@@ -180,7 +180,7 @@ pub(super) fn table_ddl_stmts(
 ) -> Vec<String> {
     // Merge stages; Append and Replace publish straight into the target, so
     // no staging twin is built for them.
-    let plan = ensure::table_plan(schema, mode, FullLoadPublish::DirectToTarget, previous);
+    let plan = ensure::schema_steps(schema, mode, FullLoadPublish::DirectToTarget, previous);
     let leg_name = |leg: Leg| match leg {
         Leg::Target => schema.table.as_str().to_owned(),
         Leg::Stage => stage_name(pipeline, &schema.table),
@@ -274,7 +274,7 @@ pub(super) fn merge_ensure_stmts(
     let table = schema.table.as_str();
     let scd2 = options.scd2_for(table);
     let mut out = Vec::new();
-    for step in ensure::merge_plan(options, schema, mode)? {
+    for step in ensure::merge_steps(options, schema, mode)? {
         match step {
             EnsureStep::Validity(which) => {
                 let (col, ty) = match which {

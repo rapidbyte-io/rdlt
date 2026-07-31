@@ -22,7 +22,7 @@ mod tests {
 
     #[test]
     fn append_on_a_direct_destination_plans_one_leg() {
-        let plan = table_plan(
+        let plan = schema_steps(
             &schema(vec![col("id", LogicalType::Int64)]),
             &WriteMode::Append,
             FullLoadPublish::DirectToTarget,
@@ -44,7 +44,7 @@ mod tests {
     fn append_on_a_staged_destination_plans_both_legs() {
         // The same mode, a different publish path — and the stage leg appears.
         // This is the rule the commit planner also consults; they must agree.
-        let plan = table_plan(
+        let plan = schema_steps(
             &schema(vec![col("id", LogicalType::Int64)]),
             &WriteMode::Append,
             FullLoadPublish::Staged,
@@ -62,7 +62,7 @@ mod tests {
     fn merge_always_stages_whatever_the_publish_path() {
         for publish in [FullLoadPublish::DirectToTarget, FullLoadPublish::Staged] {
             assert!(
-                stages(&merge(&["id"]), publish),
+                uses_stage(&merge(&["id"]), publish),
                 "merge stages under {publish:?}"
             );
         }
@@ -72,7 +72,7 @@ mod tests {
     fn a_changed_type_plans_a_widen_directly_after_its_column() {
         let before = schema(vec![col("id", LogicalType::Int64)]);
         let after = schema(vec![col("id", LogicalType::Utf8)]);
-        let plan = table_plan(
+        let plan = schema_steps(
             &after,
             &WriteMode::Append,
             FullLoadPublish::DirectToTarget,
@@ -97,7 +97,7 @@ mod tests {
     #[test]
     fn an_unchanged_type_plans_no_widen() {
         let same = schema(vec![col("id", LogicalType::Int64)]);
-        let plan = table_plan(
+        let plan = schema_steps(
             &same,
             &WriteMode::Append,
             FullLoadPublish::DirectToTarget,
@@ -112,7 +112,7 @@ mod tests {
             merge_strategy: Some(MergeStrategy::Scd2),
             ..DestinationOptions::default()
         };
-        let plan = merge_plan(
+        let plan = merge_steps(
             &options,
             &schema(vec![col("id", LogicalType::Int64)]),
             &merge(&["id"]),
@@ -135,7 +135,7 @@ mod tests {
 
     #[test]
     fn a_non_merge_mode_plans_nothing_but_still_validates() {
-        let plan = merge_plan(
+        let plan = merge_steps(
             &DestinationOptions::default(),
             &schema(vec![col("id", LogicalType::Int64)]),
             &WriteMode::Append,
@@ -147,7 +147,7 @@ mod tests {
             merge_strategy: Some(MergeStrategy::Upsert),
             ..DestinationOptions::default()
         };
-        merge_plan(
+        merge_steps(
             &refused,
             &schema(vec![col("id", LogicalType::Int64)]),
             &WriteMode::Append,
