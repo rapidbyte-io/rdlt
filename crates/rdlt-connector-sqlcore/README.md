@@ -5,11 +5,11 @@ PostgreSQL and DuckDB destinations cannot drift apart in merge semantics.
 
 ## What it owns
 
-| Module | Responsibility |
+| Surface | Responsibility |
 |---|---|
 | `options` | the destination options vocabulary and its validation — one YAML shape across every SQL destination |
 | `plan` | the plan shapes: dedup and survivor ordering, scope replacement, strategy arms, hard-delete decisions, index plans |
-| `dialect` | the seam through which a destination owns SQL **text** and nothing else |
+| `MergeDialect` (trait, at the crate root) | the seam through which a destination owns SQL **text** and nothing else |
 
 The division is the point. Deciding *which rows survive a merge* is
 semantics and lives here; spelling `ON CONFLICT` versus `INSERT OR REPLACE`
