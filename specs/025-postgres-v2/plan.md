@@ -1,382 +1,406 @@
-# rdlt-connector-postgres v2 Implementation Plan
+# rdlt-connector-postgres-v2 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans
 > to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for
 > tracking. Update checkboxes as tasks complete — this file is the durable
 > record across context windows.
 
-**Goal:** Rewrite `crates/rdlt-connector-postgres` in place, module by module,
-into the six-seam v2 design — fresh code and naming throughout, zero duplicated
-logic, full functional parity proven by the existing test suite and gate.
+**Goal:** Build a brand-new crate `crates/rdlt-connector-postgres-v2` from
+scratch to the six-seam design, with every identifier — types, functions,
+parameters, fields, modules — named from first principles, full functional
+parity with `rdlt-connector-postgres` proven by a ported test suite, and the
+workspace gate green.
 
-**Architecture:** In-place progressive rewrite ("ship of Theseus"): each task
-replaces one zone with freshly written code behind the same frozen public
-surface, deletes the old files in the same commit, and ends with the crate's
-tests green. The existing ~9.6k-line test suite is the parity oracle; the
-golden-SQL pins, conformance suites, crash sweeps, and iai benches are the
-regression net. The six seams: (1) `session/` owns connect+TLS-handshake+GUC
-profiles+classification; (2) `types/` is the single Postgres type rulebook
-(map/binary/text/literal/encode); (3) dest decomposes by owned state
-(catalog/unit/executor); (4) source validates each fact once (`plan.rs`,
-`cursor/`); (5) CDC gets a typestate runtime and an `ack` module; (6) one
-`testsupport/` seam replaces four ad-hoc test-access mechanisms.
+**Architecture:** Greenfield crate built bottom-up (tls → session → types →
+source → destination → cdc), each layer landing with its tests in the same
+task. The old crate is read for *behavioral contracts only* (Appendix A) and
+stays untouched and in the workspace; nothing links the new crate into the
+facade — swapping it in later is the owner's call. Persisted formats, wire
+formats, YAML config vocabulary, and engine-visible behavior are frozen
+(Appendix B); every Rust identifier is free and MUST be re-derived under the
+naming rules (below).
 
-**Tech Stack:** tokio-postgres + rustls (unchanged deps; the manifest's
-dependency set must not grow), arrow 58.3, rdlt-connector SPI,
-rdlt-connector-sqlcore planner.
+**Tech Stack:** Same dependency set as the old crate (tokio-postgres, rustls,
+arrow 58.3, rdlt-connector SPI, rdlt-connector-sqlcore) — the dependency list
+may not grow beyond the old crate's.
 
 ## Decision record
 
-- **D1 — crate name and path unchanged.** "v2" names the design generation,
-  not the package. Keeping `rdlt-connector-postgres` keeps the facade path
-  `rdlt::connector::postgres`, the gate's `-p` selections, the four named test
-  binaries, and external users (duckdb/snowflake tests, fuzz targets) intact.
-- **D2 — branch `postgres-v2` off main @ d92cec06.** Merge is the owner's
-  call; done = gate twice clean on the branch.
-- **D3 — no copying.** Each task: read the old module, extract its behavioral
-  contract (Appendix A), write fresh code + naming against that contract,
-  delete the old file in the same commit. Public frozen names (Appendix B) are
-  the only carried-over spellings.
-- **D4 — `tls/` stays a public top-level module** holding the portable policy
-  vocabulary (`TlsPolicy` — constructed by `rdlt::pipeline_spec`); the
-  Postgres-specific connect machinery moves to a new private `session/`.
-- **D5 — dest gains config entry points** (`from_yaml/from_json/from_value` +
-  `config_schema()`), freezing the facade's existing YAML field set
-  `{conn, dataset, tls, merge_strategy, tables}`; the facade delegates.
+- **D1 — new crate, old untouched.** Package `rdlt-connector-postgres-v2`,
+  path `crates/rdlt-connector-postgres-v2`, registered as a workspace member,
+  `publish = false` until the owner decides its fate. NOT wired into the
+  `rdlt` facade. The old crate keeps running the existing gate lines.
+- **D2 — branch `postgres-v2`.** Done = full gate twice clean with the new
+  crate's suites wired in; merge is the owner's call.
+- **D3 — no copying.** Fresh code against Appendix A contracts. Constants that
+  ARE the contract (SQLSTATE class lists, the TLS-refusal needle, alert sets,
+  driver param list, GUC pins, SQL text) necessarily reappear; prose and
+  structure never.
+- **D4 — behavior parity, API freedom.** The new crate's Rust API is
+  redesigned (naming rules below). What the ENGINE and the OPERATOR observe is
+  frozen: Appendix B.
+- **D5 — gate wiring is in scope.** 024 made the gate refuse unknown test
+  binaries: every new test binary must be invoked or exempted BY NAME
+  (Makefile sweep lines + the reachability enumeration). Task 10.
 - **D6 — hot paths keep their measured algorithms** (single-pass COPY decode,
-  borrowed-view encode, no per-row allocation). Fresh code, same shape; the
-  iai gate (6 benches, 0 regressed) adjudicates.
+  borrowed-view encode, bounded buffers). Task 11 measures old vs new with
+  side-by-side iai benches before the gate rules.
+
+## Naming rules (the user's directive — apply to EVERY identifier)
+
+1. **The module path is part of the name.** No type repeats its module's
+   noun: `tls::Policy` not `TlsPolicy`, `source::Config` not
+   `PostgresSourceConfig`, `cursor::Tracker` not `CursorTracker`. Call sites
+   spell the path (`tls::Policy`) — the crate has no root re-exports, so the
+   path IS the canonical spelling.
+2. **No ad-hoc truncations.** `connection` not `conn`, `statement` not
+   `stmt`, `table` not `tbl`, `context` not `ctx`, `buffer` not `buf`.
+   Established domain acronyms are words: SQL, TLS, CDC, DDL, WAL, LSN, COPY,
+   GUC (CamelCase as `Sql`, `Tls`, …). Rust-idiomatic short forms that std
+   itself uses stay: `config`, `len`, `id`, `iter`.
+3. **Functions are verbs** (`parse`, `establish`, `reflect`, `render`,
+   `plan`); predicates read as questions (`is_transient`, `wants_encryption`,
+   `covers_all_columns`); no `get_` prefixes; conversions follow std
+   (`from_*`, `into_*`, `as_*`, `to_*`).
+4. **Parameters are named for their role,** not their type:
+   `tls_override` not `block`, `connection_string` not `s` or `conn`.
+5. **One name per concept, crate-wide.** "schema" = the Postgres namespace,
+   always; the SPI's `TableSchema` is only ever referred to as a table's
+   *shape* in prose and `table_schema` in code. "stream" = an engine stream;
+   "table" = a Postgres relation. The rename ledger (Appendix C) is the
+   authority; extend it whenever a new concept is coined.
+6. **Booleans read as assertions** (`replica_identity_covers_all_columns`,
+   `transaction_open`), never bare adjectives (`full`, `open`).
+7. **Errors are named by what failed** (`EstablishError`, `ParseError`), not
+   by the layer that noticed.
 
 ## Global Constraints
 
 - Workspace denies `unsafe_code`; workspace lints apply; `cargo fmt` every touched crate.
 - Tests via `cargo nextest run` (doc-tests via `cargo test --doc`); gates with `env -u RUSTUP_TOOLCHAIN`, launched from repo root, Makefile untouched during a run.
 - House layout: pure-TOC `mod.rs`, code under its noun, tests = `integration.rs` + `cases/test_<noun>.rs`; no `name.rs` beside `name/`.
-- Comments self-contained (no citation IDs); typed error taxonomy; no substring-matching rendered errors in production code.
-- Greenfield: no compat shims or aliases; renames land directly with all consumers updated in the same commit. Persisted DATA formats stay frozen.
-- The dependency list in Cargo.toml may not grow.
-- Every task ends: crate compiles with `--all-targets --features failpoints`, affected suites green, one commit ending with `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`.
-- Container suites need `systemctl --user start podman.socket`; first full-crate run after a rebuild may hit the recorded container-burst flake — rerun once before diagnosing.
+- Comments self-contained; no citation IDs; typed error taxonomy end to end.
+- Every task ends: `cargo check -p rdlt-connector-postgres-v2 --all-targets --all-features` clean, that task's tests green, one commit ending with `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`.
+- Container suites need `systemctl --user start podman.socket`; the first full run after a rebuild may hit the recorded container-burst flake — rerun once before diagnosing.
+
+## The crate
+
+```
+crates/rdlt-connector-postgres-v2/
+├── Cargo.toml            # features: default=["source","destination"], failpoints, fixtures
+├── README.md
+├── benches/iai.rs        # decode/encode hot-path benches, NOT gate-wired (Task 11 compares by hand)
+├── src/
+│   ├── lib.rs            # front page + module TOC; no root re-exports
+│   ├── tls/              # public policy vocabulary (facade-independent)
+│   │   ├── mod.rs        #   pub Policy, Mode, ConfigError; pub(crate) build seam
+│   │   ├── policy.rs     #   Policy/Mode + resolution + credential shape rules
+│   │   ├── client_config.rs # rustls ClientConfig construction
+│   │   └── verify.rs     #   the quarantined weaker-mode verifiers
+│   ├── session/          # pub(crate): connection string → prepared live connection
+│   │   ├── mod.rs
+│   │   ├── connection_string.rs  # both libpq spellings, TLS trio extraction, strict escapes
+│   │   ├── establish.rs  #   Profile (Plain | CdcControl), Connection, establish()
+│   │   └── classify.rs   #   detail rendering + the two opposite-polarity SQLSTATE rules + TLS failure taxonomy
+│   ├── types/            # pub(crate): THE Postgres type rulebook
+│   │   ├── mod.rs        #   Kind (closed enum), Column (name + kind)
+│   │   ├── map.rs        #   catalog type + hint → Kind (+ `rdlt::lossy` warns)
+│   │   ├── binary.rs     #   COPY BINARY → Arrow (single-pass, bounded)
+│   │   ├── text.rs       #   text form → value (CDC tuples, watermarks)
+│   │   ├── literal.rs    #   value → SQL literal (resume predicates)
+│   │   └── encode.rs     #   Arrow → COPY BINARY (destination feature)
+│   ├── source/
+│   │   ├── mod.rs
+│   │   ├── connector.rs  #   struct Postgres + impl Source (thin dispatch)
+│   │   ├── config/       #   vocabulary.rs (serde nouns incl. TypeHint) + validate.rs (entry points)
+│   │   ├── plan.rs       #   THE stream validation gate; streams() and read() share its output
+│   │   ├── reflect.rs    #   catalog reflection + query describe
+│   │   ├── sql.rs        #   SELECT/COPY text + the boundary matrix
+│   │   ├── copy.rs       #   the COPY read loop (crash hook only under failpoints)
+│   │   ├── cursor/       #   watermark.rs, tracker.rs, prepare.rs
+│   │   ├── cdc/          #   runtime.rs (typestate), slot.rs, read.rs, tail.rs, ack.rs, apply.rs, pgoutput.rs
+│   │   ├── errors.rs     #   Phase-tagged source errors + establish/driver adapters
+│   │   └── fail_points.rs
+│   ├── destination/
+│   │   ├── mod.rs
+│   │   ├── connector.rs  #   struct Postgres + impl Destination; open()
+│   │   ├── config.rs     #   builder + from_yaml/from_json/from_value + config_schema()
+│   │   ├── catalog.rs    #   ensured tables + DDL rendering (sqlcore ensure planner consumer)
+│   │   ├── unit.rs       #   the commit-unit transaction + cleared-target set
+│   │   ├── executor.rs   #   sqlcore Step execution over (Connection, Catalog, Unit)
+│   │   ├── load.rs       #   impl LoadSession — coordinates the three
+│   │   ├── dialect.rs    #   sqlcore MergeDialect (three overrides, defaults golden-pinned)
+│   │   ├── errors.rs     #   Phase-tagged destination errors (parity with source)
+│   │   └── fail_points.rs
+│   ├── testsupport/      # ONE doc-hidden seam for pins/benches/fuzz across the test-binary boundary
+│   │   ├── mod.rs, source.rs, destination.rs, session.rs, data.rs
+│   └── fixtures.rs       # feature "fixtures": PostgresContainer, CdcContainer
+└── tests/
+    ├── integration.rs + cases/…          # ported suites, renamed to the new API
+    ├── source_crash_sweep.rs             # named gate binaries (Task 10 wires them)
+    ├── destination_crash_sweep.rs
+    ├── cdc_crash_sweep.rs
+    └── memory_bound.rs
+```
 
 ---
 
-### Task 0: Branch + baseline
+### Task 1: Scaffold
 
-**Files:** none (git only)
+**Files:** `crates/rdlt-connector-postgres-v2/{Cargo.toml,README.md,src/lib.rs}`, root `Cargo.toml` (workspace member)
 
-- [x] **Step 1:** `git checkout -b postgres-v2` (from main @ d92cec06)
-- [x] **Step 2:** Baseline: `env -u RUSTUP_TOOLCHAIN cargo nextest run -p rdlt-connector-postgres --features failpoints` — record the pass count; this is the oracle's starting shape.
-- [x] **Step 3:** Commit this plan file: `git add specs/025-postgres-v2/ && git commit -m "plan(postgres-v2): the six-seam rewrite plan"`
+- [ ] **Step 1:** Cargo.toml: copy the OLD crate's dependency set exactly (minus nothing, plus nothing), `publish = false`, features `default=["source","destination"]`, `failpoints=["rdlt-connector/failpoints"]`, `fixtures=[dep:rdlt-testkit, dep:testcontainers-modules]`, workspace lints.
+- [ ] **Step 2:** lib.rs: front-page doc (v2 statement + module map + naming rules synopsis) with the empty module tree declared; register in workspace `members`.
+- [ ] **Step 3:** `cargo check -p rdlt-connector-postgres-v2 --all-features` clean; commit `feat(postgres-v2): scaffold — the crate exists`.
 
-### Task 1: `session/` — the connection module
+### Task 2: `tls/`
 
-**Files:**
-- Create: `src/session/mod.rs` (TOC), `src/session/conn_string.rs`, `src/session/establish.rs`, `src/session/profile.rs`, `src/session/classify.rs`
-- Modify: `src/source/connector.rs` (drop `connect()`), `src/source/cdc/runtime.rs`, `src/source/testhook.rs`, `src/dest/config.rs` (drop `client()`), `src/dest/connector.rs`, `src/tls/mod.rs`
-- Delete: `src/tls/connstring.rs`, `src/tls/connect.rs`, `src/driver_error.rs`
-- Test: existing `tests/cases/test_connstring.rs`, `tests/cases/test_tls_matrix.rs` (repoint imports), inline unit tests in the new files
+**Files:** `src/tls/{mod.rs,policy.rs,client_config.rs,verify.rs}`
+**Interfaces:** `pub struct Policy { mode: Mode, root_cert, client_cert, client_key: Option<PemSource> }` (serde shape byte-compatible with old `TlsPolicy` — same field names, same `snake_case` mode strings, `deny_unknown_fields`); `pub enum Mode { Disable, Prefer, Require, VerifyCa, VerifyFull }`; `pub enum ConfigError` (all seven old variants, fresh prose); `pub(crate) fn resolve(connection_sslmode, tls_override) -> Result<Policy, ConfigError>`; `pub(crate) fn validate_credentials(&Policy)`; `pub(crate) fn build_client_config(&Policy) -> Result<Option<rustls::ClientConfig>, ConfigError>`.
+**Contract:** Appendix A §Session (policy rules half). Never-weaken sslmode resolution; both-or-neither credentials; never-with-plaintext; labels never leak inline PEM material; verify_ca = chain-only verifier; require/prefer = accept-any.
 
-**Interfaces (produces):**
+- [ ] Write fresh with inline unit tests (resolution matrix, credential shapes, verifier selection, PEM label hygiene); green; commit `feat(postgres-v2): tls policy vocabulary`.
+
+### Task 3: `session/`
+
+**Files:** `src/session/{mod.rs,connection_string.rs,establish.rs,classify.rs}`
+**Interfaces:**
 ```rust
-pub(crate) struct Conn { /* tokio_postgres::Client + spawned io-driver handle */ }
-impl Conn {
-    pub(crate) fn client(&self) -> &tokio_postgres::Client;
-}
-pub(crate) enum Profile { Plain, CdcControl }   // CdcControl pins datestyle=ISO, bytea_output=hex
-pub(crate) struct ParsedConn { pub config: tokio_postgres::Config, pub tls: crate::tls::TlsPolicy }
-pub(crate) fn parse_conn(s: &str) -> Result<ParsedConn, ConnStringError>;   // libpq forms, percent-escapes, sslmode↔tls translation, unsupported params rejected BY NAME, application_name=rdlt default
-pub(crate) async fn establish(parsed: &ParsedConn, profile: Profile) -> Result<Conn, EstablishError>;
-pub(crate) enum EstablishError { Config(String), Transient(String), Fatal(String) }
-// classify.rs: the two opposite-polarity SQLSTATE rulebooks, side by side:
-pub(crate) fn connect_sqlstate_is_transient(code: &str) -> bool;
-pub(crate) fn statement_sqlstate_is_permanent(code: &str) -> bool;   // classes 22/23/42
-pub(crate) fn detail_of(e: &tokio_postgres::Error) -> String;        // server message + SQLSTATE, always
+pub(crate) struct Parsed { pub driver: tokio_postgres::Config, pub tls: tls::Policy }
+pub(crate) fn parse(connection_string: &str, tls_override: Option<&tls::Policy>) -> Result<Parsed, tls::ConfigError>;
+pub(crate) enum Profile { Plain, CdcControl }   // CdcControl pins datestyle=ISO + bytea_output=hex after connect
+pub(crate) struct Connection { … }              // live client + detached io driver; Deref<Target=tokio_postgres::Client> documented as deliberate
+pub(crate) async fn establish(connection_string: &str, tls_override: Option<&tls::Policy>, profile: Profile) -> Result<Connection, EstablishError>;
+pub(crate) enum EstablishError { Config(tls::ConfigError), Connect(ConnectError) }  // is_transient() is THE retryability rule
+pub(crate) struct ConnectError { pub failure: TlsFailure, pub detail: String, pub transient: bool }
+pub(crate) enum TlsFailure { TrustAnchor, Chain, Hostname, ServerRefusedTls, ClientCert, Other }
+// classify.rs: detail(&tokio_postgres::Error) -> String;  is_transient_connect_sqlstate; is_permanent_statement_sqlstate
 ```
+**Contract:** Appendix A §Session. TLS trio extraction from both libpq forms; strict percent-escapes; unsupported params rejected by name with hints; `sslrootcert=system`; verify-* strength ordering; `application_name=rdlt` default; the pinned `"server does not support TLS"` needle (with its pin test); rustls alert classification incl. the TLS-1.2 handshake_failure forms; 28000+certificate = ClientCert; connect polarity 08/53/57/40 transient, statement polarity 22/23/42 permanent.
 
-**Behavioral contract:** Appendix A §Session. Headline invariants: conn-string
-parse failure is always Config/Fatal; network-shaped connect failure is
-Transient; TLS alert + SQLSTATE 28000 → ClientCert class; the
-`EstablishError → SourceError/DestinationError` mapping lives in ONE place
-(two tiny adapters, one per half — deleting the twice-copied 4-arm match).
+- [ ] Write fresh; unit tests inline (needle pin, alert classification, parse matrix ported from old `test_connstring.rs` cases with new spellings); commit `feat(postgres-v2): session — one path from string to prepared connection`.
 
-- [ ] **Step 1:** Read old `tls/connstring.rs`, `tls/connect.rs`, `driver_error.rs`; write the contract notes into Appendix A §Session (below) if anything there is missing.
-- [ ] **Step 2:** Write `session/` fresh per the interfaces above, unit tests inline (conn-string matrix: libpq spellings, sslmode trio, percent-escape strictness, rejected params by name).
-- [ ] **Step 3:** Migrate all six old connection call sites (source read/reflect, cdc control/snapshot/preflight, dest open) to `session::establish`; delete the three old files; repoint `test_connstring.rs`/`test_tls_matrix.rs` imports.
-- [ ] **Step 4:** `cargo nextest run -p rdlt-connector-postgres --features failpoints` green (container suites included).
-- [ ] **Step 5:** Commit: `refactor(postgres): session/ owns connect — one parse, one handshake, one rulebook`
+### Task 4: `types/` — map, binary, text, literal
 
-### Task 2: `tls/` — portable policy, fresh internals
+**Files:** `src/types/{mod.rs,map.rs,binary.rs,text.rs,literal.rs}`
+**Interfaces:** `pub(crate) enum Kind { … }` (closed; full set derived from old `type_map.rs` in Step 1 and recorded in Appendix A §Types); `pub(crate) struct Column { name: String, kind: Kind }`; `map::resolve(catalog_row, hint) -> Kind`; `binary::Decoder` (COPY BINARY → RecordBatch); `text::parse(kind, text) -> value`; `literal::render(kind, value) -> String`. Exhaustive `match` over Kind in every face — no `_` arms.
+**Contract:** Appendix A §Types. UUID server forms; numeric stays in the string domain; timestamps µs; lossy warns once per column per read; bounded decode memory.
 
-**Files:**
-- Create: `src/tls/rustls.rs`, `src/tls/verify.rs` (fresh rewrites), keep `src/tls/policy.rs` rewritten in place
-- Delete: `src/tls/rustls_config.rs`
-- Test: `tests/cases/test_tls_matrix.rs` (unchanged assertions)
+- [ ] **Step 1:** Derive the Kind set + per-face behavior tables from old `type_map.rs`/`copy_decode.rs`/`cdc/values.rs`/`cursor.rs`; record in Appendix A §Types.
+- [ ] **Step 2:** Write fresh, porting old inline test CASES (values/expectations) with new naming; add a proptest: `text::parse ∘ literal::render` round-trips per Kind.
+- [ ] **Step 3:** Green; commit `feat(postgres-v2): types/ — one rulebook, four faces`.
 
-**Interfaces:** `tls::TlsPolicy` serde shape FROZEN (mode strings incl. the
-verify-* spellings, `client_cert`/`client_key`, PemSource fields). Internals:
-`pub(crate) fn client_config(policy: &TlsPolicy) -> Result<rustls::ClientConfig, TlsError>` —
-require = accept-any verifier, verify_ca = webpki minus hostname, verify_full =
-stock webpki.
+### Task 5: `types/encode.rs`
 
-- [ ] **Step 1:** Rewrite the three files fresh (policy vocabulary serde-identical; verifiers with their invariants stated in self-contained comments).
-- [ ] **Step 2:** Full TLS matrix suite green (needs containers): `cargo nextest run -p rdlt-connector-postgres -E 'test(tls)'`
-- [ ] **Step 3:** Commit: `refactor(postgres): tls/ is the portable policy home — nothing postgres in it`
+**Interfaces:** `pub(crate) struct Encoder` — Arrow → COPY BINARY, borrowed column views, 64 KiB flush.
+**Contract:** decoder-as-oracle round-trip test per Kind; numeric string-domain (the u128 lesson).
 
-### Task 3: `types/` — one type rulebook (source half)
+- [ ] Write fresh + round-trip suite; commit `feat(postgres-v2): encode — the decoder is its oracle`.
 
-**Files:**
-- Create: `src/types/mod.rs`, `src/types/map.rs`, `src/types/binary.rs`, `src/types/text.rs`, `src/types/literal.rs`
-- Modify: `src/source/{connector,reflect,cursor,testhook}.rs`, `src/source/cdc/{apply,read,values}.rs`, `src/source/config/vocabulary.rs` (HintType home)
-- Delete: `src/source/type_map.rs`, `src/source/copy_decode.rs`, parser halves of `src/source/cdc/values.rs` and `src/source/cursor.rs`
-- Test: existing `test_native_types.rs`, `test_incremental.rs`, cdc suites, fuzz entry via testhook (Task 9 repoints the fuzz crate)
+### Task 6: `source/` (non-CDC) + its suites
 
-**Interfaces (produces):**
+**Files:** `src/source/{mod.rs,connector.rs,plan.rs,reflect.rs,sql.rs,copy.rs,errors.rs,fail_points.rs}`, `src/source/config/{mod.rs,vocabulary.rs,validate.rs}`, `src/source/cursor/{mod.rs,watermark.rs,tracker.rs,prepare.rs}`; tests `tests/integration.rs` + `cases/{common.rs,test_config.rs,test_config_schema.rs,test_connection_string.rs,test_reflect.rs,test_native_types.rs,test_incremental.rs,test_query_streams.rs,test_option_edges.rs,test_source_conformance.rs,test_copy_wire_pin.rs,test_tls_matrix.rs}` (ported from old, rewritten to the new API)
+**Interfaces:**
 ```rust
-pub(crate) enum Kind { Bool, Int2, Int4, Int8, Float4, Float8, Numeric { precision: u16, scale: i16 }, Text, Bytea, TimestampUs, TimestamptzUs, DateDays, TimeUs, Uuid, Json, /* full set derived from old type_map.rs during Step 1 */ }
-impl Kind { pub(crate) fn arrow(&self) -> arrow_schema::DataType; }
-pub(crate) struct ColumnPlan { pub name: String, pub kind: Kind }   // replaces FieldPlan, lives HERE not in the decoder
-// map.rs:  catalog (typname/oid, typmod) + HintType → Kind; lossy-mapping warn on `rdlt::lossy`, once per column per read
-// binary.rs: pub(crate) struct Decoder { … }  — COPY BINARY → RecordBatch, single-pass, bounded buffers (memory_bound suite is the proof)
-// text.rs: pub(crate) fn parse(kind: &Kind, s: &str) -> Result<ScalarValue, ParseError>   — the ONE text-form parser (CDC tuples + cursor watermarks)
-// literal.rs: pub(crate) fn render(kind: &Kind, v: &ScalarValue) -> String                — the ONE SQL-literal renderer (watermark resume predicates)
+pub struct Postgres { … }                       // source::Postgres — the connector
+impl Postgres { pub fn from_yaml/from_json/from_value/new(config: Config) }
+pub struct Config { pub connection: String, pub schema: String, pub tables: Option<Vec<TableConfig>>, pub queries: Vec<QueryConfig>, pub tls: Option<tls::Policy>, pub cdc: Option<CdcConfig>, … }
+// serde: field spellings FROZEN to the old YAML vocabulary (conn, schema, tables, queries, tls, cdc, …)
+// NOTE: Rust field `connection` ↔ YAML `conn` via #[serde(rename)] — the document is frozen, the identifier is not.
+pub enum ConfigError { … }   pub fn config_schema() -> serde_json::Value;
+pub(crate) plan::streams(...) -> Vec<plan::Stream>   // the ONE validation gate
 ```
-`HintType` public spelling stays `source::HintType`; its 5 string-newtype trait
-impls collapse into one `string_newtype!`-style macro shared with `Lag`/`Wait`
-(the ~200-line triplication dies here or in Task 6, whichever touches it first).
+**Contract:** Appendix A §Source. Always-structured streams; validation facts once with one error text each; cursorless never checkpoints; ChannelClosed = done; the boundary matrix; watermark-never-lowered; tracker dedup rules; query streams wrapped one way for describe AND read.
 
-**Behavioral contract:** Appendix A §Types. A new `Kind` variant must be a
-compiler-forced edit in every face (exhaustive matches, no `_` arms over Kind).
+- [ ] **Step 1:** Contract completion from old source files → Appendix A §Source.
+- [ ] **Step 2:** config/ + reflect + sql + plan (fresh; port test cases).
+- [ ] **Step 3:** cursor/ + copy + connector; wire `Source` impl.
+- [ ] **Step 4:** Port the listed suites (new API spellings, same assertions); container suites green.
+- [ ] **Step 5:** Commit `feat(postgres-v2): the source — every fact validated once`.
 
-- [ ] **Step 1:** Read old `type_map.rs` + the three conversion tables; enumerate the full Kind set and each face's per-kind behavior into Appendix A §Types (uuid server forms! numeric text domain! timestamp µs precision!).
-- [ ] **Step 2:** Write `types/` fresh; port the inline unit tests' *cases* (values and expectations are contract, wording fresh).
-- [ ] **Step 3:** Migrate consumers (source read path, cdc apply/values, cursor parse/render); delete old files.
-- [ ] **Step 4:** Suites: native_types, incremental, cdc_cycle, memory_bound (`RDLT_HEAVY=1 … -E 'binary(memory_bound)'`), differential, property (`-E 'binary(shred_property)'` is engine-side; postgres property lives in the copy decode fuzz — run the proptest suites in-crate).
-- [ ] **Step 5:** Commit: `refactor(postgres): types/ is the one rulebook — a new kind is a compiler-forced edit`
+### Task 7: `destination/` + its suites
 
-### Task 4: `types/encode.rs` — the dest wire face
+**Files:** `src/destination/*` per the tree; tests `cases/{test_dest_conformance.rs→test_destination_conformance.rs,test_dest_recovery.rs→test_destination_recovery.rs,test_golden_sql.rs,test_golden_ensure_sql.rs,test_golden_unit_sql.rs,test_merge_strategies.rs,test_merge_refinements.rs,test_scd2.rs,test_unit_isolation.rs,test_direct_publish.rs,test_differential.rs,test_destination_config.rs (new)}`
+**Interfaces:** `destination::Postgres` builder (`new(connection_string)`, `.schema(…)` — YAML keeps `dataset` spelling via serde rename, `.tls(…)`, `.options(…)`), `destination::Config` with `from_yaml/from_json/from_value` + `config_schema()` (freezes the facade field set `{conn, dataset, tls, merge_strategy, tables}`); `Catalog`/`Unit`/`executor` per the tree; sqlcore vocabulary re-exported under its bare names (family rule).
+**Contract:** Appendix A §Destination. Golden SQL BYTE-IDENTICAL to the old pins (copy the old goldens' expected strings into the ported pin tests unchanged — they are contract, not code).
 
-**Files:**
-- Create: `src/types/encode.rs` (cfg dest)
-- Modify: `src/dest/write.rs` (consumer), `src/dest/testhook.rs`
-- Delete: `src/dest/encode.rs`
-- Test: `test_dest_conformance.rs`, `test_native_types.rs` round-trip legs, encode pins in dest testhook
+- [ ] **Step 1:** Contract completion (every literal SQL string, the capabilities values, the reclamation scoping, replay rules) → Appendix A §Destination.
+- [ ] **Step 2:** catalog + unit + executor + dialect + errors (fresh, unit-tested).
+- [ ] **Step 3:** load.rs + connector.rs + config.rs; wire `Destination` impl.
+- [ ] **Step 4:** Port suites; golden pins byte-identical or STOP and fix the code (never the pin).
+- [ ] **Step 5:** Commit `feat(postgres-v2): the destination — catalog, unit, executor`.
 
-**Interfaces:** `pub(crate) struct Encoder` — Arrow → COPY BINARY over a
-borrowed column view, `ToSql`-based, 64 KiB flush discipline preserved.
-Round-trip property: `binary::Decoder` is the oracle for `Encoder` (the 008
-review's hand-rolled-encoder-vs-decoder oracle stays a test).
+### Task 8: `cdc/` + its suites
 
-- [ ] **Step 1:** Read old `dest/encode.rs`; contract to Appendix A §Types (numeric string-domain grouping — the u128 overflow lesson; NULL bitmap; per-kind wire forms).
-- [ ] **Step 2:** Write fresh; migrate `write.rs`; delete old.
-- [ ] **Step 3:** Dest suites green incl. conformance + iai bench compiles: `cargo bench -p rdlt-connector-postgres --bench iai_pg -- --list`
-- [ ] **Step 4:** Commit: `refactor(postgres): encode joins the rulebook — decoder is the encoder's oracle`
+**Files:** `src/source/cdc/{mod.rs,runtime.rs,slot.rs,read.rs,tail.rs,ack.rs,apply.rs,pgoutput.rs}`; tests `cases/{cdc_rig.rs,test_cdc_cycle.rs,test_cdc_slot.rs,test_cdc_identity.rs,test_cdc_recovery.rs}`
+**Interfaces:** typestate runtime (`Control` established with `Profile::CdcControl`; `Snapshot` holds the repeatable-read transaction; no `Option<Arc<_>> + expect()`); `ack.rs` owns run-completion ack + lag; `slot::ensure` decomposed into named checks; pgoutput parser self-contained with its fuzz entry.
+**Contract:** Appendix A §CDC — every 009-review invariant listed there.
 
-### Task 5: dest decomposition — catalog / unit / executor
+- [ ] **Step 1:** Contract completion from the eight old files → §CDC.
+- [ ] **Step 2:** pgoutput + apply (+ types/text consumers) fresh; unit tests.
+- [ ] **Step 3:** slot + runtime + read + tail + ack; wire into `source::Postgres`.
+- [ ] **Step 4:** Port the four CDC suites + rig; green with containers.
+- [ ] **Step 5:** Commit `feat(postgres-v2): cdc — the runtime is a typestate`.
 
-**Files:**
-- Create: `src/dest/catalog.rs`, `src/dest/unit.rs`, `src/dest/executor.rs`, `src/dest/load.rs` (the `LoadSession` impl, fresh name `PgLoad`), `src/dest/errors.rs` (phase-tagged)
-- Modify: `src/dest/connector.rs` (open() thins; state-tables DDL moves to catalog), `src/dest/dialect.rs` (rewrite in place, 3 hooks + why-defaults comment), `src/dest/mod.rs`
-- Delete: `src/dest/commit.rs`, `src/dest/write.rs`, `src/dest/ddl.rs`, `src/dest/sqlgen.rs`, `src/dest/classify.rs`
-- Test: golden pins (`test_golden_sql.rs`, `test_golden_ensure_sql.rs` — SQL text BYTE-IDENTICAL), dest_conformance, merge suites, dest_crash_sweep, direct_publish, unit_isolation
+### Task 9: crash sweeps, memory bound, testsupport, fixtures, benches
 
-**Interfaces (produces):**
-```rust
-struct PgLoad { conn: session::Conn, catalog: Catalog, unit: Unit, load_id: LoadId, pipeline: PipelineId }
-pub(super) struct Catalog { tables: BTreeMap<TableName, (TableSchema, WriteMode)> }
-impl Catalog {   // consumes sqlcore ensure planner; renders DDL text (types lowering, UNLOGGED stages, identity CACHE 32, USING casts)
-    pub(super) async fn ensure(&mut self, conn: &Conn, schema: &TableSchema, mode: &WriteMode) -> Result<(), DestError>;
-    pub(super) fn planner_input(&self) -> …;   // what plan_commit needs
-}
-pub(super) struct Unit { state: UnitState, cleared: BTreeSet<TableName> }  // UnitState = Closed | Open — no bool
-impl Unit {   // literal BEGIN ISOLATION LEVEL READ COMMITTED / SET LOCAL work_mem='64MB' / COMMIT / ROLLBACK
-    pub(super) async fn begin_if_closed(&mut self, conn: &Conn) -> Result<(), DestError>;
-    pub(super) async fn commit(&mut self, conn: &Conn) -> Result<(), DestError>;
-    pub(super) async fn rollback(&mut self, conn: &Conn) -> Result<(), DestError>;   // EVERY error path — 25P02 poisoning rule
-}
-// executor.rs: methods take (&Conn, &Catalog, &mut Unit) — disjoint structs, no free fn, no pub(super) field pokes
-pub(super) async fn run_step(conn: &Conn, catalog: &Catalog, unit: &mut Unit, step: &Step) -> Result<(), DestError>;
-// errors.rs: phase-tagged like the source half:
-pub(super) enum DestPhase { Connect, Ensure, Write, Commit }
-```
+**Files:** `src/testsupport/*`, `src/fixtures.rs`, `tests/{source_crash_sweep.rs,destination_crash_sweep.rs,cdc_crash_sweep.rs,memory_bound.rs}`, `benches/iai.rs`
+**Interfaces:** fail-point registries (same crash-point ID strings as the old crate — they name real crash sites; the sweeps port over); `fixtures::{PostgresContainer, CdcContainer}` (one shared `start` core — the old verbatim duplication does not return); testsupport carries the pin/bench/fuzz seams (one convention).
+**Contract:** every registry passes `rdlt_testkit::crash::assert_registry_matches_sources` against THIS crate's tree; sweeps prove exactly-once per point × action; memory_bound reproduces the bounded-snapshot guarantee.
 
-**Behavioral contract:** Appendix A §Dest. Non-negotiables: rollback-on-every-
-error wrapper pattern; `ClearTarget`/`InsertSelect` unreachable → fatal
-"internal:"; replay = sqlcore `replay_disposition` (DiscardUnit) + still apply
-`script.marks` + return prior receipt; Replace clear at write time via
-`prepare_target`, at most once per (load, target), durable record in same txn;
-23505 → `duplicate_merge_key_diagnosis`; reclamation TRUNCATE scoped to the
-pipeline's hash prefix; capabilities values verbatim.
+- [ ] Write + port; sweeps green under `--features failpoints`; commit `feat(postgres-v2): the nets — sweeps, memory bound, one test seam`.
 
-- [ ] **Step 1:** Read old commit/write/ddl/connector; write §Dest contract incl. every literal SQL string (they are golden-pinned).
-- [ ] **Step 2:** Write catalog.rs + unit.rs fresh with inline unit tests.
-- [ ] **Step 3:** Write executor.rs + load.rs (the LoadSession impl) + errors.rs; open() thins; goldens pin through `testsupport::dest` (temporary shim until Task 9 lands the real one).
-- [ ] **Step 4:** Delete the five old files; suites: golden × 2 (byte-identical or STOP and fix), dest_conformance, merge_strategies, scd2, merge_refinements, unit_isolation, direct_publish.
-- [ ] **Step 5:** Crash sweep: `cargo nextest run -p rdlt-connector-postgres --features failpoints -E 'binary(dest_crash_sweep)'`
-- [ ] **Step 6:** Commit: `refactor(postgres): dest splits by owned state — catalog, unit, executor`
+### Task 10: gate wiring + naming audit + docs
 
-### Task 6: dest config entry points + facade delegation
+- [ ] **Step 1:** Wire the new binaries into the gate per 024's discipline: Makefile sweep/test lines + the by-name enumeration (find the mechanism: `grep -rn "crash_sweep\|memory_bound" Makefile crates/rdlt-testkit/`); every new binary invoked or exempted BY NAME.
+- [ ] **Step 2:** Naming audit against the rules: `grep -rnE "\b(conn|stmt|tbl|cfg|ctx|buf)\b" crates/rdlt-connector-postgres-v2/src/` → zero hits (serde renames excepted); ledger (Appendix C) complete; every public item documented.
+- [ ] **Step 3:** README (self-contained, old crate's coverage) + lib.rs front page with a RUNNING doctest (yaml → validated source; contradiction refused at parse time).
+- [ ] **Step 4:** `cargo clippy -p rdlt-connector-postgres-v2 --all-targets --all-features -- -D warnings`; fmt; `RUSTDOCFLAGS="-D warnings" cargo doc -p rdlt-connector-postgres-v2 --no-deps --all-features`; `cd fuzz && cargo check` if fuzz targets were added.
+- [ ] **Step 5:** Commit `docs(postgres-v2): the front page + the gate knows every binary`.
 
-**Files:**
-- Create: `src/dest/config.rs` rewritten: builder (frozen) + `PostgresDestConfig { conn, dataset, tls, merge_strategy, tables }` with `from_yaml/from_json/from_value`, `config_schema()`
-- Modify: `src/dest/connector.rs` (`spec()` now carries the schema), `crates/rdlt/src/pipeline_spec.rs` (delegate the postgres dest arm), string-newtype macro adoption for `Lag`/`Wait`/`HintType` if not already done in Task 3
-- Test: new `tests/cases/test_dest_config.rs` (entry-point trio + schema round-trip via `jsonschema`, mirroring `test_config_schema.rs`), facade's own pipeline_spec tests
+### Task 11: parity measurement + the gate, twice
 
-**Behavioral contract:** the facade's YAML field set is FROZEN (existing bench-
-generated specs must parse unchanged); explicit `merge_strategy` under
-append/replace stays a typed error at open, absent stays permissive
-(the load-bearing `Option`); `from_yaml → ConfigError` (family rule).
+- [ ] **Step 1:** Hot-path parity: run `benches/iai.rs` (new) vs old `iai_pg` equivalents; instruction counts within noise of the old crate's, or fix before proceeding.
+- [ ] **Step 2:** `env -u RUSTUP_TOOLCHAIN cargo test --doc -p rdlt-connector-postgres-v2`.
+- [ ] **Step 3:** Full gate from repo root, untouched while running: `env -u RUSTUP_TOOLCHAIN make check`; wait on the log's completion marker.
+- [ ] **Step 4:** Second untouched run; both clean (old crate's 964 + new crate's suites, sweeps, semver, benches, cold start) → done.
+- [ ] **Step 5:** Update memory; report. Merge + facade swap remain the owner's calls.
 
-- [ ] **Step 1:** Write config type + entry points + schema fresh; wire `spec()`.
-- [ ] **Step 2:** Delegate facade arm; run facade tests: `cargo nextest run -p rdlt`.
-- [ ] **Step 3:** New test file; crate suites green.
-- [ ] **Step 4:** Commit: `feat(postgres): the destination is describable — config entry points reach parity with the source`
+## Appendix A — Behavioral contracts
 
-### Task 7: source — one validation gate, cursor by noun
+Seeded from the survey reports; each build task's Step 1 completes its section
+from the old source BEFORE fresh code is written.
 
-**Files:**
-- Create: `src/source/plan.rs`, `src/source/cursor/mod.rs`, `src/source/cursor/watermark.rs`, `src/source/cursor/tracker.rs`, `src/source/cursor/prepare.rs`, `src/source/pump.rs`
-- Modify: `src/source/connector.rs` (thins to SPI dispatch), `src/source/sqlgen.rs` (rewrite in place; `wrap_query` used by BOTH describe and read paths), `src/source/reflect.rs` (rewrite in place), `src/source/errors.rs` (rewrite in place), `src/source/config/*` (rewrite in place)
-- Delete: `src/source/cursor.rs`, `src/source/copy_pump.rs`
-- Test: `test_incremental.rs`, `test_source_conformance.rs`, `test_query_streams.rs`, `test_config.rs`, `test_option_edges.rs`, crash_sweep
+**§Session** — parse gate: TLS trio (`sslrootcert`/`sslcert`/`sslkey`) +
+`sslmode=verify-ca|verify-full` extracted from BOTH libpq spellings (URL query
++ key=value with quote-aware scan); strict percent-escapes (malformed = typed
+error naming param and value); driver rejection names the offending key when
+it is outside tokio-postgres 0.7's accepted set (with per-param hints:
+sslpassword/gssencmode/requiressl/sslcrl/service); `sslrootcert=system` = the
+platform store (conflicts with an explicit root_cert); trio merge:
+conn-value + absent block field fills, agreeing duplicates pass, disagreement
+typed; verify-* from the conn string may be kept or STRENGTHENED by the block,
+never weakened (strength order disable<prefer<require<verify_ca<verify_full);
+credentials both-or-neither, never with plaintext, checked across sources;
+`application_name=rdlt` unless set. Resolution without a block: driver sslmode
+→ mode (Disable/Require map, else Prefer). Contradictions: explicit disable vs
+demanding block; explicit require vs disable block; prefer composes with
+everything (incl. a block that only sets root_cert). Connect: verifying modes
+force driver ssl_mode Require (never plaintext fallback); Disable forces
+driver Disable; ONE generic connect path for plaintext + rustls; driver task
+detached, its terminal error logged (`tracing::warn`) — it names WHY later
+statements fail. Classification: rustls errors reached through io::Error
+get_ref (source() skips it); UnknownIssuer→TrustAnchor,
+NotValidForName*→Hostname, other cert errors→Chain; alerts
+CertificateRequired/BadCertificate/UnknownCA/CertificateUnknown/AccessDenied/
+HandshakeFailure→ClientCert; pinned needle "server does not support TLS"→
+ServerRefusedTls (pin test); 28000 + "certificate" in message→ClientCert;
+else Other with connect-polarity transience. TLS-verification failures never
+transient. detail(): db errors render message + SQLSTATE + COPY `where_`
+context; non-db render the whole source chain. GUC profiles: CdcControl =
+`SET datestyle = 'ISO'; SET bytea_output = 'hex'`.
 
-**Interfaces (produces):**
-```rust
-pub(crate) enum StreamPlan { Table(TablePlan), Query(QueryPlan), Cdc(CdcPlan) }
-pub(crate) async fn plan_streams(cfg: &PostgresConfig, reflection: &Reflection) -> Result<Vec<StreamPlan>, PgSourceError>;
-// THE gate: cursor column selected/capable, lag prerequisites (inclusive boundary + sql_delta + PK),
-// CDC replica-identity keys survive column selection, query-name collisions.
-// streams() maps plans → StreamSpec (always .with_structured()); read() looks up its plan — NO revalidation, ONE error text per fact.
-pub(crate) struct Watermark …;   // serde JSON shape FROZEN (CursorState); literal rendering via types::literal
-pub(crate) struct Tracker …;     // built from a TrackerSpec struct, not 8 positional args; single pass per batch, row_key computed once
-pub(crate) fn prepare(plan: &TablePlan, since: Option<&Cursor>) -> Result<Incremental, PgSourceError>;  // cursor column resolved ONCE
-// pump.rs: pub(crate) async fn pump(client, sql, on_batch) — the shared COPY read loop; crash hook behind #[cfg(feature="failpoints")], NOT a production enum variant
-```
+**§Types** — Kind set: derive from old `type_map.rs` (Task 4 Step 1 records
+it here). UUID accepts urn:/braced/bare-hex server forms; numeric text-domain
+end-to-end (38-digit u128 wrap lesson); timestamps µs precision; `rdlt::lossy`
+warn once per column per read; hint vocabulary = the closed "decimal(p,s)"
+string table; binary decode single-pass + bounded (memory_bound proves);
+encode borrowed views + 64 KiB flush; text parse and literal render round-trip
+per Kind; encoder↔decoder round-trip oracle.
 
-**Behavioral contract:** Appendix A §Source. Cursorless streams never
-checkpoint; `ChannelClosed` = cancellation = `Ok(())`; watermark never lowered;
-lag re-delivers window under Append (documented); boundary matrix
-(inclusive/exclusive × closed/open) preserved exactly; dedup semantics of
-tracker (values beat NULL, ties keep arrival last-wins).
+**§Source** — streams always `.with_structured()`; validation facts, once
+each: cursor column selected + cursor-capable post-hints; lag requires
+inclusive boundary + defined sql_delta + a primary key; CDC replica-identity
+keys survive column selection; query-name collisions with reflected tables.
+Reflection once per run (OnceCell), query streams described through the same
+cache; `SELECT * FROM (sql) AS q` is the ONE wrapping for describe AND read.
+Cursorless (snapshot) streams never checkpoint; intermediate checkpoints after
+each pushed batch on cursored streams; ChannelClosed = cancellation = Ok.
+Boundary matrix (inclusive/exclusive) and watermark-never-lowered exactly as
+old `sql.rs`/`cursor.rs` record them; tracker dedup: values beat NULL, ties
+keep arrival last-wins (survivor drives every merge strategy); conn parse
+failure Fatal, network connect Transient. pg_inherits discovery filter with
+explicit-listing override.
 
-- [ ] **Step 1:** Read old connector/cursor/copy_pump/sqlgen; contracts to §Source (the boundary matrix verbatim, the tracker dedup rules, the 019 perf notes on render_cell).
-- [ ] **Step 2:** Write plan.rs + cursor/ + pump.rs fresh; thin connector.rs; rewrite sqlgen/reflect/errors/config in place.
-- [ ] **Step 3:** Delete old files; suites green incl. `-E 'binary(crash_sweep)'` armed.
-- [ ] **Step 4:** Commit: `refactor(postgres): every source fact validated once — plan.rs is the gate`
+**§Destination** — capabilities: merge true, structs false, scalar_lists
+false, json_type true, decimal true, ident max_len 63. open(): create schema
+if missing → `SET search_path` → create `_rdlt_state`/`_rdlt_commits`/
+`_rdlt_cleared` (sqlcore names) → TRUNCATE stage tables matching THIS
+pipeline's hash prefix only. Unit: `BEGIN ISOLATION LEVEL READ COMMITTED`,
+`SET LOCAL work_mem = '64MB'`, literal COMMIT/ROLLBACK (borrow reason);
+rollback on EVERY mutating-path error (25P02 poisoning). Writes: stage for
+merge tables, target directly otherwise; Replace clear via sqlcore
+`prepare_target` at most once per (load, target) with the durable
+`_rdlt_cleared` record in the same transaction. Commit: load_id equality
+check; lazy unit open; receipt probe; staged-emptiness probes
+(`staged_probe_targets`); `plan_commit` script executed step-by-step;
+`ClearTarget`/`InsertSelect` unreachable → fatal "internal:"; replay =
+rollback + apply `script.marks` + return prior receipt (sqlcore
+`replay_disposition(DirectToTarget) == DiscardUnit`); 23505 on merge-identity
+index → sqlcore `duplicate_merge_key_diagnosis`; ensure-before-validate phase
+order FROZEN. DDL: stage tables UNLOGGED with `__rdlt_arrival bigint
+GENERATED BY DEFAULT AS IDENTITY (CACHE 32)`; widens spell `USING x::type`;
+NOT NULL on target only. Dialect: exactly three overrides (arrival_order,
+clear_table=TRUNCATE, materialize_dedup=CREATE TEMP TABLE … ON COMMIT DROP);
+defaults ARE this destination's text (golden-pinned). Statement
+classification: 22/23/42 permanent, else transient.
 
-### Task 8: CDC — typestate runtime, ack has a home
+**§CDC** — slot-first snapshot; ONE repeatable-read view for all CDC tables;
+pre-existing slot: snapshot cursor = WAL position read BEFORE the RR BEGIN
+(visibility horizon; confirmed_flush would wedge recovery on
+TRUNCATE/TOAST-without-old-image); ack trails one run behind — floors =
+destination-committed `since` values + fresh snapshot points; failed runs ack
+nothing; control connection GUC-pinned (Profile::CdcControl), Arc-shared so a
+backpressured stream never stalls others, dropped on any error (retries need
+fresh clients); preflight: replica identity d→PK (else typed), i→identity
+index columns (dropped index = typed, never empty key), f→declared override
+or PK (TOAST substitution possible), nothing→typed; declared primary_key
+disagreeing with identity columns = typed (except under FULL); flag-column
+collision = typed; empty key = defense-in-depth assert. TOAST
+substitute-under-FULL / typed without; PK-change = delete+insert; chunked
+tail with per-chunk targets + checkpoint-probe cancellation (quiet tails
+observe engine cancel); retention warn @256MiB on `rdlt::cdc`; lag_bytes
+reporting; CdcCursor = distinct JSON shape `{cdc_lsn}` (misrouted state fails
+typed); slot lifecycle errors distinguished: WAL-retention overrun,
+concurrent-consumer PID, invalidation, recreated-slot WAL gap; TRUNCATE in
+feed = defer-to-commit typed error; publication existence/coverage checks.
 
-**Files:**
-- Create: `src/source/cdc/ack.rs`; rewrite in place: `runtime.rs`, `read.rs`, `slot.rs`, `tail.rs`, `apply.rs`, `pgoutput.rs`, `mod.rs`
-- Delete: `src/source/cdc/values.rs` (remainder folded into types/text in Task 3)
-- Test: `test_cdc_cycle.rs`, `test_cdc_slot.rs`, `test_cdc_identity.rs`, `test_cdc_recovery.rs`, cdc_crash_sweep
+## Appendix B — Frozen surfaces (engine/operator-visible; the parity bar)
 
-**Interfaces (produces):**
-```rust
-// runtime.rs — the Option<Arc<Client>>+expect() pair becomes a typestate:
-pub(super) struct Control { conn: Arc<session::Conn> }      // established with Profile::CdcControl
-pub(super) struct Snapshot { conn: Arc<session::Conn> }     // holds the REPEATABLE READ txn
-pub(super) enum RunPhase { Idle, Controlled(Control), Snapshotting(Control, Snapshot) }
-// read.rs: phase functions with lock scopes — validate_slot_gap / snapshot_pass / change_pass / complete_run — each takes the guard, none straddles an await it shouldn't
-// ack.rs: pub(super) async fn advance_and_report(…) — run-completion ack + lag_bytes on `rdlt::cdc`; called by BOTH tail and non-tail paths
-// slot.rs: ensure() decomposed into a pipeline of named checks, one EnsureOutcome
-```
+1. YAML vocabularies: the source config document (field spellings incl.
+   `conn`), `DestinationOptions` (sqlcore, untouched), the facade destination
+   field set `{conn, dataset, tls, merge_strategy, tables}`, the `tls:` block
+   (mode strings, PEM fields).
+2. Persisted data: cursor-state JSON, CdcCursor JSON `{cdc_lsn}`, `_rdlt_*`
+   table names + `__rdlt_arrival`, receipt/state semantics.
+3. Wire: COPY BINARY both directions; pgoutput v1 accepted grammar; the exact
+   SQL text of the golden pins; DDL text.
+4. SPI behavior: everything in Appendix A; capabilities values; conformance
+   suites pass; crash-point exactly-once guarantees.
+5. NOT frozen: every Rust identifier, module path, test name, and doc string
+   of the new crate; the old crate (untouched, still shipping the gate).
 
-**Behavioral contract:** Appendix A §CDC. Slot-first snapshot; ONE
-repeatable-read view; snapshot cursor read BEFORE the RR BEGIN (visibility
-horizon — confirmed_flush would wedge recovery); ACK trails one run behind,
-failed runs ack nothing; peek session GUC pins; TOAST substitute-under-FULL /
-typed without; PK-change = delete+insert; chunked tail with checkpoint-probe
-cancellation; distinct CdcCursor JSON shape (misrouted state fails typed);
-R9's distinguished slot errors (WAL-retention overrun, concurrent consumer,
-invalidation, recreated-slot gap, dropped-index empty key).
+## Appendix C — Rename ledger (old → v2; extend as coined)
 
-- [ ] **Step 1:** Read all eight old files; §CDC contract (this is the subtlest zone — every recorded 009-review fix is an invariant).
-- [ ] **Step 2:** Rewrite fresh (pgoutput parser last — it is self-contained and fuzzed; keep its exact accepted grammar).
-- [ ] **Step 3:** CDC suites + `-E 'binary(cdc_crash_sweep)'` green.
-- [ ] **Step 4:** Commit: `refactor(postgres): cdc runtime is a typestate — the audited panics retire`
-
-### Task 9: `testsupport/` — one seam, and the outside world
-
-**Files:**
-- Create: `src/testsupport/mod.rs` (doc-hidden TOC), `src/testsupport/source.rs`, `src/testsupport/dest.rs`, `src/testsupport/session.rs`, shared fixture data `src/testsupport/data.rs`
-- Modify: `src/fixtures.rs` (dedup `PgFixture`/`CdcPgFixture` via one private `start_with(flags)`; keep public API), `fuzz/fuzz_targets/pg_copy_decode.rs`, `fuzz/fuzz_targets/pg_pgoutput_decode.rs`, `benches/iai_pg.rs`, `src/tls/mod.rs` (doc-hidden block retires), test files importing `testhook`/`dest::sqlgen`
-- Delete: `src/source/testhook.rs`, `src/dest/testhook.rs`, the Task-5 temporary shim
-- Test: whole crate + `cargo check` in `fuzz/` (out-of-workspace — the compiler won't catch it from here)
-
-- [ ] **Step 1:** Write testsupport/ fresh; the duplicated literal FieldPlan vectors become one fixture table in data.rs.
-- [ ] **Step 2:** Repoint fuzz targets, bench, and every test import; delete old seams.
-- [ ] **Step 3:** `cargo nextest run -p rdlt-connector-postgres --features failpoints,fixtures` + `cd fuzz && cargo check` + bench `--list`.
-- [ ] **Step 4:** Commit: `refactor(postgres): one test-access seam — testsupport/ replaces four conventions`
-
-### Task 10: front page, naming sweep, duplicate audit
-
-**Files:**
-- Modify: `src/lib.rs` (front-page doctest stays runnable; module map updated), `README.md`, every `mod.rs` TOC comment
-- Audit: whole crate
-
-- [ ] **Step 1:** lib.rs front page rewritten for the v2 map (keep the doctest contract: yaml → validated source; contradiction refused at parse time with "contradicts" in the message).
-- [ ] **Step 2:** Naming sweep against the crate rule (public = `Postgres*`, internal = `Pg*` or bare; one spelling per concept — grep for the old names: `FieldPlan|MappedType|Decode::|PgSession|testhook|driver_error|copy_decode|copy_pump|rustls_config` must return zero hits in src/).
-- [ ] **Step 3:** Duplicate audit: `quote` aliases (ONE: sqlcore's, spelled at use sites), parse helpers (`grep -rn "parse_date_days\|parse_time_us"` → exactly one home), the 4-arm connect match (one home), string-newtype impls (one macro).
-- [ ] **Step 4:** `cargo clippy -p rdlt-connector-postgres --all-targets --all-features -- -D warnings`; `cargo fmt`; `RUSTDOCFLAGS="-D warnings" cargo doc -p rdlt-connector-postgres --no-deps --all-features`.
-- [ ] **Step 5:** Commit: `docs(postgres): the front page describes v2 — and nothing is spelled twice`
-
-### Task 11: the gate, twice
-
-- [ ] **Step 1:** Doc-tests: `env -u RUSTUP_TOOLCHAIN cargo test --doc -p rdlt-connector-postgres`
-- [ ] **Step 2:** Full workspace gate from repo root, no edits during the run: `env -u RUSTUP_TOOLCHAIN make check` — wait on the log's completion marker, not a pgrep PID.
-- [ ] **Step 3:** Inspect: 964/964 (2 instrument skips), all sweeps, semver clean, 6 benches 0 regressed (the iai compare adjudicates D6 — if a bench regressed, fix the hot path, do NOT re-record baselines), cold start ≤ 40 ms.
-- [ ] **Step 4:** Second untouched gate run; both clean → done.
-- [ ] **Step 5:** Update memory (plan-series status); report. Merge stays the owner's call (D2).
-
-## Appendix A — Behavioral contracts (filled during each task's Step 1)
-
-Seeded from the three survey reports; each task's Step 1 verifies against the
-old source and completes its section BEFORE fresh code is written.
-
-**§Session** — six call sites today; CDC control pins `datestyle=ISO`,
-`bytea_output=hex` (pgoutput TEXT forms depend on them); dest sets
-`search_path` AFTER schema creation (stays in dest, not a profile); parse:
-libpq trio + verify-* sslmode spellings translate, unsupported params rejected
-by name, strict percent-escape errors, `application_name=rdlt` default,
-sslmode-contradicts-tls-block refused at source-config parse time.
-
-**§Types** — full Kind set from old `type_map.rs`; uuid accepts server forms
-(urn:, braces, bare hex); numeric stays in the string domain end-to-end (u128
-wraps silently in release at 38 digits — the 008 lesson); timestamps µs;
-`rdlt::lossy` warn once per column per read; hint vocabulary is the closed
-"decimal(p,s)" string table; binary decoder bounded-memory (memory_bound
-proves); encoder 64 KiB flush; decoder-as-encoder-oracle round-trip test.
-
-**§Dest** — capabilities: merge/json/decimal true, structs/lists false,
-ident max_len 63; open(): create schema → search_path → state/commits/cleared
-tables → TRUNCATE stages scoped to pipeline hash prefix; unit tx literals
-(`BEGIN ISOLATION LEVEL READ COMMITTED`, `SET LOCAL work_mem = '64MB'`);
-rollback on EVERY mutating error (25P02); `DirectToTarget` publish;
-ClearTarget/InsertSelect unreachable→fatal "internal:"; replay: rollback +
-apply marks + prior receipt; ensure-before-validate phase order FROZEN;
-23505→duplicate_merge_key_diagnosis; golden SQL byte-identical (21 pins).
-
-**§Source** — streams() always structured; validation facts (cursor
-selected/capable; lag needs inclusive+delta+PK; CDC keys survive selection;
-query name collisions); cursorless never checkpoints; ChannelClosed=Ok;
-boundary matrix inclusive/exclusive; watermark never lowered; tracker dedup
-(values>NULL, ties→arrival last-wins); query streams wrapped ONE way
-(`SELECT * FROM (sql) AS q`) for describe AND read.
-
-**§CDC** — slot-first snapshot; one RR view; snapshot cursor = visibility
-horizon read before RR BEGIN; ack trails one run, failed runs ack nothing;
-floors = dest-committed since + fresh snapshot points; TOAST
-substitute-under-FULL/typed-without; PK-change delete+insert; chunked tail +
-checkpoint-probe cancellation; retention warn @256MiB; primary_key override
-wins under REPLICA IDENTITY FULL; distinguished slot errors (retention
-overrun, concurrent pid, invalidation, recreated gap, dropped-'i'-index);
-per-chunk targets; distinct CdcCursor JSON.
-
-## Appendix B — Frozen surfaces (never change; verified by existing tests)
-
-1. Public paths: `source::{PostgresSource, PostgresConfig, ConfigError, config_schema, HintType}`, `dest::{Postgres, DestinationOptions, TableOptions, MergeStrategy, Scd2Options, DedupSort, SortOrder, AbsentPolicy}`, `tls::TlsPolicy` (+serde), `fixtures::{PgFixture, CdcPgFixture}`; doc-hidden: `FAIL_POINTS`/`CDC_FAIL_POINTS` registries (names + every crash-point ID string).
-2. Config vocabularies: source YAML document; sqlcore `DestinationOptions` serde; facade dest fields `{conn, dataset, tls, merge_strategy, tables}`.
-3. Persisted: cursor-state JSON, CdcCursor JSON, `_rdlt_*` names (sqlcore's), receipt semantics, `__rdlt_arrival` identity column DDL.
-4. Wire: COPY BINARY both directions; pgoutput v1 accepted grammar; golden SQL text; DDL text.
-5. Gate names: test binaries `integration`, `crash_sweep`, `dest_crash_sweep`, `cdc_crash_sweep`, `memory_bound`; bench `iai_pg` + its bench fn names; crate name + feature names (`source`, `dest`, `failpoints`, `fixtures`).
-6. Engine-visible behavior: everything in Appendix A.
+| Old | v2 | Rule |
+|---|---|---|
+| crate `rdlt-connector-postgres` | `rdlt-connector-postgres-v2` | D1 |
+| `source::PostgresSource` | `source::Postgres` | 1 |
+| `source::PostgresConfig` | `source::Config` (field `connection`, serde-renamed `conn`) | 1, 2 |
+| `source::HintType` | `source::config::TypeHint` | 1 |
+| `dest::Postgres` | `destination::Postgres` (`new`, not `connect` — it does not connect) | 2, 3 |
+| module `dest` | `destination` | 2 |
+| `tls::TlsPolicy` / `TlsMode` / `TlsConfigError` | `tls::Policy` / `tls::Mode` / `tls::ConfigError` | 1 |
+| `tls::parse_conn` / `ParsedConn` | `session::parse` / `session::Parsed` | 1, 2 |
+| `tls::connect` + `ConnectResult` | `session::establish` + `session::EstablishError` | 3, 7 |
+| `driver_error::detail` | `session::classify::detail` | seam move |
+| `FieldPlan` (in copy_decode) | `types::Column` | 1, seam move |
+| `MappedType`/`Decode` | `types::Kind` | 5 |
+| `CopyDecoder` | `types::binary::Decoder` | 1 |
+| `copy_pump::pump_copy` | `source::copy::stream` (verb) | 3 |
+| `cursor::Tracker::new(8 args)` | builder/spec struct | 4 |
+| `PgSession` (dest) | `destination::load::Load` (the LoadSession impl) | 1 |
+| `TableIdentity.full` | `covers_all_columns` | 6 |
+| `PgFixture` / `CdcPgFixture` | `fixtures::PostgresContainer` / `fixtures::CdcContainer` | 1, 2 |
+| `testhook` (×2) + `dest/sqlgen` shim + tls doc-hidden block | `testsupport::{source,destination,session}` | one seam |
+| test binaries `crash_sweep`/`dest_crash_sweep` | `source_crash_sweep`/`destination_crash_sweep` | 2 |
