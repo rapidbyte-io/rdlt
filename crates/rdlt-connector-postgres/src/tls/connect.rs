@@ -108,7 +108,7 @@ fn classify_connect_error(err: &tokio_postgres::Error) -> ConnectError {
     // the real server message + SQLSTATE — bad password / unknown database
     // are the most common connect failures. Shared rendering with both
     // connectors so the detail cannot drift.
-    let detail = crate::pgerror::pg_error_detail(err);
+    let detail = crate::driver_error::detail(err);
     let mut source: Option<&(dyn std::error::Error + 'static)> = err.source();
     while let Some(cause) = source {
         // io::Error::source() skips its own inner error (it delegates to the
@@ -154,7 +154,7 @@ fn classify_connect_error(err: &tokio_postgres::Error) -> ConnectError {
     ConnectError {
         failure: TlsFailure::Other,
         detail,
-        transient: crate::pgerror::is_transient_sqlstate(err),
+        transient: crate::driver_error::is_transient_connect_sqlstate(err),
     }
 }
 

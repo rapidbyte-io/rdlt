@@ -18,7 +18,7 @@ use arrow_array::builder::{
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 
-use crate::source::types::Decode;
+use crate::source::type_map::Decode;
 
 /// µs from the PG epoch (2000-01-01) to the Unix epoch.
 const PG_EPOCH_US: i64 = 946_684_800_000_000;

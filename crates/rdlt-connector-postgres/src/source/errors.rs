@@ -64,15 +64,15 @@ pub(crate) fn transient(
 }
 
 /// Classify a driver error into Transient/Fatal by SQLSTATE class (the shared
-/// [`crate::pgerror::is_transient_sqlstate`] rule), carrying the server's full
+/// [`crate::driver_error::is_transient_connect_sqlstate`] rule), carrying the server's full
 /// rendered detail either way.
 pub(crate) fn classify(
     phase: Phase,
     table: Option<&str>,
     err: &tokio_postgres::Error,
 ) -> SourceError {
-    let detail = crate::pgerror::pg_error_detail(err);
-    if crate::pgerror::is_transient_sqlstate(err) {
+    let detail = crate::driver_error::detail(err);
+    if crate::driver_error::is_transient_connect_sqlstate(err) {
         transient(phase, table, detail)
     } else {
         // 28 auth, 3D invalid catalog, 42 syntax/undefined object, 22 data

@@ -9,7 +9,7 @@ use tokio_postgres::Client;
 
 use crate::source::config::{PostgresConfig, TableConfig};
 use crate::source::errors::{self, Phase};
-use crate::source::types::{MappedType, PgTypeInfo, map_type};
+use crate::source::type_map::{MappedType, PgTypeInfo, map_type};
 
 #[derive(Debug, Clone)]
 pub struct ReflectedColumn {
@@ -193,7 +193,7 @@ pub(crate) fn hinted_columns(
                     )
                 })?;
             column.mapped =
-                crate::source::types::apply_hint(&column.type_info, *hint).map_err(|e| {
+                crate::source::type_map::apply_hint(&column.type_info, *hint).map_err(|e| {
                     errors::fatal(
                         Phase::Reflect,
                         Some(&table.name),
@@ -359,7 +359,7 @@ pub(crate) async fn reflect_schema(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::source::types::{Decode, oid};
+    use crate::source::type_map::{Decode, oid};
 
     fn table(cols: &[(&str, u32, bool)]) -> ReflectedTable {
         ReflectedTable {

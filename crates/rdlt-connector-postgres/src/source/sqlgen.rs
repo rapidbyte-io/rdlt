@@ -5,7 +5,7 @@
 //! explicit casts — never raw user strings.
 
 use crate::source::reflect::ReflectedColumn;
-use crate::source::types::SelectPolicy;
+use crate::source::type_map::SelectPolicy;
 
 /// PostgreSQL identifier quoting: the ONE injection-safe rule shared with
 /// every SQL destination. Delegates to [`rdlt_connector_sqlcore::quote_identifier`]
@@ -168,7 +168,7 @@ pub(crate) fn incremental_clauses(
 mod tests {
     use super::*;
     use crate::source::reflect::ReflectedColumn;
-    use crate::source::types::{PgTypeInfo, map_type, oid};
+    use crate::source::type_map::{PgTypeInfo, map_type, oid};
 
     fn col(name: &str, o: u32) -> ReflectedColumn {
         let info = PgTypeInfo {

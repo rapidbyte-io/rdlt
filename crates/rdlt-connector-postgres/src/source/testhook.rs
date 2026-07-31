@@ -53,7 +53,7 @@ pub fn bench_wire(rows: usize) -> Vec<u8> {
 /// returns decoded rows so the work cannot be optimized away.
 pub fn bench_decode(wire: &[u8]) -> u64 {
     use crate::source::copy_decode::{CopyDecoder, FieldPlan};
-    use crate::source::types::Decode;
+    use crate::source::type_map::Decode;
     use arrow_schema::{DataType, TimeUnit};
 
     let plans = vec![
@@ -131,7 +131,7 @@ pub fn fuzz_pgoutput_decode(data: &[u8]) {
 /// chunk-boundary states get fuzzed too.
 pub fn fuzz_copy_decode(data: &[u8]) {
     use crate::source::copy_decode::{CopyDecoder, FieldPlan};
-    use crate::source::types::Decode;
+    use crate::source::type_map::Decode;
     use arrow_schema::{DataType, TimeUnit};
 
     let plans = vec![

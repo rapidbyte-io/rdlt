@@ -39,13 +39,13 @@
 //!   the batch that carried it and names the row. Under staging the row landed
 //!   in a permissive stage first and failed later, at `INSERT … SELECT`.
 
+mod classify;
 mod commit;
 mod config;
 mod connector;
 mod ddl;
 mod dialect;
 mod encode;
-mod errors;
 #[cfg(feature = "failpoints")]
 mod fail_points;
 #[doc(hidden)]
@@ -62,5 +62,5 @@ pub use config::{
 #[doc(hidden)]
 pub use fail_points::FAIL_POINTS;
 
+pub(crate) use classify::{classify_stmt, describe, fatal, transient};
 pub(crate) use dialect::quote;
-pub(crate) use errors::{classify_stmt, describe, fatal, transient};

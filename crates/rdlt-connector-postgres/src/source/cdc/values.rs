@@ -12,7 +12,7 @@ use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 
 use crate::source::copy_decode::FieldPlan;
-use crate::source::types::Decode;
+use crate::source::type_map::Decode;
 
 /// Typed change-row decode failure. thiserror, matching the crate's other
 /// decode errors ([`crate::source::copy_decode::DecodeError`],

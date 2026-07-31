@@ -1,5 +1,6 @@
 //! SQL-generation seam, exposed ONLY for the golden-SQL pin suite: the pins
 //! bind the exact statement text across the sqlcore extraction. Not a public
+//! API.
 
 pub use super::commit::{ARRIVAL_COL, UNIT_BEGIN, UNIT_COMMIT, UNIT_ROLLBACK, UNIT_WORK_MEM};
 pub use super::dialect::PgDialect;

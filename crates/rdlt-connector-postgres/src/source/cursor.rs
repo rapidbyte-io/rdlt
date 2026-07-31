@@ -11,7 +11,7 @@ use crate::source::config::{self, CursorConfig, TableConfig};
 use crate::source::errors::{self, Phase};
 use crate::source::reflect::{ReflectedColumn, ReflectedTable};
 use crate::source::sqlgen;
-use crate::source::types::Decode;
+use crate::source::type_map::Decode;
 
 /// A typed watermark value. Ordering is the cursor ordering (same-variant
 /// comparisons only — the column type is fixed per stream).
@@ -770,7 +770,7 @@ mod tests {
 
     #[test]
     fn out_of_order_arrival_fails_in_all_profiles() {
-        use crate::source::types::Decode;
+        use crate::source::type_map::Decode;
         use arrow_array::{Int64Array, RecordBatch};
         use arrow_schema::{DataType, Field, Schema};
         use std::sync::Arc;
@@ -803,7 +803,7 @@ mod tests {
 
     #[test]
     fn row_key_threads_and_composes() {
-        use crate::source::types::Decode;
+        use crate::source::type_map::Decode;
         use arrow_array::{Int64Array, RecordBatch};
         use arrow_schema::{DataType, Field, Schema};
         use std::sync::Arc;
@@ -847,7 +847,7 @@ mod tests {
     /// timestamptz boundary row — all boundary rows colliding on one key.
     #[test]
     fn zoned_timestamp_keys_are_distinct_and_nonempty() {
-        use crate::source::types::Decode;
+        use crate::source::type_map::Decode;
         use arrow_array::{RecordBatch, TimestampMicrosecondArray};
         use arrow_schema::{DataType, Field, Schema, TimeUnit};
         use std::sync::Arc;
@@ -876,7 +876,7 @@ mod tests {
 
     #[test]
     fn config_literals_parse_per_type() {
-        use crate::source::types::Decode;
+        use crate::source::type_map::Decode;
         assert_eq!(
             Watermark::parse_config_literal(Decode::Int8, "17", "t").expect("int"),
             Watermark::Int(17)

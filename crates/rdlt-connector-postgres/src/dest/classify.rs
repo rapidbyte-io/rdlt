@@ -7,7 +7,7 @@ use rdlt_connector::DestinationError;
 /// rendering both connectors use (tokio-postgres's own Display for a db error
 /// is just "db error"; non-db errors render their full source chain).
 pub(crate) fn describe(e: &tokio_postgres::Error) -> String {
-    crate::pgerror::pg_error_detail(e)
+    crate::driver_error::detail(e)
 }
 
 pub(crate) fn transient(e: tokio_postgres::Error) -> DestinationError {
@@ -21,7 +21,7 @@ pub(crate) fn transient(e: tokio_postgres::Error) -> DestinationError {
 /// win. Everything else stays transient (connection-shaped).
 pub(crate) fn classify_stmt(e: tokio_postgres::Error) -> DestinationError {
     match e.as_db_error() {
-        Some(db) if crate::pgerror::is_permanent_statement_sqlstate(db.code().code()) => {
+        Some(db) if crate::driver_error::is_permanent_statement_sqlstate(db.code().code()) => {
             DestinationError::fatal(describe(&e))
         }
         _ => DestinationError::transient(describe(&e)),

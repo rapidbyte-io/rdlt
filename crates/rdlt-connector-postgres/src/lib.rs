@@ -56,9 +56,9 @@
 //! (`DestinationOptions`, `TableOptions`, …), the same spelling every SQL destination
 //! uses.
 
+mod driver_error;
 #[cfg(feature = "fixtures")]
 pub mod fixtures;
-mod pgerror;
 pub mod tls;
 
 #[cfg(feature = "dest")]

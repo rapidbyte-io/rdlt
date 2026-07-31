@@ -220,8 +220,11 @@ impl Lag {
     /// The SQL delta subtracted from (direction max) or added to (min) the
     /// watermark, per cursor family. Err = the pair is undefined — surfaced
     /// as a typed open-time error naming the column.
-    pub(crate) fn sql_delta(&self, decode: crate::source::types::Decode) -> Result<String, String> {
-        use crate::source::types::Decode;
+    pub(crate) fn sql_delta(
+        &self,
+        decode: crate::source::type_map::Decode,
+    ) -> Result<String, String> {
+        use crate::source::type_map::Decode;
         match (self, decode) {
             (Self::Duration { seconds }, Decode::Timestamp { .. }) => {
                 Ok(format!("INTERVAL '{seconds} seconds'"))
@@ -712,7 +715,7 @@ tables:
 
     #[test]
     fn lag_vocabulary_round_trips_and_rejects() {
-        use crate::source::types::Decode;
+        use crate::source::type_map::Decode;
         // Duration forms.
         assert_eq!("90s".parse::<Lag>().unwrap(), Lag::Duration { seconds: 90 });
         assert_eq!("5m".parse::<Lag>().unwrap(), Lag::Duration { seconds: 300 });

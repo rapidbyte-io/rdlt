@@ -7,7 +7,7 @@
 //! every rendered detail reaches through it. Second, the SQLSTATE *class* (or
 //! its absence) decides retry-worthiness. TWO classification rules live
 //! here, with deliberately OPPOSITE polarity for classes neither lists:
-//! at connect/session time (`is_transient_sqlstate`) only the clearly
+//! at connect/session time (`is_transient_connect_sqlstate`) only the clearly
 //! environmental classes retry and an unknown class fails fast (it is
 //! auth/configuration-shaped); at statement time
 //! (`is_permanent_statement_sqlstate`) only the clearly deterministic
@@ -20,7 +20,7 @@
 /// message + SQLSTATE, plus the statement's column context when the server
 /// supplied one (the COPY `where_` field). A non-db error renders its whole
 /// source chain — `Display` alone drops the cause.
-pub(crate) fn pg_error_detail(err: &tokio_postgres::Error) -> String {
+pub(crate) fn detail(err: &tokio_postgres::Error) -> String {
     use std::error::Error as _;
     if let Some(db) = err.as_db_error() {
         let context = db.where_().map(|w| format!(" [{w}]")).unwrap_or_default();
@@ -47,7 +47,7 @@ pub(crate) fn pg_error_detail(err: &tokio_postgres::Error) -> String {
 /// 57 operator intervention (shutdown), 40 transaction rollback
 /// (serialization). Every other class is server-classified and permanent —
 /// retrying an auth, syntax, or data error cannot fix it.
-pub(crate) fn is_transient_sqlstate(err: &tokio_postgres::Error) -> bool {
+pub(crate) fn is_transient_connect_sqlstate(err: &tokio_postgres::Error) -> bool {
     match err.code() {
         None => true,
         Some(state) => matches!(&state.code()[..2], "08" | "53" | "57" | "40"),
@@ -59,7 +59,7 @@ pub(crate) fn is_transient_sqlstate(err: &tokio_postgres::Error) -> bool {
 /// 23 integrity (a duplicate receipt included), 42 syntax/access — are
 /// permanent; retrying an identical statement cannot win. Every other
 /// class stays transient. See the module doc for why this polarity
-/// differs from `is_transient_sqlstate`.
+/// differs from `is_transient_connect_sqlstate`.
 pub(crate) fn is_permanent_statement_sqlstate(code: &str) -> bool {
     matches!(code.get(..2), Some("22") | Some("23") | Some("42"))
 }

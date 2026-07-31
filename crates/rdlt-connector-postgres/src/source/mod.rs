@@ -21,11 +21,11 @@ mod reflect;
 mod sqlgen;
 #[doc(hidden)]
 pub mod testhook;
-mod types;
+mod type_map;
 
 pub use config::{ConfigError, PostgresConfig, config_schema};
 pub use connector::PostgresSource;
-pub use types::HintType;
+pub use type_map::HintType;
 
 #[cfg(feature = "failpoints")]
 #[doc(hidden)]
