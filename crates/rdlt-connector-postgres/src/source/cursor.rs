@@ -364,7 +364,7 @@ impl Tracker {
             && cursor_col.null_count() > 0
         {
             return Err(crate::source::errors::fatal(
-                crate::source::Phase::Copy,
+                crate::source::errors::Phase::Copy,
                 Some(stream),
                 format!(
                     "cursor column `{column}` contains a NULL value and \
