@@ -43,11 +43,6 @@ async fn count(client: &tokio_postgres::Client, table: &str) -> i64 {
         .get(0)
 }
 
-async fn reader(conn: &str) -> tokio_postgres::Client {
-    let client = crate::cases::common::connect(conn).await;
-    client
-}
-
 /// A Replace load clears its target and refills it in ONE transaction, so
 /// no reader ever observes the gap between the two. Pinned here because
 /// the MECHANISM is not the one an isolation-level argument would predict,
@@ -97,7 +92,7 @@ async fn a_replace_reload_is_never_observed_empty() {
     first.commit(meta("iso-1", 0)).await.expect("commit");
     drop(first);
 
-    let observer = reader(&conn).await;
+    let observer = crate::cases::common::connect(&conn).await;
     assert_eq!(count(&observer, "iso.iso").await, 3, "load 1 landed");
 
     // Load 2 clears and refills. Mid-unit — after the TRUNCATE and the
@@ -150,7 +145,7 @@ async fn a_replace_load_preserves_indexes_grants_and_dependents() {
         return;
     };
     let conn = pg.conn.clone();
-    let admin = reader(&conn).await;
+    let admin = crate::cases::common::connect(&conn).await;
     admin
         .batch_execute(
             "CREATE SCHEMA IF NOT EXISTS iso3;
@@ -273,7 +268,7 @@ async fn a_multi_unit_replace_load_clears_exactly_once() {
         session.commit(meta(seq)).await.expect("commit");
     }
 
-    let client = reader(&conn).await;
+    let client = crate::cases::common::connect(&conn).await;
     assert_eq!(
         count(&client, "iso2.iso").await,
         3,
