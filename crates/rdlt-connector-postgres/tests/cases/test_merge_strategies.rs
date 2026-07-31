@@ -10,7 +10,7 @@ use rdlt_connector::{ConnectorSpec, Cursor, ReadRequest, Source, SourceError, St
 use rdlt_connector_postgres::dest::{DestinationOptions, MergeStrategy, Postgres, TableOptions};
 use rdlt_engine::{Engine, EngineConfig};
 
-use super::PgFixture;
+use rdlt_connector_postgres::fixtures::PgFixture;
 
 /// Keyed structured stream with a bool `deleted` flag column.
 struct FlaggedSource {

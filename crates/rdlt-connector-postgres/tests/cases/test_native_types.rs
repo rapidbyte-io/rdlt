@@ -12,7 +12,8 @@ use rdlt_connector::core::{
 use rdlt_connector::{CommitMeta, Destination as _, OpenCtx, WriteMode};
 use rdlt_testkit::TableProbe as _;
 
-use super::{PgFixture, PgProbe};
+use crate::cases::common::PgProbe;
+use rdlt_connector_postgres::fixtures::PgFixture;
 
 fn col(name: &str, scalar: LogicalType, nullable: bool) -> ColumnDef {
     ColumnDef {

@@ -7,7 +7,7 @@ use rdlt_connector_postgres::fixtures::CdcPgFixture;
 use rdlt_connector_postgres::source::testhook::cdc_slot;
 use rdlt_connector_postgres::source::testhook::cdc_slot::Change;
 
-use crate::*;
+use crate::cases::cdc_rig::*;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn create_if_missing_is_idempotent_and_reports_the_consistent_point() {

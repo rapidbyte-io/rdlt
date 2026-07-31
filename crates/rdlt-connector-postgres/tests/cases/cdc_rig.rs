@@ -1,11 +1,11 @@
-//! CDC conformance: the shared rig and config scaffolding, with the cells in
-//! topic modules — slot lifecycle, the streaming cycle, replica
-//! identity/TOAST, and damage recovery.
+//! The shared CDC rig and config scaffolding consumed by the test_cdc_*
+//! case files — slot lifecycle, the streaming cycle, replica identity/TOAST,
+//! and damage recovery.
 
 use rdlt_connector_postgres::fixtures::CdcPgFixture;
 use rdlt_connector_postgres::source::config::{AckMode, CdcConfig, CdcMode, Wait};
 
-fn cdc(slot: &str, publication: &str, create_if_missing: bool) -> CdcConfig {
+pub fn cdc(slot: &str, publication: &str, create_if_missing: bool) -> CdcConfig {
     CdcConfig {
         slot: slot.into(),
         publication: publication.into(),
@@ -17,7 +17,7 @@ fn cdc(slot: &str, publication: &str, create_if_missing: bool) -> CdcConfig {
     }
 }
 
-const SEED: &str = r#"
+pub const SEED: &str = r#"
 CREATE TABLE public.orders (id int8 PRIMARY KEY, total int4);
 INSERT INTO public.orders VALUES (1, 10), (2, 20);
 "#;
@@ -31,15 +31,15 @@ use rdlt_engine::{Engine, EngineConfig};
 /// The recommended composition (contract C3): CDC source → postgres dest,
 /// `merge{key}` + `merge_strategy: upsert` + `hard_delete: <flag>` into a
 /// `mirror` schema of the SAME database (equality checks become SQL).
-struct CdcRig {
-    fixture: CdcPgFixture,
-    workdir: std::path::PathBuf,
-    pipeline: String,
+pub struct CdcRig {
+    pub fixture: CdcPgFixture,
+    pub workdir: std::path::PathBuf,
+    pub pipeline: String,
 }
 
 impl CdcRig {
     /// Skip-not-fail: `None` when no container runtime, so callers return early.
-    async fn start(pipeline: &str) -> Option<Self> {
+    pub async fn start(pipeline: &str) -> Option<Self> {
         let fixture = CdcPgFixture::start().await?;
         let dir = tempfile::tempdir().expect("workdir");
         let workdir = dir.path().to_path_buf();
@@ -53,14 +53,14 @@ impl CdcRig {
 
     /// A fresh pipeline identity (new workdir + name): the documented
     /// recovery for wedged streams — cursors gone, next run snapshots.
-    fn reset_state(&mut self, pipeline: &str) {
+    pub fn reset_state(&mut self, pipeline: &str) {
         let dir = tempfile::tempdir().expect("workdir");
         self.workdir = dir.path().to_path_buf();
         std::mem::forget(dir);
         self.pipeline = pipeline.to_string();
     }
 
-    fn source(&self, tables: &[&str]) -> PostgresSource {
+    pub fn source(&self, tables: &[&str]) -> PostgresSource {
         let list = tables
             .iter()
             .map(|t| format!("  - name: {t}\n"))
@@ -72,7 +72,7 @@ impl CdcRig {
         .expect("cdc source config")
     }
 
-    fn dest(&self, tables: &[&str]) -> Postgres {
+    pub fn dest(&self, tables: &[&str]) -> Postgres {
         Postgres::connect(self.fixture.conn.clone())
             .dataset("mirror")
             .options(DestinationOptions {
@@ -93,7 +93,7 @@ impl CdcRig {
             .expect("valid dest options")
     }
 
-    async fn run(&self, tables: &[&str], key: &str) -> u64 {
+    pub async fn run(&self, tables: &[&str], key: &str) -> u64 {
         let mut config = EngineConfig::new(self.pipeline.as_str());
         config = config.with_workdir(self.workdir.clone());
         config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
@@ -106,7 +106,7 @@ impl CdcRig {
         report.total_rows()
     }
 
-    async fn run_expect_err(&self, tables: &[&str], key: &str) -> String {
+    pub async fn run_expect_err(&self, tables: &[&str], key: &str) -> String {
         let mut config = EngineConfig::new(self.pipeline.as_str());
         config = config.with_workdir(self.workdir.clone());
         config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
@@ -120,7 +120,7 @@ impl CdcRig {
     }
 
     /// Row-for-row equality on the projected columns, both directions.
-    async fn assert_mirror_equals(&self, table: &str, cols: &str) {
+    pub async fn assert_mirror_equals(&self, table: &str, cols: &str) {
         let client = self.fixture.client().await;
         for (a, b) in [("public", "mirror"), ("mirror", "public")] {
             let diff: i64 = client
@@ -138,7 +138,7 @@ impl CdcRig {
         }
     }
 
-    async fn scalar(&self, sql: &str) -> i64 {
+    pub async fn scalar(&self, sql: &str) -> i64 {
         self.fixture
             .client()
             .await
@@ -148,7 +148,7 @@ impl CdcRig {
             .get(0)
     }
 
-    async fn scalar_text(&self, sql: &str) -> String {
+    pub async fn scalar_text(&self, sql: &str) -> String {
         self.fixture
             .client()
             .await
@@ -158,8 +158,3 @@ impl CdcRig {
             .get(0)
     }
 }
-
-mod cycle;
-mod identity;
-mod recovery;
-mod slot;

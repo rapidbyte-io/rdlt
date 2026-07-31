@@ -2,7 +2,10 @@
 //! the boundary-overlap guarantee, ack floors, burst tails with clean
 //! cancellation, ack-off, the flag column, and lag reporting.
 
-use crate::*;
+use crate::cases::cdc_rig::*;
+use rdlt_connector_postgres::dest::{DestinationOptions, MergeStrategy, Postgres, TableOptions};
+use rdlt_connector_postgres::source::PostgresSource;
+use rdlt_engine::{Engine, EngineConfig};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn equality_cycle_snapshot_mutate_catch_up() {

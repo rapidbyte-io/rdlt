@@ -1,7 +1,9 @@
 //! Replica identity and TOAST: substitution under FULL, typed refusal
 //! without it, the per-table preflight matrix, and declared-key overrides.
 
-use crate::*;
+use crate::cases::cdc_rig::*;
+use rdlt_connector_postgres::source::PostgresSource;
+use rdlt_engine::{Engine, EngineConfig};
 
 // ─────────────── TOAST policy + error matrix + lag ───────────────
 

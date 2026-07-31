@@ -4,7 +4,7 @@
 use rdlt_connector_postgres::fixtures::CdcPgFixture;
 use rdlt_connector_postgres::source::testhook::cdc_slot;
 
-use crate::*;
+use crate::cases::cdc_rig::*;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn wal_retention_overrun_is_typed_with_fresh_snapshot_recovery() {

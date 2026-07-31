@@ -13,7 +13,7 @@ use rdlt_connector_postgres::dest::{
 };
 use rdlt_engine::{Engine, EngineConfig};
 
-use super::PgFixture;
+use rdlt_connector_postgres::fixtures::PgFixture;
 
 /// (id, day, seq, name, deleted) — id is the identity key, day the
 /// scope column, seq the dedup-sort column.

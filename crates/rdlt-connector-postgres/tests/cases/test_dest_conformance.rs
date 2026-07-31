@@ -1,10 +1,11 @@
-//! Postgres destination via testcontainers — destination conformance suite
-//! plus an end-to-end engine run with flatten lowering and merge; topic
-//! modules cover native types, merge strategies, merge refinements, the
-//! option matrix, and unit-transaction isolation.
+//! Postgres destination via testcontainers — the destination conformance
+//! verdict plus an end-to-end engine run with flatten lowering and merge.
+//! Sibling case files cover native types, merge strategies, merge
+//! refinements, the option matrix, and unit-transaction isolation.
 //!
 //! Requires a container runtime; each test spins up postgres:16-alpine.
 
+use crate::cases::common::PgProbe;
 use async_trait::async_trait;
 use rdlt_connector_postgres::dest::Postgres;
 use rdlt_connector_postgres::fixtures::PgFixture;
@@ -12,32 +13,6 @@ use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::conformance::dest::verify_destination;
 use rdlt_testkit::{MemorySource, TableProbe, assert_conformant};
 use serde_json::json;
-
-struct PgProbe {
-    conn: String,
-    schema: String,
-}
-
-#[async_trait]
-impl TableProbe for PgProbe {
-    async fn count(&self, table: &rdlt_connector::TableName) -> u64 {
-        let (client, connection) = tokio_postgres::connect(&self.conn, tokio_postgres::NoTls)
-            .await
-            .expect("connect");
-        tokio::spawn(async move {
-            let _ = connection.await;
-        });
-        let sql = format!(
-            "SELECT count(*) FROM \"{}\".\"{}\"",
-            self.schema,
-            table.as_str().replace('"', "")
-        );
-        match client.query_one(&sql, &[]).await {
-            Ok(row) => row.get::<_, i64>(0) as u64,
-            Err(_) => 0, // missing table counts as empty (probe contract)
-        }
-    }
-}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn postgres_destination_is_conformant() {
@@ -240,9 +215,3 @@ async fn keyed_structured_merge_into_postgres() {
         .get(0);
     assert_eq!(name, "b2", "merge took the updated value");
 }
-
-mod native_types;
-mod param_matrix;
-mod refinements;
-mod strategies;
-mod unit_isolation;

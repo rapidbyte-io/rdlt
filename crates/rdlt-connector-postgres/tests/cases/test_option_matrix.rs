@@ -6,7 +6,7 @@ use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::MemorySource;
 use serde_json::json;
 
-use super::PgFixture;
+use rdlt_connector_postgres::fixtures::PgFixture;
 
 /// `dataset` default — omitted, tables land in `public` (observed,
 /// not inferred; PM3).
