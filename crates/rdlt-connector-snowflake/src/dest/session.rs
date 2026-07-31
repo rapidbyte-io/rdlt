@@ -17,11 +17,12 @@ use rdlt_connector::{
     core::{LoadId, PipelineId, StateDoc, TableName, TableSchema, WriteMode},
 };
 use rdlt_connector_sqlcore::plan::scope_replace_sql;
-use rdlt_connector_sqlcore::protocol::{
-    CommitCtx, FullLoadPublish, MergeArm, Step, build_merge_plan, commit_script, insert_select_sql,
-    prepare_target, render_arm, staged_probe_targets, unit,
+use rdlt_connector_sqlcore::protocol::unit;
+use rdlt_connector_sqlcore::{
+    CommitCtx, FullLoadPublish, MergeArm, MergeDialect as _, Step, build_merge_plan,
+    column_list_with, commit_script, insert_select_sql, prepare_target, render_arm,
+    staged_probe_targets,
 };
-use rdlt_connector_sqlcore::{MergeDialect as _, column_list_with};
 
 use super::client::{self, DmlOnly, Executor};
 use super::config::SnowflakeConfig;

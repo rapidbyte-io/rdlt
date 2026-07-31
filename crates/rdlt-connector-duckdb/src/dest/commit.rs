@@ -109,7 +109,7 @@ pub(crate) fn table_ddl_stmts(schema: &TableSchema, previous: Option<&TableSchem
     let plan = ensure::table_plan(
         schema,
         &WriteMode::Append,
-        rdlt_connector_sqlcore::protocol::FullLoadPublish::Staged,
+        rdlt_connector_sqlcore::FullLoadPublish::Staged,
         previous,
     );
     let stage = stage_name(&schema.table);

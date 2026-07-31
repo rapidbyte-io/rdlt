@@ -5,9 +5,9 @@
 //! arrow repr) can never confuse.
 
 use rdlt_connector::core::{ColumnDef, ColumnType, LogicalType, TableSchema, WriteMode};
+use rdlt_connector_sqlcore::FullLoadPublish;
 use rdlt_connector_sqlcore::ensure::{self, EnsureStep, Leg, Validity};
 use rdlt_connector_sqlcore::plan::ValidateError;
-use rdlt_connector_sqlcore::protocol::FullLoadPublish;
 
 use super::commit::{ARRIVAL_COL, stage_name};
 use super::config::DestOptions;

@@ -18,10 +18,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use rdlt_connector::core::{ColumnType, LogicalType, TableName, TableSchema, WriteMode};
+use rdlt_connector_sqlcore::DestOptions;
+use rdlt_connector_sqlcore::FullLoadPublish;
 use rdlt_connector_sqlcore::ensure::{self, EnsureStep, Leg, Validity};
-use rdlt_connector_sqlcore::options::DestOptions;
 use rdlt_connector_sqlcore::plan::ValidateError;
-use rdlt_connector_sqlcore::protocol::FullLoadPublish;
 
 use super::config::TableType;
 
@@ -533,7 +533,7 @@ mod tests {
     #[test]
     fn scd2_adds_validity_columns_without_a_not_null_constraint() {
         let options = DestOptions {
-            merge_strategy: Some(rdlt_connector_sqlcore::options::MergeStrategy::Scd2),
+            merge_strategy: Some(rdlt_connector_sqlcore::MergeStrategy::Scd2),
             ..DestOptions::default()
         };
         let mut catalog = Catalog::default();
@@ -560,7 +560,7 @@ mod tests {
         // This service enforces no unique constraints and needs no supporting
         // index to find rows; emitting one would cost time and do nothing.
         let options = DestOptions {
-            merge_strategy: Some(rdlt_connector_sqlcore::options::MergeStrategy::Upsert),
+            merge_strategy: Some(rdlt_connector_sqlcore::MergeStrategy::Upsert),
             ..DestOptions::default()
         };
         let sql = merge_ensure_stmts(
@@ -581,7 +581,7 @@ mod tests {
     #[test]
     fn merge_only_options_are_refused_under_append_with_the_shared_error() {
         let options = DestOptions {
-            merge_strategy: Some(rdlt_connector_sqlcore::options::MergeStrategy::Upsert),
+            merge_strategy: Some(rdlt_connector_sqlcore::MergeStrategy::Upsert),
             ..DestOptions::default()
         };
         let err = merge_ensure_stmts(&options, &events(), &WriteMode::Append, &Catalog::default())

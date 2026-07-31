@@ -12,7 +12,7 @@ use rdlt_connector::core::{
     ColumnDef, ColumnType, LogicalType, Provenance, TableName, TableSchema, WriteMode,
 };
 use rdlt_connector_snowflake::dest::testhook::{Catalog, ensure_merge_sql};
-use rdlt_connector_sqlcore::options::{DestOptions, MergeStrategy, TableOptions};
+use rdlt_connector_sqlcore::{DestOptions, MergeStrategy, TableOptions};
 
 /// A keyed structured table — no `_rdlt_id`, so the strategies that converge
 /// on a declared key are available.
@@ -101,9 +101,9 @@ fn refusals_carry_the_shared_core_wording() {
             options(
                 Some(MergeStrategy::DeleteInsert),
                 Some(TableOptions {
-                    dedup_sort: Some(rdlt_connector_sqlcore::options::DedupSort {
+                    dedup_sort: Some(rdlt_connector_sqlcore::DedupSort {
                         column: "note".into(),
-                        order: rdlt_connector_sqlcore::options::SortOrder::Desc,
+                        order: rdlt_connector_sqlcore::SortOrder::Desc,
                     }),
                     ..TableOptions::default()
                 }),
@@ -183,9 +183,9 @@ fn every_supported_combination_is_accepted() {
                 Some(MergeStrategy::Upsert),
                 Some(TableOptions {
                     hard_delete: Some("deleted".into()),
-                    dedup_sort: Some(rdlt_connector_sqlcore::options::DedupSort {
+                    dedup_sort: Some(rdlt_connector_sqlcore::DedupSort {
                         column: "note".into(),
-                        order: rdlt_connector_sqlcore::options::SortOrder::Desc,
+                        order: rdlt_connector_sqlcore::SortOrder::Desc,
                     }),
                     merge_scope: Some(vec!["region".into()]),
                     ..TableOptions::default()

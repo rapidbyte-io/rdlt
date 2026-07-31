@@ -9,6 +9,11 @@
 //! The plan shapes are shared by the postgres and DuckDB destinations; the
 //! postgres crate's golden-SQL suite pins them byte-for-byte, so any change
 //! here that alters emitted SQL is caught there.
+//!
+//! ONE SPELLING PER ITEM: the re-export list below is the canonical
+//! vocabulary — an item listed here is spelled at the crate root everywhere;
+//! everything else is reached by its module path. Do not import a root item
+//! through its module.
 
 pub mod dialect;
 pub mod ensure;
