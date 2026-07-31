@@ -258,7 +258,7 @@ proptest! {
 
     #[test]
     fn copy_decoder_matches_driver_reference(rows in proptest::collection::vec(row_strategy(), 0..32)) {
-        if !rdlt_testkit::containers::runtime_available() {
+        if !rdlt_testkit::gate::runtime_available() {
             return Ok(()); // skip-not-fail: no container runtime
         }
         let (rt, fixture, conn) = shared();
@@ -290,7 +290,7 @@ proptest! {
     fn copy_decoder_matches_reference_across_batch_boundaries(
         rows in proptest::collection::vec(row_strategy(), 10..60)
     ) {
-        if !rdlt_testkit::containers::runtime_available() {
+        if !rdlt_testkit::gate::runtime_available() {
             return Ok(()); // skip-not-fail: no container runtime
         }
         let (rt, fixture, conn) = shared();

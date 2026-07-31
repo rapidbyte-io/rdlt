@@ -25,7 +25,7 @@
 fn forcing_absence_makes_the_container_probe_report_absent() {
     // The probe is not even consulted: forced absence short-circuits it. Proven
     // by passing a probe that would report TRUE and asserting the answer is false.
-    let reported = rdlt_testkit::decide_availability(false, true, || true);
+    let reported = rdlt_testkit::gate::decide_availability(false, true, || true);
     assert!(
         !reported,
         "forcing absence must report absent even where a runtime is present — this \
@@ -35,8 +35,16 @@ fn forcing_absence_makes_the_container_probe_report_absent() {
 
 #[test]
 fn a_present_runtime_is_reported_present() {
-    assert!(rdlt_testkit::decide_availability(false, false, || true));
-    assert!(!rdlt_testkit::decide_availability(false, false, || false));
+    assert!(rdlt_testkit::gate::decide_availability(
+        false,
+        false,
+        || true
+    ));
+    assert!(!rdlt_testkit::gate::decide_availability(
+        false,
+        false,
+        || false
+    ));
 }
 
 #[test]
@@ -45,16 +53,18 @@ fn demanding_a_runtime_that_is_absent_fails_naming_it() {
     // The whole point of the opt-in posture: a leg that would have skipped now
     // fails, and the message names what was missing rather than leaving a
     // maintainer to infer it from a suite that quietly did nothing.
-    rdlt_testkit::decide_availability(true, false, || false);
+    rdlt_testkit::gate::decide_availability(true, false, || false);
 }
 
 #[test]
 fn demanding_a_runtime_that_is_present_is_satisfied() {
-    assert!(rdlt_testkit::decide_availability(true, false, || true));
+    assert!(rdlt_testkit::gate::decide_availability(true, false, || {
+        true
+    }));
 }
 
 #[test]
 #[should_panic(expected = "are both set")]
 fn demanding_and_forcing_the_runtime_absent_together_is_an_error() {
-    rdlt_testkit::decide_availability(true, true, || true);
+    rdlt_testkit::gate::decide_availability(true, true, || true);
 }

@@ -20,18 +20,19 @@ serde_json = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
-# Self-reference so this crate's own tests always see the `containers` module
+# Self-reference so this crate's own tests always see the `gate` module
 # (a bare `-p rdlt-testkit` build otherwise fails to compile the gating pin).
 rdlt-testkit = { path = ".", features = [
-    "containers",
+    "gate",
 ] }
 
 [features]
-# The container-runtime probe + reclaim label (std-only). Off by default;
-# consumers turn it on in their dev-dependency line where they gate on
-# `runtime_available`. System-specific container fixtures live with their
-# connectors (e.g. rdlt-connector-postgres's `fixtures` feature).
-containers = []
+# The container-runtime gate (probe + posture + reclaim label; std-only).
+# Off by default; consumers turn it on in their dev-dependency line where
+# they gate on `gate::runtime_available`. System-specific container fixtures
+# live with their connectors (e.g. rdlt-connector-postgres's `fixtures`
+# feature).
+gate = []
 
 [lints]
 workspace = true

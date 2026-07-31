@@ -4,7 +4,7 @@
 //! Lived in rdlt-testkit until the testkit went connector-agnostic; a
 //! postgres image, its flags, and its client plumbing belong with the
 //! postgres connector. The runtime probe and the reclaim label stay in the
-//! testkit (`rdlt_testkit::containers`) — they are container facts, not
+//! testkit (`rdlt_testkit::gate`) — they are container facts, not
 //! postgres facts — and the fixtures here route through them so every
 //! container-gated suite keeps one skip-not-fail posture and one label
 //! `make reclaim` can act on.
@@ -13,7 +13,7 @@
 //! `None` after a visible `SKIP` line, and the caller returns early. Panics
 //! are reserved for real startup failures WITH the runtime present.
 
-use rdlt_testkit::containers::{RECLAIM_LABEL, runtime_available};
+use rdlt_testkit::gate::{RECLAIM_LABEL, runtime_available};
 use testcontainers_modules::postgres::Postgres as PostgresImage;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};

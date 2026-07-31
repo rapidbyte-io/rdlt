@@ -327,7 +327,7 @@ check: lint
 # Reclaim leaked test containers and their volumes.
 #
 # Scoped by the `rdlt-test=1` label that every start site in this workspace
-# applies (rdlt-testkit::containers::RECLAIM_LABEL, and `--label` at the two
+# applies (rdlt-testkit::gate::RECLAIM_LABEL, and `--label` at the two
 # sites that shell out to the CLI). Volumes are removed SEPARATELY because an
 # anonymous volume outlives the container that created it — reaping containers
 # alone is what let the disk fill twice during 017.

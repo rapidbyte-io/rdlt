@@ -32,7 +32,7 @@ tokio = { workspace = true }
 jsonschema = { workspace = true }
 reqwest = { workspace = true }
 rdlt-engine = { workspace = true }
-rdlt-testkit = { workspace = true, features = ["containers"] }
+rdlt-testkit = { workspace = true, features = ["gate"] }
 tempfile = { workspace = true }
 
 [lints]

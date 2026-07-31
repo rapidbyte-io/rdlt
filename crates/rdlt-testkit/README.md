@@ -31,10 +31,10 @@ side effects.
 | `BeforeCommit(n)` | batches staged, not published — recovery must re-drive the commit |
 | `AfterCommit(n)` | published, but the receipt was lost — recovery must hit idempotence, not double-publish |
 
-## Container gating: skip, never fail
+## The gate: skip, never fail
 
 This crate is connector-agnostic: it carries the ONE runtime probe
-(`containers::runtime_available`) and the reclaim label, while the
+(`gate::runtime_available`) and the reclaim label, while the
 system-specific fixtures live with their connectors and route through the
 probe (`rdlt_connector_postgres::fixtures::{PgFixture, CdcPgFixture}` behind
 that crate's `fixtures` feature). A fixture's `start()` returns `Option` —

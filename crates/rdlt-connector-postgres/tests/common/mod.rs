@@ -117,7 +117,7 @@ impl TlsPgFixture {
     }
 
     async fn start_with(cert_auth: bool) -> Option<Self> {
-        if !rdlt_testkit::containers::runtime_available() {
+        if !rdlt_testkit::gate::runtime_available() {
             eprintln!("SKIP: no container runtime — TLS postgres fixture not started");
             return None;
         }
@@ -152,7 +152,7 @@ HBA
         );
         let container = PostgresImage::default()
             .with_tag("16-alpine")
-            .with_label(rdlt_testkit::containers::RECLAIM_LABEL, "1")
+            .with_label(rdlt_testkit::gate::RECLAIM_LABEL, "1")
             .with_copy_to(
                 "/tls-in/server.crt",
                 pki.server_cert_pem.clone().into_bytes(),

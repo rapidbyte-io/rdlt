@@ -120,7 +120,7 @@ impl CatalogFixture {
     /// Start RUSTFS + Polaris, bootstrap a catalog over the bucket, grant
     /// the admin principal, create nothing else — or skip visibly (None).
     pub async fn start() -> Option<Self> {
-        if !rdlt_testkit::containers::runtime_available() {
+        if !rdlt_testkit::gate::runtime_available() {
             eprintln!("SKIP: no container runtime socket — iceberg live cell not run");
             return None;
         }

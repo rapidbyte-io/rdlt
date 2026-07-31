@@ -29,7 +29,7 @@ pub struct S3Fixture {
 impl S3Fixture {
     /// Start RUSTFS, or skip visibly (None) without a runtime socket.
     pub async fn start() -> Option<Self> {
-        if !rdlt_testkit::containers::runtime_available() {
+        if !rdlt_testkit::gate::runtime_available() {
             eprintln!("SKIP: no container runtime socket — s3 live cell not run");
             return None;
         }
@@ -40,7 +40,7 @@ impl S3Fixture {
             .with_env_var("RUSTFS_SECRET_KEY", SECRET_KEY)
             // Last in the chain: `with_label` returns a `ContainerRequest`, and
             // the `GenericImage`-only builders above are unavailable on it.
-            .with_label(rdlt_testkit::containers::RECLAIM_LABEL, "1")
+            .with_label(rdlt_testkit::gate::RECLAIM_LABEL, "1")
             .start()
             .await
             .expect("start rustfs container (runtime socket present)");

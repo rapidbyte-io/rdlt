@@ -27,7 +27,7 @@ tokio = { workspace = true }
 parquet = { workspace = true }
 
 [dev-dependencies]
-rdlt-testkit = { workspace = true, features = ["containers"] }
+rdlt-testkit = { workspace = true }
 rdlt-connector-postgres = { workspace = true, features = ["dest", "fixtures"] }
 tokio-postgres = { workspace = true }
 arrow-schema = { workspace = true }

@@ -8,18 +8,16 @@
 //! carries only what every connector shares.
 
 pub mod conformance;
-#[cfg(feature = "containers")]
-pub mod containers;
 pub mod crash;
 pub mod fixtures;
+#[cfg(feature = "gate")]
+pub mod gate;
 pub mod memory;
 
 pub use conformance::{
     ConformanceFailure, assert_conformant, dest::TableProbe, dest::verify_destination,
     source::verify_source,
 };
-#[cfg(feature = "containers")]
-pub use containers::{decide_availability, runtime_available};
 pub use crash::{CrashDestination, FaultPoint, assert_registry_is_armed, scan_arming_sites};
 pub use fixtures::{batch_of, meta_for, schema_for};
 pub use memory::{MemoryBatch, MemoryDestination, MemorySource, MemoryStream, Row};

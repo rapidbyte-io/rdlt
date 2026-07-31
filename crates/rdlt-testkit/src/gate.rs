@@ -1,8 +1,9 @@
-//! The ONE container-runtime probe every connector suite uses, plus the
-//! reclaim label their containers carry. Connector-agnostic by design: the
-//! system-specific fixtures live with their connectors (e.g.
-//! `rdlt_connector_postgres::fixtures`) and route through this probe so the
-//! whole workspace keeps one skip-not-fail posture.
+//! The gate on container-backed suites: ONE runtime probe, the
+//! skip-not-fail / demand-and-fail posture around it, and the reclaim label
+//! carried by every container the gate admits. Connector-agnostic by design:
+//! the system-specific fixtures live with their connectors (e.g.
+//! `rdlt_connector_postgres::fixtures`) and route through this gate so the
+//! whole workspace keeps one posture.
 //!
 //! Posture rule: a missing container runtime NEVER panics — fixture `start()`
 //! implementations return `None` after a visible `SKIP` line, and the caller

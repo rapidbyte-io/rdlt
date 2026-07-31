@@ -267,7 +267,7 @@ fn kv_feed(rows: &[(Option<i64>, Option<&str>)]) -> Feed {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn differential_delete_insert_redelivery() {
-    if !rdlt_testkit::containers::runtime_available() {
+    if !rdlt_testkit::gate::runtime_available() {
         eprintln!("SKIP: no container runtime — differential cell not run");
         return;
     }
@@ -292,7 +292,7 @@ type UpsertRow<'a> = (Option<i64>, Option<i64>, Option<&'a str>, Option<bool>);
 
 #[tokio::test(flavor = "multi_thread")]
 async fn differential_upsert_with_hard_delete_and_dedup() {
-    if !rdlt_testkit::containers::runtime_available() {
+    if !rdlt_testkit::gate::runtime_available() {
         eprintln!("SKIP: no container runtime — differential cell not run");
         return;
     }
@@ -342,7 +342,7 @@ async fn differential_upsert_with_hard_delete_and_dedup() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn differential_scd2_history() {
-    if !rdlt_testkit::containers::runtime_available() {
+    if !rdlt_testkit::gate::runtime_available() {
         eprintln!("SKIP: no container runtime — differential cell not run");
         return;
     }
@@ -370,7 +370,7 @@ async fn differential_scd2_history() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn differential_merge_scope_scope_and_null_scope() {
-    if !rdlt_testkit::containers::runtime_available() {
+    if !rdlt_testkit::gate::runtime_available() {
         eprintln!("SKIP: no container runtime — differential cell not run");
         return;
     }
@@ -408,7 +408,7 @@ async fn differential_merge_scope_scope_and_null_scope() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn differential_rejections_are_class_identical() {
-    if !rdlt_testkit::containers::runtime_available() {
+    if !rdlt_testkit::gate::runtime_available() {
         eprintln!("SKIP: no container runtime — differential cell not run");
         return;
     }
@@ -441,7 +441,7 @@ async fn differential_rejections_are_class_identical() {
 /// destinations (retire only within delivered scopes).
 #[tokio::test(flavor = "multi_thread")]
 async fn differential_scd2_scoped_retirement() {
-    if !rdlt_testkit::containers::runtime_available() {
+    if !rdlt_testkit::gate::runtime_available() {
         eprintln!("SKIP: no container runtime — differential cell not run");
         return;
     }
