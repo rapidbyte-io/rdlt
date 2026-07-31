@@ -5,9 +5,11 @@
 //! receipt. Receives FLATTENED schemas — `structs: false` makes the
 //! engine lower nested objects at the seam. Depends on the SPI only.
 //!
-//! Module layout (source-mirroring, all crate-private): `config` the
-//! handle/builder, `ddl` type mapping + table DDL, `encode` the binary-COPY
-//! wire encoding, `commit` the load-session protocol.
+//! Module layout (source-mirroring): `config` the handle/builder, `ddl`
+//! type mapping + table DDL, `encode` the binary-COPY wire encoding,
+//! `commit` the load-session protocol, `connector` the SPI face, `classify`
+//! the retry/fatal verdicts, `dialect` the SQL-text seam — plus the
+//! doc-hidden `sqlgen`/`testhook` pin seams and the `fail_points` registry.
 //!
 //! # What a unit transaction costs
 //!

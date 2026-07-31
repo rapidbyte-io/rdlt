@@ -63,7 +63,7 @@ async fn join_query_lands_with_described_schema_and_incremental_works() {
 
     // Run 1: table stream (2 rows) + query stream (2 aggregated rows).
     assert_eq!(
-        rig.run(source(&fixture.conn.clone(), &totals_yaml(true)), "qs")
+        rig.run(source(&fixture.conn, &totals_yaml(true)), "qs")
             .await,
         4
     );
@@ -87,7 +87,7 @@ async fn join_query_lands_with_described_schema_and_incremental_works() {
         )
         .await;
     assert_eq!(
-        rig.run(source(&fixture.conn.clone(), &totals_yaml(true)), "qs")
+        rig.run(source(&fixture.conn, &totals_yaml(true)), "qs")
             .await,
         2,
         "one table row + one query row past the watermark"
@@ -130,7 +130,7 @@ async fn rejections_are_typed_and_early() {
 
     // Mutating SQL: rejected at describe time (subquery rules), before data.
     let bad = source(
-        &fixture.conn.clone(),
+        &fixture.conn,
         "queries:\n  - name: nope\n    sql: \"DELETE FROM orders RETURNING id\"\n",
     );
     let err = rejection_of(&bad).await;
@@ -138,14 +138,14 @@ async fn rejections_are_typed_and_early() {
 
     // Data-modifying CTE: same rejection through the same wrapper.
     let cte = source(
-        &fixture.conn.clone(),
+        &fixture.conn,
         "queries:\n  - name: nope\n    sql: \"WITH d AS (DELETE FROM orders RETURNING id) SELECT * FROM d\"\n",
     );
     rejection_of(&cte).await; // any typed rejection — message pinned above
 
     // Cursor column absent from the described output.
     let no_cursor = source(
-        &fixture.conn.clone(),
+        &fixture.conn,
         "queries:\n  - name: q\n    sql: \"SELECT id FROM orders\"\n    cursor:\n      column: updated_at\n",
     );
     let err = rejection_of(&no_cursor).await;
@@ -153,7 +153,7 @@ async fn rejections_are_typed_and_early() {
 
     // Name collision with a reflected table.
     let collide = source(
-        &fixture.conn.clone(),
+        &fixture.conn,
         "queries:\n  - name: orders\n    sql: \"SELECT 1 AS x\"\n",
     );
     let err = rejection_of(&collide).await;

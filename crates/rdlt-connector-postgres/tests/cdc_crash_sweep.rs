@@ -330,13 +330,13 @@ async fn transient_mid_snapshot_resumes_within_one_run() {
     // recovers by itself.
     fail::cfg("cdc.snapshot.copy", "2*return->off").expect("configure");
     let report = rig
-        .attempt(&fixture.conn.clone())
+        .attempt(&fixture.conn)
         .await
         .expect("run recovers in-run");
     fail::remove("cdc.snapshot.copy");
 
     assert!(report.retries > 0, "the engine's retry counter surfaces");
     assert_mirror_equals(&fixture, "in-run retry").await;
-    let stable = rig.attempt(&fixture.conn.clone()).await.expect("stable");
+    let stable = rig.attempt(&fixture.conn).await.expect("stable");
     assert_eq!(stable.total_rows(), 0, "convergent after in-run retries");
 }

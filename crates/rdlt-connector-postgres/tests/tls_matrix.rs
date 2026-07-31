@@ -89,7 +89,7 @@ async fn prefer_falls_back_on_plaintext_server_and_conn_sslmode_flows() {
     let Some(plain) = PgFixture::start().await else {
         return;
     };
-    probe_source(&plain.conn.clone(), "")
+    probe_source(&plain.conn, "")
         .await
         .expect("default prefer falls back to plaintext");
     probe_source(&format!("{} sslmode=disable", plain.conn.clone()), "")

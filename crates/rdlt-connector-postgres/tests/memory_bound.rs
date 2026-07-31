@@ -86,10 +86,7 @@ async fn snapshot_ten_times_larger_than_memory_ceiling() {
     let yaml = dir.path().join("pg.yaml");
     std::fs::write(
         &yaml,
-        format!(
-            "conn: \"{}\"\ntables:\n  - name: big\n",
-            fixture.conn.clone()
-        ),
+        format!("conn: \"{}\"\ntables:\n  - name: big\n", fixture.conn),
     )
     .expect("yaml");
     let spec = dir.path().join("pipeline.yaml");

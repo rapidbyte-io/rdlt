@@ -75,7 +75,7 @@ async fn type_matrix_round_trip() {
     };
     fixture.seed(TYPE_MATRIX_SEED).await;
     let (dest, report) = run_to_duckdb(
-        source_for(&fixture.conn.clone(), "tables:\n  - name: type_matrix\n"),
+        source_for(&fixture.conn, "tables:\n  - name: type_matrix\n"),
         "conf-matrix",
     )
     .await;
@@ -172,7 +172,7 @@ async fn type_hints_end_to_end() {
         .await;
     let (dest, _) = run_to_duckdb(
         source_for(
-            &fixture.conn.clone(),
+            &fixture.conn,
             "tables:\n  - name: h\n    type_hints:\n      raw_ts: timestamp_tz\n      amount: decimal(12,4)\n",
         ),
         "conf-hints",
@@ -201,7 +201,7 @@ async fn type_hints_end_to_end() {
         )
         .await;
     let source = source_for(
-        &fixture2.conn.clone(),
+        &fixture2.conn,
         "tables:\n  - name: h\n    type_hints:\n      raw_ts: timestamp_tz\n",
     );
     let db = tempfile::tempdir().expect("tempdir");
@@ -231,7 +231,7 @@ async fn partitioned_tables_load_once_via_parent() {
              INSERT INTO metrics VALUES ('2026-01-05', 1), ('2026-02-05', 2), ('2026-02-06', 3);",
         )
         .await;
-    let (dest, report) = run_to_duckdb(source_for(&fixture.conn.clone(), ""), "conf-part").await;
+    let (dest, report) = run_to_duckdb(source_for(&fixture.conn, ""), "conf-part").await;
     assert_eq!(
         report.total_rows(),
         3,
@@ -246,7 +246,7 @@ async fn partitioned_tables_load_once_via_parent() {
     // Feature 007: an EXPLICITLY listed leaf overrides the exclusion —
     // reading one partition alone is a legitimate backfill.
     let (dest, report) = run_to_duckdb(
-        source_for(&fixture.conn.clone(), "tables:\n  - name: metrics_jan\n"),
+        source_for(&fixture.conn, "tables:\n  - name: metrics_jan\n"),
         "conf-part-listed",
     )
     .await;
@@ -282,7 +282,7 @@ async fn inherits_children_load_once_via_parent() {
              INSERT INTO events_hot VALUES (2, '2026-01-05');",
         )
         .await;
-    let (dest, _report) = run_to_duckdb(source_for(&fixture.conn.clone(), ""), "conf-inh").await;
+    let (dest, _report) = run_to_duckdb(source_for(&fixture.conn, ""), "conf-inh").await;
 
     // cities parent covers both rows; capitals is NOT its own stream.
     assert_eq!(dest.count_rows("cities").expect("parent"), 2);
@@ -302,7 +302,7 @@ async fn inherits_children_load_once_via_parent() {
 
     // Explicitly listed INHERITS child: readable alone (the override).
     let (dest, report) = run_to_duckdb(
-        source_for(&fixture.conn.clone(), "tables:\n  - name: capitals\n"),
+        source_for(&fixture.conn, "tables:\n  - name: capitals\n"),
         "conf-inh-listed",
     )
     .await;
@@ -328,7 +328,7 @@ CREATE VIEW gamma AS SELECT id FROM alpha;
         .await;
 
     // No table list ⇒ every table in the schema; views excluded by default.
-    let (dest, _) = run_to_duckdb(source_for(&fixture.conn.clone(), ""), "conf-discovery").await;
+    let (dest, _) = run_to_duckdb(source_for(&fixture.conn, ""), "conf-discovery").await;
     assert_eq!(dest.count_rows("alpha").expect("alpha"), 1);
     assert_eq!(dest.count_rows("beta").expect("beta"), 1);
     assert!(
@@ -338,7 +338,7 @@ CREATE VIEW gamma AS SELECT id FROM alpha;
 
     // include_views: the view becomes a stream.
     let (dest, _) = run_to_duckdb(
-        source_for(&fixture.conn.clone(), "include_views: true\n"),
+        source_for(&fixture.conn, "include_views: true\n"),
         "conf-views",
     )
     .await;
@@ -364,7 +364,7 @@ INSERT INTO "Order ""Items""" VALUES (1, 'kw', 'hidden');
         .await;
     let (dest, _) = run_to_duckdb(
         source_for(
-            &fixture.conn.clone(),
+            &fixture.conn,
             "tables:\n  - name: 'Order \"Items\"'\n    excluded_columns: [secret]\n",
         ),
         "conf-idents",
@@ -399,7 +399,7 @@ async fn empty_table_materializes_with_schema() {
         .seed("CREATE TABLE hollow (id int8 PRIMARY KEY, v numeric(6,3));")
         .await;
     let (dest, report) = run_to_duckdb(
-        source_for(&fixture.conn.clone(), "tables:\n  - name: hollow\n"),
+        source_for(&fixture.conn, "tables:\n  - name: hollow\n"),
         "conf-empty",
     )
     .await;
@@ -423,7 +423,7 @@ async fn drift_column_added_dropped_retyped() {
     fixture
         .seed("CREATE TABLE d (id int8 PRIMARY KEY, v text); INSERT INTO d VALUES (1, 'x');")
         .await;
-    let source = source_for(&fixture.conn.clone(), "tables:\n  - name: d\n");
+    let source = source_for(&fixture.conn, "tables:\n  - name: d\n");
     source.streams().await.expect("reflect");
     fixture
         .seed("ALTER TABLE d ADD COLUMN extra int4; UPDATE d SET extra = 7;")
@@ -441,7 +441,7 @@ async fn drift_column_added_dropped_retyped() {
         "column added after reflection must not appear this run"
     );
     // Next run (fresh reflection) picks it up via schema evolution.
-    let source = source_for(&fixture.conn.clone(), "tables:\n  - name: d\n");
+    let source = source_for(&fixture.conn, "tables:\n  - name: d\n");
     Engine::new(EngineConfig::new("drift-add"), source, dest.clone())
         .run()
         .await
@@ -461,7 +461,7 @@ async fn drift_column_added_dropped_retyped() {
     fixture
         .seed("CREATE TABLE d (id int8 PRIMARY KEY, v text); INSERT INTO d VALUES (1, 'x');")
         .await;
-    let source = source_for(&fixture.conn.clone(), "tables:\n  - name: d\n");
+    let source = source_for(&fixture.conn, "tables:\n  - name: d\n");
     source.streams().await.expect("reflect");
     fixture.seed("ALTER TABLE d DROP COLUMN v;").await;
     let db = tempfile::tempdir().expect("tempdir");
@@ -480,7 +480,7 @@ async fn drift_column_added_dropped_retyped() {
     fixture
         .seed("CREATE TABLE d (id int8 PRIMARY KEY, n int4); INSERT INTO d VALUES (1, 5);")
         .await;
-    let source = source_for(&fixture.conn.clone(), "tables:\n  - name: d\n");
+    let source = source_for(&fixture.conn, "tables:\n  - name: d\n");
     source.streams().await.expect("reflect");
     fixture
         .seed("ALTER TABLE d ALTER COLUMN n TYPE int8;")
@@ -506,7 +506,7 @@ async fn drift_table_dropped_between_reflect_and_read() {
     fixture
         .seed("CREATE TABLE doomed (id int8 PRIMARY KEY); INSERT INTO doomed VALUES (1);")
         .await;
-    let source = source_for(&fixture.conn.clone(), "tables:\n  - name: doomed\n");
+    let source = source_for(&fixture.conn, "tables:\n  - name: doomed\n");
     // Prime reflection (as the engine's stream discovery would)…
     use rdlt_connector::Source as _;
     let specs = source.streams().await.expect("streams");
@@ -652,8 +652,7 @@ async fn hint_matrix_covers_every_documented_pair() {
         )
         .await;
     let hints = "tables:\n  - name: h\n    type_hints:\n      t_bool: bool\n      t_int: int64\n      t_float: float64\n      t_naive: timestamp_naive\n      t_date: date\n      t_time: time\n      t_uuid: uuid\n      t_json: json\n      t_bin: binary\n      i_bool: bool\n      i_float: float64\n      n_float: float64\n      ts_date: date\n      d_tz: timestamp_tz\n";
-    let (db, report) =
-        run_to_duckdb(source_for(&fixture.conn.clone(), hints), "conf-hint-matrix").await;
+    let (db, report) = run_to_duckdb(source_for(&fixture.conn, hints), "conf-hint-matrix").await;
     assert_eq!(report.total_rows(), 1);
     // Server-side casts landed TYPED — duckdb's typeof() is the witness.
     for (col, want) in [
@@ -697,7 +696,7 @@ async fn hint_matrix_covers_every_documented_pair() {
     // An UNDEFINED pair stays a typed open-time error (closed table).
     let err = run_to_duckdb_err(
         source_for(
-            &fixture.conn.clone(),
+            &fixture.conn,
             "tables:\n  - name: h\n    type_hints:\n      i_bool: uuid\n",
         ),
         "conf-hint-bad",

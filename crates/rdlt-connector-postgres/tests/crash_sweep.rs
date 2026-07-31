@@ -173,7 +173,7 @@ async fn transient_mid_copy_resumes_within_one_run() {
     // checkpointed batches before dying, attempts 2–3 resume past them.
     fail::cfg("pg.src.mid_copy", "2*return->off").expect("configure");
     let report = rig
-        .attempt(&fixture.conn.clone())
+        .attempt(&fixture.conn)
         .await
         .expect("run recovers in-run");
     fail::remove("pg.src.mid_copy");
