@@ -1,5 +1,6 @@
-//! Every destination option exercised through the full config surface —
-//! the parameter-traceability net.
+//! Destination option edge cases the strategy and refinement suites do not
+//! reach: the dataset default, cross-mode strategy rejection, and the
+//! non-bool hard-delete flag.
 
 use rdlt_connector_postgres::dest::{DestinationOptions, MergeStrategy, Postgres, TableOptions};
 use rdlt_engine::{Engine, EngineConfig};

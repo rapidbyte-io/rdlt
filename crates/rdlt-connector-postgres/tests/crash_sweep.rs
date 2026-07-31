@@ -90,7 +90,7 @@ fn registry_is_pinned() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn sweep_postgres_source() {
+async fn every_source_fail_point_recovers_exactly_once_under_append_and_merge() {
     let _guard = FAIL_POINT_LOCK.lock().await;
     let Some(fixture) = PgFixture::start().await else {
         return;

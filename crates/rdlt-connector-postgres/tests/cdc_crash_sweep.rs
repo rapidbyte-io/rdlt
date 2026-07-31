@@ -111,7 +111,7 @@ fn cdc_registry_is_pinned() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn sweep_cdc_fail_points() {
+async fn every_cdc_fail_point_recovers_to_source_mirror_equality() {
     let _guard = FAIL_POINT_LOCK.lock().await;
 
     for &point in rdlt_connector_postgres::source::CDC_FAIL_POINTS {

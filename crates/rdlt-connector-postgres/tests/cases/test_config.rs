@@ -8,7 +8,7 @@ conn: "postgresql://u:p@localhost:5432/db"
 "#;
 
 #[test]
-fn minimal_defaults() {
+fn a_minimal_config_fills_in_documented_defaults() {
     let c = PostgresConfig::from_yaml(MINIMAL).expect("minimal config");
     assert_eq!(c.schema, "public");
     assert!(!c.include_views);
@@ -168,7 +168,7 @@ fn json_and_value_entry_points_share_validation() {
 }
 
 #[test]
-fn conn_parse_gate_and_tls_policy() {
+fn malformed_conn_strings_and_tls_contradictions_are_typed_at_parse() {
     // Contract rule 1: parse failure = typed CONFIG error, up front.
     let err = PostgresConfig::from_yaml("conn: not-a-conn-string\n").unwrap_err();
     assert!(err.to_string().contains("does not parse"), "{err}");

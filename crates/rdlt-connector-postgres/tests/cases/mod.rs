@@ -19,7 +19,7 @@ mod test_incremental;
 mod test_merge_refinements;
 mod test_merge_strategies;
 mod test_native_types;
-mod test_option_matrix;
+mod test_option_edges;
 mod test_query_streams;
 mod test_reflect;
 mod test_scd2;

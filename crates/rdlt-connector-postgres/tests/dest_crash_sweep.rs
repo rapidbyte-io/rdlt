@@ -104,7 +104,7 @@ fn reachable(mode: &str) -> Vec<&'static str> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn sweep_postgres_destination() {
+async fn every_dest_fail_point_recovers_exactly_once_across_append_replace_and_merge() {
     let Some(pg) = PgFixture::start().await else {
         return;
     };
@@ -264,7 +264,7 @@ async fn attempt_keyed(workdir: &std::path::Path, dest: &Postgres) -> Result<(),
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn sweep_postgres_destination_keyed_structured_merge() {
+async fn every_dest_fail_point_recovers_exactly_once_under_keyed_structured_merge() {
     let Some(pg) = PgFixture::start().await else {
         return;
     };
@@ -412,7 +412,7 @@ async fn attempt_refined(workdir: &std::path::Path, dest: &Postgres) -> Result<(
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn sweep_postgres_destination_refined_merge() {
+async fn every_dest_fail_point_recovers_exactly_once_under_refined_scoped_merge() {
     let Some(pg) = PgFixture::start().await else {
         return;
     };

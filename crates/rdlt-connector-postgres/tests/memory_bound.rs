@@ -32,7 +32,7 @@ fn release_cli() -> Option<std::path::PathBuf> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn snapshot_ten_times_larger_than_memory_ceiling() {
+async fn a_table_ten_times_the_memory_ceiling_still_snapshots_within_it() {
     let heavy = std::env::var("RDLT_HEAVY").is_ok_and(|v| v == "1");
     if std::process::Command::new("prlimit")
         .arg("--version")

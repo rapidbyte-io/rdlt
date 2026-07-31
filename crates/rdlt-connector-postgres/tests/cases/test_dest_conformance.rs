@@ -29,7 +29,7 @@ async fn postgres_destination_is_conformant() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn end_to_end_flattened_sync_into_postgres() {
+async fn flattened_nested_fields_land_and_merge_replaces_child_subtrees() {
     let Some(pg) = PgFixture::start().await else {
         return;
     };
@@ -116,7 +116,7 @@ async fn end_to_end_flattened_sync_into_postgres() {
 /// Keyed STRUCTURED merge (contract merge-structured.md) — no `_rdlt_id`
 /// exists, the declared key drives delete+insert, update-heavy runs converge.
 #[tokio::test(flavor = "multi_thread")]
-async fn keyed_structured_merge_into_postgres() {
+async fn keyed_merge_converges_to_one_row_per_key_with_updated_values() {
     use std::sync::Arc;
 
     use arrow_array::{Int64Array, RecordBatch, StringArray};

@@ -62,7 +62,7 @@ async fn count(conn: &str, t: &str) -> i64 {
 /// replay branch truncated without publishing — so nothing tested it, and the
 /// crash sweep passed 23/23 while this was broken.
 #[tokio::test(flavor = "multi_thread")]
-async fn probe_redelivered_unit_does_not_duplicate() {
+async fn a_redelivered_unit_never_duplicates_its_rows() {
     let Some(pg) = PgFixture::start().await else {
         return;
     };
@@ -120,7 +120,7 @@ async fn probe_redelivered_unit_does_not_duplicate() {
 /// same transaction as the TRUNCATE, so a rolled-back clear leaves no record
 /// claiming it happened.
 #[tokio::test(flavor = "multi_thread")]
-async fn probe_replace_first_written_in_unit_two_is_cleared() {
+async fn a_replace_target_first_written_in_unit_two_is_still_cleared() {
     let Some(pg) = PgFixture::start().await else {
         return;
     };

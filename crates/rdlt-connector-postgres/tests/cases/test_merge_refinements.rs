@@ -286,7 +286,7 @@ async fn merge_scope_replaces_delivered_scopes_only() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn merge_scope_scope_moves_and_null_scopes() {
+async fn a_row_moving_scopes_lands_once_and_null_scope_rows_still_merge() {
     let Some(pg) = PgFixture::start().await else {
         return;
     };
@@ -413,7 +413,7 @@ async fn merge_scope_requires_a_single_commit_unit() {
 // ---- per-table single-unit rule + composition pins ----
 
 #[tokio::test(flavor = "multi_thread")]
-async fn scoped_feed_in_a_later_unit_of_a_multi_unit_load_is_fine() {
+async fn a_leading_empty_unit_does_not_reject_a_later_scoped_replace() {
     // Review F2: the single-unit rule is PER TABLE — other streams'
     // checkpoints split the LOAD without splitting this table's feed. A
     // leading empty unit (another stream committed first) must not

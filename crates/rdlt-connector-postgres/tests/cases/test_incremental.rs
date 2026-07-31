@@ -106,7 +106,7 @@ async fn open_boundary_skips_watermark_equal_rows() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn null_cursor_policies() {
+async fn null_cursor_rows_are_excluded_by_default_and_reload_every_run_under_include() {
     let Some(fixture) = PgFixture::start().await else {
         return;
     };
