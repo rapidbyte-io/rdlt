@@ -4,7 +4,7 @@
 //! destination options, and the transaction facts a destination has already
 //! gathered, the exact ordered [`Step`] program a publish executes. The
 //! destinations own only EXECUTION: they run each step's SQL through their own
-//! connection + [`crate::dialect::MergeDialect`] seam.
+//! connection + [`MergeDialect`](crate::MergeDialect) seam.
 //!
 //! The single-unit discipline and scope-replacement ordering are planner
 //! decisions here; an executor may not reorder or re-decide them. Golden pins

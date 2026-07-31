@@ -16,7 +16,7 @@ pub enum Step {
     /// Clear a Replace target before its rows land — once per (load, target).
     /// On the staged path the planner emits it in the publish transaction,
     /// ahead of that target's `InsertSelect`; on the direct path
-    /// [`prepare_target`] emits it as the unit transaction's first statement,
+    /// [`prepare_target`](crate::prepare_target) emits it as the unit transaction's first statement,
     /// ahead of the first `COPY` into the target.
     ClearTarget { table: TableName },
     /// Append/Replace publish: by-name `INSERT … SELECT` of the staged rows.

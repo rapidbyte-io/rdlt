@@ -1,8 +1,8 @@
-//! The shared merge planning: survivor selection, scope replacement, strategy
-//! [`arms`], hard-delete decisions, open-time [`validate`]ation, [`index`]
+//! The shared merge planning: survivor selection, scope replacement,
+//! strategy arms, hard-delete decisions, open-time validation, index
 //! plans, and the per-table plan inputs (root walk, column list, merge
-//! resolution) re-exported from their own file. Every statement's text is produced through the
-//! [`MergeDialect`](crate::dialect::MergeDialect) seam; the postgres crate's
+//! resolution). Every statement's text is produced through the
+//! [`MergeDialect`](crate::MergeDialect) seam; the postgres crate's
 //! golden-SQL suite pins that text byte-for-byte, so a change that alters
 //! emitted SQL is caught there.
 

@@ -3,7 +3,7 @@
 //! ONE core for every SQL destination: the destination options vocabulary +
 //! validation ([`options`]), the plan shapes — dedup/survivor ordering, scope
 //! replacement, strategy arms, hard-delete decisions, index plans ([`plan`])
-//! — and the [`dialect`] seam through which destinations own SQL TEXT and
+//! — and the [`MergeDialect`] seam through which destinations own SQL TEXT and
 //! nothing else.
 //!
 //! The plan shapes are shared by the postgres and DuckDB destinations; the
