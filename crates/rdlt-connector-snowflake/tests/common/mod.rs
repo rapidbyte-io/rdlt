@@ -1,4 +1,11 @@
-//! Credential gating for the Snowflake live legs.
+//! Credential gating for the Snowflake live legs — shared by every test
+//! binary in this crate via `mod common;`.
+//!
+//! Lived in rdlt-testkit until the testkit went connector-agnostic; the
+//! convention is this connector's alone, so it lives with its consumers. The
+//! `RDLT_TESTKIT_*` env names are kept VERBATIM — they are recorded operating
+//! practice (gate docs, close-outs), and renaming them would silently disarm
+//! every runbook that sets them.
 //!
 //! The container posture with credential presence in place of runtime
 //! presence: a contributor without an account runs the full gate and every
@@ -9,6 +16,10 @@
 //! Nothing here reads a credential's VALUE into anything it returns beyond the
 //! config it hands the connector — the values live in the environment or in
 //! files under the user's config directory, and never in the repository.
+
+// Each test binary compiles this module and uses its own subset, so unused
+// items are expected per binary rather than being dead code.
+#![allow(dead_code)]
 
 use std::path::PathBuf;
 
@@ -218,120 +229,4 @@ pub fn scratch_schema(label: &str) -> String {
         .map(|d| d.as_nanos())
         .unwrap_or_default();
     format!("RDLT_T_{}_{nanos:X}", label.to_ascii_uppercase())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A lookup with nothing but what the test puts in it.
-    struct Fake(std::collections::BTreeMap<String, String>);
-
-    impl Fake {
-        fn with(pairs: &[(&str, &str)]) -> Self {
-            Self(
-                pairs
-                    .iter()
-                    .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
-                    .collect(),
-            )
-        }
-    }
-
-    impl Lookup for Fake {
-        fn env(&self, var: &str) -> Option<String> {
-            self.0.get(var).cloned()
-        }
-        fn file(&self, name: &str) -> Option<String> {
-            self.0.get(name).cloned()
-        }
-    }
-
-    #[test]
-    fn the_force_flag_makes_the_gate_report_absent() {
-        // The skip path has to be reachable on a machine that HAS credentials,
-        // or it is never exercised where it matters.
-        let forced = Fake::with(&[
-            (FORCE_NO_SNOWFLAKE, "1"),
-            ("RDLT_SNOWFLAKE_ACCOUNT", "A"),
-            ("RDLT_SNOWFLAKE_PAT", "tok"),
-        ]);
-        assert!(credentials_with(&forced).is_none());
-        assert!(token_with(&forced, TokenKind::Pat).is_none());
-    }
-
-    #[test]
-    fn a_missing_entry_skips_rather_than_guessing() {
-        // No account: there is nothing to connect to, and inventing a default
-        // would turn a skip into a confusing live failure.
-        let partial = Fake::with(&[("RDLT_SNOWFLAKE_USER", "U")]);
-        assert!(credentials_with(&partial).is_none());
-    }
-
-    #[test]
-    fn the_environment_wins_over_the_file() {
-        // Same key in both positions: a one-off run must be able to override
-        // the user's config without editing it.
-        let both = Fake::with(&[("RDLT_SNOWFLAKE_PAT", "from-env"), ("pat", "from-file")]);
-        assert_eq!(
-            token_with(&both, TokenKind::Pat).as_deref(),
-            Some("from-env")
-        );
-        let file_only = Fake::with(&[("pat", "from-file")]);
-        assert_eq!(
-            token_with(&file_only, TokenKind::Pat).as_deref(),
-            Some("from-file")
-        );
-    }
-
-    #[test]
-    fn the_key_entry_is_a_path_and_never_the_key_itself() {
-        // The trap this cell exists for: every other entry resolves a VALUE
-        // from its file, but reading the key file's contents as a path makes
-        // the gate silently report absent — and a leg that can only skip
-        // looks exactly like a leg that passed.
-        let dir = std::env::temp_dir().join("rdlt-sf-gate-test");
-        std::fs::create_dir_all(&dir).expect("temp dir");
-        let key = dir.join("k.p8");
-        std::fs::write(&key, b"-----BEGIN ENCRYPTED PRIVATE KEY-----\n").expect("write");
-        let creds = credentials_with(&Fake::with(&[
-            ("RDLT_SNOWFLAKE_PRIVATE_KEY_PATH", &key.to_string_lossy()),
-            ("RDLT_SNOWFLAKE_ACCOUNT", "ACCT"),
-            ("RDLT_SNOWFLAKE_USER", "USER"),
-            ("RDLT_SNOWFLAKE_DATABASE", "DB"),
-        ]))
-        .expect("a complete convention resolves");
-        assert_eq!(creds.private_key_path, key.to_string_lossy());
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn a_key_path_that_does_not_exist_reports_absent() {
-        assert!(
-            credentials_with(&Fake::with(&[
-                ("RDLT_SNOWFLAKE_PRIVATE_KEY_PATH", "/no/such/key.p8"),
-                ("RDLT_SNOWFLAKE_ACCOUNT", "ACCT"),
-                ("RDLT_SNOWFLAKE_USER", "USER"),
-                ("RDLT_SNOWFLAKE_DATABASE", "DB"),
-            ]))
-            .is_none()
-        );
-    }
-
-    #[test]
-    fn each_token_gates_on_its_own_entry() {
-        // A missing PAT must skip only the PAT leg.
-        let pat_only = Fake::with(&[("RDLT_SNOWFLAKE_PAT", "tok")]);
-        assert!(token_with(&pat_only, TokenKind::Pat).is_some());
-        assert!(token_with(&pat_only, TokenKind::OauthToken).is_none());
-        assert!(token_with(&pat_only, TokenKind::Password).is_none());
-    }
-
-    #[test]
-    fn scratch_schemas_do_not_collide_between_runs() {
-        let a = scratch_schema("live");
-        let b = scratch_schema("live");
-        assert_ne!(a, b);
-        assert!(a.starts_with("RDLT_T_LIVE_"), "{a}");
-    }
 }

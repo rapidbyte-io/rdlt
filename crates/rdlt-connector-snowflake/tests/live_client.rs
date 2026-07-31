@@ -17,7 +17,9 @@ use rdlt_connector_snowflake::dest::testhook::{
     DUPLICATE_ROW_IN_DML, classify_live_error, connect_and_run,
 };
 use rdlt_connector_snowflake::dest::{Auth, KeyPair, Password, SnowflakeConfig};
-use rdlt_testkit::snowflake::{TokenKind, credentials, scratch_schema, token};
+mod common;
+
+use common::{TokenKind, credentials, scratch_schema, token};
 
 /// A config for the qual account, authenticating by key pair.
 fn key_pair_config() -> Option<SnowflakeConfig> {

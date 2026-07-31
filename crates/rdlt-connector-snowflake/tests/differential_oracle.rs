@@ -18,7 +18,9 @@ use rdlt_connector_postgres::dest::Postgres;
 use rdlt_connector_snowflake::dest::{Snowflake, SnowflakeConfig};
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::PgFixture;
-use rdlt_testkit::snowflake::{credentials, scratch_schema};
+mod common;
+
+use common::{credentials, scratch_schema};
 use serde_json::json;
 
 /// A structured keyed source — what the converging strategies require.

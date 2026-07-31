@@ -10,7 +10,9 @@ use rdlt_connector::StreamSpec;
 use rdlt_connector::core::WriteMode;
 use rdlt_connector_snowflake::dest::{Snowflake, SnowflakeConfig};
 use rdlt_engine::{Engine, EngineConfig};
-use rdlt_testkit::snowflake::{credentials, scratch_schema};
+mod common;
+
+use common::{credentials, scratch_schema};
 use serde_json::json;
 
 fn config_in(schema: &str, options: serde_json::Value) -> Option<SnowflakeConfig> {

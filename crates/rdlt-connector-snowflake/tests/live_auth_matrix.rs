@@ -15,7 +15,9 @@ use rdlt_connector::DestinationError;
 use rdlt_connector::core::{LoadId, PipelineId};
 use rdlt_connector_snowflake::dest::testhook::connect_and_run;
 use rdlt_connector_snowflake::dest::{Auth, KeyPair, Password, Snowflake, SnowflakeConfig};
-use rdlt_testkit::snowflake::{TokenKind, credentials, scratch_schema, token};
+mod common;
+
+use common::{TokenKind, credentials, scratch_schema, token};
 use serde_json::json;
 
 /// A config for the qual account with `auth` replaced.

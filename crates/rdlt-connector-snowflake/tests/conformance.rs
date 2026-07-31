@@ -9,7 +9,9 @@ use async_trait::async_trait;
 use rdlt_connector_snowflake::dest::{Snowflake, SnowflakeConfig};
 use rdlt_testkit::TableProbe;
 use rdlt_testkit::conformance::dest::verify_destination;
-use rdlt_testkit::snowflake::{credentials, scratch_schema};
+mod common;
+
+use common::{credentials, scratch_schema};
 use serde_json::json;
 
 fn config_in(schema: &str) -> Option<SnowflakeConfig> {

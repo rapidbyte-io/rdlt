@@ -8,7 +8,9 @@
 
 use rdlt_connector_snowflake::dest::SnowflakeConfig;
 use rdlt_connector_snowflake::dest::testhook::connect_and_run_script;
-use rdlt_testkit::snowflake::{credentials, scratch_schema};
+mod common;
+
+use common::{credentials, scratch_schema};
 
 fn config_in(schema: &str) -> Option<SnowflakeConfig> {
     let creds = credentials()?;

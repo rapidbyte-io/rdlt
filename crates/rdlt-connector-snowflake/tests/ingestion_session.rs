@@ -24,7 +24,9 @@ use rdlt_connector::StreamSpec;
 use rdlt_connector_snowflake::dest::{Snowflake, SnowflakeConfig};
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::memory::{MemoryBatch, MemorySource, MemoryStream};
-use rdlt_testkit::snowflake::{credentials, scratch_schema};
+mod common;
+
+use common::{credentials, scratch_schema};
 use serde_json::json;
 
 /// What 022 recorded, on this exact row shape, for the two removed paths.

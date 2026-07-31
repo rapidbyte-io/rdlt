@@ -14,7 +14,9 @@
 //! ```
 
 use rdlt_connector_snowflake::dest::SnowflakeConfig;
-use rdlt_testkit::snowflake::credentials;
+mod common;
+
+use common::credentials;
 use serde_json::json;
 
 /// Scratch schemas are named by the testkit and by nothing else.
