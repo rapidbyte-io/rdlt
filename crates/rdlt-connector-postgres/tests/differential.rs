@@ -1,4 +1,4 @@
-//! T013 (research R8): differential property test — the binary-COPY decoder
+//! Differential property test — the binary-COPY decoder
 //! and a driver-row reference path must produce IDENTICAL Arrow batches for
 //! any generated typed row set. The reference decodes through completely
 //! independent code (`FromSql` + text casts), so a bug must strike both

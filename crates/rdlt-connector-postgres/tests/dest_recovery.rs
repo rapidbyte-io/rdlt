@@ -1,4 +1,4 @@
-//! Crash-recovery regression (feature 003 review): the Replace-mode
+//! Crash-recovery regression: the Replace-mode
 //! truncate-once guard must be DURABLE across sessions — the parquet twin was
 //! the feature-002 review's confirmed data-loss finding; Postgres carried the
 //! same latent in-memory pattern (never crash-swept until now).

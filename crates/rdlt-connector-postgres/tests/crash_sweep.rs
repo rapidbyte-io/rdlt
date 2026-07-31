@@ -1,4 +1,4 @@
-//! T020/T021: source crash sweep (feature 005 FR-009, 003 gate G2 style) —
+//! Source crash sweep —
 //! every registered fail point, first- AND second-occurrence passes, against
 //! real Postgres + DuckDB; plus engine-owned mid-COPY retry resuming from a
 //! MID-TABLE checkpoint, and a real container-kill mid-read.
@@ -98,7 +98,7 @@ async fn sweep_postgres_source() {
     fixture.seed(SEED).await;
     let conn = fixture.conn.clone();
 
-    // Append + keyed structured Merge (feature 006): the merge axis drives the
+    // Append + keyed structured Merge: the merge axis drives the
     // keyed delete+insert commit path under every crash point.
     let modes = [
         rdlt_connector::core::WriteMode::Append,

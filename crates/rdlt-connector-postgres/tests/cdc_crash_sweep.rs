@@ -1,4 +1,4 @@
-//! Feature 009 T009: CDC crash sweep (contract O6) — every registered CDC
+//! CDC crash sweep — every registered CDC
 //! fail point × three actions × both occurrence passes with armed-fire
 //! pins, post-recovery source-equality checks, redelivery convergence, and
 //! a real container-kill mid-catch-up.
@@ -173,7 +173,7 @@ async fn sweep_cdc_fail_points() {
     }
 }
 
-/// Redelivery convergence (US2-AS4): a run that dies AFTER applying changes
+/// Redelivery convergence: a run that dies AFTER applying changes
 /// but BEFORE the ack redelivers the same transactions on the next run —
 /// the redelivered update converges and the redelivered delete no-ops.
 #[tokio::test(flavor = "multi_thread")]

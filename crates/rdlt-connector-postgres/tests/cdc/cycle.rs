@@ -122,7 +122,7 @@ async fn boundary_overlap_row_appears_exactly_once_with_final_state() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn ack_never_exceeds_the_least_committed_cursor() {
-    // The T007 weld (P6): the slot's confirmed position may only reflect
+    // The weld: the slot's confirmed position may only reflect
     // positions the DESTINATION durably committed — across full runs (the
     // ack trails one run behind) and across a partial run (no ack at all).
     let Some(rig) = CdcRig::start("cdc-ack").await else {
@@ -217,7 +217,7 @@ async fn ack_never_exceeds_the_least_committed_cursor() {
     );
 }
 
-// ───────────────────────── US3: continuous tail ─────────────────────────
+// ───────────────────── continuous tail ─────────────────────
 
 #[tokio::test(flavor = "multi_thread")]
 async fn tail_applies_bursts_cancels_cleanly_and_resumes() {
@@ -305,7 +305,7 @@ async fn tail_applies_bursts_cancels_cleanly_and_resumes() {
     assert_eq!(stable, 0, "quiet catch-up after the tail moves nothing");
 }
 
-// ---- Feature 011 (contract PM1/PM2): parameter-matrix gap cells ----
+// ---- parameter-matrix gap cells ----
 
 #[tokio::test(flavor = "multi_thread")]
 async fn ack_off_never_advances_the_slot() {
@@ -489,7 +489,7 @@ async fn replication_lag_lands_on_the_dedicated_target() {
     let events = EVENTS.get_or_init(Mutex::default).lock().expect("lock");
     assert!(
         events.len() >= 2,
-        "one lag event per completed run (SC-006): {events:?}"
+        "one lag event per completed run: {events:?}"
     );
 }
 

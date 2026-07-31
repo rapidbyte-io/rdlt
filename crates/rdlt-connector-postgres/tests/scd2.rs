@@ -1,4 +1,4 @@
-//! Feature 008 US3 (contract scd2.md): version history, point-in-time
+//! scd2 against a live server (contract scd2.md): version history, point-in-time
 //! correctness, absence policies, redelivery stability, rejections.
 
 use std::sync::Arc;
@@ -456,7 +456,7 @@ async fn absent_retire_rejects_multi_unit_loads() {
     );
 }
 
-/// Feature 011 (PM1/PM3): CUSTOM validity column names flow end to end —
+/// CUSTOM validity column names flow end to end —
 /// the configured names appear on the target and carry the history.
 #[tokio::test(flavor = "multi_thread")]
 async fn custom_validity_column_names_flow_end_to_end() {

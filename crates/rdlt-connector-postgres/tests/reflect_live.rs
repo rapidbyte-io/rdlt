@@ -1,4 +1,4 @@
-//! T006: catalog reflection against a real Postgres — quoted identifiers,
+//! Catalog reflection against a real Postgres — quoted identifiers,
 //! PKs, views, non-default schema, domains, enums, arrays, numerics.
 
 use rdlt_connector_postgres::fixtures::PgFixture;

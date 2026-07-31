@@ -1,4 +1,4 @@
-//! T008: the TLS matrix (contract tls-policy.md) — five modes against a real
+//! The TLS matrix (contract tls-policy.md) — five modes against a real
 //! TLS-only Postgres with a generated CA, positive AND distinguished
 //! negative cases, for BOTH connectors through the one shared connect path.
 
@@ -338,7 +338,7 @@ fn config_validation_matrix() {
     );
 }
 
-// ---- Feature 007 US1: mutual TLS (contract tls-client-auth.md) ----
+// ---- mutual TLS (contract tls-client-auth.md) ----
 
 fn pem_block(name: &str, pem: &str) -> String {
     let indented = pem.trim().replace('\n', "\n    ");
@@ -439,7 +439,7 @@ async fn credential_offered_but_unused_still_syncs() {
         .expect("credential offered but unused must not break the sync");
 }
 
-// ---- Feature 007 US3: conn-string portability (connstring-portability.md) ----
+// ---- conn-string portability (contract connstring-portability.md) ----
 
 #[tokio::test(flavor = "multi_thread")]
 async fn sslrootcert_url_syncs_and_application_name_is_set() {
@@ -462,7 +462,7 @@ async fn sslrootcert_url_syncs_and_application_name_is_set() {
     );
 
     // SOURCE: reflect over the URL (connects verified), then check that the
-    // live session carries application_name=rdlt (A1 / SC-006).
+    // live session carries application_name=rdlt.
     use rdlt_connector::Source as _;
     let source = PostgresSource::from_yaml(&format!("conn: \"{url}\"\n")).expect("config");
     source

@@ -1,4 +1,4 @@
-//! T022 (SC-002): a table ≥ 10× the enforced memory ceiling snapshots
+//! A table ≥ 10× the enforced memory ceiling snapshots
 //! successfully — memory is bounded by configuration, not table size. The
 //! release CLI runs as a subprocess under `prlimit --data` (heap ceiling);
 //! the test verifies the 10× ratio from pg_total_relation_size, so the claim

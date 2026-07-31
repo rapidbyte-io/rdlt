@@ -1,6 +1,10 @@
-//! T012: source conformance against real Postgres + DuckDB — the full
+//! Source conformance against real Postgres + DuckDB — the full
 //! type-matrix round-trip (every contract row), selection modes, hostile
 //! identifiers, empty tables, and reflect→read drift.
+//!
+//! ABOVE THE SIZE CEILING, DELIBERATELY: every cell drives the same
+//! postgres→duckdb rig; the file is one differential oracle, not a
+//! collection of topics.
 
 use rdlt_connector_duckdb::dest::DuckDb;
 use rdlt_connector_postgres::fixtures::PgFixture;
@@ -156,7 +160,7 @@ async fn type_matrix_round_trip() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn type_hints_end_to_end() {
-    // 006 US2: hinted text→timestamptz lands typed; unconstrained numeric
+    // Hinted text→timestamptz lands typed; unconstrained numeric
     // regains decimality via a hint; a failing cast is a typed copy error
     // naming the column.
     let Some(fixture) = PgFixture::start().await else {
@@ -241,7 +245,7 @@ async fn partitioned_tables_load_once_via_parent() {
         "leaf partitions must not become their own streams"
     );
 
-    // Feature 007: an EXPLICITLY listed leaf overrides the exclusion —
+    // An EXPLICITLY listed leaf overrides the exclusion —
     // reading one partition alone is a legitimate backfill.
     let (dest, report) = run_to_duckdb(
         source_for(&fixture.conn, "tables:\n  - name: metrics_jan\n"),
@@ -254,7 +258,7 @@ async fn partitioned_tables_load_once_via_parent() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn inherits_children_load_once_via_parent() {
-    // Feature 007 US5 (contract: discovery scope): classic INHERITS
+    // Discovery scope: classic INHERITS
     // children are excluded exactly like declarative partitions — the
     // parent SELECT already includes child rows, so discovery streaming
     // both double-loaded every child row (dlt has the same defect; we fix
@@ -525,7 +529,7 @@ async fn drift_table_dropped_between_reflect_and_read() {
     );
 }
 
-/// US4 lossy visibility (T018): every [documented-lossy] column announces
+/// Lossy visibility: every [documented-lossy] column announces
 /// itself EXACTLY ONCE per read on the dedicated `rdlt::lossy` tracing
 /// target — and a clean table stays silent. Suppression-proof: the signal is
 /// a structured tracing event, not log text.
@@ -621,7 +625,7 @@ async fn lossy_mappings_announce_once_per_read_on_dedicated_target() {
     );
 }
 
-// ---- Feature 011 (contract PM1/PM2): parameter-matrix gap cells ----
+// ---- parameter-matrix gap cells ----
 
 /// Every remaining documented hint pair lands TYPED end to end (the
 /// closed conversion table, contracts/type-hints.md): text → each hint;

@@ -22,7 +22,7 @@ CREATE TABLE public.orders (id int8 PRIMARY KEY, total int4);
 INSERT INTO public.orders VALUES (1, 10), (2, 20);
 "#;
 
-// ───────────────────────── US1: bounded catch-up ─────────────────────────
+// ───────────────────── bounded catch-up ─────────────────────
 
 use rdlt_connector_postgres::dest::{DestinationOptions, MergeStrategy, Postgres, TableOptions};
 use rdlt_connector_postgres::source::PostgresSource;

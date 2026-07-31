@@ -1,4 +1,4 @@
-//! T012: query streams (contract query-streams.md) — described schemas,
+//! Query streams (contract query-streams.md) — described schemas,
 //! full incremental semantics, read-only enforcement, typed rejections.
 
 use rdlt_connector_duckdb::dest::DuckDb;

@@ -1,4 +1,4 @@
-//! Postgres crash-point sweep (feature 003 gate G2.1): the ENGINE-OWNED
+//! Postgres crash-point sweep: the ENGINE-OWNED
 //! protocol boundaries against a real Postgres — stage COPY, the publish
 //! transaction edges, the D3 redelivery window. The DB's internal transaction
 //! atomicity is its own guarantee (research R20 scope guard).
@@ -116,7 +116,7 @@ async fn sweep_postgres_destination() {
             for mode in [
                 WriteMode::Append,
                 WriteMode::Replace,
-                // Shredded identity merge (feature 006 sweep extension): the
+                // Shredded identity merge: the
                 // dedup DELETE+INSERT arm under the same protocol edges.
                 WriteMode::Merge {
                     key: vec!["id".into()],
@@ -270,7 +270,7 @@ async fn sweep_postgres_destination_keyed_structured_merge() {
     };
     let conn = pg.conn.clone();
 
-    // Feature 008 T008: BOTH strategies cross every boundary (M2) — the
+    // BOTH strategies cross every boundary — the
     // upsert arm's conflict-update runs inside the same publish transaction.
     let strategies = [
         (
@@ -326,7 +326,7 @@ async fn sweep_postgres_destination_keyed_structured_merge() {
     );
 }
 
-// ---- Feature 010 T007: the refined-merge arm (dedup_sort + merge_scope)
+// ---- the refined-merge arm (dedup_sort + merge_scope)
 // crosses every registered boundary — receipts must survive crash/replay
 // without double-deleting a scope (contract merge-refinements.md MR5). ----
 

@@ -1,4 +1,4 @@
-//! T019: the declared config schema is GENERATED from the config structs —
+//! The declared config schema is GENERATED from the config structs —
 //! examples validate, unknown fields fail schema AND parser identically.
 
 use jsonschema::validator_for;
@@ -80,7 +80,7 @@ fn schema_valid_corpus_parses() {
         "tables": [{"name": "t", "type_hints": {"c": "decimal(banana)"}}]});
     assert!(!validator.is_valid(&bad_hint));
     assert!(PostgresConfig::from_value(bad_hint).is_err());
-    // Feature 007: bad lag strings likewise (pattern mirrors FromStr)…
+    // Bad lag strings likewise (pattern mirrors FromStr)…
     let bad_lag = json!({"conn": "postgres://u@h/d",
         "tables": [{"name": "t", "cursor": {"column": "ts", "lag": "soon"}}]});
     assert!(!validator.is_valid(&bad_lag));
@@ -96,7 +96,7 @@ fn schema_valid_corpus_parses() {
     PostgresConfig::from_value(new_fields).expect("new fields parse");
 }
 
-// ---- Feature 009: the cdc block (SC-007) ----
+// ---- the cdc block ----
 
 #[test]
 fn cdc_block_round_trips_the_schema() {
@@ -139,7 +139,7 @@ fn cdc_block_round_trips_the_schema() {
     );
 }
 
-// ---- Feature 008: destination options schema (SC-008) ----
+// ---- destination options schema ----
 
 mod dest_options {
     use jsonschema::validator_for;
@@ -175,7 +175,7 @@ mod dest_options {
 
     #[test]
     fn refinement_options_round_trip_the_schema() {
-        // Feature 010 (MR7): both options in the generated schema; bad
+        // Both refinement options in the generated schema; bad
         // `order` tokens and unknown sub-fields fail schema AND parser.
         let validator = validator_for(&schema()).expect("schema compiles");
         for bad in [

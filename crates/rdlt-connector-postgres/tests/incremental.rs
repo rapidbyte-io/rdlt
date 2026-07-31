@@ -1,7 +1,11 @@
-//! T018: incremental cursor semantics against real Postgres + DuckDB —
+//! Incremental cursor semantics against real Postgres + DuckDB —
 //! delta loads, closed-boundary dedup vs open opt-out, NULL policies,
 //! regressing clocks, config windows, PK-less row-hash keys, and the
 //! structured-stream Merge boundary (engine clause B4).
+//!
+//! ABOVE THE SIZE CEILING, DELIBERATELY: nineteen cells over ONE shared rig
+//! exercising one contract — the incremental state machine src/source/cursor.rs
+//! keeps as one file for the same reason.
 
 use rdlt_connector_duckdb::dest::DuckDb;
 use rdlt_connector_postgres::fixtures::PgFixture;
@@ -271,7 +275,7 @@ async fn text_cursor_mixed_case_byte_order() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn merge_by_declared_key_converges_and_keyless_is_rejected() {
-    // Engine clause B4 as amended by feature 006 (merge-structured.md):
+    // Engine clause B4 as amended (contract merge-structured.md):
     // structured streams with a declared primary_key merge BY that key —
     // update-heavy re-runs converge to one row per key. Keyless structured
     // streams keep the original plan-time rejection.
@@ -351,7 +355,7 @@ async fn merge_by_declared_key_converges_and_keyless_is_rejected() {
     );
 }
 
-// ---- Feature 007 US2: cursor lag (contract cursor-lag.md) ----
+// ---- cursor lag (contract cursor-lag.md) ----
 
 #[tokio::test(flavor = "multi_thread")]
 async fn lag_captures_late_arrivals_with_exact_totals_under_merge() {
@@ -402,7 +406,7 @@ async fn lag_captures_late_arrivals_with_exact_totals_under_merge() {
     assert_eq!(missing, "0", "L5: the window bounds the guarantee");
 
     // Idempotent window re-merge: three further runs, totals NEVER move —
-    // window rows re-deliver and merge by key (SC-002 as amended by R4).
+    // window rows re-deliver and merge by key.
     for _ in 0..3 {
         run_merge(lag_source(&fixture.conn)).await;
         assert_eq!(rig.count(), 4, "destination totals stay exact");
@@ -456,7 +460,7 @@ async fn lag_rejections_are_typed_and_early() {
         .expect("whole-day lag on date is fine");
 }
 
-// ---- Feature 007 US4: cursor edge policies (cursor-lag.md N1-N3, E1-E2) ----
+// ---- cursor edge policies (contract cursor-lag.md) ----
 
 #[tokio::test(flavor = "multi_thread")]
 async fn null_cursor_error_policy_fails_typed_and_old_policies_unchanged() {
@@ -614,7 +618,7 @@ async fn inclusive_end_bound_loads_boundary_rows_exactly_once() {
     assert_eq!(rig.distinct_ids(), "3");
 }
 
-// ---- Feature 011 (contract PM1/PM2): parameter-matrix gap cells ----
+// ---- parameter-matrix gap cells ----
 
 /// `direction: min` — descending cursors: the watermark is the MINIMUM
 /// seen, and later runs load rows BELOW it.

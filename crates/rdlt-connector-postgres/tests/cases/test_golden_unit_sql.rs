@@ -1,4 +1,4 @@
-//! Golden text pin for the NON-MERGE publish path (feature 019 US5).
+//! Golden text pin for the NON-MERGE publish path.
 //!
 //! `golden_sql.rs` pins the merge statements and is deliberately untouched by
 //! this story — merge still stages and its SQL is unchanged. What changed is

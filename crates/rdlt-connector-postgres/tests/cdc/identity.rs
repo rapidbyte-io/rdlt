@@ -3,7 +3,7 @@
 
 use crate::*;
 
-// ─────────────────── US4: TOAST policy + error matrix + lag ───────────────────
+// ─────────────── TOAST policy + error matrix + lag ───────────────
 
 #[tokio::test(flavor = "multi_thread")]
 async fn toast_full_identity_substitutes_from_the_old_image() {

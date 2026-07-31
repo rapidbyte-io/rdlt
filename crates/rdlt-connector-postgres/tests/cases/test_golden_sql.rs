@@ -1,4 +1,4 @@
-//! Golden-SQL pins (feature 013 T001, contract SM4).
+//! Golden-SQL pins (contract shared-merge-core.md).
 //!
 //! These tests bind the EXACT statement text the postgres destination
 //! generates for a representative plan matrix. They were captured against the
@@ -152,7 +152,7 @@ fn pin_scd2_keep_and_retire() {
     );
 }
 
-/// Feature 013 G1/G2 additions — new pins; the pre-013 pins above are
+/// Later additions — new pins; the pins above are
 /// UNTOUCHED (default scd2 output stayed byte-identical).
 #[test]
 fn pin_scd2_markers_and_boundary() {
