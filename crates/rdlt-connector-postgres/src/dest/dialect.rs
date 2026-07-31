@@ -10,7 +10,7 @@ pub struct PgDialect;
 
 impl MergeDialect for PgDialect {
     fn arrival_order(&self) -> String {
-        super::quote(super::commit::ARRIVAL_COL)
+        quote(super::commit::ARRIVAL_COL)
     }
 
     fn clear_table(&self, table: &str) -> String {
@@ -26,4 +26,11 @@ impl MergeDialect for PgDialect {
             "CREATE TEMP TABLE {name} ON COMMIT DROP AS SELECT * FROM {subquery} deduped"
         ))
     }
+}
+
+pub(crate) fn quote(ident: &str) -> String {
+    // The one injection-safe quoting rule, shared with every SQL destination
+    // (and the dialect seam's default). Kept as a thin local alias so the many
+    // DDL/publish call sites read `quote(...)`.
+    rdlt_connector_sqlcore::quote_identifier(ident)
 }
