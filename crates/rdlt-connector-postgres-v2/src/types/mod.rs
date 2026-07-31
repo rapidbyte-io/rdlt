@@ -13,6 +13,8 @@
 
 pub(crate) mod binary;
 pub(crate) mod builder;
+#[cfg(feature = "destination")]
+pub(crate) mod encode;
 pub(crate) mod literal;
 pub(crate) mod map;
 pub(crate) mod text;
