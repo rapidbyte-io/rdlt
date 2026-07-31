@@ -9,16 +9,16 @@ use crate::tls;
 /// A fully parsed connection: the driver config (TLS parameters stripped,
 /// `application_name` defaulted) plus the effective TLS policy.
 #[derive(Debug)]
-pub(crate) struct Parsed {
-    pub(crate) driver: tokio_postgres::Config,
-    pub(crate) tls: tls::Policy,
+pub struct Parsed {
+    pub driver: tokio_postgres::Config,
+    pub tls: tls::Policy,
 }
 
 /// THE parse gate. Every consumer of a user connection string — source,
 /// destination, CDC — goes through here, so an unsupported parameter, a
 /// malformed escape, or a policy contradiction is refused identically
 /// everywhere, before any connection exists.
-pub(crate) fn parse(
+pub fn parse(
     connection_string: &str,
     tls_override: Option<&tls::Policy>,
 ) -> Result<Parsed, tls::ConfigError> {

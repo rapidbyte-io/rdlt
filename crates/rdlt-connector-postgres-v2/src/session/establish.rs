@@ -10,7 +10,7 @@ use crate::tls;
 
 /// How a session is prepared after the handshake.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Profile {
+pub enum Profile {
     /// Server defaults — reads, reflection, DDL.
     Plain,
     /// Pins the GUCs the pgoutput TEXT forms depend on (`datestyle`,
@@ -32,7 +32,7 @@ impl Profile {
 /// exists so "how a connection came to be" has exactly one owner, not to
 /// hide the driver; every query still speaks `tokio_postgres::Client`.
 #[derive(Debug)]
-pub(crate) struct Connection {
+pub struct Connection {
     client: tokio_postgres::Client,
 }
 
@@ -53,7 +53,7 @@ impl std::ops::Deref for Connection {
 /// How establishing a session can fail — and the ONE place retry-worthiness
 /// is decided for connection failures.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum EstablishError {
+pub enum EstablishError {
     #[error("tls config: {0}")]
     Config(#[from] tls::ConfigError),
     #[error("connect: {0}")]
@@ -75,7 +75,7 @@ impl EstablishError {
 /// The whole path: parse the connection string, resolve the policy, shake
 /// hands, apply the profile. Every consumer of a user connection string ends
 /// up here.
-pub(crate) async fn establish(
+pub async fn establish(
     connection_string: &str,
     tls_override: Option<&tls::Policy>,
     profile: Profile,
@@ -102,7 +102,7 @@ pub(crate) async fn establish(
 /// The handshake half, callable with an already-parsed connection (the TLS
 /// matrix tests exercise policies directly). Verifying modes never fall back
 /// to plaintext; `disable` never negotiates TLS.
-pub(crate) async fn connect(parsed: &Parsed) -> Result<Connection, EstablishError> {
+pub async fn connect(parsed: &Parsed) -> Result<Connection, EstablishError> {
     let mut driver = parsed.driver.clone();
     if parsed.tls.mode.wants_encryption() && parsed.tls.mode != tls::Mode::Prefer {
         driver.ssl_mode(SslMode::Require);

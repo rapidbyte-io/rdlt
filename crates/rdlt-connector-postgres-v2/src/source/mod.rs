@@ -18,11 +18,13 @@ mod errors;
 #[cfg(feature = "failpoints")]
 mod fail_points;
 mod plan;
-mod reflect;
+pub(crate) mod reflect;
 mod sql;
 
 pub use config::{Config, ConfigError, config_schema};
 pub use connector::Postgres;
+
+pub(crate) use connector::connect;
 
 #[cfg(feature = "failpoints")]
 pub use fail_points::FAIL_POINTS;

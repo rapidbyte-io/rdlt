@@ -67,7 +67,7 @@ pub(crate) fn is_permanent_at_statement(sqlstate: &str) -> bool {
 
 /// Connect-phase failures, distinguished by TLS meaning.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TlsFailure {
+pub enum TlsFailure {
     /// Certificate signed by an unknown CA — supply `tls.root_cert`.
     TrustAnchor,
     /// Chain invalid (expired, wrong usage, malformed…).
@@ -88,10 +88,10 @@ pub(crate) enum TlsFailure {
 /// (retries don't mint certificates); network-shaped `Other` failures are.
 #[derive(Debug, thiserror::Error)]
 #[error("{failure:?}: {detail}")]
-pub(crate) struct ConnectError {
-    pub(crate) failure: TlsFailure,
-    pub(crate) detail: String,
-    pub(crate) transient: bool,
+pub struct ConnectError {
+    pub failure: TlsFailure,
+    pub detail: String,
+    pub transient: bool,
 }
 
 /// The server-refused-TLS signal is a STRING SNIFF: tokio-postgres surfaces

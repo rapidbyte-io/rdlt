@@ -14,8 +14,7 @@ mod classify;
 mod connection_string;
 mod establish;
 
-pub(crate) use classify::{
-    ConnectError, TlsFailure, describe, is_permanent_at_statement, is_transient_at_connect,
-};
-pub(crate) use connection_string::{Parsed, parse};
-pub(crate) use establish::{Connection, EstablishError, Profile, connect, establish};
+pub use classify::{ConnectError, TlsFailure};
+pub(crate) use classify::{describe, is_permanent_at_statement, is_transient_at_connect};
+pub use connection_string::{Parsed, parse};
+pub use establish::{Connection, EstablishError, Profile, connect, establish};
