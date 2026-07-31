@@ -112,6 +112,7 @@ else ifeq ($(TARGET),sweep)
 	cargo nextest run -p rdlt-engine --features failpoints -E 'binary(crash_sweep)'
 	# Postgres sweeps self-skip without a container runtime (G2.1).
 	cargo nextest run -p rdlt-connector-postgres --features failpoints -E 'binary(crash_sweep) or binary(dest_crash_sweep) or binary(cdc_crash_sweep)'
+	cargo nextest run -p rdlt-connector-postgres-v2 --features failpoints -E 'binary(source_crash_sweep) or binary(destination_crash_sweep) or binary(cdc_crash_sweep)'
 	cargo nextest run -p rdlt-connector-duckdb --features failpoints -E 'binary(sweep)'
 	cargo nextest run -p rdlt-connector-rest --features failpoints -E 'binary(sweep)'
 	cargo nextest run -p rdlt-connector-file --features failpoints -E 'binary(sweep)'
@@ -217,6 +218,7 @@ else ifeq ($(TARGET),deep)
 	# (prlimit, release CLI) hard-fail instead of silently skipping. Not on
 	# sweep: sweep is part of the PR gate, which stays container-optional.
 	RDLT_HEAVY=1 cargo nextest run -p rdlt-connector-postgres -E 'binary(memory_bound)'
+	RDLT_HEAVY=1 cargo nextest run -p rdlt-connector-postgres-v2 -E 'binary(memory_bound)'
 	# Spark read-back (016): heavyweight JVM leg, deep tier only.
 	RDLT_DEEP=1 cargo nextest run -p rdlt-connector-iceberg -E 'binary(spark_deep)'
 	$(MAKE) test TARGET=prop

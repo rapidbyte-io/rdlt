@@ -8,8 +8,9 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Per-column type-hint vocabulary — defined beside the conversion table it
-/// selects from ([`crate::types::map`]); this is its public spelling.
+/// Per-column type-hint vocabulary — defined beside the closed conversion
+/// table it selects from (the crate-internal type rulebook); this is its
+/// public spelling.
 pub use crate::types::map::TypeHint;
 
 #[derive(Debug, thiserror::Error)]

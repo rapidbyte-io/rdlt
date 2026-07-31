@@ -36,12 +36,6 @@ pub struct Connection {
     client: tokio_postgres::Client,
 }
 
-impl Connection {
-    pub(crate) fn client(&self) -> &tokio_postgres::Client {
-        &self.client
-    }
-}
-
 impl std::ops::Deref for Connection {
     type Target = tokio_postgres::Client;
 
