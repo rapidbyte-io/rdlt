@@ -98,7 +98,7 @@ async fn sweep_postgres_source() {
         return;
     };
     fixture.seed(SEED).await;
-    let conn = fixture.conn_url();
+    let conn = fixture.conn.clone();
 
     // Append + keyed structured Merge (feature 006): the merge axis drives the
     // keyed delete+insert commit path under every crash point.
@@ -173,7 +173,7 @@ async fn transient_mid_copy_resumes_within_one_run() {
     // checkpointed batches before dying, attempts 2–3 resume past them.
     fail::cfg("pg.src.mid_copy", "2*return->off").expect("configure");
     let report = rig
-        .attempt(&fixture.conn_url())
+        .attempt(&fixture.conn.clone())
         .await
         .expect("run recovers in-run");
     fail::remove("pg.src.mid_copy");
@@ -205,7 +205,7 @@ async fn container_kill_mid_read_is_typed_and_preserves_commits() {
         )
         .await;
     let rig = Rig::new();
-    let conn = fixture.conn_url();
+    let conn = fixture.conn.clone();
 
     // Deterministic kill point (005 review advisory): wait until AT LEAST ONE
     // commit landed, so the prefix-integrity assertion below is unconditional

@@ -40,7 +40,7 @@ async fn reflects_schema_shape_pks_views_and_type_policies() {
     // Tables only (no views).
     let config = PostgresConfig::from_yaml(&format!(
         "conn: \"{}\"\nschema: sales\n",
-        fixture.conn_url()
+        fixture.conn.clone()
     ))
     .expect("config");
     let tables = reflect_for_tests(&config).await.expect("reflect");
@@ -77,7 +77,7 @@ async fn reflects_schema_shape_pks_views_and_type_policies() {
     // include_views picks up the view.
     let config_views = PostgresConfig::from_yaml(&format!(
         "conn: \"{}\"\nschema: sales\ninclude_views: true\n",
-        fixture.conn_url()
+        fixture.conn.clone()
     ))
     .expect("config");
     let with_views = reflect_for_tests(&config_views)
@@ -88,7 +88,7 @@ async fn reflects_schema_shape_pks_views_and_type_policies() {
     // Unknown listed table is a typed reflect error.
     let config_missing = PostgresConfig::from_yaml(&format!(
         "conn: \"{}\"\nschema: sales\ntables:\n  - name: ghost\n",
-        fixture.conn_url()
+        fixture.conn.clone()
     ))
     .expect("config");
     let err = reflect_for_tests(&config_missing).await.unwrap_err();

@@ -16,7 +16,7 @@
 use rdlt_testkit::gate::{RECLAIM_LABEL, runtime_available};
 use testcontainers_modules::postgres::Postgres as PostgresImage;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
-use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};
+use testcontainers_modules::testcontainers::{ContainerAsync, ContainerRequest, ImageExt};
 use tokio_postgres::{Client, NoTls};
 
 /// The postgres image is testcontainers-modules' default repository,
@@ -37,11 +37,47 @@ fn conn_string(port: u16) -> String {
     format!("host=127.0.0.1 port={port} user=postgres password=postgres dbname=postgres")
 }
 
+/// The one start sequence both fixtures share: probe the runtime (skip
+/// visibly without one), label for `make reclaim`, start, read the mapped
+/// port back into a conn string.
+async fn start_labeled(
+    request: ContainerRequest<PostgresImage>,
+    what: &str,
+) -> Option<(ContainerAsync<PostgresImage>, String)> {
+    if !runtime_available() {
+        eprintln!("SKIP: no container runtime — {what} not started");
+        return None;
+    }
+    let container = request
+        .with_label(RECLAIM_LABEL, "1")
+        .start()
+        .await
+        .expect("start postgres container (runtime present)");
+    let port = container
+        .get_host_port_ipv4(POSTGRES_PORT)
+        .await
+        .expect("mapped port");
+    let conn = conn_string(port);
+    Some((container, conn))
+}
+
+/// A raw client on the fixture's conn string, its connection task detached.
+async fn raw_client(conn: &str) -> Client {
+    let (client, connection) = tokio_postgres::connect(conn, NoTls)
+        .await
+        .expect("connect to fixture postgres");
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    client
+}
+
 /// A fresh `postgres:16-alpine`, seeded via SQL batches, handing out conn
 /// strings/clients. One container per fixture; the container stops on Drop.
 pub struct PgFixture {
     // Held for its Drop: the container stops when the fixture drops.
     _container: ContainerAsync<PostgresImage>,
+    /// The source-config `conn:` value for this fixture — the ONE spelling.
     pub conn: String,
 }
 
@@ -57,46 +93,26 @@ impl std::fmt::Debug for PgFixture {
 impl PgFixture {
     /// Start a fresh postgres, or skip visibly (`None`) without a runtime.
     pub async fn start() -> Option<Self> {
-        if !runtime_available() {
-            eprintln!("SKIP: no container runtime — postgres fixture not started");
-            return None;
-        }
-        let container = PostgresImage::default()
-            .with_tag(POSTGRES_TAG)
-            .with_label(RECLAIM_LABEL, "1")
-            .start()
-            .await
-            .expect("start postgres container (runtime present)");
-        let port = container
-            .get_host_port_ipv4(POSTGRES_PORT)
-            .await
-            .expect("mapped port");
+        let request = PostgresImage::default().with_tag(POSTGRES_TAG);
+        let (container, conn) = start_labeled(request, "postgres fixture").await?;
         Some(Self {
             _container: container,
-            conn: conn_string(port),
+            conn,
         })
     }
 
     /// A raw client for seeding/asserting, independent of the source under test.
     pub async fn client(&self) -> Client {
-        let (client, connection) = tokio_postgres::connect(&self.conn, NoTls)
-            .await
-            .expect("connect to fixture postgres");
-        tokio::spawn(async move {
-            let _ = connection.await;
-        });
-        client
+        raw_client(&self.conn).await
     }
 
     /// Run semicolon-separated DDL/DML (simple batch seeding).
     pub async fn seed(&self, sql: &str) {
-        let client = self.client().await;
-        client.batch_execute(sql).await.expect("seed SQL");
-    }
-
-    /// The source-config `conn:` value for this fixture.
-    pub fn conn_url(&self) -> String {
-        self.conn.clone()
+        self.client()
+            .await
+            .batch_execute(sql)
+            .await
+            .expect("seed SQL");
     }
 }
 
@@ -105,7 +121,8 @@ impl PgFixture {
 pub struct CdcPgFixture {
     // Held for its Drop: the container stops when the fixture drops.
     _container: ContainerAsync<PostgresImage>,
-    conn: String,
+    /// The source-config `conn:` value for this fixture — the ONE spelling.
+    pub conn: String,
 }
 
 // `ContainerAsync` is not `Debug`; expose the useful half by hand.
@@ -121,49 +138,26 @@ impl CdcPgFixture {
     /// Start a fresh logical-replication postgres, or skip visibly (`None`)
     /// without a runtime.
     pub async fn start() -> Option<Self> {
-        if !runtime_available() {
-            eprintln!("SKIP: no container runtime — CDC postgres fixture not started");
-            return None;
-        }
-        let container = PostgresImage::default()
-            .with_tag(POSTGRES_TAG)
-            .with_label(RECLAIM_LABEL, "1")
-            .with_cmd([
-                "postgres",
-                "-c",
-                "wal_level=logical",
-                "-c",
-                "max_replication_slots=8",
-                "-c",
-                "max_wal_senders=8",
-            ])
-            .start()
-            .await
-            .expect("start CDC postgres container (runtime present)");
-        let port = container
-            .get_host_port_ipv4(POSTGRES_PORT)
-            .await
-            .expect("mapped port");
+        let request = PostgresImage::default().with_tag(POSTGRES_TAG).with_cmd([
+            "postgres",
+            "-c",
+            "wal_level=logical",
+            "-c",
+            "max_replication_slots=8",
+            "-c",
+            "max_wal_senders=8",
+        ]);
+        let (container, conn) = start_labeled(request, "CDC postgres fixture").await?;
         Some(Self {
             _container: container,
-            conn: conn_string(port),
+            conn,
         })
-    }
-
-    pub fn conn_url(&self) -> String {
-        self.conn.clone()
     }
 
     /// A raw client for seeding/mutating/asserting, independent of the source
     /// under test.
     pub async fn client(&self) -> Client {
-        let (client, connection) = tokio_postgres::connect(&self.conn, NoTls)
-            .await
-            .expect("connect to CDC fixture");
-        tokio::spawn(async move {
-            let _ = connection.await;
-        });
-        client
+        raw_client(&self.conn).await
     }
 
     pub async fn seed(&self, sql: &str) {

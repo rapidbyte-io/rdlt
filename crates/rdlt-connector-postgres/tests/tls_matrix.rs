@@ -89,13 +89,13 @@ async fn prefer_falls_back_on_plaintext_server_and_conn_sslmode_flows() {
     let Some(plain) = PgFixture::start().await else {
         return;
     };
-    probe_source(&plain.conn_url(), "")
+    probe_source(&plain.conn.clone(), "")
         .await
         .expect("default prefer falls back to plaintext");
-    probe_source(&format!("{} sslmode=disable", plain.conn_url()), "")
+    probe_source(&format!("{} sslmode=disable", plain.conn.clone()), "")
         .await
         .expect("explicit disable on a plaintext server");
-    let err = probe_source(&format!("{} sslmode=require", plain.conn_url()), "")
+    let err = probe_source(&format!("{} sslmode=require", plain.conn.clone()), "")
         .await
         .expect_err("require against a server without TLS must fail");
     assert!(err.contains("connect phase"), "{err}");
@@ -353,7 +353,8 @@ async fn common_connect_failures_carry_the_server_message() {
         return;
     };
     let bad_db = plain
-        .conn_url()
+        .conn
+        .clone()
         .replace("dbname=postgres", "dbname=doesnotexist");
     let err = probe_source(&bad_db, "")
         .await

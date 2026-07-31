@@ -85,7 +85,7 @@ fn shared() -> &'static (tokio::runtime::Runtime, PgFixture, String) {
             .await;
             f
         });
-        let conn = fixture.conn_url();
+        let conn = fixture.conn.clone();
         (rt, fixture, conn)
     })
 }

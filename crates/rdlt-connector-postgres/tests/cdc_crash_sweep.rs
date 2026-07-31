@@ -127,7 +127,7 @@ async fn sweep_cdc_fail_points() {
                 return;
             };
             fixture.seed(SEED).await;
-            let conn = fixture.conn_url();
+            let conn = fixture.conn.clone();
             let rig = Rig::new();
 
             if needs_change_pass {
@@ -185,7 +185,7 @@ async fn redelivered_changes_converge() {
         return;
     };
     fixture.seed(SEED).await;
-    let conn = fixture.conn_url();
+    let conn = fixture.conn.clone();
     let rig = Rig::new();
 
     rig.attempt(&conn).await.expect("snapshot run");
@@ -235,7 +235,7 @@ async fn container_kill_mid_catch_up_is_typed_and_preserves_commits() {
     fixture
         .seed("CREATE TABLE public.ev (id int8 PRIMARY KEY, v text);")
         .await;
-    let conn = fixture.conn_url();
+    let conn = fixture.conn.clone();
 
     let dir = tempfile::tempdir().expect("tempdir");
     let dest =
@@ -330,13 +330,13 @@ async fn transient_mid_snapshot_resumes_within_one_run() {
     // recovers by itself.
     fail::cfg("cdc.snapshot.copy", "2*return->off").expect("configure");
     let report = rig
-        .attempt(&fixture.conn_url())
+        .attempt(&fixture.conn.clone())
         .await
         .expect("run recovers in-run");
     fail::remove("cdc.snapshot.copy");
 
     assert!(report.retries > 0, "the engine's retry counter surfaces");
     assert_mirror_equals(&fixture, "in-run retry").await;
-    let stable = rig.attempt(&fixture.conn_url()).await.expect("stable");
+    let stable = rig.attempt(&fixture.conn.clone()).await.expect("stable");
     assert_eq!(stable.total_rows(), 0, "convergent after in-run retries");
 }

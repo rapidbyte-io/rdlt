@@ -65,7 +65,7 @@ async fn delta_loads_and_closed_boundary_dedup() {
     let rig = Rig::new();
 
     // Run 1: full load.
-    assert_eq!(rig.run(source(&fixture.conn_url(), ""), "inc").await, 3);
+    assert_eq!(rig.run(source(&fixture.conn.clone(), ""), "inc").await, 3);
     assert_eq!(rig.count(), 3);
 
     // New row AT the exact watermark (2026-01-02) plus one beyond it.
@@ -77,12 +77,12 @@ async fn delta_loads_and_closed_boundary_dedup() {
         .await;
     // Run 2: closed boundary re-fetches watermark-equal rows; ids 2 and 3 are
     // deduped source-side via boundary keys — exactly the two new rows load.
-    assert_eq!(rig.run(source(&fixture.conn_url(), ""), "inc").await, 2);
+    assert_eq!(rig.run(source(&fixture.conn.clone(), ""), "inc").await, 2);
     assert_eq!(rig.count(), 5, "no duplicates");
     assert_eq!(rig.distinct_ids(), "5");
 
     // Run 3 with nothing new: zero rows move.
-    assert_eq!(rig.run(source(&fixture.conn_url(), ""), "inc").await, 0);
+    assert_eq!(rig.run(source(&fixture.conn.clone(), ""), "inc").await, 0);
     assert_eq!(rig.count(), 5);
 }
 
@@ -96,7 +96,8 @@ async fn open_boundary_skips_watermark_equal_rows() {
     let cfg = "      boundary: exclusive\n";
 
     assert_eq!(
-        rig.run(source(&fixture.conn_url(), cfg), "inc-open").await,
+        rig.run(source(&fixture.conn.clone(), cfg), "inc-open")
+            .await,
         3
     );
     // A late row at the exact watermark: the open boundary (strict >) never
@@ -105,7 +106,8 @@ async fn open_boundary_skips_watermark_equal_rows() {
         .seed("INSERT INTO ev VALUES (4, 'd', '2026-01-02T00:00:00Z');")
         .await;
     assert_eq!(
-        rig.run(source(&fixture.conn_url(), cfg), "inc-open").await,
+        rig.run(source(&fixture.conn.clone(), cfg), "inc-open")
+            .await,
         0
     );
     assert_eq!(rig.count(), 3, "watermark-equal late row skipped by design");
@@ -123,15 +125,24 @@ async fn null_cursor_policies() {
 
     // Default exclude: NULL-cursor rows never load.
     let rig = Rig::new();
-    assert_eq!(rig.run(source(&fixture.conn_url(), ""), "inc-nx").await, 3);
+    assert_eq!(
+        rig.run(source(&fixture.conn.clone(), ""), "inc-nx").await,
+        3
+    );
     assert_eq!(rig.count(), 3);
 
     // Include: NULL-cursor rows load on EVERY run (they carry no watermark) —
     // the documented Append-mode consequence.
     let rig = Rig::new();
     let cfg = "      nulls: include\n";
-    assert_eq!(rig.run(source(&fixture.conn_url(), cfg), "inc-ni").await, 5);
-    assert_eq!(rig.run(source(&fixture.conn_url(), cfg), "inc-ni").await, 2);
+    assert_eq!(
+        rig.run(source(&fixture.conn.clone(), cfg), "inc-ni").await,
+        5
+    );
+    assert_eq!(
+        rig.run(source(&fixture.conn.clone(), cfg), "inc-ni").await,
+        2
+    );
     let null_copies = rig
         .dest
         .query_string("SELECT CAST(count(*) AS VARCHAR) FROM ev WHERE id = 90")
@@ -150,19 +161,28 @@ async fn regressing_clock_never_moves_watermark_backward() {
     fixture.seed(BASE).await;
     let rig = Rig::new();
 
-    assert_eq!(rig.run(source(&fixture.conn_url(), ""), "inc-reg").await, 3);
+    assert_eq!(
+        rig.run(source(&fixture.conn.clone(), ""), "inc-reg").await,
+        3
+    );
     // Clock skew writes a row BELOW the committed watermark: invisible to
     // cursor incremental (the documented caveat), and the watermark must not
     // regress because of it.
     fixture
         .seed("INSERT INTO ev VALUES (6, 'skew', '2026-01-01T12:00:00Z');")
         .await;
-    assert_eq!(rig.run(source(&fixture.conn_url(), ""), "inc-reg").await, 0);
+    assert_eq!(
+        rig.run(source(&fixture.conn.clone(), ""), "inc-reg").await,
+        0
+    );
     // A later row still loads exactly once — state stayed at the max.
     fixture
         .seed("INSERT INTO ev VALUES (7, 'later', '2026-01-04T00:00:00Z');")
         .await;
-    assert_eq!(rig.run(source(&fixture.conn_url(), ""), "inc-reg").await, 1);
+    assert_eq!(
+        rig.run(source(&fixture.conn.clone(), ""), "inc-reg").await,
+        1
+    );
     assert_eq!(rig.count(), 4);
 }
 
@@ -179,7 +199,7 @@ async fn initial_and_end_value_window() {
     let cfg = "      initial_value: \"2026-01-02T00:00:00Z\"\n      end_value: \"2026-01-06T00:00:00Z\"\n";
     // Closed start (>= 01-02), exclusive end (< 01-06): ids 2,3,8.
     assert_eq!(
-        rig.run(source(&fixture.conn_url(), cfg), "inc-win").await,
+        rig.run(source(&fixture.conn.clone(), cfg), "inc-win").await,
         3
     );
     let ids = rig
@@ -204,7 +224,7 @@ async fn pkless_table_dedups_via_row_hash() {
         .await;
     let rig = Rig::new();
     assert_eq!(
-        rig.run(source(&fixture.conn_url(), ""), "inc-hash").await,
+        rig.run(source(&fixture.conn.clone(), ""), "inc-hash").await,
         2
     );
     // New DISTINCT row at the watermark: row-hash dedup passes it, drops the
@@ -213,7 +233,7 @@ async fn pkless_table_dedups_via_row_hash() {
         .seed("INSERT INTO ev VALUES (3, 'c', '2026-01-02T00:00:00Z');")
         .await;
     assert_eq!(
-        rig.run(source(&fixture.conn_url(), ""), "inc-hash").await,
+        rig.run(source(&fixture.conn.clone(), ""), "inc-hash").await,
         1
     );
     assert_eq!(rig.count(), 3);
@@ -241,11 +261,11 @@ async fn uuid_cursor_end_to_end() {
         ))
         .expect("config")
     };
-    assert_eq!(rig.run(src(&fixture.conn_url()), "inc-uuid").await, 2);
+    assert_eq!(rig.run(src(&fixture.conn.clone()), "inc-uuid").await, 2);
     fixture
         .seed("INSERT INTO ev VALUES ('00000000-0000-0000-0000-000000000003', 'c');")
         .await;
-    assert_eq!(rig.run(src(&fixture.conn_url()), "inc-uuid").await, 1);
+    assert_eq!(rig.run(src(&fixture.conn.clone()), "inc-uuid").await, 1);
     assert_eq!(rig.count(), 3);
 }
 
@@ -269,7 +289,7 @@ async fn text_cursor_mixed_case_byte_order() {
         ))
         .expect("config")
     };
-    assert_eq!(rig.run(src(&fixture.conn_url()), "inc-text").await, 3);
+    assert_eq!(rig.run(src(&fixture.conn.clone()), "inc-text").await, 3);
     // 'Delta' < 'beta' in byte order (uppercase D), so under a locale sort it
     // would land inside the already-seen range; byte-order watermark 'beta'
     // means 'Delta' is BELOW the watermark — documented cursor semantics: a
@@ -279,7 +299,7 @@ async fn text_cursor_mixed_case_byte_order() {
         .seed("INSERT INTO ev VALUES (4, 'Delta'), (5, 'zeta');")
         .await;
     assert_eq!(
-        rig.run(src(&fixture.conn_url()), "inc-text").await,
+        rig.run(src(&fixture.conn.clone()), "inc-text").await,
         1,
         "only the byte-order-greater row loads; ordering is consistent, no panic, no dupes"
     );
@@ -317,7 +337,7 @@ async fn merge_by_declared_key_converges_and_keyless_is_rejected() {
         }
     };
 
-    assert_eq!(run_merge(source(&fixture.conn_url(), "")).await, 3);
+    assert_eq!(run_merge(source(&fixture.conn.clone(), "")).await, 3);
     assert_eq!(rig.count(), 3);
 
     // Update TWO existing rows past the watermark and add one new row: the
@@ -329,7 +349,7 @@ async fn merge_by_declared_key_converges_and_keyless_is_rejected() {
              INSERT INTO ev VALUES (4, 'd', '2026-01-04T00:00:00Z');",
         )
         .await;
-    assert_eq!(run_merge(source(&fixture.conn_url(), "")).await, 3);
+    assert_eq!(run_merge(source(&fixture.conn.clone(), "")).await, 3);
     assert_eq!(rig.count(), 4, "one row per key after update-heavy run");
     assert_eq!(rig.distinct_ids(), "4");
     let v1 = rig
@@ -339,7 +359,7 @@ async fn merge_by_declared_key_converges_and_keyless_is_rejected() {
     assert_eq!(v1, "a2", "merge took the updated value");
 
     // Idempotent re-run (nothing past the watermark): still one row per key.
-    assert_eq!(run_merge(source(&fixture.conn_url(), "")).await, 0);
+    assert_eq!(run_merge(source(&fixture.conn.clone(), "")).await, 0);
     assert_eq!(rig.count(), 4);
 
     // Keyless structured stream: B4 rejection stands, at plan time.
@@ -348,7 +368,7 @@ async fn merge_by_declared_key_converges_and_keyless_is_rejected() {
         .await;
     let keyless = PostgresSource::from_yaml(&format!(
         "conn: \"{}\"\ntables:\n  - name: nokey\n",
-        fixture.conn_url()
+        fixture.conn.clone()
     ))
     .expect("config");
     let dir = tempfile::tempdir().expect("tempdir");
@@ -399,7 +419,7 @@ async fn lag_captures_late_arrivals_with_exact_totals_under_merge() {
         }
     };
 
-    assert_eq!(run_merge(lag_source(&fixture.conn_url())).await, 3);
+    assert_eq!(run_merge(lag_source(&fixture.conn.clone())).await, 3);
 
     // A LATE commit: cursor value 3 minutes BEHIND the watermark (inside the
     // 5m window) — invisible without lag. Plus one far beyond the window.
@@ -409,7 +429,7 @@ async fn lag_captures_late_arrivals_with_exact_totals_under_merge() {
              (5, 'too-old', '2026-01-01T12:00:00Z');",
         )
         .await;
-    run_merge(lag_source(&fixture.conn_url())).await;
+    run_merge(lag_source(&fixture.conn.clone())).await;
     assert_eq!(rig.count(), 4, "late row captured, beyond-window row not");
     assert_eq!(rig.distinct_ids(), "4");
     let missing = rig
@@ -421,7 +441,7 @@ async fn lag_captures_late_arrivals_with_exact_totals_under_merge() {
     // Idempotent window re-merge: three further runs, totals NEVER move —
     // window rows re-deliver and merge by key (SC-002 as amended by R4).
     for _ in 0..3 {
-        run_merge(lag_source(&fixture.conn_url())).await;
+        run_merge(lag_source(&fixture.conn.clone())).await;
         assert_eq!(rig.count(), 4, "destination totals stay exact");
         assert_eq!(rig.distinct_ids(), "4");
     }
@@ -441,7 +461,7 @@ async fn lag_rejections_are_typed_and_early() {
         )
         .await;
     let src = |extra: &str| {
-        PostgresSource::from_yaml(&format!("conn: \"{}\"\n{extra}", fixture.conn_url()))
+        PostgresSource::from_yaml(&format!("conn: \"{}\"\n{extra}", fixture.conn.clone()))
             .expect("config")
     };
 
@@ -491,7 +511,7 @@ async fn null_cursor_error_policy_fails_typed_and_old_policies_unchanged() {
     let src = |nulls: &str| {
         PostgresSource::from_yaml(&format!(
             "conn: \"{}\"\ntables:\n  - name: ev\n    cursor:\n      column: ts\n      nulls: {nulls}\n",
-            fixture.conn_url()
+            fixture.conn.clone()
         ))
         .expect("config")
     };
@@ -549,7 +569,7 @@ async fn null_cursor_error_policy_fails_typed_and_old_policies_unchanged() {
     let src2 = |nulls: &str| {
         PostgresSource::from_yaml(&format!(
             "conn: \"{}\"\ntables:\n  - name: ev\n    cursor:\n      column: ts\n      nulls: {nulls}\n",
-            fixture2.conn_url()
+            fixture2.conn.clone()
         ))
         .expect("config")
     };
@@ -592,7 +612,7 @@ async fn inclusive_end_bound_loads_boundary_rows_exactly_once() {
     let src = |end_bound: &str| {
         PostgresSource::from_yaml(&format!(
             "conn: \"{}\"\ntables:\n  - name: ev\n    cursor:\n      column: ts\n      end_value: \"2026-01-02T00:00:00Z\"\n      end_bound: {end_bound}\n",
-            fixture.conn_url()
+            fixture.conn.clone()
         ))
         .expect("config")
     };
@@ -654,14 +674,14 @@ async fn direction_min_descends_and_resumes() {
         ))
         .expect("config")
     };
-    assert_eq!(rig.run(source(&fixture.conn_url()), "inc-min").await, 2);
+    assert_eq!(rig.run(source(&fixture.conn.clone()), "inc-min").await, 2);
 
     // Rows BELOW the min watermark arrive later (a descending feed).
     fixture
         .seed("INSERT INTO ev VALUES (3, 'c', now()), (4, 'd', now());")
         .await;
     assert_eq!(
-        rig.run(source(&fixture.conn_url()), "inc-min").await,
+        rig.run(source(&fixture.conn.clone()), "inc-min").await,
         2,
         "descending resume loads exactly the rows below the watermark"
     );
@@ -697,12 +717,18 @@ async fn magnitude_lag_for_integer_cursors() {
         });
         Engine::new(config, src, rig.dest.clone())
     };
-    run(source(&fixture.conn_url())).run().await.expect("run 1");
+    run(source(&fixture.conn.clone()))
+        .run()
+        .await
+        .expect("run 1");
     // A LATE row lands inside the magnitude window (id 6 ≥ 7 - 2).
     fixture
         .seed("INSERT INTO ev VALUES (6, 'late', now());")
         .await;
-    let report = run(source(&fixture.conn_url())).run().await.expect("run 2");
+    let report = run(source(&fixture.conn.clone()))
+        .run()
+        .await
+        .expect("run 2");
     assert_eq!(
         report.total_rows(),
         1,
@@ -729,7 +755,7 @@ async fn cursor_column_must_survive_selection() {
         .await;
     let source = PostgresSource::from_yaml(&format!(
         "conn: \"{}\"\ntables:\n  - name: ev\n    excluded_columns: [ts]\n    cursor:\n      column: ts\n",
-        fixture.conn_url()
+        fixture.conn.clone()
     ))
     .expect("config parses — the check needs reflection");
     let rig = Rig::new();
@@ -757,7 +783,7 @@ async fn batch_knobs_cut_batches_observably() {
         )
         .await;
     let commits_with = |extra: &str| {
-        let conn = fixture.conn_url();
+        let conn = fixture.conn.clone();
         let extra = extra.to_string();
         async move {
             let rig = Rig::new();

@@ -379,13 +379,13 @@ impl CdcRig {
             .collect::<String>();
         PostgresSource::from_yaml(&format!(
             "conn: \"{}\"\ncdc:\n  slot: s1\n  publication: p1\n  create_if_missing: true\ntables:\n{list}",
-            self.fixture.conn_url()
+            self.fixture.conn.clone()
         ))
         .expect("cdc source config")
     }
 
     fn dest(&self, tables: &[&str]) -> Postgres {
-        Postgres::connect(self.fixture.conn_url())
+        Postgres::connect(self.fixture.conn.clone())
             .dataset("mirror")
             .options(DestinationOptions {
                 merge_strategy: Some(MergeStrategy::Upsert),
@@ -702,7 +702,7 @@ async fn tail_applies_bursts_cancels_cleanly_and_resumes() {
     let source = PostgresSource::from_yaml(&format!(
         "conn: \"{}\"\ncdc:\n  slot: s1\n  publication: p1\n  create_if_missing: true\n\
          \x20 mode: tail\n  idle_wait: \"1s\"\ntables:\n  - name: orders\n",
-        rig.fixture.conn_url()
+        rig.fixture.conn.clone()
     ))
     .expect("tail config");
     let mut config = EngineConfig::new("cdc-tail");
@@ -1173,7 +1173,7 @@ async fn declared_primary_key_override_keys_the_stream_under_full() {
     let source = PostgresSource::from_yaml(&format!(
         "conn: \"{}\"\ncdc:\n  slot: s1\n  publication: p1\n  create_if_missing: true\n\
          tables:\n  - name: orders\n    primary_key: [code]\n",
-        rig.fixture.conn_url()
+        rig.fixture.conn.clone()
     ))
     .expect("config");
     let specs = source.streams().await.expect("streams");
@@ -1214,7 +1214,7 @@ async fn ack_off_never_advances_the_slot() {
         });
         Engine::new(
             config,
-            source(&rig.fixture.conn_url()),
+            source(&rig.fixture.conn.clone()),
             rig.dest(&["orders"]),
         )
         .run()
@@ -1268,7 +1268,7 @@ async fn custom_flag_column_flows_end_to_end() {
         .expect("config")
     };
     let dest = || {
-        Postgres::connect(rig.fixture.conn_url())
+        Postgres::connect(rig.fixture.conn.clone())
             .dataset("mirror")
             .options(DestinationOptions {
                 merge_strategy: Some(MergeStrategy::Upsert),
@@ -1290,7 +1290,7 @@ async fn custom_flag_column_flows_end_to_end() {
         config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
             key: vec!["id".into()],
         });
-        Engine::new(config, source(&rig.fixture.conn_url()), dest())
+        Engine::new(config, source(&rig.fixture.conn.clone()), dest())
             .run()
             .await
             .expect("run")
@@ -1333,7 +1333,7 @@ async fn declared_key_mismatch_under_default_identity_is_typed() {
     let source = PostgresSource::from_yaml(&format!(
         "conn: \"{}\"\ncdc:\n  slot: s1\n  publication: p1\n  create_if_missing: true\n\
          tables:\n  - name: orders\n    primary_key: [code]\n",
-        rig.fixture.conn_url()
+        rig.fixture.conn.clone()
     ))
     .expect("config");
     let mut config = EngineConfig::new("cdc-key-mismatch");
