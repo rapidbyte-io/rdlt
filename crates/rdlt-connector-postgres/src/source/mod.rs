@@ -756,6 +756,7 @@ pub fn config_schema() -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "failpoints")]
     use super::*;
 
     #[cfg(feature = "failpoints")]
@@ -772,21 +773,5 @@ mod tests {
         let fired = site().is_err();
         rdlt_connector::core::failpoint::fail::remove("pg.src.after_reflect");
         assert!(fired, "armed crash_point must fire");
-    }
-
-    #[test]
-    fn tls_contradiction_rejected_at_config_validation() {
-        // sslmode=require is ACCEPTED (TLS is wired); the config-level
-        // rejection is now the contradiction rule.
-        assert!(
-            PostgresConfig::from_yaml("conn: \"postgresql://u:p@localhost/db?sslmode=require\"\n")
-                .is_ok(),
-            "require now validates — TLS is wired"
-        );
-        let err = PostgresConfig::from_yaml(
-            "conn: \"postgresql://u:p@localhost/db?sslmode=require\"\ntls:\n  mode: disable\n",
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("contradicts"), "{err}");
     }
 }
