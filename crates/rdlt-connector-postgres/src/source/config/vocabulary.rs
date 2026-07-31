@@ -429,6 +429,7 @@ fn default_batch_max_rows() -> usize {
     65_536
 }
 
+/// JSON Schema GENERATED from the config structs — the declared schema and
 /// the parser cannot drift.
 pub fn config_schema() -> serde_json::Value {
     serde_json::to_value(schemars::schema_for!(PostgresConfig)).expect("schema serializes")

@@ -236,8 +236,6 @@ impl PostgresConfig {
     }
 }
 
-/// JSON Schema GENERATED from the config structs — the declared schema and
-
 #[cfg(test)]
 mod tests {
     use super::*;
