@@ -26,23 +26,36 @@ may not grow beyond the old crate's.
 
 ## STATUS (update as work lands — the durable record)
 
-Done through commit `eae968a1`: Tasks 0–5 complete (scaffold, tls, session,
-types incl. encode — 69 unit tests green). Task 6 src HALF done: the whole
-non-CDC source module is written and unit-tested
-(config/{vocabulary,validate}, errors, reflect, sql, plan, cursor/{state
-FROZEN-JSON+proptest, tracker, prepare}, copy, fail_points, connector,
-cdc/mod.rs placeholder that fails typed). REMAINING in Task 6: port the
-source integration suites (needs `fixtures.rs` pulled FORWARD from Task 9 —
-containers first), tests/integration.rs + cases/. Then Tasks 7 (destination),
-8 (CDC — replaces the placeholder; add CDC_FAIL_POINTS then), 9 (sweeps,
-memory_bound, testsupport, benches), 10 (gate wiring + naming audit + docs),
-11 (parity measurement + full gate twice).
+Done through commit `6ca4f7f6`: Tasks 0–5 complete; Task 6 src complete
+(non-CDC source, 69 lib tests); fixtures.rs + testsupport/{data,source,
+session,destination} pulled forward; tests scaffolding (integration.rs,
+cases/mod.rs, cases/common.rs) written; TWO BACKGROUND AGENTS are porting
+the source integration suites (offline batch: test_config,
+test_config_schema — test_option_edges was destination-scoped and dropped
+from cases/mod.rs; container batch: test_reflect, test_native_types,
+test_incremental, test_query_streams, test_source_conformance,
+test_tls_matrix with dest-parts omitted). Task 7 destination src COMPLETE
+(catalog/unit/executor/load/write/connector/config incl. NEW
+document entry points + config_schema; 73 lib tests green).
+REMAINING: agents' suite ports land + fix/commit tests; port destination
+suites (goldens byte-identical, dest_conformance→test_destination_*,
+merge_strategies, merge_refinements, scd2, unit_isolation, direct_publish,
+differential, dest_recovery, copy_wire_pin, option_edges, tls_matrix dest
+parts); Task 8 CDC (replace source/cdc/mod.rs placeholder; wire
+Profile::CdcControl; add CDC_FAIL_POINTS + testsupport fuzz_pgoutput_decode);
+Task 9 sweeps (source_crash_sweep/destination_crash_sweep/cdc_crash_sweep/
+memory_bound) + benches/iai.rs; Task 10 gate wiring (Makefile + 024
+enumeration) + naming audit + docs/README + front-page doctest; Task 11
+parity measurement + full gate twice.
 
-In-flight facts: `reflect::tests::table` is a pub(crate) test helper shared
-by sql/plan tests. `source::config` is a pub module (TypeHint public path =
-`source::config::TypeHint`, defined in types/map.rs). Dead-code warnings are
-expected until consumers land; Task 10 clippy gates zero. The old crate is
-UNTOUCHED; workspace member added for v2 only.
+Key API facts for continuation: source::Postgres/source::Config
+(YAML `conn:` frozen via serde rename to field `connection`);
+destination::{Postgres (new/schema/tls/options/from_yaml…), Config,
+config_schema}; tls::{Policy,Mode,ConfigError}; session pub via
+testsupport::session; fixtures::PostgresContainer::{start,start_for_cdc}
+field connection_string; testsupport::destination has the golden-pin seams
+(table_ddl_statements, merge_ensure_statements, Dialect, UNIT_* literals,
+stage_name/prefix). Old crate UNTOUCHED.
 
 ## Decision record
 
