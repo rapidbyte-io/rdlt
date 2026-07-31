@@ -31,12 +31,17 @@ side effects.
 | `BeforeCommit(n)` | batches staged, not published — recovery must re-drive the commit |
 | `AfterCommit(n)` | published, but the receipt was lost — recovery must hit idempotence, not double-publish |
 
-## Container fixtures: skip, never fail
+## Container gating: skip, never fail
 
-`PgFixture` / `CdcPgFixture` return `Option` — without a container runtime
-they print a visible `SKIP` line and return `None`, and the caller returns
-early. A missing runtime NEVER panics, because a panic there is
-indistinguishable from a real failure and trains people to ignore red.
+This crate is connector-agnostic: it carries the ONE runtime probe
+(`containers::runtime_available`) and the reclaim label, while the
+system-specific fixtures live with their connectors and route through the
+probe (`rdlt_connector_postgres::fixtures::{PgFixture, CdcPgFixture}` behind
+that crate's `fixtures` feature). A fixture's `start()` returns `Option` —
+without a container runtime it prints a visible `SKIP` line and returns
+`None`, and the caller returns early. A missing runtime NEVER panics, because
+a panic there is indistinguishable from a real failure and trains people to
+ignore red.
 
 Set `RDLT_TESTKIT_FORCE_NO_CONTAINERS=1` to force the skip posture on a
 machine that *does* have a runtime — that is how the skip path itself stays
@@ -60,7 +65,7 @@ Four environment overrides, in two symmetric pairs:
 |---|---|
 | `RDLT_TESTKIT_FORCE_NO_CONTAINERS` | report the runtime absent even when present — makes the skip path verifiable |
 | `RDLT_TESTKIT_REQUIRE_CONTAINERS` | absence becomes a FAILURE naming what is missing |
-| `RDLT_TESTKIT_FORCE_NO_SNOWFLAKE` | report credentials absent even when present |
+| `RDLT_TESTKIT_FORCE_NO_SNOWFLAKE` | report Snowflake credentials absent even when present (gate lives in the snowflake connector's tests; the env names are kept verbatim) |
 | `RDLT_TESTKIT_REQUIRE_SNOWFLAKE` | absence becomes a FAILURE naming them |
 
 Setting a `FORCE_NO_*` and its matching `REQUIRE_*` together is an **error**, not

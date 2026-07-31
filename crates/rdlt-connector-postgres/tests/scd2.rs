@@ -13,8 +13,8 @@ use rdlt_connector::{
 use rdlt_connector_postgres::dest::{
     AbsentPolicy, DestOptions, MergeStrategy, Postgres, Scd2Options, TableOptions,
 };
-use rdlt_engine::{Engine, EngineConfig};
 use rdlt_connector_postgres::fixtures::PgFixture;
+use rdlt_engine::{Engine, EngineConfig};
 
 struct DimSource {
     batch: RecordBatch,

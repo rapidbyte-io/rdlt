@@ -3,6 +3,9 @@
 //! Public and shipped: connector authors certify against the conformance suites here
 //! ("certified = passes conformance"). Depends on the SPI only — if
 //! something in here needs engine internals, the SPI is wrong; raise it.
+//! Connector-agnostic by the same rule: system-specific fixtures (a postgres
+//! container, a credential convention) live with their connectors; this crate
+//! carries only what every connector shares.
 
 pub mod conformance;
 #[cfg(feature = "containers")]
@@ -10,7 +13,6 @@ pub mod containers;
 pub mod crash;
 pub mod fixtures;
 pub mod memory;
-pub(crate) mod util;
 
 pub use conformance::{
     ConformanceFailure, assert_conformant, dest::TableProbe, dest::verify_destination,

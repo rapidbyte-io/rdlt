@@ -7,6 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
+use arrow::json::writer::{JsonArray, WriterBuilder};
 use async_trait::async_trait;
 use rdlt_connector::{
     CommitMeta, CommitReceipt, ConnectorSpec, Destination, DestinationCapabilities,
@@ -15,11 +16,22 @@ use rdlt_connector::{
 };
 use serde_json::{Map, Value};
 
-use crate::util::batch_to_rows;
-
 /// One committed or staged row: a JSON object keyed by column name, the memory
 /// destination's row representation.
 pub type Row = Map<String, Value>;
+
+/// Render a batch as JSON rows (explicit nulls) for easy assertions.
+fn batch_to_rows(batch: &RecordBatch) -> Vec<Map<String, Value>> {
+    let buf = Vec::new();
+    let mut writer = WriterBuilder::new()
+        .with_explicit_nulls(true)
+        .build::<_, JsonArray>(buf);
+    writer
+        .write(batch)
+        .expect("in-memory JSON write cannot fail");
+    writer.finish().expect("finish JSON array");
+    serde_json::from_slice(&writer.into_inner()).expect("arrow JSON writer emits valid JSON")
+}
 
 #[derive(Debug, Default)]
 struct Inner {

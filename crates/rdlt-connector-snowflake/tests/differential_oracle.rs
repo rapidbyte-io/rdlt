@@ -15,9 +15,9 @@
 use rdlt_connector::core::WriteMode;
 use rdlt_connector::{ConnectorSpec, ReadRequest, Source, SourceError, StreamSpec};
 use rdlt_connector_postgres::dest::Postgres;
+use rdlt_connector_postgres::fixtures::PgFixture;
 use rdlt_connector_snowflake::dest::{Snowflake, SnowflakeConfig};
 use rdlt_engine::{Engine, EngineConfig};
-use rdlt_connector_postgres::fixtures::PgFixture;
 mod common;
 
 use common::{credentials, scratch_schema};

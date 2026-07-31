@@ -19,6 +19,13 @@ async-trait = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 
+[dev-dependencies]
+# Self-reference so this crate's own tests always see the `containers` module
+# (a bare `-p rdlt-testkit` build otherwise fails to compile the gating pin).
+rdlt-testkit = { path = ".", features = [
+    "containers",
+] }
+
 [features]
 # The container-runtime probe + reclaim label (std-only). Off by default;
 # consumers turn it on in their dev-dependency line where they gate on
