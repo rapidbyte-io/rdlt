@@ -54,6 +54,7 @@ mod fail_points;
 pub mod sqlgen;
 #[doc(hidden)]
 pub mod testhook;
+mod write;
 
 pub use config::{
     AbsentPolicy, DedupSort, DestinationOptions, MergeStrategy, Postgres, Scd2Options, SortOrder,
