@@ -8,6 +8,8 @@ mod tests {
     use rdlt_connector_sqlcore::protocol::FullLoadPublish;
     use rdlt_connector_sqlcore::protocol::unit::*;
 
+    use crate::cases::common::linked_table;
+
     fn pg(n: usize) -> String {
         format!("${n}")
     }
@@ -59,20 +61,7 @@ mod tests {
             ("grandchild", Some("child")),
             ("lonely", None),
         ] {
-            tables.insert(
-                TableName::from(name),
-                (
-                    TableSchema {
-                        table: TableName::from(name),
-                        parent: parent.map(|p: &str| rdlt_connector::core::ParentLink {
-                            parent: TableName::from(p),
-                            depth: 1,
-                        }),
-                        columns: Vec::new(),
-                    },
-                    (),
-                ),
-            );
+            tables.insert(TableName::from(name), (linked_table(name, parent), ()));
         }
         let roots = roots_of(&tables);
         assert_eq!(
@@ -92,17 +81,7 @@ mod tests {
         for (name, parent) in [("a", "b"), ("b", "a")] {
             tables.insert(
                 TableName::from(name),
-                (
-                    TableSchema {
-                        table: TableName::from(name),
-                        parent: Some(rdlt_connector::core::ParentLink {
-                            parent: TableName::from(parent),
-                            depth: 1,
-                        }),
-                        columns: Vec::new(),
-                    },
-                    (),
-                ),
+                (linked_table(name, Some(parent)), ()),
             );
         }
         let roots = roots_of(&tables);

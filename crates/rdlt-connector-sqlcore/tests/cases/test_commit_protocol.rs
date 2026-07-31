@@ -6,8 +6,8 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     use rdlt_connector::WriteMode;
+    use rdlt_connector::core::LogicalType;
     use rdlt_connector::core::schema::ColumnDef;
-    use rdlt_connector::core::{ColumnType, LogicalType, Provenance};
     use rdlt_connector::core::{TableName, TableSchema, schema::system_columns};
     use rdlt_connector_sqlcore::options::{
         AbsentPolicy, DestOptions, MergeStrategy, Scd2Options, TableOptions,
@@ -15,13 +15,10 @@ mod tests {
     use rdlt_connector_sqlcore::plan::single_unit_violation;
     use rdlt_connector_sqlcore::protocol::*;
 
+    use crate::cases::common::{self, merge};
+
     fn col(name: &str) -> ColumnDef {
-        ColumnDef {
-            name: name.into(),
-            column_type: ColumnType::scalar(LogicalType::Int64),
-            nullable: true,
-            provenance: Provenance::Inferred,
-        }
+        common::col(name, LogicalType::Int64)
     }
 
     /// A keyed structured schema (no `_rdlt_id`): merge goes by declared key.
@@ -40,12 +37,6 @@ mod tests {
             .into_iter()
             .map(|(t, s, m)| (TableName::new(t), (s, m)))
             .collect()
-    }
-
-    fn merge(keys: &[&str]) -> WriteMode {
-        WriteMode::Merge {
-            key: keys.iter().map(|k| k.to_string()).collect(),
-        }
     }
 
     /// No target cleared yet — the state every staged-path pin assumes.

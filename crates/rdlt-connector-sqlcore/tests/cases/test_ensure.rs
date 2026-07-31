@@ -4,32 +4,19 @@
 mod tests {
     use rdlt_connector::WriteMode;
     use rdlt_connector::core::TableSchema;
-    use rdlt_connector::core::{ColumnDef, ColumnType, LogicalType, Provenance, TableName};
+    use rdlt_connector::core::{ColumnDef, LogicalType, TableName};
+
+    use crate::cases::common::{col, merge};
     use rdlt_connector_sqlcore::ensure::*;
     use rdlt_connector_sqlcore::options::DestOptions;
     use rdlt_connector_sqlcore::options::MergeStrategy;
     use rdlt_connector_sqlcore::protocol::FullLoadPublish;
-
-    fn col(name: &str, scalar: LogicalType) -> ColumnDef {
-        ColumnDef {
-            name: name.to_owned(),
-            column_type: ColumnType::Scalar { scalar },
-            nullable: true,
-            provenance: Provenance::Inferred,
-        }
-    }
 
     fn schema(columns: Vec<ColumnDef>) -> TableSchema {
         TableSchema {
             table: TableName::from("events"),
             parent: None,
             columns,
-        }
-    }
-
-    fn merge() -> WriteMode {
-        WriteMode::Merge {
-            key: vec!["id".to_owned()],
         }
     }
 
@@ -74,7 +61,10 @@ mod tests {
     #[test]
     fn merge_always_stages_whatever_the_publish_path() {
         for publish in [FullLoadPublish::DirectToTarget, FullLoadPublish::Staged] {
-            assert!(stages(&merge(), publish), "merge stages under {publish:?}");
+            assert!(
+                stages(&merge(&["id"]), publish),
+                "merge stages under {publish:?}"
+            );
         }
     }
 
@@ -125,7 +115,7 @@ mod tests {
         let plan = merge_plan(
             &options,
             &schema(vec![col("id", LogicalType::Int64)]),
-            &merge(),
+            &merge(&["id"]),
         )
         .expect("valid options");
         let from = plan
