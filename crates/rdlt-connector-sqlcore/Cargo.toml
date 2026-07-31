@@ -20,5 +20,8 @@ serde_json = { workspace = true }
 schemars = { workspace = true }
 chrono = { workspace = true }
 
+[dev-dependencies]
+rdlt-connector = { workspace = true }
+
 [lints]
 workspace = true
