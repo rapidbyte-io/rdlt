@@ -25,7 +25,6 @@
 pub mod fixtures;
 mod pgerror;
 pub mod tls;
-mod tls_verify;
 
 #[cfg(feature = "dest")]
 pub mod dest;

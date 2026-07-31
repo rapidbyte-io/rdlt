@@ -9,7 +9,7 @@ use std::sync::Arc;
 use rustls::RootCertStore;
 
 use super::policy::{PemSource, TlsConfigError, TlsMode, TlsPolicy, validate_credentials};
-use crate::tls_verify::{AcceptAnyCert, ChainOnly, provider};
+use super::verify::{AcceptAnyCert, ChainOnly, provider};
 
 /// Resolve PEM material to bytes plus a label safe to put in an error — the
 /// label must never be the material itself, so an inline key cannot reach a

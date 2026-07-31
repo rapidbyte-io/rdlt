@@ -17,6 +17,7 @@ mod connect;
 mod connstring;
 mod policy;
 mod rustls_config;
+mod verify;
 
 pub use connect::{ConnectError, ConnectResult, TlsFailure, connect};
 pub use connstring::{ParsedConn, parse_conn};
