@@ -149,9 +149,9 @@ crates/rdlt-connector-postgres-v2/
 
 **Files:** `crates/rdlt-connector-postgres-v2/{Cargo.toml,README.md,src/lib.rs}`, root `Cargo.toml` (workspace member)
 
-- [ ] **Step 1:** Cargo.toml: copy the OLD crate's dependency set exactly (minus nothing, plus nothing), `publish = false`, features `default=["source","destination"]`, `failpoints=["rdlt-connector/failpoints"]`, `fixtures=[dep:rdlt-testkit, dep:testcontainers-modules]`, workspace lints.
-- [ ] **Step 2:** lib.rs: front-page doc (v2 statement + module map + naming rules synopsis) with the empty module tree declared; register in workspace `members`.
-- [ ] **Step 3:** `cargo check -p rdlt-connector-postgres-v2 --all-features` clean; commit `feat(postgres-v2): scaffold — the crate exists`.
+- [x] **Step 1:** Cargo.toml: copy the OLD crate's dependency set exactly (minus nothing, plus nothing), `publish = false`, features `default=["source","destination"]`, `failpoints=["rdlt-connector/failpoints"]`, `fixtures=[dep:rdlt-testkit, dep:testcontainers-modules]`, workspace lints.
+- [x] **Step 2:** lib.rs: front-page doc (v2 statement + module map + naming rules synopsis) with the empty module tree declared; register in workspace `members`.
+- [x] **Step 3:** `cargo check -p rdlt-connector-postgres-v2 --all-features` clean; commit `feat(postgres-v2): scaffold — the crate exists`.
 
 ### Task 2: `tls/`
 
@@ -159,7 +159,7 @@ crates/rdlt-connector-postgres-v2/
 **Interfaces:** `pub struct Policy { mode: Mode, root_cert, client_cert, client_key: Option<PemSource> }` (serde shape byte-compatible with old `TlsPolicy` — same field names, same `snake_case` mode strings, `deny_unknown_fields`); `pub enum Mode { Disable, Prefer, Require, VerifyCa, VerifyFull }`; `pub enum ConfigError` (all seven old variants, fresh prose); `pub(crate) fn resolve(connection_sslmode, tls_override) -> Result<Policy, ConfigError>`; `pub(crate) fn validate_credentials(&Policy)`; `pub(crate) fn build_client_config(&Policy) -> Result<Option<rustls::ClientConfig>, ConfigError>`.
 **Contract:** Appendix A §Session (policy rules half). Never-weaken sslmode resolution; both-or-neither credentials; never-with-plaintext; labels never leak inline PEM material; verify_ca = chain-only verifier; require/prefer = accept-any.
 
-- [ ] Write fresh with inline unit tests (resolution matrix, credential shapes, verifier selection, PEM label hygiene); green; commit `feat(postgres-v2): tls policy vocabulary`.
+- [x] Write fresh with inline unit tests (resolution matrix, credential shapes, verifier selection, PEM label hygiene); green; commit `feat(postgres-v2): tls policy vocabulary`.
 
 ### Task 3: `session/`
 
@@ -178,7 +178,7 @@ pub(crate) enum TlsFailure { TrustAnchor, Chain, Hostname, ServerRefusedTls, Cli
 ```
 **Contract:** Appendix A §Session. TLS trio extraction from both libpq forms; strict percent-escapes; unsupported params rejected by name with hints; `sslrootcert=system`; verify-* strength ordering; `application_name=rdlt` default; the pinned `"server does not support TLS"` needle (with its pin test); rustls alert classification incl. the TLS-1.2 handshake_failure forms; 28000+certificate = ClientCert; connect polarity 08/53/57/40 transient, statement polarity 22/23/42 permanent.
 
-- [ ] Write fresh; unit tests inline (needle pin, alert classification, parse matrix ported from old `test_connstring.rs` cases with new spellings); commit `feat(postgres-v2): session — one path from string to prepared connection`.
+- [x] Write fresh; unit tests inline (needle pin, alert classification, parse matrix ported from old `test_connstring.rs` cases with new spellings); commit `feat(postgres-v2): session — one path from string to prepared connection`.
 
 ### Task 4: `types/` — map, binary, text, literal
 
@@ -186,16 +186,16 @@ pub(crate) enum TlsFailure { TrustAnchor, Chain, Hostname, ServerRefusedTls, Cli
 **Interfaces:** `pub(crate) enum Kind { … }` (closed; full set derived from old `type_map.rs` in Step 1 and recorded in Appendix A §Types); `pub(crate) struct Column { name: String, kind: Kind }`; `map::resolve(catalog_row, hint) -> Kind`; `binary::Decoder` (COPY BINARY → RecordBatch); `text::parse(kind, text) -> value`; `literal::render(kind, value) -> String`. Exhaustive `match` over Kind in every face — no `_` arms.
 **Contract:** Appendix A §Types. UUID server forms; numeric stays in the string domain; timestamps µs; lossy warns once per column per read; bounded decode memory.
 
-- [ ] **Step 1:** Derive the Kind set + per-face behavior tables from old `type_map.rs`/`copy_decode.rs`/`cdc/values.rs`/`cursor.rs`; record in Appendix A §Types.
-- [ ] **Step 2:** Write fresh, porting old inline test CASES (values/expectations) with new naming; add a proptest: `text::parse ∘ literal::render` round-trips per Kind.
-- [ ] **Step 3:** Green; commit `feat(postgres-v2): types/ — one rulebook, four faces`.
+- [x] **Step 1:** Derive the Kind set + per-face behavior tables from old `type_map.rs`/`copy_decode.rs`/`cdc/values.rs`/`cursor.rs`; record in Appendix A §Types.
+- [x] **Step 2:** Write fresh, porting old inline test CASES (values/expectations) with new naming; add a proptest: `text::parse ∘ literal::render` round-trips per Kind.
+- [x] **Step 3:** Green; commit `feat(postgres-v2): types/ — one rulebook, four faces`.
 
 ### Task 5: `types/encode.rs`
 
 **Interfaces:** `pub(crate) struct Encoder` — Arrow → COPY BINARY, borrowed column views, 64 KiB flush.
 **Contract:** decoder-as-oracle round-trip test per Kind; numeric string-domain (the u128 lesson).
 
-- [ ] Write fresh + round-trip suite; commit `feat(postgres-v2): encode — the decoder is its oracle`.
+- [x] Write fresh + round-trip suite; commit `feat(postgres-v2): encode — the decoder is its oracle`.
 
 ### Task 6: `source/` (non-CDC) + its suites
 
