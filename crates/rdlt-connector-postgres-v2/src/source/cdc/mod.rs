@@ -1,28 +1,24 @@
-//! Change data capture via logical replication — UNDER CONSTRUCTION.
+//! Change data capture via logical replication, over the ordinary SQL
+//! connection (no replication-protocol client): slot-first snapshot through
+//! ONE repeatable-read view, bounded catch-up passes over
+//! `pg_logical_slot_peek_binary_changes`, commit-boundary checkpoints, and
+//! an acknowledgement that trails one run behind.
 //!
-//! The configuration vocabulary parses (the `cdc:` block), but reads
-//! dispatching here fail typed until the CDC runtime lands. This placeholder
-//! keeps the crate honest while it is built bottom-up: nothing pretends to
-//! capture changes.
+//! Layout, one noun per module: `runtime` the run-scoped state + the
+//! replica-identity preflight; `slot` the slot/publication lifecycle and
+//! the peek/advance SQL; `pgoutput` the hand-rolled protocol-v1 parser
+//! (fuzzed); `apply` the per-stream transaction-buffered state machine;
+//! `read` the dispatch (snapshot pass / change pass); `ack` the
+//! acknowledgement + lag surface; `tail` the continuous chunked loop.
 
-use rdlt_connector::SourceError;
+mod ack;
+mod apply;
+mod pgoutput;
+mod read;
+mod runtime;
+pub mod slot;
+mod tail;
 
-use crate::source::errors::{self, Phase};
-
-/// Run-scoped CDC state placeholder — the typestate runtime replaces this.
-#[derive(Debug)]
-pub(crate) struct Runtime;
-
-impl Runtime {
-    pub(crate) fn new() -> Self {
-        Self
-    }
-
-    pub(crate) fn not_yet_implemented(&self, stream: &str) -> SourceError {
-        errors::fatal(
-            Phase::Slot,
-            Some(stream),
-            "CDC is not yet implemented in this crate generation",
-        )
-    }
-}
+pub(crate) use pgoutput::parse as parse_pgoutput;
+pub(crate) use read::{StreamContext, read_stream};
+pub(crate) use runtime::{Identity, Runtime};

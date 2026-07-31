@@ -13,3 +13,14 @@ pub const FAIL_POINTS: &[&str] = &[
     "pg.src.after_batch_push",
     "pg.src.before_checkpoint",
 ];
+
+/// CDC fail-point registry — the CDC sweep pins and iterates exactly this
+/// list, both passes.
+#[cfg(feature = "failpoints")]
+#[doc(hidden)]
+pub const CDC_FAIL_POINTS: &[&str] = &[
+    "cdc.slot.create",
+    "cdc.snapshot.copy",
+    "cdc.stream.peek",
+    "cdc.ack.advance",
+];

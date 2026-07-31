@@ -9,7 +9,7 @@
 //! incremental machinery; `cdc/` change data capture; `errors` the
 //! phase-tagged taxonomy.
 
-mod cdc;
+pub(crate) mod cdc;
 pub mod config;
 mod connector;
 mod copy;
@@ -27,4 +27,4 @@ pub use connector::Postgres;
 pub(crate) use connector::connect;
 
 #[cfg(feature = "failpoints")]
-pub use fail_points::FAIL_POINTS;
+pub use fail_points::{CDC_FAIL_POINTS, FAIL_POINTS};

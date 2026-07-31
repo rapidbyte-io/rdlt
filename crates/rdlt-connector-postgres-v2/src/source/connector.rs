@@ -95,6 +95,19 @@ impl Postgres {
         names
     }
 
+    /// The CDC-covered stream set: every TABLE stream (query streams are
+    /// never CDC), in declaration order.
+    fn cdc_tables(&self, reflected: &BTreeMap<String, reflect::Table>) -> Vec<String> {
+        match &self.config.tables {
+            Some(listed) => listed.iter().map(|table| table.name.clone()).collect(),
+            None => reflected
+                .keys()
+                .filter(|name| self.config.query_config(name).is_none())
+                .cloned()
+                .collect(),
+        }
+    }
+
     /// Resolve one stream's table + validated facts. A missing entry is
     /// typed, never an index panic.
     fn stream_facts(
@@ -163,10 +176,43 @@ impl Source for Postgres {
         for name in names {
             let (facts, _) = self.stream_facts(reflected, name)?;
             // CDC table streams: keyed structured streams, the key from the
-            // replica-identity preflight; query streams stay on their own
-            // machinery.
-            if self.config.cdc.is_some() && self.config.query_config(name).is_none() {
-                return Err(self.cdc_runtime.not_yet_implemented(name));
+            // replica-identity preflight; cursor config is impossible here
+            // (refused at parse). Query streams stay on their own machinery.
+            if let Some(cdc_config) = &self.config.cdc
+                && self.config.query_config(name).is_none()
+            {
+                let cdc_tables = self.cdc_tables(reflected);
+                let identities = self
+                    .cdc_runtime
+                    .identities(&self.config, cdc_config, reflected, &cdc_tables)
+                    .await?;
+                let identity = identities.get(name).ok_or_else(|| {
+                    errors::fatal(Phase::Reflect, Some(name), "stream is not a CDC table")
+                })?;
+                // The merge key must survive the column selection — delete
+                // records are key-only, so an excluded key column would
+                // strand them.
+                if let Some(missing) = identity
+                    .key
+                    .iter()
+                    .find(|key| !facts.columns.iter().any(|column| &&column.name == key))
+                {
+                    return Err(errors::fatal(
+                        Phase::Reflect,
+                        Some(name),
+                        format!(
+                            "replica-identity key column `{missing}` is excluded \
+                             by the column selection — CDC delete records carry \
+                             only key columns"
+                        ),
+                    ));
+                }
+                specs.push(
+                    StreamSpec::new(name)
+                        .with_structured()
+                        .with_primary_key(identity.key.clone()),
+                );
+                continue;
             }
             let mut spec = StreamSpec::new(name).with_structured();
             if !facts.primary_key.is_empty() {
@@ -210,8 +256,41 @@ impl Source for Postgres {
 
         // CDC dispatch: table streams read through the snapshot/change-pass
         // machinery; everything below is the non-CDC path.
-        if self.config.cdc.is_some() && self.config.query_config(&name).is_none() {
-            return Err(self.cdc_runtime.not_yet_implemented(&name));
+        if let Some(cdc_config) = &self.config.cdc
+            && self.config.query_config(&name).is_none()
+        {
+            let cdc_tables = self.cdc_tables(reflected);
+            let identities = self
+                .cdc_runtime
+                .identities(&self.config, cdc_config, reflected, &cdc_tables)
+                .await?;
+            let identity = identities.get(&name).ok_or_else(|| {
+                errors::fatal(Phase::Reflect, Some(&name), "stream is not a CDC table")
+            })?;
+            let decode_columns: Vec<Column> = facts
+                .columns
+                .iter()
+                .map(|column| Column {
+                    name: column.name.clone(),
+                    kind: column.mapping.kind,
+                    not_null: column.not_null,
+                })
+                .collect();
+            let context = cdc::StreamContext {
+                config: &self.config,
+                cdc: cdc_config,
+                identity,
+                columns: &decode_columns,
+            };
+            let reflected_columns: Vec<&reflect::Column> = facts.columns.iter().collect();
+            return cdc::read_stream(
+                &self.cdc_runtime,
+                &context,
+                &cdc_tables,
+                &reflected_columns,
+                request,
+            )
+            .await;
         }
 
         let mut incremental = cursor::prepare(&facts, request.since.as_ref(), &name)?;

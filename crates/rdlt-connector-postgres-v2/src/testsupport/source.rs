@@ -7,6 +7,9 @@ use rdlt_connector::SourceError;
 
 pub use crate::source::reflect::{Column, Table};
 
+/// CDC lifecycle surface for the integration suites.
+pub use crate::source::cdc::slot as cdc_slot;
+
 /// Reflect a config's schema exactly as a run would, without the pipeline.
 pub async fn reflect_for_tests(
     config: &crate::source::Config,
@@ -93,4 +96,10 @@ pub fn fuzz_copy_decode(data: &[u8]) {
         return;
     }
     let _ = decoder.finish();
+}
+
+/// Fuzz entry (`pgoutput_decode` target): arbitrary bytes through the
+/// logical-replication message parser — typed errors only, never a panic.
+pub fn fuzz_pgoutput_decode(data: &[u8]) {
+    let _ = crate::source::cdc::parse_pgoutput(data);
 }
