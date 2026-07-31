@@ -3,6 +3,13 @@
 //! Watermarks are TYPE-TAGGED so state round-trips losslessly
 //! (`decode(encode(v)) == v`, property-tested) and renders back into
 //! injection-safe SQL literals (COPY accepts no binds).
+//!
+//! ABOVE THE SIZE CEILING, DELIBERATELY: watermark encode/decode with its
+//! SQL-literal rendering, the boundary-matrix `IncrementalPlan`, and the
+//! dedup/checkpoint `Tracker` are three faces of one incremental state
+//! machine (the read loop consumes them as one unit). Splitting them would
+//! let the boundary rules and the tracker they gate drift out of lockstep;
+//! a third of the file is the property tests pinning exactly that.
 
 use rdlt_connector::{Cursor, SourceError};
 use serde::{Deserialize, Serialize};

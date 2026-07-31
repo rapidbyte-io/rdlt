@@ -8,6 +8,11 @@
 //!
 //! Total decoder: every failure is a typed [`DecodeError`]; no panics, no
 //! silent coercion (fuzz target: `pg_copy_decode`).
+//!
+//! ABOVE THE SIZE CEILING, DELIBERATELY: ~530 lines are the decoder; the
+//! rest is the inline test module pinning every chunk-boundary case. This
+//! is the crate's hot path and its own fuzz target (`pg_copy_decode`), so
+//! the pins stay beside the state machine they pin.
 
 use std::sync::Arc;
 

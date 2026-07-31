@@ -1,4 +1,9 @@
 //! Binary-COPY wire encoding: arrow column → Postgres wire type + cell values.
+//!
+//! ABOVE THE SIZE CEILING, DELIBERATELY: ~475 lines are the encoders — one
+//! noun, mirroring `source/copy_decode.rs` on the read side; the rest is
+//! two inline test modules (one kept runnable under a dest-only build)
+//! pinning the wire bytes the fixture captures.
 
 use arrow_array::{
     Array, BinaryArray, BooleanArray, Date32Array, Decimal128Array, Float64Array, Int64Array,
