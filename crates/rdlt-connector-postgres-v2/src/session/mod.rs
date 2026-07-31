@@ -1,0 +1,21 @@
+//! One home for "a connected Postgres session", shared by the source, the
+//! destination, and CDC — so the three cannot drift on how a connection is
+//! made, prepared, or judged when it fails.
+//!
+//! The module owns the whole path from a user's connection string to a live
+//! prepared client: `connection_string` parses both libpq spellings and
+//! extracts the TLS parameters, `establish` resolves the policy, performs
+//! the handshake, and applies a session [`Profile`]; `classify` renders
+//! driver failures with their full meaning and decides retry-worthiness in
+//! exactly one place. Callers hold a [`Connection`] and never see the
+//! parse → resolve → handshake → pin sequence.
+
+mod classify;
+mod connection_string;
+mod establish;
+
+pub(crate) use classify::{
+    ConnectError, TlsFailure, describe, is_permanent_at_statement, is_transient_at_connect,
+};
+pub(crate) use connection_string::{Parsed, parse};
+pub(crate) use establish::{Connection, EstablishError, Profile, connect, establish};

@@ -19,9 +19,10 @@
 //! Modules land bottom-up while the crate is under construction; the tree
 //! below fills in as they do.
 
-// Substrate (both directions):
-//   mod tls;      — connection-security vocabulary + rustls construction
-//   mod session;  — connection string → prepared live connection
+pub(crate) mod session;
+pub mod tls;
+
+// Substrate still to land:
 //   mod types;    — the Postgres type rulebook
 // Directions:
 //   mod source;       (feature `source`)
