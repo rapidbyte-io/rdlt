@@ -4347,6 +4347,7 @@ dependencies = [
  "rcgen",
  "rdlt-connector",
  "rdlt-connector-duckdb",
+ "rdlt-connector-postgres",
  "rdlt-connector-sqlcore",
  "rdlt-engine",
  "rdlt-testkit",
@@ -4470,10 +4471,9 @@ dependencies = [
  "async-trait",
  "rdlt-connector",
  "rdlt-core",
+ "rdlt-testkit",
  "serde_json",
- "testcontainers-modules",
  "tokio",
- "tokio-postgres",
 ]
 
 [[package]]

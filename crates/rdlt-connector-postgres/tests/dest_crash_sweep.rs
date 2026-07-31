@@ -13,7 +13,8 @@ use rdlt_connector::core::WriteMode;
 use rdlt_connector::core::failpoint::fail;
 use rdlt_connector_postgres::dest::Postgres;
 use rdlt_engine::{Engine, EngineConfig};
-use rdlt_testkit::{MemoryBatch, MemorySource, MemoryStream, PgFixture};
+use rdlt_connector_postgres::fixtures::PgFixture;
+use rdlt_testkit::{MemoryBatch, MemorySource, MemoryStream};
 use serde_json::json;
 
 const TOTAL_ROWS: u64 = 100;
