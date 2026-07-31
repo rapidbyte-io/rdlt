@@ -22,9 +22,11 @@
 pub(crate) mod session;
 pub mod tls;
 pub(crate) mod types;
-// Directions:
-//   mod source;       (feature `source`)
+
+#[cfg(feature = "source")]
+pub mod source;
+
+// Still to land:
 //   mod destination;  (feature `destination`)
-// Test access across the test-binary boundary:
-//   mod testsupport;  (doc-hidden)
+//   mod testsupport;  (doc-hidden test access across the test-binary boundary)
 //   mod fixtures;     (feature `fixtures`)
