@@ -8,11 +8,9 @@
 
 #![cfg(feature = "failpoints")]
 
-mod common;
-
-use common::CdcPgFixture;
 use rdlt_connector::core::failpoint::fail;
 use rdlt_connector_postgres::dest::{DestinationOptions, MergeStrategy, Postgres, TableOptions};
+use rdlt_connector_postgres::fixtures::CdcPgFixture;
 use rdlt_connector_postgres::source::PostgresSource;
 use rdlt_engine::{Engine, EngineConfig};
 

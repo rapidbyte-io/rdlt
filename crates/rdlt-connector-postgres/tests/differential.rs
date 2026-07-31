@@ -4,8 +4,6 @@
 //! independent code (`FromSql` + text casts), so a bug must strike both
 //! paths identically to hide.
 
-mod common;
-
 use std::sync::OnceLock;
 
 use arrow_array::builder::{
@@ -15,9 +13,9 @@ use arrow_array::builder::{
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use chrono::{DateTime, Utc};
-use common::PgFixture;
 use proptest::prelude::*;
 use rdlt_connector::{PushPayload, ReadRequest, Source as _, records_channel};
+use rdlt_connector_postgres::fixtures::PgFixture;
 use rdlt_connector_postgres::source::PostgresSource;
 use std::sync::Arc;
 

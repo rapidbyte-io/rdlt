@@ -2,10 +2,8 @@
 //! type-matrix round-trip (every contract row), selection modes, hostile
 //! identifiers, empty tables, and reflect→read drift.
 
-mod common;
-
-use common::PgFixture;
 use rdlt_connector_duckdb::dest::DuckDb;
+use rdlt_connector_postgres::fixtures::PgFixture;
 use rdlt_connector_postgres::source::PostgresSource;
 use rdlt_engine::{Engine, EngineConfig};
 

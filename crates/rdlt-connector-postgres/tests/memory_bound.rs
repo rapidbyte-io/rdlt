@@ -15,9 +15,7 @@
 //! targets), where a missing prerequisite is a hard FAIL with instructions:
 //! the deep job must never green-wash this claim by silently skipping.
 
-mod common;
-
-use common::PgFixture;
+use rdlt_connector_postgres::fixtures::PgFixture;
 
 /// RLIMIT_DATA ceiling for the CLI process (heap + data mmaps).
 const CEILING_BYTES: u64 = 256 * 1024 * 1024;

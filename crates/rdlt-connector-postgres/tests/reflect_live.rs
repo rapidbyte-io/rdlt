@@ -1,9 +1,7 @@
 //! T006: catalog reflection against a real Postgres — quoted identifiers,
 //! PKs, views, non-default schema, domains, enums, arrays, numerics.
 
-mod common;
-
-use common::PgFixture;
+use rdlt_connector_postgres::fixtures::PgFixture;
 use rdlt_connector_postgres::source::PostgresConfig;
 use rdlt_connector_postgres::source::testhook::reflect_for_tests;
 

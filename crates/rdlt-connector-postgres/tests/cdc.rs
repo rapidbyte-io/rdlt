@@ -3,10 +3,8 @@
 //! non-consuming peek + explicit advance); the US1 equality cycle and
 //! boundary cells land on top of it.
 
-mod common;
-
-use common::CdcPgFixture;
 use futures::TryStreamExt;
+use rdlt_connector_postgres::fixtures::CdcPgFixture;
 use rdlt_connector_postgres::source::config::{AckMode, CdcConfig, CdcMode, Wait};
 use rdlt_connector_postgres::source::testhook::cdc_slot;
 use rdlt_connector_postgres::source::testhook::cdc_slot::Change;

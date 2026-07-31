@@ -3,10 +3,8 @@
 //! regressing clocks, config windows, PK-less row-hash keys, and the
 //! structured-stream Merge boundary (engine clause B4).
 
-mod common;
-
-use common::PgFixture;
 use rdlt_connector_duckdb::dest::DuckDb;
+use rdlt_connector_postgres::fixtures::PgFixture;
 use rdlt_connector_postgres::source::PostgresSource;
 use rdlt_engine::{Engine, EngineConfig};
 

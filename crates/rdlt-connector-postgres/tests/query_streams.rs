@@ -1,10 +1,8 @@
 //! T012: query streams (contract query-streams.md) — described schemas,
 //! full incremental semantics, read-only enforcement, typed rejections.
 
-mod common;
-
-use common::PgFixture;
 use rdlt_connector_duckdb::dest::DuckDb;
+use rdlt_connector_postgres::fixtures::PgFixture;
 use rdlt_connector_postgres::source::{PostgresConfig, PostgresSource};
 use rdlt_engine::{Engine, EngineConfig};
 
