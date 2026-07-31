@@ -95,7 +95,7 @@ legitimate test addition would train everyone to update it without reading it.
 
 ## Verifying crash-point registries
 
-`assert_registry_is_armed(src_dir, &[registry, …])` checks that a crate's declared
+`assert_registry_matches_sources(src_dir, &[registry, …])` checks that a crate's declared
 crash points and the sites armed in its own sources agree. Every crate that arms
 points calls it, from its existing sweep binary.
 

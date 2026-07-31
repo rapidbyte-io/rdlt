@@ -8,7 +8,7 @@ use rdlt_connector::core::{LoadId, PipelineId, TableName, WriteMode, naming::ide
 use rdlt_connector::{Destination, OpenCtx};
 use rdlt_connector_file::source::cursor::{FileCursor, FileMeta};
 use rdlt_connector_file::{FileConfig, ParquetDir};
-use rdlt_testkit::{batch_of, meta_for, schema_for};
+use rdlt_testkit::{batch_of, commit_meta_for, schema_for};
 
 /// A cursor document EXACTLY as pre-015 runs persisted it (format_version 1).
 /// Parsing and plan decisions must never change for these bytes.
@@ -107,7 +107,7 @@ async fn pre_015_artifact_names_and_commit_log_shape_are_frozen() {
     s.write(&TableName::new("events"), batch_of(&[1, 2]))
         .await
         .expect("write");
-    s.commit(meta_for(&pipeline, &load, 1))
+    s.commit(commit_meta_for(&pipeline, &load, 1))
         .await
         .expect("commit");
 
@@ -159,7 +159,7 @@ async fn pre_015_commit_log_fixture_drives_receipt_dedup() {
         .await
         .expect("write");
     let receipt = s
-        .commit(meta_for(&pipeline, &load, 1))
+        .commit(commit_meta_for(&pipeline, &load, 1))
         .await
         .expect("replayed commit returns the prior receipt");
     assert_eq!(receipt.commit_seq, 1);

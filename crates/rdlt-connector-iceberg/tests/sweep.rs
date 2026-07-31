@@ -123,5 +123,8 @@ async fn iceberg_dest_survives_crash_sweep() {
 #[test]
 fn the_registry_matches_the_sources() {
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    rdlt_testkit::assert_registry_is_armed(&src, &[rdlt_connector_iceberg::dest::ICE_FAIL_POINTS]);
+    rdlt_testkit::assert_registry_matches_sources(
+        &src,
+        &[rdlt_connector_iceberg::dest::ICE_FAIL_POINTS],
+    );
 }

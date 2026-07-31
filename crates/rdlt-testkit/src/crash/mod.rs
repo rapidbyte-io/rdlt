@@ -5,4 +5,4 @@ mod fault;
 mod registry;
 
 pub use fault::{CrashDestination, FaultPoint};
-pub use registry::{assert_registry_is_armed, scan_arming_sites};
+pub use registry::{armed_crash_points, assert_registry_matches_sources};

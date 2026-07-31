@@ -10,7 +10,7 @@
 use rdlt_connector::core::{LoadId, PipelineId, TableName, WriteMode};
 use rdlt_connector::{Destination, OpenCtx};
 use rdlt_connector_duckdb::dest::DuckDb;
-use rdlt_testkit::{batch_of, meta_for, schema_for};
+use rdlt_testkit::{batch_of, commit_meta_for, schema_for};
 
 #[tokio::test]
 async fn replace_recovery_session_keeps_prior_commits_of_same_load() {
@@ -29,7 +29,7 @@ async fn replace_recovery_session_keeps_prior_commits_of_same_load() {
         .await
         .expect("ensure");
     s1.write(&table, batch_of(&[1, 2, 3])).await.expect("write");
-    s1.commit(meta_for(&pipeline, &load, 1))
+    s1.commit(commit_meta_for(&pipeline, &load, 1))
         .await
         .expect("commit 1");
     assert_eq!(dest.count_rows("events").expect("count"), 3);
@@ -46,7 +46,7 @@ async fn replace_recovery_session_keeps_prior_commits_of_same_load() {
     s2.write(&table, batch_of(&[4, 5]))
         .await
         .expect("write tail");
-    s2.commit(meta_for(&pipeline, &load, 2))
+    s2.commit(commit_meta_for(&pipeline, &load, 2))
         .await
         .expect("commit 2");
 
@@ -66,7 +66,7 @@ async fn replace_recovery_session_keeps_prior_commits_of_same_load() {
         .await
         .expect("ensure");
     s3.write(&table, batch_of(&[9])).await.expect("write");
-    s3.commit(meta_for(&pipeline, &load_b, 1))
+    s3.commit(commit_meta_for(&pipeline, &load_b, 1))
         .await
         .expect("commit");
     assert_eq!(
@@ -110,7 +110,7 @@ async fn replay_re_marks_single_unit_discipline() {
         .await
         .expect("ensure");
     s1.write(&table, batch_of(&[1, 2])).await.expect("write");
-    s1.commit(meta_for(&pipeline, &load, 1))
+    s1.commit(commit_meta_for(&pipeline, &load, 1))
         .await
         .expect("commit 1");
 
@@ -127,7 +127,7 @@ async fn replay_re_marks_single_unit_discipline() {
     s2.write(&table, batch_of(&[1, 2]))
         .await
         .expect("replay write");
-    s2.commit(meta_for(&pipeline, &load, 1))
+    s2.commit(commit_meta_for(&pipeline, &load, 1))
         .await
         .expect("replayed commit is a no-op publish");
     assert_eq!(
@@ -142,7 +142,7 @@ async fn replay_re_marks_single_unit_discipline() {
         .await
         .expect("unit-2 write");
     let err = s2
-        .commit(meta_for(&pipeline, &load, 2))
+        .commit(commit_meta_for(&pipeline, &load, 2))
         .await
         .expect_err("second unit for a scoped table must be typed")
         .to_string();

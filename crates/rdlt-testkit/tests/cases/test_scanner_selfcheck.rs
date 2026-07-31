@@ -18,7 +18,7 @@ use std::path::Path;
 /// Some names are armed INDIRECTLY — the `crash_point!` takes a variable and the
 /// literal lives at the constructor supplying it — so they are absent here by
 /// design and covered instead by the "declared names must appear twice" half of
-/// `assert_registry_is_armed`.
+/// `assert_registry_matches_sources`.
 const EXPECTED_DIRECT_NAMES: &[(&str, usize)] = &[
     ("rdlt-engine", 7),
     ("rdlt-connector-file", 11),
@@ -48,7 +48,7 @@ fn the_scanner_finds_every_directly_armed_name() {
         .expect("crates/ is the parent of this crate");
     for (crate_name, expected) in EXPECTED_DIRECT_NAMES {
         let src = crates_dir.join(crate_name).join("src");
-        let found = rdlt_testkit::scan_arming_sites(&src);
+        let found = rdlt_testkit::armed_crash_points(&src);
         assert_eq!(
             found.len(),
             *expected,
@@ -68,5 +68,5 @@ fn the_scanner_finds_every_directly_armed_name() {
 #[should_panic(expected = "no crash-point sites found")]
 fn scanning_nowhere_against_a_real_registry_fails() {
     let empty = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/memory");
-    rdlt_testkit::assert_registry_is_armed(&empty, &[&["some.point"]]);
+    rdlt_testkit::assert_registry_matches_sources(&empty, &[&["some.point"]]);
 }

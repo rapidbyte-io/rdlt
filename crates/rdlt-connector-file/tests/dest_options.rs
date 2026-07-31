@@ -13,7 +13,7 @@ use rdlt_connector::core::{
 };
 use rdlt_connector::{Destination, OpenCtx};
 use rdlt_connector_file::dest::{DestFormat, FileDest, FileDestConfig};
-use rdlt_testkit::meta_for;
+use rdlt_testkit::commit_meta_for;
 
 fn schema_for(table: &str) -> TableSchema {
     TableSchema {
@@ -63,7 +63,7 @@ async fn run_load(dest: &FileDest, rows: RecordBatch) {
     s.write(&TableName::new("events"), rows)
         .await
         .expect("write");
-    s.commit(meta_for(&pipeline, &load, 1))
+    s.commit(commit_meta_for(&pipeline, &load, 1))
         .await
         .expect("commit");
 }
@@ -184,7 +184,7 @@ async fn replace_truncation_spares_user_files() {
     s.write(&TableName::new("events"), batch(&[1], &[Some("d1")]))
         .await
         .expect("write");
-    s.commit(meta_for(&pipeline, &load, 1))
+    s.commit(commit_meta_for(&pipeline, &load, 1))
         .await
         .expect("commit");
     assert!(
@@ -218,7 +218,7 @@ async fn replace_truncation_spares_user_files() {
     s.write(&TableName::new("events"), batch(&[2], &[Some("d1")]))
         .await
         .expect("write");
-    s.commit(meta_for(&pipeline, &load, 1))
+    s.commit(commit_meta_for(&pipeline, &load, 1))
         .await
         .expect("commit");
     assert!(
@@ -260,7 +260,7 @@ async fn replace_clears_earlier_loads_written_in_another_shape() {
     s.write(&TableName::new("events"), batch(&[1], &[Some("d1")]))
         .await
         .expect("write");
-    s.commit(meta_for(&pipeline, &load, 1))
+    s.commit(commit_meta_for(&pipeline, &load, 1))
         .await
         .expect("commit");
 
@@ -306,7 +306,7 @@ async fn replace_never_deletes_a_foreign_dataset() {
     s.write(&TableName::new("events"), batch(&[1], &[Some("d1")]))
         .await
         .expect("write");
-    s.commit(meta_for(&pipeline, &load, 1))
+    s.commit(commit_meta_for(&pipeline, &load, 1))
         .await
         .expect("commit");
 

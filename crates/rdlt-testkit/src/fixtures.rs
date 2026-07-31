@@ -43,7 +43,7 @@ pub fn batch_of(ids: &[i64]) -> RecordBatch {
 
 /// A commit envelope for `(pipeline, load, seq)` with an otherwise-empty
 /// state doc — the fresh-state shape the recovery/exactly-once cells commit.
-pub fn meta_for(pipeline: &PipelineId, load: &LoadId, seq: u64) -> CommitMeta {
+pub fn commit_meta_for(pipeline: &PipelineId, load: &LoadId, seq: u64) -> CommitMeta {
     CommitMeta {
         load_id: load.clone(),
         commit_seq: seq,

@@ -14,7 +14,7 @@
 /// blame the protocol rather than the injection.
 ///
 /// Adding a third spelling means adding it HERE. The vacuity guard in
-/// [`assert_registry_is_armed`] is what makes a missing spelling surface as a
+/// [`assert_registry_matches_sources`] is what makes a missing spelling surface as a
 /// failure rather than as agreement.
 const ARMING_PATTERNS: &[&str] = &["crash_point!(", "crash_at("];
 
@@ -45,7 +45,7 @@ const ARMING_PATTERNS: &[&str] = &["crash_point!(", "crash_at("];
 /// **It cannot catch a point deleted from the code AND the registry together.**
 /// After such a deletion neither side mentions it, and both assertions above
 /// still hold. That case is caught by an independently-recorded site COUNT — see
-/// `scan_arming_sites` and the committed per-crate counts that use it. Saying so
+/// `armed_crash_points` and the committed per-crate counts that use it. Saying so
 /// here matters: a reader could otherwise believe this function alone closes the
 /// silent-shrink hole, and it does not.
 ///
@@ -66,9 +66,9 @@ const ARMING_PATTERNS: &[&str] = &["crash_point!(", "crash_at("];
 /// deliberate: the alternative is parsing Rust to decide what is live, and a
 /// scanner that guessed wrong would fail open. A commented-out arming call must
 /// be deleted rather than left, and this assertion is what forces that.
-pub fn assert_registry_is_armed(src_dir: &std::path::Path, registries: &[&[&str]]) {
+pub fn assert_registry_matches_sources(src_dir: &std::path::Path, registries: &[&[&str]]) {
     let registry: Vec<&str> = registries.iter().flat_map(|r| r.iter().copied()).collect();
-    let armed = scan_arming_sites(src_dir);
+    let armed = armed_crash_points(src_dir);
 
     // Vacuity guard: scanning nothing must never read as agreement. Without it a
     // mistyped path, a moved module, or an unrecognised arming spelling produces
@@ -174,13 +174,13 @@ fn literals_outside_declarations(dir: &std::path::Path) -> std::collections::BTr
 
 /// Every crash-point name armed beside an arming call under `dir`, sorted and
 /// deduplicated. Sites whose name is a VARIABLE contribute nothing here, because
-/// their literal lives elsewhere — see [`assert_registry_is_armed`].
+/// their literal lives elsewhere — see [`assert_registry_matches_sources`].
 ///
 /// Exposed separately from the assertion so the scanner's own count can be
 /// checked against an independently-derived one. A scanner is the piece of this
 /// machinery that fails OPEN when wrong: it finds fewer sites while every
 /// assertion still passes, so its count is committed and compared.
-pub fn scan_arming_sites(dir: &std::path::Path) -> Vec<String> {
+pub fn armed_crash_points(dir: &std::path::Path) -> Vec<String> {
     let mut found: Vec<String> = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
     while let Some(next) = stack.pop() {

@@ -7,7 +7,7 @@ use rdlt_connector::core::{LoadId, PipelineId, TableName, WriteMode};
 use rdlt_connector::{Destination, OpenCtx};
 use rdlt_connector_postgres::dest::Postgres;
 use rdlt_connector_postgres::fixtures::PgFixture;
-use rdlt_testkit::{batch_of, meta_for, schema_for};
+use rdlt_testkit::{batch_of, commit_meta_for, schema_for};
 
 async fn count(conn: &str, dataset: &str, table: &str) -> u64 {
     let (client, connection) = tokio_postgres::connect(conn, tokio_postgres::NoTls)
@@ -50,7 +50,7 @@ async fn replace_recovery_session_keeps_prior_commits_of_same_load() {
         .await
         .expect("ensure");
     s1.write(&table, batch1).await.expect("write");
-    s1.commit(meta_for(&pipeline, &load, 1))
+    s1.commit(commit_meta_for(&pipeline, &load, 1))
         .await
         .expect("commit 1");
     assert_eq!(count(&conn, "rec", "events").await, 3);
@@ -64,7 +64,7 @@ async fn replace_recovery_session_keeps_prior_commits_of_same_load() {
         .await
         .expect("ensure again");
     s2.write(&table, batch2).await.expect("write tail");
-    s2.commit(meta_for(&pipeline, &load, 2))
+    s2.commit(commit_meta_for(&pipeline, &load, 2))
         .await
         .expect("commit 2");
 

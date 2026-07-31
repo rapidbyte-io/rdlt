@@ -205,7 +205,7 @@ fn sweep_covers_entire_registry() {
     // OPEN — it finds fewer sites and the assertion still passes, so one
     // implementation is the only arrangement where fixing it fixes every user.
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    rdlt_testkit::assert_registry_is_armed(&src, &[ENGINE_POINTS]);
+    rdlt_testkit::assert_registry_matches_sources(&src, &[ENGINE_POINTS]);
 
     // Destination side: the exported registries, pinned against this list.
     // (The Postgres registry is pinned in ITS crate's crash_sweep test — the

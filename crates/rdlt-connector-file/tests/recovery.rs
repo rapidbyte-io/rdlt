@@ -4,7 +4,7 @@
 use rdlt_connector::core::{LoadId, PipelineId, TableName, WriteMode};
 use rdlt_connector::{Destination, OpenCtx};
 use rdlt_connector_file::ParquetDir;
-use rdlt_testkit::{batch_of, meta_for, schema_for};
+use rdlt_testkit::{batch_of, commit_meta_for, schema_for};
 
 /// THE confirmed review finding: a Replace table must be truncated at most once per
 /// LOAD, guarded durably. A crash between commit #1 and commit #2 recovers into a
@@ -27,7 +27,7 @@ async fn replace_recovery_session_keeps_prior_commits_of_same_load() {
         .await
         .expect("ensure");
     s1.write(&table, batch_of(&[1, 2, 3])).await.expect("write");
-    s1.commit(meta_for(&pipeline, &load, 1))
+    s1.commit(commit_meta_for(&pipeline, &load, 1))
         .await
         .expect("commit 1");
     assert_eq!(dest.count_rows("events").expect("count"), 3);
@@ -44,7 +44,7 @@ async fn replace_recovery_session_keeps_prior_commits_of_same_load() {
     s2.write(&table, batch_of(&[4, 5]))
         .await
         .expect("write tail");
-    s2.commit(meta_for(&pipeline, &load, 2))
+    s2.commit(commit_meta_for(&pipeline, &load, 2))
         .await
         .expect("commit 2");
 
@@ -64,7 +64,7 @@ async fn replace_recovery_session_keeps_prior_commits_of_same_load() {
         .await
         .expect("ensure");
     s3.write(&table, batch_of(&[9])).await.expect("write");
-    s3.commit(meta_for(&pipeline, &load_b, 1))
+    s3.commit(commit_meta_for(&pipeline, &load_b, 1))
         .await
         .expect("commit");
     assert_eq!(
@@ -105,7 +105,7 @@ async fn final_names_independent_of_cross_table_arrival_order() {
             session.write(table, batch_of(&[1])).await.expect("write");
         }
         session
-            .commit(meta_for(&pipeline, &load, 1))
+            .commit(commit_meta_for(&pipeline, &load, 1))
             .await
             .expect("commit");
 
@@ -161,10 +161,12 @@ async fn open_does_not_destroy_another_pipelines_staging_or_state() {
         .await
         .expect("ensure");
     s2.write(&table, batch_of(&[10])).await.expect("write");
-    s2.commit(meta_for(&p2, &l2, 1)).await.expect("commit p2");
+    s2.commit(commit_meta_for(&p2, &l2, 1))
+        .await
+        .expect("commit p2");
 
     // Pipeline 1's staged data survived and commits cleanly.
-    s1.commit(meta_for(&p1, &l1, 1))
+    s1.commit(commit_meta_for(&p1, &l1, 1))
         .await
         .expect("p1 commit must still succeed — its staging was not torn down");
     assert_eq!(dest.count_rows("events").expect("count"), 3);
@@ -204,7 +206,7 @@ async fn a_redelivered_commit_is_recognised_after_later_loads_have_run() {
                 .await
                 .expect("ensure");
             s.write(&table, batch_of(&rows)).await.expect("write");
-            s.commit(meta_for(&pipeline, &load, 1))
+            s.commit(commit_meta_for(&pipeline, &load, 1))
                 .await
                 .expect("commit")
         }

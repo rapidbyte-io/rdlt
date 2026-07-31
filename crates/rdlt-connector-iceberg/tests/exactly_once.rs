@@ -9,7 +9,7 @@ use common::CatalogFixture;
 use rdlt_connector::core::{Cursor, LoadId, PipelineId, TableName, WriteMode};
 use rdlt_connector::{Destination, OpenCtx};
 use rdlt_connector_iceberg::IcebergDest;
-use rdlt_testkit::{batch_of, meta_for, schema_for};
+use rdlt_testkit::{batch_of, commit_meta_for, schema_for};
 use serde_json::json;
 
 /// A crash-recovery replay — a FRESH session re-staging and
@@ -34,7 +34,7 @@ async fn replayed_commit_publishes_nothing() {
         .await
         .expect("ensure");
     s1.write(&table, batch_of(&[1, 2, 3])).await.expect("write");
-    s1.commit(meta_for(&pipeline, &load, 1))
+    s1.commit(commit_meta_for(&pipeline, &load, 1))
         .await
         .expect("commit 1");
     let after_first = fixture.snapshot_summaries("replay", "events").await;
@@ -53,7 +53,7 @@ async fn replayed_commit_publishes_nothing() {
         .await
         .expect("write replayed rows");
     let receipt = s2
-        .commit(meta_for(&pipeline, &load, 1))
+        .commit(commit_meta_for(&pipeline, &load, 1))
         .await
         .expect("replayed commit succeeds (converges, not errors)");
     assert_eq!(receipt.commit_seq, 1);
@@ -74,7 +74,7 @@ async fn replayed_commit_publishes_nothing() {
         .await
         .expect("ensure");
     s3.write(&table, batch_of(&[4])).await.expect("write");
-    s3.commit(meta_for(&pipeline, &load, 2))
+    s3.commit(commit_meta_for(&pipeline, &load, 2))
         .await
         .expect("commit 2");
     let after_second = fixture.snapshot_summaries("replay", "events").await;
