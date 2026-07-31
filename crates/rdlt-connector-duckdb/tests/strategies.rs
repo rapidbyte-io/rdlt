@@ -12,7 +12,7 @@ mod common;
 
 use common::{Col, batch, bools, i64s, one_unit, strs};
 use rdlt_connector::{StreamSpec, WriteMode};
-use rdlt_connector_duckdb::dest::{DestOptions, DuckDb};
+use rdlt_connector_duckdb::dest::{DestinationOptions, DuckDb};
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::MemorySource;
 use serde_json::json;
@@ -25,8 +25,8 @@ fn merge_config(name: &str, key: &[&str]) -> EngineConfig {
     config
 }
 
-fn options(value: serde_json::Value) -> DestOptions {
-    DestOptions::from_value(value).expect("valid options")
+fn options(value: serde_json::Value) -> DestinationOptions {
+    DestinationOptions::from_value(value).expect("valid options")
 }
 
 fn kv(rows: &[(Option<i64>, Option<&str>)]) -> common::StructuredSource {
@@ -391,7 +391,7 @@ async fn scd2_scoped_retirement_by_merge_scope() {
 /// silently inert — rejected naming the requirement.
 #[tokio::test(flavor = "multi_thread")]
 async fn scd2_merge_scope_requires_retire() {
-    let err = DestOptions::from_value(json!({
+    let err = DestinationOptions::from_value(json!({
         "merge_strategy": "scd2",
         "tables": {"kv": {"scd2": {}, "merge_scope": ["day"]}}
     }))
@@ -448,7 +448,7 @@ async fn scd2_active_marker_and_boundary_override() {
         "one"
     );
     // Typed: garbage timestamps never reach SQL.
-    let err = DestOptions::from_value(json!({
+    let err = DestinationOptions::from_value(json!({
         "tables": {"kv": {"merge_strategy": "scd2",
                            "scd2": {"boundary_timestamp": "'); DROP TABLE kv; --"}}}
     }))

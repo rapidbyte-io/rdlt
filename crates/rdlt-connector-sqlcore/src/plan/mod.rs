@@ -16,7 +16,7 @@ pub use arms::{
     scd2_merge_sql, scope_replace_sql, single_unit_violation,
 };
 pub use index::IndexSpec;
-pub use table::{MergeCtx, column_list, column_list_with, root_of};
+pub use table::{MergeContext, column_list, column_list_with, root_of};
 pub use validate::ValidateError;
 
 pub(crate) use index::index_plan;

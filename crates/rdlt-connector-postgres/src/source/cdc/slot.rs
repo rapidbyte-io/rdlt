@@ -14,7 +14,7 @@ use tokio_postgres::Client;
 
 use crate::source::config::CdcConfig;
 use crate::source::errors::{Phase, classify, fatal};
-use crate::source::sqlgen::quote_ident;
+use crate::source::sqlgen::quote_identifier;
 
 /// Parse postgres's `pg_lsn` text form `X/Y` (two hex halves) into the
 /// 64-bit position.
@@ -83,13 +83,13 @@ pub async fn ensure(
         }
         let table_list = tables
             .iter()
-            .map(|t| format!("{}.{}", quote_ident(schema), quote_ident(t)))
+            .map(|t| format!("{}.{}", quote_identifier(schema), quote_identifier(t)))
             .collect::<Vec<_>>()
             .join(", ");
         client
             .batch_execute(&format!(
                 "CREATE PUBLICATION {} FOR TABLE {table_list}",
-                quote_ident(&cdc.publication)
+                quote_identifier(&cdc.publication)
             ))
             .await
             .map_err(|e| classify(Phase::Slot, None, &e))?;

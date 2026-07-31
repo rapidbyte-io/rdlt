@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 
 use rdlt_connector::{PemSource, Secret};
-use rdlt_connector_sqlcore::DestOptions;
+use rdlt_connector_sqlcore::DestinationOptions;
 use serde::{Deserialize, Serialize};
 
 /// A rejected configuration. Every variant names the field at fault, because
@@ -271,7 +271,7 @@ pub struct SnowflakeConfig {
     /// The destination-option vocabulary shared by every SQL destination:
     /// merge strategy, hard delete, dedup sort, merge scope, scd2 columns.
     #[serde(default, flatten)]
-    pub options: DestOptions,
+    pub options: DestinationOptions,
 }
 
 impl SnowflakeConfig {

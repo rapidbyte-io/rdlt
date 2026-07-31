@@ -32,7 +32,7 @@ use rdlt_connector::core::Cursor;
 use rdlt_connector::{ConnectorSpec, ReadRequest, Source, SourceError, StreamSpec};
 use rdlt_connector_duckdb::dest::DuckDb;
 use rdlt_connector_postgres::dest::Postgres;
-use rdlt_connector_sqlcore::DestOptions;
+use rdlt_connector_sqlcore::DestinationOptions;
 use rdlt_engine::{Engine, EngineConfig};
 
 // ---- shared structured feed ------------------------------------------------
@@ -188,14 +188,14 @@ async fn both(
     let mut duck_result: Result<(), String> = Ok(());
     let duck = DuckDb::open(duck_dir.path().join("diff.duckdb"))
         .unwrap()
-        .options(DestOptions::from_value(options.clone()).expect("options"))
+        .options(DestinationOptions::from_value(options.clone()).expect("options"))
         .unwrap();
 
     for feed in &feeds {
         // postgres side
         let dest = Postgres::connect(&conn)
             .dataset(&schema)
-            .options(DestOptions::from_value(options.clone()).expect("options"))
+            .options(DestinationOptions::from_value(options.clone()).expect("options"))
             .unwrap();
         let mut config = EngineConfig::new(format!("diff-{name}"));
         config = config.with_write_mode(mode.clone());

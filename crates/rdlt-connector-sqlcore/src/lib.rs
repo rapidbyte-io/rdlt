@@ -25,7 +25,7 @@
 //!
 //! use rdlt_connector::WriteMode;
 //! use rdlt_connector::core::{TableName, TableSchema};
-//! use rdlt_connector_sqlcore::{CommitCtx, DestOptions, FullLoadPublish, Step, commit_script};
+//! use rdlt_connector_sqlcore::{CommitContext, DestinationOptions, FullLoadPublish, Step, commit_script};
 //!
 //! let mut tables = BTreeMap::new();
 //! tables.insert(
@@ -38,8 +38,8 @@
 //! let empty = BTreeSet::new();
 //! let script = commit_script(
 //!     &tables,
-//!     &DestOptions::default(),
-//!     &CommitCtx {
+//!     &DestinationOptions::default(),
+//!     &CommitContext {
 //!         replayed: false,
 //!         load_committed_before: false,
 //!         single_unit_done: &empty,
@@ -67,12 +67,13 @@ pub mod options;
 pub mod plan;
 pub mod protocol;
 
-pub use dialect::{MergeDialect, Upsert, UpsertAction, quote_ident};
+pub use dialect::{MergeDialect, Upsert, UpsertAction, quote_identifier};
 pub use options::{
-    AbsentPolicy, DedupSort, DestOptions, MergeStrategy, Scd2Options, SortOrder, TableOptions,
+    AbsentPolicy, DedupSort, DestinationOptions, MergeStrategy, Scd2Options, SortOrder,
+    TableOptions,
 };
-pub use plan::{HardDelete, MergeCtx, MergePlan, column_list, column_list_with, root_of};
+pub use plan::{HardDelete, MergeContext, MergePlan, column_list, column_list_with, root_of};
 pub use protocol::{
-    CommitCtx, CommitError, CommitScript, FullLoadPublish, MergeArm, Step, build_merge_plan,
+    CommitContext, CommitError, CommitScript, FullLoadPublish, MergeArm, Step, build_merge_plan,
     commit_script, insert_select_sql, prepare_target, render_arm, staged_probe_targets,
 };

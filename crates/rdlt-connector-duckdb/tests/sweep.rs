@@ -20,7 +20,7 @@ use std::path::Path;
 use common::{StructuredSource, batch, bools, i64s, one_unit, strs};
 use rdlt_connector::WriteMode;
 use rdlt_connector::core::failpoint::fail;
-use rdlt_connector_duckdb::dest::{DestOptions, DuckDb};
+use rdlt_connector_duckdb::dest::{DestinationOptions, DuckDb};
 use rdlt_engine::{Engine, EngineConfig};
 
 fn feed() -> StructuredSource {
@@ -117,7 +117,7 @@ async fn strategy_arms_survive_crash_sweep() {
                 let workdir = dir.path().join("wal");
                 let dest = DuckDb::open(dir.path().join("sweep.duckdb"))
                     .unwrap()
-                    .options(DestOptions::from_value(options.clone()).unwrap())
+                    .options(DestinationOptions::from_value(options.clone()).unwrap())
                     .unwrap();
 
                 fail::cfg(point, action).expect("configure fail point");

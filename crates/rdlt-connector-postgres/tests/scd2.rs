@@ -11,7 +11,7 @@ use rdlt_connector::{
     ConnectorSpec, Cursor, Destination as _, OpenCtx, ReadRequest, Source, SourceError, StreamSpec,
 };
 use rdlt_connector_postgres::dest::{
-    AbsentPolicy, DestOptions, MergeStrategy, Postgres, Scd2Options, TableOptions,
+    AbsentPolicy, DestinationOptions, MergeStrategy, Postgres, Scd2Options, TableOptions,
 };
 use rdlt_connector_postgres::fixtures::PgFixture;
 use rdlt_engine::{Engine, EngineConfig};
@@ -62,7 +62,7 @@ fn batch(rows: &[(i64, &str)]) -> RecordBatch {
 fn scd2_dest(conn: &str, dataset: &str, absent: AbsentPolicy) -> Postgres {
     Postgres::connect(conn)
         .dataset(dataset)
-        .options(DestOptions {
+        .options(DestinationOptions {
             merge_strategy: Some(MergeStrategy::DeleteInsert),
             tables: [(
                 "dims".to_string(),
@@ -325,7 +325,7 @@ async fn rejections_are_typed_at_ensure() {
     // Validity-name collision with a stream column (S1).
     let dest = Postgres::connect(&conn)
         .dataset("bad")
-        .options(DestOptions {
+        .options(DestinationOptions {
             tables: [(
                 "dims".to_string(),
                 TableOptions {
@@ -339,7 +339,7 @@ async fn rejections_are_typed_at_ensure() {
             )]
             .into_iter()
             .collect(),
-            ..DestOptions::default()
+            ..DestinationOptions::default()
         })
         .expect("options parse");
     let mut config = EngineConfig::new("bad");
@@ -364,9 +364,9 @@ async fn rejections_are_typed_at_ensure() {
     use serde_json::json;
     let dest = Postgres::connect(&conn)
         .dataset("badsh")
-        .options(DestOptions {
+        .options(DestinationOptions {
             merge_strategy: Some(MergeStrategy::Scd2),
-            ..DestOptions::default()
+            ..DestinationOptions::default()
         })
         .expect("options parse");
     let mut config = EngineConfig::new("badsh");
@@ -460,7 +460,9 @@ async fn absent_retire_rejects_multi_unit_loads() {
 /// the configured names appear on the target and carry the history.
 #[tokio::test(flavor = "multi_thread")]
 async fn custom_validity_column_names_flow_end_to_end() {
-    use rdlt_connector_postgres::dest::{DestOptions, MergeStrategy, Scd2Options, TableOptions};
+    use rdlt_connector_postgres::dest::{
+        DestinationOptions, MergeStrategy, Scd2Options, TableOptions,
+    };
 
     let Some(pg) = PgFixture::start().await else {
         return;
@@ -468,7 +470,7 @@ async fn custom_validity_column_names_flow_end_to_end() {
     let conn = pg.conn.clone();
     let dest = Postgres::connect(&conn)
         .dataset("scd2c")
-        .options(DestOptions {
+        .options(DestinationOptions {
             merge_strategy: Some(MergeStrategy::Scd2),
             tables: [(
                 "dims".to_string(),

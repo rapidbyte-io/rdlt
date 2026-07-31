@@ -10,8 +10,8 @@ use std::fmt;
 use rdlt_connector::WriteMode;
 use rdlt_connector::core::{TableName, TableSchema};
 
-use crate::options::{DestOptions, MergeStrategy};
-use crate::plan::{MergeCtx, TableFacts, single_unit_violation};
+use crate::options::{DestinationOptions, MergeStrategy};
+use crate::plan::{MergeContext, TableFacts, single_unit_violation};
 
 use super::step::{FullLoadPublish, MergeArm, Step};
 
@@ -30,7 +30,7 @@ use super::step::{FullLoadPublish, MergeArm, Step};
 /// the staged path, where the clear is planned for every Replace table at
 /// once.
 #[derive(Debug, Clone, Copy)]
-pub struct CommitCtx<'a> {
+pub struct CommitContext<'a> {
     pub replayed: bool,
     pub load_committed_before: bool,
     pub single_unit_done: &'a BTreeSet<TableName>,
@@ -39,7 +39,7 @@ pub struct CommitCtx<'a> {
     pub cleared_targets: &'a BTreeSet<TableName>,
 }
 
-impl CommitCtx<'_> {
+impl CommitContext<'_> {
     /// Whether `table` still round-trips through a stage table — the ensure
     /// planner's rule, consulted here so the two planners cannot drift.
     fn stages(&self, mode: &WriteMode) -> bool {
@@ -58,7 +58,7 @@ impl CommitCtx<'_> {
 /// clear and the rows would leave the target empty.
 pub fn prepare_target(
     tables: &BTreeMap<TableName, (TableSchema, WriteMode)>,
-    ctx: &CommitCtx<'_>,
+    ctx: &CommitContext<'_>,
     table: &TableName,
 ) -> Vec<Step> {
     let Some((_, mode)) = tables.get(table) else {
@@ -148,17 +148,17 @@ fn check_single_unit(already_done: bool, staged: bool) -> SingleUnit {
 /// before planning — scope replacement and absent-retire read the stage as the
 /// complete truth, so an empty stage means "skip this table this unit", not
 /// "mass retirement". The executor probes exactly these and passes the
-/// non-empty ones in [`CommitCtx::staged_nonempty`]; every other table's stage
+/// non-empty ones in [`CommitContext::staged_nonempty`]; every other table's stage
 /// row count never affects the plan.
 pub fn staged_probe_targets<'a>(
     tables: &'a BTreeMap<TableName, (TableSchema, WriteMode)>,
-    options: &DestOptions,
+    options: &DestinationOptions,
 ) -> Vec<&'a TableName> {
     tables
         .iter()
         .filter(|(table, (_, mode))| {
             matches!(mode, WriteMode::Merge { .. })
-                && MergeCtx::resolve(options, table.as_str()).full_feed()
+                && MergeContext::resolve(options, table.as_str()).full_feed()
         })
         .map(|(table, _)| table)
         .collect()
@@ -168,7 +168,7 @@ fn select_arm(
     table: &str,
     has_identity: bool,
     strategy: MergeStrategy,
-    options: &DestOptions,
+    options: &DestinationOptions,
 ) -> Result<MergeArm, CommitError> {
     Ok(match (has_identity, strategy) {
         (false, MergeStrategy::DeleteInsert) => MergeArm::KeyedDeleteInsert,
@@ -197,8 +197,8 @@ fn select_arm(
 /// options, and facts, it emits the same script byte-for-byte.
 pub fn commit_script(
     tables: &BTreeMap<TableName, (TableSchema, WriteMode)>,
-    options: &DestOptions,
-    ctx: &CommitCtx<'_>,
+    options: &DestinationOptions,
+    ctx: &CommitContext<'_>,
 ) -> Result<CommitScript, CommitError> {
     let mut steps = Vec::new();
     let mut marks = Vec::new();
@@ -211,8 +211,8 @@ pub fn commit_script(
             if !matches!(mode, WriteMode::Merge { .. }) {
                 continue;
             }
-            let mctx = MergeCtx::resolve(options, table.as_str());
-            if mctx.full_feed()
+            let merge_context = MergeContext::resolve(options, table.as_str());
+            if merge_context.full_feed()
                 && !ctx.single_unit_done.contains(table)
                 && ctx.staged_nonempty.contains(table)
             {
@@ -261,11 +261,11 @@ pub fn commit_script(
                 });
             }
             WriteMode::Merge { .. } => {
-                let mctx = MergeCtx::resolve(options, table.as_str());
+                let merge_context = MergeContext::resolve(options, table.as_str());
                 // Single-unit discipline, PER TABLE: a unit where this table
                 // stages NOTHING is skipped outright; a second non-empty unit
                 // violates.
-                if mctx.full_feed() {
+                if merge_context.full_feed() {
                     match check_single_unit(
                         ctx.single_unit_done.contains(table),
                         ctx.staged_nonempty.contains(table),
@@ -277,7 +277,7 @@ pub fn commit_script(
                                 // Name the rule that FIRED — under scd2 the
                                 // absent-retire rule governs even when a
                                 // merge_scope scopes it.
-                                scoped: mctx.scoped.is_some() && !mctx.retire,
+                                scoped: merge_context.scoped.is_some() && !merge_context.retire,
                             });
                         }
                         SingleUnit::Mark => marks.push(table.clone()),
@@ -286,15 +286,20 @@ pub fn commit_script(
                 // Scope replacement runs BEFORE the strategy arm. NOT for scd2:
                 // there the merge_scope scopes RETIREMENT inside the arm —
                 // deleting scope rows would destroy history.
-                if let Some(scope) = mctx.scoped
-                    && mctx.strategy != MergeStrategy::Scd2
+                if let Some(scope) = merge_context.scoped
+                    && merge_context.strategy != MergeStrategy::Scd2
                 {
                     steps.push(Step::ScopeReplace {
                         table: table.clone(),
                         scope: scope.to_vec(),
                     });
                 }
-                let arm = select_arm(table.as_str(), has_identity, mctx.strategy, options)?;
+                let arm = select_arm(
+                    table.as_str(),
+                    has_identity,
+                    merge_context.strategy,
+                    options,
+                )?;
                 steps.push(Step::MergeArm {
                     table: table.clone(),
                     arm,

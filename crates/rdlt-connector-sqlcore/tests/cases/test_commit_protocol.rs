@@ -10,7 +10,7 @@ mod tests {
     use rdlt_connector::core::schema::ColumnDef;
     use rdlt_connector::core::{TableName, TableSchema, schema::system_columns};
     use rdlt_connector_sqlcore::options::{
-        AbsentPolicy, DestOptions, MergeStrategy, Scd2Options, TableOptions,
+        AbsentPolicy, DestinationOptions, MergeStrategy, Scd2Options, TableOptions,
     };
     use rdlt_connector_sqlcore::plan::single_unit_violation;
     use rdlt_connector_sqlcore::protocol::*;
@@ -47,8 +47,8 @@ mod tests {
         load_committed_before: bool,
         done: &'a BTreeSet<TableName>,
         staged: &'a BTreeSet<TableName>,
-    ) -> CommitCtx<'a> {
-        CommitCtx {
+    ) -> CommitContext<'a> {
+        CommitContext {
             replayed,
             load_committed_before,
             single_unit_done: done,
@@ -65,8 +65,8 @@ mod tests {
         done: &'a BTreeSet<TableName>,
         staged: &'a BTreeSet<TableName>,
         cleared: &'a BTreeSet<TableName>,
-    ) -> CommitCtx<'a> {
-        CommitCtx {
+    ) -> CommitContext<'a> {
+        CommitContext {
             full_load_publish: FullLoadPublish::DirectToTarget,
             cleared_targets: cleared,
             ..ctx(replayed, load_committed_before, done, staged)
@@ -93,7 +93,7 @@ mod tests {
     /// run that should succeed.
     #[test]
     fn only_full_feed_merges_are_probed() {
-        let opts = DestOptions {
+        let opts = DestinationOptions {
             tables: [(
                 "scoped".to_string(),
                 TableOptions {
@@ -137,7 +137,7 @@ mod tests {
     #[test]
     fn a_single_unit_violation_names_the_rule_that_fired() {
         let with = |scope: bool, retire: bool| {
-            let opts = DestOptions {
+            let opts = DestinationOptions {
                 tables: [(
                     "dims".to_string(),
                     TableOptions {
@@ -186,7 +186,7 @@ mod tests {
     /// reads as its complete feed.
     #[test]
     fn the_single_unit_mark_needs_every_term() {
-        let opts = DestOptions {
+        let opts = DestinationOptions {
             tables: [(
                 "scoped".to_string(),
                 TableOptions {
@@ -253,7 +253,7 @@ mod tests {
     #[test]
     fn pin_direct_append_publishes_nothing() {
         let tbls = tables(vec![("events", keyed_schema("events"), WriteMode::Append)]);
-        let opts = DestOptions::default();
+        let opts = DestinationOptions::default();
         let (done, staged, cleared) = (empty(), empty(), empty());
         let script = commit_script(
             &tbls,
@@ -270,7 +270,7 @@ mod tests {
     #[test]
     fn pin_direct_replace_clears_at_write_not_at_publish() {
         let tbls = tables(vec![("events", keyed_schema("events"), WriteMode::Replace)]);
-        let opts = DestOptions::default();
+        let opts = DestinationOptions::default();
         let (done, staged, cleared) = (empty(), empty(), empty());
         let ctx = direct_ctx(false, false, &done, &staged, &cleared);
 
@@ -341,7 +341,7 @@ mod tests {
     #[test]
     fn pin_direct_merge_is_identical_to_staged() {
         let tbls = tables(vec![("events", keyed_schema("events"), merge(&["id"]))]);
-        let opts = DestOptions::default();
+        let opts = DestinationOptions::default();
         let (done, staged, cleared) = (empty(), empty(), empty());
         let direct = commit_script(
             &tbls,
@@ -369,7 +369,7 @@ mod tests {
             ("evt", keyed_schema("evt"), WriteMode::Replace),
             ("usr", keyed_schema("usr"), merge(&["id"])),
         ]);
-        let opts = DestOptions::default();
+        let opts = DestinationOptions::default();
         let (done, staged, cleared) = (empty(), empty(), empty());
         let script = commit_script(
             &tbls,
@@ -398,7 +398,7 @@ mod tests {
             ("evt", keyed_schema("evt"), WriteMode::Replace),
             ("usr", keyed_schema("usr"), merge(&["id"])),
         ]);
-        let opts = DestOptions::default();
+        let opts = DestinationOptions::default();
         let (done, staged, cleared) = (empty(), empty(), empty());
         let script = commit_script(
             &tbls,
@@ -412,7 +412,7 @@ mod tests {
     #[test]
     fn pin_append_only() {
         let tbls = tables(vec![("events", keyed_schema("events"), WriteMode::Append)]);
-        let opts = DestOptions::default();
+        let opts = DestinationOptions::default();
         let (done, staged) = (empty(), empty());
         let script = commit_script(&tbls, &opts, &ctx(false, false, &done, &staged)).unwrap();
         assert_eq!(
@@ -430,7 +430,7 @@ mod tests {
     #[test]
     fn pin_replace_first_and_later_unit() {
         let tbls = tables(vec![("events", keyed_schema("events"), WriteMode::Replace)]);
-        let opts = DestOptions::default();
+        let opts = DestinationOptions::default();
         let (done, staged) = (empty(), empty());
         // First unit of the load: clear the target once.
         let first = commit_script(&tbls, &opts, &ctx(false, false, &done, &staged)).unwrap();
@@ -459,7 +459,7 @@ mod tests {
 
     #[test]
     fn pin_merge_upsert_and_scd2_arms() {
-        let opts = DestOptions {
+        let opts = DestinationOptions {
             merge_strategy: Some(MergeStrategy::Upsert),
             tables: [(
                 "dims".to_string(),
@@ -499,7 +499,7 @@ mod tests {
 
     #[test]
     fn pin_scoped_merge_publishes_and_marks_when_staged() {
-        let opts = DestOptions {
+        let opts = DestinationOptions {
             tables: [(
                 "events".to_string(),
                 TableOptions {
@@ -536,7 +536,7 @@ mod tests {
 
     #[test]
     fn pin_scoped_merge_skips_when_stage_empty() {
-        let opts = DestOptions {
+        let opts = DestinationOptions {
             tables: [(
                 "events".to_string(),
                 TableOptions {
@@ -565,7 +565,7 @@ mod tests {
 
     #[test]
     fn pin_single_unit_violation() {
-        let opts = DestOptions {
+        let opts = DestinationOptions {
             tables: [(
                 "events".to_string(),
                 TableOptions {
@@ -594,7 +594,7 @@ mod tests {
 
     #[test]
     fn pin_replayed_unit_truncates_and_recounts() {
-        let opts = DestOptions {
+        let opts = DestinationOptions {
             tables: [(
                 "events".to_string(),
                 TableOptions {
@@ -623,7 +623,7 @@ mod tests {
     fn pin_shredded_upsert_is_unsupported() {
         let mut schema = keyed_schema("events");
         schema.columns.insert(0, col(system_columns::ID));
-        let opts = DestOptions {
+        let opts = DestinationOptions {
             merge_strategy: Some(MergeStrategy::Upsert),
             ..Default::default()
         };

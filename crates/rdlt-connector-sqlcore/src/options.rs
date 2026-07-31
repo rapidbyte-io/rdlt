@@ -143,7 +143,7 @@ pub struct TableOptions {
 /// Destination-wide defaults + per-table overrides.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct DestOptions {
+pub struct DestinationOptions {
     /// Destination-wide strategy. `None` = the `delete_insert` default —
     /// and the distinction is LOAD-BEARING: an EXPLICIT strategy under an
     /// append/replace write mode is a typed error at open, while the
@@ -154,7 +154,7 @@ pub struct DestOptions {
     pub tables: BTreeMap<String, TableOptions>,
 }
 
-impl DestOptions {
+impl DestinationOptions {
     /// The embedder entry point (mirrors the sources' from_value contract).
     pub fn from_value(value: serde_json::Value) -> Result<Self, String> {
         let options: Self = serde_json::from_value(value).map_err(|e| e.to_string())?;

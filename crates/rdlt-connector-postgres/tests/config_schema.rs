@@ -143,11 +143,11 @@ fn cdc_block_round_trips_the_schema() {
 
 mod dest_options {
     use jsonschema::validator_for;
-    use rdlt_connector_postgres::dest::DestOptions;
+    use rdlt_connector_postgres::dest::DestinationOptions;
     use serde_json::json;
 
     fn schema() -> serde_json::Value {
-        serde_json::to_value(schemars::schema_for!(DestOptions)).expect("schema serializes")
+        serde_json::to_value(schemars::schema_for!(DestinationOptions)).expect("schema serializes")
     }
 
     #[test]
@@ -170,7 +170,7 @@ mod dest_options {
             "example must validate: {:?}",
             validator.iter_errors(&example).next()
         );
-        DestOptions::from_value(example).expect("schema-valid example parses");
+        DestinationOptions::from_value(example).expect("schema-valid example parses");
     }
 
     #[test]
@@ -187,7 +187,7 @@ mod dest_options {
         ] {
             assert!(!validator.is_valid(&bad), "schema must reject: {bad}");
             assert!(
-                DestOptions::from_value(bad.clone()).is_err(),
+                DestinationOptions::from_value(bad.clone()).is_err(),
                 "parser agrees: {bad}"
             );
         }
@@ -199,18 +199,18 @@ mod dest_options {
         // Unknown field: schema AND parser agree.
         let bad = json!({"merge_stratgy": "upsert"});
         assert!(!validator.is_valid(&bad));
-        assert!(DestOptions::from_value(bad).is_err());
+        assert!(DestinationOptions::from_value(bad).is_err());
         // Unknown strategy value.
         let bad = json!({"merge_strategy": "replace"});
         assert!(!validator.is_valid(&bad));
-        assert!(DestOptions::from_value(bad).is_err());
+        assert!(DestinationOptions::from_value(bad).is_err());
         // Schema-valid but semantically contradictory (S8): the VALIDATOR
         // accepts the shape; the parser's validate() names the field.
         let contradiction = json!({
             "tables": {"t": {"merge_strategy": "scd2", "hard_delete": "gone"}}
         });
         assert!(validator.is_valid(&contradiction), "shape is legal");
-        let err = DestOptions::from_value(contradiction).unwrap_err();
+        let err = DestinationOptions::from_value(contradiction).unwrap_err();
         assert!(err.contains("tables.t.hard_delete"), "{err}");
     }
 }

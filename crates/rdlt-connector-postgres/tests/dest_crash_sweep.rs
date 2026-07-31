@@ -242,7 +242,7 @@ fn with_strategy(
     dest: Postgres,
     strategy: rdlt_connector_postgres::dest::MergeStrategy,
 ) -> Postgres {
-    dest.options(rdlt_connector_postgres::dest::DestOptions {
+    dest.options(rdlt_connector_postgres::dest::DestinationOptions {
         merge_strategy: Some(strategy),
         ..Default::default()
     })
@@ -436,7 +436,7 @@ async fn sweep_postgres_destination_refined_merge() {
             let workdir = dir.path().join("wal");
             let dest = Postgres::connect(&conn)
                 .dataset(&dataset)
-                .options(rdlt_connector_postgres::dest::DestOptions {
+                .options(rdlt_connector_postgres::dest::DestinationOptions {
                     tables: [(
                         "s".to_string(),
                         rdlt_connector_postgres::dest::TableOptions {

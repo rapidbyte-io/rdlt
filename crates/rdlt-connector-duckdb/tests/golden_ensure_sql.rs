@@ -14,7 +14,7 @@ use rdlt_connector::core::{
     ColumnDef, ColumnType, LogicalType, Provenance, TableName, TableSchema, WriteMode,
 };
 use rdlt_connector_duckdb::dest::sqlgen::{ensure_merge_sql, ensure_table_sql};
-use rdlt_connector_duckdb::dest::{DestOptions, MergeStrategy};
+use rdlt_connector_duckdb::dest::{DestinationOptions, MergeStrategy};
 
 fn col(name: &str, scalar: LogicalType, nullable: bool) -> ColumnDef {
     ColumnDef {
@@ -45,10 +45,10 @@ fn events() -> TableSchema {
 
 /// Options carrying one explicit strategy — set at construction so the value
 /// is visible where the options are made.
-fn with_strategy(strategy: MergeStrategy) -> DestOptions {
-    DestOptions {
+fn with_strategy(strategy: MergeStrategy) -> DestinationOptions {
+    DestinationOptions {
         merge_strategy: Some(strategy),
-        ..DestOptions::default()
+        ..DestinationOptions::default()
     }
 }
 
@@ -169,7 +169,7 @@ fn a_unique_index_is_preceded_by_dropping_its_legacy_name() {
 fn the_default_strategy_ensures_a_plain_supporting_index_and_no_drop() {
     // delete-insert needs the key indexed to find rows, but must NOT declare
     // it unique — so there is no legacy unique name to retire either.
-    let stmts = ensure_merge_sql(&DestOptions::default(), &events(), &merge_by_id())
+    let stmts = ensure_merge_sql(&DestinationOptions::default(), &events(), &merge_by_id())
         .expect("valid options");
     assert_eq!(stmts.len(), 1, "one supporting index: {stmts:?}");
     assert!(stmts[0].1.is_none(), "not unique: {stmts:?}");
@@ -178,8 +178,12 @@ fn the_default_strategy_ensures_a_plain_supporting_index_and_no_drop() {
 
 #[test]
 fn a_non_merge_mode_emits_no_merge_statements_and_still_validates() {
-    let stmts = ensure_merge_sql(&DestOptions::default(), &events(), &WriteMode::Append)
-        .expect("default options are valid");
+    let stmts = ensure_merge_sql(
+        &DestinationOptions::default(),
+        &events(),
+        &WriteMode::Append,
+    )
+    .expect("default options are valid");
     assert!(
         stmts.is_empty(),
         "nothing to ensure beyond the tables: {stmts:?}"

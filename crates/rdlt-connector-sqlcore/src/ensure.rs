@@ -15,7 +15,7 @@
 
 use rdlt_connector::core::{TableSchema, WriteMode};
 
-use crate::options::{DestOptions, MergeStrategy};
+use crate::options::{DestinationOptions, MergeStrategy};
 use crate::plan::{
     IndexSpec, TableFacts, ValidateError, index_plan, validate_merge, validate_non_merge,
 };
@@ -111,7 +111,7 @@ pub fn table_plan(
 /// A non-merge mode still validates: the merge-only options are refused here,
 /// with the same typed error on every destination.
 pub fn merge_plan(
-    options: &DestOptions,
+    options: &DestinationOptions,
     schema: &TableSchema,
     mode: &WriteMode,
 ) -> Result<Vec<EnsureStep>, ValidateError> {

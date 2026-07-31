@@ -10,7 +10,7 @@ mod common;
 
 use common::{StructuredSource, batch, i64s, one_unit, strs};
 use rdlt_connector::{StreamSpec, WriteMode};
-use rdlt_connector_duckdb::dest::{DestOptions, DuckDb};
+use rdlt_connector_duckdb::dest::{DestinationOptions, DuckDb};
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::MemorySource;
 use serde_json::json;
@@ -23,8 +23,8 @@ fn merge_config(name: &str, key: &[&str]) -> EngineConfig {
     config
 }
 
-fn options(value: serde_json::Value) -> DestOptions {
-    DestOptions::from_value(value).expect("valid options")
+fn options(value: serde_json::Value) -> DestinationOptions {
+    DestinationOptions::from_value(value).expect("valid options")
 }
 
 async fn run<S: rdlt_connector::Source + 'static>(

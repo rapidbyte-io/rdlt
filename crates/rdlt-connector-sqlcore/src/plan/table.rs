@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 
 use rdlt_connector::core::{TableName, TableSchema};
 
-use crate::dialect::quote_ident;
-use crate::options::{AbsentPolicy, DestOptions, MergeStrategy, Scd2Options};
+use crate::dialect::quote_identifier;
+use crate::options::{AbsentPolicy, DestinationOptions, MergeStrategy, Scd2Options};
 
 /// The parent-chain depth ceiling for [`root_of`]: shred nesting never
 /// approaches this (the engine bounds nesting far below), so the loop is a
@@ -32,7 +32,7 @@ pub fn root_of<V>(tables: &BTreeMap<TableName, (TableSchema, V)>, table: &TableN
 /// persistent target's column order is historical while the stage carries this
 /// run's order, so a positional `SELECT *` would corrupt or break on drift.
 pub fn column_list(schema: &TableSchema) -> String {
-    column_list_with(schema, quote_ident)
+    column_list_with(schema, quote_identifier)
 }
 
 /// The publish column list under a destination's OWN quoting.
@@ -56,7 +56,7 @@ pub fn column_list_with(schema: &TableSchema, quote: impl Fn(&str) -> String) ->
 /// retire flag). Resolved ONCE from the destination options; every SQL
 /// destination reads the same shape.
 #[derive(Debug)]
-pub struct MergeCtx<'a> {
+pub struct MergeContext<'a> {
     pub strategy: MergeStrategy,
     /// merge_scope scope columns, when configured.
     pub scoped: Option<&'a [String]>,
@@ -66,8 +66,8 @@ pub struct MergeCtx<'a> {
     pub retire: bool,
 }
 
-impl<'a> MergeCtx<'a> {
-    pub fn resolve(options: &'a DestOptions, table: &str) -> Self {
+impl<'a> MergeContext<'a> {
+    pub fn resolve(options: &'a DestinationOptions, table: &str) -> Self {
         let strategy = options.strategy_for(table);
         let scoped = options.merge_scope_for(table);
         let scd2 = (strategy == MergeStrategy::Scd2).then(|| options.scd2_for(table));

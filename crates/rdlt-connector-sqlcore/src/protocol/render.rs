@@ -4,7 +4,7 @@
 use rdlt_connector::core::{TableName, TableSchema};
 
 use crate::dialect::MergeDialect;
-use crate::options::DestOptions;
+use crate::options::DestinationOptions;
 use crate::plan::{
     HardDelete, MergePlan, identity_delete_insert_sql, keyed_delete_insert_sql, keyed_upsert_sql,
     scd2_merge_sql,
@@ -25,7 +25,7 @@ pub fn insert_select_sql(target: &str, cols: &str, stage: &str) -> String {
 #[allow(clippy::too_many_arguments)]
 pub fn build_merge_plan<'a>(
     dialect: &'a dyn MergeDialect,
-    options: &'a DestOptions,
+    options: &'a DestinationOptions,
     table: &'a TableName,
     schema: &'a TableSchema,
     key: &'a [String],

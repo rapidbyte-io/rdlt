@@ -639,7 +639,9 @@ mod strategies {
     use arrow_schema::{DataType, Field, Schema};
     use async_trait::async_trait;
     use rdlt_connector::{ConnectorSpec, Cursor, ReadRequest, Source, SourceError, StreamSpec};
-    use rdlt_connector_postgres::dest::{DestOptions, MergeStrategy, Postgres, TableOptions};
+    use rdlt_connector_postgres::dest::{
+        DestinationOptions, MergeStrategy, Postgres, TableOptions,
+    };
     use rdlt_engine::{Engine, EngineConfig};
 
     use super::PgFixture;
@@ -695,7 +697,7 @@ mod strategies {
     fn upsert_dest(conn: &str, dataset: &str) -> Postgres {
         Postgres::connect(conn)
             .dataset(dataset)
-            .options(DestOptions {
+            .options(DestinationOptions {
                 merge_strategy: Some(MergeStrategy::Upsert),
                 tables: [(
                     "events".to_string(),
@@ -852,9 +854,9 @@ mod strategies {
         let conn = pg.conn.clone();
         let dest = Postgres::connect(&conn)
             .dataset("shup")
-            .options(DestOptions {
+            .options(DestinationOptions {
                 merge_strategy: Some(MergeStrategy::Upsert),
-                ..DestOptions::default()
+                ..DestinationOptions::default()
             })
             .expect("options");
         let mut config = EngineConfig::new("shup");
@@ -890,7 +892,7 @@ mod strategies {
         let conn = pg.conn.clone();
         let dest = Postgres::connect(&conn)
             .dataset("recreate")
-            .options(DestOptions {
+            .options(DestinationOptions {
                 tables: [(
                     "users".to_string(),
                     TableOptions {
@@ -900,7 +902,7 @@ mod strategies {
                 )]
                 .into_iter()
                 .collect(),
-                ..DestOptions::default()
+                ..DestinationOptions::default()
             })
             .expect("options");
         let mut config = EngineConfig::new("recreate");
@@ -951,7 +953,7 @@ mod strategies {
         let conn = pg.conn.clone();
         let dest = Postgres::connect(&conn)
             .dataset("childhd")
-            .options(DestOptions {
+            .options(DestinationOptions {
                 tables: [(
                     "users__tags".to_string(),
                     TableOptions {
@@ -961,7 +963,7 @@ mod strategies {
                 )]
                 .into_iter()
                 .collect(),
-                ..DestOptions::default()
+                ..DestinationOptions::default()
             })
             .expect("options");
         let mut config = EngineConfig::new("childhd");
@@ -991,7 +993,7 @@ mod refinements {
     use async_trait::async_trait;
     use rdlt_connector::{ConnectorSpec, Cursor, ReadRequest, Source, SourceError, StreamSpec};
     use rdlt_connector_postgres::dest::{
-        DedupSort, DestOptions, MergeStrategy, Postgres, SortOrder, TableOptions,
+        DedupSort, DestinationOptions, MergeStrategy, Postgres, SortOrder, TableOptions,
     };
     use rdlt_engine::{Engine, EngineConfig};
 
@@ -1073,7 +1075,7 @@ mod refinements {
     fn dest(conn: &str, dataset: &str, opts: Opts) -> Postgres {
         Postgres::connect(conn)
             .dataset(dataset)
-            .options(DestOptions {
+            .options(DestinationOptions {
                 merge_strategy: opts.strategy,
                 tables: [(
                     "events".to_string(),
@@ -1682,9 +1684,9 @@ mod refinements {
         ] {
             let dest = Postgres::connect(&conn)
                 .dataset(dataset)
-                .options(DestOptions {
+                .options(DestinationOptions {
                     tables: [("users".to_string(), table_opts)].into_iter().collect(),
-                    ..DestOptions::default()
+                    ..DestinationOptions::default()
                 })
                 .expect("options");
             let mut config = EngineConfig::new(dataset);
@@ -1877,7 +1879,9 @@ mod refinements {
 // ---- Feature 011 (contract PM1/PM2): parameter-matrix gap cells ----
 
 mod param_matrix {
-    use rdlt_connector_postgres::dest::{DestOptions, MergeStrategy, Postgres, TableOptions};
+    use rdlt_connector_postgres::dest::{
+        DestinationOptions, MergeStrategy, Postgres, TableOptions,
+    };
     use rdlt_engine::{Engine, EngineConfig};
     use rdlt_testkit::MemorySource;
     use serde_json::json;
@@ -1930,7 +1934,7 @@ mod param_matrix {
                 vec![json!({"id": 1, "v": "a"})],
             )
         };
-        let run = |mode: rdlt_connector::WriteMode, options: DestOptions| {
+        let run = |mode: rdlt_connector::WriteMode, options: DestinationOptions| {
             let dest = Postgres::connect(&conn)
                 .dataset("r5")
                 .options(options)
@@ -1943,9 +1947,9 @@ mod param_matrix {
         // Destination-wide explicit strategy under APPEND: typed.
         let err = run(
             rdlt_connector::WriteMode::Append,
-            DestOptions {
+            DestinationOptions {
                 merge_strategy: Some(MergeStrategy::Upsert),
-                ..DestOptions::default()
+                ..DestinationOptions::default()
             },
         )
         .await
@@ -1957,7 +1961,7 @@ mod param_matrix {
         // Per-table explicit strategy under REPLACE: typed too.
         let err = run(
             rdlt_connector::WriteMode::Replace,
-            DestOptions {
+            DestinationOptions {
                 tables: [(
                     "things".to_string(),
                     TableOptions {
@@ -1967,7 +1971,7 @@ mod param_matrix {
                 )]
                 .into_iter()
                 .collect(),
-                ..DestOptions::default()
+                ..DestinationOptions::default()
             },
         )
         .await
@@ -1976,9 +1980,12 @@ mod param_matrix {
         assert!(err.contains("`things`"), "{err}");
 
         // UNCONFIGURED default: append works exactly as before.
-        run(rdlt_connector::WriteMode::Append, DestOptions::default())
-            .await
-            .expect("default options never reject append");
+        run(
+            rdlt_connector::WriteMode::Append,
+            DestinationOptions::default(),
+        )
+        .await
+        .expect("default options never reject append");
     }
 
     /// `hard_delete` on a NON-boolean column — M4's other arm: the flag
@@ -2046,7 +2053,7 @@ mod param_matrix {
         let conn = pg.conn.clone();
         let dest = Postgres::connect(&conn)
             .dataset("nbhd")
-            .options(DestOptions {
+            .options(DestinationOptions {
                 merge_strategy: Some(MergeStrategy::Upsert),
                 tables: [(
                     "ev".to_string(),

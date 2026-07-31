@@ -16,8 +16,8 @@ use rdlt_connector_postgres::dest::sqlgen::{
     PgDialect, UNIT_BEGIN, UNIT_COMMIT, UNIT_ROLLBACK, UNIT_WORK_MEM,
 };
 use rdlt_connector_sqlcore::{
-    CommitCtx, DestOptions, FullLoadPublish, Step, column_list, commit_script, insert_select_sql,
-    prepare_target, quote_ident,
+    CommitContext, DestinationOptions, FullLoadPublish, Step, column_list, commit_script,
+    insert_select_sql, prepare_target, quote_identifier,
 };
 
 use rdlt_connector_sqlcore::MergeDialect;
@@ -54,9 +54,9 @@ fn tables(mode: WriteMode) -> BTreeMap<TableName, (TableSchema, WriteMode)> {
         .collect()
 }
 
-fn direct(cleared: &BTreeSet<TableName>, load_committed_before: bool) -> CommitCtx<'_> {
+fn direct(cleared: &BTreeSet<TableName>, load_committed_before: bool) -> CommitContext<'_> {
     static EMPTY: BTreeSet<TableName> = BTreeSet::new();
-    CommitCtx {
+    CommitContext {
         replayed: false,
         load_committed_before,
         single_unit_done: &EMPTY,
@@ -102,7 +102,7 @@ fn replace_clears_with_truncate() {
         }]
     );
     assert_eq!(
-        PgDialect.clear_table(&quote_ident("events")),
+        PgDialect.clear_table(&quote_identifier("events")),
         r#"TRUNCATE TABLE "events""#
     );
 }
@@ -115,8 +115,12 @@ fn the_direct_path_emits_no_insert_select() {
     let cleared = BTreeSet::new();
     for mode in [WriteMode::Append, WriteMode::Replace] {
         let tbls = tables(mode);
-        let script =
-            commit_script(&tbls, &DestOptions::default(), &direct(&cleared, false)).expect("plan");
+        let script = commit_script(
+            &tbls,
+            &DestinationOptions::default(),
+            &direct(&cleared, false),
+        )
+        .expect("plan");
         assert_eq!(
             script.steps,
             vec![Step::UpsertState, Step::InsertReceipt],
@@ -127,9 +131,9 @@ fn the_direct_path_emits_no_insert_select() {
     // statement ran once per table per unit and wrote every row a second time.
     assert_eq!(
         insert_select_sql(
-            &quote_ident("events"),
+            &quote_identifier("events"),
             &column_list(&schema("events")),
-            &quote_ident("stage")
+            &quote_identifier("stage")
         ),
         r#"INSERT INTO "events" ("id", "name") SELECT "id", "name" FROM "stage""#
     );

@@ -12,7 +12,7 @@ use rdlt_connector::core::{
     ColumnDef, ColumnType, LogicalType, Provenance, TableName, TableSchema, WriteMode,
 };
 use rdlt_connector_snowflake::dest::testhook::{Catalog, ensure_merge_sql};
-use rdlt_connector_sqlcore::{DestOptions, MergeStrategy, TableOptions};
+use rdlt_connector_sqlcore::{DestinationOptions, MergeStrategy, TableOptions};
 
 /// A keyed structured table — no `_rdlt_id`, so the strategies that converge
 /// on a declared key are available.
@@ -54,8 +54,8 @@ fn merge_mode() -> WriteMode {
     }
 }
 
-fn options(strategy: Option<MergeStrategy>, table: Option<TableOptions>) -> DestOptions {
-    DestOptions {
+fn options(strategy: Option<MergeStrategy>, table: Option<TableOptions>) -> DestinationOptions {
+    DestinationOptions {
         merge_strategy: strategy,
         tables: table
             .map(|opts| [("events".to_string(), opts)].into_iter().collect())
@@ -63,7 +63,7 @@ fn options(strategy: Option<MergeStrategy>, table: Option<TableOptions>) -> Dest
     }
 }
 
-fn refusal(schema: &TableSchema, options: &DestOptions) -> String {
+fn refusal(schema: &TableSchema, options: &DestinationOptions) -> String {
     ensure_merge_sql(options, schema, &merge_mode(), &Catalog::default())
         .expect_err("this configuration must be refused")
         .to_string()

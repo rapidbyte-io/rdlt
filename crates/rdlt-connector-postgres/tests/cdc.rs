@@ -336,7 +336,7 @@ async fn wal_retention_overrun_is_typed_with_fresh_snapshot_recovery() {
 
 // ───────────────────────── US1: bounded catch-up ─────────────────────────
 
-use rdlt_connector_postgres::dest::{DestOptions, MergeStrategy, Postgres, TableOptions};
+use rdlt_connector_postgres::dest::{DestinationOptions, MergeStrategy, Postgres, TableOptions};
 use rdlt_connector_postgres::source::PostgresSource;
 use rdlt_engine::{Engine, EngineConfig};
 
@@ -387,7 +387,7 @@ impl CdcRig {
     fn dest(&self, tables: &[&str]) -> Postgres {
         Postgres::connect(self.fixture.conn_url())
             .dataset("mirror")
-            .options(DestOptions {
+            .options(DestinationOptions {
                 merge_strategy: Some(MergeStrategy::Upsert),
                 tables: tables
                     .iter()
@@ -1270,7 +1270,7 @@ async fn custom_flag_column_flows_end_to_end() {
     let dest = || {
         Postgres::connect(rig.fixture.conn_url())
             .dataset("mirror")
-            .options(DestOptions {
+            .options(DestinationOptions {
                 merge_strategy: Some(MergeStrategy::Upsert),
                 tables: [(
                     "orders".to_string(),

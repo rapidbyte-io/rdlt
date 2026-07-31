@@ -23,7 +23,7 @@ mod tests {
                 scd2: Some(scd2(from, to)),
                 ..Default::default()
             };
-            let dest = DestOptions {
+            let dest = DestinationOptions {
                 tables: [("dims".to_string(), opts)].into_iter().collect(),
                 ..Default::default()
             };
@@ -49,7 +49,7 @@ mod tests {
     #[test]
     fn validation_matrix_names_the_field() {
         // scd2 options without the strategy.
-        let bad = DestOptions::from_value(serde_json::json!({
+        let bad = DestinationOptions::from_value(serde_json::json!({
             "tables": {"t": {"scd2": {}}}
         }))
         .unwrap_err();
@@ -59,7 +59,7 @@ mod tests {
         );
 
         // hard_delete + scd2 is a contradiction and must be rejected.
-        let bad = DestOptions::from_value(serde_json::json!({
+        let bad = DestinationOptions::from_value(serde_json::json!({
             "tables": {"t": {"merge_strategy": "scd2", "hard_delete": "deleted"}}
         }))
         .unwrap_err();
@@ -69,14 +69,14 @@ mod tests {
         );
 
         // Empty hard_delete column.
-        let bad = DestOptions::from_value(serde_json::json!({
+        let bad = DestinationOptions::from_value(serde_json::json!({
             "tables": {"t": {"hard_delete": "  "}}
         }))
         .unwrap_err();
         assert!(bad.contains("empty column name"), "{bad}");
 
         // Identical validity columns.
-        let bad = DestOptions::from_value(serde_json::json!({
+        let bad = DestinationOptions::from_value(serde_json::json!({
             "tables": {"t": {"merge_strategy": "scd2",
                               "scd2": {"valid_from": "v", "valid_to": "v"}}}
         }))
@@ -84,18 +84,21 @@ mod tests {
         assert!(bad.contains("must differ"), "{bad}");
 
         // Unknown strategy dies at serde; unknown fields likewise.
-        assert!(DestOptions::from_value(serde_json::json!({"merge_strategy": "replace"})).is_err());
-        assert!(DestOptions::from_value(serde_json::json!({"nope": 1})).is_err());
+        assert!(
+            DestinationOptions::from_value(serde_json::json!({"merge_strategy": "replace"}))
+                .is_err()
+        );
+        assert!(DestinationOptions::from_value(serde_json::json!({"nope": 1})).is_err());
 
         // Refinement-option shape matrix at the parse layer.
-        let bad = DestOptions::from_value(serde_json::json!({
+        let bad = DestinationOptions::from_value(serde_json::json!({
             "tables": {"t": {"dedup_sort": {"column": " ", "order": "desc"}}}
         }))
         .unwrap_err();
         assert!(bad.contains("tables.t.dedup_sort"), "{bad}");
         // order is REQUIRED — no implicit survivor direction.
         assert!(
-            DestOptions::from_value(serde_json::json!({
+            DestinationOptions::from_value(serde_json::json!({
                 "tables": {"t": {"dedup_sort": {"column": "seq"}}}
             }))
             .is_err()
@@ -105,7 +108,7 @@ mod tests {
             (serde_json::json!([" "]), "empty column name"),
             (serde_json::json!(["day", "day"]), "listed twice"),
         ] {
-            let bad = DestOptions::from_value(serde_json::json!({
+            let bad = DestinationOptions::from_value(serde_json::json!({
                 "tables": {"t": {"merge_scope": scope}}
             }))
             .unwrap_err();
@@ -113,7 +116,7 @@ mod tests {
         }
         // merge_scope + scd2 under KEEP is the inert-option rejection; under
         // RETIRE it is VALID (scoped retirement).
-        let bad = DestOptions::from_value(serde_json::json!({
+        let bad = DestinationOptions::from_value(serde_json::json!({
             "tables": {"t": {"merge_strategy": "scd2", "merge_scope": ["day"]}}
         }))
         .unwrap_err();
@@ -121,7 +124,7 @@ mod tests {
             bad.contains("tables.t.merge_scope") && bad.contains("absent: retire"),
             "{bad}"
         );
-        DestOptions::from_value(serde_json::json!({
+        DestinationOptions::from_value(serde_json::json!({
             "tables": {"t": {"merge_strategy": "scd2", "merge_scope": ["day"],
                               "scd2": {"absent": "retire"}}}
         }))
@@ -130,14 +133,14 @@ mod tests {
         // marker/boundary must be real timestamps — injection shapes
         // are typed errors, never SQL.
         for field in ["active_record_timestamp", "boundary_timestamp"] {
-            let bad = DestOptions::from_value(serde_json::json!({
+            let bad = DestinationOptions::from_value(serde_json::json!({
                 "tables": {"t": {"merge_strategy": "scd2",
                                   "scd2": {field: "'); DROP TABLE t; --"}}}
             }))
             .unwrap_err();
             assert!(bad.contains(field) && bad.contains("not a"), "{bad}");
         }
-        DestOptions::from_value(serde_json::json!({
+        DestinationOptions::from_value(serde_json::json!({
             "tables": {"t": {"merge_strategy": "scd2",
                               "scd2": {"active_record_timestamp": "9999-12-31T00:00:00Z",
                                        "boundary_timestamp": "2026-07-22T00:00:00Z"}}}
@@ -145,7 +148,7 @@ mod tests {
         .expect("valid marker + boundary literals");
         // Zone-less literals resolve per session TimeZone — rejected.
         for zoneless in ["9999-12-31", "2026-07-22 00:00:00"] {
-            let bad = DestOptions::from_value(serde_json::json!({
+            let bad = DestinationOptions::from_value(serde_json::json!({
                 "tables": {"t": {"merge_strategy": "scd2",
                                   "scd2": {"boundary_timestamp": zoneless}}}
             }))
@@ -153,7 +156,7 @@ mod tests {
             assert!(bad.contains("zone-explicit"), "{bad}");
         }
         // boundary == marker: closed rows would read as active.
-        let bad = DestOptions::from_value(serde_json::json!({
+        let bad = DestinationOptions::from_value(serde_json::json!({
             "tables": {"t": {"merge_strategy": "scd2",
                               "scd2": {"active_record_timestamp": "9999-12-31T00:00:00Z",
                                        "boundary_timestamp": "9999-12-31T00:00:00Z"}}}
@@ -162,7 +165,7 @@ mod tests {
         assert!(bad.contains("equals active_record_timestamp"), "{bad}");
 
         // Valid: destination default upsert + per-table scd2.
-        let ok = DestOptions::from_value(serde_json::json!({
+        let ok = DestinationOptions::from_value(serde_json::json!({
             "merge_strategy": "upsert",
             "tables": {
                 "dims": {"merge_strategy": "scd2", "scd2": {"absent": "retire"}},

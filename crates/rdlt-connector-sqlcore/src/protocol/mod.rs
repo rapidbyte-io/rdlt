@@ -19,6 +19,6 @@ pub mod unit;
 
 pub use render::{build_merge_plan, insert_select_sql, render_arm};
 pub use script::{
-    CommitCtx, CommitError, CommitScript, commit_script, prepare_target, staged_probe_targets,
+    CommitContext, CommitError, CommitScript, commit_script, prepare_target, staged_probe_targets,
 };
 pub use step::{FullLoadPublish, MergeArm, Step};

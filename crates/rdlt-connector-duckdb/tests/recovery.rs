@@ -83,12 +83,12 @@ async fn replace_recovery_session_keeps_prior_commits_of_same_load() {
 /// double-firing the scope delete.
 #[tokio::test]
 async fn replay_re_marks_single_unit_discipline() {
-    use rdlt_connector_duckdb::dest::DestOptions;
+    use rdlt_connector_duckdb::dest::DestinationOptions;
     let dir = tempfile::tempdir().expect("tempdir");
     let dest = DuckDb::open(dir.path().join("remark.duckdb"))
         .expect("open dest")
         .options(
-            DestOptions::from_value(serde_json::json!({
+            DestinationOptions::from_value(serde_json::json!({
                 "tables": {"events": {"merge_scope": ["id"]}}
             }))
             .expect("options"),

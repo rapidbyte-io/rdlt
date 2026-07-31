@@ -8,7 +8,7 @@ use std::fmt;
 
 use rdlt_connector::core::TableSchema;
 
-use crate::options::{AbsentPolicy, DestOptions, MergeStrategy};
+use crate::options::{AbsentPolicy, DestinationOptions, MergeStrategy};
 
 /// Table facts a destination resolves before validation.
 #[derive(Debug)]
@@ -175,7 +175,7 @@ impl std::error::Error for ValidateError {}
 /// Merge-only options (strategy, dedup_sort, merge_scope) under Append or
 /// Replace would be silently inert — reject typed instead. Only an EXPLICIT
 /// merge_strategy rejects; the unconfigured default does not.
-pub fn validate_non_merge(options: &DestOptions, table: &str) -> Result<(), ValidateError> {
+pub fn validate_non_merge(options: &DestinationOptions, table: &str) -> Result<(), ValidateError> {
     for (declared, option) in [
         (
             options.explicit_strategy_for(table).is_some(),
@@ -198,7 +198,7 @@ pub fn validate_non_merge(options: &DestOptions, table: &str) -> Result<(), Vali
 /// one `check_*` per rule group, run in the order the messages were frozen.
 /// Every error names the offender; the postgres conformance cells pin them.
 pub fn validate_merge(
-    options: &DestOptions,
+    options: &DestinationOptions,
     table: &str,
     key: &[String],
     facts: &TableFacts<'_>,
@@ -213,7 +213,7 @@ pub fn validate_merge(
 }
 
 fn check_hard_delete(
-    options: &DestOptions,
+    options: &DestinationOptions,
     table: &str,
     facts: &TableFacts<'_>,
 ) -> Result<(), ValidateError> {
@@ -241,7 +241,7 @@ fn check_hard_delete(
 /// repurpose the hard_delete flag, and it may not be a merge-key column
 /// (constant within each identity group).
 fn check_dedup_sort(
-    options: &DestOptions,
+    options: &DestinationOptions,
     table: &str,
     key: &[String],
     facts: &TableFacts<'_>,
@@ -281,7 +281,7 @@ fn check_dedup_sort(
 /// retirement and requires `absent: retire`; its columns must exist and may not
 /// be the hard_delete flag.
 fn check_merge_scope(
-    options: &DestOptions,
+    options: &DestinationOptions,
     table: &str,
     facts: &TableFacts<'_>,
     strategy: MergeStrategy,
@@ -338,7 +338,7 @@ fn check_upsert(
 }
 
 fn check_scd2(
-    options: &DestOptions,
+    options: &DestinationOptions,
     table: &str,
     facts: &TableFacts<'_>,
     strategy: MergeStrategy,

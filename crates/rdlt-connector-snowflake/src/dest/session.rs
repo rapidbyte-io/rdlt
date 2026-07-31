@@ -19,7 +19,7 @@ use rdlt_connector::{
 use rdlt_connector_sqlcore::plan::scope_replace_sql;
 use rdlt_connector_sqlcore::protocol::unit;
 use rdlt_connector_sqlcore::{
-    CommitCtx, FullLoadPublish, MergeArm, MergeDialect as _, Step, build_merge_plan,
+    CommitContext, FullLoadPublish, MergeArm, MergeDialect as _, Step, build_merge_plan,
     column_list_with, commit_script, insert_select_sql, prepare_target, render_arm,
     staged_probe_targets,
 };
@@ -468,7 +468,7 @@ impl LoadSession for SnowflakeSession {
         let empty = BTreeSet::new();
         let steps = prepare_target(
             &self.tables,
-            &CommitCtx {
+            &CommitContext {
                 replayed: false,
                 load_committed_before: false,
                 single_unit_done: &empty,
@@ -598,7 +598,7 @@ impl LoadSession for SnowflakeSession {
         let script = commit_script(
             &self.tables,
             &self.config.options,
-            &CommitCtx {
+            &CommitContext {
                 replayed,
                 load_committed_before: false,
                 single_unit_done: &self.single_unit_done,

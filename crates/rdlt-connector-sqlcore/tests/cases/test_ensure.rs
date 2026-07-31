@@ -8,7 +8,7 @@ mod tests {
 
     use crate::cases::common::{col, merge};
     use rdlt_connector_sqlcore::ensure::*;
-    use rdlt_connector_sqlcore::options::DestOptions;
+    use rdlt_connector_sqlcore::options::DestinationOptions;
     use rdlt_connector_sqlcore::options::MergeStrategy;
     use rdlt_connector_sqlcore::protocol::FullLoadPublish;
 
@@ -108,9 +108,9 @@ mod tests {
 
     #[test]
     fn scd2_plans_both_validity_columns_before_any_index() {
-        let options = DestOptions {
+        let options = DestinationOptions {
             merge_strategy: Some(MergeStrategy::Scd2),
-            ..DestOptions::default()
+            ..DestinationOptions::default()
         };
         let plan = merge_plan(
             &options,
@@ -136,16 +136,16 @@ mod tests {
     #[test]
     fn a_non_merge_mode_plans_nothing_but_still_validates() {
         let plan = merge_plan(
-            &DestOptions::default(),
+            &DestinationOptions::default(),
             &schema(vec![col("id", LogicalType::Int64)]),
             &WriteMode::Append,
         )
         .expect("default options are valid");
         assert!(plan.is_empty());
 
-        let refused = DestOptions {
+        let refused = DestinationOptions {
             merge_strategy: Some(MergeStrategy::Upsert),
-            ..DestOptions::default()
+            ..DestinationOptions::default()
         };
         merge_plan(
             &refused,

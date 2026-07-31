@@ -28,7 +28,8 @@ use rdlt_connector::{
     core::{ColumnType, LogicalType, TableName, TableSchema, naming::IdentRules},
 };
 pub use rdlt_connector_sqlcore::{
-    AbsentPolicy, DedupSort, DestOptions, MergeStrategy, Scd2Options, SortOrder, TableOptions,
+    AbsentPolicy, DedupSort, DestinationOptions, MergeStrategy, Scd2Options, SortOrder,
+    TableOptions,
 };
 
 /// One shared database instance; sessions and probes clone connections from it.
@@ -37,7 +38,7 @@ pub use rdlt_connector_sqlcore::{
 #[derive(Clone)]
 pub struct DuckDb {
     db: std::sync::Arc<Mutex<Connection>>,
-    options: DestOptions,
+    options: DestinationOptions,
     /// Settings/extensions, REPLAYED on every session connection:
     /// `try_clone` opens a NEW DuckDB session that inherits neither
     /// session-scoped SETs nor LOADs — applying them only on the builder
@@ -66,14 +67,14 @@ impl DuckDb {
         let conn = Connection::open(path.into()).map_err(classify)?;
         Ok(Self {
             db: std::sync::Arc::new(Mutex::new(conn)),
-            options: DestOptions::default(),
+            options: DestinationOptions::default(),
             session_setup: Vec::new(),
         })
     }
 
     /// Strategy/hard-delete/refinement options — the SAME vocabulary as the
     /// postgres destination. Validated here; errors name the field.
-    pub fn options(mut self, options: DestOptions) -> Result<Self, DestinationError> {
+    pub fn options(mut self, options: DestinationOptions) -> Result<Self, DestinationError> {
         options.validate().map_err(DestinationError::fatal)?;
         self.options = options;
         Ok(self)
@@ -231,7 +232,7 @@ pub mod sqlgen {
     use rdlt_connector::core::{TableSchema, WriteMode};
     use rdlt_connector_sqlcore::plan::ValidateError;
 
-    use super::DestOptions;
+    use super::DestinationOptions;
 
     /// One ensure statement and, when it creates a unique index, that index's
     /// key columns — the distinction the duplicate-key diagnosis depends on.
@@ -244,7 +245,7 @@ pub mod sqlgen {
 
     /// The post-table ensure statements, in emission order.
     pub fn ensure_merge_sql(
-        options: &DestOptions,
+        options: &DestinationOptions,
         schema: &TableSchema,
         mode: &WriteMode,
     ) -> Result<Vec<EnsureStatement>, ValidateError> {
@@ -265,7 +266,7 @@ pub(crate) fn quote(ident: &str) -> String {
     // The one injection-safe quoting rule, shared with every SQL destination
     // (and the DuckDialect seam's default). Kept as a thin local alias so the
     // many DDL/publish call sites read `quote(...)`.
-    rdlt_connector_sqlcore::quote_ident(ident)
+    rdlt_connector_sqlcore::quote_identifier(ident)
 }
 
 pub(crate) fn stage_name(table: &TableName) -> String {

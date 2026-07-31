@@ -52,7 +52,7 @@ use rdlt_connector::{
 };
 
 pub use config::{
-    AbsentPolicy, DedupSort, DestOptions, MergeStrategy, Postgres, Scd2Options, SortOrder,
+    AbsentPolicy, DedupSort, DestinationOptions, MergeStrategy, Postgres, Scd2Options, SortOrder,
     TableOptions,
 };
 
@@ -72,7 +72,7 @@ pub mod sqlgen {
     use rdlt_connector::core::{PipelineId, TableSchema, WriteMode};
     use rdlt_connector_sqlcore::plan::ValidateError;
 
-    use super::config::DestOptions;
+    use super::config::DestinationOptions;
 
     /// The table-ensure statements, in emission order.
     pub fn ensure_table_sql(
@@ -90,7 +90,7 @@ pub mod sqlgen {
 
     /// The post-table ensure statements, in emission order.
     pub fn ensure_merge_sql(
-        options: &DestOptions,
+        options: &DestinationOptions,
         schema: &TableSchema,
         mode: &WriteMode,
     ) -> Result<Vec<EnsureStatement>, ValidateError> {
@@ -421,7 +421,7 @@ pub(crate) fn quote(ident: &str) -> String {
     // The one injection-safe quoting rule, shared with every SQL destination
     // (and the dialect seam's default). Kept as a thin local alias so the many
     // DDL/publish call sites read `quote(...)`.
-    rdlt_connector_sqlcore::quote_ident(ident)
+    rdlt_connector_sqlcore::quote_identifier(ident)
 }
 
 #[async_trait]

@@ -112,15 +112,15 @@ fn snowflake_config(schema: &str, strategy: &str, hard_delete: bool) -> Option<S
 }
 
 fn postgres_dest(conn: &str, dataset: &str, strategy: &str, hard_delete: bool) -> Postgres {
-    use rdlt_connector_sqlcore::{DestOptions, MergeStrategy, TableOptions};
+    use rdlt_connector_sqlcore::{DestinationOptions, MergeStrategy, TableOptions};
     let strategy = match strategy {
         "upsert" => MergeStrategy::Upsert,
         "delete_insert" => MergeStrategy::DeleteInsert,
         other => panic!("unmapped strategy {other}"),
     };
-    let mut options = DestOptions {
+    let mut options = DestinationOptions {
         merge_strategy: Some(strategy),
-        ..DestOptions::default()
+        ..DestinationOptions::default()
     };
     if hard_delete {
         options.tables = [(

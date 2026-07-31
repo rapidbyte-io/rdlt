@@ -15,7 +15,7 @@ use tokio_postgres::Client;
 use rdlt_connector_sqlcore::plan::scope_replace_sql;
 use rdlt_connector_sqlcore::protocol::unit;
 use rdlt_connector_sqlcore::{
-    CommitCtx, FullLoadPublish, MergeDialect, Step, build_merge_plan, commit_script,
+    CommitContext, FullLoadPublish, MergeDialect, Step, build_merge_plan, commit_script,
     prepare_target, render_arm, staged_probe_targets,
 };
 
@@ -89,7 +89,7 @@ pub(super) struct PgSession {
     /// the engine gives WAL recovery its own session.
     pub(super) load_id: LoadId,
     pub(super) tables: BTreeMap<TableName, (TableSchema, WriteMode)>,
-    pub(super) options: super::config::DestOptions,
+    pub(super) options: super::config::DestinationOptions,
     /// The unit transaction, opened lazily at the first `write` of a unit and
     /// closed by `commit`. `None` between units.
     pub(super) unit: Option<Unit>,
@@ -120,8 +120,8 @@ impl PgSession {
         replayed: bool,
         staged_nonempty: &'a BTreeSet<TableName>,
         cleared: &'a BTreeSet<TableName>,
-    ) -> CommitCtx<'a> {
-        CommitCtx {
+    ) -> CommitContext<'a> {
+        CommitContext {
             replayed,
             load_committed_before: self.unit.as_ref().is_some_and(|u| u.load_committed_before),
             single_unit_done: &self.single_unit_done,
@@ -347,7 +347,7 @@ async fn execute_step(
     tx: &Client,
     pipeline: &PipelineId,
     tables: &BTreeMap<TableName, (TableSchema, WriteMode)>,
-    options: &super::config::DestOptions,
+    options: &super::config::DestinationOptions,
     roots: &BTreeMap<TableName, TableName>,
     meta: &CommitMeta,
     step: &Step,

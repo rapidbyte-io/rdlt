@@ -10,7 +10,7 @@ use rdlt_connector_sqlcore::ensure::{self, EnsureStep, Leg, Validity};
 use rdlt_connector_sqlcore::plan::ValidateError;
 
 use super::commit::{ARRIVAL_COL, stage_name};
-use super::config::DestOptions;
+use super::config::DestinationOptions;
 
 /// Postgres SQL type per logical column type.
 pub(super) fn sql_type(ty: &ColumnType) -> String {
@@ -184,7 +184,7 @@ pub(super) fn table_ddl_stmts(
 /// plan. Runs AFTER phase 1 has been applied, preserving today's failure
 /// point. Non-merge modes validate and return nothing to execute.
 pub(super) fn merge_ensure_stmts(
-    options: &DestOptions,
+    options: &DestinationOptions,
     schema: &TableSchema,
     mode: &WriteMode,
 ) -> Result<Vec<EnsureStmt>, ValidateError> {

@@ -8,17 +8,17 @@ use crate::source::reflect::ReflectedColumn;
 use crate::source::types::SelectPolicy;
 
 /// PostgreSQL identifier quoting: the ONE injection-safe rule shared with
-/// every SQL destination. Delegates to [`rdlt_connector_sqlcore::quote_ident`]
+/// every SQL destination. Delegates to [`rdlt_connector_sqlcore::quote_identifier`]
 /// (wrap in double quotes, double any embedded quote) — a thin crate-local
-/// alias so the many source-side call sites read `quote_ident(...)`.
-pub(crate) fn quote_ident(ident: &str) -> String {
-    rdlt_connector_sqlcore::quote_ident(ident)
+/// alias so the many source-side call sites read `quote_identifier(...)`.
+pub(crate) fn quote_identifier(ident: &str) -> String {
+    rdlt_connector_sqlcore::quote_identifier(ident)
 }
 
 /// One projection item per the column's SelectPolicy; policy conversions run
 /// server-side so the wire only carries the lossless decode set.
 fn projection(column: &ReflectedColumn) -> String {
-    let ident = quote_ident(&column.name);
+    let ident = quote_identifier(&column.name);
     match &column.mapped.select {
         SelectPolicy::Direct => ident,
         SelectPolicy::CastText => format!("({ident})::text AS {ident}"),
@@ -42,8 +42,8 @@ pub(crate) fn select_sql(
     let mut sql = format!(
         "SELECT {} FROM {}.{}",
         cols.join(", "),
-        quote_ident(schema),
-        quote_ident(table)
+        quote_identifier(schema),
+        quote_identifier(table)
     );
     if !where_sql.is_empty() {
         sql.push_str(" WHERE ");
@@ -113,7 +113,7 @@ pub(crate) fn incremental_clauses(
     // too — a column collation (ICU, en_US…) would diverge.
     collate_byte_order: bool,
 ) -> IncrementalClauses {
-    let bare = quote_ident(column);
+    let bare = quote_identifier(column);
     let ident = if collate_byte_order {
         format!("{bare} COLLATE \"C\"")
     } else {
@@ -189,11 +189,11 @@ mod tests {
 
     #[test]
     fn quotes_hostile_identifiers() {
-        assert_eq!(quote_ident("plain"), "\"plain\"");
-        assert_eq!(quote_ident("Order Items"), "\"Order Items\"");
+        assert_eq!(quote_identifier("plain"), "\"plain\"");
+        assert_eq!(quote_identifier("Order Items"), "\"Order Items\"");
         // Embedded quotes double; injection attempts stay inert identifiers.
         assert_eq!(
-            quote_ident(r#"x"; DROP TABLE t; --"#),
+            quote_identifier(r#"x"; DROP TABLE t; --"#),
             r#""x""; DROP TABLE t; --""#
         );
     }

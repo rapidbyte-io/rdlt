@@ -12,7 +12,7 @@
 /// current destinations quote identically; the [`MergeDialect::quote`] hook
 /// defaults to this, and each destination's own DDL/publish quoting delegates
 /// here too, so the escaping rule exists in exactly one place.
-pub fn quote_ident(ident: &str) -> String {
+pub fn quote_identifier(ident: &str) -> String {
     format!("\"{}\"", ident.replace('"', "\"\""))
 }
 
@@ -21,9 +21,9 @@ pub fn quote_ident(ident: &str) -> String {
 /// `Send + Sync`: plans borrow dialects across await points in async sessions.
 pub trait MergeDialect: Send + Sync {
     /// Identifier quoting. Both current destinations double-quote with `"`
-    /// doubling — the shared [`quote_ident`] rule.
+    /// doubling — the shared [`quote_identifier`] rule.
     fn quote(&self, ident: &str) -> String {
-        quote_ident(ident)
+        quote_identifier(ident)
     }
 
     /// The stage's arrival-order expression (a quoted real column or a

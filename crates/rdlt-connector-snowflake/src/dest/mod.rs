@@ -170,7 +170,7 @@ pub mod testhook {
 
     /// The post-table ensure statements (scd2 validity columns; no indexes).
     pub fn ensure_merge_sql(
-        options: &rdlt_connector_sqlcore::DestOptions,
+        options: &rdlt_connector_sqlcore::DestinationOptions,
         schema: &TableSchema,
         mode: &WriteMode,
         catalog: &Catalog,

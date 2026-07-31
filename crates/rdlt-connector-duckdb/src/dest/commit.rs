@@ -21,8 +21,8 @@ use rdlt_connector_sqlcore::ensure::{self, EnsureStep, Leg, Validity};
 use rdlt_connector_sqlcore::plan::{ValidateError, scope_replace_sql};
 use rdlt_connector_sqlcore::protocol::unit;
 use rdlt_connector_sqlcore::{
-    CommitCtx, DestOptions, FullLoadPublish, MergeDialect, Step, build_merge_plan, commit_script,
-    insert_select_sql, render_arm, staged_probe_targets,
+    CommitContext, DestinationOptions, FullLoadPublish, MergeDialect, Step, build_merge_plan,
+    commit_script, insert_select_sql, render_arm, staged_probe_targets,
 };
 
 use super::dialect::DuckDialect;
@@ -36,7 +36,7 @@ pub(super) struct DuckDbSession {
     /// Send while every call still runs on &mut self.
     pub(super) conn: Mutex<Connection>,
     pub(super) tables: BTreeMap<TableName, (TableSchema, WriteMode)>,
-    pub(super) options: DestOptions,
+    pub(super) options: DestinationOptions,
     /// Single-unit discipline, PER TABLE — the rule and its message live in
     /// sqlcore; the bookkeeping mirrors the postgres session. Marked only
     /// AFTER the unit's transaction commits, and re-marked when a committed
@@ -148,7 +148,7 @@ pub(crate) fn table_ddl_stmts(schema: &TableSchema, previous: Option<&TableSchem
 /// plan. Runs AFTER phase 1 has been applied, preserving today's failure
 /// point. Non-merge modes validate and return nothing to execute.
 pub(crate) fn merge_ensure_stmts(
-    options: &DestOptions,
+    options: &DestinationOptions,
     schema: &TableSchema,
     mode: &WriteMode,
 ) -> Result<Vec<EnsureStmt>, ValidateError> {
@@ -217,7 +217,7 @@ fn staged_nonempty(
 fn execute_step(
     tx: &duckdb::Transaction<'_>,
     tables: &BTreeMap<TableName, (TableSchema, WriteMode)>,
-    options: &DestOptions,
+    options: &DestinationOptions,
     roots: &BTreeMap<TableName, TableName>,
     meta: &CommitMeta,
     state_json: &str,
@@ -425,7 +425,7 @@ impl LoadSession for DuckDbSession {
             let script = commit_script(
                 &tables,
                 &options,
-                &CommitCtx {
+                &CommitContext {
                     replayed,
                     load_committed_before,
                     single_unit_done: &single_unit_done,

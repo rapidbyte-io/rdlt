@@ -18,7 +18,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use rdlt_connector::core::{ColumnType, LogicalType, TableName, TableSchema, WriteMode};
-use rdlt_connector_sqlcore::DestOptions;
+use rdlt_connector_sqlcore::DestinationOptions;
 use rdlt_connector_sqlcore::FullLoadPublish;
 use rdlt_connector_sqlcore::ensure::{self, EnsureStep, Leg, Validity};
 use rdlt_connector_sqlcore::plan::ValidateError;
@@ -266,7 +266,7 @@ pub(super) fn table_ddl_stmts(
 /// deliberately dropped here rather than emitted as something that would do
 /// nothing.
 pub(super) fn merge_ensure_stmts(
-    options: &DestOptions,
+    options: &DestinationOptions,
     schema: &TableSchema,
     mode: &WriteMode,
     catalog: &Catalog,
@@ -532,9 +532,9 @@ mod tests {
 
     #[test]
     fn scd2_adds_validity_columns_without_a_not_null_constraint() {
-        let options = DestOptions {
+        let options = DestinationOptions {
             merge_strategy: Some(rdlt_connector_sqlcore::MergeStrategy::Scd2),
-            ..DestOptions::default()
+            ..DestinationOptions::default()
         };
         let mut catalog = Catalog::default();
         catalog.observe("events", ["ID".to_owned()].into_iter().collect());
@@ -559,9 +559,9 @@ mod tests {
     fn no_index_is_ever_emitted() {
         // This service enforces no unique constraints and needs no supporting
         // index to find rows; emitting one would cost time and do nothing.
-        let options = DestOptions {
+        let options = DestinationOptions {
             merge_strategy: Some(rdlt_connector_sqlcore::MergeStrategy::Upsert),
-            ..DestOptions::default()
+            ..DestinationOptions::default()
         };
         let sql = merge_ensure_stmts(
             &options,
@@ -580,9 +580,9 @@ mod tests {
 
     #[test]
     fn merge_only_options_are_refused_under_append_with_the_shared_error() {
-        let options = DestOptions {
+        let options = DestinationOptions {
             merge_strategy: Some(rdlt_connector_sqlcore::MergeStrategy::Upsert),
-            ..DestOptions::default()
+            ..DestinationOptions::default()
         };
         let err = merge_ensure_stmts(&options, &events(), &WriteMode::Append, &Catalog::default())
             .expect_err("a merge strategy under Append is a config error");

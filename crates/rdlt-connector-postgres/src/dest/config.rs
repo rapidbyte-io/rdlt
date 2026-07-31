@@ -8,7 +8,7 @@ pub struct Postgres {
     pub(super) conn_string: String,
     pub(super) schema: String,
     pub(super) tls: Option<crate::tls::TlsPolicy>,
-    pub(super) options: DestOptions,
+    pub(super) options: DestinationOptions,
 }
 
 impl Postgres {
@@ -18,7 +18,7 @@ impl Postgres {
             conn_string: conn_string.into(),
             schema: "public".into(),
             tls: None,
-            options: DestOptions::default(),
+            options: DestinationOptions::default(),
         }
     }
 
@@ -62,13 +62,14 @@ impl Postgres {
 // SQL destination consumes it.
 
 pub use rdlt_connector_sqlcore::{
-    AbsentPolicy, DedupSort, DestOptions, MergeStrategy, Scd2Options, SortOrder, TableOptions,
+    AbsentPolicy, DedupSort, DestinationOptions, MergeStrategy, Scd2Options, SortOrder,
+    TableOptions,
 };
 
 impl Postgres {
     /// Strategy/hard-delete/SCD2 options. Validated here — errors name the
     /// field.
-    pub fn options(mut self, options: DestOptions) -> Result<Self, DestinationError> {
+    pub fn options(mut self, options: DestinationOptions) -> Result<Self, DestinationError> {
         options.validate().map_err(DestinationError::fatal)?;
         self.options = options;
         Ok(self)

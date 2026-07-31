@@ -409,7 +409,7 @@ fn build_with<S: rdlt_connector::Source>(
                     .map_err(|e| SpecError::resolve(format!("duckdb memory_limit: {e}")))?;
             }
             if merge_strategy.is_some() || tables.is_some() {
-                let options = crate::connector::duckdb::dest::DestOptions {
+                let options = crate::connector::duckdb::dest::DestinationOptions {
                     merge_strategy: *merge_strategy,
                     tables: tables.clone().unwrap_or_default(),
                 };
@@ -433,7 +433,7 @@ fn build_with<S: rdlt_connector::Source>(
                 dest = dest.tls(policy.clone());
             }
             if merge_strategy.is_some() || tables.is_some() {
-                let options = crate::connector::postgres::dest::DestOptions {
+                let options = crate::connector::postgres::dest::DestinationOptions {
                     merge_strategy: *merge_strategy,
                     tables: tables.clone().unwrap_or_default(),
                 };

@@ -11,7 +11,7 @@ use rdlt_connector::core::{
     ColumnDef, ColumnType, LogicalType, PipelineId, Provenance, TableName, TableSchema, WriteMode,
 };
 use rdlt_connector_postgres::dest::sqlgen::{ensure_merge_sql, ensure_table_sql};
-use rdlt_connector_postgres::dest::{DestOptions, MergeStrategy};
+use rdlt_connector_postgres::dest::{DestinationOptions, MergeStrategy};
 
 fn col(name: &str, scalar: LogicalType, nullable: bool) -> ColumnDef {
     ColumnDef {
@@ -46,10 +46,10 @@ fn pipeline() -> PipelineId {
 
 /// Options carrying one explicit strategy — the field is set at construction
 /// so the value is visible where the options are made, not two lines later.
-fn with_strategy(strategy: MergeStrategy) -> DestOptions {
-    DestOptions {
+fn with_strategy(strategy: MergeStrategy) -> DestinationOptions {
+    DestinationOptions {
         merge_strategy: Some(strategy),
-        ..DestOptions::default()
+        ..DestinationOptions::default()
     }
 }
 
@@ -175,7 +175,7 @@ fn the_default_strategy_ensures_a_plain_supporting_index() {
     // delete-insert needs the key indexed to find rows, but must NOT declare
     // it unique — duplicates are resolved by the plan, not refused by the
     // database.
-    let stmts = ensure_merge_sql(&DestOptions::default(), &events(), &merge_by_id())
+    let stmts = ensure_merge_sql(&DestinationOptions::default(), &events(), &merge_by_id())
         .expect("valid options");
     assert_eq!(stmts.len(), 1, "one supporting index: {stmts:?}");
     assert!(stmts[0].1.is_none(), "not a unique index: {stmts:?}");
@@ -184,7 +184,7 @@ fn the_default_strategy_ensures_a_plain_supporting_index() {
 
 #[test]
 fn a_non_merge_mode_emits_no_merge_statements_and_still_validates() {
-    let options = DestOptions::default();
+    let options = DestinationOptions::default();
     let stmts = ensure_merge_sql(&options, &events(), &WriteMode::Append)
         .expect("default options are valid");
     assert!(

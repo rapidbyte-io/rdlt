@@ -57,7 +57,7 @@ error). Every source example below drops into either place unchanged.
 
 Library embedders build the same objects directly:
 `PostgresSource::from_yaml / from_json / from_value` and
-`Postgres::connect(conn).dataset("mirror").options(PgDestOptions {…})`.
+`Postgres::connect(conn).dataset("mirror").options(DestinationOptions {…})`.
 All entry points share one validation path, and the connector's declared
 `config_schema` is **generated from the config structs** (schemars), so
 platform-side validation and the parser cannot drift.
@@ -286,7 +286,7 @@ additive (new columns via `ADD COLUMN`, widenings via `USING` casts).
 Every destination error carries the server's message + SQLSTATE, and
 COPY data errors name the failing column.
 
-### Destination-wide options (`PgDestOptions`)
+### Destination-wide options (`DestinationOptions`)
 
 | Field | Type / values | Default | Description |
 |---|---|---|---|

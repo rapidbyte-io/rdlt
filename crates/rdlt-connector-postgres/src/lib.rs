@@ -18,7 +18,7 @@
 //! prefix (`PgDialect`, `PgSession`, `PgTypeInfo`, `PgSourceError`,
 //! `PgoutputError`). Shared config vocabulary is not Postgres-specific and
 //! carries no prefix at all: it is re-exported under its bare `sqlcore` names
-//! (`DestOptions`, `TableOptions`, …), the same spelling every SQL destination
+//! (`DestinationOptions`, `TableOptions`, …), the same spelling every SQL destination
 //! uses.
 
 #[cfg(feature = "fixtures")]

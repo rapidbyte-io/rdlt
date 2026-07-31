@@ -4,7 +4,7 @@
 
 use rdlt_connector::core::schema::system_columns;
 
-use crate::options::{DestOptions, MergeStrategy};
+use crate::options::{DestinationOptions, MergeStrategy};
 
 /// One planned supporting index: `unique` distinguishes the upsert merge-key
 /// index (which enforces the conflict target) from the plain lookup indexes.
@@ -32,7 +32,7 @@ impl IndexSpec {
 
 /// Index plan: identity indexes per table kind, plus the scope index.
 pub fn index_plan(
-    options: &DestOptions,
+    options: &DestinationOptions,
     table: &str,
     key: &[String],
     has_identity: bool,
