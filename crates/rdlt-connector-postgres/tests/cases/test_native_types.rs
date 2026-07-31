@@ -6,11 +6,11 @@ use std::sync::Arc;
 use arrow_array::{Decimal128Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use rdlt_connector::core::{
-    ColumnDef, ColumnType, CommitCounters, LoadId, LogicalType, PipelineId, Provenance, StateDoc,
-    TableName, TableSchema,
+    ColumnDef, ColumnType, LoadId, LogicalType, PipelineId, Provenance, TableName, TableSchema,
 };
-use rdlt_connector::{CommitMeta, Destination as _, OpenCtx, WriteMode};
+use rdlt_connector::{Destination as _, OpenCtx, WriteMode};
 use rdlt_testkit::TableProbe as _;
+use rdlt_testkit::commit_meta_for;
 
 use crate::cases::common::PgProbe;
 use rdlt_connector_postgres::fixtures::PgFixture;
@@ -74,15 +74,6 @@ fn fidelity_batch(rows: &[FidelityRow<'_>]) -> RecordBatch {
     .expect("batch")
 }
 
-fn meta(pipeline: &PipelineId, load: &str, seq: u64) -> CommitMeta {
-    CommitMeta {
-        load_id: LoadId::new(load),
-        commit_seq: seq,
-        state: StateDoc::new(pipeline.clone(), env!("CARGO_PKG_VERSION")),
-        counters: CommitCounters::default(),
-    }
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn native_types_land_with_exact_values() {
     let Some(pg) = PgFixture::start().await else {
@@ -124,7 +115,7 @@ async fn native_types_land_with_exact_values() {
         .await
         .expect("write");
     session
-        .commit(meta(&pipeline, LOAD, 0))
+        .commit(commit_meta_for(&pipeline, &LoadId::new(LOAD), 0))
         .await
         .expect("commit");
 
@@ -134,12 +125,7 @@ async fn native_types_land_with_exact_values() {
     };
     assert_eq!(probe.count(&TableName::new("fidelity")).await, 3);
 
-    let (client, connection) = tokio_postgres::connect(&conn, tokio_postgres::NoTls)
-        .await
-        .expect("connect");
-    tokio::spawn(async move {
-        let _ = connection.await;
-    });
+    let client = crate::cases::common::connect(&conn).await;
 
     // T1/T2/T3 catalog assertions: the COLUMN TYPES are native.
     let type_of = |name: &'static str| {
@@ -269,16 +255,11 @@ async fn extreme_decimal_round_trips_through_the_server() {
     .expect("batch");
     session.write(&schema.table, batch).await.expect("write");
     session
-        .commit(meta(&pipeline, LOAD, 0))
+        .commit(commit_meta_for(&pipeline, &LoadId::new(LOAD), 0))
         .await
         .expect("commit");
 
-    let (client, connection) = tokio_postgres::connect(&conn, tokio_postgres::NoTls)
-        .await
-        .expect("connect");
-    tokio::spawn(async move {
-        let _ = connection.await;
-    });
+    let client = crate::cases::common::connect(&conn).await;
     let text: String = client
         .query_one("SELECT amount::text FROM wide.wide WHERE id = 1", &[])
         .await

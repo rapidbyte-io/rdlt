@@ -1,6 +1,7 @@
 //! Query streams (contract query-streams.md) — described schemas,
 //! full incremental semantics, read-only enforcement, typed rejections.
 
+use crate::cases::common::source;
 use rdlt_connector_duckdb::dest::DuckDb;
 use rdlt_connector_postgres::fixtures::PgFixture;
 use rdlt_connector_postgres::source::{PostgresConfig, PostgresSource};
@@ -14,10 +15,6 @@ INSERT INTO order_items VALUES (1, 10.50), (1, 2.25), (2, 7.00);
 "#;
 
 const TOTALS_SQL: &str = "SELECT o.id, o.updated_at, sum(i.amount) AS total FROM orders o JOIN order_items i ON i.order_id = o.id GROUP BY o.id, o.updated_at";
-
-fn source(conn: &str, extra: &str) -> PostgresSource {
-    PostgresSource::from_yaml(&format!("conn: \"{conn}\"\n{extra}")).expect("config")
-}
 
 fn totals_yaml(cursor: bool) -> String {
     let cursor_part = if cursor {
@@ -36,9 +33,7 @@ struct Rig {
 
 impl Rig {
     fn new() -> Self {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let dest = DuckDb::open(dir.path().join("out.duckdb")).expect("open db");
-        std::mem::forget(dir);
+        let dest = crate::cases::common::duckdb_dest();
         Self { dest }
     }
 
@@ -161,7 +156,7 @@ async fn rejections_are_typed_and_early() {
     assert!(
         PostgresConfig::from_yaml(&format!(
             "conn: \"{}\"\nqueries:\n  - name: a\n    sql: \"SELECT 1 AS x\"\n  - name: a\n    sql: \"SELECT 2 AS y\"\n",
-            fixture.conn.clone()
+            fixture.conn
         ))
         .is_err()
     );

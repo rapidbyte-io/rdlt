@@ -2,6 +2,7 @@
 //! TLS-only Postgres with a generated CA, positive AND distinguished
 //! negative cases, for BOTH connectors through the one shared connect path.
 
+use crate::cases::common::source;
 use rdlt_connector_postgres::fixtures::PgFixture;
 use rdlt_connector_postgres::source::{PostgresConfig, PostgresSource};
 use rdlt_connector_postgres::tls::{PemSource, TlsMode, TlsPolicy};
@@ -12,7 +13,6 @@ use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};
 /// Generated PKI for the TLS matrix: a CA, a server cert signed by it
 /// (SAN: localhost ONLY — connecting via 127.0.0.1 is the hostname-mismatch
 /// case), and an unrelated CA for the wrong-trust-anchor case.
-#[allow(dead_code)]
 struct TlsPki {
     ca_pem: String,
     wrong_ca_pem: String,
@@ -28,7 +28,6 @@ struct TlsPki {
     wrong_client_key_pem: String,
 }
 
-#[allow(dead_code)]
 impl TlsPki {
     fn generate() -> Self {
         use rcgen::{BasicConstraints, CertificateParams, IsCa, KeyPair};
@@ -90,14 +89,12 @@ impl TlsPki {
 /// (runs AFTER initdb's temp server, as root — fixes key perms and appends
 /// ssl config before the FINAL server start; `hostssl`-only pg_hba makes
 /// plaintext connections a protocol-level rejection).
-#[allow(dead_code)]
 struct TlsPgFixture {
     _container: ContainerAsync<PostgresImage>,
     port: u16,
     pki: TlsPki,
 }
 
-#[allow(dead_code)]
 impl TlsPgFixture {
     async fn start() -> Option<Self> {
         Self::start_with(false).await
@@ -191,10 +188,6 @@ HBA
     }
 }
 
-fn source(conn: &str, tls_yaml: &str) -> PostgresSource {
-    PostgresSource::from_yaml(&format!("conn: \"{conn}\"\n{tls_yaml}")).expect("config")
-}
-
 /// Drive a real connection through the source (streams() reflects ⇒ connects).
 async fn probe_source(conn: &str, tls_yaml: &str) -> Result<(), String> {
     use rdlt_connector::Source as _;
@@ -275,10 +268,10 @@ async fn prefer_falls_back_on_plaintext_server_and_conn_sslmode_flows() {
     probe_source(&plain.conn, "")
         .await
         .expect("default prefer falls back to plaintext");
-    probe_source(&format!("{} sslmode=disable", plain.conn.clone()), "")
+    probe_source(&format!("{} sslmode=disable", plain.conn), "")
         .await
         .expect("explicit disable on a plaintext server");
-    let err = probe_source(&format!("{} sslmode=require", plain.conn.clone()), "")
+    let err = probe_source(&format!("{} sslmode=require", plain.conn), "")
         .await
         .expect_err("require against a server without TLS must fail");
     assert!(err.contains("connect phase"), "{err}");

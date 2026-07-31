@@ -13,6 +13,7 @@ use rdlt_connector_postgres::dest::{
 };
 use rdlt_engine::{Engine, EngineConfig};
 
+use crate::cases::common;
 use rdlt_connector_postgres::fixtures::PgFixture;
 
 /// (id, day, seq, name, deleted) — id is the identity key, day the
@@ -131,34 +132,9 @@ async fn run(conn: &str, dataset: &str, opts: Opts, units: Vec<Vec<Row>>) {
         .expect("merge run");
 }
 
-async fn scalar(conn: &str, sql: &str) -> i64 {
-    let (client, connection) = tokio_postgres::connect(conn, tokio_postgres::NoTls)
-        .await
-        .expect("connect");
-    tokio::spawn(async move {
-        let _ = connection.await;
-    });
-    client.query_one(sql, &[]).await.expect("scalar").get(0)
-}
-
-async fn text(conn: &str, sql: &str) -> String {
-    let (client, connection) = tokio_postgres::connect(conn, tokio_postgres::NoTls)
-        .await
-        .expect("connect");
-    tokio::spawn(async move {
-        let _ = connection.await;
-    });
-    client.query_one(sql, &[]).await.expect("text").get(0)
-}
-
 /// `(id, day, seq, name)` rows of `<dataset>.events`, id-ordered.
 async fn rows(conn: &str, dataset: &str) -> Vec<(i64, Option<i64>, Option<i64>, String)> {
-    let (client, connection) = tokio_postgres::connect(conn, tokio_postgres::NoTls)
-        .await
-        .expect("connect");
-    tokio::spawn(async move {
-        let _ = connection.await;
-    });
+    let client = crate::cases::common::connect(conn).await;
     client
         .query(
             &format!("SELECT id, day, seq, name FROM \"{dataset}\".events ORDER BY id, day, seq"),
@@ -284,7 +260,7 @@ async fn merge_scope_replaces_delivered_scopes_only() {
     // Review F8: the scope columns get a supporting index automatically
     // (the scope delete must never seq-scan the target).
     assert_eq!(
-        scalar(
+        common::scalar::<i64>(
             &conn,
             "SELECT count(*) FROM pg_indexes WHERE schemaname = 'mr_scope' \
              AND tablename = 'events' AND indexname LIKE 'rdlt_ix%' \
@@ -490,7 +466,7 @@ async fn scd2_retire_shares_the_per_table_single_unit_rule() {
     // Trailing empty unit: fine — and it retires NOTHING.
     run(&conn, "mr_scd2_units", opts, vec![full[0].clone(), vec![]]).await;
     assert_eq!(
-        scalar(
+        common::scalar::<i64>(
             &conn,
             "SELECT count(*) FROM mr_scd2_units.events WHERE _rdlt_valid_to IS NULL",
         )
@@ -537,7 +513,7 @@ async fn dedup_sort_survivor_drives_scd2_change_detection() {
     )
     .await;
     assert_eq!(
-        text(
+        common::scalar::<String>(
             &conn,
             "SELECT name FROM mr_scd2_dedup.events WHERE _rdlt_valid_to IS NULL",
         )
@@ -555,7 +531,7 @@ async fn dedup_sort_survivor_drives_scd2_change_detection() {
     )
     .await;
     assert_eq!(
-        scalar(&conn, "SELECT count(*) FROM mr_scd2_dedup.events").await,
+        common::scalar::<i64>(&conn, "SELECT count(*) FROM mr_scd2_dedup.events").await,
         2,
         "exactly two versions ever existed"
     );

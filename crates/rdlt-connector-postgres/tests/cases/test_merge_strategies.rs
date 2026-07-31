@@ -113,12 +113,7 @@ async fn upsert_converges_and_hard_delete_removes_keys() {
     ];
     run_merge(upsert_dest(&conn, "strat"), round2).await;
 
-    let (client, connection) = tokio_postgres::connect(&conn, tokio_postgres::NoTls)
-        .await
-        .expect("connect");
-    tokio::spawn(async move {
-        let _ = connection.await;
-    });
+    let client = crate::cases::common::connect(&conn).await;
     let rows: Vec<(i64, String)> = client
         .query("SELECT id, name FROM strat.events ORDER BY id", &[])
         .await
@@ -169,12 +164,7 @@ async fn duplicate_keys_under_upsert_fail_typed_naming_the_key() {
     let conn = pg.conn.clone();
     // A table that already violates key uniqueness.
     {
-        let (client, connection) = tokio_postgres::connect(&conn, tokio_postgres::NoTls)
-            .await
-            .expect("connect");
-        tokio::spawn(async move {
-            let _ = connection.await;
-        });
+        let client = crate::cases::common::connect(&conn).await;
         client
             .batch_execute(
                 "CREATE SCHEMA IF NOT EXISTS dup;
@@ -287,12 +277,7 @@ async fn flagged_then_recreated_root_keeps_its_subtree() {
     );
     Engine::new(config, source, dest).run().await.expect("run");
 
-    let (client, connection) = tokio_postgres::connect(&conn, tokio_postgres::NoTls)
-        .await
-        .expect("connect");
-    tokio::spawn(async move {
-        let _ = connection.await;
-    });
+    let client = crate::cases::common::connect(&conn).await;
     let name: String = client
         .query_one("SELECT name FROM recreate.users WHERE id = 1", &[])
         .await

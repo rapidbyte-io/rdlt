@@ -70,12 +70,7 @@ async fn end_to_end_flattened_sync_into_postgres() {
     );
 
     // Flatten lowering: nested field arrived as a flat, prefixed column.
-    let (client, connection) = tokio_postgres::connect(&conn, tokio_postgres::NoTls)
-        .await
-        .expect("connect");
-    tokio::spawn(async move {
-        let _ = connection.await;
-    });
+    let client = crate::cases::common::connect(&conn).await;
     let city: String = client
         .query_one("SELECT profile__city FROM raw.users WHERE id = 1", &[])
         .await
@@ -196,12 +191,7 @@ async fn keyed_structured_merge_into_postgres() {
         .await
         .expect("keyed merge run 2");
 
-    let (client, connection) = tokio_postgres::connect(&conn, tokio_postgres::NoTls)
-        .await
-        .expect("connect");
-    tokio::spawn(async move {
-        let _ = connection.await;
-    });
+    let client = crate::cases::common::connect(&conn).await;
     let count: i64 = client
         .query_one("SELECT count(*) FROM raw.metrics", &[])
         .await

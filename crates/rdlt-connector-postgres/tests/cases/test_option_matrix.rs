@@ -25,12 +25,7 @@ async fn default_dataset_is_public() {
         .run()
         .await
         .expect("run");
-    let (client, connection) = tokio_postgres::connect(&conn, tokio_postgres::NoTls)
-        .await
-        .expect("connect");
-    tokio::spawn(async move {
-        let _ = connection.await;
-    });
+    let client = crate::cases::common::connect(&conn).await;
     let n: i64 = client
         .query_one("SELECT count(*) FROM public.things", &[])
         .await
@@ -198,12 +193,7 @@ async fn non_bool_hard_delete_flag_uses_is_not_null() {
     run(&[(1, "a2", Some(1_700_000_000_000_000)), (2, "b2", None)])
         .await
         .expect("flagged");
-    let (client, connection) = tokio_postgres::connect(&conn, tokio_postgres::NoTls)
-        .await
-        .expect("connect");
-    tokio::spawn(async move {
-        let _ = connection.await;
-    });
+    let client = crate::cases::common::connect(&conn).await;
     let names: Vec<String> = client
         .query("SELECT name FROM nbhd.ev ORDER BY id", &[])
         .await

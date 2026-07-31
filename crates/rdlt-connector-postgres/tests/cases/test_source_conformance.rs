@@ -6,6 +6,7 @@
 //! postgres→duckdb rig; the file is one differential oracle, not a
 //! collection of topics.
 
+use crate::cases::common::source as source_for;
 use rdlt_connector_duckdb::dest::DuckDb;
 use rdlt_connector_postgres::fixtures::PgFixture;
 use rdlt_connector_postgres::source::PostgresSource;
@@ -54,15 +55,8 @@ INSERT INTO type_matrix (i8) VALUES (2); -- all-NULL row (except PK)
 INSERT INTO type_matrix (i8, tstz, d) VALUES (3, 'infinity', '-infinity');
 "#;
 
-fn source_for(conn: &str, extra: &str) -> PostgresSource {
-    PostgresSource::from_yaml(&format!("conn: \"{conn}\"\n{extra}")).expect("config")
-}
-
 async fn run_to_duckdb(source: PostgresSource, pipeline: &str) -> (DuckDb, rdlt_engine::RunReport) {
-    let db = tempfile::tempdir().expect("tempdir");
-    let dest = DuckDb::open(db.path().join("out.duckdb")).expect("open db");
-    // Leak the tempdir so the db outlives this helper (tests read from it).
-    std::mem::forget(db);
+    let dest = crate::cases::common::duckdb_dest();
     let report = Engine::new(EngineConfig::new(pipeline), source, dest.clone())
         .run()
         .await
@@ -430,9 +424,7 @@ async fn drift_column_added_dropped_retyped() {
     fixture
         .seed("ALTER TABLE d ADD COLUMN extra int4; UPDATE d SET extra = 7;")
         .await;
-    let db = tempfile::tempdir().expect("tempdir");
-    let dest = DuckDb::open(db.path().join("out.duckdb")).expect("open db");
-    std::mem::forget(db);
+    let dest = crate::cases::common::duckdb_dest();
     Engine::new(EngineConfig::new("drift-add"), source, dest.clone())
         .run()
         .await
@@ -602,7 +594,7 @@ async fn lossy_mappings_announce_once_per_read_on_dedicated_target() {
     let dest = DuckDb::open(dir.path().join("out.duckdb")).expect("open db");
     let source = PostgresSource::from_yaml(&format!(
         "conn: \"{}\"\ntables:\n  - name: noisy\n  - name: clean\n",
-        fixture.conn.clone()
+        fixture.conn
     ))
     .expect("config");
     Engine::new(EngineConfig::new("lossy-cap"), source, dest)
@@ -708,9 +700,7 @@ async fn hint_matrix_covers_every_documented_pair() {
 }
 
 async fn run_to_duckdb_err(source: PostgresSource, pipeline: &str) -> String {
-    let db = tempfile::tempdir().expect("tempdir");
-    let dest = DuckDb::open(db.path().join("out.duckdb")).expect("open db");
-    std::mem::forget(db);
+    let dest = crate::cases::common::duckdb_dest();
     Engine::new(EngineConfig::new(pipeline), source, dest)
         .run()
         .await

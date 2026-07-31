@@ -34,7 +34,7 @@ use rdlt_engine::{Engine, EngineConfig};
 pub struct CdcRig {
     pub fixture: CdcPgFixture,
     pub workdir: std::path::PathBuf,
-    pub pipeline: String,
+    pipeline: String,
 }
 
 impl CdcRig {
@@ -60,7 +60,7 @@ impl CdcRig {
         self.pipeline = pipeline.to_string();
     }
 
-    pub fn source(&self, tables: &[&str]) -> PostgresSource {
+    fn source(&self, tables: &[&str]) -> PostgresSource {
         let list = tables
             .iter()
             .map(|t| format!("  - name: {t}\n"))

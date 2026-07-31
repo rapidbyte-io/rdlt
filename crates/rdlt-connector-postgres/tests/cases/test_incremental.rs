@@ -33,9 +33,7 @@ struct Rig {
 
 impl Rig {
     fn new() -> Self {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let dest = DuckDb::open(dir.path().join("out.duckdb")).expect("open db");
-        std::mem::forget(dir);
+        let dest = crate::cases::common::duckdb_dest();
         Self { dest }
     }
 
@@ -335,7 +333,7 @@ async fn merge_by_declared_key_converges_and_keyless_is_rejected() {
         .await;
     let keyless = PostgresSource::from_yaml(&format!(
         "conn: \"{}\"\ntables:\n  - name: nokey\n",
-        fixture.conn.clone()
+        fixture.conn
     ))
     .expect("config");
     let dir = tempfile::tempdir().expect("tempdir");
@@ -477,7 +475,7 @@ async fn null_cursor_error_policy_fails_typed_and_old_policies_unchanged() {
     let src = |nulls: &str| {
         PostgresSource::from_yaml(&format!(
             "conn: \"{}\"\ntables:\n  - name: ev\n    cursor:\n      column: ts\n      nulls: {nulls}\n",
-            fixture.conn.clone()
+            fixture.conn
         ))
         .expect("config")
     };
@@ -535,7 +533,7 @@ async fn null_cursor_error_policy_fails_typed_and_old_policies_unchanged() {
     let src2 = |nulls: &str| {
         PostgresSource::from_yaml(&format!(
             "conn: \"{}\"\ntables:\n  - name: ev\n    cursor:\n      column: ts\n      nulls: {nulls}\n",
-            fixture2.conn.clone()
+            fixture2.conn
         ))
         .expect("config")
     };
@@ -578,7 +576,7 @@ async fn inclusive_end_bound_loads_boundary_rows_exactly_once() {
     let src = |end_bound: &str| {
         PostgresSource::from_yaml(&format!(
             "conn: \"{}\"\ntables:\n  - name: ev\n    cursor:\n      column: ts\n      end_value: \"2026-01-02T00:00:00Z\"\n      end_bound: {end_bound}\n",
-            fixture.conn.clone()
+            fixture.conn
         ))
         .expect("config")
     };
@@ -715,7 +713,7 @@ async fn cursor_column_must_survive_selection() {
         .await;
     let source = PostgresSource::from_yaml(&format!(
         "conn: \"{}\"\ntables:\n  - name: ev\n    excluded_columns: [ts]\n    cursor:\n      column: ts\n",
-        fixture.conn.clone()
+        fixture.conn
     ))
     .expect("config parses — the check needs reflection");
     let rig = Rig::new();

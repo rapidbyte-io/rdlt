@@ -44,12 +44,7 @@ async fn count(client: &tokio_postgres::Client, table: &str) -> i64 {
 }
 
 async fn reader(conn: &str) -> tokio_postgres::Client {
-    let (client, connection) = tokio_postgres::connect(conn, tokio_postgres::NoTls)
-        .await
-        .expect("connect");
-    tokio::spawn(async move {
-        let _ = connection.await;
-    });
+    let client = crate::cases::common::connect(conn).await;
     client
 }
 

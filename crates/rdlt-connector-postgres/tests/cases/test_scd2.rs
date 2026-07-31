@@ -98,12 +98,7 @@ async fn three_rounds_produce_correct_history_and_point_in_time() {
         return;
     };
     let conn = pg.conn.clone();
-    let (client, connection) = tokio_postgres::connect(&conn, tokio_postgres::NoTls)
-        .await
-        .expect("connect");
-    tokio::spawn(async move {
-        let _ = connection.await;
-    });
+    let client = crate::cases::common::connect(&conn).await;
     let now = || async {
         let t: chrono::DateTime<chrono::Utc> = client
             .query_one("SELECT now()", &[])
@@ -213,12 +208,7 @@ async fn absent_retire_closes_missing_keys() {
     .await;
     run(scd2_dest(&conn, "ret", AbsentPolicy::Retire), &[(1, "a2")]).await;
 
-    let (client, connection) = tokio_postgres::connect(&conn, tokio_postgres::NoTls)
-        .await
-        .expect("connect");
-    tokio::spawn(async move {
-        let _ = connection.await;
-    });
+    let client = crate::cases::common::connect(&conn).await;
     let active: Vec<i64> = client
         .query(
             "SELECT id FROM ret.dims WHERE _rdlt_valid_to IS NULL ORDER BY id",
@@ -301,12 +291,7 @@ async fn redelivery_adds_zero_versions() {
         .expect("re-write (redelivery)");
     session.commit(meta).await.expect("redelivered commit");
 
-    let (client, connection) = tokio_postgres::connect(&conn, tokio_postgres::NoTls)
-        .await
-        .expect("connect");
-    tokio::spawn(async move {
-        let _ = connection.await;
-    });
+    let client = crate::cases::common::connect(&conn).await;
     let versions: i64 = client
         .query_one("SELECT count(*) FROM redel.dims", &[])
         .await
@@ -491,12 +476,7 @@ async fn custom_validity_column_names_flow_end_to_end() {
     run(dest.clone(), &[(1, "v1")]).await;
     run(dest, &[(1, "v2")]).await;
 
-    let (client, connection) = tokio_postgres::connect(&conn, tokio_postgres::NoTls)
-        .await
-        .expect("connect");
-    tokio::spawn(async move {
-        let _ = connection.await;
-    });
+    let client = crate::cases::common::connect(&conn).await;
     let versions: i64 = client
         .query_one("SELECT count(*) FROM scd2c.dims", &[])
         .await

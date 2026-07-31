@@ -3,30 +3,12 @@
 //! the feature-002 review's confirmed data-loss finding; Postgres carried the
 //! same latent in-memory pattern (never crash-swept until now).
 
+use crate::cases::common::count;
 use rdlt_connector::core::{LoadId, PipelineId, TableName, WriteMode};
 use rdlt_connector::{Destination, OpenCtx};
 use rdlt_connector_postgres::dest::Postgres;
 use rdlt_connector_postgres::fixtures::PgFixture;
 use rdlt_testkit::{batch_of, commit_meta_for, schema_for};
-
-async fn count(conn: &str, dataset: &str, table: &str) -> u64 {
-    let (client, connection) = tokio_postgres::connect(conn, tokio_postgres::NoTls)
-        .await
-        .expect("connect");
-    tokio::spawn(async move {
-        let _ = connection.await;
-    });
-    match client
-        .query_one(
-            &format!("SELECT count(*) FROM \"{dataset}\".\"{table}\""),
-            &[],
-        )
-        .await
-    {
-        Ok(row) => row.get::<_, i64>(0) as u64,
-        Err(_) => 0,
-    }
-}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn replace_recovery_session_keeps_prior_commits_of_same_load() {
