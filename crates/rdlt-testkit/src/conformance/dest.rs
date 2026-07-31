@@ -78,7 +78,12 @@ fn arrow_field(column: &ColumnDef) -> Field {
     Field::new(column.name.clone(), data_type, column.nullable)
 }
 
-fn meta(pipeline: &PipelineId, load_id: &LoadId, seq: u64, cursor: Option<i64>) -> CommitMeta {
+fn commit_meta(
+    pipeline: &PipelineId,
+    load_id: &LoadId,
+    seq: u64,
+    cursor: Option<i64>,
+) -> CommitMeta {
     let mut state = StateDoc::new(pipeline.clone(), env!("CARGO_PKG_VERSION"));
     if let Some(c) = cursor {
         state
@@ -197,7 +202,9 @@ pub async fn verify_destination<D: Destination>(
     let receipt1 = try_step!(
         "D2",
         "commit failed",
-        session2.commit(meta(&pipeline, &load_a, 1, Some(10))).await
+        session2
+            .commit(commit_meta(&pipeline, &load_a, 1, Some(10)))
+            .await
     );
     let after_first_commit = probe.count(&table).await;
     if after_first_commit != 1 {
@@ -212,7 +219,10 @@ pub async fn verify_destination<D: Destination>(
 
     // ---- D3: re-committing the same (load_id, commit_seq) is a no-op with the
     // prior receipt ----
-    match session2.commit(meta(&pipeline, &load_a, 1, Some(10))).await {
+    match session2
+        .commit(commit_meta(&pipeline, &load_a, 1, Some(10)))
+        .await
+    {
         Ok(receipt2) => {
             if receipt2 != receipt1 {
                 failures.push(fail(
@@ -262,7 +272,7 @@ pub async fn verify_destination<D: Destination>(
                 .await
                 .map_err(|e| e.to_string())?;
             session2
-                .commit(meta(&pipeline, &load_a, 2, None))
+                .commit(commit_meta(&pipeline, &load_a, 2, None))
                 .await
                 .map_err(|e| e.to_string())?;
             // Same _rdlt_id `k1` again with new content: must replace, not append.
@@ -271,7 +281,7 @@ pub async fn verify_destination<D: Destination>(
                 .await
                 .map_err(|e| e.to_string())?;
             session2
-                .commit(meta(&pipeline, &load_a, 3, None))
+                .commit(commit_meta(&pipeline, &load_a, 3, None))
                 .await
                 .map_err(|e| e.to_string())?;
             Ok(())

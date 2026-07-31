@@ -6,7 +6,7 @@
 //! wrongly reports credentials absent disarms every live leg while the suite
 //! still reports green. These cases moved here with the gate itself when it
 //! left rdlt-testkit; the container half of the same contract stays pinned in
-//! rdlt-testkit's `gating_pin`.
+//! rdlt-testkit's `tests/cases/test_gating_pin.rs`.
 //!
 //! Two postures exist and both are deliberate. **Skip-not-fail is the
 //! default**, because a contributor without an account must still be able to
@@ -26,9 +26,9 @@ use std::collections::BTreeMap;
 use common::{Lookup, TokenKind, credentials_with, scratch_schema, token_with};
 
 /// A lookup with nothing but what the test puts in it.
-struct Fake(BTreeMap<String, String>);
+struct FakeLookup(BTreeMap<String, String>);
 
-impl Fake {
+impl FakeLookup {
     fn with(pairs: &[(&str, &str)]) -> Self {
         Self(
             pairs
@@ -39,7 +39,7 @@ impl Fake {
     }
 }
 
-impl Lookup for Fake {
+impl Lookup for FakeLookup {
     fn env(&self, var: &str) -> Option<String> {
         self.0.get(var).cloned()
     }
@@ -52,7 +52,7 @@ impl Lookup for Fake {
 fn the_force_flag_makes_the_gate_report_absent() {
     // The skip path has to be reachable on a machine that HAS credentials,
     // or it is never exercised where it matters.
-    let forced = Fake::with(&[
+    let forced = FakeLookup::with(&[
         ("RDLT_TESTKIT_FORCE_NO_SNOWFLAKE", "1"),
         ("RDLT_SNOWFLAKE_ACCOUNT", "A"),
         ("RDLT_SNOWFLAKE_PAT", "tok"),
@@ -67,7 +67,7 @@ fn demanding_credentials_that_are_absent_fails_naming_them() {
     // The opt-in posture. The failure must name the missing resource, because a
     // maintainer who set this is asking a question and deserves the answer
     // rather than an obscure error further down.
-    let env = Fake::with(&[("RDLT_TESTKIT_REQUIRE_SNOWFLAKE", "1")]);
+    let env = FakeLookup::with(&[("RDLT_TESTKIT_REQUIRE_SNOWFLAKE", "1")]);
     let _ = credentials_with(&env);
 }
 
@@ -77,7 +77,7 @@ fn demanding_and_forcing_absence_together_is_an_error() {
     // Not a precedence puzzle. A run that both demands credentials and pretends
     // there are none is a mistake in how it was invoked; honouring either one
     // silently would hide the mistake and produce a result nobody can read.
-    let env = Fake::with(&[
+    let env = FakeLookup::with(&[
         ("RDLT_TESTKIT_REQUIRE_SNOWFLAKE", "1"),
         ("RDLT_TESTKIT_FORCE_NO_SNOWFLAKE", "1"),
     ]);
@@ -88,7 +88,7 @@ fn demanding_and_forcing_absence_together_is_an_error() {
 fn a_missing_entry_skips_rather_than_guessing() {
     // No account: there is nothing to connect to, and inventing a default
     // would turn a skip into a confusing live failure.
-    let partial = Fake::with(&[("RDLT_SNOWFLAKE_USER", "U")]);
+    let partial = FakeLookup::with(&[("RDLT_SNOWFLAKE_USER", "U")]);
     assert!(credentials_with(&partial).is_none());
 }
 
@@ -96,12 +96,12 @@ fn a_missing_entry_skips_rather_than_guessing() {
 fn the_environment_wins_over_the_file() {
     // Same key in both positions: a one-off run must be able to override
     // the user's config without editing it.
-    let both = Fake::with(&[("RDLT_SNOWFLAKE_PAT", "from-env"), ("pat", "from-file")]);
+    let both = FakeLookup::with(&[("RDLT_SNOWFLAKE_PAT", "from-env"), ("pat", "from-file")]);
     assert_eq!(
         token_with(&both, TokenKind::Pat).as_deref(),
         Some("from-env")
     );
-    let file_only = Fake::with(&[("pat", "from-file")]);
+    let file_only = FakeLookup::with(&[("pat", "from-file")]);
     assert_eq!(
         token_with(&file_only, TokenKind::Pat).as_deref(),
         Some("from-file")
@@ -118,7 +118,7 @@ fn the_key_entry_is_a_path_and_never_the_key_itself() {
     std::fs::create_dir_all(&dir).expect("temp dir");
     let key = dir.join("k.p8");
     std::fs::write(&key, b"-----BEGIN ENCRYPTED PRIVATE KEY-----\n").expect("write");
-    let creds = credentials_with(&Fake::with(&[
+    let creds = credentials_with(&FakeLookup::with(&[
         ("RDLT_SNOWFLAKE_PRIVATE_KEY_PATH", &key.to_string_lossy()),
         ("RDLT_SNOWFLAKE_ACCOUNT", "ACCT"),
         ("RDLT_SNOWFLAKE_USER", "USER"),
@@ -132,7 +132,7 @@ fn the_key_entry_is_a_path_and_never_the_key_itself() {
 #[test]
 fn a_key_path_that_does_not_exist_reports_absent() {
     assert!(
-        credentials_with(&Fake::with(&[
+        credentials_with(&FakeLookup::with(&[
             ("RDLT_SNOWFLAKE_PRIVATE_KEY_PATH", "/no/such/key.p8"),
             ("RDLT_SNOWFLAKE_ACCOUNT", "ACCT"),
             ("RDLT_SNOWFLAKE_USER", "USER"),
@@ -145,7 +145,7 @@ fn a_key_path_that_does_not_exist_reports_absent() {
 #[test]
 fn each_token_gates_on_its_own_entry() {
     // A missing PAT must skip only the PAT leg.
-    let pat_only = Fake::with(&[("RDLT_SNOWFLAKE_PAT", "tok")]);
+    let pat_only = FakeLookup::with(&[("RDLT_SNOWFLAKE_PAT", "tok")]);
     assert!(token_with(&pat_only, TokenKind::Pat).is_some());
     assert!(token_with(&pat_only, TokenKind::OauthToken).is_none());
     assert!(token_with(&pat_only, TokenKind::Password).is_none());

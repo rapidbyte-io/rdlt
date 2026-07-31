@@ -50,7 +50,6 @@ struct Inner {
     truncated_load: Option<LoadId>,
     /// Diagnostics for conformance tests.
     opens: u64,
-    staged_dropped_on_open: u64,
 }
 
 /// Cloneable handle; every clone shares the same "warehouse".
@@ -106,16 +105,8 @@ impl MemoryDestination {
         self.lock().state.clone()
     }
 
-    pub fn staged_batches(&self) -> usize {
-        self.lock().staged.len()
-    }
-
     pub fn opens(&self) -> u64 {
         self.lock().opens
-    }
-
-    pub fn staged_dropped_on_open(&self) -> u64 {
-        self.lock().staged_dropped_on_open
     }
 
     /// Full content snapshot for byte-identical comparisons in crash tests.
@@ -143,7 +134,6 @@ impl Destination for MemoryDestination {
         inner.opens += 1;
         // Clause D4: uncommitted staged data from any previous session becomes
         // invisible and reclaimable.
-        inner.staged_dropped_on_open += inner.staged.len() as u64;
         inner.staged.clear();
         drop(inner);
         Ok(Box::new(MemorySession {

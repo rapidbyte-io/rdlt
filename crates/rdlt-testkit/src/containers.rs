@@ -86,11 +86,11 @@ pub fn decide_availability(demanded: bool, forced_absent: bool, probe: impl Fn()
 
 /// Ask the machine whether a container runtime is reachable.
 fn probe_for_runtime() -> bool {
-    // 2. An explicitly configured docker endpoint is authoritative.
+    // 1. An explicitly configured docker endpoint is authoritative.
     if std::env::var_os("DOCKER_HOST").is_some() {
         return true;
     }
-    // 3. Rootless podman's user socket (the standing workspace note).
+    // 2. Rootless podman's user socket (the standing workspace note).
     if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR")
         && std::path::Path::new(&dir)
             .join("podman/podman.sock")
@@ -98,11 +98,11 @@ fn probe_for_runtime() -> bool {
     {
         return true;
     }
-    // 4. The system docker/podman socket.
+    // 3. The system docker/podman socket.
     if std::path::Path::new("/var/run/docker.sock").exists() {
         return true;
     }
-    // 5. Last resort: ask podman directly (covers hosts where the socket
+    // 4. Last resort: ask podman directly (covers hosts where the socket
     //    lives off the default paths but the CLI still works).
     std::process::Command::new("podman")
         .arg("ps")

@@ -71,12 +71,12 @@ impl Lookup for RealLookup {
     }
 }
 
-/// One convention entry: the environment variable first, then the file.
+/// Resolve one convention entry: the environment variable first, then the file.
 ///
 /// Environment first so a CI or a one-off run can override without editing
 /// the user's config, and trimmed because an editor's trailing newline in a
 /// credential file is not part of the credential.
-fn entry(lookup: &dyn Lookup, var: &str, file: &str) -> Option<String> {
+fn env_then_file(lookup: &dyn Lookup, var: &str, file: &str) -> Option<String> {
     lookup.env(var).or_else(|| lookup.file(file))
 }
 
@@ -175,13 +175,13 @@ fn resolve_credentials(lookup: &dyn Lookup) -> Option<SnowflakeCreds> {
         })
         .filter(|path| std::path::Path::new(path).exists())?;
     Some(SnowflakeCreds {
-        account: entry(lookup, "RDLT_SNOWFLAKE_ACCOUNT", "account")?,
-        user: entry(lookup, "RDLT_SNOWFLAKE_USER", "user")?,
+        account: env_then_file(lookup, "RDLT_SNOWFLAKE_ACCOUNT", "account")?,
+        user: env_then_file(lookup, "RDLT_SNOWFLAKE_USER", "user")?,
         private_key_path: key_path,
-        passphrase: entry(lookup, "RDLT_SNOWFLAKE_KEY_PASSPHRASE", "passphrase"),
-        database: entry(lookup, "RDLT_SNOWFLAKE_DATABASE", "database")?,
-        warehouse: entry(lookup, "RDLT_SNOWFLAKE_WAREHOUSE", "warehouse"),
-        role: entry(lookup, "RDLT_SNOWFLAKE_ROLE", "role"),
+        passphrase: env_then_file(lookup, "RDLT_SNOWFLAKE_KEY_PASSPHRASE", "passphrase"),
+        database: env_then_file(lookup, "RDLT_SNOWFLAKE_DATABASE", "database")?,
+        warehouse: env_then_file(lookup, "RDLT_SNOWFLAKE_WAREHOUSE", "warehouse"),
+        role: env_then_file(lookup, "RDLT_SNOWFLAKE_ROLE", "role"),
     })
 }
 
@@ -199,9 +199,9 @@ pub fn token_with(lookup: &dyn Lookup, kind: TokenKind) -> Option<String> {
         return None;
     }
     match kind {
-        TokenKind::Pat => entry(lookup, "RDLT_SNOWFLAKE_PAT", "pat"),
-        TokenKind::OauthToken => entry(lookup, "RDLT_SNOWFLAKE_OAUTH_TOKEN", "oauth-token"),
-        TokenKind::Password => entry(lookup, "RDLT_SNOWFLAKE_PASSWORD", "password"),
+        TokenKind::Pat => env_then_file(lookup, "RDLT_SNOWFLAKE_PAT", "pat"),
+        TokenKind::OauthToken => env_then_file(lookup, "RDLT_SNOWFLAKE_OAUTH_TOKEN", "oauth-token"),
+        TokenKind::Password => env_then_file(lookup, "RDLT_SNOWFLAKE_PASSWORD", "password"),
     }
 }
 
