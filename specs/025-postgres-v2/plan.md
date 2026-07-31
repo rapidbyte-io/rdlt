@@ -24,6 +24,26 @@ naming rules (below).
 arrow 58.3, rdlt-connector SPI, rdlt-connector-sqlcore) — the dependency list
 may not grow beyond the old crate's.
 
+## STATUS (update as work lands — the durable record)
+
+Done through commit `eae968a1`: Tasks 0–5 complete (scaffold, tls, session,
+types incl. encode — 69 unit tests green). Task 6 src HALF done: the whole
+non-CDC source module is written and unit-tested
+(config/{vocabulary,validate}, errors, reflect, sql, plan, cursor/{state
+FROZEN-JSON+proptest, tracker, prepare}, copy, fail_points, connector,
+cdc/mod.rs placeholder that fails typed). REMAINING in Task 6: port the
+source integration suites (needs `fixtures.rs` pulled FORWARD from Task 9 —
+containers first), tests/integration.rs + cases/. Then Tasks 7 (destination),
+8 (CDC — replaces the placeholder; add CDC_FAIL_POINTS then), 9 (sweeps,
+memory_bound, testsupport, benches), 10 (gate wiring + naming audit + docs),
+11 (parity measurement + full gate twice).
+
+In-flight facts: `reflect::tests::table` is a pub(crate) test helper shared
+by sql/plan tests. `source::config` is a pub module (TypeHint public path =
+`source::config::TypeHint`, defined in types/map.rs). Dead-code warnings are
+expected until consumers land; Task 10 clippy gates zero. The old crate is
+UNTOUCHED; workspace member added for v2 only.
+
 ## Decision record
 
 - **D1 — new crate, old untouched.** Package `rdlt-connector-postgres-v2`,
