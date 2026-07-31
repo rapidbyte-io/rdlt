@@ -4471,7 +4471,6 @@ dependencies = [
  "async-trait",
  "rdlt-connector",
  "rdlt-core",
- "rdlt-testkit",
  "serde_json",
  "tokio",
 ]

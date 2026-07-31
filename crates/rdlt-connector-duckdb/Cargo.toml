@@ -26,7 +26,7 @@ arrow-schema = { workspace = true }
 rdlt-connector-postgres = { workspace = true, default-features = false, features = ["dest", "fixtures"] }
 tokio-postgres = { workspace = true }
 testcontainers-modules = { workspace = true }
-rdlt-testkit = { workspace = true, features = ["gate"] }
+rdlt-testkit = { workspace = true }
 rdlt-engine = { workspace = true }
 tempfile = { workspace = true }
 bytes = { workspace = true }

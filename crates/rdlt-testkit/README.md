@@ -33,8 +33,9 @@ side effects.
 
 ## The gate: skip, never fail
 
-This crate is connector-agnostic: it carries the ONE runtime probe
-(`gate::runtime_available`) and the reclaim label, while the
+This crate is connector-agnostic and feature-less: it carries the ONE
+runtime probe (`gate::runtime_available`, std-only, always compiled) and the
+reclaim label, while the
 system-specific fixtures live with their connectors and route through the
 probe (`rdlt_connector_postgres::fixtures::{PgFixture, CdcPgFixture}` behind
 that crate's `fixtures` feature). A fixture's `start()` returns `Option` —

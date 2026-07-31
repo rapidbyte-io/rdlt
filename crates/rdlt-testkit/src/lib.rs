@@ -10,7 +10,6 @@
 pub mod conformance;
 pub mod crash;
 pub mod fixtures;
-#[cfg(feature = "gate")]
 pub mod gate;
 pub mod memory;
 
