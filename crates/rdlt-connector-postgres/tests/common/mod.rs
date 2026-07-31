@@ -13,7 +13,7 @@ use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};
 // paths resolve; each test binary uses only one, so silence per-binary
 // "unused" noise (the old local fixtures carried `#[allow(dead_code)]`).
 #[allow(unused_imports)]
-pub use rdlt_testkit::{CdcPgFixture, PgFixture};
+pub use rdlt_connector_postgres::fixtures::{CdcPgFixture, PgFixture};
 
 /// Generated PKI for the TLS matrix (T007): a CA, a server cert signed by it
 /// (SAN: localhost ONLY — connecting via 127.0.0.1 is the hostname-mismatch

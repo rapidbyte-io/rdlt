@@ -7,7 +7,8 @@ use async_trait::async_trait;
 use rdlt_connector_postgres::dest::Postgres;
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::conformance::dest::verify_destination;
-use rdlt_testkit::{MemorySource, PgFixture, TableProbe, assert_conformant};
+use rdlt_connector_postgres::fixtures::PgFixture;
+use rdlt_testkit::{MemorySource, TableProbe, assert_conformant};
 use serde_json::json;
 
 struct PgProbe {
@@ -2104,7 +2105,7 @@ mod unit_isolation {
         StateDoc, TableName, TableSchema,
     };
     use rdlt_connector::{CommitMeta, Destination, OpenCtx, WriteMode};
-    use rdlt_testkit::containers::PgFixture;
+    use rdlt_connector_postgres::fixtures::PgFixture;
 
     fn schema() -> TableSchema {
         TableSchema {

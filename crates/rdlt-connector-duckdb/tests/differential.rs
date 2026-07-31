@@ -177,7 +177,7 @@ async fn both(
 ) -> (Outcome, Outcome) {
     // Callers guard on `runtime_available()` and skip before reaching here,
     // so a missing runtime at this point is unexpected — fail loudly.
-    let pg = rdlt_testkit::PgFixture::start()
+    let pg = rdlt_connector_postgres::fixtures::PgFixture::start()
         .await
         .expect("postgres runtime (probed by the caller)");
     let conn = pg.conn.clone();

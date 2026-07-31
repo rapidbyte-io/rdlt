@@ -6,7 +6,8 @@
 use rdlt_connector::core::{LoadId, PipelineId, TableName, WriteMode};
 use rdlt_connector::{Destination, OpenCtx};
 use rdlt_connector_postgres::dest::Postgres;
-use rdlt_testkit::{PgFixture, batch_of, meta_for, schema_for};
+use rdlt_connector_postgres::fixtures::PgFixture;
+use rdlt_testkit::{batch_of, meta_for, schema_for};
 
 async fn count(conn: &str, dataset: &str, table: &str) -> u64 {
     let (client, connection) = tokio_postgres::connect(conn, tokio_postgres::NoTls)

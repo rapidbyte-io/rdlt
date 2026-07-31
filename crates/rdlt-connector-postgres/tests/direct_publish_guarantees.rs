@@ -15,7 +15,7 @@ use rdlt_connector::core::{
     TableName, TableSchema,
 };
 use rdlt_connector::{CommitMeta, Destination, OpenCtx, WriteMode};
-use rdlt_testkit::containers::PgFixture;
+use rdlt_connector_postgres::fixtures::PgFixture;
 use std::sync::Arc;
 
 fn schema(t: &str) -> TableSchema {

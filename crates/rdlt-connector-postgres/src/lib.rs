@@ -21,6 +21,8 @@
 //! (`DestOptions`, `TableOptions`, …), the same spelling every SQL destination
 //! uses.
 
+#[cfg(feature = "fixtures")]
+pub mod fixtures;
 mod pgerror;
 pub mod tls;
 mod tls_verify;

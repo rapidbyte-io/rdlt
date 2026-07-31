@@ -16,6 +16,9 @@ default = ["source", "dest"]
 source = []
 dest = []
 failpoints = ["rdlt-connector/failpoints"]
+# Container fixtures for tests across the workspace (PgFixture/CdcPgFixture).
+# Test support only, no semver guarantees.
+fixtures = ["dep:rdlt-testkit", "dep:testcontainers-modules"]
 
 [dependencies]
 rdlt-connector = { workspace = true, features = ["schema"] }
@@ -37,6 +40,12 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-postgres = { workspace = true }
 tokio-postgres-rustls = { workspace = true }
+# Container fixtures (behind `fixtures`): non-dev so other crates' tests reach
+# them through their dev-dependency on this crate.
+rdlt-testkit = { workspace = true, features = [
+    "containers",
+], optional = true }
+testcontainers-modules = { workspace = true, optional = true }
 rustls = { workspace = true }
 rustls-pemfile = { workspace = true }
 rustls-native-certs = { workspace = true }
@@ -51,6 +60,7 @@ rcgen = { workspace = true }
 proptest = { workspace = true }
 rdlt-connector-duckdb = { workspace = true }
 rdlt-engine = { workspace = true }
+rdlt-connector-postgres = { path = ".", features = ["fixtures"] }
 rdlt-testkit = { workspace = true, features = ["containers"] }
 tempfile = { workspace = true }
 testcontainers-modules = { workspace = true }

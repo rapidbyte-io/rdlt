@@ -14,7 +14,7 @@ use rdlt_connector_postgres::dest::{
     AbsentPolicy, DestOptions, MergeStrategy, Postgres, Scd2Options, TableOptions,
 };
 use rdlt_engine::{Engine, EngineConfig};
-use rdlt_testkit::PgFixture;
+use rdlt_connector_postgres::fixtures::PgFixture;
 
 struct DimSource {
     batch: RecordBatch,
