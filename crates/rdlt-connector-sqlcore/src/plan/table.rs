@@ -12,10 +12,10 @@ use crate::options::{AbsentPolicy, DestOptions, MergeStrategy, Scd2Options};
 /// approaches this (the engine bounds nesting far below), so the loop is a
 /// guard against a cyclic `parent` link — reaching it yields the deepest node
 /// walked, never a hang.
-pub const ROOT_DEPTH_BOUND: usize = 64;
+const ROOT_DEPTH_BOUND: usize = 64;
 
 /// Walk a table's `parent` chain to its shred root — the table itself when it
-/// has no parent. Bounded by [`ROOT_DEPTH_BOUND`]. Generic over the map's
+/// has no parent. Bounded by `ROOT_DEPTH_BOUND`. Generic over the map's
 /// value tail so it serves any `(TableSchema, _)` session table map.
 pub fn root_of<V>(tables: &BTreeMap<TableName, (TableSchema, V)>, table: &TableName) -> TableName {
     let mut current = table.clone();

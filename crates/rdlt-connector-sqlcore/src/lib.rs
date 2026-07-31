@@ -60,7 +60,7 @@
 //! );
 //! ```
 
-pub mod dialect;
+mod dialect;
 pub mod ensure;
 pub mod names;
 pub mod options;

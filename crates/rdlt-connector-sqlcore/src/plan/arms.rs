@@ -78,6 +78,14 @@ impl MergePlan<'_> {
         self.dialect.quote(ident)
     }
 
+    /// The hard-delete survivor filter, or nothing when the option is off.
+    fn keep_clause(&self) -> String {
+        self.hard_delete
+            .as_ref()
+            .map(|hd| format!(" WHERE {}", hd.keep))
+            .unwrap_or_default()
+    }
+
     fn key_list(&self) -> String {
         self.key
             .iter()
@@ -184,16 +192,7 @@ pub fn scope_replace_sql(
     stage: &str,
     scope: &[String],
 ) -> String {
-    let cols = scope
-        .iter()
-        .map(|c| dialect.quote(c))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let not_null = scope
-        .iter()
-        .map(|c| format!("{} IS NOT NULL", dialect.quote(c)))
-        .collect::<Vec<_>>()
-        .join(" AND ");
+    let (cols, not_null) = scope_predicate(scope, |c| dialect.quote(c));
     format!(
         "DELETE FROM {target} WHERE ({cols}) IN (
              SELECT {cols} FROM {stage} WHERE {not_null})"
@@ -210,11 +209,7 @@ pub fn scope_replace_sql(
 pub fn keyed_delete_insert_sql(plan: &MergePlan<'_>) -> Vec<String> {
     let (target, stage, cols) = (plan.target_sql, plan.stage_sql, plan.cols_sql);
     let key_list = plan.key_list();
-    let keep = plan
-        .hard_delete
-        .as_ref()
-        .map(|hd| format!(" WHERE {}", hd.keep))
-        .unwrap_or_default();
+    let keep = plan.keep_clause();
     vec![
         format!("DELETE FROM {target} WHERE ({key_list}) IN (SELECT {key_list} FROM {stage})"),
         format!(
@@ -243,11 +238,7 @@ pub fn keyed_upsert_sql(plan: &MergePlan<'_>) -> Vec<String> {
             hd.flagged
         ));
     }
-    let keep = plan
-        .hard_delete
-        .as_ref()
-        .map(|hd| format!(" WHERE {}", hd.keep))
-        .unwrap_or_default();
+    let keep = plan.keep_clause();
     let set = plan.update_set(plan.key);
     let action = if set.is_empty() {
         UpsertAction::Nothing
@@ -318,7 +309,7 @@ pub fn scd2_merge_sql(plan: &MergePlan<'_>, scd2: &Scd2Options) -> Vec<String> {
     // value was VALIDATED as a timestamp at the options layer — the quoted
     // literal here can never carry raw user SQL.
     let now = match &scd2.boundary_timestamp {
-        Some(boundary) => format!("'{}'", boundary.replace('\'', "''")),
+        Some(boundary) => sql_literal(boundary),
         None => plan.dialect.tx_timestamp().to_string(),
     };
     let key_list = plan.key_list();
@@ -336,8 +327,9 @@ pub fn scd2_merge_sql(plan: &MergePlan<'_>, scd2: &Scd2Options) -> Vec<String> {
     // keys change.
     let (open_value, is_active) = match &scd2.active_record_timestamp {
         Some(marker) => {
-            let lit = format!("'{}'", marker.replace('\'', "''"));
-            (lit.clone(), format!("(t.{vt} IS NULL OR t.{vt} = {lit})"))
+            let lit = sql_literal(marker);
+            let is_active = format!("(t.{vt} IS NULL OR t.{vt} = {lit})");
+            (lit, is_active)
         }
         None => ("NULL".to_string(), format!("t.{vt} IS NULL")),
     };
@@ -386,16 +378,7 @@ pub fn scd2_merge_sql(plan: &MergePlan<'_>, scd2: &Scd2Options) -> Vec<String> {
             // would be malformed SQL, and the guard says so locally rather than
             // relying on a check three modules away.
             Some(scope) if !scope.is_empty() => {
-                let cols = scope
-                    .iter()
-                    .map(|c| plan.quote(c))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let not_null = scope
-                    .iter()
-                    .map(|c| format!("{} IS NOT NULL", plan.quote(c)))
-                    .collect::<Vec<_>>()
-                    .join(" AND ");
+                let (cols, not_null) = scope_predicate(scope, |c| plan.quote(c));
                 format!(
                     " AND ({cols}) IN (SELECT {cols} FROM {} WHERE {not_null})",
                     plan.stage_sql
@@ -427,4 +410,28 @@ pub fn single_unit_violation(table: &str, scoped: bool) -> String {
          fixed configuration re-delivers the full feed and \
          converges"
     )
+}
+
+/// Quote a validated timestamp value as a SQL string literal. The value was
+/// validated at the options layer, so the literal can never carry raw SQL —
+/// and the quoting rule exists ONCE.
+fn sql_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+/// The scope columns as a quoted list and their NULL-is-not-a-scope filter —
+/// the one spelling of the scope predicate, shared by scope replacement and
+/// scoped scd2 retirement.
+fn scope_predicate(scope: &[String], quote: impl Fn(&str) -> String) -> (String, String) {
+    let cols = scope
+        .iter()
+        .map(|c| quote(c))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let not_null = scope
+        .iter()
+        .map(|c| format!("{} IS NOT NULL", quote(c)))
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    (cols, not_null)
 }

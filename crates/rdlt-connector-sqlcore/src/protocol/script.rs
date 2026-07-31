@@ -8,10 +8,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use rdlt_connector::WriteMode;
-use rdlt_connector::core::{TableName, TableSchema, schema::system_columns};
+use rdlt_connector::core::{TableName, TableSchema};
 
 use crate::options::{DestOptions, MergeStrategy};
-use crate::plan::{MergeCtx, single_unit_violation};
+use crate::plan::{MergeCtx, TableFacts, single_unit_violation};
 
 use super::step::{FullLoadPublish, MergeArm, Step};
 
@@ -40,10 +40,10 @@ pub struct CommitCtx<'a> {
 }
 
 impl CommitCtx<'_> {
-    /// Whether `table` still round-trips through a stage table. Merge always
-    /// does; Append and Replace do only on the staged publish path.
+    /// Whether `table` still round-trips through a stage table — the ensure
+    /// planner's rule, consulted here so the two planners cannot drift.
     fn stages(&self, mode: &WriteMode) -> bool {
-        matches!(mode, WriteMode::Merge { .. }) || self.full_load_publish == FullLoadPublish::Staged
+        crate::ensure::stages(mode, self.full_load_publish)
     }
 }
 
@@ -234,8 +234,9 @@ pub fn commit_script(
     // atomically).
     for (table, (schema, mode)) in tables {
         // A schema without the per-row identity column is a STRUCTURED stream's
-        // table — merge (if requested) goes by key.
-        let has_identity = schema.columns.iter().any(|c| c.name == system_columns::ID);
+        // table — merge (if requested) goes by key. One predicate, owned by
+        // the per-table facts, so the planner and validation cannot disagree.
+        let has_identity = TableFacts::of(schema).has_identity;
         match mode {
             // Append and Replace publish nothing here on the direct path: the
             // rows are already in the target and the clear (Replace only)

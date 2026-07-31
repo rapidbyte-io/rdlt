@@ -65,8 +65,8 @@ pub fn stage_table(pipeline: &str, table: &str) -> String {
 }
 
 /// Merge-identity index prefixes (auto-ensured per load): plain and unique.
-pub const INDEX_PREFIX: &str = "rdlt_ix";
-pub const UNIQUE_INDEX_PREFIX: &str = "rdlt_ux";
+pub(crate) const INDEX_PREFIX: &str = "rdlt_ix";
+pub(crate) const UNIQUE_INDEX_PREFIX: &str = "rdlt_ux";
 
 /// Deterministic supporting-index name — the ONE hash formula every SQL
 /// destination shares: the unique/plain prefix plus a bounded hash of
