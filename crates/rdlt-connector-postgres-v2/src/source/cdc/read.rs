@@ -53,12 +53,7 @@ async fn dispatch(
     reflected_columns: &[&crate::source::reflect::Column],
     mut request: ReadRequest,
 ) -> Result<(), SourceError> {
-    let &StreamContext {
-        config,
-        cdc,
-        columns,
-        ..
-    } = context;
+    let &StreamContext { config, cdc, .. } = context;
     let stream = request.stream.name.as_str().to_owned();
 
     // ---- lifecycle, under the state lock ----

@@ -8,5 +8,3 @@ mod state;
 mod tracker;
 
 pub(crate) use prepare::{Incremental, prepare};
-pub(crate) use state::{State, scalar_at};
-pub(crate) use tracker::Tracker;

@@ -21,4 +21,4 @@ mod tail;
 
 pub(crate) use pgoutput::parse as parse_pgoutput;
 pub(crate) use read::{StreamContext, read_stream};
-pub(crate) use runtime::{Identity, Runtime};
+pub(crate) use runtime::Runtime;

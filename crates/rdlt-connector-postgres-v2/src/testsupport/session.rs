@@ -2,4 +2,7 @@
 //! the TLS matrix and connection-string suites that must exercise them
 //! without a full pipeline.
 
-pub use crate::session::{Connection, EstablishError, Parsed, Profile, connect, establish, parse};
+pub use crate::session::{
+    ConnectError, Connection, EstablishError, Parsed, Profile, TlsFailure, connect, establish,
+    parse,
+};
