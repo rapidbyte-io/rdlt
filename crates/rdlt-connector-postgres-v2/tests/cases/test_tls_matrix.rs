@@ -2,12 +2,14 @@
 //! Postgres built here from a generated PKI: every mode, positive AND
 //! distinguished negative, mutual-TLS client credentials, and the libpq
 //! connection-string parameters that reach the same policy without a `tls:`
-//! block.
+//! block — for BOTH connectors, which share one connect path.
 
 use crate::cases::common;
+use rdlt_connector_postgres_v2::destination;
 use rdlt_connector_postgres_v2::fixtures::PostgresContainer;
 use rdlt_connector_postgres_v2::source;
 use rdlt_connector_postgres_v2::testsupport::session;
+use rdlt_connector_postgres_v2::tls::{Mode, PemSource, Policy};
 use testcontainers_modules::postgres::Postgres as PostgresImage;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};
@@ -282,6 +284,47 @@ async fn prefer_falls_back_on_plaintext_server_and_conn_sslmode_flows() {
     assert!(error.contains("connect phase"), "{error}");
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn destination_uses_the_same_policy_path() {
+    use rdlt_connector::core::{LoadId, PipelineId};
+    use rdlt_connector::{Destination as _, OpenCtx};
+
+    let Some(fixture) = TlsPostgresContainer::start().await else {
+        return;
+    };
+    let pipeline = PipelineId::new("tls");
+    let load = LoadId::new("tls-load");
+
+    // verify_full + right root + matching hostname: the destination opens.
+    let good = destination::Postgres::new(fixture.connection_string_via_localhost())
+        .schema("tls_ok")
+        .tls(Policy {
+            mode: Mode::VerifyFull,
+            root_cert: Some(PemSource(fixture.pki.ca_pem.clone())),
+            ..Policy::default()
+        });
+    assert!(
+        good.open(OpenCtx::new(pipeline.clone(), load.clone()))
+            .await
+            .is_ok(),
+        "destination over verify_full must open"
+    );
+
+    // Same policy, wrong trust anchor: typed failure through the SAME path.
+    let bad = destination::Postgres::new(fixture.connection_string_via_localhost())
+        .schema("tls_bad")
+        .tls(Policy {
+            mode: Mode::VerifyFull,
+            root_cert: Some(PemSource(fixture.pki.wrong_ca_pem.clone())),
+            ..Policy::default()
+        });
+    let error = match bad.open(OpenCtx::new(pipeline, load)).await {
+        Ok(_) => panic!("wrong CA must fail the destination identically"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("TrustAnchor"), "{error}");
+}
+
 #[test]
 fn config_validation_matrix() {
     // Contradiction typed at validate; refinement allowed; bad roots typed.
@@ -314,13 +357,16 @@ fn mtls_yaml(mode: &str, root: &str, client: Option<(&str, &str)>) -> String {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn client_cert_matrix_against_cert_auth_server() {
+    use rdlt_connector::core::{LoadId, PipelineId};
+    use rdlt_connector::{Destination as _, OpenCtx};
+
     let Some(fixture) = TlsPostgresContainer::start_cert_auth().await else {
         return;
     };
     let pki = &fixture.pki;
     let localhost = fixture.connection_string_via_localhost();
 
-    // Valid credential: the SOURCE syncs.
+    // Valid credential: the SOURCE syncs…
     let good = mtls_yaml(
         "verify_full",
         &pki.ca_pem,
@@ -329,6 +375,24 @@ async fn client_cert_matrix_against_cert_auth_server() {
     probe_source(&localhost, &good)
         .await
         .expect("valid client cert + key must connect (source)");
+
+    // …and the DESTINATION opens through the same path.
+    let postgres_destination =
+        destination::Postgres::new(fixture.connection_string_via_localhost())
+            .schema("mtls_ok")
+            .tls(Policy {
+                mode: Mode::VerifyFull,
+                root_cert: Some(PemSource(pki.ca_pem.clone())),
+                client_cert: Some(PemSource(pki.client_cert_pem.clone())),
+                client_key: Some(PemSource(pki.client_key_pem.clone())),
+            });
+    postgres_destination
+        .open(OpenCtx::new(
+            PipelineId::new("mtls"),
+            LoadId::new("mtls-load"),
+        ))
+        .await
+        .expect("destination over mTLS must open");
 
     // No credential: the server demands one — distinguished ClientCert.
     let error = probe_source(&localhost, &mtls_yaml("verify_full", &pki.ca_pem, None))
@@ -384,6 +448,9 @@ async fn credential_offered_but_unused_still_syncs() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn sslrootcert_url_syncs_and_application_name_is_set() {
+    use rdlt_connector::core::{LoadId, PipelineId};
+    use rdlt_connector::{Destination as _, OpenCtx};
+
     let Some(fixture) = TlsPostgresContainer::start().await else {
         return;
     };
@@ -456,6 +523,16 @@ async fn sslrootcert_url_syncs_and_application_name_is_set() {
         .collect();
     assert_eq!(names, vec!["rdlt"], "A1: rdlt identifies itself");
     drop(held);
+
+    // DESTINATION: the same URL through the same gate.
+    let postgres_destination = destination::Postgres::new(&url).schema("url_ok");
+    postgres_destination
+        .open(OpenCtx::new(
+            PipelineId::new("url"),
+            LoadId::new("url-load"),
+        ))
+        .await
+        .expect("sslrootcert URL opens (destination)");
 }
 
 /// Review F3: EVERY connect-phase db error carries the real server message —
