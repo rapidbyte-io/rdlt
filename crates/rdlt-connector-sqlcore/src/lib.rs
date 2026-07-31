@@ -14,6 +14,51 @@
 //! vocabulary — an item listed here is spelled at the crate root everywhere;
 //! everything else is reached by its module path. Do not import a root item
 //! through its module.
+//!
+//! The primary workflow is planning a commit unit. [`commit_script`] is a
+//! PURE function, so the whole flow runs without a database: describe the
+//! session tables, resolve the options, state the transaction facts, and
+//! receive the exact ordered step program the destination will execute:
+//!
+//! ```
+//! use std::collections::{BTreeMap, BTreeSet};
+//!
+//! use rdlt_connector::WriteMode;
+//! use rdlt_connector::core::{TableName, TableSchema};
+//! use rdlt_connector_sqlcore::{CommitCtx, DestOptions, FullLoadPublish, Step, commit_script};
+//!
+//! let mut tables = BTreeMap::new();
+//! tables.insert(
+//!     TableName::new("events"),
+//!     (
+//!         TableSchema { table: TableName::new("events"), parent: None, columns: vec![] },
+//!         WriteMode::Append,
+//!     ),
+//! );
+//! let empty = BTreeSet::new();
+//! let script = commit_script(
+//!     &tables,
+//!     &DestOptions::default(),
+//!     &CommitCtx {
+//!         replayed: false,
+//!         load_committed_before: false,
+//!         single_unit_done: &empty,
+//!         staged_nonempty: &empty,
+//!         full_load_publish: FullLoadPublish::Staged,
+//!         cleared_targets: &empty,
+//!     },
+//! )
+//! .unwrap();
+//! assert_eq!(
+//!     script.steps,
+//!     vec![
+//!         Step::InsertSelect { table: TableName::new("events") },
+//!         Step::TruncateStage { table: TableName::new("events") },
+//!         Step::UpsertState,
+//!         Step::InsertReceipt,
+//!     ],
+//! );
+//! ```
 
 pub mod dialect;
 pub mod ensure;
