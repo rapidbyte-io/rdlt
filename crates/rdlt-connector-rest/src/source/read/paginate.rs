@@ -1,17 +1,17 @@
-//! The paginator vocabulary: seven config-backed families behind the public
-//! [`Paginator`] trait — the composition seam wrappers may implement for API quirks.
-//! Every family runs under the same loop guards (same-request detection + `max_pages`),
-//! owned by the read loop.
+//! The paginator vocabulary: seven config-backed families behind the
+//! public [`Paginator`] trait — the composition seam wrappers may implement
+//! for API quirks. Every family runs under the same loop guards
+//! (same-request detection + `max_pages`), owned by the read loop.
 
 use serde_json::Value;
 
 use crate::source::config::Pagination;
-use crate::source::read::extract::{Selector, json_kind};
+use crate::source::select::{Selector, value_kind};
 
 /// What the paginator saw of one response — bounded on purpose: never the
 /// whole body a second time.
 #[derive(Debug)]
-pub struct PageContext<'a> {
+pub struct Context<'a> {
     /// Parsed response body (present for body-driven paginators).
     pub body: Option<&'a Value>,
     /// Response headers the paginator may need.
@@ -24,53 +24,56 @@ pub struct PageContext<'a> {
 
 /// Where the next request goes.
 #[derive(Debug, Clone, PartialEq)]
-pub enum PageDecision {
+pub enum Decision {
     /// Stop: the stream is complete.
     Done,
     /// Fetch again with these query params merged in.
     NextParams(Vec<(String, String)>),
-    /// Fetch this URL next (absolute, or relative to the current URL).
+    /// Fetch this URL next (absolute, or relative — a relative URL
+    /// resolves against the source `base_url`).
     NextUrl(String),
 }
 
-/// Why a paginator could not decide the next page. Both variants are fatal:
-/// a wrong-typed cursor or next-url is an API-contract violation retrying
-/// cannot fix; the single call site (`SequenceDriver::advance`) maps them to
-/// `SourceError::fatal`.
+/// Why a paginator could not decide the next page. Both variants are
+/// fatal: a wrong-typed cursor or next-url is an API-contract violation
+/// retrying cannot fix; the single call site (the read loop's request
+/// sequence) maps them to `SourceError::fatal`.
 #[derive(Debug, Clone, PartialEq)]
-pub enum PaginatorError {
+pub enum Error {
     /// A body cursor value was neither a string nor a number.
     CursorNotScalar { path: String, kind: &'static str },
     /// A next-url value was not a string.
     NextUrlNotString { path: String },
 }
 
-impl std::fmt::Display for PaginatorError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl std::fmt::Display for Error {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::CursorNotScalar { path, kind } => {
                 write!(
-                    f,
+                    formatter,
                     "cursor at `{path}` is {kind} — expected string or number"
                 )
             }
             Self::NextUrlNotString { path } => {
-                write!(f, "next url at `{path}` is not a string")
+                write!(formatter, "next url at `{path}` is not a string")
             }
         }
     }
 }
 
-impl std::error::Error for PaginatorError {}
+impl std::error::Error for Error {}
 
 /// The pagination contract (a public, stable seam). Implementations are
-/// per-stream-read state machines: `initial_params()` yields the extra params
-/// for the first request; `decide()` decides after each page.
+/// per-stream-read state machines: [`Paginator::initial_params`] yields the
+/// extra params for the first request; [`Paginator::decide`] decides after
+/// each page.
 pub trait Paginator: Send + Sync {
     /// Extra query params for the FIRST request (e.g. `page=1`).
     fn initial_params(&self) -> Vec<(String, String)>;
-    /// Decide after a page. `ctx.body` is `Some` iff [`Paginator::needs_body`].
-    fn decide(&mut self, ctx: &PageContext<'_>) -> Result<PageDecision, PaginatorError>;
+    /// Decide after a page. `context.body` is `Some` iff
+    /// [`Paginator::needs_body`].
+    fn decide(&mut self, context: &Context<'_>) -> Result<Decision, Error>;
     /// Whether this paginator needs the parsed response body.
     fn needs_body(&self) -> bool {
         false
@@ -78,9 +81,9 @@ pub trait Paginator: Send + Sync {
 }
 
 /// Build the config-backed paginator for a stream. Selector parsing is
-/// re-run here (config validation already proved these paths parse); a parse
-/// error surfaces honestly rather than through a panic.
-pub fn from_config(pagination: &Pagination) -> Result<Box<dyn Paginator>, String> {
+/// re-run here (config validation already proved these paths parse); a
+/// parse error surfaces honestly rather than through a panic.
+pub fn build(pagination: &Pagination) -> Result<Box<dyn Paginator>, String> {
     let paginator: Box<dyn Paginator> = match pagination {
         Pagination::None => Box::new(SinglePage),
         Pagination::Page {
@@ -92,8 +95,8 @@ pub fn from_config(pagination: &Pagination) -> Result<Box<dyn Paginator>, String
             param: page_param.clone(),
             next: *start,
             start: *start,
-            total_pages: parse_opt_selector(total_pages_path)?,
-            total_count: parse_opt_selector(total_count_path)?,
+            total_pages: parse_optional_selector(total_pages_path)?,
+            total_count: parse_optional_selector(total_count_path)?,
         }),
         Pagination::Offset {
             offset_param,
@@ -105,7 +108,7 @@ pub fn from_config(pagination: &Pagination) -> Result<Box<dyn Paginator>, String
             limit_param: limit_param.clone(),
             page_size: *page_size,
             offset: 0,
-            total_count: parse_opt_selector(total_count_path)?,
+            total_count: parse_optional_selector(total_count_path)?,
         }),
         Pagination::BodyCursor {
             cursor_path,
@@ -130,22 +133,23 @@ pub fn from_config(pagination: &Pagination) -> Result<Box<dyn Paginator>, String
 }
 
 /// Parse an optional selector path (a total-count/total-pages stop).
-fn parse_opt_selector(path: &Option<String>) -> Result<Option<Selector>, String> {
+fn parse_optional_selector(path: &Option<String>) -> Result<Option<Selector>, String> {
     path.as_deref().map(Selector::parse).transpose()
 }
 
-/// A declared total-count stop: true once the cumulative record count reaches
-/// the total the response advertises at `selector`.
-fn total_count_reached(selector: &Option<Selector>, ctx: &PageContext<'_>) -> bool {
-    let (Some(sel), Some(body)) = (selector, ctx.body) else {
+/// A declared total-count stop: true once the cumulative record count
+/// reaches the total the response advertises at `selector`.
+fn total_count_reached(selector: &Option<Selector>, context: &Context<'_>) -> bool {
+    let (Some(selector), Some(body)) = (selector, context.body) else {
         return false;
     };
-    sel.select_one(body)
+    selector
+        .select_one(body)
         .and_then(Value::as_u64)
-        .is_some_and(|total| ctx.total_records >= total)
+        .is_some_and(|total| context.total_records >= total)
 }
 
-// ---- the seven families ----------------------------------------------------
+// ---- the seven families ---------------------------------------------------
 
 struct SinglePage;
 
@@ -153,8 +157,8 @@ impl Paginator for SinglePage {
     fn initial_params(&self) -> Vec<(String, String)> {
         vec![]
     }
-    fn decide(&mut self, _ctx: &PageContext<'_>) -> Result<PageDecision, PaginatorError> {
-        Ok(PageDecision::Done)
+    fn decide(&mut self, _context: &Context<'_>) -> Result<Decision, Error> {
+        Ok(Decision::Done)
     }
 }
 
@@ -170,25 +174,25 @@ impl Paginator for PageNumber {
     fn initial_params(&self) -> Vec<(String, String)> {
         vec![(self.param.clone(), self.next.to_string())]
     }
-    fn decide(&mut self, ctx: &PageContext<'_>) -> Result<PageDecision, PaginatorError> {
-        if ctx.record_count == 0 {
-            return Ok(PageDecision::Done);
+    fn decide(&mut self, context: &Context<'_>) -> Result<Decision, Error> {
+        if context.record_count == 0 {
+            return Ok(Decision::Done);
         }
         let current = self.next;
         // Declared totals stop BEFORE an extra empty-page request.
-        if let (Some(sel), Some(body)) = (&self.total_pages, ctx.body)
-            && let Some(total) = sel.select_one(body).and_then(Value::as_u64)
+        if let (Some(selector), Some(body)) = (&self.total_pages, context.body)
+            && let Some(total) = selector.select_one(body).and_then(Value::as_u64)
         {
             let pages_done = current - self.start + 1;
             if pages_done >= total {
-                return Ok(PageDecision::Done);
+                return Ok(Decision::Done);
             }
         }
-        if total_count_reached(&self.total_count, ctx) {
-            return Ok(PageDecision::Done);
+        if total_count_reached(&self.total_count, context) {
+            return Ok(Decision::Done);
         }
         self.next = current + 1;
-        Ok(PageDecision::NextParams(vec![(
+        Ok(Decision::NextParams(vec![(
             self.param.clone(),
             self.next.to_string(),
         )]))
@@ -219,15 +223,15 @@ impl Paginator for OffsetLimit {
     fn initial_params(&self) -> Vec<(String, String)> {
         self.params()
     }
-    fn decide(&mut self, ctx: &PageContext<'_>) -> Result<PageDecision, PaginatorError> {
-        if ctx.record_count < self.page_size as usize {
-            return Ok(PageDecision::Done); // short page = last page
+    fn decide(&mut self, context: &Context<'_>) -> Result<Decision, Error> {
+        if context.record_count < self.page_size as usize {
+            return Ok(Decision::Done); // short page = last page
         }
-        if total_count_reached(&self.total_count, ctx) {
-            return Ok(PageDecision::Done);
+        if total_count_reached(&self.total_count, context) {
+            return Ok(Decision::Done);
         }
         self.offset += self.page_size;
-        Ok(PageDecision::NextParams(self.params()))
+        Ok(Decision::NextParams(self.params()))
     }
     fn needs_body(&self) -> bool {
         self.total_count.is_some()
@@ -243,26 +247,25 @@ impl Paginator for BodyCursor {
     fn initial_params(&self) -> Vec<(String, String)> {
         vec![]
     }
-    fn decide(&mut self, ctx: &PageContext<'_>) -> Result<PageDecision, PaginatorError> {
+    fn decide(&mut self, context: &Context<'_>) -> Result<Decision, Error> {
         // No parsed body (an `ignore`d page whose body wasn't JSON): no
         // cursor to follow — the sequence ends cleanly.
-        let Some(body) = ctx.body else {
-            return Ok(PageDecision::Done);
+        let Some(body) = context.body else {
+            return Ok(Decision::Done);
         };
         match self.path.select_one(body) {
-            None | Some(Value::Null) => Ok(PageDecision::Done),
-            Some(Value::String(s)) if s.is_empty() => Ok(PageDecision::Done),
-            Some(Value::String(s)) => Ok(PageDecision::NextParams(vec![(
-                self.param.clone(),
-                s.clone(),
-            )])),
-            Some(Value::Number(n)) => Ok(PageDecision::NextParams(vec![(
+            None | Some(Value::Null) => Ok(Decision::Done),
+            Some(Value::String(s)) if s.is_empty() => Ok(Decision::Done),
+            Some(Value::String(s)) => {
+                Ok(Decision::NextParams(vec![(self.param.clone(), s.clone())]))
+            }
+            Some(Value::Number(n)) => Ok(Decision::NextParams(vec![(
                 self.param.clone(),
                 n.to_string(),
             )])),
-            Some(other) => Err(PaginatorError::CursorNotScalar {
+            Some(other) => Err(Error::CursorNotScalar {
                 path: self.path.raw().to_owned(),
-                kind: json_kind(other),
+                kind: value_kind(other),
             }),
         }
     }
@@ -280,11 +283,15 @@ impl Paginator for HeaderCursor {
     fn initial_params(&self) -> Vec<(String, String)> {
         vec![]
     }
-    fn decide(&mut self, ctx: &PageContext<'_>) -> Result<PageDecision, PaginatorError> {
-        match ctx.headers.get(&self.header).and_then(|v| v.to_str().ok()) {
-            None => Ok(PageDecision::Done),
-            Some("") => Ok(PageDecision::Done),
-            Some(value) => Ok(PageDecision::NextParams(vec![(
+    fn decide(&mut self, context: &Context<'_>) -> Result<Decision, Error> {
+        match context
+            .headers
+            .get(&self.header)
+            .and_then(|v| v.to_str().ok())
+        {
+            None => Ok(Decision::Done),
+            Some("") => Ok(Decision::Done),
+            Some(value) => Ok(Decision::NextParams(vec![(
                 self.param.clone(),
                 value.to_owned(),
             )])),
@@ -300,15 +307,15 @@ impl Paginator for NextUrl {
     fn initial_params(&self) -> Vec<(String, String)> {
         vec![]
     }
-    fn decide(&mut self, ctx: &PageContext<'_>) -> Result<PageDecision, PaginatorError> {
-        let Some(body) = ctx.body else {
-            return Ok(PageDecision::Done); // ignored non-JSON page: no next URL
+    fn decide(&mut self, context: &Context<'_>) -> Result<Decision, Error> {
+        let Some(body) = context.body else {
+            return Ok(Decision::Done); // ignored non-JSON page: no next URL
         };
         match self.path.select_one(body) {
-            None | Some(Value::Null) => Ok(PageDecision::Done),
-            Some(Value::String(url)) if url.is_empty() => Ok(PageDecision::Done),
-            Some(Value::String(url)) => Ok(PageDecision::NextUrl(url.clone())),
-            Some(_) => Err(PaginatorError::NextUrlNotString {
+            None | Some(Value::Null) => Ok(Decision::Done),
+            Some(Value::String(url)) if url.is_empty() => Ok(Decision::Done),
+            Some(Value::String(url)) => Ok(Decision::NextUrl(url.clone())),
+            Some(_) => Err(Error::NextUrlNotString {
                 path: self.path.raw().to_owned(),
             }),
         }
@@ -324,25 +331,25 @@ impl Paginator for LinkHeader {
     fn initial_params(&self) -> Vec<(String, String)> {
         vec![]
     }
-    fn decide(&mut self, ctx: &PageContext<'_>) -> Result<PageDecision, PaginatorError> {
-        let Some(link) = ctx
+    fn decide(&mut self, context: &Context<'_>) -> Result<Decision, Error> {
+        let Some(link) = context
             .headers
             .get(reqwest::header::LINK)
             .and_then(|v| v.to_str().ok())
         else {
-            return Ok(PageDecision::Done);
+            return Ok(Decision::Done);
         };
         match parse_link_next(link) {
-            Some(url) => Ok(PageDecision::NextUrl(url)),
-            None => Ok(PageDecision::Done),
+            Some(url) => Ok(Decision::NextUrl(url)),
+            None => Ok(Decision::Done),
         }
     }
 }
 
 /// RFC5988 subset: find the `<url>; rel="next"` member. Members are walked
-/// by locating each `<...>` PAIR first (URLs may legally contain commas, so
-/// naive `split(',')` breaks them), and a malformed member never aborts the
-/// scan of later ones.
+/// by locating each `<...>` PAIR first (URLs may legally contain commas,
+/// so naive `split(',')` breaks them), and a malformed member never aborts
+/// the scan of later ones.
 pub(crate) fn parse_link_next(header: &str) -> Option<String> {
     let mut rest = header;
     loop {
@@ -355,9 +362,9 @@ pub(crate) fn parse_link_next(header: &str) -> Option<String> {
             Some(comma) => (&after[..comma], &after[comma + 1..]),
             None => (after, ""),
         };
-        let is_next = params.split(';').any(|p| {
-            let p = p.trim();
-            p.eq_ignore_ascii_case("rel=next") || p.eq_ignore_ascii_case("rel=\"next\"")
+        let is_next = params.split(';').any(|param| {
+            let param = param.trim();
+            param.eq_ignore_ascii_case("rel=next") || param.eq_ignore_ascii_case("rel=\"next\"")
         });
         if is_next {
             return Some(url.to_owned());
@@ -375,17 +382,17 @@ mod tests {
 
     #[test]
     fn link_header_subset() {
-        let h = "<https://api.example.com/x?page=2>; rel=\"next\", <https://api.example.com/x?page=9>; rel=\"last\"";
+        let header = "<https://api.example.com/x?page=2>; rel=\"next\", <https://api.example.com/x?page=9>; rel=\"last\"";
         assert_eq!(
-            parse_link_next(h).as_deref(),
+            parse_link_next(header).as_deref(),
             Some("https://api.example.com/x?page=2")
         );
         assert_eq!(parse_link_next("<https://x>; rel=\"prev\""), None);
         assert_eq!(parse_link_next("junk"), None);
     }
 
-    /// Commas INSIDE a member's URL, and non-`<...>` members before the next
-    /// link, must not truncate the scan (the silent-stop bug).
+    /// Commas INSIDE a member's URL, and non-`<...>` members before the
+    /// next link, must not truncate the scan (the silent-stop bug).
     #[test]
     fn link_header_survives_commas_and_junk_members() {
         let comma_url = "<https://api.example.com/x?ids=1,2&page=2>; rel=\"next\"";

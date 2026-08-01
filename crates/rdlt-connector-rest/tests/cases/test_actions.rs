@@ -1,8 +1,6 @@
 //! Feature 014 US1 (T005/T007): selectors, response actions, POST bodies.
 
-mod common;
-
-use common::{read_err, read_ok, read_stream, stream_yaml};
+use super::common::{read_err, read_ok, read_stream, stream_yaml};
 use serde_json::json;
 use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -51,7 +49,7 @@ async fn selector_no_match_is_typed() {
 /// Invalid selector syntax fails AT CONFIG PARSE, naming the subset.
 #[tokio::test]
 async fn invalid_selector_fails_at_parse() {
-    let err = rdlt_connector_rest::RestConfig::from_yaml(&stream_yaml(
+    let err = rdlt_connector_rest::source::Config::from_yaml(&stream_yaml(
         "http://x",
         "a",
         "/a",
@@ -125,7 +123,7 @@ async fn action_content_ignore() {
 /// Unconditional actions are rejected at parse (they'd swallow everything).
 #[tokio::test]
 async fn unconditional_action_rejected_at_parse() {
-    let err = rdlt_connector_rest::RestConfig::from_yaml(&stream_yaml(
+    let err = rdlt_connector_rest::source::Config::from_yaml(&stream_yaml(
         "http://x",
         "a",
         "/a",
@@ -170,7 +168,7 @@ async fn post_body_with_cursor_pagination() {
 /// body without method: post is typed at parse.
 #[tokio::test]
 async fn body_requires_post() {
-    let err = rdlt_connector_rest::RestConfig::from_yaml(&stream_yaml(
+    let err = rdlt_connector_rest::source::Config::from_yaml(&stream_yaml(
         "http://x",
         "a",
         "/a",
@@ -184,7 +182,7 @@ async fn body_requires_post() {
 /// Incremental aliases and the block are mutually exclusive (typed).
 #[tokio::test]
 async fn incremental_block_and_aliases_are_exclusive() {
-    let err = rdlt_connector_rest::RestConfig::from_yaml(&stream_yaml(
+    let err = rdlt_connector_rest::source::Config::from_yaml(&stream_yaml(
         "http://x",
         "a",
         "/a",
@@ -349,7 +347,7 @@ async fn action_status_and_content_combined() {
 /// Declared statuses must be real HTTP statuses (typo net).
 #[tokio::test]
 async fn action_status_out_of_range_rejected_at_parse() {
-    let err = rdlt_connector_rest::RestConfig::from_yaml(&stream_yaml(
+    let err = rdlt_connector_rest::source::Config::from_yaml(&stream_yaml(
         "http://x",
         "a",
         "/a",
@@ -373,28 +371,30 @@ async fn validation_matrix_covers_remaining_arms() {
             "pick one stop condition",
         ),
     ] {
-        let err =
-            rdlt_connector_rest::RestConfig::from_yaml(&stream_yaml("http://x", "a", "/a", frag))
-                .expect_err(needle)
-                .to_string();
+        let err = rdlt_connector_rest::source::Config::from_yaml(&stream_yaml(
+            "http://x", "a", "/a", frag,
+        ))
+        .expect_err(needle)
+        .to_string();
         assert!(err.contains(needle), "expected `{needle}` in: {err}");
     }
     // from_json: same document shape, same validation.
-    rdlt_connector_rest::RestConfig::from_json(
+    rdlt_connector_rest::source::Config::from_json(
         r#"{"base_url": "http://x", "streams": [{"name": "a", "path": "/a"}]}"#,
     )
     .expect("valid JSON document parses");
-    let err =
-        rdlt_connector_rest::RestConfig::from_json(r#"{"base_url": "http://x", "streams": []}"#)
-            .expect_err("empty streams via JSON")
-            .to_string();
+    let err = rdlt_connector_rest::source::Config::from_json(
+        r#"{"base_url": "http://x", "streams": []}"#,
+    )
+    .expect_err("empty streams via JSON")
+    .to_string();
     assert!(err.contains("at least one stream"), "{err}");
 }
 
 /// end_param requires end_value (closed windows are explicit).
 #[tokio::test]
 async fn end_param_requires_end_value() {
-    let err = rdlt_connector_rest::RestConfig::from_yaml(&stream_yaml(
+    let err = rdlt_connector_rest::source::Config::from_yaml(&stream_yaml(
         "http://x",
         "a",
         "/a",

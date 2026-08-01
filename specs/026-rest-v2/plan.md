@@ -49,6 +49,31 @@ of this file); the ADVERSARIAL REVIEW LOOP is closed. Final state:
   per the ledger), retire the gen-1 Makefile line, keep the `sweep`
   binary name, move the bench fixture's mock_api reference.
 
+## SWAP-IN — EXECUTED (2026-08-01, owner decision)
+
+The owner took the standing calls: generation 1 DELETED, this crate
+renamed to `rdlt-connector-rest` (its `-v2` suffix existed only to
+coexist), branch merged to main. What the swap rewired, all in one
+commit — a much smaller blast radius than the postgres swap, because the
+facade re-exports the crate root and no other crate consumed the REST
+API directly:
+
+- Package: name `rdlt-connector-rest`, `publish = false` dropped, docs.rs
+  `documentation` key restored, "second generation" dropped from the
+  description.
+- Facade (`rdlt`): the `rest` feature mapping is unchanged (no feature
+  split to rename); `pipeline_spec.rs` ports `RestSource::from_yaml/
+  from_json` to `source::Rest::…` per the ledger. The YAML vocabulary is
+  UNCHANGED (frozen surface 1).
+- Gate wiring: the two per-generation Makefile sweep lines collapsed to
+  one; the binary name `sweep` and the crash-point registry check carry
+  over unchanged (the scanner selfcheck's rest row still holds — 3
+  directly-armed names at the same path).
+- `examples/mock_api.rs` keeps its name and package (D5): the bench
+  teardown's `pkill -f mock_api` and any spawn-by-package reference
+  resolve exactly as before.
+- README banner rewritten from coexistence to the swapped-in reality.
+
 ## Decision record
 
 - D1. NEW crate `rdlt-connector-rest-v2` (`publish = false`), generation 1

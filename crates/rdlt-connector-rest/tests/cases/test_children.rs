@@ -1,12 +1,10 @@
 //! Feature 014 US3 (T011/T012): parent-child composition + the composed
 //! example connector — engine-driven (the real wiring, not just the source).
 
-mod common;
-
-use common::read_err;
+use super::common::read_err;
 use rdlt_connector::SourceError;
 use rdlt_connector_duckdb::dest::DuckDb;
-use rdlt_connector_rest::RestSource;
+use rdlt_connector_rest::source::Rest;
 use rdlt_engine::{Engine, EngineConfig};
 use serde_json::json;
 use wiremock::matchers::{method, path, query_param};
@@ -69,7 +67,7 @@ streams:
 #[tokio::test(flavor = "multi_thread")]
 async fn parent_child_reads_through_the_engine() {
     let server = nested_api().await;
-    let source = RestSource::from_yaml(&nested_yaml(&server.uri())).expect("config");
+    let source = Rest::from_yaml(&nested_yaml(&server.uri())).expect("config");
     let dir = tempfile::tempdir().unwrap();
     let dest = DuckDb::open(dir.path().join("nested.duckdb")).unwrap();
     let mut config = EngineConfig::new("nested");
@@ -166,7 +164,7 @@ streams:
 "#,
             server.uri()
         );
-        let outcome = common::read_stream(&yaml, "issues", None).await;
+        let outcome = super::common::read_stream(&yaml, "issues", None).await;
         let err = outcome.result.expect_err("child failure surfaces typed");
         match &err {
             SourceError::RateLimited { .. } => {
@@ -226,7 +224,7 @@ async fn parent_validation_matrix() {
         ),
     ] {
         let yaml = format!("base_url: http://x\nstreams:\n  - name: a\n    path: /a\n{yaml_frag}");
-        let err = rdlt_connector_rest::RestConfig::from_yaml(&yaml)
+        let err = rdlt_connector_rest::source::Config::from_yaml(&yaml)
             .expect_err(needle)
             .to_string();
         assert!(err.contains(needle), "expected `{needle}` in: {err}");
@@ -291,7 +289,7 @@ streams:
         server.uri()
     );
     let started = std::time::Instant::now();
-    let rows = common::read_ok(&yaml, "issues").await;
+    let rows = super::common::read_ok(&yaml, "issues").await;
     let elapsed = started.elapsed();
     assert_eq!(rows.len(), 3);
     assert!(
@@ -304,7 +302,7 @@ streams:
 /// `max_concurrency: 0` is rejected at parse.
 #[tokio::test]
 async fn zero_max_concurrency_rejected_at_parse() {
-    let err = rdlt_connector_rest::RestConfig::from_yaml(
+    let err = rdlt_connector_rest::source::Config::from_yaml(
         "base_url: http://x\nmax_concurrency: 0\nstreams:\n  - name: a\n    path: /a\n",
     )
     .expect_err("zero concurrency")
@@ -316,11 +314,11 @@ async fn zero_max_concurrency_rejected_at_parse() {
 /// surface — the shape a Google-Search-Console-style wrapper takes. No raw
 /// HTTP anywhere; auth/pagination/extraction/engine wiring all inherited.
 mod composed_api {
-    use rdlt_connector_rest::{RestConfig, RestSource};
+    use rdlt_connector_rest::source::{Config, Rest};
 
     /// "MiniHub": repos + their issues, as a one-call constructor.
-    pub fn build(base_url: &str) -> Result<RestSource, Box<dyn std::error::Error>> {
-        let config = RestConfig::from_value(serde_json::json!({
+    pub fn build(base_url: &str) -> Result<Rest, Box<dyn std::error::Error>> {
+        let config = Config::from_value(serde_json::json!({
             "base_url": base_url,
             "streams": [
                 {"name": "repos", "path": "/repos", "pagination": {"type": "page"}},
@@ -330,6 +328,6 @@ mod composed_api {
                              "include": ["name"]}}
             ]
         }))?;
-        Ok(RestSource::new(config)?)
+        Ok(Rest::new(config)?)
     }
 }

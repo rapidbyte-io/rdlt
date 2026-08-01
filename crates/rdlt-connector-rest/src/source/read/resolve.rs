@@ -1,8 +1,8 @@
 //! Parent-child placeholder resolution: `{token}` substitution into
-//! path/params/body from a parent record's fields, plus
-//! the `_parent_<field>` embedding. Buffering is BOUNDED — only the
-//! referenced placeholder values and declared include fields, never whole
-//! parent records.
+//! path/params/body from a parent record's fields, plus the
+//! `_parent_<field>` embedding. Buffering is BOUNDED — only the referenced
+//! placeholder values and declared include fields, never whole parent
+//! records.
 
 use std::collections::BTreeMap;
 
@@ -10,19 +10,19 @@ use rdlt_connector::SourceError;
 use serde_json::Value;
 
 use crate::source::config::Parent;
-use crate::source::read::extract::Selector;
+use crate::source::select::{Selector, value_kind};
 
 /// One parent record's contribution: resolved placeholder values + the
 /// fields to embed into child records.
 #[derive(Debug, Clone)]
-pub struct ParentValues {
-    pub placeholders: BTreeMap<String, String>,
-    pub include: Vec<(String, Value)>,
+pub(crate) struct ParentValues {
+    pub(crate) placeholders: BTreeMap<String, String>,
+    pub(crate) include: Vec<(String, Value)>,
 }
 
 /// Extract every parent record's values from one parent PAGE (the parsed
 /// records the read loop already holds — never a reparse).
-pub fn collect_parent_values(
+pub(crate) fn parent_values(
     items: &[Value],
     parent: &Parent,
 ) -> Result<Vec<ParentValues>, SourceError> {
@@ -37,10 +37,10 @@ pub fn collect_parent_values(
                     "parent record lacks field `{field_path}` for placeholder `{{{token}}}`"
                 ))
             })?;
-            // Placeholders deliberately accept Bool (a `{active}` path segment
-            // renders `true`/`false`) as well as string and number; only
-            // container/null values are rejected — a distinct policy from the
-            // cursor scalar render, which is string-or-number only.
+            // Placeholders deliberately accept Bool (a `{active}` path
+            // segment renders `true`/`false`) as well as string and number;
+            // only container/null values are rejected — a distinct policy
+            // from the cursor scalar render, which is string-or-number only.
             let rendered = match value {
                 Value::String(s) => s.clone(),
                 Value::Number(n) => n.to_string(),
@@ -49,7 +49,7 @@ pub fn collect_parent_values(
                     return Err(SourceError::fatal(format!(
                         "parent field `{field_path}` for placeholder `{{{token}}}` is {} — \
                          placeholders take scalars",
-                        super::extract::json_kind(other)
+                        value_kind(other)
                     )));
                 }
             };
@@ -71,24 +71,26 @@ pub fn collect_parent_values(
 /// Substitute `{token}` occurrences into a URL PATH, percent-encoding each
 /// value so data cannot alter the request's structure.
 ///
-/// The values come from a parent stream's records — remote data. Substituted
-/// raw, a value containing `/`, `?`, `#` or `%` re-points the child request: an
-/// id of `../admin` walks up a path segment, `x?y=1` starts a query string.
-/// Only the substituted VALUE is encoded; the template's own separators are
-/// structure the operator wrote and must survive.
+/// The values come from a parent stream's records — remote data.
+/// Substituted raw, a value containing `/`, `?`, `#` or `%` re-points the
+/// child request: an id of `../admin` walks up a path segment, `x?y=1`
+/// starts a query string. Only the substituted VALUE is encoded; the
+/// template's own separators are structure the operator wrote and must
+/// survive.
 ///
-/// The escape set is RFC 3986 unreserved (`A-Z a-z 0-9 - . _ ~`), i.e. RFC 6570
-/// simple string expansion — the standard rule for a URI-template variable.
-/// Hand-rolled rather than pulling in a crate: it is nine lines and one table.
+/// The escape set is RFC 3986 unreserved (`A-Z a-z 0-9 - . _ ~`), i.e.
+/// RFC 6570 simple string expansion — the standard rule for a URI-template
+/// variable. Hand-rolled rather than pulling in a crate: it is nine lines
+/// and one table.
 ///
-/// With ONE addition the standard rule does not cover: a value that encodes to
-/// exactly `.` or `..` is a DOT SEGMENT, and the URL parser removes it — so
-/// `..` still walks up a path segment even though every character in it is
-/// unreserved. Those two values have their dots escaped as well, which keeps
-/// them a literal segment. Escaping `.` everywhere is not the answer: it is
-/// legitimate and common inside an ordinary id.
+/// With ONE addition the standard rule does not cover: a value that
+/// encodes to exactly `.` or `..` is a DOT SEGMENT, and the URL parser
+/// removes it — so `..` still walks up a path segment even though every
+/// character in it is unreserved. Those two values have their dots escaped
+/// as well, which keeps them a literal segment. Escaping `.` everywhere is
+/// not the answer: it is legitimate and common inside an ordinary id.
 pub(crate) fn substitute_path(template: &str, values: &BTreeMap<String, String>) -> String {
-    let mut out = template.to_owned();
+    let mut encoded_values = BTreeMap::new();
     for (token, value) in values {
         let mut encoded = String::with_capacity(value.len());
         for byte in value.bytes() {
@@ -102,21 +104,49 @@ pub(crate) fn substitute_path(template: &str, values: &BTreeMap<String, String>)
         if encoded == "." || encoded == ".." {
             encoded = encoded.replace('.', "%2E");
         }
-        out = out.replace(&format!("{{{token}}}"), &encoded);
+        encoded_values.insert(token.clone(), encoded);
     }
-    out
+    replace_tokens(template, &encoded_values)
 }
 
 /// Substitute `{token}` occurrences in a template string, VERBATIM.
 ///
 /// For query-parameter values and body strings only: `reqwest` and `serde`
-/// encode those themselves, so encoding here would double-encode them. Never
-/// use this for a path — see [`substitute_path`].
-pub fn substitute(template: &str, values: &BTreeMap<String, String>) -> String {
-    let mut out = template.to_owned();
-    for (token, value) in values {
-        out = out.replace(&format!("{{{token}}}"), value);
+/// encode those themselves, so encoding here would double-encode them.
+/// Never use this for a path — see [`substitute_path`].
+pub(crate) fn substitute(template: &str, values: &BTreeMap<String, String>) -> String {
+    replace_tokens(template, values)
+}
+
+/// ONE left-to-right pass over the TEMPLATE: each declared `{token}` is
+/// replaced with its value, an undeclared brace stays literal, and
+/// substituted text is never rescanned. Sequential per-token `.replace()`
+/// calls would rescan earlier substitutions — a parent value containing
+/// literal text shaped like another declared `{token}` (remote data) would
+/// then have that other field's value injected into it.
+fn replace_tokens(template: &str, values: &BTreeMap<String, String>) -> String {
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let after_brace = &rest[open + 1..];
+        let replaced = after_brace.find('}').and_then(|close| {
+            values
+                .get(&after_brace[..close])
+                .map(|value| (value, &after_brace[close + 1..]))
+        });
+        match replaced {
+            Some((value, remainder)) => {
+                out.push_str(value);
+                rest = remainder;
+            }
+            None => {
+                out.push('{');
+                rest = after_brace;
+            }
+        }
     }
+    out.push_str(rest);
     out
 }
 
@@ -139,18 +169,18 @@ pub(crate) fn substitute_body(body: &Value, values: &BTreeMap<String, String>) -
 
 /// Human-readable resolved-values summary for failure messages, so a child
 /// failure NAMES the parent's resolved values.
-pub fn describe(values: &BTreeMap<String, String>) -> String {
+pub(crate) fn describe(values: &BTreeMap<String, String>) -> String {
     values
         .iter()
-        .map(|(k, v)| format!("{k}={v}"))
+        .map(|(token, value)| format!("{token}={value}"))
         .collect::<Vec<_>>()
         .join(", ")
 }
 
 /// Embed `_parent_<field>` values into each child record of a page (the
-/// parsed values, consumed — no reparse) and serialize once.
-/// Collision with an existing child field is a typed error.
-pub fn embed_parent_fields(
+/// parsed values, consumed — no reparse) and serialize once. Collision
+/// with an existing child field is a typed error.
+pub(crate) fn embed(
     mut items: Vec<Value>,
     include: &[(String, Value)],
 ) -> Result<bytes::Bytes, SourceError> {
@@ -184,7 +214,7 @@ mod tests {
             stream: "parents".into(),
             placeholders: placeholders
                 .iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .map(|(token, path)| (token.to_string(), path.to_string()))
                 .collect(),
             include: include.iter().map(|s| s.to_string()).collect(),
         }
@@ -193,7 +223,7 @@ mod tests {
     #[test]
     fn collects_and_substitutes() {
         let records = [json!({"id": 7, "name": "ada", "org": {"slug": "acme"}})];
-        let values = collect_parent_values(
+        let values = parent_values(
             &records,
             &parent(&[("id", "id"), ("org", "org.slug")], &["name"]),
         )
@@ -208,36 +238,35 @@ mod tests {
 
     #[test]
     fn missing_field_and_non_scalar_are_typed() {
-        let err = collect_parent_values(&[json!({"id": [1, 2]})], &parent(&[("id", "id")], &[]))
+        let error = parent_values(&[json!({"id": [1, 2]})], &parent(&[("id", "id")], &[]))
             .unwrap_err()
             .to_string();
-        assert!(err.contains("an array"), "{err}");
-        let err = collect_parent_values(&[json!({"x": 1})], &parent(&[("id", "id")], &[]))
+        assert!(error.contains("an array"), "{error}");
+        let error = parent_values(&[json!({"x": 1})], &parent(&[("id", "id")], &[]))
             .unwrap_err()
             .to_string();
-        assert!(err.contains("lacks field `id`"), "{err}");
+        assert!(error.contains("lacks field `id`"), "{error}");
     }
 
     #[test]
     fn embeds_parent_fields_and_detects_collisions() {
-        let out =
-            embed_parent_fields(vec![json!({"a": 1})], &[("name".into(), json!("ada"))]).unwrap();
+        let out = embed(vec![json!({"a": 1})], &[("name".into(), json!("ada"))]).unwrap();
         let items: Vec<Value> = serde_json::from_slice(&out).unwrap();
         assert_eq!(items[0]["_parent_name"], "ada");
 
-        let err = embed_parent_fields(
+        let error = embed(
             vec![json!({"_parent_name": 1})],
             &[("name".into(), json!("x"))],
         )
         .unwrap_err()
         .to_string();
-        assert!(err.contains("collides"), "{err}");
+        assert!(error.contains("collides"), "{error}");
     }
 
     /// Parent values are REMOTE DATA. Substituted raw into a path they can
-    /// re-point the request: `../admin` walks up a segment, `x?y=1` starts a
-    /// query string. Only the value is encoded — the template's own separators
-    /// are structure the operator wrote.
+    /// re-point the request: `../admin` walks up a segment, `x?y=1` starts
+    /// a query string. Only the value is encoded — the template's own
+    /// separators are structure the operator wrote.
     #[test]
     fn a_path_value_cannot_restructure_the_request() {
         let mut values = BTreeMap::new();
@@ -247,8 +276,9 @@ mod tests {
             "/orgs/acme/users/..%2Fadmin"
         );
 
-        // `.` and `..` are unreserved, so a naive RFC 3986 encoder passes them
-        // through and the URL parser then REMOVES the segment — `..` walks up.
+        // `.` and `..` are unreserved, so a naive RFC 3986 encoder passes
+        // them through and the URL parser then REMOVES the segment — `..`
+        // walks up.
         for dots in [".", ".."] {
             let mut values = BTreeMap::new();
             values.insert("id".to_owned(), dots.to_owned());
@@ -266,18 +296,38 @@ mod tests {
             "/users/x%3Fy%3D1%23frag/events"
         );
 
-        // Unreserved characters pass through, so ordinary ids stay readable.
+        // Unreserved characters pass through, so ordinary ids stay
+        // readable.
         let mut values = BTreeMap::new();
         values.insert("id".to_owned(), "abc-123_x.y~z".to_owned());
         assert_eq!(substitute_path("/u/{id}", &values), "/u/abc-123_x.y~z");
     }
 
-    /// Query and body values keep going through verbatim — reqwest and serde
-    /// encode those, and encoding here would double-encode them.
+    /// Query and body values keep going through verbatim — reqwest and
+    /// serde encode those, and encoding here would double-encode them.
     #[test]
     fn query_and_body_substitution_stays_verbatim() {
         let mut values = BTreeMap::new();
         values.insert("id".to_owned(), "a b&c".to_owned());
         assert_eq!(substitute("{id}", &values), "a b&c");
+    }
+
+    /// Substitution is ONE pass over the TEMPLATE: a parent value whose
+    /// text happens to look like another declared placeholder arrives
+    /// verbatim — the other field's value must not be injected into it
+    /// (values are remote data; sequential per-token replacement rescans
+    /// earlier substitutions and corrupts exactly this case).
+    #[test]
+    fn a_value_resembling_another_token_is_not_resubstituted() {
+        let mut values = BTreeMap::new();
+        values.insert("a".to_owned(), "prefix-{z}-suffix".to_owned());
+        values.insert("z".to_owned(), "999".to_owned());
+        assert_eq!(substitute("{a}", &values), "prefix-{z}-suffix");
+        assert_eq!(
+            substitute("q={a}&r={z}", &values),
+            "q=prefix-{z}-suffix&r=999"
+        );
+        // Undeclared braces in the template stay literal.
+        assert_eq!(substitute("{missing}-{z}", &values), "{missing}-999");
     }
 }

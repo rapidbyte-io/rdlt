@@ -1,9 +1,9 @@
-//! Shared harness for the 014 wiremock suites: build a source from YAML,
-//! read one stream, collect rows + checkpoints.
+//! Shared harness for the wiremock suites: build a source from YAML, read
+//! one stream, collect rows + checkpoints.
 #![allow(dead_code)]
 
 use rdlt_connector::{Cursor, PushPayload, ReadRequest, Source, SourceError, records_channel};
-use rdlt_connector_rest::RestSource;
+use rdlt_connector_rest::source::Rest;
 
 pub struct ReadOutcome {
     pub rows: Vec<serde_json::Value>,
@@ -11,9 +11,10 @@ pub struct ReadOutcome {
     pub result: Result<(), SourceError>,
 }
 
-/// Read `stream` fully; panics only on harness plumbing, never on the read.
+/// Read `stream` fully; panics only on harness plumbing, never on the
+/// read.
 pub async fn read_stream(yaml: &str, stream: &str, since: Option<Cursor>) -> ReadOutcome {
-    let source = RestSource::from_yaml(yaml).expect("config parses");
+    let source = Rest::from_yaml(yaml).expect("config parses");
     let (out, mut input) = records_channel(1 << 20);
     let specs = source.streams().await.expect("streams");
     let spec = specs
@@ -28,10 +29,10 @@ pub async fn read_stream(yaml: &str, stream: &str, since: Option<Cursor>) -> Rea
     while let Some(push) = input.recv().await {
         match push.payload {
             PushPayload::RawJson(bytes) => {
-                let v: serde_json::Value = serde_json::from_slice(&bytes).expect("valid json");
-                rows.extend(v.as_array().expect("array").clone());
+                let value: serde_json::Value = serde_json::from_slice(&bytes).expect("valid json");
+                rows.extend(value.as_array().expect("array").clone());
             }
-            PushPayload::Checkpoint(c) => checkpoints.push(c),
+            PushPayload::Checkpoint(cursor) => checkpoints.push(cursor),
             _ => {}
         }
     }
@@ -58,11 +59,11 @@ pub async fn read_err(yaml: &str, stream: &str) -> String {
 
 /// One-stream REST config document: `base_url` plus a single stream named
 /// `name` at `path`. `extra` is the stream's remaining fields as raw YAML
-/// (records_path, pagination, response_actions, method/body, incremental, …);
-/// every line is indented to the stream's field column here, so callers write
-/// it flush-left and state only their per-test delta. `base_url` is always
-/// quoted — valid both for a live server URI and for a literal like
-/// `http://x` used by parse-only cases.
+/// (records_path, pagination, response_actions, method/body, incremental,
+/// …); every line is indented to the stream's field column here, so
+/// callers write it flush-left and state only their per-test delta.
+/// `base_url` is always quoted — valid both for a live server URI and for
+/// a literal like `http://x` used by parse-only cases.
 pub fn stream_yaml(base_url: &str, name: &str, path: &str, extra: &str) -> String {
     let mut doc =
         format!("base_url: \"{base_url}\"\nstreams:\n  - name: {name}\n    path: {path}\n");

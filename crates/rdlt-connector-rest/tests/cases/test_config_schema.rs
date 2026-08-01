@@ -2,7 +2,7 @@
 //! schema AND parser identically.
 
 use jsonschema::validator_for;
-use rdlt_connector_rest_v2::source::{Config, config_schema};
+use rdlt_connector_rest::source::{Config, config_schema};
 use serde_json::json;
 
 fn example() -> serde_json::Value {

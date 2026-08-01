@@ -8,7 +8,7 @@
 //! parent-child detail stream (`/pokemon/{name}`).
 
 use rdlt_connector_duckdb::dest::DuckDb;
-use rdlt_connector_rest::RestSource;
+use rdlt_connector_rest::source::Rest;
 use rdlt_engine::{Engine, EngineConfig};
 
 fn net_gated() -> bool {
@@ -43,7 +43,7 @@ streams:
       placeholders: {name: name}
       include: [name]
 "#;
-    let source = RestSource::from_yaml(yaml).expect("config");
+    let source = Rest::from_yaml(yaml).expect("config");
     let dir = tempfile::tempdir().unwrap();
     let dest = DuckDb::open(dir.path().join("poke.duckdb")).unwrap();
     let mut config = EngineConfig::new("pokeapi");
@@ -89,7 +89,7 @@ streams:
     records_path: results
     pagination: {type: next_url, next_url_path: next}
 "#;
-    let source = RestSource::from_yaml(yaml).expect("config");
+    let source = Rest::from_yaml(yaml).expect("config");
     let dir = tempfile::tempdir().unwrap();
     let dest = DuckDb::open(dir.path().join("colors.duckdb")).unwrap();
     let mut config = EngineConfig::new("poke-colors");

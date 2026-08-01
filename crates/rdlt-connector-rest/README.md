@@ -8,6 +8,14 @@ LIBRARY: named-API connectors (a Google-Search-Console-style wrapper) are
 built from the same public pieces, inheriting the client, the paginators,
 and the whole test discipline instead of re-implementing HTTP.
 
+`rdlt::connector::rest` and the CLI's `rest:` blocks resolve to this
+crate. It is the second-generation rewrite of the original
+`rdlt-connector-rest`, which it replaced wholesale: behavior, the config
+document vocabulary, error classification, and operational semantics are
+identical to the original; what changed is the Rust API — module paths,
+type names, and internal structure. The design record is
+`specs/026-rest-v2/plan.md`.
+
 The perf posture: a stream without `records_path` passes response bytes
 to the engine **byte-identical** (no parse/reserialize) — the flagship
 REST→Postgres benchmark rides this path.
@@ -41,13 +49,13 @@ source:
           - {status: 404, action: end_stream}
 ```
 
-Entry points: `RestSource::from_yaml(…)`, `RestConfig::from_yaml` /
+Entry points: `source::Rest::from_yaml(…)`, `source::Config::from_yaml` /
 `from_json` / `from_value` (the embedder seam — platforms holding configs
-as JSON documents pass `serde_json::Value` directly) + `RestSource::new`.
-The generated JSON schema (`config_schema()`) validates exactly what the
-parser accepts. All validation runs eagerly at parse — selector syntax,
-alias exclusivity, parent linkage — a bad document never reaches the
-network.
+as JSON documents pass `serde_json::Value` directly) + `source::Rest::new`.
+The generated JSON schema (`source::config_schema()`) validates exactly
+what the parser accepts. All validation runs eagerly at parse — selector
+syntax, alias exclusivity, parent linkage — a bad document never reaches
+the network.
 
 ## Source-level options
 
@@ -59,15 +67,16 @@ network.
 | `params` | map | `{}` | Query params on every request, merged UNDER stream params the same way. |
 | `max_concurrency` | int ≥ 1 | `1` | Concurrent child sequences during parent-child fan-out. `1` = strictly sequential. `0` is a typed error. Plain (parentless) streams always read sequentially. |
 | `min_request_interval_ms` | ms | `0` | Politeness floor: at least this long between request sends, across ALL streams and children of the source. |
-| `retry_after_cap_secs` | secs | `300` | A 429/503 carrying `Retry-After ≤ cap` is honored in-source — **one** wait, one retry per request. Anything beyond (or a second rate-limit) surfaces as a typed `RateLimited` error to the engine's retry budget. The source never free-loops. |
+| `retry_after_cap_secs` | secs | `300` | A 429/503 carrying `Retry-After ≤ cap` is honored in-source — **one** wait, one retry per request. A 429 beyond the cap (or a second rate-limit) surfaces as a typed `RateLimited` error to the engine's retry budget; a beyond-cap 503 surfaces as its classification, `Transient`. The source never free-loops. |
+| `request_timeout_secs` | secs ≥ 1 | `300` | Read deadline per request: the longest wait for the server to produce MORE bytes (resets on progress, so a large transfer that keeps moving never dies). `0` is refused — no configuration produces an unbounded wait. |
 | `max_pages` | int | `10000` | Per-sequence page guard; exceeding it is a typed error naming the stream (raise it for genuinely long streams). |
 | `streams` | list | required, non-empty | See Stream options. |
 
 ## Auth schemes
 
 Externally tagged: `auth: {bearer: {token: …}}` (YAML singleton-map and
-JSON alike; the pre-014 YAML tagged spelling `auth: !bearer` also still
-parses — frozen, RS6). Every credential field is a `Secret` — `Debug`/`Display`
+JSON alike; the legacy tagged spelling `auth: !bearer` also still
+parses — frozen). Every credential field is a `Secret` — `Debug`/`Display`
 render `***`, and the test suite grep-proves that no config/source/error
 rendering ever contains a secret substring.
 
@@ -78,7 +87,7 @@ rendering ever contains a secret substring.
 | `header` | `name`, `value` | Arbitrary header credential. |
 | `basic` | `username`, `password` | HTTP Basic. |
 | `api_key` | `name`, `key`, `location: header\|query` (default `header`) | Named credential as a header or query param. |
-| `oauth2_client_credentials` | `token_url`, `client_id`, `client_secret`, `scopes` (`[]`), `audience` (optional), `expiry_margin_secs` (`60`) | Client-credentials grant: token fetched lazily on first use, cached, refreshed `expiry_margin_secs` before expiry, single-flight (one fetch even under concurrent children). A 401 on a data request drops the cache and re-fetches **once**; a second 401 is fatal (wrong credentials, never a loop). Token-endpoint 5xx is transient (engine budget), 4xx fatal. |
+| `oauth2_client_credentials` | `token_url`, `client_id`, `client_secret`, `scopes` (`[]`), `audience` (optional), `expiry_margin_secs` (`60`) | Client-credentials grant: token fetched lazily on first use, cached, refreshed `expiry_margin_secs` before expiry, single-flight (one fetch even under concurrent children). A 401 on a data request drops the cache and re-fetches **once**; a second 401 is fatal (wrong credentials, never a loop). Token-endpoint 5xx is transient (engine budget), 429 is `RateLimited` with the server's Retry-After attached, other 4xx fatal. |
 
 ## Stream options
 
@@ -93,7 +102,7 @@ rendering ever contains a secret substring.
 | `records_path` | selector | absent | Where the records array lives: dot paths + `[*]` wildcards + `[N]` indices (`data.items[*].payload`). **Absent = the body IS the records array, streamed byte-identical (the perf path).** Unsupported syntax is a typed error at parse naming the subset; a non-matching path is a typed error naming the path and the response's top-level keys — except a wildcard over an existing EMPTY array, which is a legitimately empty page (the standard terminal-page shape). |
 | `pagination` | family block | `none` | See Pagination families. |
 | `incremental` | block | absent | See Incremental. |
-| `cursor_field`, `cursor_param` | strings | absent | FROZEN pre-014 aliases for `incremental.cursor_field`/`start_param` — old documents parse unchanged. Set together; mixing them with the block is a typed error. |
+| `cursor_field`, `cursor_param` | strings | absent | FROZEN legacy aliases for `incremental.cursor_field`/`start_param` — old documents parse unchanged. Set together; mixing them with the block is a typed error. |
 | `response_actions` | list | `[]` | See Response actions. |
 | `parent` | block | absent | See Parent-child. |
 | `primary_key` | [column] | absent | Declared key for merge identity downstream. |
@@ -102,8 +111,9 @@ rendering ever contains a secret substring.
 ## Pagination families
 
 `pagination: {type: <family>, …}`. Two guards protect **every** family: a
-page that would repeat the previous request byte-for-byte is a typed
-error (the API is not advancing), and `max_pages` bounds runaways. There
+page that would repeat ANY earlier request of the sequence byte-for-byte
+is a typed error (the API is not advancing — adjacent repeats and A→B→A
+cycles alike), and `max_pages` bounds runaways. There
 is deliberately **no auto-detection** — a wrong family fails typed, never
 guesses.
 
@@ -112,14 +122,15 @@ guesses.
 | `none` | — | Single request. |
 | `page` | `page_param` (`page`), `start` (`1`), `total_pages_path` / `total_count_path` (optional stop, mutually exclusive) | Empty page — or the declared total, which stops WITHOUT the extra empty-page request. |
 | `offset` | `offset_param` (`offset`), `limit_param` (`limit`), `page_size` (required), `total_count_path` (optional) | Short page, or the declared count. |
-| `cursor` | `cursor_path` (selector into the body), `cursor_param` | Cursor absent/null. The value rides the query for GET and the body for POST. |
+| `cursor` | `cursor_path` (selector into the body), `cursor_param` | Cursor absent/null. The value rides the query for GET (and body-less POST) and the body for POST. |
 | `header_cursor` | `header`, `cursor_param` | Response header absent. |
 | `next_url` | `next_url_path` (selector) | Absent/null. Absolute URLs followed verbatim; relative resolved against `base_url`. |
 | `link_header` | — | RFC5988 `Link: <…>; rel="next"` absent. |
 
-Custom schemes: implement the public `Paginator` trait
-(`first()` → params, `next(&PageContext)` → `Done` / `NextParams` /
-`NextUrl`) — the same seam the built-in families compile to.
+Custom schemes: implement the public `read::paginate::Paginator` trait
+(`initial_params()` → the first request's params,
+`decide(&paginate::Context)` → `Done` / `NextParams` / `NextUrl`) — the
+same seam the built-in families compile to.
 
 ## Incremental
 
@@ -186,17 +197,21 @@ Network/5xx → transient (the ENGINE retries within its budget); 429 →
 `RateLimited` carrying the server's `Retry-After`; other 4xx → fatal.
 In-source waits are bounded by construction: at most one Retry-After
 wait and one auth re-fetch per request. `min_request_interval_ms` paces
-all requests of the source.
+all data requests of the source; the OAuth2 token endpoint shares the
+read deadline but is deliberately not paced.
 
 ## Using it as a library
 
-The composition surface is public: `RestConfig`/`RestSource` (config
-generators — see the MiniHub example in `tests/children.rs`), the
-`Paginator` trait for API quirks, `Secret` for credentials, and
-`config_schema()` for embedders. A wrapper connector writes **no** HTTP.
+The composition surface is public: `source::Config`/`source::Rest`
+(config generators — see the MiniHub example in
+`tests/cases/test_children.rs`), the `read::paginate::Paginator` trait
+for API quirks, `rdlt_connector::Secret` for credentials, and
+`source::config_schema()` for embedders. A wrapper connector writes **no** HTTP.
 
 ## Verification records
 
+`specs/026-rest-v2/plan.md` — this crate's design record: the frozen
+surfaces, the rename ledger, and the review rounds.
 `specs/014-rest-completeness/matrix.md` — parameter traceability, zero
 uncited rows. `specs/014-rest-completeness/dlt-parity.md` — paginator/
 auth/config mapping against dlt 1.29.0 with deliberate deviations named.

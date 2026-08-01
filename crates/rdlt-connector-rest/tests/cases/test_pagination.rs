@@ -264,7 +264,7 @@ async fn pre_014_pagination_spellings_parse() {
         "base_url: http://x\nstreams:\n  - name: a\n    path: /a\n    pagination: {type: offset, page_size: 10}\n",
         "base_url: http://x\nstreams:\n  - name: a\n    path: /a\n",
     ] {
-        rdlt_connector_rest_v2::source::Config::from_yaml(yaml).expect("pre-014 spelling parses");
+        rdlt_connector_rest::source::Config::from_yaml(yaml).expect("pre-014 spelling parses");
     }
 }
 

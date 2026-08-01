@@ -40,7 +40,7 @@ pub use rdlt_core::{
 /// The bundled connectors, one module per system — the same pattern as the
 /// crates themselves (`rdlt-connector-<system>`). A system module exposes
 /// everything it has: `connector::postgres::{source, destination, tls}`,
-/// `connector::rest::RestSource`, `connector::duckdb::DuckDb`, etc.
+/// `connector::rest::source::Rest`, `connector::duckdb::DuckDb`, etc.
 pub mod connector {
     #[cfg(feature = "duckdb")]
     pub use rdlt_connector_duckdb as duckdb;

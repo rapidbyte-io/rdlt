@@ -8,8 +8,8 @@
 use std::time::Duration;
 
 use rdlt_connector::{ReadRequest, Source, SourceError, records_channel};
-use rdlt_connector_rest_v2::source::Config;
-use rdlt_connector_rest_v2::source::Rest;
+use rdlt_connector_rest::source::Config;
+use rdlt_connector_rest::source::Rest;
 use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};

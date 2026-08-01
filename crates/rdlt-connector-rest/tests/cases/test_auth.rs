@@ -1,9 +1,7 @@
 //! Feature 014 US1 (T006): auth schemes — attachment, the OAuth2 token
 //! lifecycle, and the secret grep-proof (contracts RS3/RS4).
 
-mod common;
-
-use common::{read_ok, read_stream};
+use super::common::{read_ok, read_stream};
 use serde_json::json;
 use wiremock::matchers::{body_string_contains, header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -57,7 +55,7 @@ async fn pre_014_tagged_auth_spelling_parses_and_attaches() {
         "base_url: http://x\nauth: !basic\n  username: u\n  password: p\nstreams:\n  - name: a\n    path: /a\n",
         "base_url: http://x\nauth: !header\n  name: x-k\n  value: v\nstreams:\n  - name: a\n    path: /a\n",
     ] {
-        rdlt_connector_rest::RestConfig::from_yaml(yaml)
+        rdlt_connector_rest::source::Config::from_yaml(yaml)
             .unwrap_or_else(|e| panic!("pre-014 tagged spelling must parse: {e}\n{yaml}"));
     }
     let server = MockServer::start().await;
@@ -213,6 +211,45 @@ streams:
     }
 }
 
+/// A rate-limited token endpoint classifies exactly like a rate-limited
+/// data request: `RateLimited` carrying the server's Retry-After, for the
+/// engine's backoff — NEVER fatal, which would abort the run over an
+/// ordinary shared-issuer limit.
+#[tokio::test]
+async fn oauth2_token_endpoint_429_is_rate_limited() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "7"))
+        .mount(&server)
+        .await;
+    let yaml = format!(
+        r#"
+base_url: "{0}"
+auth:
+  oauth2_client_credentials:
+    token_url: "{0}/token"
+    client_id: cid
+    client_secret: shh
+streams:
+  - name: items
+    path: /items
+"#,
+        server.uri()
+    );
+    let outcome = read_stream(&yaml, "items", None).await;
+    match outcome.result {
+        Err(rdlt_connector::SourceError::RateLimited { retry_after, .. }) => {
+            assert_eq!(
+                retry_after,
+                Some(std::time::Duration::from_secs(7)),
+                "the issuer's Retry-After reaches the engine"
+            );
+        }
+        other => panic!("expected RateLimited, got {other:?}"),
+    }
+}
+
 /// Source-level headers and params ride every request, merged UNDER the
 /// stream's own (same name → the stream's value wins, exactly once).
 #[tokio::test]
@@ -271,9 +308,9 @@ async fn secrets_never_render_anywhere() {
         ),
     ] {
         let yaml = one_item_stream(&server, auth);
-        let config = rdlt_connector_rest::RestConfig::from_yaml(&yaml).expect("parses");
+        let config = rdlt_connector_rest::source::Config::from_yaml(&yaml).expect("parses");
         let rendered_config = format!("{config:?}");
-        let source = rdlt_connector_rest::RestSource::new(config).expect("valid config");
+        let source = rdlt_connector_rest::source::Rest::new(config).expect("valid config");
         let rendered_source = format!("{source:?}");
         let outcome = read_stream(&yaml, "items", None).await;
         let rendered_err = outcome.result.expect_err("500s fail").to_string();

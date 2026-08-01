@@ -11,6 +11,34 @@ integrity first (this feature), house style second.
 
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
+`specs/026-rest-v2/plan.md` (feature: REST SECOND GENERATION — COMPLETE,
+SWAPPED IN, and MERGED, the second application of the 025 playbook.
+Written greenfield as `rdlt-connector-rest-v2` (no code copied from
+generation 1), gated clean while both generations coexisted, taken
+through a THREE-ROUND adversarial review loop, then — owner decision —
+generation 1 was DELETED and this crate renamed to
+`rdlt-connector-rest`. Same complete functionality; the Rust API is
+renamed by 025's seven naming rules with the ledger in the plan
+(`source::Rest`/`source::Config`, `http::Client`/`http::Credentials`,
+`paginate::{Paginator, Context, Decision, Error}`; NO crate-root
+re-exports — module paths are canonical; the JSONPath-subset selector
+HOISTED to `source::select`, removing gen 1's config→read layering
+inversion). FROZEN and verified: the whole YAML document vocabulary
+including the legacy tagged-auth form and flat cursor aliases, error
+classification, crash-point IDs `rest.request`/`rest.decode`/
+`rest.checkpoint`, cursor semantics, wire behavior (merge precedence,
+POST-body page params, percent-encoding + dot-segment escape, the
+fingerprint loop guard, the 64KiB action window, Link parsing). THREE
+defects inherited from generation 1 were found by review and fixed
+parity-safe, each pinned: sequential placeholder substitution let a
+parent value shaped like another `{token}` have that field's value
+injected (now ONE left-to-right template pass); an OAuth2 token-endpoint
+429 was run-aborting fatal (now RateLimited carrying Retry-After); child
+fan-out context double-framed the classification (context now wraps the
+INNER cause). Every generation-1 test ported byte-identical and passed
+as written. plan.md carries STATUS, the SWAP-IN record, decisions D1-D6,
+frozen surfaces, and the three REVIEW ROUNDS.)
+Previous feature 025 for reference:
 `specs/025-postgres-v2/plan.md` (feature: POSTGRES SECOND GENERATION —
 COMPLETE, SWAPPED IN, and MERGED. Written greenfield as
 `rdlt-connector-postgres-v2` (no code copied from generation 1), gated

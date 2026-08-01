@@ -1,4 +1,4 @@
-//! Standalone mock API for the REST→Postgres benchmark cell (feature 003 R29).
+//! Standalone mock API for the REST→Postgres benchmark cell.
 //!
 //! Serves the flagship nested-record shape over page-number pagination:
 //! `GET /events?page=N` (1-based) → a bare JSON array; past the last page → `[]`.

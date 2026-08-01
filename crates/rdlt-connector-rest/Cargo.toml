@@ -11,6 +11,9 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+failpoints = ["rdlt-connector/failpoints", "rdlt-connector-duckdb/failpoints"]
+
 [dependencies]
 rdlt-connector = { workspace = true, features = ["schema"] }
 schemars = { workspace = true }
@@ -36,6 +39,3 @@ wiremock = { workspace = true }
 
 [lints]
 workspace = true
-
-[features]
-failpoints = ["rdlt-connector/failpoints", "rdlt-connector-duckdb/failpoints"]

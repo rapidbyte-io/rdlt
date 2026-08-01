@@ -114,7 +114,6 @@ else ifeq ($(TARGET),sweep)
 	cargo nextest run -p rdlt-connector-postgres --features failpoints -E 'binary(source_crash_sweep) or binary(destination_crash_sweep) or binary(cdc_crash_sweep)'
 	cargo nextest run -p rdlt-connector-duckdb --features failpoints -E 'binary(sweep)'
 	cargo nextest run -p rdlt-connector-rest --features failpoints -E 'binary(sweep)'
-	cargo nextest run -p rdlt-connector-rest-v2 --features failpoints -E 'binary(sweep)'
 	cargo nextest run -p rdlt-connector-file --features failpoints -E 'binary(sweep)'
 	cargo nextest run -p rdlt-connector-iceberg --features failpoints -E 'binary(sweep)'
 else ifeq ($(TARGET),prop)
