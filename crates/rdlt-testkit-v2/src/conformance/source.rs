@@ -129,56 +129,59 @@ pub async fn verify_source<S: Source>(source: &S) -> Vec<ConformanceFailure> {
     }
 
     for spec in &streams {
-        // Baseline full read.
-        let full = match read_all(source, spec, None).await {
-            Ok(observed) => observed,
+        // Baseline full read, feeding the resume law. S4 below runs for
+        // EVERY stream regardless of this block's outcome — cancellation
+        // behavior is independent of whether the stream reads or
+        // checkpoints, and skipping it here would under-report a
+        // non-conformant stream's failures (generation 1 did exactly
+        // that, pinned by `both_s2_and_s4_are_reported_independently`).
+        match read_all(source, spec, None).await {
             Err(e) => {
                 failures.push(fail("S1", format!("stream `{}`: {e}", spec.name)));
-                continue;
             }
-        };
-
-        let checkpoints = full.checkpoints();
-        if checkpoints.is_empty() {
-            failures.push(fail(
-                "S2",
-                format!(
-                    "stream `{}` never checkpoints — resume (S1) cannot be certified \
-                     and every restart re-reads everything",
-                    spec.name
-                ),
-            ));
-            continue;
-        }
-
-        // S1 + S2 as one law: for every checkpoint c,
-        //   full_read == rows_covered_by(c) ++ read(since = c).
-        for cursor in &checkpoints {
-            let resumed = match read_all(source, spec, Some(cursor.clone())).await {
-                Ok(observed) => observed,
-                Err(e) => {
+            Ok(full) => {
+                let checkpoints = full.checkpoints();
+                if checkpoints.is_empty() {
                     failures.push(fail(
-                        "S1",
-                        format!("stream `{}` resume from {cursor:?}: {e}", spec.name),
+                        "S2",
+                        format!(
+                            "stream `{}` never checkpoints — resume (S1) cannot be certified \
+                             and every restart re-reads everything",
+                            spec.name
+                        ),
                     ));
-                    continue;
                 }
-            };
-            let mut expected = full.rows_covered_by(cursor);
-            let suffix = resumed.all_rows();
-            expected.extend(suffix.iter().cloned());
-            if expected != full.all_rows() {
-                failures.push(fail(
-                    "S1",
-                    format!(
-                        "stream `{}`: read(since={cursor:?}) must emit exactly the rows \
-                         after that checkpoint — prefix+resume ({} rows) != full read \
-                         ({} rows, or content differs)",
-                        spec.name,
-                        expected.len(),
-                        full.all_rows().len(),
-                    ),
-                ));
+
+                // S1 + S2 as one law: for every checkpoint c,
+                //   full_read == rows_covered_by(c) ++ read(since = c).
+                for cursor in &checkpoints {
+                    let resumed = match read_all(source, spec, Some(cursor.clone())).await {
+                        Ok(observed) => observed,
+                        Err(e) => {
+                            failures.push(fail(
+                                "S1",
+                                format!("stream `{}` resume from {cursor:?}: {e}", spec.name),
+                            ));
+                            continue;
+                        }
+                    };
+                    let mut expected = full.rows_covered_by(cursor);
+                    let suffix = resumed.all_rows();
+                    expected.extend(suffix.iter().cloned());
+                    if expected != full.all_rows() {
+                        failures.push(fail(
+                            "S1",
+                            format!(
+                                "stream `{}`: read(since={cursor:?}) must emit exactly the rows \
+                                 after that checkpoint — prefix+resume ({} rows) != full read \
+                                 ({} rows, or content differs)",
+                                spec.name,
+                                expected.len(),
+                                full.all_rows().len(),
+                            ),
+                        ));
+                    }
+                }
             }
         }
 

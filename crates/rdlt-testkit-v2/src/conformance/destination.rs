@@ -136,8 +136,12 @@ pub async fn verify_destination<D: Destination>(
     let schema = fixture_schema("rdlt_conf_t");
 
     // ---- D6: a fresh pipeline has no state ----
+    // Setup failures carry the clause they are setting up (here D6, below
+    // D1) — generation 1 labelled every open "D4" and sent an author whose
+    // open fails to investigate teardown semantics that were never
+    // reached.
     let mut session = try_step!(
-        "D4",
+        "D6",
         "open failed",
         dest.open(OpenContext::new(
             PipelineId::new("rdlt-conf-fresh"),
@@ -159,7 +163,7 @@ pub async fn verify_destination<D: Destination>(
 
     // ---- D1: staged writes are invisible before commit ----
     let mut session1 = try_step!(
-        "D4",
+        "D1",
         "open failed",
         dest.open(OpenContext::new(pipeline.clone(), load_a.clone()))
             .await

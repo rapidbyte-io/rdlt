@@ -508,6 +508,30 @@ Dossier verified against the live tree before writing:
   scanner-selfcheck with its per-crate EXPECTED_DIRECT_NAMES counts
   unchanged (same tree scanned).
 
+WAVE 3 REVIEW ROUND (two lenses). PARITY lens: all eight areas CLEAN —
+gate probe order, fixtures (StateDoc::new verified field-for-field
+against gen 1's hand-built literal), clause renderings, both
+conformance harnesses, injector, scanner machinery, and the memory
+connectors' full commit algorithm byte-identical; the only differences
+are the ledgered ones. FRESH-EYES lens: two defects found, BOTH
+INHERITED from generation 1 (verified present there), fixed
+parity-safe per the 026 precedent and pinned:
+(1) the S2/S1 `continue` skipped the S4 cancellation check for any
+stream that failed an earlier clause — a stream that never checkpoints
+AND hangs on a closed channel reported only S2; S4 now runs for EVERY
+stream (pin: `both_s2_and_s4_are_reported_independently`).
+(2) every `open()` failure was labelled clause D4, sending an author
+whose open fails (credentials, config) to investigate teardown
+semantics never reached; setup failures now carry the clause they set
+up — D6 for the fresh-state open, D1 for the first-session open, D4
+kept for the genuine teardown open (pin:
+`an_open_failure_is_attributed_to_the_clause_it_sets_up`).
+The fresh-eyes lens also VERIFIED (not flagged): the read_all select
+loop cannot drop pushes or deadlock, the D8 merge-key fixture is
+correct against sqlcore's identity routing, injector once-only
+semantics hold under Clone. After the round: 8 tests + doctest, zero
+warnings, fmt/clippy/rustdoc clean.
+
 ## Waves (each ends with a clean full gate)
 
 1. `rdlt-connector` rewritten; consumers ported (engine, 6 connectors,
