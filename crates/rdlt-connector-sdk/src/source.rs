@@ -144,6 +144,37 @@ pub fn shell<C: SourceConnector>(connector: C) -> SourceShell<C> {
     SourceShell { connector }
 }
 
+/// The from-text constructor family every connector used to hand-roll —
+/// written once, here: parse (through the config's [`Document`] gate),
+/// assemble, shell. `SourceShell::<Rest>::from_yaml(yaml)` is a running
+/// SPI source in one call.
+impl<C: SourceConnector> SourceShell<C> {
+    /// Validate an already-parsed document, assemble, and shell — the
+    /// entry for a caller holding a config VALUE rather than text (a
+    /// hand-built or programmatically composed document has not passed
+    /// any gate yet, so this one validates).
+    pub fn new(config: C::Config) -> Result<Self, <C::Config as Document>::Error> {
+        config.validate()?;
+        Ok(shell(C::assemble(config)?))
+    }
+
+    /// Parse YAML text, validate, assemble, shell.
+    pub fn from_yaml(yaml: &str) -> Result<Self, <C::Config as Document>::Error> {
+        Ok(shell(C::assemble(C::Config::from_yaml(yaml)?)?))
+    }
+
+    /// Parse JSON text, validate, assemble, shell.
+    pub fn from_json(json: &str) -> Result<Self, <C::Config as Document>::Error> {
+        Ok(shell(C::assemble(C::Config::from_json(json)?)?))
+    }
+
+    /// The embedder entry point: an already-parsed `serde_json::Value`
+    /// straight through the same gate.
+    pub fn from_value(value: serde_json::Value) -> Result<Self, <C::Config as Document>::Error> {
+        Ok(shell(C::assemble(C::Config::from_value(value)?)?))
+    }
+}
+
 #[async_trait]
 impl<C: SourceConnector> Source for SourceShell<C> {
     fn spec(&self) -> ConnectorSpec {
@@ -183,15 +214,24 @@ mod tests {
         Yaml(#[from] serde_yaml::Error),
         #[error("probe json: {0}")]
         Json(#[from] serde_json::Error),
+        #[error("probe config: {0}")]
+        Invalid(String),
     }
 
     impl Document for ProbeConfig {
         type Error = ProbeError;
         fn validate(&self) -> Result<(), Self::Error> {
+            if self.row < 0 {
+                return Err(ProbeError::Invalid(format!(
+                    "`row` is {} — negatives are refused",
+                    self.row
+                )));
+            }
             Ok(())
         }
     }
 
+    #[derive(Debug)]
     struct Probe {
         row: i64,
     }
@@ -295,6 +335,32 @@ mod tests {
             rdlt_connector::PushPayload::Arrow(batch) => assert_eq!(batch.num_rows(), 3),
             other => panic!("arrow stays arrow: {other:?}"),
         }
+    }
+
+    /// The shell's from-text constructor family runs the whole path —
+    /// parse through the Document gate, assemble, shell — and `new`
+    /// validates a hand-built document rather than trusting it.
+    #[tokio::test]
+    async fn the_shell_constructors_run_the_document_gate() {
+        let from_yaml = SourceShell::<Probe>::from_yaml("row: 7").expect("valid yaml");
+        assert_eq!(from_yaml.spec().name, "probe");
+        let from_json = SourceShell::<Probe>::from_json("{\"row\": 7}").expect("valid json");
+        assert_eq!(from_json.spec().name, "probe");
+        let from_value =
+            SourceShell::<Probe>::from_value(serde_json::json!({"row": 7})).expect("valid value");
+        assert_eq!(from_value.spec().name, "probe");
+
+        let parse = SourceShell::<Probe>::from_yaml(": not yaml").unwrap_err();
+        assert!(
+            parse.to_string().starts_with("probe yaml: "),
+            "the connector's own parse framing survives: {parse}"
+        );
+        let refused = SourceShell::<Probe>::new(ProbeConfig { row: -1 }).unwrap_err();
+        assert_eq!(
+            refused.to_string(),
+            "probe config: `row` is -1 — negatives are refused",
+            "new() validates the hand-built document"
+        );
     }
 
     /// A connector that DOES declare a schema and a real probe sees both

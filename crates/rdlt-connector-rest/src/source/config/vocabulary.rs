@@ -455,31 +455,6 @@ impl From<TypeHint> for LogicalType {
     }
 }
 
-impl Config {
-    pub fn from_yaml(yaml: &str) -> Result<Self, ConfigError> {
-        let config: Config = serde_yaml::from_str(yaml)?;
-        config.validate()?;
-        Ok(config)
-    }
-
-    /// JSON text form — same document shape and validation as YAML.
-    pub fn from_json(json: &str) -> Result<Self, ConfigError> {
-        let config: Config = serde_json::from_str(json)?;
-        config.validate()?;
-        Ok(config)
-    }
-
-    /// The embedder entry point: a platform holding connector configs as
-    /// JSON documents (validated against the connector's declared config
-    /// schema) passes the `serde_json::Value` directly — no string
-    /// round-trip, same validation as every other entry point.
-    pub fn from_value(value: serde_json::Value) -> Result<Self, ConfigError> {
-        let config: Config = serde_json::from_value(value)?;
-        config.validate()?;
-        Ok(config)
-    }
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     #[error("invalid REST source YAML: {0}")]

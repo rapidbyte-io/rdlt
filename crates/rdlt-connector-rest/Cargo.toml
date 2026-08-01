@@ -16,6 +16,7 @@ failpoints = ["rdlt-connector/failpoints", "rdlt-connector-duckdb/failpoints"]
 
 [dependencies]
 rdlt-connector = { workspace = true, features = ["schema"] }
+rdlt-connector-sdk = { workspace = true }
 schemars = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }

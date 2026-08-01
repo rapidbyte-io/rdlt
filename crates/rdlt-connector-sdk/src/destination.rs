@@ -158,6 +158,36 @@ pub fn shell<C: DestinationConnector>(connector: C) -> DestinationShell<C> {
     DestinationShell { connector }
 }
 
+/// The from-text constructor family every connector used to hand-roll —
+/// written once, here: parse (through the config's [`Document`] gate),
+/// assemble, shell.
+impl<C: DestinationConnector> DestinationShell<C> {
+    /// Validate an already-parsed document, assemble, and shell — the
+    /// entry for a caller holding a config VALUE rather than text (a
+    /// hand-built document has not passed any gate yet, so this one
+    /// validates).
+    pub fn new(config: C::Config) -> Result<Self, <C::Config as Document>::Error> {
+        config.validate()?;
+        Ok(shell(C::assemble(config)?))
+    }
+
+    /// Parse YAML text, validate, assemble, shell.
+    pub fn from_yaml(yaml: &str) -> Result<Self, <C::Config as Document>::Error> {
+        Ok(shell(C::assemble(C::Config::from_yaml(yaml)?)?))
+    }
+
+    /// Parse JSON text, validate, assemble, shell.
+    pub fn from_json(json: &str) -> Result<Self, <C::Config as Document>::Error> {
+        Ok(shell(C::assemble(C::Config::from_json(json)?)?))
+    }
+
+    /// The embedder entry point: an already-parsed `serde_json::Value`
+    /// straight through the same gate.
+    pub fn from_value(value: serde_json::Value) -> Result<Self, <C::Config as Document>::Error> {
+        Ok(shell(C::assemble(C::Config::from_value(value)?)?))
+    }
+}
+
 #[async_trait]
 impl<C: DestinationConnector> Destination for DestinationShell<C> {
     fn spec(&self) -> ConnectorSpec {
@@ -266,6 +296,7 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
     struct Probe;
     struct ProbeBackend;
 
@@ -332,6 +363,19 @@ mod tests {
         async fn connect(&self, _context: &OpenContext) -> Result<ProbeBackend, DestinationError> {
             Ok(ProbeBackend)
         }
+    }
+
+    /// The from-text constructor family works end to end on the
+    /// destination shell too.
+    #[tokio::test]
+    async fn the_shell_constructors_run_the_document_gate() {
+        let from_yaml = DestinationShell::<Probe>::from_yaml("{}").expect("valid yaml");
+        assert_eq!(from_yaml.spec().name, "probe");
+        let from_value =
+            DestinationShell::<Probe>::from_value(serde_json::json!({})).expect("valid value");
+        assert_eq!(from_value.spec().name, "probe");
+        let parse = DestinationShell::<Probe>::from_json("not json").unwrap_err();
+        assert!(parse.to_string().starts_with("probe json: "), "{parse}");
     }
 
     /// The shell serves spec, capabilities, and check from the

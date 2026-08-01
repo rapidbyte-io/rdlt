@@ -4,7 +4,8 @@
 use super::common::read_err;
 use rdlt_connector::SourceError;
 use rdlt_connector_duckdb::dest::DuckDb;
-use rdlt_connector_rest::source::Rest;
+use rdlt_connector_rest::source::Shell;
+use rdlt_connector_sdk::config::Document;
 use rdlt_engine::{Engine, EngineConfig};
 use serde_json::json;
 use wiremock::matchers::{method, path, query_param};
@@ -67,7 +68,7 @@ streams:
 #[tokio::test(flavor = "multi_thread")]
 async fn parent_child_reads_through_the_engine() {
     let server = nested_api().await;
-    let source = Rest::from_yaml(&nested_yaml(&server.uri())).expect("config");
+    let source = Shell::from_yaml(&nested_yaml(&server.uri())).expect("config");
     let dir = tempfile::tempdir().unwrap();
     let dest = DuckDb::open(dir.path().join("nested.duckdb")).unwrap();
     let mut config = EngineConfig::new("nested");
@@ -314,10 +315,11 @@ async fn zero_max_concurrency_rejected_at_parse() {
 /// surface — the shape a Google-Search-Console-style wrapper takes. No raw
 /// HTTP anywhere; auth/pagination/extraction/engine wiring all inherited.
 mod composed_api {
-    use rdlt_connector_rest::source::{Config, Rest};
+    use rdlt_connector_rest::source::{Config, Shell};
+    use rdlt_connector_sdk::config::Document;
 
     /// "MiniHub": repos + their issues, as a one-call constructor.
-    pub fn build(base_url: &str) -> Result<Rest, Box<dyn std::error::Error>> {
+    pub fn build(base_url: &str) -> Result<Shell, Box<dyn std::error::Error>> {
         let config = Config::from_value(serde_json::json!({
             "base_url": base_url,
             "streams": [
@@ -328,6 +330,6 @@ mod composed_api {
                              "include": ["name"]}}
             ]
         }))?;
-        Ok(Rest::new(config)?)
+        Ok(Shell::new(config)?)
     }
 }

@@ -3,6 +3,7 @@
 
 use jsonschema::validator_for;
 use rdlt_connector_rest::source::{Config, config_schema};
+use rdlt_connector_sdk::config::Document;
 use serde_json::json;
 
 fn example() -> serde_json::Value {

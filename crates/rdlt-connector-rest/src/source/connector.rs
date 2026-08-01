@@ -1,10 +1,10 @@
-//! The SPI face: [`Rest`] implements `Source` over a validated [`Config`]
-//! and one shared [`http::Client`].
+//! The framework face: [`Rest`] implements the sdk's `SourceConnector`
+//! over a validated [`Config`] and one shared [`http::Client`]; the sdk's
+//! shell provides the SPI ([`super::Shell`]).
 
 use async_trait::async_trait;
-use rdlt_connector::{
-    ConnectorSpec, ReadRequest, Source, SourceError, StreamSpec, core::StreamName,
-};
+use rdlt_connector::{Cursor, SourceError, StreamSpec, core::StreamName};
+use rdlt_connector_sdk::source::{Feed, SourceConnector};
 
 use super::config::{self, Config, Stream};
 use super::http::{Client, Credentials};
@@ -19,33 +19,19 @@ pub struct Rest {
 }
 
 impl Rest {
-    pub fn from_yaml(yaml: &str) -> Result<Self, config::ConfigError> {
-        Self::assemble(Config::from_yaml(yaml)?)
+    fn stream_config(&self, name: &StreamName) -> Option<&Stream> {
+        self.config.streams.iter().find(|s| s.name == name.as_str())
     }
+}
 
-    pub fn from_json(json: &str) -> Result<Self, config::ConfigError> {
-        Self::assemble(Config::from_json(json)?)
-    }
+#[async_trait]
+impl SourceConnector for Rest {
+    const NAME: &'static str = "rest";
+    const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
-    /// Embedder entry point (see [`Config::from_value`]).
-    pub fn from_value(value: serde_json::Value) -> Result<Self, config::ConfigError> {
-        Self::assemble(Config::from_value(value)?)
-    }
+    type Config = Config;
 
-    /// Construct from an already-parsed [`Config`], validating it first —
-    /// the canonical entry when a caller holds a config value rather than
-    /// serialized text. Validation makes the read path's invariants real
-    /// (selectors parse, `max_concurrency >= 1`, parent-stream
-    /// membership), so nothing downstream has to re-check or paper over
-    /// them.
-    pub fn new(config: Config) -> Result<Self, config::ConfigError> {
-        config.validate()?;
-        Self::assemble(config)
-    }
-
-    /// Wire up the HTTP client for a config already known valid (the
-    /// `from_*` text constructors validate as they parse; [`Self::new`]
-    /// validates too).
+    /// Wire up the HTTP client for a validated config.
     fn assemble(config: Config) -> Result<Self, config::ConfigError> {
         // ONE reqwest client for the whole source, so the deadline covers
         // the token fetch as well as the data requests. Its construction is
@@ -83,17 +69,8 @@ impl Rest {
         Ok(Self { config, client })
     }
 
-    fn stream_config(&self, name: &StreamName) -> Option<&Stream> {
-        self.config.streams.iter().find(|s| s.name == name.as_str())
-    }
-}
-
-#[async_trait]
-impl Source for Rest {
-    fn spec(&self) -> ConnectorSpec {
-        let mut spec = ConnectorSpec::new("rest", env!("CARGO_PKG_VERSION"));
-        spec.config_schema = Some(config::config_schema());
-        spec
+    fn config_schema() -> Option<serde_json::Value> {
+        Some(config::config_schema())
     }
 
     async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
@@ -117,17 +94,15 @@ impl Source for Rest {
             .collect())
     }
 
-    async fn read(&self, mut request: ReadRequest) -> Result<(), SourceError> {
+    async fn read_stream(
+        &self,
+        stream: &StreamSpec,
+        since: Option<Cursor>,
+        feed: &mut Feed,
+    ) -> Result<(), SourceError> {
         let stream = self
-            .stream_config(&request.stream.name)
-            .ok_or_else(|| SourceError::fatal(format!("unknown stream {}", request.stream.name)))?;
-        read::deliver(
-            &self.config,
-            &self.client,
-            stream,
-            request.since.as_ref(),
-            &mut request.out,
-        )
-        .await
+            .stream_config(&stream.name)
+            .ok_or_else(|| SourceError::fatal(format!("unknown stream {}", stream.name)))?;
+        read::deliver(&self.config, &self.client, stream, since.as_ref(), feed).await
     }
 }

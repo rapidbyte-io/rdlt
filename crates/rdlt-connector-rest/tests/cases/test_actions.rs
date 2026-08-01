@@ -1,6 +1,7 @@
 //! Feature 014 US1 (T005/T007): selectors, response actions, POST bodies.
 
 use super::common::{read_err, read_ok, read_stream, stream_yaml};
+use rdlt_connector_sdk::config::Document;
 use serde_json::json;
 use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};

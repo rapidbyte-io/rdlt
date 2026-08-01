@@ -3,20 +3,21 @@
 //! checkpoints.
 
 use rdlt_connector::core::crash_point;
-use rdlt_connector::{Cursor, RecordsOut, SourceError};
+use rdlt_connector::{Cursor, SourceError};
+use rdlt_connector_sdk::source::Feed;
 
 use super::sequence::Sequence;
 use crate::source::config::{Config, Incremental, Stream};
 use crate::source::http::Client;
 use crate::source::select::Selector;
 
-/// Read one stream (with parent fan-out when declared) into `out`.
+/// Read one stream (with parent fan-out when declared) into `feed`.
 pub(crate) async fn deliver(
     config: &Config,
     client: &Client,
     stream: &Stream,
     since: Option<&Cursor>,
-    out: &mut RecordsOut,
+    feed: &mut Feed,
 ) -> Result<(), SourceError> {
     let incremental = stream.effective_incremental();
     let since_value: Option<String> =
@@ -29,7 +30,7 @@ pub(crate) async fn deliver(
 
     match &stream.parent {
         None => {
-            deliver_sequence(config, client, stream, &incremental, &mut max_cursor, out).await?;
+            deliver_sequence(config, client, stream, &incremental, &mut max_cursor, feed).await?;
         }
         Some(parent_link) => {
             // Fan-out: re-read the parent stream's pages (a fresh,
@@ -68,7 +69,7 @@ pub(crate) async fn deliver(
                 &start_value,
                 &mut max_cursor,
                 parent_values,
-                out,
+                feed,
             )
             .await?;
         }
@@ -85,7 +86,7 @@ pub(crate) async fn deliver(
             "rest.checkpoint",
             Err(SourceError::fatal("injected crash at rest.checkpoint"))
         );
-        let _ = out.checkpoint(Cursor::new(max.clone())).await;
+        let _ = feed.checkpoint(Cursor::new(max.clone())).await;
     }
     Ok(())
 }
@@ -96,7 +97,7 @@ async fn deliver_sequence(
     stream: &Stream,
     incremental: &Option<Incremental>,
     max_cursor: &mut Option<String>,
-    out: &mut RecordsOut,
+    feed: &mut Feed,
 ) -> Result<(), SourceError> {
     let selector = parse_selector(stream)?;
     let mut paginator = super::paginate::build(&stream.pagination).map_err(SourceError::fatal)?;
@@ -117,7 +118,7 @@ async fn deliver_sequence(
                 let values = page.values.as_deref().unwrap_or_default();
                 super::cursor::observe(values, &incremental.cursor_field, max_cursor);
             }
-            if out.raw_json(page.records.clone()).await.is_err() {
+            if feed.raw_json(page.records.clone()).await.is_break() {
                 return Ok(()); // closed channel = cancellation
             }
             // Parentless streams checkpoint per page; children checkpoint
@@ -129,7 +130,7 @@ async fn deliver_sequence(
                     "rest.checkpoint",
                     Err(SourceError::fatal("injected crash at rest.checkpoint"))
                 );
-                if out.checkpoint(Cursor::new(max.clone())).await.is_err() {
+                if feed.checkpoint(Cursor::new(max.clone())).await.is_break() {
                     return Ok(());
                 }
             }

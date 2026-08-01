@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use rdlt_connector::{ReadRequest, Source, SourceError, records_channel};
 use rdlt_connector_rest::source::Config;
-use rdlt_connector_rest::source::Rest;
+use rdlt_connector_rest::source::Shell;
 use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -29,7 +29,7 @@ async fn stalling_server(delay: Duration) -> MockServer {
     server
 }
 
-async fn read_to_end(source: Rest) -> Result<(), SourceError> {
+async fn read_to_end(source: Shell) -> Result<(), SourceError> {
     let (out, mut input) = records_channel(1 << 20);
     let spec = source.streams().await?[0].clone();
     let read = tokio::spawn(async move { source.read(ReadRequest::new(spec, None, out)).await });
@@ -43,7 +43,7 @@ async fn read_to_end(source: Rest) -> Result<(), SourceError> {
 #[tokio::test]
 async fn a_stalled_server_fails_typed_instead_of_hanging() {
     let server = stalling_server(Duration::from_secs(60)).await;
-    let source = Rest::from_yaml(&format!(
+    let source = Shell::from_yaml(&format!(
         "base_url: \"{}\"\nrequest_timeout_secs: 1\nstreams:\n  - name: events\n    path: /events\n",
         server.uri()
     ))
@@ -85,7 +85,7 @@ fn a_zero_request_timeout_is_refused() {
         "an unconfigured source still gets a deadline"
     );
 
-    Rest::from_yaml(
+    Shell::from_yaml(
         "base_url: \"http://127.0.0.1:1\"\nrequest_timeout_secs: 0\nstreams:\n  - name: events\n    path: /events\n",
     )
     .expect_err("0 must not disable the bound");
@@ -100,7 +100,7 @@ fn a_zero_request_timeout_is_refused() {
 #[test]
 fn post_pagination_with_a_non_object_body_is_refused_at_validation() {
     for body in ["[1, 2, 3]", "\"a string\"", "42"] {
-        let error = Rest::from_yaml(&format!(
+        let error = Shell::from_yaml(&format!(
             "base_url: \"http://127.0.0.1:1\"\nstreams:\n  - name: events\n    path: /events\n    \
              method: post\n    body: {body}\n    pagination:\n      type: page\n"
         ))
@@ -117,7 +117,7 @@ fn post_pagination_with_a_non_object_body_is_refused_at_validation() {
 /// them — so the refusal must be about the combination, not the body.
 #[test]
 fn a_non_object_body_without_pagination_is_accepted() {
-    Rest::from_yaml(
+    Shell::from_yaml(
         "base_url: \"http://127.0.0.1:1\"\nstreams:\n  - name: events\n    path: /events\n    \
          method: post\n    body: [1, 2, 3]\n",
     )
@@ -142,7 +142,7 @@ async fn a_retry_after_http_date_is_honoured_like_delta_seconds() {
         .mount(&server)
         .await;
 
-    let source = Rest::from_yaml(&format!(
+    let source = Shell::from_yaml(&format!(
         "base_url: \"{}\"\nretry_after_cap_secs: 1\nstreams:\n  - name: events\n    path: /events\n",
         server.uri()
     ))
@@ -178,7 +178,7 @@ fn credential_bearing_headers_are_refused() {
         "x-amz-security-token",
         "private-token",
     ] {
-        let error = Rest::from_yaml(&format!(
+        let error = Shell::from_yaml(&format!(
             "base_url: \"http://127.0.0.1:1\"\nheaders:\n  {name}: \"secret\"\nstreams:\n  - name: events\n    path: /events\n"
         ))
         .unwrap_err();
@@ -189,7 +189,7 @@ fn credential_bearing_headers_are_refused() {
     }
     // A header that merely LOOKS similar is not a credential and must be allowed —
     // a guard that fires on innocent configuration gets disabled, not heeded.
-    Rest::from_yaml(
+    Shell::from_yaml(
         "base_url: \"http://127.0.0.1:1\"\nheaders:\n  x-request-token-count: \"5\"\nstreams:\n  - name: events\n    path: /events\n",
     )
     .expect("an exact-name rule must not reject look-alikes");
@@ -212,7 +212,7 @@ async fn a_parent_value_reaches_the_server_as_a_single_path_segment() {
         .mount(&server)
         .await;
 
-    let source = Rest::from_yaml(&format!(
+    let source = Shell::from_yaml(&format!(
         r#"
 base_url: "{}"
 streams:

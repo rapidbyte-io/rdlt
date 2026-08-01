@@ -58,7 +58,7 @@ pub(crate) async fn read_children(
     start_value: &Option<String>,
     max_cursor: &mut Option<String>,
     parents: Vec<ParentValues>,
-    out: &mut rdlt_connector::RecordsOut,
+    out: &mut rdlt_connector_sdk::source::Feed,
 ) -> Result<(), SourceError> {
     use futures::StreamExt;
     let selector = parse_selector(stream)?;
@@ -67,7 +67,7 @@ pub(crate) async fn read_children(
 
     let forward = async {
         while let Some(records) = rx.recv().await {
-            if out.raw_json(records).await.is_err() {
+            if out.raw_json(records).await.is_break() {
                 break; // closed channel = cancellation
             }
         }

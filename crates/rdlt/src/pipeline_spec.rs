@@ -332,9 +332,9 @@ pub fn build_pipeline(spec: &Spec) -> Result<Pipeline, SpecError> {
         SourceSpec::Rest { config } => {
             let text = read_config(config)?;
             let source = if is_json(config) {
-                crate::connector::rest::source::Rest::from_json(&text)
+                crate::connector::rest::source::Shell::from_json(&text)
             } else {
-                crate::connector::rest::source::Rest::from_yaml(&text)
+                crate::connector::rest::source::Shell::from_yaml(&text)
             }
             .map_err(|e| SpecError::resolve(e.to_string()))?;
             build_with(builder.source(source), &spec.destination)
