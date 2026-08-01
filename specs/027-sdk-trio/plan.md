@@ -551,6 +551,12 @@ line in each of duckdb/file/snowflake/postgres's destination
 conformance suites). Workspace: fmt/clippy clean, 1008/1008 (= 1014
 minus generation 1's own 6 tests, count math verified), doctest green.
 
+TESTKIT SWAP GATE OF RECORD — TWICE CLEAN, both first attempt (reclaim
++ drain between): 1008/1008 both runs (2 named instrument skips),
+semver no update required, perf all benches within tolerance, cold
+start 23.6/23.0 ms (bar <=40). The trio's first two layers plus the
+verification half are now ALL second-generation on this branch.
+
 ## Waves (each ends with a clean full gate)
 
 1. `rdlt-connector` rewritten; consumers ported (engine, 6 connectors,
