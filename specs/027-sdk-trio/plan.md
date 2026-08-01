@@ -33,6 +33,13 @@ bare-`String` validate. The swap — porting engine + connectors +
 testkit, bumping 0.3.0 (D4) — remains the owner's call; waves 2–5
 (sdk crate, testkit rewrite, adoption, guide) follow separately.
 
+GATE OF RECORD: full `make check` TWICE CLEAN on the review-complete
+tree, both first attempt (reclaim + TIME_WAIT drain applied between
+runs): 1027/1027 workspace tests (2 named instrument skips), all
+sweeps, semver no update required, perf gate 0 regressed, cold start
+23.6 / 23.9 ms vs the 40 ms bar, exit 0 both. Review round 1 (three
+lenses, record below) closed with all eight findings fixed and pinned.
+
 ## Decision record
 
 - D1. EXTRACTION-READINESS is a requirement, not a nice-to-have (owner
