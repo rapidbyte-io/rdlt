@@ -26,8 +26,8 @@ const SEED: &str = "CREATE TABLE ev (id int8 PRIMARY KEY, v text); \
 
 /// Incremental on id, small batches ⇒ mid-stream checkpoints exist for the
 /// resume paths to bite on.
-fn source(connection_string: &str) -> source::Postgres {
-    source::Postgres::from_yaml(&format!(
+fn source(connection_string: &str) -> source::Shell {
+    source::Shell::from_yaml(&format!(
         "conn: \"{connection_string}\"\nbatch_max_rows: 10\ntables:\n  - name: ev\n    cursor:\n      column: id\n"
     ))
     .expect("config")

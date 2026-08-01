@@ -62,7 +62,10 @@ fn batch(rows: &[(i64, &str, Option<bool>)]) -> RecordBatch {
     .expect("batch")
 }
 
-fn upsert_destination(connection_string: &str, schema: &str) -> Postgres {
+fn upsert_destination(
+    connection_string: &str,
+    schema: &str,
+) -> rdlt_connector_postgres::destination::Shell {
     Postgres::new(connection_string)
         .schema(schema)
         .options(DestinationOptions {
@@ -78,9 +81,13 @@ fn upsert_destination(connection_string: &str, schema: &str) -> Postgres {
             .collect(),
         })
         .expect("valid options")
+        .into_shell()
 }
 
-async fn run_merge(destination: Postgres, rows: &[(i64, &str, Option<bool>)]) {
+async fn run_merge(
+    destination: rdlt_connector_postgres::destination::Shell,
+    rows: &[(i64, &str, Option<bool>)],
+) {
     let mut config = EngineConfig::new("strat");
     config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
         key: vec!["id".into()],
@@ -216,7 +223,8 @@ async fn shredded_upsert_is_rejected_typed_at_ensure() {
             merge_strategy: Some(MergeStrategy::Upsert),
             ..DestinationOptions::default()
         })
-        .expect("options");
+        .expect("options")
+        .into_shell();
     let mut config = EngineConfig::new("shup");
     config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
         key: vec!["id".into()],
@@ -262,7 +270,8 @@ async fn flagged_then_recreated_root_keeps_its_subtree() {
             .collect(),
             ..DestinationOptions::default()
         })
-        .expect("options");
+        .expect("options")
+        .into_shell();
     let mut config = EngineConfig::new("recreate");
     config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
         key: vec!["id".into()],
@@ -321,7 +330,8 @@ async fn child_hard_delete_is_rejected_typed() {
             .collect(),
             ..DestinationOptions::default()
         })
-        .expect("options");
+        .expect("options")
+        .into_shell();
     let mut config = EngineConfig::new("childhd");
     config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
         key: vec!["id".into()],

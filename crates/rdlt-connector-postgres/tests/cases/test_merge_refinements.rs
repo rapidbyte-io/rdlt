@@ -91,7 +91,11 @@ struct Refinements {
     scd2_retire: bool,
 }
 
-fn destination(connection_string: &str, schema: &str, refinements: Refinements) -> Postgres {
+fn destination(
+    connection_string: &str,
+    schema: &str,
+    refinements: Refinements,
+) -> rdlt_connector_postgres::destination::Shell {
     Postgres::new(connection_string)
         .schema(schema)
         .options(DestinationOptions {
@@ -120,6 +124,7 @@ fn destination(connection_string: &str, schema: &str, refinements: Refinements) 
             .collect(),
         })
         .expect("valid options")
+        .into_shell()
 }
 
 async fn run(
@@ -727,7 +732,8 @@ async fn refinement_options_reject_shredded_streams() {
                 tables: [("users".to_string(), table_options)].into_iter().collect(),
                 ..DestinationOptions::default()
             })
-            .expect("options");
+            .expect("options")
+            .into_shell();
         let mut config = EngineConfig::new(schema);
         config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
             key: vec!["id".into()],

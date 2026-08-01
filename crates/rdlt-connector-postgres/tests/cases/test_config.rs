@@ -4,6 +4,7 @@
 //! database — every rule below is decidable from the document alone.
 
 use rdlt_connector_postgres::source::config::*;
+use rdlt_connector_sdk::config::Document;
 
 const MINIMAL: &str = r#"
 conn: "postgresql://u:p@localhost:5432/db"

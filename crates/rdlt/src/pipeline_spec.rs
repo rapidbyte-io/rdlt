@@ -15,6 +15,7 @@
 //! to none): a spec that names a connector this build did not compile in fails
 //! to parse (the variant does not exist), never silently.
 
+use rdlt_connector_sdk::config::Document;
 use std::path::PathBuf;
 
 use serde::Deserialize;
@@ -353,7 +354,8 @@ pub fn build_pipeline(spec: &Spec) -> Result<Pipeline, SpecError> {
         #[cfg(feature = "postgres-source")]
         SourceSpec::Postgres(pg) => {
             let config = resolve_pg(pg)?;
-            let source = crate::connector::postgres::source::Postgres::new(config);
+            let source = crate::connector::postgres::source::Shell::new(config)
+                .map_err(|e| SpecError::resolve(e.to_string()))?;
             build_with(builder.source(source), &spec.destination)
         }
         #[allow(unreachable_patterns)]
@@ -444,7 +446,7 @@ fn build_with<S: rdlt_connector::Source>(
                     .options(options)
                     .map_err(|e| SpecError::resolve(format!("destination options: {e}")))?;
             }
-            Ok(builder.destination(dest).build()?)
+            Ok(builder.destination(dest.into_shell()).build()?)
         }
         #[cfg(feature = "file")]
         DestSpec::Parquet { path } => {

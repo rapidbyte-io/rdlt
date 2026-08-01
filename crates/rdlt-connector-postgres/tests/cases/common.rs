@@ -48,8 +48,8 @@ pub async fn count(connection_string: &str, dataset: &str, table: &str) -> u64 {
 }
 
 /// A source from the bare `conn:` line plus whatever YAML the suite appends.
-pub fn source(connection_string: &str, extra_yaml: &str) -> source::Postgres {
-    source::Postgres::from_yaml(&format!("conn: \"{connection_string}\"\n{extra_yaml}"))
+pub fn source(connection_string: &str, extra_yaml: &str) -> source::Shell {
+    source::Shell::from_yaml(&format!("conn: \"{connection_string}\"\n{extra_yaml}"))
         .expect("config")
 }
 

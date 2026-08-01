@@ -28,6 +28,7 @@ postgres-dest = ["dep:rdlt-connector-postgres", "rdlt-connector-postgres/destina
 parquet = ["file"]
 
 [dependencies]
+rdlt-connector-sdk = { workspace = true }
 rdlt-core = { workspace = true }
 rdlt-connector = { workspace = true }
 rdlt-engine = { workspace = true }

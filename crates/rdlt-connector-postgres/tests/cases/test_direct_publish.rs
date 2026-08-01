@@ -68,8 +68,9 @@ async fn a_redelivered_unit_never_duplicates_its_rows() {
         return;
     };
     let connection_string = container.connection_string.clone();
-    let destination =
-        rdlt_connector_postgres::destination::Postgres::new(&connection_string).schema("rp1");
+    let destination = rdlt_connector_postgres::destination::Postgres::new(&connection_string)
+        .schema("rp1")
+        .into_shell();
     let pipeline = PipelineId::new("rp1");
     let meta = |commit_seq: u64| CommitMeta {
         load_id: LoadId::new("rp1-load"),
@@ -134,8 +135,9 @@ async fn a_replace_target_first_written_in_unit_two_is_still_cleared() {
         return;
     };
     let connection_string = container.connection_string.clone();
-    let destination =
-        rdlt_connector_postgres::destination::Postgres::new(&connection_string).schema("rp2");
+    let destination = rdlt_connector_postgres::destination::Postgres::new(&connection_string)
+        .schema("rp2")
+        .into_shell();
     let pipeline = PipelineId::new("rp2");
     let meta = |load: &str, commit_seq: u64| CommitMeta {
         load_id: LoadId::new(load),

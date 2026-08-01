@@ -3,7 +3,8 @@
 
 use std::sync::Arc;
 
-use rdlt_connector::{ReadRequest, SourceError};
+use rdlt_connector::SourceError;
+use rdlt_connector_sdk::source::Feed;
 
 use crate::session::Connection;
 
@@ -32,23 +33,21 @@ pub(super) async fn tail_loop(
     context: &StreamContext<'_>,
     stream: &str,
     mut cursor: u64,
-    mut request: ReadRequest,
+    feed: &mut Feed,
 ) -> Result<(), SourceError> {
     let confirmed = slot::confirmed_flush_lsn(&control, &context.cdc.slot).await?;
     let mut retention_warned = false;
     loop {
-        if request
-            .out
+        if feed
             .checkpoint(Resume { cdc_lsn: cursor }.encode())
             .await
-            .is_err()
+            .is_break()
         {
             return Ok(()); // cancellation, at a commit boundary
         }
         let target = slot::current_wal_lsn(&control).await?;
         let quiet = if target > cursor {
-            let outcome =
-                change_pass(&control, context, stream, cursor, target, &mut request).await?;
+            let outcome = change_pass(&control, context, stream, cursor, target, feed).await?;
             if outcome == PassOutcome::Cancelled {
                 return Ok(());
             }

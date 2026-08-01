@@ -21,6 +21,7 @@ failpoints = ["rdlt-connector/failpoints"]
 fixtures = ["dep:rdlt-testkit", "dep:testcontainers-modules"]
 
 [dependencies]
+rdlt-connector-sdk = { workspace = true }
 rdlt-connector = { workspace = true, features = ["schema"] }
 rdlt-connector-sqlcore = { workspace = true }
 schemars = { workspace = true }

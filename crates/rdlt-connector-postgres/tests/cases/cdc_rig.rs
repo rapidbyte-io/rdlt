@@ -61,7 +61,7 @@ impl Rig {
         self.pipeline = pipeline.to_string();
     }
 
-    fn source(&self, tables: &[&str]) -> source::Postgres {
+    fn source(&self, tables: &[&str]) -> source::Shell {
         let list = tables
             .iter()
             .map(|table| format!("  - name: {table}\n"))
@@ -74,7 +74,7 @@ impl Rig {
         )
     }
 
-    pub fn destination(&self, tables: &[&str]) -> Postgres {
+    pub fn destination(&self, tables: &[&str]) -> rdlt_connector_postgres::destination::Shell {
         Postgres::new(self.container.connection_string.clone())
             .schema("mirror")
             .options(DestinationOptions {
@@ -93,6 +93,7 @@ impl Rig {
                     .collect(),
             })
             .expect("valid destination options")
+            .into_shell()
     }
 
     pub async fn run(&self, tables: &[&str], key: &str) -> u64 {

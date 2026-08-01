@@ -129,7 +129,7 @@ impl Feed {
 }
 
 /// The SPI shell around a [`SourceConnector`] — what [`shell`] returns.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SourceShell<C> {
     connector: C,
 }

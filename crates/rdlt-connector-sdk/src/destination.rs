@@ -148,7 +148,7 @@ pub trait Backend: Send {
 
 /// The SPI shell around a [`DestinationConnector`] — what [`shell`]
 /// returns.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DestinationShell<C> {
     connector: C,
 }

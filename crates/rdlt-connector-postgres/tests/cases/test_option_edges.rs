@@ -20,7 +20,7 @@ async fn default_dataset_is_public() {
         return;
     };
     let connection_string = container.connection_string.clone();
-    let destination = Postgres::new(&connection_string); // no .schema(...)
+    let destination = Postgres::new(&connection_string).into_shell(); // no .schema(...)
     let source = MemorySource::single_stream(
         rdlt_connector::StreamSpec::new("things").with_primary_key(["id"]),
         vec![json!({"id": 1, "v": "a"})],
@@ -57,7 +57,8 @@ async fn explicit_strategy_under_non_merge_mode_is_typed() {
         let destination = Postgres::new(&connection_string)
             .schema("r5")
             .options(options)
-            .expect("options");
+            .expect("options")
+            .into_shell();
         let mut config = EngineConfig::new("r5");
         config = config.with_write_mode(mode);
         Engine::new(config, source(), destination).run()
@@ -184,7 +185,8 @@ async fn non_bool_hard_delete_flag_uses_is_not_null() {
             .into_iter()
             .collect(),
         })
-        .expect("options");
+        .expect("options")
+        .into_shell();
     let run = |rows: &[(i64, &str, Option<i64>)]| {
         let mut config = EngineConfig::new("nbhd");
         config = config.with_write_mode(rdlt_connector::WriteMode::Merge {

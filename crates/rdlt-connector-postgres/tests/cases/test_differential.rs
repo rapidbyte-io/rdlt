@@ -112,7 +112,7 @@ async fn read_via_copy_batched(connection_string: &str) -> (usize, RecordBatch) 
 }
 
 async fn collect_copy_batches(connection_string: &str, extra_yaml: &str) -> Vec<RecordBatch> {
-    let postgres = source::Postgres::from_yaml(&format!(
+    let postgres = source::Shell::from_yaml(&format!(
         "conn: \"{connection_string}\"\n{extra_yaml}tables:\n  - name: diff\n"
     ))
     .expect("config");

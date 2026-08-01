@@ -1,7 +1,8 @@
-//! The load session: the SPI's `LoadSession` implemented as a coordinator
+//! The load backend: the sdk's `Backend` implemented as a coordinator
 //! over three owned states — the [`Connection`], the ensured [`Catalog`],
 //! and the [`Unit`] transaction — plus the once-per-load guards that span
-//! units.
+//! units. The sdk session choreography drives it: `existing_receipt`
+//! (the replay probe) always precedes `replay` or `publish`.
 //!
 //! Every mutating method wraps its body so that ANY error abandons the open
 //! unit: a failed statement poisons the connection with 25P02 until
@@ -12,9 +13,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use async_trait::async_trait;
 use rdlt_connector::{
-    CommitMeta, CommitReceipt, DestinationError, LoadSession, RecordBatch, WriteMode,
+    CommitMeta, CommitReceipt, DestinationError, RecordBatch, WriteMode,
     core::{LoadId, PipelineId, StateDoc, TableName, TableSchema, crash_point},
 };
+use rdlt_connector_sdk::destination::Backend;
 use rdlt_connector_sqlcore::protocol::unit as unit_rules;
 use rdlt_connector_sqlcore::{
     CommitContext, FullLoadPublish, MergeDialect, Step, plan_commit, prepare_target,
@@ -29,7 +31,22 @@ use super::unit::Unit;
 use super::{executor, write};
 use crate::session::Connection;
 
-pub(super) struct Load {
+/// The per-session system IO — [`DestinationConnector::connect`]
+/// (`super::connector`) opens one; the sdk session drives it. Public only
+/// as the connector's associated `Backend` type; every field and method
+/// stays crate-internal.
+// Debug is required by the workspace lint; the fields' debug value is nil
+// (a connection handle and guard sets), so the derive-free minimal form.
+impl std::fmt::Debug for Load {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Load")
+            .field("pipeline", &self.pipeline)
+            .field("load_id", &self.load_id)
+            .finish_non_exhaustive()
+    }
+}
+
+pub struct Load {
     pub(super) connection: Connection,
     pub(super) pipeline: PipelineId,
     /// The load this session belongs to. It scopes the Replace
@@ -211,52 +228,53 @@ impl Load {
         write::copy_batch(&self.connection, &relation, table_schema, &batch).await
     }
 
-    async fn commit_inner(&mut self, meta: &CommitMeta) -> Result<CommitReceipt, DestinationError> {
-        let receipt = CommitReceipt {
-            load_id: meta.load_id.clone(),
-            commit_seq: meta.commit_seq,
-        };
+    /// The choreography's first commit step: the idempotence probe by
+    /// `(load_id, commit_seq)`. Opens the unit if `write` never did — a
+    /// unit with no writes still has to publish state and a receipt, and
+    /// the probe must read inside that transaction.
+    async fn existing_receipt_inner(
+        &mut self,
+        load_id: &LoadId,
+        commit_seq: u64,
+    ) -> Result<Option<CommitReceipt>, DestinationError> {
         // The clear guard is scoped by the SESSION's load, so a unit
         // committed under a different one would consult the wrong guard.
         // The engine gives WAL recovery its own session precisely so this
         // holds; check it rather than assume it.
-        if meta.load_id != self.load_id {
+        if load_id != &self.load_id {
             return Err(fatal(
                 Phase::Commit,
                 format!(
                     "internal: session opened for load `{}` asked to commit load `{}`",
-                    self.load_id, meta.load_id
+                    self.load_id, load_id
                 ),
             ));
         }
-        let roots: BTreeMap<TableName, TableName> = self
-            .catalog
-            .tables
-            .keys()
-            .map(|table| (table.clone(), self.catalog.root_of(table)))
-            .collect();
-
-        // A unit with no writes still has to publish state and a receipt,
-        // so the transaction is opened here if `write` never did.
-        let load_id = self.load_id.as_str().to_owned();
+        let session_load = self.load_id.as_str().to_owned();
         self.unit
-            .begin_if_closed(&self.connection, &load_id)
+            .begin_if_closed(&self.connection, &session_load)
             .await?;
-        // Idempotence by (load_id, commit_seq).
         let replayed = self
             .connection
             .query_one(
                 &unit_rules::receipt_exists_sql(|n| format!("${n}")),
-                &[&meta.load_id.as_str(), &(meta.commit_seq as i64)],
+                &[&load_id.as_str(), &(commit_seq as i64)],
             )
             .await
             .map_err(|e| driver_transient(Phase::Commit, e))?
             .get::<_, i64>(0)
             > 0;
-        // Probe the full-feed stages the planner needs. Staged-row counts
-        // are INVARIANT across the publish (no stage is written during it —
-        // merges read stages, publishes write targets), so probing up front
-        // matches a lazy per-table check.
+        Ok(replayed.then(|| CommitReceipt {
+            load_id: load_id.clone(),
+            commit_seq,
+        }))
+    }
+
+    /// Probe the full-feed stages the planner needs. Staged-row counts
+    /// are INVARIANT across the publish (no stage is written during it —
+    /// merges read stages, publishes write targets), so probing up front
+    /// matches a lazy per-table check.
+    async fn probe_staged_nonempty(&self) -> Result<BTreeSet<TableName>, DestinationError> {
         let mut staged_nonempty = BTreeSet::new();
         for table in staged_probe_targets(&self.catalog.tables, &self.options) {
             let stage = quote_identifier(&stage_name(&self.pipeline, table));
@@ -270,6 +288,64 @@ impl Load {
                 staged_nonempty.insert(table.clone());
             }
         }
+        Ok(staged_nonempty)
+    }
+
+    /// A REDELIVERED unit must be thrown away, not published.
+    ///
+    /// What a redelivered unit owes depends on WHERE its rows are, and
+    /// the answer is inverted between publish paths — so it is the
+    /// shared planner's to state, not this executor's to remember:
+    /// `unit_rules::replay_disposition(FullLoadPublish::DirectToTarget)`
+    /// is `DiscardUnit` on this path.
+    ///
+    /// Here `write` COPYed the redelivered rows straight into the target
+    /// (or, for merge, into the stage) inside the transaction still open,
+    /// so committing would land them a SECOND time. Rolling back discards
+    /// exactly what this unit wrote and leaves the earlier commit
+    /// standing; the framework then returns the stored receipt, because
+    /// from the caller's side the unit did commit — it just committed the
+    /// first time.
+    ///
+    /// The single-unit marks are still applied: a full-feed unit whose
+    /// outcome the client never learned still counts against the
+    /// discipline.
+    async fn replay_inner(&mut self, meta: &CommitMeta) -> Result<(), DestinationError> {
+        debug_assert_eq!(
+            unit_rules::replay_disposition(FullLoadPublish::DirectToTarget),
+            unit_rules::ReplayDisposition::DiscardUnit,
+        );
+        let staged_nonempty = self.probe_staged_nonempty().await?;
+        let cleared = self.cleared_union();
+        let script = plan_commit(
+            &self.catalog.tables,
+            &self.options,
+            &self.commit_context(true, &staged_nonempty, &cleared),
+        )
+        .map_err(|e| fatal(Phase::Commit, e))?;
+        let _ = meta;
+        self.unit.rollback(&self.connection).await;
+        self.single_unit_done.extend(script.marks);
+        Ok(())
+    }
+
+    /// The fresh-unit publish: plan, execute, commit the unit transaction,
+    /// then promote the once-per-load guards.
+    async fn publish_inner(
+        &mut self,
+        meta: &CommitMeta,
+    ) -> Result<CommitReceipt, DestinationError> {
+        let receipt = CommitReceipt {
+            load_id: meta.load_id.clone(),
+            commit_seq: meta.commit_seq,
+        };
+        let roots: BTreeMap<TableName, TableName> = self
+            .catalog
+            .tables
+            .keys()
+            .map(|table| (table.clone(), self.catalog.root_of(table)))
+            .collect();
+        let staged_nonempty = self.probe_staged_nonempty().await?;
 
         // The planner owns every decision + the ordering; this session
         // executes.
@@ -277,35 +353,9 @@ impl Load {
         let script = plan_commit(
             &self.catalog.tables,
             &self.options,
-            &self.commit_context(replayed, &staged_nonempty, &cleared),
+            &self.commit_context(false, &staged_nonempty, &cleared),
         )
         .map_err(|e| fatal(Phase::Commit, e))?;
-
-        // A REDELIVERED unit must be thrown away, not published.
-        //
-        // What a redelivered unit owes depends on WHERE its rows are, and
-        // the answer is inverted between publish paths — so it is the
-        // shared planner's to state, not this executor's to remember.
-        //
-        // On this path `write` COPYed the redelivered rows straight into
-        // the target (or, for merge, into the stage) inside the transaction
-        // still open, so committing would land them a SECOND time. Rolling
-        // back discards exactly what this unit wrote and leaves the earlier
-        // commit standing. The receipt is returned as success, because from
-        // the caller's side the unit did commit; it just committed the
-        // first time.
-        //
-        // The single-unit marks are still applied: a full-feed unit whose
-        // outcome the client never learned still counts against the
-        // discipline.
-        if replayed
-            && unit_rules::replay_disposition(FullLoadPublish::DirectToTarget)
-                == unit_rules::ReplayDisposition::DiscardUnit
-        {
-            self.unit.rollback(&self.connection).await;
-            self.single_unit_done.extend(script.marks);
-            return Ok(receipt);
-        }
 
         // Narrowed from "before BEGIN" to "before the first publish step":
         // the unit transaction is already open and already holds this
@@ -334,14 +384,12 @@ impl Load {
         // published in ONE server-side transaction, so a crash at either
         // edge of the commit must replay idempotently — the injected error
         // models the client dying without learning the outcome. A replay
-        // unit only truncated stages and carried no receipt/state edge, so
-        // the crash point stays confined to the fresh path.
-        if !replayed {
-            crash_point!(
-                "pg.tx.commit",
-                Err(DestinationError::fatal("injected crash at pg.tx.commit"))
-            );
-        }
+        // unit only rolls back and carries no receipt/state edge, so the
+        // crash point stays confined to this fresh path.
+        crash_point!(
+            "pg.tx.commit",
+            Err(DestinationError::fatal("injected crash at pg.tx.commit"))
+        );
         let open = self.unit.commit(&self.connection).await?;
         // The other half of the redelivery window, and the sharper half:
         // the transaction is COMMITTED and durable, and the client dies
@@ -364,7 +412,7 @@ impl Load {
 }
 
 #[async_trait]
-impl LoadSession for Load {
+impl Backend for Load {
     async fn ensure_table(
         &mut self,
         schema: &TableSchema,
@@ -402,8 +450,36 @@ impl LoadSession for Load {
         result
     }
 
-    async fn commit(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestinationError> {
-        match self.commit_inner(&meta).await {
+    async fn existing_receipt(
+        &mut self,
+        load_id: &LoadId,
+        commit_seq: u64,
+    ) -> Result<Option<CommitReceipt>, DestinationError> {
+        match self.existing_receipt_inner(load_id, commit_seq).await {
+            Ok(receipt) => Ok(receipt),
+            Err(e) => {
+                self.unit.rollback(&self.connection).await;
+                Err(e)
+            }
+        }
+    }
+
+    async fn replay(
+        &mut self,
+        meta: &CommitMeta,
+        _receipt: &CommitReceipt,
+    ) -> Result<(), DestinationError> {
+        match self.replay_inner(meta).await {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                self.unit.rollback(&self.connection).await;
+                Err(e)
+            }
+        }
+    }
+
+    async fn publish(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestinationError> {
+        match self.publish_inner(&meta).await {
             Ok(receipt) => Ok(receipt),
             Err(e) => {
                 self.unit.rollback(&self.connection).await;

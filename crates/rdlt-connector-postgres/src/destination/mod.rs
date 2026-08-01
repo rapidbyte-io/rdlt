@@ -4,12 +4,14 @@
 //! objects at the seam. Depends on the SPI, sqlcore, and this crate's
 //! substrate only.
 //!
-//! Layout, one owned state per module: `connector` the SPI face + `open`;
-//! `config` the handle/builder + document vocabulary; `catalog` what has
-//! been ensured and the DDL that ensured it; `unit` the commit-unit
-//! transaction; `write` the COPY wire loop; `executor` planned-step
-//! execution; `load` the LoadSession coordinator over all of them;
-//! `dialect` the SQL-text seam; `errors` the phase-tagged taxonomy.
+//! Layout, one owned state per module: `connector` the framework face +
+//! `connect`; `config` the handle/builder + document vocabulary; `catalog`
+//! what has been ensured and the DDL that ensured it; `unit` the
+//! commit-unit transaction; `write` the COPY wire loop; `executor`
+//! planned-step execution; `load` the sdk-`Backend` coordinator over all
+//! of them; `dialect` the SQL-text seam; `errors` the phase-tagged
+//! taxonomy. The SPI face is [`Shell`], the sdk's session choreography
+//! over [`Load`].
 //!
 //! # What a unit transaction costs
 //!
@@ -52,6 +54,13 @@ pub use config::{
     AbsentPolicy, Config, ConfigError, DedupSort, DestinationOptions, MergeStrategy, Postgres,
     Scd2Options, SortOrder, TableOptions, config_schema,
 };
+pub use load::Load;
+
+/// The SPI face: the sdk's shell over [`Postgres`]. `Shell::from_yaml`
+/// (or `from_json`/`from_value`/`new`) is a running destination in one
+/// call; a builder-constructed handle wraps via
+/// `rdlt_connector_sdk::destination::shell`.
+pub type Shell = rdlt_connector_sdk::destination::DestinationShell<Postgres>;
 
 #[cfg(feature = "failpoints")]
 pub use fail_points::FAIL_POINTS;

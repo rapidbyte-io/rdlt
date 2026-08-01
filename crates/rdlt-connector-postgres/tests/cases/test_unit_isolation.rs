@@ -66,8 +66,9 @@ async fn a_replace_reload_is_never_observed_empty() {
         return;
     };
     let connection_string = container.connection_string.clone();
-    let destination =
-        rdlt_connector_postgres::destination::Postgres::new(&connection_string).schema("iso");
+    let destination = rdlt_connector_postgres::destination::Postgres::new(&connection_string)
+        .schema("iso")
+        .into_shell();
     let pipeline = PipelineId::new("iso");
 
     let meta = |load: &str, commit_seq: u64| CommitMeta {
@@ -166,8 +167,9 @@ async fn a_replace_load_preserves_indexes_grants_and_dependents() {
         .expect("oid")
         .get(0);
 
-    let destination =
-        rdlt_connector_postgres::destination::Postgres::new(&connection_string).schema("iso3");
+    let destination = rdlt_connector_postgres::destination::Postgres::new(&connection_string)
+        .schema("iso3")
+        .into_shell();
     let pipeline = PipelineId::new("iso3");
     let mut session = destination
         .open(OpenContext::new(pipeline.clone(), LoadId::new("iso3-load")))
@@ -244,8 +246,9 @@ async fn a_multi_unit_replace_load_clears_exactly_once() {
         return;
     };
     let connection_string = container.connection_string.clone();
-    let destination =
-        rdlt_connector_postgres::destination::Postgres::new(&connection_string).schema("iso2");
+    let destination = rdlt_connector_postgres::destination::Postgres::new(&connection_string)
+        .schema("iso2")
+        .into_shell();
     let pipeline = PipelineId::new("iso2");
     let mut session = destination
         .open(OpenContext::new(pipeline.clone(), LoadId::new("iso2-load")))

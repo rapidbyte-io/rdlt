@@ -111,7 +111,12 @@ fn snowflake_config(schema: &str, strategy: &str, hard_delete: bool) -> Option<S
     Some(SnowflakeConfig::from_value(doc).expect("valid config"))
 }
 
-fn postgres_dest(conn: &str, dataset: &str, strategy: &str, hard_delete: bool) -> Postgres {
+fn postgres_dest(
+    conn: &str,
+    dataset: &str,
+    strategy: &str,
+    hard_delete: bool,
+) -> rdlt_connector_postgres::destination::Shell {
     use rdlt_connector_sqlcore::{DestinationOptions, MergeStrategy, TableOptions};
     let strategy = match strategy {
         "upsert" => MergeStrategy::Upsert,
@@ -137,6 +142,7 @@ fn postgres_dest(conn: &str, dataset: &str, strategy: &str, hard_delete: bool) -
         .schema(dataset)
         .options(options)
         .expect("options")
+        .into_shell()
 }
 
 /// Every surviving row, rendered as one comparable string per row.
@@ -194,7 +200,11 @@ async fn run_snowflake(
     }
 }
 
-async fn run_postgres(dest: &Postgres, pipeline: &str, batches: [arrow_array::RecordBatch; 2]) {
+async fn run_postgres(
+    dest: &rdlt_connector_postgres::destination::Shell,
+    pipeline: &str,
+    batches: [arrow_array::RecordBatch; 2],
+) {
     for (index, batch) in batches.into_iter().enumerate() {
         let mut engine_config = EngineConfig::new(format!("{pipeline}-{index}"));
         engine_config = engine_config.with_write_mode(WriteMode::Merge {

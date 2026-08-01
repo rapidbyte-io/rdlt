@@ -92,6 +92,7 @@ pub fn cdc_composition_warnings(spec: &Spec, config: &PostgresConfig) -> Vec<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rdlt::sdk::config::Document;
 
     fn spec(yaml: &str) -> Spec {
         serde_yaml::from_str(yaml).expect("spec parses")

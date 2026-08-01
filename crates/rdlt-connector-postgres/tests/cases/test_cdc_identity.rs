@@ -103,7 +103,7 @@ async fn identity_preflight_matrix_is_typed_per_table() {
 
     // cdc + cursor exclusivity is a CONFIG-parse error — no server
     // round-trip, named table.
-    let error = rdlt_connector_postgres::source::Postgres::from_yaml(
+    let error = rdlt_connector_postgres::source::Shell::from_yaml(
         "conn: host=localhost\ncdc:\n  slot: s\n  publication: p\n\
          tables:\n  - name: t\n    cursor:\n      column: id\n",
     )

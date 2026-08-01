@@ -10,6 +10,7 @@ use rdlt_connector_postgres::fixtures::PostgresContainer;
 use rdlt_connector_postgres::source;
 use rdlt_connector_postgres::testsupport::session;
 use rdlt_connector_postgres::tls::{Mode, PemSource, Policy};
+use rdlt_connector_sdk::config::Document;
 use testcontainers_modules::postgres::Postgres as PostgresImage;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};
@@ -302,7 +303,8 @@ async fn destination_uses_the_same_policy_path() {
             mode: Mode::VerifyFull,
             root_cert: Some(PemSource(fixture.pki.ca_pem.clone())),
             ..Policy::default()
-        });
+        })
+        .into_shell();
     assert!(
         good.open(OpenContext::new(pipeline.clone(), load.clone()))
             .await
@@ -317,7 +319,8 @@ async fn destination_uses_the_same_policy_path() {
             mode: Mode::VerifyFull,
             root_cert: Some(PemSource(fixture.pki.wrong_ca_pem.clone())),
             ..Policy::default()
-        });
+        })
+        .into_shell();
     let error = match bad.open(OpenContext::new(pipeline, load)).await {
         Ok(_) => panic!("wrong CA must fail the destination identically"),
         Err(error) => error,
@@ -385,7 +388,8 @@ async fn client_cert_matrix_against_cert_auth_server() {
                 root_cert: Some(PemSource(pki.ca_pem.clone())),
                 client_cert: Some(PemSource(pki.client_cert_pem.clone())),
                 client_key: Some(PemSource(pki.client_key_pem.clone())),
-            });
+            })
+            .into_shell();
     postgres_destination
         .open(OpenContext::new(
             PipelineId::new("mtls"),
@@ -469,8 +473,7 @@ async fn sslrootcert_url_syncs_and_application_name_is_set() {
     // SOURCE: reflect over the URL (connects verified), then check that the
     // live session carries application_name=rdlt.
     use rdlt_connector::Source as _;
-    let postgres_source =
-        source::Postgres::from_yaml(&format!("conn: \"{url}\"\n")).expect("config");
+    let postgres_source = source::Shell::from_yaml(&format!("conn: \"{url}\"\n")).expect("config");
     postgres_source
         .streams()
         .await
@@ -525,7 +528,9 @@ async fn sslrootcert_url_syncs_and_application_name_is_set() {
     drop(held);
 
     // DESTINATION: the same URL through the same gate.
-    let postgres_destination = destination::Postgres::new(&url).schema("url_ok");
+    let postgres_destination = destination::Postgres::new(&url)
+        .schema("url_ok")
+        .into_shell();
     postgres_destination
         .open(OpenContext::new(
             PipelineId::new("url"),

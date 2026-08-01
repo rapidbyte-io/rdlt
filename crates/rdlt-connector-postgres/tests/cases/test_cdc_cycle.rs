@@ -405,6 +405,7 @@ async fn custom_flag_column_flows_end_to_end() {
                 .collect(),
             })
             .expect("options")
+            .into_shell()
     };
     let run = || async {
         let config = EngineConfig::new("cdc-flag-name")

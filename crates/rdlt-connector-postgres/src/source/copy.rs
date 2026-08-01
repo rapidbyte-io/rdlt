@@ -14,7 +14,8 @@
 use arrow_array::RecordBatch;
 use futures::TryStreamExt;
 use rdlt_connector::core::crash_point;
-use rdlt_connector::{Cursor, ReadRequest, SourceError};
+use rdlt_connector::{Cursor, SourceError};
+use rdlt_connector_sdk::source::Feed;
 use tokio_postgres::Client;
 
 use crate::source::errors::{self, Phase};
@@ -56,7 +57,7 @@ pub(crate) async fn stream<F>(
     client: &Client,
     copy_sql: &str,
     decoder: &mut Decoder,
-    request: &mut ReadRequest,
+    feed: &mut Feed,
     stream_name: &str,
     crash: CrashSite,
     mut transform: F,
@@ -89,7 +90,7 @@ where
             .feed(&chunk)
             .map_err(|e| errors::fatal(Phase::Decode, Some(stream_name), e))?;
         for batch in batches {
-            if !perform(transform(batch)?, request).await? {
+            if !perform(transform(batch)?, feed).await? {
                 return Ok(false);
             }
         }
@@ -97,7 +98,7 @@ where
     if let Some(tail) = decoder
         .finish()
         .map_err(|e| errors::fatal(Phase::Decode, Some(stream_name), e))?
-        && !perform(transform(tail)?, request).await?
+        && !perform(transform(tail)?, feed).await?
     {
         return Ok(false);
     }
@@ -106,16 +107,16 @@ where
 
 /// Await one batch's push actions in order. `false` = engine cancellation.
 #[cfg_attr(not(feature = "failpoints"), allow(unused_variables))]
-async fn perform(pushes: Vec<Push>, request: &mut ReadRequest) -> Result<bool, SourceError> {
+async fn perform(pushes: Vec<Push>, feed: &mut Feed) -> Result<bool, SourceError> {
     for push in pushes {
         match push {
             Push::Arrow(batch) => {
-                if request.out.arrow(batch).await.is_err() {
+                if feed.arrow(batch).await.is_break() {
                     return Ok(false);
                 }
             }
             Push::Checkpoint(cursor) => {
-                if request.out.checkpoint(cursor).await.is_err() {
+                if feed.checkpoint(cursor).await.is_break() {
                     return Ok(false);
                 }
             }

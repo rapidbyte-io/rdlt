@@ -1,12 +1,14 @@
-//! The source connector: construction and the SPI face. Both faces are thin
-//! dispatch — validation lives in `plan`, incremental resolution in
+//! The source connector: construction and the framework face (the sdk's
+//! `SourceConnector`; the SPI comes from [`super::Shell`]). Both faces are
+//! thin dispatch — validation lives in `plan`, incremental resolution in
 //! `cursor::prepare`, SQL in `sql`, the read loop in `copy`.
 
 use std::collections::BTreeMap;
 
 use async_trait::async_trait;
 use rdlt_connector::core::crash_point;
-use rdlt_connector::{ConnectorSpec, ReadRequest, Source, SourceError, StreamSpec};
+use rdlt_connector::{Cursor, SourceError, StreamSpec};
+use rdlt_connector_sdk::source::{Feed, SourceConnector};
 
 use super::config::{self, Config};
 use super::errors::{self, Phase};
@@ -26,27 +28,6 @@ pub struct Postgres {
 }
 
 impl Postgres {
-    pub fn from_yaml(yaml: &str) -> Result<Self, config::ConfigError> {
-        Ok(Self::new(Config::from_yaml(yaml)?))
-    }
-
-    pub fn from_json(json: &str) -> Result<Self, config::ConfigError> {
-        Ok(Self::new(Config::from_json(json)?))
-    }
-
-    /// Embedder entry point (see [`Config::from_value`]).
-    pub fn from_value(value: serde_json::Value) -> Result<Self, config::ConfigError> {
-        Ok(Self::new(Config::from_value(value)?))
-    }
-
-    pub fn new(config: Config) -> Self {
-        Self {
-            config,
-            reflected: tokio::sync::OnceCell::new(),
-            cdc_runtime: cdc::Runtime::new(),
-        }
-    }
-
     async fn reflected(&self) -> Result<&BTreeMap<String, reflect::Table>, SourceError> {
         self.reflected
             .get_or_try_init(|| async {
@@ -140,11 +121,22 @@ pub(crate) async fn connect(config: &Config) -> Result<session::Connection, Sour
 }
 
 #[async_trait]
-impl Source for Postgres {
-    fn spec(&self) -> ConnectorSpec {
-        let mut spec = ConnectorSpec::new("postgres", env!("CARGO_PKG_VERSION"));
-        spec.config_schema = Some(config::config_schema());
-        spec
+impl SourceConnector for Postgres {
+    const NAME: &'static str = "postgres";
+    const VERSION: &'static str = env!("CARGO_PKG_VERSION");
+
+    type Config = Config;
+
+    fn assemble(config: Config) -> Result<Self, config::ConfigError> {
+        Ok(Self {
+            config,
+            reflected: tokio::sync::OnceCell::new(),
+            cdc_runtime: cdc::Runtime::new(),
+        })
+    }
+
+    fn config_schema() -> Option<serde_json::Value> {
+        Some(config::config_schema())
     }
 
     async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
@@ -226,8 +218,13 @@ impl Source for Postgres {
         Ok(specs)
     }
 
-    async fn read(&self, mut request: ReadRequest) -> Result<(), SourceError> {
-        let name = request.stream.name.as_str().to_owned();
+    async fn read_stream(
+        &self,
+        stream: &StreamSpec,
+        since: Option<Cursor>,
+        feed: &mut Feed,
+    ) -> Result<(), SourceError> {
+        let name = stream.name.as_str().to_owned();
         let reflected = self.reflected().await?;
         let (facts, _) = self.stream_facts(reflected, &name)?;
         // Lossy visibility: each documented-lossy column announces itself
@@ -288,12 +285,14 @@ impl Source for Postgres {
                 &context,
                 &cdc_tables,
                 &reflected_columns,
-                request,
+                stream,
+                since,
+                feed,
             )
             .await;
         }
 
-        let mut incremental = cursor::prepare(&facts, request.since.as_ref(), &name)?;
+        let mut incremental = cursor::prepare(&facts, since.as_ref(), &name)?;
         let (where_sql, order_sql) = match &incremental {
             Some(plan) => (plan.where_sql.clone(), plan.order_sql.clone()),
             None => (String::new(), String::new()),
@@ -338,7 +337,7 @@ impl Source for Postgres {
             &connection,
             &copy_sql,
             &mut decoder,
-            &mut request,
+            feed,
             &name,
             copy::CrashSite {
                 label: "pg.src.mid_copy",
@@ -350,7 +349,7 @@ impl Source for Postgres {
         if !completed {
             return Ok(()); // cancellation; dropping the client aborts the COPY
         }
-        if !pushed_any && request.out.arrow(decoder.empty_batch()).await.is_err() {
+        if !pushed_any && feed.arrow(decoder.empty_batch()).await.is_break() {
             return Ok(()); // still cancellation
         }
         match incremental {
@@ -369,7 +368,7 @@ impl Source for Postgres {
                     ))
                 );
                 if let Some(state) = plan.tracker.final_state(plan.keep_final_keys)
-                    && request.out.checkpoint(state.encode()).await.is_err()
+                    && feed.checkpoint(state.encode()).await.is_break()
                 {
                     return Ok(());
                 }

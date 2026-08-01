@@ -84,7 +84,9 @@ async fn native_types_land_with_exact_values() {
         return;
     };
     let connection_string = fixture.connection_string.clone();
-    let postgres_destination = destination::Postgres::new(&connection_string).schema("fid");
+    let postgres_destination = destination::Postgres::new(&connection_string)
+        .schema("fid")
+        .into_shell();
     let pipeline = PipelineId::new("fid");
     const LOAD: &str = "fid-load";
     let mut session = postgres_destination
@@ -213,7 +215,9 @@ async fn extreme_decimal_round_trips_through_the_server() {
         return;
     };
     let connection_string = fixture.connection_string.clone();
-    let postgres_destination = destination::Postgres::new(&connection_string).schema("wide");
+    let postgres_destination = destination::Postgres::new(&connection_string)
+        .schema("wide")
+        .into_shell();
     let pipeline = PipelineId::new("wide");
     const LOAD: &str = "w-load";
     let mut session = postgres_destination
@@ -280,7 +284,9 @@ async fn rejected_documents_and_uuids_fail_typed_naming_the_column() {
         return;
     };
     let connection_string = fixture.connection_string.clone();
-    let postgres_destination = destination::Postgres::new(&connection_string).schema("fidbad");
+    let postgres_destination = destination::Postgres::new(&connection_string)
+        .schema("fidbad")
+        .into_shell();
     let pipeline = PipelineId::new("fidbad");
     const LOAD: &str = "fb-load";
     let mut session = postgres_destination
@@ -340,7 +346,9 @@ async fn forced_db_failure_surfaces_server_message_and_sqlstate() {
         return;
     };
     let connection_string = fixture.connection_string.clone();
-    let postgres_destination = destination::Postgres::new(&connection_string).schema("f6");
+    let postgres_destination = destination::Postgres::new(&connection_string)
+        .schema("f6")
+        .into_shell();
     let pipeline = PipelineId::new("f6");
     const LOAD: &str = "f6-load";
     let mut session = postgres_destination

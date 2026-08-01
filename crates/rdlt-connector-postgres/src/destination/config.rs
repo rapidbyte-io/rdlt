@@ -60,6 +60,13 @@ impl Postgres {
         Ok(self)
     }
 
+    /// Wrap into the SPI face — the sdk's session choreography over
+    /// [`super::Load`]. The builder composes the handle; this hands it to
+    /// the engine.
+    pub fn into_shell(self) -> super::Shell {
+        rdlt_connector_sdk::destination::shell(self)
+    }
+
     /// Build from a parsed configuration document.
     pub fn from_config(config: Config) -> Result<Self, ConfigError> {
         let options = DestinationOptions {
@@ -73,20 +80,6 @@ impl Postgres {
             tls: config.tls,
             options,
         })
-    }
-
-    pub fn from_yaml(yaml: &str) -> Result<Self, ConfigError> {
-        Self::from_config(Config::from_yaml(yaml)?)
-    }
-
-    pub fn from_json(json: &str) -> Result<Self, ConfigError> {
-        Self::from_config(Config::from_json(json)?)
-    }
-
-    /// The embedder entry point — a `serde_json::Value` straight through,
-    /// same validation as every other entry point.
-    pub fn from_value(value: serde_json::Value) -> Result<Self, ConfigError> {
-        Self::from_config(Config::from_value(value)?)
     }
 }
 
@@ -126,17 +119,21 @@ pub struct Config {
     pub tables: std::collections::BTreeMap<String, TableOptions>,
 }
 
-impl Config {
-    pub fn from_yaml(yaml: &str) -> Result<Self, ConfigError> {
-        Ok(serde_yaml::from_str(yaml)?)
-    }
+/// The [`Document`](rdlt_connector_sdk::config::Document) gate. Closing a
+/// recorded asymmetry: generation 1's bare `Config::from_*` parsed WITHOUT
+/// validating (only the handle constructors validated), so a config
+/// document was checkable at one entry and not another. Under the sdk the
+/// provided entry points all run this gate.
+impl rdlt_connector_sdk::config::Document for Config {
+    type Error = ConfigError;
 
-    pub fn from_json(json: &str) -> Result<Self, ConfigError> {
-        Ok(serde_json::from_str(json)?)
-    }
-
-    pub fn from_value(value: serde_json::Value) -> Result<Self, ConfigError> {
-        Ok(serde_json::from_value(value)?)
+    fn validate(&self) -> Result<(), ConfigError> {
+        DestinationOptions {
+            merge_strategy: self.merge_strategy,
+            tables: self.tables.clone(),
+        }
+        .validate()
+        .map_err(ConfigError::Invalid)
     }
 }
 
@@ -153,11 +150,13 @@ pub fn config_schema() -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
+    use rdlt_connector_sdk::config::Document;
+
     use super::*;
 
     #[test]
     fn document_round_trips_and_validates() {
-        let destination = Postgres::from_yaml(
+        let config = Config::from_yaml(
             r#"
 conn: "host=h user=u"
 dataset: raw
@@ -167,23 +166,28 @@ tables:
     merge_strategy: delete_insert
 "#,
         )
-        .expect("parses");
+        .expect("document");
+        let destination = Postgres::from_config(config).expect("parses");
         assert_eq!(destination.schema, "raw");
         assert_eq!(
             destination.options.merge_strategy,
             Some(MergeStrategy::Upsert)
         );
         // Dataset defaults to public; unknown fields refuse.
-        let bare = Postgres::from_yaml("conn: \"host=h\"\n").expect("parses");
-        assert_eq!(bare.schema, "public");
-        assert!(Postgres::from_yaml("conn: \"host=h\"\nghost: 1\n").is_err());
+        let bare = Config::from_yaml("conn: \"host=h\"\n").expect("document");
+        assert_eq!(
+            Postgres::from_config(bare).expect("parses").schema,
+            "public"
+        );
+        assert!(Config::from_yaml("conn: \"host=h\"\nghost: 1\n").is_err());
     }
 
     #[test]
     fn invalid_options_are_refused_at_parse() {
         // scd2 options without the scd2 strategy — sqlcore's validation
-        // fires through the document entry point too.
-        let err = Postgres::from_yaml(
+        // fires through the document entry point too, now at EVERY entry
+        // (the sdk gate closed generation 1's non-validating from_*).
+        let err = Config::from_yaml(
             "conn: \"host=h\"\ntables:\n  events:\n    scd2:\n      valid_from: vf\n",
         )
         .expect_err("invalid options refuse");

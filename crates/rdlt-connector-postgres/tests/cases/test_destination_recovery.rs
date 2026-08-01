@@ -16,7 +16,7 @@ async fn replace_recovery_session_keeps_prior_commits_of_same_load() {
         return;
     };
     let connection_string = container.connection_string.clone();
-    let destination = Postgres::new(&connection_string).schema("rec");
+    let destination = Postgres::new(&connection_string).schema("rec").into_shell();
     let pipeline = PipelineId::new("p1");
     let load = LoadId::new("load-a");
     let table_schema = schema_for("events");

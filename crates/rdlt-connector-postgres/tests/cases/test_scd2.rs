@@ -60,7 +60,11 @@ fn batch(rows: &[(i64, &str)]) -> RecordBatch {
     .expect("batch")
 }
 
-fn scd2_destination(connection_string: &str, schema: &str, absent: AbsentPolicy) -> Postgres {
+fn scd2_destination(
+    connection_string: &str,
+    schema: &str,
+    absent: AbsentPolicy,
+) -> rdlt_connector_postgres::destination::Shell {
     Postgres::new(connection_string)
         .schema(schema)
         .options(DestinationOptions {
@@ -80,9 +84,10 @@ fn scd2_destination(connection_string: &str, schema: &str, absent: AbsentPolicy)
             .collect(),
         })
         .expect("valid options")
+        .into_shell()
 }
 
-async fn run(destination: Postgres, rows: &[(i64, &str)]) {
+async fn run(destination: rdlt_connector_postgres::destination::Shell, rows: &[(i64, &str)]) {
     let mut config = EngineConfig::new("scd2");
     config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
         key: vec!["id".into()],
@@ -344,7 +349,8 @@ async fn rejections_are_typed_at_ensure() {
             .collect(),
             ..DestinationOptions::default()
         })
-        .expect("options parse");
+        .expect("options parse")
+        .into_shell();
     let mut config = EngineConfig::new("bad");
     config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
         key: vec!["id".into()],
@@ -374,7 +380,8 @@ async fn rejections_are_typed_at_ensure() {
             merge_strategy: Some(MergeStrategy::Scd2),
             ..DestinationOptions::default()
         })
-        .expect("options parse");
+        .expect("options parse")
+        .into_shell();
     let mut config = EngineConfig::new("badsh");
     config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
         key: vec!["id".into()],
@@ -471,7 +478,8 @@ async fn custom_validity_column_names_flow_end_to_end() {
             .into_iter()
             .collect(),
         })
-        .expect("options");
+        .expect("options")
+        .into_shell();
     run(destination.clone(), &[(1, "v1")]).await;
     run(destination, &[(1, "v2")]).await;
 

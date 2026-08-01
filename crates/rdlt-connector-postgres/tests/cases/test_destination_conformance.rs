@@ -20,7 +20,7 @@ async fn postgres_destination_is_conformant() {
         return;
     };
     let connection_string = container.connection_string.clone();
-    let destination = Postgres::new(&connection_string).schema("raw");
+    let destination = Postgres::new(&connection_string).schema("raw").into_shell();
     let probe = Probe {
         connection_string: connection_string.clone(),
         schema: "raw".into(),
@@ -34,7 +34,7 @@ async fn flattened_nested_fields_land_and_merge_replaces_child_subtrees() {
         return;
     };
     let connection_string = container.connection_string.clone();
-    let destination = Postgres::new(&connection_string).schema("raw");
+    let destination = Postgres::new(&connection_string).schema("raw").into_shell();
 
     let source = MemorySource::single_stream(
         rdlt_connector::StreamSpec::new("users").with_primary_key(["id"]),
@@ -165,7 +165,7 @@ async fn keyed_merge_converges_to_one_row_per_key_with_updated_values() {
         return;
     };
     let connection_string = container.connection_string.clone();
-    let destination = Postgres::new(&connection_string).schema("raw");
+    let destination = Postgres::new(&connection_string).schema("raw").into_shell();
     let merge_config = || {
         let mut config = EngineConfig::new("pg-kmerge");
         config = config.with_write_mode(rdlt_connector::WriteMode::Merge {

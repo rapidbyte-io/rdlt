@@ -36,8 +36,8 @@ impl Rig {
         Self { workdir }
     }
 
-    fn source(connection_string: &str) -> source::Postgres {
-        source::Postgres::from_yaml(&format!(
+    fn source(connection_string: &str) -> source::Shell {
+        source::Shell::from_yaml(&format!(
             "conn: \"{connection_string}\"\nbatch_max_rows: 10\n\
              cdc:\n  slot: s1\n  publication: p1\n  create_if_missing: true\n\
              tables:\n  - name: ev\n"
@@ -45,7 +45,7 @@ impl Rig {
         .expect("cdc source config")
     }
 
-    fn destination(connection_string: &str) -> Postgres {
+    fn destination(connection_string: &str) -> rdlt_connector_postgres::destination::Shell {
         Postgres::new(connection_string)
             .schema("mirror")
             .options(DestinationOptions {
@@ -61,6 +61,7 @@ impl Rig {
                 .collect(),
             })
             .expect("valid destination options")
+            .into_shell()
     }
 
     async fn attempt(&self, connection_string: &str) -> Result<rdlt_engine::RunReport, String> {

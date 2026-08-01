@@ -32,6 +32,10 @@ mod builder;
 pub mod pipeline_spec;
 
 pub use builder::{Pipeline, PipelineBuilder};
+/// The connector-authoring layer, re-exported for embedders that build or
+/// parse connector configs directly (`sdk::config::Document` is the trait
+/// behind every connector's `from_yaml`/`from_json`/`from_value`).
+pub use rdlt_connector_sdk as sdk;
 pub use rdlt_core::{
     CommitPolicy, Cursor, PipelineEvent, PolicyAction, RdltError, ResumedFrom, RunReport,
     SchemaPolicy, TableReport, WriteMode,
