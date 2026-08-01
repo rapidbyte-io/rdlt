@@ -184,6 +184,38 @@ crates/rdlt-connector-snowflake-v2/
     crash_sweep.rs      — own binary (by-hand sweep selects by name)
 ```
 
-## STATUS
+## STATUS — BUILT, TESTS RE-AUTHORED, ALL GREEN LIVE (2026-08-01)
 
-(filled as the work lands)
+SRC: every module designed fresh (unit.rs owns the transaction AND the
+DML-only discipline; catalog.rs split from ddl; client.rs slimmed to a
+four-method executor seam with uniform binds). 57/57 unit tests.
+IMPROVEMENT FOUND BY THE FRESH SUITE: generation 1 never validated the
+shared merge options at parse — a document with contradictory options
+parsed clean and failed mid-load; the gate now runs
+`DestinationOptions::validate` with sqlcore's frozen sentence as the
+detail (the same asymmetry class 027 closed for pg-dest).
+
+TESTS: re-authored per D4/D5 under the house layout —
+tests/integration.rs + cases/{common + 14 suites} + crash_sweep.rs (own
+binary, by-hand). 88/88 PASSING INCLUDING EVERY LIVE LEG against the
+qual account: the conformance kit through the shell, ingestion
+end-to-end with the no-local-residue check, replace, the live
+steady-state ensure economy, upsert/hard-delete/scd2 single-instant
+read-backs, the auth matrix (password/oauth legs written and gated,
+UNPERFORMED without their entries — the standing 022/023 call), the
+three service-fact pins (DDL commits, SET does not, per-statement
+clock), aged reclaim BOTH ways, live classification, and the
+differential oracle vs postgres across 4 strategy arms (69.7 s).
+
+COVERAGE MAP (gen-1 suite → fresh home): conformance→test_conformance;
+ingestion_session→test_ingestion; live_load+live_economy→test_load;
+live_merge→test_merge; live_auth_matrix→test_auth;
+live_semantics→test_semantics; scratch_reclaim→test_reclaim;
+live_client→test_client; differential_oracle→test_oracle;
+quickstart_doc→test_quickstart (quickstart matches the fresh README);
+secret_hygiene→test_secret_hygiene; options_parity→test_options;
+statement_economy→test_economy (+ src unit pins);
+credential_gating→test_gating; crash_sweep→crash_sweep.rs (fresh
+armed-then-recover shape iterating FAIL_POINTS + the registry check;
+by-hand, not run here). Zero warnings all shapes. Review + gates
+follow.

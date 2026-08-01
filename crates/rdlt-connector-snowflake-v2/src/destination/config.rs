@@ -239,7 +239,18 @@ impl SnowflakeConfig {
                 detail: "is the account identifier alone; the host is derived from it".to_owned(),
             });
         }
-        self.auth.validate()
+        self.auth.validate()?;
+        // The shared option rules fire at PARSE, not first at ensure —
+        // generation 1 left this seam unvalidated (a document with
+        // contradictory merge options parsed clean and failed mid-load);
+        // the fresh suite exposed the gap and this closes it, with
+        // sqlcore's own frozen sentence as the detail.
+        self.options
+            .validate()
+            .map_err(|detail| ConfigError::Invalid {
+                field: "tables",
+                detail,
+            })
     }
 
     /// The host this configuration addresses — derived from `account`
