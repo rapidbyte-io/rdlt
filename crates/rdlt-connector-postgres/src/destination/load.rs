@@ -31,7 +31,8 @@ use super::unit::Unit;
 use super::{executor, write};
 use crate::session::Connection;
 
-/// The per-session system IO — [`DestinationConnector::connect`]
+/// The per-session system IO —
+/// [`DestinationConnector::connect`](rdlt_connector_sdk::destination::DestinationConnector::connect)
 /// (`super::connector`) opens one; the sdk session drives it. Public only
 /// as the connector's associated `Backend` type; every field and method
 /// stays crate-internal.
