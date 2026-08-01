@@ -2,7 +2,7 @@
 //! schema AND parser identically.
 
 use jsonschema::validator_for;
-use rdlt_connector_rest_v2::source::{Config as RestConfig, config_schema};
+use rdlt_connector_rest_v2::source::{Config, config_schema};
 use serde_json::json;
 
 fn example() -> serde_json::Value {
@@ -32,7 +32,7 @@ fn documented_example_validates_and_parses() {
         "example must validate: {:?}",
         validator.iter_errors(&example).next()
     );
-    RestConfig::from_value(example).expect("schema-valid example parses");
+    Config::from_value(example).expect("schema-valid example parses");
 }
 
 #[test]
@@ -41,7 +41,7 @@ fn unknown_fields_fail_schema_and_parser_identically() {
     let mut bad = example();
     bad["streams"][0]["cursor"] = json!("updated_at"); // typo for cursor_field
     assert!(!validator.is_valid(&bad));
-    assert!(RestConfig::from_value(bad).is_err());
+    assert!(Config::from_value(bad).is_err());
 }
 
 #[test]
@@ -99,14 +99,14 @@ fn schema_valid_corpus_parses() {
             validator.is_valid(&config),
             "corpus entry invalid: {config}"
         );
-        RestConfig::from_value(config.clone())
+        Config::from_value(config.clone())
             .unwrap_or_else(|e| panic!("schema-valid config failed to parse: {config}: {e}"));
     }
 }
 
 #[test]
 fn empty_streams_rejected() {
-    let err = RestConfig::from_value(json!({"base_url": "https://x", "streams": []}))
+    let err = Config::from_value(json!({"base_url": "https://x", "streams": []}))
         .expect_err("no streams")
         .to_string();
     assert!(err.contains("at least one stream"), "{err}");

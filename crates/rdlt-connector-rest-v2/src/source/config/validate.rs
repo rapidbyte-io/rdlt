@@ -3,9 +3,8 @@
 //! bounded request deadline) are real by the time a connector exists —
 //! nothing downstream re-checks or papers over them.
 //!
-//! Every refusal keeps its generation-1 message needle: the ported suites
-//! pin these strings, and an operator's muscle memory is part of the
-//! surface.
+//! Refusal messages are FROZEN: the suites pin these strings, and an
+//! operator's muscle memory is part of the surface.
 
 use std::collections::BTreeMap;
 
@@ -49,7 +48,7 @@ fn invalid(message: String) -> Result<(), ConfigError> {
 /// plain (Debug-printable) `headers:` map instead of the `Secret`-wrapped
 /// `auth:` block. Returns the rejection message when `name` is one of them,
 /// case-insensitively.
-fn reserved_auth_header(name: &str) -> Option<String> {
+fn credential_header_refusal(name: &str) -> Option<String> {
     // A slice, so the length is not hand-maintained. EXACT names only,
     // matched case-insensitively — a substring or suffix rule would reject
     // legitimate headers like `x-request-token-count`, and a guard that
@@ -99,7 +98,7 @@ fn validate_headers(
                 ));
             }
         }
-        if let Some(message) = reserved_auth_header(name) {
+        if let Some(message) = credential_header_refusal(name) {
             return match stream {
                 Some(name) => invalid(format!("stream `{name}`: {message}")),
                 None => invalid(message),

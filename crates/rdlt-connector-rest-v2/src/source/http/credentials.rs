@@ -154,6 +154,16 @@ impl Credentials {
             .map_err(super::classify::transport)?;
         let status = response.status();
         if !status.is_success() {
+            // The shared classification's three-way split, with the token
+            // endpoint named: a 429 here is the issuer pacing its clients —
+            // rate-limited (engine backoff), NEVER fatal; a fatal would
+            // abort the whole run over an ordinary shared-issuer limit.
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                return Err(SourceError::RateLimited {
+                    retry_after: super::classify::server_retry_after(&response),
+                    source: format!("oauth2 token endpoint: HTTP {status}").into(),
+                });
+            }
             if status.is_server_error() {
                 return Err(SourceError::transient(format!(
                     "oauth2 token endpoint: HTTP {status}"

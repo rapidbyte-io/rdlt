@@ -82,8 +82,7 @@ impl Client {
     /// status comes back as `Ok(response)` after the bounded in-source
     /// handling below, so the caller can match declared response actions on
     /// the TYPED status before classifying. Retry-After on 429/503 is
-    /// honored IN-SOURCE up to the cap (one wait, one retry per
-    /// occurrence).
+    /// honored IN-SOURCE up to the cap (one wait, one retry per send).
     pub async fn send(
         &self,
         build: impl Fn(&reqwest::Client) -> reqwest::RequestBuilder,

@@ -5,8 +5,7 @@
 //!
 //! Substrate on purpose: the config gate, the paginator families, record
 //! extraction, and parent placeholder resolution all select with THIS one
-//! type — generation 1 kept it inside the read path and had config
-//! validation reach across, a layering inversion this home removes.
+//! type — config validation never reaches into the read path for it.
 
 use serde_json::Value;
 
@@ -27,7 +26,7 @@ pub struct Selector {
 }
 
 impl Selector {
-    /// Parse or fail typed, naming the supported subset.
+    /// Parse or fail with a message naming the supported subset.
     pub fn parse(raw: &str) -> Result<Self, String> {
         if raw.is_empty() {
             return Err("empty selector".into());

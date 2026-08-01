@@ -211,6 +211,45 @@ streams:
     }
 }
 
+/// A rate-limited token endpoint classifies exactly like a rate-limited
+/// data request: `RateLimited` carrying the server's Retry-After, for the
+/// engine's backoff — NEVER fatal, which would abort the run over an
+/// ordinary shared-issuer limit.
+#[tokio::test]
+async fn oauth2_token_endpoint_429_is_rate_limited() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "7"))
+        .mount(&server)
+        .await;
+    let yaml = format!(
+        r#"
+base_url: "{0}"
+auth:
+  oauth2_client_credentials:
+    token_url: "{0}/token"
+    client_id: cid
+    client_secret: shh
+streams:
+  - name: items
+    path: /items
+"#,
+        server.uri()
+    );
+    let outcome = read_stream(&yaml, "items", None).await;
+    match outcome.result {
+        Err(rdlt_connector::SourceError::RateLimited { retry_after, .. }) => {
+            assert_eq!(
+                retry_after,
+                Some(std::time::Duration::from_secs(7)),
+                "the issuer's Retry-After reaches the engine"
+            );
+        }
+        other => panic!("expected RateLimited, got {other:?}"),
+    }
+}
+
 /// Source-level headers and params ride every request, merged UNDER the
 /// stream's own (same name → the stream's value wins, exactly once).
 #[tokio::test]

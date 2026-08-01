@@ -49,7 +49,7 @@ impl Rest {
     fn assemble(config: Config) -> Result<Self, config::ConfigError> {
         // ONE reqwest client for the whole source, so the deadline covers
         // the token fetch as well as the data requests. Its construction is
-        // fallible — `Client::new()` PANICS when the TLS backend cannot
+        // fallible — `reqwest::Client::new()` PANICS when the TLS backend cannot
         // initialise, which is an environment problem an embedder should
         // receive as an error.
         //

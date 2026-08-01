@@ -77,7 +77,7 @@ pub(crate) async fn read_children(
         // the stream (a lazy map trips higher-ranked lifetime inference).
         let child_futures: Vec<_> = parents
             .iter()
-            .map(|values| {
+            .map(|parent_values| {
                 let tx = tx.clone();
                 let selector = &selector;
                 async move {
@@ -88,11 +88,11 @@ pub(crate) async fn read_children(
                         selector,
                         incremental,
                         start_value,
-                        values,
+                        parent_values,
                         &tx,
                     )
                     .await
-                    .map_err(|e| with_parent_context(e, &stream.name, values))
+                    .map_err(|e| with_parent_context(e, &stream.name, parent_values))
                 }
             })
             .collect();
@@ -120,18 +120,18 @@ async fn read_child_pages(
     selector: &Option<Selector>,
     incremental: &Option<Incremental>,
     start_value: &Option<String>,
-    values: &ParentValues,
+    parent_values: &ParentValues,
     tx: &tokio::sync::mpsc::Sender<Bytes>,
 ) -> Result<Option<String>, SourceError> {
-    let need_values = incremental.is_some() || !values.include.is_empty();
+    let needs_values = incremental.is_some() || !parent_values.include.is_empty();
     let mut paginator = paginate::build(&stream.pagination).map_err(SourceError::fatal)?;
     let mut sequence = Sequence::new(
         config,
         stream,
         client,
         &mut *paginator,
-        need_values,
-        Some(values),
+        needs_values,
+        Some(parent_values),
     );
     sequence.bind_incremental(incremental, start_value);
     let mut local_max = start_value.clone();
@@ -146,11 +146,11 @@ async fn read_child_pages(
             }
             // Parent-field embedding reuses the already-parsed values — no
             // reparse; without `include` the page bytes pass through.
-            let records = if values.include.is_empty() {
+            let records = if parent_values.include.is_empty() {
                 page.records.clone()
             } else {
                 let page_values = page.values.take().unwrap_or_default();
-                resolve::embed(page_values, &values.include)?
+                resolve::embed(page_values, &parent_values.include)?
             };
             if tx.send(records).await.is_err() {
                 break; // forwarder ended = cancellation
@@ -167,10 +167,14 @@ async fn read_child_pages(
 /// the engine will treat it: a transient or rate-limited child error keeps
 /// its variant (and any `retry_after`) so the run still spends its retry
 /// budget rather than aborting; only an already-fatal error stays fatal.
-fn with_parent_context(error: SourceError, stream: &str, values: &ParentValues) -> SourceError {
+fn with_parent_context(
+    error: SourceError,
+    stream: &str,
+    parent_values: &ParentValues,
+) -> SourceError {
     let message = format!(
         "child stream `{stream}` failed for parent ({}): {error}",
-        resolve::describe(&values.placeholders)
+        resolve::describe(&parent_values.placeholders)
     );
     match error {
         SourceError::Transient(_) => SourceError::transient(message),

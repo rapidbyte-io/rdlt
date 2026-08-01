@@ -76,7 +76,7 @@ the network.
 ## Auth schemes
 
 Externally tagged: `auth: {bearer: {token: …}}` (YAML singleton-map and
-JSON alike; the pre-014 YAML tagged spelling `auth: !bearer` also still
+JSON alike; the legacy tagged spelling `auth: !bearer` also still
 parses — frozen). Every credential field is a `Secret` — `Debug`/`Display`
 render `***`, and the test suite grep-proves that no config/source/error
 rendering ever contains a secret substring.
@@ -103,7 +103,7 @@ rendering ever contains a secret substring.
 | `records_path` | selector | absent | Where the records array lives: dot paths + `[*]` wildcards + `[N]` indices (`data.items[*].payload`). **Absent = the body IS the records array, streamed byte-identical (the perf path).** Unsupported syntax is a typed error at parse naming the subset; a non-matching path is a typed error naming the path and the response's top-level keys — except a wildcard over an existing EMPTY array, which is a legitimately empty page (the standard terminal-page shape). |
 | `pagination` | family block | `none` | See Pagination families. |
 | `incremental` | block | absent | See Incremental. |
-| `cursor_field`, `cursor_param` | strings | absent | FROZEN pre-014 aliases for `incremental.cursor_field`/`start_param` — old documents parse unchanged. Set together; mixing them with the block is a typed error. |
+| `cursor_field`, `cursor_param` | strings | absent | FROZEN legacy aliases for `incremental.cursor_field`/`start_param` — old documents parse unchanged. Set together; mixing them with the block is a typed error. |
 | `response_actions` | list | `[]` | See Response actions. |
 | `parent` | block | absent | See Parent-child. |
 | `primary_key` | [column] | absent | Declared key for merge identity downstream. |
@@ -122,7 +122,7 @@ guesses.
 | `none` | — | Single request. |
 | `page` | `page_param` (`page`), `start` (`1`), `total_pages_path` / `total_count_path` (optional stop, mutually exclusive) | Empty page — or the declared total, which stops WITHOUT the extra empty-page request. |
 | `offset` | `offset_param` (`offset`), `limit_param` (`limit`), `page_size` (required), `total_count_path` (optional) | Short page, or the declared count. |
-| `cursor` | `cursor_path` (selector into the body), `cursor_param` | Cursor absent/null. The value rides the query for GET and the body for POST. |
+| `cursor` | `cursor_path` (selector into the body), `cursor_param` | Cursor absent/null. The value rides the query for GET (and body-less POST) and the body for POST. |
 | `header_cursor` | `header`, `cursor_param` | Response header absent. |
 | `next_url` | `next_url_path` (selector) | Absent/null. Absolute URLs followed verbatim; relative resolved against `base_url`. |
 | `link_header` | — | RFC5988 `Link: <…>; rel="next"` absent. |
@@ -197,7 +197,8 @@ Network/5xx → transient (the ENGINE retries within its budget); 429 →
 `RateLimited` carrying the server's `Retry-After`; other 4xx → fatal.
 In-source waits are bounded by construction: at most one Retry-After
 wait and one auth re-fetch per request. `min_request_interval_ms` paces
-all requests of the source.
+all data requests of the source; the OAuth2 token endpoint shares the
+read deadline but is deliberately not paced.
 
 ## Using it as a library
 

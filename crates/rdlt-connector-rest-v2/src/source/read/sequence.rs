@@ -30,7 +30,7 @@ pub(crate) struct Sequence<'a> {
     parent: Option<&'a ParentValues>,
     /// Whether extraction should keep parsed record values on the page
     /// (incremental cursors / parent-child embedding — one parse per page).
-    need_values: bool,
+    needs_values: bool,
     /// Params merged into every request (incremental bindings).
     extra_params: Vec<(String, String)>,
     /// Current page params from the paginator (or a full URL override).
@@ -43,7 +43,7 @@ pub(crate) struct Sequence<'a> {
     /// Body of the LAST response (for body-driven paginators).
     last_body: Option<Value>,
     last_headers: reqwest::header::HeaderMap,
-    done: bool,
+    ended: bool,
 }
 
 impl<'a> Sequence<'a> {
@@ -52,7 +52,7 @@ impl<'a> Sequence<'a> {
         stream: &'a Stream,
         client: &'a Client,
         paginator: &'a mut dyn Paginator,
-        need_values: bool,
+        needs_values: bool,
         parent: Option<&'a ParentValues>,
     ) -> Self {
         let page_params = paginator.initial_params();
@@ -62,7 +62,7 @@ impl<'a> Sequence<'a> {
             client,
             paginator,
             parent,
-            need_values,
+            needs_values,
             extra_params: Vec::new(),
             page_params,
             url_override: None,
@@ -71,7 +71,7 @@ impl<'a> Sequence<'a> {
             total_records: 0,
             last_body: None,
             last_headers: reqwest::header::HeaderMap::new(),
-            done: false,
+            ended: false,
         }
     }
 
@@ -108,7 +108,7 @@ impl<'a> Sequence<'a> {
         &mut self,
         selector: &Option<Selector>,
     ) -> Result<Option<Page>, SourceError> {
-        if self.done {
+        if self.ended {
             return Ok(None);
         }
         let url = self.url_override.clone().unwrap_or_else(|| self.base_url());
@@ -193,7 +193,7 @@ impl<'a> Sequence<'a> {
             return Err(classify::status(status, retry_after));
         }
 
-        let page = extract::page(&body, selector.as_ref(), self.need_values)?;
+        let page = extract::page(&body, selector.as_ref(), self.needs_values)?;
         self.total_records += page.count as u64;
         self.last_headers = headers;
         self.last_body = if self.paginator.needs_body() {
@@ -216,7 +216,7 @@ impl<'a> Sequence<'a> {
                 self.stream.name
             ))),
             ActionKind::EndStream => {
-                self.done = true;
+                self.ended = true;
                 Ok(None)
             }
             ActionKind::Ignore => {
@@ -235,7 +235,7 @@ impl<'a> Sequence<'a> {
 
     /// Ask the paginator for the next move. Returns false when done.
     pub(crate) fn advance(&mut self, page: &Page) -> Result<bool, SourceError> {
-        if self.done {
+        if self.ended {
             return Ok(false);
         }
         let context = Context {
@@ -250,7 +250,7 @@ impl<'a> Sequence<'a> {
             .map_err(|e| SourceError::fatal(format!("stream `{}`: {e}", self.stream.name)))?
         {
             Decision::Done => {
-                self.done = true;
+                self.ended = true;
                 Ok(false)
             }
             Decision::NextParams(params) => {

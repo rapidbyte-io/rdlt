@@ -1,8 +1,7 @@
 //! Every config type with its FROZEN document spelling — field names, enum
-//! tags, compat forms, and defaults are the operator contract and match the
-//! first-generation crate byte for byte. Evolution is ADDITIVE: every older
-//! spelling parses unchanged; superseded fields remain as documented
-//! aliases.
+//! tags, compat forms, and defaults are the operator contract. Evolution is
+//! ADDITIVE: every older spelling parses unchanged; superseded fields
+//! remain as documented aliases.
 //!
 //! Configs are DATA — no callbacks — so a platform can render, validate,
 //! and store them, and [`config_schema`] is GENERATED from these structs so
@@ -24,7 +23,7 @@ pub struct Config {
     pub base_url: String,
     // The compat module accepts BOTH the natural `auth: {bearer: {token: …}}`
     // singleton-map form (YAML and JSON) AND the older YAML tagged form
-    // `auth: !bearer`, so pre-014 spellings parse unchanged.
+    // `auth: !bearer`, so the older tagged spelling parses unchanged.
     #[serde(default, with = "auth_compat")]
     #[schemars(with = "Auth")]
     pub auth: Auth,
@@ -82,8 +81,8 @@ pub(crate) fn default_max_pages() -> u64 {
 }
 
 /// Auth field (de)serialization: singleton-map form in and out, PLUS the
-/// older YAML tagged spelling (`auth: !bearer`) on the way in — the only
-/// YAML form the original plain externally-tagged enum accepted.
+/// older YAML tagged spelling (`auth: !bearer`) on the way in — the form
+/// serde_yaml itself produces for a plain externally-tagged enum.
 mod auth_compat {
     use serde::de::Error as _;
     use serde::{Deserialize, Deserializer, Serializer};

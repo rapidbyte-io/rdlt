@@ -238,4 +238,40 @@ that fails is a v2 bug found, not a test to adapt):
 
 ## REVIEW ROUNDS (running record)
 
-(none yet)
+Round 1 (three parallel lenses, 2026-08-01):
+
+- DRIFT vs generation 1: NO DRIFT FOUND — every function pair walked on
+  both sides; the only byte-level difference is `config_schema()`'s
+  `$defs` type names, declared in Frozen surfaces item 1.
+- BUG SCAN: two CONFIRMED defects, both INHERITED from generation 1
+  verbatim (the drift lens proves the code paths are identical there),
+  both fixed here with regression pins — the postgres-v2 precedent for
+  parity-safe inherited fixes. Generation 1 stays untouched (D1).
+  1. `resolve::substitute` applied one `.replace()` pass PER placeholder
+     over the accumulated output, so a parent value (remote data) whose
+     text looked like another declared `{token}` had that other field's
+     value injected into it (BTreeMap order decided the corruption).
+     Fixed: `replace_tokens` does ONE left-to-right pass over the
+     template and never rescans substituted text; `substitute_path` now
+     routes through the same pass over pre-encoded values. Pin:
+     `a_value_resembling_another_token_is_not_resubstituted`.
+  2. The OAuth2 token endpoint classified a 429 as FATAL (its hand-rolled
+     success/5xx/else split predated the shared rulebook), aborting the
+     whole run over an ordinary shared-issuer rate limit — while the
+     identical status on the data path is `RateLimited`. Fixed: a 429 arm
+     returning `RateLimited` with the endpoint named and the server's
+     Retry-After attached. Pin: `oauth2_token_endpoint_429_is_rate_limited`.
+     (Frozen surfaces item 2's "endpoint 5xx transient, 4xx fatal" is
+     hereby amended: 429 → RateLimited, other 4xx fatal.)
+- NAMING/COMMENT AUDIT: no unsanctioned rule violations; ~15 polish items
+  all applied — test-import aliases resurrecting `RestConfig` dropped
+  (one spelling per concept), six comments made self-contained (no
+  generation references or spec-number citations in code), README's
+  pacing and cursor-family claims corrected to match the code,
+  `done`→`ended` and `need_values`→`needs_values` (booleans as
+  assertions), the `ParentValues` instance spelled `parent_values` at
+  every seam, `reserved_auth_header`→`credential_header_refusal` (named
+  by what it builds). Recorded, not changed: `select::Selector` /
+  `paginate::Paginator` repeat their module noun (sanctioned in the
+  layout above); `paginate::build`'s public `String` error (matches the
+  seam shape the composed-example contract exercises).

@@ -90,7 +90,7 @@ pub(crate) fn parent_values(
 /// as well, which keeps them a literal segment. Escaping `.` everywhere is
 /// not the answer: it is legitimate and common inside an ordinary id.
 pub(crate) fn substitute_path(template: &str, values: &BTreeMap<String, String>) -> String {
-    let mut out = template.to_owned();
+    let mut encoded_values = BTreeMap::new();
     for (token, value) in values {
         let mut encoded = String::with_capacity(value.len());
         for byte in value.bytes() {
@@ -104,9 +104,9 @@ pub(crate) fn substitute_path(template: &str, values: &BTreeMap<String, String>)
         if encoded == "." || encoded == ".." {
             encoded = encoded.replace('.', "%2E");
         }
-        out = out.replace(&format!("{{{token}}}"), &encoded);
+        encoded_values.insert(token.clone(), encoded);
     }
-    out
+    replace_tokens(template, &encoded_values)
 }
 
 /// Substitute `{token}` occurrences in a template string, VERBATIM.
@@ -115,10 +115,38 @@ pub(crate) fn substitute_path(template: &str, values: &BTreeMap<String, String>)
 /// encode those themselves, so encoding here would double-encode them.
 /// Never use this for a path — see [`substitute_path`].
 pub(crate) fn substitute(template: &str, values: &BTreeMap<String, String>) -> String {
-    let mut out = template.to_owned();
-    for (token, value) in values {
-        out = out.replace(&format!("{{{token}}}"), value);
+    replace_tokens(template, values)
+}
+
+/// ONE left-to-right pass over the TEMPLATE: each declared `{token}` is
+/// replaced with its value, an undeclared brace stays literal, and
+/// substituted text is never rescanned. Sequential per-token `.replace()`
+/// calls would rescan earlier substitutions — a parent value containing
+/// literal text shaped like another declared `{token}` (remote data) would
+/// then have that other field's value injected into it.
+fn replace_tokens(template: &str, values: &BTreeMap<String, String>) -> String {
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let after_brace = &rest[open + 1..];
+        let replaced = after_brace.find('}').and_then(|close| {
+            values
+                .get(&after_brace[..close])
+                .map(|value| (value, &after_brace[close + 1..]))
+        });
+        match replaced {
+            Some((value, remainder)) => {
+                out.push_str(value);
+                rest = remainder;
+            }
+            None => {
+                out.push('{');
+                rest = after_brace;
+            }
+        }
     }
+    out.push_str(rest);
     out
 }
 
@@ -282,5 +310,24 @@ mod tests {
         let mut values = BTreeMap::new();
         values.insert("id".to_owned(), "a b&c".to_owned());
         assert_eq!(substitute("{id}", &values), "a b&c");
+    }
+
+    /// Substitution is ONE pass over the TEMPLATE: a parent value whose
+    /// text happens to look like another declared placeholder arrives
+    /// verbatim — the other field's value must not be injected into it
+    /// (values are remote data; sequential per-token replacement rescans
+    /// earlier substitutions and corrupts exactly this case).
+    #[test]
+    fn a_value_resembling_another_token_is_not_resubstituted() {
+        let mut values = BTreeMap::new();
+        values.insert("a".to_owned(), "prefix-{z}-suffix".to_owned());
+        values.insert("z".to_owned(), "999".to_owned());
+        assert_eq!(substitute("{a}", &values), "prefix-{z}-suffix");
+        assert_eq!(
+            substitute("q={a}&r={z}", &values),
+            "q=prefix-{z}-suffix&r=999"
+        );
+        // Undeclared braces in the template stay literal.
+        assert_eq!(substitute("{missing}-{z}", &values), "{missing}-999");
     }
 }

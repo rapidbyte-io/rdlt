@@ -8,7 +8,7 @@
 use std::time::Duration;
 
 use rdlt_connector::{ReadRequest, Source, SourceError, records_channel};
-use rdlt_connector_rest_v2::source::Config as RestConfig;
+use rdlt_connector_rest_v2::source::Config;
 use rdlt_connector_rest_v2::source::Rest;
 use serde_json::json;
 use wiremock::matchers::{method, path};
@@ -67,7 +67,7 @@ fn a_zero_request_timeout_is_refused() {
     // Asserted through the CONFIG TYPE, not a rendered message. Matching the
     // message made this pass even with the whole field deleted, because
     // `deny_unknown_fields` echoes an unknown key straight back into its error.
-    let accepted: RestConfig = serde_yaml::from_str(
+    let accepted: Config = serde_yaml::from_str(
         "base_url: \"http://127.0.0.1:1\"\nrequest_timeout_secs: 30\nstreams:\n  - name: events\n    path: /events\n",
     )
     .expect("a positive deadline parses");
@@ -76,7 +76,7 @@ fn a_zero_request_timeout_is_refused() {
         "the field must exist and carry the configured value"
     );
 
-    let defaulted: RestConfig = serde_yaml::from_str(
+    let defaulted: Config = serde_yaml::from_str(
         "base_url: \"http://127.0.0.1:1\"\nstreams:\n  - name: events\n    path: /events\n",
     )
     .expect("the field defaults");

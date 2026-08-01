@@ -1,6 +1,6 @@
 //! Records extraction. The no-selector passthrough — body bytes stream
-//! through untouched — is the flagship perf path and is preserved
-//! byte-for-byte; selector extraction is one parse + reserialize per page.
+//! through untouched — is the flagship perf path; selector extraction is
+//! one parse + reserialize per page.
 
 use bytes::Bytes;
 use rdlt_connector::SourceError;
@@ -11,7 +11,8 @@ use crate::source::select::Selector;
 /// One page's extraction result: the records-array bytes, the record
 /// count, and — when the caller declared it needs them (incremental
 /// cursors, parent-child) — the parsed record values, so downstream never
-/// reparses the page (one parse per page, total).
+/// reparses the page (one parse per page, total). The passthrough branch
+/// keeps the values regardless: its parse already happened for the count.
 #[derive(Debug)]
 pub(crate) struct Page {
     pub(crate) records: Bytes,
@@ -35,12 +36,12 @@ impl Page {
 /// one, one parse + reserialize. No-match is a typed error naming the path
 /// and the response's top-level keys — EXCEPT when a wildcard traversed an
 /// existing empty array: that's a legitimately empty page (the standard
-/// terminal-page shape), never an error. `need_values` keeps the parsed
+/// terminal-page shape), never an error. `needs_values` keeps the parsed
 /// records on the result for downstream consumers.
 pub(crate) fn page(
     body: &Bytes,
     selector: Option<&Selector>,
-    need_values: bool,
+    needs_values: bool,
 ) -> Result<Page, SourceError> {
     match selector {
         None => {
@@ -90,7 +91,7 @@ pub(crate) fn page(
             let count = items.len();
             let records =
                 serde_json::to_vec(&items).map_err(|e| SourceError::fatal(e.to_string()))?;
-            let values = need_values.then(|| items.into_iter().cloned().collect());
+            let values = needs_values.then(|| items.into_iter().cloned().collect());
             Ok(Page {
                 records: records.into(),
                 count,

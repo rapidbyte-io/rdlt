@@ -109,8 +109,8 @@ async fn deliver_sequence(
 ) -> Result<(), SourceError> {
     let selector = parse_selector(stream)?;
     let mut paginator = paginate::build(&stream.pagination).map_err(SourceError::fatal)?;
-    let need_values = incremental.is_some();
-    let mut sequence = Sequence::new(config, stream, client, &mut *paginator, need_values, None);
+    let needs_values = incremental.is_some();
+    let mut sequence = Sequence::new(config, stream, client, &mut *paginator, needs_values, None);
     // max_cursor was already seeded from the resume point (committed cursor
     // or initial_value) in `deliver`, so it is the value to bind.
     sequence.bind_incremental(incremental, &max_cursor.clone());
