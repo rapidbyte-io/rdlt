@@ -74,6 +74,44 @@ Branch `027-sdk-trio` off main @ cb130ee8 (the rest swap-in merge).
   (c) nothing else. RateLimited-for-destinations, richer check reports,
   capability matrices: all deferred with named triggers.
 
+- D9. THE ENV-KNOB SURFACE, redesigned after a no-assumptions audit of
+  every variable the workspace reads (owner direction: the
+  `RDLT_TESTKIT_FORCE_NO_CONTAINERS`/`RDLT_TESTKIT_REQUIRE_CONTAINERS`
+  names are disliked and their necessity questioned).
+  The audit found, with THREE different read conventions in use
+  (any-set, `=="1"` required, `is_ok`):
+  - gates: the containers pair (testkit) + the snowflake pair
+    (`RDLT_TESTKIT_{FORCE_NO,REQUIRE}_SNOWFLAKE`, snowflake tests);
+  - tiers: `RDLT_NET` (=="1"), `RDLT_HEAVY` (=="1"), `RDLT_DEEP`
+    (any-set);
+  - tools: `RDLT_REPIN` (golden re-record, any-set), `RDLT_BENCH_FORCE`
+    (=="1", bench quiet-guard override), `RDLT_INTEROP_PYTHON` (path);
+  - credentials: `RDLT_SNOWFLAKE_*` (ten data vars);
+  - read-only externals: `DOCKER_HOST`, `XDG_RUNTIME_DIR`, `HOME`.
+  THE DIAGNOSIS: each gate is ONE tri-state knob modeled as TWO booleans,
+  which manufactures an invalid fourth state (both set) that then needs a
+  panic to guard. The redesign makes the invalid state unrepresentable:
+  - `RDLT_CONTAINERS=auto|require|skip` (default `auto`): `auto` =
+    probe, skip-not-fail; `require` = absent runtime panics (the 024
+    gate-integrity guarantee, KEPT — this half is load-bearing); `skip` =
+    behave as absent without probing (the FORCE_NO capability, kept
+    because it costs one enum arm, lets a dev reproduce the no-runtime
+    path, and its existence no longer creates a conflict state). An
+    unrecognized value panics naming the valid ones — the misuse guard
+    the both-set panic used to be.
+  - `RDLT_SNOWFLAKE=auto|require|skip`, same semantics over credential
+    presence (the parser lives in the testkit gate module; the snowflake
+    crate consumes it, so every resource gate spells identically). The
+    prefix overlap with the `RDLT_SNOWFLAKE_*` credential vars is
+    deliberate: the gate names the resource the credentials belong to.
+  - Tier flags KEEP their names (`RDLT_NET`, `RDLT_HEAVY`, `RDLT_DEEP`)
+    but unify on ONE read convention: set-to-`1` enables, exposed as a
+    testkit helper so the rule lives once. Tool and credential vars keep
+    their names (they are well-named data, not switches).
+  - The old four gate names are DELETED, not aliased (greenfield rule);
+    the gating-pin tests port to the tri-state contract with new
+    needles.
+
 ## Frozen surfaces (the parity bar)
 
 1. ERROR RENDERING, verbatim: the six classification frames
@@ -105,12 +143,11 @@ Branch `027-sdk-trio` off main @ cb130ee8 (the rest swap-in merge).
 5. TESTKIT CONTRACTS, verbatim (the 024 inheritance):
    - The two crate rules: SPI-only dependencies; connector-agnostic and
      feature-less.
-   - Env vars `RDLT_TESTKIT_FORCE_NO_CONTAINERS` /
-     `RDLT_TESTKIT_REQUIRE_CONTAINERS` (any value counts as set),
-     both-set panics with needle `are both set`, demand-fail panics with
-     needle `RDLT_TESTKIT_REQUIRE_CONTAINERS is set but no container
-     runtime`; the `RDLT_TESTKIT_` prefix is shared vocabulary with the
-     snowflake credential gate and does not move.
+   - The gate's CAPABILITIES (probe, skip-not-fail default, a way to
+     DEMAND the resource so a skip cannot read as a pass, a way to force
+     the absent path on a machine that has the resource) — the spelling
+     is REDESIGNED under D9; the old two-boolean env pair is NOT frozen
+     (owner direction, this feature).
    - `RECLAIM_LABEL = "rdlt-test"` with value "1" at start sites; the
      Makefile reclaim filter and the probe order (DOCKER_HOST → podman
      user socket → /var/run/docker.sock → `podman ps`) stay in sync.
