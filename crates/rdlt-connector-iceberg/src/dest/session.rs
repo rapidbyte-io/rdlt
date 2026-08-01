@@ -15,7 +15,7 @@ use rdlt_connector::core::{
 };
 use rdlt_connector::{
     CommitMeta, CommitReceipt, ConnectorSpec, Destination, DestinationCapabilities,
-    DestinationError, LoadSession, OpenCtx, RecordBatch,
+    DestinationError, LoadSession, OpenContext, RecordBatch,
 };
 
 use super::catalog::connect;
@@ -65,17 +65,18 @@ impl Destination for IcebergDest {
     }
 
     fn capabilities(&self) -> DestinationCapabilities {
-        DestinationCapabilities {
-            merge: false, // append-only lakehouse tables; merge stays SQL-side
-            structs: true,
-            scalar_lists: true,
-            json_type: false, // Json → string (documented closed-table row)
-            decimal: true,
-            ident_rules: IdentRules::default(),
-        }
+        DestinationCapabilities::default()
+            .with_merge(false)
+            // append-only lakehouse tables; merge stays SQL-side
+            .with_structs(true)
+            .with_scalar_lists(true)
+            .with_json_type(false)
+            // Json → string (documented closed-table row)
+            .with_decimal(true)
+            .with_ident_rules(IdentRules::default())
     }
 
-    async fn open(&self, ctx: OpenCtx) -> Result<Box<dyn LoadSession>, DestinationError> {
+    async fn open(&self, ctx: OpenContext) -> Result<Box<dyn LoadSession>, DestinationError> {
         let catalog = connect(&self.config).await?;
         let namespace = NamespaceIdent::from_vec(self.config.namespace_levels())
             .map_err(|e| fatal(format!("namespace `{}`: {e}", self.config.namespace)))?;

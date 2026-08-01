@@ -1,5 +1,8 @@
-pub mod dest;
-pub mod source;
+//! In-memory reference connectors — certified by this crate's own
+//! conformance suites, and the substrate for crash-injection tests.
 
-pub use dest::{MemoryDestination, Row};
-pub use source::{MemoryBatch, MemorySource, MemoryStream};
+mod destination;
+mod source;
+
+pub use destination::{MemoryDestination, Row};
+pub use source::{MemoryBatch, MemorySource, MemoryStream, SinceLog};

@@ -14,9 +14,9 @@ use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use chrono::{DateTime, Utc};
 use proptest::prelude::*;
-use rdlt_connector::{PushPayload, ReadRequest, Source as _, records_channel};
 use rdlt_connector_postgres::fixtures::PostgresContainer;
 use rdlt_connector_postgres::source;
+use rdlt_connector_sdk::spi::{PushPayload, ReadRequest, Source as _, records_channel};
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -112,7 +112,7 @@ async fn read_via_copy_batched(connection_string: &str) -> (usize, RecordBatch) 
 }
 
 async fn collect_copy_batches(connection_string: &str, extra_yaml: &str) -> Vec<RecordBatch> {
-    let postgres = source::Postgres::from_yaml(&format!(
+    let postgres = source::Shell::from_yaml(&format!(
         "conn: \"{connection_string}\"\n{extra_yaml}tables:\n  - name: diff\n"
     ))
     .expect("config");

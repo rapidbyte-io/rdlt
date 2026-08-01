@@ -353,7 +353,7 @@ impl IcebergConfig {
         if let Some(parquet) = &self.parquet
             && let Err(message) = parquet.validate()
         {
-            return invalid(message);
+            return invalid(message.to_string());
         }
         for (stream, table) in &self.tables {
             if let Some(name) = &table.name

@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use rdlt_connector::SourceError;
+use rdlt_connector_sdk::spi::SourceError;
 
 /// Connection-level problems are the textbook transient failure.
 pub(crate) fn transport(error: reqwest::Error) -> SourceError {

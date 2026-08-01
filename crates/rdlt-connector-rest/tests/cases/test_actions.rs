@@ -1,6 +1,7 @@
 //! Feature 014 US1 (T005/T007): selectors, response actions, POST bodies.
 
 use super::common::{read_err, read_ok, read_stream, stream_yaml};
+use rdlt_connector_sdk::config::Document;
 use serde_json::json;
 use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -423,11 +424,16 @@ async fn incremental_start_and_end_params_bind() {
         "/items",
         r#"incremental: {cursor_field: seq, start_param: since, end_param: until, end_value: "9"}"#,
     );
-    let outcome = read_stream(&yaml, "items", Some(rdlt_connector::Cursor::new("5"))).await;
+    let outcome = read_stream(
+        &yaml,
+        "items",
+        Some(rdlt_connector_sdk::spi::Cursor::new("5")),
+    )
+    .await;
     outcome.result.expect("windowed read");
     assert_eq!(outcome.rows.len(), 1);
     assert_eq!(
         outcome.checkpoints.last(),
-        Some(&rdlt_connector::Cursor::new("7"))
+        Some(&rdlt_connector_sdk::spi::Cursor::new("7"))
     );
 }

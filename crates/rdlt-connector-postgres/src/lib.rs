@@ -23,6 +23,7 @@
 //!
 //! ```
 //! use rdlt_connector_postgres::source;
+//! use rdlt_connector_sdk::config::Document;
 //!
 //! let config = source::Config::from_yaml(
 //!     r#"
@@ -34,7 +35,7 @@
 //! "#,
 //! )
 //! .expect("a listed table with a cursor column validates");
-//! let _source = source::Postgres::new(config);
+//! let _source = source::Shell::new(config).expect("validated");
 //!
 //! // Validation is the same gate for every entry point: a conn string whose
 //! // sslmode contradicts the tls block is refused at parse time, not at
@@ -47,7 +48,7 @@
 //!
 //! // The destination is describable the same way — the SAME document
 //! // vocabulary the pipeline YAML's `destination: postgres:` block carries.
-//! let _destination = rdlt_connector_postgres::destination::Postgres::from_yaml(
+//! let _destination = rdlt_connector_postgres::destination::Shell::from_yaml(
 //!     "conn: \"host=warehouse user=loader\"\ndataset: raw\n",
 //! )
 //! .expect("a destination document validates");

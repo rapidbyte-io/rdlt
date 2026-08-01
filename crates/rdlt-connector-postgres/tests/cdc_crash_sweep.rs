@@ -8,12 +8,12 @@
 
 #![cfg(feature = "failpoints")]
 
-use rdlt_connector::core::failpoint::fail;
 use rdlt_connector_postgres::destination::{
     DestinationOptions, MergeStrategy, Postgres, TableOptions,
 };
 use rdlt_connector_postgres::fixtures::PostgresContainer;
 use rdlt_connector_postgres::source;
+use rdlt_connector_sdk::spi::core::failpoint::fail;
 use rdlt_engine::{Engine, EngineConfig};
 
 /// Fail points are PROCESS-GLOBAL; serialize every arming test.
@@ -36,8 +36,8 @@ impl Rig {
         Self { workdir }
     }
 
-    fn source(connection_string: &str) -> source::Postgres {
-        source::Postgres::from_yaml(&format!(
+    fn source(connection_string: &str) -> source::Shell {
+        source::Shell::from_yaml(&format!(
             "conn: \"{connection_string}\"\nbatch_max_rows: 10\n\
              cdc:\n  slot: s1\n  publication: p1\n  create_if_missing: true\n\
              tables:\n  - name: ev\n"
@@ -45,7 +45,7 @@ impl Rig {
         .expect("cdc source config")
     }
 
-    fn destination(connection_string: &str) -> Postgres {
+    fn destination(connection_string: &str) -> rdlt_connector_postgres::destination::Shell {
         Postgres::new(connection_string)
             .schema("mirror")
             .options(DestinationOptions {
@@ -61,12 +61,13 @@ impl Rig {
                 .collect(),
             })
             .expect("valid destination options")
+            .into_shell()
     }
 
     async fn attempt(&self, connection_string: &str) -> Result<rdlt_engine::RunReport, String> {
         let config = EngineConfig::new("cdc-sweep")
             .with_workdir(self.workdir.clone())
-            .with_write_mode(rdlt_connector::WriteMode::Merge {
+            .with_write_mode(rdlt_connector_sdk::spi::WriteMode::Merge {
                 key: vec!["id".into()],
             });
         let engine = Engine::new(
@@ -257,7 +258,7 @@ async fn container_kill_mid_catch_up_is_typed_and_preserves_commits() {
                workdir: std::path::PathBuf| async move {
         let config = EngineConfig::new("cdc-kill")
             .with_workdir(workdir)
-            .with_write_mode(rdlt_connector::WriteMode::Merge {
+            .with_write_mode(rdlt_connector_sdk::spi::WriteMode::Merge {
                 key: vec!["id".into()],
             });
         let engine = Engine::new(config, Rig::source(&source_connection), destination);

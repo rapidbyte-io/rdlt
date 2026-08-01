@@ -9,7 +9,7 @@
 use std::collections::BTreeSet;
 
 use futures::{Stream, StreamExt};
-use rdlt_connector::SourceError;
+use rdlt_connector_sdk::spi::SourceError;
 use rdlt_connector_sqlcore::quote_identifier;
 use tokio_postgres::Client;
 

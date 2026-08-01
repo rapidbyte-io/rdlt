@@ -58,7 +58,7 @@ INSERT INTO type_matrix (i8, tstz, d) VALUES (3, 'infinity', '-infinity');
 "#;
 
 async fn run_to_duckdb(
-    postgres_source: source::Postgres,
+    postgres_source: source::Shell,
     pipeline: &str,
 ) -> (DuckDb, rdlt_engine::RunReport) {
     let destination = common::duckdb_destination();
@@ -445,7 +445,7 @@ async fn empty_table_materializes_with_schema() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn drift_column_added_dropped_retyped() {
-    use rdlt_connector::Source as _;
+    use rdlt_connector_sdk::spi::Source as _;
 
     // ADDED between reflect and read: this run projects the reflected
     // columns only (discovery is once per run); the NEXT run evolves.
@@ -556,7 +556,7 @@ async fn drift_table_dropped_between_reflect_and_read() {
         .await;
     let postgres_source = common::source(&fixture.connection_string, "tables:\n  - name: doomed\n");
     // Prime reflection (as the engine's stream discovery would)…
-    use rdlt_connector::Source as _;
+    use rdlt_connector_sdk::spi::Source as _;
     let specs = postgres_source.streams().await.expect("streams");
     assert_eq!(specs.len(), 1);
     // …then drift: the table vanishes before read.
@@ -650,7 +650,7 @@ async fn lossy_mappings_announce_once_per_read_on_dedicated_target() {
         .await;
     let directory = tempfile::tempdir().expect("tempdir");
     let destination = DuckDb::open(directory.path().join("out.duckdb")).expect("open db");
-    let postgres_source = source::Postgres::from_yaml(&format!(
+    let postgres_source = source::Shell::from_yaml(&format!(
         "conn: \"{}\"\ntables:\n  - name: noisy\n  - name: clean\n",
         fixture.connection_string
     ))
@@ -763,7 +763,7 @@ async fn hint_matrix_covers_every_documented_pair() {
     assert!(error.contains("no defined conversion"), "{error}");
 }
 
-async fn run_to_duckdb_err(postgres_source: source::Postgres, pipeline: &str) -> String {
+async fn run_to_duckdb_err(postgres_source: source::Shell, pipeline: &str) -> String {
     let destination = common::duckdb_destination();
     Engine::new(EngineConfig::new(pipeline), postgres_source, destination)
         .run()

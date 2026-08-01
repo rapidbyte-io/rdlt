@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use rdlt_connector::{Destination, DestinationCapabilities, LoadSession, OpenCtx};
+use rdlt_connector::{Destination, DestinationCapabilities, LoadSession, OpenContext};
 use rdlt_core::{LoadId, RdltError, ResumedFrom, StateDoc};
 
 use crate::EngineConfig;
@@ -62,7 +62,7 @@ pub(super) async fn recover_wal(
     // The run's own session. Its state read happens AFTER any replay commit,
     // so it observes the recovered cursors rather than the pre-crash ones.
     let mut session = destination
-        .open(OpenCtx::new(config.pipeline.clone(), load_id.clone()))
+        .open(OpenContext::new(config.pipeline.clone(), load_id.clone()))
         .await
         .map_err(|e| classify_dest_error(&e))?;
     let recovered = read_state_checked(&mut *session, config).await?;
@@ -105,7 +105,10 @@ async fn replay_span(
     capabilities: DestinationCapabilities,
 ) -> Result<Option<ResumedFrom>, RdltError> {
     let mut session = destination
-        .open(OpenCtx::new(config.pipeline.clone(), span.load_id.clone()))
+        .open(OpenContext::new(
+            config.pipeline.clone(),
+            span.load_id.clone(),
+        ))
         .await
         .map_err(|e| classify_dest_error(&e))?;
     let mut state = read_state_checked(&mut *session, config)

@@ -8,7 +8,7 @@
 //! that has forgotten it.
 
 use rdlt_connector::core::{LoadId, PipelineId, TableName, WriteMode};
-use rdlt_connector::{Destination, OpenCtx};
+use rdlt_connector::{Destination, OpenContext};
 use rdlt_connector_duckdb::dest::DuckDb;
 use rdlt_testkit::{batch_of, commit_meta_for, schema_for};
 
@@ -22,7 +22,7 @@ async fn replace_recovery_session_keeps_prior_commits_of_same_load() {
 
     // Commit #1 lands durably.
     let mut s1 = dest
-        .open(OpenCtx::new(pipeline.clone(), load.clone()))
+        .open(OpenContext::new(pipeline.clone(), load.clone()))
         .await
         .expect("open s1");
     s1.ensure_table(&schema_for("events"), &WriteMode::Replace)
@@ -37,7 +37,7 @@ async fn replace_recovery_session_keeps_prior_commits_of_same_load() {
     // Crash before commit #2's receipt: recovery opens a FRESH session with
     // the SAME load id and replays only the uncommitted tail.
     let mut s2 = dest
-        .open(OpenCtx::new(pipeline.clone(), load.clone()))
+        .open(OpenContext::new(pipeline.clone(), load.clone()))
         .await
         .expect("open recovery session");
     s2.ensure_table(&schema_for("events"), &WriteMode::Replace)
@@ -59,7 +59,7 @@ async fn replace_recovery_session_keeps_prior_commits_of_same_load() {
     // A genuinely NEW load still replaces from scratch.
     let load_b = LoadId::new("load-b");
     let mut s3 = dest
-        .open(OpenCtx::new(pipeline.clone(), load_b.clone()))
+        .open(OpenContext::new(pipeline.clone(), load_b.clone()))
         .await
         .expect("open next load");
     s3.ensure_table(&schema_for("events"), &WriteMode::Replace)
@@ -103,7 +103,7 @@ async fn replay_re_marks_single_unit_discipline() {
 
     // Session 1: unit 1 stages + commits (receipt recorded).
     let mut s1 = dest
-        .open(OpenCtx::new(pipeline.clone(), load.clone()))
+        .open(OpenContext::new(pipeline.clone(), load.clone()))
         .await
         .expect("open s1");
     s1.ensure_table(&schema_for("events"), &merge)
@@ -118,7 +118,7 @@ async fn replay_re_marks_single_unit_discipline() {
     // same (load_id, commit_seq), stage re-populated. The D3 branch must
     // publish nothing AND re-mark the unit.
     let mut s2 = dest
-        .open(OpenCtx::new(pipeline.clone(), load.clone()))
+        .open(OpenContext::new(pipeline.clone(), load.clone()))
         .await
         .expect("open recovery session");
     s2.ensure_table(&schema_for("events"), &merge)

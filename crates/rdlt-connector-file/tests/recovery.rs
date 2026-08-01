@@ -2,7 +2,7 @@
 //! (code-review findings on branch 002-file-arrow-ingestion).
 
 use rdlt_connector::core::{LoadId, PipelineId, TableName, WriteMode};
-use rdlt_connector::{Destination, OpenCtx};
+use rdlt_connector::{Destination, OpenContext};
 use rdlt_connector_file::ParquetDir;
 use rdlt_testkit::{batch_of, commit_meta_for, schema_for};
 
@@ -20,7 +20,7 @@ async fn replace_recovery_session_keeps_prior_commits_of_same_load() {
 
     // Commit #1 lands durably.
     let mut s1 = dest
-        .open(OpenCtx::new(pipeline.clone(), load.clone()))
+        .open(OpenContext::new(pipeline.clone(), load.clone()))
         .await
         .expect("open s1");
     s1.ensure_table(&schema_for("events"), &WriteMode::Replace)
@@ -35,7 +35,7 @@ async fn replace_recovery_session_keeps_prior_commits_of_same_load() {
     // Crash before commit #2's receipt: recovery opens a FRESH session with the
     // SAME load id and replays only the uncommitted tail.
     let mut s2 = dest
-        .open(OpenCtx::new(pipeline.clone(), load.clone()))
+        .open(OpenContext::new(pipeline.clone(), load.clone()))
         .await
         .expect("open recovery session");
     s2.ensure_table(&schema_for("events"), &WriteMode::Replace)
@@ -57,7 +57,7 @@ async fn replace_recovery_session_keeps_prior_commits_of_same_load() {
     // A genuinely NEW load still replaces from scratch.
     let load_b = LoadId::new("load-b");
     let mut s3 = dest
-        .open(OpenCtx::new(pipeline.clone(), load_b.clone()))
+        .open(OpenContext::new(pipeline.clone(), load_b.clone()))
         .await
         .expect("open next load");
     s3.ensure_table(&schema_for("events"), &WriteMode::Replace)
@@ -89,7 +89,7 @@ async fn final_names_independent_of_cross_table_arrival_order() {
         let dir = tempfile::tempdir().expect("tempdir");
         let dest = ParquetDir::open(dir.path()).expect("open dest");
         let mut session = dest
-            .open(OpenCtx::new(pipeline.clone(), load.clone()))
+            .open(OpenContext::new(pipeline.clone(), load.clone()))
             .await
             .expect("open");
         session
@@ -144,7 +144,7 @@ async fn open_does_not_destroy_another_pipelines_staging_or_state() {
 
     // Pipeline 1 is mid-flight: staged rows, nothing committed yet.
     let mut s1 = dest
-        .open(OpenCtx::new(p1.clone(), l1.clone()))
+        .open(OpenContext::new(p1.clone(), l1.clone()))
         .await
         .expect("open p1");
     s1.ensure_table(&schema_for("events"), &WriteMode::Append)
@@ -154,7 +154,7 @@ async fn open_does_not_destroy_another_pipelines_staging_or_state() {
 
     // Pipeline 2 opens the SAME output directory (its own D4 teardown runs).
     let mut s2 = dest
-        .open(OpenCtx::new(p2.clone(), l2.clone()))
+        .open(OpenContext::new(p2.clone(), l2.clone()))
         .await
         .expect("open p2");
     s2.ensure_table(&schema_for("events"), &WriteMode::Append)
@@ -199,7 +199,7 @@ async fn a_redelivered_commit_is_recognised_after_later_loads_have_run() {
         let table = table.clone();
         async move {
             let mut s = dest
-                .open(OpenCtx::new(pipeline.clone(), load.clone()))
+                .open(OpenContext::new(pipeline.clone(), load.clone()))
                 .await
                 .expect("open");
             s.ensure_table(&schema_for("events"), &WriteMode::Replace)

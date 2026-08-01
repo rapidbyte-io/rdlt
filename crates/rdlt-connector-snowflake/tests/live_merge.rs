@@ -55,7 +55,7 @@ where
     let dest = Snowflake::new(config.clone()).expect("valid config");
     rdlt_connector::Destination::open(
         &dest,
-        rdlt_connector::OpenCtx::new(
+        rdlt_connector::OpenContext::new(
             rdlt_connector::core::PipelineId::from("setup"),
             rdlt_connector::core::LoadId::from("setup"),
         ),

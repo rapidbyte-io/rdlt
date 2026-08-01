@@ -4,15 +4,10 @@
 //! between running against the real service and skipping visibly. That makes
 //! the gate's behaviour a contract, not an implementation detail: a gate that
 //! wrongly reports credentials absent disarms every live leg while the suite
-//! still reports green. These cases moved here with the gate itself when it
-//! left rdlt-testkit; the container half of the same contract stays pinned in
-//! rdlt-testkit's `tests/cases/test_gating_pin.rs`.
-//!
-//! Two postures exist and both are deliberate. **Skip-not-fail is the
-//! default**, because a contributor without an account must still be able to
-//! run the gate. **Demand-and-fail is opt-in** (`RDLT_TESTKIT_REQUIRE_SNOWFLAKE`),
-//! for the opposite audience: a maintainer with the account, who needs to know
-//! a leg actually ran rather than trusting green.
+//! still reports green — which is why the RESOLUTION RULES are what these
+//! cases pin (skip-not-fail is the one posture; there is no override, and a
+//! quietly-disarmed leg surfaces through the run/skip counts a gate of
+//! record states).
 //!
 //! Nothing here mutates the process environment (this workspace denies
 //! `unsafe_code`, and `std::env::set_var` is unsafe); the gate separates the
@@ -46,42 +41,6 @@ impl Lookup for FakeLookup {
     fn file(&self, name: &str) -> Option<String> {
         self.0.get(name).cloned()
     }
-}
-
-#[test]
-fn the_force_flag_makes_the_gate_report_absent() {
-    // The skip path has to be reachable on a machine that HAS credentials,
-    // or it is never exercised where it matters.
-    let forced = FakeLookup::with(&[
-        ("RDLT_TESTKIT_FORCE_NO_SNOWFLAKE", "1"),
-        ("RDLT_SNOWFLAKE_ACCOUNT", "A"),
-        ("RDLT_SNOWFLAKE_PAT", "tok"),
-    ]);
-    assert!(credentials_with(&forced).is_none());
-    assert!(token_with(&forced, TokenKind::Pat).is_none());
-}
-
-#[test]
-#[should_panic(expected = "RDLT_TESTKIT_REQUIRE_SNOWFLAKE is set but no account credentials")]
-fn demanding_credentials_that_are_absent_fails_naming_them() {
-    // The opt-in posture. The failure must name the missing resource, because a
-    // maintainer who set this is asking a question and deserves the answer
-    // rather than an obscure error further down.
-    let env = FakeLookup::with(&[("RDLT_TESTKIT_REQUIRE_SNOWFLAKE", "1")]);
-    let _ = credentials_with(&env);
-}
-
-#[test]
-#[should_panic(expected = "are both set")]
-fn demanding_and_forcing_absence_together_is_an_error() {
-    // Not a precedence puzzle. A run that both demands credentials and pretends
-    // there are none is a mistake in how it was invoked; honouring either one
-    // silently would hide the mistake and produce a result nobody can read.
-    let env = FakeLookup::with(&[
-        ("RDLT_TESTKIT_REQUIRE_SNOWFLAKE", "1"),
-        ("RDLT_TESTKIT_FORCE_NO_SNOWFLAKE", "1"),
-    ]);
-    let _ = credentials_with(&env);
 }
 
 #[test]

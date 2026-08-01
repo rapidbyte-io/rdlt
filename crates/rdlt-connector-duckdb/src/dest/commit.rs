@@ -410,9 +410,10 @@ impl LoadSession for DuckDbSession {
             let load_committed_before = load_committed_before > 0;
             let replayed = already > 0;
 
-            // Probe the full-feed stages the planner needs. Staged-row counts
-            // are INVARIANT across the publish (no stage is written during it),
-            // so probing up front matches the former lazy per-table check.
+            // Probe the full-feed stages the planner needs. An up-front
+            // probe matches the former lazy per-table check because nothing
+            // writes a stage before the steps that READ it — the script's
+            // stage truncations come only after every table publishes.
             let mut staged_nonempty_set = BTreeSet::new();
             for table in staged_probe_targets(&tables, &options) {
                 if staged_nonempty(&tx, table)? {

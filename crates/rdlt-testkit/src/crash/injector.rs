@@ -9,32 +9,35 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use async_trait::async_trait;
 use rdlt_connector::{
     CommitMeta, CommitReceipt, ConnectorSpec, Destination, DestinationCapabilities,
-    DestinationError, LoadSession, OpenCtx, PipelineId, RecordBatch, StateDoc, TableName,
+    DestinationError, LoadSession, OpenContext, PipelineId, RecordBatch, StateDoc, TableName,
     TableSchema, WriteMode,
 };
 
 /// Where to inject the fault.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FaultPoint {
-    /// Fail the Nth `write` call (1-based) before the batch reaches the inner
-    /// destination. Models a crash where the WAL has recorded the batch but the
-    /// destination never received it; recovery must replay it from the WAL.
+    /// Fail the Nth `write` call (1-based) before the batch reaches the
+    /// inner destination. Models a crash where the WAL has recorded the
+    /// batch but the destination never received it; recovery must replay
+    /// it from the WAL.
     BeforeWrite(u64),
-    /// Fail the Nth `commit` call before the inner destination commits. The
-    /// earlier `write` calls have all reached the inner destination, so this
-    /// models a crash where the batches are staged but not yet published;
-    /// recovery must re-drive the commit.
+    /// Fail the Nth `commit` call before the inner destination commits.
+    /// The earlier `write` calls have all reached the inner destination,
+    /// so this models a crash where the batches are staged but not yet
+    /// published; recovery must re-drive the commit.
     BeforeCommit(u64),
-    /// Let the Nth `commit` succeed inside, then fail — the receipt is lost.
-    /// Models a crash after the destination published but before the caller
-    /// learned; recovery must hit idempotence to avoid double-publishing.
+    /// Let the Nth `commit` succeed inside, then fail — the receipt is
+    /// lost. Models a crash after the destination published but before
+    /// the caller learned; recovery must hit idempotence to avoid
+    /// double-publishing.
     AfterCommit(u64),
 }
 
-/// Wraps any destination and injects a single deterministic fault: it fails exactly
-/// once at the configured fault point, then behaves like the inner destination. Clone
-/// shares the trigger, so "restart" = build a new engine over the same wrapper
-/// (already-fired faults don't fire again).
+/// Wraps any destination and injects a single deterministic fault: it
+/// fails exactly once at the configured fault point, then behaves like
+/// the inner destination. Clone shares the trigger, so "restart" = build
+/// a new engine over the same wrapper (already-fired faults don't fire
+/// again).
 #[derive(Debug, Clone)]
 pub struct CrashDestination<D> {
     inner: D,
@@ -45,6 +48,7 @@ pub struct CrashDestination<D> {
 }
 
 impl<D> CrashDestination<D> {
+    /// Wrap `inner`, arming `fault` to fire once.
     pub fn new(inner: D, fault: FaultPoint) -> Self {
         Self {
             inner,
@@ -55,7 +59,8 @@ impl<D> CrashDestination<D> {
         }
     }
 
-    /// How many times the fault actually fired (each fault fires at most once).
+    /// How many times the fault actually fired (each fault fires at most
+    /// once).
     pub fn fired(&self) -> u64 {
         self.fired.load(Ordering::SeqCst)
     }
@@ -71,7 +76,7 @@ impl<D: Destination + Clone> Destination for CrashDestination<D> {
         self.inner.capabilities()
     }
 
-    async fn open(&self, ctx: OpenCtx) -> Result<Box<dyn LoadSession>, DestinationError> {
+    async fn open(&self, ctx: OpenContext) -> Result<Box<dyn LoadSession>, DestinationError> {
         let session = self.inner.open(ctx).await?;
         Ok(Box::new(CrashSession {
             inner: session,

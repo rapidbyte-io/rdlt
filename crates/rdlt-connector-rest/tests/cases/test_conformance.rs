@@ -1,8 +1,8 @@
 //! T055: REST source against a mock API — pagination, resume, error classification —
 //! plus the public source conformance suite (the certification gate).
 
-use rdlt_connector::{Cursor, ReadRequest, Source, SourceError, records_channel};
-use rdlt_connector_rest::source::Rest;
+use rdlt_connector_rest::source::Shell;
+use rdlt_connector_sdk::spi::{Cursor, ReadRequest, Source, SourceError, records_channel};
 use rdlt_testkit::assert_conformant;
 use rdlt_testkit::conformance::source::verify_source;
 use serde_json::json;
@@ -74,7 +74,7 @@ async fn mock_api() -> MockServer {
 #[tokio::test]
 async fn paginates_and_checkpoints_max_cursor() {
     let server = mock_api().await;
-    let source = Rest::from_yaml(&config_yaml(&server.uri())).expect("config");
+    let source = Shell::from_yaml(&config_yaml(&server.uri())).expect("config");
     let (out, mut input) = records_channel(1 << 20);
     let spec = source.streams().await.expect("streams")[0].clone();
     let read = tokio::spawn(async move { source.read(ReadRequest::new(spec, None, out)).await });
@@ -83,11 +83,11 @@ async fn paginates_and_checkpoints_max_cursor() {
     let mut checkpoints = Vec::new();
     while let Some(push) = input.recv().await {
         match push.payload {
-            rdlt_connector::PushPayload::RawJson(bytes) => {
+            rdlt_connector_sdk::spi::PushPayload::RawJson(bytes) => {
                 let v: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
                 rows += v.as_array().expect("array").len();
             }
-            rdlt_connector::PushPayload::Checkpoint(c) => checkpoints.push(c),
+            rdlt_connector_sdk::spi::PushPayload::Checkpoint(c) => checkpoints.push(c),
             other => panic!("unexpected push {other:?}"),
         }
     }
@@ -103,7 +103,7 @@ async fn paginates_and_checkpoints_max_cursor() {
 #[tokio::test]
 async fn resume_sends_cursor_param_and_skips_completed_ranges() {
     let server = mock_api().await;
-    let source = Rest::from_yaml(&config_yaml(&server.uri())).expect("config");
+    let source = Shell::from_yaml(&config_yaml(&server.uri())).expect("config");
     let (out, mut input) = records_channel(1 << 20);
     let spec = source.streams().await.expect("streams")[0].clone();
     let read = tokio::spawn(async move {
@@ -113,7 +113,7 @@ async fn resume_sends_cursor_param_and_skips_completed_ranges() {
     });
     let mut rows = Vec::new();
     while let Some(push) = input.recv().await {
-        if let rdlt_connector::PushPayload::RawJson(bytes) = push.payload {
+        if let rdlt_connector_sdk::spi::PushPayload::RawJson(bytes) = push.payload {
             let v: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
             rows.extend(v.as_array().expect("array").clone());
         }
@@ -154,7 +154,7 @@ async fn error_classification_matches_the_contract() {
             "base_url: \"{}\"\nstreams:\n  - name: s\n    path: /{endpoint}\n",
             server.uri()
         );
-        let source = Rest::from_yaml(&yaml).expect("config");
+        let source = Shell::from_yaml(&yaml).expect("config");
         let (out, _input) = records_channel(1 << 20);
         let spec = source.streams().await.expect("streams")[0].clone();
         let err = source
@@ -177,7 +177,7 @@ async fn error_classification_matches_the_contract() {
 #[tokio::test]
 async fn rest_source_is_conformant() {
     let server = mock_api().await;
-    let source = Rest::from_yaml(&config_yaml(&server.uri())).expect("config");
+    let source = Shell::from_yaml(&config_yaml(&server.uri())).expect("config");
     assert_conformant(verify_source(&source).await);
 }
 
@@ -202,14 +202,14 @@ async fn retry_after_within_cap_waits_and_succeeds() {
         "base_url: \"{}\"\nstreams:\n  - name: flaky\n    path: /flaky\n",
         server.uri()
     );
-    let source = Rest::from_yaml(&yaml).expect("config");
+    let source = Shell::from_yaml(&yaml).expect("config");
     let (out, mut input) = records_channel(1 << 20);
     let spec = source.streams().await.expect("streams")[0].clone();
     let started = std::time::Instant::now();
     let read = tokio::spawn(async move { source.read(ReadRequest::new(spec, None, out)).await });
     let mut rows = 0usize;
     while let Some(push) = input.recv().await {
-        if let rdlt_connector::PushPayload::RawJson(bytes) = push.payload {
+        if let rdlt_connector_sdk::spi::PushPayload::RawJson(bytes) = push.payload {
             let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
             rows += v.as_array().unwrap().len();
         }
@@ -243,7 +243,7 @@ async fn pacing_floor_is_observed() {
         "base_url: \"{}\"\nmin_request_interval_ms: 200\nstreams:\n  - name: paced\n    path: /paced\n    pagination: {{type: page}}\n",
         server.uri()
     );
-    let source = Rest::from_yaml(&yaml).expect("config");
+    let source = Shell::from_yaml(&yaml).expect("config");
     let (out, mut input) = records_channel(1 << 20);
     let spec = source.streams().await.expect("streams")[0].clone();
     let started = std::time::Instant::now();

@@ -12,10 +12,12 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-failpoints = ["rdlt-connector/failpoints", "rdlt-connector-duckdb/failpoints"]
+failpoints = ["rdlt-connector-sdk/failpoints", "rdlt-connector-duckdb/failpoints"]
 
 [dependencies]
-rdlt-connector = { workspace = true, features = ["schema"] }
+# The ONE rdlt dependency (the one-dependency rule): the SPI is reached
+# through the sdk's `spi` re-export.
+rdlt-connector-sdk = { workspace = true, features = ["schema"] }
 schemars = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }

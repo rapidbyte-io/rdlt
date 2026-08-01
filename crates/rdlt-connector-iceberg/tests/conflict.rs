@@ -9,7 +9,7 @@ mod common;
 
 use common::CatalogFixture;
 use rdlt_connector::core::{LoadId, PipelineId, TableName, WriteMode};
-use rdlt_connector::{Destination, DestinationError, OpenCtx};
+use rdlt_connector::{Destination, DestinationError, OpenContext};
 use rdlt_connector_iceberg::IcebergDest;
 use rdlt_testkit::{batch_of, commit_meta_for, schema_for};
 
@@ -20,7 +20,7 @@ async fn run_writer(dest: IcebergDest, pipeline: &str, load: &str) -> Result<(),
     let load = LoadId::new(load);
     let table = TableName::new("contested");
     let mut session = dest
-        .open(OpenCtx::new(pipeline.clone(), load.clone()))
+        .open(OpenContext::new(pipeline.clone(), load.clone()))
         .await?;
     session
         .ensure_table(&schema_for("contested"), &WriteMode::Append)

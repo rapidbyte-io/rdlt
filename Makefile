@@ -97,9 +97,15 @@ lint:
 test:
 ifeq ($(TARGET),)
 	cargo nextest run --workspace
+	# The sdk's `schema` feature gates schema_of and its test; no workspace
+	# run enables it, so without this line that test had never executed
+	# (the 024 zero-second-pass class). `-E 'test(schema_of)'` so an empty
+	# selection — a renamed test — fails rather than passing vacuously.
+	cargo nextest run -p rdlt-connector-sdk --features schema -E 'test(schema_of)'
 	cargo test --doc --workspace
 else ifeq ($(TARGET),unit)
 	cargo nextest run --workspace
+	cargo nextest run -p rdlt-connector-sdk --features schema -E 'test(schema_of)'
 else ifeq ($(TARGET),e2e)
 	cargo nextest run --workspace -E 'binary(/e2e/)'
 else ifeq ($(TARGET),sweep)

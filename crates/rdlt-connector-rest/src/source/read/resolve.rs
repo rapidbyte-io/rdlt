@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use rdlt_connector::SourceError;
+use rdlt_connector_sdk::spi::SourceError;
 use serde_json::Value;
 
 use crate::source::config::Parent;

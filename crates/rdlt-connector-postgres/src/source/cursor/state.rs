@@ -6,7 +6,7 @@
 //! "boundary_keys": […]}` with the tag vocabulary pinned below. The Rust
 //! value vocabulary is [`Scalar`]; this module owns ONLY its persistence.
 
-use rdlt_connector::{Cursor, SourceError};
+use rdlt_connector_sdk::spi::{Cursor, SourceError};
 use serde::{Deserialize, Serialize};
 
 use crate::source::errors::{self, Phase};

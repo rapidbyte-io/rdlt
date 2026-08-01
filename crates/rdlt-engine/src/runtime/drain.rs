@@ -1,6 +1,6 @@
 //! Drain the loader over the load channel and settle the run's outcome.
 
-use rdlt_connector::channel::{ByteRx, Permitted};
+use rdlt_connector::channel::{ByteReceiver, Permitted};
 use rdlt_core::{RdltError, RunReport};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -13,7 +13,7 @@ use crate::load::{LoadItem, Loader};
 /// induced `Cancelled` must not mask the original destination error).
 pub(super) async fn drain_loader(
     mut loader: Loader,
-    mut load_rx: ByteRx<LoadItem>,
+    mut load_rx: ByteReceiver<LoadItem>,
     mut stream_tasks: JoinSet<Result<(), RdltError>>,
     cancel: &CancellationToken,
 ) -> Result<RunReport, RdltError> {
@@ -155,7 +155,7 @@ mod drain_loader_tests {
 
     /// Dropping the sender closes the loader's input, so `recv` returns `None`
     /// immediately and the loader's own result is `Ok`.
-    fn closed_input() -> ByteRx<LoadItem> {
+    fn closed_input() -> ByteReceiver<LoadItem> {
         let (tx, rx) = byte_channel::<LoadItem>(4096, STAGE_MSG_CAPACITY);
         drop(tx);
         rx

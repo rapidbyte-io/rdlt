@@ -22,8 +22,8 @@ INSERT INTO ev VALUES
   (3, 'c', '2026-01-02T00:00:00Z');
 "#;
 
-fn ev_source(connection_string: &str, cursor_extra: &str) -> source::Postgres {
-    source::Postgres::from_yaml(&format!(
+fn ev_source(connection_string: &str, cursor_extra: &str) -> source::Shell {
+    source::Shell::from_yaml(&format!(
         "conn: \"{connection_string}\"\nbatch_max_rows: 2\ntables:\n  - name: ev\n    cursor:\n      column: ts\n{cursor_extra}"
     ))
     .expect("config")
@@ -40,7 +40,7 @@ impl Harness {
         }
     }
 
-    async fn run(&self, postgres_source: source::Postgres, pipeline: &str) -> u64 {
+    async fn run(&self, postgres_source: source::Shell, pipeline: &str) -> u64 {
         let report = Engine::new(
             EngineConfig::new(pipeline),
             postgres_source,
@@ -317,7 +317,7 @@ async fn uuid_cursor_end_to_end() {
         .await;
     let harness = Harness::new();
     let uuid_source = |connection_string: &str| {
-        source::Postgres::from_yaml(&format!(
+        source::Shell::from_yaml(&format!(
             "conn: \"{connection_string}\"\ntables:\n  - name: ev\n    cursor:\n      column: id\n"
         ))
         .expect("config")
@@ -355,7 +355,7 @@ async fn text_cursor_mixed_case_byte_order() {
         .await;
     let harness = Harness::new();
     let name_source = |connection_string: &str| {
-        source::Postgres::from_yaml(&format!(
+        source::Shell::from_yaml(&format!(
             "conn: \"{connection_string}\"\ntables:\n  - name: ev\n    cursor:\n      column: name\n"
         ))
         .expect("config")
@@ -398,12 +398,12 @@ async fn merge_by_declared_key_converges_and_keyless_is_rejected() {
 
     let merge_config = |pipeline: &str| {
         let mut config = EngineConfig::new(pipeline);
-        config = config.with_write_mode(rdlt_connector::core::WriteMode::Merge {
+        config = config.with_write_mode(rdlt_connector_sdk::spi::core::WriteMode::Merge {
             key: vec!["id".into()],
         });
         config
     };
-    let run_merge = |postgres_source: source::Postgres| {
+    let run_merge = |postgres_source: source::Shell| {
         let destination = harness.destination.clone();
         let config = merge_config("inc-merge");
         async move {
@@ -453,7 +453,7 @@ async fn merge_by_declared_key_converges_and_keyless_is_rejected() {
     fixture
         .seed("CREATE TABLE nokey (x int8); INSERT INTO nokey VALUES (1);")
         .await;
-    let keyless = source::Postgres::from_yaml(&format!(
+    let keyless = source::Shell::from_yaml(&format!(
         "conn: \"{}\"\ntables:\n  - name: nokey\n",
         fixture.connection_string
     ))
@@ -461,7 +461,7 @@ async fn merge_by_declared_key_converges_and_keyless_is_rejected() {
     let directory = tempfile::tempdir().expect("tempdir");
     let destination = DuckDb::open(directory.path().join("nokey.duckdb")).expect("open db");
     let mut config = merge_config("inc-merge-nokey");
-    config = config.with_write_mode(rdlt_connector::core::WriteMode::Merge {
+    config = config.with_write_mode(rdlt_connector_sdk::spi::core::WriteMode::Merge {
         key: vec!["x".into()],
     });
     let error = Engine::new(config, keyless, destination)
@@ -486,16 +486,16 @@ async fn lag_captures_late_arrivals_with_exact_totals_under_merge() {
     let harness = Harness::new();
 
     let lag_source = |connection_string: &str| {
-        source::Postgres::from_yaml(&format!(
+        source::Shell::from_yaml(&format!(
             "conn: \"{connection_string}\"\ntables:\n  - name: ev\n    cursor:\n      column: ts\n      lag: \"5m\"\n"
         ))
         .expect("config")
     };
-    let run_merge = |postgres_source: source::Postgres| {
+    let run_merge = |postgres_source: source::Shell| {
         let destination = harness.destination.clone();
         async move {
             let mut config = EngineConfig::new("inc-lag");
-            config = config.with_write_mode(rdlt_connector::core::WriteMode::Merge {
+            config = config.with_write_mode(rdlt_connector_sdk::spi::core::WriteMode::Merge {
                 key: vec!["id".into()],
             });
             Engine::new(config, postgres_source, destination)
@@ -540,7 +540,7 @@ async fn lag_captures_late_arrivals_with_exact_totals_under_merge() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn lag_rejections_are_typed_and_early() {
-    use rdlt_connector::Source as _;
+    use rdlt_connector_sdk::spi::Source as _;
     let Some(fixture) = PostgresContainer::start().await else {
         return;
     };
@@ -552,7 +552,7 @@ async fn lag_rejections_are_typed_and_early() {
         )
         .await;
     let configured = |extra: &str| {
-        source::Postgres::from_yaml(&format!("conn: \"{}\"\n{extra}", fixture.connection_string))
+        source::Shell::from_yaml(&format!("conn: \"{}\"\n{extra}", fixture.connection_string))
             .expect("config")
     };
 
@@ -606,7 +606,7 @@ async fn null_cursor_error_policy_fails_typed_and_old_policies_unchanged() {
         )
         .await;
     let with_nulls = |nulls: &str| {
-        source::Postgres::from_yaml(&format!(
+        source::Shell::from_yaml(&format!(
             "conn: \"{}\"\ntables:\n  - name: ev\n    cursor:\n      column: ts\n      nulls: {nulls}\n",
             fixture.connection_string
         ))
@@ -664,7 +664,7 @@ async fn null_cursor_error_policy_fails_typed_and_old_policies_unchanged() {
         )
         .await;
     let second_with_nulls = |nulls: &str| {
-        source::Postgres::from_yaml(&format!(
+        source::Shell::from_yaml(&format!(
             "conn: \"{}\"\ntables:\n  - name: ev\n    cursor:\n      column: ts\n      nulls: {nulls}\n",
             second_fixture.connection_string
         ))
@@ -707,7 +707,7 @@ async fn inclusive_end_bound_loads_boundary_rows_exactly_once() {
     };
     fixture.seed(BASE).await; // ids 1..3, ts 01-01 .. 01-02
     let with_end_bound = |end_bound: &str| {
-        source::Postgres::from_yaml(&format!(
+        source::Shell::from_yaml(&format!(
             "conn: \"{}\"\ntables:\n  - name: ev\n    cursor:\n      column: ts\n      end_value: \"2026-01-02T00:00:00Z\"\n      end_bound: {end_bound}\n",
             fixture.connection_string
         ))
@@ -766,7 +766,7 @@ async fn direction_min_descends_and_resumes() {
         .await;
     let harness = Harness::new();
     let descending_source = |connection_string: &str| {
-        source::Postgres::from_yaml(&format!(
+        source::Shell::from_yaml(&format!(
             "conn: \"{connection_string}\"\ntables:\n  - name: ev\n    cursor:\n      column: id\n      direction: min\n"
         ))
         .expect("config")
@@ -808,14 +808,14 @@ async fn magnitude_lag_for_integer_cursors() {
         .await;
     let harness = Harness::new();
     let magnitude_source = |connection_string: &str| {
-        source::Postgres::from_yaml(&format!(
+        source::Shell::from_yaml(&format!(
             "conn: \"{connection_string}\"\ntables:\n  - name: ev\n    cursor:\n      column: id\n      lag: \"2\"\n"
         ))
         .expect("config")
     };
     let run = |postgres_source| {
         let mut config = EngineConfig::new("int-lag");
-        config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
+        config = config.with_write_mode(rdlt_connector_sdk::spi::WriteMode::Merge {
             key: vec!["id".into()],
         });
         Engine::new(config, postgres_source, harness.destination.clone())
@@ -856,7 +856,7 @@ async fn cursor_column_must_survive_selection() {
     fixture
         .seed("CREATE TABLE ev (id int8 PRIMARY KEY, v text, ts timestamptz);")
         .await;
-    let postgres_source = source::Postgres::from_yaml(&format!(
+    let postgres_source = source::Shell::from_yaml(&format!(
         "conn: \"{}\"\ntables:\n  - name: ev\n    excluded_columns: [ts]\n    cursor:\n      column: ts\n",
         fixture.connection_string
     ))
@@ -890,7 +890,7 @@ async fn batch_knobs_cut_batches_observably() {
         let extra = extra.to_string();
         async move {
             let harness = Harness::new();
-            let postgres_source = source::Postgres::from_yaml(&format!(
+            let postgres_source = source::Shell::from_yaml(&format!(
                 "conn: \"{connection_string}\"\n{extra}tables:\n  - name: ev\n    cursor:\n      column: id\n"
             ))
             .expect("config");

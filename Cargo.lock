@@ -4184,7 +4184,7 @@ dependencies = [
 
 [[package]]
 name = "rdlt"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "rdlt-connector",
  "rdlt-connector-duckdb",
@@ -4192,6 +4192,7 @@ dependencies = [
  "rdlt-connector-iceberg",
  "rdlt-connector-postgres",
  "rdlt-connector-rest",
+ "rdlt-connector-sdk",
  "rdlt-connector-snowflake",
  "rdlt-core",
  "rdlt-engine",
@@ -4205,7 +4206,7 @@ dependencies = [
 
 [[package]]
 name = "rdlt-bench"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "blake3",
  "clap",
@@ -4221,7 +4222,7 @@ dependencies = [
 
 [[package]]
 name = "rdlt-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "libc",
  "rdlt",
@@ -4234,7 +4235,7 @@ dependencies = [
 
 [[package]]
 name = "rdlt-connector"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -4251,7 +4252,7 @@ dependencies = [
 
 [[package]]
 name = "rdlt-connector-duckdb"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4273,7 +4274,7 @@ dependencies = [
 
 [[package]]
 name = "rdlt-connector-file"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "arrow",
  "async-trait",
@@ -4304,7 +4305,7 @@ dependencies = [
 
 [[package]]
 name = "rdlt-connector-iceberg"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "arrow-array",
  "arrow-cast",
@@ -4330,7 +4331,7 @@ dependencies = [
 
 [[package]]
 name = "rdlt-connector-postgres"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "arrow-array",
  "arrow-cast",
@@ -4345,9 +4346,9 @@ dependencies = [
  "jsonschema",
  "proptest",
  "rcgen",
- "rdlt-connector",
  "rdlt-connector-duckdb",
  "rdlt-connector-postgres",
+ "rdlt-connector-sdk",
  "rdlt-connector-sqlcore",
  "rdlt-engine",
  "rdlt-testkit",
@@ -4369,15 +4370,15 @@ dependencies = [
 
 [[package]]
 name = "rdlt-connector-rest"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "bytes",
  "futures",
  "httpdate",
  "jsonschema",
- "rdlt-connector",
  "rdlt-connector-duckdb",
+ "rdlt-connector-sdk",
  "rdlt-engine",
  "rdlt-testkit",
  "reqwest 0.12.28",
@@ -4392,8 +4393,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "rdlt-connector-sdk"
+version = "0.3.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "rdlt-connector",
+ "rdlt-testkit",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "rdlt-connector-snowflake"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -4417,7 +4434,7 @@ dependencies = [
 
 [[package]]
 name = "rdlt-connector-sqlcore"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "rdlt-connector",
@@ -4428,7 +4445,7 @@ dependencies = [
 
 [[package]]
 name = "rdlt-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "blake3",
  "fail",
@@ -4440,7 +4457,7 @@ dependencies = [
 
 [[package]]
 name = "rdlt-engine"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "arrow",
  "async-trait",
@@ -4465,12 +4482,11 @@ dependencies = [
 
 [[package]]
 name = "rdlt-testkit"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "arrow",
  "async-trait",
  "rdlt-connector",
- "rdlt-core",
  "serde_json",
  "tokio",
 ]

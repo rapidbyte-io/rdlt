@@ -2,8 +2,10 @@
 //! one stream, collect rows + checkpoints.
 #![allow(dead_code)]
 
-use rdlt_connector::{Cursor, PushPayload, ReadRequest, Source, SourceError, records_channel};
-use rdlt_connector_rest::source::Rest;
+use rdlt_connector_rest::source::Shell;
+use rdlt_connector_sdk::spi::{
+    Cursor, PushPayload, ReadRequest, Source, SourceError, records_channel,
+};
 
 pub struct ReadOutcome {
     pub rows: Vec<serde_json::Value>,
@@ -14,7 +16,7 @@ pub struct ReadOutcome {
 /// Read `stream` fully; panics only on harness plumbing, never on the
 /// read.
 pub async fn read_stream(yaml: &str, stream: &str, since: Option<Cursor>) -> ReadOutcome {
-    let source = Rest::from_yaml(yaml).expect("config parses");
+    let source = Shell::from_yaml(yaml).expect("config parses");
     let (out, mut input) = records_channel(1 << 20);
     let specs = source.streams().await.expect("streams");
     let spec = specs

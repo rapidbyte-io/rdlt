@@ -4,10 +4,10 @@
 //! same latent in-memory pattern (never crash-swept until now).
 
 use crate::cases::common::count;
-use rdlt_connector::core::{LoadId, PipelineId, TableName, WriteMode};
-use rdlt_connector::{Destination, OpenCtx};
 use rdlt_connector_postgres::destination::Postgres;
 use rdlt_connector_postgres::fixtures::PostgresContainer;
+use rdlt_connector_sdk::spi::core::{LoadId, PipelineId, TableName, WriteMode};
+use rdlt_connector_sdk::spi::{Destination, OpenContext};
 use rdlt_testkit::{batch_of, commit_meta_for, schema_for};
 
 #[tokio::test(flavor = "multi_thread")]
@@ -16,7 +16,7 @@ async fn replace_recovery_session_keeps_prior_commits_of_same_load() {
         return;
     };
     let connection_string = container.connection_string.clone();
-    let destination = Postgres::new(&connection_string).schema("rec");
+    let destination = Postgres::new(&connection_string).schema("rec").into_shell();
     let pipeline = PipelineId::new("p1");
     let load = LoadId::new("load-a");
     let table_schema = schema_for("events");
@@ -25,7 +25,7 @@ async fn replace_recovery_session_keeps_prior_commits_of_same_load() {
     let table = TableName::new("events");
 
     let mut first_session = destination
-        .open(OpenCtx::new(pipeline.clone(), load.clone()))
+        .open(OpenContext::new(pipeline.clone(), load.clone()))
         .await
         .expect("open first session");
     first_session
@@ -44,7 +44,7 @@ async fn replace_recovery_session_keeps_prior_commits_of_same_load() {
 
     // Crash before commit #2's receipt: fresh session, same load.
     let mut recovery_session = destination
-        .open(OpenCtx::new(pipeline.clone(), load.clone()))
+        .open(OpenContext::new(pipeline.clone(), load.clone()))
         .await
         .expect("open recovery session");
     recovery_session

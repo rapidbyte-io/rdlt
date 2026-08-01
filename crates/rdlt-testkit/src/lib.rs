@@ -1,15 +1,16 @@
 //! # rdlt-testkit — memory connectors, conformance suites, crash harness
 //!
-//! Public and shipped: connector authors certify against the conformance suites here
-//! ("certified = passes conformance"). Depends on the SPI only — if
-//! something in here needs engine internals, the SPI is wrong; raise it.
-//! Connector-agnostic by the same rule: system-specific fixtures (a postgres
-//! container, a credential convention) live with their connectors; this crate
-//! carries only what every connector shares.
+//! Public and shipped: connector authors certify against the conformance
+//! suites here ("certified = passes conformance"). Depends on the SPI
+//! only — if something in here needs engine internals, the SPI is wrong;
+//! raise it. Connector-agnostic by the same rule: system-specific
+//! fixtures (a postgres container, a credential convention) live with
+//! their connectors; this crate carries only what every connector shares.
 //!
-//! The primary workflow is certification, and it runs anywhere — no network,
-//! no containers, no credentials. Build your connector (here: the bundled
-//! memory source), hand it to the suite, and assert the verdict:
+//! The primary workflow is certification, and it runs anywhere — no
+//! network, no containers, no credentials. Build your connector (here:
+//! the bundled memory source), hand it to the suite, and assert the
+//! verdict:
 //!
 //! ```
 //! use rdlt_testkit::{MemoryBatch, MemorySource, MemoryStream, assert_conformant};
@@ -29,14 +30,15 @@
 //! # });
 //! ```
 //!
-//! Destinations certify the same way through [`verify_destination`], with a
-//! [`TableProbe`] you implement so the suite can read back what a warehouse
-//! query would see. Around certification sit the rest of the kit:
-//! [`CrashDestination`] injects a deterministic fault at a chosen
-//! [`FaultPoint`] to prove crash recovery; [`assert_registry_matches_sources`]
-//! keeps a crash-point sweep honest against the sources it sweeps; and
-//! [`gate`] holds the one container-runtime probe and the skip-not-fail /
-//! demand-and-fail posture every resource-gated suite shares.
+//! Destinations certify the same way through [`verify_destination`], with
+//! a [`TableProbe`] you implement so the suite can read back what a
+//! warehouse query would see. Around certification sit the rest of the
+//! kit: [`CrashDestination`] injects a deterministic fault at a chosen
+//! [`FaultPoint`] to prove crash recovery;
+//! [`assert_registry_matches_sources`] keeps a crash-point sweep honest
+//! against the sources it sweeps; and [`gate`] holds the one
+//! container-runtime probe and the skip-not-fail posture every
+//! resource-gated suite shares.
 
 pub mod conformance;
 pub mod crash;
@@ -45,8 +47,8 @@ pub mod gate;
 pub mod memory;
 
 pub use conformance::{
-    ConformanceFailure, assert_conformant, dest::TableProbe, dest::verify_destination,
-    source::verify_source,
+    ConformanceFailure, assert_conformant, destination::TableProbe,
+    destination::verify_destination, source::verify_source,
 };
 pub use crash::{
     CrashDestination, FaultPoint, armed_crash_points, assert_registry_matches_sources,

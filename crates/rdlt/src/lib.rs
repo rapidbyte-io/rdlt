@@ -32,6 +32,10 @@ mod builder;
 pub mod pipeline_spec;
 
 pub use builder::{Pipeline, PipelineBuilder};
+/// The connector-authoring layer, re-exported for embedders that build or
+/// parse connector configs directly (`sdk::config::Document` is the trait
+/// behind every connector's `from_yaml`/`from_json`/`from_value`).
+pub use rdlt_connector_sdk as sdk;
 pub use rdlt_core::{
     CommitPolicy, Cursor, PipelineEvent, PolicyAction, RdltError, ResumedFrom, RunReport,
     SchemaPolicy, TableReport, WriteMode,
@@ -40,7 +44,7 @@ pub use rdlt_core::{
 /// The bundled connectors, one module per system — the same pattern as the
 /// crates themselves (`rdlt-connector-<system>`). A system module exposes
 /// everything it has: `connector::postgres::{source, destination, tls}`,
-/// `connector::rest::source::Rest`, `connector::duckdb::DuckDb`, etc.
+/// `connector::rest::source::Shell`, `connector::duckdb::DuckDb`, etc.
 pub mod connector {
     #[cfg(feature = "duckdb")]
     pub use rdlt_connector_duckdb as duckdb;

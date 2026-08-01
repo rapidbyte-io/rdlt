@@ -9,8 +9,8 @@
 
 use std::collections::BTreeMap;
 
-use rdlt_connector::Secret;
-use rdlt_connector::core::LogicalType;
+use rdlt_connector_sdk::spi::Secret;
+use rdlt_connector_sdk::spi::core::LogicalType;
 use serde::{Deserialize, Serialize};
 
 /// The whole source document: connection-wide settings plus one entry per
@@ -452,31 +452,6 @@ impl From<TypeHint> for LogicalType {
             TypeHint::Uuid => LogicalType::Uuid,
             TypeHint::Json => LogicalType::Json,
         }
-    }
-}
-
-impl Config {
-    pub fn from_yaml(yaml: &str) -> Result<Self, ConfigError> {
-        let config: Config = serde_yaml::from_str(yaml)?;
-        config.validate()?;
-        Ok(config)
-    }
-
-    /// JSON text form — same document shape and validation as YAML.
-    pub fn from_json(json: &str) -> Result<Self, ConfigError> {
-        let config: Config = serde_json::from_str(json)?;
-        config.validate()?;
-        Ok(config)
-    }
-
-    /// The embedder entry point: a platform holding connector configs as
-    /// JSON documents (validated against the connector's declared config
-    /// schema) passes the `serde_json::Value` directly — no string
-    /// round-trip, same validation as every other entry point.
-    pub fn from_value(value: serde_json::Value) -> Result<Self, ConfigError> {
-        let config: Config = serde_json::from_value(value)?;
-        config.validate()?;
-        Ok(config)
     }
 }
 

@@ -1,0 +1,40 @@
+[package]
+name = "rdlt-connector-sdk"
+description = "rdlt connector-builder SDK: the authoring framework over the connector SPI — config documents, the source shell, the destination session choreography"
+keywords = ["elt", "connector", "sdk", "framework"]
+categories = ["database"]
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rdlt-connector = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+schemars = { workspace = true, optional = true }
+
+[dev-dependencies]
+rdlt-testkit = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[lints]
+workspace = true
+
+[features]
+# Connectors depend on the sdk ALONE (the one-dependency rule) and reach
+# the SPI through the `spi` re-export, so every SPI feature a connector
+# may need forwards through the same spelling here.
+# `config::schema_of` + the SPI's schemars impls for shared config types.
+schema = ["dep:schemars", "rdlt-connector/schema"]
+# The crash-sweep seam, forwarded to the vocabulary crate that defines
+# `crash_point!`.
+failpoints = ["rdlt-connector/failpoints"]
+# The object-store vocabulary (one shared recoverability rule).
+object-store = ["rdlt-connector/object-store"]

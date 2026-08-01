@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/rdlt-core",
     "crates/rdlt-connector",
+    "crates/rdlt-connector-sdk",
     "crates/rdlt-engine",
     "crates/rdlt",
     "crates/rdlt-testkit",
@@ -18,7 +19,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 # MSRV floor. rust-toolchain.toml pins the exact build toolchain (1.96.0); this
 # is the minimum the workspace commits to supporting, inherited by every crate.
@@ -34,18 +35,19 @@ memchr = "2"
 # revision: rdlt, rdlt-cli and rdlt-connector-snowflake cannot be published
 # until that dependency is retired. Recorded, with the exits, in
 # tools/allowed-git-deps.toml.
-rdlt-core = { path = "crates/rdlt-core", version = "0.2.0" }
-rdlt-connector = { path = "crates/rdlt-connector", version = "0.2.0" }
-rdlt-engine = { path = "crates/rdlt-engine", version = "0.2.0" }
-rdlt = { path = "crates/rdlt", version = "0.2.0" }
-rdlt-testkit = { path = "crates/rdlt-testkit", version = "0.2.0" }
-rdlt-connector-rest = { path = "crates/rdlt-connector-rest", version = "0.2.0" }
-rdlt-connector-duckdb = { path = "crates/rdlt-connector-duckdb", version = "0.2.0" }
-rdlt-connector-snowflake = { path = "crates/rdlt-connector-snowflake", version = "0.2.0" }
-rdlt-connector-file = { path = "crates/rdlt-connector-file", version = "0.2.0" }
-rdlt-connector-iceberg = { path = "crates/rdlt-connector-iceberg", version = "0.2.0" }
-rdlt-connector-postgres = { path = "crates/rdlt-connector-postgres", version = "0.2.0", default-features = false }
-rdlt-connector-sqlcore = { path = "crates/rdlt-connector-sqlcore", version = "0.2.0" }
+rdlt-core = { path = "crates/rdlt-core", version = "0.3.0" }
+rdlt-connector = { path = "crates/rdlt-connector", version = "0.3.0" }
+rdlt-connector-sdk = { path = "crates/rdlt-connector-sdk", version = "0.3.0" }
+rdlt-engine = { path = "crates/rdlt-engine", version = "0.3.0" }
+rdlt = { path = "crates/rdlt", version = "0.3.0" }
+rdlt-testkit = { path = "crates/rdlt-testkit", version = "0.3.0" }
+rdlt-connector-rest = { path = "crates/rdlt-connector-rest", version = "0.3.0" }
+rdlt-connector-duckdb = { path = "crates/rdlt-connector-duckdb", version = "0.3.0" }
+rdlt-connector-snowflake = { path = "crates/rdlt-connector-snowflake", version = "0.3.0" }
+rdlt-connector-file = { path = "crates/rdlt-connector-file", version = "0.3.0" }
+rdlt-connector-iceberg = { path = "crates/rdlt-connector-iceberg", version = "0.3.0" }
+rdlt-connector-postgres = { path = "crates/rdlt-connector-postgres", version = "0.3.0", default-features = false }
+rdlt-connector-sqlcore = { path = "crates/rdlt-connector-sqlcore", version = "0.3.0" }
 
 # arrow-rs: single workspace-wide major (research.md R10). Pinned to the major that
 # duckdb-rs links — connectors receive `RecordBatch` through the rdlt-connector

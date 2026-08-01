@@ -203,15 +203,12 @@ async fn scalar_lists_follow_destination_capabilities() {
     );
 
     // Degraded destination: child table instead.
-    let dest =
-        MemoryDestination::new().with_capabilities(rdlt_connector::DestinationCapabilities {
-            merge: false,
-            structs: true,
-            scalar_lists: false,
-            json_type: true,
-            decimal: true,
-            ident_rules: Default::default(),
-        });
+    let dest = MemoryDestination::new().with_capabilities(
+        rdlt_connector::DestinationCapabilities::default()
+            .with_structs(true)
+            .with_json_type(true)
+            .with_decimal(true),
+    );
     let source = MemorySource::single_stream(rdlt_connector::StreamSpec::new("s"), rows);
     Engine::new(EngineConfig::new("lists-child"), source, dest.clone())
         .run()
@@ -229,15 +226,12 @@ async fn scalar_lists_follow_destination_capabilities() {
 #[tokio::test]
 async fn structless_destination_gets_flattened_columns() {
     let rows = vec![json!({"id": 1, "profile": {"city": "NYC", "geo": {"lat": 1.5}}})];
-    let dest =
-        MemoryDestination::new().with_capabilities(rdlt_connector::DestinationCapabilities {
-            merge: false,
-            structs: false,
-            scalar_lists: true,
-            json_type: true,
-            decimal: true,
-            ident_rules: Default::default(),
-        });
+    let dest = MemoryDestination::new().with_capabilities(
+        rdlt_connector::DestinationCapabilities::default()
+            .with_scalar_lists(true)
+            .with_json_type(true)
+            .with_decimal(true),
+    );
     let source = MemorySource::single_stream(rdlt_connector::StreamSpec::new("s"), rows);
     Engine::new(EngineConfig::new("flatten"), source, dest.clone())
         .run()

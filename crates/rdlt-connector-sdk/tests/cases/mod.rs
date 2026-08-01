@@ -1,0 +1,7 @@
+//! Table of contents for the suites; the example connector both suites
+//! certify lives in `example`.
+
+mod example;
+mod test_dependency_rule;
+mod test_framework_conformance;
+mod test_session_choreography;

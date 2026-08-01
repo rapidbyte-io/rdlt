@@ -8,9 +8,9 @@
 
 use std::path::Path;
 
-use rdlt_connector::core::failpoint::fail;
 use rdlt_connector_duckdb::dest::DuckDb;
-use rdlt_connector_rest::source::Rest;
+use rdlt_connector_rest::source::Shell;
+use rdlt_connector_sdk::spi::core::failpoint::fail;
 use rdlt_engine::{Engine, EngineConfig};
 use serde_json::json;
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -62,7 +62,7 @@ streams:
 }
 
 async fn attempt(workdir: &Path, db: &Path, base: &str) -> Result<(), String> {
-    let source = Rest::from_yaml(&yaml(base)).expect("config");
+    let source = Shell::from_yaml(&yaml(base)).expect("config");
     let dest = DuckDb::open(db).map_err(|e| e.to_string())?;
     let mut config = EngineConfig::new("rest-sweep");
     config = config.with_workdir(workdir.to_path_buf());

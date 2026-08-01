@@ -8,8 +8,8 @@
 
 use std::collections::BTreeMap;
 
-use rdlt_connector::core::{ColumnDef, ColumnType, LogicalType, PipelineId, TableName};
-use rdlt_connector::{DestinationError, WriteMode, core::TableSchema};
+use rdlt_connector_sdk::spi::core::{ColumnDef, ColumnType, LogicalType, PipelineId, TableName};
+use rdlt_connector_sdk::spi::{DestinationError, WriteMode, core::TableSchema};
 use rdlt_connector_sqlcore::ensure::{self, EnsureStep, Leg, Validity};
 use rdlt_connector_sqlcore::plan::ValidateError;
 use rdlt_connector_sqlcore::{FullLoadPublish, quote_identifier};
@@ -27,7 +27,7 @@ pub fn stage_prefix(pipeline: &PipelineId) -> String {
     format!(
         "{}{}_",
         rdlt_connector_sqlcore::names::STAGE_PREFIX,
-        rdlt_connector::core::naming::ident_hash(pipeline.as_str(), 8)
+        rdlt_connector_sdk::spi::core::naming::ident_hash(pipeline.as_str(), 8)
     )
 }
 

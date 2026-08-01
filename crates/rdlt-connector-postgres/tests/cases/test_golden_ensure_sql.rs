@@ -7,12 +7,12 @@
 //! dropped `IF NOT EXISTS`, a changed type mapping or a lost `CACHE 32` all
 //! fail here rather than silently changing what a user's database gets.
 
-use rdlt_connector::core::{
-    ColumnDef, ColumnType, LogicalType, PipelineId, Provenance, TableName, TableSchema, WriteMode,
-};
 use rdlt_connector_postgres::destination::{DestinationOptions, MergeStrategy};
 use rdlt_connector_postgres::testsupport::destination::{
     merge_ensure_statements, table_ddl_statements,
+};
+use rdlt_connector_sdk::spi::core::{
+    ColumnDef, ColumnType, LogicalType, PipelineId, Provenance, TableName, TableSchema, WriteMode,
 };
 
 fn column(name: &str, scalar: LogicalType, nullable: bool) -> ColumnDef {

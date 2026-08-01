@@ -4,8 +4,9 @@
 
 use futures::TryStreamExt;
 
-use rdlt_connector::core::crash_point;
-use rdlt_connector::{ReadRequest, SourceError};
+use rdlt_connector_sdk::source::Feed;
+use rdlt_connector_sdk::spi::core::crash_point;
+use rdlt_connector_sdk::spi::{Cursor, SourceError, StreamSpec};
 
 use crate::session::Connection;
 use crate::source::config::{CdcConfig, CdcMode, Config};
@@ -37,9 +38,20 @@ pub(crate) async fn read_stream(
     context: &StreamContext<'_>,
     cdc_tables: &[String],
     reflected_columns: &[&crate::source::reflect::Column],
-    request: ReadRequest,
+    stream: &StreamSpec,
+    since: Option<Cursor>,
+    feed: &mut Feed,
 ) -> Result<(), SourceError> {
-    let result = dispatch(runtime, context, cdc_tables, reflected_columns, request).await;
+    let result = dispatch(
+        runtime,
+        context,
+        cdc_tables,
+        reflected_columns,
+        stream,
+        since,
+        feed,
+    )
+    .await;
     if result.is_err() {
         runtime.state.lock().await.drop_connections();
     }
@@ -51,10 +63,12 @@ async fn dispatch(
     context: &StreamContext<'_>,
     cdc_tables: &[String],
     reflected_columns: &[&crate::source::reflect::Column],
-    mut request: ReadRequest,
+    stream: &StreamSpec,
+    since: Option<Cursor>,
+    feed: &mut Feed,
 ) -> Result<(), SourceError> {
     let &StreamContext { config, cdc, .. } = context;
-    let stream = request.stream.name.as_str().to_owned();
+    let stream = stream.name.as_str().to_owned();
 
     // ---- lifecycle, under the state lock ----
     let mut state = runtime.state.lock().await;
@@ -76,7 +90,7 @@ async fn dispatch(
     }
     let ensured = state.ensured.expect("ensured just initialized");
 
-    let since = match &request.since {
+    let since = match &since {
         Some(cursor) => Some(Resume::decode(cursor, &stream)?.cdc_lsn),
         None => None,
     };
@@ -120,16 +134,15 @@ async fn dispatch(
             };
             let snapshot = state.snapshot(config, &stream, start).await?;
             drop(state); // COPY + pushes run WITHOUT the state lock
-            if snapshot_pass(&snapshot, context, &stream, reflected_columns, &mut request).await?
+            if snapshot_pass(&snapshot, context, &stream, reflected_columns, feed).await?
                 == PassOutcome::Cancelled
             {
                 return Ok(());
             }
-            if request
-                .out
+            if feed
                 .checkpoint(Resume { cdc_lsn: start }.encode())
                 .await
-                .is_err()
+                .is_break()
             {
                 return Ok(());
             }
@@ -150,8 +163,7 @@ async fn dispatch(
             state.ack_floor.insert(stream.clone(), since);
             drop(state); // the pass pushes batches WITHOUT the state lock
             if target > since {
-                let outcome =
-                    change_pass(&control, context, &stream, since, target, &mut request).await?;
+                let outcome = change_pass(&control, context, &stream, since, target, feed).await?;
                 if outcome == PassOutcome::Cancelled {
                     return Ok(());
                 }
@@ -176,7 +188,7 @@ async fn dispatch(
     }
     if cdc.mode == CdcMode::Tail {
         drop(state);
-        return tail::tail_loop(control, context, &stream, cursor, request).await;
+        return tail::tail_loop(control, context, &stream, cursor, feed).await;
     }
     Ok(())
 }
@@ -195,7 +207,7 @@ async fn snapshot_pass(
     context: &StreamContext<'_>,
     stream: &str,
     reflected_columns: &[&crate::source::reflect::Column],
-    request: &mut ReadRequest,
+    feed: &mut Feed,
 ) -> Result<PassOutcome, SourceError> {
     let select = sql::select(&context.config.schema, stream, reflected_columns, "", "");
     let copy_sql = sql::copy(&select);
@@ -211,7 +223,7 @@ async fn snapshot_pass(
         snapshot,
         &copy_sql,
         &mut decoder,
-        request,
+        feed,
         stream,
         copy::CrashSite {
             label: "cdc.snapshot.copy",
@@ -230,7 +242,7 @@ async fn snapshot_pass(
         // Schema-bearing empty batch: columns + flag, all nullable.
         let empty = batch_of(context.columns, &context.cdc.flag_column, &[], &[])
             .map_err(|e| errors::fatal(Phase::Decode, Some(stream), e))?;
-        if request.out.arrow(empty).await.is_err() {
+        if feed.arrow(empty).await.is_break() {
             return Ok(PassOutcome::Cancelled);
         }
     }
@@ -246,7 +258,7 @@ pub(super) async fn change_pass(
     stream: &str,
     since: u64,
     target: u64,
-    request: &mut ReadRequest,
+    feed: &mut Feed,
 ) -> Result<PassOutcome, SourceError> {
     crash_point!(
         "cdc.stream.peek",
@@ -268,11 +280,11 @@ pub(super) async fn change_pass(
     while let Some(change) = changes.try_next().await? {
         let message = pgoutput::parse(&change.data)
             .map_err(|e| errors::fatal(Phase::Decode, Some(stream), e))?;
-        if !deliver(apply.on_message(change.lsn, message)?, request).await? {
+        if !deliver(apply.on_message(change.lsn, message)?, feed).await? {
             return Ok(PassOutcome::Cancelled);
         }
     }
-    if !deliver(apply.finish(target)?, request).await? {
+    if !deliver(apply.finish(target)?, feed).await? {
         return Ok(PassOutcome::Cancelled);
     }
     Ok(PassOutcome::Complete)
@@ -281,15 +293,14 @@ pub(super) async fn change_pass(
 /// Deliver one apply step's emitted actions in order. Returns `false` at
 /// the first engine cancellation (a closed batch or checkpoint channel) so
 /// the caller can stop the pass cleanly.
-async fn deliver(emits: Vec<Emit>, request: &mut ReadRequest) -> Result<bool, SourceError> {
+async fn deliver(emits: Vec<Emit>, feed: &mut Feed) -> Result<bool, SourceError> {
     for action in emits {
         let delivered = match action {
-            Emit::Batch(batch) => request.out.arrow(batch).await.is_ok(),
-            Emit::Checkpoint(lsn) => request
-                .out
+            Emit::Batch(batch) => feed.arrow(batch).await.is_continue(),
+            Emit::Checkpoint(lsn) => feed
                 .checkpoint(Resume { cdc_lsn: lsn }.encode())
                 .await
-                .is_ok(),
+                .is_continue(),
         };
         if !delivered {
             return Ok(false);

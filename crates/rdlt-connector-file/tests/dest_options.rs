@@ -11,7 +11,7 @@ use rdlt_connector::core::{
     ColumnDef, ColumnType, LoadId, LogicalType, PipelineId, Provenance, TableName, TableSchema,
     WriteMode,
 };
-use rdlt_connector::{Destination, OpenCtx};
+use rdlt_connector::{Destination, OpenContext};
 use rdlt_connector_file::dest::{DestFormat, FileDest, FileDestConfig};
 use rdlt_testkit::commit_meta_for;
 
@@ -54,7 +54,7 @@ async fn run_load(dest: &FileDest, rows: RecordBatch) {
     let pipeline = PipelineId::new("p");
     let load = LoadId::new("load-a");
     let mut s = dest
-        .open(OpenCtx::new(pipeline.clone(), load.clone()))
+        .open(OpenContext::new(pipeline.clone(), load.clone()))
         .await
         .expect("open");
     s.ensure_table(&schema_for("events"), &WriteMode::Append)
@@ -122,7 +122,7 @@ async fn missing_partition_column_is_typed() {
     let pipeline = PipelineId::new("p");
     let load = LoadId::new("load-a");
     let mut s = dest
-        .open(OpenCtx::new(pipeline.clone(), load.clone()))
+        .open(OpenContext::new(pipeline.clone(), load.clone()))
         .await
         .expect("open");
     s.ensure_table(&schema_for("events"), &WriteMode::Append)
@@ -156,7 +156,7 @@ fn dest_config_validation_is_typed() {
 #[tokio::test]
 async fn replace_truncation_spares_user_files() {
     use rdlt_connector::core::WriteMode;
-    use rdlt_connector::{Destination, OpenCtx};
+    use rdlt_connector::{Destination, OpenContext};
 
     // Frozen config: top-level *.parquet goes (old rule), user jsonl and
     // nested dirs SURVIVE.
@@ -175,7 +175,7 @@ async fn replace_truncation_spares_user_files() {
     let pipeline = PipelineId::new("p");
     let load = LoadId::new("load-r");
     let mut s = dest
-        .open(OpenCtx::new(pipeline.clone(), load.clone()))
+        .open(OpenContext::new(pipeline.clone(), load.clone()))
         .await
         .expect("open");
     s.ensure_table(&schema_for("events"), &WriteMode::Replace)
@@ -209,7 +209,7 @@ async fn replace_truncation_spares_user_files() {
     .expect("open");
     let load = LoadId::new("load-r2");
     let mut s = dest
-        .open(OpenCtx::new(pipeline.clone(), load.clone()))
+        .open(OpenContext::new(pipeline.clone(), load.clone()))
         .await
         .expect("open");
     s.ensure_table(&schema_for("events"), &WriteMode::Replace)
@@ -251,7 +251,7 @@ async fn replace_clears_earlier_loads_written_in_another_shape() {
     let config = FileDestConfig::new(dir.path().to_string_lossy().to_string());
     let mut s = FileDest::from_config(config)
         .expect("dest")
-        .open(OpenCtx::new(pipeline.clone(), load.clone()))
+        .open(OpenContext::new(pipeline.clone(), load.clone()))
         .await
         .expect("open");
     s.ensure_table(&schema_for("events"), &WriteMode::Replace)
@@ -297,7 +297,7 @@ async fn replace_never_deletes_a_foreign_dataset() {
         .with_format(DestFormat::Jsonl);
     let mut s = FileDest::from_config(config)
         .expect("dest")
-        .open(OpenCtx::new(pipeline.clone(), load.clone()))
+        .open(OpenContext::new(pipeline.clone(), load.clone()))
         .await
         .expect("open");
     s.ensure_table(&schema_for("events"), &WriteMode::Replace)

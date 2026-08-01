@@ -2,6 +2,7 @@
 //! correct termination, loud loop guards (contract RS2).
 
 use super::common::{read_err, read_ok, stream_yaml};
+use rdlt_connector_sdk::config::Document;
 use serde_json::json;
 use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};

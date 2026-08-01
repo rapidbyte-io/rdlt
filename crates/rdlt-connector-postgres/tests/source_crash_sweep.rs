@@ -8,10 +8,10 @@
 
 #![cfg(feature = "failpoints")]
 
-use rdlt_connector::core::failpoint::fail;
 use rdlt_connector_duckdb::dest::DuckDb;
 use rdlt_connector_postgres::fixtures::PostgresContainer;
 use rdlt_connector_postgres::source;
+use rdlt_connector_sdk::spi::core::failpoint::fail;
 use rdlt_engine::{Engine, EngineConfig};
 
 const TOTAL_ROWS: u64 = 100;
@@ -26,8 +26,8 @@ const SEED: &str = "CREATE TABLE ev (id int8 PRIMARY KEY, v text); \
 
 /// Incremental on id, small batches ⇒ mid-stream checkpoints exist for the
 /// resume paths to bite on.
-fn source(connection_string: &str) -> source::Postgres {
-    source::Postgres::from_yaml(&format!(
+fn source(connection_string: &str) -> source::Shell {
+    source::Shell::from_yaml(&format!(
         "conn: \"{connection_string}\"\nbatch_max_rows: 10\ntables:\n  - name: ev\n    cursor:\n      column: id\n"
     ))
     .expect("config")
@@ -51,14 +51,17 @@ impl Rig {
     }
 
     async fn attempt(&self, connection_string: &str) -> Result<rdlt_engine::RunReport, String> {
-        self.attempt_mode(connection_string, &rdlt_connector::core::WriteMode::Append)
-            .await
+        self.attempt_mode(
+            connection_string,
+            &rdlt_connector_sdk::spi::core::WriteMode::Append,
+        )
+        .await
     }
 
     async fn attempt_mode(
         &self,
         connection_string: &str,
-        mode: &rdlt_connector::core::WriteMode,
+        mode: &rdlt_connector_sdk::spi::core::WriteMode,
     ) -> Result<rdlt_engine::RunReport, String> {
         let config = EngineConfig::new("pg-src-sweep")
             .with_workdir(self.workdir.clone())
@@ -104,8 +107,8 @@ async fn every_source_fail_point_recovers_exactly_once_under_append_and_merge() 
     // Append + keyed structured Merge: the merge axis drives the
     // keyed delete+insert commit path under every crash point.
     let modes = [
-        rdlt_connector::core::WriteMode::Append,
-        rdlt_connector::core::WriteMode::Merge {
+        rdlt_connector_sdk::spi::core::WriteMode::Append,
+        rdlt_connector_sdk::spi::core::WriteMode::Merge {
             key: vec!["id".into()],
         },
     ];

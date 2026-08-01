@@ -8,7 +8,7 @@
 use async_trait::async_trait;
 use rdlt_connector_snowflake::dest::{Snowflake, SnowflakeConfig};
 use rdlt_testkit::TableProbe;
-use rdlt_testkit::conformance::dest::verify_destination;
+use rdlt_testkit::conformance::destination::verify_destination;
 mod common;
 
 use common::{credentials, scratch_schema};
@@ -69,7 +69,7 @@ async fn the_snowflake_destination_is_conformant() {
     // creates the scratch schema for it to work in.
     rdlt_connector::Destination::open(
         &dest,
-        rdlt_connector::OpenCtx::new(
+        rdlt_connector::OpenContext::new(
             rdlt_connector::core::PipelineId::from("setup"),
             rdlt_connector::core::LoadId::from("setup"),
         ),

@@ -8,11 +8,11 @@
 
 #![cfg(feature = "failpoints")]
 
-use rdlt_connector::StreamSpec;
-use rdlt_connector::core::WriteMode;
-use rdlt_connector::core::failpoint::fail;
 use rdlt_connector_postgres::destination::Postgres;
 use rdlt_connector_postgres::fixtures::PostgresContainer;
+use rdlt_connector_sdk::spi::StreamSpec;
+use rdlt_connector_sdk::spi::core::WriteMode;
+use rdlt_connector_sdk::spi::core::failpoint::fail;
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{MemoryBatch, MemorySource, MemoryStream};
 use serde_json::json;
@@ -55,7 +55,7 @@ async fn count_rows(connection_string: &str, schema: &str) -> u64 {
 
 async fn attempt(
     workdir: &std::path::Path,
-    destination: &Postgres,
+    destination: &rdlt_connector_postgres::destination::Shell,
     mode: &WriteMode,
 ) -> Result<(), String> {
     let config = EngineConfig::new("pg-sweep")
@@ -138,7 +138,9 @@ async fn every_dest_fail_point_recovers_exactly_once_across_append_replace_and_m
                 );
                 let directory = tempfile::tempdir().expect("tempdir");
                 let workdir = directory.path().join("wal");
-                let destination = Postgres::new(&connection_string).schema(&schema);
+                let destination = Postgres::new(&connection_string)
+                    .schema(&schema)
+                    .into_shell();
 
                 fail::cfg(point, action).expect("configure fail point");
                 let armed1 = attempt(&workdir, &destination, &mode).await;
@@ -182,7 +184,7 @@ async fn every_dest_fail_point_recovers_exactly_once_across_append_replace_and_m
 use arrow_array::{Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use async_trait::async_trait;
-use rdlt_connector::{ConnectorSpec, Cursor, ReadRequest, Source, SourceError};
+use rdlt_connector_sdk::spi::{ConnectorSpec, Cursor, ReadRequest, Source, SourceError};
 use std::sync::Arc;
 
 /// Structured stream with a declared key: 4 checkpointed batches × 25 rows,
@@ -243,16 +245,20 @@ impl Source for KeyedArrowSource {
 fn with_strategy(
     destination: Postgres,
     strategy: rdlt_connector_postgres::destination::MergeStrategy,
-) -> Postgres {
+) -> rdlt_connector_postgres::destination::Shell {
     destination
         .options(rdlt_connector_postgres::destination::DestinationOptions {
             merge_strategy: Some(strategy),
             ..Default::default()
         })
         .expect("valid options")
+        .into_shell()
 }
 
-async fn attempt_keyed(workdir: &std::path::Path, destination: &Postgres) -> Result<(), String> {
+async fn attempt_keyed(
+    workdir: &std::path::Path,
+    destination: &rdlt_connector_postgres::destination::Shell,
+) -> Result<(), String> {
     let config = EngineConfig::new("pg-sweep-keyed")
         .with_workdir(workdir.to_path_buf())
         .with_write_mode(WriteMode::Merge {
@@ -407,7 +413,10 @@ impl Source for RefinedArrowSource {
     }
 }
 
-async fn attempt_refined(workdir: &std::path::Path, destination: &Postgres) -> Result<(), String> {
+async fn attempt_refined(
+    workdir: &std::path::Path,
+    destination: &rdlt_connector_postgres::destination::Shell,
+) -> Result<(), String> {
     let config = EngineConfig::new("pg-sweep-refined")
         .with_workdir(workdir.to_path_buf())
         .with_write_mode(WriteMode::Merge {
@@ -457,7 +466,8 @@ async fn every_dest_fail_point_recovers_exactly_once_under_refined_scoped_merge(
                     .collect(),
                     ..Default::default()
                 })
-                .expect("valid options");
+                .expect("valid options")
+                .into_shell();
 
             fail::cfg(point, action).expect("configure fail point");
             let armed1 = attempt_refined(&workdir, &destination).await;

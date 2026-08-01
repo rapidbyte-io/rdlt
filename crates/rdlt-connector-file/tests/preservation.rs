@@ -5,7 +5,7 @@
 
 use rdlt_connector::Cursor;
 use rdlt_connector::core::{LoadId, PipelineId, TableName, WriteMode, naming::ident_hash};
-use rdlt_connector::{Destination, OpenCtx};
+use rdlt_connector::{Destination, OpenContext};
 use rdlt_connector_file::source::cursor::{FileCursor, FileMeta};
 use rdlt_connector_file::{FileConfig, ParquetDir};
 use rdlt_testkit::{batch_of, commit_meta_for, schema_for};
@@ -98,7 +98,7 @@ async fn pre_015_artifact_names_and_commit_log_shape_are_frozen() {
     let scope = ident_hash(pipeline.as_str(), 12);
 
     let mut s = dest
-        .open(OpenCtx::new(pipeline.clone(), load.clone()))
+        .open(OpenContext::new(pipeline.clone(), load.clone()))
         .await
         .expect("open");
     s.ensure_table(&schema_for("events"), &WriteMode::Append)
@@ -149,7 +149,7 @@ async fn pre_015_commit_log_fixture_drives_receipt_dedup() {
     let dest = ParquetDir::open(dir.path()).expect("open");
     let load = LoadId::new("load-x");
     let mut s = dest
-        .open(OpenCtx::new(pipeline.clone(), load.clone()))
+        .open(OpenContext::new(pipeline.clone(), load.clone()))
         .await
         .expect("open");
     s.ensure_table(&schema_for("events"), &WriteMode::Append)

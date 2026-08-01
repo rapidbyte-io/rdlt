@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use rdlt_connector::{
-    DestinationCapabilities, PushPayload, ReadRequest, Source, StreamSpec, channel::ByteTx,
+    DestinationCapabilities, PushPayload, ReadRequest, Source, StreamSpec, channel::ByteSender,
     records_channel,
 };
 use rdlt_core::{
@@ -115,7 +115,7 @@ pub(super) struct StreamPlan {
 pub(super) async fn stream_task(
     plan: StreamPlan,
     source: Arc<dyn Source>,
-    tx: ByteTx<LoadItem>,
+    tx: ByteSender<LoadItem>,
     cancel: CancellationToken,
     events: broadcast::Sender<PipelineEvent>,
 ) -> Result<(), RdltError> {

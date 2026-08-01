@@ -4,35 +4,18 @@
 
 use std::collections::BTreeSet;
 
+use rdlt_connector_sdk::config::Document;
+
 use super::vocabulary::*;
 
-impl Config {
-    pub fn from_yaml(yaml: &str) -> Result<Self, ConfigError> {
-        let config: Config = serde_yaml::from_str(yaml)?;
-        config.validate()?;
-        Ok(config)
-    }
+/// The [`Document`] gate: the sdk's provided `from_yaml`/`from_json`/
+/// `from_value` parse and then run THIS — local validation split by
+/// concern (connection, cursors, CDC, stream selection), each owning a
+/// coherent slice of the same typed errors, with the crate's own frozen
+/// refusal spellings.
+impl Document for Config {
+    type Error = ConfigError;
 
-    /// JSON text form — same document shape and validation as YAML.
-    pub fn from_json(json: &str) -> Result<Self, ConfigError> {
-        let config: Config = serde_json::from_str(json)?;
-        config.validate()?;
-        Ok(config)
-    }
-
-    /// The embedder entry point: a platform holding connector configs as
-    /// JSON documents (validated against the connector's declared config
-    /// schema) passes the `serde_json::Value` directly — no string
-    /// round-trip, same validation as every other entry point.
-    pub fn from_value(value: serde_json::Value) -> Result<Self, ConfigError> {
-        let config: Config = serde_json::from_value(value)?;
-        config.validate()?;
-        Ok(config)
-    }
-
-    /// Local validation, split by concern — connection, cursors, CDC, and
-    /// stream selection — each owning a coherent slice of the same typed
-    /// errors.
     fn validate(&self) -> Result<(), ConfigError> {
         self.validate_connection()?;
         self.validate_cursors()?;
@@ -40,7 +23,9 @@ impl Config {
         self.validate_streams()?;
         Ok(())
     }
+}
 
+impl Config {
     /// Top-level connection + batching scalars.
     fn validate_connection(&self) -> Result<(), ConfigError> {
         let invalid = |message: String| Err(ConfigError::Invalid(message));
@@ -254,6 +239,8 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
+    use rdlt_connector_sdk::config::Document;
+
     use super::*;
 
     #[test]

@@ -32,8 +32,8 @@ use std::collections::BTreeMap;
 
 use async_trait::async_trait;
 use rdlt_connector::{
-    ConnectorSpec, Destination, DestinationCapabilities, DestinationError, LoadSession, OpenCtx,
-    core::naming::IdentRules,
+    ConnectorSpec, Destination, DestinationCapabilities, DestinationError, LoadSession,
+    OpenContext, core::naming::IdentRules,
 };
 
 pub use config::{DestFormat, FileDestConfig, dest_config_schema};
@@ -117,17 +117,17 @@ impl Destination for FileDest {
     }
 
     fn capabilities(&self) -> DestinationCapabilities {
-        DestinationCapabilities {
-            merge: false, // write-only destination; no per-row identity semantics
-            structs: true,
-            scalar_lists: true,
-            json_type: false,
-            decimal: true,
-            ident_rules: IdentRules::default(),
-        }
+        DestinationCapabilities::default()
+            .with_merge(false)
+            // write-only destination; no per-row identity semantics
+            .with_structs(true)
+            .with_scalar_lists(true)
+            .with_json_type(false)
+            .with_decimal(true)
+            .with_ident_rules(IdentRules::default())
     }
 
-    async fn open(&self, ctx: OpenCtx) -> Result<Box<dyn LoadSession>, DestinationError> {
+    async fn open(&self, ctx: OpenContext) -> Result<Box<dyn LoadSession>, DestinationError> {
         let scope = pipeline_scope(&ctx.pipeline);
         // Clause D4: staged data from THIS PIPELINE's dead sessions becomes
         // invisible/reclaimable. Scoped — another pipeline sharing this output

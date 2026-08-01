@@ -279,14 +279,14 @@ async fn run(case: &Case) -> MemoryDestination {
         spec = spec.with_primary_key(key.iter().copied());
     }
     let source = MemorySource::single_stream(spec, case.rows.clone());
-    let dest = MemoryDestination::new().with_capabilities(DestinationCapabilities {
-        merge: true,
-        structs: true,
-        scalar_lists: case.scalar_lists,
-        json_type: true,
-        decimal: true,
-        ident_rules: Default::default(),
-    });
+    let dest = MemoryDestination::new().with_capabilities(
+        DestinationCapabilities::default()
+            .with_merge(true)
+            .with_structs(true)
+            .with_scalar_lists(case.scalar_lists)
+            .with_json_type(true)
+            .with_decimal(true),
+    );
     Engine::new(EngineConfig::new("identity-pin"), source, dest.clone())
         .run()
         .await

@@ -8,11 +8,18 @@
 
 use std::collections::BTreeMap;
 
+use rdlt_connector_sdk::config::Document;
+
 use super::vocabulary::{Config, ConfigError, Method, Pagination, Stream};
 use crate::source::select::Selector;
 
-impl Config {
-    pub(crate) fn validate(&self) -> Result<(), ConfigError> {
+/// The [`Document`] gate: the sdk's provided `from_yaml`/`from_json`/
+/// `from_value` parse and then run THIS — the one validation gate, with
+/// the crate's own frozen refusal spellings.
+impl Document for Config {
+    type Error = ConfigError;
+
+    fn validate(&self) -> Result<(), ConfigError> {
         if self.streams.is_empty() {
             return invalid("at least one stream is required".into());
         }
@@ -299,6 +306,8 @@ fn validate_parent(config: &Config, names: &[&str], stream: &Stream) -> Result<(
 
 #[cfg(test)]
 mod tests {
+    use rdlt_connector_sdk::config::Document;
+
     use super::super::vocabulary::Config;
 
     fn err(config: serde_json::Value) -> String {

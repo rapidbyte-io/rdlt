@@ -8,6 +8,7 @@ use crate::cases::common;
 use rdlt_connector_duckdb::dest::DuckDb;
 use rdlt_connector_postgres::fixtures::PostgresContainer;
 use rdlt_connector_postgres::source;
+use rdlt_connector_sdk::config::Document;
 use rdlt_engine::{Engine, EngineConfig};
 
 const SEED: &str = r#"
@@ -41,7 +42,7 @@ impl Harness {
         }
     }
 
-    async fn run(&self, postgres_source: source::Postgres, pipeline: &str) -> u64 {
+    async fn run(&self, postgres_source: source::Shell, pipeline: &str) -> u64 {
         Engine::new(
             EngineConfig::new(pipeline),
             postgres_source,
@@ -116,8 +117,8 @@ async fn join_query_lands_with_described_schema_and_incremental_works() {
 /// port-proxy can transiently refuse a connect, which would surface here as a
 /// connect-phase error instead of the typed rejection under test — so this
 /// harness plays the engine's role and retries ONLY transient connect errors.
-async fn rejection_of(postgres_source: &source::Postgres) -> String {
-    use rdlt_connector::Source as _;
+async fn rejection_of(postgres_source: &source::Shell) -> String {
+    use rdlt_connector_sdk::spi::Source as _;
     for _ in 0..3 {
         let error = postgres_source
             .streams()

@@ -196,7 +196,8 @@ async fn both(
         let dest = Postgres::new(&conn)
             .schema(&schema)
             .options(DestinationOptions::from_value(options.clone()).expect("options"))
-            .unwrap();
+            .unwrap()
+            .into_shell();
         let mut config = EngineConfig::new(format!("diff-{name}"));
         config = config.with_write_mode(mode.clone());
         config = config.with_workdir(duck_dir.path().join("pg-work"));

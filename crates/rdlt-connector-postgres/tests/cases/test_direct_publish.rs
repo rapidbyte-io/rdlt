@@ -10,12 +10,12 @@
 //! the standing coverage for that state.
 use arrow_array::{Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
-use rdlt_connector::core::{
+use rdlt_connector_postgres::fixtures::PostgresContainer;
+use rdlt_connector_sdk::spi::core::{
     ColumnDef, ColumnType, CommitCounters, LoadId, LogicalType, PipelineId, Provenance, StateDoc,
     TableName, TableSchema,
 };
-use rdlt_connector::{CommitMeta, Destination, OpenCtx, WriteMode};
-use rdlt_connector_postgres::fixtures::PostgresContainer;
+use rdlt_connector_sdk::spi::{CommitMeta, Destination, OpenContext, WriteMode};
 use std::sync::Arc;
 
 fn schema(table: &str) -> TableSchema {
@@ -68,8 +68,9 @@ async fn a_redelivered_unit_never_duplicates_its_rows() {
         return;
     };
     let connection_string = container.connection_string.clone();
-    let destination =
-        rdlt_connector_postgres::destination::Postgres::new(&connection_string).schema("rp1");
+    let destination = rdlt_connector_postgres::destination::Postgres::new(&connection_string)
+        .schema("rp1")
+        .into_shell();
     let pipeline = PipelineId::new("rp1");
     let meta = |commit_seq: u64| CommitMeta {
         load_id: LoadId::new("rp1-load"),
@@ -78,7 +79,7 @@ async fn a_redelivered_unit_never_duplicates_its_rows() {
         counters: CommitCounters::default(),
     };
     let mut session = destination
-        .open(OpenCtx::new(pipeline.clone(), LoadId::new("rp1-load")))
+        .open(OpenContext::new(pipeline.clone(), LoadId::new("rp1-load")))
         .await
         .expect("open");
     session
@@ -134,8 +135,9 @@ async fn a_replace_target_first_written_in_unit_two_is_still_cleared() {
         return;
     };
     let connection_string = container.connection_string.clone();
-    let destination =
-        rdlt_connector_postgres::destination::Postgres::new(&connection_string).schema("rp2");
+    let destination = rdlt_connector_postgres::destination::Postgres::new(&connection_string)
+        .schema("rp2")
+        .into_shell();
     let pipeline = PipelineId::new("rp2");
     let meta = |load: &str, commit_seq: u64| CommitMeta {
         load_id: LoadId::new(load),
@@ -145,7 +147,7 @@ async fn a_replace_target_first_written_in_unit_two_is_still_cleared() {
     };
     // Load 1 leaves rows behind.
     let mut session = destination
-        .open(OpenCtx::new(pipeline.clone(), LoadId::new("L1")))
+        .open(OpenContext::new(pipeline.clone(), LoadId::new("L1")))
         .await
         .expect("open");
     session
@@ -163,7 +165,7 @@ async fn a_replace_target_first_written_in_unit_two_is_still_cleared() {
     // Load 2: table T gets NO write in unit 0, which still commits; its first
     // rows arrive in unit 1.
     let mut session = destination
-        .open(OpenCtx::new(pipeline.clone(), LoadId::new("L2")))
+        .open(OpenContext::new(pipeline.clone(), LoadId::new("L2")))
         .await
         .expect("open");
     session

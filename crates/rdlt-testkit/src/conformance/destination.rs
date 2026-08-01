@@ -1,15 +1,32 @@
-//! Destination conformance (clauses D1–D8): staging invisibility, atomic state,
-//! idempotent commits, staging teardown — verified black-box through the SPI plus one
-//! author-supplied probe (row counting is the only thing the SPI itself can't do).
+//! Destination conformance. Asserted clauses — EXACTLY these seven, no
+//! more:
+//!
+//! - **D1** staging invisibility: rows written but not committed are not
+//!   reader-visible.
+//! - **D2** atomic state: `commit` persists `meta.state` with the data;
+//!   `read_state` returns the committed cursor.
+//! - **D3** idempotent commits: re-committing the same
+//!   `(load_id, commit_seq)` returns the prior receipt and re-publishes
+//!   nothing.
+//! - **D4** staging teardown: a new session makes a dead predecessor's
+//!   staged rows invisible; only the new session's rows publish.
+//! - **D5** idempotent `ensure_table`.
+//! - **D6** fresh pipelines have no state.
+//! - **D8** merge upserts by `_rdlt_id` (asserted only when the
+//!   destination declares the merge capability).
+//!
+//! Verified black-box through the SPI plus one author-supplied
+//! [`TableProbe`] — row counting is the only thing the SPI itself cannot
+//! do. D7 has no check here yet; adding one is deferred work, renumbering
+//! is forbidden.
 
 use std::sync::Arc;
 
 use arrow::array::{Int64Array, StringArray};
-use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use rdlt_connector::{
-    CommitMeta, Destination, OpenCtx, WriteMode,
+    CommitMeta, Destination, OpenContext, WriteMode,
     core::{
         ColumnDef, ColumnType, CommitCounters, Cursor, LoadId, LogicalType, PipelineId, Provenance,
         StateDoc, StreamName, TableName, TableSchema, schema::system_columns,
@@ -17,14 +34,19 @@ use rdlt_connector::{
 };
 
 use super::ConformanceFailure;
+use crate::fixtures;
 
-/// The one capability the SPI cannot provide: counting reader-VISIBLE rows in a
-/// table (a warehouse query). Implement per destination under test.
+/// The one capability the SPI cannot provide: counting reader-VISIBLE
+/// rows in a table (a warehouse query). Implement per destination under
+/// test.
 #[async_trait]
 pub trait TableProbe: Send + Sync {
+    /// Rows a reader of `table` would see right now.
     async fn count(&self, table: &TableName) -> u64;
 }
 
+/// The suite's three-column logical fixture: two system columns and one
+/// value column, enough for every clause including merge identity.
 fn fixture_schema(table: &str) -> TableSchema {
     let col = |name: &str, ty, provenance| ColumnDef {
         name: name.to_owned(),
@@ -47,13 +69,12 @@ fn fixture_schema(table: &str) -> TableSchema {
     }
 }
 
+/// A batch over [`fixture_schema`]'s columns, filled positionally. The
+/// Arrow schema comes from the crate's one logical→Arrow derivation
+/// ([`fixtures::arrow_schema`]) so the two shapes cannot drift apart.
 fn fixture_batch(load_id: &str, ids: &[&str], values: &[i64]) -> RecordBatch {
-    // Derive the Arrow schema from the logical fixture schema so the two column lists
-    // cannot drift apart; the arrays below fill those columns positionally.
-    let logical = fixture_schema("_");
-    let schema = Schema::new(logical.columns.iter().map(arrow_field).collect::<Vec<_>>());
     RecordBatch::try_new(
-        Arc::new(schema),
+        Arc::new(fixtures::arrow_schema(&fixture_schema("_"))),
         vec![
             Arc::new(StringArray::from(vec![load_id; ids.len()])),
             Arc::new(StringArray::from(ids.to_vec())),
@@ -61,21 +82,6 @@ fn fixture_batch(load_id: &str, ids: &[&str], values: &[i64]) -> RecordBatch {
         ],
     )
     .expect("fixture batch")
-}
-
-/// Map a fixture column to its Arrow field. Only the scalar types the fixture schema
-/// uses are handled — any other type is a bug in the fixture, not a runtime input.
-fn arrow_field(column: &ColumnDef) -> Field {
-    let data_type = match &column.column_type {
-        ColumnType::Scalar {
-            scalar: LogicalType::Utf8,
-        } => DataType::Utf8,
-        ColumnType::Scalar {
-            scalar: LogicalType::Int64,
-        } => DataType::Int64,
-        other => unreachable!("fixture schema uses only Utf8/Int64 columns, got {other:?}"),
-    };
-    Field::new(column.name.clone(), data_type, column.nullable)
 }
 
 fn commit_meta(
@@ -98,8 +104,9 @@ fn commit_meta(
     }
 }
 
-/// Run the destination conformance suite. Uses tables prefixed `rdlt_conf_` — point
-/// it at a scratch dataset.
+/// Run the destination conformance suite (clauses D1–D6 and D8 — see the
+/// module doc). Uses tables prefixed `rdlt_conf_` — point it at a scratch
+/// dataset.
 pub async fn verify_destination<D: Destination>(
     dest: &D,
     probe: &dyn TableProbe,
@@ -107,10 +114,10 @@ pub async fn verify_destination<D: Destination>(
     let mut failures = Vec::new();
     let fail = |clause: &'static str, message: String| ConformanceFailure { clause, message };
 
-    // Run a fallible SPI step; on error, record the clause failure (message
-    // `"{prefix}: {error}"`) and return the failures gathered so far. The clause id
-    // and prefix are the diagnostic the connector author reads, so they are spelled
-    // out verbatim at each call site.
+    // Run a fallible SPI step; on error, record the clause failure
+    // (message `"{prefix}: {error}"`) and return the failures gathered so
+    // far. The clause id and prefix are the diagnostic the connector
+    // author reads, so they are spelled out verbatim at each call site.
     macro_rules! try_step {
         ($clause:expr, $prefix:expr, $step:expr $(,)?) => {
             match $step {
@@ -129,10 +136,14 @@ pub async fn verify_destination<D: Destination>(
     let schema = fixture_schema("rdlt_conf_t");
 
     // ---- D6: a fresh pipeline has no state ----
+    // Setup failures carry the clause they are setting up (here D6, below
+    // D1) — generation 1 labelled every open "D4" and sent an author whose
+    // open fails to investigate teardown semantics that were never
+    // reached.
     let mut session = try_step!(
-        "D4",
+        "D6",
         "open failed",
-        dest.open(OpenCtx::new(
+        dest.open(OpenContext::new(
             PipelineId::new("rdlt-conf-fresh"),
             load_a.clone()
         ))
@@ -152,9 +163,9 @@ pub async fn verify_destination<D: Destination>(
 
     // ---- D1: staged writes are invisible before commit ----
     let mut session1 = try_step!(
-        "D4",
+        "D1",
         "open failed",
-        dest.open(OpenCtx::new(pipeline.clone(), load_a.clone()))
+        dest.open(OpenContext::new(pipeline.clone(), load_a.clone()))
             .await
     );
     // D5: ensure_table is idempotent.
@@ -184,7 +195,7 @@ pub async fn verify_destination<D: Destination>(
     let mut session2 = try_step!(
         "D4",
         "re-open failed",
-        dest.open(OpenCtx::new(pipeline.clone(), load_a.clone()))
+        dest.open(OpenContext::new(pipeline.clone(), load_a.clone()))
             .await
     );
     try_step!(
@@ -217,8 +228,8 @@ pub async fn verify_destination<D: Destination>(
         ));
     }
 
-    // ---- D3: re-committing the same (load_id, commit_seq) is a no-op with the
-    // prior receipt ----
+    // ---- D3: re-committing the same (load_id, commit_seq) is a no-op with
+    // the prior receipt ----
     match session2
         .commit(commit_meta(&pipeline, &load_a, 1, Some(10)))
         .await
@@ -252,7 +263,8 @@ pub async fn verify_destination<D: Destination>(
         Err(e) => failures.push(fail("D2", format!("read_state failed: {e}"))),
     }
 
-    // ---- D8: merge replaces by _rdlt_id (only when the capability is declared) ----
+    // ---- D8: merge replaces by _rdlt_id (only when the capability is
+    // declared) ----
     if dest.capabilities().merge {
         let merge_table = TableName::new("rdlt_conf_merge");
         let merge_schema = fixture_schema("rdlt_conf_merge");
@@ -275,7 +287,8 @@ pub async fn verify_destination<D: Destination>(
                 .commit(commit_meta(&pipeline, &load_a, 2, None))
                 .await
                 .map_err(|e| e.to_string())?;
-            // Same _rdlt_id `k1` again with new content: must replace, not append.
+            // Same _rdlt_id `k1` again with new content: must replace, not
+            // append.
             session2
                 .write(&merge_table, fixture_batch("conf-load-b", &["k1"], &[99]))
                 .await
@@ -293,7 +306,9 @@ pub async fn verify_destination<D: Destination>(
                 if count != 2 {
                     failures.push(fail(
                         "D8",
-                        format!("merge on an existing _rdlt_id must upsert: expected 2 rows, found {count}"),
+                        format!(
+                            "merge on an existing _rdlt_id must upsert: expected 2 rows, found {count}"
+                        ),
                     ));
                 }
             }

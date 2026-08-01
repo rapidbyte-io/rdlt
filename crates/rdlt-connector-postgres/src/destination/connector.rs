@@ -1,44 +1,52 @@
-//! The destination connector: the SPI face and `open` — session
-//! bookkeeping tables, the search path, and the reclamation obligation.
+//! The destination connector: the framework face (the sdk's
+//! `DestinationConnector`; the SPI comes from [`super::Shell`]) and
+//! `connect` — session bookkeeping tables, the search path, and the
+//! reclamation obligation.
 
 use async_trait::async_trait;
-use rdlt_connector::core::naming::IdentRules;
-use rdlt_connector::{
-    ConnectorSpec, Destination, DestinationCapabilities, DestinationError, LoadSession, OpenCtx,
-};
+use rdlt_connector_sdk::destination::DestinationConnector;
+use rdlt_connector_sdk::spi::core::naming::IdentRules;
+use rdlt_connector_sdk::spi::{DestinationCapabilities, DestinationError, OpenContext};
 use rdlt_connector_sqlcore::quote_identifier;
 
 use super::catalog::{Catalog, stage_prefix};
-use super::config::{self, Postgres};
+use super::config::{self, Config, Postgres};
 use super::errors::{Phase, driver_transient};
 use super::load::Load;
 use super::unit::Unit;
 use crate::session;
 
 #[async_trait]
-impl Destination for Postgres {
-    fn spec(&self) -> ConnectorSpec {
-        let mut spec = ConnectorSpec::new("postgres", env!("CARGO_PKG_VERSION"));
-        spec.config_schema = Some(config::config_schema());
-        spec
+impl DestinationConnector for Postgres {
+    const NAME: &'static str = "postgres";
+    const VERSION: &'static str = env!("CARGO_PKG_VERSION");
+
+    type Config = Config;
+    type Backend = Load;
+
+    fn assemble(config: Config) -> Result<Self, config::ConfigError> {
+        Self::from_config(config)
+    }
+
+    fn config_schema() -> Option<serde_json::Value> {
+        Some(config::config_schema())
     }
 
     fn capabilities(&self) -> DestinationCapabilities {
-        DestinationCapabilities {
+        DestinationCapabilities::default()
             // Merge is native (the sqlcore strategy arms); structs and
             // scalar lists are not — the engine flattens and shreds at the
             // seam. Json and decimal pass through untouched as JSONB and
             // NUMERIC.
-            merge: true,
-            structs: false,
-            scalar_lists: false,
-            json_type: true,
-            decimal: true,
-            ident_rules: IdentRules { max_len: 63 },
-        }
+            .with_merge(true)
+            .with_structs(false)
+            .with_scalar_lists(false)
+            .with_json_type(true)
+            .with_decimal(true)
+            .with_ident_rules(IdentRules { max_len: 63 })
     }
 
-    async fn open(&self, context: OpenCtx) -> Result<Box<dyn LoadSession>, DestinationError> {
+    async fn connect(&self, context: &OpenContext) -> Result<Load, DestinationError> {
         let connection = session::establish(
             &self.connection_string,
             self.tls.as_ref(),
@@ -95,15 +103,15 @@ impl Destination for Postgres {
                 .map_err(|e| driver_transient(Phase::Connect, e))?;
         }
 
-        Ok(Box::new(Load {
+        Ok(Load {
             connection,
-            pipeline: context.pipeline,
-            load_id: context.load_id,
+            pipeline: context.pipeline.clone(),
+            load_id: context.load_id.clone(),
             catalog: Catalog::default(),
             options: self.options.clone(),
             unit: Unit::default(),
             cleared_targets: std::collections::BTreeSet::new(),
             single_unit_done: std::collections::BTreeSet::new(),
-        }))
+        })
     }
 }

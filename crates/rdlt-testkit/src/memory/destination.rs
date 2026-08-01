@@ -1,8 +1,10 @@
-//! In-memory destination — the reference implementation of the destination contract
-//! (clauses D1–D8) and the substrate for crash-injection tests.
+//! In-memory destination — the reference implementation of the
+//! destination contract (certified by this crate's own suite) and the
+//! substrate for crash-injection tests.
 //!
-//! State survives across sessions (`Arc<Mutex<Inner>>`), which is exactly what lets
-//! tests simulate "the process died, a new session opened against the same warehouse".
+//! State survives across sessions (`Arc<Mutex<Inner>>`), which is exactly
+//! what lets tests simulate "the process died, a new session opened
+//! against the same warehouse".
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
@@ -11,17 +13,17 @@ use arrow::json::writer::{JsonArray, WriterBuilder};
 use async_trait::async_trait;
 use rdlt_connector::{
     CommitMeta, CommitReceipt, ConnectorSpec, Destination, DestinationCapabilities,
-    DestinationError, LoadSession, OpenCtx, PipelineId, RecordBatch, StateDoc, TableName,
+    DestinationError, LoadSession, OpenContext, PipelineId, RecordBatch, StateDoc, TableName,
     TableSchema, WriteMode, core::LoadId, core::schema::system_columns,
 };
 use serde_json::{Map, Value};
 
-/// One committed or staged row: a JSON object keyed by column name, the memory
-/// destination's row representation.
+/// One committed or staged row: a JSON object keyed by column name, the
+/// memory destination's row representation.
 pub type Row = Map<String, Value>;
 
 /// Render a batch as JSON rows (explicit nulls) for easy assertions.
-fn batch_to_rows(batch: &RecordBatch) -> Vec<Map<String, Value>> {
+fn batch_to_rows(batch: &RecordBatch) -> Vec<Row> {
     let buf = Vec::new();
     let mut writer = WriterBuilder::new()
         .with_explicit_nulls(true)
@@ -35,7 +37,8 @@ fn batch_to_rows(batch: &RecordBatch) -> Vec<Map<String, Value>> {
 
 #[derive(Debug, Default)]
 struct Inner {
-    /// Reader-visible data (clause D1: only `commit` moves anything here).
+    /// Reader-visible data (clause D1: only `commit` moves anything
+    /// here).
     committed: BTreeMap<TableName, Vec<Row>>,
     /// Ordered uncommitted writes of the current session.
     staged: Vec<(TableName, Vec<Row>)>,
@@ -43,10 +46,12 @@ struct Inner {
     modes: BTreeMap<TableName, WriteMode>,
     state: Option<StateDoc>,
     receipts: BTreeMap<(String, u64), CommitReceipt>,
-    /// Tables already truncated by a `Replace` write in the current load — the first
-    /// `Replace` batch per table wipes, later batches for it in the same load append.
+    /// Tables already truncated by a `Replace` write in the current load —
+    /// the first `Replace` batch per table wipes, later batches for it in
+    /// the same load append.
     truncated_tables: BTreeSet<TableName>,
-    /// The load the `truncated_tables` bookkeeping belongs to; a new load resets it.
+    /// The load the `truncated_tables` bookkeeping belongs to; a new load
+    /// resets it.
     truncated_load: Option<LoadId>,
     /// Diagnostics for conformance tests.
     opens: u64,
@@ -60,23 +65,22 @@ pub struct MemoryDestination {
 }
 
 impl MemoryDestination {
-    /// Full-featured by default (merge, structs, lists, json, decimal) so engine tests
-    /// exercise the native paths; degrade with [`Self::with_capabilities`] to test
-    /// lowering.
+    /// Full-featured by default (merge, structs, lists, json, decimal) so
+    /// engine tests exercise the native paths; degrade with
+    /// [`Self::with_capabilities`] to test lowering.
     pub fn new() -> Self {
         Self {
             inner: Arc::default(),
-            capabilities: DestinationCapabilities {
-                merge: true,
-                structs: true,
-                scalar_lists: true,
-                json_type: true,
-                decimal: true,
-                ident_rules: Default::default(),
-            },
+            capabilities: DestinationCapabilities::default()
+                .with_merge(true)
+                .with_structs(true)
+                .with_scalar_lists(true)
+                .with_json_type(true)
+                .with_decimal(true),
         }
     }
 
+    /// Replace the declared capabilities (lowering tests).
     pub fn with_capabilities(mut self, capabilities: DestinationCapabilities) -> Self {
         self.capabilities = capabilities;
         self
@@ -93,23 +97,28 @@ impl MemoryDestination {
             .unwrap_or_default()
     }
 
+    /// Every table with committed (possibly empty) content.
     pub fn committed_tables(&self) -> Vec<TableName> {
         self.lock().committed.keys().cloned().collect()
     }
 
+    /// The last-ensured schema of `table`, if any.
     pub fn schema(&self, table: &str) -> Option<TableSchema> {
         self.lock().schemas.get(&TableName::new(table)).cloned()
     }
 
+    /// The state persisted by the latest commit, if any.
     pub fn state(&self) -> Option<StateDoc> {
         self.lock().state.clone()
     }
 
+    /// How many sessions were opened against this warehouse.
     pub fn opens(&self) -> u64 {
         self.lock().opens
     }
 
-    /// Full content snapshot for byte-identical comparisons in crash tests.
+    /// Full content snapshot for byte-identical comparisons in crash
+    /// tests.
     pub fn snapshot(&self) -> BTreeMap<TableName, Vec<Row>> {
         self.lock().committed.clone()
     }
@@ -129,16 +138,16 @@ impl Destination for MemoryDestination {
         self.capabilities
     }
 
-    async fn open(&self, _ctx: OpenCtx) -> Result<Box<dyn LoadSession>, DestinationError> {
+    async fn open(&self, _ctx: OpenContext) -> Result<Box<dyn LoadSession>, DestinationError> {
         let mut inner = self.lock();
         inner.opens += 1;
-        // Clause D4: uncommitted staged data from any previous session becomes
-        // invisible and reclaimable.
+        // Clause D4: uncommitted staged data from any previous session
+        // becomes invisible and reclaimable.
         inner.staged.clear();
         drop(inner);
         Ok(Box::new(MemorySession {
             inner: Arc::clone(&self.inner),
-            ensured: std::collections::BTreeSet::new(),
+            ensured: BTreeSet::new(),
         }))
     }
 }
@@ -146,10 +155,10 @@ impl Destination for MemoryDestination {
 #[derive(Debug)]
 struct MemorySession {
     inner: Arc<Mutex<Inner>>,
-    /// Tables ensured on THIS session — real destinations register publishable
-    /// tables per session, so writes to un-ensured tables are contract violations
-    /// (clause E1) and must fail here too.
-    ensured: std::collections::BTreeSet<TableName>,
+    /// Tables ensured on THIS session — real destinations register
+    /// publishable tables per session, so writes to un-ensured tables are
+    /// contract violations (clause E1) and must fail here too.
+    ensured: BTreeSet<TableName>,
 }
 
 impl MemorySession {
@@ -167,8 +176,9 @@ impl LoadSession for MemorySession {
     ) -> Result<(), DestinationError> {
         self.ensured.insert(schema.table.clone());
         let mut inner = self.lock();
-        // Clause D5: apply migrations. Widened columns cast existing rows to the new
-        // type's representation — the in-memory analogue of `ALTER TABLE … USING`.
+        // Clause D5: apply migrations. Widened columns cast existing rows
+        // to the new type's representation — the in-memory analogue of
+        // `ALTER TABLE … USING`.
         let migrating = inner
             .schemas
             .get(&schema.table)
@@ -203,7 +213,7 @@ impl LoadSession for MemorySession {
         let rows = batch_to_rows(&batch);
         if !self.ensured.contains(table) {
             return Err(DestinationError::fatal(format!(
-                "write before ensure_table for `{table}` ON THIS SESSION (violates clause E1)"
+                "write before ensure_table for `{table}` ON THIS SESSION"
             )));
         }
         let mut inner = self.lock();
@@ -214,8 +224,8 @@ impl LoadSession for MemorySession {
     async fn commit(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestinationError> {
         let mut inner = self.lock();
         let key = (meta.load_id.as_str().to_owned(), meta.commit_seq);
-        // Clause D3: idempotent per (load_id, commit_seq) — return prior receipt,
-        // re-publish nothing.
+        // Clause D3: idempotent per (load_id, commit_seq) — return prior
+        // receipt, re-publish nothing.
         if let Some(prior) = inner.receipts.get(&key).cloned() {
             inner.staged.clear();
             return Ok(prior);
@@ -227,8 +237,9 @@ impl LoadSession for MemorySession {
             inner.truncated_load = Some(meta.load_id.clone());
         }
 
-        // Merge pass 1: per merge-root table, the staged root ids define which
-        // subtrees are being replaced — merge deletes whole subtrees by root id.
+        // Merge pass 1: per merge-root table, the staged root ids define
+        // which subtrees are being replaced — merge deletes whole subtrees
+        // by root id.
         let mut staged_root_ids: BTreeMap<TableName, BTreeSet<String>> = BTreeMap::new();
         for (table, rows) in &inner.staged {
             let is_merge_root = matches!(inner.modes.get(table), Some(WriteMode::Merge { .. }))
@@ -243,9 +254,10 @@ impl LoadSession for MemorySession {
             }
         }
 
-        // Pass 2: apply staged writes in arrival order (clause D2: all-or-nothing is
-        // trivial under one mutex). Each write mode has its own algorithm; the match
-        // selects it and the extracted `apply_*` functions carry the rules.
+        // Pass 2: apply staged writes in arrival order (clause D2:
+        // all-or-nothing is trivial under one mutex). Each write mode has
+        // its own algorithm; the match selects it and the extracted
+        // `apply_*` functions carry the rules.
         let staged = std::mem::take(&mut inner.staged);
         for (table, rows) in staged {
             let mode = inner
@@ -288,15 +300,16 @@ impl LoadSession for MemorySession {
     }
 }
 
-/// Append mode: staged rows are concatenated onto the committed table in arrival
-/// order; nothing already committed is touched.
+/// Append mode: staged rows are concatenated onto the committed table in
+/// arrival order; nothing already committed is touched.
 fn apply_append(inner: &mut Inner, table: TableName, rows: Vec<Row>) {
     inner.committed.entry(table).or_default().extend(rows);
 }
 
-/// Replace mode: the first `Replace` batch for a table within a load truncates it
-/// (recorded in `truncated_tables`); any later batch for the same table in the same
-/// load appends, so a multi-batch Replace accumulates instead of repeatedly wiping.
+/// Replace mode: the first `Replace` batch for a table within a load
+/// truncates it (recorded in `truncated_tables`); any later batch for the
+/// same table in the same load appends, so a multi-batch Replace
+/// accumulates instead of repeatedly wiping.
 fn apply_replace(inner: &mut Inner, table: TableName, rows: Vec<Row>) {
     if inner.truncated_tables.insert(table.clone()) {
         inner.committed.insert(table, rows);
@@ -305,10 +318,10 @@ fn apply_replace(inner: &mut Inner, table: TableName, rows: Vec<Row>) {
     }
 }
 
-/// Keyed structured merge: used when the table has no per-row `_rdlt_id` column, so
-/// identity is the declared merge `key`. Delete every committed row whose key tuple
-/// appears in the staged batch, then append the staged rows deduplicated last-wins by
-/// that same key.
+/// Keyed structured merge: used when the table has no per-row `_rdlt_id`
+/// column, so identity is the declared merge `key`. Delete every
+/// committed row whose key tuple appears in the staged batch, then append
+/// the staged rows deduplicated last-wins by that same key.
 fn apply_merge_keyed(inner: &mut Inner, table: TableName, rows: Vec<Row>, key: &[String]) {
     let key_of = |row: &Row| -> String {
         let tuple: Vec<&Value> = key
@@ -331,10 +344,11 @@ fn apply_merge_keyed(inner: &mut Inner, table: TableName, rows: Vec<Row>, key: &
     committed.extend(deduped);
 }
 
-/// Id-keyed merge: the staged root ids for this table's merge root define which whole
-/// subtrees are being replaced. Delete committed rows keyed by `_rdlt_id` (the root
-/// table) or `_rdlt_root_id` (a child table) that fall in that set, then append the
-/// staged rows deduplicated last-wins by `_rdlt_id`.
+/// Id-keyed merge: the staged root ids for this table's merge root define
+/// which whole subtrees are being replaced. Delete committed rows keyed
+/// by `_rdlt_id` (the root table) or `_rdlt_root_id` (a child table) that
+/// fall in that set, then append the staged rows deduplicated last-wins
+/// by `_rdlt_id`.
 fn apply_merge_by_id(
     inner: &mut Inner,
     table: TableName,
@@ -355,8 +369,8 @@ fn apply_merge_by_id(
             .and_then(Value::as_str)
             .is_none_or(|id| !replaced_root_ids.contains(id))
     });
-    // Upsert semantics also within one staged batch: identical `_rdlt_id`s collapse,
-    // last write wins (keyless content-hash dedup).
+    // Upsert semantics also within one staged batch: identical `_rdlt_id`s
+    // collapse, last write wins.
     let mut seen = BTreeSet::new();
     let mut deduped: Vec<Row> = Vec::new();
     for row in rows.into_iter().rev() {
@@ -373,8 +387,8 @@ fn apply_merge_by_id(
     committed.extend(deduped);
 }
 
-/// Cast one stored row to the (possibly widened) column types — the memory analogue
-/// of a column-type migration.
+/// Cast one stored row to the (possibly widened) column types — the
+/// memory analogue of a column-type migration.
 fn migrate_row(row: &mut Row, columns: &[rdlt_connector::core::ColumnDef]) {
     for column in columns {
         if let Some(value) = row.get_mut(&column.name) {
@@ -443,7 +457,8 @@ fn coerce_value(value: &mut Value, ty: &rdlt_connector::core::ColumnType) {
     }
 }
 
-/// Walk the parent chain to the root table (child schemas link upward via `parent`).
+/// Walk the parent chain to the root table (child schemas link upward via
+/// `parent`).
 fn root_table(schemas: &BTreeMap<TableName, TableSchema>, table: &TableName) -> TableName {
     let mut current = table.clone();
     let mut hops = 0;

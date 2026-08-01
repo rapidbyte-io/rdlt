@@ -3,7 +3,7 @@
 //! One YAML/JSON document describes an API — pagination (seven families),
 //! auth (including OAuth2 client credentials), JSONPath-subset record
 //! selection, response actions, incremental cursors, and parent-child
-//! endpoint composition — and [`source::Rest`] reads it. Configs are DATA:
+//! endpoint composition — and [`source::Rest`] (through the sdk shell, [`source::Shell`]) reads it. Configs are DATA:
 //! no callbacks, ever, so a platform can render, validate, and store them.
 //!
 //! Error classification is the source's whole retry story: 429 becomes
@@ -22,7 +22,7 @@
 //! ```
 //! use rdlt_connector_rest::source;
 //!
-//! let rest = source::Rest::from_yaml(
+//! let rest = source::Shell::from_yaml(
 //!     r#"
 //! base_url: "https://api.example.com"
 //! streams:
@@ -37,7 +37,7 @@
 //!
 //! // Validation is the same gate for every entry point: an undeclared
 //! // placeholder is refused at parse time, not at request time.
-//! let err = source::Rest::from_yaml(
+//! let err = source::Shell::from_yaml(
 //!     "base_url: \"https://x\"\nstreams:\n  - name: s\n    path: /a/{id}\n",
 //! )
 //! .unwrap_err();

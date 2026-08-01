@@ -8,6 +8,7 @@ use std::fmt;
 pub struct ConformanceFailure {
     /// Clause id from the contract, e.g. `"S1"`, `"D3"`.
     pub clause: &'static str,
+    /// What the connector did, in terms an author can act on.
     pub message: String,
 }
 

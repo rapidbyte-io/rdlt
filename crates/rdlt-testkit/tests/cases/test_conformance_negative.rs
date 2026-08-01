@@ -4,10 +4,10 @@
 use async_trait::async_trait;
 use rdlt_connector::{
     CommitMeta, CommitReceipt, ConnectorSpec, Destination, DestinationCapabilities,
-    DestinationError, LoadSession, OpenCtx, PipelineId, ReadRequest, RecordBatch, Source,
+    DestinationError, LoadSession, OpenContext, PipelineId, ReadRequest, RecordBatch, Source,
     SourceError, StateDoc, StreamSpec, TableName, TableSchema, WriteMode,
 };
-use rdlt_testkit::conformance::{dest::verify_destination, source::verify_source};
+use rdlt_testkit::conformance::{destination::verify_destination, source::verify_source};
 use rdlt_testkit::{MemoryDestination, TableProbe};
 use serde_json::json;
 
@@ -58,13 +58,10 @@ impl Destination for ForgetfulDest {
     }
 
     fn capabilities(&self) -> DestinationCapabilities {
-        DestinationCapabilities {
-            merge: false,
-            ..self.inner.capabilities()
-        }
+        self.inner.capabilities().with_merge(false)
     }
 
-    async fn open(&self, ctx: OpenCtx) -> Result<Box<dyn LoadSession>, DestinationError> {
+    async fn open(&self, ctx: OpenContext) -> Result<Box<dyn LoadSession>, DestinationError> {
         Ok(Box::new(ForgetfulSession {
             inner: self.inner.open(ctx).await?,
             bump: 0,
@@ -129,5 +126,125 @@ async fn destination_without_idempotent_commit_fails_d3_by_name() {
     assert!(
         failures.iter().any(|f| f.clause == "D3"),
         "expected a D3 diagnostic, got: {failures:?}"
+    );
+}
+
+/// Violates S2 (never checkpoints) AND S4 (errors on a closed channel).
+/// Pins the generation-1 defect this generation fixes: the S2 `continue`
+/// skipped the S4 check, so the second violation was never reported.
+struct DoublyBrokenSource;
+
+#[async_trait]
+impl Source for DoublyBrokenSource {
+    fn spec(&self) -> ConnectorSpec {
+        ConnectorSpec::new("doubly-broken", "0.0.0")
+    }
+
+    async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
+        Ok(vec![StreamSpec::new("events")])
+    }
+
+    async fn read(&self, mut req: ReadRequest) -> Result<(), SourceError> {
+        // NOTE both bugs: no checkpoint ever, and a closed channel is
+        // treated as an error instead of cancellation.
+        if req.out.rows([json!({"a": 1})]).await.is_err() {
+            return Err(SourceError::fatal("channel closed mid-read"));
+        }
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn both_s2_and_s4_are_reported_independently() {
+    let failures = verify_source(&DoublyBrokenSource).await;
+    for clause in ["S2", "S4"] {
+        assert!(
+            failures.iter().any(|f| f.clause == clause),
+            "expected a {clause} diagnostic, got: {failures:?}"
+        );
+    }
+}
+
+/// A destination whose `open` always fails. Pins the second generation-1
+/// defect: every open was labelled D4, sending the author to investigate
+/// teardown semantics that were never reached — the setup failure now
+/// carries the clause it was setting up.
+struct Unopenable;
+
+#[async_trait]
+impl Destination for Unopenable {
+    fn spec(&self) -> ConnectorSpec {
+        ConnectorSpec::new("unopenable", "0.0.0")
+    }
+
+    fn capabilities(&self) -> DestinationCapabilities {
+        DestinationCapabilities::default()
+    }
+
+    async fn open(&self, _ctx: OpenContext) -> Result<Box<dyn LoadSession>, DestinationError> {
+        Err(DestinationError::fatal("credentials rejected"))
+    }
+}
+
+struct NoProbe;
+
+#[async_trait]
+impl TableProbe for NoProbe {
+    async fn count(&self, _table: &TableName) -> u64 {
+        0
+    }
+}
+
+#[tokio::test]
+async fn an_open_failure_is_attributed_to_the_clause_it_sets_up() {
+    let failures = verify_destination(&Unopenable, &NoProbe).await;
+    let first = failures.first().expect("an unopenable destination fails");
+    assert_eq!(
+        (first.clause, first.message.starts_with("open failed: ")),
+        ("D6", true),
+        "the first open serves the D6 fresh-state check, not D4 teardown: {failures:?}"
+    );
+}
+
+/// Fails AFTER dropping its output handle: the rows all arrive, the
+/// channel drains, and only then does the read return an error. Pins the
+/// harness hole round 2 closed: `read_all` used to break on the drained
+/// channel and drop the still-pending future, certifying the failure
+/// away (and cancelling the source's teardown mid-flight).
+struct TeardownFailingSource;
+
+#[async_trait]
+impl Source for TeardownFailingSource {
+    fn spec(&self) -> ConnectorSpec {
+        ConnectorSpec::new("teardown-failing", "0.0.0")
+    }
+
+    async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
+        Ok(vec![StreamSpec::new("events")])
+    }
+
+    async fn read(&self, req: ReadRequest) -> Result<(), SourceError> {
+        let mut out = req.out;
+        if out.rows([json!({"a": 1})]).await.is_err() {
+            return Ok(());
+        }
+        let _ = out.checkpoint(rdlt_connector::Cursor::new(1)).await;
+        drop(out); // every sender gone — the harness channel drains NOW
+        // Yield so the harness OBSERVES the drain before this error
+        // exists — the pin must exercise the wait-for-the-reader path,
+        // not the result-captured-first path.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        Err(SourceError::fatal("teardown failed after the last push"))
+    }
+}
+
+#[tokio::test]
+async fn a_source_that_fails_after_dropping_its_feed_is_not_certified() {
+    let failures = verify_source(&TeardownFailingSource).await;
+    assert!(
+        failures
+            .iter()
+            .any(|f| f.clause == "S1" && f.message.contains("teardown failed")),
+        "the post-drop error must fail certification, got: {failures:?}"
     );
 }

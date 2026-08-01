@@ -20,9 +20,9 @@ async fn default_dataset_is_public() {
         return;
     };
     let connection_string = container.connection_string.clone();
-    let destination = Postgres::new(&connection_string); // no .schema(...)
+    let destination = Postgres::new(&connection_string).into_shell(); // no .schema(...)
     let source = MemorySource::single_stream(
-        rdlt_connector::StreamSpec::new("things").with_primary_key(["id"]),
+        rdlt_connector_sdk::spi::StreamSpec::new("things").with_primary_key(["id"]),
         vec![json!({"id": 1, "v": "a"})],
     );
     Engine::new(EngineConfig::new("dflt-ds"), source, destination)
@@ -49,15 +49,16 @@ async fn explicit_strategy_under_non_merge_mode_is_typed() {
     let connection_string = container.connection_string.clone();
     let source = || {
         MemorySource::single_stream(
-            rdlt_connector::StreamSpec::new("things").with_primary_key(["id"]),
+            rdlt_connector_sdk::spi::StreamSpec::new("things").with_primary_key(["id"]),
             vec![json!({"id": 1, "v": "a"})],
         )
     };
-    let run = |mode: rdlt_connector::WriteMode, options: DestinationOptions| {
+    let run = |mode: rdlt_connector_sdk::spi::WriteMode, options: DestinationOptions| {
         let destination = Postgres::new(&connection_string)
             .schema("r5")
             .options(options)
-            .expect("options");
+            .expect("options")
+            .into_shell();
         let mut config = EngineConfig::new("r5");
         config = config.with_write_mode(mode);
         Engine::new(config, source(), destination).run()
@@ -65,7 +66,7 @@ async fn explicit_strategy_under_non_merge_mode_is_typed() {
 
     // Destination-wide explicit strategy under APPEND: typed.
     let error = run(
-        rdlt_connector::WriteMode::Append,
+        rdlt_connector_sdk::spi::WriteMode::Append,
         DestinationOptions {
             merge_strategy: Some(MergeStrategy::Upsert),
             ..DestinationOptions::default()
@@ -79,7 +80,7 @@ async fn explicit_strategy_under_non_merge_mode_is_typed() {
 
     // Per-table explicit strategy under REPLACE: typed too.
     let error = run(
-        rdlt_connector::WriteMode::Replace,
+        rdlt_connector_sdk::spi::WriteMode::Replace,
         DestinationOptions {
             tables: [(
                 "things".to_string(),
@@ -100,7 +101,7 @@ async fn explicit_strategy_under_non_merge_mode_is_typed() {
 
     // UNCONFIGURED default: append works exactly as before.
     run(
-        rdlt_connector::WriteMode::Append,
+        rdlt_connector_sdk::spi::WriteMode::Append,
         DestinationOptions::default(),
     )
     .await
@@ -116,7 +117,7 @@ async fn non_bool_hard_delete_flag_uses_is_not_null() {
     use arrow_array::{Int64Array, RecordBatch, StringArray, TimestampMicrosecondArray};
     use arrow_schema::{DataType, Field, Schema, TimeUnit};
     use async_trait::async_trait;
-    use rdlt_connector::{ConnectorSpec, ReadRequest, Source, SourceError, StreamSpec};
+    use rdlt_connector_sdk::spi::{ConnectorSpec, ReadRequest, Source, SourceError, StreamSpec};
 
     struct TimestampFlaggedSource {
         batch: RecordBatch,
@@ -184,10 +185,11 @@ async fn non_bool_hard_delete_flag_uses_is_not_null() {
             .into_iter()
             .collect(),
         })
-        .expect("options");
+        .expect("options")
+        .into_shell();
     let run = |rows: &[(i64, &str, Option<i64>)]| {
         let mut config = EngineConfig::new("nbhd");
-        config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
+        config = config.with_write_mode(rdlt_connector_sdk::spi::WriteMode::Merge {
             key: vec!["id".into()],
         });
         Engine::new(

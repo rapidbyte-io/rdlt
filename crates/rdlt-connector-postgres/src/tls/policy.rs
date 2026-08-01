@@ -9,7 +9,7 @@ use tokio_postgres::config::SslMode;
 /// A PEM input — trust root, client certificate, or client key. The shared
 /// SPI type: one statement of the path-or-inline rule for every connector
 /// that takes PEM material.
-pub use rdlt_connector::PemSource;
+pub use rdlt_connector_sdk::spi::PemSource;
 
 /// How strictly a connection encrypts and verifies, on libpq's ladder.
 ///

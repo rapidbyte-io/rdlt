@@ -6,6 +6,7 @@
 use rdlt_connector_postgres::fixtures::PostgresContainer;
 use rdlt_connector_postgres::source::Config;
 use rdlt_connector_postgres::testsupport::source::reflect_for_tests;
+use rdlt_connector_sdk::config::Document;
 
 const SEED: &str = r#"
 CREATE SCHEMA sales;

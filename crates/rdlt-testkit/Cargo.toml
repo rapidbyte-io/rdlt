@@ -12,7 +12,6 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-rdlt-core = { workspace = true }
 rdlt-connector = { workspace = true }
 arrow = { workspace = true, features = ["json"] }
 async-trait = { workspace = true }

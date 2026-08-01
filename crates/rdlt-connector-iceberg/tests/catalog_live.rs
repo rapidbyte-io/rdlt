@@ -151,13 +151,13 @@ async fn engine_empty_commit_publishes_no_snapshot() {
 #[tokio::test(flavor = "multi_thread")]
 async fn open_failures_are_typed_against_live_catalog() {
     use rdlt_connector::core::{LoadId, PipelineId};
-    use rdlt_connector::{Destination, OpenCtx};
+    use rdlt_connector::{Destination, OpenContext};
     use rdlt_connector_iceberg::{AuthOptions, IcebergConfig, IcebergDest};
 
     let Some(fixture) = CatalogFixture::start().await else {
         return;
     };
-    let ctx = || OpenCtx::new(PipelineId::new("p"), LoadId::new("l"));
+    let ctx = || OpenContext::new(PipelineId::new("p"), LoadId::new("l"));
 
     // Wrong credentials: the OAuth leg fails, typed.
     let mut bad_auth = fixture.config("auth_fail");
@@ -207,7 +207,7 @@ async fn open_failures_are_typed_against_live_catalog() {
 #[tokio::test(flavor = "multi_thread")]
 async fn open_unreachable_catalog_is_typed() {
     use rdlt_connector::core::{LoadId, PipelineId};
-    use rdlt_connector::{Destination, OpenCtx};
+    use rdlt_connector::{Destination, OpenContext};
     use rdlt_connector_iceberg::{AuthOptions, IcebergConfig, IcebergDest};
 
     // A port that was bound then released: nothing listens there.
@@ -224,7 +224,7 @@ async fn open_unreachable_catalog_is_typed() {
     );
     let err = IcebergDest::from_config(config)
         .expect("config valid")
-        .open(OpenCtx::new(PipelineId::new("p"), LoadId::new("l")))
+        .open(OpenContext::new(PipelineId::new("p"), LoadId::new("l")))
         .await
         .err()
         .expect("unreachable must fail");

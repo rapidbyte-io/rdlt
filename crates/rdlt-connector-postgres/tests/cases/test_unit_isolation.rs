@@ -5,12 +5,12 @@ use std::sync::Arc;
 
 use arrow_array::{Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
-use rdlt_connector::core::{
+use rdlt_connector_postgres::fixtures::PostgresContainer;
+use rdlt_connector_sdk::spi::core::{
     ColumnDef, ColumnType, CommitCounters, LoadId, LogicalType, PipelineId, Provenance, StateDoc,
     TableName, TableSchema,
 };
-use rdlt_connector::{CommitMeta, Destination, OpenCtx, WriteMode};
-use rdlt_connector_postgres::fixtures::PostgresContainer;
+use rdlt_connector_sdk::spi::{CommitMeta, Destination, OpenContext, WriteMode};
 
 fn schema() -> TableSchema {
     TableSchema {
@@ -66,8 +66,9 @@ async fn a_replace_reload_is_never_observed_empty() {
         return;
     };
     let connection_string = container.connection_string.clone();
-    let destination =
-        rdlt_connector_postgres::destination::Postgres::new(&connection_string).schema("iso");
+    let destination = rdlt_connector_postgres::destination::Postgres::new(&connection_string)
+        .schema("iso")
+        .into_shell();
     let pipeline = PipelineId::new("iso");
 
     let meta = |load: &str, commit_seq: u64| CommitMeta {
@@ -79,7 +80,7 @@ async fn a_replace_reload_is_never_observed_empty() {
 
     // Load 1 establishes the "previous contents".
     let mut first = destination
-        .open(OpenCtx::new(pipeline.clone(), LoadId::new("iso-1")))
+        .open(OpenContext::new(pipeline.clone(), LoadId::new("iso-1")))
         .await
         .expect("open");
     first
@@ -99,7 +100,7 @@ async fn a_replace_reload_is_never_observed_empty() {
     // Load 2 clears and refills. Mid-unit — after the TRUNCATE and the
     // COPY, before the commit — the reader must still see load 1.
     let mut second = destination
-        .open(OpenCtx::new(pipeline.clone(), LoadId::new("iso-2")))
+        .open(OpenContext::new(pipeline.clone(), LoadId::new("iso-2")))
         .await
         .expect("open");
     second
@@ -166,11 +167,12 @@ async fn a_replace_load_preserves_indexes_grants_and_dependents() {
         .expect("oid")
         .get(0);
 
-    let destination =
-        rdlt_connector_postgres::destination::Postgres::new(&connection_string).schema("iso3");
+    let destination = rdlt_connector_postgres::destination::Postgres::new(&connection_string)
+        .schema("iso3")
+        .into_shell();
     let pipeline = PipelineId::new("iso3");
     let mut session = destination
-        .open(OpenCtx::new(pipeline.clone(), LoadId::new("iso3-load")))
+        .open(OpenContext::new(pipeline.clone(), LoadId::new("iso3-load")))
         .await
         .expect("open");
     session
@@ -244,11 +246,12 @@ async fn a_multi_unit_replace_load_clears_exactly_once() {
         return;
     };
     let connection_string = container.connection_string.clone();
-    let destination =
-        rdlt_connector_postgres::destination::Postgres::new(&connection_string).schema("iso2");
+    let destination = rdlt_connector_postgres::destination::Postgres::new(&connection_string)
+        .schema("iso2")
+        .into_shell();
     let pipeline = PipelineId::new("iso2");
     let mut session = destination
-        .open(OpenCtx::new(pipeline.clone(), LoadId::new("iso2-load")))
+        .open(OpenContext::new(pipeline.clone(), LoadId::new("iso2-load")))
         .await
         .expect("open");
     session

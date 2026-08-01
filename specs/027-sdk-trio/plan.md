@@ -1,0 +1,859 @@
+# 027 — The SDK trio: rdlt-connector, rdlt-connector-sdk, rdlt-testkit
+
+The connector-facing foundation, rewritten as a deliberate SDK in three
+layers — the same greenfield method as 025/026 (no code copied; every
+identifier re-derived under the seven naming rules; operator/consumer
+surfaces frozen and verified), applied to the widest surface yet: the SPI
+reaches ~240 files across 10 crates, the testkit ~73.
+
+- Layer 1 — `rdlt-connector`: the SMALL, STABLE protocol (semver-sacred).
+- Layer 2 — `rdlt-connector-sdk`: NEW optional scaffolding connectors may
+  use; the engine never depends on it; it may move fast.
+- Layer 3 — `rdlt-testkit`: the verification half — "certified = passes
+  the kits".
+
+## STATUS — Wave 1 COMPLETE as `rdlt-connector-v2` (2026-08-01)
+
+Branch `027-sdk-trio` off main @ cb130ee8 (the rest swap-in merge).
+
+`crates/rdlt-connector-v2` is BUILT, from scratch under the no-copying
+rule (every file re-derived from the generation-1 contract): 41 unit +
+integration tests (including the object-safety pin, which matters more
+here than in generation 1 because of the default async `check` methods)
+plus the protocol doctest; zero warnings across every feature shape
+(none, failpoints, schema, object-store, all); coexists UNCONSUMED
+(publish = false, no in-tree consumer) per amended D3. What is new over
+generation 1 — all sanctioned by D7/D8 and the ledger: `check()` probes,
+error `context()` (single-frame rule, compiler-forced exhaustiveness),
+`#[non_exhaustive]` capabilities with `with_*` declaration builders,
+`OpenContext`, modules `parquet`/`store` (ledgered renames of
+`output`/`objects`), `ByteSender`/`ByteReceiver` (rule-2 rename of
+`ByteTx`/`ByteRx`), and a typed `parquet::OptionsError` replacing the
+bare-`String` validate. The swap — porting engine + connectors +
+testkit, bumping 0.3.0 (D4) — remains the owner's call; waves 2–5
+(sdk crate, testkit rewrite, adoption, guide) follow separately.
+
+GATE OF RECORD: full `make check` TWICE CLEAN on the review-complete
+tree, both first attempt (reclaim + TIME_WAIT drain applied between
+runs): 1027/1027 workspace tests (2 named instrument skips), all
+sweeps, semver no update required, perf gate 0 regressed, cold start
+23.6 / 23.9 ms vs the 40 ms bar, exit 0 both. Review round 1 (three
+lenses, record below) closed with all eight findings fixed and pinned.
+
+D9 IMPLEMENTED (owner-directed, ahead of the testkit wave): the four
+gate env knobs deleted from the live tree — testkit's
+`runtime_available()` probes directly, the snowflake credential gate
+keeps its resolution rules and visible skip. The 8 knob-behavior tests
+died with the knobs; the gate then ran TWICE CLEAN at exactly the
+predicted 1019/1019 (both first attempt, cold 24.0 / 23.5 ms, exit 0) —
+the count discipline verifying its own change.
+
+## SWAP-IN — EXECUTED (2026-08-01, owner decision)
+
+Generation 1 DELETED; `rdlt-connector-v2` renamed to `rdlt-connector`
+(publish restored, docs.rs key back, "second generation" out of the
+description); workspace version 0.2.0 → 0.3.0 (D4 — the 014-recorded
+window finally lands; `cargo semver-checks` against the pinned baseline
+registers the major change and requires no further bump). The consumer
+port, ~240 files across 10 crates, all mechanical per the ledger:
+`OpenCtx`→`OpenContext`, capability struct literals → `with_*` builder
+chains (the functional-update sites collapse beautifully:
+`self.inner.capabilities().with_merge(false)`), `ByteTx`/`ByteRx`→
+`ByteSender`/`ByteReceiver` in the engine's three channel files,
+`objects::is_recoverable`→`store::` in the file connector, and the typed
+`parquet::OptionsError` at its two validate seams (one `.to_string()`,
+one already formatting through Display). Workspace: 0 errors, 0 clippy
+warnings, fmt clean; 989/989 tests (the pre-swap 1019 minus generation
+1's own 30 — v2's 41 were already in the count as a member).
+
+GATE OF RECORD: `make check` TWICE CLEAN on the swapped tree — gate #1
+first attempt (989/989, semver no update at 0.3.0, perf 0 regressed,
+cold 23.7 ms, exit 0); gate #2 on its THIRD attempt (989/989, cold
+22.9 ms, exit 0). Both failed attempts were the recorded rootlessport
+environment flake on the same RUSTFS cell
+(`file_dest_s3_path_survives_crash_sweep`), never the code: attempt 1 a
+port-bind collision (port 43651, mechanism 2 — zero containers, zero
+orphan processes at failure), attempt 2 a dropped podman API connection
+(`hyper IncompleteMessage`) under the day's repeated full-gate load; the
+cell passed in isolation between attempts, podman probed healthy, and
+each rerun followed a TIME_WAIT drain. Recorded, not re-rolled.
+
+## Decision record
+
+- D1. EXTRACTION-READINESS is a requirement, not a nice-to-have (owner
+  direction: connectors will later move out of this repository). All
+  three crates must be consumable out-of-tree: publishable, no
+  workspace-internal reach-ins, no path-only contracts, kits usable
+  against an external crate, feature spellings stable
+  (`failpoints`, `schema`, `object-store`), and the vocabulary crate
+  (`rdlt-core`) reachable ONLY through `rdlt_connector::core` from
+  connector code — the measured status quo (no connector has a direct
+  rdlt-core dependency; 143 path references route through the SPI) is
+  hereby the RULE.
+- D2. The 025 naming rules apply. Unlike 025/026 this surface's names
+  are mostly already right (it is the youngest, most-reviewed code in
+  the tree); rule 5 cuts both ways — rename where a name is WRONG, keep
+  where it is right. The ledger below is deliberately short; churn for
+  its own sake across 240 files is not cleanliness.
+- D3. COEXISTING NEW CRATE `rdlt-connector-v2` (owner direction,
+  superseding the first-recorded in-place plan): the 025/026
+  two-generations method applies to the CRATE even though the traits
+  cannot serve two masters — v2 coexists UNCONSUMED (publish = false, no
+  in-tree consumer), its parity is proven by its own ported unit suite
+  (the SPI's tests are self-contained: channel, secret, pem, output,
+  objects, capabilities), and the consumer port is the SWAP, a separate
+  owner-decided step exactly as it was for postgres and rest. An earlier
+  in-place rewrite commit was made and then DROPPED (reset) in favor of
+  this method; the workspace version bump (D4) moves to swap time with
+  it.
+- D4. The SEMVER WINDOW OPENS: workspace version 0.2.0 → 0.3.0 — the
+  bump feature 014 recorded as owed at the next breaking publish. The
+  gate's `cargo semver-checks --baseline-rev 34ccd379` then admits the
+  renames (0.x minor is the breaking lane). Persisted DATA formats do
+  NOT move (greenfield-no-compat covers Rust names only; WAL v2, StateDoc
+  v1, cursor JSON, bench artifact v3 all stay).
+- D5. `rdlt-connector-sdk` extracts ONLY what two or more connectors
+  already implement message- and behavior-identically (config entry
+  triple, error-context attachment, cursor watermarking). Anything one
+  connector owns stays in that connector. The engine MUST NOT depend on
+  the sdk crate — that boundary is what lets it move fast while the SPI
+  stays sacred.
+- D6. `rdlt-core` is OUT OF SCOPE (not in the trio; `crash_point!` and
+  the vocabulary stay put). The engine's direct rdlt-core imports are
+  likewise untouched except where a port forces a line.
+- D7. Capability declarations become extendable: `DestinationCapabilities`
+  is constructed by struct literal in every destination today, which
+  makes ANY future field a breaking change for out-of-tree connectors —
+  exactly what D1 forbids. It becomes `#[non_exhaustive]` with a
+  conservative `Default` and `with_*` builders; the six in-tree
+  destinations port to builder construction. Capability EXPANSION beyond
+  what the engine consumes today is DEFERRED (trigger: engine-side
+  per-mode validation) — speculative fields nobody plans from would
+  violate the struct's own "truthful declaration" contract.
+- D8. New SPI surface, minimal and consumer-driven:
+  (a) `check()` on `Source` and `Destination` — a cheap connectivity
+  probe with a default body returning Ok (documented "not probed"),
+  the operationally-missed lifecycle step every peer SDK has;
+  (b) `SourceError::context(...)` / `DestinationError::context(...)` —
+  attach context around the INNER cause preserving classification and
+  `retry_after`, making the double-framing defect (found independently
+  in two connectors) inexpressible;
+  (c) nothing else. RateLimited-for-destinations, richer check reports,
+  capability matrices: all deferred with named triggers.
+
+- D9. RESOURCE GATES LOSE THEIR KNOBS (owner direction, twice refined):
+  after a no-assumptions audit of every env variable the workspace reads,
+  the owner first replaced the `RDLT_TESTKIT_{FORCE_NO,REQUIRE}_*`
+  boolean pairs with one tri-state knob per resource, then removed the
+  knobs entirely. The final design, implemented at the testkit wave:
+  - ONE behavior, the sane default: probe for the resource; if absent,
+    print a visible `SKIP` line and pass. No env override demands the
+    resource and none fakes its absence. All four old gate vars are
+    DELETED, unaliased.
+  - SUPERSESSION, stated not buried: this removes 024's "a resource
+    probe can be DEMANDED" guarantee (GI: a skip stops reading as a
+    pass). The remaining net is COUNT DISCIPLINE — nextest's run/skip
+    counts, the gate-of-record convention of naming expected skips, and
+    the testkit README's counts-interpretation table. A wrongly-skipping
+    suite surfaces as a moved number a human compares, not a panic. The
+    owner accepts that trade for the simpler surface.
+  - CONNECTOR-AGNOSTICISM enforced at the seam: the testkit carries only
+    what every connector shares — the container-runtime probe (probe
+    order unchanged: DOCKER_HOST → podman user socket →
+    /var/run/docker.sock → `podman ps`) and the reclaim label. A
+    connector needing credentials (snowflake) owns its OWN probe in its
+    own tests, same skip-not-fail posture; the testkit never names a
+    connector's resource.
+  - Unchanged: the `RDLT_SNOWFLAKE_*` credential DATA vars (they are the
+    credentials, not switches); the cost-tier flags `RDLT_NET` /
+    `RDLT_HEAVY` / `RDLT_DEEP` (they gate expense, not resource
+    presence), unified on one read convention (set-to-`1` enables); the
+    tool vars `RDLT_REPIN`, `RDLT_BENCH_FORCE`, `RDLT_INTEROP_PYTHON`.
+
+## WAVE 2 — rdlt-connector-sdk: the D5 evidence record
+
+D5 demands proof of two-plus message-identical implementations before
+anything is extracted. The study ran read-only over all six connectors;
+two of the three candidate extractions FAILED the bar and are hereby
+non-goals with the evidence recorded:
+
+- CURSOR WATERMARKING: NOT EXTRACTED. REST's cursor module is 41 lines
+  of stringly max-observed over `Option<String>` (order-agnostic,
+  lexicographic, bare-string persistence); postgres's is ~800 lines of
+  typed `Scalar` watermark with FROZEN tagged serde, boundary-key dedup
+  (strict-vs-inclusive resume), direction awareness (min-ward cursors
+  exist), order-dependence with a typed integrity failure, and
+  checkpoint-signature dedup. The shared concept — max-observed, never
+  move backwards — is two one-line comparisons in REST and an EMERGENT
+  property in postgres (stream ordering + `is_beyond` + the regression
+  guard). An extracted kernel would replace ~4 REST lines, be unusable
+  by the postgres tracker, and share no persistence. Forced extraction
+  rejected.
+- PHASE-TAGGED ERROR SKELETON: NOT EXTRACTED. Only postgres's two
+  halves share the phase shape, and even they differ (phase
+  vocabularies, table clause, classify entry points). The other five
+  connectors classify on five different keys (HTTP status class,
+  `ErrorKind`+code allowlist, `ErrorKind`+context-parsed status, message
+  prefix, `io::ErrorKind`) and render frames a shared skeleton could
+  not reproduce verbatim — and a `detail: String` skeleton would BREAK
+  snowflake's `code_in`, which downcasts the preserved library error
+  from the source chain. The honest convergences, recorded as Wave-4
+  adoption items instead: (1) `SourceError::context()` /
+  `DestinationError::context()` — shipped in the SPI, zero connector
+  call sites yet; REST's `with_parent_context` is its one hand-rolled
+  duplicate; (2) a four-way one-line `fatal(impl Display)` shim
+  (duckdb, file ×2, iceberg) whose extractable content is a single
+  `.to_string()` — record, no machinery.
+
+CONFIG-DOCUMENT SEAM: EXTRACTED — the one candidate that clears the
+bar, with a decisive twist the evidence forced. All six document types
+(postgres source + destination, rest, file source, iceberg, snowflake)
+hand-roll the same from_yaml/from_json/from_value + validate-once
+triple (18 near-identical fn bodies), BUT the frozen error prefixes
+split across two spelling families ("parsing postgres source config:"
+vs "invalid REST source YAML:") and snowflake's parse errors carry NO
+prefix at all — so a subject-parameterized message template CANNOT
+reproduce them. THE SEAM THEREFORE NEVER RENDERS TEXT: a trait with an
+associated `Error: From<serde_yaml::Error> + From<serde_json::Error>`
+and provided from_yaml/from_json/from_value bodies (parse → validate →
+Ok), with `validate` the required method. Every format string stays in
+its connector's `#[error]` attributes; validation bodies (which need
+crate-private machinery: session::parse, Selector, LocationOptions,
+AuthOptions) stay in-crate. Companion: `schema_of::<T>()` replacing six
+identical config_schema bodies. Adoption notes for Wave 4: pg-dest's
+document type currently does NOT validate in from_* (the seam can
+close that asymmetry or preserve it — decide at adoption); snowflake
+needs a small typed error wrapper with transparent variants (rendered
+bytes identical, including the deliberately-unprefixed parse errors —
+Rust signature change sanctioned by greenfield-no-compat); file-dest
+has no text entry points and stays out unless it opts in; handle-level
+wrappers (2-3 lines each, legitimately divergent return types) stay
+per-connector. A `config_error!` macro for the five 9-line thiserror
+enums was considered and DEFERRED to adoption (the trait is the real
+dedup). The full 20-needle table lives in the study record; the bar
+for adoption is every needle byte-identical.
+
+SUPERSEDED BY D10 (the crate ships the full framework): the
+extraction-only reading of this evidence produced a thin crate the
+owner rejected; the evidence's real teaching — messages, keys, and
+machines stay per-connector — binds the FRAMEWORK's boundary instead.
+
+WAVE 2 BUILT (D10 shape): config::Document + schema_of;
+source::{SourceConnector, Feed, shell} (spec assembly, delegation,
+ControlFlow-typed cancellation); destination::{DestinationConnector,
+Backend, shell} with the SDK-owned session choreography
+(write-before-ensure refused, receipt-replay-before-publish, state
+read-through; atomicity/staging stay backend storage contracts, stated
+in docs); prelude + the SPI re-exported as `spi`. PROOF: the in-memory
+example connector (tests/cases/example.rs) authored purely on the
+framework passes BOTH rdlt-testkit conformance kits, plus the
+choreography-refusal pin. 10 tests + doctest, zero warnings across
+feature shapes.
+
+WAVE 2 REVIEW ROUND (three lenses: correctness/contract, API+adoption
+fitness, test adequacy). Correctness CLEAN — choreography ordering,
+Feed's Break-only closed-channel mapping, bare-`?` error pass-through
+(no rewording), and the Send-not-Sync Backend bound all verified
+against the SPI and the real Wave-4 candidate crates; the non-async
+`assemble` was checked against postgres/rest (both construct
+synchronously) and is not a blocker. FOUR findings fixed, each pinned:
+(1) `Session::commit` hardcoded discard-style replay — a staged
+backend (duckdb's RunScript shape) could not clear redelivered staging
+on a replayed commit, and postgres's replay branch must re-mark its
+in-memory `single_unit_done` guards; FIX: `Backend::replay(meta,
+receipt)` hook (default no-op — correct for direct-publish backends),
+called between the receipt hit and the return; `existing_receipt`
+docs now say LOOKUP ONLY. (2) The D3 fast path was DELETABLE without
+any test failing — the black-box kit cannot distinguish framework
+choreography from the example's coincidentally-idempotent backend;
+FIX: spy-backend suite `tests/cases/test_session_choreography.rs`
+pins the exact call sequences (first commit = lookup→publish; replay =
+lookup→replay, NO publish; lookup error = no publish; ensure-`a`-
+write-`b` refused BEFORE backend IO; ensured set dies with its
+session). The dest module doc now states the kit-can't-see-D3 fact.
+(3) The `schema`-feature test was GATE-DEAD (no gate command enables
+the feature — the 024 zero-second-pass class); FIX: `make test` gained
+`nextest run -p rdlt-connector-sdk --features schema -E
+'test(schema_of)'` (name filter verified non-empty; default
+empty-selection-fails is the net). (4) lib.rs claimed the framework
+owns the unknown-stream refusal — it is the connector's; doc
+corrected, plus shell-delegation and Feed raw_json/arrow/from_value
+gaps closed. After the round: 17 tests + 1 schema-feature test +
+doctest. RECORDED FOR WAVE 4 (not sdk defects): snowflake's config
+cannot adopt `Document` unchanged — its `ConfigError` lacks the two
+parser `From` impls and its `from_*` return `Result<_, String>`; the
+rendered text can stay byte-identical but the TYPE surface changes
+(the already-planned typed-error-wrapper work item). Rest and
+postgres adopt cleanly (verified against their sources).
+
+WAVE 2 GATE OF RECORD — TWICE CLEAN on the final tree (post-review):
+1006/1006 both runs (2 skips, both #[ignore]d instruments; 998 + the 8
+review-round tests, count math verified), schema-feature test 1/1 in
+its own gate invocation, semver no update required, perf all benches
+within tolerance, cold start 23.5/23.2 ms (bar <=40). Environment
+flakes on the PRE-review tree, recorded not re-rolled: one rootlessport
+bind (port 45241, file s3 sweep — cell passed 1/1 in isolation) and
+that pre-review pair (998/998 twice) was superseded when the review
+fixes landed. WAVE 2 CLOSED.
+
+## WAVE 2 REDESIGN — D10: from extraction to FRAMEWORK (owner direction)
+
+The owner rejected the thin extraction-only crate: the goal is a
+full-fledged connector-builder SDK that connectors are BUILT ON, not a
+crate for its own sake. D5's measured-duplication bar is SUPERSEDED as
+the scope rule (it remains the rule for TEXT and SEMANTICS: messages,
+classification keys, cursor machines stay per-connector — the evidence
+above still binds). The reframe: the SDK is an INVERSION OF CONTROL —
+it owns the protocol choreography and plumbing; the connector fills in
+system-specific holes. Peer precedent: Meltano SDK / Airbyte CDK base
+classes over the raw protocol.
+
+- The sdk now DEPENDS ON rdlt-connector and re-exports it (a prelude:
+  one import authors a connector). Hosts still never depend on the sdk.
+- `config`: Document + schema_of (shipped) + the config_error! macro
+  (three verbatim format strings in, the 9-line enum out — verbatim
+  input is what keeps frozen prefixes frozen).
+- `source`: SourceConnector trait (name/version, Config: Document,
+  declare, per-stream reader) + Feed (RecordsOut wrapper making
+  closed-channel-is-cancellation a property of the type) + the ONE SPI
+  shell (spec from the Document schema, unknown-stream refusal,
+  dispatch).
+- `destination`: Backend trait (system IO: ensure/write/publish/
+  receipts/state — storage stays in the backend, receipts must survive
+  process death) + the SDK-owned session choreography enforcing the
+  D-clauses by construction: E1 write-before-ensure fatal, D3
+  receipt-replay-before-publish, D1/D4 staging lifecycle ordering,
+  ensured-set + sequence bookkeeping. The conformance clauses stop
+  being per-connector discipline.
+- `classify`: thin rule-builder + context idioms only.
+- PROOF DISCIPLINE: the crate ships a complete in-memory example
+  connector (source + destination on the framework) that passes the
+  rdlt-testkit conformance kits BEFORE any real connector adopts;
+  adoption then goes smallest-first (rest → postgres source →
+  destinations), each gated with existing suites unchanged.
+
+## Frozen surfaces (the parity bar)
+
+1. ERROR RENDERING, verbatim: the six classification frames
+   `transient source error:` / `source rate limited:` /
+   `fatal source error:` / `transient destination error:` /
+   `destination rate limited:` / `fatal destination error:` — the first
+   three are pinned EXACT-ONCE by rest's anti-double-frame tests; the
+   word `fatal` is pinned by postgres. `records channel closed by host`
+   kept (unpinned but public). Variant names and payload shapes kept:
+   ~20 external `matches!`/match sites, snowflake destructures all three
+   variants' payloads, engine's classify has (required) wildcard arms.
+   Helper constructors `transient`/`rate_limited`/`fatal` kept.
+2. CHANNEL SEMANTICS, verbatim (mutation-hardened): byte budget is the
+   flow control and counts QUEUED bytes (permit rides with the value,
+   released on drop); zero-byte checkpoints are never budget-gated;
+   an oversized item degrades to drain-the-budget, never deadlocks;
+   `close()` refuses further sends AND wakes a parked producer; message
+   cap 64 secondary. Every existing channel test ports as written.
+3. SECRET/PEM: serde-transparent, `***` from both Debug and Display
+   (pinned twice), `reveal()` the sole accessor, schema feature's
+   `{"type":"string"}` with the never-rendered description; PemSource
+   read semantics.
+4. SPI SHAPES: `ReadRequest`/`OpenCtx`-successor constructed via `new`
+   at every one of the 35 sites (the hedge held — additions stay
+   non-breaking); `ConnectorSpec`/`StreamSpec` serde field names
+   (platform-facing, and `StreamSpec.structured` serde-defaults false);
+   `StreamSpec` builder methods; `ConnectorSpec.config_schema` stays a
+   settable field (6 production mutation sites).
+5. TESTKIT CONTRACTS, verbatim (the 024 inheritance):
+   - The two crate rules: SPI-only dependencies; connector-agnostic and
+     feature-less.
+   - The gate's CAPABILITIES (probe, skip-not-fail default, a way to
+     DEMAND the resource so a skip cannot read as a pass, a way to force
+     the absent path on a machine that has the resource) — the spelling
+     is REDESIGNED under D9; the old two-boolean env pair is NOT frozen
+     (owner direction, this feature).
+   - `RECLAIM_LABEL = "rdlt-test"` with value "1" at start sites; the
+     Makefile reclaim filter and the probe order (DOCKER_HOST → podman
+     user socket → /var/run/docker.sock → `podman ps`) stay in sync.
+   - THE SCANNER IS NOT SIMPLIFIED: two arming spellings
+     (`crash_point!(`, `crash_at(`), union-of-registries per crate,
+     vacuity guard FIRST (needle `no crash-point sites found`), two
+     directions (armed⊆declared; declared appears twice — the indirect-
+     arming escape), declaration blocks excluded BY SHAPE
+     (`: &[&str] = &[` … `];`), text-scan-counts-comments deliberate,
+     the declared can't-catch-double-deletion limitation stated, and the
+     committed per-crate direct-name counts (engine 7, file 11, rest 3,
+     iceberg 3, duckdb 2, snowflake 4, postgres 11) as the independent
+     check. All rationale comments carry forward in substance.
+   - Conformance clause IDs and their meanings (S1/S2/S4, D1–D6/D8,
+     E1/E5/E6 as referenced from messages) — clause NUMBERING never
+     changes; `ConformanceFailure` renders `violates clause {id}: …`;
+     `assert_conformant` reports ALL failures at once.
+   - `CrashDestination` fire-once/shared-across-clones semantics and
+     `FaultPoint`'s three 1-based points; injected messages
+     `injected crash: {what}`.
+   - Memory connectors' clause semantics in full (D4-on-open staging
+     wipe, D3 receipt replay, per-load Replace truncation, root-id
+     subtree merge with last-wins dedup, migration coercion table,
+     strict resume-after-checkpoint, fatal-on-unknown-cursor,
+     Ok-on-closed-channel, E1 write-before-ensure, since-log-as-attempt-
+     counter — named explicitly this time), `MemorySource::default()`
+     (a facade doctest constructs it), inspection API names with their
+     ~500 call sites.
+   - Helper signatures `schema_for`/`batch_of`/`commit_meta_for`
+     (~120 call sites).
+6. FEATURE SPELLINGS: `failpoints`, `schema`, `object-store` on the SPI;
+   the six connectors' forward wiring unchanged.
+
+## Rename ledger (old → new)
+
+| Old | New | Rule |
+|---|---|---|
+| `OpenCtx` | `OpenContext` | 2 (no ad-hoc truncations); 31 files, all via `::new` |
+| module `output` | `parquet` | module named by its noun — the module IS the parquet-writing vocabulary; the types are root-re-exported so swap cost is near zero |
+| module `objects` | `store` | module named by its noun (the object-store rule); `is_recoverable` is NOT root-re-exported, so the swap renames `objects::is_recoverable` → `store::is_recoverable` at its two file-connector call sites |
+| SPI trait definitions inline in `lib.rs` | `source.rs` / `destination.rs`; `lib.rs` a TOC + re-exports | layout |
+| testkit's dead direct `rdlt-core` dependency | REMOVED (vocabulary flows through the SPI — D1's rule applied to ourselves) | D1 |
+| testkit README's `PgFixture`/`CdcPgFixture` reference | `fixtures::PostgresContainer` | staleness |
+| iceberg's hardcoded `"rdlt-test=1"` + stale `containers` comment | derived from `RECLAIM_LABEL`; comment names `gate` | staleness |
+| everything else | KEPT — D2's rule-5-cuts-both-ways | D2 |
+
+## The crates
+
+```
+crates/rdlt-connector/src/
+  lib.rs            — crate docs + TOC + re-exports (no trait bodies)
+  source.rs         — Source (spec/check/streams/read) + ReadRequest
+  destination.rs    — Destination (spec/check/capabilities/open) +
+                      LoadSession + OpenContext
+  error.rs          — taxonomy + context() attachment
+  channel.rs        — byte-budget channel (semantics frozen)
+  capabilities.rs   — non_exhaustive + Default + with_* builders (D7)
+  spec.rs stream.rs secret.rs pem.rs parquet.rs store.rs — rewritten,
+                      same public shapes (two module renames, ledgered)
+
+crates/rdlt-connector-sdk/src/          (NEW, publishable, rdlt-free)
+  lib.rs
+  config.rs         — config::Document (the validate-once gate behind
+                      provided from_yaml/from_json/from_value; renders
+                      NO text — the evidence overturned the sketched
+                      subject-string design) + schema_of behind the
+                      `schema` feature. The sketched cursor.rs and
+                      error-skeleton modules were NOT built: both failed
+                      the D5 bar (evidence in the Wave 2 record above).
+
+crates/rdlt-testkit/src/
+  lib.rs            — TOC + doctest (certify a memory source, no
+                      network/containers/credentials)
+  gate.rs fixtures.rs
+  conformance/{mod,source,destination,failure}.rs
+  crash/{mod,injector,registry}.rs
+  memory/{mod,source,destination}.rs
+```
+
+Testkit rewrite improvements (from the dossier, contracts intact):
+one logical→Arrow fixture derivation instead of two; the conformance
+module docs claim EXACTLY the asserted clauses (S1/S2/S4, D1–D6/D8)
+instead of ranges they don't cover — adding the missing clauses is
+DEFERRED, renumbering forbidden; `verify_source`'s Arrow-payload
+degradation to count-only checking stated in its docs; the scanner's
+shape marker sensitivity to reformatting documented at the marker.
+
+## WAVE 3 — rdlt-testkit-v2 (BUILT, GATED, and SWAPPED IN, 2026-08-01)
+
+Method: the coexisting-crate form (D3's precedent) — `rdlt-testkit-v2`
+written from scratch under the no-copying rule (publish = false,
+UNCONSUMED; the 71-file consumer re-point is the swap, owner-decided).
+Dossier verified against the live tree before writing:
+
+- CONSUMED SURFACE (the swap's whole blast radius): the root re-exports
+  (Memory{Batch,Stream,Source,Destination}, Row, CrashDestination,
+  FaultPoint, TableProbe, assert_conformant, verify_source,
+  verify_destination, batch_of, commit_meta_for, schema_for,
+  armed_crash_points, assert_registry_matches_sources) plus
+  `gate::{RECLAIM_LABEL, runtime_available}` and the module paths
+  `conformance::{dest,source}::verify_*`, `memory::{...}`.
+- FROZEN (behavior + spellings, no consumer pins them but the frozen-
+  surface discipline holds): clause rendering `violates clause {id}:`,
+  the assert_conformant panic listing, the scanner's three assertion
+  messages and vacuity guard (`no crash-point sites found` IS pinned by
+  a should_panic), the memory connectors' injected-failure spellings,
+  E1 refusal wording, gate posture (knobless per D9), RECLAIM_LABEL.
+- SCANNER DO-NOT-SIMPLIFY (024): two directions not set-equality (three
+  postgres points armed indirectly), declaration blocks located by
+  SHAPE (`: &[&str] = &[`) and excluded (the engine declares its list
+  in its test file), one assertion per CRATE against the union, two
+  arming spellings + the vacuity guard that makes a third surface as
+  failure. All four survive the rewrite verbatim-in-design.
+- LEDGERED CHANGES (rule 5 both ways, the D2 bar): module
+  `conformance::dest` → `conformance::destination` (the 025 dest→
+  destination precedent; consumer-visible, re-pointed at swap); file
+  layout crash/{injector,registry}.rs and memory/destination.rs
+  (private modules, invisible); the DEAD direct `rdlt-core` manifest
+  dependency REMOVED (D1 applied to ourselves — testkit source already
+  reaches vocabulary only through `rdlt_connector::core`); `memory`'s
+  submodules go PRIVATE behind the module's re-exports (one canonical
+  path; the deep paths `memory::{dest,source}::*` have zero consumers,
+  `SinceLog` is only ever reached through `since_log()` and is now
+  re-exported at `memory::SinceLog`); everything else KEPT — verified by
+  a mechanical public-item diff between the generations whose only
+  deltas are these two ledger entries.
+- DOSSIER IMPROVEMENTS (contracts intact): ONE logical→Arrow fixture
+  derivation shared by `batch_of` and the conformance fixture (was two
+  parallel ones); conformance module docs claim EXACTLY the asserted
+  clauses (S1/S2/S4, D1–D6/D8 — adding clauses DEFERRED, renumbering
+  FORBIDDEN); verify_source's Arrow count-only degradation stated in
+  its docs; the scanner's shape-marker reformat sensitivity documented
+  at the marker; `commit_meta_for` derives through `StateDoc::new`
+  instead of a hand-built literal (same bytes: format_version 1, empty
+  maps, engine_version "test").
+- PARITY PROOF: the testkit's own three suites ported byte-identical
+  (modulo crate name) — conformance-memory, conformance-negative,
+  scanner-selfcheck with its per-crate EXPECTED_DIRECT_NAMES counts
+  unchanged (same tree scanned).
+
+WAVE 3 REVIEW ROUND (two lenses). PARITY lens: all eight areas CLEAN —
+gate probe order, fixtures (StateDoc::new verified field-for-field
+against gen 1's hand-built literal), clause renderings, both
+conformance harnesses, injector, scanner machinery, and the memory
+connectors' full commit algorithm byte-identical; the only differences
+are the ledgered ones. FRESH-EYES lens: two defects found, BOTH
+INHERITED from generation 1 (verified present there), fixed
+parity-safe per the 026 precedent and pinned:
+(1) the S2/S1 `continue` skipped the S4 cancellation check for any
+stream that failed an earlier clause — a stream that never checkpoints
+AND hangs on a closed channel reported only S2; S4 now runs for EVERY
+stream (pin: `both_s2_and_s4_are_reported_independently`).
+(2) every `open()` failure was labelled clause D4, sending an author
+whose open fails (credentials, config) to investigate teardown
+semantics never reached; setup failures now carry the clause they set
+up — D6 for the fresh-state open, D1 for the first-session open, D4
+kept for the genuine teardown open (pin:
+`an_open_failure_is_attributed_to_the_clause_it_sets_up`).
+The fresh-eyes lens also VERIFIED (not flagged): the read_all select
+loop cannot drop pushes or deadlock, the D8 merge-key fixture is
+correct against sqlcore's identity routing, injector once-only
+semantics hold under Clone. After the round: 8 tests + doctest, zero
+warnings, fmt/clippy/rustdoc clean.
+
+WAVE 3 GATE OF RECORD — TWICE CLEAN, both first attempt (reclaim +
+TIME_WAIT drain between runs): 1014/1014 both (2 skips, both
+#[ignore]d instruments; 1006 + v2's 8, count math verified), semver no
+update required, perf all benches within tolerance, cold start
+23.2/22.6 ms (bar <=40). The crate COEXISTS UNCONSUMED (publish =
+false); the swap — re-pointing the 71 consumer files, renaming, and
+deleting generation 1 — is the owner's call, as with the SPI and both
+connector generations.
+
+SWAP-IN EXECUTED (owner decision, same session): generation 1 DELETED,
+`rdlt-testkit-v2` renamed to `rdlt-testkit` (publish metadata restored:
+description, keywords, categories, docs.rs key, README). The consumer
+re-point was FOUR files, not 71 — the crate name survives the swap, the
+memory re-exports absorb the deep paths, and the only consumer-visible
+ledger item is `conformance::dest` → `conformance::destination` (one
+line in each of duckdb/file/snowflake/postgres's destination
+conformance suites). Workspace: fmt/clippy clean, 1008/1008 (= 1014
+minus generation 1's own 6 tests, count math verified), doctest green.
+
+TESTKIT SWAP GATE OF RECORD — TWICE CLEAN, both first attempt (reclaim
++ drain between): 1008/1008 both runs (2 named instrument skips),
+semver no update required, perf all benches within tolerance, cold
+start 23.6/23.0 ms (bar <=40). The trio's first two layers plus the
+verification half are now ALL second-generation on this branch.
+
+## WAVE 4 — SDK ADOPTION: rest + postgres (BUILT, 2026-08-01; owner scope)
+
+OWNER SCOPE: rest and postgres ONLY — duckdb/file/iceberg/snowflake are
+deliberately untouched (the owner will rewrite them; the snowflake
+differential oracle and duckdb differential test were re-pointed
+mechanically because they CONSUME postgres, no adoption there).
+
+THE SDK GREW THE FROM-TEXT FAMILY (the zero-duplicate goal): inherent
+`new(config)` (validates a hand-built document) + `from_yaml`/
+`from_json`/`from_value` on BOTH shells — parse through the Document
+gate, assemble, shell, written once. Each adopter exports
+`source::Shell` (and postgres `destination::Shell`) = the sdk shell
+over its connector type; the pg destination builder gains
+`into_shell()`. Shells derive Clone (suites reuse one destination
+across engine runs).
+
+REST: Config implements Document (the gate moved into the trait impl,
+every frozen refusal spelling kept); Rest implements SourceConnector
+(assemble/config_schema/streams/read_stream); the hand-written SPI impl
+DELETED; delivery + fanout speak Feed (ControlFlow). 87/87 assertions
+unchanged; sweep 2/2.
+
+POSTGRES SOURCE: Config implements Document (validate_connection/
+cursors/cdc/streams unchanged behind the trait); Postgres implements
+SourceConnector; the COPY loop (copy.rs) and the whole CDC path
+(read/tail) take &mut Feed instead of &mut ReadRequest.
+
+POSTGRES DESTINATION: the Document gate CLOSES the recorded
+asymmetry — generation 1's bare `Config::from_*` parsed without
+validating; now every entry runs sqlcore's options validation (the
+adoption-decision D5 flagged; pinned by the config unit test).
+Postgres implements DestinationConnector (Backend = Load, now public
+as the associated type, Debug minimal); commit_inner SPLIT into the
+Wave-2 choreography hooks exactly as the framework review predicted:
+`existing_receipt` = load-guard + begin_if_closed + receipt probe;
+`replay` = staged probe + plan(replayed=true) + rollback + the
+single_unit_done mark re-extension (the planner's DiscardUnit
+disposition, cited in doc + debug_assert); `publish` = the fresh path
+with pg.publish.begin / pg.tx.commit / pg.tx.acked at the same edges.
+Every method keeps its rollback-on-error wrapper. PROOF: 14/14 crash
+sweeps pass unchanged — the exactly-once machinery is behaviorally
+identical through the restructure.
+
+VERIFIED: zero-duplicate audit (the from_yaml pattern exists ONLY in
+the sdk across the two adopters); scanner selfcheck counts unchanged;
+232/232 postgres, 87/87 rest, 1010/1010 workspace, doctests, clippy
+both feature shapes. One environment flake during the pg suite
+(tls-matrix cell, passed in isolation and on full rerun) — the
+recorded rootlessport class, not the change.
+
+WAVE 4 GATE OF RECORD — TWICE CLEAN (reclaim + drain between):
+1010/1010 both runs (2 named instrument skips; = 1008 + the sdk's 2
+constructor-family tests), semver no update required, perf all benches
+within tolerance, cold start 23.6/24.0 ms (bar <=40). Two recorded
+gate-attempt failures before the clean pair, neither the code: the
+docs gate caught an unqualified sdk intra-doc link (fixed, committed —
+the gate doing its 024 job), and one rootlessport bind flake (port
+37859, pg option-edges cell — passed 1/1 in isolation; reclaim swept
+10 orphans from the cancelled run). WAVE 4 CLOSED — rest and postgres
+are fully on the sdk; the remaining four connectors are the owner's
+rewrite scope. RECORDED FOR WAVE 5 (owner direction, this session):
+connectors should carry EXACTLY ONE rdlt dependency — the sdk — with
+the SPI reached through its re-export; the sdk grows feature
+forwarding (failpoints/schema/object-store) and the D1 audit enforces
+the rule.
+
+## WAVE 5 — ONE-DEPENDENCY RULE + AUTHORING GUIDE (CLOSED, 2026-08-01)
+
+THE ONE-DEPENDENCY RULE (owner direction): a connector's [dependencies]
+carries EXACTLY ONE rdlt crate — the sdk — and reaches the SPI through
+its `spi` re-export. Implemented: the sdk forwards the SPI features
+under the same spellings (`failpoints`, `schema` — which now also
+forwards `rdlt-connector/schema` — and `object-store`); rest and
+postgres dropped their direct `rdlt-connector` dependency and 166
+import sites flipped to `rdlt_connector_sdk::spi::` (macro paths
+included — `crash_point!` resolves through the re-export). ENFORCED by
+the sdk's `test_dependency_rule` with two recorded exceptions:
+`rdlt-connector-sqlcore` for SQL destinations (shared merge core —
+whether it folds into the sdk is an owner decision at the rewrites),
+and `rdlt-testkit` tolerated ONLY as an optional fixtures-feature dep
+(the test caught exactly that case on its first run and the tolerance
+is optional-verified). Hosts are the mirror image: engine/CLI depend on
+the SPI alone; the facade re-exports the sdk (`rdlt::sdk`) for
+embedders that parse configs.
+
+`docs/connector-authoring.md` WRITTEN: the one-dependency form, the
+three seams (Document / SourceConnector+Feed / DestinationConnector+
+Backend with the choreography contract stated hook by hook),
+certification, gate posture, and the house rules — rest and postgres
+as the worked examples. CLAUDE.md now points at 027 as the current
+plan.
+
+WAVE 5 REVIEW (one adversarial lens over the Wave-4+5 diff, centered
+on the commit split): CLEAN in all seven areas — ordering/atomicity
+(publish structurally reachable only after existing_receipt), error
+paths (Unit::rollback idempotent; COMMIT-success takes `open` so the
+post-ack crash point cannot trigger a spurious ROLLBACK after a
+durable commit), engine retry (run-level, fresh Load per attempt — the
+per-call correctness is the binding property), crash-point positions,
+the failpoints forwarding chain end to end, shell Clone equivalence to
+gen 1's Clone handle, and Feed polarity at every push site. Zero
+findings.
+
+WAVE 5 GATE OF RECORD — TWICE CLEAN, both first attempt (reclaim +
+drain between): 1013/1013 both runs (2 named instrument skips), semver
+no update required, perf all benches within tolerance, cold start
+23.3/23.2 ms (bar <=40). COUNT MATH: 1010 + 2 dependency-rule tests +
+1 — the schema-feature test now ALSO runs in the main workspace
+invocation because rest's flipped dependency enables
+`rdlt-connector-sdk/schema` and feature unification pulls it in; the
+explicit Makefile line stays as the guarantee that does not depend on
+rest's feature choices.
+
+## FINAL REVIEW LOOP (post-close, owner-directed: /code-review until clean)
+
+ROUND 1 (four lenses: shallow bug scan, house-rules, record-vs-code,
+comment accuracy). Bug scan CLEAN (channel accounting, injector
+variants, memory merge dispatch, clause attribution, scanner
+directions, CLI exit codes, builder validation all traced). Record
+lens CLEAN (every load-bearing plan/CLAUDE.md/guide claim verified
+against the tree). THREE findings, all fixed:
+(1) `source::SourceShell`/`destination::DestinationShell` violated the
+no-noun-stutter rule (every adopter was already aliasing it away —
+the tell); RENAMED to `source::Shell`/`destination::Shell` in the sdk
+itself, ledgered here. The gen-1 testkit names (`crash::CrashDestination`,
+`memory::Memory*`) stay — the Wave-3 ledger's recorded keeps on a
+frozen consumed surface.
+(2) the testkit memory destination rendered `(violates clause E1)`
+inside a runtime error string — Principle V forbids clause IDs in
+rendered errors (the sdk's twin message was already compliant);
+suffix DROPPED, the clause stays in the doc comment. No consumer
+pinned the spelling.
+(3) load.rs's staged-probe comment claimed "no stage is written during
+the publish" — the script's TruncateStage steps DO write stages at the
+tail; reworded to the true reason (nothing writes a stage before the
+steps that read it). Conclusion was correct; reason was not.
+Sweeps for further instances of the two RULE classes (stutter, clause
+IDs in rendered strings): none. Round 2's verify lens found the COMMENT
+class had one more instance — duckdb's commit path carried the same
+wrong staged-invariance premise (same shared planner, same true
+conclusion); reworded there too. A comment fix, not sdk adoption —
+duckdb's rewrite scope is untouched.
+
+ROUND 2 (fix verification + silent-failure hunt). Fixes 1-2 verified
+clean (rename complete, no Shell ambiguity — every site uses the
+module-qualified path; no pin held the old E1 spelling). TWO new
+findings, both fixed:
+(4) the duckdb staged-invariance comment (the round-1 comment class's
+one further instance — see the corrected sweep note above).
+(5) REAL HARNESS HOLE, inherited from generation 1: `read_all` exited
+when the record channel drained and DROPPED the still-pending read
+future — a source that fails after dropping its output handle (teardown
+error after the last push) certified CLEAN, with its teardown cancelled
+mid-flight. The verdict now waits for the read to finish (bounded 5 s,
+the S4 posture) so a post-drop error fails certification by name. Pin:
+`a_source_that_fails_after_dropping_its_feed_is_not_certified`. The
+sdk-shell path was never exposed (the shell holds the Feed until
+read_stream returns); the hole was open only to hand-written SPI
+sources — which the kit exists to certify.
+Silent-failure lens otherwise CLEAN: gate probe-false is always a
+visible skip; pipeline_spec arms preserve full rendered messages;
+channel close paths cannot masquerade as success; verify_destination
+records every fallible step.
+
+ROUND 3 (fix verification + out-of-tree-author sweep). Both round-2
+fixes verified sound (the select guard makes the post-loop await
+single-completion-safe; the duckdb comment holds on the Staged replay
+branch too — vacuously, since a replayed Staged script emits no
+publish reads at all). ONE finding, fixed:
+(6) the sdk prelude glob-exported BOTH halves of the protocol — the
+traits an author implements next to `Source`/`Destination`/
+`LoadSession`, which the framework implements FOR them — unused by
+both real adopters and exercised by nothing. NARROWED to the authoring
+surface only (the five framework items + the vocabulary types an
+author's signatures name) and given a compile-tested doctest so drift
+now fails the gate. The round-2 pin was also STRENGTHENED on the
+reviewer's trace: a post-drop yield forces the harness to observe the
+drained channel before the teardown error exists, so the pin exercises
+the wait-for-the-reader path, not the result-captured-first path.
+
+ROUND 4 (terminus verification): CLEAN. The prelude exports exactly
+the authoring nine, the doctest binds through the trait methods (not
+coincidental names), every vocabulary re-export verified against the
+SPI's root; the teardown pin's ordering is duration-independent
+(wake-on-drop makes the drain observation certain before the forced
+yield ends — no hang, no vacuous pass); all five fixes across rounds
+1-3 live on disjoint surfaces with no pairwise conflicts. THE LOOP
+TERMINATES: four rounds, six findings, all fixed and pinned, final
+round zero findings.
+
+REVIEW-LOOP GATE OF RECORD — TWICE CLEAN (reclaim + drain between):
+1014/1014 both runs (= 1013 + the teardown-certification pin; 2 named
+instrument skips), semver no update required, perf within tolerance,
+cold start 23.0/23.7 ms. One recorded environmental occurrence before
+the clean pair: the snowflake differential oracle exceeded nextest's
+90 s ceiling under full-gate contention (live-warehouse latency; 71 s
+in isolation, passed) — service variance, not the code.
+
+## CLOSE-OUT — 027 COMPLETE on branch `027-sdk-trio` (2026-08-01)
+
+All five waves delivered and gated; merge to main is the owner's call.
+Checklist dispositions:
+- Consumer suites: assertions unchanged through every swap and
+  adoption (the parity net held five times: SPI swap 989, sdk 1006,
+  testkit swap 1008, adoption 1010, one-dep flip 1013 — every count
+  predicted or explained).
+- Pinned needles: clause renderings, scanner messages, frozen refusal
+  spellings, crash-point IDs — all verified by ported suites and pins;
+  two inherited testkit defects and the sdk's four review findings
+  fixed WITH pins.
+- Extraction-readiness: every rdlt workspace dep carries `version`
+  (no path-only contracts); `cargo package` refuses only because the
+  0.3.0 substrate is unpublished (the standing bottom-up publish-order
+  condition, recorded — same class as 023's fork note); no connector
+  imports rdlt-core or the SPI directly (ENFORCED, not just measured);
+  kits + authoring documented for out-of-tree use.
+- Zero-duplicate: the config from-text triple has ONE home (the sdk's
+  shells + Document); cursor and error-skeleton extractions REJECTED
+  on D5 evidence (Wave 2 record); context() is SPI-owned by
+  construction.
+- Naming/warnings: review lenses clean, zero warnings across feature
+  shapes, gates twice clean at every stage.
+OUTSIDE the feature, for the record: merging this branch; the four
+remaining connector rewrites (born on the sdk, duckdb first exercises
+replay for real); sqlcore's future home; the bottom-up 0.3.0 publish;
+CI repair (org billing).
+
+## Waves (each ends with a clean full gate)
+
+1. `rdlt-connector` rewritten; consumers ported (engine, 6 connectors,
+   sqlcore, testkit-as-is, facade, fuzz); version 0.3.0; semver gate
+   green under the new baseline math.
+2. `rdlt-connector-sdk` built with its own unit suite; no consumers yet.
+3. `rdlt-testkit` rewritten; all 73 consumer files re-pointed; the
+   selfcheck counts re-verified against the tree.
+4. SDK adoption, one connector at a time, each gated: config triple →
+   sdk::document; rest+postgres cursor tracking → sdk::cursor; rest's
+   fanout context → SourceError::context. Zero-duplicate check: the
+   config-triple pattern appears ONLY in the sdk when done.
+5. Authoring guide (`docs/connector-authoring.md`): the seven naming
+   rules, the reference architecture, frozen-surface method, kit
+   contract, review-lens checklist. Then the adversarial review loop
+   (025/026 protocol) until clean, and the gate TWICE CLEAN untouched.
+
+## Verification checklist (close-out)
+
+- [ ] Every consumer suite passes with assertions unchanged (parity).
+- [ ] Pinned needles verified: six error frames, `***`, gate panics,
+      scanner messages, clause renderings.
+- [ ] Extraction-readiness: `cargo publish --dry-run` shape-clean for
+      all three (modulo workspace-internal dev-deps), no connector
+      imports `rdlt_core` directly, kits documented for out-of-tree use.
+- [ ] Zero-duplicate audit: config triple, cursor tracking, context
+      attachment each have ONE home.
+- [ ] Naming audit; zero-warning bar; gate twice clean; review rounds
+      recorded below.
+
+## REVIEW ROUNDS (running record)
+
+Round 1 on `rdlt-connector-sdk` (one combined pass — design-vs-evidence,
+bugs, naming — proportionate to ~120 lines, 2026-08-01): ALL THREE
+LENSES CLEAN, zero findings. The reviewer verified the trait against the
+D5 record item by item, confirmed byte-identical implementability
+against all six connector document types (including the two recorded
+adoption asymmetries: pg-dest's non-validating from_*, snowflake's
+String-typed error needing the wrapper the trait's bound forces), and
+confirmed every test would fail if its property broke. One bookkeeping
+correction applied: the plan's layout sketch (document.rs) updated to
+the shipped config.rs/Document — the sketch as written would have
+produced document::Document, a rule-1 stutter.
+
+Round 1 on `rdlt-connector-v2` (three parallel lenses, 2026-08-01):
+
+- CONTRACT PARITY vs generation 1: nine areas verified clean
+  mechanically (all six error frames byte-identical, channel semantics
+  item by item, Secret/PemSource, parquet options, the recoverability
+  allow-list, spec/stream shapes, trait signatures, features). Two
+  findings, both fixed: the `output`→`parquet` and `objects`→`store`
+  module renames were real but unledgered (now ledgered, with the
+  `store::is_recoverable` swap note); generation 1's object-safety pin
+  had not been ported (now `tests/cases/test_object_safety.rs`, written
+  fresh — the coercions are the assertion, and the defaulted `check`
+  dispatches through the vtable in the proof).
+- BUG SCAN: no findings at the confidence bar. Verified sound: the
+  close() ordering across mpsc + semaphore, permit-rides-with-value,
+  `context()` classification survival, dyn-compatibility with default
+  async methods, the serde-default traps. Recorded below-bar: the u32
+  saturation arm has no test (it needs a >4 GiB budget; the degradation
+  is documented at the arm).
+- NAMING/COMMENT AUDIT: six items, all applied — `ByteTx`/`ByteRx` →
+  `ByteSender`/`ByteReceiver` (the same rule-2 class as `OpenCtx`);
+  the manifest's coexistence comment reworded generation-neutrally;
+  lib.rs's serde claim made exact (declaration/state vocabulary is
+  serde; record payloads are wire forms); `context()`'s doc now states
+  the downcast boundary (the cause re-boxes as rendered text);
+  `parquet::validate` returns a typed `OptionsError` named by what
+  failed (message text verbatim, so every needle holds); the semver
+  sentence names the gate rather than CI. Rules 1/3/4/5/6 and the
+  comment standard verified clean explicitly, including a line-by-line
+  README accuracy pass.

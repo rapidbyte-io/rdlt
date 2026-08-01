@@ -103,7 +103,7 @@ async fn identity_preflight_matrix_is_typed_per_table() {
 
     // cdc + cursor exclusivity is a CONFIG-parse error — no server
     // round-trip, named table.
-    let error = rdlt_connector_postgres::source::Postgres::from_yaml(
+    let error = rdlt_connector_postgres::source::Shell::from_yaml(
         "conn: host=localhost\ncdc:\n  slot: s\n  publication: p\n\
          tables:\n  - name: t\n    cursor:\n      column: id\n",
     )
@@ -145,7 +145,7 @@ async fn declared_primary_key_override_keys_the_stream_under_full() {
     // Under REPLICA IDENTITY FULL a declared primary_key override must win
     // over the catalog PK (any key has values in the full old image) — not
     // be silently ignored.
-    use rdlt_connector::Source;
+    use rdlt_connector_sdk::spi::Source;
     let Some(rig) = Rig::start("cdc-key-override").await else {
         return;
     };
@@ -190,7 +190,7 @@ async fn declared_key_mismatch_under_default_identity_is_typed() {
     );
     let config = EngineConfig::new("cdc-key-mismatch")
         .with_workdir(rig.workdir.clone())
-        .with_write_mode(rdlt_connector::WriteMode::Merge {
+        .with_write_mode(rdlt_connector_sdk::spi::WriteMode::Merge {
             key: vec!["code".into()],
         });
     let error = Engine::new(config, keyed_source, rig.destination(&["orders"]))

@@ -2,6 +2,7 @@
 //! lifecycle, and the secret grep-proof (contracts RS3/RS4).
 
 use super::common::{read_ok, read_stream};
+use rdlt_connector_sdk::config::Document;
 use serde_json::json;
 use wiremock::matchers::{body_string_contains, header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -206,7 +207,7 @@ streams:
     );
     let outcome = read_stream(&yaml, "items", None).await;
     match outcome.result {
-        Err(rdlt_connector::SourceError::Transient { .. }) => {}
+        Err(rdlt_connector_sdk::spi::SourceError::Transient { .. }) => {}
         other => panic!("expected Transient, got {other:?}"),
     }
 }
@@ -239,7 +240,7 @@ streams:
     );
     let outcome = read_stream(&yaml, "items", None).await;
     match outcome.result {
-        Err(rdlt_connector::SourceError::RateLimited { retry_after, .. }) => {
+        Err(rdlt_connector_sdk::spi::SourceError::RateLimited { retry_after, .. }) => {
             assert_eq!(
                 retry_after,
                 Some(std::time::Duration::from_secs(7)),
@@ -310,7 +311,7 @@ async fn secrets_never_render_anywhere() {
         let yaml = one_item_stream(&server, auth);
         let config = rdlt_connector_rest::source::Config::from_yaml(&yaml).expect("parses");
         let rendered_config = format!("{config:?}");
-        let source = rdlt_connector_rest::source::Rest::new(config).expect("valid config");
+        let source = rdlt_connector_rest::source::Shell::new(config).expect("valid config");
         let rendered_source = format!("{source:?}");
         let outcome = read_stream(&yaml, "items", None).await;
         let rendered_err = outcome.result.expect_err("500s fail").to_string();
