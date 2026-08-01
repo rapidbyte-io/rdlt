@@ -63,8 +63,8 @@ pub fn sql_type(column_type: &ColumnType) -> String {
 /// One column definition for CREATE TABLE. NOT NULL applies to the TARGET
 /// table only (CREATE-time; migrations stay additive) — stage tables keep
 /// everything nullable.
-pub fn column_definition(column: &ColumnDef, target: bool) -> String {
-    let not_null = if target && !column.nullable {
+pub fn render_column_definition(column: &ColumnDef, for_target: bool) -> String {
+    let not_null = if for_target && !column.nullable {
         " NOT NULL"
     } else {
         ""
@@ -132,7 +132,7 @@ pub fn table_ddl_statements(
                 let mut columns = table_schema
                     .columns
                     .iter()
-                    .map(|column| column_definition(column, !is_stage))
+                    .map(|column| render_column_definition(column, !is_stage))
                     .collect::<Vec<_>>()
                     .join(", ");
                 if is_stage {

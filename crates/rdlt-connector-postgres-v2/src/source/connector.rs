@@ -124,7 +124,7 @@ impl Postgres {
     }
 }
 
-/// Open one connection through the shared session path: conn parse failure
+/// Open one connection through the shared session path: connection-string parse failure
 /// is Fatal (never the Transient retry path); verification failures are
 /// Fatal (retries don't mint certificates), network-shaped failures
 /// Transient. Enforcement lives HERE so it holds even for configs built

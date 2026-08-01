@@ -52,6 +52,29 @@ DONE. Every task 0-11 executed. Final state on branch `postgres-v2`:
 - Old crate UNTOUCHED and still fully gated. v2 NOT wired into the facade
   (D1); merge + facade swap + publishing name are the owner's calls.
 
+## REVIEW ROUNDS (running record)
+
+Round 1 (drift lenses): four fixes landed in `86ee46fd` — wrapper framing
+unwrapped in both connect adapters, CDC profile failures re-tagged
+slot-phase + stream via a new EstablishError::Profile variant, date config
+literals refuse ±infinity again. Kept as recorded improvements: stricter
+numeric literal intake, no post-COMMIT ROLLBACK under pg.tx.acked, the
+fused CDC ensure-and-get (kills a v1 inter-stream panic race).
+
+Round 2 (compliance lens): `ctx`→`context`; types/mod.rs became a pure TOC
+(vocabulary.rs holds Kind/Column/Scalar — the plan's own tree had
+contradicted the Global Constraint and is amended); the 28000
+"certificate" needle hoisted to a pinned named constant (Principle V
+escape hatch honored, same posture as the TLS-refusal needle); destination
+Config field `dataset`→`schema` with serde rename (rule 5; YAML frozen);
+two inherited FR-nnn citation IDs rewritten; `target`/`zoned`/`checkpoint`
+params and `done`/`beyond`/`column_definition` helpers renamed to
+rule-3/6 forms; README's "(feature 013)" citations dropped; ledger
+corrected (describe, at_connect/at_statement, state.rs) and the
+`*Config` names recorded as a deliberate rule-1 exception.
+`direction_max`/`nulls_include`/`collate_byte_order` are KEPT — they share
+the rule's own `transaction_open` assertion shape.
+
 ## Decision record
 
 - **D1 — new crate, old untouched.** Package `rdlt-connector-postgres-v2`,
@@ -131,7 +154,8 @@ crates/rdlt-connector-postgres-v2/
 │   │   ├── establish.rs  #   Profile (Plain | CdcControl), Connection, establish()
 │   │   └── classify.rs   #   detail rendering + the two opposite-polarity SQLSTATE rules + TLS failure taxonomy
 │   ├── types/            # pub(crate): THE Postgres type rulebook
-│   │   ├── mod.rs        #   Kind (closed enum), Column (name + kind)
+│   │   ├── mod.rs        #   pure TOC
+│   │   ├── vocabulary.rs #   Kind (closed enum), Column, Scalar
 │   │   ├── map.rs        #   catalog type + hint → Kind (+ `rdlt::lossy` warns)
 │   │   ├── binary.rs     #   COPY BINARY → Arrow (single-pass, bounded)
 │   │   ├── text.rs       #   text form → value (CDC tuples, watermarks)
@@ -145,7 +169,7 @@ crates/rdlt-connector-postgres-v2/
 │   │   ├── reflect.rs    #   catalog reflection + query describe
 │   │   ├── sql.rs        #   SELECT/COPY text + the boundary matrix
 │   │   ├── copy.rs       #   the COPY read loop (crash hook only under failpoints)
-│   │   ├── cursor/       #   watermark.rs, tracker.rs, prepare.rs
+│   │   ├── cursor/       #   state.rs (frozen serde), tracker.rs, prepare.rs
 │   │   ├── cdc/          #   runtime.rs (typestate), slot.rs, read.rs, tail.rs, ack.rs, apply.rs, pgoutput.rs
 │   │   ├── errors.rs     #   Phase-tagged source errors + establish/driver adapters
 │   │   └── fail_points.rs
@@ -463,12 +487,15 @@ feed = defer-to-commit typed error; publication existence/coverage checks.
 | `tls::TlsPolicy` / `TlsMode` / `TlsConfigError` | `tls::Policy` / `tls::Mode` / `tls::ConfigError` | 1 |
 | `tls::parse_conn` / `ParsedConn` | `session::parse` / `session::Parsed` | 1, 2 |
 | `tls::connect` + `ConnectResult` | `session::establish` + `session::EstablishError` | 3, 7 |
-| `driver_error::detail` | `session::classify::detail` | seam move |
+| `driver_error::detail` | `session::classify::describe` | 3, seam move |
 | `FieldPlan` (in copy_decode) | `types::Column` | 1, seam move |
 | `MappedType`/`Decode` | `types::Kind` | 5 |
 | `CopyDecoder` | `types::binary::Decoder` | 1 |
 | `copy_pump::pump_copy` | `source::copy::stream` (verb) | 3 |
-| `cursor::Tracker::new(8 args)` | builder/spec struct | 4 |
+| `cursor::Tracker::new(8 args)` | `tracker::Spec` struct | 4 |
+| `is_transient_connect_sqlstate` / `is_permanent_statement_sqlstate` | `is_transient_at_connect` / `is_permanent_at_statement` | 3 |
+| planned `cursor/watermark.rs` | shipped `cursor/state.rs` (`Watermark` is its private frozen-serde mirror) | 5 |
+| `TableConfig`/`QueryConfig`/`CursorConfig`/`CdcConfig` | KEPT (recorded rule-1 exception: `config::Table` would collide with `reflect::Table`, which rule 5 forbids arbitrating away) | 1, 5 |
 | `PgSession` (dest) | `destination::load::Load` (the LoadSession impl) | 1 |
 | `TableIdentity.full` | `covers_all_columns` | 6 |
 | `PgFixture` / `CdcPgFixture` | `fixtures::PostgresContainer` / `fixtures::CdcContainer` | 1, 2 |

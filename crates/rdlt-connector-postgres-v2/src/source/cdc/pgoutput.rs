@@ -127,7 +127,7 @@ impl<'a> Reader<'a> {
         Ok(text)
     }
 
-    fn done(&self) -> bool {
+    fn is_done(&self) -> bool {
         self.position == self.bytes.len()
     }
 }
@@ -269,7 +269,7 @@ pub fn parse(bytes: &[u8]) -> Result<Message, ParseError> {
         }
         other => return fail(format!("unknown message tag {other:#04x}")),
     };
-    if !reader.done() {
+    if !reader.is_done() {
         return fail("trailing bytes after message");
     }
     Ok(message)

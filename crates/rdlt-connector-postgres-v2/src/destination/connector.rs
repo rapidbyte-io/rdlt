@@ -38,7 +38,7 @@ impl Destination for Postgres {
         }
     }
 
-    async fn open(&self, ctx: OpenCtx) -> Result<Box<dyn LoadSession>, DestinationError> {
+    async fn open(&self, context: OpenCtx) -> Result<Box<dyn LoadSession>, DestinationError> {
         let connection = session::establish(
             &self.connection_string,
             self.tls.as_ref(),
@@ -76,7 +76,7 @@ impl Destination for Postgres {
         // Staged data from THIS PIPELINE's dead sessions becomes
         // invisible/reclaimable. Scoped by pipeline-hash prefix: other
         // pipelines sharing the schema keep their live staged rows.
-        let prefix_pattern = format!("{}%", stage_prefix(&ctx.pipeline).replace('_', "\\_"));
+        let prefix_pattern = format!("{}%", stage_prefix(&context.pipeline).replace('_', "\\_"));
         let stale: Vec<String> = connection
             .query(
                 "SELECT tablename FROM pg_tables
@@ -97,8 +97,8 @@ impl Destination for Postgres {
 
         Ok(Box::new(Load {
             connection,
-            pipeline: ctx.pipeline,
-            load_id: ctx.load_id,
+            pipeline: context.pipeline,
+            load_id: context.load_id,
             catalog: Catalog::default(),
             options: self.options.clone(),
             unit: Unit::default(),

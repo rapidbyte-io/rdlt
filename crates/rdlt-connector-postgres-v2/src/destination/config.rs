@@ -69,7 +69,7 @@ impl Postgres {
         options.validate().map_err(ConfigError::Invalid)?;
         Ok(Self {
             connection_string: config.connection,
-            schema: config.dataset,
+            schema: config.schema,
             tls: config.tls,
             options,
         })
@@ -110,9 +110,11 @@ pub struct Config {
     #[serde(rename = "conn")]
     #[schemars(rename = "conn")]
     pub connection: String,
-    /// Target schema; created if missing.
-    #[serde(default = "default_dataset")]
-    pub dataset: String,
+    /// Target schema (the document vocabulary calls it `dataset`); created
+    /// if missing.
+    #[serde(rename = "dataset", default = "default_schema")]
+    #[schemars(rename = "dataset")]
+    pub schema: String,
     /// TLS posture (verify-* modes are expressible only here).
     #[serde(default)]
     pub tls: Option<crate::tls::Policy>,
@@ -138,7 +140,7 @@ impl Config {
     }
 }
 
-fn default_dataset() -> String {
+fn default_schema() -> String {
     "public".into()
 }
 

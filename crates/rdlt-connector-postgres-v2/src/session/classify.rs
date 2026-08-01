@@ -102,6 +102,14 @@ pub struct ConnectError {
 /// test instead of silently reclassifying as `Other`.
 const SERVER_TLS_REFUSED_NEEDLE: &str = "server does not support TLS";
 
+/// The auth-phase client-certificate signal is HALF structured: SQLSTATE
+/// 28000 narrows it to authentication, but pg_hba's `cert`/`clientcert=`
+/// rejections are distinguishable from a bad password only by this word in
+/// the server's message text. Pinned by
+/// `client_certificate_needle_is_pinned` so a wording change fails a test
+/// instead of silently downgrading mutual-TLS failures to `Other`.
+const CLIENT_CERTIFICATE_NEEDLE: &str = "certificate";
+
 /// Classify a connect-phase driver error by walking its source chain for
 /// rustls/tokio-postgres evidence. Best-effort by design: unknown shapes
 /// classify `Other` with the full detail preserved.
@@ -139,7 +147,10 @@ pub(crate) fn classify_connect_error(error: &tokio_postgres::Error) -> ConnectEr
     // AFTER a successful handshake.
     if let Some(db) = error.as_db_error()
         && db.code().code() == "28000"
-        && db.message().to_lowercase().contains("certificate")
+        && db
+            .message()
+            .to_lowercase()
+            .contains(CLIENT_CERTIFICATE_NEEDLE)
     {
         return ConnectError {
             failure: TlsFailure::ClientCert,
@@ -192,6 +203,14 @@ mod tests {
         // server that refuses TLS. If the driver's wording changes, this
         // fails loudly instead of silently downgrading to `Other`.
         assert_eq!(SERVER_TLS_REFUSED_NEEDLE, "server does not support TLS");
+    }
+
+    #[test]
+    fn client_certificate_needle_is_pinned() {
+        // Probe-style pin, same posture as the TLS-refusal needle: this
+        // word is the only auth-phase signal separating a certificate
+        // rejection from a bad password under SQLSTATE 28000.
+        assert_eq!(CLIENT_CERTIFICATE_NEEDLE, "certificate");
     }
 
     #[test]

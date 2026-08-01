@@ -83,15 +83,15 @@ pub(crate) fn parse_bytea_hex(value: &str) -> Result<Vec<u8>, String> {
 }
 
 /// Postgres timestamp text (`2026-07-21 10:11:12.123456`, with an optional
-/// `+HH[:MM]` offset when `zoned`) → µs since the Unix epoch. `±infinity`
+/// `+HH[:MM]` offset when `with_zone`) → µs since the Unix epoch. `±infinity`
 /// saturates, matching the binary decoder.
-pub(crate) fn parse_timestamp(value: &str, zoned: bool) -> Result<i64, String> {
+pub(crate) fn parse_timestamp(value: &str, with_zone: bool) -> Result<i64, String> {
     match value {
         "infinity" => return Ok(i64::MAX),
         "-infinity" => return Ok(i64::MIN),
         _ => {}
     }
-    if zoned {
+    if with_zone {
         // `%#z` accepts +00, +05:30, and +0530 spellings.
         chrono::DateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f%#z")
             .map(|instant| instant.timestamp_micros())

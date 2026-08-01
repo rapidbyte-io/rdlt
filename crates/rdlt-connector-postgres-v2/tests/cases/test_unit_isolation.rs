@@ -129,7 +129,7 @@ async fn a_replace_reload_is_never_observed_empty() {
     );
 }
 
-/// FR-024: a Replace load must not cost the target anything that lives on
+/// A Replace load must not cost the target anything that lives on
 /// the table rather than in it. The clear is `TRUNCATE`, which keeps the
 /// table's identity — so indexes, constraints, grants and dependent views
 /// all survive.

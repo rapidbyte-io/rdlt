@@ -339,7 +339,7 @@ fields. Options are validated where they are supplied (`options()` hands
 back the error; the document constructors fold the same check into parsing)
 and again at open against the live stream schema.
 
-> **One vocabulary, every SQL destination** (feature 013): `merge_strategy`,
+> **One vocabulary, every SQL destination**: `merge_strategy`,
 > `hard_delete`, `dedup_sort`, `merge_scope`, and the `scd2` block are the
 > SHARED merge core (`rdlt-connector-sqlcore`), re-exported here under their
 > bare sqlcore names. They behave identically under `destination: duckdb:` —
@@ -422,7 +422,7 @@ destination:
 |---|---|---|---|
 | `valid_from` | column name | `_rdlt_valid_from` | Validity-start column added to the target (`TIMESTAMPTZ NOT NULL`). |
 | `valid_to` | column name | `_rdlt_valid_to` | Validity-end column; `NULL` marks the active version. Must differ from `valid_from`; neither may collide with a stream column. |
-| `absent` | `keep` \| `retire` | `keep` | What happens to active keys **absent** from a load: `keep` leaves them active (an incremental feed is partial by nature); `retire` closes them at the boundary (full-feed semantics). Retire needs the table's whole feed in a single commit unit — the same per-table rule as `merge_scope`, the same typed error, the same thresholds remedy. When the table also has a `merge_scope`, retirement is **scoped**: absent keys retire only inside delivered scopes (feature 013). That combination requires `retire`; under `keep` the merge_scope would do nothing, so it is a typed error. |
+| `absent` | `keep` \| `retire` | `keep` | What happens to active keys **absent** from a load: `keep` leaves them active (an incremental feed is partial by nature); `retire` closes them at the boundary (full-feed semantics). Retire needs the table's whole feed in a single commit unit — the same per-table rule as `merge_scope`, the same typed error, the same thresholds remedy. When the table also has a `merge_scope`, retirement is **scoped**: absent keys retire only inside delivered scopes. That combination requires `retire`; under `keep` the merge_scope would do nothing, so it is a typed error. |
 | `active_record_timestamp` | RFC3339 timestamp | absent (= NULL marker) | The OPEN-version marker written into `valid_to` in place of NULL (e.g. `9999-12-31T00:00:00Z` — some BI tools cannot range-query NULLs). Must be zone-explicit RFC3339, since a zone-less literal would resolve against the session TimeZone (typed error), and must differ from `boundary_timestamp` (typed error). Active-version predicates treat NULL **and** the marker as open, so a table whose history predates the option keeps working. |
 | `boundary_timestamp` | RFC3339 timestamp | absent (= transaction timestamp) | A caller-supplied boundary used for close/open/retire instead of the transaction timestamp. Same zone-explicit validation; never interpolated unvalidated. |
 

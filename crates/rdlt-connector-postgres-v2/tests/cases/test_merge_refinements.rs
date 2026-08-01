@@ -219,7 +219,7 @@ async fn dedup_sort_orders_survivors_not_arrival() {
         vec![(1, None, Some(3), "older".into())]
     );
 
-    // FR-002: absent the option, arrival-order last-wins is UNCHANGED.
+    // Absent the option, arrival-order last-wins is UNCHANGED.
     run(
         &connection_string,
         "mr_absent",

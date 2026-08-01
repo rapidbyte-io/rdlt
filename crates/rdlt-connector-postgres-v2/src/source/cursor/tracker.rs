@@ -56,7 +56,7 @@ impl Tracker {
         }
     }
 
-    fn beyond(&self, candidate: &Scalar, reference: &Scalar) -> bool {
+    fn is_beyond(&self, candidate: &Scalar, reference: &Scalar) -> bool {
         if self.spec.direction_max {
             candidate > reference
         } else {
@@ -185,7 +185,7 @@ impl Tracker {
             if self.in_boundary
                 && let (Some(value), Some(stored)) = (&value, &self.spec.stored)
             {
-                if self.beyond(value, &stored.watermark) {
+                if self.is_beyond(value, &stored.watermark) {
                     self.in_boundary = false;
                 } else if *value == stored.watermark
                     && stored.boundary_keys.contains(&self.row_key(&batch, row)?)
@@ -212,7 +212,7 @@ impl Tracker {
                     self.run_keys.push(key);
                 }
                 Some(last) => {
-                    if !self.beyond(&value, last) {
+                    if !self.is_beyond(&value, last) {
                         return Err(errors::fatal(
                             Phase::Copy,
                             Some(&self.spec.stream),
@@ -266,7 +266,7 @@ impl Tracker {
         let last = self.last_value.as_ref()?;
         let mut boundary_keys = self.run_keys.clone();
         if let Some(stored) = &self.spec.stored {
-            if !self.beyond(last, &stored.watermark) && *last != stored.watermark {
+            if !self.is_beyond(last, &stored.watermark) && *last != stored.watermark {
                 return None; // regressed — keep the stored watermark
             }
             if *last == stored.watermark {

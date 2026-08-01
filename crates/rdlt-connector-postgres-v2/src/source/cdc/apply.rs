@@ -280,7 +280,7 @@ impl<'a> Apply<'a> {
         Ok(emits)
     }
 
-    fn flush(&mut self, checkpoint: bool) -> Result<Vec<Emit>, SourceError> {
+    fn flush(&mut self, emit_checkpoint: bool) -> Result<Vec<Emit>, SourceError> {
         if self.ready_rows.is_empty() {
             return Ok(Vec::new());
         }
@@ -294,7 +294,7 @@ impl<'a> Apply<'a> {
         let batch = batch_of(self.columns, &self.cdc.flag_column, &rows, &deleted)
             .map_err(|e| self.fatal(e))?;
         let mut emits = vec![Emit::Batch(batch)];
-        if checkpoint && let Some(commit) = self.last_commit {
+        if emit_checkpoint && let Some(commit) = self.last_commit {
             emits.push(Emit::Checkpoint(commit));
         }
         Ok(emits)
