@@ -557,6 +557,56 @@ semver no update required, perf all benches within tolerance, cold
 start 23.6/23.0 ms (bar <=40). The trio's first two layers plus the
 verification half are now ALL second-generation on this branch.
 
+## WAVE 4 — SDK ADOPTION: rest + postgres (BUILT, 2026-08-01; owner scope)
+
+OWNER SCOPE: rest and postgres ONLY — duckdb/file/iceberg/snowflake are
+deliberately untouched (the owner will rewrite them; the snowflake
+differential oracle and duckdb differential test were re-pointed
+mechanically because they CONSUME postgres, no adoption there).
+
+THE SDK GREW THE FROM-TEXT FAMILY (the zero-duplicate goal): inherent
+`new(config)` (validates a hand-built document) + `from_yaml`/
+`from_json`/`from_value` on BOTH shells — parse through the Document
+gate, assemble, shell, written once. Each adopter exports
+`source::Shell` (and postgres `destination::Shell`) = the sdk shell
+over its connector type; the pg destination builder gains
+`into_shell()`. Shells derive Clone (suites reuse one destination
+across engine runs).
+
+REST: Config implements Document (the gate moved into the trait impl,
+every frozen refusal spelling kept); Rest implements SourceConnector
+(assemble/config_schema/streams/read_stream); the hand-written SPI impl
+DELETED; delivery + fanout speak Feed (ControlFlow). 87/87 assertions
+unchanged; sweep 2/2.
+
+POSTGRES SOURCE: Config implements Document (validate_connection/
+cursors/cdc/streams unchanged behind the trait); Postgres implements
+SourceConnector; the COPY loop (copy.rs) and the whole CDC path
+(read/tail) take &mut Feed instead of &mut ReadRequest.
+
+POSTGRES DESTINATION: the Document gate CLOSES the recorded
+asymmetry — generation 1's bare `Config::from_*` parsed without
+validating; now every entry runs sqlcore's options validation (the
+adoption-decision D5 flagged; pinned by the config unit test).
+Postgres implements DestinationConnector (Backend = Load, now public
+as the associated type, Debug minimal); commit_inner SPLIT into the
+Wave-2 choreography hooks exactly as the framework review predicted:
+`existing_receipt` = load-guard + begin_if_closed + receipt probe;
+`replay` = staged probe + plan(replayed=true) + rollback + the
+single_unit_done mark re-extension (the planner's DiscardUnit
+disposition, cited in doc + debug_assert); `publish` = the fresh path
+with pg.publish.begin / pg.tx.commit / pg.tx.acked at the same edges.
+Every method keeps its rollback-on-error wrapper. PROOF: 14/14 crash
+sweeps pass unchanged — the exactly-once machinery is behaviorally
+identical through the restructure.
+
+VERIFIED: zero-duplicate audit (the from_yaml pattern exists ONLY in
+the sdk across the two adopters); scanner selfcheck counts unchanged;
+232/232 postgres, 87/87 rest, 1010/1010 workspace, doctests, clippy
+both feature shapes. One environment flake during the pg suite
+(tls-matrix cell, passed in isolation and on full rerun) — the
+recorded rootlessport class, not the change.
+
 ## Waves (each ends with a clean full gate)
 
 1. `rdlt-connector` rewritten; consumers ported (engine, 6 connectors,
