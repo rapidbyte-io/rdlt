@@ -3,6 +3,12 @@
 //! `streams()` and `read()` both consume the same [`Facts`], so which SPI
 //! call the engine makes first can never change which error a
 //! misconfiguration produces.
+//!
+//! One config-shape fact is deliberately re-checked here as well: lag's
+//! inclusive-boundary requirement, first refused at document parse. The
+//! repeat is defense in depth, not drift — `Config` has public fields, so a
+//! hand-built configuration never went through `validate()`, and this gate
+//! is the last stop before data moves.
 
 use rdlt_connector::SourceError;
 
