@@ -197,3 +197,67 @@ fn with_parent_context(
         other => SourceError::fatal(format!("{context}: {other}")),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parent_values() -> ParentValues {
+        ParentValues {
+            placeholders: [("id".to_owned(), "7".to_owned())].into_iter().collect(),
+            include: Vec::new(),
+        }
+    }
+
+    /// Context wraps the variant's INNER cause: the classification frame
+    /// ("transient source error: …") must render exactly once. Re-wrapping
+    /// the variant around its own rendering would print it twice.
+    #[test]
+    fn parent_context_renders_the_classification_frame_once() {
+        let wrapped = with_parent_context(
+            SourceError::transient("HTTP 502"),
+            "issues",
+            &parent_values(),
+        );
+        let rendered = wrapped.to_string();
+        assert_eq!(
+            rendered.matches("transient source error:").count(),
+            1,
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("child stream `issues` failed for parent (id=7): HTTP 502"),
+            "{rendered}"
+        );
+
+        let wrapped = with_parent_context(
+            SourceError::RateLimited {
+                retry_after: Some(std::time::Duration::from_secs(3)),
+                source: "HTTP 429 from API".into(),
+            },
+            "issues",
+            &parent_values(),
+        );
+        let rendered = wrapped.to_string();
+        assert_eq!(
+            rendered.matches("source rate limited:").count(),
+            1,
+            "{rendered}"
+        );
+        match wrapped {
+            SourceError::RateLimited { retry_after, .. } => {
+                assert_eq!(retry_after, Some(std::time::Duration::from_secs(3)));
+            }
+            other => panic!("classification must survive wrapping: {other:?}"),
+        }
+
+        let wrapped =
+            with_parent_context(SourceError::fatal("HTTP 404"), "issues", &parent_values());
+        let rendered = wrapped.to_string();
+        assert_eq!(
+            rendered.matches("fatal source error:").count(),
+            1,
+            "{rendered}"
+        );
+    }
+}
