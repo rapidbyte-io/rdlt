@@ -90,6 +90,18 @@ separator); and the CDC snapshot single-instant property being best-effort
 after a mid-run transient error (the comment now says so; generation 1
 behaves identically while claiming otherwise).
 
+Round 6 (meta-review of the fixes, closed mechanically after the reviewer
+agent went unresponsive): every feature combination now builds
+WARNING-FREE (source-only, destination-only, each with failpoints) — the
+source-facing types faces and the per-consumer session re-exports are
+feature-gated (`test` keeps the decoder for the encode oracle); the bare
+no-features build still warns, as generation 1 also does (degenerate,
+unshippable combo — recorded, not chased). EstablishError::Profile
+matching, Apply::new Result propagation, the dataset serde document shape
+and the same-scale decimal path are all covered by the passing suites
+(151/151; one first-run-after-rebuild failure was the RECORDED
+container-burst flake, green on rerun per its standing rule).
+
 ## Decision record
 
 - **D1 — new crate, old untouched.** Package `rdlt-connector-postgres-v2`,

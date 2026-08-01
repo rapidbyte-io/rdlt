@@ -7,6 +7,7 @@
 //! for the shared representative fixtures both benches and fuzz entries
 //! build from.
 
+#[cfg(feature = "source")]
 pub mod data;
 #[cfg(feature = "destination")]
 pub mod destination;

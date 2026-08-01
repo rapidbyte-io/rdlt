@@ -14,8 +14,12 @@ mod classify;
 mod connection_string;
 mod establish;
 
+pub(crate) use classify::describe;
+#[cfg(any(feature = "destination", test))]
+pub(crate) use classify::is_permanent_at_statement;
+#[cfg(any(feature = "source", test))]
+pub(crate) use classify::is_transient_at_connect;
 pub use classify::{ConnectError, TlsFailure};
-pub(crate) use classify::{describe, is_permanent_at_statement, is_transient_at_connect};
 // `pub` items inside this `pub(crate)` module are NOT dead visibility:
 // they feed the doc-hidden `testsupport::session` re-export chain, which is
 // the one public path the integration suites reach them through.

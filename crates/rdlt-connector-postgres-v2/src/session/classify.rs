@@ -61,6 +61,7 @@ pub(crate) fn is_transient_at_connect(error: &tokio_postgres::Error) -> bool {
 /// identical statement cannot win. Every other class stays transient. See
 /// the module doc for why this polarity differs from
 /// [`is_transient_at_connect`].
+#[cfg(any(feature = "destination", test))]
 pub(crate) fn is_permanent_at_statement(sqlstate: &str) -> bool {
     matches!(sqlstate.get(..2), Some("22") | Some("23") | Some("42"))
 }

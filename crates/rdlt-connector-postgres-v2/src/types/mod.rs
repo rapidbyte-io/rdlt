@@ -11,13 +11,22 @@
 //! carries a `_` arm over [`Kind`], so adding a variant refuses to compile
 //! until every conversion says what it does.
 
+// The decode faces serve the SOURCE; `test` keeps them for the encode
+// oracle's round-trip suites under a destination-only build.
+#[cfg(any(feature = "source", test))]
 pub(crate) mod binary;
+#[cfg(any(feature = "source", test))]
 pub(crate) mod builder;
 #[cfg(feature = "destination")]
 pub(crate) mod encode;
+#[cfg(any(feature = "source", test))]
 pub(crate) mod literal;
+#[cfg(any(feature = "source", test))]
 pub(crate) mod map;
+#[cfg(any(feature = "source", test))]
 pub(crate) mod text;
+#[cfg(any(feature = "source", test))]
 pub(crate) mod vocabulary;
 
+#[cfg(any(feature = "source", test))]
 pub(crate) use vocabulary::{Column, Kind, Scalar};
