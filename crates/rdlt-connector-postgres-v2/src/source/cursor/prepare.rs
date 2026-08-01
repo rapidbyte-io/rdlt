@@ -44,6 +44,28 @@ pub(crate) fn prepare(
         Some(since) => Some(State::decode(since, stream)?),
         None => None,
     };
+    // A decimal watermark compares as (scaled, scale) pairs, which is only
+    // a numeric ordering while the scale is FIXED — the documented cursor
+    // assumption. If the column's scale changed between runs (ALTER TYPE,
+    // a changed decimal hint), silently comparing across scales would read
+    // an advancing stream as regressed and stop checkpointing; refuse
+    // loudly instead.
+    if let Some(state) = &stored
+        && let crate::types::Kind::Decimal { scale, .. } = cursor.kind
+        && let Scalar::Decimal {
+            scale: stored_scale,
+            ..
+        } = &state.watermark
+        && *stored_scale != scale
+    {
+        return Err(errors::fatal(
+            Phase::Reflect,
+            Some(stream),
+            format!(
+                "stored cursor watermark carries numeric scale {stored_scale} but the                  column now has scale {scale} — the cursor column's type changed; reset                  the pipeline state to take a fresh initial load"
+            ),
+        ));
+    }
     let parse_literal = |text_value: &str| -> Result<Scalar, SourceError> {
         text::parse_scalar(cursor.kind, text_value)
             .map_err(|detail| errors::fatal(Phase::Reflect, Some(stream), detail))

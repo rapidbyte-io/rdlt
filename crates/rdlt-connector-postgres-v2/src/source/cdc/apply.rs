@@ -108,19 +108,38 @@ pub(super) struct Apply<'a> {
 }
 
 impl<'a> Apply<'a> {
-    pub(super) fn new(context: &StreamContext<'a>, stream: &'a str, since: u64) -> Self {
+    /// Refuses a replica-identity key column that is missing from the
+    /// decode plan: silently skipping one would leave `key_cells` short —
+    /// or, worst case, EMPTY, where the keyless-delete guard is vacuously
+    /// satisfied and a delete keyed on nothing slips through. The stream
+    /// planner already enforces this; repeating it here keeps the guard
+    /// non-vacuous even if a caller reaches the apply machinery directly.
+    pub(super) fn new(
+        context: &StreamContext<'a>,
+        stream: &'a str,
+        since: u64,
+    ) -> Result<Self, SourceError> {
         let key_indices = context
             .identity
             .key
             .iter()
-            .filter_map(|key| {
+            .map(|key| {
                 context
                     .columns
                     .iter()
                     .position(|column| &column.name == key)
+                    .ok_or_else(|| {
+                        errors::fatal(
+                            Phase::Slot,
+                            Some(stream),
+                            format!(
+                                "replica-identity key column `{key}` is missing from the                                  decode plan — every key column must survive the column                                  selection"
+                            ),
+                        )
+                    })
             })
-            .collect();
-        Self {
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self {
             cdc: context.cdc,
             schema: context.config.schema.as_str(),
             stream,
@@ -134,7 +153,7 @@ impl<'a> Apply<'a> {
             ready_rows: Vec::new(),
             last_commit: None,
             transaction_error: None,
-        }
+        })
     }
 
     fn fatal(&self, detail: impl std::fmt::Display) -> SourceError {

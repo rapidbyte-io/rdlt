@@ -75,6 +75,21 @@ corrected (describe, at_connect/at_statement, state.rs) and the
 `direction_max`/`nulls_include`/`collate_byte_order` are KEPT — they share
 the rule's own `transaction_open` assertion shape.
 
+Round 3 (shallow bug scan): four findings, ALL inherited from generation 1
+(verified against the v1 sources). Two hardened in v2 because the fix is
+parity-safe: Apply::new now REFUSES a replica-identity key column missing
+from the decode plan (was a silent filter_map skip whose worst case made
+the keyless-delete guard vacuous); a decimal cursor whose stored watermark
+scale no longer matches the column's is a typed reset-state error (was a
+silent checkpoint stall — cross-scale (scaled, scale) tuples don't order
+numerically). Two documented, not changed: the row-key `|`-join collision
+(the encoding is PERSISTED cursor state — fixing it is a state-format
+change for the OWNER to schedule, shared with generation 1 and reachable
+only by same-watermark composite keys whose rendered text contains the
+separator); and the CDC snapshot single-instant property being best-effort
+after a mid-run transient error (the comment now says so; generation 1
+behaves identically while claiming otherwise).
+
 ## Decision record
 
 - **D1 — new crate, old untouched.** Package `rdlt-connector-postgres-v2`,

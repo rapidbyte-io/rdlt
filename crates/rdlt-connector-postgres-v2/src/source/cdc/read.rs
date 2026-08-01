@@ -264,7 +264,7 @@ pub(super) async fn change_pass(
     let changes = slot::peek(control, context.cdc, target).await?;
     futures::pin_mut!(changes);
 
-    let mut apply = Apply::new(context, stream, since);
+    let mut apply = Apply::new(context, stream, since)?;
     while let Some(change) = changes.try_next().await? {
         let message = pgoutput::parse(&change.data)
             .map_err(|e| errors::fatal(Phase::Decode, Some(stream), e))?;

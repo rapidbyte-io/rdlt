@@ -64,6 +64,13 @@ impl Tracker {
         }
     }
 
+    /// KNOWN SHARED LIMIT (generation 1 identical): neither the `|` join
+    /// separator nor the `∅` NULL sentinel is escaped, so a composite key
+    /// whose rendered values contain those characters can collide two
+    /// distinct rows AT THE SAME WATERMARK and drop one as a duplicate on
+    /// resume. The encoding is PERSISTED in cursor state, so fixing it is a
+    /// state-format change, not a local edit — recorded in the plan's
+    /// review log for the owner, not silently altered here.
     fn row_key(&self, batch: &arrow_array::RecordBatch, row: usize) -> Result<String, SourceError> {
         use arrow_array::Array;
         match &self.spec.key_columns {

@@ -84,7 +84,13 @@ pub(super) struct RunState {
     control: Option<Arc<session::Connection>>,
     pub(super) ensured: Option<slot::EnsureOutcome>,
     /// Open REPEATABLE READ snapshot transaction (first run) — ONE view for
-    /// every CDC table. Arc + drop-on-error like `control`.
+    /// every CDC table on the error-free path. Arc + drop-on-error like
+    /// `control`; after a mid-run transient error the replacement snapshot
+    /// opens at a LATER horizon, so streams that snapshot after the error
+    /// see a newer view than those before it (each stream stays
+    /// individually gap-free — its cursor start precedes its own view; the
+    /// cross-table single-instant property is best-effort under errors,
+    /// exactly as in generation 1).
     snapshot: Option<Arc<session::Connection>>,
     /// The shared snapshot's cursor start point for a PRE-EXISTING slot:
     /// the WAL position read BEFORE the transaction began (its visibility
