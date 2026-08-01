@@ -113,10 +113,15 @@ async fn a_replace_clear_survives_another_tables_mid_unit_evolution() {
             StreamSpec::new("events"),
             vec![MemoryBatch::new(vec![json!({"id": 10})])],
         ),
+        // The delay pins the interleaving: the streams race into one
+        // channel, and `arrivals` must arrive AFTER `events` was
+        // written for its ensure to land mid-unit — without it the pin
+        // could pass vacuously on an unlucky schedule.
         MemoryStream::new(
             StreamSpec::new("arrivals"),
             vec![MemoryBatch::new(vec![json!({"id": 100})]).with_checkpoint(1)],
-        ),
+        )
+        .batch_delay(std::time::Duration::from_millis(500)),
     ]);
     let workdir = tempfile::tempdir().expect("workdir");
     Engine::new(

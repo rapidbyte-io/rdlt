@@ -309,3 +309,28 @@ owner schedules, recorded here so it cannot pass as reviewed-and-fine.
 
 Suite after round 2: 92/92 (three pins added), clippy clean both
 feature shapes.
+
+
+## REVIEW ROUND 3 (verification lens on the round-2 machinery, 2026-08-02) — CLEAN
+
+Eight attack angles against the owed-reclear design, all SOUND: mark
+round-trips across repeated mid-unit ensures lose and duplicate
+nothing (and `reclear_owed` can never intersect `cleared`); every
+error path's abandonment of in-memory marks is safe under the engine's
+fresh-session-per-attempt retry (verified against the loader's drain);
+the phase-2 hoist renders strictly less DDL, never more, and moves
+option validation ahead of any executed statement; DDL failing after
+the rollback leaves nothing dangling; a bare publish-side failure
+leaks only age-reclaimed remote parts (deterministic names +
+OVERWRITE=TRUE + FILES=() make the retry exact); the offline pins bind
+the recorded statement ORDER, not fields. TERMINUS: no defect found.
+
+Two hardening notes taken/recorded: the live cross-table pin's stream
+interleaving is now PINNED with a testkit `batch_delay` on the second
+stream (the race could otherwise let it pass vacuously — the offline
+pin was already deterministic); and `record_created` still REPLACES a
+table's catalog image with `schema.columns`, wiping recorded validity
+columns, so an scd2 re-ensure in one session re-renders no-op ALTERs
+and can trigger a spurious-but-safe rollback/reclear cycle — round
+trips, not correctness; recorded for the owner, deliberately not
+changed inside the review loop.
