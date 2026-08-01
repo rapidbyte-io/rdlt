@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/rdlt-core",
     "crates/rdlt-connector",
+    "crates/rdlt-connector-sdk",
     "crates/rdlt-engine",
     "crates/rdlt",
     "crates/rdlt-testkit",
@@ -36,6 +37,7 @@ memchr = "2"
 # tools/allowed-git-deps.toml.
 rdlt-core = { path = "crates/rdlt-core", version = "0.3.0" }
 rdlt-connector = { path = "crates/rdlt-connector", version = "0.3.0" }
+rdlt-connector-sdk = { path = "crates/rdlt-connector-sdk", version = "0.3.0" }
 rdlt-engine = { path = "crates/rdlt-engine", version = "0.3.0" }
 rdlt = { path = "crates/rdlt", version = "0.3.0" }
 rdlt-testkit = { path = "crates/rdlt-testkit", version = "0.3.0" }

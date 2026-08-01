@@ -4392,6 +4392,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rdlt-connector-sdk"
+version = "0.3.0"
+dependencies = [
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror",
+]
+
+[[package]]
 name = "rdlt-connector-snowflake"
 version = "0.3.0"
 dependencies = [

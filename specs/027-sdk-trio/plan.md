@@ -205,9 +205,37 @@ non-goals with the evidence recorded:
   (duckdb, file ×2, iceberg) whose extractable content is a single
   `.to_string()` — record, no machinery.
 
-What remains for the sdk crate is the config-document seam (evidence
-table below once the study completes) — and the crate ships ONLY what
-that evidence supports. A small honest sdk beats a speculative one.
+CONFIG-DOCUMENT SEAM: EXTRACTED — the one candidate that clears the
+bar, with a decisive twist the evidence forced. All six document types
+(postgres source + destination, rest, file source, iceberg, snowflake)
+hand-roll the same from_yaml/from_json/from_value + validate-once
+triple (18 near-identical fn bodies), BUT the frozen error prefixes
+split across two spelling families ("parsing postgres source config:"
+vs "invalid REST source YAML:") and snowflake's parse errors carry NO
+prefix at all — so a subject-parameterized message template CANNOT
+reproduce them. THE SEAM THEREFORE NEVER RENDERS TEXT: a trait with an
+associated `Error: From<serde_yaml::Error> + From<serde_json::Error>`
+and provided from_yaml/from_json/from_value bodies (parse → validate →
+Ok), with `validate` the required method. Every format string stays in
+its connector's `#[error]` attributes; validation bodies (which need
+crate-private machinery: session::parse, Selector, LocationOptions,
+AuthOptions) stay in-crate. Companion: `schema_of::<T>()` replacing six
+identical config_schema bodies. Adoption notes for Wave 4: pg-dest's
+document type currently does NOT validate in from_* (the seam can
+close that asymmetry or preserve it — decide at adoption); snowflake
+needs a small typed error wrapper with transparent variants (rendered
+bytes identical, including the deliberately-unprefixed parse errors —
+Rust signature change sanctioned by greenfield-no-compat); file-dest
+has no text entry points and stays out unless it opts in; handle-level
+wrappers (2-3 lines each, legitimately divergent return types) stay
+per-connector. A `config_error!` macro for the five 9-line thiserror
+enums was considered and DEFERRED to adoption (the trait is the real
+dedup). The full 20-needle table lives in the study record; the bar
+for adoption is every needle byte-identical.
+
+The sdk crate therefore ships: `config::Document` + `config::schema_of`
+— small and honest, with zero rdlt dependencies (pure serde/schemars),
+which also makes it maximally extraction-ready (D1).
 
 ## Frozen surfaces (the parity bar)
 

@@ -1,0 +1,29 @@
+[package]
+name = "rdlt-connector-sdk"
+description = "rdlt connector authoring scaffolding: the validated config-document seam and schema generation"
+keywords = ["elt", "connector", "sdk", "config"]
+categories = ["database"]
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+schemars = { workspace = true, optional = true }
+
+[dev-dependencies]
+thiserror = { workspace = true }
+
+[lints]
+workspace = true
+
+[features]
+# `schema_of` — JSON Schema generation for config documents. Opt-in so
+# the scaffolding carries no mandatory schemars edge, mirroring the SPI's
+# feature spelling.
+schema = ["dep:schemars"]
