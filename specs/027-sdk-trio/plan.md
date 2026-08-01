@@ -455,7 +455,7 @@ DEFERRED, renumbering forbidden; `verify_source`'s Arrow-payload
 degradation to count-only checking stated in its docs; the scanner's
 shape marker sensitivity to reformatting documented at the marker.
 
-## WAVE 3 — rdlt-testkit-v2 (IN PROGRESS, 2026-08-01)
+## WAVE 3 — rdlt-testkit-v2 (BUILT and GATED, 2026-08-01; swap = owner decision)
 
 Method: the coexisting-crate form (D3's precedent) — `rdlt-testkit-v2`
 written from scratch under the no-copying rule (publish = false,
@@ -531,6 +531,15 @@ loop cannot drop pushes or deadlock, the D8 merge-key fixture is
 correct against sqlcore's identity routing, injector once-only
 semantics hold under Clone. After the round: 8 tests + doctest, zero
 warnings, fmt/clippy/rustdoc clean.
+
+WAVE 3 GATE OF RECORD — TWICE CLEAN, both first attempt (reclaim +
+TIME_WAIT drain between runs): 1014/1014 both (2 skips, both
+#[ignore]d instruments; 1006 + v2's 8, count math verified), semver no
+update required, perf all benches within tolerance, cold start
+23.2/22.6 ms (bar <=40). The crate COEXISTS UNCONSUMED (publish =
+false); the swap — re-pointing the 71 consumer files, renaming, and
+deleting generation 1 — is the owner's call, as with the SPI and both
+connector generations.
 
 ## Waves (each ends with a clean full gate)
 
