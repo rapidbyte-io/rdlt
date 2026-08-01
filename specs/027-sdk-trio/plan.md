@@ -40,6 +40,14 @@ sweeps, semver no update required, perf gate 0 regressed, cold start
 23.6 / 23.9 ms vs the 40 ms bar, exit 0 both. Review round 1 (three
 lenses, record below) closed with all eight findings fixed and pinned.
 
+D9 IMPLEMENTED (owner-directed, ahead of the testkit wave): the four
+gate env knobs deleted from the live tree — testkit's
+`runtime_available()` probes directly, the snowflake credential gate
+keeps its resolution rules and visible skip. The 8 knob-behavior tests
+died with the knobs; the gate then ran TWICE CLEAN at exactly the
+predicted 1019/1019 (both first attempt, cold 24.0 / 23.5 ms, exit 0) —
+the count discipline verifying its own change.
+
 ## Decision record
 
 - D1. EXTRACTION-READINESS is a requirement, not a nice-to-have (owner
