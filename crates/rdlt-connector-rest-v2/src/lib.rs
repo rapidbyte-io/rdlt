@@ -41,7 +41,7 @@
 //!     "base_url: \"https://x\"\nstreams:\n  - name: s\n    path: /a/{id}\n",
 //! )
 //! .unwrap_err();
-//! assert!(err.to_string().contains("parent"));
+//! assert!(err.to_string().contains("no `parent` block declares them"));
 //! ```
 
 pub mod source;

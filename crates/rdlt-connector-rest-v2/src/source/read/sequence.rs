@@ -28,8 +28,9 @@ pub(crate) struct Sequence<'a> {
     /// Set when this sequence is one child of a parent fan-out: its path,
     /// params, and body resolve against these placeholder values.
     parent: Option<&'a ParentValues>,
-    /// Whether extraction should keep parsed record values on the page
-    /// (incremental cursors / parent-child embedding — one parse per page).
+    /// Whether extraction should keep parsed record values on the page,
+    /// so the incremental-cursor and parent-child-embedding consumers
+    /// never reparse the records.
     needs_values: bool,
     /// Params merged into every request (incremental bindings).
     extra_params: Vec<(String, String)>,
@@ -113,13 +114,14 @@ impl<'a> Sequence<'a> {
         }
         let url = self.url_override.clone().unwrap_or_else(|| self.base_url());
 
-        // The same-request guard: a u64 fingerprint of everything that
-        // VARIES between the pages of one sequence — the URL override and
-        // the paginator's parameters. The body template and the parent's
-        // placeholder values are fixed for this sequence's lifetime, and
-        // the seen set is scoped to the same lifetime, so folding them in
-        // cannot change an outcome; rendering the body per page to hash it
-        // only costs work.
+        // The same-request guard: a u64 fingerprint of the URL override,
+        // the paginator's page parameters, and the incremental bindings.
+        // Only the first two vary between the pages of one sequence; the
+        // bindings are fixed but cheap, and folding a fixed component into
+        // every fingerprint cannot change an outcome. The body template
+        // and the parent's placeholder values are likewise fixed and are
+        // left out — rendering the body per page to hash it only costs
+        // work.
         let fingerprint = {
             let mut hasher = DefaultHasher::new();
             url.hash(&mut hasher);
@@ -165,7 +167,10 @@ impl<'a> Sequence<'a> {
             })
             .await;
 
-        let response = response?; // Err = transport-level (no status to match)
+        // Err carries anything WITHOUT a data-response status to match:
+        // transport failures (transient), token-endpoint failures (already
+        // classified), request-build failures (fatal).
+        let response = response?;
         let status = response.status();
         // Reported to the engine UNCLAMPED, deliberately. `retry_after_cap`
         // bounds how long this source will wait in-process; it says nothing

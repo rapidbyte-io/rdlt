@@ -1,6 +1,8 @@
 //! Records extraction. The no-selector passthrough — body bytes stream
 //! through untouched — is the flagship perf path; selector extraction is
-//! one parse + reserialize per page.
+//! one parse + reserialize. (A body-driven paginator parses the body once
+//! more for its cursor — that parse belongs to pagination, not to record
+//! extraction.)
 
 use bytes::Bytes;
 use rdlt_connector::SourceError;
@@ -10,8 +12,8 @@ use crate::source::select::Selector;
 
 /// One page's extraction result: the records-array bytes, the record
 /// count, and — when the caller declared it needs them (incremental
-/// cursors, parent-child) — the parsed record values, so downstream never
-/// reparses the page (one parse per page, total). The passthrough branch
+/// cursors, parent-child) — the parsed record values, so the cursor and
+/// embedding consumers never reparse the records. The passthrough branch
 /// keeps the values regardless: its parse already happened for the count.
 #[derive(Debug)]
 pub(crate) struct Page {

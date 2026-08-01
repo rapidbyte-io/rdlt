@@ -117,8 +117,9 @@ merge), 4 commits. Final state:
    credential re-fetch per send. OAuth2: lazy single-flight cache with
    expiry margin, generation counter so a stale 401 never evicts a fresh
    token; token endpoint shares the read deadline but skips pacing and
-   default headers; endpoint 5xx transient, 4xx fatal naming credentials,
-   missing `access_token` fatal.
+   default headers; endpoint 5xx transient, 429 rate-limited carrying the
+   server's Retry-After (the round-1 amendment), other 4xx fatal naming
+   credentials, missing `access_token` fatal.
 3. CRASH-POINT IDS verbatim: `rest.request`, `rest.decode`,
    `rest.checkpoint`; the registry lists exactly these and the sweep
    pins armed-fire + crash/rerun convergence to exact totals.
@@ -306,3 +307,39 @@ Round 1 (three parallel lenses, 2026-08-01):
   `paginate::Paginator` repeat their module noun (sanctioned in the
   layout above); `paginate::build`'s public `String` error (matches the
   seam shape the composed-example contract exercises).
+
+Round 2 (the five-lens review protocol on the finished tree, 2026-08-01):
+
+- CLAUDE.md COMPLIANCE: one layout item — `read/mod.rs` carried three
+  functions instead of being a pure TOC. Fixed: the per-stream loop moved
+  to `read/delivery.rs`; `mod.rs` is a TOC re-exporting
+  `delivery::{deliver, parse_selector}`. Also tightened the crate-docs
+  doctest to the refusal's exact needle. Everything else verified
+  compliant (Principle V/VI, no unsafe, test layout, gate wiring, D1's
+  zero-diff on generation 1).
+- SHALLOW BUG SCAN: no findings; both round-1 pins verified to fail on
+  the pre-fix code; `replace_tokens` edge cases (adjacent/empty/unclosed/
+  nested tokens) traced sound.
+- HISTORY/LESSONS: every hard-won generation-1 fix (the 014 review ten,
+  020's Retry-After date form and dot-segment escape, 017's
+  classification-preserving child context) and every deliberate
+  NON-feature (no pagination auto-detection, no synthesized "now")
+  verified present in v2 with its regression test. No lesson lost.
+- RECORDED-GUIDANCE RECURRENCE: one hit of the postgres-v2 double-framing
+  class — `fanout::with_parent_context` re-wrapped a rendered
+  `SourceError` in the same variant, printing the classification frame
+  twice. Fixed: context wraps the variant's INNER cause; the
+  non_exhaustive wildcard arm keeps full rendering and goes fatal (the
+  safe direction for an unknown variant). Classes 2–5 (substring
+  matching, truncations, serde-name leaks, feature-combo warnings —
+  the last verified empirically) all clean.
+- COMMENT-CODE CONSISTENCY: four wrong comments fixed (NextUrl resolves
+  against `base_url` not the current URL; README's token-endpoint row
+  now carries the round-1 429 amendment; the "one parse per page, total"
+  claim scoped to record consumers — a body-driven paginator's cursor
+  parse is pagination's, and the double-parse itself is kept as-is for
+  parity; `Client::send`'s `Err` description widened to everything
+  without a data-response status). Four minor inaccuracies fixed
+  (fingerprint contents include the fixed incremental bindings; a
+  beyond-cap 503 surfaces Transient not RateLimited; the loop guard
+  catches non-adjacent cycles too; `Secret`'s home crate named).

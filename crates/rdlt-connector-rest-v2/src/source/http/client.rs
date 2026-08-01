@@ -77,11 +77,13 @@ impl Client {
         *last = Some(Instant::now());
     }
 
-    /// Send with credentials + defaults + pacing. `Err` is TRANSPORT-level
-    /// only (connection failures, classified transient); an HTTP error
-    /// status comes back as `Ok(response)` after the bounded in-source
-    /// handling below, so the caller can match declared response actions on
-    /// the TYPED status before classifying. Retry-After on 429/503 is
+    /// Send with credentials + defaults + pacing. `Err` carries anything
+    /// WITHOUT a data-response status to match — transport failures
+    /// (transient), token-endpoint failures (already classified), request
+    /// build failures (fatal); an HTTP error status comes back as
+    /// `Ok(response)` after the bounded in-source handling below, so the
+    /// caller can match declared response actions on the TYPED status
+    /// before classifying. Retry-After on 429/503 is
     /// honored IN-SOURCE up to the cap (one wait, one retry per send).
     pub async fn send(
         &self,

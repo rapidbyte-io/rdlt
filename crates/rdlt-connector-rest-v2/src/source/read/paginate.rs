@@ -29,7 +29,8 @@ pub enum Decision {
     Done,
     /// Fetch again with these query params merged in.
     NextParams(Vec<(String, String)>),
-    /// Fetch this URL next (absolute, or relative to the current URL).
+    /// Fetch this URL next (absolute, or relative — a relative URL
+    /// resolves against the source `base_url`).
     NextUrl(String),
 }
 

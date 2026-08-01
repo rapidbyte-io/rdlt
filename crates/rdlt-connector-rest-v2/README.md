@@ -68,7 +68,7 @@ the network.
 | `params` | map | `{}` | Query params on every request, merged UNDER stream params the same way. |
 | `max_concurrency` | int ≥ 1 | `1` | Concurrent child sequences during parent-child fan-out. `1` = strictly sequential. `0` is a typed error. Plain (parentless) streams always read sequentially. |
 | `min_request_interval_ms` | ms | `0` | Politeness floor: at least this long between request sends, across ALL streams and children of the source. |
-| `retry_after_cap_secs` | secs | `300` | A 429/503 carrying `Retry-After ≤ cap` is honored in-source — **one** wait, one retry per request. Anything beyond (or a second rate-limit) surfaces as a typed `RateLimited` error to the engine's retry budget. The source never free-loops. |
+| `retry_after_cap_secs` | secs | `300` | A 429/503 carrying `Retry-After ≤ cap` is honored in-source — **one** wait, one retry per request. A 429 beyond the cap (or a second rate-limit) surfaces as a typed `RateLimited` error to the engine's retry budget; a beyond-cap 503 surfaces as its classification, `Transient`. The source never free-loops. |
 | `request_timeout_secs` | secs ≥ 1 | `300` | Read deadline per request: the longest wait for the server to produce MORE bytes (resets on progress, so a large transfer that keeps moving never dies). `0` is refused — no configuration produces an unbounded wait. |
 | `max_pages` | int | `10000` | Per-sequence page guard; exceeding it is a typed error naming the stream (raise it for genuinely long streams). |
 | `streams` | list | required, non-empty | See Stream options. |
@@ -88,7 +88,7 @@ rendering ever contains a secret substring.
 | `header` | `name`, `value` | Arbitrary header credential. |
 | `basic` | `username`, `password` | HTTP Basic. |
 | `api_key` | `name`, `key`, `location: header\|query` (default `header`) | Named credential as a header or query param. |
-| `oauth2_client_credentials` | `token_url`, `client_id`, `client_secret`, `scopes` (`[]`), `audience` (optional), `expiry_margin_secs` (`60`) | Client-credentials grant: token fetched lazily on first use, cached, refreshed `expiry_margin_secs` before expiry, single-flight (one fetch even under concurrent children). A 401 on a data request drops the cache and re-fetches **once**; a second 401 is fatal (wrong credentials, never a loop). Token-endpoint 5xx is transient (engine budget), 4xx fatal. |
+| `oauth2_client_credentials` | `token_url`, `client_id`, `client_secret`, `scopes` (`[]`), `audience` (optional), `expiry_margin_secs` (`60`) | Client-credentials grant: token fetched lazily on first use, cached, refreshed `expiry_margin_secs` before expiry, single-flight (one fetch even under concurrent children). A 401 on a data request drops the cache and re-fetches **once**; a second 401 is fatal (wrong credentials, never a loop). Token-endpoint 5xx is transient (engine budget), 429 is `RateLimited` with the server's Retry-After attached, other 4xx fatal. |
 
 ## Stream options
 
@@ -112,8 +112,9 @@ rendering ever contains a secret substring.
 ## Pagination families
 
 `pagination: {type: <family>, …}`. Two guards protect **every** family: a
-page that would repeat the previous request byte-for-byte is a typed
-error (the API is not advancing), and `max_pages` bounds runaways. There
+page that would repeat ANY earlier request of the sequence byte-for-byte
+is a typed error (the API is not advancing — adjacent repeats and A→B→A
+cycles alike), and `max_pages` bounds runaways. There
 is deliberately **no auto-detection** — a wrong family fails typed, never
 guesses.
 
@@ -205,8 +206,8 @@ read deadline but is deliberately not paced.
 The composition surface is public: `source::Config`/`source::Rest`
 (config generators — see the MiniHub example in
 `tests/cases/test_children.rs`), the `read::paginate::Paginator` trait
-for API quirks, `Secret` for credentials, and `source::config_schema()`
-for embedders. A wrapper connector writes **no** HTTP.
+for API quirks, `rdlt_connector::Secret` for credentials, and
+`source::config_schema()` for embedders. A wrapper connector writes **no** HTTP.
 
 ## Verification records
 

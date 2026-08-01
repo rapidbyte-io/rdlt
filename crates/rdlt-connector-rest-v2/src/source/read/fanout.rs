@@ -167,21 +167,33 @@ async fn read_child_pages(
 /// the engine will treat it: a transient or rate-limited child error keeps
 /// its variant (and any `retry_after`) so the run still spends its retry
 /// budget rather than aborting; only an already-fatal error stays fatal.
+///
+/// Context wraps the variant's INNER cause, not its rendered Display —
+/// rebuilding the same variant around its own rendering would print the
+/// classification frame twice ("transient source error: …: transient
+/// source error: …").
 fn with_parent_context(
     error: SourceError,
     stream: &str,
     parent_values: &ParentValues,
 ) -> SourceError {
-    let message = format!(
-        "child stream `{stream}` failed for parent ({}): {error}",
+    let context = format!(
+        "child stream `{stream}` failed for parent ({})",
         resolve::describe(&parent_values.placeholders)
     );
     match error {
-        SourceError::Transient(_) => SourceError::transient(message),
-        SourceError::RateLimited { retry_after, .. } => SourceError::RateLimited {
+        SourceError::Transient(inner) => SourceError::transient(format!("{context}: {inner}")),
+        SourceError::RateLimited {
             retry_after,
-            source: message.into(),
+            source,
+        } => SourceError::RateLimited {
+            retry_after,
+            source: format!("{context}: {source}").into(),
         },
-        _ => SourceError::fatal(message),
+        SourceError::Fatal(inner) => SourceError::fatal(format!("{context}: {inner}")),
+        // `SourceError` is non_exhaustive: an unknown future variant keeps
+        // its whole rendering (frame included) rather than losing its
+        // classification — fatal is the safe direction for the unknown.
+        other => SourceError::fatal(format!("{context}: {other}")),
     }
 }
