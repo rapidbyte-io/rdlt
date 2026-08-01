@@ -693,7 +693,33 @@ pinned the spelling.
 the publish" — the script's TruncateStage steps DO write stages at the
 tail; reworded to the true reason (nothing writes a stage before the
 steps that read it). Conclusion was correct; reason was not.
-Sweeps for further instances of both violation classes: none.
+Sweeps for further instances of the two RULE classes (stutter, clause
+IDs in rendered strings): none. Round 2's verify lens found the COMMENT
+class had one more instance — duckdb's commit path carried the same
+wrong staged-invariance premise (same shared planner, same true
+conclusion); reworded there too. A comment fix, not sdk adoption —
+duckdb's rewrite scope is untouched.
+
+ROUND 2 (fix verification + silent-failure hunt). Fixes 1-2 verified
+clean (rename complete, no Shell ambiguity — every site uses the
+module-qualified path; no pin held the old E1 spelling). TWO new
+findings, both fixed:
+(4) the duckdb staged-invariance comment (the round-1 comment class's
+one further instance — see the corrected sweep note above).
+(5) REAL HARNESS HOLE, inherited from generation 1: `read_all` exited
+when the record channel drained and DROPPED the still-pending read
+future — a source that fails after dropping its output handle (teardown
+error after the last push) certified CLEAN, with its teardown cancelled
+mid-flight. The verdict now waits for the read to finish (bounded 5 s,
+the S4 posture) so a post-drop error fails certification by name. Pin:
+`a_source_that_fails_after_dropping_its_feed_is_not_certified`. The
+sdk-shell path was never exposed (the shell holds the Feed until
+read_stream returns); the hole was open only to hand-written SPI
+sources — which the kit exists to certify.
+Silent-failure lens otherwise CLEAN: gate probe-false is always a
+visible skip; pipeline_spec arms preserve full rendered messages;
+channel close paths cannot masquerade as success; verify_destination
+records every fallible step.
 
 ## CLOSE-OUT — 027 COMPLETE on branch `027-sdk-trio` (2026-08-01)
 

@@ -98,9 +98,21 @@ async fn read_all<S: Source>(
     if !current.is_empty() {
         observed.groups.push((std::mem::take(&mut current), None));
     }
-    if let Some(Err(e)) = read_result {
-        return Err(e);
-    }
+    // The channel drains the moment every sender drops — which can happen
+    // BEFORE the read future returns (a source that moves its handle out,
+    // drops it after the last push, and then fails in teardown). Dropping
+    // the future here would cancel that teardown and certify the failure
+    // away, so the verdict waits for the read to actually finish — bounded,
+    // matching the suite's S4 posture, so a source that hangs after
+    // dropping its handle surfaces as a named failure.
+    let read_result = match read_result {
+        Some(result) => result,
+        None => tokio::time::timeout(std::time::Duration::from_secs(5), &mut reader)
+            .await
+            .map_err(|_| "source did not return after dropping its output handle".to_owned())
+            .and_then(|result| result.map_err(|e| format!("source read failed: {e}"))),
+    };
+    read_result?;
     Ok(observed)
 }
 

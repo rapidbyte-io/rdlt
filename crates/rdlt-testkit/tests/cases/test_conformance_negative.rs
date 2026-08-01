@@ -205,3 +205,42 @@ async fn an_open_failure_is_attributed_to_the_clause_it_sets_up() {
         "the first open serves the D6 fresh-state check, not D4 teardown: {failures:?}"
     );
 }
+
+/// Fails AFTER dropping its output handle: the rows all arrive, the
+/// channel drains, and only then does the read return an error. Pins the
+/// harness hole round 2 closed: `read_all` used to break on the drained
+/// channel and drop the still-pending future, certifying the failure
+/// away (and cancelling the source's teardown mid-flight).
+struct TeardownFailingSource;
+
+#[async_trait]
+impl Source for TeardownFailingSource {
+    fn spec(&self) -> ConnectorSpec {
+        ConnectorSpec::new("teardown-failing", "0.0.0")
+    }
+
+    async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
+        Ok(vec![StreamSpec::new("events")])
+    }
+
+    async fn read(&self, req: ReadRequest) -> Result<(), SourceError> {
+        let mut out = req.out;
+        if out.rows([json!({"a": 1})]).await.is_err() {
+            return Ok(());
+        }
+        let _ = out.checkpoint(rdlt_connector::Cursor::new(1)).await;
+        drop(out); // every sender gone — the harness channel drains NOW
+        Err(SourceError::fatal("teardown failed after the last push"))
+    }
+}
+
+#[tokio::test]
+async fn a_source_that_fails_after_dropping_its_feed_is_not_certified() {
+    let failures = verify_source(&TeardownFailingSource).await;
+    assert!(
+        failures
+            .iter()
+            .any(|f| f.clause == "S1" && f.message.contains("teardown failed")),
+        "the post-drop error must fail certification, got: {failures:?}"
+    );
+}
