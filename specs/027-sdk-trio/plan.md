@@ -66,6 +66,18 @@ one already formatting through Display). Workspace: 0 errors, 0 clippy
 warnings, fmt clean; 989/989 tests (the pre-swap 1019 minus generation
 1's own 30 — v2's 41 were already in the count as a member).
 
+GATE OF RECORD: `make check` TWICE CLEAN on the swapped tree — gate #1
+first attempt (989/989, semver no update at 0.3.0, perf 0 regressed,
+cold 23.7 ms, exit 0); gate #2 on its THIRD attempt (989/989, cold
+22.9 ms, exit 0). Both failed attempts were the recorded rootlessport
+environment flake on the same RUSTFS cell
+(`file_dest_s3_path_survives_crash_sweep`), never the code: attempt 1 a
+port-bind collision (port 43651, mechanism 2 — zero containers, zero
+orphan processes at failure), attempt 2 a dropped podman API connection
+(`hyper IncompleteMessage`) under the day's repeated full-gate load; the
+cell passed in isolation between attempts, podman probed healthy, and
+each rerun followed a TIME_WAIT drain. Recorded, not re-rolled.
+
 ## Decision record
 
 - D1. EXTRACTION-READINESS is a requirement, not a nice-to-have (owner
