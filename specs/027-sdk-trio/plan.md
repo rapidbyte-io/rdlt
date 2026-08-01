@@ -170,6 +170,45 @@ each rerun followed a TIME_WAIT drain. Recorded, not re-rolled.
     presence), unified on one read convention (set-to-`1` enables); the
     tool vars `RDLT_REPIN`, `RDLT_BENCH_FORCE`, `RDLT_INTEROP_PYTHON`.
 
+## WAVE 2 — rdlt-connector-sdk: the D5 evidence record
+
+D5 demands proof of two-plus message-identical implementations before
+anything is extracted. The study ran read-only over all six connectors;
+two of the three candidate extractions FAILED the bar and are hereby
+non-goals with the evidence recorded:
+
+- CURSOR WATERMARKING: NOT EXTRACTED. REST's cursor module is 41 lines
+  of stringly max-observed over `Option<String>` (order-agnostic,
+  lexicographic, bare-string persistence); postgres's is ~800 lines of
+  typed `Scalar` watermark with FROZEN tagged serde, boundary-key dedup
+  (strict-vs-inclusive resume), direction awareness (min-ward cursors
+  exist), order-dependence with a typed integrity failure, and
+  checkpoint-signature dedup. The shared concept — max-observed, never
+  move backwards — is two one-line comparisons in REST and an EMERGENT
+  property in postgres (stream ordering + `is_beyond` + the regression
+  guard). An extracted kernel would replace ~4 REST lines, be unusable
+  by the postgres tracker, and share no persistence. Forced extraction
+  rejected.
+- PHASE-TAGGED ERROR SKELETON: NOT EXTRACTED. Only postgres's two
+  halves share the phase shape, and even they differ (phase
+  vocabularies, table clause, classify entry points). The other five
+  connectors classify on five different keys (HTTP status class,
+  `ErrorKind`+code allowlist, `ErrorKind`+context-parsed status, message
+  prefix, `io::ErrorKind`) and render frames a shared skeleton could
+  not reproduce verbatim — and a `detail: String` skeleton would BREAK
+  snowflake's `code_in`, which downcasts the preserved library error
+  from the source chain. The honest convergences, recorded as Wave-4
+  adoption items instead: (1) `SourceError::context()` /
+  `DestinationError::context()` — shipped in the SPI, zero connector
+  call sites yet; REST's `with_parent_context` is its one hand-rolled
+  duplicate; (2) a four-way one-line `fatal(impl Display)` shim
+  (duckdb, file ×2, iceberg) whose extractable content is a single
+  `.to_string()` — record, no machinery.
+
+What remains for the sdk crate is the config-document seam (evidence
+table below once the study completes) — and the crate ships ONLY what
+that evidence supports. A small honest sdk beats a speculative one.
+
 ## Frozen surfaces (the parity bar)
 
 1. ERROR RENDERING, verbatim: the six classification frames
