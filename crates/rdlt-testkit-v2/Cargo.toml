@@ -1,0 +1,21 @@
+[package]
+name = "rdlt-testkit-v2"
+description = "rdlt test kit, second generation: memory connectors, conformance suites, crash injection, and the container-gate posture"
+# Coexists UNCONSUMED beside generation 1 until the owner-decided swap;
+# never published under this name.
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rdlt-connector = { workspace = true }
+arrow = { workspace = true, features = ["json"] }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[lints]
+workspace = true

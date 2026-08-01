@@ -4492,6 +4492,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rdlt-testkit-v2"
+version = "0.3.0"
+dependencies = [
+ "arrow",
+ "async-trait",
+ "rdlt-connector",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "redox_syscall"
 version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

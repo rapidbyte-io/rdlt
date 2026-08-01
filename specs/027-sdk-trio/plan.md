@@ -455,6 +455,59 @@ DEFERRED, renumbering forbidden; `verify_source`'s Arrow-payload
 degradation to count-only checking stated in its docs; the scanner's
 shape marker sensitivity to reformatting documented at the marker.
 
+## WAVE 3 — rdlt-testkit-v2 (IN PROGRESS, 2026-08-01)
+
+Method: the coexisting-crate form (D3's precedent) — `rdlt-testkit-v2`
+written from scratch under the no-copying rule (publish = false,
+UNCONSUMED; the 71-file consumer re-point is the swap, owner-decided).
+Dossier verified against the live tree before writing:
+
+- CONSUMED SURFACE (the swap's whole blast radius): the root re-exports
+  (Memory{Batch,Stream,Source,Destination}, Row, CrashDestination,
+  FaultPoint, TableProbe, assert_conformant, verify_source,
+  verify_destination, batch_of, commit_meta_for, schema_for,
+  armed_crash_points, assert_registry_matches_sources) plus
+  `gate::{RECLAIM_LABEL, runtime_available}` and the module paths
+  `conformance::{dest,source}::verify_*`, `memory::{...}`.
+- FROZEN (behavior + spellings, no consumer pins them but the frozen-
+  surface discipline holds): clause rendering `violates clause {id}:`,
+  the assert_conformant panic listing, the scanner's three assertion
+  messages and vacuity guard (`no crash-point sites found` IS pinned by
+  a should_panic), the memory connectors' injected-failure spellings,
+  E1 refusal wording, gate posture (knobless per D9), RECLAIM_LABEL.
+- SCANNER DO-NOT-SIMPLIFY (024): two directions not set-equality (three
+  postgres points armed indirectly), declaration blocks located by
+  SHAPE (`: &[&str] = &[`) and excluded (the engine declares its list
+  in its test file), one assertion per CRATE against the union, two
+  arming spellings + the vacuity guard that makes a third surface as
+  failure. All four survive the rewrite verbatim-in-design.
+- LEDGERED CHANGES (rule 5 both ways, the D2 bar): module
+  `conformance::dest` → `conformance::destination` (the 025 dest→
+  destination precedent; consumer-visible, re-pointed at swap); file
+  layout crash/{injector,registry}.rs and memory/destination.rs
+  (private modules, invisible); the DEAD direct `rdlt-core` manifest
+  dependency REMOVED (D1 applied to ourselves — testkit source already
+  reaches vocabulary only through `rdlt_connector::core`); `memory`'s
+  submodules go PRIVATE behind the module's re-exports (one canonical
+  path; the deep paths `memory::{dest,source}::*` have zero consumers,
+  `SinceLog` is only ever reached through `since_log()` and is now
+  re-exported at `memory::SinceLog`); everything else KEPT — verified by
+  a mechanical public-item diff between the generations whose only
+  deltas are these two ledger entries.
+- DOSSIER IMPROVEMENTS (contracts intact): ONE logical→Arrow fixture
+  derivation shared by `batch_of` and the conformance fixture (was two
+  parallel ones); conformance module docs claim EXACTLY the asserted
+  clauses (S1/S2/S4, D1–D6/D8 — adding clauses DEFERRED, renumbering
+  FORBIDDEN); verify_source's Arrow count-only degradation stated in
+  its docs; the scanner's shape-marker reformat sensitivity documented
+  at the marker; `commit_meta_for` derives through `StateDoc::new`
+  instead of a hand-built literal (same bytes: format_version 1, empty
+  maps, engine_version "test").
+- PARITY PROOF: the testkit's own three suites ported byte-identical
+  (modulo crate name) — conformance-memory, conformance-negative,
+  scanner-selfcheck with its per-crate EXPECTED_DIRECT_NAMES counts
+  unchanged (same tree scanned).
+
 ## Waves (each ends with a clean full gate)
 
 1. `rdlt-connector` rewritten; consumers ported (engine, 6 connectors,
