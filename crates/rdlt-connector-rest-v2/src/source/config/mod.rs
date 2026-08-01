@@ -1,7 +1,7 @@
 //! The REST source document: vocabulary + the one validation gate.
 //!
-//! [`vocabulary`] holds every config type with its frozen serde spelling;
-//! [`validate`] is the single gate every entry point (`from_yaml`,
+//! `vocabulary` holds every config type with its frozen serde spelling;
+//! `validate` is the single gate every entry point (`from_yaml`,
 //! `from_json`, `from_value`, `Rest::new`) runs, so an invariant the read
 //! path relies on is checked exactly once, at parse time.
 

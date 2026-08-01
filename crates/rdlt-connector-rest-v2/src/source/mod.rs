@@ -3,8 +3,8 @@
 //! Substrate first: [`config`] is the document vocabulary and its ONE
 //! validation gate, [`select`] the JSONPath-subset selector both the
 //! document and the read path use, [`http`] request execution (credential
-//! attachment, pacing, bounded waits, classification). [`read`] drives the
-//! paginated read loop over them; [`connector`] is the SPI face.
+//! attachment, pacing, bounded waits, classification). `read` drives the
+//! paginated read loop over them; `connector` is the SPI face.
 
 pub mod config;
 mod connector;

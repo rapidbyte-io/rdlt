@@ -1,6 +1,6 @@
-//! The send loop: ONE configured HTTP client per source document — reqwest
-//! + credentials + source-level defaults + pacing state — with every
-//! in-source wait bounded by construction.
+//! The send loop: ONE configured HTTP client per source document (reqwest,
+//! credentials, source-level defaults, pacing state) with every in-source
+//! wait bounded by construction.
 
 use std::time::{Duration, Instant};
 

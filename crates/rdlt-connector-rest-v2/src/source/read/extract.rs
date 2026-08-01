@@ -148,20 +148,22 @@ mod tests {
         assert!(error.contains("records_path"), "{error}");
         // Selector landing on a scalar: typed with the [*] hint.
         let selector = Selector::parse("a").unwrap();
-        let error = page(&body, Some(&selector), false)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("non-array") && error.contains("[*]"), "{error}");
+        let error = page(&body, Some(&selector), false).unwrap_err().to_string();
+        assert!(
+            error.contains("non-array") && error.contains("[*]"),
+            "{error}"
+        );
     }
 
     #[test]
     fn no_match_names_path_and_shape() {
         let body = Bytes::from(serde_json::to_vec(&json!({"meta": 1, "rows": []})).unwrap());
         let selector = Selector::parse("data.items").unwrap();
-        let error = page(&body, Some(&selector), false)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("data.items") && error.contains("meta"), "{error}");
+        let error = page(&body, Some(&selector), false).unwrap_err().to_string();
+        assert!(
+            error.contains("data.items") && error.contains("meta"),
+            "{error}"
+        );
     }
 
     #[test]

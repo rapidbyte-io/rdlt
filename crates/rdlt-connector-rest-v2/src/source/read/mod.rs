@@ -1,9 +1,9 @@
 //! The per-stream read loop: dispatches a stream to a parentless sequence
 //! or a parent-child fan-out, tracks the incremental cursor, and
-//! checkpoints. The request sequence itself lives in [`sequence`]; the
-//! fan-out in [`fanout`]; placeholder resolution in [`resolve`]; the
-//! paginator families in [`paginate`]; record extraction in [`extract`];
-//! cursor tracking in [`cursor`].
+//! checkpoints. The request sequence itself lives in `sequence`; the
+//! fan-out in `fanout`; placeholder resolution in `resolve`; the
+//! paginator families in [`paginate`]; record extraction in `extract`;
+//! cursor tracking in `cursor`.
 
 pub(crate) mod cursor;
 pub(crate) mod extract;
@@ -57,8 +57,14 @@ pub(crate) async fn deliver(
                     ))
                 })?;
             let mut parent_values = Vec::new();
-            fanout::collect_parents(config, client, parent_stream, parent_link, &mut parent_values)
-                .await?;
+            fanout::collect_parents(
+                config,
+                client,
+                parent_stream,
+                parent_link,
+                &mut parent_values,
+            )
+            .await?;
             // Every child window starts at the SAME resume point (the
             // committed cursor / initial_value already seeded into
             // max_cursor) — never at a sibling's in-flight progress.

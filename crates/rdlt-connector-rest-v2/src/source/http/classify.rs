@@ -16,10 +16,7 @@ pub(crate) fn transport(error: reqwest::Error) -> SourceError {
 /// everything else is fatal. Taken from parts because the response body may
 /// already be consumed by the time an undeclared error status is
 /// classified.
-pub(crate) fn status(
-    status: reqwest::StatusCode,
-    retry_after: Option<Duration>,
-) -> SourceError {
+pub(crate) fn status(status: reqwest::StatusCode, retry_after: Option<Duration>) -> SourceError {
     if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
         return SourceError::RateLimited {
             retry_after,

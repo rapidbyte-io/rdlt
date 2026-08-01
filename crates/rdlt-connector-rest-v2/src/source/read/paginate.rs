@@ -35,8 +35,8 @@ pub enum Decision {
 
 /// Why a paginator could not decide the next page. Both variants are
 /// fatal: a wrong-typed cursor or next-url is an API-contract violation
-/// retrying cannot fix; the single call site ([`super::sequence`]) maps
-/// them to `SourceError::fatal`.
+/// retrying cannot fix; the single call site (the read loop's request
+/// sequence) maps them to `SourceError::fatal`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Error {
     /// A body cursor value was neither a string nor a number.

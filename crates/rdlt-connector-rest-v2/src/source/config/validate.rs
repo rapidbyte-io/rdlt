@@ -319,7 +319,10 @@ mod tests {
                 "streams": [{"name": "s", "path": "/s"}],
             });
             let message = err(source_level);
-            assert!(message.contains("auth:"), "{header} source-level: {message}");
+            assert!(
+                message.contains("auth:"),
+                "{header} source-level: {message}"
+            );
 
             let per_stream = serde_json::json!({
                 "base_url": "https://x",
