@@ -27,8 +27,9 @@
 //! WHAT STAYS IN THE CONNECTOR, deliberately: every frozen message
 //! spelling, error classification keys, cursor machinery, and SQL
 //! planning. The framework is choreography and plumbing — it renders no
-//! operator-facing text of its own beyond the two refusals it owns
-//! (unknown stream, write-before-ensure).
+//! operator-facing text of its own beyond the one refusal it owns
+//! (write-before-ensure); even the unknown-stream refusal is the
+//! connector's, worded where the config's shape is known.
 
 // Warn, not deny: an undocumented public item is a gap to fill, not a
 // reason to fail a contributor's build. `make docs` is where the

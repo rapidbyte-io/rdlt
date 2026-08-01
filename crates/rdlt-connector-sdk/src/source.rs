@@ -257,7 +257,7 @@ mod tests {
         }
     }
 
-    /// A closed host channel surfaces as Break from every Feed method —
+    /// A closed host channel surfaces as Break from EVERY Feed method —
     /// the connector returns Ok, exactly the SPI's cancellation
     /// contract.
     #[tokio::test]
@@ -271,5 +271,77 @@ mod tests {
                 .await
                 .is_break()
         );
+        assert!(
+            feed.raw_json(bytes::Bytes::from_static(b"{}\n"))
+                .await
+                .is_break()
+        );
+        assert!(feed.arrow(rdlt_testkit::batch_of(&[1])).await.is_break());
+    }
+
+    /// A source-native Arrow batch flows through the Feed unrepackaged.
+    #[tokio::test]
+    async fn an_arrow_batch_arrives_as_arrow() {
+        let (out, mut input) = rdlt_connector::records_channel(1 << 16);
+        let mut feed = Feed::new(out);
+        assert!(
+            feed.arrow(rdlt_testkit::batch_of(&[1, 2, 3]))
+                .await
+                .is_continue()
+        );
+        drop(feed);
+        let push = input.recv().await.expect("one push");
+        match push.payload {
+            rdlt_connector::PushPayload::Arrow(batch) => assert_eq!(batch.num_rows(), 3),
+            other => panic!("arrow stays arrow: {other:?}"),
+        }
+    }
+
+    /// A connector that DOES declare a schema and a real probe sees both
+    /// carried by the shell — the None/Ok defaults above are defaults,
+    /// not the wiring.
+    #[tokio::test]
+    async fn the_shell_carries_a_declared_schema_and_check_verdict() {
+        struct Declared;
+
+        #[async_trait]
+        impl SourceConnector for Declared {
+            const NAME: &'static str = "declared";
+            const VERSION: &'static str = "0.0.0";
+            type Config = ProbeConfig;
+
+            fn assemble(_config: ProbeConfig) -> Result<Self, ProbeError> {
+                Ok(Self)
+            }
+
+            fn config_schema() -> Option<serde_json::Value> {
+                Some(serde_json::json!({"type": "object"}))
+            }
+
+            async fn check(&self) -> Result<(), SourceError> {
+                Err(SourceError::fatal("declared probe refuses"))
+            }
+
+            async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
+                Ok(vec![])
+            }
+
+            async fn read_stream(
+                &self,
+                _stream: &StreamSpec,
+                _since: Option<Cursor>,
+                _feed: &mut Feed,
+            ) -> Result<(), SourceError> {
+                Ok(())
+            }
+        }
+
+        let source = shell(Declared);
+        assert_eq!(
+            source.spec().config_schema,
+            Some(serde_json::json!({"type": "object"}))
+        );
+        let refused = source.check().await.expect_err("the override propagates");
+        assert!(refused.to_string().contains("declared probe refuses"));
     }
 }

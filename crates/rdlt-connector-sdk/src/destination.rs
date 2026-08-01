@@ -19,6 +19,12 @@
 //! them, and a transactional backend should keep its own internal
 //! receipt guard as defense in depth (the framework's replay check is
 //! the protocol fast path, not a substitute for a transactional one).
+//!
+//! NOTE on proof: the black-box conformance kit cannot distinguish the
+//! framework's replay choreography from a coincidentally-idempotent
+//! backend, so the choreography's call ordering is pinned by its own
+//! spy-backend suite (`tests/cases/test_session_choreography.rs`), not
+//! by the kit alone.
 
 use async_trait::async_trait;
 use rdlt_connector::core::{
@@ -98,14 +104,35 @@ pub trait Backend: Send {
 
     /// The receipt this `(load_id, commit_seq)` already published under,
     /// if it did — the crash-recovery replay the framework consults
-    /// BEFORE publishing. Backends whose receipts live in the same
-    /// transaction as their publish keep their internal guard too; this
-    /// is the protocol fast path.
+    /// BEFORE publishing. A LOOKUP ONLY: side effects a replayed commit
+    /// still needs belong in [`Backend::replay`], which the framework
+    /// calls next. Backends whose receipts live in the same transaction
+    /// as their publish keep their internal guard too; this is the
+    /// protocol fast path.
     async fn existing_receipt(
         &mut self,
         load_id: &LoadId,
         commit_seq: u64,
     ) -> Result<Option<CommitReceipt>, DestinationError>;
+
+    /// Housekeeping for a REPLAYED commit — called when
+    /// [`Backend::existing_receipt`] found `receipt`, before the
+    /// framework returns it instead of publishing. A replay is not
+    /// always a no-op: a backend that stages into scratch tables must
+    /// still clear the redelivered rows (or a later genuine commit
+    /// finds and publishes them twice), and a backend keeping in-memory
+    /// once-per-load guards must re-mark them so the rest of THIS
+    /// session sees the replayed unit as done. The default does
+    /// nothing, which is correct for backends that publish directly
+    /// into the target.
+    async fn replay(
+        &mut self,
+        meta: &CommitMeta,
+        receipt: &CommitReceipt,
+    ) -> Result<(), DestinationError> {
+        let _ = (meta, receipt);
+        Ok(())
+    }
 
     /// Atomically publish everything staged since the last commit AND
     /// persist `meta.state`, returning the new receipt.
@@ -195,12 +222,15 @@ impl<B: Backend> LoadSession for Session<B> {
     async fn commit(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestinationError> {
         // Clause D3, as choreography: an at-least-once re-commit of the
         // same (load_id, commit_seq) returns the receipt it already
-        // earned; nothing republishes.
+        // earned; nothing republishes. The backend's replay hook runs
+        // first — redelivered staging must be cleared and once-per-load
+        // guards re-marked even though the publish is skipped.
         if let Some(receipt) = self
             .backend
             .existing_receipt(&meta.load_id, meta.commit_seq)
             .await?
         {
+            self.backend.replay(&meta, &receipt).await?;
             return Ok(receipt);
         }
         self.backend.publish(meta).await
@@ -211,5 +241,122 @@ impl<B: Backend> LoadSession for Session<B> {
         pipeline: &PipelineId,
     ) -> Result<Option<StateDoc>, DestinationError> {
         self.backend.read_state(pipeline).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug, serde::Deserialize)]
+    struct ProbeConfig {}
+
+    #[derive(Debug, thiserror::Error)]
+    enum ProbeError {
+        #[error("probe yaml: {0}")]
+        Yaml(#[from] serde_yaml::Error),
+        #[error("probe json: {0}")]
+        Json(#[from] serde_json::Error),
+    }
+
+    impl Document for ProbeConfig {
+        type Error = ProbeError;
+        fn validate(&self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+
+    struct Probe;
+    struct ProbeBackend;
+
+    #[async_trait]
+    impl Backend for ProbeBackend {
+        async fn ensure_table(
+            &mut self,
+            _schema: &TableSchema,
+            _mode: &WriteMode,
+        ) -> Result<(), DestinationError> {
+            Ok(())
+        }
+        async fn write(
+            &mut self,
+            _table: &TableName,
+            _batch: RecordBatch,
+        ) -> Result<(), DestinationError> {
+            Ok(())
+        }
+        async fn existing_receipt(
+            &mut self,
+            _load_id: &LoadId,
+            _commit_seq: u64,
+        ) -> Result<Option<CommitReceipt>, DestinationError> {
+            Ok(None)
+        }
+        async fn publish(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestinationError> {
+            Ok(CommitReceipt {
+                load_id: meta.load_id,
+                commit_seq: meta.commit_seq,
+            })
+        }
+        async fn read_state(
+            &mut self,
+            _pipeline: &PipelineId,
+        ) -> Result<Option<StateDoc>, DestinationError> {
+            Ok(None)
+        }
+    }
+
+    #[async_trait]
+    impl DestinationConnector for Probe {
+        const NAME: &'static str = "probe";
+        const VERSION: &'static str = "9.9.9";
+        type Config = ProbeConfig;
+        type Backend = ProbeBackend;
+
+        fn assemble(_config: ProbeConfig) -> Result<Self, ProbeError> {
+            Ok(Self)
+        }
+
+        fn config_schema() -> Option<serde_json::Value> {
+            Some(serde_json::json!({"type": "object"}))
+        }
+
+        fn capabilities(&self) -> DestinationCapabilities {
+            DestinationCapabilities::default().with_structs(true)
+        }
+
+        async fn check(&self) -> Result<(), DestinationError> {
+            Err(DestinationError::fatal("probe refuses"))
+        }
+
+        async fn connect(&self, _context: &OpenContext) -> Result<ProbeBackend, DestinationError> {
+            Ok(ProbeBackend)
+        }
+    }
+
+    /// The shell serves spec, capabilities, and check from the
+    /// connector's OWN declarations — non-default values chosen so
+    /// replacing any delegation with a default would fail here.
+    #[tokio::test]
+    async fn the_shell_serves_the_spi_from_the_connector_parts() {
+        let destination = shell(Probe);
+        let spec = destination.spec();
+        assert_eq!(
+            (spec.name.as_str(), spec.version.as_str()),
+            ("probe", "9.9.9")
+        );
+        assert_eq!(
+            spec.config_schema,
+            Some(serde_json::json!({"type": "object"}))
+        );
+        assert!(
+            destination.capabilities().structs,
+            "the declared capabilities, not a default"
+        );
+        let refused = destination
+            .check()
+            .await
+            .expect_err("the override propagates");
+        assert!(refused.to_string().contains("probe refuses"));
     }
 }

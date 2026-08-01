@@ -3,3 +3,4 @@
 
 mod example;
 mod test_framework_conformance;
+mod test_session_choreography;

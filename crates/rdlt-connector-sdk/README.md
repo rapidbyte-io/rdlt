@@ -33,8 +33,10 @@ each push returns `ControlFlow`, and `Break` means the host hung up.
 (the system IO: ensure, write, publish, receipts, state) and the SDK's
 session choreography enforces the conformance clauses by construction:
 a write to a never-ensured table is refused, and a re-committed
-`(load_id, commit_seq)` returns its existing receipt before anything
-republishes. Atomicity and staging invisibility remain the backend's
+`(load_id, commit_seq)` runs the backend's replay housekeeping
+(clearing redelivered staging, re-marking once-per-load guards) and
+returns its existing receipt — the publish is never reached.
+Atomicity and staging invisibility remain the backend's
 storage contract — properties no wrapper can add — and the kits verify
 them.
 

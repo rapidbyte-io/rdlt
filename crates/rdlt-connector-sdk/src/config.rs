@@ -173,7 +173,8 @@ mod tests {
     }
 
     /// Parse errors surface through the connector's OWN From impls — the
-    /// seam adds no framing of its own.
+    /// seam adds no framing of its own. The value path's shape mismatch
+    /// is a parse error too, absorbed the same way.
     #[test]
     fn parse_errors_keep_the_connector_wording() {
         let yaml = Probe::from_yaml(": not yaml").unwrap_err();
@@ -182,6 +183,9 @@ mod tests {
         assert!(json.to_string().starts_with("probe json: "), "{json}");
         assert!(matches!(yaml, ProbeError::Yaml(_)));
         assert!(matches!(json, ProbeError::Json(_)));
+        let value = Probe::from_value(serde_json::json!({"name": 7})).unwrap_err();
+        assert!(value.to_string().starts_with("probe json: "), "{value}");
+        assert!(matches!(value, ProbeError::Json(_)));
     }
 
     /// A valid document comes back parsed, from any form, including the

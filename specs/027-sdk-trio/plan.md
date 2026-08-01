@@ -250,6 +250,42 @@ framework passes BOTH rdlt-testkit conformance kits, plus the
 choreography-refusal pin. 10 tests + doctest, zero warnings across
 feature shapes.
 
+WAVE 2 REVIEW ROUND (three lenses: correctness/contract, API+adoption
+fitness, test adequacy). Correctness CLEAN — choreography ordering,
+Feed's Break-only closed-channel mapping, bare-`?` error pass-through
+(no rewording), and the Send-not-Sync Backend bound all verified
+against the SPI and the real Wave-4 candidate crates; the non-async
+`assemble` was checked against postgres/rest (both construct
+synchronously) and is not a blocker. FOUR findings fixed, each pinned:
+(1) `Session::commit` hardcoded discard-style replay — a staged
+backend (duckdb's RunScript shape) could not clear redelivered staging
+on a replayed commit, and postgres's replay branch must re-mark its
+in-memory `single_unit_done` guards; FIX: `Backend::replay(meta,
+receipt)` hook (default no-op — correct for direct-publish backends),
+called between the receipt hit and the return; `existing_receipt`
+docs now say LOOKUP ONLY. (2) The D3 fast path was DELETABLE without
+any test failing — the black-box kit cannot distinguish framework
+choreography from the example's coincidentally-idempotent backend;
+FIX: spy-backend suite `tests/cases/test_session_choreography.rs`
+pins the exact call sequences (first commit = lookup→publish; replay =
+lookup→replay, NO publish; lookup error = no publish; ensure-`a`-
+write-`b` refused BEFORE backend IO; ensured set dies with its
+session). The dest module doc now states the kit-can't-see-D3 fact.
+(3) The `schema`-feature test was GATE-DEAD (no gate command enables
+the feature — the 024 zero-second-pass class); FIX: `make test` gained
+`nextest run -p rdlt-connector-sdk --features schema -E
+'test(schema_of)'` (name filter verified non-empty; default
+empty-selection-fails is the net). (4) lib.rs claimed the framework
+owns the unknown-stream refusal — it is the connector's; doc
+corrected, plus shell-delegation and Feed raw_json/arrow/from_value
+gaps closed. After the round: 17 tests + 1 schema-feature test +
+doctest. RECORDED FOR WAVE 4 (not sdk defects): snowflake's config
+cannot adopt `Document` unchanged — its `ConfigError` lacks the two
+parser `From` impls and its `from_*` return `Result<_, String>`; the
+rendered text can stay byte-identical but the TYPE surface changes
+(the already-planned typed-error-wrapper work item). Rest and
+postgres adopt cleanly (verified against their sources).
+
 ## WAVE 2 REDESIGN — D10: from extraction to FRAMEWORK (owner direction)
 
 The owner rejected the thin extraction-only crate: the goal is a
