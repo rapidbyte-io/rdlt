@@ -11,7 +11,8 @@ coexist; the owner decides the swap.
 ## STATUS — COMPLETE (2026-08-01)
 
 DONE, on branch `rest-v2` off main @ d2b7600e (the postgres swap-in
-merge), 4 commits. Final state:
+merge), 7 commits — including three review rounds (record at the bottom
+of this file); the ADVERSARIAL REVIEW LOOP is closed. Final state:
 
 - Crate `rdlt-connector-rest-v2` complete: 22 lib tests, 86/86
   integration (every generation-1 assertion passed as written on the
@@ -20,15 +21,20 @@ merge), 4 commits. Final state:
   example. No containers needed — the suites are wiremock-backed.
 - Zero-warning bar: clippy --all-targets --all-features, rustdoc
   -D warnings, fmt — all clean.
-- Review round 1 (three lenses, record below): NO drift vs generation 1;
-  two inherited defects found, fixed parity-safe, pinned; naming audit
-  clean after polish.
+- Review rounds 1-3 (record below): NO drift vs generation 1; three
+  inherited defects found and fixed parity-safe, each pinned; one layout
+  and ~23 comment/naming items fixed; the round-3 meta-review confirmed
+  every fix correct and its two process gaps (a missing pin, this STATUS
+  block's staleness) are closed by the round-3 commit and this text.
 - Makefile wired: v2 sweep line under TARGET=sweep alongside
   generation 1's.
-- FULL GATE TWICE CLEAN, untouched runs on the same commit: 1069/1069
-  workspace tests (2 named instrument skips), all sweeps, semver no
+- FULL GATE TWICE CLEAN, untouched runs on one commit (1069/1069
+  workspace tests, 2 named instrument skips, all sweeps, semver no
   update required, perf gate 0 regressed, cold start 23.7 / 23.8 ms
-  (bar ≤ 40). Exit 0 both runs.
+  vs the 40 ms bar, exit 0 both) — and then, after review rounds 2 and 3
+  changed source, ONCE MORE on the review-complete tree: 1070/1070 (the
+  round-3 pin is the +1), same skips, perf 0 regressed, cold 23.5 ms,
+  exit 0.
   - Gate #2's FIRST attempt failed on the recorded podman
     rootlessport flake, NOT this crate: cell
     `rdlt-connector-file::s3_live::range_read_returns_the_tail`, port
@@ -343,3 +349,14 @@ Round 2 (the five-lens review protocol on the finished tree, 2026-08-01):
   (fingerprint contents include the fixed incremental bindings; a
   beyond-cap 503 surfaces Transient not RateLimited; the loop guard
   catches non-adjacent cycles too; `Secret`'s home crate named).
+
+Round 3 (meta-review of round 2's fixes, 2026-08-01): every fix verified
+correct by direct trace (TOC split paths/visibilities, single-frame
+rendering against `SourceError`'s Display impls, each corrected comment
+against its code). Two process gaps found and closed: the double-framing
+fix had no regression pin (added:
+`parent_context_renders_the_classification_frame_once` — one frame per
+classification, retry_after survives wrapping) and the STATUS block
+predated round 2's tree (amended, with the post-review gate recorded).
+Final gate on the review-complete tree: 1070/1070, perf 0 regressed,
+cold 23.5 ms, exit 0.
