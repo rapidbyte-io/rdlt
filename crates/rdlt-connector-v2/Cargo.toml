@@ -4,8 +4,8 @@ description = "rdlt connector SPI, second generation: Source/Destination/LoadSes
 keywords = ["elt", "connector", "spi", "arrow", "data"]
 categories = ["database", "asynchronous"]
 readme = "README.md"
-# Unpublished while the first generation ships; the swap (and the published
-# name) is the owner's call once every consumer has moved.
+# Unpublished until the swap: publishing (and the published name) is the
+# owner's call once every consumer has moved.
 publish = false
 version.workspace = true
 edition.workspace = true

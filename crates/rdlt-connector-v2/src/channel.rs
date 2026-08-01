@@ -7,7 +7,7 @@
 //! a source never polls, sleeps, or counts.
 //!
 //! Two layers live here. The generic core ([`byte_channel`],
-//! [`ByteTx`]/[`ByteRx`], [`ByteSized`], [`Permitted`]) is the one
+//! [`ByteSender`]/[`ByteReceiver`], [`ByteSized`], [`Permitted`]) is the one
 //! implementation of the byte-budget rule for the whole tree — the SPI
 //! states the backpressure contract, so the SPI owns the code; a second
 //! copy elsewhere would let a fix to the rule apply to one path only. The
@@ -79,7 +79,7 @@ impl<T> Permitted<T> {
 
 /// Sending half of a byte-budgeted channel.
 #[derive(Debug)]
-pub struct ByteTx<T> {
+pub struct ByteSender<T> {
     messages: mpsc::Sender<Permitted<T>>,
     budget: Arc<Semaphore>,
     budget_total: usize,
@@ -87,7 +87,7 @@ pub struct ByteTx<T> {
 
 // Written out by hand: a derived Clone would demand `T: Clone`, and the
 // SENDER is cloneable regardless of what it carries.
-impl<T> Clone for ByteTx<T> {
+impl<T> Clone for ByteSender<T> {
     fn clone(&self) -> Self {
         Self {
             messages: self.messages.clone(),
@@ -99,12 +99,12 @@ impl<T> Clone for ByteTx<T> {
 
 /// Receiving half of a byte-budgeted channel.
 #[derive(Debug)]
-pub struct ByteRx<T> {
+pub struct ByteReceiver<T> {
     messages: mpsc::Receiver<Permitted<T>>,
     budget: Arc<Semaphore>,
 }
 
-impl<T: ByteSized> ByteTx<T> {
+impl<T: ByteSized> ByteSender<T> {
     /// Send, parking until the value's bytes fit inside the budget.
     ///
     /// A value larger than the ENTIRE budget must still pass: its request
@@ -139,7 +139,7 @@ impl<T: ByteSized> ByteTx<T> {
     }
 }
 
-impl<T> ByteRx<T> {
+impl<T> ByteReceiver<T> {
     /// The next value, or `None` once every sender dropped and the queue
     /// drained.
     pub async fn recv(&mut self) -> Option<Permitted<T>> {
@@ -161,16 +161,19 @@ impl<T> ByteRx<T> {
 /// A byte-budgeted channel: `byte_budget` caps unconsumed bytes in flight;
 /// `message_capacity` is the secondary cap that keeps zero-byte markers
 /// from queueing without limit.
-pub fn byte_channel<T>(byte_budget: usize, message_capacity: usize) -> (ByteTx<T>, ByteRx<T>) {
+pub fn byte_channel<T>(
+    byte_budget: usize,
+    message_capacity: usize,
+) -> (ByteSender<T>, ByteReceiver<T>) {
     let budget = Arc::new(Semaphore::new(byte_budget));
     let (messages, receiver) = mpsc::channel(message_capacity);
     (
-        ByteTx {
+        ByteSender {
             messages,
             budget: Arc::clone(&budget),
             budget_total: byte_budget,
         },
-        ByteRx {
+        ByteReceiver {
             messages: receiver,
             budget,
         },
@@ -224,7 +227,7 @@ pub struct SourcePush {
 /// The push handle a source holds for one read.
 #[derive(Debug)]
 pub struct RecordsOut {
-    channel: ByteTx<PushPayload>,
+    channel: ByteSender<PushPayload>,
 }
 
 impl RecordsOut {
@@ -274,7 +277,7 @@ impl RecordsOut {
 /// The receiving half a host holds (the engine, or a conformance harness).
 #[derive(Debug)]
 pub struct RecordsIn {
-    channel: ByteRx<PushPayload>,
+    channel: ByteReceiver<PushPayload>,
 }
 
 impl RecordsIn {

@@ -161,6 +161,37 @@ impl Default for ParquetOptions {
     }
 }
 
+/// A parquet setting that cannot be honoured, named by what failed.
+///
+/// `#[non_exhaustive]`: validation can learn new refusals without a
+/// breaking change.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum OptionsError {
+    /// A `compression_level` beside a codec that defines a single mode.
+    #[error(
+        "`compression_level` is set but `{codec}` has no compression level — \
+         remove the level, or choose a codec that takes one (gzip, zstd, brotli)"
+    )]
+    LevelOnLevellessCodec {
+        /// The configuration spelling of the levelless codec.
+        codec: &'static str,
+    },
+    /// `max_row_group_rows: 0`, which the parquet setter would panic on.
+    #[error(
+        "`max_row_group_rows` is 0 — a row group must hold at least one row; \
+         remove the setting to use the default, or give a positive count"
+    )]
+    ZeroRowGroupRows,
+    /// A zero-byte dictionary page while dictionary encoding is enabled.
+    #[error(
+        "`dictionary_page_size_limit` is 0 while dictionary encoding is enabled — \
+         a dictionary page cannot be zero bytes; raise the limit, or set \
+         `dictionary_enabled: false` to disable dictionary encoding outright"
+    )]
+    ZeroDictionaryPageLimit,
+}
+
 impl ParquetOptions {
     /// Refuse settings that cannot be honoured, naming the offender.
     ///
@@ -168,28 +199,17 @@ impl ParquetOptions {
     /// `parquet` block belongs on a destination at all depends on that
     /// destination's sibling `format` field, so that rule lives where
     /// `format` is in scope.
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), OptionsError> {
         if self.compression_level.is_some() && !self.compression.takes_level() {
-            return Err(format!(
-                "`compression_level` is set but `{}` has no compression level — \
-                 remove the level, or choose a codec that takes one (gzip, zstd, brotli)",
-                self.compression.as_str()
-            ));
+            return Err(OptionsError::LevelOnLevellessCodec {
+                codec: self.compression.as_str(),
+            });
         }
         if self.max_row_group_rows == Some(0) {
-            return Err(
-                "`max_row_group_rows` is 0 — a row group must hold at least one row; \
-                 remove the setting to use the default, or give a positive count"
-                    .into(),
-            );
+            return Err(OptionsError::ZeroRowGroupRows);
         }
         if self.dictionary_enabled && self.dictionary_page_size_limit == 0 {
-            return Err(
-                "`dictionary_page_size_limit` is 0 while dictionary encoding is enabled — \
-                 a dictionary page cannot be zero bytes; raise the limit, or set \
-                 `dictionary_enabled: false` to disable dictionary encoding outright"
-                    .into(),
-            );
+            return Err(OptionsError::ZeroDictionaryPageLimit);
         }
         Ok(())
     }
@@ -244,7 +264,8 @@ mod tests {
             ..Default::default()
         }
         .validate()
-        .expect_err("snappy has no level");
+        .expect_err("snappy has no level")
+        .to_string();
         assert!(
             refused.contains("snappy") && refused.contains("compression_level"),
             "{refused}"
@@ -270,7 +291,8 @@ mod tests {
             ..Default::default()
         }
         .validate()
-        .expect_err("zero rows per group is impossible");
+        .expect_err("zero rows per group is impossible")
+        .to_string();
         assert!(refused.contains("max_row_group_rows"), "{refused}");
         assert!(
             ParquetOptions {
@@ -289,7 +311,8 @@ mod tests {
             ..Default::default()
         }
         .validate()
-        .expect_err("an enabled zero-byte dictionary is impossible");
+        .expect_err("an enabled zero-byte dictionary is impossible")
+        .to_string();
         assert!(refused.contains("dictionary_page_size_limit"), "{refused}");
         assert!(
             ParquetOptions {

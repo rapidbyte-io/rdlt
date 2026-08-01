@@ -14,9 +14,10 @@
 //! so a connector crate has exactly one foundation dependency and
 //! single-version identity across a workspace.
 //!
-//! Traits are object-safe and all exchange types serde-serializable, so a
-//! future process/WASM host can adapt this SPI over a wire without engine
-//! changes.
+//! Traits are object-safe; the declaration and state vocabulary is
+//! serde-serializable and record payloads carry wire forms (NDJSON bytes,
+//! Arrow IPC), so a future process/WASM host can adapt this SPI over a
+//! wire without engine changes.
 //!
 //! The whole protocol fits in one example — declare, probe, read, and let
 //! the channel's byte budget carry the backpressure:
@@ -66,7 +67,8 @@
 //! # }
 //! ```
 //!
-//! SEMVER-SACRED once swapped in: gated by `cargo semver-checks` in CI.
+//! SEMVER-SACRED once swapped in: gated by `cargo semver-checks` in the
+//! gate.
 
 // Warn, not deny: an undocumented public item is a gap to fill, not a
 // reason to fail a contributor's build. `make docs` is where the

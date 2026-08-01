@@ -12,9 +12,26 @@ reaches ~240 files across 10 crates, the testkit ~73.
 - Layer 3 — `rdlt-testkit`: the verification half — "certified = passes
   the kits".
 
-## STATUS — IN PROGRESS (started 2026-08-01)
+## STATUS — Wave 1 COMPLETE as `rdlt-connector-v2` (2026-08-01)
 
 Branch `027-sdk-trio` off main @ cb130ee8 (the rest swap-in merge).
+
+`crates/rdlt-connector-v2` is BUILT, from scratch under the no-copying
+rule (every file re-derived from the generation-1 contract): 41 unit +
+integration tests (including the object-safety pin, which matters more
+here than in generation 1 because of the default async `check` methods)
+plus the protocol doctest; zero warnings across every feature shape
+(none, failpoints, schema, object-store, all); coexists UNCONSUMED
+(publish = false, no in-tree consumer) per amended D3. What is new over
+generation 1 — all sanctioned by D7/D8 and the ledger: `check()` probes,
+error `context()` (single-frame rule, compiler-forced exhaustiveness),
+`#[non_exhaustive]` capabilities with `with_*` declaration builders,
+`OpenContext`, modules `parquet`/`store` (ledgered renames of
+`output`/`objects`), `ByteSender`/`ByteReceiver` (rule-2 rename of
+`ByteTx`/`ByteRx`), and a typed `parquet::OptionsError` replacing the
+bare-`String` validate. The swap — porting engine + connectors +
+testkit, bumping 0.3.0 (D4) — remains the owner's call; waves 2–5
+(sdk crate, testkit rewrite, adoption, guide) follow separately.
 
 ## Decision record
 
@@ -191,6 +208,8 @@ Branch `027-sdk-trio` off main @ cb130ee8 (the rest swap-in merge).
 | Old | New | Rule |
 |---|---|---|
 | `OpenCtx` | `OpenContext` | 2 (no ad-hoc truncations); 31 files, all via `::new` |
+| module `output` | `parquet` | module named by its noun — the module IS the parquet-writing vocabulary; the types are root-re-exported so swap cost is near zero |
+| module `objects` | `store` | module named by its noun (the object-store rule); `is_recoverable` is NOT root-re-exported, so the swap renames `objects::is_recoverable` → `store::is_recoverable` at its two file-connector call sites |
 | SPI trait definitions inline in `lib.rs` | `source.rs` / `destination.rs`; `lib.rs` a TOC + re-exports | layout |
 | testkit's dead direct `rdlt-core` dependency | REMOVED (vocabulary flows through the SPI — D1's rule applied to ourselves) | D1 |
 | testkit README's `PgFixture`/`CdcPgFixture` reference | `fixtures::PostgresContainer` | staleness |
@@ -208,8 +227,8 @@ crates/rdlt-connector/src/
   error.rs          — taxonomy + context() attachment
   channel.rs        — byte-budget channel (semantics frozen)
   capabilities.rs   — non_exhaustive + Default + with_* builders (D7)
-  spec.rs stream.rs secret.rs pem.rs output.rs objects.rs — rewritten,
-                      same public shapes
+  spec.rs stream.rs secret.rs pem.rs parquet.rs store.rs — rewritten,
+                      same public shapes (two module renames, ledgered)
 
 crates/rdlt-connector-sdk/src/          (NEW, publishable, engine-free)
   lib.rs
@@ -272,4 +291,32 @@ shape marker sensitivity to reformatting documented at the marker.
 
 ## REVIEW ROUNDS (running record)
 
-(none yet)
+Round 1 on `rdlt-connector-v2` (three parallel lenses, 2026-08-01):
+
+- CONTRACT PARITY vs generation 1: nine areas verified clean
+  mechanically (all six error frames byte-identical, channel semantics
+  item by item, Secret/PemSource, parquet options, the recoverability
+  allow-list, spec/stream shapes, trait signatures, features). Two
+  findings, both fixed: the `output`→`parquet` and `objects`→`store`
+  module renames were real but unledgered (now ledgered, with the
+  `store::is_recoverable` swap note); generation 1's object-safety pin
+  had not been ported (now `tests/cases/test_object_safety.rs`, written
+  fresh — the coercions are the assertion, and the defaulted `check`
+  dispatches through the vtable in the proof).
+- BUG SCAN: no findings at the confidence bar. Verified sound: the
+  close() ordering across mpsc + semaphore, permit-rides-with-value,
+  `context()` classification survival, dyn-compatibility with default
+  async methods, the serde-default traps. Recorded below-bar: the u32
+  saturation arm has no test (it needs a >4 GiB budget; the degradation
+  is documented at the arm).
+- NAMING/COMMENT AUDIT: six items, all applied — `ByteTx`/`ByteRx` →
+  `ByteSender`/`ByteReceiver` (the same rule-2 class as `OpenCtx`);
+  the manifest's coexistence comment reworded generation-neutrally;
+  lib.rs's serde claim made exact (declaration/state vocabulary is
+  serde; record payloads are wire forms); `context()`'s doc now states
+  the downcast boundary (the cause re-boxes as rendered text);
+  `parquet::validate` returns a typed `OptionsError` named by what
+  failed (message text verbatim, so every needle holds); the semver
+  sentence names the gate rather than CI. Rules 1/3/4/5/6 and the
+  comment standard verified clean explicitly, including a line-by-line
+  README accuracy pass.

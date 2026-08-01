@@ -83,7 +83,9 @@ impl SourceError {
 
     /// Attach context without changing what the host will do: the variant
     /// survives (`retry_after` included) and the context wraps the INNER
-    /// cause, so the classification frame renders exactly once.
+    /// cause, so the classification frame renders exactly once. The cause
+    /// is re-boxed as its rendered text — downcasting to the original
+    /// error type ends at the wrap; the rendering keeps everything.
     ///
     /// The match is deliberately exhaustive — `#[non_exhaustive]` does
     /// not bind the defining crate, so adding a classification refuses to
