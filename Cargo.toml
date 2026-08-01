@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/rdlt-core",
     "crates/rdlt-connector",
+    "crates/rdlt-connector-v2",
     "crates/rdlt-engine",
     "crates/rdlt",
     "crates/rdlt-testkit",

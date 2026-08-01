@@ -4427,6 +4427,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "rdlt-connector-v2"
+version = "0.2.0"
+dependencies = [
+ "arrow-array",
+ "arrow-schema",
+ "async-trait",
+ "bytes",
+ "object_store",
+ "rdlt-core",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "rdlt-core"
 version = "0.2.0"
 dependencies = [

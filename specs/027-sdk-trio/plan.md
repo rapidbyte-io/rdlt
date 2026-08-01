@@ -33,12 +33,17 @@ Branch `027-sdk-trio` off main @ cb130ee8 (the rest swap-in merge).
   the tree); rule 5 cuts both ways — rename where a name is WRONG, keep
   where it is right. The ledger below is deliberately short; churn for
   its own sake across 240 files is not cleanliness.
-- D3. IN-PLACE REPLACEMENT, not coexistence: a trait crate cannot
-  usefully coexist with its successor (every implementation names ONE
-  Source trait), so the 025 two-generations method does not apply.
-  Instead: rewrite lands on this branch wave by wave, the full gate runs
-  green at every wave boundary, and the ported consumer suites (unchanged
-  assertions) are the parity proof.
+- D3. COEXISTING NEW CRATE `rdlt-connector-v2` (owner direction,
+  superseding the first-recorded in-place plan): the 025/026
+  two-generations method applies to the CRATE even though the traits
+  cannot serve two masters — v2 coexists UNCONSUMED (publish = false, no
+  in-tree consumer), its parity is proven by its own ported unit suite
+  (the SPI's tests are self-contained: channel, secret, pem, output,
+  objects, capabilities), and the consumer port is the SWAP, a separate
+  owner-decided step exactly as it was for postgres and rest. An earlier
+  in-place rewrite commit was made and then DROPPED (reset) in favor of
+  this method; the workspace version bump (D4) moves to swap time with
+  it.
 - D4. The SEMVER WINDOW OPENS: workspace version 0.2.0 → 0.3.0 — the
   bump feature 014 recorded as owed at the next breaking publish. The
   gate's `cargo semver-checks --baseline-rev 34ccd379` then admits the

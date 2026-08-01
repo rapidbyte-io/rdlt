@@ -1,0 +1,173 @@
+//! [`PemSource`] — PEM material given inline or as a path to it.
+//!
+//! One shared type for every connector that takes a certificate, a trust
+//! root, or a private key. The discriminator is the PEM armour itself:
+//! a value whose first non-whitespace characters are `-----BEGIN` IS the
+//! material; anything else is a filesystem path to it. Stated once, here,
+//! because a connector reading the rule differently would treat a user's
+//! key as a filename or their filename as a key — both fail confusingly.
+//!
+//! Serde-transparent, so config documents keep plain strings in and out;
+//! the `schemars::JsonSchema` impl rides the crate's `schema` feature,
+//! like [`crate::Secret`].
+//!
+//! Deliberately NOT wrapped in a [`crate::Secret`]: a path is not a
+//! credential, and inline material is usually a certificate rather than a
+//! key. A connector taking a PRIVATE key pairs this with its own secrecy
+//! handling — this type says where the bytes come from, not how sensitive
+//! they are.
+
+use serde::{Deserialize, Serialize};
+
+/// PEM material: inline text, or a filesystem path to a file holding it.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(transparent)]
+pub struct PemSource(pub String);
+
+/// A PATH renders as itself; INLINE material renders as a placeholder.
+///
+/// The asymmetry is the point, and each half matters. This type carries
+/// private keys, and `Debug` is what panics, logs, and error reports
+/// reach for — inline bytes must not survive it. A path is not a
+/// credential, and it is exactly what an operator needs to see to fix an
+/// unreadable-key report; hiding it would make that report useless.
+impl std::fmt::Debug for PemSource {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.is_inline() {
+            // Named, not starred: the reader learns WHAT is hidden and
+            // that a value is present at all.
+            formatter.write_str("PemSource(<inline PEM>)")
+        } else {
+            write!(formatter, "PemSource({:?})", self.0)
+        }
+    }
+}
+
+impl PemSource {
+    /// Is the material inline rather than a path?
+    ///
+    /// True when the value opens with PEM armour. Leading whitespace is
+    /// tolerated because YAML block scalars routinely introduce it.
+    pub fn is_inline(&self) -> bool {
+        self.0.trim_start().starts_with("-----BEGIN")
+    }
+
+    /// The PEM bytes, reading the file when this is a path.
+    ///
+    /// The error stays `io::Error` on purpose: what went wrong reading a
+    /// file is the same everywhere, and each connector maps it into its
+    /// own taxonomy with its own context (which field, which credential).
+    pub fn read(&self) -> std::io::Result<Vec<u8>> {
+        if self.is_inline() {
+            Ok(self.0.as_bytes().to_vec())
+        } else {
+            std::fs::read(&self.0)
+        }
+    }
+
+    /// The PEM text, reading the file when this is a path.
+    ///
+    /// For the libraries that want a `String`. Non-UTF-8 file contents
+    /// surface as `InvalidData` rather than lossy text — a mangled key
+    /// would otherwise fail later and further from its cause.
+    pub fn read_to_string(&self) -> std::io::Result<String> {
+        if self.is_inline() {
+            Ok(self.0.clone())
+        } else {
+            std::fs::read_to_string(&self.0)
+        }
+    }
+}
+
+impl<T: Into<String>> From<T> for PemSource {
+    fn from(value: T) -> Self {
+        Self(value.into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn armour_at_the_start_means_inline_and_anything_else_is_a_path() {
+        assert!(PemSource::from("-----BEGIN PRIVATE KEY-----\nMIIB\n").is_inline());
+        // YAML block scalars indent; the armour still decides.
+        assert!(PemSource::from("\n  -----BEGIN CERTIFICATE-----\n").is_inline());
+        assert!(!PemSource::from("/etc/ssl/key.pem").is_inline());
+        assert!(!PemSource::from("relative/key.p8").is_inline());
+        // A path CONTAINING the armour text is still a path: the check is
+        // anchored at the start.
+        assert!(!PemSource::from("/keys/-----BEGIN/x.pem").is_inline());
+    }
+
+    #[test]
+    fn inline_material_reads_back_without_touching_the_filesystem() {
+        let material = "-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n";
+        assert_eq!(
+            PemSource::from(material).read().expect("inline"),
+            material.as_bytes()
+        );
+        assert_eq!(
+            PemSource::from(material).read_to_string().expect("inline"),
+            material
+        );
+    }
+
+    #[test]
+    fn a_path_reads_its_file_and_a_missing_one_surfaces_the_io_error() {
+        let directory = std::env::temp_dir().join("rdlt-connector-v2-pem-test");
+        std::fs::create_dir_all(&directory).expect("temp dir");
+        let path = directory.join("material.pem");
+        std::fs::write(&path, b"-----BEGIN X-----\n").expect("write");
+        let source = PemSource::from(path.to_string_lossy().into_owned());
+        assert!(!source.is_inline());
+        assert_eq!(source.read().expect("file"), b"-----BEGIN X-----\n");
+        std::fs::remove_dir_all(&directory).ok();
+
+        let missing = PemSource::from("/no/such/material.pem").read().unwrap_err();
+        assert_eq!(missing.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn the_wire_form_is_a_plain_string() {
+        let source: PemSource = serde_json::from_str("\"/k.pem\"").expect("parses");
+        assert_eq!(source, PemSource::from("/k.pem"));
+        assert_eq!(
+            serde_json::to_string(&source).expect("renders"),
+            "\"/k.pem\""
+        );
+    }
+
+    /// Inline material never renders — certificates included, because the
+    /// type cannot tell which it holds — while a path always does, and
+    /// the guarantee survives a derived Debug on a holder.
+    #[test]
+    fn debug_hides_inline_material_and_shows_paths() {
+        let key = PemSource::from("-----BEGIN PRIVATE KEY-----\nSECRET-BYTES\n");
+        let rendered = format!("{key:?}");
+        assert!(!rendered.contains("SECRET-BYTES"), "{rendered}");
+        assert!(rendered.contains("inline"), "{rendered}");
+
+        assert!(format!("{:?}", PemSource::from("/etc/rdlt/key.p8")).contains("/etc/rdlt/key.p8"));
+
+        #[derive(Debug)]
+        struct Holder {
+            key: PemSource,
+        }
+        let holder = Holder {
+            key: PemSource::from("-----BEGIN CERTIFICATE-----\nPUBLIC-ENOUGH\n"),
+        };
+        assert!(!format!("{holder:?}").contains("PUBLIC-ENOUGH"));
+        // Redaction is a rendering property, not storage: the material
+        // still reads back in full.
+        assert!(
+            holder
+                .key
+                .read_to_string()
+                .expect("inline")
+                .contains("PUBLIC-ENOUGH")
+        );
+    }
+}
