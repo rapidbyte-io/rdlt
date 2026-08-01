@@ -42,6 +42,13 @@ DONE. Every task 0-11 executed. Final state on branch `postgres-v2`:
   (2 named instrument skips), all sweeps, semver clean, perf gate all
   benches within tolerance / 0 regressed, cold start 22.8 / 24.0 ms
   (bar ≤ 40). Exit 0 both runs.
+- WALL-CLOCK A/B vs generation 1 (tests/perf_ab.rs, release profile, one
+  warmup pair + 5 interleaved pairs per cell, fresh schema/pipeline per
+  run): append 1M rows gen1 median 721 ms vs gen2 706 ms (−2.1%; samples
+  gen1 638–743, gen2 651–786 — overlapping, parity-or-better); merge 250k
+  gen1 491 ms vs gen2 485 ms (−1.3%; both arms ~477–552 — a wash, expected:
+  the merge cell is ~71% server-side). Direction agrees with the iai
+  instruction counts. NO regression.
 - Old crate UNTOUCHED and still fully gated. v2 NOT wired into the facade
   (D1); merge + facade swap + publishing name are the owner's calls.
 
