@@ -333,17 +333,15 @@ crates/rdlt-connector/src/
   spec.rs stream.rs secret.rs pem.rs parquet.rs store.rs — rewritten,
                       same public shapes (two module renames, ledgered)
 
-crates/rdlt-connector-sdk/src/          (NEW, publishable, engine-free)
+crates/rdlt-connector-sdk/src/          (NEW, publishable, rdlt-free)
   lib.rs
-  document.rs       — the config-document contract: one validate-once
-                      gate behind from_yaml/from_json/from_value +
-                      schema, with a per-connector SUBJECT so every
-                      existing message needle ("invalid REST source
-                      YAML: …") renders verbatim
-  cursor.rs         — max-observed watermark (observe/merge/render,
-                      string-or-number, skip-never-guess)
-  (error-skeleton helpers only if Wave 4 proves two connectors
-   message-identical; otherwise cursor+document ship alone)
+  config.rs         — config::Document (the validate-once gate behind
+                      provided from_yaml/from_json/from_value; renders
+                      NO text — the evidence overturned the sketched
+                      subject-string design) + schema_of behind the
+                      `schema` feature. The sketched cursor.rs and
+                      error-skeleton modules were NOT built: both failed
+                      the D5 bar (evidence in the Wave 2 record above).
 
 crates/rdlt-testkit/src/
   lib.rs            — TOC + doctest (certify a memory source, no
@@ -393,6 +391,18 @@ shape marker sensitivity to reformatting documented at the marker.
       recorded below.
 
 ## REVIEW ROUNDS (running record)
+
+Round 1 on `rdlt-connector-sdk` (one combined pass — design-vs-evidence,
+bugs, naming — proportionate to ~120 lines, 2026-08-01): ALL THREE
+LENSES CLEAN, zero findings. The reviewer verified the trait against the
+D5 record item by item, confirmed byte-identical implementability
+against all six connector document types (including the two recorded
+adoption asymmetries: pg-dest's non-validating from_*, snowflake's
+String-typed error needing the wrapper the trait's bound forces), and
+confirmed every test would fail if its property broke. One bookkeeping
+correction applied: the plan's layout sketch (document.rs) updated to
+the shipped config.rs/Document — the sketch as written would have
+produced document::Document, a rule-1 stutter.
 
 Round 1 on `rdlt-connector-v2` (three parallel lenses, 2026-08-01):
 
