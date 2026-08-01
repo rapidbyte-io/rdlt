@@ -83,6 +83,12 @@ pub struct Load {
     /// nothing, and forgetting that would let a later unit skip a clear
     /// the server never saw.
     pub(super) cleared_in_unit: BTreeSet<TableName>,
+    /// Clears a mid-unit ensure's rollback took back, still OWED to the
+    /// load: re-executed the next time a unit opens. Waiting for "the
+    /// next write to that table" instead would not do — the table may
+    /// never be written again before publish, and a Replace whose
+    /// DELETE silently vanished commits the old rows alongside the new.
+    pub(super) reclear_owed: BTreeSet<TableName>,
     /// The commit-unit transaction.
     pub(super) unit: Unit,
     /// Tables whose one full-feed unit has committed — marked only
@@ -129,6 +135,29 @@ impl Load {
     /// clears plus the current unit's own.
     fn cleared_union(&self) -> BTreeSet<TableName> {
         self.cleared.union(&self.cleared_in_unit).cloned().collect()
+    }
+
+    /// Open the unit if it is closed, and re-execute any clears still
+    /// owed from a mid-unit ensure's rollback. Every unit-opening path
+    /// comes through here so an owed clear cannot outlive the next
+    /// transaction — the re-run happens before any planner consults
+    /// `cleared_union`, which then counts the table cleared again.
+    async fn open_unit(&mut self) -> Result<(), DestinationError> {
+        self.unit.begin_if_closed(&*self.executor).await?;
+        for table in std::mem::take(&mut self.reclear_owed) {
+            let step = Step::ClearTarget {
+                table: table.clone(),
+            };
+            let executor = DmlOnly(&*self.executor);
+            self.execute_step(
+                &executor,
+                &prepare_meta(&self.load_id, &self.pipeline),
+                &step,
+            )
+            .await?;
+            self.cleared_in_unit.insert(table);
+        }
+        Ok(())
     }
 
     /// Read a table's columns unless this session already has.
@@ -389,6 +418,17 @@ impl Backend for Load {
             previous.as_ref(),
             &self.catalog,
         );
+        // Phase 2 is rendered HERE, before anything executes: its scd2
+        // validity ALTERs are DDL like any other, and the unit gate
+        // below must see ALL owed schema work — gating on phase 1 alone
+        // would let a validity-only ensure auto-commit an open unit.
+        // (Rendering against the pre-`record_created` image is
+        // equivalent: validity columns never appear in
+        // `schema.columns`, so recording them cannot change what phase
+        // 2 finds missing.)
+        let merge_statements =
+            ddl::merge_ensure_stmts(&self.config.options, schema, mode, &self.catalog)
+                .map_err(DestinationError::fatal)?;
         // The engine legitimately ensures MID-UNIT when a source's
         // schema evolves between batches. DDL here auto-commits the
         // open transaction — publishing a partial unit with no receipt —
@@ -397,14 +437,16 @@ impl Backend for Load {
         // are FILES and survive (an upload rides outside transaction
         // semantics), `pending` stays valid, and the only transactional
         // work a unit holds before publish is a Replace clear, whose
-        // in-unit mark is dropped with the rollback so the next write
-        // re-clears. Generation 1 had no handling at all — a debug
-        // build panicked on an assertion here and a release build
-        // silently committed the partial unit. Found by this rewrite's
-        // review; pinned live by `a_column_added_mid_unit_keeps_its_data`.
-        if !statements.is_empty() && self.unit.is_open() {
+        // rolled-back DELETEs move to `reclear_owed` and re-run when
+        // the unit next opens (`open_unit`). Generation 1 had no
+        // handling at all — a debug build panicked on an assertion here
+        // and a release build silently committed the partial unit.
+        // Found by this rewrite's review; pinned live by
+        // `a_column_added_mid_unit_keeps_its_data`.
+        if (!statements.is_empty() || !merge_statements.is_empty()) && self.unit.is_open() {
             self.unit.rollback(&*self.executor).await;
-            self.cleared_in_unit.clear();
+            self.reclear_owed
+                .extend(std::mem::take(&mut self.cleared_in_unit));
         }
         for sql in statements {
             self.executor.execute(&self.qualify_ddl(&sql)).await?;
@@ -420,9 +462,7 @@ impl Backend for Load {
                 .collect::<Vec<_>>(),
         );
 
-        for sql in ddl::merge_ensure_stmts(&self.config.options, schema, mode, &self.catalog)
-            .map_err(DestinationError::fatal)?
-        {
+        for sql in merge_statements {
             self.executor.execute(&self.qualify_ddl(&sql)).await?;
             if let Some(column) = column_of_add(&sql) {
                 self.catalog.record_column(&table, &column);
@@ -447,7 +487,7 @@ impl Backend for Load {
                 "snowflake: `{table}` was written before it was ensured"
             )));
         };
-        self.unit.begin_if_closed(&*self.executor).await?;
+        self.open_unit().await?;
 
         // Merge rows land in the STAGE table — the arms join delivered
         // rows against the target, and rows written straight there
@@ -557,7 +597,7 @@ impl Backend for Load {
         if let Some(message) = protocol::load_mismatch(&self.load_id, load_id) {
             return Err(DestinationError::fatal(format!("snowflake: {message}")));
         }
-        self.unit.begin_if_closed(&*self.executor).await?;
+        self.open_unit().await?;
 
         // The probe's errors propagate BARE — generation 1 rolled
         // nothing back here, and dispositions are protocol behavior.
@@ -592,7 +632,15 @@ impl Backend for Load {
             protocol::ReplayDisposition::DiscardUnit,
         );
         self.unit.rollback(&*self.executor).await;
-        self.cleared_in_unit.clear();
+        // This attempt's in-unit clears roll back with it — but the
+        // receipt proves a PRIOR incarnation committed this very unit,
+        // and by then it had durably cleared every Replace table the
+        // unit writes. So the marks PROMOTE instead of dropping:
+        // forgetting them would let a later unit of this load re-clear
+        // rows the load already committed. (Generation 1's single
+        // never-rolled-back set had exactly this observable state.)
+        self.cleared
+            .extend(std::mem::take(&mut self.cleared_in_unit));
         self.discard_staged().await;
         Ok(())
     }
@@ -602,6 +650,13 @@ impl Backend for Load {
             load_id: meta.load_id.clone(),
             commit_seq: meta.commit_seq,
         };
+
+        // The unit is normally already open — `existing_receipt`
+        // precedes publish in the sdk choreography and opens it — but a
+        // COPY on a closed session would autocommit per statement, so
+        // the open (and any owed re-clear) is asserted rather than
+        // assumed.
+        self.open_unit().await?;
 
         // Parts land BEFORE anything asks what the stages hold, and
         // before the publish steps, in the same transaction — the
@@ -775,5 +830,211 @@ mod tests {
                 "{code:?}"
             );
         }
+    }
+
+    // ---- the unit-vs-DDL choreography, driven offline ----------------
+
+    use std::sync::{Arc, Mutex};
+
+    use rdlt_connector_sdk::spi::core::{ColumnDef, ColumnType, LogicalType, Provenance};
+
+    /// A scripted executor recording every statement it is handed.
+    struct Recorder(Arc<Mutex<Vec<String>>>);
+
+    #[async_trait]
+    impl Executor for Recorder {
+        async fn execute(&self, sql: &str) -> Result<(), DestinationError> {
+            self.0.lock().expect("lock").push(sql.to_owned());
+            Ok(())
+        }
+        async fn scalar_u64(&self, sql: &str, _: &[&str]) -> Result<u64, DestinationError> {
+            self.0.lock().expect("lock").push(sql.to_owned());
+            Ok(0)
+        }
+        async fn sum_column(&self, sql: &str, _: &str) -> Result<u64, DestinationError> {
+            self.0.lock().expect("lock").push(sql.to_owned());
+            Ok(0)
+        }
+        async fn rows(
+            &self,
+            sql: &str,
+            _: &[&str],
+            _: &[&str],
+        ) -> Result<Vec<Vec<String>>, DestinationError> {
+            self.0.lock().expect("lock").push(sql.to_owned());
+            Ok(Vec::new())
+        }
+    }
+
+    /// A session over the recorder — the whole Backend choreography runs
+    /// against it, no account required.
+    fn recorded_load(options: serde_json::Value) -> (Load, Arc<Mutex<Vec<String>>>) {
+        use rdlt_connector_sdk::config::Document;
+        let mut doc = serde_json::json!({
+            "account": "MYORG-MYACCT",
+            "user": "LOADER",
+            "auth": {"key_pair": {"private_key": "/k.p8"}},
+            "database": "DB",
+            "schema": "S",
+        });
+        if let (Some(doc), Some(extra)) = (doc.as_object_mut(), options.as_object()) {
+            for (key, value) in extra {
+                doc.insert(key.clone(), value.clone());
+            }
+        }
+        let config = SnowflakeConfig::from_value(doc).expect("valid");
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let load = Load {
+            config,
+            executor: Box::new(Recorder(Arc::clone(&log))),
+            pipeline: PipelineId::from("p"),
+            load_id: LoadId::from("load-1"),
+            catalog: Catalog::default(),
+            tables: BTreeMap::new(),
+            cleared: BTreeSet::new(),
+            cleared_in_unit: BTreeSet::new(),
+            reclear_owed: BTreeSet::new(),
+            unit: Unit::default(),
+            single_unit_done: BTreeSet::new(),
+            stage: Stage::new("p", "load-1"),
+            pending: BTreeMap::new(),
+        };
+        (load, log)
+    }
+
+    fn table_schema(table: &str, columns: &[&str]) -> TableSchema {
+        TableSchema {
+            table: TableName::from(table),
+            parent: None,
+            columns: columns
+                .iter()
+                .map(|name| ColumnDef {
+                    name: (*name).to_owned(),
+                    column_type: ColumnType::scalar(LogicalType::Int64),
+                    nullable: true,
+                    provenance: Provenance::Inferred,
+                })
+                .collect(),
+        }
+    }
+
+    /// A mid-unit ensure whose ONLY owed DDL is phase 2 — the scd2
+    /// validity columns — still ends the unit first. The gate is
+    /// computed over every statement the ensure will run: an ALTER
+    /// through the unguarded executor auto-commits the partial unit
+    /// exactly like a CREATE, and gating on phase 1 alone left this
+    /// window open (review round 2's second finding).
+    #[tokio::test]
+    async fn a_validity_only_ensure_still_ends_the_open_unit_first() {
+        let (mut load, log) = recorded_load(serde_json::json!({"merge_strategy": "scd2"}));
+        // The image already holds both legs at the data schema, so
+        // phase 1 renders nothing; validity columns are the only work.
+        load.catalog
+            .observe("events", ["ID".to_owned()].into_iter().collect());
+        load.catalog.observe(
+            &ddl::stage_name("p", &TableName::from("events")),
+            ["ID".to_owned(), "__RDLT_ARRIVAL".to_owned()]
+                .into_iter()
+                .collect(),
+        );
+        load.unit
+            .begin_if_closed(&*load.executor)
+            .await
+            .expect("begin");
+
+        load.ensure_table(
+            &table_schema("events", &["id"]),
+            &WriteMode::Merge {
+                key: vec!["id".into()],
+            },
+        )
+        .await
+        .expect("ensure");
+
+        let log = log.lock().expect("lock");
+        let rollback = log
+            .iter()
+            .position(|s| s == "ROLLBACK")
+            .expect("the unit was ended");
+        let alter = log
+            .iter()
+            .position(|s| s.contains("ADD COLUMN"))
+            .expect("the validity DDL ran");
+        assert!(rollback < alter, "rollback precedes the DDL: {log:?}");
+        assert!(
+            !log.iter().any(|s| s.contains("CREATE TABLE")),
+            "phase 1 was empty by construction: {log:?}"
+        );
+    }
+
+    /// A clear rolled back by a mid-unit ensure is re-executed when the
+    /// unit next OPENS — not when its table is next written, because
+    /// that write may never come: here `a` is written once, `b`'s
+    /// ensure rolls the unit back, and only the receipt probe touches
+    /// the session again before publish. A Replace whose DELETE
+    /// silently vanished would commit the previous load's rows
+    /// alongside the new ones (review round 2's first finding).
+    #[tokio::test]
+    async fn a_rolled_back_clear_is_owed_to_the_next_unit_not_the_next_write() {
+        let (mut load, log) = recorded_load(serde_json::json!({}));
+        load.catalog
+            .observe("a", ["ID".to_owned()].into_iter().collect());
+        load.tables.insert(
+            TableName::from("a"),
+            (table_schema("a", &["id"]), WriteMode::Replace),
+        );
+
+        // An empty batch still runs the prepare steps: the unit opens
+        // and `a`'s Replace DELETE executes inside it.
+        let empty = RecordBatch::new_empty(Arc::new(arrow_schema::Schema::new(vec![
+            arrow_schema::Field::new("id", arrow_schema::DataType::Int64, true),
+        ])));
+        load.write(&TableName::from("a"), empty)
+            .await
+            .expect("write");
+        assert_eq!(load.cleared_in_unit.len(), 1, "the clear is in-unit");
+
+        // `b` arrives mid-unit needing real DDL: the unit ends, and
+        // `a`'s clear — rolled back with it — becomes owed.
+        load.ensure_table(&table_schema("b", &["id"]), &WriteMode::Append)
+            .await
+            .expect("ensure");
+        assert!(load.cleared_in_unit.is_empty(), "the mark rolled back");
+        assert_eq!(load.reclear_owed.len(), 1, "…and is owed");
+
+        // The next unit-opening contact — the receipt probe, first in
+        // the publish choreography — re-runs the DELETE.
+        let receipt = load
+            .existing_receipt(&LoadId::from("load-1"), 1)
+            .await
+            .expect("probe");
+        assert!(receipt.is_none());
+        assert!(load.reclear_owed.is_empty(), "the debt is settled");
+        assert_eq!(load.cleared_in_unit.len(), 1, "…and marked in-unit again");
+
+        let log = log.lock().expect("lock");
+        let deletes: Vec<usize> = log
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.starts_with("DELETE FROM"))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(
+            deletes.len(),
+            2,
+            "cleared, rolled back, re-cleared: {log:?}"
+        );
+        let rollback = log
+            .iter()
+            .position(|s| s == "ROLLBACK")
+            .expect("the mid-unit ensure ended the unit");
+        let reopen = log
+            .iter()
+            .rposition(|s| s == "BEGIN")
+            .expect("the unit reopened");
+        assert!(
+            deletes[0] < rollback && rollback < reopen && reopen < deletes[1],
+            "clear → rollback → reopen → re-clear: {log:?}"
+        );
     }
 }

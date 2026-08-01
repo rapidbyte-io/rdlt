@@ -253,3 +253,59 @@ mid-unit widening through the engine against the qual account and
 reads the added column's value back. The reviewer also verified the
 bare-error paths safe under the engine's run-level retry model (fresh
 session per attempt; a poisoned Load is dropped, never reused).
+
+
+## REVIEW ROUND 2 (verification lens on the round-1 fix, 2026-08-02)
+
+The round-1 fix touches exactly-once machinery, so it got its own
+adversarial pass: eight attack scenarios against the mid-unit-rollback
+design and the `cleared` split. Five verdicts SOUND (unit contents
+enumerated; publish always runs inside a unit the receipt probe opened;
+promotion discipline; PUT/`pending` validity under rollback+retry;
+`$1:"COL"` on an absent parquet key is NULL, not an ON_ERROR abort).
+TWO DEFECTS CONFIRMED AND FIXED, one observation recorded:
+
+1. CROSS-TABLE OWED CLEARS (data integrity, reachable): the mid-unit
+   rollback dropped EVERY table's in-unit Replace-clear mark, but only
+   a subsequent write of the SAME table re-cleared — and that write may
+   never come. A unit holding Replace table A's executed DELETE that is
+   then rolled back by table B's mid-unit ensure would publish A's
+   parts with the clear silently gone (old rows coexist with new), and
+   the un-promoted mark would let a LATER unit re-clear rows this load
+   had committed. FIX: the marks move to `reclear_owed`, and every
+   unit-opening path now goes through `open_unit`, which re-executes
+   owed clears before any planner consults `cleared_union` (write, the
+   receipt probe, and publish — which now asserts the open instead of
+   assuming it). Replay PROMOTES in-unit marks into `cleared` instead
+   of dropping them: the receipt proves a prior incarnation committed
+   that very unit, durable clear included — generation 1's single
+   never-rolled-back set had exactly this observable state. PINNED
+   offline (`a_rolled_back_clear_is_owed_to_the_next_unit_not_the_next_write`
+   drives the whole choreography over a recording executor) and live
+   (`a_replace_clear_survives_another_tables_mid_unit_evolution`: a
+   two-run, two-stream load where the second table's mid-unit ensure
+   rolls back the first table's clear, and only run 2's row survives).
+
+2. PHASE-2 DDL BYPASSED THE GATE (exactly-once, narrow): the rollback
+   gate read only phase 1's statements, while the scd2 validity ALTERs
+   of phase 2 ran through the UNGUARDED executor — a validity-only
+   ensure arriving mid-unit would auto-commit the partial unit, the
+   exact class round 1 closed. FIX: phase 2 is rendered up front and
+   the gate is computed over ALL owed DDL (rendering against the
+   pre-`record_created` image is equivalent — validity columns never
+   appear in `schema.columns` — and stops a re-ensure from wiping
+   recorded validity columns and re-emitting their ALTERs). PINNED
+   offline: `a_validity_only_ensure_still_ends_the_open_unit_first`.
+
+OBSERVATION, RECORDED NOT FIXED (inherited, both generations): the
+Replace guard's committed half lives only in session memory — sqlcore's
+planner contract expects `cleared_targets` seeded durably (postgres
+writes `names::CLEARED_TABLE`; snowflake never has). A crash between
+two units of one load that both write the same Replace table lets the
+recovery session re-emit the clear and delete rows the first unit
+committed. Fixing it means adding the third bookkeeping table to the
+connect surface and the publish transaction — a deliberate scope the
+owner schedules, recorded here so it cannot pass as reviewed-and-fine.
+
+Suite after round 2: 92/92 (three pins added), clippy clean both
+feature shapes.

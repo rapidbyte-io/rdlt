@@ -74,6 +74,90 @@ async fn a_replace_load_leaves_only_the_newest_rows() {
     .await;
 }
 
+/// A Replace clear survives a MID-UNIT schema evolution of a DIFFERENT
+/// table, live. Run 2's `events` batch carries no checkpoint of its
+/// own, so the brand-new `arrivals` stream's ensure lands mid-unit
+/// AFTER `events` was written and cleared — the rollback takes the
+/// DELETE with it, and `events` is never written again before the one
+/// publish. Only the owed-re-clear machinery (review round 2) stands
+/// between this load and committing run 1's rows alongside its own.
+#[tokio::test]
+async fn a_replace_clear_survives_another_tables_mid_unit_evolution() {
+    let Some(creds) = credentials() else { return };
+    let schema = scratch_schema("owed");
+    let doc = config_for(&creds, &schema);
+    let config = {
+        use rdlt_connector_sdk::config::Document;
+        rdlt_connector_snowflake_v2::destination::SnowflakeConfig::from_value(doc.clone())
+            .expect("valid")
+    };
+
+    // Run 1 seeds `events` with the rows a vanished re-clear would
+    // leave behind.
+    {
+        let workdir = tempfile::tempdir().expect("workdir");
+        Engine::new(
+            EngineConfig::new("sf-owed-1")
+                .with_workdir(workdir.path().join("wal"))
+                .with_write_mode(WriteMode::Replace),
+            source_of(vec![json!({"id": 1}), json!({"id": 2})]),
+            Shell::from_value(doc.clone()).expect("valid"),
+        )
+        .run()
+        .await
+        .expect("run 1 settles");
+    }
+
+    let source = MemorySource::new(vec![
+        MemoryStream::new(
+            StreamSpec::new("events"),
+            vec![MemoryBatch::new(vec![json!({"id": 10})])],
+        ),
+        MemoryStream::new(
+            StreamSpec::new("arrivals"),
+            vec![MemoryBatch::new(vec![json!({"id": 100})]).with_checkpoint(1)],
+        ),
+    ]);
+    let workdir = tempfile::tempdir().expect("workdir");
+    Engine::new(
+        EngineConfig::new("sf-owed-2")
+            .with_workdir(workdir.path().join("wal"))
+            .with_write_mode(WriteMode::Replace),
+        source,
+        Shell::from_value(doc).expect("valid"),
+    )
+    .run()
+    .await
+    .expect("run 2 settles");
+
+    let landed = testhook::rows(
+        &config,
+        &format!(
+            "SELECT \"ID\" AS I FROM \"{}\".\"{}\".\"EVENTS\" ORDER BY \"ID\"",
+            config.database.to_uppercase(),
+            schema.to_uppercase()
+        ),
+        &["i"],
+    )
+    .await
+    .expect("read back");
+    assert_eq!(
+        landed,
+        vec![vec!["10".to_string()]],
+        "run 2's one row, and none of run 1's"
+    );
+
+    let _ = testhook::connect_and_run(
+        &config,
+        &format!(
+            "DROP SCHEMA IF EXISTS \"{}\".\"{}\" CASCADE",
+            config.database.to_uppercase(),
+            schema.to_uppercase()
+        ),
+    )
+    .await;
+}
+
 /// The economy, live: after a load created the table, the same ensure
 /// against the REAL catalog renders zero statements.
 #[tokio::test]

@@ -134,6 +134,7 @@ impl DestinationConnector for Snowflake {
             tables: std::collections::BTreeMap::new(),
             cleared: std::collections::BTreeSet::new(),
             cleared_in_unit: std::collections::BTreeSet::new(),
+            reclear_owed: std::collections::BTreeSet::new(),
             unit: super::unit::Unit::default(),
             single_unit_done: std::collections::BTreeSet::new(),
             stage,
