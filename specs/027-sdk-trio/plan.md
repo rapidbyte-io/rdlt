@@ -721,6 +721,22 @@ visible skip; pipeline_spec arms preserve full rendered messages;
 channel close paths cannot masquerade as success; verify_destination
 records every fallible step.
 
+ROUND 3 (fix verification + out-of-tree-author sweep). Both round-2
+fixes verified sound (the select guard makes the post-loop await
+single-completion-safe; the duckdb comment holds on the Staged replay
+branch too — vacuously, since a replayed Staged script emits no
+publish reads at all). ONE finding, fixed:
+(6) the sdk prelude glob-exported BOTH halves of the protocol — the
+traits an author implements next to `Source`/`Destination`/
+`LoadSession`, which the framework implements FOR them — unused by
+both real adopters and exercised by nothing. NARROWED to the authoring
+surface only (the five framework items + the vocabulary types an
+author's signatures name) and given a compile-tested doctest so drift
+now fails the gate. The round-2 pin was also STRENGTHENED on the
+reviewer's trace: a post-drop yield forces the harness to observe the
+drained channel before the teardown error exists, so the pin exercises
+the wait-for-the-reader path, not the result-captured-first path.
+
 ## CLOSE-OUT — 027 COMPLETE on branch `027-sdk-trio` (2026-08-01)
 
 All five waves delivered and gated; merge to main is the owner's call.

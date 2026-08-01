@@ -43,13 +43,34 @@ pub mod source;
 /// The connector SPI, re-exported: one dependency authors a connector.
 pub use rdlt_connector as spi;
 
-/// The one-import authoring surface.
+/// The one-import AUTHORING surface: the traits you implement and the
+/// vocabulary your signatures name — and nothing the framework
+/// implements FOR you (`Source`, `Destination`, `LoadSession` stay off
+/// it deliberately; an author never touches those, and having both
+/// halves in one namespace invites `impl Source for MyThing` where
+/// `impl SourceConnector` was meant). Anything else is reached by its
+/// canonical module path ([`spi`], [`config`], [`source`],
+/// [`destination`]).
+///
+/// ```
+/// use rdlt_connector_sdk::prelude::*;
+///
+/// // Every name an author's impl blocks and signatures need is in
+/// // scope — this signature is spelled entirely from the prelude:
+/// async fn _streams<S: SourceConnector>(source: &S) -> Result<Vec<StreamSpec>, SourceError> {
+///     source.streams().await
+/// }
+/// fn _capabilities<D: DestinationConnector>(destination: &D) -> DestinationCapabilities {
+///     destination.capabilities()
+/// }
+/// # fn main() {}
+/// ```
 pub mod prelude {
     pub use crate::config::Document;
     pub use crate::destination::{Backend, DestinationConnector};
     pub use crate::source::{Feed, SourceConnector};
     pub use rdlt_connector::{
-        ConnectorSpec, Cursor, Destination, DestinationCapabilities, DestinationError, LoadSession,
-        OpenContext, ReadRequest, RecordBatch, Source, SourceError, StreamSpec,
+        Cursor, DestinationCapabilities, DestinationError, OpenContext, RecordBatch, SourceError,
+        StreamSpec,
     };
 }

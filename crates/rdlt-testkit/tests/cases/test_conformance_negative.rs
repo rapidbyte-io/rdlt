@@ -230,6 +230,10 @@ impl Source for TeardownFailingSource {
         }
         let _ = out.checkpoint(rdlt_connector::Cursor::new(1)).await;
         drop(out); // every sender gone — the harness channel drains NOW
+        // Yield so the harness OBSERVES the drain before this error
+        // exists — the pin must exercise the wait-for-the-reader path,
+        // not the result-captured-first path.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         Err(SourceError::fatal("teardown failed after the last push"))
     }
 }
