@@ -607,6 +607,22 @@ both feature shapes. One environment flake during the pg suite
 (tls-matrix cell, passed in isolation and on full rerun) — the
 recorded rootlessport class, not the change.
 
+WAVE 4 GATE OF RECORD — TWICE CLEAN (reclaim + drain between):
+1010/1010 both runs (2 named instrument skips; = 1008 + the sdk's 2
+constructor-family tests), semver no update required, perf all benches
+within tolerance, cold start 23.6/24.0 ms (bar <=40). Two recorded
+gate-attempt failures before the clean pair, neither the code: the
+docs gate caught an unqualified sdk intra-doc link (fixed, committed —
+the gate doing its 024 job), and one rootlessport bind flake (port
+37859, pg option-edges cell — passed 1/1 in isolation; reclaim swept
+10 orphans from the cancelled run). WAVE 4 CLOSED — rest and postgres
+are fully on the sdk; the remaining four connectors are the owner's
+rewrite scope. RECORDED FOR WAVE 5 (owner direction, this session):
+connectors should carry EXACTLY ONE rdlt dependency — the sdk — with
+the SPI reached through its re-export; the sdk grows feature
+forwarding (failpoints/schema/object-store) and the D1 audit enforces
+the rule.
+
 ## Waves (each ends with a clean full gate)
 
 1. `rdlt-connector` rewritten; consumers ported (engine, 6 connectors,
