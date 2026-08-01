@@ -737,6 +737,16 @@ reviewer's trace: a post-drop yield forces the harness to observe the
 drained channel before the teardown error exists, so the pin exercises
 the wait-for-the-reader path, not the result-captured-first path.
 
+ROUND 4 (terminus verification): CLEAN. The prelude exports exactly
+the authoring nine, the doctest binds through the trait methods (not
+coincidental names), every vocabulary re-export verified against the
+SPI's root; the teardown pin's ordering is duration-independent
+(wake-on-drop makes the drain observation certain before the forced
+yield ends — no hang, no vacuous pass); all five fixes across rounds
+1-3 live on disjoint surfaces with no pairwise conflicts. THE LOOP
+TERMINATES: four rounds, six findings, all fixed and pinned, final
+round zero findings.
+
 ## CLOSE-OUT — 027 COMPLETE on branch `027-sdk-trio` (2026-08-01)
 
 All five waves delivered and gated; merge to main is the owner's call.
