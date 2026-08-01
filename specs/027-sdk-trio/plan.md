@@ -103,43 +103,34 @@ lenses, record below) closed with all eight findings fixed and pinned.
   (c) nothing else. RateLimited-for-destinations, richer check reports,
   capability matrices: all deferred with named triggers.
 
-- D9. THE ENV-KNOB SURFACE, redesigned after a no-assumptions audit of
-  every variable the workspace reads (owner direction: the
-  `RDLT_TESTKIT_FORCE_NO_CONTAINERS`/`RDLT_TESTKIT_REQUIRE_CONTAINERS`
-  names are disliked and their necessity questioned).
-  The audit found, with THREE different read conventions in use
-  (any-set, `=="1"` required, `is_ok`):
-  - gates: the containers pair (testkit) + the snowflake pair
-    (`RDLT_TESTKIT_{FORCE_NO,REQUIRE}_SNOWFLAKE`, snowflake tests);
-  - tiers: `RDLT_NET` (=="1"), `RDLT_HEAVY` (=="1"), `RDLT_DEEP`
-    (any-set);
-  - tools: `RDLT_REPIN` (golden re-record, any-set), `RDLT_BENCH_FORCE`
-    (=="1", bench quiet-guard override), `RDLT_INTEROP_PYTHON` (path);
-  - credentials: `RDLT_SNOWFLAKE_*` (ten data vars);
-  - read-only externals: `DOCKER_HOST`, `XDG_RUNTIME_DIR`, `HOME`.
-  THE DIAGNOSIS: each gate is ONE tri-state knob modeled as TWO booleans,
-  which manufactures an invalid fourth state (both set) that then needs a
-  panic to guard. The redesign makes the invalid state unrepresentable:
-  - `RDLT_CONTAINERS=auto|require|skip` (default `auto`): `auto` =
-    probe, skip-not-fail; `require` = absent runtime panics (the 024
-    gate-integrity guarantee, KEPT — this half is load-bearing); `skip` =
-    behave as absent without probing (the FORCE_NO capability, kept
-    because it costs one enum arm, lets a dev reproduce the no-runtime
-    path, and its existence no longer creates a conflict state). An
-    unrecognized value panics naming the valid ones — the misuse guard
-    the both-set panic used to be.
-  - `RDLT_SNOWFLAKE=auto|require|skip`, same semantics over credential
-    presence (the parser lives in the testkit gate module; the snowflake
-    crate consumes it, so every resource gate spells identically). The
-    prefix overlap with the `RDLT_SNOWFLAKE_*` credential vars is
-    deliberate: the gate names the resource the credentials belong to.
-  - Tier flags KEEP their names (`RDLT_NET`, `RDLT_HEAVY`, `RDLT_DEEP`)
-    but unify on ONE read convention: set-to-`1` enables, exposed as a
-    testkit helper so the rule lives once. Tool and credential vars keep
-    their names (they are well-named data, not switches).
-  - The old four gate names are DELETED, not aliased (greenfield rule);
-    the gating-pin tests port to the tri-state contract with new
-    needles.
+- D9. RESOURCE GATES LOSE THEIR KNOBS (owner direction, twice refined):
+  after a no-assumptions audit of every env variable the workspace reads,
+  the owner first replaced the `RDLT_TESTKIT_{FORCE_NO,REQUIRE}_*`
+  boolean pairs with one tri-state knob per resource, then removed the
+  knobs entirely. The final design, implemented at the testkit wave:
+  - ONE behavior, the sane default: probe for the resource; if absent,
+    print a visible `SKIP` line and pass. No env override demands the
+    resource and none fakes its absence. All four old gate vars are
+    DELETED, unaliased.
+  - SUPERSESSION, stated not buried: this removes 024's "a resource
+    probe can be DEMANDED" guarantee (GI: a skip stops reading as a
+    pass). The remaining net is COUNT DISCIPLINE — nextest's run/skip
+    counts, the gate-of-record convention of naming expected skips, and
+    the testkit README's counts-interpretation table. A wrongly-skipping
+    suite surfaces as a moved number a human compares, not a panic. The
+    owner accepts that trade for the simpler surface.
+  - CONNECTOR-AGNOSTICISM enforced at the seam: the testkit carries only
+    what every connector shares — the container-runtime probe (probe
+    order unchanged: DOCKER_HOST → podman user socket →
+    /var/run/docker.sock → `podman ps`) and the reclaim label. A
+    connector needing credentials (snowflake) owns its OWN probe in its
+    own tests, same skip-not-fail posture; the testkit never names a
+    connector's resource.
+  - Unchanged: the `RDLT_SNOWFLAKE_*` credential DATA vars (they are the
+    credentials, not switches); the cost-tier flags `RDLT_NET` /
+    `RDLT_HEAVY` / `RDLT_DEEP` (they gate expense, not resource
+    presence), unified on one read convention (set-to-`1` enables); the
+    tool vars `RDLT_REPIN`, `RDLT_BENCH_FORCE`, `RDLT_INTEROP_PYTHON`.
 
 ## Frozen surfaces (the parity bar)
 
