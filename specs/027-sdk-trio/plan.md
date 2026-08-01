@@ -286,6 +286,16 @@ rendered text can stay byte-identical but the TYPE surface changes
 (the already-planned typed-error-wrapper work item). Rest and
 postgres adopt cleanly (verified against their sources).
 
+WAVE 2 GATE OF RECORD — TWICE CLEAN on the final tree (post-review):
+1006/1006 both runs (2 skips, both #[ignore]d instruments; 998 + the 8
+review-round tests, count math verified), schema-feature test 1/1 in
+its own gate invocation, semver no update required, perf all benches
+within tolerance, cold start 23.5/23.2 ms (bar <=40). Environment
+flakes on the PRE-review tree, recorded not re-rolled: one rootlessport
+bind (port 45241, file s3 sweep — cell passed 1/1 in isolation) and
+that pre-review pair (998/998 twice) was superseded when the review
+fixes landed. WAVE 2 CLOSED.
+
 ## WAVE 2 REDESIGN — D10: from extraction to FRAMEWORK (owner direction)
 
 The owner rejected the thin extraction-only crate: the goal is a
