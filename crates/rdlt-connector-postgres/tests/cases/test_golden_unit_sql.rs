@@ -9,12 +9,12 @@
 //!
 //! No database: every string here is produced by a pure builder.
 
-use rdlt_connector::WriteMode;
-use rdlt_connector::core::schema::ColumnDef;
-use rdlt_connector::core::{ColumnType, LogicalType, Provenance, TableName, TableSchema};
 use rdlt_connector_postgres::testsupport::destination::{
     Dialect, UNIT_BEGIN, UNIT_COMMIT, UNIT_ROLLBACK, UNIT_WORK_MEM,
 };
+use rdlt_connector_sdk::spi::WriteMode;
+use rdlt_connector_sdk::spi::core::schema::ColumnDef;
+use rdlt_connector_sdk::spi::core::{ColumnType, LogicalType, Provenance, TableName, TableSchema};
 use rdlt_connector_sqlcore::{
     CommitContext, DestinationOptions, FullLoadPublish, Step, column_list, insert_select_sql,
     plan_commit, prepare_target, quote_identifier,

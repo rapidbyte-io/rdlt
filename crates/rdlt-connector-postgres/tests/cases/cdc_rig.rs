@@ -123,7 +123,7 @@ impl Rig {
     fn engine_config(&self, key: &str) -> EngineConfig {
         EngineConfig::new(self.pipeline.as_str())
             .with_workdir(self.workdir.clone())
-            .with_write_mode(rdlt_connector::WriteMode::Merge {
+            .with_write_mode(rdlt_connector_sdk::spi::WriteMode::Merge {
                 key: vec![key.into()],
             })
     }

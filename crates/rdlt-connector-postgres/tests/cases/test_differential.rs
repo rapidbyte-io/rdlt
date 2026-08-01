@@ -14,9 +14,9 @@ use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use chrono::{DateTime, Utc};
 use proptest::prelude::*;
-use rdlt_connector::{PushPayload, ReadRequest, Source as _, records_channel};
 use rdlt_connector_postgres::fixtures::PostgresContainer;
 use rdlt_connector_postgres::source;
+use rdlt_connector_sdk::spi::{PushPayload, ReadRequest, Source as _, records_channel};
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]

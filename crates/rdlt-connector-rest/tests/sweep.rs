@@ -8,9 +8,9 @@
 
 use std::path::Path;
 
-use rdlt_connector::core::failpoint::fail;
 use rdlt_connector_duckdb::dest::DuckDb;
 use rdlt_connector_rest::source::Shell;
+use rdlt_connector_sdk::spi::core::failpoint::fail;
 use rdlt_engine::{Engine, EngineConfig};
 use serde_json::json;
 use wiremock::{Mock, MockServer, ResponseTemplate};

@@ -7,9 +7,11 @@ use std::sync::Arc;
 use arrow_array::{BooleanArray, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use async_trait::async_trait;
-use rdlt_connector::{ConnectorSpec, Cursor, ReadRequest, Source, SourceError, StreamSpec};
 use rdlt_connector_postgres::destination::{
     DedupSort, DestinationOptions, MergeStrategy, Postgres, SortOrder, TableOptions,
+};
+use rdlt_connector_sdk::spi::{
+    ConnectorSpec, Cursor, ReadRequest, Source, SourceError, StreamSpec,
 };
 use rdlt_engine::{Engine, EngineConfig};
 
@@ -134,7 +136,7 @@ async fn run(
     units: Vec<Vec<Row>>,
 ) {
     let mut config = EngineConfig::new(format!("mr-{schema}"));
-    config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
+    config = config.with_write_mode(rdlt_connector_sdk::spi::WriteMode::Merge {
         key: vec!["id".into()],
     });
     let units = units.iter().map(|unit| batch(unit)).collect();
@@ -173,7 +175,7 @@ async fn run_expect_error(
     units: Vec<Vec<Row>>,
 ) -> String {
     let mut config = EngineConfig::new(format!("mr-{schema}"));
-    config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
+    config = config.with_write_mode(rdlt_connector_sdk::spi::WriteMode::Merge {
         key: vec!["id".into()],
     });
     let units = units.iter().map(|unit| batch(unit)).collect();
@@ -675,7 +677,7 @@ async fn refinement_options_validate_typed_at_open() {
     // Review F5: the options under a non-merge write mode are rejected,
     // never silently inert (the 008 F6 lesson).
     let mut config = EngineConfig::new("mr-inert");
-    config = config.with_write_mode(rdlt_connector::WriteMode::Append);
+    config = config.with_write_mode(rdlt_connector_sdk::spi::WriteMode::Append);
     let units = one_row.iter().map(|unit| batch(unit)).collect();
     let error = Engine::new(
         config,
@@ -735,11 +737,11 @@ async fn refinement_options_reject_shredded_streams() {
             .expect("options")
             .into_shell();
         let mut config = EngineConfig::new(schema);
-        config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
+        config = config.with_write_mode(rdlt_connector_sdk::spi::WriteMode::Merge {
             key: vec!["id".into()],
         });
         let source = MemorySource::single_stream(
-            rdlt_connector::StreamSpec::new("users").with_primary_key(["id"]),
+            rdlt_connector_sdk::spi::StreamSpec::new("users").with_primary_key(["id"]),
             vec![json!({"id": 1, "seq": 2, "day": 3})],
         );
         let error = Engine::new(config, source, destination)

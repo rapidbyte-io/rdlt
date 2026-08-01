@@ -6,9 +6,9 @@
 use std::collections::BTreeMap;
 
 use async_trait::async_trait;
-use rdlt_connector::core::crash_point;
-use rdlt_connector::{Cursor, SourceError, StreamSpec};
 use rdlt_connector_sdk::source::{Feed, SourceConnector};
+use rdlt_connector_sdk::spi::core::crash_point;
+use rdlt_connector_sdk::spi::{Cursor, SourceError, StreamSpec};
 
 use super::config::{self, Config};
 use super::errors::{self, Phase};
@@ -436,9 +436,10 @@ mod tests {
             );
             Ok(())
         }
-        rdlt_connector::core::failpoint::fail::cfg("pg.src.after_reflect", "return").unwrap();
+        rdlt_connector_sdk::spi::core::failpoint::fail::cfg("pg.src.after_reflect", "return")
+            .unwrap();
         let fired = site().is_err();
-        rdlt_connector::core::failpoint::fail::remove("pg.src.after_reflect");
+        rdlt_connector_sdk::spi::core::failpoint::fail::remove("pg.src.after_reflect");
         assert!(fired, "armed crash_point must fire");
     }
 }

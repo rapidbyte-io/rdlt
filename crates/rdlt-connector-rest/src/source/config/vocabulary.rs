@@ -9,8 +9,8 @@
 
 use std::collections::BTreeMap;
 
-use rdlt_connector::Secret;
-use rdlt_connector::core::LogicalType;
+use rdlt_connector_sdk::spi::Secret;
+use rdlt_connector_sdk::spi::core::LogicalType;
 use serde::{Deserialize, Serialize};
 
 /// The whole source document: connection-wide settings plus one entry per

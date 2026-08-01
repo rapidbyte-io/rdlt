@@ -72,7 +72,7 @@ pub struct Probe {
 
 #[async_trait]
 impl TableProbe for Probe {
-    async fn count(&self, table: &rdlt_connector::TableName) -> u64 {
+    async fn count(&self, table: &rdlt_connector_sdk::spi::TableName) -> u64 {
         count(&self.connection_string, &self.schema, table.as_str()).await
     }
 }

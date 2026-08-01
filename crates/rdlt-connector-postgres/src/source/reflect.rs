@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use rdlt_connector::SourceError;
+use rdlt_connector_sdk::spi::SourceError;
 use tokio_postgres::Client;
 
 use crate::source::config::{Config, TableConfig};

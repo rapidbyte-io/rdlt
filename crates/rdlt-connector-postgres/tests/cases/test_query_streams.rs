@@ -118,7 +118,7 @@ async fn join_query_lands_with_described_schema_and_incremental_works() {
 /// connect-phase error instead of the typed rejection under test — so this
 /// harness plays the engine's role and retries ONLY transient connect errors.
 async fn rejection_of(postgres_source: &source::Shell) -> String {
-    use rdlt_connector::Source as _;
+    use rdlt_connector_sdk::spi::Source as _;
     for _ in 0..3 {
         let error = postgres_source
             .streams()

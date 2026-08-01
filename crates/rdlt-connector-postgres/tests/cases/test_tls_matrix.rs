@@ -198,7 +198,7 @@ HBA
 
 /// Drive a real connection through the source (streams() reflects ⇒ connects).
 async fn probe_source(connection_string: &str, tls_yaml: &str) -> Result<(), String> {
-    use rdlt_connector::Source as _;
+    use rdlt_connector_sdk::spi::Source as _;
     common::source(connection_string, tls_yaml)
         .streams()
         .await
@@ -287,8 +287,8 @@ async fn prefer_falls_back_on_plaintext_server_and_conn_sslmode_flows() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn destination_uses_the_same_policy_path() {
-    use rdlt_connector::core::{LoadId, PipelineId};
-    use rdlt_connector::{Destination as _, OpenContext};
+    use rdlt_connector_sdk::spi::core::{LoadId, PipelineId};
+    use rdlt_connector_sdk::spi::{Destination as _, OpenContext};
 
     let Some(fixture) = TlsPostgresContainer::start().await else {
         return;
@@ -360,8 +360,8 @@ fn mtls_yaml(mode: &str, root: &str, client: Option<(&str, &str)>) -> String {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn client_cert_matrix_against_cert_auth_server() {
-    use rdlt_connector::core::{LoadId, PipelineId};
-    use rdlt_connector::{Destination as _, OpenContext};
+    use rdlt_connector_sdk::spi::core::{LoadId, PipelineId};
+    use rdlt_connector_sdk::spi::{Destination as _, OpenContext};
 
     let Some(fixture) = TlsPostgresContainer::start_cert_auth().await else {
         return;
@@ -452,8 +452,8 @@ async fn credential_offered_but_unused_still_syncs() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn sslrootcert_url_syncs_and_application_name_is_set() {
-    use rdlt_connector::core::{LoadId, PipelineId};
-    use rdlt_connector::{Destination as _, OpenContext};
+    use rdlt_connector_sdk::spi::core::{LoadId, PipelineId};
+    use rdlt_connector_sdk::spi::{Destination as _, OpenContext};
 
     let Some(fixture) = TlsPostgresContainer::start().await else {
         return;
@@ -472,7 +472,7 @@ async fn sslrootcert_url_syncs_and_application_name_is_set() {
 
     // SOURCE: reflect over the URL (connects verified), then check that the
     // live session carries application_name=rdlt.
-    use rdlt_connector::Source as _;
+    use rdlt_connector_sdk::spi::Source as _;
     let postgres_source = source::Shell::from_yaml(&format!("conn: \"{url}\"\n")).expect("config");
     postgres_source
         .streams()

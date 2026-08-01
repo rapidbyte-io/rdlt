@@ -6,9 +6,11 @@ use std::sync::Arc;
 use arrow_array::{BooleanArray, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use async_trait::async_trait;
-use rdlt_connector::{ConnectorSpec, Cursor, ReadRequest, Source, SourceError, StreamSpec};
 use rdlt_connector_postgres::destination::{
     DestinationOptions, MergeStrategy, Postgres, TableOptions,
+};
+use rdlt_connector_sdk::spi::{
+    ConnectorSpec, Cursor, ReadRequest, Source, SourceError, StreamSpec,
 };
 use rdlt_engine::{Engine, EngineConfig};
 
@@ -89,7 +91,7 @@ async fn run_merge(
     rows: &[(i64, &str, Option<bool>)],
 ) {
     let mut config = EngineConfig::new("strat");
-    config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
+    config = config.with_write_mode(rdlt_connector_sdk::spi::WriteMode::Merge {
         key: vec!["id".into()],
     });
     Engine::new(config, FlaggedSource { batch: batch(rows) }, destination)
@@ -185,7 +187,7 @@ async fn duplicate_keys_under_upsert_fail_typed_naming_the_key() {
             .expect("dup table");
     }
     let mut config = EngineConfig::new("dup");
-    config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
+    config = config.with_write_mode(rdlt_connector_sdk::spi::WriteMode::Merge {
         key: vec!["id".into()],
     });
     let error = Engine::new(
@@ -226,11 +228,11 @@ async fn shredded_upsert_is_rejected_typed_at_ensure() {
         .expect("options")
         .into_shell();
     let mut config = EngineConfig::new("shup");
-    config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
+    config = config.with_write_mode(rdlt_connector_sdk::spi::WriteMode::Merge {
         key: vec!["id".into()],
     });
     let source = MemorySource::single_stream(
-        rdlt_connector::StreamSpec::new("users").with_primary_key(["id"]),
+        rdlt_connector_sdk::spi::StreamSpec::new("users").with_primary_key(["id"]),
         vec![json!({"id": 1, "name": "ada"})],
     );
     let error = Engine::new(config, source, destination)
@@ -273,13 +275,13 @@ async fn flagged_then_recreated_root_keeps_its_subtree() {
         .expect("options")
         .into_shell();
     let mut config = EngineConfig::new("recreate");
-    config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
+    config = config.with_write_mode(rdlt_connector_sdk::spi::WriteMode::Merge {
         key: vec!["id".into()],
     });
     // One load, same key twice: flagged first, re-created after (arrival
     // order matters — last wins).
     let source = MemorySource::single_stream(
-        rdlt_connector::StreamSpec::new("users").with_primary_key(["id"]),
+        rdlt_connector_sdk::spi::StreamSpec::new("users").with_primary_key(["id"]),
         vec![
             json!({"id": 1, "name": "ada", "deleted": true, "tags": []}),
             json!({"id": 1, "name": "ada-again", "deleted": null,
@@ -333,11 +335,11 @@ async fn child_hard_delete_is_rejected_typed() {
         .expect("options")
         .into_shell();
     let mut config = EngineConfig::new("childhd");
-    config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
+    config = config.with_write_mode(rdlt_connector_sdk::spi::WriteMode::Merge {
         key: vec!["id".into()],
     });
     let source = MemorySource::single_stream(
-        rdlt_connector::StreamSpec::new("users").with_primary_key(["id"]),
+        rdlt_connector_sdk::spi::StreamSpec::new("users").with_primary_key(["id"]),
         vec![json!({"id": 1, "tags": [{"label": "x"}]})],
     );
     let error = Engine::new(config, source, destination)

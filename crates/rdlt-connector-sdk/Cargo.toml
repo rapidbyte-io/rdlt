@@ -28,7 +28,13 @@ tokio = { workspace = true }
 workspace = true
 
 [features]
-# `config::schema_of` — JSON Schema generation for config documents.
-# Opt-in so the framework carries no mandatory schemars edge, mirroring
-# the SPI's feature spelling.
-schema = ["dep:schemars"]
+# Connectors depend on the sdk ALONE (the one-dependency rule) and reach
+# the SPI through the `spi` re-export, so every SPI feature a connector
+# may need forwards through the same spelling here.
+# `config::schema_of` + the SPI's schemars impls for shared config types.
+schema = ["dep:schemars", "rdlt-connector/schema"]
+# The crash-sweep seam, forwarded to the vocabulary crate that defines
+# `crash_point!`.
+failpoints = ["rdlt-connector/failpoints"]
+# The object-store vocabulary (one shared recoverability rule).
+object-store = ["rdlt-connector/object-store"]

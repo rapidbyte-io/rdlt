@@ -398,7 +398,7 @@ async fn merge_by_declared_key_converges_and_keyless_is_rejected() {
 
     let merge_config = |pipeline: &str| {
         let mut config = EngineConfig::new(pipeline);
-        config = config.with_write_mode(rdlt_connector::core::WriteMode::Merge {
+        config = config.with_write_mode(rdlt_connector_sdk::spi::core::WriteMode::Merge {
             key: vec!["id".into()],
         });
         config
@@ -461,7 +461,7 @@ async fn merge_by_declared_key_converges_and_keyless_is_rejected() {
     let directory = tempfile::tempdir().expect("tempdir");
     let destination = DuckDb::open(directory.path().join("nokey.duckdb")).expect("open db");
     let mut config = merge_config("inc-merge-nokey");
-    config = config.with_write_mode(rdlt_connector::core::WriteMode::Merge {
+    config = config.with_write_mode(rdlt_connector_sdk::spi::core::WriteMode::Merge {
         key: vec!["x".into()],
     });
     let error = Engine::new(config, keyless, destination)
@@ -495,7 +495,7 @@ async fn lag_captures_late_arrivals_with_exact_totals_under_merge() {
         let destination = harness.destination.clone();
         async move {
             let mut config = EngineConfig::new("inc-lag");
-            config = config.with_write_mode(rdlt_connector::core::WriteMode::Merge {
+            config = config.with_write_mode(rdlt_connector_sdk::spi::core::WriteMode::Merge {
                 key: vec!["id".into()],
             });
             Engine::new(config, postgres_source, destination)
@@ -540,7 +540,7 @@ async fn lag_captures_late_arrivals_with_exact_totals_under_merge() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn lag_rejections_are_typed_and_early() {
-    use rdlt_connector::Source as _;
+    use rdlt_connector_sdk::spi::Source as _;
     let Some(fixture) = PostgresContainer::start().await else {
         return;
     };
@@ -815,7 +815,7 @@ async fn magnitude_lag_for_integer_cursors() {
     };
     let run = |postgres_source| {
         let mut config = EngineConfig::new("int-lag");
-        config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
+        config = config.with_write_mode(rdlt_connector_sdk::spi::WriteMode::Merge {
             key: vec!["id".into()],
         });
         Engine::new(config, postgres_source, harness.destination.clone())

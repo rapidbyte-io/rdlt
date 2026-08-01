@@ -8,10 +8,10 @@ use std::sync::Arc;
 
 use arrow_array::{Decimal128Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
-use rdlt_connector::core::{
+use rdlt_connector_sdk::spi::core::{
     ColumnDef, ColumnType, LoadId, LogicalType, PipelineId, Provenance, TableName, TableSchema,
 };
-use rdlt_connector::{Destination as _, OpenContext, WriteMode};
+use rdlt_connector_sdk::spi::{Destination as _, OpenContext, WriteMode};
 use rdlt_testkit::TableProbe as _;
 use rdlt_testkit::commit_meta_for;
 

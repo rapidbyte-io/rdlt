@@ -4,9 +4,9 @@
 //! reclamation obligation.
 
 use async_trait::async_trait;
-use rdlt_connector::core::naming::IdentRules;
-use rdlt_connector::{DestinationCapabilities, DestinationError, OpenContext};
 use rdlt_connector_sdk::destination::DestinationConnector;
+use rdlt_connector_sdk::spi::core::naming::IdentRules;
+use rdlt_connector_sdk::spi::{DestinationCapabilities, DestinationError, OpenContext};
 use rdlt_connector_sqlcore::quote_identifier;
 
 use super::catalog::{Catalog, stage_prefix};

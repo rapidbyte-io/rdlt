@@ -8,11 +8,11 @@
 
 #![cfg(feature = "failpoints")]
 
-use rdlt_connector::StreamSpec;
-use rdlt_connector::core::WriteMode;
-use rdlt_connector::core::failpoint::fail;
 use rdlt_connector_postgres::destination::Postgres;
 use rdlt_connector_postgres::fixtures::PostgresContainer;
+use rdlt_connector_sdk::spi::StreamSpec;
+use rdlt_connector_sdk::spi::core::WriteMode;
+use rdlt_connector_sdk::spi::core::failpoint::fail;
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{MemoryBatch, MemorySource, MemoryStream};
 use serde_json::json;
@@ -184,7 +184,7 @@ async fn every_dest_fail_point_recovers_exactly_once_across_append_replace_and_m
 use arrow_array::{Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use async_trait::async_trait;
-use rdlt_connector::{ConnectorSpec, Cursor, ReadRequest, Source, SourceError};
+use rdlt_connector_sdk::spi::{ConnectorSpec, Cursor, ReadRequest, Source, SourceError};
 use std::sync::Arc;
 
 /// Structured stream with a declared key: 4 checkpointed batches × 25 rows,

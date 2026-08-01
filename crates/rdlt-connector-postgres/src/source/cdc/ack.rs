@@ -3,8 +3,8 @@
 //! dedicated `rdlt::cdc` tracing target. Called at run completion by the
 //! dispatch, and kept alive by the tail loop — both paths, one module.
 
-use rdlt_connector::SourceError;
-use rdlt_connector::core::crash_point;
+use rdlt_connector_sdk::spi::SourceError;
+use rdlt_connector_sdk::spi::core::crash_point;
 
 use crate::session::Connection;
 use crate::source::config::{AckMode, CdcConfig};

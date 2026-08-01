@@ -7,9 +7,9 @@
 
 use std::time::Duration;
 
-use rdlt_connector::{ReadRequest, Source, SourceError, records_channel};
 use rdlt_connector_rest::source::Config;
 use rdlt_connector_rest::source::Shell;
+use rdlt_connector_sdk::spi::{ReadRequest, Source, SourceError, records_channel};
 use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};

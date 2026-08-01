@@ -2,10 +2,10 @@
 //! example connector — engine-driven (the real wiring, not just the source).
 
 use super::common::read_err;
-use rdlt_connector::SourceError;
 use rdlt_connector_duckdb::dest::DuckDb;
 use rdlt_connector_rest::source::Shell;
 use rdlt_connector_sdk::config::Document;
+use rdlt_connector_sdk::spi::SourceError;
 use rdlt_engine::{Engine, EngineConfig};
 use serde_json::json;
 use wiremock::matchers::{method, path, query_param};

@@ -445,7 +445,7 @@ async fn empty_table_materializes_with_schema() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn drift_column_added_dropped_retyped() {
-    use rdlt_connector::Source as _;
+    use rdlt_connector_sdk::spi::Source as _;
 
     // ADDED between reflect and read: this run projects the reflected
     // columns only (discovery is once per run); the NEXT run evolves.
@@ -556,7 +556,7 @@ async fn drift_table_dropped_between_reflect_and_read() {
         .await;
     let postgres_source = common::source(&fixture.connection_string, "tables:\n  - name: doomed\n");
     // Prime reflection (as the engine's stream discovery would)…
-    use rdlt_connector::Source as _;
+    use rdlt_connector_sdk::spi::Source as _;
     let specs = postgres_source.streams().await.expect("streams");
     assert_eq!(specs.len(), 1);
     // …then drift: the table vanishes before read.

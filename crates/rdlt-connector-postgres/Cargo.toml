@@ -15,14 +15,17 @@ repository.workspace = true
 default = ["source", "destination"]
 source = []
 destination = []
-failpoints = ["rdlt-connector/failpoints"]
+failpoints = ["rdlt-connector-sdk/failpoints"]
 # Container fixtures for tests across the workspace. Test support only, no
 # semver guarantees.
 fixtures = ["dep:rdlt-testkit", "dep:testcontainers-modules"]
 
 [dependencies]
-rdlt-connector-sdk = { workspace = true }
-rdlt-connector = { workspace = true, features = ["schema"] }
+# The ONE rdlt dependency (the one-dependency rule): the SPI is reached
+# through the sdk's `spi` re-export. sqlcore is the RECORDED exception —
+# the shared SQL merge core is connector substrate, not the SPI; whether
+# it folds into the sdk is an owner decision at the connector rewrites.
+rdlt-connector-sdk = { workspace = true, features = ["schema"] }
 rdlt-connector-sqlcore = { workspace = true }
 schemars = { workspace = true }
 arrow-array = { workspace = true }

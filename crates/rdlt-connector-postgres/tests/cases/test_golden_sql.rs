@@ -9,10 +9,10 @@
 //! No database: the builders are pure. Behavior (what the SQL does) is pinned
 //! by the 006/008/010 conformance + sweep suites; THIS suite pins the text.
 
-use rdlt_connector::core::schema::ColumnDef;
-use rdlt_connector::core::{ColumnType, LogicalType, Provenance, TableName, TableSchema};
 use rdlt_connector_postgres::destination::{AbsentPolicy, DedupSort, Scd2Options, SortOrder};
 use rdlt_connector_postgres::testsupport::destination::Dialect;
+use rdlt_connector_sdk::spi::core::schema::ColumnDef;
+use rdlt_connector_sdk::spi::core::{ColumnType, LogicalType, Provenance, TableName, TableSchema};
 use rdlt_connector_sqlcore::plan::{
     identity_delete_insert_sql, keyed_delete_insert_sql, keyed_upsert_sql, scd2_merge_sql,
     scope_replace_sql,

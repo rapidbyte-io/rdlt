@@ -145,7 +145,7 @@ async fn declared_primary_key_override_keys_the_stream_under_full() {
     // Under REPLICA IDENTITY FULL a declared primary_key override must win
     // over the catalog PK (any key has values in the full old image) — not
     // be silently ignored.
-    use rdlt_connector::Source;
+    use rdlt_connector_sdk::spi::Source;
     let Some(rig) = Rig::start("cdc-key-override").await else {
         return;
     };
@@ -190,7 +190,7 @@ async fn declared_key_mismatch_under_default_identity_is_typed() {
     );
     let config = EngineConfig::new("cdc-key-mismatch")
         .with_workdir(rig.workdir.clone())
-        .with_write_mode(rdlt_connector::WriteMode::Merge {
+        .with_write_mode(rdlt_connector_sdk::spi::WriteMode::Merge {
             key: vec!["code".into()],
         });
     let error = Engine::new(config, keyed_source, rig.destination(&["orders"]))

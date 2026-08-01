@@ -2,9 +2,9 @@
 //! sequence or a parent-child fan-out, tracks the incremental cursor, and
 //! checkpoints.
 
-use rdlt_connector::core::crash_point;
-use rdlt_connector::{Cursor, SourceError};
 use rdlt_connector_sdk::source::Feed;
+use rdlt_connector_sdk::spi::core::crash_point;
+use rdlt_connector_sdk::spi::{Cursor, SourceError};
 
 use super::sequence::Sequence;
 use crate::source::config::{Config, Incremental, Stream};

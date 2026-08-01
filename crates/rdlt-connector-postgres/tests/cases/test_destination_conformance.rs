@@ -37,7 +37,7 @@ async fn flattened_nested_fields_land_and_merge_replaces_child_subtrees() {
     let destination = Postgres::new(&connection_string).schema("raw").into_shell();
 
     let source = MemorySource::single_stream(
-        rdlt_connector::StreamSpec::new("users").with_primary_key(["id"]),
+        rdlt_connector_sdk::spi::StreamSpec::new("users").with_primary_key(["id"]),
         vec![
             json!({"id": 1, "name": "ada", "profile": {"city": "NYC"},
                    "tags": [{"label": "x"}, {"label": "y"}]}),
@@ -45,7 +45,7 @@ async fn flattened_nested_fields_land_and_merge_replaces_child_subtrees() {
         ],
     );
     let mut config = EngineConfig::new("pg-e2e");
-    config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
+    config = config.with_write_mode(rdlt_connector_sdk::spi::WriteMode::Merge {
         key: vec!["id".into()],
     });
     let report = Engine::new(config, source, destination.clone())
@@ -59,12 +59,14 @@ async fn flattened_nested_fields_land_and_merge_replaces_child_subtrees() {
         schema: "raw".into(),
     };
     assert_eq!(
-        probe.count(&rdlt_connector::TableName::new("users")).await,
+        probe
+            .count(&rdlt_connector_sdk::spi::TableName::new("users"))
+            .await,
         2
     );
     assert_eq!(
         probe
-            .count(&rdlt_connector::TableName::new("users__tags"))
+            .count(&rdlt_connector_sdk::spi::TableName::new("users__tags"))
             .await,
         2
     );
@@ -80,14 +82,14 @@ async fn flattened_nested_fields_land_and_merge_replaces_child_subtrees() {
 
     // Merge run 2: user 1 updated with one new tag — subtree replaced.
     let source = MemorySource::single_stream(
-        rdlt_connector::StreamSpec::new("users").with_primary_key(["id"]),
+        rdlt_connector_sdk::spi::StreamSpec::new("users").with_primary_key(["id"]),
         vec![
             json!({"id": 1, "name": "ada lovelace", "profile": {"city": "London"},
                     "tags": [{"label": "z"}]}),
         ],
     );
     let mut config = EngineConfig::new("pg-e2e");
-    config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
+    config = config.with_write_mode(rdlt_connector_sdk::spi::WriteMode::Merge {
         key: vec!["id".into()],
     });
     Engine::new(config, source, destination.clone())
@@ -96,7 +98,9 @@ async fn flattened_nested_fields_land_and_merge_replaces_child_subtrees() {
         .expect("run 2");
 
     assert_eq!(
-        probe.count(&rdlt_connector::TableName::new("users")).await,
+        probe
+            .count(&rdlt_connector_sdk::spi::TableName::new("users"))
+            .await,
         2
     );
     let labels: Vec<String> = client
@@ -121,7 +125,7 @@ async fn keyed_merge_converges_to_one_row_per_key_with_updated_values() {
 
     use arrow_array::{Int64Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema};
-    use rdlt_connector::{ConnectorSpec, ReadRequest, Source, SourceError, StreamSpec};
+    use rdlt_connector_sdk::spi::{ConnectorSpec, ReadRequest, Source, SourceError, StreamSpec};
 
     struct KeyedArrowSource {
         batch: RecordBatch,
@@ -168,7 +172,7 @@ async fn keyed_merge_converges_to_one_row_per_key_with_updated_values() {
     let destination = Postgres::new(&connection_string).schema("raw").into_shell();
     let merge_config = || {
         let mut config = EngineConfig::new("pg-kmerge");
-        config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
+        config = config.with_write_mode(rdlt_connector_sdk::spi::WriteMode::Merge {
             key: vec!["id".into()],
         });
         config

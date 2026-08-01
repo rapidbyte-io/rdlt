@@ -6,7 +6,7 @@
 //! bare sqlcore names — the same spelling every SQL destination uses, so a
 //! config document reads identically whichever one consumes it.
 
-use rdlt_connector::DestinationError;
+use rdlt_connector_sdk::spi::DestinationError;
 use serde::{Deserialize, Serialize};
 
 pub use rdlt_connector_sqlcore::{

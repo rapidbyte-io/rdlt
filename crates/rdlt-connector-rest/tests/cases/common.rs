@@ -2,8 +2,10 @@
 //! one stream, collect rows + checkpoints.
 #![allow(dead_code)]
 
-use rdlt_connector::{Cursor, PushPayload, ReadRequest, Source, SourceError, records_channel};
 use rdlt_connector_rest::source::Shell;
+use rdlt_connector_sdk::spi::{
+    Cursor, PushPayload, ReadRequest, Source, SourceError, records_channel,
+};
 
 pub struct ReadOutcome {
     pub rows: Vec<serde_json::Value>,

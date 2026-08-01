@@ -11,6 +11,37 @@ integrity first (this feature), house style second.
 
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
+`specs/027-sdk-trio/plan.md` (feature: THE SDK TRIO — the connector-facing
+foundation as three deliberate layers, ALL SECOND-GENERATION and SWAPPED
+IN on branch `027-sdk-trio` (off main @ cb130ee8, NOT merged): the SPI
+`rdlt-connector` rewritten greenfield (check() probes, error context()
+single-frame, non_exhaustive capabilities with with_* builders,
+OpenContext, modules parquet/store, ByteSender/ByteReceiver; workspace
+0.2.0→0.3.0 — the 014 window LANDED, semver gate passes); the NEW
+`rdlt-connector-sdk` connector-builder FRAMEWORK (D10 — inversion of
+control: config::Document parse-then-validate that renders NO text,
+SourceConnector + Feed with ControlFlow cancellation, DestinationConnector
++ Backend with the session choreography owning write-before-ensure
+refusal and existing_receipt→replay→publish; proof discipline = an
+in-memory example connector passes the SAME testkit kits shipping
+connectors answer to; shells carry the generic from-text family so the
+config triple lives ONCE); `rdlt-testkit` rewritten (scanner
+DO-NOT-SIMPLIFY design intact, conformance docs claim EXACTLY the
+asserted clauses S1/S2/S4 + D1-D6/D8, TWO inherited gen-1 defects fixed
+parity-safe and pinned: the S4 check skipped after an S1/S2 failure, and
+open() failures all mislabelled D4). WAVE 4: rest AND postgres fully
+adopted (owner scope — duckdb/file/iceberg/snowflake await the owner's
+rewrite); the pg destination's commit split into the choreography hooks
+with 14/14 crash sweeps unchanged as the exactly-once proof; pg-dest's
+non-validating from_* asymmetry CLOSED. WAVE 5: the ONE-DEPENDENCY rule
+(connectors depend on the sdk alone, SPI via its `spi` re-export, sdk
+forwards failpoints/schema/object-store; ENFORCED by the sdk's
+test_dependency_rule with sqlcore + optional-fixtures-testkit as the
+recorded exceptions) and `docs/connector-authoring.md`. Every stage
+gated TWICE CLEAN with counts predicted and verified; environment
+flakes recorded, never re-rolled. plan.md carries D1-D10, the wave
+records, swap-ins, review rounds, and gate-of-record blocks.)
+Previous feature 026 for reference:
 `specs/026-rest-v2/plan.md` (feature: REST SECOND GENERATION — COMPLETE,
 SWAPPED IN, and MERGED, the second application of the 025 playbook.
 Written greenfield as `rdlt-connector-rest-v2` (no code copied from

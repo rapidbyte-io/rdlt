@@ -5,12 +5,12 @@ use std::sync::Arc;
 
 use arrow_array::{Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
-use rdlt_connector::core::{
+use rdlt_connector_postgres::fixtures::PostgresContainer;
+use rdlt_connector_sdk::spi::core::{
     ColumnDef, ColumnType, CommitCounters, LoadId, LogicalType, PipelineId, Provenance, StateDoc,
     TableName, TableSchema,
 };
-use rdlt_connector::{CommitMeta, Destination, OpenContext, WriteMode};
-use rdlt_connector_postgres::fixtures::PostgresContainer;
+use rdlt_connector_sdk::spi::{CommitMeta, Destination, OpenContext, WriteMode};
 
 fn schema() -> TableSchema {
     TableSchema {

@@ -3,8 +3,8 @@
 //! shell provides the SPI ([`super::Shell`]).
 
 use async_trait::async_trait;
-use rdlt_connector::{Cursor, SourceError, StreamSpec, core::StreamName};
 use rdlt_connector_sdk::source::{Feed, SourceConnector};
+use rdlt_connector_sdk::spi::{Cursor, SourceError, StreamSpec, core::StreamName};
 
 use super::config::{self, Config, Stream};
 use super::http::{Client, Credentials};

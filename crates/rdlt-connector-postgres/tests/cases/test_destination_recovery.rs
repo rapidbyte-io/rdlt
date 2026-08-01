@@ -4,10 +4,10 @@
 //! same latent in-memory pattern (never crash-swept until now).
 
 use crate::cases::common::count;
-use rdlt_connector::core::{LoadId, PipelineId, TableName, WriteMode};
-use rdlt_connector::{Destination, OpenContext};
 use rdlt_connector_postgres::destination::Postgres;
 use rdlt_connector_postgres::fixtures::PostgresContainer;
+use rdlt_connector_sdk::spi::core::{LoadId, PipelineId, TableName, WriteMode};
+use rdlt_connector_sdk::spi::{Destination, OpenContext};
 use rdlt_testkit::{batch_of, commit_meta_for, schema_for};
 
 #[tokio::test(flavor = "multi_thread")]
