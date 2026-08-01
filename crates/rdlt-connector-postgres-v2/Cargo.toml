@@ -59,6 +59,7 @@ rustls-pemfile = { workspace = true }
 rcgen = { workspace = true }
 proptest = { workspace = true }
 rdlt-connector-duckdb = { workspace = true }
+rdlt-connector-postgres = { workspace = true, features = ["source", "dest"] }
 rdlt-engine = { workspace = true }
 rdlt-connector-postgres-v2 = { path = ".", features = ["fixtures"] }
 rdlt-testkit = { workspace = true }

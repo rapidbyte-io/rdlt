@@ -4386,6 +4386,7 @@ dependencies = [
  "rcgen",
  "rdlt-connector",
  "rdlt-connector-duckdb",
+ "rdlt-connector-postgres",
  "rdlt-connector-postgres-v2",
  "rdlt-connector-sqlcore",
  "rdlt-engine",
