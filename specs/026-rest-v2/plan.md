@@ -8,9 +8,40 @@ every operator-visible surface frozen and verified identical. Generation 1
 (`crates/rdlt-connector-rest`) stays UNTOUCHED and fully gated while both
 coexist; the owner decides the swap.
 
-## STATUS — IN PROGRESS (started 2026-08-01)
+## STATUS — COMPLETE (2026-08-01)
 
-Branch `rest-v2` off main @ d2b7600e (the postgres swap-in merge).
+DONE, on branch `rest-v2` off main @ d2b7600e (the postgres swap-in
+merge), 4 commits. Final state:
+
+- Crate `rdlt-connector-rest-v2` complete: 22 lib tests, 86/86
+  integration (every generation-1 assertion passed as written on the
+  first run) + the 2 review-round pins, 2/2 sweep (crash/rerun
+  convergence ×3 points, registry-vs-sources), doctest, mock_api
+  example. No containers needed — the suites are wiremock-backed.
+- Zero-warning bar: clippy --all-targets --all-features, rustdoc
+  -D warnings, fmt — all clean.
+- Review round 1 (three lenses, record below): NO drift vs generation 1;
+  two inherited defects found, fixed parity-safe, pinned; naming audit
+  clean after polish.
+- Makefile wired: v2 sweep line under TARGET=sweep alongside
+  generation 1's.
+- FULL GATE TWICE CLEAN, untouched runs on the same commit: 1069/1069
+  workspace tests (2 named instrument skips), all sweeps, semver no
+  update required, perf gate 0 regressed, cold start 23.7 / 23.8 ms
+  (bar ≤ 40). Exit 0 both runs.
+  - Gate #2's FIRST attempt failed on the recorded podman
+    rootlessport flake, NOT this crate: cell
+    `rdlt-connector-file::s3_live::range_read_returns_the_tail`, port
+    38981, mechanism 1 (inter-run residue — the run started straight
+    after gate #1; 48 residual containers + 1,501 TIME_WAIT sockets
+    measured at failure). Remedy per the recorded procedure: `make
+    reclaim` + drain to zero, rerun — clean.
+- Generation 1 UNTOUCHED and still fully gated (D1). NOT merged, NOT
+  wired into the facade; swap/rename/publish are the owner's calls. The
+  swap checklist mirrors postgres-v2's: point the facade `rest` feature
+  at v2, port `pipeline_spec`/CLI spellings (`RestSource`→`source::Rest`
+  per the ledger), retire the gen-1 Makefile line, keep the `sweep`
+  binary name, move the bench fixture's mock_api reference.
 
 ## Decision record
 
