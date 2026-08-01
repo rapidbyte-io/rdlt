@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use rdlt_connector_file::ParquetDir;
-use rdlt_testkit::conformance::dest::verify_destination;
+use rdlt_testkit::conformance::destination::verify_destination;
 use rdlt_testkit::{TableProbe, assert_conformant};
 
 struct DirProbe(ParquetDir);

@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use rdlt_connector_postgres::destination::Postgres;
 use rdlt_connector_postgres::fixtures::PostgresContainer;
 use rdlt_engine::{Engine, EngineConfig};
-use rdlt_testkit::conformance::dest::verify_destination;
+use rdlt_testkit::conformance::destination::verify_destination;
 use rdlt_testkit::{MemorySource, TableProbe, assert_conformant};
 use serde_json::json;
 

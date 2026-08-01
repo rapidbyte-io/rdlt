@@ -7,7 +7,7 @@ use rdlt_connector::{
     DestinationError, LoadSession, OpenContext, PipelineId, ReadRequest, RecordBatch, Source,
     SourceError, StateDoc, StreamSpec, TableName, TableSchema, WriteMode,
 };
-use rdlt_testkit::conformance::{dest::verify_destination, source::verify_source};
+use rdlt_testkit::conformance::{destination::verify_destination, source::verify_source};
 use rdlt_testkit::{MemoryDestination, TableProbe};
 use serde_json::json;
 
@@ -126,5 +126,82 @@ async fn destination_without_idempotent_commit_fails_d3_by_name() {
     assert!(
         failures.iter().any(|f| f.clause == "D3"),
         "expected a D3 diagnostic, got: {failures:?}"
+    );
+}
+
+/// Violates S2 (never checkpoints) AND S4 (errors on a closed channel).
+/// Pins the generation-1 defect this generation fixes: the S2 `continue`
+/// skipped the S4 check, so the second violation was never reported.
+struct DoublyBrokenSource;
+
+#[async_trait]
+impl Source for DoublyBrokenSource {
+    fn spec(&self) -> ConnectorSpec {
+        ConnectorSpec::new("doubly-broken", "0.0.0")
+    }
+
+    async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
+        Ok(vec![StreamSpec::new("events")])
+    }
+
+    async fn read(&self, mut req: ReadRequest) -> Result<(), SourceError> {
+        // NOTE both bugs: no checkpoint ever, and a closed channel is
+        // treated as an error instead of cancellation.
+        if req.out.rows([json!({"a": 1})]).await.is_err() {
+            return Err(SourceError::fatal("channel closed mid-read"));
+        }
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn both_s2_and_s4_are_reported_independently() {
+    let failures = verify_source(&DoublyBrokenSource).await;
+    for clause in ["S2", "S4"] {
+        assert!(
+            failures.iter().any(|f| f.clause == clause),
+            "expected a {clause} diagnostic, got: {failures:?}"
+        );
+    }
+}
+
+/// A destination whose `open` always fails. Pins the second generation-1
+/// defect: every open was labelled D4, sending the author to investigate
+/// teardown semantics that were never reached — the setup failure now
+/// carries the clause it was setting up.
+struct Unopenable;
+
+#[async_trait]
+impl Destination for Unopenable {
+    fn spec(&self) -> ConnectorSpec {
+        ConnectorSpec::new("unopenable", "0.0.0")
+    }
+
+    fn capabilities(&self) -> DestinationCapabilities {
+        DestinationCapabilities::default()
+    }
+
+    async fn open(&self, _ctx: OpenContext) -> Result<Box<dyn LoadSession>, DestinationError> {
+        Err(DestinationError::fatal("credentials rejected"))
+    }
+}
+
+struct NoProbe;
+
+#[async_trait]
+impl TableProbe for NoProbe {
+    async fn count(&self, _table: &TableName) -> u64 {
+        0
+    }
+}
+
+#[tokio::test]
+async fn an_open_failure_is_attributed_to_the_clause_it_sets_up() {
+    let failures = verify_destination(&Unopenable, &NoProbe).await;
+    let first = failures.first().expect("an unopenable destination fails");
+    assert_eq!(
+        (first.clause, first.message.starts_with("open failed: ")),
+        ("D6", true),
+        "the first open serves the D6 fresh-state check, not D4 teardown: {failures:?}"
     );
 }

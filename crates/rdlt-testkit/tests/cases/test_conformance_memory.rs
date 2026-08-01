@@ -2,7 +2,7 @@
 //! conformance" starts with our own connectors (spec SC-007).
 
 use async_trait::async_trait;
-use rdlt_testkit::conformance::{dest::verify_destination, source::verify_source};
+use rdlt_testkit::conformance::{destination::verify_destination, source::verify_source};
 use rdlt_testkit::{
     MemoryBatch, MemoryDestination, MemorySource, MemoryStream, TableProbe, assert_conformant,
 };

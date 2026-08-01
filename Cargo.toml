@@ -7,7 +7,6 @@ members = [
     "crates/rdlt-engine",
     "crates/rdlt",
     "crates/rdlt-testkit",
-    "crates/rdlt-testkit-v2",
     "crates/rdlt-connector-rest",
     "crates/rdlt-connector-duckdb",
     "crates/rdlt-connector-file",

@@ -4486,18 +4486,6 @@ dependencies = [
  "arrow",
  "async-trait",
  "rdlt-connector",
- "rdlt-core",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "rdlt-testkit-v2"
-version = "0.3.0"
-dependencies = [
- "arrow",
- "async-trait",
- "rdlt-connector",
  "serde_json",
  "tokio",
 ]

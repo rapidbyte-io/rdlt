@@ -8,7 +8,7 @@
 use async_trait::async_trait;
 use rdlt_connector_snowflake::dest::{Snowflake, SnowflakeConfig};
 use rdlt_testkit::TableProbe;
-use rdlt_testkit::conformance::dest::verify_destination;
+use rdlt_testkit::conformance::destination::verify_destination;
 mod common;
 
 use common::{credentials, scratch_schema};

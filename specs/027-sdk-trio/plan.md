@@ -455,7 +455,7 @@ DEFERRED, renumbering forbidden; `verify_source`'s Arrow-payload
 degradation to count-only checking stated in its docs; the scanner's
 shape marker sensitivity to reformatting documented at the marker.
 
-## WAVE 3 — rdlt-testkit-v2 (BUILT and GATED, 2026-08-01; swap = owner decision)
+## WAVE 3 — rdlt-testkit-v2 (BUILT, GATED, and SWAPPED IN, 2026-08-01)
 
 Method: the coexisting-crate form (D3's precedent) — `rdlt-testkit-v2`
 written from scratch under the no-copying rule (publish = false,
@@ -540,6 +540,16 @@ update required, perf all benches within tolerance, cold start
 false); the swap — re-pointing the 71 consumer files, renaming, and
 deleting generation 1 — is the owner's call, as with the SPI and both
 connector generations.
+
+SWAP-IN EXECUTED (owner decision, same session): generation 1 DELETED,
+`rdlt-testkit-v2` renamed to `rdlt-testkit` (publish metadata restored:
+description, keywords, categories, docs.rs key, README). The consumer
+re-point was FOUR files, not 71 — the crate name survives the swap, the
+memory re-exports absorb the deep paths, and the only consumer-visible
+ledger item is `conformance::dest` → `conformance::destination` (one
+line in each of duckdb/file/snowflake/postgres's destination
+conformance suites). Workspace: fmt/clippy clean, 1008/1008 (= 1014
+minus generation 1's own 6 tests, count math verified), doctest green.
 
 ## Waves (each ends with a clean full gate)
 
