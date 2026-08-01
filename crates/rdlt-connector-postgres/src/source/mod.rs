@@ -27,7 +27,7 @@ pub use connector::Postgres;
 /// The SPI face: the sdk's shell over [`Postgres`]. `Shell::from_yaml`
 /// (or `from_json`/`from_value`/`new`) is a running source in one call —
 /// the parse-validate-assemble path lives in the sdk, once.
-pub type Shell = rdlt_connector_sdk::source::SourceShell<Postgres>;
+pub type Shell = rdlt_connector_sdk::source::Shell<Postgres>;
 
 pub(crate) use connector::connect;
 

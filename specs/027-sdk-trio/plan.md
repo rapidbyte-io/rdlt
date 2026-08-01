@@ -670,6 +670,31 @@ invocation because rest's flipped dependency enables
 explicit Makefile line stays as the guarantee that does not depend on
 rest's feature choices.
 
+## FINAL REVIEW LOOP (post-close, owner-directed: /code-review until clean)
+
+ROUND 1 (four lenses: shallow bug scan, house-rules, record-vs-code,
+comment accuracy). Bug scan CLEAN (channel accounting, injector
+variants, memory merge dispatch, clause attribution, scanner
+directions, CLI exit codes, builder validation all traced). Record
+lens CLEAN (every load-bearing plan/CLAUDE.md/guide claim verified
+against the tree). THREE findings, all fixed:
+(1) `source::SourceShell`/`destination::DestinationShell` violated the
+no-noun-stutter rule (every adopter was already aliasing it away —
+the tell); RENAMED to `source::Shell`/`destination::Shell` in the sdk
+itself, ledgered here. The gen-1 testkit names (`crash::CrashDestination`,
+`memory::Memory*`) stay — the Wave-3 ledger's recorded keeps on a
+frozen consumed surface.
+(2) the testkit memory destination rendered `(violates clause E1)`
+inside a runtime error string — Principle V forbids clause IDs in
+rendered errors (the sdk's twin message was already compliant);
+suffix DROPPED, the clause stays in the doc comment. No consumer
+pinned the spelling.
+(3) load.rs's staged-probe comment claimed "no stage is written during
+the publish" — the script's TruncateStage steps DO write stages at the
+tail; reworded to the true reason (nothing writes a stage before the
+steps that read it). Conclusion was correct; reason was not.
+Sweeps for further instances of both violation classes: none.
+
 ## CLOSE-OUT — 027 COMPLETE on branch `027-sdk-trio` (2026-08-01)
 
 All five waves delivered and gated; merge to main is the owner's call.

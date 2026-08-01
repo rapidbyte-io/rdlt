@@ -69,7 +69,7 @@ The sdk's shell provides the whole SPI. Export the canonical face as a
 type alias and the SPI arrives in one call:
 
 ```rust
-pub type Shell = rdlt_connector_sdk::source::SourceShell<MySource>;
+pub type Shell = rdlt_connector_sdk::source::Shell<MySource>;
 // callers: Shell::from_yaml(text)?  /  Shell::new(config)?
 ```
 

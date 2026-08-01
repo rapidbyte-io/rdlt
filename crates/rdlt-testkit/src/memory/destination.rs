@@ -213,7 +213,7 @@ impl LoadSession for MemorySession {
         let rows = batch_to_rows(&batch);
         if !self.ensured.contains(table) {
             return Err(DestinationError::fatal(format!(
-                "write before ensure_table for `{table}` ON THIS SESSION (violates clause E1)"
+                "write before ensure_table for `{table}` ON THIS SESSION"
             )));
         }
         let mut inner = self.lock();

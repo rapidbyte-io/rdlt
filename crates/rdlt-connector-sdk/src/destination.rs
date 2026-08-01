@@ -149,19 +149,19 @@ pub trait Backend: Send {
 /// The SPI shell around a [`DestinationConnector`] — what [`shell`]
 /// returns.
 #[derive(Debug, Clone)]
-pub struct DestinationShell<C> {
+pub struct Shell<C> {
     connector: C,
 }
 
 /// Wrap a framework connector as an SPI [`Destination`].
-pub fn shell<C: DestinationConnector>(connector: C) -> DestinationShell<C> {
-    DestinationShell { connector }
+pub fn shell<C: DestinationConnector>(connector: C) -> Shell<C> {
+    Shell { connector }
 }
 
 /// The from-text constructor family every connector used to hand-roll —
 /// written once, here: parse (through the config's [`Document`] gate),
 /// assemble, shell.
-impl<C: DestinationConnector> DestinationShell<C> {
+impl<C: DestinationConnector> Shell<C> {
     /// Validate an already-parsed document, assemble, and shell — the
     /// entry for a caller holding a config VALUE rather than text (a
     /// hand-built document has not passed any gate yet, so this one
@@ -189,7 +189,7 @@ impl<C: DestinationConnector> DestinationShell<C> {
 }
 
 #[async_trait]
-impl<C: DestinationConnector> Destination for DestinationShell<C> {
+impl<C: DestinationConnector> Destination for Shell<C> {
     fn spec(&self) -> ConnectorSpec {
         let mut spec = ConnectorSpec::new(C::NAME, C::VERSION);
         spec.config_schema = C::config_schema();
@@ -369,12 +369,11 @@ mod tests {
     /// destination shell too.
     #[tokio::test]
     async fn the_shell_constructors_run_the_document_gate() {
-        let from_yaml = DestinationShell::<Probe>::from_yaml("{}").expect("valid yaml");
+        let from_yaml = Shell::<Probe>::from_yaml("{}").expect("valid yaml");
         assert_eq!(from_yaml.spec().name, "probe");
-        let from_value =
-            DestinationShell::<Probe>::from_value(serde_json::json!({})).expect("valid value");
+        let from_value = Shell::<Probe>::from_value(serde_json::json!({})).expect("valid value");
         assert_eq!(from_value.spec().name, "probe");
-        let parse = DestinationShell::<Probe>::from_json("not json").unwrap_err();
+        let parse = Shell::<Probe>::from_json("not json").unwrap_err();
         assert!(parse.to_string().starts_with("probe json: "), "{parse}");
     }
 

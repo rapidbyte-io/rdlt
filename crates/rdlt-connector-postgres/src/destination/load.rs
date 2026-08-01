@@ -271,10 +271,10 @@ impl Load {
         }))
     }
 
-    /// Probe the full-feed stages the planner needs. Staged-row counts
-    /// are INVARIANT across the publish (no stage is written during it —
-    /// merges read stages, publishes write targets), so probing up front
-    /// matches a lazy per-table check.
+    /// Probe the full-feed stages the planner needs. An up-front probe
+    /// matches a lazy per-table check because no stage is written before
+    /// the steps that READ it — the script's stage truncations come only
+    /// after every table publishes.
     async fn probe_staged_nonempty(&self) -> Result<BTreeSet<TableName>, DestinationError> {
         let mut staged_nonempty = BTreeSet::new();
         for table in staged_probe_targets(&self.catalog.tables, &self.options) {

@@ -60,7 +60,7 @@ pub use load::Load;
 /// (or `from_json`/`from_value`/`new`) is a running destination in one
 /// call; a builder-constructed handle wraps via
 /// `rdlt_connector_sdk::destination::shell`.
-pub type Shell = rdlt_connector_sdk::destination::DestinationShell<Postgres>;
+pub type Shell = rdlt_connector_sdk::destination::Shell<Postgres>;
 
 #[cfg(feature = "failpoints")]
 pub use fail_points::FAIL_POINTS;

@@ -130,7 +130,7 @@ impl Feed {
 
 /// The SPI shell around a [`SourceConnector`] — what [`shell`] returns.
 #[derive(Debug, Clone)]
-pub struct SourceShell<C> {
+pub struct Shell<C> {
     connector: C,
 }
 
@@ -140,15 +140,15 @@ pub struct SourceShell<C> {
 /// from the connector's constants and schema, `check`/`streams`
 /// delegated, and each read's channel wrapped into a [`Feed`] before the
 /// hand-off.
-pub fn shell<C: SourceConnector>(connector: C) -> SourceShell<C> {
-    SourceShell { connector }
+pub fn shell<C: SourceConnector>(connector: C) -> Shell<C> {
+    Shell { connector }
 }
 
 /// The from-text constructor family every connector used to hand-roll —
 /// written once, here: parse (through the config's [`Document`] gate),
-/// assemble, shell. `SourceShell::<Rest>::from_yaml(yaml)` is a running
+/// assemble, shell. `Shell::<Rest>::from_yaml(yaml)` is a running
 /// SPI source in one call.
-impl<C: SourceConnector> SourceShell<C> {
+impl<C: SourceConnector> Shell<C> {
     /// Validate an already-parsed document, assemble, and shell — the
     /// entry for a caller holding a config VALUE rather than text (a
     /// hand-built or programmatically composed document has not passed
@@ -176,7 +176,7 @@ impl<C: SourceConnector> SourceShell<C> {
 }
 
 #[async_trait]
-impl<C: SourceConnector> Source for SourceShell<C> {
+impl<C: SourceConnector> Source for Shell<C> {
     fn spec(&self) -> ConnectorSpec {
         let mut spec = ConnectorSpec::new(C::NAME, C::VERSION);
         spec.config_schema = C::config_schema();
@@ -342,20 +342,20 @@ mod tests {
     /// validates a hand-built document rather than trusting it.
     #[tokio::test]
     async fn the_shell_constructors_run_the_document_gate() {
-        let from_yaml = SourceShell::<Probe>::from_yaml("row: 7").expect("valid yaml");
+        let from_yaml = Shell::<Probe>::from_yaml("row: 7").expect("valid yaml");
         assert_eq!(from_yaml.spec().name, "probe");
-        let from_json = SourceShell::<Probe>::from_json("{\"row\": 7}").expect("valid json");
+        let from_json = Shell::<Probe>::from_json("{\"row\": 7}").expect("valid json");
         assert_eq!(from_json.spec().name, "probe");
         let from_value =
-            SourceShell::<Probe>::from_value(serde_json::json!({"row": 7})).expect("valid value");
+            Shell::<Probe>::from_value(serde_json::json!({"row": 7})).expect("valid value");
         assert_eq!(from_value.spec().name, "probe");
 
-        let parse = SourceShell::<Probe>::from_yaml(": not yaml").unwrap_err();
+        let parse = Shell::<Probe>::from_yaml(": not yaml").unwrap_err();
         assert!(
             parse.to_string().starts_with("probe yaml: "),
             "the connector's own parse framing survives: {parse}"
         );
-        let refused = SourceShell::<Probe>::new(ProbeConfig { row: -1 }).unwrap_err();
+        let refused = Shell::<Probe>::new(ProbeConfig { row: -1 }).unwrap_err();
         assert_eq!(
             refused.to_string(),
             "probe config: `row` is -1 — negatives are refused",
