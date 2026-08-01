@@ -1,7 +1,7 @@
 [package]
 name = "rdlt-connector-sdk"
-description = "rdlt connector authoring scaffolding: the validated config-document seam and schema generation"
-keywords = ["elt", "connector", "sdk", "config"]
+description = "rdlt connector-builder SDK: the authoring framework over the connector SPI — config documents, the source shell, the destination session choreography"
+keywords = ["elt", "connector", "sdk", "framework"]
 categories = ["database"]
 readme = "README.md"
 version.workspace = true
@@ -11,19 +11,24 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+rdlt-connector = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 schemars = { workspace = true, optional = true }
 
 [dev-dependencies]
+rdlt-testkit = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true }
 
 [lints]
 workspace = true
 
 [features]
-# `schema_of` — JSON Schema generation for config documents. Opt-in so
-# the scaffolding carries no mandatory schemars edge, mirroring the SPI's
-# feature spelling.
+# `config::schema_of` — JSON Schema generation for config documents.
+# Opt-in so the framework carries no mandatory schemars edge, mirroring
+# the SPI's feature spelling.
 schema = ["dep:schemars"]

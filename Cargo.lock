@@ -4395,11 +4395,16 @@ dependencies = [
 name = "rdlt-connector-sdk"
 version = "0.3.0"
 dependencies = [
+ "async-trait",
+ "bytes",
+ "rdlt-connector",
+ "rdlt-testkit",
  "schemars 1.2.1",
  "serde",
  "serde_json",
  "serde_yaml",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]

@@ -233,9 +233,22 @@ enums was considered and DEFERRED to adoption (the trait is the real
 dedup). The full 20-needle table lives in the study record; the bar
 for adoption is every needle byte-identical.
 
-The sdk crate therefore ships: `config::Document` + `config::schema_of`
-— small and honest, with zero rdlt dependencies (pure serde/schemars),
-which also makes it maximally extraction-ready (D1).
+SUPERSEDED BY D10 (the crate ships the full framework): the
+extraction-only reading of this evidence produced a thin crate the
+owner rejected; the evidence's real teaching — messages, keys, and
+machines stay per-connector — binds the FRAMEWORK's boundary instead.
+
+WAVE 2 BUILT (D10 shape): config::Document + schema_of;
+source::{SourceConnector, Feed, shell} (spec assembly, delegation,
+ControlFlow-typed cancellation); destination::{DestinationConnector,
+Backend, shell} with the SDK-owned session choreography
+(write-before-ensure refused, receipt-replay-before-publish, state
+read-through; atomicity/staging stay backend storage contracts, stated
+in docs); prelude + the SPI re-exported as `spi`. PROOF: the in-memory
+example connector (tests/cases/example.rs) authored purely on the
+framework passes BOTH rdlt-testkit conformance kits, plus the
+choreography-refusal pin. 10 tests + doctest, zero warnings across
+feature shapes.
 
 ## WAVE 2 REDESIGN — D10: from extraction to FRAMEWORK (owner direction)
 
