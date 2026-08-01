@@ -334,3 +334,40 @@ columns, so an scd2 re-ensure in one session re-renders no-op ALTERs
 and can trigger a spurious-but-safe rollback/reclear cycle — round
 trips, not correctness; recorded for the owner, deliberately not
 changed inside the review loop.
+
+
+## GATE OF RECORD (2026-08-02, tree @ 2e58b0db)
+
+`make check` TWICE CLEAN, untouched between runs, `env -u
+RUSTUP_TOOLCHAIN`, reclaim + TIME_WAIT drain before each. COUNT
+PREDICTED AND VERIFIED: 1106 (the 1014 pre-028 workspace + this
+crate's 92: 57 unit-and-offline + 35 live/gated — 89 at round 1, +3
+review pins). Run 1: 1106/1106, 2 skips (both #[ignore]d instruments),
+six in-gate sweep suites green (postgres source sweep 64.7 s the one
+SLOW), semver no update required, 6 benches 0 regressed, cold start
+22.9 ms (bar <= 40). Run 2: 1106/1106, same 2 skips, semver clean, 0
+regressed, cold start 23.4 ms.
+
+ENVIRONMENT EVENTS, recorded not re-rolled: a FIRST gate attempt
+failed on the KNOWN rootlessport bind flake (`rdlt-connector-file::
+s3_live s3_replace_never_deletes_user_files`, port 46011 — the
+intra-run concurrency mechanism; crate untouched by 028); the
+isolation rerun then exposed that the dev toolbox (Fedora 44 / gcc 16)
+no longer carried the `libstdc++.so` link symlink — Fedora moved it
+from `libstdc++-devel` into `gcc-c++`, which was absent, so ANY relink
+of a duckdb-linked test binary failed with `unable to find -lstdc++`
+(the first attempt's 412 passes ran from cached binaries). `gcc-c++`
+installed; the flaked cell then passed 1/1 in isolation and both
+recorded gates ran start-to-finish clean.
+
+STATUS: the fresh rewrite is COMPLETE on the branch — built greenfield
+on the sdk (D1-D6), three review rounds (round 1: the mid-unit
+schema-evolution defect, both halves; round 2: the cross-table owed
+clears and the phase-2 gate bypass; round 3: CLEAN, terminus), every
+fix pinned offline or live, 92/92 crate suite, gates twice clean at
+1106. The crate coexists UNCONSUMED as `rdlt-connector-snowflake-v2`;
+the swap (delete generation 1, rename, take the `snowflake` name) is
+the owner's decision, as 025/026 precedent. The crash sweep remains
+by-hand and was NOT run in these gates (its own binary, failpoints-
+gated, spends real account time). One recorded owner item stands open:
+the non-durable Replace-clear guard (review round 2's observation).
