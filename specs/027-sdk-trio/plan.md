@@ -237,6 +237,42 @@ The sdk crate therefore ships: `config::Document` + `config::schema_of`
 — small and honest, with zero rdlt dependencies (pure serde/schemars),
 which also makes it maximally extraction-ready (D1).
 
+## WAVE 2 REDESIGN — D10: from extraction to FRAMEWORK (owner direction)
+
+The owner rejected the thin extraction-only crate: the goal is a
+full-fledged connector-builder SDK that connectors are BUILT ON, not a
+crate for its own sake. D5's measured-duplication bar is SUPERSEDED as
+the scope rule (it remains the rule for TEXT and SEMANTICS: messages,
+classification keys, cursor machines stay per-connector — the evidence
+above still binds). The reframe: the SDK is an INVERSION OF CONTROL —
+it owns the protocol choreography and plumbing; the connector fills in
+system-specific holes. Peer precedent: Meltano SDK / Airbyte CDK base
+classes over the raw protocol.
+
+- The sdk now DEPENDS ON rdlt-connector and re-exports it (a prelude:
+  one import authors a connector). Hosts still never depend on the sdk.
+- `config`: Document + schema_of (shipped) + the config_error! macro
+  (three verbatim format strings in, the 9-line enum out — verbatim
+  input is what keeps frozen prefixes frozen).
+- `source`: SourceConnector trait (name/version, Config: Document,
+  declare, per-stream reader) + Feed (RecordsOut wrapper making
+  closed-channel-is-cancellation a property of the type) + the ONE SPI
+  shell (spec from the Document schema, unknown-stream refusal,
+  dispatch).
+- `destination`: Backend trait (system IO: ensure/write/publish/
+  receipts/state — storage stays in the backend, receipts must survive
+  process death) + the SDK-owned session choreography enforcing the
+  D-clauses by construction: E1 write-before-ensure fatal, D3
+  receipt-replay-before-publish, D1/D4 staging lifecycle ordering,
+  ensured-set + sequence bookkeeping. The conformance clauses stop
+  being per-connector discipline.
+- `classify`: thin rule-builder + context idioms only.
+- PROOF DISCIPLINE: the crate ships a complete in-memory example
+  connector (source + destination on the framework) that passes the
+  rdlt-testkit conformance kits BEFORE any real connector adopts;
+  adoption then goes smallest-first (rest → postgres source →
+  destinations), each gated with existing suites unchanged.
+
 ## Frozen surfaces (the parity bar)
 
 1. ERROR RENDERING, verbatim: the six classification frames
