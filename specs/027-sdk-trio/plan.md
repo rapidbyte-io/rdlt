@@ -623,6 +623,82 @@ the SPI reached through its re-export; the sdk grows feature
 forwarding (failpoints/schema/object-store) and the D1 audit enforces
 the rule.
 
+## WAVE 5 — ONE-DEPENDENCY RULE + AUTHORING GUIDE (CLOSED, 2026-08-01)
+
+THE ONE-DEPENDENCY RULE (owner direction): a connector's [dependencies]
+carries EXACTLY ONE rdlt crate — the sdk — and reaches the SPI through
+its `spi` re-export. Implemented: the sdk forwards the SPI features
+under the same spellings (`failpoints`, `schema` — which now also
+forwards `rdlt-connector/schema` — and `object-store`); rest and
+postgres dropped their direct `rdlt-connector` dependency and 166
+import sites flipped to `rdlt_connector_sdk::spi::` (macro paths
+included — `crash_point!` resolves through the re-export). ENFORCED by
+the sdk's `test_dependency_rule` with two recorded exceptions:
+`rdlt-connector-sqlcore` for SQL destinations (shared merge core —
+whether it folds into the sdk is an owner decision at the rewrites),
+and `rdlt-testkit` tolerated ONLY as an optional fixtures-feature dep
+(the test caught exactly that case on its first run and the tolerance
+is optional-verified). Hosts are the mirror image: engine/CLI depend on
+the SPI alone; the facade re-exports the sdk (`rdlt::sdk`) for
+embedders that parse configs.
+
+`docs/connector-authoring.md` WRITTEN: the one-dependency form, the
+three seams (Document / SourceConnector+Feed / DestinationConnector+
+Backend with the choreography contract stated hook by hook),
+certification, gate posture, and the house rules — rest and postgres
+as the worked examples. CLAUDE.md now points at 027 as the current
+plan.
+
+WAVE 5 REVIEW (one adversarial lens over the Wave-4+5 diff, centered
+on the commit split): CLEAN in all seven areas — ordering/atomicity
+(publish structurally reachable only after existing_receipt), error
+paths (Unit::rollback idempotent; COMMIT-success takes `open` so the
+post-ack crash point cannot trigger a spurious ROLLBACK after a
+durable commit), engine retry (run-level, fresh Load per attempt — the
+per-call correctness is the binding property), crash-point positions,
+the failpoints forwarding chain end to end, shell Clone equivalence to
+gen 1's Clone handle, and Feed polarity at every push site. Zero
+findings.
+
+WAVE 5 GATE OF RECORD — TWICE CLEAN, both first attempt (reclaim +
+drain between): 1013/1013 both runs (2 named instrument skips), semver
+no update required, perf all benches within tolerance, cold start
+23.3/23.2 ms (bar <=40). COUNT MATH: 1010 + 2 dependency-rule tests +
+1 — the schema-feature test now ALSO runs in the main workspace
+invocation because rest's flipped dependency enables
+`rdlt-connector-sdk/schema` and feature unification pulls it in; the
+explicit Makefile line stays as the guarantee that does not depend on
+rest's feature choices.
+
+## CLOSE-OUT — 027 COMPLETE on branch `027-sdk-trio` (2026-08-01)
+
+All five waves delivered and gated; merge to main is the owner's call.
+Checklist dispositions:
+- Consumer suites: assertions unchanged through every swap and
+  adoption (the parity net held five times: SPI swap 989, sdk 1006,
+  testkit swap 1008, adoption 1010, one-dep flip 1013 — every count
+  predicted or explained).
+- Pinned needles: clause renderings, scanner messages, frozen refusal
+  spellings, crash-point IDs — all verified by ported suites and pins;
+  two inherited testkit defects and the sdk's four review findings
+  fixed WITH pins.
+- Extraction-readiness: every rdlt workspace dep carries `version`
+  (no path-only contracts); `cargo package` refuses only because the
+  0.3.0 substrate is unpublished (the standing bottom-up publish-order
+  condition, recorded — same class as 023's fork note); no connector
+  imports rdlt-core or the SPI directly (ENFORCED, not just measured);
+  kits + authoring documented for out-of-tree use.
+- Zero-duplicate: the config from-text triple has ONE home (the sdk's
+  shells + Document); cursor and error-skeleton extractions REJECTED
+  on D5 evidence (Wave 2 record); context() is SPI-owned by
+  construction.
+- Naming/warnings: review lenses clean, zero warnings across feature
+  shapes, gates twice clean at every stage.
+OUTSIDE the feature, for the record: merging this branch; the four
+remaining connector rewrites (born on the sdk, duckdb first exercises
+replay for real); sqlcore's future home; the bottom-up 0.3.0 publish;
+CI repair (org billing).
+
 ## Waves (each ends with a clean full gate)
 
 1. `rdlt-connector` rewritten; consumers ported (engine, 6 connectors,
