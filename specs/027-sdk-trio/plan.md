@@ -747,6 +747,14 @@ yield ends — no hang, no vacuous pass); all five fixes across rounds
 TERMINATES: four rounds, six findings, all fixed and pinned, final
 round zero findings.
 
+REVIEW-LOOP GATE OF RECORD — TWICE CLEAN (reclaim + drain between):
+1014/1014 both runs (= 1013 + the teardown-certification pin; 2 named
+instrument skips), semver no update required, perf within tolerance,
+cold start 23.0/23.7 ms. One recorded environmental occurrence before
+the clean pair: the snowflake differential oracle exceeded nextest's
+90 s ceiling under full-gate contention (live-warehouse latency; 71 s
+in isolation, passed) — service variance, not the code.
+
 ## CLOSE-OUT — 027 COMPLETE on branch `027-sdk-trio` (2026-08-01)
 
 All five waves delivered and gated; merge to main is the owner's call.
