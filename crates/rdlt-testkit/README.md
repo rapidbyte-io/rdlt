@@ -37,48 +37,30 @@ This crate is connector-agnostic and feature-less: it carries the ONE
 runtime probe (`gate::runtime_available`, std-only, always compiled) and the
 reclaim label, while the
 system-specific fixtures live with their connectors and route through the
-probe (`rdlt_connector_postgres::fixtures::{PgFixture, CdcPgFixture}` behind
-that crate's `fixtures` feature). A fixture's `start()` returns `Option` —
+probe (`rdlt_connector_postgres::fixtures::PostgresContainer` behind that
+crate's `fixtures` feature). A fixture's `start()` returns `Option` —
 without a container runtime it prints a visible `SKIP` line and returns
 `None`, and the caller returns early. A missing runtime NEVER panics, because
 a panic there is indistinguishable from a real failure and trains people to
 ignore red.
-
-Set `RDLT_TESTKIT_FORCE_NO_CONTAINERS=1` to force the skip posture on a
-machine that *does* have a runtime — that is how the skip path itself stays
-tested.
 
 Every container started here carries the label `rdlt-test=1` so leaked
 containers and their volumes are reclaimable in one scoped command. A suite
 killed mid-run never reaches `Drop`, and orphaned anonymous volumes fill
 disks.
 
-## Demanding that resource-gated suites actually run
+## Knowing that resource-gated suites actually ran
 
-Suites needing a container runtime or live credentials **skip rather than fail**
-when those are absent. That default is deliberate and required — a contributor
-without them must still be able to run the gate — but it has a cost: a suite that
-wrongly skips is indistinguishable from one that passed.
+Suites needing a container runtime or live credentials **skip rather than
+fail** when those are absent — the one posture, with no environment
+override. That default is deliberate and required (a contributor without
+them must still be able to run the gate), and it has a cost worth naming:
+a suite that wrongly skips is indistinguishable from one that passed.
 
-Four environment overrides, in two symmetric pairs:
-
-| variable | effect |
-|---|---|
-| `RDLT_TESTKIT_FORCE_NO_CONTAINERS` | report the runtime absent even when present — makes the skip path verifiable |
-| `RDLT_TESTKIT_REQUIRE_CONTAINERS` | absence becomes a FAILURE naming what is missing |
-| `RDLT_TESTKIT_FORCE_NO_SNOWFLAKE` | report Snowflake credentials absent even when present (gate lives in the snowflake connector's tests; the env names are kept verbatim) |
-| `RDLT_TESTKIT_REQUIRE_SNOWFLAKE` | absence becomes a FAILURE naming them |
-
-Setting a `FORCE_NO_*` and its matching `REQUIRE_*` together is an **error**, not
-a precedence rule: a run that both demands a resource and pretends there is none
-asked two contradictory questions, and answering one silently would hide the
-mistake.
-
-```sh
-# On a machine where the resources ARE present, and you need to know the legs ran:
-RDLT_TESTKIT_REQUIRE_CONTAINERS=1 RDLT_TESTKIT_REQUIRE_SNOWFLAKE=1 \
-  env -u RUSTUP_TOOLCHAIN make check
-```
+The net is **count discipline**, not a knob. The runner prints run/skip
+counts for every binary; every gate of record states the expected ones
+("N/N, 2 named instrument skips, 0 skipped with containers"); a leg that
+quietly stopped running surfaces as a moved number against that record.
 
 ### Reading a count difference
 

@@ -1,17 +1,17 @@
 //! Credential gating for the Snowflake live legs — shared by every test
 //! binary in this crate via `mod common;`.
 //!
-//! Lived in rdlt-testkit until the testkit went connector-agnostic; the
-//! convention is this connector's alone, so it lives with its consumers. The
-//! `RDLT_TESTKIT_*` env names are kept VERBATIM — they are recorded operating
-//! practice (gate docs, close-outs), and renaming them would silently disarm
-//! every runbook that sets them.
+//! The convention is this connector's alone, so it lives with its
+//! consumers rather than in the connector-agnostic testkit.
 //!
-//! The container posture with credential presence in place of runtime
-//! presence: a contributor without an account runs the full gate and every
-//! Snowflake leg skips VISIBLY, while a contributor with credentials in the
-//! documented place runs the same gate and the legs execute against the real
-//! service.
+//! ONE posture, no environment override — the container gate's rule with
+//! credential presence in place of runtime presence: a contributor
+//! without an account runs the full gate and every Snowflake leg skips
+//! VISIBLY, while a contributor with credentials in the documented place
+//! runs the same gate and the legs execute against the real service. The
+//! net against a leg that quietly stopped running is count discipline
+//! (the runner's run/skip counts against the gate of record), not a
+//! knob.
 //!
 //! Nothing here reads a credential's VALUE into anything it returns beyond the
 //! config it hands the connector — the values live in the environment or in
@@ -22,19 +22,6 @@
 #![allow(dead_code)]
 
 use std::path::PathBuf;
-
-/// Env override forcing the skip posture ON even where credentials ARE
-/// present, so the skip-not-fail behaviour is verifiable without removing
-/// them — the same escape hatch the container probe carries.
-const FORCE_NO_SNOWFLAKE: &str = "RDLT_TESTKIT_FORCE_NO_SNOWFLAKE";
-
-/// Env override DEMANDING credentials: absence becomes a failure, not a skip.
-///
-/// The counterpart to [`FORCE_NO_SNOWFLAKE`]. Skip-not-fail is the right default
-/// — nobody without an account should be blocked from the gate — but it makes a
-/// credential-gated leg that silently stopped running look exactly like one that
-/// passed. Setting this says "I have the account; tell me if a leg did not run."
-const REQUIRE_SNOWFLAKE: &str = "RDLT_TESTKIT_REQUIRE_SNOWFLAKE";
 
 /// Where the file form of the convention lives.
 fn config_dir() -> Option<PathBuf> {
@@ -129,37 +116,14 @@ fn announce_skip(reason: &str) {
 
 /// [`credentials`] against a supplied lookup — the testable form.
 pub fn credentials_with(lookup: &dyn Lookup) -> Option<SnowflakeCreds> {
-    let demanded = lookup.env(REQUIRE_SNOWFLAKE).is_some();
-    let forced_absent = lookup.env(FORCE_NO_SNOWFLAKE).is_some();
-
-    // Contradictory invocation, not a precedence puzzle: demanding credentials
-    // while pretending there are none is a mistake in how the run was invoked,
-    // and honouring either silently would hide it.
-    assert!(
-        !(demanded && forced_absent),
-        "{REQUIRE_SNOWFLAKE} and {FORCE_NO_SNOWFLAKE} are both set — one demands \
-         credentials and the other pretends there are none; pick one"
-    );
-
     let resolved = resolve_credentials(lookup);
     if resolved.is_none() {
-        // Demanded means a missing credential is a failure naming what is
-        // missing, rather than a skip that reads as green.
-        assert!(
-            !demanded,
-            "{REQUIRE_SNOWFLAKE} is set but no account credentials were found in \
-             the environment or ~/.config/rdlt/snowflake/ — the live legs cannot \
-             run, and this run asked to be told rather than to skip"
-        );
         announce_skip("no account credentials in the environment or ~/.config/rdlt/snowflake/");
     }
     resolved
 }
 
 fn resolve_credentials(lookup: &dyn Lookup) -> Option<SnowflakeCreds> {
-    if lookup.env(FORCE_NO_SNOWFLAKE).is_some() {
-        return None;
-    }
     // The key entry is a PATH, not a value — so unlike every other entry it
     // must not be read from the convention file's CONTENTS. The file IS the
     // key; its path is what the connector wants.
@@ -195,9 +159,6 @@ pub fn token(kind: TokenKind) -> Option<String> {
 
 /// [`token`] against a supplied lookup — the testable form.
 pub fn token_with(lookup: &dyn Lookup, kind: TokenKind) -> Option<String> {
-    if lookup.env(FORCE_NO_SNOWFLAKE).is_some() {
-        return None;
-    }
     match kind {
         TokenKind::Pat => env_then_file(lookup, "RDLT_SNOWFLAKE_PAT", "pat"),
         TokenKind::OauthToken => env_then_file(lookup, "RDLT_SNOWFLAKE_OAUTH_TOKEN", "oauth-token"),

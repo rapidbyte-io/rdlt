@@ -80,9 +80,10 @@ WHAT THE GATE NOW GUARANTEES that it did not: an empty test selection FAILS
 the flags protected nothing and hid renames); every one of 107 test binaries is
 invoked or exempt BY NAME; ten crash-point registries across six crates verify
 against their own SOURCES rather than themselves; a file compiled by no gate
-command is now type-checked; a resource probe can be DEMANDED
-(`RDLT_TESTKIT_REQUIRE_CONTAINERS` / `_REQUIRE_SNOWFLAKE`, both-set is an
-error) so a skip stops reading as a pass; `make semver` exists at all.
+command is now type-checked; a resource probe could be DEMANDED
+(`RDLT_TESTKIT_REQUIRE_CONTAINERS` / `_REQUIRE_SNOWFLAKE`; the four gate
+env knobs were later REMOVED by 027 D9 — sane default only, count
+discipline is the net); `make semver` exists at all.
 THE FIGURE THAT SUMS IT UP: `make test TARGET=prop` went 0.000s/0 tests ->
 38.026s/1 test. Its selector was `test(shred_property)` — a test-NAME filter —
 while `shred_property` is the BINARY and its test is `shred_invariants_hold`.
