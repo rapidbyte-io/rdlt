@@ -16,6 +16,7 @@ members = [
     "crates/rdlt-bench",
     "crates/rdlt-connector-sqlcore",
     "crates/rdlt-connector-snowflake",
+    "crates/rdlt-connector-snowflake-v2",
 ]
 
 [workspace.package]

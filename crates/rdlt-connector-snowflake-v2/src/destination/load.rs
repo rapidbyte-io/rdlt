@@ -1,0 +1,745 @@
+//! The load: one session's conversation with the service, as the sdk's
+//! `Backend`.
+//!
+//! The protocol is the shared one every SQL destination runs — the plan
+//! comes from sqlcore, this executes it — under the service constraint
+//! the unit module owns: schema work strictly before the unit opens,
+//! and the unit itself pure DML on a guarded executor.
+//!
+//! The sdk session drives the hooks in a fixed order (`existing_receipt`
+//! always precedes `replay` or `publish`), and every hook keeps the
+//! exact error-path disposition generation 1's single `commit` had:
+//! which failures roll the unit back and discard staged parts, and
+//! which propagate bare, is recorded protocol behavior — not style.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use async_trait::async_trait;
+use rdlt_connector_sdk::destination::Backend;
+use rdlt_connector_sdk::spi::core::{
+    LoadId, PipelineId, StateDoc, TableName, TableSchema, WriteMode,
+};
+use rdlt_connector_sdk::spi::{CommitMeta, CommitReceipt, DestinationError, RecordBatch};
+use rdlt_connector_sqlcore::plan::scope_replace_sql;
+use rdlt_connector_sqlcore::protocol::unit as protocol;
+use rdlt_connector_sqlcore::{
+    CommitContext, FullLoadPublish, MergeArm, MergeDialect as _, Step, build_merge_plan,
+    column_list_with, insert_select_sql, plan_commit, prepare_target, render_arm,
+    staged_probe_targets,
+};
+
+use super::catalog::{self, Catalog};
+use super::client::{self, Executor};
+use super::config::SnowflakeConfig;
+use super::dialect::SnowflakeDialect;
+use super::encode;
+use super::stage::{self, Part, Stage};
+use super::unit::{DmlOnly, Unit};
+use super::{ddl, ddl::quote};
+
+/// Append and Replace publish straight into their targets inside the
+/// unit transaction — no staging twin, nothing written twice. Merge
+/// alone stages, because its arms join delivered rows against the
+/// target.
+const PUBLISH: FullLoadPublish = FullLoadPublish::DirectToTarget;
+
+/// The column a COPY result reports each file's loaded rowcount in.
+const COPY_ROWS_LOADED: &str = "rows_loaded";
+
+/// An injected crash as a VALUE, for the two unit-edge points: a crash
+/// there has cleanup to run first (abandon the transaction, drop the
+/// staged parts), and the macro's early return would leave the session
+/// holding an open transaction the test then blames on the protocol.
+#[cfg(feature = "failpoints")]
+fn crash_at(name: &str) -> Option<DestinationError> {
+    rdlt_connector_sdk::spi::core::failpoint::fail::fail_point!(name, |_| {
+        Some(DestinationError::fatal(format!("injected crash at {name}")))
+    });
+    None
+}
+
+#[cfg(not(feature = "failpoints"))]
+fn crash_at(_name: &str) -> Option<DestinationError> {
+    None
+}
+
+/// One session's system IO — `connect` (`super::connector`) opens one,
+/// the sdk session drives it. Public only as the connector's associated
+/// `Backend` type; everything inside is crate-internal.
+pub struct Load {
+    pub(super) config: SnowflakeConfig,
+    pub(super) executor: Box<dyn Executor>,
+    pub(super) pipeline: PipelineId,
+    pub(super) load_id: LoadId,
+    /// The catalog image, read once per table per session.
+    pub(super) catalog: Catalog,
+    /// Ensured tables, each with the mode it was ensured under.
+    pub(super) tables: BTreeMap<TableName, (TableSchema, WriteMode)>,
+    /// Targets this load has already cleared (the once-per-load Replace
+    /// guard).
+    pub(super) cleared: BTreeSet<TableName>,
+    /// The commit-unit transaction.
+    pub(super) unit: Unit,
+    /// Tables whose one full-feed unit has committed — marked only
+    /// AFTER the commit; a rolled-back unit never counts.
+    pub(super) single_unit_done: BTreeSet<TableName>,
+    /// The staging identity: where parts go, locally and remotely.
+    pub(super) stage: Stage,
+    /// Parts written but not yet loaded, per destination table,
+    /// together with the column list they carry (recorded at build
+    /// time, where the schema is known — deriving it later from a
+    /// stage-table name would be guesswork). The COPY waits for the
+    /// commit: one statement names every part a table accumulated,
+    /// and the SaaS round trip is the cost that matters.
+    pub(super) pending: BTreeMap<TableName, (Vec<String>, Vec<Part>)>,
+}
+
+// Debug is the workspace lint's requirement; the executor handle and
+// guard sets have no useful rendering, so the minimal form.
+impl std::fmt::Debug for Load {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Load")
+            .field("pipeline", &self.pipeline)
+            .field("load_id", &self.load_id)
+            .finish_non_exhaustive()
+    }
+}
+
+// ---- shared plumbing -------------------------------------------------------
+
+impl Load {
+    /// A table's fully-qualified, quoted name. Always three-part: a
+    /// changed server-side default must not retarget a pipeline
+    /// mid-load.
+    fn qualified(&self, table: &str) -> String {
+        format!(
+            "{}.{}.{}",
+            quote(&self.config.database),
+            quote(&self.config.schema),
+            quote(table)
+        )
+    }
+
+    /// The planner's context for this moment of the protocol.
+    fn commit_context<'a>(
+        &'a self,
+        replayed: bool,
+        staged_nonempty: &'a BTreeSet<TableName>,
+    ) -> CommitContext<'a> {
+        CommitContext {
+            replayed,
+            load_committed_before: false,
+            single_unit_done: &self.single_unit_done,
+            staged_nonempty,
+            full_load_publish: PUBLISH,
+            cleared_targets: &self.cleared,
+        }
+    }
+
+    /// Read a table's columns unless this session already has.
+    async fn observe(&mut self, table: &str) -> Result<(), DestinationError> {
+        if self.catalog.is_known(table) {
+            return Ok(());
+        }
+        let columns = catalog::observe_table(
+            &*self.executor,
+            &self.config.database,
+            &self.config.schema,
+            table,
+        )
+        .await?;
+        self.catalog.observe(table, columns);
+        Ok(())
+    }
+
+    /// Load every pending part into its table, inside the open unit —
+    /// one COPY per table, its loaded rowcount checked against what was
+    /// written. Nothing should be able to make those differ, which is
+    /// exactly why a difference means an assumption broke and the unit
+    /// must not commit on it.
+    async fn load_staged_parts(&mut self) -> Result<(), DestinationError> {
+        let pending = std::mem::take(&mut self.pending);
+        for (table, (columns, parts)) in pending {
+            if parts.is_empty() {
+                continue;
+            }
+            let sql = stage::copy_sql(
+                &self.qualified(table.as_str()),
+                &self.qualified(self.stage.name()),
+                &columns,
+                &parts,
+            );
+            let written: u64 = parts.iter().map(|part| part.rows).sum();
+            let loaded = DmlOnly(&*self.executor)
+                .sum_column(&sql, COPY_ROWS_LOADED)
+                .await?;
+            if loaded != written {
+                return Err(DestinationError::fatal(format!(
+                    "snowflake: loading `{table}` staged {written} rows in {} part(s) but the \
+                     service reported {loaded} loaded; the unit is abandoned rather than \
+                     committed short",
+                    parts.len()
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Drop every part this load staged, loaded or not. Best effort —
+    /// the parts are dead either way (each is named by exactly one
+    /// COPY), and a cleanup failure must not fail a committed load; the
+    /// aged reclaim at the next open sweeps the rest.
+    async fn discard_staged(&mut self) {
+        self.pending.clear();
+        let qualified_stage = self.qualified(self.stage.name());
+        self.stage.remove(&*self.executor, &qualified_stage).await;
+    }
+
+    /// Qualify a rendered DDL statement's object name. The ddl module
+    /// renders names quoted but unqualified — qualification belongs to
+    /// the session that knows the database and schema — and the
+    /// substitution anchors on the statement verb, so it cannot touch a
+    /// column or a literal.
+    fn qualify_ddl(&self, sql: &str) -> String {
+        let prefix = format!(
+            "{}.{}.",
+            quote(&self.config.database),
+            quote(&self.config.schema)
+        );
+        for verb in [
+            "CREATE TABLE IF NOT EXISTS ",
+            "CREATE TRANSIENT TABLE IF NOT EXISTS ",
+            "ALTER TABLE ",
+        ] {
+            if let Some(rest) = sql.strip_prefix(verb) {
+                return format!("{verb}{prefix}{rest}");
+            }
+        }
+        sql.to_owned()
+    }
+}
+
+// ---- the commit program ----------------------------------------------------
+
+impl Load {
+    /// Execute one planned step. Every statement here is DML by
+    /// construction — the planner emits no schema work — and runs
+    /// through the guarded executor, which enforces that instead of
+    /// assuming it.
+    async fn execute_step(
+        &self,
+        executor: &DmlOnly<'_>,
+        meta: &CommitMeta,
+        step: &Step,
+    ) -> Result<(), DestinationError> {
+        match step {
+            Step::ClearTarget { table } => {
+                // The dialect spells this DELETE — TRUNCATE would commit
+                // the unit (see the unit module).
+                executor
+                    .execute(&SnowflakeDialect.clear_table(&self.qualified(table.as_str())))
+                    .await
+            }
+            Step::UpsertState => {
+                let doc = serde_json::to_string(&meta.state).map_err(DestinationError::fatal)?;
+                executor
+                    .execute(&format!(
+                        "MERGE INTO {state} t USING (SELECT '{pipeline}' AS PIPELINE) s \
+                         ON t.{pipeline_col} = s.PIPELINE \
+                         WHEN MATCHED THEN UPDATE SET {doc_col} = '{doc}' \
+                         WHEN NOT MATCHED THEN INSERT ({pipeline_col}, {doc_col}) \
+                         VALUES (s.PIPELINE, '{doc}')",
+                        state = self.qualified(rdlt_connector_sqlcore::names::STATE_TABLE),
+                        pipeline = encode::sql_literal_body(meta.state.pipeline.as_str()),
+                        pipeline_col = quote("pipeline"),
+                        doc_col = quote("doc"),
+                        doc = encode::sql_literal_body(&doc),
+                    ))
+                    .await
+            }
+            Step::InsertReceipt => {
+                executor
+                    .execute(&format!(
+                        "INSERT INTO {commits} ({load_col}, {seq_col}) VALUES ('{load}', {seq})",
+                        commits = self.qualified(rdlt_connector_sqlcore::names::COMMITS_TABLE),
+                        load_col = quote("load_id"),
+                        seq_col = quote("commit_seq"),
+                        load = encode::sql_literal_body(meta.load_id.as_str()),
+                        seq = meta.commit_seq,
+                    ))
+                    .await
+            }
+            Step::InsertSelect { table } => {
+                let (schema, _) = &self.tables[table];
+                executor
+                    .execute(&insert_select_sql(
+                        &self.qualified(table.as_str()),
+                        &column_list_with(schema, quote),
+                        &self.qualified(&ddl::stage_name(self.pipeline.as_str(), table)),
+                    ))
+                    .await
+            }
+            Step::ScopeReplace { table, scope } => {
+                executor
+                    .execute(&scope_replace_sql(
+                        &SnowflakeDialect,
+                        &self.qualified(table.as_str()),
+                        &self.qualified(&ddl::stage_name(self.pipeline.as_str(), table)),
+                        scope,
+                    ))
+                    .await
+            }
+            Step::MergeArm { table, arm } => {
+                for sql in self.merge_statements(table, arm)? {
+                    if let Err(e) = executor.execute(&sql).await {
+                        return Err(self.explain_merge_failure(table, e));
+                    }
+                }
+                Ok(())
+            }
+            Step::TruncateStage { table } => {
+                executor
+                    .execute(&SnowflakeDialect.clear_table(
+                        &self.qualified(&ddl::stage_name(self.pipeline.as_str(), table)),
+                    ))
+                    .await
+            }
+        }
+    }
+
+    /// Render one merge arm. Every decision is the planner's; only the
+    /// spelling is the dialect's. Built here to keep the borrow of
+    /// `self.tables` contained.
+    fn merge_statements(
+        &self,
+        table: &TableName,
+        arm: &MergeArm,
+    ) -> Result<Vec<String>, DestinationError> {
+        let (schema, mode) = self.tables.get(table).ok_or_else(|| {
+            DestinationError::fatal(format!(
+                "snowflake: merge arm planned for unknown `{table}`"
+            ))
+        })?;
+        let WriteMode::Merge { key } = mode else {
+            return Err(DestinationError::fatal(format!(
+                "snowflake: merge arm planned for non-merge table `{table}`"
+            )));
+        };
+        let roots = protocol::roots_of(&self.tables);
+        let root = roots.get(table).unwrap_or(table).clone();
+        let pipeline = self.pipeline.as_str();
+        // Locals, because the plan borrows every one of them.
+        let target = self.qualified(table.as_str());
+        let stage_table = self.qualified(&ddl::stage_name(pipeline, table));
+        let columns = column_list_with(schema, quote);
+        let plan = build_merge_plan(
+            &SnowflakeDialect,
+            &self.config.options,
+            table,
+            schema,
+            key,
+            &target,
+            &stage_table,
+            &columns,
+            &root,
+            self.qualified(&ddl::stage_name(pipeline, &root)),
+            self.tables.get(&root).map(|(s, _)| s),
+        );
+        Ok(render_arm(&plan, arm))
+    }
+
+    /// Exchange a duplicate-merge-key failure for the SHARED diagnosis,
+    /// recognised by structured CODE — the service's wording is its own
+    /// to change and is kept as the cause. Everything else passes
+    /// through: replacing an unrelated error with merge advice would
+    /// send an operator hunting a duplicate that is not there.
+    fn explain_merge_failure(
+        &self,
+        table: &TableName,
+        error: DestinationError,
+    ) -> DestinationError {
+        let key = match self.tables.get(table) {
+            Some((_, WriteMode::Merge { key })) => key.as_slice(),
+            _ => &[],
+        };
+        match merge_diagnosis(table.as_str(), key, client::code_in(&error).as_deref()) {
+            Some(diagnosis) => DestinationError::fatal(diagnosis),
+            None => error,
+        }
+    }
+}
+
+// ---- the Backend hooks -----------------------------------------------------
+
+#[async_trait]
+impl Backend for Load {
+    async fn ensure_table(
+        &mut self,
+        schema: &TableSchema,
+        mode: &WriteMode,
+    ) -> Result<(), DestinationError> {
+        // Schema work strictly outside the unit — DDL would commit it.
+        debug_assert!(
+            !self.unit.is_open(),
+            "ensure_table must not run inside a unit: DDL would commit it"
+        );
+        let table = schema.table.as_str().to_owned();
+        self.observe(&table).await?;
+        if matches!(mode, WriteMode::Merge { .. }) {
+            let stage_table = ddl::stage_name(self.pipeline.as_str(), &schema.table);
+            self.observe(&stage_table).await?;
+        }
+
+        let previous = self.tables.get(&schema.table).map(|(s, _)| s.clone());
+        for sql in ddl::table_ddl_stmts(
+            self.pipeline.as_str(),
+            schema,
+            mode,
+            self.config.table_type,
+            previous.as_ref(),
+            &self.catalog,
+        ) {
+            self.executor.execute(&self.qualify_ddl(&sql)).await?;
+        }
+        // Fold the applied work into the image so a re-ensure at the
+        // same schema version emits nothing.
+        self.catalog.record_created(
+            &table,
+            &schema
+                .columns
+                .iter()
+                .map(|c| c.name.clone())
+                .collect::<Vec<_>>(),
+        );
+
+        for sql in ddl::merge_ensure_stmts(&self.config.options, schema, mode, &self.catalog)
+            .map_err(DestinationError::fatal)?
+        {
+            self.executor.execute(&self.qualify_ddl(&sql)).await?;
+            if let Some(column) = column_of_add(&sql) {
+                self.catalog.record_column(&table, &column);
+            }
+        }
+
+        self.tables
+            .insert(schema.table.clone(), (schema.clone(), mode.clone()));
+        Ok(())
+    }
+
+    async fn write(
+        &mut self,
+        table: &TableName,
+        batch: RecordBatch,
+    ) -> Result<(), DestinationError> {
+        // The sdk session refuses un-ensured writes before this point;
+        // the lookup is needed for the schema and mode regardless, so
+        // the refusal stays as its defensive twin.
+        let Some((schema, mode)) = self.tables.get(table).cloned() else {
+            return Err(DestinationError::fatal(format!(
+                "snowflake: `{table}` was written before it was ensured"
+            )));
+        };
+        self.unit.begin_if_closed(&*self.executor).await?;
+
+        // Merge rows land in the STAGE table — the arms join delivered
+        // rows against the target, and rows written straight there
+        // would be both sides of the join.
+        let destination_table = if matches!(mode, WriteMode::Merge { .. }) {
+            ddl::stage_name(self.pipeline.as_str(), table)
+        } else {
+            table.as_str().to_owned()
+        };
+
+        // Replace clears its target once per load, inside the unit,
+        // ahead of the first row. The planner owns the decision; this
+        // runs what it returns.
+        let no_stages = BTreeSet::new();
+        let empty_done = BTreeSet::new();
+        let steps = prepare_target(
+            &self.tables,
+            &CommitContext {
+                replayed: false,
+                load_committed_before: false,
+                single_unit_done: &empty_done,
+                staged_nonempty: &no_stages,
+                full_load_publish: PUBLISH,
+                cleared_targets: &self.cleared,
+            },
+            table,
+        );
+        for step in steps {
+            let executor = DmlOnly(&*self.executor);
+            self.execute_step(
+                &executor,
+                &prepare_meta(&self.load_id, &self.pipeline),
+                &step,
+            )
+            .await?;
+            if let Step::ClearTarget { table } = step {
+                self.cleared.insert(table);
+            }
+        }
+
+        // Empty batches stage nothing — a zero-row part buys only a
+        // file the COPY reads nothing from. Safe ONLY after the steps
+        // above: a Replace still clears, the unit still commits the
+        // position, and the next run does not re-read.
+        let rows = batch.num_rows() as u64;
+        if rows == 0 {
+            return Ok(());
+        }
+
+        // The rows leave as one parquet part. The fields are split out
+        // of `self` because the upload needs the executor and the
+        // staging state at once, and both are the session's.
+        let part = {
+            let Self {
+                stage,
+                executor,
+                config,
+                ..
+            } = self;
+            let qualified_stage = format!(
+                "{}.{}.{}",
+                quote(&config.database),
+                quote(&config.schema),
+                quote(stage.name())
+            );
+            let bytes = encode::parquet_part(&schema, &batch)?;
+            stage
+                .put_part(
+                    &**executor,
+                    &qualified_stage,
+                    &destination_table,
+                    bytes,
+                    rows,
+                )
+                .await?
+        };
+        let columns = schema.columns.iter().map(|c| c.name.clone()).collect();
+        self.pending
+            .entry(TableName::from(destination_table.as_str()))
+            .or_insert_with(|| (columns, Vec::new()))
+            .1
+            .push(part);
+        Ok(())
+    }
+
+    async fn existing_receipt(
+        &mut self,
+        load_id: &LoadId,
+        commit_seq: u64,
+    ) -> Result<Option<CommitReceipt>, DestinationError> {
+        // A session opened for one load must not commit another — the
+        // receipt it would write is one no recovery could match. The
+        // choreography's first commit contact, so the guard lives here,
+        // before anything begins.
+        if let Some(message) = protocol::load_mismatch(&self.load_id, load_id) {
+            return Err(DestinationError::fatal(format!("snowflake: {message}")));
+        }
+        self.unit.begin_if_closed(&*self.executor).await?;
+
+        // The probe's errors propagate BARE — generation 1 rolled
+        // nothing back here, and dispositions are protocol behavior.
+        let replayed = DmlOnly(&*self.executor)
+            .scalar_u64(
+                &protocol::receipt_exists_sql(|_| "?".to_owned()),
+                &[load_id.as_str(), &commit_seq.to_string()],
+            )
+            .await?
+            > 0;
+        Ok(replayed.then(|| CommitReceipt {
+            load_id: load_id.clone(),
+            commit_seq,
+        }))
+    }
+
+    async fn replay(
+        &mut self,
+        _meta: &CommitMeta,
+        _receipt: &CommitReceipt,
+    ) -> Result<(), DestinationError> {
+        // A redelivered unit's rows are already durable; this attempt's
+        // copies sit in the still-open transaction. The shared planner
+        // owns the answer — on a direct-publish path the disposition is
+        // DiscardUnit: abandon the transaction, which drops exactly
+        // what this attempt wrote, and remove its staged parts. No
+        // single-unit re-marking happens on replay (generation 1
+        // computed no plan here and marked nothing — a recorded
+        // divergence from the postgres split).
+        debug_assert_eq!(
+            protocol::replay_disposition(PUBLISH),
+            protocol::ReplayDisposition::DiscardUnit,
+        );
+        self.unit.rollback(&*self.executor).await;
+        self.discard_staged().await;
+        Ok(())
+    }
+
+    async fn publish(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestinationError> {
+        let receipt = CommitReceipt {
+            load_id: meta.load_id.clone(),
+            commit_seq: meta.commit_seq,
+        };
+
+        // Parts land BEFORE anything asks what the stages hold, and
+        // before the publish steps, in the same transaction — the
+        // receipt this unit writes claims those rows durable.
+        if let Err(e) = self.load_staged_parts().await {
+            self.unit.rollback(&*self.executor).await;
+            self.discard_staged().await;
+            return Err(e);
+        }
+
+        // Which full-feed stages actually hold rows — probed, not
+        // remembered: rows may arrive through either ingestion path and
+        // the stage table is where both agree. Probe errors propagate
+        // bare.
+        let mut staged_nonempty = BTreeSet::new();
+        for table in staged_probe_targets(&self.tables, &self.config.options) {
+            let stage_table = self.qualified(&ddl::stage_name(self.pipeline.as_str(), table));
+            let rows = DmlOnly(&*self.executor)
+                .scalar_u64(&protocol::stage_nonempty_sql(&stage_table), &[])
+                .await?;
+            if rows > 0 {
+                staged_nonempty.insert(table.clone());
+            }
+        }
+
+        let script = plan_commit(
+            &self.tables,
+            &self.config.options,
+            &self.commit_context(false, &staged_nonempty),
+        )
+        .map_err(DestinationError::fatal)?;
+
+        for step in &script.steps {
+            let executor = DmlOnly(&*self.executor);
+            if let Err(e) = self.execute_step(&executor, &meta, step).await {
+                self.unit.rollback(&*self.executor).await;
+                self.discard_staged().await;
+                return Err(e);
+            }
+        }
+
+        // Everything is written, nothing durable — recovery must find
+        // the target exactly as before this attempt.
+        if let Some(injected) = crash_at("sf.unit.publish") {
+            self.unit.rollback(&*self.executor).await;
+            self.discard_staged().await;
+            return Err(injected);
+        }
+
+        self.unit.commit(&*self.executor).await?;
+        // Only now: a table whose unit did not commit has not had its
+        // one full feed, and marking earlier would refuse the retry.
+        self.single_unit_done.extend(staged_nonempty);
+
+        // Durable, and the caller is about to be told otherwise — the
+        // one crash nothing can undo; recovery must find the receipt
+        // and publish nothing.
+        if let Some(injected) = crash_at("sf.receipt.visible") {
+            self.discard_staged().await;
+            return Err(injected);
+        }
+
+        // After the commit only: a part removed before its rows are
+        // durable is a part no recovery could re-read.
+        self.discard_staged().await;
+        Ok(receipt)
+    }
+
+    async fn read_state(
+        &mut self,
+        pipeline: &PipelineId,
+    ) -> Result<Option<StateDoc>, DestinationError> {
+        let sql = format!(
+            "SELECT {doc} FROM {state} WHERE {pipeline_col} = ?",
+            doc = quote("doc"),
+            state = self.qualified(rdlt_connector_sqlcore::names::STATE_TABLE),
+            pipeline_col = quote("pipeline"),
+        );
+        let rows = self
+            .executor
+            .rows(&sql, &[pipeline.as_str()], &["doc"])
+            .await?;
+        let Some(row) = rows.into_iter().next() else {
+            return Ok(None);
+        };
+        serde_json::from_str(&row[0])
+            .map(Some)
+            .map_err(DestinationError::fatal)
+    }
+}
+
+// ---- helpers ---------------------------------------------------------------
+
+/// The column an `ADD COLUMN` statement adds, so the catalog image can
+/// fold it in without a re-read.
+fn column_of_add(sql: &str) -> Option<String> {
+    let rest = sql.split("ADD COLUMN IF NOT EXISTS ").nth(1)?;
+    let name = rest.split_whitespace().next()?;
+    Some(name.trim_matches('"').to_owned())
+}
+
+/// The shared duplicate-merge-key advice, when the structured code says
+/// it applies. Split from the plumbing so the decision — which code,
+/// what advice — tests without a live error to carry it.
+fn merge_diagnosis(table: &str, key: &[String], code: Option<&str>) -> Option<String> {
+    (code? == client::DUPLICATE_ROW_IN_DML).then(|| {
+        rdlt_connector_sqlcore::names::duplicate_merge_key_diagnosis(
+            table,
+            key,
+            &format!("Snowflake error {}", client::DUPLICATE_ROW_IN_DML),
+        )
+    })
+}
+
+/// A meta for the write-path prepare steps, which read none of it:
+/// `ClearTarget` names its own table, and the step executor takes a
+/// `CommitMeta` only because the receipt and state steps need one.
+fn prepare_meta(load_id: &LoadId, pipeline: &PipelineId) -> CommitMeta {
+    CommitMeta {
+        load_id: load_id.clone(),
+        commit_seq: 0,
+        state: StateDoc::new(pipeline.clone(), ""),
+        counters: Default::default(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The duplicate code (and only it) earns the SHARED advice — the
+    /// sentence an operator would read on any SQL destination — with
+    /// the service's own error kept as the cause.
+    #[test]
+    fn the_duplicate_key_code_becomes_the_shared_diagnosis() {
+        let key = vec!["id".to_string(), "day".to_string()];
+        let diagnosis = merge_diagnosis("orders", &key, Some(client::DUPLICATE_ROW_IN_DML))
+            .expect("the duplicate code earns advice");
+        assert_eq!(
+            diagnosis,
+            rdlt_connector_sqlcore::names::duplicate_merge_key_diagnosis(
+                "orders",
+                &key,
+                &format!("Snowflake error {}", client::DUPLICATE_ROW_IN_DML)
+            )
+        );
+        assert!(diagnosis.contains("id, day"), "{diagnosis}");
+        assert!(diagnosis.contains("delete_insert"), "{diagnosis}");
+    }
+
+    /// Any other failure keeps its own error — a wrong diagnosis is
+    /// worse than none, because it reads as one.
+    #[test]
+    fn an_unrelated_failure_keeps_its_own_error() {
+        for code in [None, Some("000904"), Some("002003")] {
+            assert!(
+                merge_diagnosis("orders", &["id".to_string()], code).is_none(),
+                "{code:?}"
+            );
+        }
+    }
+}

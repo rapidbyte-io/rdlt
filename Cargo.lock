@@ -4433,6 +4433,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "rdlt-connector-snowflake-v2"
+version = "0.3.0"
+dependencies = [
+ "arrow-array",
+ "arrow-schema",
+ "async-trait",
+ "futures",
+ "parquet",
+ "rdlt-connector-postgres",
+ "rdlt-connector-sdk",
+ "rdlt-connector-sqlcore",
+ "rdlt-engine",
+ "rdlt-testkit",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "snowflake-connector-rs",
+ "tempfile",
+ "tokio",
+ "tokio-postgres",
+]
+
+[[package]]
 name = "rdlt-connector-sqlcore"
 version = "0.3.0"
 dependencies = [
