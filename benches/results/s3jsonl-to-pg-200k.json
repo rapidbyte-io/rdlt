@@ -1,45 +1,45 @@
 {
   "format_version": 3,
   "cell_id": "s3jsonl-to-pg-200k",
-  "recorded_at": "2026-07-28",
+  "recorded_at": "2026-08-01",
   "fingerprint": {
     "cpu_model": "AMD RYZEN AI MAX+ 395 w/ Radeon 8060S",
     "kernel": "7.0.12-201.fc44.x86_64",
-    "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
     "competitor_pins": {
       "airbyte": "airbyte 2.1.1",
       "dlt": "dlt 1.29.0"
     },
     "dataset_hashes": {
       "pg:seed_output": "dataset  |  rows   |           content_md5 | -----------+---------+---------------------------------- | events    | 1000000 | e840f51738a6b4b15f9f085ea85e3df8 | events_v2 | 1000000 | 7e208273f4d5333658fff2fa1c9839d9 | (2 rows)",
-      "rustfs:/tmp/.tmpB6Qpfu/rows.jsonl": "34e4e3d045b4f35e9c8ac8f1c8bba9af3711c341b21f2a8e72c58a401b27b747"
+      "rustfs:/tmp/.tmpFxdNDQ/rows.jsonl": "34e4e3d045b4f35e9c8ac8f1c8bba9af3711c341b21f2a8e72c58a401b27b747"
     },
-    "loadavg_at_start": 2.39,
+    "loadavg_at_start": 1.47,
     "quiet_note": null
   },
   "workload": {},
   "rdlt": {
     "runs_ms": [
-      653.260939,
-      649.9456270000001,
-      643.1278689999999,
-      652.5932290000001,
-      635.746029
+      651.655477,
+      641.472126,
+      633.8684380000001,
+      639.8137889999999,
+      632.593485
     ],
-    "median_ms": 649.9456270000001,
-    "p95_ms": 653.260939,
+    "median_ms": 639.8137889999999,
+    "p95_ms": 651.655477,
     "rows": 600000,
     "bytes": 149965184,
-    "rows_per_s": 923154.1456313237,
-    "mb_per_s": 220.04601368898432,
+    "rows_per_s": 937772.849406345,
+    "mb_per_s": 223.53057529358358,
     "cpu": {
-      "mean_util": 1.0224208573074705,
-      "peak_util": 1.2658227848101267,
-      "user_sys_ms": 650,
+      "mean_util": 1.0117081746423613,
+      "peak_util": 1.4516129032258065,
+      "user_sys_ms": 640,
       "note": "process TREE sampled at 50ms (root VmHWM exact; tree spikes between polls can be missed; cpu undercounts up to one interval)"
     },
     "rss": {
-      "peak_bytes": 179068928,
+      "peak_bytes": 178565120,
       "note": "process TREE sampled at 50ms (root VmHWM exact; tree spikes between polls can be missed; cpu undercounts up to one interval)"
     }
   },
@@ -51,25 +51,25 @@
     "dlt": {
       "status": "ok",
       "runs_ms": [
-        64239.853719000166,
-        65705.64614499972,
-        66054.13937899994,
-        67703.68643600022,
-        65233.49060800001
+        60449.33369100909,
+        63634.86198600731,
+        59630.31829602551,
+        62761.1860439938,
+        63900.441653007874
       ],
-      "median_ms": 65705.64614499972,
+      "median_ms": 62761.1860439938,
       "self_timed": true,
       "cpu": {
-        "mean_util": 0.9679395867779613,
+        "mean_util": 0.9717311787958787,
         "peak_util": null,
-        "user_sys_ms": 64197,
+        "user_sys_ms": 62725,
         "note": "cgroup v2 cpu.stat, last poll before exit"
       },
       "rss": {
-        "peak_bytes": 326946816,
+        "peak_bytes": 346230784,
         "note": "self-reported ru_maxrss — the recorded statistic (bar derivation)"
       },
-      "ratio_vs_rdlt": 101.09406605023547
+      "ratio_vs_rdlt": 98.09289378099635
     }
   },
   "verify": {

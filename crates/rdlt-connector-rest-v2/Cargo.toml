@@ -1,0 +1,43 @@
+[package]
+name = "rdlt-connector-rest-v2"
+description = "rdlt declarative REST source, second generation: YAML-configured pagination, auth, incremental cursors"
+keywords = ["elt", "rest", "api", "pagination", "http"]
+categories = ["database", "web-programming::http-client"]
+readme = "README.md"
+# Not published while the first-generation crate ships; the owner decides the
+# swap (and the publishable name) when this crate replaces it.
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+failpoints = ["rdlt-connector/failpoints", "rdlt-connector-duckdb/failpoints"]
+
+[dependencies]
+rdlt-connector = { workspace = true, features = ["schema"] }
+schemars = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+reqwest = { workspace = true }
+httpdate = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+httpdate = { workspace = true }
+rdlt-connector-duckdb = { workspace = true }
+rdlt-engine = { workspace = true }
+tempfile = { workspace = true }
+jsonschema = { workspace = true }
+rdlt-testkit = { workspace = true }
+wiremock = { workspace = true }
+
+[lints]
+workspace = true
