@@ -340,7 +340,7 @@ mod tests {
 
         // Truthful line: replay proceeds.
         let mut session = rdlt_testkit::MemoryDestination::new()
-            .open(rdlt_connector::OpenCtx::new(
+            .open(rdlt_connector::OpenContext::new(
                 PipelineId::new("p"),
                 LoadId::new("l"),
             ))
@@ -360,7 +360,7 @@ mod tests {
 
         // Lying line: the segment really holds 3, the manifest claims 7.
         let mut session = rdlt_testkit::MemoryDestination::new()
-            .open(rdlt_connector::OpenCtx::new(
+            .open(rdlt_connector::OpenContext::new(
                 PipelineId::new("p"),
                 LoadId::new("l"),
             ))

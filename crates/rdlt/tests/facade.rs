@@ -33,11 +33,8 @@ async fn full_sync_through_the_facade() {
 
 #[test]
 fn build_rejects_merge_against_non_merge_destination() {
-    let dest =
-        MemoryDestination::new().with_capabilities(rdlt_connector::DestinationCapabilities {
-            merge: false,
-            ..rdlt_connector::DestinationCapabilities::default()
-        });
+    let dest = MemoryDestination::new()
+        .with_capabilities(rdlt_connector::DestinationCapabilities::default().with_merge(false));
     let err = Pipeline::builder("bad")
         .source(MemorySource::default())
         .destination(dest)

@@ -4,7 +4,7 @@
 use async_trait::async_trait;
 use rdlt_connector::{
     CommitMeta, CommitReceipt, ConnectorSpec, Destination, DestinationCapabilities,
-    DestinationError, LoadSession, OpenCtx, PipelineId, ReadRequest, RecordBatch, Source,
+    DestinationError, LoadSession, OpenContext, PipelineId, ReadRequest, RecordBatch, Source,
     SourceError, StateDoc, StreamSpec, TableName, TableSchema, WriteMode,
 };
 use rdlt_testkit::conformance::{dest::verify_destination, source::verify_source};
@@ -58,13 +58,10 @@ impl Destination for ForgetfulDest {
     }
 
     fn capabilities(&self) -> DestinationCapabilities {
-        DestinationCapabilities {
-            merge: false,
-            ..self.inner.capabilities()
-        }
+        self.inner.capabilities().with_merge(false)
     }
 
-    async fn open(&self, ctx: OpenCtx) -> Result<Box<dyn LoadSession>, DestinationError> {
+    async fn open(&self, ctx: OpenContext) -> Result<Box<dyn LoadSession>, DestinationError> {
         Ok(Box::new(ForgetfulSession {
             inner: self.inner.open(ctx).await?,
             bump: 0,

@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use async_trait::async_trait;
 use rdlt_connector::{
     CommitMeta, CommitReceipt, ConnectorSpec, Destination, DestinationCapabilities,
-    DestinationError, LoadSession, OpenCtx, PipelineId, RecordBatch, StateDoc, TableName,
+    DestinationError, LoadSession, OpenContext, PipelineId, RecordBatch, StateDoc, TableName,
     TableSchema, WriteMode,
 };
 
@@ -71,7 +71,7 @@ impl<D: Destination + Clone> Destination for CrashDestination<D> {
         self.inner.capabilities()
     }
 
-    async fn open(&self, ctx: OpenCtx) -> Result<Box<dyn LoadSession>, DestinationError> {
+    async fn open(&self, ctx: OpenContext) -> Result<Box<dyn LoadSession>, DestinationError> {
         let session = self.inner.open(ctx).await?;
         Ok(Box::new(CrashSession {
             inner: session,

@@ -69,7 +69,7 @@ async fn the_snowflake_destination_is_conformant() {
     // creates the scratch schema for it to work in.
     rdlt_connector::Destination::open(
         &dest,
-        rdlt_connector::OpenCtx::new(
+        rdlt_connector::OpenContext::new(
             rdlt_connector::core::PipelineId::from("setup"),
             rdlt_connector::core::LoadId::from("setup"),
         ),

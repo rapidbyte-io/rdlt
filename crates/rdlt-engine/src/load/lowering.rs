@@ -220,11 +220,9 @@ mod tests {
     use rdlt_core::{Provenance, TableName};
 
     fn capabilities(structs: bool, decimal: bool) -> DestinationCapabilities {
-        DestinationCapabilities {
-            structs,
-            decimal,
-            ..DestinationCapabilities::default()
-        }
+        DestinationCapabilities::default()
+            .with_structs(structs)
+            .with_decimal(decimal)
     }
 
     fn col(name: &str, ty: ColumnType) -> ColumnDef {
@@ -527,11 +525,9 @@ mod parity_tests {
     use rdlt_core::{Provenance, TableName};
 
     fn capabilities(structs: bool, decimal: bool) -> DestinationCapabilities {
-        DestinationCapabilities {
-            structs,
-            decimal,
-            ..DestinationCapabilities::default()
-        }
+        DestinationCapabilities::default()
+            .with_structs(structs)
+            .with_decimal(decimal)
     }
 
     fn scalar_type() -> impl Strategy<Value = ColumnType> {

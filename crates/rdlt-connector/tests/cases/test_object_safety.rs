@@ -8,10 +8,10 @@
 //! last: default async trait methods (`check`) are exactly the kind of
 //! addition that can quietly disturb dyn-compatibility.
 
-use rdlt_connector_v2::core::{
+use rdlt_connector::core::{
     CommitMeta, CommitReceipt, PipelineId, StateDoc, TableName, TableSchema, WriteMode,
 };
-use rdlt_connector_v2::{
+use rdlt_connector::{
     ConnectorSpec, Destination, DestinationCapabilities, DestinationError, LoadSession,
     OpenContext, ReadRequest, Source, SourceError, StreamSpec,
 };
@@ -47,7 +47,7 @@ impl LoadSession for InertSession {
     async fn write(
         &mut self,
         _table: &TableName,
-        _batch: rdlt_connector_v2::RecordBatch,
+        _batch: rdlt_connector::RecordBatch,
     ) -> Result<(), DestinationError> {
         Ok(())
     }

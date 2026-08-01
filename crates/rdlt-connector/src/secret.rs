@@ -1,34 +1,27 @@
-//! [`Secret`] — a credential string that never renders.
+//! [`Secret`] — a credential that cannot be printed by accident.
 //!
-//! One shared type for every connector. A `Secret` is serde-transparent, so
-//! config documents keep plain strings in and out; its `Debug` and `Display`
-//! both print `***`, so a credential can be nested anywhere in a config struct
-//! that derives `Debug` (or lands in an error via `{:?}`/`{}`) without leaking.
+//! One shared type for every connector. Serde-transparent, so config
+//! documents keep plain strings in and out; `Debug` and `Display` both
+//! render `***`, so a credential nested anywhere in a config struct that
+//! derives `Debug` — or interpolated into an error — never leaks.
 //!
-//! [`Secret::reveal`] is the ONLY way to the underlying value, and that makes
-//! the set of `reveal()` call sites the entire audit surface: every place a
-//! credential is exposed is a `.reveal()` a reader can grep for. The rule the
-//! connectors follow is to call it at the exact point the credential attaches
-//! to an outbound request (a header, a query param, a catalog property) and
-//! never to place its result into a log line, an error message, or any other
-//! rendered output.
+//! [`Secret::reveal`] is the ONLY accessor, which makes the set of
+//! `reveal()` call sites the entire audit surface: every exposure is a
+//! grep away. The rule connectors follow: reveal at the exact point the
+//! credential attaches to an outbound request (a header, a form field, a
+//! connection property) and never into anything rendered.
 //!
-//! The [`schemars::JsonSchema`] impl (a plain `{"type": "string"}` placeholder)
-//! lives behind the crate's `schema` feature so the SPI carries no mandatory
-//! schemars dependency; connectors that generate config schemas enable it.
+//! The `schemars::JsonSchema` impl (a plain string placeholder) rides the
+//! crate's `schema` feature so the SPI carries no mandatory schemars
+//! dependency.
 
 use serde::{Deserialize, Serialize};
 
-/// A credential that cannot be printed by accident.
+/// A credential string that renders as `***` from both `Debug` and
+/// `Display`; [`Secret::reveal`] is the sole way to the value.
 ///
-/// `Debug` and `Display` render `***`, so a secret survives being interpolated
-/// into an error, a log line, or a rendered config without leaking. The only way
-/// to obtain the value is [`Secret::reveal`], which makes that call site the
-/// entire audit surface — the test suite greps rendered output to prove no
-/// secret substring ever reaches it.
-///
-/// `#[serde(transparent)]`: it deserializes from a plain string, so wrapping a
-/// config field in `Secret` changes nothing about the document.
+/// `#[serde(transparent)]`: wrapping a config field in `Secret` changes
+/// nothing about the document.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Secret(String);
@@ -40,22 +33,22 @@ impl Secret {
     }
 
     /// The raw credential — the sole accessor, and therefore the audit
-    /// surface. Call it only at the point the value attaches to a request,
-    /// never into a log, error, or other rendered output.
+    /// surface. Call it only where the value attaches to a request; never
+    /// into a log, an error, or any other rendered output.
     pub fn reveal(&self) -> &str {
         &self.0
     }
 }
 
 impl std::fmt::Debug for Secret {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("***")
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("***")
     }
 }
 
 impl std::fmt::Display for Secret {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("***")
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("***")
     }
 }
 
@@ -86,48 +79,56 @@ impl schemars::JsonSchema for Secret {
 mod tests {
     use super::*;
 
-    /// The generated schema must say STRING.
-    ///
-    /// A config schema is what a platform renders a form from and validates
-    /// against, so a `Secret` field that loses its type stops being an input a
-    /// UI can offer and stops rejecting a wrong-typed value. Nothing asserted
-    /// the generated shape, so the whole impl could have returned an empty
-    /// schema while every other test passed.
+    #[test]
+    fn both_renderings_mask_and_reveal_is_the_only_way_through() {
+        let secret = Secret::new("hunter2-credential");
+        assert_eq!(format!("{secret:?}"), "***");
+        assert_eq!(format!("{secret}"), "***");
+        assert_eq!(secret.reveal(), "hunter2-credential");
+    }
+
+    /// The mask survives nesting: a struct deriving Debug delegates here.
+    #[test]
+    fn the_mask_survives_a_derived_debug() {
+        #[derive(Debug)]
+        struct Config {
+            token: Secret,
+        }
+        let config = Config {
+            token: Secret::new("leakable"),
+        };
+        assert!(!format!("{config:?}").contains("leakable"));
+        // Masking is a rendering property, not storage: the credential
+        // still reads back in full where it is meant to.
+        assert_eq!(config.token.reveal(), "leakable");
+    }
+
+    #[test]
+    fn serde_is_transparent_in_both_directions() {
+        let secret: Secret = serde_json::from_str("\"tok\"").expect("a plain string parses");
+        assert_eq!(secret.reveal(), "tok");
+        assert_eq!(serde_json::to_string(&secret).expect("renders"), "\"tok\"");
+    }
+
+    #[test]
+    fn string_and_str_conversions_agree() {
+        assert_eq!(Secret::from("k"), Secret::from(String::from("k")));
+    }
+
+    /// The generated schema must say STRING: a platform renders a form
+    /// from it and validates input against it, so an untyped schema would
+    /// stop rejecting wrong-typed values.
     #[cfg(feature = "schema")]
     #[test]
-    fn the_generated_schema_declares_a_string() {
+    fn the_schema_is_a_string_carrying_the_never_rendered_warning() {
         let schema = schemars::schema_for!(Secret);
         let json = serde_json::to_value(&schema).expect("schema serializes");
-        assert_eq!(
-            json.get("type").and_then(|t| t.as_str()),
-            Some("string"),
-            "a Secret is a string on the wire: {json}"
-        );
+        assert_eq!(json.get("type").and_then(|t| t.as_str()), Some("string"));
         assert!(
             json.get("description")
                 .and_then(|d| d.as_str())
                 .is_some_and(|d| d.contains("never rendered")),
-            "the schema carries the never-rendered warning: {json}"
+            "{json}"
         );
-    }
-
-    #[test]
-    fn debug_and_display_never_render_the_value() {
-        let secret = Secret::new("hunter2-super-secret");
-        assert_eq!(format!("{secret:?}"), "***");
-        assert_eq!(format!("{secret}"), "***");
-        assert_eq!(secret.reveal(), "hunter2-super-secret");
-    }
-
-    #[test]
-    fn serde_is_transparent() {
-        let secret: Secret = serde_json::from_str("\"tok\"").unwrap();
-        assert_eq!(secret.reveal(), "tok");
-        assert_eq!(serde_json::to_string(&secret).unwrap(), "\"tok\"");
-    }
-
-    #[test]
-    fn from_str_and_string_construct_equal_secrets() {
-        assert_eq!(Secret::from("k"), Secret::from(String::from("k")));
     }
 }

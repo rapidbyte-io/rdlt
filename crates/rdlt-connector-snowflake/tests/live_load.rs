@@ -51,7 +51,7 @@ where
     };
     let schema = scratch_schema(label);
     let dest = Snowflake::new(admin.clone()).expect("valid config");
-    let ctx = rdlt_connector::OpenCtx::new(
+    let ctx = rdlt_connector::OpenContext::new(
         rdlt_connector::core::PipelineId::from("setup"),
         rdlt_connector::core::LoadId::from("setup"),
     );
@@ -62,7 +62,7 @@ where
     let scratch = Snowflake::new(config.clone()).expect("valid config");
     rdlt_connector::Destination::open(
         &scratch,
-        rdlt_connector::OpenCtx::new(
+        rdlt_connector::OpenContext::new(
             rdlt_connector::core::PipelineId::from("setup"),
             rdlt_connector::core::LoadId::from("setup"),
         ),

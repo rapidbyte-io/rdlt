@@ -9,7 +9,7 @@ use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use rdlt_connector::{
-    CommitMeta, Destination, OpenCtx, WriteMode,
+    CommitMeta, Destination, OpenContext, WriteMode,
     core::{
         ColumnDef, ColumnType, CommitCounters, Cursor, LoadId, LogicalType, PipelineId, Provenance,
         StateDoc, StreamName, TableName, TableSchema, schema::system_columns,
@@ -132,7 +132,7 @@ pub async fn verify_destination<D: Destination>(
     let mut session = try_step!(
         "D4",
         "open failed",
-        dest.open(OpenCtx::new(
+        dest.open(OpenContext::new(
             PipelineId::new("rdlt-conf-fresh"),
             load_a.clone()
         ))
@@ -154,7 +154,7 @@ pub async fn verify_destination<D: Destination>(
     let mut session1 = try_step!(
         "D4",
         "open failed",
-        dest.open(OpenCtx::new(pipeline.clone(), load_a.clone()))
+        dest.open(OpenContext::new(pipeline.clone(), load_a.clone()))
             .await
     );
     // D5: ensure_table is idempotent.
@@ -184,7 +184,7 @@ pub async fn verify_destination<D: Destination>(
     let mut session2 = try_step!(
         "D4",
         "re-open failed",
-        dest.open(OpenCtx::new(pipeline.clone(), load_a.clone()))
+        dest.open(OpenContext::new(pipeline.clone(), load_a.clone()))
             .await
     );
     try_step!(

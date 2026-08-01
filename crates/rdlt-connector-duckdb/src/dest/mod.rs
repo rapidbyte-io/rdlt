@@ -24,7 +24,8 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use duckdb::Connection;
 use rdlt_connector::{
-    ConnectorSpec, Destination, DestinationCapabilities, DestinationError, LoadSession, OpenCtx,
+    ConnectorSpec, Destination, DestinationCapabilities, DestinationError, LoadSession,
+    OpenContext,
     core::{ColumnType, LogicalType, TableName, TableSchema, naming::IdentRules},
 };
 pub use rdlt_connector_sqlcore::{
@@ -339,19 +340,18 @@ impl Destination for DuckDb {
     }
 
     fn capabilities(&self) -> DestinationCapabilities {
-        DestinationCapabilities {
-            merge: true,
-            structs: true,
-            scalar_lists: true,
+        DestinationCapabilities::default()
+            .with_merge(true)
+            .with_structs(true)
+            .with_scalar_lists(true)
             // Json lands as native DuckDB JSON — proven by a probe and a
             // round-trip test (tests/probes.rs, tests/json.rs).
-            json_type: true,
-            decimal: true,
-            ident_rules: IdentRules::default(),
-        }
+            .with_json_type(true)
+            .with_decimal(true)
+            .with_ident_rules(IdentRules::default())
     }
 
-    async fn open(&self, _ctx: OpenCtx) -> Result<Box<dyn LoadSession>, DestinationError> {
+    async fn open(&self, _ctx: OpenContext) -> Result<Box<dyn LoadSession>, DestinationError> {
         // A cloned connection shares the database instance but has its OWN temp-table
         // catalog — a dead session's staged temp tables are unreachable.
         let conn = self.clone_conn()?;

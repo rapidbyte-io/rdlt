@@ -7,7 +7,7 @@ mod common;
 
 use common::CatalogFixture;
 use rdlt_connector::core::{Cursor, LoadId, PipelineId, TableName, WriteMode};
-use rdlt_connector::{Destination, OpenCtx};
+use rdlt_connector::{Destination, OpenContext};
 use rdlt_connector_iceberg::IcebergDest;
 use rdlt_testkit::{batch_of, commit_meta_for, schema_for};
 use serde_json::json;
@@ -27,7 +27,7 @@ async fn replayed_commit_publishes_nothing() {
 
     // Commit #1 lands.
     let mut s1 = dest
-        .open(OpenCtx::new(pipeline.clone(), load.clone()))
+        .open(OpenContext::new(pipeline.clone(), load.clone()))
         .await
         .expect("open s1");
     s1.ensure_table(&schema_for("events"), &WriteMode::Append)
@@ -43,7 +43,7 @@ async fn replayed_commit_publishes_nothing() {
 
     // Crash-recovery replay: fresh session, SAME (load, seq), same rows.
     let mut s2 = dest
-        .open(OpenCtx::new(pipeline.clone(), load.clone()))
+        .open(OpenContext::new(pipeline.clone(), load.clone()))
         .await
         .expect("open replay session");
     s2.ensure_table(&schema_for("events"), &WriteMode::Append)
@@ -67,7 +67,7 @@ async fn replayed_commit_publishes_nothing() {
 
     // A genuinely NEW commit still lands on top.
     let mut s3 = dest
-        .open(OpenCtx::new(pipeline.clone(), load.clone()))
+        .open(OpenContext::new(pipeline.clone(), load.clone()))
         .await
         .expect("open s3");
     s3.ensure_table(&schema_for("events"), &WriteMode::Append)
@@ -149,7 +149,7 @@ async fn replace_rejected_against_live_catalog() {
     };
     let dest = IcebergDest::from_config(fixture.config("replace_reject")).expect("dest");
     let mut session = dest
-        .open(OpenCtx::new(PipelineId::new("p"), LoadId::new("l")))
+        .open(OpenContext::new(PipelineId::new("p"), LoadId::new("l")))
         .await
         .expect("open");
     let err = session

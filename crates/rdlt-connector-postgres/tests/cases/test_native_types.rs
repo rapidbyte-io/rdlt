@@ -11,7 +11,7 @@ use arrow_schema::{DataType, Field, Schema};
 use rdlt_connector::core::{
     ColumnDef, ColumnType, LoadId, LogicalType, PipelineId, Provenance, TableName, TableSchema,
 };
-use rdlt_connector::{Destination as _, OpenCtx, WriteMode};
+use rdlt_connector::{Destination as _, OpenContext, WriteMode};
 use rdlt_testkit::TableProbe as _;
 use rdlt_testkit::commit_meta_for;
 
@@ -88,7 +88,7 @@ async fn native_types_land_with_exact_values() {
     let pipeline = PipelineId::new("fid");
     const LOAD: &str = "fid-load";
     let mut session = postgres_destination
-        .open(OpenCtx::new(pipeline.clone(), LoadId::new(LOAD)))
+        .open(OpenContext::new(pipeline.clone(), LoadId::new(LOAD)))
         .await
         .expect("open");
 
@@ -217,7 +217,7 @@ async fn extreme_decimal_round_trips_through_the_server() {
     let pipeline = PipelineId::new("wide");
     const LOAD: &str = "w-load";
     let mut session = postgres_destination
-        .open(OpenCtx::new(pipeline.clone(), LoadId::new(LOAD)))
+        .open(OpenContext::new(pipeline.clone(), LoadId::new(LOAD)))
         .await
         .expect("open");
     let schema = TableSchema {
@@ -284,7 +284,7 @@ async fn rejected_documents_and_uuids_fail_typed_naming_the_column() {
     let pipeline = PipelineId::new("fidbad");
     const LOAD: &str = "fb-load";
     let mut session = postgres_destination
-        .open(OpenCtx::new(pipeline.clone(), LoadId::new(LOAD)))
+        .open(OpenContext::new(pipeline.clone(), LoadId::new(LOAD)))
         .await
         .expect("open");
     let schema = fidelity_schema();
@@ -344,7 +344,7 @@ async fn forced_db_failure_surfaces_server_message_and_sqlstate() {
     let pipeline = PipelineId::new("f6");
     const LOAD: &str = "f6-load";
     let mut session = postgres_destination
-        .open(OpenCtx::new(pipeline.clone(), LoadId::new(LOAD)))
+        .open(OpenContext::new(pipeline.clone(), LoadId::new(LOAD)))
         .await
         .expect("open");
     let schema = fidelity_schema();

@@ -130,7 +130,7 @@ impl rdlt_connector::Destination for CountersDest {
     }
     async fn open(
         &self,
-        ctx: rdlt_connector::OpenCtx,
+        ctx: rdlt_connector::OpenContext,
     ) -> Result<Box<dyn rdlt_connector::LoadSession>, rdlt_connector::DestinationError> {
         Ok(Box::new(CountersSession {
             inner: self.inner.open(ctx).await?,

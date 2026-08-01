@@ -289,7 +289,7 @@ impl S3Location {
         );
         // Severity comes from the ONE rulebook; this match only chooses the
         // wording, so a message can never disagree with a classification.
-        if rdlt_connector::objects::is_recoverable(&error) {
+        if rdlt_connector::store::is_recoverable(&error) {
             return SourceError::transient(format!("{name}: {error}"));
         }
         match &error {
@@ -426,7 +426,7 @@ impl S3Reader {
                         // a mid-stream transport failure keeps a retryable
                         // kind so consumers classify it transient instead
                         // of failing the whole run.
-                        let kind = if rdlt_connector::objects::is_recoverable(&e) {
+                        let kind = if rdlt_connector::store::is_recoverable(&e) {
                             std::io::ErrorKind::ConnectionReset
                         } else {
                             std::io::ErrorKind::Other

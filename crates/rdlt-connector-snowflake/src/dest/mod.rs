@@ -1,8 +1,8 @@
 //! The Snowflake destination.
 
 use rdlt_connector::{
-    ConnectorSpec, Destination, DestinationCapabilities, DestinationError, LoadSession, OpenCtx,
-    core::naming::IdentRules,
+    ConnectorSpec, Destination, DestinationCapabilities, DestinationError, LoadSession,
+    OpenContext, core::naming::IdentRules,
 };
 
 pub(crate) mod client;
@@ -249,20 +249,17 @@ impl Destination for Snowflake {
     }
 
     fn capabilities(&self) -> DestinationCapabilities {
-        DestinationCapabilities {
-            merge: true,
-            // Nested shapes are lowered before they arrive: VARIANT could
-            // carry them, but claiming so without the read-back proof would
-            // be a capability this crate has not verified.
-            structs: false,
-            scalar_lists: false,
-            json_type: true,
-            decimal: true,
-            ident_rules: IdentRules::default(),
-        }
+        // Nested shapes are lowered before they arrive: VARIANT could
+        // carry them, but claiming so without the read-back proof would
+        // be a capability this crate has not verified.
+        DestinationCapabilities::default()
+            .with_merge(true)
+            .with_json_type(true)
+            .with_decimal(true)
+            .with_ident_rules(IdentRules::default())
     }
 
-    async fn open(&self, ctx: OpenCtx) -> Result<Box<dyn LoadSession>, DestinationError> {
+    async fn open(&self, ctx: OpenContext) -> Result<Box<dyn LoadSession>, DestinationError> {
         let executor = client::connect(&self.config).await?;
 
         // The bookkeeping tables, created OUTSIDE any unit — they are DDL, and

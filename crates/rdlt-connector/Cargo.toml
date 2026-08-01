@@ -1,6 +1,6 @@
 [package]
 name = "rdlt-connector"
-description = "rdlt connector SPI: Source/Destination/LoadSession traits, RecordsOut, capabilities, error taxonomy"
+description = "rdlt connector SPI: Source/Destination/LoadSession traits, the byte-budget record channel, capabilities, error taxonomy"
 keywords = ["elt", "connector", "spi", "arrow", "data"]
 categories = ["database", "asynchronous"]
 documentation = "https://docs.rs/rdlt-connector"
@@ -28,13 +28,14 @@ tokio = { workspace = true }
 workspace = true
 
 [features]
-# Forwarded test infrastructure (crash sweep): connectors depend on the SPI
-# only, so the fail-point feature routes through this seam to rdlt-core.
+# The crash-sweep seam: connectors depend on the SPI alone, so arming fail
+# points routes through this feature to the vocabulary crate that defines
+# the `crash_point!` macro.
 failpoints = ["rdlt-core/failpoints"]
-# Opt-in `schemars::JsonSchema` for `Secret`, so the SPI carries no mandatory
-# schemars dependency; connectors that generate config schemas enable it.
+# `schemars::JsonSchema` for the shared config types (Secret, PemSource,
+# parquet options). Opt-in so the SPI carries no mandatory schemars edge;
+# a connector that generates config schemas turns it on.
 schema = ["dep:schemars"]
-# Opt-in object-store vocabulary (the one recoverability rule), for the
-# connectors that reach an object store; the SPI carries no mandatory
-# dependency on it.
+# The object-store vocabulary (one shared recoverability rule). Opt-in so
+# only the connectors that reach an object store carry the dependency.
 object-store = ["dep:object_store"]

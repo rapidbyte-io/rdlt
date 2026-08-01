@@ -10,7 +10,7 @@ mod common;
 
 use common::CatalogFixture;
 use rdlt_connector::core::{LoadId, PipelineId};
-use rdlt_connector::{Destination, DestinationError, OpenCtx};
+use rdlt_connector::{Destination, DestinationError, OpenContext};
 use rdlt_connector_iceberg::{AuthOptions, IcebergConfig, IcebergDest};
 
 #[tokio::test]
@@ -26,7 +26,7 @@ async fn live_auth_rejection_classifies_fatal() {
     );
     let dest = IcebergDest::from_config(config).expect("config parses");
     let result = dest
-        .open(OpenCtx::new(
+        .open(OpenContext::new(
             PipelineId::new("auth-probe"),
             LoadId::new("load-1"),
         ))

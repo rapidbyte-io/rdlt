@@ -152,7 +152,7 @@ impl rdlt_connector::Destination for TransientCommitDest {
     }
     async fn open(
         &self,
-        ctx: rdlt_connector::OpenCtx,
+        ctx: rdlt_connector::OpenContext,
     ) -> Result<Box<dyn rdlt_connector::LoadSession>, rdlt_connector::DestinationError> {
         let session = self.inner.open(ctx).await?;
         Ok(Box::new(TransientCommitSession {

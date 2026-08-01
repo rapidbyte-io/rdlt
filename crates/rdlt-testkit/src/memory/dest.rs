@@ -11,7 +11,7 @@ use arrow::json::writer::{JsonArray, WriterBuilder};
 use async_trait::async_trait;
 use rdlt_connector::{
     CommitMeta, CommitReceipt, ConnectorSpec, Destination, DestinationCapabilities,
-    DestinationError, LoadSession, OpenCtx, PipelineId, RecordBatch, StateDoc, TableName,
+    DestinationError, LoadSession, OpenContext, PipelineId, RecordBatch, StateDoc, TableName,
     TableSchema, WriteMode, core::LoadId, core::schema::system_columns,
 };
 use serde_json::{Map, Value};
@@ -66,14 +66,12 @@ impl MemoryDestination {
     pub fn new() -> Self {
         Self {
             inner: Arc::default(),
-            capabilities: DestinationCapabilities {
-                merge: true,
-                structs: true,
-                scalar_lists: true,
-                json_type: true,
-                decimal: true,
-                ident_rules: Default::default(),
-            },
+            capabilities: DestinationCapabilities::default()
+                .with_merge(true)
+                .with_structs(true)
+                .with_scalar_lists(true)
+                .with_json_type(true)
+                .with_decimal(true),
         }
     }
 
@@ -129,7 +127,7 @@ impl Destination for MemoryDestination {
         self.capabilities
     }
 
-    async fn open(&self, _ctx: OpenCtx) -> Result<Box<dyn LoadSession>, DestinationError> {
+    async fn open(&self, _ctx: OpenContext) -> Result<Box<dyn LoadSession>, DestinationError> {
         let mut inner = self.lock();
         inner.opens += 1;
         // Clause D4: uncommitted staged data from any previous session becomes

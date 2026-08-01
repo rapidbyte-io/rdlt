@@ -8,7 +8,8 @@ use arrow_schema::{DataType, Field, Schema};
 use async_trait::async_trait;
 use rdlt_connector::core::{LoadId, PipelineId};
 use rdlt_connector::{
-    ConnectorSpec, Cursor, Destination as _, OpenCtx, ReadRequest, Source, SourceError, StreamSpec,
+    ConnectorSpec, Cursor, Destination as _, OpenContext, ReadRequest, Source, SourceError,
+    StreamSpec,
 };
 use rdlt_connector_postgres::destination::{
     AbsentPolicy, DestinationOptions, MergeStrategy, Postgres, Scd2Options, TableOptions,
@@ -278,7 +279,7 @@ async fn redelivery_adds_zero_versions() {
     let destination = scd2_destination(&connection_string, "redel", AbsentPolicy::Keep);
     let pipeline = PipelineId::new("redel");
     let mut session = destination
-        .open(OpenCtx::new(pipeline.clone(), LoadId::new("rd-load")))
+        .open(OpenContext::new(pipeline.clone(), LoadId::new("rd-load")))
         .await
         .expect("open");
     let table_schema = dims_schema();
@@ -405,7 +406,7 @@ async fn absent_retire_rejects_multi_unit_loads() {
     let destination = scd2_destination(&connection_string, "multiunit", AbsentPolicy::Retire);
     let pipeline = PipelineId::new("multiunit");
     let mut session = destination
-        .open(OpenCtx::new(pipeline.clone(), LoadId::new("mu-load")))
+        .open(OpenContext::new(pipeline.clone(), LoadId::new("mu-load")))
         .await
         .expect("open");
     let table_schema = dims_schema();

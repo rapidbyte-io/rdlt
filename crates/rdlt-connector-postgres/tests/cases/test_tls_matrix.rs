@@ -287,7 +287,7 @@ async fn prefer_falls_back_on_plaintext_server_and_conn_sslmode_flows() {
 #[tokio::test(flavor = "multi_thread")]
 async fn destination_uses_the_same_policy_path() {
     use rdlt_connector::core::{LoadId, PipelineId};
-    use rdlt_connector::{Destination as _, OpenCtx};
+    use rdlt_connector::{Destination as _, OpenContext};
 
     let Some(fixture) = TlsPostgresContainer::start().await else {
         return;
@@ -304,7 +304,7 @@ async fn destination_uses_the_same_policy_path() {
             ..Policy::default()
         });
     assert!(
-        good.open(OpenCtx::new(pipeline.clone(), load.clone()))
+        good.open(OpenContext::new(pipeline.clone(), load.clone()))
             .await
             .is_ok(),
         "destination over verify_full must open"
@@ -318,7 +318,7 @@ async fn destination_uses_the_same_policy_path() {
             root_cert: Some(PemSource(fixture.pki.wrong_ca_pem.clone())),
             ..Policy::default()
         });
-    let error = match bad.open(OpenCtx::new(pipeline, load)).await {
+    let error = match bad.open(OpenContext::new(pipeline, load)).await {
         Ok(_) => panic!("wrong CA must fail the destination identically"),
         Err(error) => error,
     };
@@ -358,7 +358,7 @@ fn mtls_yaml(mode: &str, root: &str, client: Option<(&str, &str)>) -> String {
 #[tokio::test(flavor = "multi_thread")]
 async fn client_cert_matrix_against_cert_auth_server() {
     use rdlt_connector::core::{LoadId, PipelineId};
-    use rdlt_connector::{Destination as _, OpenCtx};
+    use rdlt_connector::{Destination as _, OpenContext};
 
     let Some(fixture) = TlsPostgresContainer::start_cert_auth().await else {
         return;
@@ -387,7 +387,7 @@ async fn client_cert_matrix_against_cert_auth_server() {
                 client_key: Some(PemSource(pki.client_key_pem.clone())),
             });
     postgres_destination
-        .open(OpenCtx::new(
+        .open(OpenContext::new(
             PipelineId::new("mtls"),
             LoadId::new("mtls-load"),
         ))
@@ -449,7 +449,7 @@ async fn credential_offered_but_unused_still_syncs() {
 #[tokio::test(flavor = "multi_thread")]
 async fn sslrootcert_url_syncs_and_application_name_is_set() {
     use rdlt_connector::core::{LoadId, PipelineId};
-    use rdlt_connector::{Destination as _, OpenCtx};
+    use rdlt_connector::{Destination as _, OpenContext};
 
     let Some(fixture) = TlsPostgresContainer::start().await else {
         return;
@@ -527,7 +527,7 @@ async fn sslrootcert_url_syncs_and_application_name_is_set() {
     // DESTINATION: the same URL through the same gate.
     let postgres_destination = destination::Postgres::new(&url).schema("url_ok");
     postgres_destination
-        .open(OpenCtx::new(
+        .open(OpenContext::new(
             PipelineId::new("url"),
             LoadId::new("url-load"),
         ))

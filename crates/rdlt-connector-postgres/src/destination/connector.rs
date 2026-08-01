@@ -4,7 +4,7 @@
 use async_trait::async_trait;
 use rdlt_connector::core::naming::IdentRules;
 use rdlt_connector::{
-    ConnectorSpec, Destination, DestinationCapabilities, DestinationError, LoadSession, OpenCtx,
+    ConnectorSpec, Destination, DestinationCapabilities, DestinationError, LoadSession, OpenContext,
 };
 use rdlt_connector_sqlcore::quote_identifier;
 
@@ -24,21 +24,20 @@ impl Destination for Postgres {
     }
 
     fn capabilities(&self) -> DestinationCapabilities {
-        DestinationCapabilities {
+        DestinationCapabilities::default()
             // Merge is native (the sqlcore strategy arms); structs and
             // scalar lists are not — the engine flattens and shreds at the
             // seam. Json and decimal pass through untouched as JSONB and
             // NUMERIC.
-            merge: true,
-            structs: false,
-            scalar_lists: false,
-            json_type: true,
-            decimal: true,
-            ident_rules: IdentRules { max_len: 63 },
-        }
+            .with_merge(true)
+            .with_structs(false)
+            .with_scalar_lists(false)
+            .with_json_type(true)
+            .with_decimal(true)
+            .with_ident_rules(IdentRules { max_len: 63 })
     }
 
-    async fn open(&self, context: OpenCtx) -> Result<Box<dyn LoadSession>, DestinationError> {
+    async fn open(&self, context: OpenContext) -> Result<Box<dyn LoadSession>, DestinationError> {
         let connection = session::establish(
             &self.connection_string,
             self.tls.as_ref(),

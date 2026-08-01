@@ -48,6 +48,24 @@ died with the knobs; the gate then ran TWICE CLEAN at exactly the
 predicted 1019/1019 (both first attempt, cold 24.0 / 23.5 ms, exit 0) —
 the count discipline verifying its own change.
 
+## SWAP-IN — EXECUTED (2026-08-01, owner decision)
+
+Generation 1 DELETED; `rdlt-connector-v2` renamed to `rdlt-connector`
+(publish restored, docs.rs key back, "second generation" out of the
+description); workspace version 0.2.0 → 0.3.0 (D4 — the 014-recorded
+window finally lands; `cargo semver-checks` against the pinned baseline
+registers the major change and requires no further bump). The consumer
+port, ~240 files across 10 crates, all mechanical per the ledger:
+`OpenCtx`→`OpenContext`, capability struct literals → `with_*` builder
+chains (the functional-update sites collapse beautifully:
+`self.inner.capabilities().with_merge(false)`), `ByteTx`/`ByteRx`→
+`ByteSender`/`ByteReceiver` in the engine's three channel files,
+`objects::is_recoverable`→`store::` in the file connector, and the typed
+`parquet::OptionsError` at its two validate seams (one `.to_string()`,
+one already formatting through Display). Workspace: 0 errors, 0 clippy
+warnings, fmt clean; 989/989 tests (the pre-swap 1019 minus generation
+1's own 30 — v2's 41 were already in the count as a member).
+
 ## Decision record
 
 - D1. EXTRACTION-READINESS is a requirement, not a nice-to-have (owner

@@ -14,7 +14,7 @@ use rdlt_connector::core::{
     ColumnDef, ColumnType, CommitCounters, LoadId, LogicalType, PipelineId, Provenance, StateDoc,
     TableName, TableSchema,
 };
-use rdlt_connector::{CommitMeta, Destination, OpenCtx, WriteMode};
+use rdlt_connector::{CommitMeta, Destination, OpenContext, WriteMode};
 use rdlt_connector_postgres::fixtures::PostgresContainer;
 use std::sync::Arc;
 
@@ -78,7 +78,7 @@ async fn a_redelivered_unit_never_duplicates_its_rows() {
         counters: CommitCounters::default(),
     };
     let mut session = destination
-        .open(OpenCtx::new(pipeline.clone(), LoadId::new("rp1-load")))
+        .open(OpenContext::new(pipeline.clone(), LoadId::new("rp1-load")))
         .await
         .expect("open");
     session
@@ -145,7 +145,7 @@ async fn a_replace_target_first_written_in_unit_two_is_still_cleared() {
     };
     // Load 1 leaves rows behind.
     let mut session = destination
-        .open(OpenCtx::new(pipeline.clone(), LoadId::new("L1")))
+        .open(OpenContext::new(pipeline.clone(), LoadId::new("L1")))
         .await
         .expect("open");
     session
@@ -163,7 +163,7 @@ async fn a_replace_target_first_written_in_unit_two_is_still_cleared() {
     // Load 2: table T gets NO write in unit 0, which still commits; its first
     // rows arrive in unit 1.
     let mut session = destination
-        .open(OpenCtx::new(pipeline.clone(), LoadId::new("L2")))
+        .open(OpenContext::new(pipeline.clone(), LoadId::new("L2")))
         .await
         .expect("open");
     session

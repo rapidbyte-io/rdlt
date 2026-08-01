@@ -10,10 +10,7 @@ fn source() -> MemorySource {
 }
 
 fn merge_less() -> MemoryDestination {
-    let caps = rdlt_connector::DestinationCapabilities {
-        merge: false,
-        ..MemoryDestination::new().capabilities()
-    };
+    let caps = MemoryDestination::new().capabilities().with_merge(false);
     MemoryDestination::new().with_capabilities(caps)
 }
 
