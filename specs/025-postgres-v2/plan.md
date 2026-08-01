@@ -24,44 +24,26 @@ naming rules (below).
 arrow 58.3, rdlt-connector SPI, rdlt-connector-sqlcore) — the dependency list
 may not grow beyond the old crate's.
 
-## STATUS (update as work lands — the durable record)
+## STATUS — COMPLETE (2026-08-01)
 
-Done through `e4c1495f`: ALL of src/ complete — tls, session, types (+encode),
-source (+CDC real, placeholder gone), destination, fixtures, testsupport
-(source/session/destination seams incl. golden-pin + encode-pin + bench
-bodies + both fuzz entries), benches/iai.rs (decode/encode pair, hand-run
-parity only), lib.rs front page with RUNNING doctest (both halves from
-YAML), 79 lib tests + doctest green, zero library warnings. src naming audit
-CLEAN. CDC_FAIL_POINTS + destination FAIL_POINTS registries carry
-generation-1 crash-point IDs verbatim.
-
-FIVE background agents own tests/ + README right now:
-1. port-offline: test_config, test_config_schema (files present).
-2. port-container: test_reflect, test_native_types, test_incremental,
-   test_query_streams, test_source_conformance, test_tls_matrix (files
-   present). Extended common.rs with Probe (TableProbe impl).
-3. port-destination: goldens x3, destination_{conformance,recovery},
-   merge_strategies, merge_refinements, scd2, unit_isolation,
-   direct_publish, differential (+proptest-regressions + fixtures hex),
-   option_edges, dest-TLS appends to test_tls_matrix.rs.
-4. port-cdc-sweeps: cdc_rig + 4 CDC suites; NEW binaries
-   tests/{source_crash_sweep,destination_crash_sweep,cdc_crash_sweep,
-   memory_bound}.rs. WATCH: if old memory_bound shells out to the rdlt CLI,
-   v2 (not in facade) needs a library-mode variant or a recorded exemption.
-5. write-readme: full v2 README from the gen-1 reference.
-
-AFTER agents land: fix residual failures, fmt, COMMIT tests+README; then
-Makefile wiring (two lines, prepared): under TARGET=sweep after the
-gen-1 postgres line add
-`cargo nextest run -p rdlt-connector-postgres-v2 --features failpoints -E 'binary(source_crash_sweep) or binary(destination_crash_sweep) or binary(cdc_crash_sweep)'`
-and under TARGET=deep after the gen-1 memory_bound line add
-`RDLT_HEAVY=1 cargo nextest run -p rdlt-connector-postgres-v2 -E 'binary(memory_bound)'`
-(024 D-4: reachability enumeration is structural, nothing else to register;
-coverage target picks v2 sweeps up automatically via --features failpoints).
-Then: tests-side naming audit; clippy --all-targets -D warnings + docs leg
-(`RUSTDOCFLAGS="-D warnings" cargo doc`); iai parity vs gen-1 iai_pg (hand
-compare); full `env -u RUSTUP_TOOLCHAIN make check` from repo root, TWICE,
-untouched while running. Merge = owner's call.
+DONE. Every task 0-11 executed. Final state on branch `postgres-v2`:
+- crate `rdlt-connector-postgres-v2` complete: 79 lib tests, 148/148
+  integration (zero skips, containers live), 14/14 armed sweep cells
+  (source/destination/cdc, exactly-once at every crash point, registries
+  scanner-verified), memory_bound heavy claim green, doctests green.
+- Golden SQL byte-identical to generation 1 (DDL, ensure, unit literals).
+- iai parity: v2 FASTER — decode 20,547,225 vs 20,994,190 instructions
+  (−2.1%), encode 28,597,743 vs 30,047,979 (−4.8%).
+- clippy --all-targets --all-features −D warnings: zero. rustdoc −D
+  warnings: zero. cargo fmt clean. Naming audit clean (src + tests).
+- Makefile wired: v2 sweeps in TARGET=sweep, v2 memory_bound in
+  TARGET=deep.
+- FULL GATE TWICE CLEAN, untouched runs: 1194/1194 workspace tests
+  (2 named instrument skips), all sweeps, semver clean, perf gate all
+  benches within tolerance / 0 regressed, cold start 22.8 / 24.0 ms
+  (bar ≤ 40). Exit 0 both runs.
+- Old crate UNTOUCHED and still fully gated. v2 NOT wired into the facade
+  (D1); merge + facade swap + publishing name are the owner's calls.
 
 ## Decision record
 
@@ -251,11 +233,11 @@ pub(crate) plan::streams(...) -> Vec<plan::Stream>   // the ONE validation gate
 ```
 **Contract:** Appendix A §Source. Always-structured streams; validation facts once with one error text each; cursorless never checkpoints; ChannelClosed = done; the boundary matrix; watermark-never-lowered; tracker dedup rules; query streams wrapped one way for describe AND read.
 
-- [ ] **Step 1:** Contract completion from old source files → Appendix A §Source.
-- [ ] **Step 2:** config/ + reflect + sql + plan (fresh; port test cases).
-- [ ] **Step 3:** cursor/ + copy + connector; wire `Source` impl.
-- [ ] **Step 4:** Port the listed suites (new API spellings, same assertions); container suites green.
-- [ ] **Step 5:** Commit `feat(postgres-v2): the source — every fact validated once`.
+- [x] **Step 1:** Contract completion from old source files → Appendix A §Source.
+- [x] **Step 2:** config/ + reflect + sql + plan (fresh; port test cases).
+- [x] **Step 3:** cursor/ + copy + connector; wire `Source` impl.
+- [x] **Step 4:** Port the listed suites (new API spellings, same assertions); container suites green.
+- [x] **Step 5:** Commit `feat(postgres-v2): the source — every fact validated once`.
 
 ### Task 7: `destination/` + its suites
 
@@ -263,11 +245,11 @@ pub(crate) plan::streams(...) -> Vec<plan::Stream>   // the ONE validation gate
 **Interfaces:** `destination::Postgres` builder (`new(connection_string)`, `.schema(…)` — YAML keeps `dataset` spelling via serde rename, `.tls(…)`, `.options(…)`), `destination::Config` with `from_yaml/from_json/from_value` + `config_schema()` (freezes the facade field set `{conn, dataset, tls, merge_strategy, tables}`); `Catalog`/`Unit`/`executor` per the tree; sqlcore vocabulary re-exported under its bare names (family rule).
 **Contract:** Appendix A §Destination. Golden SQL BYTE-IDENTICAL to the old pins (copy the old goldens' expected strings into the ported pin tests unchanged — they are contract, not code).
 
-- [ ] **Step 1:** Contract completion (every literal SQL string, the capabilities values, the reclamation scoping, replay rules) → Appendix A §Destination.
-- [ ] **Step 2:** catalog + unit + executor + dialect + errors (fresh, unit-tested).
-- [ ] **Step 3:** load.rs + connector.rs + config.rs; wire `Destination` impl.
-- [ ] **Step 4:** Port suites; golden pins byte-identical or STOP and fix the code (never the pin).
-- [ ] **Step 5:** Commit `feat(postgres-v2): the destination — catalog, unit, executor`.
+- [x] **Step 1:** Contract completion (every literal SQL string, the capabilities values, the reclamation scoping, replay rules) → Appendix A §Destination.
+- [x] **Step 2:** catalog + unit + executor + dialect + errors (fresh, unit-tested).
+- [x] **Step 3:** load.rs + connector.rs + config.rs; wire `Destination` impl.
+- [x] **Step 4:** Port suites; golden pins byte-identical or STOP and fix the code (never the pin).
+- [x] **Step 5:** Commit `feat(postgres-v2): the destination — catalog, unit, executor`.
 
 ### Task 8: `cdc/` + its suites
 
@@ -275,11 +257,11 @@ pub(crate) plan::streams(...) -> Vec<plan::Stream>   // the ONE validation gate
 **Interfaces:** typestate runtime (`Control` established with `Profile::CdcControl`; `Snapshot` holds the repeatable-read transaction; no `Option<Arc<_>> + expect()`); `ack.rs` owns run-completion ack + lag; `slot::ensure` decomposed into named checks; pgoutput parser self-contained with its fuzz entry.
 **Contract:** Appendix A §CDC — every 009-review invariant listed there.
 
-- [ ] **Step 1:** Contract completion from the eight old files → §CDC.
-- [ ] **Step 2:** pgoutput + apply (+ types/text consumers) fresh; unit tests.
-- [ ] **Step 3:** slot + runtime + read + tail + ack; wire into `source::Postgres`.
-- [ ] **Step 4:** Port the four CDC suites + rig; green with containers.
-- [ ] **Step 5:** Commit `feat(postgres-v2): cdc — the runtime is a typestate`.
+- [x] **Step 1:** Contract completion from the eight old files → §CDC.
+- [x] **Step 2:** pgoutput + apply (+ types/text consumers) fresh; unit tests.
+- [x] **Step 3:** slot + runtime + read + tail + ack; wire into `source::Postgres`.
+- [x] **Step 4:** Port the four CDC suites + rig; green with containers.
+- [x] **Step 5:** Commit `feat(postgres-v2): cdc — the runtime is a typestate`.
 
 ### Task 9: crash sweeps, memory bound, testsupport, fixtures, benches
 
@@ -287,23 +269,23 @@ pub(crate) plan::streams(...) -> Vec<plan::Stream>   // the ONE validation gate
 **Interfaces:** fail-point registries (same crash-point ID strings as the old crate — they name real crash sites; the sweeps port over); `fixtures::{PostgresContainer, CdcContainer}` (one shared `start` core — the old verbatim duplication does not return); testsupport carries the pin/bench/fuzz seams (one convention).
 **Contract:** every registry passes `rdlt_testkit::crash::assert_registry_matches_sources` against THIS crate's tree; sweeps prove exactly-once per point × action; memory_bound reproduces the bounded-snapshot guarantee.
 
-- [ ] Write + port; sweeps green under `--features failpoints`; commit `feat(postgres-v2): the nets — sweeps, memory bound, one test seam`.
+- [x] Write + port; sweeps green under `--features failpoints`; commit `feat(postgres-v2): the nets — sweeps, memory bound, one test seam`.
 
 ### Task 10: gate wiring + naming audit + docs
 
-- [ ] **Step 1:** Wire the new binaries into the gate per 024's discipline: Makefile sweep/test lines + the by-name enumeration (find the mechanism: `grep -rn "crash_sweep\|memory_bound" Makefile crates/rdlt-testkit/`); every new binary invoked or exempted BY NAME.
-- [ ] **Step 2:** Naming audit against the rules: `grep -rnE "\b(conn|stmt|tbl|cfg|ctx|buf)\b" crates/rdlt-connector-postgres-v2/src/` → zero hits (serde renames excepted); ledger (Appendix C) complete; every public item documented.
-- [ ] **Step 3:** README (self-contained, old crate's coverage) + lib.rs front page with a RUNNING doctest (yaml → validated source; contradiction refused at parse time).
-- [ ] **Step 4:** `cargo clippy -p rdlt-connector-postgres-v2 --all-targets --all-features -- -D warnings`; fmt; `RUSTDOCFLAGS="-D warnings" cargo doc -p rdlt-connector-postgres-v2 --no-deps --all-features`; `cd fuzz && cargo check` if fuzz targets were added.
-- [ ] **Step 5:** Commit `docs(postgres-v2): the front page + the gate knows every binary`.
+- [x] **Step 1:** Wire the new binaries into the gate per 024's discipline: Makefile sweep/test lines + the by-name enumeration (find the mechanism: `grep -rn "crash_sweep\|memory_bound" Makefile crates/rdlt-testkit/`); every new binary invoked or exempted BY NAME.
+- [x] **Step 2:** Naming audit against the rules: `grep -rnE "\b(conn|stmt|tbl|cfg|ctx|buf)\b" crates/rdlt-connector-postgres-v2/src/` → zero hits (serde renames excepted); ledger (Appendix C) complete; every public item documented.
+- [x] **Step 3:** README (self-contained, old crate's coverage) + lib.rs front page with a RUNNING doctest (yaml → validated source; contradiction refused at parse time).
+- [x] **Step 4:** `cargo clippy -p rdlt-connector-postgres-v2 --all-targets --all-features -- -D warnings`; fmt; `RUSTDOCFLAGS="-D warnings" cargo doc -p rdlt-connector-postgres-v2 --no-deps --all-features`; `cd fuzz && cargo check` if fuzz targets were added.
+- [x] **Step 5:** Commit `docs(postgres-v2): the front page + the gate knows every binary`.
 
 ### Task 11: parity measurement + the gate, twice
 
-- [ ] **Step 1:** Hot-path parity: run `benches/iai.rs` (new) vs old `iai_pg` equivalents; instruction counts within noise of the old crate's, or fix before proceeding.
-- [ ] **Step 2:** `env -u RUSTUP_TOOLCHAIN cargo test --doc -p rdlt-connector-postgres-v2`.
-- [ ] **Step 3:** Full gate from repo root, untouched while running: `env -u RUSTUP_TOOLCHAIN make check`; wait on the log's completion marker.
-- [ ] **Step 4:** Second untouched run; both clean (old crate's 964 + new crate's suites, sweeps, semver, benches, cold start) → done.
-- [ ] **Step 5:** Update memory; report. Merge + facade swap remain the owner's calls.
+- [x] **Step 1:** Hot-path parity: run `benches/iai.rs` (new) vs old `iai_pg` equivalents; instruction counts within noise of the old crate's, or fix before proceeding.
+- [x] **Step 2:** `env -u RUSTUP_TOOLCHAIN cargo test --doc -p rdlt-connector-postgres-v2`.
+- [x] **Step 3:** Full gate from repo root, untouched while running: `env -u RUSTUP_TOOLCHAIN make check`; wait on the log's completion marker.
+- [x] **Step 4:** Second untouched run; both clean (old crate's 964 + new crate's suites, sweeps, semver, benches, cold start) → done.
+- [x] **Step 5:** Update memory; report. Merge + facade swap remain the owner's calls.
 
 ## Appendix A — Behavioral contracts
 
