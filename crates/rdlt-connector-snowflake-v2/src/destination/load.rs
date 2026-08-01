@@ -75,9 +75,14 @@ pub struct Load {
     pub(super) catalog: Catalog,
     /// Ensured tables, each with the mode it was ensured under.
     pub(super) tables: BTreeMap<TableName, (TableSchema, WriteMode)>,
-    /// Targets this load has already cleared (the once-per-load Replace
-    /// guard).
+    /// Targets cleared by units that COMMITTED — the once-per-load
+    /// Replace guard's durable half.
     pub(super) cleared: BTreeSet<TableName>,
+    /// Targets cleared inside the CURRENT unit: promoted into `cleared`
+    /// at commit, dropped at rollback — a rolled-back DELETE cleared
+    /// nothing, and forgetting that would let a later unit skip a clear
+    /// the server never saw.
+    pub(super) cleared_in_unit: BTreeSet<TableName>,
     /// The commit-unit transaction.
     pub(super) unit: Unit,
     /// Tables whose one full-feed unit has committed — marked only
@@ -120,20 +125,10 @@ impl Load {
         )
     }
 
-    /// The planner's context for this moment of the protocol.
-    fn commit_context<'a>(
-        &'a self,
-        replayed: bool,
-        staged_nonempty: &'a BTreeSet<TableName>,
-    ) -> CommitContext<'a> {
-        CommitContext {
-            replayed,
-            load_committed_before: false,
-            single_unit_done: &self.single_unit_done,
-            staged_nonempty,
-            full_load_publish: PUBLISH,
-            cleared_targets: &self.cleared,
-        }
+    /// Everything the planner must treat as already cleared: durable
+    /// clears plus the current unit's own.
+    fn cleared_union(&self) -> BTreeSet<TableName> {
+        self.cleared.union(&self.cleared_in_unit).cloned().collect()
     }
 
     /// Read a table's columns unless this session already has.
@@ -378,11 +373,6 @@ impl Backend for Load {
         schema: &TableSchema,
         mode: &WriteMode,
     ) -> Result<(), DestinationError> {
-        // Schema work strictly outside the unit — DDL would commit it.
-        debug_assert!(
-            !self.unit.is_open(),
-            "ensure_table must not run inside a unit: DDL would commit it"
-        );
         let table = schema.table.as_str().to_owned();
         self.observe(&table).await?;
         if matches!(mode, WriteMode::Merge { .. }) {
@@ -391,14 +381,32 @@ impl Backend for Load {
         }
 
         let previous = self.tables.get(&schema.table).map(|(s, _)| s.clone());
-        for sql in ddl::table_ddl_stmts(
+        let statements = ddl::table_ddl_stmts(
             self.pipeline.as_str(),
             schema,
             mode,
             self.config.table_type,
             previous.as_ref(),
             &self.catalog,
-        ) {
+        );
+        // The engine legitimately ensures MID-UNIT when a source's
+        // schema evolves between batches. DDL here auto-commits the
+        // open transaction — publishing a partial unit with no receipt —
+        // so when real schema work is owed while a unit is open, the
+        // unit is deliberately ENDED first, by ROLLBACK: staged parts
+        // are FILES and survive (an upload rides outside transaction
+        // semantics), `pending` stays valid, and the only transactional
+        // work a unit holds before publish is a Replace clear, whose
+        // in-unit mark is dropped with the rollback so the next write
+        // re-clears. Generation 1 had no handling at all — a debug
+        // build panicked on an assertion here and a release build
+        // silently committed the partial unit. Found by this rewrite's
+        // review; pinned live by `a_column_added_mid_unit_keeps_its_data`.
+        if !statements.is_empty() && self.unit.is_open() {
+            self.unit.rollback(&*self.executor).await;
+            self.cleared_in_unit.clear();
+        }
+        for sql in statements {
             self.executor.execute(&self.qualify_ddl(&sql)).await?;
         }
         // Fold the applied work into the image so a re-ensure at the
@@ -455,6 +463,7 @@ impl Backend for Load {
         // runs what it returns.
         let no_stages = BTreeSet::new();
         let empty_done = BTreeSet::new();
+        let cleared = self.cleared_union();
         let steps = prepare_target(
             &self.tables,
             &CommitContext {
@@ -463,7 +472,7 @@ impl Backend for Load {
                 single_unit_done: &empty_done,
                 staged_nonempty: &no_stages,
                 full_load_publish: PUBLISH,
-                cleared_targets: &self.cleared,
+                cleared_targets: &cleared,
             },
             table,
         );
@@ -476,7 +485,9 @@ impl Backend for Load {
             )
             .await?;
             if let Step::ClearTarget { table } = step {
-                self.cleared.insert(table);
+                // In-unit until the unit commits: a rolled-back DELETE
+                // cleared nothing.
+                self.cleared_in_unit.insert(table);
             }
         }
 
@@ -516,12 +527,21 @@ impl Backend for Load {
                 )
                 .await?
         };
-        let columns = schema.columns.iter().map(|c| c.name.clone()).collect();
-        self.pending
+        // The column list follows the LATEST write's schema, not the
+        // first's: evolution is additive, so the newest set is a
+        // superset covering every earlier part (whose files simply lack
+        // the added column and load NULL for it). Capturing only the
+        // first write's list — generation 1's shape — silently dropped
+        // a mid-unit added column's values for the whole unit: the COPY
+        // projected the narrower list, row counts still matched, and
+        // nothing errored. Found by review of this rewrite; pinned live
+        // by `a_column_added_mid_unit_keeps_its_data`.
+        let entry = self
+            .pending
             .entry(TableName::from(destination_table.as_str()))
-            .or_insert_with(|| (columns, Vec::new()))
-            .1
-            .push(part);
+            .or_default();
+        entry.0 = schema.columns.iter().map(|c| c.name.clone()).collect();
+        entry.1.push(part);
         Ok(())
     }
 
@@ -572,6 +592,7 @@ impl Backend for Load {
             protocol::ReplayDisposition::DiscardUnit,
         );
         self.unit.rollback(&*self.executor).await;
+        self.cleared_in_unit.clear();
         self.discard_staged().await;
         Ok(())
     }
@@ -587,6 +608,7 @@ impl Backend for Load {
         // receipt this unit writes claims those rows durable.
         if let Err(e) = self.load_staged_parts().await {
             self.unit.rollback(&*self.executor).await;
+            self.cleared_in_unit.clear();
             self.discard_staged().await;
             return Err(e);
         }
@@ -606,10 +628,18 @@ impl Backend for Load {
             }
         }
 
+        let cleared = self.cleared_union();
         let script = plan_commit(
             &self.tables,
             &self.config.options,
-            &self.commit_context(false, &staged_nonempty),
+            &CommitContext {
+                replayed: false,
+                load_committed_before: false,
+                single_unit_done: &self.single_unit_done,
+                staged_nonempty: &staged_nonempty,
+                full_load_publish: PUBLISH,
+                cleared_targets: &cleared,
+            },
         )
         .map_err(DestinationError::fatal)?;
 
@@ -617,6 +647,7 @@ impl Backend for Load {
             let executor = DmlOnly(&*self.executor);
             if let Err(e) = self.execute_step(&executor, &meta, step).await {
                 self.unit.rollback(&*self.executor).await;
+                self.cleared_in_unit.clear();
                 self.discard_staged().await;
                 return Err(e);
             }
@@ -626,14 +657,17 @@ impl Backend for Load {
         // the target exactly as before this attempt.
         if let Some(injected) = crash_at("sf.unit.publish") {
             self.unit.rollback(&*self.executor).await;
+            self.cleared_in_unit.clear();
             self.discard_staged().await;
             return Err(injected);
         }
 
         self.unit.commit(&*self.executor).await?;
-        // Only now: a table whose unit did not commit has not had its
-        // one full feed, and marking earlier would refuse the retry.
+        // Only now, for both guards: a rolled-back unit neither counts
+        // as a full feed nor cleared anything.
         self.single_unit_done.extend(staged_nonempty);
+        self.cleared
+            .extend(std::mem::take(&mut self.cleared_in_unit));
 
         // Durable, and the caller is about to be told otherwise — the
         // one crash nothing can undo; recovery must find the receipt

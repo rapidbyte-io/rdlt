@@ -76,3 +76,68 @@ async fn an_append_load_lands_every_row_and_leaves_no_local_residue() {
     )
     .await;
 }
+
+/// A column that appears MID-UNIT (second batch, before any checkpoint)
+/// keeps its data. Pins the generation-1 defect this rewrite found: the
+/// COPY's column list was captured on a table's first write and never
+/// refreshed, so a mid-unit widened column projected out of the load —
+/// every row's value for it landed NULL with matching row counts and no
+/// error anywhere.
+#[tokio::test]
+async fn a_column_added_mid_unit_keeps_its_data() {
+    let Some(creds) = credentials() else { return };
+    let schema = scratch_schema("widen");
+    let doc = config_for(&creds, &schema);
+    let config = {
+        use rdlt_connector_sdk::config::Document;
+        rdlt_connector_snowflake_v2::destination::SnowflakeConfig::from_value(doc.clone())
+            .expect("valid")
+    };
+
+    // Two batches, ONE checkpoint at the end: both land in the same
+    // commit unit, and the second batch carries a column the first did
+    // not — the shredder infers it and the engine widens mid-unit.
+    let source = MemorySource::new(vec![MemoryStream::new(
+        StreamSpec::new("events"),
+        vec![
+            MemoryBatch::new(vec![json!({"id": 1})]),
+            MemoryBatch::new(vec![json!({"id": 2, "extra": "kept"})]).with_checkpoint(1),
+        ],
+    )]);
+
+    let workdir = tempfile::tempdir().expect("workdir");
+    Engine::new(
+        EngineConfig::new("sf-widen").with_workdir(workdir.path().join("wal")),
+        source,
+        Shell::from_value(doc).expect("valid"),
+    )
+    .run()
+    .await
+    .expect("the load settles");
+
+    let landed = testhook::rows(
+        &config,
+        &format!(
+            "SELECT \"EXTRA\" AS V FROM \"{}\".\"{}\".\"EVENTS\" WHERE \"ID\" = 2",
+            config.database.to_uppercase(),
+            schema.to_uppercase()
+        ),
+        &["v"],
+    )
+    .await
+    .expect("read back");
+    assert_eq!(
+        landed[0][0], "kept",
+        "the mid-unit column's value must survive the COPY"
+    );
+
+    let _ = testhook::connect_and_run(
+        &config,
+        &format!(
+            "DROP SCHEMA IF EXISTS \"{}\".\"{}\" CASCADE",
+            config.database.to_uppercase(),
+            schema.to_uppercase()
+        ),
+    )
+    .await;
+}

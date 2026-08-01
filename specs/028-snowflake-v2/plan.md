@@ -219,3 +219,37 @@ credential_gating→test_gating; crash_sweep→crash_sweep.rs (fresh
 armed-then-recover shape iterating FAIL_POINTS + the registry check;
 by-hand, not run here). Zero warnings all shapes. Review + gates
 follow.
+
+
+## REVIEW ROUND 1 (two lenses, 2026-08-01)
+
+CONTRACT FIDELITY vs the reference implementation: CLEAN in all seven
+areas — every frozen message/SQL/classification/crash-point surface
+byte-identical, the protocol dispositions verified line-by-line against
+gen 1's commit, the options-validation delta confirmed as the only
+vocabulary-behavior change, and the anti-transcription check confirms
+genuinely fresh authorship (v2-only module boundaries, the 4-method
+executor seam, independent prose throughout — no near-verbatim file).
+
+FRESH EYES: ONE CRITICAL FINDING — inherited from generation 1, and
+exactly what the rewrite-as-review discipline exists to catch. The
+engine legitimately calls ensure_table MID-UNIT when a source's schema
+evolves between batches; generation 1 had no handling (a debug build
+panics on its assertion; a release build lets the DDL auto-commit the
+partial unit — exactly-once broken silently) and additionally captured
+each table's COPY column list on the FIRST write only, so a mid-unit
+added column's values loaded NULL for the whole unit with matching row
+counts and no error. FIXED, both halves, the snowflake-shaped way:
+when real schema work is owed while a unit is open the unit is ENDED
+by rollback first (staged parts are FILES and survive; `pending` stays
+valid; the only transactional work a unit holds pre-publish is a
+Replace clear, so `cleared` tracking split into committed vs in-unit —
+promoted at COMMIT, dropped at rollback — and the next write
+re-clears); and the pending column list now follows the LATEST write's
+schema (additive evolution makes it a superset; earlier parts load
+NULL for the new column, which is correct). PINNED LIVE:
+`a_column_added_mid_unit_keeps_its_data` drives two batches and a
+mid-unit widening through the engine against the qual account and
+reads the added column's value back. The reviewer also verified the
+bare-error paths safe under the engine's run-level retry model (fresh
+session per attempt; a poisoned Load is dropped, never reused).
