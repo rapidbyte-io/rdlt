@@ -83,12 +83,31 @@ pub(crate) fn classify(
 }
 
 /// The session-establish adapter: retry-worthiness comes from the session's
-/// one rule; the phase tag is always Connect.
+/// one rule; the phase tag is always Connect; the DETAIL is the inner
+/// failure alone — the enum's own framing would render "connect: " twice.
 pub(crate) fn establish_failure(error: crate::session::EstablishError) -> SourceError {
+    let detail = error.detail();
     if error.is_transient() {
-        transient(Phase::Connect, None, error)
+        transient(Phase::Connect, None, detail)
     } else {
-        fatal(Phase::Connect, None, error)
+        fatal(Phase::Connect, None, detail)
+    }
+}
+
+#[cfg(test)]
+mod establish_adapter_tests {
+    use super::*;
+
+    #[test]
+    fn adapter_renders_the_inner_failure_without_wrapper_framing() {
+        let config_error = crate::tls::ConfigError::Syntax("does not parse: x".into());
+        let error = establish_failure(crate::session::EstablishError::Config(config_error));
+        let message = format!("{error:?}");
+        assert!(message.contains("conn string does not parse"), "{message}");
+        assert!(
+            !message.contains("tls config:"),
+            "wrapper framing must not reach the operator: {message}"
+        );
     }
 }
 

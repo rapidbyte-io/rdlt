@@ -61,7 +61,7 @@ async fn dispatch(
     if state.pending.is_none() {
         state.pending = Some(cdc_tables.iter().cloned().collect());
     }
-    let control = state.control(config).await?;
+    let control = state.control(config, &stream).await?;
     if state.ensured.is_none() {
         crash_point!(
             "cdc.slot.create",

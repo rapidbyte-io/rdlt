@@ -155,9 +155,18 @@ pub(crate) fn parse_scalar(kind: Kind, value: &str) -> Result<Scalar, String> {
         Kind::TimestampNaive => parse_timestamp_flexible(value)
             .map(Scalar::TimestampNaive)
             .ok_or_else(|| format!("cursor literal `{value}` is not an RFC3339/ISO timestamp")),
-        Kind::Date => parse_date_days(value)
-            .map(Scalar::Date)
-            .map_err(|_| format!("cursor literal `{value}` is not a YYYY-MM-DD date")),
+        // The STRICT date parser saturates the server's `±infinity`
+        // spellings; a config literal must not — an unbounded window is
+        // spelled by omitting the bound, and letting the sentinel through
+        // would defer the mistake to a server-side range error mid-COPY.
+        Kind::Date => match value {
+            "infinity" | "-infinity" => {
+                Err(format!("cursor literal `{value}` is not a YYYY-MM-DD date"))
+            }
+            _ => parse_date_days(value)
+                .map(Scalar::Date)
+                .map_err(|_| format!("cursor literal `{value}` is not a YYYY-MM-DD date")),
+        },
         Kind::Time => {
             use chrono::Timelike;
             let lenient = chrono::NaiveTime::parse_from_str(value, "%H:%M:%S%.f")
@@ -232,5 +241,10 @@ mod tests {
             Ok(Scalar::Uuid("550e8400-e29b-41d4-a716-446655440000".into()))
         );
         assert!(parse_scalar(Kind::Bool, "t").is_err(), "not cursor-capable");
+        // Server-side infinity spellings are STRICT-parser territory; a
+        // config literal refuses them at open instead of failing mid-COPY.
+        for sentinel in ["infinity", "-infinity"] {
+            assert!(parse_scalar(Kind::Date, sentinel).is_err(), "{sentinel}");
+        }
     }
 }

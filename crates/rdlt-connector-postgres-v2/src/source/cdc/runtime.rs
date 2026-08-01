@@ -108,10 +108,14 @@ pub(super) struct RunState {
 impl RunState {
     /// The lifecycle connection, opened if this run has not yet — GUC pins
     /// applied by the session profile. Idempotent within a run; the
-    /// returned Arc outlives the state lock.
+    /// returned Arc outlives the state lock. A PROFILE failure (the GUC
+    /// SETs) is a CDC lifecycle fault and is tagged with the slot phase and
+    /// the asking stream; a connect failure keeps the ordinary connect
+    /// framing.
     pub(super) async fn control(
         &mut self,
         config: &Config,
+        stream: &str,
     ) -> Result<Arc<session::Connection>, SourceError> {
         if let Some(control) = &self.control {
             return Ok(Arc::clone(control));
@@ -122,7 +126,16 @@ impl RunState {
             session::Profile::CdcControl,
         )
         .await
-        .map_err(errors::establish_failure)?;
+        .map_err(|error| match error {
+            session::EstablishError::Profile { detail, transient } => {
+                if transient {
+                    errors::transient(Phase::Slot, Some(stream), detail)
+                } else {
+                    errors::fatal(Phase::Slot, Some(stream), detail)
+                }
+            }
+            other => errors::establish_failure(other),
+        })?;
         let control = Arc::new(connection);
         self.control = Some(Arc::clone(&control));
         Ok(control)

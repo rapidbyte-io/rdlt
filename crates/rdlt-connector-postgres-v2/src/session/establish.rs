@@ -52,16 +52,36 @@ pub enum EstablishError {
     Config(#[from] tls::ConfigError),
     #[error("connect: {0}")]
     Connect(#[from] ConnectError),
+    /// The post-handshake session [`Profile`] statements failed — carried as
+    /// its own variant so callers that OWN the profile (the CDC control path)
+    /// can tag it with their phase and stream instead of inheriting the
+    /// connect framing.
+    #[error("session profile: {detail}")]
+    Profile { detail: String, transient: bool },
 }
 
 impl EstablishError {
     /// Whether the engine's retry loop can ever help: config errors never,
     /// connect failures only when network-shaped (TLS verification failures
-    /// don't heal — retries don't mint certificates).
+    /// don't heal — retries don't mint certificates), profile failures by
+    /// the connect-time SQLSTATE rule they were judged with.
     pub(crate) fn is_transient(&self) -> bool {
         match self {
             EstablishError::Config(_) => false,
             EstablishError::Connect(error) => error.transient,
+            EstablishError::Profile { transient, .. } => *transient,
+        }
+    }
+
+    /// The failure alone, without the variant framing — what error adapters
+    /// hand to their own taxonomies. The enum's `Display` prefixes exist for
+    /// typed matching in tests, not for operators: rendering them into a
+    /// phase-tagged message would say "connect: " twice in two spellings.
+    pub(crate) fn detail(&self) -> String {
+        match self {
+            EstablishError::Config(inner) => inner.to_string(),
+            EstablishError::Connect(inner) => inner.to_string(),
+            EstablishError::Profile { detail, .. } => detail.clone(),
         }
     }
 }
@@ -81,12 +101,8 @@ pub async fn establish(
             .client
             .batch_execute(statements)
             .await
-            .map_err(|error| ConnectError {
-                failure: super::classify::TlsFailure::Other,
-                detail: format!(
-                    "session profile setup failed: {}",
-                    super::classify::describe(&error)
-                ),
+            .map_err(|error| EstablishError::Profile {
+                detail: super::classify::describe(&error),
                 transient: is_transient_at_connect(&error),
             })?;
     }

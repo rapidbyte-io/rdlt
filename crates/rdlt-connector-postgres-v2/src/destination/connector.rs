@@ -46,10 +46,14 @@ impl Destination for Postgres {
         )
         .await
         .map_err(|e| {
+            // The inner failure alone, through this half's phase taxonomy —
+            // the session enum's own framing would double the "connect"
+            // spelling.
+            let detail = e.detail();
             if e.is_transient() {
-                DestinationError::transient(e.to_string())
+                super::errors::transient(Phase::Connect, detail)
             } else {
-                DestinationError::fatal(e.to_string())
+                super::errors::fatal(Phase::Connect, detail)
             }
         })?;
         let schema = quote_identifier(&self.schema);
