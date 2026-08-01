@@ -2,17 +2,20 @@
 //! the boundary-overlap guarantee, ack floors, burst tails with clean
 //! cancellation, ack-off, the flag column, and lag reporting.
 
-use crate::cases::cdc_rig::*;
-use rdlt_connector_postgres::dest::{DestinationOptions, MergeStrategy, Postgres, TableOptions};
-use rdlt_connector_postgres::source::PostgresSource;
+use rdlt_connector_postgres::destination::{
+    DestinationOptions, MergeStrategy, Postgres, TableOptions,
+};
 use rdlt_engine::{Engine, EngineConfig};
+
+use crate::cases::cdc_rig::Rig;
+use crate::cases::common::source;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn equality_cycle_snapshot_mutate_catch_up() {
-    let Some(rig) = CdcRig::start("cdc-us1").await else {
+    let Some(rig) = Rig::start("cdc-us1").await else {
         return;
     };
-    rig.fixture
+    rig.container
         .seed(
             "CREATE TABLE public.orders (id int8 PRIMARY KEY, total int4, note text);\
              INSERT INTO public.orders VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c');",
@@ -22,11 +25,12 @@ async fn equality_cycle_snapshot_mutate_catch_up() {
     // Run 1: snapshot.
     let rows = rig.run(&["orders"], "id").await;
     assert_eq!(rows, 3, "snapshot loads every row");
-    rig.assert_mirror_equals("orders", "id, total, note").await;
+    rig.assert_mirror_equals_source("orders", "id, total, note")
+        .await;
 
     // Mutations: inserts, an update, a DELETE, a PK-changing update, a
     // multi-row transaction, and a net no-op transaction.
-    let client = rig.fixture.client().await;
+    let client = rig.container.client().await;
     client
         .batch_execute(
             "BEGIN;\
@@ -46,7 +50,8 @@ async fn equality_cycle_snapshot_mutate_catch_up() {
     // id 3 relocated to 33, id 1 shows the LATER of the two updates
     // (commit order), 99 never materializes (net no-op transaction).
     rig.run(&["orders"], "id").await;
-    rig.assert_mirror_equals("orders", "id, total, note").await;
+    rig.assert_mirror_equals_source("orders", "id, total, note")
+        .await;
     assert_eq!(
         rig.scalar("SELECT count(*) FROM mirror.orders WHERE id IN (2, 3, 99)")
             .await,
@@ -63,25 +68,26 @@ async fn equality_cycle_snapshot_mutate_catch_up() {
     // Run 3: nothing changed — nothing moves, equality holds.
     let rows = rig.run(&["orders"], "id").await;
     assert_eq!(rows, 0, "a quiet feed moves nothing");
-    rig.assert_mirror_equals("orders", "id, total, note").await;
+    rig.assert_mirror_equals_source("orders", "id, total, note")
+        .await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn boundary_overlap_row_appears_exactly_once_with_final_state() {
-    // The recorded refinement's NON-OPTIONAL proof (P2): a row mutated
+    // The NON-OPTIONAL proof of the boundary refinement: a row mutated
     // between slot creation and snapshot end lands in BOTH the snapshot and
     // the feed — it must appear exactly once, with its final state.
-    let Some(rig) = CdcRig::start("cdc-overlap").await else {
+    let Some(rig) = Rig::start("cdc-overlap").await else {
         return;
     };
-    rig.fixture
+    rig.container
         .seed(
             "CREATE TABLE public.orders (id int8 PRIMARY KEY, total int4);\
              INSERT INTO public.orders VALUES (1, 10);\
              CREATE PUBLICATION p1 FOR TABLE public.orders;",
         )
         .await;
-    let client = rig.fixture.client().await;
+    let client = rig.container.client().await;
     // Slot FIRST (as run 1 would), then mutate INSIDE the window before the
     // snapshot begins — run 1 sees the slot pre-existing, snapshots the
     // final state, and initializes its cursor at the slot's confirmed
@@ -103,7 +109,7 @@ async fn boundary_overlap_row_appears_exactly_once_with_final_state() {
 
     // Run 1 (snapshot): final states, once each.
     rig.run(&["orders"], "id").await;
-    rig.assert_mirror_equals("orders", "id, total").await;
+    rig.assert_mirror_equals_source("orders", "id, total").await;
     assert_eq!(rig.scalar("SELECT count(*) FROM mirror.orders").await, 2);
 
     // Run 2 replays the window through the feed (the overlap) — upsert
@@ -120,7 +126,7 @@ async fn boundary_overlap_row_appears_exactly_once_with_final_state() {
             .await,
         77
     );
-    rig.assert_mirror_equals("orders", "id, total").await;
+    rig.assert_mirror_equals_source("orders", "id, total").await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -128,19 +134,19 @@ async fn ack_never_exceeds_the_least_committed_cursor() {
     // The weld: the slot's confirmed position may only reflect
     // positions the DESTINATION durably committed — across full runs (the
     // ack trails one run behind) and across a partial run (no ack at all).
-    let Some(rig) = CdcRig::start("cdc-ack").await else {
+    let Some(rig) = Rig::start("cdc-ack").await else {
         return;
     };
-    rig.fixture
+    rig.container
         .seed(
             "CREATE TABLE public.a (id int8 PRIMARY KEY, v int4);\
              CREATE TABLE public.b (id int8 PRIMARY KEY, v int4);\
              INSERT INTO public.a VALUES (1, 1); INSERT INTO public.b VALUES (1, 1);",
         )
         .await;
-    let client = rig.fixture.client().await;
+    let client = rig.container.client().await;
     let confirmed = || async {
-        rig.fixture
+        rig.container
             .client()
             .await
             .query_one(
@@ -192,8 +198,8 @@ async fn ack_never_exceeds_the_least_committed_cursor() {
         .batch_execute("ALTER PUBLICATION p1 DROP TABLE public.b; UPDATE public.a SET v = 3;")
         .await
         .unwrap();
-    let err = rig.run_expect_err(&["a", "b"], "id").await;
-    assert!(err.contains("p1"), "{err}");
+    let error = rig.run_expecting_error(&["a", "b"], "id").await;
+    assert!(error.contains("p1"), "{error}");
     assert_eq!(
         confirmed().await,
         after_catch_up,
@@ -224,10 +230,10 @@ async fn ack_never_exceeds_the_least_committed_cursor() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn tail_applies_bursts_cancels_cleanly_and_resumes() {
-    let Some(rig) = CdcRig::start("cdc-tail").await else {
+    let Some(rig) = Rig::start("cdc-tail").await else {
         return;
     };
-    rig.fixture
+    rig.container
         .seed(
             "CREATE TABLE public.orders (id int8 PRIMARY KEY, total int4);\
              INSERT INTO public.orders VALUES (1, 10);",
@@ -235,18 +241,17 @@ async fn tail_applies_bursts_cancels_cleanly_and_resumes() {
         .await;
 
     // A tail-mode source (idle_wait 1s), run in the background.
-    let source = PostgresSource::from_yaml(&format!(
-        "conn: \"{}\"\ncdc:\n  slot: s1\n  publication: p1\n  create_if_missing: true\n\
+    let tail_source = source(
+        &rig.container.connection_string,
+        "cdc:\n  slot: s1\n  publication: p1\n  create_if_missing: true\n\
          \x20 mode: tail\n  idle_wait: \"1s\"\ntables:\n  - name: orders\n",
-        rig.fixture.conn
-    ))
-    .expect("tail config");
-    let mut config = EngineConfig::new("cdc-tail");
-    config = config.with_workdir(rig.workdir.clone());
-    config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
-        key: vec!["id".into()],
-    });
-    let engine = Engine::new(config, source, rig.dest(&["orders"]));
+    );
+    let config = EngineConfig::new("cdc-tail")
+        .with_workdir(rig.workdir.clone())
+        .with_write_mode(rdlt_connector::WriteMode::Merge {
+            key: vec!["id".into()],
+        });
+    let engine = Engine::new(config, tail_source, rig.destination(&["orders"]));
     let cancel = engine.cancellation_token();
     let tail = tokio::spawn(engine.run());
 
@@ -255,7 +260,7 @@ async fn tail_applies_bursts_cancels_cleanly_and_resumes() {
         async move {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
             loop {
-                let client = rig.fixture.client().await;
+                let client = rig.container.client().await;
                 if let Ok(row) = client.query_one(&sql, &[]).await
                     && row.get::<_, i64>(0) == expect
                 {
@@ -272,7 +277,7 @@ async fn tail_applies_bursts_cancels_cleanly_and_resumes() {
 
     // Snapshot lands, then a first burst applies WITHOUT restart.
     wait_for("SELECT count(*) FROM mirror.orders".into(), 1).await;
-    rig.fixture
+    rig.container
         .seed("INSERT INTO public.orders VALUES (2, 20), (3, 30); UPDATE public.orders SET total = 11 WHERE id = 1;")
         .await;
     wait_for("SELECT count(*) FROM mirror.orders".into(), 3).await;
@@ -285,7 +290,7 @@ async fn tail_applies_bursts_cancels_cleanly_and_resumes() {
     // Quiet idle (≥ two idle_waits), then a SECOND burst still applies —
     // the loop wakes from idle rather than busy-spinning or wedging.
     tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
-    rig.fixture
+    rig.container
         .seed("DELETE FROM public.orders WHERE id = 2;")
         .await;
     wait_for("SELECT count(*) FROM mirror.orders".into(), 2).await;
@@ -293,17 +298,20 @@ async fn tail_applies_bursts_cancels_cleanly_and_resumes() {
     // Clean cancellation at a commit boundary.
     cancel.cancel();
     let outcome = tail.await.expect("tail task");
-    let err = outcome.expect_err("cancelled run reports cancellation");
-    assert!(err.to_string().to_lowercase().contains("cancel"), "{err}");
-    rig.assert_mirror_equals("orders", "id, total").await;
+    let error = outcome.expect_err("cancelled run reports cancellation");
+    assert!(
+        error.to_string().to_lowercase().contains("cancel"),
+        "{error}"
+    );
+    rig.assert_mirror_equals_source("orders", "id, total").await;
 
     // A subsequent run (catch-up mode) resumes exactly: only the new delta
     // moves, nothing is lost or duplicated.
-    rig.fixture
+    rig.container
         .seed("INSERT INTO public.orders VALUES (4, 40);")
         .await;
     rig.run(&["orders"], "id").await;
-    rig.assert_mirror_equals("orders", "id, total").await;
+    rig.assert_mirror_equals_source("orders", "id, total").await;
     let stable = rig.run(&["orders"], "id").await;
     assert_eq!(stable, 0, "quiet catch-up after the tail moves nothing");
 }
@@ -314,32 +322,33 @@ async fn tail_applies_bursts_cancels_cleanly_and_resumes() {
 async fn ack_off_never_advances_the_slot() {
     // `ack: off` — data flows, but the slot's confirmed position never
     // moves (debugging / fan-in staging; WAL retention documented).
-    let Some(rig) = CdcRig::start("cdc-ack-off").await else {
+    let Some(rig) = Rig::start("cdc-ack-off").await else {
         return;
     };
-    rig.fixture
+    rig.container
         .seed(
             "CREATE TABLE public.orders (id int8 PRIMARY KEY, total int4);\
              INSERT INTO public.orders VALUES (1, 10);",
         )
         .await;
-    let source = |conn: &str| {
-        PostgresSource::from_yaml(&format!(
-            "conn: \"{conn}\"\ncdc:\n  slot: s1\n  publication: p1\n  create_if_missing: true\n\
-             \x20 ack: off\ntables:\n  - name: orders\n"
-        ))
-        .expect("config")
-    };
     let run = || async {
-        let mut config = EngineConfig::new("cdc-ack-off");
-        config = config.with_workdir(rig.workdir.clone());
-        config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
-            key: vec!["id".into()],
-        });
-        Engine::new(config, source(&rig.fixture.conn), rig.dest(&["orders"]))
-            .run()
-            .await
-            .expect("run")
+        let config = EngineConfig::new("cdc-ack-off")
+            .with_workdir(rig.workdir.clone())
+            .with_write_mode(rdlt_connector::WriteMode::Merge {
+                key: vec!["id".into()],
+            });
+        Engine::new(
+            config,
+            source(
+                &rig.container.connection_string,
+                "cdc:\n  slot: s1\n  publication: p1\n  create_if_missing: true\n\
+                 \x20 ack: off\ntables:\n  - name: orders\n",
+            ),
+            rig.destination(&["orders"]),
+        )
+        .run()
+        .await
+        .expect("run")
     };
     run().await;
     let confirmed_after_snapshot = rig
@@ -347,7 +356,7 @@ async fn ack_off_never_advances_the_slot() {
             "SELECT confirmed_flush_lsn::text FROM pg_replication_slots WHERE slot_name = 's1'",
         )
         .await;
-    rig.fixture
+    rig.container
         .seed("INSERT INTO public.orders VALUES (2, 20);")
         .await;
     run().await;
@@ -371,25 +380,18 @@ async fn ack_off_never_advances_the_slot() {
 async fn custom_flag_column_flows_end_to_end() {
     // `flag_column` — a custom name rides the whole composition: the CDC
     // stream emits it, the destination hard-deletes by it.
-    let Some(rig) = CdcRig::start("cdc-flag-name").await else {
+    let Some(rig) = Rig::start("cdc-flag-name").await else {
         return;
     };
-    rig.fixture
+    rig.container
         .seed(
             "CREATE TABLE public.orders (id int8 PRIMARY KEY, total int4);\
              INSERT INTO public.orders VALUES (1, 10), (2, 20);",
         )
         .await;
-    let source = |conn: &str| {
-        PostgresSource::from_yaml(&format!(
-            "conn: \"{conn}\"\ncdc:\n  slot: s1\n  publication: p1\n  create_if_missing: true\n\
-             \x20 flag_column: gone\ntables:\n  - name: orders\n"
-        ))
-        .expect("config")
-    };
-    let dest = || {
-        Postgres::connect(rig.fixture.conn.clone())
-            .dataset("mirror")
+    let destination = || {
+        Postgres::new(rig.container.connection_string.clone())
+            .schema("mirror")
             .options(DestinationOptions {
                 merge_strategy: Some(MergeStrategy::Upsert),
                 tables: [(
@@ -405,18 +407,26 @@ async fn custom_flag_column_flows_end_to_end() {
             .expect("options")
     };
     let run = || async {
-        let mut config = EngineConfig::new("cdc-flag-name");
-        config = config.with_workdir(rig.workdir.clone());
-        config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
-            key: vec!["id".into()],
-        });
-        Engine::new(config, source(&rig.fixture.conn), dest())
-            .run()
-            .await
-            .expect("run")
+        let config = EngineConfig::new("cdc-flag-name")
+            .with_workdir(rig.workdir.clone())
+            .with_write_mode(rdlt_connector::WriteMode::Merge {
+                key: vec!["id".into()],
+            });
+        Engine::new(
+            config,
+            source(
+                &rig.container.connection_string,
+                "cdc:\n  slot: s1\n  publication: p1\n  create_if_missing: true\n\
+                 \x20 flag_column: gone\ntables:\n  - name: orders\n",
+            ),
+            destination(),
+        )
+        .run()
+        .await
+        .expect("run")
     };
     run().await;
-    rig.fixture
+    rig.container
         .seed("DELETE FROM public.orders WHERE id = 2;")
         .await;
     run().await;
@@ -479,14 +489,14 @@ async fn replication_lag_lands_on_the_dedicated_target() {
 
     let _ = tracing::subscriber::set_global_default(LagCollector);
 
-    let Some(rig) = CdcRig::start("cdc-lag").await else {
+    let Some(rig) = Rig::start("cdc-lag").await else {
         return;
     };
-    rig.fixture
+    rig.container
         .seed("CREATE TABLE public.ev (id int8 PRIMARY KEY, v int4); INSERT INTO public.ev VALUES (1, 1);")
         .await;
     rig.run(&["ev"], "id").await;
-    rig.fixture.seed("UPDATE public.ev SET v = 2;").await;
+    rig.container.seed("UPDATE public.ev SET v = 2;").await;
     rig.run(&["ev"], "id").await;
 
     let events = EVENTS.get_or_init(Mutex::default).lock().expect("lock");
@@ -498,12 +508,12 @@ async fn replication_lag_lands_on_the_dedicated_target() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn session_gucs_do_not_break_change_decoding() {
-    // Review F6: the peek session pins DateStyle/bytea_output — a database
-    // with legacy settings must decode identically.
-    let Some(rig) = CdcRig::start("cdc-gucs").await else {
+    // The peek session pins DateStyle/bytea_output — a database with legacy
+    // settings must decode identically.
+    let Some(rig) = Rig::start("cdc-gucs").await else {
         return;
     };
-    let client = rig.fixture.client().await;
+    let client = rig.container.client().await;
     client
         .batch_execute("ALTER DATABASE postgres SET datestyle = 'SQL, DMY'")
         .await
@@ -512,7 +522,7 @@ async fn session_gucs_do_not_break_change_decoding() {
         .batch_execute("ALTER DATABASE postgres SET bytea_output = 'escape'")
         .await
         .unwrap();
-    rig.fixture
+    rig.container
         .seed(
             "CREATE TABLE public.ev (id int8 PRIMARY KEY, at timestamptz, d date, raw bytea);\
              INSERT INTO public.ev VALUES \
@@ -520,7 +530,7 @@ async fn session_gucs_do_not_break_change_decoding() {
         )
         .await;
     rig.run(&["ev"], "id").await;
-    rig.fixture
+    rig.container
         .seed(
             "UPDATE public.ev SET at = '2026-07-22T01:02:03Z', d = '2026-07-22', \
              raw = '\\xdeadbeef' WHERE id = 1;\
@@ -528,5 +538,6 @@ async fn session_gucs_do_not_break_change_decoding() {
         )
         .await;
     rig.run(&["ev"], "id").await;
-    rig.assert_mirror_equals("ev", "id, at, d, raw").await;
+    rig.assert_mirror_equals_source("ev", "id, at, d, raw")
+        .await;
 }

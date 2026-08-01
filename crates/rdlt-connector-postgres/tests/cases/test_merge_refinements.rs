@@ -8,13 +8,13 @@ use arrow_array::{BooleanArray, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use async_trait::async_trait;
 use rdlt_connector::{ConnectorSpec, Cursor, ReadRequest, Source, SourceError, StreamSpec};
-use rdlt_connector_postgres::dest::{
+use rdlt_connector_postgres::destination::{
     DedupSort, DestinationOptions, MergeStrategy, Postgres, SortOrder, TableOptions,
 };
 use rdlt_engine::{Engine, EngineConfig};
 
 use crate::cases::common;
-use rdlt_connector_postgres::fixtures::PgFixture;
+use rdlt_connector_postgres::fixtures::PostgresContainer;
 
 /// (id, day, seq, name, deleted) — id is the identity key, day the
 /// scope column, seq the dedup-sort column.
@@ -31,19 +31,19 @@ fn batch(rows: &[Row]) -> RecordBatch {
         ])),
         vec![
             Arc::new(Int64Array::from(
-                rows.iter().map(|r| r.0).collect::<Vec<_>>(),
+                rows.iter().map(|row| row.0).collect::<Vec<_>>(),
             )),
             Arc::new(Int64Array::from(
-                rows.iter().map(|r| r.1).collect::<Vec<_>>(),
+                rows.iter().map(|row| row.1).collect::<Vec<_>>(),
             )),
             Arc::new(Int64Array::from(
-                rows.iter().map(|r| r.2).collect::<Vec<_>>(),
+                rows.iter().map(|row| row.2).collect::<Vec<_>>(),
             )),
             Arc::new(StringArray::from(
-                rows.iter().map(|r| r.3).collect::<Vec<_>>(),
+                rows.iter().map(|row| row.3).collect::<Vec<_>>(),
             )),
             Arc::new(BooleanArray::from(
-                rows.iter().map(|r| r.4).collect::<Vec<_>>(),
+                rows.iter().map(|row| row.4).collect::<Vec<_>>(),
             )),
         ],
     )
@@ -71,17 +71,19 @@ impl Source for UnitsSource {
         ])
     }
 
-    async fn read(&self, mut req: ReadRequest) -> Result<(), SourceError> {
-        for (i, unit) in self.units.iter().enumerate() {
-            let _ = req.out.arrow(unit.clone()).await;
-            let _ = req.out.checkpoint(Cursor::new(i as u64 + 1)).await;
+    async fn read(&self, mut request: ReadRequest) -> Result<(), SourceError> {
+        for (index, unit) in self.units.iter().enumerate() {
+            let _ = request.out.arrow(unit.clone()).await;
+            let _ = request.out.checkpoint(Cursor::new(index as u64 + 1)).await;
         }
         Ok(())
     }
 }
 
+/// The knobs one cell turns on, in the spelling a cell reads best in — the
+/// full destination options are built from them by [`destination`].
 #[derive(Clone, Copy, Default)]
-struct Opts {
+struct Refinements {
     strategy: Option<MergeStrategy>,
     dedup: Option<(&'static str, SortOrder)>,
     merge_scope: Option<&'static [&'static str]>,
@@ -89,28 +91,28 @@ struct Opts {
     scd2_retire: bool,
 }
 
-fn dest(conn: &str, dataset: &str, opts: Opts) -> Postgres {
-    Postgres::connect(conn)
-        .dataset(dataset)
+fn destination(connection_string: &str, schema: &str, refinements: Refinements) -> Postgres {
+    Postgres::new(connection_string)
+        .schema(schema)
         .options(DestinationOptions {
-            merge_strategy: opts.strategy,
+            merge_strategy: refinements.strategy,
             tables: [(
                 "events".to_string(),
                 TableOptions {
-                    hard_delete: opts.hard_delete.then(|| "deleted".into()),
-                    dedup_sort: opts.dedup.map(|(column, order)| DedupSort {
+                    hard_delete: refinements.hard_delete.then(|| "deleted".into()),
+                    dedup_sort: refinements.dedup.map(|(column, order)| DedupSort {
                         column: column.into(),
                         order,
                     }),
-                    merge_scope: opts
+                    merge_scope: refinements
                         .merge_scope
-                        .map(|c| c.iter().map(|s| s.to_string()).collect()),
-                    scd2: opts
-                        .scd2_retire
-                        .then(|| rdlt_connector_postgres::dest::Scd2Options {
-                            absent: rdlt_connector_postgres::dest::AbsentPolicy::Retire,
-                            ..rdlt_connector_postgres::dest::Scd2Options::default()
-                        }),
+                        .map(|columns| columns.iter().map(|name| name.to_string()).collect()),
+                    scd2: refinements.scd2_retire.then(|| {
+                        rdlt_connector_postgres::destination::Scd2Options {
+                            absent: rdlt_connector_postgres::destination::AbsentPolicy::Retire,
+                            ..rdlt_connector_postgres::destination::Scd2Options::default()
+                        }
+                    }),
                     ..TableOptions::default()
                 },
             )]
@@ -120,54 +122,75 @@ fn dest(conn: &str, dataset: &str, opts: Opts) -> Postgres {
         .expect("valid options")
 }
 
-async fn run(conn: &str, dataset: &str, opts: Opts, units: Vec<Vec<Row>>) {
-    let mut config = EngineConfig::new(format!("mr-{dataset}"));
+async fn run(
+    connection_string: &str,
+    schema: &str,
+    refinements: Refinements,
+    units: Vec<Vec<Row>>,
+) {
+    let mut config = EngineConfig::new(format!("mr-{schema}"));
     config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
         key: vec!["id".into()],
     });
-    let units = units.iter().map(|u| batch(u)).collect();
-    Engine::new(config, UnitsSource { units }, dest(conn, dataset, opts))
-        .run()
-        .await
-        .expect("merge run");
+    let units = units.iter().map(|unit| batch(unit)).collect();
+    Engine::new(
+        config,
+        UnitsSource { units },
+        destination(connection_string, schema, refinements),
+    )
+    .run()
+    .await
+    .expect("merge run");
 }
 
-/// `(id, day, seq, name)` rows of `<dataset>.events`, id-ordered.
-async fn rows(conn: &str, dataset: &str) -> Vec<(i64, Option<i64>, Option<i64>, String)> {
-    let client = crate::cases::common::connect(conn).await;
+/// `(id, day, seq, name)` rows of `<schema>.events`, id-ordered.
+async fn rows(
+    connection_string: &str,
+    schema: &str,
+) -> Vec<(i64, Option<i64>, Option<i64>, String)> {
+    let client = crate::cases::common::connect(connection_string).await;
     client
         .query(
-            &format!("SELECT id, day, seq, name FROM \"{dataset}\".events ORDER BY id, day, seq"),
+            &format!("SELECT id, day, seq, name FROM \"{schema}\".events ORDER BY id, day, seq"),
             &[],
         )
         .await
         .expect("rows")
         .into_iter()
-        .map(|r| (r.get(0), r.get(1), r.get(2), r.get::<_, String>(3)))
+        .map(|row| (row.get(0), row.get(1), row.get(2), row.get::<_, String>(3)))
         .collect()
 }
 
-async fn run_expect_err(conn: &str, dataset: &str, opts: Opts, units: Vec<Vec<Row>>) -> String {
-    let mut config = EngineConfig::new(format!("mr-{dataset}"));
+async fn run_expect_error(
+    connection_string: &str,
+    schema: &str,
+    refinements: Refinements,
+    units: Vec<Vec<Row>>,
+) -> String {
+    let mut config = EngineConfig::new(format!("mr-{schema}"));
     config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
         key: vec!["id".into()],
     });
-    let units = units.iter().map(|u| batch(u)).collect();
-    Engine::new(config, UnitsSource { units }, dest(conn, dataset, opts))
-        .run()
-        .await
-        .expect_err("run should fail")
-        .to_string()
+    let units = units.iter().map(|unit| batch(unit)).collect();
+    Engine::new(
+        config,
+        UnitsSource { units },
+        destination(connection_string, schema, refinements),
+    )
+    .run()
+    .await
+    .expect_err("run should fail")
+    .to_string()
 }
 
 // ---- ordered survivor selection (dedup_sort) ----
 
 #[tokio::test(flavor = "multi_thread")]
 async fn dedup_sort_orders_survivors_not_arrival() {
-    let Some(pg) = PgFixture::start().await else {
+    let Some(container) = PostgresContainer::start().await else {
         return;
     };
-    let conn = pg.conn.clone();
+    let connection_string = container.connection_string.clone();
     // Wrong arrival order: the newest version arrives FIRST.
     let load: Vec<Vec<Row>> = vec![vec![
         (1, None, Some(5), "newest", None),
@@ -175,43 +198,49 @@ async fn dedup_sort_orders_survivors_not_arrival() {
     ]];
 
     // desc: greatest seq survives, despite arriving first.
-    let desc = Opts {
+    let desc = Refinements {
         dedup: Some(("seq", SortOrder::Desc)),
-        ..Opts::default()
+        ..Refinements::default()
     };
-    run(&conn, "mr_desc", desc, load.clone()).await;
+    run(&connection_string, "mr_desc", desc, load.clone()).await;
     assert_eq!(
-        rows(&conn, "mr_desc").await,
+        rows(&connection_string, "mr_desc").await,
         vec![(1, None, Some(5), "newest".into())]
     );
 
     // asc: least seq survives.
-    let asc = Opts {
+    let asc = Refinements {
         dedup: Some(("seq", SortOrder::Asc)),
-        ..Opts::default()
+        ..Refinements::default()
     };
-    run(&conn, "mr_asc", asc, load.clone()).await;
+    run(&connection_string, "mr_asc", asc, load.clone()).await;
     assert_eq!(
-        rows(&conn, "mr_asc").await,
+        rows(&connection_string, "mr_asc").await,
         vec![(1, None, Some(3), "older".into())]
     );
 
-    // FR-002: absent the option, arrival-order last-wins is UNCHANGED.
-    run(&conn, "mr_absent", Opts::default(), load.clone()).await;
+    // Absent the option, arrival-order last-wins is UNCHANGED.
+    run(
+        &connection_string,
+        "mr_absent",
+        Refinements::default(),
+        load.clone(),
+    )
+    .await;
     assert_eq!(
-        rows(&conn, "mr_absent").await,
+        rows(&connection_string, "mr_absent").await,
         vec![(1, None, Some(3), "older".into())]
     );
 
     // The same desc rule under the UPSERT arm — one shared shape.
-    let upsert = Opts {
+    let upsert = Refinements {
         strategy: Some(MergeStrategy::Upsert),
         dedup: Some(("seq", SortOrder::Desc)),
-        ..Opts::default()
+        ..Refinements::default()
     };
-    run(&conn, "mr_upsert", upsert, load).await;
+    run(&connection_string, "mr_upsert", upsert, load).await;
     assert_eq!(
-        rows(&conn, "mr_upsert").await,
+        rows(&connection_string, "mr_upsert").await,
         vec![(1, None, Some(5), "newest".into())]
     );
 }
@@ -220,19 +249,19 @@ async fn dedup_sort_orders_survivors_not_arrival() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn merge_scope_replaces_delivered_scopes_only() {
-    let Some(pg) = PgFixture::start().await else {
+    let Some(container) = PostgresContainer::start().await else {
         return;
     };
-    let conn = pg.conn.clone();
-    let opts = Opts {
+    let connection_string = container.connection_string.clone();
+    let refinements = Refinements {
         merge_scope: Some(&["day"]),
-        ..Opts::default()
+        ..Refinements::default()
     };
     // Seed two scopes.
     run(
-        &conn,
+        &connection_string,
         "mr_scope",
-        opts,
+        refinements,
         vec![vec![
             (1, Some(1), None, "d1-a", None),
             (2, Some(1), None, "d1-b", None),
@@ -242,14 +271,14 @@ async fn merge_scope_replaces_delivered_scopes_only() {
     .await;
     // Re-deliver day 1 WITHOUT id 2, with id 1 updated; day 2 untouched.
     run(
-        &conn,
+        &connection_string,
         "mr_scope",
-        opts,
+        refinements,
         vec![vec![(1, Some(1), None, "d1-a2", None)]],
     )
     .await;
     assert_eq!(
-        rows(&conn, "mr_scope").await,
+        rows(&connection_string, "mr_scope").await,
         vec![
             (1, Some(1), None, "d1-a2".into()),
             (3, Some(2), None, "d2-a".into()),
@@ -261,7 +290,7 @@ async fn merge_scope_replaces_delivered_scopes_only() {
     // (the scope delete must never seq-scan the target).
     assert_eq!(
         common::scalar::<i64>(
-            &conn,
+            &connection_string,
             "SELECT count(*) FROM pg_indexes WHERE schemaname = 'mr_scope' \
              AND tablename = 'events' AND indexname LIKE 'rdlt_ix%' \
              AND indexdef LIKE '%(day)%'",
@@ -273,10 +302,10 @@ async fn merge_scope_replaces_delivered_scopes_only() {
 
     // An unseen scope simply lands; replay is idempotent.
     let unseen: Vec<Vec<Row>> = vec![vec![(9, Some(9), None, "d9", None)]];
-    run(&conn, "mr_scope", opts, unseen.clone()).await;
-    run(&conn, "mr_scope", opts, unseen).await;
+    run(&connection_string, "mr_scope", refinements, unseen.clone()).await;
+    run(&connection_string, "mr_scope", refinements, unseen).await;
     assert_eq!(
-        rows(&conn, "mr_scope").await,
+        rows(&connection_string, "mr_scope").await,
         vec![
             (1, Some(1), None, "d1-a2".into()),
             (3, Some(2), None, "d2-a".into()),
@@ -287,18 +316,18 @@ async fn merge_scope_replaces_delivered_scopes_only() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_row_moving_scopes_lands_once_and_null_scope_rows_still_merge() {
-    let Some(pg) = PgFixture::start().await else {
+    let Some(container) = PostgresContainer::start().await else {
         return;
     };
-    let conn = pg.conn.clone();
-    let opts = Opts {
+    let connection_string = container.connection_string.clone();
+    let refinements = Refinements {
         merge_scope: Some(&["day"]),
-        ..Opts::default()
+        ..Refinements::default()
     };
     run(
-        &conn,
+        &connection_string,
         "mr_move",
-        opts,
+        refinements,
         vec![vec![
             (1, Some(1), None, "in-d1", None),
             (2, None, None, "no-scope", None),
@@ -309,9 +338,9 @@ async fn a_row_moving_scopes_lands_once_and_null_scope_rows_still_merge() {
     // the NULL-scope row is untouched by scope deletion and
     // still merges by identity.
     run(
-        &conn,
+        &connection_string,
         "mr_move",
-        opts,
+        refinements,
         vec![vec![
             (1, Some(2), None, "in-d2", None),
             (2, None, None, "no-scope-v2", None),
@@ -319,7 +348,7 @@ async fn a_row_moving_scopes_lands_once_and_null_scope_rows_still_merge() {
     )
     .await;
     assert_eq!(
-        rows(&conn, "mr_move").await,
+        rows(&connection_string, "mr_move").await,
         vec![
             (1, Some(2), None, "in-d2".into()),
             (2, None, None, "no-scope-v2".into()),
@@ -336,25 +365,25 @@ async fn merge_scope_requires_a_single_commit_unit() {
     // PARTIAL feed, indistinguishable destination-side from a fresh one.
     // Multi-unit scoped loads are therefore a TYPED error, never silent
     // partial replacement.
-    let Some(pg) = PgFixture::start().await else {
+    let Some(container) = PostgresContainer::start().await else {
         return;
     };
-    let conn = pg.conn.clone();
-    let opts = Opts {
+    let connection_string = container.connection_string.clone();
+    let refinements = Refinements {
         merge_scope: Some(&["day"]),
-        ..Opts::default()
+        ..Refinements::default()
     };
     run(
-        &conn,
+        &connection_string,
         "mr_units",
-        opts,
+        refinements,
         vec![vec![(99, Some(1), None, "stale", None)]],
     )
     .await;
-    let err = run_expect_err(
-        &conn,
+    let error = run_expect_error(
+        &connection_string,
         "mr_units",
-        opts,
+        refinements,
         vec![
             vec![(1, Some(1), None, "u1-a", None)],
             vec![(2, Some(1), None, "u2-a", None)],
@@ -362,15 +391,15 @@ async fn merge_scope_requires_a_single_commit_unit() {
     )
     .await;
     assert!(
-        err.contains("SINGLE commit unit") && err.contains("commit thresholds"),
-        "{err}"
+        error.contains("SINGLE commit unit") && error.contains("commit thresholds"),
+        "{error}"
     );
 
     // Recovery: the same feed in one unit converges.
     run(
-        &conn,
+        &connection_string,
         "mr_units",
-        opts,
+        refinements,
         vec![vec![
             (1, Some(1), None, "u1-a", None),
             (2, Some(1), None, "u2-a", None),
@@ -378,7 +407,7 @@ async fn merge_scope_requires_a_single_commit_unit() {
     )
     .await;
     assert_eq!(
-        rows(&conn, "mr_units").await,
+        rows(&connection_string, "mr_units").await,
         vec![
             (1, Some(1), None, "u1-a".into()),
             (2, Some(1), None, "u2-a".into()),
@@ -389,9 +418,9 @@ async fn merge_scope_requires_a_single_commit_unit() {
     // A later unit with NOTHING staged for the scoped table is fine —
     // multi-unit pipelines where the scoped table fits unit 1 work.
     run(
-        &conn,
+        &connection_string,
         "mr_units",
-        opts,
+        refinements,
         vec![
             vec![
                 (1, Some(1), None, "v2", None),
@@ -402,7 +431,7 @@ async fn merge_scope_requires_a_single_commit_unit() {
     )
     .await;
     assert_eq!(
-        rows(&conn, "mr_units").await,
+        rows(&connection_string, "mr_units").await,
         vec![
             (1, Some(1), None, "v2".into()),
             (2, Some(1), None, "u2-a".into()),
@@ -418,30 +447,30 @@ async fn a_leading_empty_unit_does_not_reject_a_later_scoped_replace() {
     // checkpoints split the LOAD without splitting this table's feed. A
     // leading empty unit (another stream committed first) must not
     // reject the scoped table.
-    let Some(pg) = PgFixture::start().await else {
+    let Some(container) = PostgresContainer::start().await else {
         return;
     };
-    let conn = pg.conn.clone();
-    let opts = Opts {
+    let connection_string = container.connection_string.clone();
+    let refinements = Refinements {
         merge_scope: Some(&["day"]),
-        ..Opts::default()
+        ..Refinements::default()
     };
     run(
-        &conn,
+        &connection_string,
         "mr_lead_empty",
-        opts,
+        refinements,
         vec![vec![(99, Some(1), None, "stale", None)]],
     )
     .await;
     run(
-        &conn,
+        &connection_string,
         "mr_lead_empty",
-        opts,
+        refinements,
         vec![vec![], vec![(1, Some(1), None, "fresh", None)]],
     )
     .await;
     assert_eq!(
-        rows(&conn, "mr_lead_empty").await,
+        rows(&connection_string, "mr_lead_empty").await,
         vec![(1, Some(1), None, "fresh".into())],
         "scope replaced from the table's FIRST STAGED unit, wherever it lands"
     );
@@ -452,22 +481,34 @@ async fn scd2_retire_shares_the_per_table_single_unit_rule() {
     // One rule, both consumers. Retire tolerates units where the table
     // stages nothing (an empty stage must not read as "every key absent"
     // = mass retirement), and rejects a split feed typed.
-    let Some(pg) = PgFixture::start().await else {
+    let Some(container) = PostgresContainer::start().await else {
         return;
     };
-    let conn = pg.conn.clone();
-    let opts = Opts {
+    let connection_string = container.connection_string.clone();
+    let refinements = Refinements {
         strategy: Some(MergeStrategy::Scd2),
         scd2_retire: true,
-        ..Opts::default()
+        ..Refinements::default()
     };
     let full: Vec<Vec<Row>> = vec![vec![(1, None, None, "a", None), (2, None, None, "b", None)]];
-    run(&conn, "mr_scd2_units", opts, full.clone()).await;
+    run(
+        &connection_string,
+        "mr_scd2_units",
+        refinements,
+        full.clone(),
+    )
+    .await;
     // Trailing empty unit: fine — and it retires NOTHING.
-    run(&conn, "mr_scd2_units", opts, vec![full[0].clone(), vec![]]).await;
+    run(
+        &connection_string,
+        "mr_scd2_units",
+        refinements,
+        vec![full[0].clone(), vec![]],
+    )
+    .await;
     assert_eq!(
         common::scalar::<i64>(
-            &conn,
+            &connection_string,
             "SELECT count(*) FROM mr_scd2_units.events WHERE _rdlt_valid_to IS NULL",
         )
         .await,
@@ -475,37 +516,37 @@ async fn scd2_retire_shares_the_per_table_single_unit_rule() {
         "empty unit retired nothing"
     );
     // Split feed: typed, names the single-unit rule.
-    let err = run_expect_err(
-        &conn,
+    let error = run_expect_error(
+        &connection_string,
         "mr_scd2_units",
-        opts,
+        refinements,
         vec![
             vec![(1, None, None, "a2", None)],
             vec![(2, None, None, "b2", None)],
         ],
     )
     .await;
-    assert!(err.contains("SINGLE commit unit"), "{err}");
+    assert!(error.contains("SINGLE commit unit"), "{error}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn dedup_sort_survivor_drives_scd2_change_detection() {
     // The scd2 arm consumes the SAME deduped shape —
     // the ordered survivor decides the active version.
-    let Some(pg) = PgFixture::start().await else {
+    let Some(container) = PostgresContainer::start().await else {
         return;
     };
-    let conn = pg.conn.clone();
-    let opts = Opts {
+    let connection_string = container.connection_string.clone();
+    let refinements = Refinements {
         strategy: Some(MergeStrategy::Scd2),
         dedup: Some(("seq", SortOrder::Desc)),
-        ..Opts::default()
+        ..Refinements::default()
     };
     // Wrong arrival order: the survivor (seq=5) becomes the active row.
     run(
-        &conn,
+        &connection_string,
         "mr_scd2_dedup",
-        opts,
+        refinements,
         vec![vec![
             (1, None, Some(5), "newest", None),
             (1, None, Some(3), "older", None),
@@ -514,7 +555,7 @@ async fn dedup_sort_survivor_drives_scd2_change_detection() {
     .await;
     assert_eq!(
         common::scalar::<String>(
-            &conn,
+            &connection_string,
             "SELECT name FROM mr_scd2_dedup.events WHERE _rdlt_valid_to IS NULL",
         )
         .await,
@@ -524,14 +565,18 @@ async fn dedup_sort_survivor_drives_scd2_change_detection() {
     // A later load creates history; the stale-arrival version never
     // polluted it.
     run(
-        &conn,
+        &connection_string,
         "mr_scd2_dedup",
-        opts,
+        refinements,
         vec![vec![(1, None, Some(9), "newer-still", None)]],
     )
     .await;
     assert_eq!(
-        common::scalar::<i64>(&conn, "SELECT count(*) FROM mr_scd2_dedup.events").await,
+        common::scalar::<i64>(
+            &connection_string,
+            "SELECT count(*) FROM mr_scd2_dedup.events"
+        )
+        .await,
         2,
         "exactly two versions ever existed"
     );
@@ -541,95 +586,101 @@ async fn dedup_sort_survivor_drives_scd2_change_detection() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn refinement_options_validate_typed_at_open() {
-    let Some(pg) = PgFixture::start().await else {
+    let Some(container) = PostgresContainer::start().await else {
         return;
     };
-    let conn = pg.conn.clone();
+    let connection_string = container.connection_string.clone();
     let one_row: Vec<Vec<Row>> = vec![vec![(1, Some(1), Some(1), "x", None)]];
 
     // Nonexistent columns: table AND column named, before any data moves.
-    let err = run_expect_err(
-        &conn,
+    let error = run_expect_error(
+        &connection_string,
         "mr_bad_dedup",
-        Opts {
+        Refinements {
             dedup: Some(("nope", SortOrder::Desc)),
-            ..Opts::default()
-        },
-        one_row.clone(),
-    )
-    .await;
-    assert!(err.contains("`nope`") && err.contains("`events`"), "{err}");
-
-    let err = run_expect_err(
-        &conn,
-        "mr_bad_scope",
-        Opts {
-            merge_scope: Some(&["ghost"]),
-            ..Opts::default()
-        },
-        one_row.clone(),
-    )
-    .await;
-    assert!(err.contains("`ghost`") && err.contains("`events`"), "{err}");
-
-    // The hard_delete flag is neither an ordering column nor a scope.
-    let err = run_expect_err(
-        &conn,
-        "mr_flag_dedup",
-        Opts {
-            dedup: Some(("deleted", SortOrder::Desc)),
-            hard_delete: true,
-            ..Opts::default()
+            ..Refinements::default()
         },
         one_row.clone(),
     )
     .await;
     assert!(
-        err.contains("hard_delete") && err.contains("`deleted`"),
-        "{err}"
+        error.contains("`nope`") && error.contains("`events`"),
+        "{error}"
     );
 
-    let err = run_expect_err(
-        &conn,
-        "mr_flag_scope",
-        Opts {
-            merge_scope: Some(&["deleted"]),
-            hard_delete: true,
-            ..Opts::default()
+    let error = run_expect_error(
+        &connection_string,
+        "mr_bad_scope",
+        Refinements {
+            merge_scope: Some(&["ghost"]),
+            ..Refinements::default()
         },
         one_row.clone(),
     )
     .await;
-    assert!(err.contains("not a scope"), "{err}");
+    assert!(
+        error.contains("`ghost`") && error.contains("`events`"),
+        "{error}"
+    );
+
+    // The hard_delete flag is neither an ordering column nor a scope.
+    let error = run_expect_error(
+        &connection_string,
+        "mr_flag_dedup",
+        Refinements {
+            dedup: Some(("deleted", SortOrder::Desc)),
+            hard_delete: true,
+            ..Refinements::default()
+        },
+        one_row.clone(),
+    )
+    .await;
+    assert!(
+        error.contains("hard_delete") && error.contains("`deleted`"),
+        "{error}"
+    );
+
+    let error = run_expect_error(
+        &connection_string,
+        "mr_flag_scope",
+        Refinements {
+            merge_scope: Some(&["deleted"]),
+            hard_delete: true,
+            ..Refinements::default()
+        },
+        one_row.clone(),
+    )
+    .await;
+    assert!(error.contains("not a scope"), "{error}");
 
     // Review F4: a merge-key column is constant per identity group — the
     // ordering could never pick a survivor; silent no-op forbidden.
-    let err = run_expect_err(
-        &conn,
+    let error = run_expect_error(
+        &connection_string,
         "mr_key_dedup",
-        Opts {
+        Refinements {
             dedup: Some(("id", SortOrder::Desc)),
-            ..Opts::default()
+            ..Refinements::default()
         },
         one_row.clone(),
     )
     .await;
-    assert!(err.contains("part of the merge key"), "{err}");
+    assert!(error.contains("part of the merge key"), "{error}");
 
     // Review F5: the options under a non-merge write mode are rejected,
     // never silently inert (the 008 F6 lesson).
     let mut config = EngineConfig::new("mr-inert");
     config = config.with_write_mode(rdlt_connector::WriteMode::Append);
-    let units = one_row.iter().map(|u| batch(u)).collect();
-    let err = Engine::new(
+    let units = one_row.iter().map(|unit| batch(unit)).collect();
+    let error = Engine::new(
         config,
         UnitsSource { units },
-        dest(
-            &conn,
+        destination(
+            &connection_string,
             "mr_inert",
-            Opts {
+            Refinements {
                 merge_scope: Some(&["day"]),
-                ..Opts::default()
+                ..Refinements::default()
             },
         ),
     )
@@ -637,7 +688,7 @@ async fn refinement_options_validate_typed_at_open() {
     .await
     .expect_err("inert option must be rejected")
     .to_string();
-    assert!(err.contains("requires the merge write mode"), "{err}");
+    assert!(error.contains("requires the merge write mode"), "{error}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -645,11 +696,11 @@ async fn refinement_options_reject_shredded_streams() {
     use rdlt_testkit::MemorySource;
     use serde_json::json;
 
-    let Some(pg) = PgFixture::start().await else {
+    let Some(container) = PostgresContainer::start().await else {
         return;
     };
-    let conn = pg.conn.clone();
-    for (dataset, table_opts, needle) in [
+    let connection_string = container.connection_string.clone();
+    for (schema, table_options, needle) in [
         (
             "mr_sh_dedup",
             TableOptions {
@@ -670,14 +721,14 @@ async fn refinement_options_reject_shredded_streams() {
             "merge_scope requires a KEYED structured",
         ),
     ] {
-        let dest = Postgres::connect(&conn)
-            .dataset(dataset)
+        let destination = Postgres::new(&connection_string)
+            .schema(schema)
             .options(DestinationOptions {
-                tables: [("users".to_string(), table_opts)].into_iter().collect(),
+                tables: [("users".to_string(), table_options)].into_iter().collect(),
                 ..DestinationOptions::default()
             })
             .expect("options");
-        let mut config = EngineConfig::new(dataset);
+        let mut config = EngineConfig::new(schema);
         config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
             key: vec!["id".into()],
         });
@@ -685,32 +736,32 @@ async fn refinement_options_reject_shredded_streams() {
             rdlt_connector::StreamSpec::new("users").with_primary_key(["id"]),
             vec![json!({"id": 1, "seq": 2, "day": 3})],
         );
-        let err = Engine::new(config, source, dest)
+        let error = Engine::new(config, source, destination)
             .run()
             .await
             .expect_err("shredded stream must reject the option")
             .to_string();
-        assert!(err.contains(needle), "{err}");
+        assert!(error.contains(needle), "{error}");
     }
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn merge_scope_composes_with_upsert_hard_delete_and_dedup_sort() {
-    let Some(pg) = PgFixture::start().await else {
+    let Some(container) = PostgresContainer::start().await else {
         return;
     };
-    let conn = pg.conn.clone();
-    let opts = Opts {
+    let connection_string = container.connection_string.clone();
+    let refinements = Refinements {
         strategy: Some(MergeStrategy::Upsert),
         dedup: Some(("seq", SortOrder::Desc)),
         merge_scope: Some(&["day"]),
         hard_delete: true,
-        ..Opts::default()
+        ..Refinements::default()
     };
     run(
-        &conn,
+        &connection_string,
         "mr_compose",
-        opts,
+        refinements,
         vec![vec![
             (1, Some(1), Some(1), "keep-old", None),
             (2, Some(1), Some(1), "stale", None),
@@ -721,9 +772,9 @@ async fn merge_scope_composes_with_upsert_hard_delete_and_dedup_sort() {
     // arrives twice in wrong order (survivor by seq), id 3 arrives
     // flagged (hard-delete wins over insert).
     run(
-        &conn,
+        &connection_string,
         "mr_compose",
-        opts,
+        refinements,
         vec![vec![
             (1, Some(1), Some(9), "newest", None),
             (1, Some(1), Some(5), "older", None),
@@ -732,7 +783,7 @@ async fn merge_scope_composes_with_upsert_hard_delete_and_dedup_sort() {
     )
     .await;
     assert_eq!(
-        rows(&conn, "mr_compose").await,
+        rows(&connection_string, "mr_compose").await,
         vec![(1, Some(1), Some(9), "newest".into())],
         "scope delete + ordered survivor + hard delete compose"
     );
@@ -740,28 +791,28 @@ async fn merge_scope_composes_with_upsert_hard_delete_and_dedup_sort() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn dedup_sort_survivor_drives_hard_delete() {
-    let Some(pg) = PgFixture::start().await else {
+    let Some(container) = PostgresContainer::start().await else {
         return;
     };
-    let conn = pg.conn.clone();
-    let opts = Opts {
+    let connection_string = container.connection_string.clone();
+    let refinements = Refinements {
         dedup: Some(("seq", SortOrder::Desc)),
         hard_delete: true,
-        ..Opts::default()
+        ..Refinements::default()
     };
     // Seed the key, then a load where the NEWEST version is flagged
     // deleted but an OLDER unflagged version arrives after it.
     run(
-        &conn,
+        &connection_string,
         "mr_flag",
-        opts,
+        refinements,
         vec![vec![(1, None, Some(1), "seed", None)]],
     )
     .await;
     run(
-        &conn,
+        &connection_string,
         "mr_flag",
-        opts,
+        refinements,
         vec![vec![
             (1, None, Some(5), "kill", Some(true)),
             (1, None, Some(3), "stale", None),
@@ -769,26 +820,26 @@ async fn dedup_sort_survivor_drives_hard_delete() {
     )
     .await;
     assert_eq!(
-        rows(&conn, "mr_flag").await,
+        rows(&connection_string, "mr_flag").await,
         vec![],
         "the SURVIVOR's flag decides — the row is gone"
     );
 
     // Under asc the unflagged older version survives instead.
-    let asc = Opts {
+    let asc = Refinements {
         dedup: Some(("seq", SortOrder::Asc)),
         hard_delete: true,
-        ..Opts::default()
+        ..Refinements::default()
     };
     run(
-        &conn,
+        &connection_string,
         "mr_flag_asc",
         asc,
         vec![vec![(1, None, Some(1), "seed", None)]],
     )
     .await;
     run(
-        &conn,
+        &connection_string,
         "mr_flag_asc",
         asc,
         vec![vec![
@@ -798,26 +849,26 @@ async fn dedup_sort_survivor_drives_hard_delete() {
     )
     .await;
     assert_eq!(
-        rows(&conn, "mr_flag_asc").await,
+        rows(&connection_string, "mr_flag_asc").await,
         vec![(1, None, Some(3), "stale".into())]
     );
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn dedup_sort_null_and_tie_policy_is_deterministic() {
-    let Some(pg) = PgFixture::start().await else {
+    let Some(container) = PostgresContainer::start().await else {
         return;
     };
-    let conn = pg.conn.clone();
-    let opts = Opts {
+    let connection_string = container.connection_string.clone();
+    let refinements = Refinements {
         dedup: Some(("seq", SortOrder::Desc)),
-        ..Opts::default()
+        ..Refinements::default()
     };
     // NULL loses to a value in EITHER direction.
     run(
-        &conn,
+        &connection_string,
         "mr_null",
-        opts,
+        refinements,
         vec![vec![
             (1, None, None, "null-seq", None),
             (1, None, Some(3), "valued", None),
@@ -825,15 +876,15 @@ async fn dedup_sort_null_and_tie_policy_is_deterministic() {
     )
     .await;
     assert_eq!(
-        rows(&conn, "mr_null").await,
+        rows(&connection_string, "mr_null").await,
         vec![(1, None, Some(3), "valued".into())]
     );
 
     // All NULL: deterministic last-wins.
     run(
-        &conn,
+        &connection_string,
         "mr_all_null",
-        opts,
+        refinements,
         vec![vec![
             (1, None, None, "first", None),
             (1, None, None, "last", None),
@@ -841,7 +892,7 @@ async fn dedup_sort_null_and_tie_policy_is_deterministic() {
     )
     .await;
     assert_eq!(
-        rows(&conn, "mr_all_null").await,
+        rows(&connection_string, "mr_all_null").await,
         vec![(1, None, None, "last".into())]
     );
 
@@ -851,14 +902,14 @@ async fn dedup_sort_null_and_tie_policy_is_deterministic() {
         (1, None, Some(5), "first", None),
         (1, None, Some(5), "last", None),
     ]];
-    run(&conn, "mr_tie", opts, tie.clone()).await;
+    run(&connection_string, "mr_tie", refinements, tie.clone()).await;
     assert_eq!(
-        rows(&conn, "mr_tie").await,
+        rows(&connection_string, "mr_tie").await,
         vec![(1, None, Some(5), "last".into())]
     );
-    run(&conn, "mr_tie", opts, tie).await;
+    run(&connection_string, "mr_tie", refinements, tie).await;
     assert_eq!(
-        rows(&conn, "mr_tie").await,
+        rows(&connection_string, "mr_tie").await,
         vec![(1, None, Some(5), "last".into())]
     );
 }

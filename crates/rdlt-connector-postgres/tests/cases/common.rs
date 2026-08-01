@@ -5,14 +5,14 @@
 
 use async_trait::async_trait;
 use rdlt_connector_duckdb::dest::DuckDb;
-use rdlt_connector_postgres::source::PostgresSource;
+use rdlt_connector_postgres::source;
 use rdlt_testkit::TableProbe;
 use tokio_postgres::Client;
 
-/// A raw client on `conn`, its connection task detached — the one spelling
-/// of the connect idiom in the case files.
-pub async fn connect(conn: &str) -> Client {
-    let (client, connection) = tokio_postgres::connect(conn, tokio_postgres::NoTls)
+/// A raw client on `connection_string`, its connection task detached — the
+/// one spelling of the connect idiom in the case files.
+pub async fn connect(connection_string: &str) -> Client {
+    let (client, connection) = tokio_postgres::connect(connection_string, tokio_postgres::NoTls)
         .await
         .expect("connect");
     tokio::spawn(async move {
@@ -22,11 +22,11 @@ pub async fn connect(conn: &str) -> Client {
 }
 
 /// One value from one row — the readback most assertions need.
-pub async fn scalar<T>(conn: &str, sql: &str) -> T
+pub async fn scalar<T>(connection_string: &str, sql: &str) -> T
 where
     T: for<'a> tokio_postgres::types::FromSql<'a>,
 {
-    connect(conn)
+    connect(connection_string)
         .await
         .query_one(sql, &[])
         .await
@@ -36,39 +36,43 @@ where
 
 /// Row count of `<dataset>.<table>`; a missing table counts as empty (the
 /// probe contract — recovery suites ask before the table exists).
-pub async fn count(conn: &str, dataset: &str, table: &str) -> u64 {
+pub async fn count(connection_string: &str, dataset: &str, table: &str) -> u64 {
     let sql = format!(
         "SELECT count(*) FROM \"{dataset}\".\"{}\"",
         table.replace('"', "")
     );
-    match connect(conn).await.query_one(&sql, &[]).await {
+    match connect(connection_string).await.query_one(&sql, &[]).await {
         Ok(row) => row.get::<_, i64>(0) as u64,
         Err(_) => 0,
     }
 }
 
 /// A source from the bare `conn:` line plus whatever YAML the suite appends.
-pub fn source(conn: &str, extra: &str) -> PostgresSource {
-    PostgresSource::from_yaml(&format!("conn: \"{conn}\"\n{extra}")).expect("config")
+pub fn source(connection_string: &str, extra_yaml: &str) -> source::Postgres {
+    source::Postgres::from_yaml(&format!("conn: \"{connection_string}\"\n{extra_yaml}"))
+        .expect("config")
 }
 
 /// A DuckDB destination in a leaked tempdir — leaked deliberately: the file
 /// must outlive the test body so late engine writes never race teardown.
-pub fn duckdb_dest() -> DuckDb {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let dest = DuckDb::open(dir.path().join("out.duckdb")).expect("open db");
-    std::mem::forget(dir);
-    dest
+pub fn duckdb_destination() -> DuckDb {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let destination = DuckDb::open(directory.path().join("out.duckdb")).expect("open db");
+    std::mem::forget(directory);
+    destination
 }
 
-pub struct PgProbe {
-    pub conn: String,
+/// The rowcount face the conformance harness reads a loaded table through:
+/// one schema on one database, counted with the same missing-table-is-empty
+/// contract [`count`] carries.
+pub struct Probe {
+    pub connection_string: String,
     pub schema: String,
 }
 
 #[async_trait]
-impl TableProbe for PgProbe {
+impl TableProbe for Probe {
     async fn count(&self, table: &rdlt_connector::TableName) -> u64 {
-        count(&self.conn, &self.schema, table.as_str()).await
+        count(&self.connection_string, &self.schema, table.as_str()).await
     }
 }

@@ -11,9 +11,39 @@ integrity first (this feature), house style second.
 
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
+`specs/025-postgres-v2/plan.md` (feature: POSTGRES SECOND GENERATION —
+COMPLETE, SWAPPED IN, and MERGED. Written greenfield as
+`rdlt-connector-postgres-v2` (no code copied from generation 1), gated
+twice clean while both generations coexisted, adversarially reviewed over
+six recorded rounds, then — owner decision — generation 1 was DELETED and
+this crate renamed to `rdlt-connector-postgres`; commit `79211241` is the
+last tree carrying both. Same complete functionality; the Rust API is
+renamed by the plan's seven naming rules with the full old→new ledger in
+Appendix C (`source::Postgres`/`source::Config`,
+`destination::Postgres::new(..).schema(..)`, `tls::Policy`,
+`fixtures::PostgresContainer`; crate feature `dest` is now `destination`;
+test binaries `source_crash_sweep`/`destination_crash_sweep`). FROZEN and
+verified byte-identical (Appendix B): the YAML vocabulary (`conn`,
+`dataset` — serde renames, NOT field names), persisted cursor + CDC state
+JSON, COPY BINARY + pgoutput v1 wire, golden SQL, crash-point IDs (the
+scanner selfcheck still finds 11 directly-armed of 14 declared, same three
+indirect). PERF: iai parity BEATEN (decode −2.1%, encode −4.8%) and
+wall-clock A/B no regression; `benches/iai_pg.rs` deliberately keeps the
+generation-1 benchmark IDs `pg_copy_decode_10k`/`pg_copy_encode_10k` so
+the recorded perf baselines keep binding — do not rename them. The A/B
+harness `tests/perf_ab.rs` died with generation 1 (it needed both crates);
+its figures are recorded in plan.md STATUS. Three v1 defects quietly fixed
+and pinned: post-COMMIT ROLLBACK under `pg.tx.acked`, an inter-stream CDC
+panic race, `--5` numeric literal misparse. Recorded and deliberately NOT
+changed: the row-key `|`-join collision (persisted-state encoding, owner
+schedules any fix) and CDC snapshot single-instant best-effort under
+mid-run errors. plan.md carries STATUS, the SWAP-IN record, REVIEW ROUNDS,
+decisions D1-D6, and the naming rules.)
+Previous feature 024 for reference:
 `specs/024-gate-integrity/plan.md` (feature: TEST-GATE INTEGRITY — make the
 gate incapable of passing silently. COMPLETE 49/49 on branch
-`024-gate-integrity` off main @ 34ccd379, NOT merged. All five stories
+`024-gate-integrity` off main @ 34ccd379, since merged to main (in
+d92cec06's history). All five stories
 delivered; GI1-GI8 all MET; gate TWICE CLEAN (961/961 both runs, 2 named
 instrument skips, six sweep suites, semver clean, 6 benches 0 regressed, cold
 start 23.5/23.9 ms); coverage 87.25% reproducing 023's recorded 87.22%. Contract contracts/gate-integrity.md.

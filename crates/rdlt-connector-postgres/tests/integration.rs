@@ -1,10 +1,7 @@
-//! THE compile root for the postgres test surface: every suite lives under
-//! `cases/` as a `test_<noun>` module — golden pins, config vocabulary,
-//! conformance (source and destination), merge strategies and refinements,
-//! incremental, CDC, TLS, recovery, and the differential decoder oracle.
-//!
-//! Only binaries a gate selects BY NAME keep their own roots: `crash_sweep`,
-//! `dest_crash_sweep` and `cdc_crash_sweep` (the Makefile's sweep target)
-//! and `memory_bound` (the heavy target).
+//! THE compile root for the v2 postgres test surface: every suite lives
+//! under `cases/` as a `test_<noun>` module. Only binaries a gate selects BY
+//! NAME keep their own roots: `source_crash_sweep`,
+//! `destination_crash_sweep`, `cdc_crash_sweep` (the sweep targets) and
+//! `memory_bound` (the heavy target).
 
 mod cases;

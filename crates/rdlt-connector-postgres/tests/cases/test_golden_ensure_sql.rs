@@ -10,10 +10,12 @@
 use rdlt_connector::core::{
     ColumnDef, ColumnType, LogicalType, PipelineId, Provenance, TableName, TableSchema, WriteMode,
 };
-use rdlt_connector_postgres::dest::sqlgen::{ensure_merge_sql, ensure_table_sql};
-use rdlt_connector_postgres::dest::{DestinationOptions, MergeStrategy};
+use rdlt_connector_postgres::destination::{DestinationOptions, MergeStrategy};
+use rdlt_connector_postgres::testsupport::destination::{
+    merge_ensure_statements, table_ddl_statements,
+};
 
-fn col(name: &str, scalar: LogicalType, nullable: bool) -> ColumnDef {
+fn column(name: &str, scalar: LogicalType, nullable: bool) -> ColumnDef {
     ColumnDef {
         name: name.to_owned(),
         column_type: ColumnType::Scalar { scalar },
@@ -34,8 +36,8 @@ fn events() -> TableSchema {
     schema(
         "events",
         vec![
-            col("id", LogicalType::Int64, false),
-            col("note", LogicalType::Utf8, true),
+            column("id", LogicalType::Int64, false),
+            column("note", LogicalType::Utf8, true),
         ],
     )
 }
@@ -64,7 +66,7 @@ fn append_ensures_only_the_target_leg() {
     // No stage table for a non-merge mode: an UNLOGGED twin and its sequence
     // would be created, written and truncated for nothing.
     assert_eq!(
-        ensure_table_sql(&pipeline(), &events(), &WriteMode::Append, None),
+        table_ddl_statements(&pipeline(), &events(), &WriteMode::Append, None),
         vec![
             "CREATE TABLE IF NOT EXISTS \"events\" (\"id\" BIGINT NOT NULL, \"note\" TEXT)",
             "ALTER TABLE \"events\" ADD COLUMN IF NOT EXISTS \"id\" BIGINT",
@@ -75,15 +77,15 @@ fn append_ensures_only_the_target_leg() {
 
 #[test]
 fn merge_ensures_a_stage_leg_with_a_cached_arrival_sequence() {
-    let sql = ensure_table_sql(&pipeline(), &events(), &merge_by_id(), None);
+    let statements = table_ddl_statements(&pipeline(), &events(), &merge_by_id(), None);
     // The target leg first, then the stage leg — order is part of the pin.
     assert_eq!(
-        sql[0],
+        statements[0],
         "CREATE TABLE IF NOT EXISTS \"events\" (\"id\" BIGINT NOT NULL, \"note\" TEXT)"
     );
-    let stage_create = sql
+    let stage_create = statements
         .iter()
-        .find(|s| s.starts_with("CREATE UNLOGGED"))
+        .find(|statement| statement.starts_with("CREATE UNLOGGED"))
         .expect("a stage leg exists under merge");
     // UNLOGGED, nullability dropped on the stage, and the arrival column
     // carrying its measured cache — 122 ms of a 642 ms stage COPY.
@@ -100,11 +102,11 @@ fn merge_ensures_a_stage_leg_with_a_cached_arrival_sequence() {
 fn a_widened_column_adds_a_using_cast_after_its_add() {
     // The widen is a WITHIN-SESSION rule: it fires from the schema this
     // session last ensured, not from the live catalog.
-    let before = schema("events", vec![col("id", LogicalType::Int64, false)]);
-    let after = schema("events", vec![col("id", LogicalType::Utf8, false)]);
-    let sql = ensure_table_sql(&pipeline(), &after, &WriteMode::Append, Some(&before));
+    let before = schema("events", vec![column("id", LogicalType::Int64, false)]);
+    let after = schema("events", vec![column("id", LogicalType::Utf8, false)]);
+    let statements = table_ddl_statements(&pipeline(), &after, &WriteMode::Append, Some(&before));
     assert_eq!(
-        sql,
+        statements,
         vec![
             "CREATE TABLE IF NOT EXISTS \"events\" (\"id\" TEXT NOT NULL)",
             "ALTER TABLE \"events\" ADD COLUMN IF NOT EXISTS \"id\" TEXT",
@@ -116,10 +118,12 @@ fn a_widened_column_adds_a_using_cast_after_its_add() {
 #[test]
 fn an_unchanged_column_is_added_but_never_widened() {
     let same = events();
-    let sql = ensure_table_sql(&pipeline(), &same, &WriteMode::Append, Some(&same));
+    let statements = table_ddl_statements(&pipeline(), &same, &WriteMode::Append, Some(&same));
     assert!(
-        !sql.iter().any(|s| s.contains("ALTER COLUMN")),
-        "nothing changed type, so nothing may be widened: {sql:?}"
+        !statements
+            .iter()
+            .any(|statement| statement.contains("ALTER COLUMN")),
+        "nothing changed type, so nothing may be widened: {statements:?}"
     );
 }
 
@@ -128,33 +132,44 @@ fn upsert_ensures_a_unique_index_that_carries_its_key_columns() {
     // Upsert must be asked for: the DEFAULT strategy is delete-insert, whose
     // index is a plain supporting one — there is no arbiter to enforce.
     let options = with_strategy(MergeStrategy::Upsert);
-    let stmts = ensure_merge_sql(&options, &events(), &merge_by_id()).expect("valid options");
-    let unique: Vec<_> = stmts.iter().filter(|s| s.1.is_some()).collect();
-    assert_eq!(unique.len(), 1, "one arbiter index: {stmts:?}");
-    assert_eq!(unique[0].1.as_deref(), Some(&["id".to_owned()][..]));
+    let statements =
+        merge_ensure_statements(&options, &events(), &merge_by_id()).expect("valid options");
+    let unique: Vec<_> = statements
+        .iter()
+        .filter(|statement| statement.unique_index.is_some())
+        .collect();
+    assert_eq!(unique.len(), 1, "one arbiter index: {statements:?}");
+    assert_eq!(
+        unique[0].unique_index.as_deref(),
+        Some(&["id".to_owned()][..])
+    );
     assert!(
-        unique[0].0.contains("CREATE UNIQUE INDEX IF NOT EXISTS"),
+        unique[0].sql.contains("CREATE UNIQUE INDEX IF NOT EXISTS"),
         "{:?}",
-        unique[0].0
+        unique[0].sql
     );
 }
 
 #[test]
 fn scd2_ensures_both_validity_columns_before_any_index() {
     let options = with_strategy(MergeStrategy::Scd2);
-    let stmts = ensure_merge_sql(&options, &events(), &merge_by_id()).expect("valid options");
-    let texts: Vec<&str> = stmts.iter().map(|s| s.0.as_str()).collect();
+    let statements =
+        merge_ensure_statements(&options, &events(), &merge_by_id()).expect("valid options");
+    let texts: Vec<&str> = statements
+        .iter()
+        .map(|statement| statement.sql.as_str())
+        .collect();
     let from = texts
         .iter()
-        .position(|s| s.contains("_rdlt_valid_from"))
+        .position(|text| text.contains("_rdlt_valid_from"))
         .expect("valid_from column");
     let to = texts
         .iter()
-        .position(|s| s.contains("_rdlt_valid_to"))
+        .position(|text| text.contains("_rdlt_valid_to"))
         .expect("valid_to column");
     let first_index = texts
         .iter()
-        .position(|s| s.contains("INDEX"))
+        .position(|text| text.contains("INDEX"))
         .unwrap_or(usize::MAX);
     assert!(
         from < to,
@@ -175,21 +190,25 @@ fn the_default_strategy_ensures_a_plain_supporting_index() {
     // delete-insert needs the key indexed to find rows, but must NOT declare
     // it unique — duplicates are resolved by the plan, not refused by the
     // database.
-    let stmts = ensure_merge_sql(&DestinationOptions::default(), &events(), &merge_by_id())
-        .expect("valid options");
-    assert_eq!(stmts.len(), 1, "one supporting index: {stmts:?}");
-    assert!(stmts[0].1.is_none(), "not a unique index: {stmts:?}");
-    assert!(stmts[0].0.starts_with("CREATE INDEX IF NOT EXISTS"));
+    let statements =
+        merge_ensure_statements(&DestinationOptions::default(), &events(), &merge_by_id())
+            .expect("valid options");
+    assert_eq!(statements.len(), 1, "one supporting index: {statements:?}");
+    assert!(
+        statements[0].unique_index.is_none(),
+        "not a unique index: {statements:?}"
+    );
+    assert!(statements[0].sql.starts_with("CREATE INDEX IF NOT EXISTS"));
 }
 
 #[test]
 fn a_non_merge_mode_emits_no_merge_statements_and_still_validates() {
     let options = DestinationOptions::default();
-    let stmts = ensure_merge_sql(&options, &events(), &WriteMode::Append)
+    let statements = merge_ensure_statements(&options, &events(), &WriteMode::Append)
         .expect("default options are valid");
     assert!(
-        stmts.is_empty(),
-        "nothing to ensure beyond the table: {stmts:?}"
+        statements.is_empty(),
+        "nothing to ensure beyond the table: {statements:?}"
     );
 }
 
@@ -198,10 +217,10 @@ fn merge_only_options_are_refused_under_append_with_the_shared_error() {
     // The rule set is sqlcore's; this pins that the postgres path still runs
     // it, and still runs it AFTER the tables exist.
     let options = with_strategy(MergeStrategy::Upsert);
-    let err = ensure_merge_sql(&options, &events(), &WriteMode::Append)
+    let error = merge_ensure_statements(&options, &events(), &WriteMode::Append)
         .expect_err("a merge strategy under Append is a config error");
     assert!(
-        format!("{err}").contains("events"),
-        "the error names the table: {err}"
+        format!("{error}").contains("events"),
+        "the error names the table: {error}"
     );
 }

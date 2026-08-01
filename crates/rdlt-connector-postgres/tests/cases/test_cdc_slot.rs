@@ -3,28 +3,28 @@
 //! explicit advance, and the concurrent-consumer refusal.
 
 use futures::TryStreamExt;
-use rdlt_connector_postgres::fixtures::CdcPgFixture;
-use rdlt_connector_postgres::source::testhook::cdc_slot;
-use rdlt_connector_postgres::source::testhook::cdc_slot::Change;
+use rdlt_connector_postgres::fixtures::PostgresContainer;
+use rdlt_connector_postgres::testsupport::source::cdc_slot;
+use rdlt_connector_postgres::testsupport::source::cdc_slot::Change;
 
-use crate::cases::cdc_rig::*;
+use crate::cases::cdc_rig::{ORDERS_SEED, cdc_config};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn create_if_missing_is_idempotent_and_reports_the_consistent_point() {
-    let Some(fixture) = CdcPgFixture::start().await else {
+    let Some(container) = PostgresContainer::start_for_cdc().await else {
         return;
     };
-    fixture.seed(SEED).await;
-    let client = fixture.client().await;
+    container.seed(ORDERS_SEED).await;
+    let client = container.client().await;
     let tables = vec!["orders".to_string()];
 
-    let first = cdc_slot::ensure(&client, &cdc("s1", "p1", true), "public", &tables)
+    let first = cdc_slot::ensure(&client, &cdc_config("s1", "p1", true), "public", &tables)
         .await
         .expect("first ensure creates");
     assert!(first.created_slot);
     assert!(first.consistent_point.is_some());
 
-    let second = cdc_slot::ensure(&client, &cdc("s1", "p1", true), "public", &tables)
+    let second = cdc_slot::ensure(&client, &cdc_config("s1", "p1", true), "public", &tables)
         .await
         .expect("second ensure is a no-op");
     assert!(!second.created_slot);
@@ -39,7 +39,7 @@ async fn create_if_missing_is_idempotent_and_reports_the_consistent_point() {
         .await
         .unwrap()
         .get(0);
-    let pubs: i64 = client
+    let publications: i64 = client
         .query_one(
             "SELECT count(*) FROM pg_publication WHERE pubname = 'p1'",
             &[],
@@ -47,72 +47,80 @@ async fn create_if_missing_is_idempotent_and_reports_the_consistent_point() {
         .await
         .unwrap()
         .get(0);
-    assert_eq!((slots, pubs), (1, 1));
+    assert_eq!((slots, publications), (1, 1));
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn missing_resources_without_create_are_typed_with_the_hint() {
-    let Some(fixture) = CdcPgFixture::start().await else {
+    let Some(container) = PostgresContainer::start_for_cdc().await else {
         return;
     };
-    fixture.seed(SEED).await;
-    let client = fixture.client().await;
+    container.seed(ORDERS_SEED).await;
+    let client = container.client().await;
     let tables = vec!["orders".to_string()];
 
     // Nothing exists: the publication check fires first.
-    let err = cdc_slot::ensure(&client, &cdc("s1", "p1", false), "public", &tables)
+    let error = cdc_slot::ensure(&client, &cdc_config("s1", "p1", false), "public", &tables)
         .await
         .expect_err("missing publication");
-    let msg = err.to_string();
-    assert!(msg.contains("publication `p1`"), "{msg}");
-    assert!(msg.contains("create_if_missing"), "{msg}");
+    let message = error.to_string();
+    assert!(message.contains("publication `p1`"), "{message}");
+    assert!(message.contains("create_if_missing"), "{message}");
 
     // Publication present, slot missing: the slot error, with the hint.
     client
         .batch_execute("CREATE PUBLICATION p1 FOR TABLE public.orders")
         .await
         .unwrap();
-    let err = cdc_slot::ensure(&client, &cdc("s1", "p1", false), "public", &tables)
+    let error = cdc_slot::ensure(&client, &cdc_config("s1", "p1", false), "public", &tables)
         .await
         .expect_err("missing slot");
-    let msg = err.to_string();
-    assert!(msg.contains("slot `s1`"), "{msg}");
-    assert!(msg.contains("create_if_missing"), "{msg}");
+    let message = error.to_string();
+    assert!(message.contains("slot `s1`"), "{message}");
+    assert!(message.contains("create_if_missing"), "{message}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn publication_gap_names_publication_and_missing_tables() {
-    let Some(fixture) = CdcPgFixture::start().await else {
+    let Some(container) = PostgresContainer::start_for_cdc().await else {
         return;
     };
-    fixture
+    container
         .seed(
             "CREATE TABLE public.a (id int8 PRIMARY KEY);\
              CREATE TABLE public.b (id int8 PRIMARY KEY);\
              CREATE PUBLICATION partial_pub FOR TABLE public.a;",
         )
         .await;
-    let client = fixture.client().await;
+    let client = container.client().await;
     let tables = vec!["a".to_string(), "b".to_string()];
 
     // A gap is an error even under create_if_missing — the publication is
     // user-owned; rdlt creates, never alters.
-    let err = cdc_slot::ensure(&client, &cdc("s1", "partial_pub", true), "public", &tables)
-        .await
-        .expect_err("publication gap");
-    let msg = err.to_string();
-    assert!(msg.contains("partial_pub"), "{msg}");
-    assert!(msg.contains("`b`"), "{msg}");
-    assert!(!msg.contains("`a`,"), "covered table not listed: {msg}");
+    let error = cdc_slot::ensure(
+        &client,
+        &cdc_config("s1", "partial_pub", true),
+        "public",
+        &tables,
+    )
+    .await
+    .expect_err("publication gap");
+    let message = error.to_string();
+    assert!(message.contains("partial_pub"), "{message}");
+    assert!(message.contains("`b`"), "{message}");
+    assert!(
+        !message.contains("`a`,"),
+        "covered table not listed: {message}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn foreign_plugin_slot_is_typed_naming_both_plugins() {
-    let Some(fixture) = CdcPgFixture::start().await else {
+    let Some(container) = PostgresContainer::start_for_cdc().await else {
         return;
     };
-    fixture.seed(SEED).await;
-    let client = fixture.client().await;
+    container.seed(ORDERS_SEED).await;
+    let client = container.client().await;
     client
         .query_one(
             "SELECT 1 FROM pg_create_logical_replication_slot('their_slot', 'test_decoding')",
@@ -121,27 +129,27 @@ async fn foreign_plugin_slot_is_typed_naming_both_plugins() {
         .await
         .expect("foreign slot");
 
-    let err = cdc_slot::ensure(
+    let error = cdc_slot::ensure(
         &client,
-        &cdc("their_slot", "p1", true),
+        &cdc_config("their_slot", "p1", true),
         "public",
         &["orders".to_string()],
     )
     .await
     .expect_err("wrong plugin");
-    let msg = err.to_string();
-    assert!(msg.contains("test_decoding"), "{msg}");
-    assert!(msg.contains("pgoutput"), "{msg}");
+    let message = error.to_string();
+    assert!(message.contains("test_decoding"), "{message}");
+    assert!(message.contains("pgoutput"), "{message}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn peek_is_nonconsuming_and_advance_acknowledges() {
-    let Some(fixture) = CdcPgFixture::start().await else {
+    let Some(container) = PostgresContainer::start_for_cdc().await else {
         return;
     };
-    fixture.seed(SEED).await;
-    let client = fixture.client().await;
-    let config = cdc("s1", "p1", true);
+    container.seed(ORDERS_SEED).await;
+    let client = container.client().await;
+    let config = cdc_config("s1", "p1", true);
     cdc_slot::ensure(&client, &config, "public", &["orders".to_string()])
         .await
         .expect("ensure");
@@ -171,11 +179,14 @@ async fn peek_is_nonconsuming_and_advance_acknowledges() {
         "peek consumed nothing — the per-table pass design depends on this"
     );
     assert!(
-        first.iter().zip(&second).all(|(a, b)| a.lsn == b.lsn),
+        first
+            .iter()
+            .zip(&second)
+            .all(|(left, right)| left.lsn == right.lsn),
         "identical positions across passes"
     );
 
-    let max_lsn = first.iter().map(|c| c.lsn).max().unwrap();
+    let max_lsn = first.iter().map(|change| change.lsn).max().unwrap();
     cdc_slot::advance(&client, "s1", max_lsn)
         .await
         .expect("advance");
@@ -190,19 +201,19 @@ async fn peek_is_nonconsuming_and_advance_acknowledges() {
         .await
         .expect("collect peek after ack");
     assert!(
-        after.iter().all(|c| c.lsn > max_lsn),
+        after.iter().all(|change| change.lsn > max_lsn),
         "acknowledged changes are gone from the feed"
     );
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn concurrent_consumer_is_typed_naming_the_pid() {
-    let Some(fixture) = CdcPgFixture::start().await else {
+    let Some(container) = PostgresContainer::start_for_cdc().await else {
         return;
     };
-    fixture.seed(SEED).await;
-    let client = fixture.client().await;
-    let config = cdc("s1", "p1", true);
+    container.seed(ORDERS_SEED).await;
+    let client = container.client().await;
+    let config = cdc_config("s1", "p1", true);
     cdc_slot::ensure(&client, &config, "public", &["orders".to_string()])
         .await
         .expect("ensure");
@@ -217,7 +228,7 @@ async fn concurrent_consumer_is_typed_naming_the_pid() {
         .await
         .unwrap();
 
-    let competing = fixture.client().await;
+    let competing = container.client().await;
     let hold = tokio::spawn(async move {
         let _ = competing
             .query(
@@ -245,12 +256,12 @@ async fn concurrent_consumer_is_typed_naming_the_pid() {
     }
     assert!(held, "competing consumer never observed holding the slot");
 
-    let err = cdc_slot::ensure(&client, &config, "public", &["orders".to_string()])
+    let error = cdc_slot::ensure(&client, &config, "public", &["orders".to_string()])
         .await
         .expect_err("slot held");
-    let msg = err.to_string();
-    assert!(msg.contains("slot `s1`"), "{msg}");
-    assert!(msg.contains("pid"), "{msg}");
-    assert!(msg.contains("one consumer"), "{msg}");
+    let message = error.to_string();
+    assert!(message.contains("slot `s1`"), "{message}");
+    assert!(message.contains("pid"), "{message}");
+    assert!(message.contains("one consumer"), "{message}");
     hold.await.unwrap();
 }

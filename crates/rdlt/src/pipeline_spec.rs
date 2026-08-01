@@ -23,7 +23,7 @@ use crate::builder::{Missing, PipelineBuilder};
 use crate::{Pipeline, WriteMode};
 
 #[cfg(feature = "postgres-source")]
-use crate::connector::postgres::source::PostgresConfig;
+use crate::connector::postgres::source::Config as PostgresConfig;
 
 /// One pipeline, end to end.
 #[derive(Debug, Deserialize)]
@@ -155,15 +155,18 @@ pub enum DestSpec {
         /// The schema rows land in. Created if absent.
         dataset: String,
         /// Optional TLS block: `tls: {mode: verify_full, root_cert: /ca.pem}`.
-        tls: Option<crate::connector::postgres::tls::TlsPolicy>,
+        tls: Option<crate::connector::postgres::tls::Policy>,
         /// Destination-wide merge strategy
         /// ("delete_insert" | "upsert" | "scd2").
-        merge_strategy: Option<crate::connector::postgres::dest::MergeStrategy>,
+        merge_strategy: Option<crate::connector::postgres::destination::MergeStrategy>,
         /// Per-table options — `tables: <name>: {…}` with
         /// `merge_strategy`, `hard_delete`, `dedup_sort`, `merge_scope`, and
         /// `scd2: {valid_from, valid_to, absent}`.
         tables: Option<
-            std::collections::BTreeMap<String, crate::connector::postgres::dest::TableOptions>,
+            std::collections::BTreeMap<
+                String,
+                crate::connector::postgres::destination::TableOptions,
+            >,
         >,
     },
     /// The frozen `parquet:` spelling (equivalent to `file: local parquet`);
@@ -350,7 +353,7 @@ pub fn build_pipeline(spec: &Spec) -> Result<Pipeline, SpecError> {
         #[cfg(feature = "postgres-source")]
         SourceSpec::Postgres(pg) => {
             let config = resolve_pg(pg)?;
-            let source = crate::connector::postgres::source::PostgresSource::new(config);
+            let source = crate::connector::postgres::source::Postgres::new(config);
             build_with(builder.source(source), &spec.destination)
         }
         #[allow(unreachable_patterns)]
@@ -428,12 +431,12 @@ fn build_with<S: rdlt_connector::Source>(
             tables,
         } => {
             let mut dest =
-                crate::connector::postgres::dest::Postgres::connect(conn).dataset(dataset);
+                crate::connector::postgres::destination::Postgres::new(conn).schema(dataset);
             if let Some(policy) = tls {
                 dest = dest.tls(policy.clone());
             }
             if merge_strategy.is_some() || tables.is_some() {
-                let options = crate::connector::postgres::dest::DestinationOptions {
+                let options = crate::connector::postgres::destination::DestinationOptions {
                     merge_strategy: *merge_strategy,
                     tables: tables.clone().unwrap_or_default(),
                 };

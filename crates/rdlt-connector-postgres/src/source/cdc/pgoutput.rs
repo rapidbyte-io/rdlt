@@ -1,21 +1,19 @@
 //! Hand-rolled pgoutput (logical replication) message parser — protocol
 //! version 1, the format `pg_logical_slot_peek_binary_changes` emits with
 //! `proto_version '1'`. Same house discipline as the binary-COPY decoder:
-//! no dependencies, typed errors, no panics on
-//! malformed input, fuzzed (`pg_pgoutput_decode`).
+//! no dependencies, typed errors, no panics on malformed input, fuzzed
+//! (`pgoutput_decode`).
 //!
 //! Message reference: PostgreSQL docs, "Logical Replication Message
 //! Formats". Tuple values arrive TEXT-form under proto v1.
 
-/// Typed parse failure — never a panic (fuzz-pinned). thiserror, matching the
-/// crate's other decode errors ([`crate::source::copy_decode::DecodeError`],
-/// [`crate::source::cdc::values::ValueError`]).
+/// Typed parse failure — never a panic (fuzz-pinned).
 #[derive(Debug, thiserror::Error)]
 #[error("pgoutput: {0}")]
-pub struct PgoutputError(pub String);
+pub struct ParseError(pub String);
 
-fn err<T>(message: impl Into<String>) -> Result<T, PgoutputError> {
-    Err(PgoutputError(message.into()))
+fn fail<T>(message: impl Into<String>) -> Result<T, ParseError> {
+    Err(ParseError(message.into()))
 }
 
 /// One column value inside a tuple.
@@ -53,28 +51,26 @@ pub enum Message {
     /// consumer checkpoints from the peek row's own LSN and does not read
     /// them.
     Begin,
-    /// Transaction boundary. The wire carries the commit/end LSNs; the
-    /// consumer checkpoints from the peek row's own LSN and does not read
-    /// them.
+    /// Transaction boundary — same posture as [`Message::Begin`].
     Commit,
     Relation(Relation),
     Insert {
-        rel: u32,
+        relation: u32,
         new: TupleData,
     },
     Update {
-        rel: u32,
+        relation: u32,
         /// Old key ('K') or full old tuple ('O'), when present.
         old: Option<TupleData>,
         new: TupleData,
     },
     Delete {
-        rel: u32,
+        relation: u32,
         /// Old key ('K') or full old tuple ('O').
         old: TupleData,
     },
     Truncate {
-        rels: Vec<u32>,
+        relations: Vec<u32>,
     },
     /// Parsed and carried for completeness; the consumer ignores them.
     Origin,
@@ -83,130 +79,130 @@ pub enum Message {
 
 struct Reader<'a> {
     bytes: &'a [u8],
-    pos: usize,
+    position: usize,
 }
 
 impl<'a> Reader<'a> {
-    fn take(&mut self, n: usize) -> Result<&'a [u8], PgoutputError> {
+    fn take(&mut self, count: usize) -> Result<&'a [u8], ParseError> {
         let end = self
-            .pos
-            .checked_add(n)
-            .filter(|e| *e <= self.bytes.len())
-            .ok_or_else(|| PgoutputError("message truncated".into()))?;
-        let out = &self.bytes[self.pos..end];
-        self.pos = end;
-        Ok(out)
+            .position
+            .checked_add(count)
+            .filter(|end| *end <= self.bytes.len())
+            .ok_or_else(|| ParseError("message truncated".into()))?;
+        let window = &self.bytes[self.position..end];
+        self.position = end;
+        Ok(window)
     }
 
-    fn u8(&mut self) -> Result<u8, PgoutputError> {
+    fn u8(&mut self) -> Result<u8, ParseError> {
         Ok(self.take(1)?[0])
     }
 
-    fn u16(&mut self) -> Result<u16, PgoutputError> {
+    fn u16(&mut self) -> Result<u16, ParseError> {
         Ok(u16::from_be_bytes(self.take(2)?.try_into().expect("2")))
     }
 
-    fn u32(&mut self) -> Result<u32, PgoutputError> {
+    fn u32(&mut self) -> Result<u32, ParseError> {
         Ok(u32::from_be_bytes(self.take(4)?.try_into().expect("4")))
     }
 
-    fn i32(&mut self) -> Result<i32, PgoutputError> {
+    fn i32(&mut self) -> Result<i32, ParseError> {
         Ok(i32::from_be_bytes(self.take(4)?.try_into().expect("4")))
     }
 
-    fn u64(&mut self) -> Result<u64, PgoutputError> {
+    fn u64(&mut self) -> Result<u64, ParseError> {
         Ok(u64::from_be_bytes(self.take(8)?.try_into().expect("8")))
     }
 
-    fn cstr(&mut self) -> Result<String, PgoutputError> {
-        let rest = &self.bytes[self.pos..];
-        let nul = rest
+    fn c_string(&mut self) -> Result<String, ParseError> {
+        let rest = &self.bytes[self.position..];
+        let terminator = rest
             .iter()
-            .position(|b| *b == 0)
-            .ok_or_else(|| PgoutputError("unterminated string".into()))?;
-        let s = std::str::from_utf8(&rest[..nul])
-            .map_err(|_| PgoutputError("non-UTF8 identifier".into()))?
+            .position(|byte| *byte == 0)
+            .ok_or_else(|| ParseError("unterminated string".into()))?;
+        let text = std::str::from_utf8(&rest[..terminator])
+            .map_err(|_| ParseError("non-UTF8 identifier".into()))?
             .to_owned();
-        self.pos += nul + 1;
-        Ok(s)
+        self.position += terminator + 1;
+        Ok(text)
     }
 
-    fn done(&self) -> bool {
-        self.pos == self.bytes.len()
+    fn is_done(&self) -> bool {
+        self.position == self.bytes.len()
     }
 }
 
-fn tuple(r: &mut Reader<'_>) -> Result<TupleData, PgoutputError> {
-    let ncols = r.u16()? as usize;
+fn tuple(reader: &mut Reader<'_>) -> Result<TupleData, ParseError> {
+    let column_count = reader.u16()? as usize;
     // Bound: each column needs at least 1 byte — a hostile count cannot
     // allocate more than the message could carry.
-    if ncols > r.bytes.len() {
-        return err("tuple column count exceeds message");
+    if column_count > reader.bytes.len() {
+        return fail("tuple column count exceeds message");
     }
-    let mut values = Vec::with_capacity(ncols);
-    for _ in 0..ncols {
-        match r.u8()? {
+    let mut values = Vec::with_capacity(column_count);
+    for _ in 0..column_count {
+        match reader.u8()? {
             b'n' => values.push(TupleValue::Null),
             b'u' => values.push(TupleValue::UnchangedToast),
             b't' => {
-                let len = r.u32()? as usize;
-                values.push(TupleValue::Text(r.take(len)?.to_vec()));
+                let length = reader.u32()? as usize;
+                values.push(TupleValue::Text(reader.take(length)?.to_vec()));
             }
             b'b' => {
                 // Binary form only appears under options we do not request;
                 // reject rather than misinterpret.
-                return err("binary tuple value (unrequested option)");
+                return fail("binary tuple value (unrequested option)");
             }
-            other => return err(format!("unknown tuple value kind {other:#04x}")),
+            other => return fail(format!("unknown tuple value kind {other:#04x}")),
         }
     }
     Ok(TupleData { values })
 }
 
 /// Parse ONE pgoutput message (one `data` cell from the peek function).
-pub fn parse(bytes: &[u8]) -> Result<Message, PgoutputError> {
-    let mut r = Reader { bytes, pos: 0 };
-    let tag = r.u8()?;
+pub fn parse(bytes: &[u8]) -> Result<Message, ParseError> {
+    let mut reader = Reader { bytes, position: 0 };
+    let tag = reader.u8()?;
     let message = match tag {
         b'B' => {
-            let _final_lsn = r.u64()?;
-            let _commit_ts = r.u64()?;
-            let _xid = r.u32()?;
+            let _final_lsn = reader.u64()?;
+            let _commit_timestamp = reader.u64()?;
+            let _transaction_id = reader.u32()?;
             Message::Begin
         }
         b'C' => {
-            let _flags = r.u8()?;
-            let _commit_lsn = r.u64()?;
-            let _end_lsn = r.u64()?;
-            let _commit_ts = r.u64()?;
+            let _flags = reader.u8()?;
+            let _commit_lsn = reader.u64()?;
+            let _end_lsn = reader.u64()?;
+            let _commit_timestamp = reader.u64()?;
             Message::Commit
         }
         b'O' => {
-            let _lsn = r.u64()?;
-            let _name = r.cstr()?;
+            let _lsn = reader.u64()?;
+            let _name = reader.c_string()?;
             Message::Origin
         }
         b'R' => {
-            let id = r.u32()?;
-            let namespace = r.cstr()?;
-            let name = r.cstr()?;
-            // replica-identity setting ('d'/'n'/'f'/'i'); identity is read
+            let id = reader.u32()?;
+            let namespace = reader.c_string()?;
+            let name = reader.c_string()?;
+            // Replica-identity setting ('d'/'n'/'f'/'i'); identity is read
             // from the catalog at preflight, not from the wire.
-            let _replident = r.u8()?;
-            let ncols = r.u16()? as usize;
-            if ncols > bytes.len() {
-                return err("relation column count exceeds message");
+            let _replica_identity = reader.u8()?;
+            let column_count = reader.u16()? as usize;
+            if column_count > bytes.len() {
+                return fail("relation column count exceeds message");
             }
-            let mut columns = Vec::with_capacity(ncols);
-            for _ in 0..ncols {
+            let mut columns = Vec::with_capacity(column_count);
+            for _ in 0..column_count {
                 // Wire order per column: flags (identity-key bit), name,
-                // type OID, type modifier. Only the name is retained — column
-                // mapping is by name; type/identity facts come from the
-                // catalog.
-                let _flags = r.u8()?;
-                let name = r.cstr()?;
-                let _type_oid = r.u32()?;
-                let _typmod = r.i32()?;
+                // type OID, type modifier. Only the name is retained —
+                // column mapping is by name; type/identity facts come from
+                // the catalog.
+                let _flags = reader.u8()?;
+                let name = reader.c_string()?;
+                let _type_oid = reader.u32()?;
+                let _type_modifier = reader.i32()?;
                 columns.push(RelationColumn { name });
             }
             Message::Relation(Relation {
@@ -217,64 +213,64 @@ pub fn parse(bytes: &[u8]) -> Result<Message, PgoutputError> {
             })
         }
         b'Y' => {
-            let _oid = r.u32()?;
-            let _namespace = r.cstr()?;
-            let _name = r.cstr()?;
+            let _oid = reader.u32()?;
+            let _namespace = reader.c_string()?;
+            let _name = reader.c_string()?;
             Message::Type
         }
         b'I' => {
-            let rel = r.u32()?;
-            match r.u8()? {
+            let relation = reader.u32()?;
+            match reader.u8()? {
                 b'N' => Message::Insert {
-                    rel,
-                    new: tuple(&mut r)?,
+                    relation,
+                    new: tuple(&mut reader)?,
                 },
-                other => return err(format!("insert: expected 'N', got {other:#04x}")),
+                other => return fail(format!("insert: expected 'N', got {other:#04x}")),
             }
         }
         b'U' => {
-            let rel = r.u32()?;
+            let relation = reader.u32()?;
             let mut old = None;
-            let marker = r.u8()?;
+            let marker = reader.u8()?;
             let new = match marker {
                 b'K' | b'O' => {
-                    old = Some(tuple(&mut r)?);
-                    match r.u8()? {
-                        b'N' => tuple(&mut r)?,
-                        other => return err(format!("update: expected 'N', got {other:#04x}")),
+                    old = Some(tuple(&mut reader)?);
+                    match reader.u8()? {
+                        b'N' => tuple(&mut reader)?,
+                        other => return fail(format!("update: expected 'N', got {other:#04x}")),
                     }
                 }
-                b'N' => tuple(&mut r)?,
-                other => return err(format!("update: unknown marker {other:#04x}")),
+                b'N' => tuple(&mut reader)?,
+                other => return fail(format!("update: unknown marker {other:#04x}")),
             };
-            Message::Update { rel, old, new }
+            Message::Update { relation, old, new }
         }
         b'D' => {
-            let rel = r.u32()?;
-            match r.u8()? {
+            let relation = reader.u32()?;
+            match reader.u8()? {
                 b'K' | b'O' => Message::Delete {
-                    rel,
-                    old: tuple(&mut r)?,
+                    relation,
+                    old: tuple(&mut reader)?,
                 },
-                other => return err(format!("delete: unknown marker {other:#04x}")),
+                other => return fail(format!("delete: unknown marker {other:#04x}")),
             }
         }
         b'T' => {
-            let nrels = r.u32()? as usize;
-            if nrels > bytes.len() {
-                return err("truncate relation count exceeds message");
+            let relation_count = reader.u32()? as usize;
+            if relation_count > bytes.len() {
+                return fail("truncate relation count exceeds message");
             }
-            let _flags = r.u8()?;
-            let mut rels = Vec::with_capacity(nrels);
-            for _ in 0..nrels {
-                rels.push(r.u32()?);
+            let _flags = reader.u8()?;
+            let mut relations = Vec::with_capacity(relation_count);
+            for _ in 0..relation_count {
+                relations.push(reader.u32()?);
             }
-            Message::Truncate { rels }
+            Message::Truncate { relations }
         }
-        other => return err(format!("unknown message tag {other:#04x}")),
+        other => return fail(format!("unknown message tag {other:#04x}")),
     };
-    if !r.done() {
-        return err("trailing bytes after message");
+    if !reader.is_done() {
+        return fail("trailing bytes after message");
     }
     Ok(message)
 }
@@ -285,96 +281,95 @@ mod tests {
 
     use super::*;
 
-    fn cstr(s: &str) -> Vec<u8> {
-        let mut v = s.as_bytes().to_vec();
-        v.push(0);
-        v
+    fn c_string(text: &str) -> Vec<u8> {
+        let mut bytes = text.as_bytes().to_vec();
+        bytes.push(0);
+        bytes
     }
 
     fn text_tuple(values: &[Option<&str>]) -> Vec<u8> {
-        let mut v = (values.len() as u16).to_be_bytes().to_vec();
+        let mut bytes = (values.len() as u16).to_be_bytes().to_vec();
         for value in values {
             match value {
-                None => v.push(b'n'),
+                None => bytes.push(b'n'),
                 Some(text) => {
-                    v.push(b't');
-                    v.extend((text.len() as u32).to_be_bytes());
-                    v.extend(text.as_bytes());
+                    bytes.push(b't');
+                    bytes.extend((text.len() as u32).to_be_bytes());
+                    bytes.extend(text.as_bytes());
                 }
             }
         }
-        v
+        bytes
     }
 
     #[test]
     fn round_trips_the_message_set() {
         // Begin
-        let mut b = vec![b'B'];
-        b.extend(7u64.to_be_bytes());
-        b.extend(0i64.to_be_bytes());
-        b.extend(42u32.to_be_bytes());
-        assert_eq!(parse(&b).unwrap(), Message::Begin);
+        let mut begin = vec![b'B'];
+        begin.extend(7u64.to_be_bytes());
+        begin.extend(0i64.to_be_bytes());
+        begin.extend(42u32.to_be_bytes());
+        assert_eq!(parse(&begin).unwrap(), Message::Begin);
 
         // Commit
-        let mut c = vec![b'C', 0];
-        c.extend(7u64.to_be_bytes());
-        c.extend(8u64.to_be_bytes());
-        c.extend(0i64.to_be_bytes());
-        assert_eq!(parse(&c).unwrap(), Message::Commit);
+        let mut commit = vec![b'C', 0];
+        commit.extend(7u64.to_be_bytes());
+        commit.extend(8u64.to_be_bytes());
+        commit.extend(0i64.to_be_bytes());
+        assert_eq!(parse(&commit).unwrap(), Message::Commit);
 
         // Relation with one key column.
-        let mut r = vec![b'R'];
-        r.extend(99u32.to_be_bytes());
-        r.extend(cstr("public"));
-        r.extend(cstr("orders"));
-        r.push(b'd');
-        r.extend(2u16.to_be_bytes());
-        r.push(1); // key column
-        r.extend(cstr("id"));
-        r.extend(20u32.to_be_bytes()); // int8
-        r.extend((-1i32).to_be_bytes());
-        r.push(0);
-        r.extend(cstr("name"));
-        r.extend(25u32.to_be_bytes()); // text
-        r.extend((-1i32).to_be_bytes());
-        let parsed = parse(&r).unwrap();
-        match parsed {
-            Message::Relation(rel) => {
-                assert_eq!(rel.name, "orders");
-                assert_eq!(rel.columns.len(), 2);
-                assert_eq!(rel.columns[0].name, "id");
-                assert_eq!(rel.columns[1].name, "name");
+        let mut relation = vec![b'R'];
+        relation.extend(99u32.to_be_bytes());
+        relation.extend(c_string("public"));
+        relation.extend(c_string("orders"));
+        relation.push(b'd');
+        relation.extend(2u16.to_be_bytes());
+        relation.push(1); // key column
+        relation.extend(c_string("id"));
+        relation.extend(20u32.to_be_bytes()); // int8
+        relation.extend((-1i32).to_be_bytes());
+        relation.push(0);
+        relation.extend(c_string("name"));
+        relation.extend(25u32.to_be_bytes()); // text
+        relation.extend((-1i32).to_be_bytes());
+        match parse(&relation).unwrap() {
+            Message::Relation(parsed) => {
+                assert_eq!(parsed.name, "orders");
+                assert_eq!(parsed.columns.len(), 2);
+                assert_eq!(parsed.columns[0].name, "id");
+                assert_eq!(parsed.columns[1].name, "name");
             }
             other => panic!("{other:?}"),
         }
 
         // Insert
-        let mut i = vec![b'I'];
-        i.extend(99u32.to_be_bytes());
-        i.push(b'N');
-        i.extend(text_tuple(&[Some("1"), Some("ada")]));
-        match parse(&i).unwrap() {
-            Message::Insert { rel: 99, new } => {
+        let mut insert = vec![b'I'];
+        insert.extend(99u32.to_be_bytes());
+        insert.push(b'N');
+        insert.extend(text_tuple(&[Some("1"), Some("ada")]));
+        match parse(&insert).unwrap() {
+            Message::Insert { relation: 99, new } => {
                 assert_eq!(new.values[0], TupleValue::Text(b"1".to_vec()));
             }
             other => panic!("{other:?}"),
         }
 
         // Update with old key + unchanged TOAST in the new image.
-        let mut u = vec![b'U'];
-        u.extend(99u32.to_be_bytes());
-        u.push(b'K');
-        u.extend(text_tuple(&[Some("1"), None]));
-        u.push(b'N');
+        let mut update = vec![b'U'];
+        update.extend(99u32.to_be_bytes());
+        update.push(b'K');
+        update.extend(text_tuple(&[Some("1"), None]));
+        update.push(b'N');
         let mut new = 2u16.to_be_bytes().to_vec();
         new.push(b't');
         new.extend(1u32.to_be_bytes());
         new.push(b'1');
         new.push(b'u'); // unchanged toast
-        u.extend(new);
-        match parse(&u).unwrap() {
+        update.extend(new);
+        match parse(&update).unwrap() {
             Message::Update {
-                rel: 99,
+                relation: 99,
                 old: Some(_),
                 new,
             } => assert_eq!(new.values[1], TupleValue::UnchangedToast),
@@ -382,21 +377,26 @@ mod tests {
         }
 
         // Delete by key.
-        let mut d = vec![b'D'];
-        d.extend(99u32.to_be_bytes());
-        d.push(b'K');
-        d.extend(text_tuple(&[Some("1"), None]));
+        let mut delete = vec![b'D'];
+        delete.extend(99u32.to_be_bytes());
+        delete.push(b'K');
+        delete.extend(text_tuple(&[Some("1"), None]));
         assert!(matches!(
-            parse(&d).unwrap(),
-            Message::Delete { rel: 99, .. }
+            parse(&delete).unwrap(),
+            Message::Delete { relation: 99, .. }
         ));
 
         // Truncate.
-        let mut t = vec![b'T'];
-        t.extend(1u32.to_be_bytes());
-        t.push(0);
-        t.extend(99u32.to_be_bytes());
-        assert_eq!(parse(&t).unwrap(), Message::Truncate { rels: vec![99] });
+        let mut truncate = vec![b'T'];
+        truncate.extend(1u32.to_be_bytes());
+        truncate.push(0);
+        truncate.extend(99u32.to_be_bytes());
+        assert_eq!(
+            parse(&truncate).unwrap(),
+            Message::Truncate {
+                relations: vec![99]
+            }
+        );
     }
 
     #[test]

@@ -52,6 +52,39 @@ DONE. Every task 0-11 executed. Final state on branch `postgres-v2`:
 - Old crate UNTOUCHED and still fully gated. v2 NOT wired into the facade
   (D1); merge + facade swap + publishing name are the owner's calls.
 
+## SWAP-IN — EXECUTED (2026-08-01, owner decision)
+
+The owner took all three calls at once: generation 1 DELETED, this crate
+renamed to `rdlt-connector-postgres` (its `-v2` suffix existed only to
+coexist), branch merged to main. The last tree carrying BOTH generations is
+`79211241` — the A/B harness (`tests/perf_ab.rs`) died with it, since it
+needs both crates; its figures are recorded in STATUS above and are not
+reproducible after the swap. What the swap rewired, all in one commit:
+
+- Package: name `rdlt-connector-postgres`, `publish = false` dropped,
+  docs.rs `documentation` key restored, the gen-1 dev-dependency and
+  `perf_ab.rs` deleted, self-dev-dependency renamed.
+- Facade (`rdlt`): feature `postgres-dest` now maps to
+  `rdlt-connector-postgres/destination` (the crate's feature spelling);
+  `pipeline_spec.rs` and the CLI ported to the v2 API per the Appendix C
+  ledger (`source::Config`, `source::Postgres`, `tls::Policy`,
+  `destination::Postgres::new(..).schema(..)`). The YAML vocabulary is
+  UNCHANGED — `conn`/`dataset` spellings are serde-owned (Appendix B).
+- Consumers: duckdb + snowflake differential oracles ported
+  (`fixtures::PostgresContainer`, `.connection_string`); both crates'
+  dev-dependencies select `destination` instead of `dest`; fuzz targets
+  re-pointed at `testsupport::source::fuzz_*`.
+- Gate wiring: the two per-generation Makefile lines (sweep, deep)
+  collapsed to one each; the scanner selfcheck's postgres row still holds
+  (11 directly-armed of 14 declared — same three indirect, new file
+  locations recorded in its comment).
+- Bench continuity: `benches/iai.rs` → `benches/iai_pg.rs` with the
+  generation-1 benchmark IDs (`pg_copy_decode_10k`/`pg_copy_encode_10k`),
+  BECAUSE the recorded baselines in `benches/perf-baselines.json` key on
+  those names — keeping them makes the standing baselines bind on this
+  crate, and v2 measured below both, so this is a tightening, not a
+  re-record.
+
 ## REVIEW ROUNDS (running record)
 
 Round 1 (drift lenses): four fixes landed in `86ee46fd` — wrapper framing
@@ -525,6 +558,6 @@ feed = defer-to-commit typed error; publication existence/coverage checks.
 | `TableConfig`/`QueryConfig`/`CursorConfig`/`CdcConfig` | KEPT (recorded rule-1 exception: `config::Table` would collide with `reflect::Table`, which rule 5 forbids arbitrating away) | 1, 5 |
 | `PgSession` (dest) | `destination::load::Load` (the LoadSession impl) | 1 |
 | `TableIdentity.full` | `covers_all_columns` | 6 |
-| `PgFixture` / `CdcPgFixture` | `fixtures::PostgresContainer` / `fixtures::CdcContainer` | 1, 2 |
+| `PgFixture` / `CdcPgFixture` | one `fixtures::PostgresContainer`, `start()` / `start_for_cdc()` | 1, 2 |
 | `testhook` (×2) + `dest/sqlgen` shim + tls doc-hidden block | `testsupport::{source,destination,session}` | one seam |
 | test binaries `crash_sweep`/`dest_crash_sweep` | `source_crash_sweep`/`destination_crash_sweep` | 2 |

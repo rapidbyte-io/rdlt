@@ -6,5 +6,5 @@
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
-    rdlt_connector_postgres::source::testhook::fuzz_copy_decode(data);
+    rdlt_connector_postgres::testsupport::source::fuzz_copy_decode(data);
 });

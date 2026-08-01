@@ -3,7 +3,7 @@
 //! (never blocks) so a change-data-capture pipeline that will silently append
 //! or soft-delete says so up front.
 
-use rdlt::connector::postgres::source::PostgresConfig;
+use rdlt::connector::postgres::source::Config as PostgresConfig;
 use rdlt::pipeline_spec::{DestSpec, Spec, WriteModeSpec};
 
 /// The exactly-once-outcome CDC composition is `write_mode = merge{key}` +
@@ -30,7 +30,7 @@ pub fn cdc_composition_warnings(spec: &Spec, config: &PostgresConfig) -> Vec<Str
         } => {
             if !matches!(
                 merge_strategy,
-                Some(rdlt::connector::postgres::dest::MergeStrategy::Upsert)
+                Some(rdlt::connector::postgres::destination::MergeStrategy::Upsert)
             ) {
                 warnings.push(
                     "cdc: destination merge_strategy is not upsert — the \

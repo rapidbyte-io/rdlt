@@ -15,8 +15,8 @@ use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use chrono::{DateTime, Utc};
 use proptest::prelude::*;
 use rdlt_connector::{PushPayload, ReadRequest, Source as _, records_channel};
-use rdlt_connector_postgres::fixtures::PgFixture;
-use rdlt_connector_postgres::source::PostgresSource;
+use rdlt_connector_postgres::fixtures::PostgresContainer;
+use rdlt_connector_postgres::source;
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -62,35 +62,36 @@ fn row_strategy() -> impl Strategy<Value = Row> {
 
 fn decimal_text(scaled: i64) -> String {
     let sign = if scaled < 0 { "-" } else { "" };
-    let abs = scaled.unsigned_abs();
-    format!("{sign}{}.{:04}", abs / 10_000, abs % 10_000)
+    let magnitude = scaled.unsigned_abs();
+    format!("{sign}{}.{:04}", magnitude / 10_000, magnitude % 10_000)
 }
 
-fn shared() -> &'static (tokio::runtime::Runtime, PgFixture, String) {
-    static SHARED: OnceLock<(tokio::runtime::Runtime, PgFixture, String)> = OnceLock::new();
+fn shared() -> &'static (tokio::runtime::Runtime, PostgresContainer, String) {
+    static SHARED: OnceLock<(tokio::runtime::Runtime, PostgresContainer, String)> = OnceLock::new();
     SHARED.get_or_init(|| {
-        let rt = tokio::runtime::Runtime::new().expect("runtime");
-        let fixture = rt.block_on(async {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let container = runtime.block_on(async {
             // Callers guard on `runtime_available()` before reaching `shared()`,
             // so a present runtime is invariant here.
-            let f = PgFixture::start()
+            let container = PostgresContainer::start()
                 .await
                 .expect("postgres runtime (probed before shared())");
-            f.seed(
-                "CREATE TABLE diff (id int8 PRIMARY KEY, a int4, b text, c float8, \
-                 d numeric(12,4), e timestamptz, f bool, g bytea);",
-            )
-            .await;
-            f
+            container
+                .seed(
+                    "CREATE TABLE diff (id int8 PRIMARY KEY, a int4, b text, c float8, \
+                     d numeric(12,4), e timestamptz, f bool, g bytea);",
+                )
+                .await;
+            container
         });
-        let conn = fixture.conn.clone();
-        (rt, fixture, conn)
+        let connection_string = container.connection_string.clone();
+        (runtime, container, connection_string)
     })
 }
 
 /// The source-under-test path: drive `read()` directly, collect Arrow pushes.
-async fn read_via_copy(conn: &str) -> RecordBatch {
-    let batches = collect_copy_batches(conn, "").await;
+async fn read_via_copy(connection_string: &str) -> RecordBatch {
+    let batches = collect_copy_batches(connection_string, "").await;
     // ≤ 32 generated rows and a 64k-row batch cap ⇒ exactly one batch
     // (the empty-table schema batch when zero rows).
     assert_eq!(batches.len(), 1, "expected a single batch for ≤32 rows");
@@ -103,22 +104,22 @@ async fn read_via_copy(conn: &str) -> RecordBatch {
 
 /// Multi-batch variant (005 review advisory): tiny `batch_max_rows` forces
 /// row-group boundaries THROUGH the decoder; concat before compare.
-async fn read_via_copy_batched(conn: &str) -> (usize, RecordBatch) {
-    let batches = collect_copy_batches(conn, "batch_max_rows: 3\n").await;
+async fn read_via_copy_batched(connection_string: &str) -> (usize, RecordBatch) {
+    let batches = collect_copy_batches(connection_string, "batch_max_rows: 3\n").await;
     let schema = batches[0].schema();
     let combined = arrow_select::concat::concat_batches(&schema, &batches).expect("concat batches");
     (batches.len(), sort_by_id(&combined))
 }
 
-async fn collect_copy_batches(conn: &str, extra: &str) -> Vec<RecordBatch> {
-    let source = PostgresSource::from_yaml(&format!(
-        "conn: \"{conn}\"\n{extra}tables:\n  - name: diff\n"
+async fn collect_copy_batches(connection_string: &str, extra_yaml: &str) -> Vec<RecordBatch> {
+    let postgres = source::Postgres::from_yaml(&format!(
+        "conn: \"{connection_string}\"\n{extra_yaml}tables:\n  - name: diff\n"
     ))
     .expect("config");
-    let specs = source.streams().await.expect("streams");
+    let specs = postgres.streams().await.expect("streams");
     let (out, mut input) = records_channel(64 << 20);
     let read = tokio::spawn(async move {
-        source
+        postgres
             .read(ReadRequest::new(
                 specs.into_iter().next().expect("spec"),
                 None,
@@ -146,19 +147,19 @@ fn sort_by_id(batch: &RecordBatch) -> RecordBatch {
         .downcast_ref::<Int64Array>()
         .expect("id column");
     let mut order: Vec<u32> = (0..batch.num_rows() as u32).collect();
-    order.sort_by_key(|&i| ids.value(i as usize));
+    order.sort_by_key(|&position| ids.value(position as usize));
     let indices = arrow_array::UInt32Array::from(order);
     let columns: Vec<ArrayRef> = batch
         .columns()
         .iter()
-        .map(|c| arrow_select::take::take(c, &indices, None).expect("take"))
+        .map(|column| arrow_select::take::take(column, &indices, None).expect("take"))
         .collect();
     RecordBatch::try_new(batch.schema(), columns).expect("sorted batch")
 }
 
 /// The reference path: independent decode via driver `FromSql` + text casts.
-async fn read_via_driver(fixture: &PgFixture) -> RecordBatch {
-    let client = fixture.client().await;
+async fn read_via_driver(container: &PostgresContainer) -> RecordBatch {
+    let client = container.client().await;
     let rows = client
         .query(
             "SELECT id, a, b, c, d::text, e, f, g FROM diff ORDER BY id",
@@ -191,7 +192,7 @@ async fn read_via_driver(fixture: &PgFixture) -> RecordBatch {
         }));
         e.append_option(
             row.get::<_, Option<DateTime<Utc>>>(5)
-                .map(|ts| ts.timestamp_micros()),
+                .map(|instant| instant.timestamp_micros()),
         );
         f.append_option(row.get::<_, Option<bool>>(6));
         g.append_option(row.get::<_, Option<Vec<u8>>>(7));
@@ -223,13 +224,13 @@ async fn read_via_driver(fixture: &PgFixture) -> RecordBatch {
     RecordBatch::try_new(schema, arrays).expect("reference batch")
 }
 
-async fn seed_rows(fixture: &PgFixture, rows: &[Row]) {
-    let client = fixture.client().await;
+async fn seed_rows(container: &PostgresContainer, rows: &[Row]) {
+    let client = container.client().await;
     client
         .execute("TRUNCATE diff", &[])
         .await
         .expect("truncate");
-    let stmt = client
+    let insert = client
         .prepare(
             "INSERT INTO diff VALUES ($1, $2, $3, $4, $5::text::numeric, \
              to_timestamp($6::float8 / 1000000.0), $7, $8) ON CONFLICT (id) DO NOTHING",
@@ -237,13 +238,13 @@ async fn seed_rows(fixture: &PgFixture, rows: &[Row]) {
         .await
         .expect("prepare");
     for row in rows {
-        let d_text = row.d.map(decimal_text);
-        let e_us = row.e.map(|v| v as f64);
+        let decimal = row.d.map(decimal_text);
+        let micros = row.e.map(|value| value as f64);
         client
             .execute(
-                &stmt,
+                &insert,
                 &[
-                    &row.id, &row.a, &row.b, &row.c, &d_text, &e_us, &row.f, &row.g,
+                    &row.id, &row.a, &row.b, &row.c, &decimal, &micros, &row.f, &row.g,
                 ],
             )
             .await
@@ -259,22 +260,22 @@ proptest! {
         if !rdlt_testkit::gate::runtime_available() {
             return Ok(()); // skip-not-fail: no container runtime
         }
-        let (rt, fixture, conn) = shared();
-        rt.block_on(async {
-            seed_rows(fixture, &rows).await;
-            let via_copy = read_via_copy(conn).await;
-            let reference = read_via_driver(fixture).await;
+        let (runtime, container, connection_string) = shared();
+        runtime.block_on(async {
+            seed_rows(container, &rows).await;
+            let via_copy = read_via_copy(connection_string).await;
+            let reference = read_via_driver(container).await;
             // NaN != NaN under arrow equality; compare float column textually.
             prop_assert_eq!(via_copy.num_rows(), reference.num_rows());
             prop_assert_eq!(via_copy.schema(), reference.schema());
-            for (idx, (ours, theirs)) in via_copy.columns().iter().zip(reference.columns()).enumerate() {
-                if idx == 3 {
+            for (index, (ours, theirs)) in via_copy.columns().iter().zip(reference.columns()).enumerate() {
+                if index == 3 {
                     prop_assert_eq!(
                         format!("{ours:?}"), format!("{theirs:?}"),
                         "float column (NaN-tolerant debug compare)"
                     );
                 } else {
-                    prop_assert_eq!(ours, theirs, "column {}", idx);
+                    prop_assert_eq!(ours, theirs, "column {}", index);
                 }
             }
             Ok(())
@@ -291,11 +292,11 @@ proptest! {
         if !rdlt_testkit::gate::runtime_available() {
             return Ok(()); // skip-not-fail: no container runtime
         }
-        let (rt, fixture, conn) = shared();
-        rt.block_on(async {
-            seed_rows(fixture, &rows).await;
-            let reference = read_via_driver(fixture).await;
-            let (batch_count, via_copy) = read_via_copy_batched(conn).await;
+        let (runtime, container, connection_string) = shared();
+        runtime.block_on(async {
+            seed_rows(container, &rows).await;
+            let reference = read_via_driver(container).await;
+            let (batch_count, via_copy) = read_via_copy_batched(connection_string).await;
             prop_assert!(
                 batch_count >= reference.num_rows().div_ceil(3).max(1),
                 "row cap must actually cut: {} batches for {} rows",
@@ -303,14 +304,14 @@ proptest! {
             );
             prop_assert_eq!(via_copy.num_rows(), reference.num_rows());
             prop_assert_eq!(via_copy.schema(), reference.schema());
-            for (idx, (ours, theirs)) in via_copy.columns().iter().zip(reference.columns()).enumerate() {
-                if idx == 3 {
+            for (index, (ours, theirs)) in via_copy.columns().iter().zip(reference.columns()).enumerate() {
+                if index == 3 {
                     prop_assert_eq!(
                         format!("{ours:?}"), format!("{theirs:?}"),
                         "float column (NaN-tolerant debug compare)"
                     );
                 } else {
-                    prop_assert_eq!(ours, theirs, "column {}", idx);
+                    prop_assert_eq!(ours, theirs, "column {}", index);
                 }
             }
             Ok(())

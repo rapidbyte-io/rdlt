@@ -10,10 +10,10 @@ use rdlt_connector::core::{LoadId, PipelineId};
 use rdlt_connector::{
     ConnectorSpec, Cursor, Destination as _, OpenCtx, ReadRequest, Source, SourceError, StreamSpec,
 };
-use rdlt_connector_postgres::dest::{
+use rdlt_connector_postgres::destination::{
     AbsentPolicy, DestinationOptions, MergeStrategy, Postgres, Scd2Options, TableOptions,
 };
-use rdlt_connector_postgres::fixtures::PgFixture;
+use rdlt_connector_postgres::fixtures::PostgresContainer;
 use rdlt_engine::{Engine, EngineConfig};
 
 struct DimSource {
@@ -34,9 +34,9 @@ impl Source for DimSource {
         ])
     }
 
-    async fn read(&self, mut req: ReadRequest) -> Result<(), SourceError> {
-        let _ = req.out.arrow(self.batch.clone()).await;
-        let _ = req.out.checkpoint(Cursor::new(1u64)).await;
+    async fn read(&self, mut request: ReadRequest) -> Result<(), SourceError> {
+        let _ = request.out.arrow(self.batch.clone()).await;
+        let _ = request.out.checkpoint(Cursor::new(1u64)).await;
         Ok(())
     }
 }
@@ -49,19 +49,19 @@ fn batch(rows: &[(i64, &str)]) -> RecordBatch {
         ])),
         vec![
             Arc::new(Int64Array::from(
-                rows.iter().map(|r| r.0).collect::<Vec<_>>(),
+                rows.iter().map(|row| row.0).collect::<Vec<_>>(),
             )),
             Arc::new(StringArray::from(
-                rows.iter().map(|r| r.1).collect::<Vec<_>>(),
+                rows.iter().map(|row| row.1).collect::<Vec<_>>(),
             )),
         ],
     )
     .expect("batch")
 }
 
-fn scd2_dest(conn: &str, dataset: &str, absent: AbsentPolicy) -> Postgres {
-    Postgres::connect(conn)
-        .dataset(dataset)
+fn scd2_destination(connection_string: &str, schema: &str, absent: AbsentPolicy) -> Postgres {
+    Postgres::new(connection_string)
+        .schema(schema)
         .options(DestinationOptions {
             merge_strategy: Some(MergeStrategy::DeleteInsert),
             tables: [(
@@ -81,49 +81,80 @@ fn scd2_dest(conn: &str, dataset: &str, absent: AbsentPolicy) -> Postgres {
         .expect("valid options")
 }
 
-async fn run(dest: Postgres, rows: &[(i64, &str)]) {
+async fn run(destination: Postgres, rows: &[(i64, &str)]) {
     let mut config = EngineConfig::new("scd2");
     config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
         key: vec!["id".into()],
     });
-    Engine::new(config, DimSource { batch: batch(rows) }, dest)
+    Engine::new(config, DimSource { batch: batch(rows) }, destination)
         .run()
         .await
         .expect("scd2 run");
 }
 
+/// The two-column dimension schema the session-level cells ensure by hand,
+/// where no engine is in the loop to infer it.
+fn dims_schema() -> rdlt_connector::core::TableSchema {
+    rdlt_connector::core::TableSchema {
+        table: rdlt_connector::core::TableName::new("dims"),
+        parent: None,
+        columns: vec![
+            rdlt_connector::core::ColumnDef {
+                name: "id".into(),
+                column_type: rdlt_connector::core::ColumnType::scalar(
+                    rdlt_connector::core::LogicalType::Int64,
+                ),
+                nullable: false,
+                provenance: rdlt_connector::core::Provenance::Hinted,
+            },
+            rdlt_connector::core::ColumnDef {
+                name: "name".into(),
+                column_type: rdlt_connector::core::ColumnType::scalar(
+                    rdlt_connector::core::LogicalType::Utf8,
+                ),
+                nullable: true,
+                provenance: rdlt_connector::core::Provenance::Hinted,
+            },
+        ],
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn three_rounds_produce_correct_history_and_point_in_time() {
-    let Some(pg) = PgFixture::start().await else {
+    let Some(container) = PostgresContainer::start().await else {
         return;
     };
-    let conn = pg.conn.clone();
-    let client = crate::cases::common::connect(&conn).await;
+    let connection_string = container.connection_string.clone();
+    let client = crate::cases::common::connect(&connection_string).await;
     let now = || async {
-        let t: chrono::DateTime<chrono::Utc> = client
+        let instant: chrono::DateTime<chrono::Utc> = client
             .query_one("SELECT now()", &[])
             .await
             .expect("now")
             .get(0);
-        t
+        instant
     };
 
     // Round 1: both keys active.
     run(
-        scd2_dest(&conn, "hist", AbsentPolicy::Keep),
+        scd2_destination(&connection_string, "hist", AbsentPolicy::Keep),
         &[(1, "a"), (2, "b")],
     )
     .await;
-    let after_r1 = now().await;
+    let after_first_round = now().await;
     // Round 2 (S3): key 1 CHANGED (retire + new version); key 2 UNCHANGED
     // (no churn version).
     run(
-        scd2_dest(&conn, "hist", AbsentPolicy::Keep),
+        scd2_destination(&connection_string, "hist", AbsentPolicy::Keep),
         &[(1, "a2"), (2, "b")],
     )
     .await;
     // Round 3 (S6 keep): key 2 absent — keeps its active version.
-    run(scd2_dest(&conn, "hist", AbsentPolicy::Keep), &[(1, "a3")]).await;
+    run(
+        scd2_destination(&connection_string, "hist", AbsentPolicy::Keep),
+        &[(1, "a3")],
+    )
+    .await;
 
     // Version counts: key 1 has 3, key 2 has exactly 1 (S3 skip-unchanged).
     let counts: Vec<(i64, i64)> = client
@@ -134,7 +165,7 @@ async fn three_rounds_produce_correct_history_and_point_in_time() {
         .await
         .expect("counts")
         .into_iter()
-        .map(|r| (r.get(0), r.get(1)))
+        .map(|row| (row.get(0), row.get(1)))
         .collect();
     assert_eq!(counts, vec![(1, 3), (2, 1)], "S3: versions only on change");
 
@@ -147,7 +178,7 @@ async fn three_rounds_produce_correct_history_and_point_in_time() {
         .await
         .expect("active")
         .into_iter()
-        .map(|r| (r.get(0), r.get(1)))
+        .map(|row| (row.get(0), row.get(1)))
         .collect();
     assert_eq!(
         active,
@@ -187,7 +218,7 @@ async fn three_rounds_produce_correct_history_and_point_in_time() {
             "SELECT name FROM hist.dims
              WHERE id = 1 AND _rdlt_valid_from <= $1
                AND COALESCE(_rdlt_valid_to, 'infinity') > $1",
-            &[&after_r1],
+            &[&after_first_round],
         )
         .await
         .expect("as-of")
@@ -197,18 +228,22 @@ async fn three_rounds_produce_correct_history_and_point_in_time() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn absent_retire_closes_missing_keys() {
-    let Some(pg) = PgFixture::start().await else {
+    let Some(container) = PostgresContainer::start().await else {
         return;
     };
-    let conn = pg.conn.clone();
+    let connection_string = container.connection_string.clone();
     run(
-        scd2_dest(&conn, "ret", AbsentPolicy::Retire),
+        scd2_destination(&connection_string, "ret", AbsentPolicy::Retire),
         &[(1, "a"), (2, "b")],
     )
     .await;
-    run(scd2_dest(&conn, "ret", AbsentPolicy::Retire), &[(1, "a2")]).await;
+    run(
+        scd2_destination(&connection_string, "ret", AbsentPolicy::Retire),
+        &[(1, "a2")],
+    )
+    .await;
 
-    let client = crate::cases::common::connect(&conn).await;
+    let client = crate::cases::common::connect(&connection_string).await;
     let active: Vec<i64> = client
         .query(
             "SELECT id FROM ret.dims WHERE _rdlt_valid_to IS NULL ORDER BY id",
@@ -217,10 +252,10 @@ async fn absent_retire_closes_missing_keys() {
         .await
         .expect("active")
         .into_iter()
-        .map(|r| r.get(0))
+        .map(|row| row.get(0))
         .collect();
     assert_eq!(active, vec![1], "S6 retire: absent key 2 closed");
-    let key2: i64 = client
+    let second_key: i64 = client
         .query_one(
             "SELECT count(*) FROM ret.dims WHERE id = 2 AND _rdlt_valid_to IS NOT NULL",
             &[],
@@ -228,7 +263,7 @@ async fn absent_retire_closes_missing_keys() {
         .await
         .expect("key2")
         .get(0);
-    assert_eq!(key2, 1, "key 2's version retired, not deleted");
+    assert_eq!(second_key, 1, "key 2's version retired, not deleted");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -236,44 +271,26 @@ async fn redelivery_adds_zero_versions() {
     use rdlt_connector::core::{CommitCounters, StateDoc};
     use rdlt_connector::{CommitMeta, WriteMode};
 
-    let Some(pg) = PgFixture::start().await else {
+    let Some(container) = PostgresContainer::start().await else {
         return;
     };
-    let conn = pg.conn.clone();
-    let dest = scd2_dest(&conn, "redel", AbsentPolicy::Keep);
+    let connection_string = container.connection_string.clone();
+    let destination = scd2_destination(&connection_string, "redel", AbsentPolicy::Keep);
     let pipeline = PipelineId::new("redel");
-    let mut session = dest
+    let mut session = destination
         .open(OpenCtx::new(pipeline.clone(), LoadId::new("rd-load")))
         .await
         .expect("open");
-    let schema = rdlt_connector::core::TableSchema {
-        table: rdlt_connector::core::TableName::new("dims"),
-        parent: None,
-        columns: vec![
-            rdlt_connector::core::ColumnDef {
-                name: "id".into(),
-                column_type: rdlt_connector::core::ColumnType::scalar(
-                    rdlt_connector::core::LogicalType::Int64,
-                ),
-                nullable: false,
-                provenance: rdlt_connector::core::Provenance::Hinted,
-            },
-            rdlt_connector::core::ColumnDef {
-                name: "name".into(),
-                column_type: rdlt_connector::core::ColumnType::scalar(
-                    rdlt_connector::core::LogicalType::Utf8,
-                ),
-                nullable: true,
-                provenance: rdlt_connector::core::Provenance::Hinted,
-            },
-        ],
-    };
+    let table_schema = dims_schema();
     let mode = WriteMode::Merge {
         key: vec!["id".into()],
     };
-    session.ensure_table(&schema, &mode).await.expect("ensure");
     session
-        .write(&schema.table, batch(&[(1, "a")]))
+        .ensure_table(&table_schema, &mode)
+        .await
+        .expect("ensure");
+    session
+        .write(&table_schema.table, batch(&[(1, "a")]))
         .await
         .expect("write");
     let meta = CommitMeta {
@@ -286,12 +303,12 @@ async fn redelivery_adds_zero_versions() {
     // S5: the SAME (load_id, commit_seq) redelivered — receipts short-circuit,
     // zero new versions even though the stage was re-written.
     session
-        .write(&schema.table, batch(&[(1, "a")]))
+        .write(&table_schema.table, batch(&[(1, "a")]))
         .await
         .expect("re-write (redelivery)");
     session.commit(meta).await.expect("redelivered commit");
 
-    let client = crate::cases::common::connect(&conn).await;
+    let client = crate::cases::common::connect(&connection_string).await;
     let versions: i64 = client
         .query_one("SELECT count(*) FROM redel.dims", &[])
         .await
@@ -302,14 +319,14 @@ async fn redelivery_adds_zero_versions() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn rejections_are_typed_at_ensure() {
-    let Some(pg) = PgFixture::start().await else {
+    let Some(container) = PostgresContainer::start().await else {
         return;
     };
-    let conn = pg.conn.clone();
+    let connection_string = container.connection_string.clone();
 
     // Validity-name collision with a stream column (S1).
-    let dest = Postgres::connect(&conn)
-        .dataset("bad")
+    let destination = Postgres::new(&connection_string)
+        .schema("bad")
         .options(DestinationOptions {
             tables: [(
                 "dims".to_string(),
@@ -331,24 +348,27 @@ async fn rejections_are_typed_at_ensure() {
     config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
         key: vec!["id".into()],
     });
-    let err = Engine::new(
+    let error = Engine::new(
         config,
         DimSource {
             batch: batch(&[(1, "a")]),
         },
-        dest,
+        destination,
     )
     .run()
     .await
     .expect_err("collision must be rejected");
-    let msg = err.to_string();
-    assert!(msg.contains("name") && msg.contains("collides"), "{msg}");
+    let message = error.to_string();
+    assert!(
+        message.contains("name") && message.contains("collides"),
+        "{message}"
+    );
 
     // scd2 on a SHREDDED stream (S1): typed at ensure.
     use rdlt_testkit::MemorySource;
     use serde_json::json;
-    let dest = Postgres::connect(&conn)
-        .dataset("badsh")
+    let destination = Postgres::new(&connection_string)
+        .schema("badsh")
         .options(DestinationOptions {
             merge_strategy: Some(MergeStrategy::Scd2),
             ..DestinationOptions::default()
@@ -362,12 +382,12 @@ async fn rejections_are_typed_at_ensure() {
         StreamSpec::new("users").with_primary_key(["id"]),
         vec![json!({"id": 1})],
     );
-    let err = Engine::new(config, source, dest)
+    let error = Engine::new(config, source, destination)
         .run()
         .await
         .expect_err("scd2 on shredded must be rejected");
-    let msg = err.to_string();
-    assert!(msg.contains("KEYED structured"), "{msg}");
+    let message = error.to_string();
+    assert!(message.contains("KEYED structured"), "{message}");
 }
 
 /// Review F2 (contract S6 as amended): `absent: retire` compares against ONE
@@ -378,66 +398,48 @@ async fn absent_retire_rejects_multi_unit_loads() {
     use rdlt_connector::core::{CommitCounters, StateDoc};
     use rdlt_connector::{CommitMeta, WriteMode};
 
-    let Some(pg) = PgFixture::start().await else {
+    let Some(container) = PostgresContainer::start().await else {
         return;
     };
-    let conn = pg.conn.clone();
-    let dest = scd2_dest(&conn, "multiunit", AbsentPolicy::Retire);
+    let connection_string = container.connection_string.clone();
+    let destination = scd2_destination(&connection_string, "multiunit", AbsentPolicy::Retire);
     let pipeline = PipelineId::new("multiunit");
-    let mut session = dest
+    let mut session = destination
         .open(OpenCtx::new(pipeline.clone(), LoadId::new("mu-load")))
         .await
         .expect("open");
-    let schema = rdlt_connector::core::TableSchema {
-        table: rdlt_connector::core::TableName::new("dims"),
-        parent: None,
-        columns: vec![
-            rdlt_connector::core::ColumnDef {
-                name: "id".into(),
-                column_type: rdlt_connector::core::ColumnType::scalar(
-                    rdlt_connector::core::LogicalType::Int64,
-                ),
-                nullable: false,
-                provenance: rdlt_connector::core::Provenance::Hinted,
-            },
-            rdlt_connector::core::ColumnDef {
-                name: "name".into(),
-                column_type: rdlt_connector::core::ColumnType::scalar(
-                    rdlt_connector::core::LogicalType::Utf8,
-                ),
-                nullable: true,
-                provenance: rdlt_connector::core::Provenance::Hinted,
-            },
-        ],
-    };
+    let table_schema = dims_schema();
     let mode = WriteMode::Merge {
         key: vec!["id".into()],
     };
-    let meta = |seq: u64| CommitMeta {
+    let meta = |commit_seq: u64| CommitMeta {
         load_id: LoadId::new("mu-load"),
-        commit_seq: seq,
+        commit_seq,
         state: StateDoc::new(pipeline.clone(), env!("CARGO_PKG_VERSION")),
         counters: CommitCounters::default(),
     };
-    session.ensure_table(&schema, &mode).await.expect("ensure");
     session
-        .write(&schema.table, batch(&[(1, "a")]))
+        .ensure_table(&table_schema, &mode)
+        .await
+        .expect("ensure");
+    session
+        .write(&table_schema.table, batch(&[(1, "a")]))
         .await
         .expect("write unit 0");
     session.commit(meta(0)).await.expect("first unit commits");
     // Unit 1 of the SAME load: must fail typed, not corrupt history.
     session
-        .write(&schema.table, batch(&[(2, "b")]))
+        .write(&table_schema.table, batch(&[(2, "b")]))
         .await
         .expect("write unit 1");
-    let err = session
+    let error = session
         .commit(meta(1))
         .await
         .expect_err("second unit under absent: retire must be rejected");
-    let msg = err.to_string();
+    let message = error.to_string();
     assert!(
-        msg.contains("SINGLE commit unit") && msg.contains("commit thresholds"),
-        "{msg}"
+        message.contains("SINGLE commit unit") && message.contains("commit thresholds"),
+        "{message}"
     );
 }
 
@@ -445,16 +447,12 @@ async fn absent_retire_rejects_multi_unit_loads() {
 /// the configured names appear on the target and carry the history.
 #[tokio::test(flavor = "multi_thread")]
 async fn custom_validity_column_names_flow_end_to_end() {
-    use rdlt_connector_postgres::dest::{
-        DestinationOptions, MergeStrategy, Scd2Options, TableOptions,
-    };
-
-    let Some(pg) = PgFixture::start().await else {
+    let Some(container) = PostgresContainer::start().await else {
         return;
     };
-    let conn = pg.conn.clone();
-    let dest = Postgres::connect(&conn)
-        .dataset("scd2c")
+    let connection_string = container.connection_string.clone();
+    let destination = Postgres::new(&connection_string)
+        .schema("scd2c")
         .options(DestinationOptions {
             merge_strategy: Some(MergeStrategy::Scd2),
             tables: [(
@@ -473,10 +471,10 @@ async fn custom_validity_column_names_flow_end_to_end() {
             .collect(),
         })
         .expect("options");
-    run(dest.clone(), &[(1, "v1")]).await;
-    run(dest, &[(1, "v2")]).await;
+    run(destination.clone(), &[(1, "v1")]).await;
+    run(destination, &[(1, "v2")]).await;
 
-    let client = crate::cases::common::connect(&conn).await;
+    let client = crate::cases::common::connect(&connection_string).await;
     let versions: i64 = client
         .query_one("SELECT count(*) FROM scd2c.dims", &[])
         .await

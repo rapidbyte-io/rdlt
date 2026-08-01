@@ -15,12 +15,12 @@ use rdlt_connector::core::{
     TableName, TableSchema,
 };
 use rdlt_connector::{CommitMeta, Destination, OpenCtx, WriteMode};
-use rdlt_connector_postgres::fixtures::PgFixture;
+use rdlt_connector_postgres::fixtures::PostgresContainer;
 use std::sync::Arc;
 
-fn schema(t: &str) -> TableSchema {
+fn schema(table: &str) -> TableSchema {
     TableSchema {
-        table: TableName::new(t),
+        table: TableName::new(table),
         parent: None,
         columns: vec![ColumnDef {
             name: "id".into(),
@@ -39,14 +39,15 @@ fn batch(ids: &[i64]) -> RecordBatch {
     )
     .expect("batch")
 }
-async fn count(conn: &str, t: &str) -> i64 {
-    let (c, connection) = tokio_postgres::connect(conn, tokio_postgres::NoTls)
+async fn count(connection_string: &str, table: &str) -> i64 {
+    let (client, connection) = tokio_postgres::connect(connection_string, tokio_postgres::NoTls)
         .await
         .expect("conn");
     tokio::spawn(async move {
         let _ = connection.await;
     });
-    c.query_one(&format!("SELECT count(*) FROM {t}"), &[])
+    client
+        .query_one(&format!("SELECT count(*) FROM {table}"), &[])
         .await
         .expect("count")
         .get(0)
@@ -63,39 +64,47 @@ async fn count(conn: &str, t: &str) -> i64 {
 /// crash sweep passed 23/23 while this was broken.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_redelivered_unit_never_duplicates_its_rows() {
-    let Some(pg) = PgFixture::start().await else {
+    let Some(container) = PostgresContainer::start().await else {
         return;
     };
-    let conn = pg.conn.clone();
-    let dest = rdlt_connector_postgres::dest::Postgres::connect(&conn).dataset("rp1");
+    let connection_string = container.connection_string.clone();
+    let destination =
+        rdlt_connector_postgres::destination::Postgres::new(&connection_string).schema("rp1");
     let pipeline = PipelineId::new("rp1");
-    let meta = |seq: u64| CommitMeta {
+    let meta = |commit_seq: u64| CommitMeta {
         load_id: LoadId::new("rp1-load"),
-        commit_seq: seq,
+        commit_seq,
         state: StateDoc::new(pipeline.clone(), env!("CARGO_PKG_VERSION")),
         counters: CommitCounters::default(),
     };
-    let mut s = dest
+    let mut session = destination
         .open(OpenCtx::new(pipeline.clone(), LoadId::new("rp1-load")))
         .await
         .expect("open");
-    s.ensure_table(&schema("t"), &WriteMode::Append)
+    session
+        .ensure_table(&schema("t"), &WriteMode::Append)
         .await
         .expect("ensure");
-    s.write(&TableName::new("t"), batch(&[1, 2, 3]))
+    session
+        .write(&TableName::new("t"), batch(&[1, 2, 3]))
         .await
         .expect("write");
-    s.commit(meta(0)).await.expect("commit");
-    assert_eq!(count(&conn, "rp1.t").await, 3, "first delivery");
+    session.commit(meta(0)).await.expect("commit");
+    assert_eq!(
+        count(&connection_string, "rp1.t").await,
+        3,
+        "first delivery"
+    );
 
     // The redelivery window: the client died without learning the outcome, so
     // the same (load_id, commit_seq) is delivered again.
-    s.write(&TableName::new("t"), batch(&[1, 2, 3]))
+    session
+        .write(&TableName::new("t"), batch(&[1, 2, 3]))
         .await
         .expect("re-write");
-    s.commit(meta(0)).await.expect("replay commit");
+    session.commit(meta(0)).await.expect("replay commit");
     assert_eq!(
-        count(&conn, "rp1.t").await,
+        count(&connection_string, "rp1.t").await,
         3,
         "REDELIVERY MUST NOT DUPLICATE"
     );
@@ -121,49 +130,57 @@ async fn a_redelivered_unit_never_duplicates_its_rows() {
 /// claiming it happened.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_replace_target_first_written_in_unit_two_is_still_cleared() {
-    let Some(pg) = PgFixture::start().await else {
+    let Some(container) = PostgresContainer::start().await else {
         return;
     };
-    let conn = pg.conn.clone();
-    let dest = rdlt_connector_postgres::dest::Postgres::connect(&conn).dataset("rp2");
+    let connection_string = container.connection_string.clone();
+    let destination =
+        rdlt_connector_postgres::destination::Postgres::new(&connection_string).schema("rp2");
     let pipeline = PipelineId::new("rp2");
-    let mk = |load: &str, seq: u64| CommitMeta {
+    let meta = |load: &str, commit_seq: u64| CommitMeta {
         load_id: LoadId::new(load),
-        commit_seq: seq,
+        commit_seq,
         state: StateDoc::new(pipeline.clone(), env!("CARGO_PKG_VERSION")),
         counters: CommitCounters::default(),
     };
     // Load 1 leaves rows behind.
-    let mut s = dest
+    let mut session = destination
         .open(OpenCtx::new(pipeline.clone(), LoadId::new("L1")))
         .await
         .expect("open");
-    s.ensure_table(&schema("t"), &WriteMode::Replace)
+    session
+        .ensure_table(&schema("t"), &WriteMode::Replace)
         .await
         .expect("ensure");
-    s.write(&TableName::new("t"), batch(&[1, 2, 3]))
+    session
+        .write(&TableName::new("t"), batch(&[1, 2, 3]))
         .await
         .expect("write");
-    s.commit(mk("L1", 0)).await.expect("commit");
-    drop(s);
-    assert_eq!(count(&conn, "rp2.t").await, 3, "load 1 landed");
+    session.commit(meta("L1", 0)).await.expect("commit");
+    drop(session);
+    assert_eq!(count(&connection_string, "rp2.t").await, 3, "load 1 landed");
 
     // Load 2: table T gets NO write in unit 0, which still commits; its first
     // rows arrive in unit 1.
-    let mut s = dest
+    let mut session = destination
         .open(OpenCtx::new(pipeline.clone(), LoadId::new("L2")))
         .await
         .expect("open");
-    s.ensure_table(&schema("t"), &WriteMode::Replace)
+    session
+        .ensure_table(&schema("t"), &WriteMode::Replace)
         .await
         .expect("ensure");
-    s.commit(mk("L2", 0)).await.expect("empty unit commits");
-    s.write(&TableName::new("t"), batch(&[9]))
+    session
+        .commit(meta("L2", 0))
+        .await
+        .expect("empty unit commits");
+    session
+        .write(&TableName::new("t"), batch(&[9]))
         .await
         .expect("write in unit 1");
-    s.commit(mk("L2", 1)).await.expect("commit unit 1");
+    session.commit(meta("L2", 1)).await.expect("commit unit 1");
     assert_eq!(
-        count(&conn, "rp2.t").await,
+        count(&connection_string, "rp2.t").await,
         1,
         "REPLACE MUST CLEAR load 1's rows"
     );

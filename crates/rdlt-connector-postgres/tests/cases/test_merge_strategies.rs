@@ -7,10 +7,12 @@ use arrow_array::{BooleanArray, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use async_trait::async_trait;
 use rdlt_connector::{ConnectorSpec, Cursor, ReadRequest, Source, SourceError, StreamSpec};
-use rdlt_connector_postgres::dest::{DestinationOptions, MergeStrategy, Postgres, TableOptions};
+use rdlt_connector_postgres::destination::{
+    DestinationOptions, MergeStrategy, Postgres, TableOptions,
+};
 use rdlt_engine::{Engine, EngineConfig};
 
-use rdlt_connector_postgres::fixtures::PgFixture;
+use rdlt_connector_postgres::fixtures::PostgresContainer;
 
 /// Keyed structured stream with a bool `deleted` flag column.
 struct FlaggedSource {
@@ -31,9 +33,9 @@ impl Source for FlaggedSource {
         ])
     }
 
-    async fn read(&self, mut req: ReadRequest) -> Result<(), SourceError> {
-        let _ = req.out.arrow(self.batch.clone()).await;
-        let _ = req.out.checkpoint(Cursor::new(1u64)).await;
+    async fn read(&self, mut request: ReadRequest) -> Result<(), SourceError> {
+        let _ = request.out.arrow(self.batch.clone()).await;
+        let _ = request.out.checkpoint(Cursor::new(1u64)).await;
         Ok(())
     }
 }
@@ -47,22 +49,22 @@ fn batch(rows: &[(i64, &str, Option<bool>)]) -> RecordBatch {
         ])),
         vec![
             Arc::new(Int64Array::from(
-                rows.iter().map(|r| r.0).collect::<Vec<_>>(),
+                rows.iter().map(|row| row.0).collect::<Vec<_>>(),
             )),
             Arc::new(StringArray::from(
-                rows.iter().map(|r| r.1).collect::<Vec<_>>(),
+                rows.iter().map(|row| row.1).collect::<Vec<_>>(),
             )),
             Arc::new(BooleanArray::from(
-                rows.iter().map(|r| r.2).collect::<Vec<_>>(),
+                rows.iter().map(|row| row.2).collect::<Vec<_>>(),
             )),
         ],
     )
     .expect("batch")
 }
 
-fn upsert_dest(conn: &str, dataset: &str) -> Postgres {
-    Postgres::connect(conn)
-        .dataset(dataset)
+fn upsert_destination(connection_string: &str, schema: &str) -> Postgres {
+    Postgres::new(connection_string)
+        .schema(schema)
         .options(DestinationOptions {
             merge_strategy: Some(MergeStrategy::Upsert),
             tables: [(
@@ -78,12 +80,12 @@ fn upsert_dest(conn: &str, dataset: &str) -> Postgres {
         .expect("valid options")
 }
 
-async fn run_merge(dest: Postgres, rows: &[(i64, &str, Option<bool>)]) {
+async fn run_merge(destination: Postgres, rows: &[(i64, &str, Option<bool>)]) {
     let mut config = EngineConfig::new("strat");
     config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
         key: vec!["id".into()],
     });
-    Engine::new(config, FlaggedSource { batch: batch(rows) }, dest)
+    Engine::new(config, FlaggedSource { batch: batch(rows) }, destination)
         .run()
         .await
         .expect("merge run");
@@ -91,14 +93,14 @@ async fn run_merge(dest: Postgres, rows: &[(i64, &str, Option<bool>)]) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn upsert_converges_and_hard_delete_removes_keys() {
-    let Some(pg) = PgFixture::start().await else {
+    let Some(container) = PostgresContainer::start().await else {
         return;
     };
-    let conn = pg.conn.clone();
+    let connection_string = container.connection_string.clone();
 
     // Run 1: three live rows.
     run_merge(
-        upsert_dest(&conn, "strat"),
+        upsert_destination(&connection_string, "strat"),
         &[(1, "a", Some(false)), (2, "b", None), (3, "c", Some(false))],
     )
     .await;
@@ -111,15 +113,15 @@ async fn upsert_converges_and_hard_delete_removes_keys() {
         (4, "d", Some(false)),
         (9, "ghost", Some(true)),
     ];
-    run_merge(upsert_dest(&conn, "strat"), round2).await;
+    run_merge(upsert_destination(&connection_string, "strat"), round2).await;
 
-    let client = crate::cases::common::connect(&conn).await;
+    let client = crate::cases::common::connect(&connection_string).await;
     let rows: Vec<(i64, String)> = client
         .query("SELECT id, name FROM strat.events ORDER BY id", &[])
         .await
         .expect("rows")
         .into_iter()
-        .map(|r| (r.get(0), r.get(1)))
+        .map(|row| (row.get(0), row.get(1)))
         .collect();
     assert_eq!(
         rows,
@@ -133,13 +135,13 @@ async fn upsert_converges_and_hard_delete_removes_keys() {
 
     // Three further re-runs: totals never move (idempotent conflict-update).
     for _ in 0..3 {
-        run_merge(upsert_dest(&conn, "strat"), round2).await;
-        let n: i64 = client
+        run_merge(upsert_destination(&connection_string, "strat"), round2).await;
+        let total: i64 = client
             .query_one("SELECT count(*) FROM strat.events", &[])
             .await
             .expect("count")
             .get(0);
-        assert_eq!(n, 3, "totals exactly stable");
+        assert_eq!(total, 3, "totals exactly stable");
     }
 
     // M3/M5: the unique index the strategy required exists.
@@ -158,13 +160,13 @@ async fn upsert_converges_and_hard_delete_removes_keys() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn duplicate_keys_under_upsert_fail_typed_naming_the_key() {
-    let Some(pg) = PgFixture::start().await else {
+    let Some(container) = PostgresContainer::start().await else {
         return;
     };
-    let conn = pg.conn.clone();
+    let connection_string = container.connection_string.clone();
     // A table that already violates key uniqueness.
     {
-        let client = crate::cases::common::connect(&conn).await;
+        let client = crate::cases::common::connect(&connection_string).await;
         client
             .batch_execute(
                 "CREATE SCHEMA IF NOT EXISTS dup;
@@ -179,20 +181,20 @@ async fn duplicate_keys_under_upsert_fail_typed_naming_the_key() {
     config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
         key: vec!["id".into()],
     });
-    let err = Engine::new(
+    let error = Engine::new(
         config,
         FlaggedSource {
             batch: batch(&[(1, "a", None)]),
         },
-        upsert_dest(&conn, "dup"),
+        upsert_destination(&connection_string, "dup"),
     )
     .run()
     .await
     .expect_err("duplicate keys must block upsert");
-    let msg = err.to_string();
+    let message = error.to_string();
     assert!(
-        msg.contains("unique index") && msg.contains("id") && msg.contains("23505"),
-        "M3 typed, names the key: {msg}"
+        message.contains("unique index") && message.contains("id") && message.contains("23505"),
+        "M3 typed, names the key: {message}"
     );
 }
 
@@ -204,12 +206,12 @@ async fn shredded_upsert_is_rejected_typed_at_ensure() {
     use rdlt_testkit::MemorySource;
     use serde_json::json;
 
-    let Some(pg) = PgFixture::start().await else {
+    let Some(container) = PostgresContainer::start().await else {
         return;
     };
-    let conn = pg.conn.clone();
-    let dest = Postgres::connect(&conn)
-        .dataset("shup")
+    let connection_string = container.connection_string.clone();
+    let destination = Postgres::new(&connection_string)
+        .schema("shup")
         .options(DestinationOptions {
             merge_strategy: Some(MergeStrategy::Upsert),
             ..DestinationOptions::default()
@@ -223,14 +225,14 @@ async fn shredded_upsert_is_rejected_typed_at_ensure() {
         rdlt_connector::StreamSpec::new("users").with_primary_key(["id"]),
         vec![json!({"id": 1, "name": "ada"})],
     );
-    let err = Engine::new(config, source, dest)
+    let error = Engine::new(config, source, destination)
         .run()
         .await
         .expect_err("shredded upsert must be rejected");
-    let msg = err.to_string();
+    let message = error.to_string();
     assert!(
-        msg.contains("KEYED structured") && msg.contains("delete_insert"),
-        "{msg}"
+        message.contains("KEYED structured") && message.contains("delete_insert"),
+        "{message}"
     );
 }
 
@@ -242,12 +244,12 @@ async fn flagged_then_recreated_root_keeps_its_subtree() {
     use rdlt_testkit::MemorySource;
     use serde_json::json;
 
-    let Some(pg) = PgFixture::start().await else {
+    let Some(container) = PostgresContainer::start().await else {
         return;
     };
-    let conn = pg.conn.clone();
-    let dest = Postgres::connect(&conn)
-        .dataset("recreate")
+    let connection_string = container.connection_string.clone();
+    let destination = Postgres::new(&connection_string)
+        .schema("recreate")
         .options(DestinationOptions {
             tables: [(
                 "users".to_string(),
@@ -275,9 +277,12 @@ async fn flagged_then_recreated_root_keeps_its_subtree() {
                    "tags": [{"label": "back"}]}),
         ],
     );
-    Engine::new(config, source, dest).run().await.expect("run");
+    Engine::new(config, source, destination)
+        .run()
+        .await
+        .expect("run");
 
-    let client = crate::cases::common::connect(&conn).await;
+    let client = crate::cases::common::connect(&connection_string).await;
     let name: String = client
         .query_one("SELECT name FROM recreate.users WHERE id = 1", &[])
         .await
@@ -298,12 +303,12 @@ async fn child_hard_delete_is_rejected_typed() {
     use rdlt_testkit::MemorySource;
     use serde_json::json;
 
-    let Some(pg) = PgFixture::start().await else {
+    let Some(container) = PostgresContainer::start().await else {
         return;
     };
-    let conn = pg.conn.clone();
-    let dest = Postgres::connect(&conn)
-        .dataset("childhd")
+    let connection_string = container.connection_string.clone();
+    let destination = Postgres::new(&connection_string)
+        .schema("childhd")
         .options(DestinationOptions {
             tables: [(
                 "users__tags".to_string(),
@@ -325,10 +330,10 @@ async fn child_hard_delete_is_rejected_typed() {
         rdlt_connector::StreamSpec::new("users").with_primary_key(["id"]),
         vec![json!({"id": 1, "tags": [{"label": "x"}]})],
     );
-    let err = Engine::new(config, source, dest)
+    let error = Engine::new(config, source, destination)
         .run()
         .await
         .expect_err("child hard_delete must be rejected");
-    let msg = err.to_string();
-    assert!(msg.contains("ROOT table"), "{msg}");
+    let message = error.to_string();
+    assert!(message.contains("ROOT table"), "{message}");
 }

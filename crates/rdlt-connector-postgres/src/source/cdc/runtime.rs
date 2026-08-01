@@ -1,28 +1,35 @@
 //! Run-scoped CDC state: the replica-identity preflight, the shared control
 //! and snapshot connections, and per-stream ack/cursor bookkeeping — one
 //! instance per engine run.
+//!
+//! The connection accessors FUSE ensure-and-get: a caller asks for the
+//! control or snapshot connection and receives an `Arc` in one call, so
+//! there is no window in which "opened earlier" must be assumed — the
+//! generation-one design split ensure from get and needed two audited
+//! `expect()` panic sites to bridge them.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::Arc;
 
 use rdlt_connector::{Cursor, SourceError};
 use serde::{Deserialize, Serialize};
-use tokio_postgres::Client;
 
-use crate::source::config::{CdcConfig, PostgresConfig};
-use crate::source::connect;
+use crate::session;
+use crate::source::config::{CdcConfig, Config};
 use crate::source::errors::{self, Phase};
-use crate::source::reflect::ReflectedTable;
+use crate::source::reflect;
 
 use super::slot;
 
-/// The engine cursor for a CDC stream: one LSN, distinct JSON shape from
-/// the cursor-column state so misrouted state fails typed.
+/// The engine cursor for a CDC stream: one LSN. FROZEN JSON shape
+/// (`{"cdc_lsn": …}`), deliberately distinct from the cursor-column state so
+/// misrouted state fails typed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) struct CdcCursor {
+pub(super) struct Resume {
     pub(super) cdc_lsn: u64,
 }
 
-impl CdcCursor {
+impl Resume {
     pub(super) fn encode(self) -> Cursor {
         Cursor::new(serde_json::to_value(self).expect("cdc cursor serializes"))
     }
@@ -40,25 +47,26 @@ impl CdcCursor {
 
 /// Per-table replica-identity preflight result.
 #[derive(Debug, Clone)]
-pub(crate) struct TableIdentity {
+pub(crate) struct Identity {
     /// The merge key: the table's replica identity columns.
-    pub key: Vec<String>,
+    pub(crate) key: Vec<String>,
     /// REPLICA IDENTITY FULL — old tuples carry every column (TOAST
     /// substitution is possible).
-    pub full: bool,
+    pub(crate) covers_all_columns: bool,
 }
 
 /// Run-scoped CDC state on the source (one instance per engine run).
 pub(crate) struct Runtime {
     pub(super) state: tokio::sync::Mutex<RunState>,
-    identities: tokio::sync::OnceCell<BTreeMap<String, TableIdentity>>,
+    identities: tokio::sync::OnceCell<BTreeMap<String, Identity>>,
 }
 
 impl std::fmt::Debug for Runtime {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // RunState holds live connections (no Debug); the identities map is
         // the useful part.
-        f.debug_struct("cdc::Runtime")
+        formatter
+            .debug_struct("cdc::Runtime")
             .field("identities", &self.identities.get())
             .finish_non_exhaustive()
     }
@@ -66,27 +74,35 @@ impl std::fmt::Debug for Runtime {
 
 #[derive(Default)]
 pub(super) struct RunState {
-    /// Lifecycle client, lazily opened; also carries peeks and the ack.
-    /// Arc so passes run WITHOUT the state lock held (a stream blocked on
-    /// destination backpressure must never stall the other streams), and
-    /// dropped on any error (the engine's transient in-run retries re-enter
-    /// with this same state — a dead connection must not be reused).
-    pub(super) control: Option<std::sync::Arc<Client>>,
+    /// Lifecycle connection, opened on first use with
+    /// [`session::Profile::CdcControl`] (the pgoutput TEXT forms depend on
+    /// its GUC pins); also carries peeks and the ack. Arc so passes run
+    /// WITHOUT the state lock held (a stream blocked on destination
+    /// backpressure must never stall the other streams), and dropped on any
+    /// error (the engine's transient in-run retries re-enter with this same
+    /// state — a dead connection must not be reused).
+    control: Option<Arc<session::Connection>>,
     pub(super) ensured: Option<slot::EnsureOutcome>,
-    /// Open REPEATABLE READ snapshot transaction (first run) — ONE view
-    /// for every CDC table. Arc + drop-on-error like `control`.
-    pub(super) snapshot: Option<std::sync::Arc<Client>>,
+    /// Open REPEATABLE READ snapshot transaction (first run) — ONE view for
+    /// every CDC table on the error-free path. Arc + drop-on-error like
+    /// `control`; after a mid-run transient error the replacement snapshot
+    /// opens at a LATER horizon, so streams that snapshot after the error
+    /// see a newer view than those before it (each stream stays
+    /// individually gap-free — its cursor start precedes its own view; the
+    /// cross-table single-instant property is best-effort under errors,
+    /// exactly as in generation 1).
+    snapshot: Option<Arc<session::Connection>>,
     /// The shared snapshot's cursor start point for a PRE-EXISTING slot:
     /// the WAL position read BEFORE the transaction began (its visibility
     /// horizon) — every commit ≤ it is IN the snapshot; commits after it
     /// replay and converge. (Starting at confirmed_flush instead would
     /// replay a window that can contain unappliable records — TRUNCATE,
     /// TOAST without an old image — and permanently wedge recovery.)
-    pub(super) snapshot_start: Option<u64>,
-    /// `target_lsn`, pinned once per run at the first CDC read.
+    pub(super) snapshot_horizon: Option<u64>,
+    /// The run's target position, pinned once at the first CDC read.
     pub(super) target: Option<u64>,
-    /// Per-stream ack floors: destination-committed `since`, or the fresh
-    /// snapshot start point (see module docs).
+    /// Per-stream ack floors: destination-committed resume positions, or
+    /// the fresh snapshot start point.
     pub(super) ack_floor: BTreeMap<String, u64>,
     /// CDC streams that have not completed their pass this run; `None`
     /// until the first CDC read initializes it.
@@ -96,99 +112,120 @@ pub(super) struct RunState {
 }
 
 impl RunState {
-    /// Open the lifecycle client if this run has not yet, pinning the session
-    /// GUCs the pgoutput TEXT forms depend on (a role whose DateStyle or
-    /// bytea_output differs must not change what the feed looks like).
-    /// Idempotent within a run.
-    pub(super) async fn ensure_control(
+    /// The lifecycle connection, opened if this run has not yet — GUC pins
+    /// applied by the session profile. Idempotent within a run; the
+    /// returned Arc outlives the state lock. A PROFILE failure (the GUC
+    /// SETs) is a CDC lifecycle fault and is tagged with the slot phase and
+    /// the asking stream; a connect failure keeps the ordinary connect
+    /// framing.
+    pub(super) async fn control(
         &mut self,
-        config: &PostgresConfig,
-        name: &str,
-    ) -> Result<(), SourceError> {
-        if self.control.is_none() {
-            let client = connect(config).await?;
-            client
-                .batch_execute("SET datestyle = 'ISO'; SET bytea_output = 'hex'")
-                .await
-                .map_err(|e| errors::classify(Phase::Slot, Some(name), &e))?;
-            self.control = Some(std::sync::Arc::new(client));
+        config: &Config,
+        stream: &str,
+    ) -> Result<Arc<session::Connection>, SourceError> {
+        if let Some(control) = &self.control {
+            return Ok(Arc::clone(control));
         }
-        Ok(())
+        let connection = session::establish(
+            &config.connection,
+            config.tls.as_ref(),
+            session::Profile::CdcControl,
+        )
+        .await
+        .map_err(|error| match error {
+            session::EstablishError::Profile { detail, transient } => {
+                if transient {
+                    errors::transient(Phase::Slot, Some(stream), detail)
+                } else {
+                    errors::fatal(Phase::Slot, Some(stream), detail)
+                }
+            }
+            other => errors::establish_failure(other),
+        })?;
+        let control = Arc::new(connection);
+        self.control = Some(Arc::clone(&control));
+        Ok(control)
     }
 
-    /// Open the shared REPEATABLE READ snapshot transaction if this run has
-    /// not yet, recording its visibility horizon `start`. Idempotent — the
+    /// The shared REPEATABLE READ snapshot transaction, opened if this run
+    /// has not yet, recording its visibility horizon. Idempotent — the
     /// first CDC stream opens it; every snapshot pass this run shares it.
-    pub(super) async fn ensure_snapshot(
+    pub(super) async fn snapshot(
         &mut self,
-        config: &PostgresConfig,
-        name: &str,
-        start: u64,
-    ) -> Result<(), SourceError> {
-        if self.snapshot.is_none() {
-            let snap = connect(config).await?;
-            snap.batch_execute("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ")
-                .await
-                .map_err(|e| errors::classify(Phase::Copy, Some(name), &e))?;
-            self.snapshot = Some(std::sync::Arc::new(snap));
-            self.snapshot_start = Some(start);
+        config: &Config,
+        stream: &str,
+        horizon: u64,
+    ) -> Result<Arc<session::Connection>, SourceError> {
+        if let Some(snapshot) = &self.snapshot {
+            return Ok(Arc::clone(snapshot));
         }
-        Ok(())
+        let connection = session::establish(
+            &config.connection,
+            config.tls.as_ref(),
+            session::Profile::Plain,
+        )
+        .await
+        .map_err(errors::establish_failure)?;
+        connection
+            .batch_execute("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            .await
+            .map_err(|e| errors::classify(Phase::Copy, Some(stream), &e))?;
+        let snapshot = Arc::new(connection);
+        self.snapshot = Some(Arc::clone(&snapshot));
+        self.snapshot_horizon = Some(horizon);
+        Ok(snapshot)
     }
 
-    /// The lifecycle client, guaranteed present once `ensure_control` has run
-    /// at the top of `read_stream_inner`. The one audited panic site: the run
-    /// clears `control` only on error, which returns before any getter runs.
-    pub(super) fn control(&self) -> &std::sync::Arc<Client> {
-        self.control
-            .as_ref()
-            .expect("control client opened at run start")
+    /// Close the shared snapshot transaction's connection (run drained).
+    pub(super) fn close_snapshot(&mut self) {
+        self.snapshot = None;
     }
 
-    /// The shared snapshot client, guaranteed present once `ensure_snapshot`
-    /// has run for the snapshot pass. The one audited panic site.
-    pub(super) fn snapshot(&self) -> &std::sync::Arc<Client> {
-        self.snapshot
-            .as_ref()
-            .expect("snapshot client opened for the snapshot pass")
+    /// Drop every cached connection — called on any error path, because the
+    /// engine's transient in-run retries re-enter with this same state and
+    /// a dead connection must never be reused.
+    pub(super) fn drop_connections(&mut self) {
+        self.control = None;
+        self.snapshot = None;
+        self.snapshot_horizon = None;
     }
 }
 
 impl Runtime {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             state: tokio::sync::Mutex::new(RunState::default()),
             identities: tokio::sync::OnceCell::new(),
         }
     }
 
-    /// The replica-identity preflight, once per run: key + FULL flag
+    /// The replica-identity preflight, once per run: key + coverage flag
     /// per CDC table, flag-column collisions, unusable identities — all
     /// typed BEFORE any stream declares itself.
-    pub async fn identities(
+    pub(crate) async fn identities(
         &self,
-        config: &PostgresConfig,
+        config: &Config,
         cdc: &CdcConfig,
-        reflected: &BTreeMap<String, ReflectedTable>,
+        reflected: &BTreeMap<String, reflect::Table>,
         cdc_tables: &[String],
-    ) -> Result<&BTreeMap<String, TableIdentity>, SourceError> {
+    ) -> Result<&BTreeMap<String, Identity>, SourceError> {
         self.identities
             .get_or_try_init(|| async {
-                let client = connect(config).await?;
-                preflight(&client, config, cdc, reflected, cdc_tables).await
+                let connection = crate::source::connect(config).await?;
+                preflight(&connection, config, cdc, reflected, cdc_tables).await
             })
             .await
     }
 }
 
 async fn preflight(
-    client: &Client,
-    config: &PostgresConfig,
+    connection: &session::Connection,
+    config: &Config,
     cdc: &CdcConfig,
-    reflected: &BTreeMap<String, ReflectedTable>,
+    reflected: &BTreeMap<String, reflect::Table>,
     cdc_tables: &[String],
-) -> Result<BTreeMap<String, TableIdentity>, SourceError> {
-    let rows = client
+) -> Result<BTreeMap<String, Identity>, SourceError> {
+    let rows = connection
         .query(
             "SELECT c.relname, c.relreplident::text,
                     coalesce((SELECT array_agg(a.attname ORDER BY x.ord)
@@ -231,26 +268,26 @@ async fn preflight(
                 ),
             ));
         }
-        let (replident, ident_cols) = facts.get(table).ok_or_else(|| {
+        let (replica_identity, identity_columns) = facts.get(table).ok_or_else(|| {
             errors::fatal(
                 Phase::Slot,
                 Some(table),
                 "CDC table not found in the catalog",
             )
         })?;
-        let pk: Vec<String> = reflected_table
+        let primary_key: Vec<String> = reflected_table
             .primary_key()
             .iter()
-            .map(|s| (*s).to_owned())
+            .map(|name| (*name).to_owned())
             .collect();
         let declared = config
             .table_config(table)
-            .and_then(|t| t.primary_key.clone());
-        let identity = match replident.as_str() {
+            .and_then(|table_config| table_config.primary_key.clone());
+        let identity = match replica_identity.as_str() {
             // Default: delete/update records carry the PRIMARY KEY columns.
-            "d" if !pk.is_empty() => TableIdentity {
-                key: pk,
-                full: false,
+            "d" if !primary_key.is_empty() => Identity {
+                key: primary_key,
+                covers_all_columns: false,
             },
             "d" => {
                 return Err(errors::fatal(
@@ -265,9 +302,9 @@ async fn preflight(
             // dropped identity index leaves relreplident = 'i' with NO
             // indisreplident row — an empty key would merge on nothing and
             // corrupt deletes, so it is a typed error, never accepted.
-            "i" if !ident_cols.is_empty() => TableIdentity {
-                key: ident_cols.clone(),
-                full: false,
+            "i" if !identity_columns.is_empty() => Identity {
+                key: identity_columns.clone(),
+                covers_all_columns: false,
             },
             "i" => {
                 return Err(errors::fatal(
@@ -279,12 +316,16 @@ async fn preflight(
                 ));
             }
             // FULL: old tuples carry everything, so ANY declared key has its
-            // values — a declared primary_key override wins; else the PK.
+            // values — a declared primary_key override wins; else the
+            // reflected primary key.
             "f" => match declared
                 .clone()
-                .or_else(|| (!pk.is_empty()).then(|| pk.clone()))
+                .or_else(|| (!primary_key.is_empty()).then(|| primary_key.clone()))
             {
-                Some(key) => TableIdentity { key, full: true },
+                Some(key) => Identity {
+                    key,
+                    covers_all_columns: true,
+                },
                 None => {
                     return Err(errors::fatal(
                         Phase::Slot,
@@ -294,7 +335,8 @@ async fn preflight(
                     ));
                 }
             },
-            // NOTHING (or anything else): updates/deletes carry no key data.
+            // NOTHING (or anything else): updates/deletes carry no key
+            // data.
             other => {
                 return Err(errors::fatal(
                     Phase::Slot,
@@ -309,9 +351,10 @@ async fn preflight(
         };
         // A declared primary_key that disagrees with the identity columns
         // would leave delete records without values for the merge key —
-        // typed, not silently ignored. (Under FULL any declared key works.)
+        // typed, not silently ignored. (When the identity covers all
+        // columns, any declared key works.)
         if let Some(declared) = declared
-            && !identity.full
+            && !identity.covers_all_columns
             && declared != identity.key
         {
             return Err(errors::fatal(

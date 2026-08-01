@@ -11,7 +11,6 @@ members = [
     "crates/rdlt-connector-file",
     "crates/rdlt-connector-iceberg",
     "crates/rdlt-connector-postgres",
-    "crates/rdlt-connector-postgres-v2",
     "crates/rdlt-cli",
     "crates/rdlt-bench",
     "crates/rdlt-connector-sqlcore",

@@ -1,91 +1,83 @@
 //! The CDC read dispatch: the snapshot pass (first run, no cursor) and the
-//! bounded change-catch-up pass, plus the run-completion ack/lag reporting.
+//! bounded change-catch-up pass, phase by phase, with the run-state lock
+//! held only where run state is actually touched.
 
 use futures::TryStreamExt;
-use tokio_postgres::Client;
 
 use rdlt_connector::core::crash_point;
 use rdlt_connector::{ReadRequest, SourceError};
 
-use crate::source::config::{CdcConfig, CdcMode, PostgresConfig};
-use crate::source::copy_decode::{CopyDecoder, FieldPlan};
-use crate::source::copy_pump::{CrashSite, Push, pump_copy};
+use crate::session::Connection;
+use crate::source::config::{CdcConfig, CdcMode, Config};
 use crate::source::errors::{self, Phase};
-use crate::source::sqlgen;
+use crate::source::{copy, sql};
+use crate::types::Column;
 
-use super::apply::{Apply, Emit};
-use super::runtime::{CdcCursor, Runtime, TableIdentity};
-use super::tail::{advance_and_report, tail_loop};
-use super::{pgoutput, slot, values};
+use super::apply::{Apply, Emit, batch_of};
+use super::runtime::{Identity, Resume, Runtime};
+use super::{ack, pgoutput, slot, tail};
 
-/// The per-table read context: everything fixed for the whole of one stream's
-/// read — the source config, the CDC block, the resolved replica identity, and
-/// the decode plan. Built by `PostgresSource::read` and threaded through the
-/// pass/apply signatures so they stay small (removing the last
-/// `too_many_arguments` allow on the dispatch entry point).
-pub(crate) struct TableCtx<'a> {
-    pub(crate) config: &'a PostgresConfig,
+/// The per-stream read context: everything fixed for the whole of one
+/// stream's read — the source config, the CDC block, the resolved replica
+/// identity, and the decode columns. Built by the connector and threaded
+/// through the pass/apply signatures so they stay small.
+pub(crate) struct StreamContext<'a> {
+    pub(crate) config: &'a Config,
     pub(crate) cdc: &'a CdcConfig,
-    pub(crate) identity: &'a TableIdentity,
-    pub(crate) plans: &'a [FieldPlan],
+    pub(crate) identity: &'a Identity,
+    pub(crate) columns: &'a [Column],
 }
 
 /// The CDC read dispatch: snapshot pass (no cursor) or change pass. Any
 /// error drops the run's cached connections — the engine's TRANSIENT
-/// in-run retries re-enter with this same `Runtime`, and a dead snapshot
-/// or control client must never be reused across attempts.
+/// in-run retries re-enter with this same [`Runtime`], and a dead snapshot
+/// or control connection must never be reused across attempts.
 pub(crate) async fn read_stream(
     runtime: &Runtime,
-    ctx: &TableCtx<'_>,
+    context: &StreamContext<'_>,
     cdc_tables: &[String],
-    columns: &[&crate::source::reflect::ReflectedColumn],
-    req: ReadRequest,
+    reflected_columns: &[&crate::source::reflect::Column],
+    request: ReadRequest,
 ) -> Result<(), SourceError> {
-    let result = read_stream_inner(runtime, ctx, cdc_tables, columns, req).await;
+    let result = dispatch(runtime, context, cdc_tables, reflected_columns, request).await;
     if result.is_err() {
-        let mut state = runtime.state.lock().await;
-        state.control = None;
-        state.snapshot = None;
-        state.snapshot_start = None;
+        runtime.state.lock().await.drop_connections();
     }
     result
 }
 
-async fn read_stream_inner(
+async fn dispatch(
     runtime: &Runtime,
-    ctx: &TableCtx<'_>,
+    context: &StreamContext<'_>,
     cdc_tables: &[String],
-    columns: &[&crate::source::reflect::ReflectedColumn],
-    mut req: ReadRequest,
+    reflected_columns: &[&crate::source::reflect::Column],
+    mut request: ReadRequest,
 ) -> Result<(), SourceError> {
-    use std::sync::Arc;
-    // `identity` is threaded onward through `ctx`; the inner dispatch itself
-    // needs only the config, the CDC block, and the decode plan.
-    let &TableCtx {
-        config, cdc, plans, ..
-    } = ctx;
-    let name = req.stream.name.as_str().to_owned();
+    let &StreamContext { config, cdc, .. } = context;
+    let stream = request.stream.name.as_str().to_owned();
+
+    // ---- lifecycle, under the state lock ----
     let mut state = runtime.state.lock().await;
     if state.pending.is_none() {
         state.pending = Some(cdc_tables.iter().cloned().collect());
     }
-    state.ensure_control(config, &name).await?;
+    let control = state.control(config, &stream).await?;
     if state.ensured.is_none() {
         crash_point!(
             "cdc.slot.create",
             Err(errors::fatal(
                 Phase::Slot,
-                Some(&name),
+                Some(&stream),
                 "injected: before slot ensure"
             ))
         );
-        let outcome = slot::ensure(state.control(), cdc, &config.schema, cdc_tables).await?;
+        let outcome = slot::ensure(&control, cdc, &config.schema, cdc_tables).await?;
         state.ensured = Some(outcome);
     }
-    let ensured = state.ensured.expect("ensured");
+    let ensured = state.ensured.expect("ensured just initialized");
 
-    let since = match &req.since {
-        Some(cursor) => Some(CdcCursor::decode(cursor, &name)?.cdc_lsn),
+    let since = match &request.since {
+        Some(cursor) => Some(Resume::decode(cursor, &stream)?.cdc_lsn),
         None => None,
     };
     // A slot created THIS run starts at its consistent point — it cannot
@@ -98,15 +90,15 @@ async fn read_stream_inner(
     {
         return Err(errors::fatal(
             Phase::Slot,
-            Some(&name),
+            Some(&stream),
             format!(
                 "replication slot `{}` was created THIS run at {} but this \
                  stream resumes from {} — the feed cannot cover that gap; \
                  reset the pipeline state so the stream takes a fresh \
                  snapshot instead of resuming past a recreated slot",
                 cdc.slot,
-                slot::fmt_lsn(point),
-                slot::fmt_lsn(since)
+                slot::render_lsn(point),
+                slot::render_lsn(since)
             ),
         ));
     }
@@ -116,69 +108,33 @@ async fn read_stream_inner(
             // ---- snapshot pass ----
             // Cursor start: the consistent point when THIS run created the
             // slot; otherwise the shared snapshot's visibility horizon —
-            // the WAL position read BEFORE its transaction began (see
-            // `RunState::snapshot_start`). Either way: no gap, and the
-            // overlap window applies twice and converges.
+            // the WAL position read BEFORE its transaction began. Either
+            // way: no gap, and the overlap window applies twice and
+            // converges.
             let start = match ensured.consistent_point {
                 Some(point) => point,
-                None => match state.snapshot_start {
+                None => match state.snapshot_horizon {
                     Some(horizon) => horizon,
-                    None => slot::current_wal_lsn(state.control()).await?,
+                    None => slot::current_wal_lsn(&control).await?,
                 },
             };
-            state.ensure_snapshot(config, &name, start).await?;
-            let snap = Arc::clone(state.snapshot());
+            let snapshot = state.snapshot(config, &stream, start).await?;
             drop(state); // COPY + pushes run WITHOUT the state lock
-            let select = sqlgen::select_sql(&config.schema, &name, columns, "", "");
-            let copy = sqlgen::copy_sql(&select);
-            let mut decoder = CopyDecoder::new(
-                plans.to_vec(),
-                config.batch_target_bytes,
-                config.batch_max_rows,
-            )
-            .map_err(|e| errors::fatal(Phase::Decode, Some(&name), e))?;
-            // The COPY stream + decode loop is the shared pump; the snapshot's
-            // only per-batch work is flag-wrapping (rows are upserts, flag
-            // NULL) and pushing. `cdc.snapshot.copy` is the pump's mid-stream
-            // crash site here.
-            let mut pushed_any = false;
-            let completed = pump_copy(
-                &snap,
-                copy.as_str(),
-                &mut decoder,
-                &mut req,
-                &name,
-                CrashSite {
-                    label: "cdc.snapshot.copy",
-                    msg: "injected: connection lost mid-snapshot",
-                },
-                |batch| {
-                    pushed_any = true;
-                    Ok(vec![Push::Arrow(with_null_flag(batch, &cdc.flag_column))])
-                },
-            )
-            .await?;
-            if !completed {
-                return Ok(()); // cancellation
+            if snapshot_pass(&snapshot, context, &stream, reflected_columns, &mut request).await?
+                == PassOutcome::Cancelled
+            {
+                return Ok(());
             }
-            if !pushed_any {
-                // Schema-bearing empty batch: plans + flag, all nullable.
-                let empty = values::rows_to_batch(plans, &cdc.flag_column, &[], &[])
-                    .map_err(|e| errors::fatal(Phase::Decode, Some(&name), e))?;
-                if req.out.arrow(empty).await.is_err() {
-                    return Ok(());
-                }
-            }
-            if req
+            if request
                 .out
-                .checkpoint(CdcCursor { cdc_lsn: start }.encode())
+                .checkpoint(Resume { cdc_lsn: start }.encode())
                 .await
                 .is_err()
             {
                 return Ok(());
             }
             state = runtime.state.lock().await;
-            state.ack_floor.insert(name.clone(), start);
+            state.ack_floor.insert(stream.clone(), start);
             start
         }
         Some(since) => {
@@ -186,16 +142,16 @@ async fn read_stream_inner(
             let target = match state.target {
                 Some(target) => target,
                 None => {
-                    let target = slot::current_wal_lsn(state.control()).await?;
+                    let target = slot::current_wal_lsn(&control).await?;
                     state.target = Some(target);
                     target
                 }
             };
-            state.ack_floor.insert(name.clone(), since);
-            let control = Arc::clone(state.control());
+            state.ack_floor.insert(stream.clone(), since);
             drop(state); // the pass pushes batches WITHOUT the state lock
             if target > since {
-                let outcome = change_pass(&control, ctx, &name, since, target, &mut req).await?;
+                let outcome =
+                    change_pass(&control, context, &stream, since, target, &mut request).await?;
                 if outcome == PassOutcome::Cancelled {
                     return Ok(());
                 }
@@ -206,23 +162,21 @@ async fn read_stream_inner(
     };
 
     // ---- run completion + ack ----
-    state.final_cursor.insert(name.clone(), cursor);
+    state.final_cursor.insert(stream.clone(), cursor);
     let drained = {
         let pending = state.pending.as_mut().expect("pending initialized");
-        pending.remove(&name);
+        pending.remove(&stream);
         pending.is_empty()
     };
     if drained {
-        state.snapshot = None; // closes the snapshot tx connection
-        // Ack advance + replication-lag reporting are the tail module's
-        // concern (it also owns the continuous tail loop that keeps them
-        // running past this first completion).
-        advance_and_report(&state, cdc, &name).await?;
+        state.close_snapshot();
+        let ack_floor = state.ack_floor.values().min().copied();
+        let committed_floor = state.final_cursor.values().min().copied();
+        ack::acknowledge_and_report(&control, cdc, ack_floor, committed_floor, &stream).await?;
     }
     if cdc.mode == CdcMode::Tail {
-        let control = std::sync::Arc::clone(state.control());
         drop(state);
-        return tail_loop(control, ctx, &name, cursor, req).await;
+        return tail::tail_loop(control, context, &stream, cursor, request).await;
     }
     Ok(())
 }
@@ -233,22 +187,72 @@ pub(super) enum PassOutcome {
     Cancelled,
 }
 
+/// The snapshot pass: COPY the whole table through the shared
+/// repeatable-read view, flag-wrapping each batch (rows are upserts, flag
+/// NULL). `cdc.snapshot.copy` is the loop's mid-stream crash site.
+async fn snapshot_pass(
+    snapshot: &Connection,
+    context: &StreamContext<'_>,
+    stream: &str,
+    reflected_columns: &[&crate::source::reflect::Column],
+    request: &mut ReadRequest,
+) -> Result<PassOutcome, SourceError> {
+    let select = sql::select(&context.config.schema, stream, reflected_columns, "", "");
+    let copy_sql = sql::copy(&select);
+    let mut decoder = crate::types::binary::Decoder::new(
+        context.columns.to_vec(),
+        context.config.batch_target_bytes,
+        context.config.batch_max_rows,
+    )
+    .map_err(|e| errors::fatal(Phase::Decode, Some(stream), e))?;
+    let mut pushed_any = false;
+    let flag_column = context.cdc.flag_column.clone();
+    let completed = copy::stream(
+        snapshot,
+        &copy_sql,
+        &mut decoder,
+        request,
+        stream,
+        copy::CrashSite {
+            label: "cdc.snapshot.copy",
+            detail: "injected: connection lost mid-snapshot",
+        },
+        |batch| {
+            pushed_any = true;
+            Ok(vec![copy::Push::Arrow(with_null_flag(batch, &flag_column))])
+        },
+    )
+    .await?;
+    if !completed {
+        return Ok(PassOutcome::Cancelled);
+    }
+    if !pushed_any {
+        // Schema-bearing empty batch: columns + flag, all nullable.
+        let empty = batch_of(context.columns, &context.cdc.flag_column, &[], &[])
+            .map_err(|e| errors::fatal(Phase::Decode, Some(stream), e))?;
+        if request.out.arrow(empty).await.is_err() {
+            return Ok(PassOutcome::Cancelled);
+        }
+    }
+    Ok(PassOutcome::Complete)
+}
+
 /// One bounded catch-up pass for one stream: peek `(since, target]` as a
 /// server-side row stream, decode pgoutput, keep this table's changes,
 /// batch, checkpoint at commit positions only.
 pub(super) async fn change_pass(
-    control: &Client,
-    ctx: &TableCtx<'_>,
-    name: &str,
+    control: &Connection,
+    context: &StreamContext<'_>,
+    stream: &str,
     since: u64,
     target: u64,
-    req: &mut ReadRequest,
+    request: &mut ReadRequest,
 ) -> Result<PassOutcome, SourceError> {
     crash_point!(
         "cdc.stream.peek",
         Err(errors::transient(
             Phase::Slot,
-            Some(name),
+            Some(stream),
             "injected: peek connection lost"
         ))
     );
@@ -257,33 +261,33 @@ pub(super) async fn change_pass(
     // carry no table name — a peek reads every table's changes and filters
     // its own). The stream is consumed row-by-row, decoding each change as
     // it lands rather than buffering the whole range.
-    let changes = slot::peek(control, ctx.cdc, target).await?;
+    let changes = slot::peek(control, context.cdc, target).await?;
     futures::pin_mut!(changes);
 
-    let mut apply = Apply::new(ctx, name, since);
+    let mut apply = Apply::new(context, stream, since)?;
     while let Some(change) = changes.try_next().await? {
         let message = pgoutput::parse(&change.data)
-            .map_err(|e| errors::fatal(Phase::Decode, Some(name), e))?;
-        if !drive(apply.on_message(change.lsn, message)?, req).await? {
+            .map_err(|e| errors::fatal(Phase::Decode, Some(stream), e))?;
+        if !deliver(apply.on_message(change.lsn, message)?, request).await? {
             return Ok(PassOutcome::Cancelled);
         }
     }
-    if !drive(apply.finish(target)?, req).await? {
+    if !deliver(apply.finish(target)?, request).await? {
         return Ok(PassOutcome::Cancelled);
     }
     Ok(PassOutcome::Complete)
 }
 
-/// Deliver one apply step's emitted actions in order. Returns `false` at the
-/// first engine cancellation (a closed batch or checkpoint channel) so the
-/// caller can stop the pass cleanly.
-async fn drive(emits: Vec<Emit>, req: &mut ReadRequest) -> Result<bool, SourceError> {
+/// Deliver one apply step's emitted actions in order. Returns `false` at
+/// the first engine cancellation (a closed batch or checkpoint channel) so
+/// the caller can stop the pass cleanly.
+async fn deliver(emits: Vec<Emit>, request: &mut ReadRequest) -> Result<bool, SourceError> {
     for action in emits {
         let delivered = match action {
-            Emit::Batch(batch) => req.out.arrow(batch).await.is_ok(),
-            Emit::Checkpoint(lsn) => req
+            Emit::Batch(batch) => request.out.arrow(batch).await.is_ok(),
+            Emit::Checkpoint(lsn) => request
                 .out
-                .checkpoint(CdcCursor { cdc_lsn: lsn }.encode())
+                .checkpoint(Resume { cdc_lsn: lsn }.encode())
                 .await
                 .is_ok(),
         };
@@ -303,7 +307,7 @@ fn with_null_flag(batch: arrow_array::RecordBatch, flag_column: &str) -> arrow_a
         .schema()
         .fields()
         .iter()
-        .map(|f| f.as_ref().clone().with_nullable(true))
+        .map(|field| field.as_ref().clone().with_nullable(true))
         .collect();
     fields.push(Field::new(flag_column, DataType::Boolean, true));
     let mut arrays = batch.columns().to_vec();

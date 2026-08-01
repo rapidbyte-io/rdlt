@@ -1,5 +1,8 @@
-//! Native type fidelity: NUMERIC(p,s)/JSONB/UUID/NOT NULL land as native
-//! columns with zero user configuration (contract dest-types.md).
+//! Native type fidelity on the write side (contract dest-types.md):
+//! NUMERIC(p,s), JSONB, UUID and NOT NULL land as native target columns
+//! with zero user configuration, an extreme decimal round-trips through a
+//! real server, and a value the server refuses fails typed with its column
+//! named and its message and SQLSTATE intact.
 
 use std::sync::Arc;
 
@@ -12,10 +15,11 @@ use rdlt_connector::{Destination as _, OpenCtx, WriteMode};
 use rdlt_testkit::TableProbe as _;
 use rdlt_testkit::commit_meta_for;
 
-use crate::cases::common::PgProbe;
-use rdlt_connector_postgres::fixtures::PgFixture;
+use crate::cases::common;
+use rdlt_connector_postgres::destination;
+use rdlt_connector_postgres::fixtures::PostgresContainer;
 
-fn col(name: &str, scalar: LogicalType, nullable: bool) -> ColumnDef {
+fn column(name: &str, scalar: LogicalType, nullable: bool) -> ColumnDef {
     ColumnDef {
         name: name.into(),
         column_type: ColumnType::Scalar { scalar },
@@ -29,8 +33,8 @@ fn fidelity_schema() -> TableSchema {
         table: TableName::new("fidelity"),
         parent: None,
         columns: vec![
-            col("id", LogicalType::Int64, false),
-            col(
+            column("id", LogicalType::Int64, false),
+            column(
                 "amount",
                 LogicalType::Decimal {
                     precision: 12,
@@ -38,8 +42,8 @@ fn fidelity_schema() -> TableSchema {
                 },
                 true,
             ),
-            col("doc", LogicalType::Json, true),
-            col("uid", LogicalType::Uuid, true),
+            column("doc", LogicalType::Json, true),
+            column("uid", LogicalType::Uuid, true),
         ],
     }
 }
@@ -56,18 +60,18 @@ fn fidelity_batch(rows: &[FidelityRow<'_>]) -> RecordBatch {
         ])),
         vec![
             Arc::new(Int64Array::from(
-                rows.iter().map(|r| r.0).collect::<Vec<_>>(),
+                rows.iter().map(|row| row.0).collect::<Vec<_>>(),
             )),
             Arc::new(
-                Decimal128Array::from(rows.iter().map(|r| r.1).collect::<Vec<_>>())
+                Decimal128Array::from(rows.iter().map(|row| row.1).collect::<Vec<_>>())
                     .with_precision_and_scale(12, 4)
                     .expect("decimal shape"),
             ),
             Arc::new(StringArray::from(
-                rows.iter().map(|r| r.2).collect::<Vec<_>>(),
+                rows.iter().map(|row| row.2).collect::<Vec<_>>(),
             )),
             Arc::new(StringArray::from(
-                rows.iter().map(|r| r.3).collect::<Vec<_>>(),
+                rows.iter().map(|row| row.3).collect::<Vec<_>>(),
             )),
         ],
     )
@@ -76,14 +80,14 @@ fn fidelity_batch(rows: &[FidelityRow<'_>]) -> RecordBatch {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn native_types_land_with_exact_values() {
-    let Some(pg) = PgFixture::start().await else {
+    let Some(fixture) = PostgresContainer::start().await else {
         return;
     };
-    let conn = pg.conn.clone();
-    let dest = rdlt_connector_postgres::dest::Postgres::connect(&conn).dataset("fid");
+    let connection_string = fixture.connection_string.clone();
+    let postgres_destination = destination::Postgres::new(&connection_string).schema("fid");
     let pipeline = PipelineId::new("fid");
     const LOAD: &str = "fid-load";
-    let mut session = dest
+    let mut session = postgres_destination
         .open(OpenCtx::new(pipeline.clone(), LoadId::new(LOAD)))
         .await
         .expect("open");
@@ -119,19 +123,19 @@ async fn native_types_land_with_exact_values() {
         .await
         .expect("commit");
 
-    let probe = PgProbe {
-        conn: conn.clone(),
+    let probe = common::Probe {
+        connection_string: connection_string.clone(),
         schema: "fid".into(),
     };
     assert_eq!(probe.count(&TableName::new("fidelity")).await, 3);
 
-    let client = crate::cases::common::connect(&conn).await;
+    let client = common::connect(&connection_string).await;
 
     // T1/T2/T3 catalog assertions: the COLUMN TYPES are native.
     let type_of = |name: &'static str| {
         let client = &client;
         async move {
-            let t: String = client
+            let declared: String = client
                 .query_one(
                     "SELECT format_type(atttypid, atttypmod) FROM pg_attribute
                      WHERE attrelid = 'fid.fidelity'::regclass AND attname = $1",
@@ -140,7 +144,7 @@ async fn native_types_land_with_exact_values() {
                 .await
                 .expect("catalog")
                 .get(0);
-            t
+            declared
         }
     };
     assert_eq!(type_of("amount").await, "numeric(12,4)", "T1");
@@ -148,7 +152,7 @@ async fn native_types_land_with_exact_values() {
     assert_eq!(type_of("uid").await, "uuid", "T3");
 
     // T4: NOT NULL honored on the target.
-    let nullable: bool = client
+    let not_null: bool = client
         .query_one(
             "SELECT attnotnull FROM pg_attribute
              WHERE attrelid = 'fid.fidelity'::regclass AND attname = 'id'",
@@ -157,7 +161,7 @@ async fn native_types_land_with_exact_values() {
         .await
         .expect("nullability")
         .get(0);
-    assert!(nullable, "T4: id declared non-nullable");
+    assert!(not_null, "T4: id declared non-nullable");
 
     // T1: exact decimal math, zero float involvement.
     let sum: String = client
@@ -205,15 +209,14 @@ async fn native_types_land_with_exact_values() {
 /// exactly through a real server.
 #[tokio::test(flavor = "multi_thread")]
 async fn extreme_decimal_round_trips_through_the_server() {
-    use rdlt_connector::core::TableName;
-    let Some(pg) = PgFixture::start().await else {
+    let Some(fixture) = PostgresContainer::start().await else {
         return;
     };
-    let conn = pg.conn.clone();
-    let dest = rdlt_connector_postgres::dest::Postgres::connect(&conn).dataset("wide");
+    let connection_string = fixture.connection_string.clone();
+    let postgres_destination = destination::Postgres::new(&connection_string).schema("wide");
     let pipeline = PipelineId::new("wide");
     const LOAD: &str = "w-load";
-    let mut session = dest
+    let mut session = postgres_destination
         .open(OpenCtx::new(pipeline.clone(), LoadId::new(LOAD)))
         .await
         .expect("open");
@@ -221,8 +224,8 @@ async fn extreme_decimal_round_trips_through_the_server() {
         table: TableName::new("wide"),
         parent: None,
         columns: vec![
-            col("id", LogicalType::Int64, false),
-            col(
+            column("id", LogicalType::Int64, false),
+            column(
                 "amount",
                 LogicalType::Decimal {
                     precision: 38,
@@ -259,7 +262,7 @@ async fn extreme_decimal_round_trips_through_the_server() {
         .await
         .expect("commit");
 
-    let client = crate::cases::common::connect(&conn).await;
+    let client = common::connect(&connection_string).await;
     let text: String = client
         .query_one("SELECT amount::text FROM wide.wide WHERE id = 1", &[])
         .await
@@ -273,14 +276,14 @@ async fn extreme_decimal_round_trips_through_the_server() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn rejected_documents_and_uuids_fail_typed_naming_the_column() {
-    let Some(pg) = PgFixture::start().await else {
+    let Some(fixture) = PostgresContainer::start().await else {
         return;
     };
-    let conn = pg.conn.clone();
-    let dest = rdlt_connector_postgres::dest::Postgres::connect(&conn).dataset("fidbad");
+    let connection_string = fixture.connection_string.clone();
+    let postgres_destination = destination::Postgres::new(&connection_string).schema("fidbad");
     let pipeline = PipelineId::new("fidbad");
     const LOAD: &str = "fb-load";
-    let mut session = dest
+    let mut session = postgres_destination
         .open(OpenCtx::new(pipeline.clone(), LoadId::new(LOAD)))
         .await
         .expect("open");
@@ -291,48 +294,56 @@ async fn rejected_documents_and_uuids_fail_typed_naming_the_column() {
         .expect("ensure");
 
     // Non-canonical uuid: OUR typed error, names the column, before COPY.
-    let err = session
+    let error = session
         .write(
             &schema.table,
             fidelity_batch(&[(1, None, None, Some("not-a-uuid"))]),
         )
         .await
         .expect_err("bad uuid must fail");
-    let msg = err.to_string();
-    assert!(msg.contains("uid") && msg.contains("not-a-uuid"), "{msg}");
+    let message = error.to_string();
+    assert!(
+        message.contains("uid") && message.contains("not-a-uuid"),
+        "{message}"
+    );
 
     // JSONB-rejected document (NUL escape): the SERVER refuses it and the
     // surfaced error carries its message + SQLSTATE.
-    let nul_doc = "{\"k\": \"\\u0000\"}".to_string();
-    let err = session
+    let nul_document = "{\"k\": \"\\u0000\"}".to_string();
+    let error = session
         .write(
             &schema.table,
-            fidelity_batch(&[(1, None, Some(&nul_doc), None)]),
+            fidelity_batch(&[(1, None, Some(&nul_document), None)]),
         )
         .await
         .expect_err("NUL escape must be rejected by jsonb");
     // Review F5: a poisoned document is PERMANENT (never retried) and
     // the server's CONTEXT line names the column.
-    let dbg = format!("{err:?}");
-    assert!(dbg.starts_with("Fatal"), "data error must be fatal: {dbg}");
-    let msg = err.to_string();
+    let debug = format!("{error:?}");
     assert!(
-        msg.contains("Unicode escape") && msg.contains("SQLSTATE") && msg.contains("doc"),
-        "server message + SQLSTATE + column context: {msg}"
+        debug.starts_with("Fatal"),
+        "data error must be fatal: {debug}"
+    );
+    let message = error.to_string();
+    assert!(
+        message.contains("Unicode escape")
+            && message.contains("SQLSTATE")
+            && message.contains("doc"),
+        "server message + SQLSTATE + column context: {message}"
     );
 }
 
 /// ANY forced db failure carries the server message + SQLSTATE.
 #[tokio::test(flavor = "multi_thread")]
 async fn forced_db_failure_surfaces_server_message_and_sqlstate() {
-    let Some(pg) = PgFixture::start().await else {
+    let Some(fixture) = PostgresContainer::start().await else {
         return;
     };
-    let conn = pg.conn.clone();
-    let dest = rdlt_connector_postgres::dest::Postgres::connect(&conn).dataset("f6");
+    let connection_string = fixture.connection_string.clone();
+    let postgres_destination = destination::Postgres::new(&connection_string).schema("f6");
     let pipeline = PipelineId::new("f6");
     const LOAD: &str = "f6-load";
-    let mut session = dest
+    let mut session = postgres_destination
         .open(OpenCtx::new(pipeline.clone(), LoadId::new(LOAD)))
         .await
         .expect("open");
@@ -353,14 +364,14 @@ async fn forced_db_failure_surfaces_server_message_and_sqlstate() {
         vec![Arc::new(Int64Array::from(vec![None::<i64>]))],
     )
     .expect("batch");
-    let err = session
+    let error = session
         .write(&schema.table, batch)
         .await
         .expect_err("NOT NULL violation on the direct write");
-    let msg = err.to_string();
+    let message = error.to_string();
     assert!(
-        msg.contains("null value") && msg.contains("SQLSTATE 23502"),
-        "F6: server message + SQLSTATE, never bare db error: {msg}"
+        message.contains("null value") && message.contains("SQLSTATE 23502"),
+        "F6: server message + SQLSTATE, never bare db error: {message}"
     );
     // The failed unit rolled back, so the session is still usable — the
     // engine may retry a transient failure on this same session.

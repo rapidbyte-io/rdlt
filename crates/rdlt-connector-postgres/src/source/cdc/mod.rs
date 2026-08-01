@@ -1,27 +1,24 @@
-//! CDC via logical replication: pgoutput decoding, slot lifecycle, and the
-//! per-table pass machinery over the SQL peek/advance interface.
+//! Change data capture via logical replication, over the ordinary SQL
+//! connection (no replication-protocol client): slot-first snapshot through
+//! ONE repeatable-read view, bounded catch-up passes over
+//! `pg_logical_slot_peek_binary_changes`, commit-boundary checkpoints, and
+//! an acknowledgement that trails one run behind.
 //!
-//! Delivery design: bounded catch-up pins `target_lsn` once per run; every
-//! CDC stream's `read()` peeks `(its cursor, target]` and filters its own
-//! table (peeking consumes NOTHING). First run: slot FIRST, then ONE
-//! `REPEATABLE READ` transaction snapshots every CDC table; the
-//! slot-to-snapshot window applies twice and CONVERGES. Checkpoints land only
-//! at transaction-commit positions. The slot's
-//! acknowledged position advances once per run to the min DESTINATION-
-//! COMMITTED position across CDC streams — each stream's `since` (only ever
-//! a cursor the destination durably committed) or its fresh-snapshot start
-//! point — so an ack can never outrun a commit, run shapes be damned (the
-//! current run's own checkpoints are not yet known-committed, so acking
-//! trails one run behind: hygiene, never correctness).
+//! Layout, one noun per module: `runtime` the run-scoped state + the
+//! replica-identity preflight; `slot` the slot/publication lifecycle and
+//! the peek/advance SQL; `pgoutput` the hand-rolled protocol-v1 parser
+//! (fuzzed); `apply` the per-stream transaction-buffered state machine;
+//! `read` the dispatch (snapshot pass / change pass); `ack` the
+//! acknowledgement + lag surface; `tail` the continuous chunked loop.
 
-pub(crate) mod pgoutput;
-pub mod slot;
-pub(crate) mod values;
-
+mod ack;
 mod apply;
+mod pgoutput;
 mod read;
 mod runtime;
+pub mod slot;
 mod tail;
 
-pub(crate) use read::{TableCtx, read_stream};
+pub(crate) use pgoutput::parse as parse_pgoutput;
+pub(crate) use read::{StreamContext, read_stream};
 pub(crate) use runtime::Runtime;

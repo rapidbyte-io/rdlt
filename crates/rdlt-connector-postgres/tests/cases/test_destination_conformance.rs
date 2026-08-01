@@ -7,8 +7,8 @@
 
 use crate::cases::common::Probe;
 use async_trait::async_trait;
-use rdlt_connector_postgres_v2::destination::Postgres;
-use rdlt_connector_postgres_v2::fixtures::PostgresContainer;
+use rdlt_connector_postgres::destination::Postgres;
+use rdlt_connector_postgres::fixtures::PostgresContainer;
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::conformance::dest::verify_destination;
 use rdlt_testkit::{MemorySource, TableProbe, assert_conformant};

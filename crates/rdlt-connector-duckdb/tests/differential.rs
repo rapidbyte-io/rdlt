@@ -31,7 +31,7 @@ use rdlt_connector::WriteMode;
 use rdlt_connector::core::Cursor;
 use rdlt_connector::{ConnectorSpec, ReadRequest, Source, SourceError, StreamSpec};
 use rdlt_connector_duckdb::dest::DuckDb;
-use rdlt_connector_postgres::dest::Postgres;
+use rdlt_connector_postgres::destination::Postgres;
 use rdlt_connector_sqlcore::DestinationOptions;
 use rdlt_engine::{Engine, EngineConfig};
 
@@ -177,10 +177,10 @@ async fn both(
 ) -> (Outcome, Outcome) {
     // Callers guard on `runtime_available()` and skip before reaching here,
     // so a missing runtime at this point is unexpected — fail loudly.
-    let pg = rdlt_connector_postgres::fixtures::PgFixture::start()
+    let pg = rdlt_connector_postgres::fixtures::PostgresContainer::start()
         .await
         .expect("postgres runtime (probed by the caller)");
-    let conn = pg.conn.clone();
+    let conn = pg.connection_string.clone();
     let schema = format!("diff_{name}");
     let duck_dir = tempfile::tempdir().expect("tempdir");
 
@@ -193,8 +193,8 @@ async fn both(
 
     for feed in &feeds {
         // postgres side
-        let dest = Postgres::connect(&conn)
-            .dataset(&schema)
+        let dest = Postgres::new(&conn)
+            .schema(&schema)
             .options(DestinationOptions::from_value(options.clone()).expect("options"))
             .unwrap();
         let mut config = EngineConfig::new(format!("diff-{name}"));

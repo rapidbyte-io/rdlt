@@ -14,8 +14,8 @@
 
 use rdlt_connector::core::WriteMode;
 use rdlt_connector::{ConnectorSpec, ReadRequest, Source, SourceError, StreamSpec};
-use rdlt_connector_postgres::dest::Postgres;
-use rdlt_connector_postgres::fixtures::PgFixture;
+use rdlt_connector_postgres::destination::Postgres;
+use rdlt_connector_postgres::fixtures::PostgresContainer;
 use rdlt_connector_snowflake::dest::{Snowflake, SnowflakeConfig};
 use rdlt_engine::{Engine, EngineConfig};
 mod common;
@@ -133,8 +133,8 @@ fn postgres_dest(conn: &str, dataset: &str, strategy: &str, hard_delete: bool) -
         .into_iter()
         .collect();
     }
-    Postgres::connect(conn)
-        .dataset(dataset)
+    Postgres::new(conn)
+        .schema(dataset)
         .options(options)
         .expect("options")
 }
@@ -209,7 +209,7 @@ async fn run_postgres(dest: &Postgres, pipeline: &str, batches: [arrow_array::Re
 
 #[tokio::test(flavor = "multi_thread")]
 async fn both_destinations_land_the_same_rows_for_every_strategy() {
-    let (Some(pg), Some(_)) = (PgFixture::start().await, credentials()) else {
+    let (Some(pg), Some(_)) = (PostgresContainer::start().await, credentials()) else {
         return;
     };
     let admin = snowflake_config("PUBLIC", "upsert", false).expect("credentials");
@@ -226,13 +226,13 @@ async fn both_destinations_land_the_same_rows_for_every_strategy() {
         schemas.push(schema.clone());
         let config = snowflake_config(&schema, strategy, hard_delete).expect("credentials");
         let dataset = format!("oracle_{label}");
-        let dest = postgres_dest(&pg.conn, &dataset, strategy, hard_delete);
+        let dest = postgres_dest(&pg.connection_string, &dataset, strategy, hard_delete);
 
         run_snowflake(&config, &format!("sf-{label}"), seeded_loads()).await;
         run_postgres(&dest, &format!("pg-{label}"), seeded_loads()).await;
 
         let sf = snowflake_rows(&config).await;
-        let pg_rows = postgres_rows(&pg.conn, &dataset).await;
+        let pg_rows = postgres_rows(&pg.connection_string, &dataset).await;
         assert!(
             !pg_rows.is_empty(),
             "[{label}] the reference loaded nothing — two empty tables also agree"

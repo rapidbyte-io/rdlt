@@ -1,15 +1,17 @@
-//! Source conformance against real Postgres + DuckDB — the full
-//! type-matrix round-trip (every contract row), selection modes, hostile
-//! identifiers, empty tables, and reflect→read drift.
+//! Source conformance driven postgres → DuckDB: the whole declared-type
+//! matrix round-tripped value by value, the type-hint conversion table,
+//! discovery scope (hierarchies, views, explicit lists), hostile quoted
+//! identifiers with column selection, an empty table, the lossy-mapping
+//! announcement, and every shape of catalog drift between reflect and read.
 //!
 //! ABOVE THE SIZE CEILING, DELIBERATELY: every cell drives the same
 //! postgres→duckdb rig; the file is one differential oracle, not a
 //! collection of topics.
 
-use crate::cases::common::source as source_for;
+use crate::cases::common;
 use rdlt_connector_duckdb::dest::DuckDb;
-use rdlt_connector_postgres::fixtures::PgFixture;
-use rdlt_connector_postgres::source::PostgresSource;
+use rdlt_connector_postgres::fixtures::PostgresContainer;
+use rdlt_connector_postgres::source;
 use rdlt_engine::{Engine, EngineConfig};
 
 const TYPE_MATRIX_SEED: &str = r#"
@@ -55,99 +57,114 @@ INSERT INTO type_matrix (i8) VALUES (2); -- all-NULL row (except PK)
 INSERT INTO type_matrix (i8, tstz, d) VALUES (3, 'infinity', '-infinity');
 "#;
 
-async fn run_to_duckdb(source: PostgresSource, pipeline: &str) -> (DuckDb, rdlt_engine::RunReport) {
-    let dest = crate::cases::common::duckdb_dest();
-    let report = Engine::new(EngineConfig::new(pipeline), source, dest.clone())
-        .run()
-        .await
-        .expect("pipeline run");
-    (dest, report)
+async fn run_to_duckdb(
+    postgres_source: source::Postgres,
+    pipeline: &str,
+) -> (DuckDb, rdlt_engine::RunReport) {
+    let destination = common::duckdb_destination();
+    let report = Engine::new(
+        EngineConfig::new(pipeline),
+        postgres_source,
+        destination.clone(),
+    )
+    .run()
+    .await
+    .expect("pipeline run");
+    (destination, report)
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn type_matrix_round_trip() {
-    let Some(fixture) = PgFixture::start().await else {
+    let Some(fixture) = PostgresContainer::start().await else {
         return;
     };
     fixture.seed(TYPE_MATRIX_SEED).await;
-    let (dest, report) = run_to_duckdb(
-        source_for(&fixture.conn, "tables:\n  - name: type_matrix\n"),
+    let (destination, report) = run_to_duckdb(
+        common::source(
+            &fixture.connection_string,
+            "tables:\n  - name: type_matrix\n",
+        ),
         "conf-matrix",
     )
     .await;
     assert_eq!(report.total_rows(), 3);
-    assert_eq!(dest.count_rows("type_matrix").expect("count"), 3);
+    assert_eq!(destination.count_rows("type_matrix").expect("count"), 3);
 
-    let val = |col: &str| {
+    let value = |column: &str| {
         // query_string reads a single VARCHAR — cast every probe to text.
-        dest.query_string(&format!(
-            "SELECT CAST(({col}) AS VARCHAR) FROM type_matrix WHERE i8 = 1"
-        ))
-        .expect(col)
+        destination
+            .query_string(&format!(
+                "SELECT CAST(({column}) AS VARCHAR) FROM type_matrix WHERE i8 = 1"
+            ))
+            .expect(column)
     };
     // Lossless scalar rows (contract table 1).
-    assert_eq!(val("b"), "true");
-    assert_eq!(val("i2"), "32000");
-    assert_eq!(val("i4"), "2000000000");
-    assert_eq!(val("f4"), "1.5");
-    assert_eq!(val("f8"), "2.25");
-    assert_eq!(val("num"), "1.25");
-    assert_eq!(val("t"), "plain");
-    assert_eq!(val("vc"), "varchar");
-    assert_eq!(val("ch"), "abc  ", "char(5) keeps pad spaces as stored");
-    assert_eq!(val("hex(byt)"), "DEADBEEF");
+    assert_eq!(value("b"), "true");
+    assert_eq!(value("i2"), "32000");
+    assert_eq!(value("i4"), "2000000000");
+    assert_eq!(value("f4"), "1.5");
+    assert_eq!(value("f8"), "2.25");
+    assert_eq!(value("num"), "1.25");
+    assert_eq!(value("t"), "plain");
+    assert_eq!(value("vc"), "varchar");
+    assert_eq!(value("ch"), "abc  ", "char(5) keeps pad spaces as stored");
+    assert_eq!(value("hex(byt)"), "DEADBEEF");
     assert!(
-        val("ts").starts_with("2026-01-02 03:04:05.123456"),
+        value("ts").starts_with("2026-01-02 03:04:05.123456"),
         "{}",
-        val("ts")
+        value("ts")
     );
     assert!(
-        val("tstz").starts_with("2026-01-02 03:04:05.123456"),
+        value("tstz").starts_with("2026-01-02 03:04:05.123456"),
         "{}",
-        val("tstz")
+        value("tstz")
     );
-    assert_eq!(val("d"), "2026-01-02");
-    assert_eq!(val("tm"), "03:04:05.123456");
-    assert_eq!(val("u"), "550e8400-e29b-41d4-a716-446655440000");
+    assert_eq!(value("d"), "2026-01-02");
+    assert_eq!(value("tm"), "03:04:05.123456");
+    assert_eq!(value("u"), "550e8400-e29b-41d4-a716-446655440000");
     // Policy rows (contract table 2): canonical text, values survive.
     assert_eq!(
-        val("numu"),
+        value("numu"),
         "1.23456789",
         "unconstrained numeric → lossless text"
     );
     assert_eq!(
-        val("numb"),
+        value("numb"),
         "123456789012345678901234567890123456789012345.67891",
         "numeric(50,5) beyond decimal128 → lossless text"
     );
-    assert_eq!(val("j"), r#"{"k": 1}"#);
-    assert_eq!(val("jb"), r#"{"k": 2}"#, "jsonb version byte stripped");
-    assert_eq!(val("md"), "happy", "enum label text");
-    assert_eq!(val("tags"), r#"["a", "b"]"#, "array → canonical JSON text");
-    assert_eq!(val("iv"), "1 day 02:00:00", "interval canonical text");
-    assert_eq!(val("mn"), "$100.00", "money canonical text");
+    assert_eq!(value("j"), r#"{"k": 1}"#);
+    assert_eq!(value("jb"), r#"{"k": 2}"#, "jsonb version byte stripped");
+    assert_eq!(value("md"), "happy", "enum label text");
     assert_eq!(
-        val("ip"),
+        value("tags"),
+        r#"["a", "b"]"#,
+        "array → canonical JSON text"
+    );
+    assert_eq!(value("iv"), "1 day 02:00:00", "interval canonical text");
+    assert_eq!(value("mn"), "$100.00", "money canonical text");
+    assert_eq!(
+        value("ip"),
         "10.0.0.1/32",
         "inet canonical text (PG includes the netmask)"
     );
 
     // All-NULL row survives as NULLs.
-    let nulls = dest
+    let nulls = destination
         .query_string("SELECT CAST(count(*) AS VARCHAR) FROM type_matrix WHERE i8 = 2 AND b IS NULL AND jb IS NULL AND mn IS NULL")
         .expect("null row");
     assert_eq!(nulls, "1");
 
     // ±infinity saturates to extremes — visible, sortable, never NULL.
-    let inf = dest
+    let infinities = destination
         .query_string("SELECT CAST(count(*) AS VARCHAR) FROM type_matrix WHERE i8 = 3 AND tstz IS NOT NULL AND d IS NOT NULL")
         .expect("infinity row");
-    assert_eq!(inf, "1");
-    let max_is_inf_row = dest
+    assert_eq!(infinities, "1");
+    let max_is_infinity_row = destination
         .query_string("SELECT CAST(i8 AS VARCHAR) FROM type_matrix WHERE tstz IS NOT NULL ORDER BY tstz DESC LIMIT 1")
         .expect("max tstz");
     assert_eq!(
-        max_is_inf_row, "3",
+        max_is_infinity_row, "3",
         "+infinity sorts above every real timestamp"
     );
 }
@@ -157,7 +174,7 @@ async fn type_hints_end_to_end() {
     // Hinted text→timestamptz lands typed; unconstrained numeric
     // regains decimality via a hint; a failing cast is a typed copy error
     // naming the column.
-    let Some(fixture) = PgFixture::start().await else {
+    let Some(fixture) = PostgresContainer::start().await else {
         return;
     };
     fixture
@@ -166,47 +183,51 @@ async fn type_hints_end_to_end() {
              INSERT INTO h VALUES (1, '2026-01-02T03:04:05Z', 12.3456);",
         )
         .await;
-    let (dest, _) = run_to_duckdb(
-        source_for(
-            &fixture.conn,
+    let (destination, _) = run_to_duckdb(
+        common::source(
+            &fixture.connection_string,
             "tables:\n  - name: h\n    type_hints:\n      raw_ts: timestamp_tz\n      amount: decimal(12,4)\n",
         ),
         "conf-hints",
     )
     .await;
-    let ts_type = dest
+    let timestamp_type = destination
         .query_string("SELECT CAST(typeof(raw_ts) AS VARCHAR) FROM h")
         .expect("typeof");
     assert!(
-        ts_type.contains("TIMESTAMP"),
-        "hinted column lands typed: {ts_type}"
+        timestamp_type.contains("TIMESTAMP"),
+        "hinted column lands typed: {timestamp_type}"
     );
-    let amount = dest
+    let amount = destination
         .query_string("SELECT CAST(amount AS VARCHAR) FROM h")
         .expect("amount");
     assert_eq!(amount, "12.3456", "decimal hint restores decimality");
 
     // Cast failure: text that is not a timestamp → typed copy-phase error.
-    let Some(fixture2) = PgFixture::start().await else {
+    let Some(second_fixture) = PostgresContainer::start().await else {
         return;
     };
-    fixture2
+    second_fixture
         .seed(
             "CREATE TABLE h (id int8 PRIMARY KEY, raw_ts text); \
              INSERT INTO h VALUES (1, 'not-a-timestamp');",
         )
         .await;
-    let source = source_for(
-        &fixture2.conn,
+    let postgres_source = common::source(
+        &second_fixture.connection_string,
         "tables:\n  - name: h\n    type_hints:\n      raw_ts: timestamp_tz\n",
     );
-    let db = tempfile::tempdir().expect("tempdir");
-    let dest = DuckDb::open(db.path().join("out.duckdb")).expect("open db");
-    let err = Engine::new(EngineConfig::new("conf-hint-fail"), source, dest)
-        .run()
-        .await
-        .expect_err("failing cast must be typed, never silent");
-    assert!(err.to_string().contains("copy phase"), "{err}");
+    let directory = tempfile::tempdir().expect("tempdir");
+    let destination = DuckDb::open(directory.path().join("out.duckdb")).expect("open db");
+    let error = Engine::new(
+        EngineConfig::new("conf-hint-fail"),
+        postgres_source,
+        destination,
+    )
+    .run()
+    .await
+    .expect_err("failing cast must be typed, never silent");
+    assert!(error.to_string().contains("copy phase"), "{error}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -214,7 +235,7 @@ async fn partitioned_tables_load_once_via_parent() {
     // 005 review finding (generalized by 007 R7 to pg_inherits): without a
     // hierarchy-child filter, schema-wide discovery streamed BOTH the
     // partitioned parent and every leaf, double-loading every row.
-    let Some(fixture) = PgFixture::start().await else {
+    let Some(fixture) = PostgresContainer::start().await else {
         return;
     };
     fixture
@@ -227,27 +248,35 @@ async fn partitioned_tables_load_once_via_parent() {
              INSERT INTO metrics VALUES ('2026-01-05', 1), ('2026-02-05', 2), ('2026-02-06', 3);",
         )
         .await;
-    let (dest, report) = run_to_duckdb(source_for(&fixture.conn, ""), "conf-part").await;
+    let (destination, report) =
+        run_to_duckdb(common::source(&fixture.connection_string, ""), "conf-part").await;
     assert_eq!(
         report.total_rows(),
         3,
         "each partitioned row loads exactly once"
     );
-    assert_eq!(dest.count_rows("metrics").expect("parent stream"), 3);
+    assert_eq!(destination.count_rows("metrics").expect("parent stream"), 3);
     assert!(
-        dest.count_rows("metrics_jan").is_err() && dest.count_rows("metrics_feb").is_err(),
+        destination.count_rows("metrics_jan").is_err()
+            && destination.count_rows("metrics_feb").is_err(),
         "leaf partitions must not become their own streams"
     );
 
     // An EXPLICITLY listed leaf overrides the exclusion —
     // reading one partition alone is a legitimate backfill.
-    let (dest, report) = run_to_duckdb(
-        source_for(&fixture.conn, "tables:\n  - name: metrics_jan\n"),
+    let (destination, report) = run_to_duckdb(
+        common::source(
+            &fixture.connection_string,
+            "tables:\n  - name: metrics_jan\n",
+        ),
         "conf-part-listed",
     )
     .await;
     assert_eq!(report.total_rows(), 1, "the January leaf alone");
-    assert_eq!(dest.count_rows("metrics_jan").expect("listed leaf"), 1);
+    assert_eq!(
+        destination.count_rows("metrics_jan").expect("listed leaf"),
+        1
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -258,7 +287,7 @@ async fn inherits_children_load_once_via_parent() {
     // both double-loaded every child row (dlt has the same defect; we fix
     // it). Mixed hierarchies (a child that is ALSO a partition parent)
     // still load each row exactly once.
-    let Some(fixture) = PgFixture::start().await else {
+    let Some(fixture) = PostgresContainer::start().await else {
         return;
     };
     fixture
@@ -278,37 +307,39 @@ async fn inherits_children_load_once_via_parent() {
              INSERT INTO events_hot VALUES (2, '2026-01-05');",
         )
         .await;
-    let (dest, _report) = run_to_duckdb(source_for(&fixture.conn, ""), "conf-inh").await;
+    let (destination, _report) =
+        run_to_duckdb(common::source(&fixture.connection_string, ""), "conf-inh").await;
 
     // cities parent covers both rows; capitals is NOT its own stream.
-    assert_eq!(dest.count_rows("cities").expect("parent"), 2);
+    assert_eq!(destination.count_rows("cities").expect("parent"), 2);
     assert!(
-        dest.count_rows("capitals").is_err(),
+        destination.count_rows("capitals").is_err(),
         "INHERITS child must not become its own stream"
     );
     // Two separate roots: `events` covers its INHERITS child's row;
     // `events_hot` (its own partitioned root) covers its leaf. Each row
     // loads exactly once, no child becomes a stream.
-    assert_eq!(dest.count_rows("events").expect("events root"), 1);
-    assert_eq!(dest.count_rows("events_hot").expect("hot root"), 1);
+    assert_eq!(destination.count_rows("events").expect("events root"), 1);
+    assert_eq!(destination.count_rows("events_hot").expect("hot root"), 1);
     assert!(
-        dest.count_rows("events_hist").is_err() && dest.count_rows("events_hot_jan").is_err(),
+        destination.count_rows("events_hist").is_err()
+            && destination.count_rows("events_hot_jan").is_err(),
         "children of either hierarchy kind must not be streams"
     );
 
     // Explicitly listed INHERITS child: readable alone (the override).
-    let (dest, report) = run_to_duckdb(
-        source_for(&fixture.conn, "tables:\n  - name: capitals\n"),
+    let (destination, report) = run_to_duckdb(
+        common::source(&fixture.connection_string, "tables:\n  - name: capitals\n"),
         "conf-inh-listed",
     )
     .await;
     assert_eq!(report.total_rows(), 1, "the child alone");
-    assert_eq!(dest.count_rows("capitals").expect("listed child"), 1);
+    assert_eq!(destination.count_rows("capitals").expect("listed child"), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn schema_wide_discovery_and_views() {
-    let Some(fixture) = PgFixture::start().await else {
+    let Some(fixture) = PostgresContainer::start().await else {
         return;
     };
     fixture
@@ -324,26 +355,30 @@ CREATE VIEW gamma AS SELECT id FROM alpha;
         .await;
 
     // No table list ⇒ every table in the schema; views excluded by default.
-    let (dest, _) = run_to_duckdb(source_for(&fixture.conn, ""), "conf-discovery").await;
-    assert_eq!(dest.count_rows("alpha").expect("alpha"), 1);
-    assert_eq!(dest.count_rows("beta").expect("beta"), 1);
+    let (destination, _) = run_to_duckdb(
+        common::source(&fixture.connection_string, ""),
+        "conf-discovery",
+    )
+    .await;
+    assert_eq!(destination.count_rows("alpha").expect("alpha"), 1);
+    assert_eq!(destination.count_rows("beta").expect("beta"), 1);
     assert!(
-        dest.count_rows("gamma").is_err(),
+        destination.count_rows("gamma").is_err(),
         "views excluded by default"
     );
 
     // include_views: the view becomes a stream.
-    let (dest, _) = run_to_duckdb(
-        source_for(&fixture.conn, "include_views: true\n"),
+    let (destination, _) = run_to_duckdb(
+        common::source(&fixture.connection_string, "include_views: true\n"),
         "conf-views",
     )
     .await;
-    assert_eq!(dest.count_rows("gamma").expect("gamma"), 1);
+    assert_eq!(destination.count_rows("gamma").expect("gamma"), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn hostile_identifiers_and_column_selection() {
-    let Some(fixture) = PgFixture::start().await else {
+    let Some(fixture) = PostgresContainer::start().await else {
         return;
     };
     fixture
@@ -358,9 +393,9 @@ INSERT INTO "Order ""Items""" VALUES (1, 'kw', 'hidden');
 "#,
         )
         .await;
-    let (dest, _) = run_to_duckdb(
-        source_for(
-            &fixture.conn,
+    let (destination, _) = run_to_duckdb(
+        common::source(
+            &fixture.connection_string,
             "tables:\n  - name: 'Order \"Items\"'\n    excluded_columns: [secret]\n",
         ),
         "conf-idents",
@@ -369,39 +404,40 @@ INSERT INTO "Order ""Items""" VALUES (1, 'kw', 'hidden');
     // The DESTINATION normalizes identifiers (engine ident rules):
     // `Order "Items"` lands as `order__items_`. The source's job was reading
     // the hostile names faithfully; the rename is downstream policy.
-    assert_eq!(dest.count_rows("order__items_").expect("count"), 1);
-    let v = dest
+    assert_eq!(destination.count_rows("order__items_").expect("count"), 1);
+    let keyword_column = destination
         .query_string(r#"SELECT CAST("select" AS VARCHAR) FROM order__items_"#)
         .expect("keyword column");
-    assert_eq!(v, "kw");
-    let secret_cols = dest
+    assert_eq!(keyword_column, "kw");
+    let secret_columns = destination
         .query_string(
             "SELECT CAST(count(*) AS VARCHAR) FROM information_schema.columns \
              WHERE table_name = 'order__items_' AND column_name = 'secret'",
         )
         .expect("column probe");
     assert_eq!(
-        secret_cols, "0",
+        secret_columns, "0",
         "excluded column must not exist downstream"
     );
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn empty_table_materializes_with_schema() {
-    let Some(fixture) = PgFixture::start().await else {
+    let Some(fixture) = PostgresContainer::start().await else {
         return;
     };
     fixture
         .seed("CREATE TABLE hollow (id int8 PRIMARY KEY, v numeric(6,3));")
         .await;
-    let (dest, report) = run_to_duckdb(
-        source_for(&fixture.conn, "tables:\n  - name: hollow\n"),
+    let (destination, report) = run_to_duckdb(
+        common::source(&fixture.connection_string, "tables:\n  - name: hollow\n"),
         "conf-empty",
     )
     .await;
     assert_eq!(report.total_rows(), 0);
     assert_eq!(
-        dest.count_rows("hollow")
+        destination
+            .count_rows("hollow")
             .expect("table exists with declared schema"),
         0
     );
@@ -413,111 +449,133 @@ async fn drift_column_added_dropped_retyped() {
 
     // ADDED between reflect and read: this run projects the reflected
     // columns only (discovery is once per run); the NEXT run evolves.
-    let Some(fixture) = PgFixture::start().await else {
+    let Some(fixture) = PostgresContainer::start().await else {
         return;
     };
     fixture
         .seed("CREATE TABLE d (id int8 PRIMARY KEY, v text); INSERT INTO d VALUES (1, 'x');")
         .await;
-    let source = source_for(&fixture.conn, "tables:\n  - name: d\n");
-    source.streams().await.expect("reflect");
+    let postgres_source = common::source(&fixture.connection_string, "tables:\n  - name: d\n");
+    postgres_source.streams().await.expect("reflect");
     fixture
         .seed("ALTER TABLE d ADD COLUMN extra int4; UPDATE d SET extra = 7;")
         .await;
-    let dest = crate::cases::common::duckdb_dest();
-    Engine::new(EngineConfig::new("drift-add"), source, dest.clone())
-        .run()
-        .await
-        .expect("added column is invisible this run, never misaligned");
+    let destination = common::duckdb_destination();
+    Engine::new(
+        EngineConfig::new("drift-add"),
+        postgres_source,
+        destination.clone(),
+    )
+    .run()
+    .await
+    .expect("added column is invisible this run, never misaligned");
     assert!(
-        dest.query_string("SELECT CAST(extra AS VARCHAR) FROM d")
+        destination
+            .query_string("SELECT CAST(extra AS VARCHAR) FROM d")
             .is_err(),
         "column added after reflection must not appear this run"
     );
     // Next run (fresh reflection) picks it up via schema evolution.
-    let source = source_for(&fixture.conn, "tables:\n  - name: d\n");
-    Engine::new(EngineConfig::new("drift-add"), source, dest.clone())
-        .run()
-        .await
-        .expect("second run evolves");
+    let postgres_source = common::source(&fixture.connection_string, "tables:\n  - name: d\n");
+    Engine::new(
+        EngineConfig::new("drift-add"),
+        postgres_source,
+        destination.clone(),
+    )
+    .run()
+    .await
+    .expect("second run evolves");
     assert_eq!(
         // Append-mode snapshot re-runs duplicate rows by design (run 1's
         // copy has NULL in the evolved column) — aggregate over the copies.
-        dest.query_string("SELECT CAST(max(extra) AS VARCHAR) FROM d")
+        destination
+            .query_string("SELECT CAST(max(extra) AS VARCHAR) FROM d")
             .expect("evolved column"),
         "7"
     );
 
     // DROPPED between reflect and read: typed error, never misaligned data.
-    let Some(fixture) = PgFixture::start().await else {
+    let Some(fixture) = PostgresContainer::start().await else {
         return;
     };
     fixture
         .seed("CREATE TABLE d (id int8 PRIMARY KEY, v text); INSERT INTO d VALUES (1, 'x');")
         .await;
-    let source = source_for(&fixture.conn, "tables:\n  - name: d\n");
-    source.streams().await.expect("reflect");
+    let postgres_source = common::source(&fixture.connection_string, "tables:\n  - name: d\n");
+    postgres_source.streams().await.expect("reflect");
     fixture.seed("ALTER TABLE d DROP COLUMN v;").await;
-    let db = tempfile::tempdir().expect("tempdir");
-    let dest = DuckDb::open(db.path().join("out.duckdb")).expect("open db");
-    let err = Engine::new(EngineConfig::new("drift-drop"), source, dest)
-        .run()
-        .await
-        .expect_err("dropped column must fail loudly");
-    assert!(err.to_string().contains("copy phase"), "{err}");
+    let directory = tempfile::tempdir().expect("tempdir");
+    let destination = DuckDb::open(directory.path().join("out.duckdb")).expect("open db");
+    let error = Engine::new(
+        EngineConfig::new("drift-drop"),
+        postgres_source,
+        destination,
+    )
+    .run()
+    .await
+    .expect_err("dropped column must fail loudly");
+    assert!(error.to_string().contains("copy phase"), "{error}");
 
     // RETYPED between reflect and read: the wire shape no longer matches the
     // reflected decode plan — a typed DECODE error, never silent coercion.
-    let Some(fixture) = PgFixture::start().await else {
+    let Some(fixture) = PostgresContainer::start().await else {
         return;
     };
     fixture
         .seed("CREATE TABLE d (id int8 PRIMARY KEY, n int4); INSERT INTO d VALUES (1, 5);")
         .await;
-    let source = source_for(&fixture.conn, "tables:\n  - name: d\n");
-    source.streams().await.expect("reflect");
+    let postgres_source = common::source(&fixture.connection_string, "tables:\n  - name: d\n");
+    postgres_source.streams().await.expect("reflect");
     fixture
         .seed("ALTER TABLE d ALTER COLUMN n TYPE int8;")
         .await;
-    let db = tempfile::tempdir().expect("tempdir");
-    let dest = DuckDb::open(db.path().join("out.duckdb")).expect("open db");
-    let err = Engine::new(EngineConfig::new("drift-retype"), source, dest)
-        .run()
-        .await
-        .expect_err("retyped column must fail loudly");
-    let msg = err.to_string();
+    let directory = tempfile::tempdir().expect("tempdir");
+    let destination = DuckDb::open(directory.path().join("out.duckdb")).expect("open db");
+    let error = Engine::new(
+        EngineConfig::new("drift-retype"),
+        postgres_source,
+        destination,
+    )
+    .run()
+    .await
+    .expect_err("retyped column must fail loudly");
+    let message = error.to_string();
     assert!(
-        msg.contains("decode") || msg.contains("copy phase"),
-        "{msg}"
+        message.contains("decode") || message.contains("copy phase"),
+        "{message}"
     );
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn drift_table_dropped_between_reflect_and_read() {
-    let Some(fixture) = PgFixture::start().await else {
+    let Some(fixture) = PostgresContainer::start().await else {
         return;
     };
     fixture
         .seed("CREATE TABLE doomed (id int8 PRIMARY KEY); INSERT INTO doomed VALUES (1);")
         .await;
-    let source = source_for(&fixture.conn, "tables:\n  - name: doomed\n");
+    let postgres_source = common::source(&fixture.connection_string, "tables:\n  - name: doomed\n");
     // Prime reflection (as the engine's stream discovery would)…
     use rdlt_connector::Source as _;
-    let specs = source.streams().await.expect("streams");
+    let specs = postgres_source.streams().await.expect("streams");
     assert_eq!(specs.len(), 1);
     // …then drift: the table vanishes before read.
     fixture.seed("DROP TABLE doomed;").await;
 
-    let db = tempfile::tempdir().expect("tempdir");
-    let dest = DuckDb::open(db.path().join("out.duckdb")).expect("open db");
-    let err = Engine::new(EngineConfig::new("conf-drift"), source, dest)
-        .run()
-        .await
-        .expect_err("dropped table must fail loudly");
-    let msg = err.to_string();
+    let directory = tempfile::tempdir().expect("tempdir");
+    let destination = DuckDb::open(directory.path().join("out.duckdb")).expect("open db");
+    let error = Engine::new(
+        EngineConfig::new("conf-drift"),
+        postgres_source,
+        destination,
+    )
+    .run()
+    .await
+    .expect_err("dropped table must fail loudly");
+    let message = error.to_string();
     assert!(
-        msg.contains("copy phase") && msg.contains("doomed"),
-        "typed error names phase + table: {msg}"
+        message.contains("copy phase") && message.contains("doomed"),
+        "typed error names phase + table: {message}"
     );
 }
 
@@ -579,7 +637,7 @@ async fn lossy_mappings_announce_once_per_read_on_dedicated_target() {
     let _ = tracing::subscriber::set_global_default(LossyCollector);
     EVENTS.get_or_init(Mutex::default);
 
-    let Some(fixture) = PgFixture::start().await else {
+    let Some(fixture) = PostgresContainer::start().await else {
         return;
     };
     fixture
@@ -590,14 +648,14 @@ async fn lossy_mappings_announce_once_per_read_on_dedicated_target() {
              INSERT INTO clean VALUES (1, 'quiet');",
         )
         .await;
-    let dir = tempfile::tempdir().expect("tempdir");
-    let dest = DuckDb::open(dir.path().join("out.duckdb")).expect("open db");
-    let source = PostgresSource::from_yaml(&format!(
+    let directory = tempfile::tempdir().expect("tempdir");
+    let destination = DuckDb::open(directory.path().join("out.duckdb")).expect("open db");
+    let postgres_source = source::Postgres::from_yaml(&format!(
         "conn: \"{}\"\ntables:\n  - name: noisy\n  - name: clean\n",
-        fixture.conn
+        fixture.connection_string
     ))
     .expect("config");
-    Engine::new(EngineConfig::new("lossy-cap"), source, dest)
+    Engine::new(EngineConfig::new("lossy-cap"), postgres_source, destination)
         .run()
         .await
         .expect("run");
@@ -608,7 +666,7 @@ async fn lossy_mappings_announce_once_per_read_on_dedicated_target() {
         .lock()
         .expect("collector lock")
         .clone();
-    events.retain(|e| e.starts_with("noisy/") || e.starts_with("clean/"));
+    events.retain(|event| event.starts_with("noisy/") || event.starts_with("clean/"));
     events.sort();
     assert_eq!(
         events,
@@ -626,7 +684,7 @@ async fn lossy_mappings_announce_once_per_read_on_dedicated_target() {
 /// already pinned by `type_hints_end_to_end`.)
 #[tokio::test(flavor = "multi_thread")]
 async fn hint_matrix_covers_every_documented_pair() {
-    let Some(fixture) = PgFixture::start().await else {
+    let Some(fixture) = PostgresContainer::start().await else {
         return;
     };
     fixture
@@ -646,10 +704,14 @@ async fn hint_matrix_covers_every_documented_pair() {
         )
         .await;
     let hints = "tables:\n  - name: h\n    type_hints:\n      t_bool: bool\n      t_int: int64\n      t_float: float64\n      t_naive: timestamp_naive\n      t_date: date\n      t_time: time\n      t_uuid: uuid\n      t_json: json\n      t_bin: binary\n      i_bool: bool\n      i_float: float64\n      n_float: float64\n      ts_date: date\n      d_tz: timestamp_tz\n";
-    let (db, report) = run_to_duckdb(source_for(&fixture.conn, hints), "conf-hint-matrix").await;
+    let (destination, report) = run_to_duckdb(
+        common::source(&fixture.connection_string, hints),
+        "conf-hint-matrix",
+    )
+    .await;
     assert_eq!(report.total_rows(), 1);
     // Server-side casts landed TYPED — duckdb's typeof() is the witness.
-    for (col, want) in [
+    for (column, want) in [
         ("t_bool", "BOOLEAN"),
         ("t_int", "BIGINT"),
         ("t_float", "DOUBLE"),
@@ -662,46 +724,48 @@ async fn hint_matrix_covers_every_documented_pair() {
         ("ts_date", "DATE"),
         ("t_bin", "BLOB"),
     ] {
-        let ty = db
-            .query_string(&format!("SELECT typeof({col}) FROM h"))
-            .expect(col);
-        assert_eq!(ty, want, "hint target type for {col}");
+        let landed = destination
+            .query_string(&format!("SELECT typeof({column}) FROM h"))
+            .expect(column);
+        assert_eq!(landed, want, "hint target type for {column}");
     }
     // Values, not just types.
     assert_eq!(
-        db.query_string("SELECT CAST(t_int AS VARCHAR) FROM h")
+        destination
+            .query_string("SELECT CAST(t_int AS VARCHAR) FROM h")
             .unwrap(),
         "42"
     );
     assert_eq!(
-        db.query_string("SELECT CAST(i_bool AS VARCHAR) FROM h")
+        destination
+            .query_string("SELECT CAST(i_bool AS VARCHAR) FROM h")
             .unwrap(),
         "true"
     );
     assert_eq!(
-        db.query_string("SELECT t_uuid FROM h").unwrap(),
+        destination.query_string("SELECT t_uuid FROM h").unwrap(),
         "6a1de5f1-97fe-4f19-b2f2-4e3a7cbe75f3",
         "uuid hint canonicalizes via the server"
     );
     assert_eq!(
-        db.query_string("SELECT t_json FROM h").unwrap(),
+        destination.query_string("SELECT t_json FROM h").unwrap(),
         "{\"k\": 1}"
     );
     // An UNDEFINED pair stays a typed open-time error (closed table).
-    let err = run_to_duckdb_err(
-        source_for(
-            &fixture.conn,
+    let error = run_to_duckdb_err(
+        common::source(
+            &fixture.connection_string,
             "tables:\n  - name: h\n    type_hints:\n      i_bool: uuid\n",
         ),
         "conf-hint-bad",
     )
     .await;
-    assert!(err.contains("no defined conversion"), "{err}");
+    assert!(error.contains("no defined conversion"), "{error}");
 }
 
-async fn run_to_duckdb_err(source: PostgresSource, pipeline: &str) -> String {
-    let dest = crate::cases::common::duckdb_dest();
-    Engine::new(EngineConfig::new(pipeline), source, dest)
+async fn run_to_duckdb_err(postgres_source: source::Postgres, pipeline: &str) -> String {
+    let destination = common::duckdb_destination();
+    Engine::new(EngineConfig::new(pipeline), postgres_source, destination)
         .run()
         .await
         .expect_err("run should fail")

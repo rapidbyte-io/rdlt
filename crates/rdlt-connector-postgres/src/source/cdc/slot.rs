@@ -1,35 +1,35 @@
 //! Slot + publication lifecycle over the SQL logical-decoding interface:
 //! create-if-missing — idempotent, and rdlt NEVER drops either resource —
-//! range peek via
-//! `pg_logical_slot_peek_binary_changes` (reads WITHOUT consuming), and
-//! explicit acknowledgement via `pg_replication_slot_advance`. Every ugly
-//! lifecycle state read from `pg_replication_slots` is its own
-//! DISTINGUISHED typed error (no silent failures).
+//! range peek via `pg_logical_slot_peek_binary_changes` (reads WITHOUT
+//! consuming), and explicit acknowledgement via
+//! `pg_replication_slot_advance`. Every ugly lifecycle state read from
+//! `pg_replication_slots` is its own DISTINGUISHED typed error (no silent
+//! failures).
 
 use std::collections::BTreeSet;
 
 use futures::{Stream, StreamExt};
 use rdlt_connector::SourceError;
+use rdlt_connector_sqlcore::quote_identifier;
 use tokio_postgres::Client;
 
 use crate::source::config::CdcConfig;
 use crate::source::errors::{Phase, classify, fatal};
-use crate::source::sqlgen::quote_identifier;
 
 /// Parse postgres's `pg_lsn` text form `X/Y` (two hex halves) into the
 /// 64-bit position.
 pub fn parse_lsn(text: &str) -> Option<u64> {
-    let (hi, lo) = text.split_once('/')?;
-    if hi.is_empty() || lo.is_empty() || hi.len() > 8 || lo.len() > 8 {
+    let (high, low) = text.split_once('/')?;
+    if high.is_empty() || low.is_empty() || high.len() > 8 || low.len() > 8 {
         return None;
     }
-    let hi = u64::from_str_radix(hi, 16).ok()?;
-    let lo = u64::from_str_radix(lo, 16).ok()?;
-    Some((hi << 32) | lo)
+    let high = u64::from_str_radix(high, 16).ok()?;
+    let low = u64::from_str_radix(low, 16).ok()?;
+    Some((high << 32) | low)
 }
 
 /// Render an LSN the way postgres and its operators do (`X/Y`).
-pub fn fmt_lsn(lsn: u64) -> String {
+pub fn render_lsn(lsn: u64) -> String {
     format!("{:X}/{:X}", lsn >> 32, lsn as u32)
 }
 
@@ -50,18 +50,32 @@ pub struct Change {
     pub data: Vec<u8>,
 }
 
-/// Preflight + lifecycle: publication exists and covers every CDC
-/// table; slot exists (created here only under `create_if_missing`), runs
-/// the `pgoutput` plugin, is not held by a concurrent consumer, and has
-/// not been invalidated by WAL retention. Each violation is its own typed
-/// fatal error naming the resource and the fix.
+/// Preflight + lifecycle, decomposed into named checks in the order they
+/// must hold: publication exists (created here only under
+/// `create_if_missing`) and covers every CDC table; slot exists (same
+/// creation rule), runs the `pgoutput` plugin, is not held by a concurrent
+/// consumer, and has not been invalidated by WAL retention. Each violation
+/// is its own typed fatal error naming the resource and the fix.
 pub async fn ensure(
     client: &Client,
     cdc: &CdcConfig,
     schema: &str,
     tables: &[String],
 ) -> Result<EnsureOutcome, SourceError> {
-    let publication_exists = client
+    ensure_publication(client, cdc, schema, tables).await?;
+    ensure_publication_covers(client, cdc, schema, tables).await?;
+    ensure_slot(client, cdc).await
+}
+
+/// Publication existence — creation is one way to satisfy it, and the only
+/// alteration rdlt ever performs.
+async fn ensure_publication(
+    client: &Client,
+    cdc: &CdcConfig,
+    schema: &str,
+    tables: &[String],
+) -> Result<(), SourceError> {
+    let exists = client
         .query_opt(
             "SELECT 1 FROM pg_publication WHERE pubname = $1",
             &[&cdc.publication],
@@ -69,35 +83,45 @@ pub async fn ensure(
         .await
         .map_err(|e| classify(Phase::Slot, None, &e))?
         .is_some();
-    if !publication_exists {
-        if !cdc.create_if_missing {
-            return Err(fatal(
-                Phase::Slot,
-                None,
-                format!(
-                    "publication `{}` does not exist (set `cdc.create_if_missing: true` \
-                     to have rdlt create it for the configured tables)",
-                    cdc.publication
-                ),
-            ));
-        }
-        let table_list = tables
-            .iter()
-            .map(|t| format!("{}.{}", quote_identifier(schema), quote_identifier(t)))
-            .collect::<Vec<_>>()
-            .join(", ");
-        client
-            .batch_execute(&format!(
-                "CREATE PUBLICATION {} FOR TABLE {table_list}",
-                quote_identifier(&cdc.publication)
-            ))
-            .await
-            .map_err(|e| classify(Phase::Slot, None, &e))?;
+    if exists {
+        return Ok(());
     }
-    // Coverage check runs even on the freshly created publication — the
-    // check is the contract, creation is just one way to satisfy it. An
-    // EXISTING publication with gaps is an error, never an ALTER: the
-    // publication is a user-owned resource and rdlt only ever creates.
+    if !cdc.create_if_missing {
+        return Err(fatal(
+            Phase::Slot,
+            None,
+            format!(
+                "publication `{}` does not exist (set `cdc.create_if_missing: true` \
+                 to have rdlt create it for the configured tables)",
+                cdc.publication
+            ),
+        ));
+    }
+    let table_list = tables
+        .iter()
+        .map(|table| format!("{}.{}", quote_identifier(schema), quote_identifier(table)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    client
+        .batch_execute(&format!(
+            "CREATE PUBLICATION {} FOR TABLE {table_list}",
+            quote_identifier(&cdc.publication)
+        ))
+        .await
+        .map_err(|e| classify(Phase::Slot, None, &e))?;
+    Ok(())
+}
+
+/// Coverage — checked even on a freshly created publication (the check is
+/// the contract; creation is just one way to satisfy it). An EXISTING
+/// publication with gaps is an error, never an ALTER: the publication is a
+/// user-owned resource and rdlt only ever creates.
+async fn ensure_publication_covers(
+    client: &Client,
+    cdc: &CdcConfig,
+    schema: &str,
+    tables: &[String],
+) -> Result<(), SourceError> {
     let covered: BTreeSet<String> = client
         .query(
             "SELECT tablename FROM pg_publication_tables \
@@ -112,27 +136,32 @@ pub async fn ensure(
     let missing: Vec<&str> = tables
         .iter()
         .map(String::as_str)
-        .filter(|t| !covered.contains(*t))
+        .filter(|table| !covered.contains(*table))
         .collect();
-    if !missing.is_empty() {
-        return Err(fatal(
-            Phase::Slot,
-            None,
-            format!(
-                "publication `{}` does not cover configured table(s) {} — \
-                 `ALTER PUBLICATION {} ADD TABLE …` (rdlt never alters the \
-                 publication itself)",
-                cdc.publication,
-                missing
-                    .iter()
-                    .map(|t| format!("`{t}`"))
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                cdc.publication
-            ),
-        ));
+    if missing.is_empty() {
+        return Ok(());
     }
+    Err(fatal(
+        Phase::Slot,
+        None,
+        format!(
+            "publication `{}` does not cover configured table(s) {} — \
+             `ALTER PUBLICATION {} ADD TABLE …` (rdlt never alters the \
+             publication itself)",
+            cdc.publication,
+            missing
+                .iter()
+                .map(|table| format!("`{table}`"))
+                .collect::<Vec<_>>()
+                .join(", "),
+            cdc.publication
+        ),
+    ))
+}
 
+/// Slot existence + the three lifecycle rejections: foreign plugin,
+/// concurrent consumer, retention invalidation.
+async fn ensure_slot(client: &Client, cdc: &CdcConfig) -> Result<EnsureOutcome, SourceError> {
     let slot = client
         .query_opt(
             "SELECT plugin, active_pid, wal_status FROM pg_replication_slots \
@@ -222,23 +251,22 @@ pub async fn ensure(
 /// Peek the change feed up to `upto` WITHOUT consuming it, as a server-side
 /// row stream: every CDC stream re-peeks the same range and filters its own
 /// table; nothing moves until [`advance`]. Rows arrive incrementally so a
-/// large change set is never fully buffered — the caller decodes each
-/// [`Change`] as it lands. `upto` is passed as a bound parameter, cast
-/// `text -> pg_lsn` server-side.
+/// large change set is never fully buffered. `upto` is passed as a bound
+/// parameter, cast `text -> pg_lsn` server-side.
 pub async fn peek(
     client: &Client,
     cdc: &CdcConfig,
     upto: u64,
 ) -> Result<impl Stream<Item = Result<Change, SourceError>>, SourceError> {
-    let upto = fmt_lsn(upto);
-    let params: [&(dyn tokio_postgres::types::ToSql + Sync); 3] =
+    let upto = render_lsn(upto);
+    let parameters: [&(dyn tokio_postgres::types::ToSql + Sync); 3] =
         [&cdc.slot, &upto, &cdc.publication];
     let rows = client
         .query_raw(
             "SELECT lsn::text, data FROM pg_logical_slot_peek_binary_changes(\
              $1, $2::text::pg_lsn, NULL::int4, \
              'proto_version', '1', 'publication_names', $3)",
-            params,
+            parameters,
         )
         .await
         .map_err(|e| classify(Phase::Slot, None, &e))?;
@@ -266,15 +294,15 @@ pub async fn advance(client: &Client, slot: &str, upto: u64) -> Result<(), Sourc
     client
         .query_one(
             "SELECT end_lsn::text FROM pg_replication_slot_advance($1, $2::text::pg_lsn)",
-            &[&slot, &fmt_lsn(upto)],
+            &[&slot, &render_lsn(upto)],
         )
         .await
         .map_err(|e| classify(Phase::Slot, None, &e))?;
     Ok(())
 }
 
-/// The feed's current position — the `target_lsn` pin for a bounded
-/// catch-up pass.
+/// The feed's current position — the target pin for a bounded catch-up
+/// pass.
 pub async fn current_wal_lsn(client: &Client) -> Result<u64, SourceError> {
     let row = client
         .query_one("SELECT pg_current_wal_lsn()::text", &[])
@@ -290,8 +318,8 @@ pub async fn current_wal_lsn(client: &Client) -> Result<u64, SourceError> {
     })
 }
 
-/// The slot's acknowledged position (`confirmed_flush_lsn`) — lag
-/// reporting and the ack-after-commit conformance pin read this.
+/// The slot's acknowledged position (`confirmed_flush_lsn`) — lag reporting
+/// and the ack-after-commit conformance pin read this.
 pub async fn confirmed_flush_lsn(client: &Client, slot: &str) -> Result<u64, SourceError> {
     let row = client
         .query_one(
@@ -324,7 +352,7 @@ mod tests {
             ("FFFFFFFF/FFFFFFFF", u64::MAX),
         ] {
             assert_eq!(parse_lsn(text), Some(value), "{text}");
-            assert_eq!(parse_lsn(&fmt_lsn(value)).unwrap(), value);
+            assert_eq!(parse_lsn(&render_lsn(value)).unwrap(), value);
         }
         for bad in ["", "0", "0/", "/0", "x/0", "0/x", "123456789/0", "0/0/0"] {
             assert_eq!(parse_lsn(bad), None, "{bad}");

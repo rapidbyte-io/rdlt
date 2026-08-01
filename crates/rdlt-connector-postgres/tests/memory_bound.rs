@@ -1,8 +1,8 @@
-//! A table ≥ 10× the enforced memory ceiling snapshots
-//! successfully — memory is bounded by configuration, not table size. The
-//! release CLI runs as a subprocess under `prlimit --data` (heap ceiling);
-//! the test verifies the 10× ratio from pg_total_relation_size, so the claim
-//! is measured, not asserted.
+//! A table ≥ 10× the enforced memory ceiling snapshots successfully —
+//! memory is bounded by configuration, not table size. The release CLI runs
+//! as a subprocess under `prlimit --data` (heap ceiling); the test verifies
+//! the 10× ratio from pg_total_relation_size, so the claim is measured, not
+//! asserted.
 //!
 //! Destination = the streaming parquet writer: the point under test is the
 //! SOURCE/engine path (never materializes the table); DuckDB's buffer-pool
@@ -10,12 +10,21 @@
 //! own memory story. Measured on the reference machine: 40 M rows / 6.86 GB
 //! source table → 39 MB peak RSS under this ceiling.
 //!
+//! WHICH CONNECTOR THIS CURRENTLY EXERCISES: the pipeline spec below names
+//! the `postgres:` source kind, which the `rdlt` facade resolves to the
+//! FIRST-GENERATION connector — this crate is deliberately not wired into
+//! the facade yet. So this binary measures the shipped CLI, not this crate,
+//! and it will start covering this crate the moment the facade points at it,
+//! with no change here. Until then it duplicates the first-generation
+//! binary of the same name; whether to run both is a gate-wiring decision,
+//! not a claim this file can make on its own.
+//!
 //! Self-skips (visibly) without `prlimit`, a container runtime, or a built
 //! release CLI (`make release`) — UNLESS `RDLT_HEAVY=1` (the sweep/deep
 //! targets), where a missing prerequisite is a hard FAIL with instructions:
 //! the deep job must never green-wash this claim by silently skipping.
 
-use rdlt_connector_postgres::fixtures::PgFixture;
+use rdlt_connector_postgres::fixtures::PostgresContainer;
 
 /// RLIMIT_DATA ceiling for the CLI process (heap + data mmaps).
 const CEILING_BYTES: u64 = 256 * 1024 * 1024;
@@ -33,7 +42,7 @@ fn release_cli() -> Option<std::path::PathBuf> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_table_ten_times_the_memory_ceiling_still_snapshots_within_it() {
-    let heavy = std::env::var("RDLT_HEAVY").is_ok_and(|v| v == "1");
+    let heavy = std::env::var("RDLT_HEAVY").is_ok_and(|value| value == "1");
     if std::process::Command::new("prlimit")
         .arg("--version")
         .output()
@@ -57,10 +66,10 @@ async fn a_table_ten_times_the_memory_ceiling_still_snapshots_within_it() {
         return;
     };
 
-    let Some(fixture) = PgFixture::start().await else {
+    let Some(container) = PostgresContainer::start().await else {
         return;
     };
-    fixture
+    container
         .seed(
             "CREATE TABLE big (id int8 PRIMARY KEY, bucket int4, payload text); \
              INSERT INTO big SELECT i, (i % 1000)::int4, repeat('x', 100) \
@@ -69,7 +78,7 @@ async fn a_table_ten_times_the_memory_ceiling_still_snapshots_within_it() {
         .await;
 
     // The 10× claim is MEASURED: on-disk table size vs the ceiling.
-    let client = fixture.client().await;
+    let client = container.client().await;
     let table_bytes: i64 = client
         .query_one("SELECT pg_total_relation_size('big')", &[])
         .await
@@ -80,23 +89,26 @@ async fn a_table_ten_times_the_memory_ceiling_still_snapshots_within_it() {
         "seeded table ({table_bytes} B) must be ≥ 10× the ceiling ({CEILING_BYTES} B)"
     );
 
-    let dir = tempfile::tempdir().expect("tempdir");
-    let yaml = dir.path().join("pg.yaml");
+    let directory = tempfile::tempdir().expect("tempdir");
+    let source_yaml = directory.path().join("pg.yaml");
     std::fs::write(
-        &yaml,
-        format!("conn: \"{}\"\ntables:\n  - name: big\n", fixture.conn),
+        &source_yaml,
+        format!(
+            "conn: \"{}\"\ntables:\n  - name: big\n",
+            container.connection_string
+        ),
     )
     .expect("yaml");
-    let spec = dir.path().join("pipeline.yaml");
-    let report_path = dir.path().join("report.json");
+    let spec = directory.path().join("pipeline.yaml");
+    let report_path = directory.path().join("report.json");
     std::fs::write(
         &spec,
         format!(
             "pipeline: membound\nworkdir: {}\nsource:\n  postgres: {{config: {}}}\n\
              destination:\n  parquet: {{path: {}}}\n",
-            dir.path().join(".rdlt").display(),
-            yaml.display(),
-            dir.path().join("pq-out").display()
+            directory.path().join(".rdlt").display(),
+            source_yaml.display(),
+            directory.path().join("pq-out").display()
         ),
     )
     .expect("spec");

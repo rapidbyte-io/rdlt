@@ -23,7 +23,7 @@ tokio = { workspace = true }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 # The 013 cross-destination differential oracle (tests/differential.rs)
-rdlt-connector-postgres = { workspace = true, default-features = false, features = ["dest", "fixtures"] }
+rdlt-connector-postgres = { workspace = true, default-features = false, features = ["destination", "fixtures"] }
 tokio-postgres = { workspace = true }
 testcontainers-modules = { workspace = true }
 rdlt-testkit = { workspace = true }

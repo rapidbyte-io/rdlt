@@ -1,3 +1,5 @@
+//! The case files, one suite per noun. Suites land as their subsystems do.
+
 mod cdc_rig;
 mod common;
 mod test_cdc_cycle;
@@ -6,10 +8,9 @@ mod test_cdc_recovery;
 mod test_cdc_slot;
 mod test_config;
 mod test_config_schema;
-mod test_connstring;
 mod test_copy_wire_pin;
-mod test_dest_conformance;
-mod test_dest_recovery;
+mod test_destination_conformance;
+mod test_destination_recovery;
 mod test_differential;
 mod test_direct_publish;
 mod test_golden_ensure_sql;

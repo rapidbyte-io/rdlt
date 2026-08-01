@@ -1,6 +1,6 @@
 [package]
 name = "rdlt-connector-postgres"
-description = "rdlt PostgreSQL connectors: binary-COPY-to-Arrow source and binary-COPY destination, one shared TLS/config home"
+description = "rdlt PostgreSQL connectors: binary-COPY-to-Arrow source and binary-COPY destination behind one session and one type rulebook"
 keywords = ["elt", "postgres", "postgresql", "cdc", "arrow"]
 categories = ["database"]
 documentation = "https://docs.rs/rdlt-connector-postgres"
@@ -12,12 +12,12 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = ["source", "dest"]
+default = ["source", "destination"]
 source = []
-dest = []
+destination = []
 failpoints = ["rdlt-connector/failpoints"]
-# Container fixtures for tests across the workspace (PgFixture/CdcPgFixture).
-# Test support only, no semver guarantees.
+# Container fixtures for tests across the workspace. Test support only, no
+# semver guarantees.
 fixtures = ["dep:rdlt-testkit", "dep:testcontainers-modules"]
 
 [dependencies]

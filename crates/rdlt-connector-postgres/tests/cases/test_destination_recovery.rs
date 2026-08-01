@@ -6,52 +6,62 @@
 use crate::cases::common::count;
 use rdlt_connector::core::{LoadId, PipelineId, TableName, WriteMode};
 use rdlt_connector::{Destination, OpenCtx};
-use rdlt_connector_postgres::dest::Postgres;
-use rdlt_connector_postgres::fixtures::PgFixture;
+use rdlt_connector_postgres::destination::Postgres;
+use rdlt_connector_postgres::fixtures::PostgresContainer;
 use rdlt_testkit::{batch_of, commit_meta_for, schema_for};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn replace_recovery_session_keeps_prior_commits_of_same_load() {
-    let Some(pg) = PgFixture::start().await else {
+    let Some(container) = PostgresContainer::start().await else {
         return;
     };
-    let conn = pg.conn.clone();
-    let dest = Postgres::connect(&conn).dataset("rec");
+    let connection_string = container.connection_string.clone();
+    let destination = Postgres::new(&connection_string).schema("rec");
     let pipeline = PipelineId::new("p1");
     let load = LoadId::new("load-a");
-    let schema = schema_for("events");
-    let batch1 = batch_of(&[1, 2, 3]);
-    let batch2 = batch_of(&[4, 5]);
+    let table_schema = schema_for("events");
+    let first_batch = batch_of(&[1, 2, 3]);
+    let second_batch = batch_of(&[4, 5]);
     let table = TableName::new("events");
 
-    let mut s1 = dest
+    let mut first_session = destination
         .open(OpenCtx::new(pipeline.clone(), load.clone()))
         .await
-        .expect("open s1");
-    s1.ensure_table(&schema, &WriteMode::Replace)
+        .expect("open first session");
+    first_session
+        .ensure_table(&table_schema, &WriteMode::Replace)
         .await
         .expect("ensure");
-    s1.write(&table, batch1).await.expect("write");
-    s1.commit(commit_meta_for(&pipeline, &load, 1))
+    first_session
+        .write(&table, first_batch)
+        .await
+        .expect("write");
+    first_session
+        .commit(commit_meta_for(&pipeline, &load, 1))
         .await
         .expect("commit 1");
-    assert_eq!(count(&conn, "rec", "events").await, 3);
+    assert_eq!(count(&connection_string, "rec", "events").await, 3);
 
     // Crash before commit #2's receipt: fresh session, same load.
-    let mut s2 = dest
+    let mut recovery_session = destination
         .open(OpenCtx::new(pipeline.clone(), load.clone()))
         .await
         .expect("open recovery session");
-    s2.ensure_table(&schema, &WriteMode::Replace)
+    recovery_session
+        .ensure_table(&table_schema, &WriteMode::Replace)
         .await
         .expect("ensure again");
-    s2.write(&table, batch2).await.expect("write tail");
-    s2.commit(commit_meta_for(&pipeline, &load, 2))
+    recovery_session
+        .write(&table, second_batch)
+        .await
+        .expect("write tail");
+    recovery_session
+        .commit(commit_meta_for(&pipeline, &load, 2))
         .await
         .expect("commit 2");
 
     assert_eq!(
-        count(&conn, "rec", "events").await,
+        count(&connection_string, "rec", "events").await,
         5,
         "commit #1's published rows must survive recovery (durable Replace guard)"
     );

@@ -2,12 +2,12 @@
 //! levels. SAFE Rust throughout — "dangerous" is rustls's API vocabulary for
 //! custom verification, not `unsafe`.
 //!
-//! - [`AcceptAnyCert`]: `require`/`prefer` — encrypt, validate NOTHING.
-//!   Exactly libpq's `sslmode=require`. Never a default here; the policy
-//!   layer only builds it for those modes, and the README says `verify_full`
-//!   is what production should use.
-//! - [`ChainOnly`]: `verify_ca` — full webpki chain verification, hostname
-//!   check waived (ONLY the name-mismatch error is forgiven).
+//! - [`AcceptAnyCertificate`]: `require`/`prefer` — encrypt, validate
+//!   NOTHING. Exactly libpq's `sslmode=require`. Never a default: the policy
+//!   layer builds it only for those modes, and the crate documentation says
+//!   `verify_full` is what production should use.
+//! - [`ChainOnly`]: `verify_ca` — full webpki chain verification with ONLY
+//!   the hostname check waived.
 
 use std::sync::Arc;
 
@@ -17,27 +17,28 @@ use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, Server
 use rustls::crypto::CryptoProvider;
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 
-/// The one crypto provider this crate uses (ring): chosen EXPLICITLY at
-/// every construction site — never the ambient process default, which is
-/// ambiguous when multiple provider features land in the dependency tree.
+/// The one crypto provider this crate uses (ring), chosen EXPLICITLY at every
+/// construction site — never the ambient process default, which is ambiguous
+/// when multiple provider features land in the dependency tree.
 pub(crate) fn provider() -> Arc<CryptoProvider> {
     Arc::new(rustls::crypto::ring::default_provider())
 }
 
+/// Encrypt without validating anything — libpq's `require` (and `prefer`).
 #[derive(Debug)]
-pub(crate) struct AcceptAnyCert {
+pub(crate) struct AcceptAnyCertificate {
     provider: Arc<CryptoProvider>,
 }
 
-impl AcceptAnyCert {
-    pub fn new() -> Self {
+impl AcceptAnyCertificate {
+    pub(crate) fn new() -> Self {
         Self {
             provider: provider(),
         }
     }
 }
 
-impl ServerCertVerifier for AcceptAnyCert {
+impl ServerCertVerifier for AcceptAnyCertificate {
     fn verify_server_cert(
         &self,
         _end_entity: &CertificateDer<'_>,
@@ -52,8 +53,8 @@ impl ServerCertVerifier for AcceptAnyCert {
     fn verify_tls12_signature(
         &self,
         _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &DigitallySignedStruct,
+        _certificate: &CertificateDer<'_>,
+        _signature: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
         Ok(HandshakeSignatureValid::assertion())
     }
@@ -61,8 +62,8 @@ impl ServerCertVerifier for AcceptAnyCert {
     fn verify_tls13_signature(
         &self,
         _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &DigitallySignedStruct,
+        _certificate: &CertificateDer<'_>,
+        _signature: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
         Ok(HandshakeSignatureValid::assertion())
     }
@@ -74,15 +75,19 @@ impl ServerCertVerifier for AcceptAnyCert {
     }
 }
 
+/// Full webpki verification with the hostname check waived — libpq's
+/// `verify_ca`. Every other failure keeps its meaning.
 #[derive(Debug)]
 pub(crate) struct ChainOnly {
-    inner: Arc<WebPkiServerVerifier>,
+    webpki: Arc<WebPkiServerVerifier>,
 }
 
 impl ChainOnly {
-    pub fn new(roots: rustls::RootCertStore) -> Result<Self, rustls::client::VerifierBuilderError> {
+    pub(crate) fn new(
+        roots: rustls::RootCertStore,
+    ) -> Result<Self, rustls::client::VerifierBuilderError> {
         Ok(Self {
-            inner: WebPkiServerVerifier::builder_with_provider(Arc::new(roots), provider())
+            webpki: WebPkiServerVerifier::builder_with_provider(Arc::new(roots), provider())
                 .build()?,
         })
     }
@@ -97,14 +102,14 @@ impl ServerCertVerifier for ChainOnly {
         ocsp_response: &[u8],
         now: UnixTime,
     ) -> Result<ServerCertVerified, rustls::Error> {
-        match self.inner.verify_server_cert(
+        match self.webpki.verify_server_cert(
             end_entity,
             intermediates,
             server_name,
             ocsp_response,
             now,
         ) {
-            // verify_ca: chain must hold; ONLY hostname mismatch is waived.
+            // ONLY the name-mismatch error is forgiven; the chain must hold.
             Err(rustls::Error::InvalidCertificate(
                 rustls::CertificateError::NotValidForName
                 | rustls::CertificateError::NotValidForNameContext { .. },
@@ -116,22 +121,24 @@ impl ServerCertVerifier for ChainOnly {
     fn verify_tls12_signature(
         &self,
         message: &[u8],
-        cert: &CertificateDer<'_>,
-        dss: &DigitallySignedStruct,
+        certificate: &CertificateDer<'_>,
+        signature: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        self.inner.verify_tls12_signature(message, cert, dss)
+        self.webpki
+            .verify_tls12_signature(message, certificate, signature)
     }
 
     fn verify_tls13_signature(
         &self,
         message: &[u8],
-        cert: &CertificateDer<'_>,
-        dss: &DigitallySignedStruct,
+        certificate: &CertificateDer<'_>,
+        signature: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        self.inner.verify_tls13_signature(message, cert, dss)
+        self.webpki
+            .verify_tls13_signature(message, certificate, signature)
     }
 
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        self.inner.supported_verify_schemes()
+        self.webpki.supported_verify_schemes()
     }
 }

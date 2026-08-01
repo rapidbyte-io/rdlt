@@ -424,7 +424,7 @@ destination:
         assert_eq!(dedup.column, "seq");
         assert_eq!(
             dedup.order,
-            rdlt::connector::postgres::dest::SortOrder::Desc
+            rdlt::connector::postgres::destination::SortOrder::Desc
         );
         assert_eq!(
             events.merge_scope.as_deref(),
@@ -459,7 +459,7 @@ destination:
         // The run() path re-validates through from_value — prove the gate
         // holds for inline documents too.
         let value = serde_json::to_value(inline).expect("serialize");
-        rdlt::connector::postgres::source::PostgresConfig::from_value(value).expect("valid inline");
+        rdlt::connector::postgres::source::Config::from_value(value).expect("valid inline");
 
         // …and rejects invalid shapes identically — cdc and cursor are
         // mutually exclusive on the same table.
@@ -481,7 +481,7 @@ destination:
             panic!("inline postgres source");
         };
         let value = serde_json::to_value(inline).expect("serialize");
-        let err = rdlt::connector::postgres::source::PostgresConfig::from_value(value)
+        let err = rdlt::connector::postgres::source::Config::from_value(value)
             .expect_err("cdc + cursor rejected inline")
             .to_string();
         assert!(err.contains("mutually exclusive"), "{err}");

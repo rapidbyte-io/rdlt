@@ -31,9 +31,9 @@ const EXPECTED_DIRECT_NAMES: &[(&str, usize)] = &[
     // 11, not the 14 names its three registries declare: THREE points are armed
     // indirectly, so their literals sit at the constructor that supplies the name
     // rather than beside the macro —
-    //   pg.src.mid_copy          `CrashSite { label: … }`  (source/mod.rs)
-    //   pg.src.after_batch_push  `Push::Crash(…)`          (source/mod.rs)
-    //   cdc.snapshot.copy        a labelled struct         (source/cdc/read.rs)
+    //   pg.src.mid_copy          a labelled struct  (source/connector.rs)
+    //   pg.src.after_batch_push  a labelled struct  (source/connector.rs)
+    //   cdc.snapshot.copy        a labelled struct  (source/cdc/read.rs)
     // Each was verified to appear twice — once declared, once where it arms — so
     // the "declared names appear twice" half of the assertion covers all three.
     // This crate is the reason that half exists: a set-equality design would

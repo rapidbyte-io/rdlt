@@ -1,10 +1,13 @@
-//! Query streams (contract query-streams.md) — described schemas,
-//! full incremental semantics, read-only enforcement, typed rejections.
+//! Query streams (contract query-streams.md): a SQL statement becomes a
+//! stream whose schema is DESCRIBED by the server, carries the same
+//! incremental semantics as a table stream, and is refused — typed, before
+//! any data moves — when it mutates, hides its cursor column, or collides
+//! with a reflected table.
 
-use crate::cases::common::source;
+use crate::cases::common;
 use rdlt_connector_duckdb::dest::DuckDb;
-use rdlt_connector_postgres::fixtures::PgFixture;
-use rdlt_connector_postgres::source::{PostgresConfig, PostgresSource};
+use rdlt_connector_postgres::fixtures::PostgresContainer;
+use rdlt_connector_postgres::source;
 use rdlt_engine::{Engine, EngineConfig};
 
 const SEED: &str = r#"
@@ -27,49 +30,61 @@ fn totals_yaml(cursor: bool) -> String {
     )
 }
 
-struct Rig {
-    dest: DuckDb,
+struct Harness {
+    destination: DuckDb,
 }
 
-impl Rig {
+impl Harness {
     fn new() -> Self {
-        let dest = crate::cases::common::duckdb_dest();
-        Self { dest }
+        Self {
+            destination: common::duckdb_destination(),
+        }
     }
 
-    async fn run(&self, source: PostgresSource, pipeline: &str) -> u64 {
-        Engine::new(EngineConfig::new(pipeline), source, self.dest.clone())
-            .run()
-            .await
-            .expect("run")
-            .total_rows()
+    async fn run(&self, postgres_source: source::Postgres, pipeline: &str) -> u64 {
+        Engine::new(
+            EngineConfig::new(pipeline),
+            postgres_source,
+            self.destination.clone(),
+        )
+        .run()
+        .await
+        .expect("run")
+        .total_rows()
     }
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn join_query_lands_with_described_schema_and_incremental_works() {
-    let Some(fixture) = PgFixture::start().await else {
+    let Some(fixture) = PostgresContainer::start().await else {
         return;
     };
     fixture.seed(SEED).await;
-    let rig = Rig::new();
+    let harness = Harness::new();
 
     // Run 1: table stream (2 rows) + query stream (2 aggregated rows).
     assert_eq!(
-        rig.run(source(&fixture.conn, &totals_yaml(true)), "qs")
+        harness
+            .run(
+                common::source(&fixture.connection_string, &totals_yaml(true)),
+                "qs"
+            )
             .await,
         4
     );
-    let total = rig
-        .dest
+    let total = harness
+        .destination
         .query_string("SELECT CAST(total AS VARCHAR) FROM order_totals WHERE id = 1")
         .expect("total");
     assert_eq!(total, "12.75", "aggregated + hinted decimal(14,2)");
-    let ty = rig
-        .dest
+    let total_type = harness
+        .destination
         .query_string("SELECT CAST(typeof(total) AS VARCHAR) FROM order_totals WHERE id = 1")
         .expect("typeof");
-    assert!(ty.contains("DECIMAL"), "hint restored decimality: {ty}");
+    assert!(
+        total_type.contains("DECIMAL"),
+        "hint restored decimality: {total_type}"
+    );
 
     // Delta: a new order past the watermark → exactly the aggregate row
     // (and the table row) move.
@@ -80,13 +95,17 @@ async fn join_query_lands_with_described_schema_and_incremental_works() {
         )
         .await;
     assert_eq!(
-        rig.run(source(&fixture.conn, &totals_yaml(true)), "qs")
+        harness
+            .run(
+                common::source(&fixture.connection_string, &totals_yaml(true)),
+                "qs"
+            )
             .await,
         2,
         "one table row + one query row past the watermark"
     );
-    let count = rig
-        .dest
+    let count = harness
+        .destination
         .query_string("SELECT CAST(count(*) AS VARCHAR) FROM order_totals")
         .expect("count");
     assert_eq!(count, "3", "no duplicates across incremental runs");
@@ -97,14 +116,14 @@ async fn join_query_lands_with_described_schema_and_incremental_works() {
 /// port-proxy can transiently refuse a connect, which would surface here as a
 /// connect-phase error instead of the typed rejection under test — so this
 /// harness plays the engine's role and retries ONLY transient connect errors.
-async fn rejection_of(source: &PostgresSource) -> String {
+async fn rejection_of(postgres_source: &source::Postgres) -> String {
     use rdlt_connector::Source as _;
     for _ in 0..3 {
-        let err = source
+        let error = postgres_source
             .streams()
             .await
             .expect_err("stream validation must fail");
-        let text = err.to_string();
+        let text = error.to_string();
         if text.contains("connect phase") {
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             continue;
@@ -116,47 +135,47 @@ async fn rejection_of(source: &PostgresSource) -> String {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn rejections_are_typed_and_early() {
-    let Some(fixture) = PgFixture::start().await else {
+    let Some(fixture) = PostgresContainer::start().await else {
         return;
     };
     fixture.seed(SEED).await;
 
     // Mutating SQL: rejected at describe time (subquery rules), before data.
-    let bad = source(
-        &fixture.conn,
+    let mutating = common::source(
+        &fixture.connection_string,
         "queries:\n  - name: nope\n    sql: \"DELETE FROM orders RETURNING id\"\n",
     );
-    let err = rejection_of(&bad).await;
-    assert!(err.contains("read-only"), "{err}");
+    let error = rejection_of(&mutating).await;
+    assert!(error.contains("read-only"), "{error}");
 
     // Data-modifying CTE: same rejection through the same wrapper.
-    let cte = source(
-        &fixture.conn,
+    let mutating_cte = common::source(
+        &fixture.connection_string,
         "queries:\n  - name: nope\n    sql: \"WITH d AS (DELETE FROM orders RETURNING id) SELECT * FROM d\"\n",
     );
-    rejection_of(&cte).await; // any typed rejection — message pinned above
+    rejection_of(&mutating_cte).await; // any typed rejection — message pinned above
 
     // Cursor column absent from the described output.
-    let no_cursor = source(
-        &fixture.conn,
+    let missing_cursor = common::source(
+        &fixture.connection_string,
         "queries:\n  - name: q\n    sql: \"SELECT id FROM orders\"\n    cursor:\n      column: updated_at\n",
     );
-    let err = rejection_of(&no_cursor).await;
-    assert!(err.contains("updated_at"), "{err}");
+    let error = rejection_of(&missing_cursor).await;
+    assert!(error.contains("updated_at"), "{error}");
 
     // Name collision with a reflected table.
-    let collide = source(
-        &fixture.conn,
+    let colliding = common::source(
+        &fixture.connection_string,
         "queries:\n  - name: orders\n    sql: \"SELECT 1 AS x\"\n",
     );
-    let err = rejection_of(&collide).await;
-    assert!(err.contains("collides"), "{err}");
+    let error = rejection_of(&colliding).await;
+    assert!(error.contains("collides"), "{error}");
 
     // Duplicate query names die at config parse (validation).
     assert!(
-        PostgresConfig::from_yaml(&format!(
+        source::Config::from_yaml(&format!(
             "conn: \"{}\"\nqueries:\n  - name: a\n    sql: \"SELECT 1 AS x\"\n  - name: a\n    sql: \"SELECT 2 AS y\"\n",
-            fixture.conn
+            fixture.connection_string
         ))
         .is_err()
     );

@@ -1,18 +1,18 @@
-//! Postgres crash-point sweep: the ENGINE-OWNED
-//! protocol boundaries against a real Postgres — stage COPY, the publish
-//! transaction edges, the D3 redelivery window. The DB's internal transaction
-//! atomicity is its own guarantee (research R20 scope guard).
+//! Postgres destination crash-point sweep: the ENGINE-OWNED protocol
+//! boundaries against a real Postgres — unit COPY, the publish transaction
+//! edges, the redelivery window. The database's internal transaction
+//! atomicity is its own guarantee and is deliberately not swept.
 //!
-//! Needs a container runtime; SKIPS cleanly without one (per-PR CI), and the
-//! scheduled deep job always provides one. Run with `--features failpoints`.
+//! Needs a container runtime; SKIPS cleanly without one, and the scheduled
+//! deep job always provides one. Run with `--features failpoints`.
 
 #![cfg(feature = "failpoints")]
 
 use rdlt_connector::StreamSpec;
 use rdlt_connector::core::WriteMode;
 use rdlt_connector::core::failpoint::fail;
-use rdlt_connector_postgres::dest::Postgres;
-use rdlt_connector_postgres::fixtures::PgFixture;
+use rdlt_connector_postgres::destination::Postgres;
+use rdlt_connector_postgres::fixtures::PostgresContainer;
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{MemoryBatch, MemorySource, MemoryStream};
 use serde_json::json;
@@ -23,27 +23,29 @@ const TOTAL_ROWS: u64 = 100;
 /// rows under the default EveryCheckpoints(1) policy.
 fn source() -> MemorySource {
     let batches = (0..4)
-        .map(|b| {
+        .map(|batch| {
             MemoryBatch::new(
                 (0..25)
-                    .map(|i| json!({"id": b * 25 + i, "name": format!("row-{b}-{i}")}))
+                    .map(
+                        |row| json!({"id": batch * 25 + row, "name": format!("row-{batch}-{row}")}),
+                    )
                     .collect(),
             )
-            .with_checkpoint(json!({"batch": b}))
+            .with_checkpoint(json!({"batch": batch}))
         })
         .collect();
     MemorySource::new(vec![MemoryStream::new(StreamSpec::new("s"), batches)])
 }
 
-async fn count_rows(conn: &str, dataset: &str) -> u64 {
-    let (client, connection) = tokio_postgres::connect(conn, tokio_postgres::NoTls)
+async fn count_rows(connection_string: &str, schema: &str) -> u64 {
+    let (client, connection) = tokio_postgres::connect(connection_string, tokio_postgres::NoTls)
         .await
         .expect("connect");
     tokio::spawn(async move {
         let _ = connection.await;
     });
     match client
-        .query_one(&format!("SELECT count(*) FROM \"{dataset}\".\"s\""), &[])
+        .query_one(&format!("SELECT count(*) FROM \"{schema}\".\"s\""), &[])
         .await
     {
         Ok(row) => row.get::<_, i64>(0) as u64,
@@ -53,25 +55,25 @@ async fn count_rows(conn: &str, dataset: &str) -> u64 {
 
 async fn attempt(
     workdir: &std::path::Path,
-    dest: &Postgres,
+    destination: &Postgres,
     mode: &WriteMode,
 ) -> Result<(), String> {
-    let mut config = EngineConfig::new("pg-sweep");
-    config = config.with_workdir(workdir.to_path_buf());
-    config = config.with_write_mode(mode.clone());
-    let engine = Engine::new(config, source(), dest.clone());
+    let config = EngineConfig::new("pg-sweep")
+        .with_workdir(workdir.to_path_buf())
+        .with_write_mode(mode.clone());
+    let engine = Engine::new(config, source(), destination.clone());
     match tokio::spawn(engine.run()).await {
         Ok(Ok(_)) => Ok(()),
-        Ok(Err(e)) => Err(e.to_string()),
+        Ok(Err(error)) => Err(error.to_string()),
         Err(join) => Err(format!("panicked: {join}")),
     }
 }
 
-/// Registry discipline (G2.2, destination half): the crate's exported list is
+/// Registry discipline, destination half: the crate's exported list is
 /// pinned here, and the sweep below iterates exactly it.
 #[test]
 fn registry_is_pinned() {
-    let mut registry: Vec<&str> = rdlt_connector_postgres::dest::FAIL_POINTS.to_vec();
+    let mut registry: Vec<&str> = rdlt_connector_postgres::destination::FAIL_POINTS.to_vec();
     registry.sort_unstable();
     let mut expected = vec![
         "pg.unit.begin",
@@ -96,7 +98,7 @@ fn registry_is_pinned() {
 /// dead `crash_point!` site still fails the pin, and a point is not demanded
 /// from a mode whose code path cannot contain it.
 fn reachable(mode: &str) -> Vec<&'static str> {
-    rdlt_connector_postgres::dest::FAIL_POINTS
+    rdlt_connector_postgres::destination::FAIL_POINTS
         .iter()
         .copied()
         .filter(|point| *point != "pg.target.clear" || mode == "replace")
@@ -105,13 +107,13 @@ fn reachable(mode: &str) -> Vec<&'static str> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn every_dest_fail_point_recovers_exactly_once_across_append_replace_and_merge() {
-    let Some(pg) = PgFixture::start().await else {
+    let Some(container) = PostgresContainer::start().await else {
         return;
     };
-    let conn = pg.conn.clone();
+    let connection_string = container.connection_string.clone();
 
     let mut fired: std::collections::BTreeSet<(&str, &str)> = std::collections::BTreeSet::new();
-    for &point in rdlt_connector_postgres::dest::FAIL_POINTS {
+    for &point in rdlt_connector_postgres::destination::FAIL_POINTS {
         for action in ["return", "panic", "1*off->return"] {
             for mode in [
                 WriteMode::Append,
@@ -122,50 +124,50 @@ async fn every_dest_fail_point_recovers_exactly_once_across_append_replace_and_m
                     key: vec!["id".into()],
                 },
             ] {
-                // Fresh dataset per cell isolates state on the one container.
+                // Fresh schema per cell isolates state on the one container.
                 let mode_label = match &mode {
                     WriteMode::Append => "append",
                     WriteMode::Replace => "replace",
                     _ => "merge",
                 };
-                let dataset = format!(
+                let schema = format!(
                     "sweep_{}_{}_{}",
                     point.replace('.', "_"),
                     action.replace(['*', '-', '>'], "_"),
                     mode_label
                 );
-                let dir = tempfile::tempdir().expect("tempdir");
-                let workdir = dir.path().join("wal");
-                let dest = Postgres::connect(&conn).dataset(&dataset);
+                let directory = tempfile::tempdir().expect("tempdir");
+                let workdir = directory.path().join("wal");
+                let destination = Postgres::new(&connection_string).schema(&schema);
 
                 fail::cfg(point, action).expect("configure fail point");
-                let armed1 = attempt(&workdir, &dest, &mode).await;
+                let armed1 = attempt(&workdir, &destination, &mode).await;
                 // Second run still armed: a crash during recovery itself.
-                let armed2 = attempt(&workdir, &dest, &mode).await;
+                let armed2 = attempt(&workdir, &destination, &mode).await;
                 fail::remove(point);
                 if armed1.is_err() || armed2.is_err() {
                     fired.insert((point, mode_label));
                 }
 
-                let recovered = attempt(&workdir, &dest, &mode).await;
+                let recovered = attempt(&workdir, &destination, &mode).await;
                 assert!(
                     recovered.is_ok(),
                     "[{point} / {action} / {mode:?}] recovery failed: {recovered:?}"
                 );
                 assert_eq!(
-                    count_rows(&conn, &dataset).await,
+                    count_rows(&connection_string, &schema).await,
                     TOTAL_ROWS,
                     "[{point} / {action} / {mode:?}] exactly-once violated"
                 );
             }
         }
     }
-    // Anti-vacuousness pin (005 review): every registered point must have
-    // failed at least one armed attempt in ALL THREE modes — a dead crash_point!
-    // site fails here instead of passing silently.
+    // Anti-vacuousness pin: every registered point must have failed at least
+    // one armed attempt in ALL THREE modes — a dead crash_point! site fails
+    // here instead of passing silently.
     let expected: std::collections::BTreeSet<(&str, &str)> = ["append", "replace", "merge"]
         .into_iter()
-        .flat_map(|mode| reachable(mode).into_iter().map(move |p| (p, mode)))
+        .flat_map(|mode| reachable(mode).into_iter().map(move |point| (point, mode)))
         .collect();
     assert_eq!(
         fired, expected,
@@ -173,9 +175,9 @@ async fn every_dest_fail_point_recovers_exactly_once_across_append_replace_and_m
     );
 }
 
-// ---- Review F11: the KEYED structured-merge arm under the destination's own
-// fail points (contract merge-structured.md conformance) — the shredded
-// MemorySource cells above exercise only the identity-merge branch. ----
+// ---- the KEYED structured-merge arm under the destination's own fail
+// points: the shredded MemorySource cells above exercise only the
+// identity-merge branch. ----
 
 use arrow_array::{Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
@@ -201,14 +203,14 @@ impl Source for KeyedArrowSource {
         ])
     }
 
-    async fn read(&self, mut req: ReadRequest) -> Result<(), SourceError> {
-        let start = match &req.since {
+    async fn read(&self, mut request: ReadRequest) -> Result<(), SourceError> {
+        let start = match &request.since {
             None => 0usize,
-            Some(c) => c.as_value().as_u64().unwrap_or(0) as usize,
+            Some(cursor) => cursor.as_value().as_u64().unwrap_or(0) as usize,
         };
-        for b in start..4 {
-            let ids: Vec<i64> = (0..25).map(|i| (b * 25 + i) as i64).collect();
-            let names: Vec<String> = ids.iter().map(|i| format!("row-{i}")).collect();
+        for batch_index in start..4 {
+            let ids: Vec<i64> = (0..25).map(|row| (batch_index * 25 + row) as i64).collect();
+            let names: Vec<String> = ids.iter().map(|id| format!("row-{id}")).collect();
             let batch = RecordBatch::try_new(
                 Arc::new(Schema::new(vec![
                     Field::new("id", DataType::Int64, false),
@@ -222,12 +224,12 @@ impl Source for KeyedArrowSource {
                 ],
             )
             .expect("batch");
-            if req.out.arrow(batch).await.is_err() {
+            if request.out.arrow(batch).await.is_err() {
                 return Ok(());
             }
-            if req
+            if request
                 .out
-                .checkpoint(Cursor::new((b + 1) as u64))
+                .checkpoint(Cursor::new((batch_index + 1) as u64))
                 .await
                 .is_err()
             {
@@ -239,75 +241,80 @@ impl Source for KeyedArrowSource {
 }
 
 fn with_strategy(
-    dest: Postgres,
-    strategy: rdlt_connector_postgres::dest::MergeStrategy,
+    destination: Postgres,
+    strategy: rdlt_connector_postgres::destination::MergeStrategy,
 ) -> Postgres {
-    dest.options(rdlt_connector_postgres::dest::DestinationOptions {
-        merge_strategy: Some(strategy),
-        ..Default::default()
-    })
-    .expect("valid options")
+    destination
+        .options(rdlt_connector_postgres::destination::DestinationOptions {
+            merge_strategy: Some(strategy),
+            ..Default::default()
+        })
+        .expect("valid options")
 }
 
-async fn attempt_keyed(workdir: &std::path::Path, dest: &Postgres) -> Result<(), String> {
-    let mut config = EngineConfig::new("pg-sweep-keyed");
-    config = config.with_workdir(workdir.to_path_buf());
-    config = config.with_write_mode(WriteMode::Merge {
-        key: vec!["id".into()],
-    });
-    let engine = Engine::new(config, KeyedArrowSource, dest.clone());
+async fn attempt_keyed(workdir: &std::path::Path, destination: &Postgres) -> Result<(), String> {
+    let config = EngineConfig::new("pg-sweep-keyed")
+        .with_workdir(workdir.to_path_buf())
+        .with_write_mode(WriteMode::Merge {
+            key: vec!["id".into()],
+        });
+    let engine = Engine::new(config, KeyedArrowSource, destination.clone());
     match tokio::spawn(engine.run()).await {
         Ok(Ok(_)) => Ok(()),
-        Ok(Err(e)) => Err(e.to_string()),
+        Ok(Err(error)) => Err(error.to_string()),
         Err(join) => Err(format!("panicked: {join}")),
     }
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn every_dest_fail_point_recovers_exactly_once_under_keyed_structured_merge() {
-    let Some(pg) = PgFixture::start().await else {
+    let Some(container) = PostgresContainer::start().await else {
         return;
     };
-    let conn = pg.conn.clone();
+    let connection_string = container.connection_string.clone();
 
     // BOTH strategies cross every boundary — the
     // upsert arm's conflict-update runs inside the same publish transaction.
     let strategies = [
         (
             "di",
-            rdlt_connector_postgres::dest::MergeStrategy::DeleteInsert,
+            rdlt_connector_postgres::destination::MergeStrategy::DeleteInsert,
         ),
-        ("up", rdlt_connector_postgres::dest::MergeStrategy::Upsert),
+        (
+            "up",
+            rdlt_connector_postgres::destination::MergeStrategy::Upsert,
+        ),
     ];
     let mut fired: std::collections::BTreeSet<(&str, &str)> = std::collections::BTreeSet::new();
-    for &point in rdlt_connector_postgres::dest::FAIL_POINTS {
+    for &point in rdlt_connector_postgres::destination::FAIL_POINTS {
         for action in ["return", "panic", "1*off->return"] {
             for (label, strategy) in strategies {
-                let dataset = format!(
+                let schema = format!(
                     "sweepk_{}_{}_{}",
                     point.replace('.', "_"),
                     action.replace(['*', '-', '>'], "_"),
                     label,
                 );
-                let dir = tempfile::tempdir().expect("tempdir");
-                let workdir = dir.path().join("wal");
-                let dest = with_strategy(Postgres::connect(&conn).dataset(&dataset), strategy);
+                let directory = tempfile::tempdir().expect("tempdir");
+                let workdir = directory.path().join("wal");
+                let destination =
+                    with_strategy(Postgres::new(&connection_string).schema(&schema), strategy);
 
                 fail::cfg(point, action).expect("configure fail point");
-                let armed1 = attempt_keyed(&workdir, &dest).await;
-                let armed2 = attempt_keyed(&workdir, &dest).await;
+                let armed1 = attempt_keyed(&workdir, &destination).await;
+                let armed2 = attempt_keyed(&workdir, &destination).await;
                 fail::remove(point);
                 if armed1.is_err() || armed2.is_err() {
                     fired.insert((point, label));
                 }
 
-                let recovered = attempt_keyed(&workdir, &dest).await;
+                let recovered = attempt_keyed(&workdir, &destination).await;
                 assert!(
                     recovered.is_ok(),
                     "[{point} / {action} / keyed-{label}] recovery failed: {recovered:?}"
                 );
                 assert_eq!(
-                    count_rows(&conn, &dataset).await,
+                    count_rows(&connection_string, &schema).await,
                     TOTAL_ROWS,
                     "[{point} / {action} / keyed-{label}] exactly-once violated"
                 );
@@ -317,7 +324,11 @@ async fn every_dest_fail_point_recovers_exactly_once_under_keyed_structured_merg
     // Anti-vacuousness: every registered point fires under BOTH strategy arms.
     let expected: std::collections::BTreeSet<(&str, &str)> = ["di", "up"]
         .into_iter()
-        .flat_map(|arm| reachable("merge").into_iter().map(move |p| (p, arm)))
+        .flat_map(|arm| {
+            reachable("merge")
+                .into_iter()
+                .map(move |point| (point, arm))
+        })
         .collect();
     assert_eq!(
         fired, expected,
@@ -326,14 +337,15 @@ async fn every_dest_fail_point_recovers_exactly_once_under_keyed_structured_merg
     );
 }
 
-// ---- the refined-merge arm (dedup_sort + merge_scope)
-// crosses every registered boundary — receipts must survive crash/replay
-// without double-deleting a scope (contract merge-refinements.md MR5). ----
+// ---- the refined-merge arm (dedup_sort + merge_scope) crosses every
+// registered boundary — receipts must survive crash/replay without
+// double-deleting a scope. ----
 
 /// Keyed structured stream with scope + ordering columns: ONE checkpointed
-/// unit (the MR5 single-unit rule), 100 ids each delivered TWICE (stale
-/// seq=1 first, surviving seq=2 second — wrong-arrival order is exercised
-/// under every crash), `day = id % 3` as the scope.
+/// unit (the single-unit rule refined merge depends on), 100 ids each
+/// delivered TWICE (stale seq=1 first, surviving seq=2 second —
+/// wrong-arrival order is exercised under every crash), `day = id % 3` as
+/// the scope.
 struct RefinedArrowSource;
 
 #[async_trait]
@@ -350,99 +362,92 @@ impl Source for RefinedArrowSource {
         ])
     }
 
-    async fn read(&self, mut req: ReadRequest) -> Result<(), SourceError> {
-        if req.since.is_some() {
+    async fn read(&self, mut request: ReadRequest) -> Result<(), SourceError> {
+        if request.since.is_some() {
             return Ok(()); // the single unit committed — nothing to resume
         }
-        {
-            let ids: Vec<i64> = (0..100).flat_map(|id| [id as i64, id as i64]).collect();
-            let days: Vec<i64> = ids.iter().map(|id| id % 3).collect();
-            let seqs: Vec<i64> = (0..ids.len() as i64).map(|n| 1 + (n % 2)).collect();
-            let names: Vec<String> = ids
-                .iter()
-                .zip(&seqs)
-                .map(|(id, seq)| {
-                    if *seq == 2 {
-                        format!("row-{id}")
-                    } else {
-                        "stale".to_string()
-                    }
-                })
-                .collect();
-            let batch = RecordBatch::try_new(
-                Arc::new(Schema::new(vec![
-                    Field::new("id", DataType::Int64, false),
-                    Field::new("day", DataType::Int64, true),
-                    Field::new("seq", DataType::Int64, true),
-                    Field::new("name", DataType::Utf8, true),
-                ])),
-                vec![
-                    Arc::new(Int64Array::from(ids)),
-                    Arc::new(Int64Array::from(days)),
-                    Arc::new(Int64Array::from(seqs)),
-                    Arc::new(StringArray::from(
-                        names.iter().map(String::as_str).collect::<Vec<_>>(),
-                    )),
-                ],
-            )
-            .expect("batch");
-            if req.out.arrow(batch).await.is_err() {
-                return Ok(());
-            }
-            if req.out.checkpoint(Cursor::new(1u64)).await.is_err() {
-                return Ok(());
-            }
+        let ids: Vec<i64> = (0..100).flat_map(|id| [id as i64, id as i64]).collect();
+        let days: Vec<i64> = ids.iter().map(|id| id % 3).collect();
+        let sequences: Vec<i64> = (0..ids.len() as i64).map(|n| 1 + (n % 2)).collect();
+        let names: Vec<String> = ids
+            .iter()
+            .zip(&sequences)
+            .map(|(id, sequence)| {
+                if *sequence == 2 {
+                    format!("row-{id}")
+                } else {
+                    "stale".to_string()
+                }
+            })
+            .collect();
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("day", DataType::Int64, true),
+                Field::new("seq", DataType::Int64, true),
+                Field::new("name", DataType::Utf8, true),
+            ])),
+            vec![
+                Arc::new(Int64Array::from(ids)),
+                Arc::new(Int64Array::from(days)),
+                Arc::new(Int64Array::from(sequences)),
+                Arc::new(StringArray::from(
+                    names.iter().map(String::as_str).collect::<Vec<_>>(),
+                )),
+            ],
+        )
+        .expect("batch");
+        if request.out.arrow(batch).await.is_err() {
+            return Ok(());
+        }
+        if request.out.checkpoint(Cursor::new(1u64)).await.is_err() {
+            return Ok(());
         }
         Ok(())
     }
 }
 
-async fn attempt_refined(workdir: &std::path::Path, dest: &Postgres) -> Result<(), String> {
-    let mut config = EngineConfig::new("pg-sweep-refined");
-    config = config.with_workdir(workdir.to_path_buf());
-    config = config.with_write_mode(WriteMode::Merge {
-        key: vec!["id".into()],
-    });
-    let engine = Engine::new(config, RefinedArrowSource, dest.clone());
+async fn attempt_refined(workdir: &std::path::Path, destination: &Postgres) -> Result<(), String> {
+    let config = EngineConfig::new("pg-sweep-refined")
+        .with_workdir(workdir.to_path_buf())
+        .with_write_mode(WriteMode::Merge {
+            key: vec!["id".into()],
+        });
+    let engine = Engine::new(config, RefinedArrowSource, destination.clone());
     match tokio::spawn(engine.run()).await {
         Ok(Ok(_)) => Ok(()),
-        Ok(Err(e)) => Err(e.to_string()),
+        Ok(Err(error)) => Err(error.to_string()),
         Err(join) => Err(format!("panicked: {join}")),
     }
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn every_dest_fail_point_recovers_exactly_once_under_refined_scoped_merge() {
-    let Some(pg) = PgFixture::start().await else {
+    let Some(container) = PostgresContainer::start().await else {
         return;
     };
-    let conn = pg.conn.clone();
-    let (client, connection) = tokio_postgres::connect(&conn, tokio_postgres::NoTls)
-        .await
-        .expect("probe connect");
-    tokio::spawn(async move {
-        let _ = connection.await;
-    });
+    let connection_string = container.connection_string.clone();
+    let client = container.client().await;
 
     let mut fired: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
-    for &point in rdlt_connector_postgres::dest::FAIL_POINTS {
+    for &point in rdlt_connector_postgres::destination::FAIL_POINTS {
         for action in ["return", "panic", "1*off->return"] {
-            let dataset = format!(
+            let schema = format!(
                 "sweepr_{}_{}",
                 point.replace('.', "_"),
                 action.replace(['*', '-', '>'], "_"),
             );
-            let dir = tempfile::tempdir().expect("tempdir");
-            let workdir = dir.path().join("wal");
-            let dest = Postgres::connect(&conn)
-                .dataset(&dataset)
-                .options(rdlt_connector_postgres::dest::DestinationOptions {
+            let directory = tempfile::tempdir().expect("tempdir");
+            let workdir = directory.path().join("wal");
+            let destination = Postgres::new(&connection_string)
+                .schema(&schema)
+                .options(rdlt_connector_postgres::destination::DestinationOptions {
                     tables: [(
                         "s".to_string(),
-                        rdlt_connector_postgres::dest::TableOptions {
-                            dedup_sort: Some(rdlt_connector_postgres::dest::DedupSort {
+                        rdlt_connector_postgres::destination::TableOptions {
+                            dedup_sort: Some(rdlt_connector_postgres::destination::DedupSort {
                                 column: "seq".into(),
-                                order: rdlt_connector_postgres::dest::SortOrder::Desc,
+                                order: rdlt_connector_postgres::destination::SortOrder::Desc,
                             }),
                             merge_scope: Some(vec!["day".into()]),
                             ..Default::default()
@@ -455,27 +460,27 @@ async fn every_dest_fail_point_recovers_exactly_once_under_refined_scoped_merge(
                 .expect("valid options");
 
             fail::cfg(point, action).expect("configure fail point");
-            let armed1 = attempt_refined(&workdir, &dest).await;
-            let armed2 = attempt_refined(&workdir, &dest).await;
+            let armed1 = attempt_refined(&workdir, &destination).await;
+            let armed2 = attempt_refined(&workdir, &destination).await;
             fail::remove(point);
             if armed1.is_err() || armed2.is_err() {
                 fired.insert(point);
             }
 
-            let recovered = attempt_refined(&workdir, &dest).await;
+            let recovered = attempt_refined(&workdir, &destination).await;
             assert!(
                 recovered.is_ok(),
                 "[{point} / {action} / refined] recovery failed: {recovered:?}"
             );
             // Exactly-once under scope replacement + ordered dedup: every id
             // once, no stale survivor — a replayed or resumed load never
-            // half-replaces a scope (MR5 single-unit rule).
+            // half-replaces a scope.
             let counts = client
                 .query_one(
                     &format!(
                         "SELECT count(*), count(DISTINCT id),
                                 count(*) FILTER (WHERE name = 'stale')
-                         FROM \"{dataset}\".s"
+                         FROM \"{schema}\".s"
                     ),
                     &[],
                 )
@@ -517,11 +522,11 @@ async fn every_dest_fail_point_recovers_exactly_once_under_refined_scoped_merge(
 /// assertion passes.
 #[test]
 fn the_registry_matches_the_sources() {
-    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let sources = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     rdlt_testkit::assert_registry_matches_sources(
-        &src,
+        &sources,
         &[
-            rdlt_connector_postgres::dest::FAIL_POINTS,
+            rdlt_connector_postgres::destination::FAIL_POINTS,
             rdlt_connector_postgres::source::FAIL_POINTS,
             rdlt_connector_postgres::source::CDC_FAIL_POINTS,
         ],

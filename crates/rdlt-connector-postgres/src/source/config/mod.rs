@@ -1,11 +1,11 @@
-//! Declarative Postgres source configuration: connection, stream selection,
-//! per-table cursor + key configuration, batching knobs. One YAML document a
-//! platform can render and validate; unknown fields are errors.
-//!
-//! There is deliberately NO retry configuration — retry policy is engine-owned;
-//! this source only classifies errors.
+//! The source configuration: `vocabulary` spells every noun a document can
+//! contain; `validate` holds the entry points and the local (database-free)
+//! rules. Catalog-dependent rules run at open, in `plan`.
 
 mod validate;
 mod vocabulary;
 
-pub use vocabulary::*;
+pub use vocabulary::{
+    AckMode, Bound, CdcConfig, CdcMode, Config, ConfigError, CursorConfig, Direction, Lag,
+    NullPolicy, QueryConfig, TableConfig, TypeHint, Wait, config_schema,
+};

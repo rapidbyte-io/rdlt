@@ -1,5 +1,5 @@
-//! Catalog reflection: one pg_catalog round trip per run → `ReflectedTable`
-//! per selected relation. The reflected structure is the authority for the
+//! Catalog reflection: one pg_catalog round trip per run → a [`Table`] per
+//! selected relation. The reflected structure is the authority for the
 //! published stream schema, column projection, and cursor-column validation.
 
 use std::collections::BTreeMap;
@@ -7,27 +7,29 @@ use std::collections::BTreeMap;
 use rdlt_connector::SourceError;
 use tokio_postgres::Client;
 
-use crate::source::config::{PostgresConfig, TableConfig};
+use crate::source::config::{Config, TableConfig};
 use crate::source::errors::{self, Phase};
-use crate::source::type_map::{MappedType, PgTypeInfo, map_type};
+use crate::types::map::{CatalogType, Mapping, map};
 
+/// One reflected column: the catalog facts, the type-mapping decision, and
+/// the constraints the stream schema carries.
 #[derive(Debug, Clone)]
-pub struct ReflectedColumn {
+pub struct Column {
     pub(crate) name: String,
     /// Postgres type name, diagnostics only.
     pub(crate) type_name: String,
-    /// The reflected shape facts — kept so per-column type hints (006) can
-    /// consult the closed conversion table post-reflection.
-    pub(crate) type_info: PgTypeInfo,
-    pub(crate) mapped: MappedType,
+    /// The reflected shape facts — kept so per-column type hints can consult
+    /// the closed conversion table post-reflection.
+    pub(crate) catalog: CatalogType,
+    pub(crate) mapping: Mapping,
     pub(crate) not_null: bool,
-    pub(crate) is_pk: bool,
+    pub(crate) in_primary_key: bool,
 }
 
-impl ReflectedColumn {
+impl Column {
     /// The Arrow type this column will carry on the structured path.
-    pub fn arrow_type(&self) -> &arrow_schema::DataType {
-        &self.mapped.arrow
+    pub fn arrow_type(&self) -> arrow_schema::DataType {
+        self.mapping.kind.arrow()
     }
 
     pub fn is_not_null(&self) -> bool {
@@ -35,32 +37,38 @@ impl ReflectedColumn {
     }
 }
 
+/// One reflected relation (or described query) and its columns, in attnum
+/// order.
 #[derive(Debug, Clone)]
-pub struct ReflectedTable {
+pub struct Table {
     pub(crate) name: String,
-    pub(crate) columns: Vec<ReflectedColumn>,
+    pub(crate) columns: Vec<Column>,
 }
 
-impl ReflectedTable {
+impl Table {
     pub fn primary_key(&self) -> Vec<&str> {
         self.columns
             .iter()
-            .filter(|c| c.is_pk)
-            .map(|c| c.name.as_str())
+            .filter(|column| column.in_primary_key)
+            .map(|column| column.name.as_str())
             .collect()
     }
 
     /// The effective merge/dedup key for a stream: a declared `primary_key`
     /// override, else the reflected primary key. Empty when neither exists.
-    pub(crate) fn effective_pk(&self, config: Option<&TableConfig>) -> Vec<String> {
-        match config.and_then(|t| t.primary_key.clone()) {
-            Some(overridden) => overridden,
-            None => self.primary_key().iter().map(|s| (*s).to_owned()).collect(),
+    pub(crate) fn effective_primary_key(&self, config: Option<&TableConfig>) -> Vec<String> {
+        match config.and_then(|table| table.primary_key.clone()) {
+            Some(declared) => declared,
+            None => self
+                .primary_key()
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect(),
         }
     }
 
-    pub fn column(&self, name: &str) -> Option<&ReflectedColumn> {
-        self.columns.iter().find(|c| c.name == name)
+    pub fn column(&self, name: &str) -> Option<&Column> {
+        self.columns.iter().find(|column| column.name == name)
     }
 
     /// Columns after applying the table's include/exclude selection: unknown
@@ -68,12 +76,19 @@ impl ReflectedTable {
     pub fn selected_columns(
         &self,
         config: Option<&TableConfig>,
-    ) -> Result<Vec<&ReflectedColumn>, SourceError> {
+    ) -> Result<Vec<&Column>, SourceError> {
         let (include, exclude) = match config {
-            Some(t) => (t.included_columns.as_deref(), t.excluded_columns.as_deref()),
+            Some(table) => (
+                table.included_columns.as_deref(),
+                table.excluded_columns.as_deref(),
+            ),
             None => (None, None),
         };
-        for requested in include.iter().chain(exclude.iter()).flat_map(|v| v.iter()) {
+        for requested in include
+            .iter()
+            .chain(exclude.iter())
+            .flat_map(|names| names.iter())
+        {
             if self.column(requested).is_none() {
                 return Err(errors::fatal(
                     Phase::Reflect,
@@ -82,12 +97,12 @@ impl ReflectedTable {
                 ));
             }
         }
-        let selected: Vec<&ReflectedColumn> = self
+        let selected: Vec<&Column> = self
             .columns
             .iter()
-            .filter(|c| match (include, exclude) {
-                (Some(inc), _) => inc.iter().any(|n| n == &c.name),
-                (_, Some(exc)) => !exc.iter().any(|n| n == &c.name),
+            .filter(|column| match (include, exclude) {
+                (Some(included), _) => included.iter().any(|name| name == &column.name),
+                (_, Some(excluded)) => !excluded.iter().any(|name| name == &column.name),
                 _ => true,
             })
             .collect();
@@ -111,8 +126,8 @@ pub(crate) async fn describe_query(
     client: &Client,
     name: &str,
     sql: &str,
-) -> Result<ReflectedTable, SourceError> {
-    let wrapped = crate::source::sqlgen::wrap_query(sql);
+) -> Result<Table, SourceError> {
+    let wrapped = format!("SELECT * FROM {}", crate::source::sql::subquery(sql));
     let statement = client.prepare(&wrapped).await.map_err(|e| {
         errors::fatal(
             Phase::Reflect,
@@ -122,14 +137,14 @@ pub(crate) async fn describe_query(
     })?;
     let mut columns = Vec::with_capacity(statement.columns().len());
     for column in statement.columns() {
-        let info = type_info_from(column.type_());
-        columns.push(ReflectedColumn {
+        let catalog = catalog_type_of(column.type_());
+        columns.push(Column {
             name: column.name().to_owned(),
             type_name: column.type_().name().to_owned(),
-            mapped: map_type(&info),
-            type_info: info,
+            mapping: map(&catalog),
+            catalog,
             not_null: false,
-            is_pk: false,
+            in_primary_key: false,
         });
     }
     if columns.is_empty() {
@@ -139,7 +154,7 @@ pub(crate) async fn describe_query(
             "query describes zero columns",
         ));
     }
-    Ok(ReflectedTable {
+    Ok(Table {
         name: name.to_owned(),
         columns,
     })
@@ -148,13 +163,13 @@ pub(crate) async fn describe_query(
 /// Map a described `tokio_postgres::types::Type` into the same shape facts
 /// reflection extracts from pg_catalog (domains resolve one level, exactly
 /// as reflection does).
-fn type_info_from(ty: &tokio_postgres::types::Type) -> PgTypeInfo {
+fn catalog_type_of(described: &tokio_postgres::types::Type) -> CatalogType {
     use tokio_postgres::types::Kind;
-    let mut oid = ty.oid();
-    let mut kind = ty.kind();
-    if let Kind::Domain(inner) = kind {
-        oid = inner.oid();
-        kind = inner.kind();
+    let mut oid = described.oid();
+    let mut kind = described.kind();
+    if let Kind::Domain(base) = kind {
+        oid = base.oid();
+        kind = base.kind();
     }
     let (typtype, typcategory) = match kind {
         Kind::Array(_) => ('b', 'A'),
@@ -163,7 +178,7 @@ fn type_info_from(ty: &tokio_postgres::types::Type) -> PgTypeInfo {
         Kind::Range(_) => ('r', 'R'),
         _ => ('b', 'X'),
     };
-    PgTypeInfo {
+    CatalogType {
         oid,
         typtype,
         typcategory,
@@ -171,20 +186,20 @@ fn type_info_from(ty: &tokio_postgres::types::Type) -> PgTypeInfo {
     }
 }
 
-/// The selected columns with type hints APPLIED: owned clones whose `mapped`
-/// is replaced per the closed conversion table.
-/// Typed errors: hint names a non-selected column; undefined pair.
+/// The selected columns with type hints APPLIED: owned clones whose mapping
+/// is replaced per the closed conversion table. Typed errors: a hint naming
+/// a non-selected column; an undefined (source type → hint) pair.
 pub(crate) fn hinted_columns(
-    table: &ReflectedTable,
+    table: &Table,
     config: Option<&TableConfig>,
-) -> Result<Vec<ReflectedColumn>, SourceError> {
+) -> Result<Vec<Column>, SourceError> {
     let selected = table.selected_columns(config)?;
-    let mut columns: Vec<ReflectedColumn> = selected.into_iter().cloned().collect();
+    let mut columns: Vec<Column> = selected.into_iter().cloned().collect();
     if let Some(config) = config {
         for (name, hint) in &config.type_hints {
             let column = columns
                 .iter_mut()
-                .find(|c| c.name == *name)
+                .find(|column| column.name == *name)
                 .ok_or_else(|| {
                     errors::fatal(
                         Phase::Reflect,
@@ -192,13 +207,13 @@ pub(crate) fn hinted_columns(
                         format!("type hint names `{name}`, which is not a selected column"),
                     )
                 })?;
-            column.mapped =
-                crate::source::type_map::apply_hint(&column.type_info, *hint).map_err(|e| {
+            column.mapping =
+                crate::types::map::apply_hint(&column.catalog, *hint).map_err(|detail| {
                     errors::fatal(
                         Phase::Reflect,
                         Some(&table.name),
                         format!(
-                            "type hint on `{name}` (source type `{}`): {e}",
+                            "type hint on `{name}` (source type `{}`): {detail}",
                             column.type_name
                         ),
                     )
@@ -209,15 +224,15 @@ pub(crate) fn hinted_columns(
 }
 
 /// One round trip: every column of every relation in `schema` matching the
-/// relkind filter, with type shape + PK membership, in attnum order.
-/// Hierarchy CHILDREN are excluded via `pg_inherits` (declarative partitions
-/// AND classic INHERITS children in one predicate): the parent's stream
-/// already scans every child — reflecting children too would double-load
-/// every row under schema-wide discovery. Explicitly LISTED names override
-/// the exclusion ($3) — reading one partition/child alone is a legitimate
-/// backfill. Domains
-/// resolve one level to their base (nested domains fall to the textual
-/// fallback — documented); the domain's own typmod wins when present.
+/// relkind filter, with type shape + primary-key membership, in attnum
+/// order. Hierarchy CHILDREN are excluded via `pg_inherits` (declarative
+/// partitions AND classic INHERITS children in one predicate): the parent's
+/// stream already scans every child — reflecting children too would
+/// double-load every row under schema-wide discovery. Explicitly LISTED
+/// names override the exclusion ($3) — reading one partition/child alone is
+/// a legitimate backfill. Domains resolve one level to their base (nested
+/// domains fall to the textual fallback — documented); the domain's own
+/// typmod wins when present.
 const REFLECT_SQL: &str = r#"
 SELECT c.relname::text                       AS table_name,
        a.attname::text                       AS column_name,
@@ -246,10 +261,10 @@ WHERE n.nspname = $1
 ORDER BY c.relname, a.attnum
 "#;
 
-pub(crate) async fn reflect_schema(
+pub(crate) async fn reflect(
     client: &Client,
-    config: &PostgresConfig,
-) -> Result<BTreeMap<String, ReflectedTable>, SourceError> {
+    config: &Config,
+) -> Result<BTreeMap<String, Table>, SourceError> {
     let relkinds: Vec<&str> = if config.include_views {
         vec!["r", "p", "v", "m"]
     } else {
@@ -260,14 +275,14 @@ pub(crate) async fn reflect_schema(
         .tables
         .iter()
         .flatten()
-        .map(|t| t.name.clone())
+        .map(|table| table.name.clone())
         .collect();
     let rows = client
         .query(REFLECT_SQL, &[&config.schema, &relkinds, &listed])
         .await
         .map_err(|e| errors::classify(Phase::Reflect, None, &e))?;
 
-    let mut tables: BTreeMap<String, ReflectedTable> = BTreeMap::new();
+    let mut tables: BTreeMap<String, Table> = BTreeMap::new();
     for row in rows {
         let table_name: String = row.get("table_name");
         let column_name: String = row.get("column_name");
@@ -277,35 +292,35 @@ pub(crate) async fn reflect_schema(
         let typtype: String = row.get("typtype");
         let typcategory: String = row.get("typcategory");
         let type_name: String = row.get("type_name");
-        let is_pk: bool = row.get("is_pk");
+        let in_primary_key: bool = row.get("is_pk");
 
         // Domains resolve one level; a domain's own typmod (typtypmod) wins
         // over the attribute's (-1 for domain attributes).
-        let info = if typtype == "d" {
+        let catalog = if typtype == "d" {
             let base_oid: Option<i64> = row.get("base_oid");
             let base_typtype: Option<String> = row.get("base_typtype");
             let base_typcategory: Option<String> = row.get("base_typcategory");
             let domain_typmod: i32 = row.get("domain_typmod");
             match (base_oid, base_typtype, base_typcategory) {
-                // A nested domain (base is itself a domain) → textual fallback
-                // via an OID no lossless arm matches.
-                (Some(_), Some(bt), _) if bt == "d" => PgTypeInfo {
+                // A nested domain (base is itself a domain) → textual
+                // fallback via an OID no lossless arm matches.
+                (Some(_), Some(base), _) if base == "d" => CatalogType {
                     oid: 0,
                     typtype: 'b',
                     typcategory: 'X',
                     typmod: -1,
                 },
-                (Some(oid), Some(bt), Some(bc)) => PgTypeInfo {
+                (Some(oid), Some(base_typtype), Some(base_typcategory)) => CatalogType {
                     oid: oid as u32,
-                    typtype: bt.chars().next().unwrap_or('b'),
-                    typcategory: bc.chars().next().unwrap_or('X'),
+                    typtype: base_typtype.chars().next().unwrap_or('b'),
+                    typcategory: base_typcategory.chars().next().unwrap_or('X'),
                     typmod: if domain_typmod != -1 {
                         domain_typmod
                     } else {
                         typmod
                     },
                 },
-                _ => PgTypeInfo {
+                _ => CatalogType {
                     oid: 0,
                     typtype: 'b',
                     typcategory: 'X',
@@ -313,7 +328,7 @@ pub(crate) async fn reflect_schema(
                 },
             }
         } else {
-            PgTypeInfo {
+            CatalogType {
                 oid: type_oid as u32,
                 typtype: typtype.chars().next().unwrap_or('b'),
                 typcategory: typcategory.chars().next().unwrap_or('X'),
@@ -323,28 +338,28 @@ pub(crate) async fn reflect_schema(
 
         tables
             .entry(table_name.clone())
-            .or_insert_with(|| ReflectedTable {
+            .or_insert_with(|| Table {
                 name: table_name,
                 columns: Vec::new(),
             })
             .columns
-            .push(ReflectedColumn {
+            .push(Column {
                 name: column_name,
                 type_name,
-                mapped: map_type(&info),
-                type_info: info,
+                mapping: map(&catalog),
+                catalog,
                 not_null,
-                is_pk,
+                in_primary_key,
             });
     }
 
-    // Contract rule 2: every listed table must exist in the reflected set.
+    // Every listed table must exist in the reflected set.
     if let Some(listed) = &config.tables {
-        for t in listed {
-            if !tables.contains_key(&t.name) {
+        for table in listed {
+            if !tables.contains_key(&table.name) {
                 return Err(errors::fatal(
                     Phase::Reflect,
-                    Some(&t.name),
+                    Some(&table.name),
                     format!(
                         "table not found in schema `{}` (include_views={})",
                         config.schema, config.include_views
@@ -357,29 +372,30 @@ pub(crate) async fn reflect_schema(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
-    use crate::source::type_map::{Decode, oid};
+    use crate::types::Kind;
+    use crate::types::map::oid;
 
-    fn table(cols: &[(&str, u32, bool)]) -> ReflectedTable {
-        ReflectedTable {
+    pub(crate) fn table(columns: &[(&str, u32, bool)]) -> Table {
+        Table {
             name: "t".into(),
-            columns: cols
+            columns: columns
                 .iter()
-                .map(|(name, o, pk)| {
-                    let info = PgTypeInfo {
-                        oid: *o,
+                .map(|(name, type_oid, in_primary_key)| {
+                    let catalog = CatalogType {
+                        oid: *type_oid,
                         typtype: 'b',
                         typcategory: 'X',
                         typmod: -1,
                     };
-                    ReflectedColumn {
+                    Column {
                         name: (*name).into(),
                         type_name: "x".into(),
-                        mapped: map_type(&info),
-                        type_info: info,
+                        mapping: map(&catalog),
+                        catalog,
                         not_null: false,
-                        is_pk: *pk,
+                        in_primary_key: *in_primary_key,
                     }
                 })
                 .collect(),
@@ -388,15 +404,15 @@ mod tests {
 
     #[test]
     fn selection_include_exclude_and_errors() {
-        let t = table(&[
+        let reflected = table(&[
             ("a", oid::INT8, true),
             ("b", oid::TEXT, false),
             ("c", oid::BOOL, false),
         ]);
-        let all = t.selected_columns(None).expect("all");
+        let all = reflected.selected_columns(None).expect("all");
         assert_eq!(all.len(), 3);
 
-        let cfg_inc = TableConfig {
+        let include = TableConfig {
             name: "t".into(),
             cursor: None,
             primary_key: None,
@@ -404,85 +420,97 @@ mod tests {
             excluded_columns: None,
             type_hints: Default::default(),
         };
-        let picked = t.selected_columns(Some(&cfg_inc)).expect("included");
+        let picked = reflected.selected_columns(Some(&include)).expect("include");
         assert_eq!(
-            picked.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            picked
+                .iter()
+                .map(|column| column.name.as_str())
+                .collect::<Vec<_>>(),
             ["a", "c"]
         );
 
-        let cfg_missing = TableConfig {
+        let missing = TableConfig {
             included_columns: Some(vec!["nope".into()]),
-            ..cfg_inc.clone()
+            ..include.clone()
         };
-        assert!(t.selected_columns(Some(&cfg_missing)).is_err());
+        assert!(reflected.selected_columns(Some(&missing)).is_err());
 
-        let cfg_empty = TableConfig {
+        let empty = TableConfig {
             included_columns: None,
             excluded_columns: Some(vec!["a".into(), "b".into(), "c".into()]),
-            ..cfg_inc
+            ..include
         };
-        assert!(t.selected_columns(Some(&cfg_empty)).is_err());
+        assert!(reflected.selected_columns(Some(&empty)).is_err());
     }
 
     #[test]
     fn hinted_columns_apply_and_reject() {
-        use crate::source::HintType;
-        let t = table(&[("id", oid::INT8, true), ("v", oid::TEXT, false)]);
+        use crate::source::config::TypeHint;
+        let reflected = table(&[("id", oid::INT8, true), ("v", oid::TEXT, false)]);
         // Hint applies: text column → timestamptz.
-        let cfg = TableConfig {
+        let hinted_config = TableConfig {
             name: "t".into(),
             cursor: None,
             primary_key: None,
             included_columns: None,
             excluded_columns: None,
-            type_hints: [("v".to_string(), HintType::TimestampTz)]
+            type_hints: [("v".to_string(), TypeHint::TimestampTz)]
                 .into_iter()
                 .collect(),
         };
-        let cols = hinted_columns(&t, Some(&cfg)).expect("hint applies");
+        let columns = hinted_columns(&reflected, Some(&hinted_config)).expect("hint applies");
         assert_eq!(
-            cols.iter().find(|c| c.name == "v").unwrap().mapped.decode,
-            Decode::Timestamp { tz: true }
+            columns
+                .iter()
+                .find(|column| column.name == "v")
+                .unwrap()
+                .mapping
+                .kind,
+            Kind::TimestampTz
         );
-        // text → binary: the text is parsed as bytea input server-side;
-        // decode becomes Bytea.
-        let bin = TableConfig {
-            type_hints: [("v".to_string(), HintType::Binary)].into_iter().collect(),
-            ..cfg.clone()
+        // text → binary: the text is parsed as bytea input server-side.
+        let binary = TableConfig {
+            type_hints: [("v".to_string(), TypeHint::Binary)].into_iter().collect(),
+            ..hinted_config.clone()
         };
-        let cols = hinted_columns(&t, Some(&bin)).expect("binary hint applies");
+        let columns = hinted_columns(&reflected, Some(&binary)).expect("binary hint applies");
         assert_eq!(
-            cols.iter().find(|c| c.name == "v").unwrap().mapped.decode,
-            Decode::Bytea
+            columns
+                .iter()
+                .find(|column| column.name == "v")
+                .unwrap()
+                .mapping
+                .kind,
+            Kind::Bytea
         );
         // Undefined pairs stay closed: int8 → uuid and int8 → binary.
         let bad = TableConfig {
-            type_hints: [("id".to_string(), HintType::Uuid)].into_iter().collect(),
-            ..cfg.clone()
+            type_hints: [("id".to_string(), TypeHint::Uuid)].into_iter().collect(),
+            ..hinted_config.clone()
         };
-        assert!(hinted_columns(&t, Some(&bad)).is_err());
-        let bad_bin = TableConfig {
-            type_hints: [("id".to_string(), HintType::Binary)].into_iter().collect(),
-            ..cfg.clone()
+        assert!(hinted_columns(&reflected, Some(&bad)).is_err());
+        let bad_binary = TableConfig {
+            type_hints: [("id".to_string(), TypeHint::Binary)].into_iter().collect(),
+            ..hinted_config.clone()
         };
-        assert!(hinted_columns(&t, Some(&bad_bin)).is_err());
+        assert!(hinted_columns(&reflected, Some(&bad_binary)).is_err());
         // Hint on a non-selected column.
         let ghost = TableConfig {
-            type_hints: [("ghost".to_string(), HintType::Utf8)]
+            type_hints: [("ghost".to_string(), TypeHint::Utf8)]
                 .into_iter()
                 .collect(),
-            ..cfg
+            ..hinted_config
         };
-        assert!(hinted_columns(&t, Some(&ghost)).is_err());
+        assert!(hinted_columns(&reflected, Some(&ghost)).is_err());
     }
 
     #[test]
     fn primary_key_extraction() {
-        let t = table(&[
+        let reflected = table(&[
             ("id", oid::INT8, true),
             ("ts", oid::TIMESTAMPTZ, true),
             ("v", oid::TEXT, false),
         ]);
-        assert_eq!(t.primary_key(), ["id", "ts"]);
+        assert_eq!(reflected.primary_key(), ["id", "ts"]);
     }
 }

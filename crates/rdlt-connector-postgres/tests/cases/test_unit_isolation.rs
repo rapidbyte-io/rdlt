@@ -10,7 +10,7 @@ use rdlt_connector::core::{
     TableName, TableSchema,
 };
 use rdlt_connector::{CommitMeta, Destination, OpenCtx, WriteMode};
-use rdlt_connector_postgres::fixtures::PgFixture;
+use rdlt_connector_postgres::fixtures::PostgresContainer;
 
 fn schema() -> TableSchema {
     TableSchema {
@@ -62,22 +62,23 @@ async fn count(client: &tokio_postgres::Client, table: &str) -> i64 {
 /// the module doc on what a unit transaction costs.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_replace_reload_is_never_observed_empty() {
-    let Some(pg) = PgFixture::start().await else {
+    let Some(container) = PostgresContainer::start().await else {
         return;
     };
-    let conn = pg.conn.clone();
-    let dest = rdlt_connector_postgres::dest::Postgres::connect(&conn).dataset("iso");
+    let connection_string = container.connection_string.clone();
+    let destination =
+        rdlt_connector_postgres::destination::Postgres::new(&connection_string).schema("iso");
     let pipeline = PipelineId::new("iso");
 
-    let meta = |load: &str, seq: u64| CommitMeta {
+    let meta = |load: &str, commit_seq: u64| CommitMeta {
         load_id: LoadId::new(load),
-        commit_seq: seq,
+        commit_seq,
         state: StateDoc::new(pipeline.clone(), env!("CARGO_PKG_VERSION")),
         counters: CommitCounters::default(),
     };
 
     // Load 1 establishes the "previous contents".
-    let mut first = dest
+    let mut first = destination
         .open(OpenCtx::new(pipeline.clone(), LoadId::new("iso-1")))
         .await
         .expect("open");
@@ -92,12 +93,12 @@ async fn a_replace_reload_is_never_observed_empty() {
     first.commit(meta("iso-1", 0)).await.expect("commit");
     drop(first);
 
-    let observer = crate::cases::common::connect(&conn).await;
+    let observer = crate::cases::common::connect(&connection_string).await;
     assert_eq!(count(&observer, "iso.iso").await, 3, "load 1 landed");
 
     // Load 2 clears and refills. Mid-unit — after the TRUNCATE and the
     // COPY, before the commit — the reader must still see load 1.
-    let mut second = dest
+    let mut second = destination
         .open(OpenCtx::new(pipeline.clone(), LoadId::new("iso-2")))
         .await
         .expect("open");
@@ -128,7 +129,7 @@ async fn a_replace_reload_is_never_observed_empty() {
     );
 }
 
-/// FR-024: a Replace load must not cost the target anything that lives on
+/// A Replace load must not cost the target anything that lives on
 /// the table rather than in it. The clear is `TRUNCATE`, which keeps the
 /// table's identity — so indexes, constraints, grants and dependent views
 /// all survive.
@@ -141,11 +142,11 @@ async fn a_replace_reload_is_never_observed_empty() {
 /// cannot take that trade silently.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_replace_load_preserves_indexes_grants_and_dependents() {
-    let Some(pg) = PgFixture::start().await else {
+    let Some(container) = PostgresContainer::start().await else {
         return;
     };
-    let conn = pg.conn.clone();
-    let admin = crate::cases::common::connect(&conn).await;
+    let connection_string = container.connection_string.clone();
+    let admin = crate::cases::common::connect(&connection_string).await;
     admin
         .batch_execute(
             "CREATE SCHEMA IF NOT EXISTS iso3;
@@ -165,9 +166,10 @@ async fn a_replace_load_preserves_indexes_grants_and_dependents() {
         .expect("oid")
         .get(0);
 
-    let dest = rdlt_connector_postgres::dest::Postgres::connect(&conn).dataset("iso3");
+    let destination =
+        rdlt_connector_postgres::destination::Postgres::new(&connection_string).schema("iso3");
     let pipeline = PipelineId::new("iso3");
-    let mut session = dest
+    let mut session = destination
         .open(OpenCtx::new(pipeline.clone(), LoadId::new("iso3-load")))
         .await
         .expect("open");
@@ -199,8 +201,8 @@ async fn a_replace_load_preserves_indexes_grants_and_dependents() {
     let survivors = |what: &'static str, sql: &'static str| {
         let admin = &admin;
         async move {
-            let n: i64 = admin.query_one(sql, &[]).await.expect(what).get(0);
-            assert_eq!(n, 1, "{what} did not survive the Replace load");
+            let found: i64 = admin.query_one(sql, &[]).await.expect(what).get(0);
+            assert_eq!(found, 1, "{what} did not survive the Replace load");
         }
     };
     survivors(
@@ -238,13 +240,14 @@ async fn a_replace_load_preserves_indexes_grants_and_dependents() {
 /// Replace load appends to what unit 1 published rather than wiping it.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_multi_unit_replace_load_clears_exactly_once() {
-    let Some(pg) = PgFixture::start().await else {
+    let Some(container) = PostgresContainer::start().await else {
         return;
     };
-    let conn = pg.conn.clone();
-    let dest = rdlt_connector_postgres::dest::Postgres::connect(&conn).dataset("iso2");
+    let connection_string = container.connection_string.clone();
+    let destination =
+        rdlt_connector_postgres::destination::Postgres::new(&connection_string).schema("iso2");
     let pipeline = PipelineId::new("iso2");
-    let mut session = dest
+    let mut session = destination
         .open(OpenCtx::new(pipeline.clone(), LoadId::new("iso2-load")))
         .await
         .expect("open");
@@ -253,22 +256,22 @@ async fn a_multi_unit_replace_load_clears_exactly_once() {
         .await
         .expect("ensure");
 
-    let meta = |seq: u64| CommitMeta {
+    let meta = |commit_seq: u64| CommitMeta {
         load_id: LoadId::new("iso2-load"),
-        commit_seq: seq,
+        commit_seq,
         state: StateDoc::new(pipeline.clone(), env!("CARGO_PKG_VERSION")),
         counters: CommitCounters::default(),
     };
 
-    for (seq, ids) in [(0u64, [1i64, 2].as_slice()), (1, [3].as_slice())] {
+    for (commit_seq, ids) in [(0u64, [1i64, 2].as_slice()), (1, [3].as_slice())] {
         session
             .write(&TableName::new("iso"), batch(ids))
             .await
             .expect("write");
-        session.commit(meta(seq)).await.expect("commit");
+        session.commit(meta(commit_seq)).await.expect("commit");
     }
 
-    let client = crate::cases::common::connect(&conn).await;
+    let client = crate::cases::common::connect(&connection_string).await;
     assert_eq!(
         count(&client, "iso2.iso").await,
         3,

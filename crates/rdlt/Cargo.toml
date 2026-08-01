@@ -22,7 +22,7 @@ file = ["dep:rdlt-connector-file"]
 iceberg = ["dep:rdlt-connector-iceberg"]
 snowflake = ["dep:rdlt-connector-snowflake"]
 postgres-source = ["dep:rdlt-connector-postgres", "rdlt-connector-postgres/source"]
-postgres-dest = ["dep:rdlt-connector-postgres", "rdlt-connector-postgres/dest"]
+postgres-dest = ["dep:rdlt-connector-postgres", "rdlt-connector-postgres/destination"]
 # The parquet FEATURE spelling stays (frozen for build scripts): the
 # parquet destination now lives in the file family (015 FF1).
 parquet = ["file"]

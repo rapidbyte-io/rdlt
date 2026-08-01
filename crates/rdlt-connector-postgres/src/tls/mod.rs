@@ -1,34 +1,26 @@
-//! TLS policy for BOTH Postgres connectors.
+//! Connection security for both Postgres connectors: the policy vocabulary,
+//! its resolution rules, and the rustls machinery that enforces it.
 //!
-//! One policy type, one connect path — the source and destination call the
-//! same code, so their TLS behavior cannot drift. Modes carry libpq
-//! semantics: `require` encrypts WITHOUT validating the certificate (the
-//! ecosystem's long-standing meaning — documented loudly), `verify_full` is
-//! the production recommendation.
+//! One policy type, consumed by one connect path (`session`), so the source
+//! and the destination cannot drift on what a TLS posture means. Modes carry
+//! libpq semantics: `require` encrypts WITHOUT validating the certificate
+//! (the ecosystem's long-standing meaning — documented loudly on the
+//! variant), `verify_full` is the production recommendation.
 //!
-//! The module is split along its five seams (all crate-private): `policy` the
-//! config-shaped vocabulary + agree-or-error resolution, `connstring` the libpq
-//! parse gate, `rustls_config` the `ClientConfig` construction, `verify` the
-//! quarantined weaker-mode certificate verifiers, and `connect` the live
-//! connect path + failure classification.
+//! `policy` holds the config-shaped vocabulary and the agree-or-error
+//! resolution rules; `client_config` turns a resolved [`Policy`] into a
+//! rustls `ClientConfig` before any connection exists; `verify` quarantines
+//! the deliberately-weaker certificate verifiers the libpq levels demand.
 //!
-//! Two audiences share the re-export list below. `TlsPolicy`, `TlsMode`,
-//! `TlsConfigError` and `PemSource` are embedder API — the YAML `tls:` block
-//! and the facade's builder speak them (`rdlt::pipeline_spec` constructs
-//! `TlsPolicy` directly). `connect`, `parse_conn` and their result types are
-//! public ONLY because this crate's own integration suites (tls_matrix, the
-//! conn-string pins) must reach them across the test-binary boundary — they
-//! are not a supported API, same posture as the doc-hidden testhook seams.
+//! [`Policy`], [`Mode`], [`ConfigError`] and [`PemSource`] are embedder API —
+//! the YAML `tls:` block and destination builders speak them. Everything
+//! else is crate-internal.
 
-mod connect;
-mod connstring;
+mod client_config;
 mod policy;
-mod rustls_config;
 mod verify;
 
-pub use policy::{PemSource, TlsConfigError, TlsMode, TlsPolicy};
+pub use policy::{ConfigError, Mode, PemSource, Policy};
 
-#[doc(hidden)]
-pub use connect::{ConnectError, ConnectResult, TlsFailure, connect};
-#[doc(hidden)]
-pub use connstring::{ParsedConn, parse_conn};
+pub(crate) use client_config::build;
+pub(crate) use policy::{resolve, validate_credentials};

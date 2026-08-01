@@ -1,8 +1,17 @@
 //! The configuration vocabulary: every struct and enum a pipeline YAML (or
 //! an embedder's JSON document) can spell, with its serde and schema
 //! plumbing. The rules that judge a parsed document live in `validate`.
+//!
+//! Serde spellings are the FROZEN document vocabulary; where a Rust
+//! identifier improves on a frozen spelling, `#[serde(rename)]` carries the
+//! document form (`conn` ↔ `connection`).
 
 use serde::{Deserialize, Serialize};
+
+/// Per-column type-hint vocabulary — defined beside the closed conversion
+/// table it selects from (the crate-internal type rulebook); this is its
+/// public spelling.
+pub use crate::types::map::TypeHint;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -14,23 +23,26 @@ pub enum ConfigError {
     Invalid(String),
 }
 
+/// The source configuration document.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct PostgresConfig {
+pub struct Config {
     /// libpq-style connection string/URL; `sslmode` up to `require` may be
     /// set here (verify-* modes go in the `tls` block).
-    pub conn: String,
+    #[serde(rename = "conn")]
+    #[schemars(rename = "conn")]
+    pub connection: String,
     /// Reflection scope; bare table names below resolve inside it.
     #[serde(default = "default_schema")]
     pub schema: String,
     /// Include views and materialized views in schema-wide discovery.
     #[serde(default)]
     pub include_views: bool,
-    /// Table selection, three-valued. PRESENT ⇒ exactly this list and nothing
-    /// else — including the empty list, which selects no tables and leaves
-    /// `queries` as the run's only streams. ABSENT ⇒ discover every table in
-    /// `schema`, which is why a pipeline that declares queries and omits this
-    /// field also receives every table alongside them.
+    /// Table selection, three-valued. PRESENT ⇒ exactly this list and
+    /// nothing else — including the empty list, which selects no tables and
+    /// leaves `queries` as the run's only streams. ABSENT ⇒ discover every
+    /// table in `schema`, which is why a pipeline that declares queries and
+    /// omits this field also receives every table alongside them.
     #[serde(default)]
     pub tables: Option<Vec<TableConfig>>,
     /// Query streams: a stream per SQL statement, schema DESCRIBED by the
@@ -39,14 +51,14 @@ pub struct PostgresConfig {
     #[serde(default)]
     pub queries: Vec<QueryConfig>,
     /// TLS posture: full sslmode matrix; verify-* modes are expressible only
-    /// here (conn-string sslmode covers disable/prefer/require). Contradicting
-    /// an explicit conn sslmode is a config error.
+    /// here (conn-string sslmode covers disable/prefer/require).
+    /// Contradicting an explicit conn sslmode is a config error.
     #[serde(default)]
-    pub tls: Option<crate::tls::TlsPolicy>,
+    pub tls: Option<crate::tls::Policy>,
     /// CDC via logical replication: when present, EVERY configured table is
-    /// captured through the
-    /// replication slot instead of cursor-column incremental (the two are
-    /// mutually exclusive per table). Query streams are unaffected.
+    /// captured through the replication slot instead of cursor-column
+    /// incremental (the two are mutually exclusive per table). Query streams
+    /// are unaffected.
     #[serde(default)]
     pub cdc: Option<CdcConfig>,
     /// Decoder cuts a RecordBatch at this many buffered bytes.
@@ -60,7 +72,8 @@ pub struct PostgresConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TableConfig {
-    /// Bare table name; `schema` owns qualification (qualified names rejected).
+    /// Bare table name; `schema` owns qualification (qualified names
+    /// rejected).
     pub name: String,
     #[serde(default)]
     pub cursor: Option<CursorConfig>,
@@ -76,7 +89,7 @@ pub struct TableConfig {
     /// columns or undefined (source → hint) pairs are typed config errors at
     /// open.
     #[serde(default)]
-    pub type_hints: std::collections::BTreeMap<String, crate::source::HintType>,
+    pub type_hints: std::collections::BTreeMap<String, TypeHint>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -92,13 +105,14 @@ pub struct QueryConfig {
     #[serde(default)]
     pub primary_key: Option<Vec<String>>,
     #[serde(default)]
-    pub type_hints: std::collections::BTreeMap<String, crate::source::HintType>,
+    pub type_hints: std::collections::BTreeMap<String, TypeHint>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CursorConfig {
-    /// Must exist on the table with a cursor-capable type (validated at open).
+    /// Must exist on the table with a cursor-capable type (validated at
+    /// open).
     pub column: String,
     /// Typed literal for the first run (absent ⇒ full initial load).
     #[serde(default)]
@@ -118,9 +132,9 @@ pub struct CursorConfig {
     #[serde(default)]
     pub nulls: NullPolicy,
     /// Attribution window: each RESUMED run widens the read window this far
-    /// behind the watermark so
-    /// late-committed rows are captured. Requires a closed boundary and a
-    /// primary key; the saved watermark is never lowered.
+    /// behind the watermark so late-committed rows are captured. Requires a
+    /// closed boundary and a primary key; the saved watermark is never
+    /// lowered.
     #[serde(default)]
     pub lag: Option<Lag>,
 }
@@ -139,33 +153,33 @@ pub enum Lag {
 impl std::str::FromStr for Lag {
     type Err = String;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let t = s.trim();
-        if let Some(unit) = t.chars().last().filter(|c| "smhd".contains(*c)) {
-            let count: u64 = t[..t.len() - 1]
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let trimmed = text.trim();
+        if let Some(unit) = trimmed.chars().last().filter(|c| "smhd".contains(*c)) {
+            let count: u64 = trimmed[..trimmed.len() - 1]
                 .parse()
-                .map_err(|e| format!("lag `{t}`: {e}"))?;
+                .map_err(|e| format!("lag `{trimmed}`: {e}"))?;
             if count == 0 {
-                return Err(format!("lag `{t}` must be positive"));
+                return Err(format!("lag `{trimmed}` must be positive"));
             }
-            let factor = match unit {
+            let seconds_per_unit = match unit {
                 's' => 1,
                 'm' => 60,
                 'h' => 3600,
                 _ => 86400,
             };
             return Ok(Self::Duration {
-                seconds: count * factor,
+                seconds: count * seconds_per_unit,
             });
         }
-        let numeric = !t.is_empty()
-            && t.chars().all(|c| c.is_ascii_digit() || c == '.')
-            && t.parse::<f64>().is_ok_and(|v| v > 0.0);
+        let numeric = !trimmed.is_empty()
+            && trimmed.chars().all(|c| c.is_ascii_digit() || c == '.')
+            && trimmed.parse::<f64>().is_ok_and(|value| value > 0.0);
         if numeric {
-            Ok(Self::Magnitude(t.to_string()))
+            Ok(Self::Magnitude(trimmed.to_string()))
         } else {
             Err(format!(
-                "lag `{t}` is neither a duration (\"90s\", \"5m\", \"2h\", \"1d\") \
+                "lag `{trimmed}` is neither a duration (\"90s\", \"5m\", \"2h\", \"1d\") \
                  nor a positive magnitude"
             ))
         }
@@ -173,23 +187,23 @@ impl std::str::FromStr for Lag {
 }
 
 impl std::fmt::Display for Lag {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Duration { seconds } => write!(f, "{seconds}s"),
-            Self::Magnitude(m) => f.write_str(m),
+            Self::Duration { seconds } => write!(formatter, "{seconds}s"),
+            Self::Magnitude(magnitude) => formatter.write_str(magnitude),
         }
     }
 }
 
 impl serde::Serialize for Lag {
-    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
-        ser.collect_str(self)
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
     }
 }
 
 impl<'de> serde::Deserialize<'de> for Lag {
-    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
-        let text = String::deserialize(de)?;
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
         text.parse().map_err(serde::de::Error::custom)
     }
 }
@@ -200,7 +214,8 @@ impl schemars::JsonSchema for Lag {
     }
 
     fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        // Mirrors `FromStr` exactly — the string vocabulary IS the config form.
+        // Mirrors `FromStr` exactly — the string vocabulary IS the config
+        // form.
         schemars::json_schema!({
             "type": "string",
             "description": "Attribution window: a duration (\"90s\", \"5m\", \
@@ -215,33 +230,32 @@ impl Lag {
     /// The SQL delta subtracted from (direction max) or added to (min) the
     /// watermark, per cursor family. Err = the pair is undefined — surfaced
     /// as a typed open-time error naming the column.
-    pub(crate) fn sql_delta(
-        &self,
-        decode: crate::source::type_map::Decode,
-    ) -> Result<String, String> {
-        use crate::source::type_map::Decode;
-        match (self, decode) {
-            (Self::Duration { seconds }, Decode::Timestamp { .. }) => {
+    pub(crate) fn sql_delta(&self, kind: crate::types::Kind) -> Result<String, String> {
+        use crate::types::Kind;
+        match (self, kind) {
+            (Self::Duration { seconds }, Kind::TimestampTz | Kind::TimestampNaive) => {
                 Ok(format!("INTERVAL '{seconds} seconds'"))
             }
-            (Self::Duration { seconds }, Decode::Date) if seconds % 86_400 == 0 => {
+            (Self::Duration { seconds }, Kind::Date) if seconds % 86_400 == 0 => {
                 Ok(format!("{}::int4", seconds / 86_400))
             }
-            (Self::Duration { .. }, Decode::Date) => {
+            (Self::Duration { .. }, Kind::Date) => {
                 Err("date cursors take whole-day lags (e.g. \"2d\")".into())
             }
-            (Self::Magnitude(m), Decode::Int2 | Decode::Int4 | Decode::Int8) => {
-                if m.contains('.') {
+            (Self::Magnitude(magnitude), Kind::Int16 | Kind::Int32 | Kind::Int64) => {
+                if magnitude.contains('.') {
                     Err("integer cursors take integer lags".into())
                 } else {
-                    Ok(format!("{m}::int8"))
+                    Ok(format!("{magnitude}::int8"))
                 }
             }
-            (Self::Magnitude(m), Decode::Decimal { .. }) => Ok(format!("'{m}'::numeric")),
-            (Self::Duration { .. }, Decode::Int2 | Decode::Int4 | Decode::Int8) => {
+            (Self::Magnitude(magnitude), Kind::Decimal { .. }) => {
+                Ok(format!("'{magnitude}'::numeric"))
+            }
+            (Self::Duration { .. }, Kind::Int16 | Kind::Int32 | Kind::Int64) => {
                 Err("integer cursors take a plain magnitude lag, not a duration".into())
             }
-            (Self::Magnitude(_), Decode::Timestamp { .. } | Decode::Date) => {
+            (Self::Magnitude(_), Kind::TimestampTz | Kind::TimestampNaive | Kind::Date) => {
                 Err("time cursors take a duration lag (\"90s\", \"5m\", \"1d\")".into())
             }
             _ => Err("lag is not defined for this cursor type".into()),
@@ -249,7 +263,6 @@ impl Lag {
     }
 }
 
-/// Upper-bound semantics for `end_value` (dlt `range_end` parity).
 /// Edge semantics for a cursor-window bound — ONE vocabulary for both the
 /// resume boundary and the optional end bound. Defaults differ per field
 /// (resume: inclusive, so watermark-equal rows re-fetch and dedup; end:
@@ -258,12 +271,11 @@ impl Lag {
 #[serde(rename_all = "snake_case")]
 pub enum Bound {
     /// `>=` / `<=` — rows exactly AT the edge value load. As the resume
-    /// boundary this re-fetches watermark-equal rows, deduped via
-    /// boundary keys.
+    /// boundary this re-fetches watermark-equal rows, deduped via boundary
+    /// keys.
     Inclusive,
-    /// `>` / `<` — the edge value itself is excluded. As the resume
-    /// boundary this skips dedup: safe only for strictly monotonic
-    /// cursors.
+    /// `>` / `<` — the edge value itself is excluded. As the resume boundary
+    /// this skips dedup: safe only for strictly monotonic cursors.
     Exclusive,
 }
 
@@ -298,14 +310,15 @@ pub enum NullPolicy {
     /// NULL-cursor rows are included on every run (`… OR cursor IS NULL`).
     Include,
     /// A NULL cursor value is a DATA-CONTRACT violation: the run fails with
-    /// a typed error naming stream and column — for pipelines that treat NULL
-    /// `updated_at` as a bug.
+    /// a typed error naming stream and column — for pipelines that treat
+    /// NULL `updated_at` as a bug.
     Error,
 }
 
 /// CDC block: slot + publication are USER-OWNED server resources — rdlt
-/// creates them only under `create_if_missing` (idempotently) and NEVER drops
-/// either. The flag-column collision check needs reflection and runs at open.
+/// creates them only under `create_if_missing` (idempotently) and NEVER
+/// drops either. The flag-column collision check needs reflection and runs
+/// at open.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CdcConfig {
@@ -324,8 +337,8 @@ pub struct CdcConfig {
     #[serde(default = "default_idle_wait")]
     pub idle_wait: Wait,
     /// Deletion-flag column emitted on every CDC stream: NULL for
-    /// insert/update rows, TRUE for deletes (feature-008 `hard_delete`
-    /// turns it into real deletions on postgres destinations).
+    /// insert/update rows, TRUE for deletes (a destination's `hard_delete`
+    /// turns it into real deletions).
     #[serde(default = "default_flag_column")]
     pub flag_column: String,
     /// `off` = never advance the slot's acknowledged position (debugging /
@@ -344,7 +357,7 @@ pub enum CdcMode {
     #[default]
     Catchup,
     /// Chunked catch-up loop until cancelled, `idle_wait` between quiet
-    /// chunks (recorded refinement 2).
+    /// chunks.
     Tail,
 }
 
@@ -359,8 +372,8 @@ pub enum AckMode {
     Off,
 }
 
-/// A wait interval: the 007 duration vocabulary ("1s", "5m", "2h", "1d")
-/// WITHOUT the magnitude forms. Config form is the literal string.
+/// A wait interval: the duration vocabulary ("1s", "5m", "2h", "1d") WITHOUT
+/// the magnitude forms. Config form is the literal string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Wait {
     pub seconds: u64,
@@ -369,31 +382,31 @@ pub struct Wait {
 impl std::str::FromStr for Wait {
     type Err = String;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.parse::<Lag>() {
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        match text.parse::<Lag>() {
             Ok(Lag::Duration { seconds }) => Ok(Self { seconds }),
             _ => Err(format!(
-                "wait `{s}` must be a duration (\"1s\", \"5m\", \"2h\", \"1d\")"
+                "wait `{text}` must be a duration (\"1s\", \"5m\", \"2h\", \"1d\")"
             )),
         }
     }
 }
 
 impl std::fmt::Display for Wait {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}s", self.seconds)
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}s", self.seconds)
     }
 }
 
 impl serde::Serialize for Wait {
-    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
-        ser.collect_str(self)
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
     }
 }
 
 impl<'de> serde::Deserialize<'de> for Wait {
-    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
-        let text = String::deserialize(de)?;
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
         text.parse().map_err(serde::de::Error::custom)
     }
 }
@@ -418,7 +431,6 @@ fn default_idle_wait() -> Wait {
 fn default_flag_column() -> String {
     "_rdlt_deleted".into()
 }
-
 fn default_schema() -> String {
     "public".into()
 }
@@ -432,5 +444,5 @@ fn default_batch_max_rows() -> usize {
 /// JSON Schema GENERATED from the config structs — the declared schema and
 /// the parser cannot drift.
 pub fn config_schema() -> serde_json::Value {
-    serde_json::to_value(schemars::schema_for!(PostgresConfig)).expect("schema serializes")
+    serde_json::to_value(schemars::schema_for!(Config)).expect("schema serializes")
 }

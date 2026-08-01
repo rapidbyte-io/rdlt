@@ -1,11 +1,19 @@
-//! The shared CDC rig and config scaffolding consumed by the test_cdc_*
-//! case files — slot lifecycle, the streaming cycle, replica identity/TOAST,
-//! and damage recovery.
+//! The shared CDC scaffolding every `test_cdc_*` case file builds on: the
+//! `cdc:` config block the slot-lifecycle suites hand to `cdc_slot`
+//! directly, the two-table seed they share, and the source→destination rig
+//! the streaming suites run pipelines through.
 
-use rdlt_connector_postgres::fixtures::CdcPgFixture;
+use rdlt_connector_postgres::destination::{
+    DestinationOptions, MergeStrategy, Postgres, TableOptions,
+};
+use rdlt_connector_postgres::fixtures::PostgresContainer;
+use rdlt_connector_postgres::source;
 use rdlt_connector_postgres::source::config::{AckMode, CdcConfig, CdcMode, Wait};
+use rdlt_engine::{Engine, EngineConfig};
 
-pub fn cdc(slot: &str, publication: &str, create_if_missing: bool) -> CdcConfig {
+/// A `cdc:` block at its documented defaults, varying only the three things
+/// the lifecycle suites vary.
+pub fn cdc_config(slot: &str, publication: &str, create_if_missing: bool) -> CdcConfig {
     CdcConfig {
         slot: slot.into(),
         publication: publication.into(),
@@ -17,71 +25,65 @@ pub fn cdc(slot: &str, publication: &str, create_if_missing: bool) -> CdcConfig 
     }
 }
 
-pub const SEED: &str = r#"
+/// The seed the lifecycle suites share: one keyed table with two rows.
+pub const ORDERS_SEED: &str = r#"
 CREATE TABLE public.orders (id int8 PRIMARY KEY, total int4);
 INSERT INTO public.orders VALUES (1, 10), (2, 20);
 "#;
 
-// ───────────────────── bounded catch-up ─────────────────────
-
-use rdlt_connector_postgres::dest::{DestinationOptions, MergeStrategy, Postgres, TableOptions};
-use rdlt_connector_postgres::source::PostgresSource;
-use rdlt_engine::{Engine, EngineConfig};
-
-/// The recommended composition (contract C3): CDC source → postgres dest,
-/// `merge{key}` + `merge_strategy: upsert` + `hard_delete: <flag>` into a
-/// `mirror` schema of the SAME database (equality checks become SQL).
-pub struct CdcRig {
-    pub fixture: CdcPgFixture,
+/// The recommended composition: a CDC source feeding the postgres
+/// destination with `merge{key}` + `merge_strategy: upsert` +
+/// `hard_delete: <flag>`, into a `mirror` schema of the SAME database — so
+/// source/destination equality is a SQL question, not a client-side diff.
+pub struct Rig {
+    pub container: PostgresContainer,
     pub workdir: std::path::PathBuf,
     pipeline: String,
 }
 
-impl CdcRig {
-    /// Skip-not-fail: `None` when no container runtime, so callers return early.
+impl Rig {
+    /// Skip-not-fail: `None` when no container runtime, so callers return
+    /// early.
     pub async fn start(pipeline: &str) -> Option<Self> {
-        let fixture = CdcPgFixture::start().await?;
-        let dir = tempfile::tempdir().expect("workdir");
-        let workdir = dir.path().to_path_buf();
-        std::mem::forget(dir);
+        let container = PostgresContainer::start_for_cdc().await?;
         Some(Self {
-            fixture,
-            workdir,
+            container,
+            workdir: leaked_workdir(),
             pipeline: pipeline.to_string(),
         })
     }
 
     /// A fresh pipeline identity (new workdir + name): the documented
-    /// recovery for wedged streams — cursors gone, next run snapshots.
+    /// recovery for a wedged stream — cursors gone, so the next run
+    /// snapshots.
     pub fn reset_state(&mut self, pipeline: &str) {
-        let dir = tempfile::tempdir().expect("workdir");
-        self.workdir = dir.path().to_path_buf();
-        std::mem::forget(dir);
+        self.workdir = leaked_workdir();
         self.pipeline = pipeline.to_string();
     }
 
-    fn source(&self, tables: &[&str]) -> PostgresSource {
+    fn source(&self, tables: &[&str]) -> source::Postgres {
         let list = tables
             .iter()
-            .map(|t| format!("  - name: {t}\n"))
+            .map(|table| format!("  - name: {table}\n"))
             .collect::<String>();
-        PostgresSource::from_yaml(&format!(
-            "conn: \"{}\"\ncdc:\n  slot: s1\n  publication: p1\n  create_if_missing: true\ntables:\n{list}",
-            self.fixture.conn
-        ))
-        .expect("cdc source config")
+        crate::cases::common::source(
+            &self.container.connection_string,
+            &format!(
+                "cdc:\n  slot: s1\n  publication: p1\n  create_if_missing: true\ntables:\n{list}"
+            ),
+        )
     }
 
-    pub fn dest(&self, tables: &[&str]) -> Postgres {
-        Postgres::connect(self.fixture.conn.clone())
-            .dataset("mirror")
+    pub fn destination(&self, tables: &[&str]) -> Postgres {
+        Postgres::new(self.container.connection_string.clone())
+            .schema("mirror")
             .options(DestinationOptions {
                 merge_strategy: Some(MergeStrategy::Upsert),
                 tables: tables
                     .iter()
-                    .map(|t| {
+                    .map(|table| {
                         (
-                            t.to_string(),
+                            table.to_string(),
                             TableOptions {
                                 hard_delete: Some("_rdlt_deleted".into()),
                                 ..TableOptions::default()
@@ -90,56 +92,65 @@ impl CdcRig {
                     })
                     .collect(),
             })
-            .expect("valid dest options")
+            .expect("valid destination options")
     }
 
     pub async fn run(&self, tables: &[&str], key: &str) -> u64 {
-        let mut config = EngineConfig::new(self.pipeline.as_str());
-        config = config.with_workdir(self.workdir.clone());
-        config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
-            key: vec![key.into()],
-        });
-        let report = Engine::new(config, self.source(tables), self.dest(tables))
-            .run()
-            .await
-            .expect("cdc run");
-        report.total_rows()
+        Engine::new(
+            self.engine_config(key),
+            self.source(tables),
+            self.destination(tables),
+        )
+        .run()
+        .await
+        .expect("cdc run")
+        .total_rows()
     }
 
-    pub async fn run_expect_err(&self, tables: &[&str], key: &str) -> String {
-        let mut config = EngineConfig::new(self.pipeline.as_str());
-        config = config.with_workdir(self.workdir.clone());
-        config = config.with_write_mode(rdlt_connector::WriteMode::Merge {
-            key: vec![key.into()],
-        });
-        Engine::new(config, self.source(tables), self.dest(tables))
-            .run()
-            .await
-            .expect_err("run should fail")
-            .to_string()
+    pub async fn run_expecting_error(&self, tables: &[&str], key: &str) -> String {
+        Engine::new(
+            self.engine_config(key),
+            self.source(tables),
+            self.destination(tables),
+        )
+        .run()
+        .await
+        .expect_err("run should fail")
+        .to_string()
+    }
+
+    fn engine_config(&self, key: &str) -> EngineConfig {
+        EngineConfig::new(self.pipeline.as_str())
+            .with_workdir(self.workdir.clone())
+            .with_write_mode(rdlt_connector::WriteMode::Merge {
+                key: vec![key.into()],
+            })
     }
 
     /// Row-for-row equality on the projected columns, both directions.
-    pub async fn assert_mirror_equals(&self, table: &str, cols: &str) {
-        let client = self.fixture.client().await;
-        for (a, b) in [("public", "mirror"), ("mirror", "public")] {
-            let diff: i64 = client
+    pub async fn assert_mirror_equals_source(&self, table: &str, columns: &str) {
+        let client = self.container.client().await;
+        for (left, right) in [("public", "mirror"), ("mirror", "public")] {
+            let difference: i64 = client
                 .query_one(
                     &format!(
-                        "SELECT count(*) FROM (SELECT {cols} FROM {a}.\"{table}\" \
-                         EXCEPT SELECT {cols} FROM {b}.\"{table}\") d"
+                        "SELECT count(*) FROM (SELECT {columns} FROM {left}.\"{table}\" \
+                         EXCEPT SELECT {columns} FROM {right}.\"{table}\") d"
                     ),
                     &[],
                 )
                 .await
                 .expect("equality query")
                 .get(0);
-            assert_eq!(diff, 0, "{a} \\ {b} on {table} should be empty");
+            assert_eq!(
+                difference, 0,
+                "{left} \\ {right} on {table} should be empty"
+            );
         }
     }
 
     pub async fn scalar(&self, sql: &str) -> i64 {
-        self.fixture
+        self.container
             .client()
             .await
             .query_one(sql, &[])
@@ -149,7 +160,7 @@ impl CdcRig {
     }
 
     pub async fn scalar_text(&self, sql: &str) -> String {
-        self.fixture
+        self.container
             .client()
             .await
             .query_one(sql, &[])
@@ -157,4 +168,13 @@ impl CdcRig {
             .expect("scalar text")
             .get(0)
     }
+}
+
+/// A workdir whose tempdir is leaked deliberately: engine state must outlive
+/// the test body so late writes never race teardown.
+fn leaked_workdir() -> std::path::PathBuf {
+    let directory = tempfile::tempdir().expect("workdir");
+    let workdir = directory.path().to_path_buf();
+    std::mem::forget(directory);
+    workdir
 }

@@ -1,19 +1,19 @@
 //! Golden text pin for the NON-MERGE publish path.
 //!
-//! `golden_sql.rs` pins the merge statements and is deliberately untouched by
-//! this story — merge still stages and its SQL is unchanged. What changed is
-//! the full-load path, which no longer emits any publish statement at all:
-//! Append and Replace rows COPY straight into the target inside a unit
-//! transaction. This file pins what that path DOES say, and what it no longer
-//! says.
+//! `test_golden_sql.rs` pins the merge statements and is deliberately
+//! untouched by this story — merge still stages and its SQL is unchanged.
+//! What changed is the full-load path, which no longer emits any publish
+//! statement at all: Append and Replace rows COPY straight into the target
+//! inside a unit transaction. This file pins what that path DOES say, and
+//! what it no longer says.
 //!
 //! No database: every string here is produced by a pure builder.
 
 use rdlt_connector::WriteMode;
 use rdlt_connector::core::schema::ColumnDef;
 use rdlt_connector::core::{ColumnType, LogicalType, Provenance, TableName, TableSchema};
-use rdlt_connector_postgres::dest::sqlgen::{
-    PgDialect, UNIT_BEGIN, UNIT_COMMIT, UNIT_ROLLBACK, UNIT_WORK_MEM,
+use rdlt_connector_postgres::testsupport::destination::{
+    Dialect, UNIT_BEGIN, UNIT_COMMIT, UNIT_ROLLBACK, UNIT_WORK_MEM,
 };
 use rdlt_connector_sqlcore::{
     CommitContext, DestinationOptions, FullLoadPublish, Step, column_list, insert_select_sql,
@@ -68,7 +68,7 @@ fn direct(cleared: &BTreeSet<TableName>, load_committed_before: bool) -> CommitC
 
 /// The unit transaction's own statements. The isolation level is stated
 /// explicitly rather than inherited from a server default a deployment could
-/// change — see the module doc on `dest`.
+/// change — see the module doc on `destination`.
 #[test]
 fn unit_transaction_statements() {
     assert_eq!(UNIT_BEGIN, "BEGIN ISOLATION LEVEL READ COMMITTED");
@@ -102,7 +102,7 @@ fn replace_clears_with_truncate() {
         }]
     );
     assert_eq!(
-        PgDialect.clear_table(&quote_identifier("events")),
+        Dialect.clear_table(&quote_identifier("events")),
         r#"TRUNCATE TABLE "events""#
     );
 }
@@ -114,9 +114,9 @@ fn replace_clears_with_truncate() {
 fn the_direct_path_emits_no_insert_select() {
     let cleared = BTreeSet::new();
     for mode in [WriteMode::Append, WriteMode::Replace] {
-        let tbls = tables(mode);
+        let table_set = tables(mode);
         let script = plan_commit(
-            &tbls,
+            &table_set,
             &DestinationOptions::default(),
             &direct(&cleared, false),
         )
