@@ -99,11 +99,50 @@ log precedes PDB listener registration — the gap yields ORA-12514);
 skip-not-fail; ONE test binary shares ONE container (the slowest
 fixture the gate will have — startup ~75 s).
 
+## T001 PROBE RECORD (2026-08-02, live against
+gvenzl/oracle-free:23.26.2-slim-faststart on podman)
+
+- PROBE A (truncation): CONFIRMED AND WORSE. 500 rows inserted; the
+  first batch returns 100 with `has_more_rows = false` (a lie);
+  calling `fetch_more` anyway returns 0 ROWS (the cursor is dead —
+  the tail is unrecoverable through the driver's continuation), and
+  the misused cursor then KILLED THE CONNECTION (reset by peer on the
+  next statement). Upstream 0.1.7 cannot stream past its 100-row
+  prefetch, and the public query path HARDCODES prefetch 100 (the
+  QueryOptions.prefetch_rows knob is not plumbed).
+- PROBE B (NUMBER fidelity): 38 significant digits round-trip EXACTLY
+  through the String mapping (raw and TO_CHAR identical).
+- PROBE C (cancellation): a dropped in-flight future did NOT desync
+  this shape (post-cancel query OK) — milder than issue #11's report,
+  but the poisoning class is real: an ERRORED statement left the
+  connection `ConnectionNotReady` (probed), and a name-collision
+  CREATE surfaced as code 0 with a misleading LOB message (the real
+  ORA code lost by the driver).
+
+THE DECISION (D2's fallback taken): v1 builds on UPSTREAM 0.1.7 —
+registry-resolvable today, constitution-clean — with the read path
+designed around the defect: every stream read runs inside
+`SET TRANSACTION READ ONLY` (one consistent SCN) and pages by
+ROWID-KEYSET (`WHERE ROWID > :last ORDER BY ROWID FETCH FIRST 100
+ROWS ONLY`-class pagination, page size = the 100-row prefetch so
+every page arrives COMPLETE in its first batch; `fetch_more` and
+`has_more_rows` are NEVER consulted). Cost: ~1 round-trip per 100
+rows (localhost fixture ~1-3 ms/query — acceptable for v1; the
+recorded motivation for the fork upgrade on WAN workloads). The
+CLIENT BOUNDARY treats EVERY driver/protocol error as
+connection-poisoning: drop, reconnect, classify by the structured ORA
+code (transient family retries; the reconnect itself is the recovery)
+— never reuse a connection that has seen an error. THE FORK OPTION
+stays recorded, not taken: a rev-pinned fork (023's packaging rules —
+git WITHOUT version so publishing REFUSES) restoring true streaming +
+plumbed prefetch is the owner's upgrade path; upstream is stalled
+(2026-03) so the fork means owning the rev.
+
 ## STATUS
 
-- Branch created; research committed (R1-R3); this plan written.
-- NEXT: T001 probe gate (D2) against the live container → the driver
-  strategy decision recorded → build in the established rhythm
+- Branch created; research committed (R1-R3); this plan written;
+  T001 PROBED LIVE and the driver strategy DECIDED (above).
+- NEXT: build in the established rhythm
   (config → client boundary (drop-and-reconnect posture) → type
   rulebook → cursor rulebook → connector/Shell) → fresh suite (kit
   LIVE, cursor wire pins, classification pins on structured codes,
