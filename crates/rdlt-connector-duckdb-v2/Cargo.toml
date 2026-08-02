@@ -33,6 +33,7 @@ arrow = { workspace = true }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 bytes = { workspace = true }
+duckdb = { workspace = true }
 jsonschema = { workspace = true }
 rdlt-connector-postgres = { workspace = true, default-features = false, features = ["destination", "fixtures"] }
 rdlt-engine = { workspace = true }

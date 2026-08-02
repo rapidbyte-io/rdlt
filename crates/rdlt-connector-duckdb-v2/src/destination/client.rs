@@ -100,33 +100,6 @@ impl Db {
         }
         Ok(conn)
     }
-
-    /// One scalar string off the shared connection — the probe seam.
-    pub(crate) fn query_string(&self, sql: &str) -> Result<String, DestinationError> {
-        self.shared(|conn| {
-            conn.query_row(sql, [], |row| row.get::<_, String>(0))
-                .map_err(fatal)
-        })
-    }
-
-    /// One scalar count off the shared connection.
-    pub(crate) fn query_count(&self, sql: &str) -> Result<u64, DestinationError> {
-        self.shared(|conn| {
-            conn.query_row(sql, [], |row| row.get::<_, u64>(0))
-                .map_err(fatal)
-        })
-    }
-
-    fn shared<T>(
-        &self,
-        run: impl FnOnce(&Connection) -> Result<T, DestinationError>,
-    ) -> Result<T, DestinationError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|_| DestinationError::fatal("connection poisoned"))?;
-        run(&conn)
-    }
 }
 
 /// The classification rulebook. DuckDB's C API reports NO structured
@@ -154,4 +127,46 @@ pub(crate) fn is_constraint_violation(e: &duckdb::Error) -> bool {
 /// The default wrap for statements with no classification story.
 pub(crate) fn fatal(e: duckdb::Error) -> DestinationError {
     DestinationError::fatal(e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The replay-per-clone invariant, pinned at its seam: a cloned
+    /// session connection inherits neither SETs nor LOADs from the
+    /// builder connection, so `session()` must replay the recorded
+    /// setup — this is the connection that actually writes.
+    #[test]
+    fn a_session_connection_carries_the_recorded_settings() {
+        let dir = tempfile::tempdir().expect("dir");
+        let db = Db::connect(
+            &dir.path().join("x.duckdb"),
+            [("threads".to_owned(), "1".to_owned())],
+            [],
+        )
+        .expect("connect");
+        let session = db.session().expect("clone + replay");
+        let live: String = session
+            .query_row("SELECT current_setting('threads')::VARCHAR", [], |row| {
+                row.get(0)
+            })
+            .expect("query");
+        assert_eq!(live, "1", "the setting reached the CLONED connection");
+    }
+
+    /// A bad setting value errors at CONNECT (eager application), with
+    /// the frozen frame naming the key.
+    #[test]
+    fn a_bad_setting_value_errors_at_connect() {
+        let dir = tempfile::tempdir().expect("dir");
+        let err = Db::connect(
+            &dir.path().join("x.duckdb"),
+            [("threads".to_owned(), "zero".to_owned())],
+            [],
+        )
+        .expect_err("refused")
+        .to_string();
+        assert!(err.contains("duckdb setting `threads`"), "{err}");
+    }
 }

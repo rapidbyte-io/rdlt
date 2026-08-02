@@ -1,2 +1,12 @@
 pub mod common;
+mod test_classification;
+mod test_conformance;
+mod test_differential;
 mod test_document;
+mod test_gating;
+mod test_golden_ensure;
+mod test_json;
+mod test_probes;
+mod test_recovery;
+mod test_refinements;
+mod test_strategies;
