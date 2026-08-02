@@ -414,3 +414,96 @@ mod tests {
         check_lines(b"{\"ok\":1}\n", 0, "f.jsonl").expect("clean slab passes");
     }
 }
+
+#[cfg(test)]
+mod read_task_pins {
+    use rdlt_connector_sdk::source::Feed;
+    use rdlt_connector_sdk::spi::{PushPayload, records_channel};
+
+    use crate::location::Location;
+    use crate::source::cursor::{FileCursor, FileTask};
+
+    fn task_for(path: &std::path::Path, listed_size: u64) -> FileTask {
+        FileTask {
+            path: path.to_str().expect("utf8").to_owned(),
+            read_path: None,
+            start: 0,
+            size_units: listed_size,
+            mtime_ms: None,
+            etag: None,
+            resume_check: None,
+        }
+    }
+
+    /// EOF short of the listing size refuses — recording it complete
+    /// would let the next run skip the missing bytes silently (030
+    /// review, docket S3: the mid-READ leg, distinct from the
+    /// planner's shrink tripwire).
+    #[tokio::test]
+    async fn eof_short_of_the_listing_refuses_as_a_mid_read_shrink() {
+        let dir = tempfile::tempdir().expect("dir");
+        let file = dir.path().join("events.jsonl");
+        std::fs::write(&file, b"{\"id\": 1}\n").expect("plant");
+        let location = Location::local_dir(dir.path().to_path_buf()).expect("local");
+        let (out, _hold) = records_channel(1 << 20);
+        let mut feed = Feed::new(out);
+        let mut cursor = FileCursor::default();
+
+        let err = super::read_task(
+            &location,
+            &task_for(&file, 30),
+            true,
+            &mut cursor,
+            &mut feed,
+        )
+        .await
+        .expect_err("refused")
+        .to_string();
+        assert!(
+            err.contains("ended at byte 10 but its listing recorded 30")
+                && err.contains("shrank while it was being read"),
+            "{err}"
+        );
+    }
+
+    /// A load must not end on a checkpoint that says nothing new: the
+    /// completion record is emitted only when it differs from the last
+    /// per-slab record (030 review, docket S13).
+    #[tokio::test]
+    async fn the_completion_checkpoint_is_not_a_redundant_duplicate() {
+        let dir = tempfile::tempdir().expect("dir");
+        let file = dir.path().join("events.jsonl");
+        std::fs::write(&file, b"{\"id\": 1}\n{\"id\": 2}\n").expect("plant");
+        let location = Location::local_dir(dir.path().to_path_buf()).expect("local");
+        let (out, mut incoming) = records_channel(1 << 20);
+        let mut feed = Feed::new(out);
+        let mut cursor = FileCursor::default();
+
+        let done = super::read_task(
+            &location,
+            &task_for(&file, 20),
+            true,
+            &mut cursor,
+            &mut feed,
+        )
+        .await
+        .expect("reads");
+        assert!(done);
+        drop(feed);
+
+        let mut checkpoints = 0;
+        let mut slabs = 0;
+        while let Some(push) = incoming.recv().await {
+            match push.payload {
+                PushPayload::Checkpoint(_) => checkpoints += 1,
+                PushPayload::RawJson(_) => slabs += 1,
+                _ => {}
+            }
+        }
+        assert_eq!(slabs, 1, "two small lines arrive as one slab");
+        assert_eq!(
+            checkpoints, 1,
+            "the completion record equals the last per-slab record and is suppressed"
+        );
+    }
+}

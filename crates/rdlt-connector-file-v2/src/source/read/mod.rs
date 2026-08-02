@@ -35,11 +35,16 @@ pub(crate) fn verify_local_snapshot(task: &FileTask) -> Result<(), SourceError> 
         (Some(listed), Some(seen)) if listed != seen
     );
     if size_differs || mtime_differs {
+        // The evidence names whichever tripwire actually moved.
+        let moved = if size_differs {
+            format!("listed {} bytes, found {}", task.size_units, meta.len())
+        } else {
+            "same size, but modified since the listing".to_owned()
+        };
         return Err(SourceError::fatal(format!(
-            "file `{}` changed on disk between listing and read (listed {} bytes, found              {}); refusing to load content the plan does not describe — retry the run",
-            task.path,
-            task.size_units,
-            meta.len()
+            "file `{}` changed on disk between listing and read ({moved}); refusing to \
+             load content the plan does not describe — retry the run",
+            task.path
         )));
     }
     Ok(())
@@ -127,5 +132,58 @@ mod tests {
             .read_to_string(&mut decoded)
             .expect("decodes");
         assert_eq!(decoded, "{\"a\":1}\n");
+    }
+
+    fn snapshot_task(path: &str, size: u64, mtime_ms: Option<u64>) -> FileTask {
+        FileTask {
+            path: path.into(),
+            read_path: None,
+            start: 0,
+            size_units: size,
+            mtime_ms,
+            etag: None,
+            resume_check: None,
+        }
+    }
+
+    /// The pre-read re-stat: a size or mtime that moved since the
+    /// listing refuses with evidence naming which tripwire fired; a
+    /// staged copy (read_path set) is already a snapshot and skips the
+    /// check (030 review, docket S11).
+    #[test]
+    fn a_moved_file_refuses_before_the_whole_file_read() {
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("data.csv");
+        std::fs::write(&path, b"1234567890").expect("plant");
+        let path = path.to_str().expect("utf8");
+
+        let err = verify_local_snapshot(&snapshot_task(path, 20, None))
+            .expect_err("size moved")
+            .to_string();
+        assert!(
+            err.contains("changed on disk between listing and read (listed 20 bytes, found 10)"),
+            "{err}"
+        );
+
+        let stale_mtime = Some(1);
+        let err = verify_local_snapshot(&snapshot_task(path, 10, stale_mtime))
+            .expect_err("mtime moved")
+            .to_string();
+        assert!(
+            err.contains("(same size, but modified since the listing)"),
+            "{err}"
+        );
+
+        let mut staged = snapshot_task("does-not-exist", 999, None);
+        staged.read_path = Some(path.to_owned());
+        verify_local_snapshot(&staged).expect("a staged copy skips the re-stat");
+
+        let meta = std::fs::metadata(path).expect("stat");
+        let honest = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64);
+        verify_local_snapshot(&snapshot_task(path, 10, honest)).expect("unchanged passes");
     }
 }

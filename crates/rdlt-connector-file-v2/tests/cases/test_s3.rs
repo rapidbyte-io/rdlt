@@ -196,3 +196,95 @@ async fn an_etag_rewrite_refuses_the_stale_offset() {
         "{err}"
     );
 }
+
+/// A leading slash on an S3 pattern is a habit carried over from
+/// local paths; listed keys come back normalized, so an un-normalized
+/// matcher would silently match NOTHING (030 review). The pattern is
+/// normalized the store's way instead.
+#[tokio::test]
+async fn a_leading_slash_pattern_still_matches() {
+    let Some(fixture) = S3Fixture::start().await else {
+        return;
+    };
+    fixture
+        .put("in/a.jsonl", b"{\"id\": 1}\n{\"id\": 2}\n")
+        .await;
+
+    let out = tempfile::tempdir().expect("out");
+    let workdir = tempfile::tempdir().expect("workdir");
+    let config = local_dest(out.path());
+    run(
+        s3_source(&fixture, "/in//*.jsonl"),
+        &config,
+        "s3-slash",
+        workdir.path(),
+    )
+    .await
+    .expect("the load settles");
+    assert_eq!(
+        destination::testhook::count_rows(&config, "events").expect("count"),
+        2
+    );
+}
+
+/// The skip-fetch shortcut PROVABLY engages: a second run over an
+/// unchanged, completed parquet object skips its download, counted on
+/// the connector instance (an optimisation that silently stops
+/// engaging is indistinguishable from one never written).
+#[tokio::test]
+async fn an_unchanged_parquet_object_skips_its_second_fetch() {
+    use rdlt_connector_sdk::source::{SourceConnector, shell};
+
+    let Some(fixture) = S3Fixture::start().await else {
+        return;
+    };
+    // A real parquet object, seeded once.
+    let schema = std::sync::Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("id", arrow::datatypes::DataType::Int64, false),
+    ]));
+    let batch = arrow::record_batch::RecordBatch::try_new(
+        schema.clone(),
+        vec![std::sync::Arc::new(arrow::array::Int64Array::from(vec![
+            1i64, 2, 3,
+        ]))],
+    )
+    .expect("batch");
+    let mut writer =
+        parquet::arrow::ArrowWriter::try_new(Vec::new(), schema, None).expect("writer");
+    writer.write(&batch).expect("write");
+    let bytes = writer.into_inner().expect("bytes");
+    fixture.put("in/a.parquet", &bytes).await;
+
+    let mut value = serde_json::json!({
+        "streams": [{"name": "events", "format": "parquet", "path": "in/*.parquet"}]
+    });
+    value["streams"][0]["location"] =
+        serde_json::to_value(fixture.location_options()).expect("options");
+    let src_config = source::Config::from_value(value).expect("valid");
+
+    let out = tempfile::tempdir().expect("out");
+    let workdir = tempfile::tempdir().expect("workdir");
+    let dest_config = local_dest(out.path());
+    // One connector instance for both runs — the counter lives on it.
+    let file = source::File::assemble(src_config).expect("assembles");
+    for _ in 0..2 {
+        Engine::new(
+            EngineConfig::new("s3-skip-fetch").with_workdir(workdir.path().join("wal")),
+            shell(file.clone()),
+            destination::Shell::new(dest_config.clone()).expect("valid"),
+        )
+        .run()
+        .await
+        .expect("the load settles");
+    }
+    assert_eq!(
+        destination::testhook::count_rows(&dest_config, "events").expect("count"),
+        3,
+        "the second run read nothing new"
+    );
+    assert_eq!(
+        file.skipped_fetches(),
+        1,
+        "the completed, etag-matched object skipped exactly its second download"
+    );
+}
