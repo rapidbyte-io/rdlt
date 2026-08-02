@@ -8,7 +8,7 @@ use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{MemoryBatch, MemorySource, MemoryStream};
 use serde_json::json;
 
-use super::common::{CLIENT_ID, CLIENT_SECRET, CatalogFixture, S3_KEY, S3_SECRET};
+use super::common::{CatalogFixture, S3_KEY, S3_SECRET};
 
 fn one_row() -> MemorySource {
     MemorySource::new(vec![MemoryStream::new(
