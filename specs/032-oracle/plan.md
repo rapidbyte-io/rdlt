@@ -215,6 +215,50 @@ chunks; the driver's whole-buffer rescan is quadratic-ish on huge
 LOBs, so chunking is the correctness-and-cost answer), with the
 `DBMS_LOB.SUBSTR` path kept as the documented fallback.
 
+## T003 — THE VENDORED PATCH, BUILT AND PROBED (2026-08-02)
+
+The fork lives at `vendor/oracle-rs` (published 0.1.7 source, MIT OR
+Apache-2.0 preserved; consumed via `[patch.crates-io]`). FOUR patches
+attempted, THREE KEPT, ONE REVERTED ON EVIDENCE:
+
+KEPT — and probed working against 23 Free:
+1. `FetchMessage` framing repaired: real sequence number (was
+   hardcoded 0), the ub8 token required at ttc_field_version >= 18
+   (Oracle 23ai), and the body now rides the connection's own
+   multi-packet sender instead of hand-writing a small-SDU header
+   under a negotiated large SDU.
+2. Honest `has_more_rows`: the query parser reports continuation from
+   the server's ORA-01403 terminator instead of the hardcoded
+   `false` that made every truncated batch look complete.
+3. `set_prefetch_rows` — the ub4 wire field is now a real knob
+   (default stays 100).
+   MEASURED: a 500-row SELECT returns ALL 500 IN ONE ROUND TRIP with
+   `has_more = false` — the T001 truncation defect and the
+   round-trip-per-100-rows ceiling are both gone for rows that fit
+   the SDU.
+
+REVERTED — the honest negative: switching the query path to a
+multi-packet read. `receive_response` hangs on queries (it waits for
+an end-of-response flag row replies never set, and its scan cannot
+walk a row stream — probed: even `SELECT 1 FROM DUAL` hung). A
+query-aware accumulator terminating on the ERROR marker ALSO fails:
+the marker byte occurs inside binary row data, so a wide-row stream
+cuts mid-message (probed: `BufferUnderflow` on 2000×3.9 KB rows).
+Terminating a multi-packet row stream correctly requires the RESUMABLE
+PARSER the patch report called structural — deliberately out of this
+feature.
+
+**THE STANDING LIMIT, now precise and LOUD:** one query reply must fit
+one SDU packet (8 KB default, negotiable). Narrow rows stream freely
+at any prefetch; a page of wide rows that exceeds the SDU fails with
+`BufferUnderflow` — an ERROR, never silent truncation, which is the
+property that matters. THE CONNECTOR'S OBLIGATION (design, not hope):
+size every page from the DESCRIBED column widths so a page can never
+exceed the SDU — wide tables get small pages, narrow tables get large
+ones — and expose the SDU as config for operators who raise it
+server-side. Wide-row streaming at high throughput is the recorded
+motivation for the resumable-parser work, whoever takes it.
+
 ## STATUS
 
 - Branch created; research committed (R1-R3); this plan written;
