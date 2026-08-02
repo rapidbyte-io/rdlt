@@ -1,4 +1,5 @@
 pub mod common;
+pub mod s3;
 mod test_conformance;
 mod test_document;
 mod test_exactly_once;
@@ -8,3 +9,4 @@ mod test_partitioning;
 mod test_preservation;
 mod test_replace;
 mod test_resume;
+mod test_s3;
