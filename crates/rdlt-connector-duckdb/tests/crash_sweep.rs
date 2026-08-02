@@ -23,7 +23,7 @@ use std::sync::Arc;
 use arrow_array::{ArrayRef, BooleanArray, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use async_trait::async_trait;
-use rdlt_connector_duckdb_v2::destination::{self, Config, FAIL_POINTS};
+use rdlt_connector_duckdb::destination::{self, Config, FAIL_POINTS};
 use rdlt_connector_sdk::config::Document as _;
 use rdlt_connector_sdk::spi::core::failpoint::fail;
 use rdlt_connector_sdk::spi::{

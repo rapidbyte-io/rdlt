@@ -392,7 +392,7 @@ destination:
         );
         assert_eq!(
             *merge_strategy,
-            Some(rdlt::connector::duckdb::dest::MergeStrategy::Upsert)
+            Some(rdlt::connector::duckdb::destination::MergeStrategy::Upsert)
         );
         let events = tables.as_ref().expect("tables")["events"].clone();
         assert_eq!(events.hard_delete.as_deref(), Some("deleted"));

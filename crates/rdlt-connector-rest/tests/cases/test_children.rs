@@ -2,7 +2,7 @@
 //! example connector — engine-driven (the real wiring, not just the source).
 
 use super::common::read_err;
-use rdlt_connector_duckdb::dest::DuckDb;
+use rdlt_connector_duckdb::destination as duck;
 use rdlt_connector_rest::source::Shell;
 use rdlt_connector_sdk::config::Document;
 use rdlt_connector_sdk::spi::SourceError;
@@ -70,7 +70,8 @@ async fn parent_child_reads_through_the_engine() {
     let server = nested_api().await;
     let source = Shell::from_yaml(&nested_yaml(&server.uri())).expect("config");
     let dir = tempfile::tempdir().unwrap();
-    let dest = DuckDb::open(dir.path().join("nested.duckdb")).unwrap();
+    let dest_config = duck::Config::new(dir.path().join("nested.duckdb"));
+    let dest = duck::Shell::new(dest_config.clone()).unwrap();
     let mut config = EngineConfig::new("nested");
     config = config.with_workdir(dir.path().join("work"));
     Engine::new(config, source, dest.clone())
@@ -78,21 +79,30 @@ async fn parent_child_reads_through_the_engine() {
         .await
         .expect("run");
 
-    assert_eq!(dest.count_rows("repos").unwrap(), 2);
     assert_eq!(
-        dest.count_rows("issues").unwrap(),
+        duck::testhook::count_rows(&dest_config, "repos").unwrap(),
+        2
+    );
+    assert_eq!(
+        duck::testhook::count_rows(&dest_config, "issues").unwrap(),
         3,
         "2 + 1 across parents"
     );
     // Parent fields embedded.
     assert_eq!(
-        dest.query_string("SELECT _parent_name FROM issues WHERE id = 21")
-            .unwrap(),
+        duck::testhook::query_string(
+            &dest_config,
+            "SELECT _parent_name FROM issues WHERE id = 21"
+        )
+        .unwrap(),
         "two"
     );
     assert_eq!(
-        dest.query_string("SELECT count(*)::VARCHAR FROM issues WHERE _parent_stars = 5")
-            .unwrap(),
+        duck::testhook::query_string(
+            &dest_config,
+            "SELECT count(*)::VARCHAR FROM issues WHERE _parent_stars = 5"
+        )
+        .unwrap(),
         "2",
         "both issues of repo `one` carry its stars"
     );
@@ -239,15 +249,22 @@ async fn composed_example_runs_through_the_engine() {
     let server = nested_api().await;
     let source = composed_api::build(&server.uri()).expect("composed connector builds");
     let dir = tempfile::tempdir().unwrap();
-    let dest = DuckDb::open(dir.path().join("composed.duckdb")).unwrap();
+    let dest_config = duck::Config::new(dir.path().join("composed.duckdb"));
+    let dest = duck::Shell::new(dest_config.clone()).unwrap();
     let mut config = EngineConfig::new("composed");
     config = config.with_workdir(dir.path().join("work"));
     Engine::new(config, source, dest.clone())
         .run()
         .await
         .expect("run");
-    assert_eq!(dest.count_rows("repos").unwrap(), 2);
-    assert_eq!(dest.count_rows("issues").unwrap(), 3);
+    assert_eq!(
+        duck::testhook::count_rows(&dest_config, "repos").unwrap(),
+        2
+    );
+    assert_eq!(
+        duck::testhook::count_rows(&dest_config, "issues").unwrap(),
+        3
+    );
 }
 
 /// `max_concurrency` observably overlaps child sequences (R5): three

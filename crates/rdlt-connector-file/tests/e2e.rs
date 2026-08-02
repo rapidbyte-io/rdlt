@@ -5,6 +5,7 @@
 //! empty-selection-must-fail discipline caught it — so this binary's
 //! NAME is load-bearing.
 
+use rdlt_connector_duckdb::destination as duck;
 use rdlt_connector_file::source;
 use rdlt_engine::{Engine, EngineConfig};
 
@@ -36,8 +37,11 @@ async fn jsonl_to_duckdb_lands_exact_totals_and_resumes() {
     let db = out.path().join("e2e.duckdb");
     plant(input.path(), "data/a.jsonl", b"{\"id\": 1}\n{\"id\": 2}\n");
 
+    // Each run opens its own shell (the engine consumes it — dropped when
+    // run returns, so the sequential re-open is legal); the counts go
+    // through the config-keyed READ-ONLY testhook oracle.
     let run = |db: std::path::PathBuf, workdir: std::path::PathBuf, input: std::path::PathBuf| async move {
-        let dest = rdlt_connector_duckdb::dest::DuckDb::open(&db).expect("open");
+        let dest = duck::Shell::new(duck::Config::new(db)).expect("open");
         Engine::new(
             EngineConfig::new("file-e2e-duckdb").with_workdir(workdir.join("wal")),
             jsonl_source(&input, "data/*.jsonl"),
@@ -48,15 +52,15 @@ async fn jsonl_to_duckdb_lands_exact_totals_and_resumes() {
         .expect("the load settles");
     };
     run(db.clone(), workdir.path().into(), input.path().into()).await;
-    let dest = rdlt_connector_duckdb::dest::DuckDb::open(&db).expect("open");
-    assert_eq!(dest.count_rows("events").expect("count"), 2);
-    drop(dest);
+    assert_eq!(
+        duck::testhook::count_rows(&duck::Config::new(&db), "events").expect("count"),
+        2
+    );
 
     plant(input.path(), "data/b.jsonl", b"{\"id\": 3}\n");
     run(db.clone(), workdir.path().into(), input.path().into()).await;
-    let dest = rdlt_connector_duckdb::dest::DuckDb::open(&db).expect("open");
     assert_eq!(
-        dest.count_rows("events").expect("count"),
+        duck::testhook::count_rows(&duck::Config::new(&db), "events").expect("count"),
         3,
         "the second run read only the new file"
     );

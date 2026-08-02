@@ -8,8 +8,8 @@
 //! USING, validity columns without NOT NULL); a refactor that
 //! "harmonized" the two would break real databases.
 
-use rdlt_connector_duckdb_v2::destination::testhook::{ensure_merge_sql, ensure_table_sql};
-use rdlt_connector_duckdb_v2::destination::{DestinationOptions, MergeStrategy};
+use rdlt_connector_duckdb::destination::testhook::{ensure_merge_sql, ensure_table_sql};
+use rdlt_connector_duckdb::destination::{DestinationOptions, MergeStrategy};
 use rdlt_connector_sdk::spi::core::naming::ident_hash;
 use rdlt_connector_sdk::spi::core::{
     ColumnDef, ColumnType, LogicalType, Provenance, TableName, TableSchema, WriteMode,

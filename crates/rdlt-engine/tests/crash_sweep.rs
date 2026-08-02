@@ -183,7 +183,7 @@ async fn sweep_parquet_destination() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn sweep_duckdb_destination() {
-    let points = engine_and(rdlt_connector_duckdb::dest::FAIL_POINTS);
+    let points = engine_and(rdlt_connector_duckdb::destination::FAIL_POINTS);
     // Merge (feature 006 sweep extension): the shredded identity-merge
     // DELETE+INSERT arm crosses the same staging/publish boundaries.
     for mode in [
@@ -193,12 +193,24 @@ async fn sweep_duckdb_destination() {
             key: vec!["id".into()],
         },
     ] {
-        let expected_fired = [ENGINE_POINTS, rdlt_connector_duckdb::dest::FAIL_POINTS].concat();
+        let expected_fired = [
+            ENGINE_POINTS,
+            rdlt_connector_duckdb::destination::FAIL_POINTS,
+        ]
+        .concat();
+        // The second generation is the sdk Shell over the config; counting
+        // goes through the crate's own config-keyed READ-ONLY testhook,
+        // safe beside the live shell.
+        let config_for =
+            |dir: &Path| rdlt_connector_duckdb::destination::Config::new(dir.join("out.duckdb"));
         sweep(
             &points,
             mode,
-            |dir| rdlt_connector_duckdb::dest::DuckDb::open(dir.join("out.duckdb")).expect("open"),
-            |_dir, dest| dest.count_rows("s").expect("count"),
+            |dir| rdlt_connector_duckdb::destination::Shell::new(config_for(dir)).expect("open"),
+            |dir, _dest| {
+                rdlt_connector_duckdb::destination::testhook::count_rows(&config_for(dir), "s")
+                    .expect("count")
+            },
             &expected_fired,
         )
         .await;
@@ -224,7 +236,7 @@ fn sweep_covers_entire_registry() {
     // engine's test tree does not depend on the postgres stack.)
     let mut registry: Vec<&str> = rdlt_connector_file::destination::FAIL_POINTS
         .iter()
-        .chain(rdlt_connector_duckdb::dest::FAIL_POINTS)
+        .chain(rdlt_connector_duckdb::destination::FAIL_POINTS)
         .copied()
         .collect();
     registry.sort_unstable();
@@ -313,7 +325,7 @@ impl rdlt_connector::Source for KeyedArrowSource {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn sweep_duckdb_keyed_structured_merge() {
-    let points = engine_and(rdlt_connector_duckdb::dest::FAIL_POINTS);
+    let points = engine_and(rdlt_connector_duckdb::destination::FAIL_POINTS);
     let mode = WriteMode::Merge {
         key: vec!["id".into()],
     };
@@ -322,10 +334,14 @@ async fn sweep_duckdb_keyed_structured_merge() {
         for action in ["return", "panic", "1*off->return"] {
             let dir = tempfile::tempdir().expect("tempdir");
             let workdir = dir.path().join("wal");
-            let dest = rdlt_connector_duckdb::dest::DuckDb::open(dir.path().join("out.duckdb"))
+            // ONE shell held across attempts; clones share the instance
+            // (a second read-write open of the same file is refused).
+            let dest_config =
+                rdlt_connector_duckdb::destination::Config::new(dir.path().join("out.duckdb"));
+            let dest = rdlt_connector_duckdb::destination::Shell::new(dest_config.clone())
                 .expect("open duckdb");
             async fn run(
-                dest: rdlt_connector_duckdb::dest::DuckDb,
+                dest: rdlt_connector_duckdb::destination::Shell,
                 workdir: &Path,
                 mode: &WriteMode,
             ) -> Result<(), String> {
@@ -349,7 +365,8 @@ async fn sweep_duckdb_keyed_structured_merge() {
                 "[{point} / {action} / keyed] recovery failed: {recovered:?}"
             );
             assert_eq!(
-                dest.count_rows("s").expect("count"),
+                rdlt_connector_duckdb::destination::testhook::count_rows(&dest_config, "s")
+                    .expect("count"),
                 TOTAL_ROWS,
                 "[{point} / {action} / keyed] exactly-once violated"
             );

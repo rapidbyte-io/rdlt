@@ -4,7 +4,7 @@
 //! back through.
 
 use async_trait::async_trait;
-use rdlt_connector_duckdb::dest::DuckDb;
+use rdlt_connector_duckdb::destination::{Config, Shell, testhook};
 use rdlt_connector_postgres::source;
 use rdlt_testkit::TableProbe;
 use tokio_postgres::Client;
@@ -55,11 +55,43 @@ pub fn source(connection_string: &str, extra_yaml: &str) -> source::Shell {
 
 /// A DuckDB destination in a leaked tempdir — leaked deliberately: the file
 /// must outlive the test body so late engine writes never race teardown.
-pub fn duckdb_destination() -> DuckDb {
+/// Second generation: the engine drives the [`Shell`]; the oracles go
+/// through the crate's config-keyed READ-ONLY testhook, which is safe to
+/// call while the live shell holds the file.
+pub struct DuckDbDest {
+    shell: Shell,
+    config: Config,
+}
+
+impl DuckDbDest {
+    /// The engine-facing destination (clones share one instance).
+    pub fn shell(&self) -> Shell {
+        self.shell.clone()
+    }
+
+    /// Rows under `table`, via the read-only oracle.
+    pub fn count_rows(
+        &self,
+        table: &str,
+    ) -> Result<u64, rdlt_connector_sdk::spi::DestinationError> {
+        testhook::count_rows(&self.config, table)
+    }
+
+    /// First column of the first row as text, via the read-only oracle.
+    pub fn query_string(
+        &self,
+        sql: &str,
+    ) -> Result<String, rdlt_connector_sdk::spi::DestinationError> {
+        testhook::query_string(&self.config, sql)
+    }
+}
+
+pub fn duckdb_destination() -> DuckDbDest {
     let directory = tempfile::tempdir().expect("tempdir");
-    let destination = DuckDb::open(directory.path().join("out.duckdb")).expect("open db");
+    let config = Config::new(directory.path().join("out.duckdb"));
+    let shell = Shell::new(config.clone()).expect("open db");
     std::mem::forget(directory);
-    destination
+    DuckDbDest { shell, config }
 }
 
 /// The rowcount face the conformance harness reads a loaded table through:

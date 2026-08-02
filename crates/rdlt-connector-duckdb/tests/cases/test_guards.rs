@@ -148,7 +148,7 @@ async fn a_reordered_batch_is_refused_before_the_positional_append() {
 /// reopen exactly for the embedder shapes the registry protects).
 #[tokio::test]
 async fn the_open_claim_outlives_the_shell_while_a_session_lives() {
-    use rdlt_connector_duckdb_v2::destination::{Config, Shell};
+    use rdlt_connector_duckdb::destination::{Config, Shell};
     use rdlt_connector_sdk::spi::core::{LoadId, PipelineId, WriteMode};
     use rdlt_connector_sdk::spi::{Destination, OpenContext};
     use rdlt_testkit::schema_for;
@@ -255,7 +255,7 @@ async fn a_short_batch_is_refused_with_the_arity_message() {
 /// the refused open never becomes the truncating act.
 #[tokio::test]
 async fn a_refused_second_open_leaves_committed_data_intact() {
-    use rdlt_connector_duckdb_v2::destination::{self, Config, Shell};
+    use rdlt_connector_duckdb::destination::{self, Config, Shell};
     use rdlt_connector_sdk::spi::core::{LoadId, PipelineId, TableName, WriteMode};
     use rdlt_connector_sdk::spi::{Destination, OpenContext};
     use rdlt_testkit::{batch_of, commit_meta_for, schema_for};
@@ -307,7 +307,7 @@ async fn a_refused_second_open_leaves_committed_data_intact() {
 /// drops, the path opens again.
 #[tokio::test(flavor = "multi_thread")]
 async fn concurrent_connects_admit_exactly_one_holder() {
-    use rdlt_connector_duckdb_v2::destination::{Config, Shell};
+    use rdlt_connector_duckdb::destination::{Config, Shell};
 
     let dir = tempfile::tempdir().expect("dir");
     let path = dir.path().join("race.duckdb");

@@ -9,7 +9,7 @@
 //! collection of topics.
 
 use crate::cases::common;
-use rdlt_connector_duckdb::dest::DuckDb;
+use rdlt_connector_duckdb::destination as duck;
 use rdlt_connector_postgres::fixtures::PostgresContainer;
 use rdlt_connector_postgres::source;
 use rdlt_engine::{Engine, EngineConfig};
@@ -60,12 +60,12 @@ INSERT INTO type_matrix (i8, tstz, d) VALUES (3, 'infinity', '-infinity');
 async fn run_to_duckdb(
     postgres_source: source::Shell,
     pipeline: &str,
-) -> (DuckDb, rdlt_engine::RunReport) {
+) -> (common::DuckDbDest, rdlt_engine::RunReport) {
     let destination = common::duckdb_destination();
     let report = Engine::new(
         EngineConfig::new(pipeline),
         postgres_source,
-        destination.clone(),
+        destination.shell(),
     )
     .run()
     .await
@@ -218,7 +218,8 @@ async fn type_hints_end_to_end() {
         "tables:\n  - name: h\n    type_hints:\n      raw_ts: timestamp_tz\n",
     );
     let directory = tempfile::tempdir().expect("tempdir");
-    let destination = DuckDb::open(directory.path().join("out.duckdb")).expect("open db");
+    let destination =
+        duck::Shell::new(duck::Config::new(directory.path().join("out.duckdb"))).expect("open db");
     let error = Engine::new(
         EngineConfig::new("conf-hint-fail"),
         postgres_source,
@@ -464,7 +465,7 @@ async fn drift_column_added_dropped_retyped() {
     Engine::new(
         EngineConfig::new("drift-add"),
         postgres_source,
-        destination.clone(),
+        destination.shell(),
     )
     .run()
     .await
@@ -480,7 +481,7 @@ async fn drift_column_added_dropped_retyped() {
     Engine::new(
         EngineConfig::new("drift-add"),
         postgres_source,
-        destination.clone(),
+        destination.shell(),
     )
     .run()
     .await
@@ -505,7 +506,8 @@ async fn drift_column_added_dropped_retyped() {
     postgres_source.streams().await.expect("reflect");
     fixture.seed("ALTER TABLE d DROP COLUMN v;").await;
     let directory = tempfile::tempdir().expect("tempdir");
-    let destination = DuckDb::open(directory.path().join("out.duckdb")).expect("open db");
+    let destination =
+        duck::Shell::new(duck::Config::new(directory.path().join("out.duckdb"))).expect("open db");
     let error = Engine::new(
         EngineConfig::new("drift-drop"),
         postgres_source,
@@ -530,7 +532,8 @@ async fn drift_column_added_dropped_retyped() {
         .seed("ALTER TABLE d ALTER COLUMN n TYPE int8;")
         .await;
     let directory = tempfile::tempdir().expect("tempdir");
-    let destination = DuckDb::open(directory.path().join("out.duckdb")).expect("open db");
+    let destination =
+        duck::Shell::new(duck::Config::new(directory.path().join("out.duckdb"))).expect("open db");
     let error = Engine::new(
         EngineConfig::new("drift-retype"),
         postgres_source,
@@ -563,7 +566,8 @@ async fn drift_table_dropped_between_reflect_and_read() {
     fixture.seed("DROP TABLE doomed;").await;
 
     let directory = tempfile::tempdir().expect("tempdir");
-    let destination = DuckDb::open(directory.path().join("out.duckdb")).expect("open db");
+    let destination =
+        duck::Shell::new(duck::Config::new(directory.path().join("out.duckdb"))).expect("open db");
     let error = Engine::new(
         EngineConfig::new("conf-drift"),
         postgres_source,
@@ -649,7 +653,8 @@ async fn lossy_mappings_announce_once_per_read_on_dedicated_target() {
         )
         .await;
     let directory = tempfile::tempdir().expect("tempdir");
-    let destination = DuckDb::open(directory.path().join("out.duckdb")).expect("open db");
+    let destination =
+        duck::Shell::new(duck::Config::new(directory.path().join("out.duckdb"))).expect("open db");
     let postgres_source = source::Shell::from_yaml(&format!(
         "conn: \"{}\"\ntables:\n  - name: noisy\n  - name: clean\n",
         fixture.connection_string
@@ -765,9 +770,13 @@ async fn hint_matrix_covers_every_documented_pair() {
 
 async fn run_to_duckdb_err(postgres_source: source::Shell, pipeline: &str) -> String {
     let destination = common::duckdb_destination();
-    Engine::new(EngineConfig::new(pipeline), postgres_source, destination)
-        .run()
-        .await
-        .expect_err("run should fail")
-        .to_string()
+    Engine::new(
+        EngineConfig::new(pipeline),
+        postgres_source,
+        destination.shell(),
+    )
+    .run()
+    .await
+    .expect_err("run should fail")
+    .to_string()
 }

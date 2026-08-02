@@ -4260,28 +4260,6 @@ dependencies = [
  "async-trait",
  "bytes",
  "duckdb",
- "rdlt-connector",
- "rdlt-connector-postgres",
- "rdlt-connector-sqlcore",
- "rdlt-engine",
- "rdlt-testkit",
- "serde_json",
- "tempfile",
- "testcontainers-modules",
- "tokio",
- "tokio-postgres",
-]
-
-[[package]]
-name = "rdlt-connector-duckdb-v2"
-version = "0.3.0"
-dependencies = [
- "arrow",
- "arrow-array",
- "arrow-schema",
- "async-trait",
- "bytes",
- "duckdb",
  "jsonschema",
  "rdlt-connector-postgres",
  "rdlt-connector-sdk",

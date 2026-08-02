@@ -5,7 +5,6 @@
 //! with a reflected table.
 
 use crate::cases::common;
-use rdlt_connector_duckdb::dest::DuckDb;
 use rdlt_connector_postgres::fixtures::PostgresContainer;
 use rdlt_connector_postgres::source;
 use rdlt_connector_sdk::config::Document;
@@ -32,7 +31,7 @@ fn totals_yaml(cursor: bool) -> String {
 }
 
 struct Harness {
-    destination: DuckDb,
+    destination: common::DuckDbDest,
 }
 
 impl Harness {
@@ -46,7 +45,7 @@ impl Harness {
         Engine::new(
             EngineConfig::new(pipeline),
             postgres_source,
-            self.destination.clone(),
+            self.destination.shell(),
         )
         .run()
         .await

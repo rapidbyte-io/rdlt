@@ -1,6 +1,6 @@
 //! The document gate and a first live round-trip through the Shell.
 
-use rdlt_connector_duckdb_v2::destination::{self, Config, Shell};
+use rdlt_connector_duckdb::destination::{self, Config, Shell};
 use rdlt_connector_sdk::config::Document;
 use rdlt_connector_sdk::spi::core::{LoadId, PipelineId, TableName, WriteMode};
 use rdlt_connector_sdk::spi::{Destination, OpenContext};

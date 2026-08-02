@@ -8,7 +8,7 @@
 
 use std::path::Path;
 
-use rdlt_connector_duckdb::dest::DuckDb;
+use rdlt_connector_duckdb::destination as duck;
 use rdlt_connector_rest::source::Shell;
 use rdlt_connector_sdk::spi::core::failpoint::fail;
 use rdlt_engine::{Engine, EngineConfig};
@@ -63,7 +63,7 @@ streams:
 
 async fn attempt(workdir: &Path, db: &Path, base: &str) -> Result<(), String> {
     let source = Shell::from_yaml(&yaml(base)).expect("config");
-    let dest = DuckDb::open(db).map_err(|e| e.to_string())?;
+    let dest = duck::Shell::new(duck::Config::new(db)).map_err(|e| e.to_string())?;
     let mut config = EngineConfig::new("rest-sweep");
     config = config.with_workdir(workdir.to_path_buf());
     let engine = Engine::new(config, source, dest);
@@ -100,9 +100,8 @@ async fn rest_read_path_survives_crash_sweep() {
                 recovered.is_ok(),
                 "[{point} / {action}] recovery failed: {recovered:?}"
             );
-            let dest = DuckDb::open(&db).unwrap();
             assert_eq!(
-                dest.count_rows("events").unwrap(),
+                duck::testhook::count_rows(&duck::Config::new(&db), "events").unwrap(),
                 TOTAL_ROWS,
                 "[{point} / {action}] exactly-once violated"
             );

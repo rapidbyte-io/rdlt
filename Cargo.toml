@@ -9,7 +9,6 @@ members = [
     "crates/rdlt-testkit",
     "crates/rdlt-connector-rest",
     "crates/rdlt-connector-duckdb",
-    "crates/rdlt-connector-duckdb-v2",
     "crates/rdlt-connector-file",
     "crates/rdlt-connector-iceberg",
     "crates/rdlt-connector-postgres",

@@ -4,7 +4,7 @@
 //! cross-run column drift.
 
 use async_trait::async_trait;
-use rdlt_connector_duckdb_v2::destination::{Config, Shell};
+use rdlt_connector_duckdb::destination::{Config, Shell};
 use rdlt_connector_sdk::spi::StreamSpec;
 use rdlt_connector_sdk::spi::core::{TableName, WriteMode};
 use rdlt_engine::{Engine, EngineConfig};

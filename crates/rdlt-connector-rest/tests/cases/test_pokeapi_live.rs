@@ -7,7 +7,7 @@
 //! pagination (`next` in the body), a records selector (`results`), and a
 //! parent-child detail stream (`/pokemon/{name}`).
 
-use rdlt_connector_duckdb::dest::DuckDb;
+use rdlt_connector_duckdb::destination as duck;
 use rdlt_connector_rest::source::Shell;
 use rdlt_engine::{Engine, EngineConfig};
 
@@ -45,7 +45,8 @@ streams:
 "#;
     let source = Shell::from_yaml(yaml).expect("config");
     let dir = tempfile::tempdir().unwrap();
-    let dest = DuckDb::open(dir.path().join("poke.duckdb")).unwrap();
+    let dest_config = duck::Config::new(dir.path().join("poke.duckdb"));
+    let dest = duck::Shell::new(dest_config.clone()).unwrap();
     let mut config = EngineConfig::new("pokeapi");
     config = config.with_workdir(dir.path().join("work"));
     Engine::new(config, source, dest.clone())
@@ -54,16 +55,17 @@ streams:
         .expect("live run");
 
     // STRUCTURAL asserts (counts drift with the Pokédex, structure doesn't).
-    let list = dest.count_rows("pokemon_list").unwrap();
+    let list = duck::testhook::count_rows(&dest_config, "pokemon_list").unwrap();
     assert!(list > 0 && list <= 20, "one bounded list page, got {list}");
-    let details = dest.count_rows("pokemon_detail").unwrap();
+    let details = duck::testhook::count_rows(&dest_config, "pokemon_detail").unwrap();
     assert!(
         details >= list,
         "every pokemon has ≥1 ability row ({details} < {list})"
     );
     // Parent resolution proven: the embedded parent name is set everywhere.
     assert_eq!(
-        dest.query_string(
+        duck::testhook::query_string(
+            &dest_config,
             "SELECT count(*)::VARCHAR FROM pokemon_detail WHERE _parent_name IS NULL"
         )
         .unwrap(),
@@ -91,13 +93,14 @@ streams:
 "#;
     let source = Shell::from_yaml(yaml).expect("config");
     let dir = tempfile::tempdir().unwrap();
-    let dest = DuckDb::open(dir.path().join("colors.duckdb")).unwrap();
+    let dest_config = duck::Config::new(dir.path().join("colors.duckdb"));
+    let dest = duck::Shell::new(dest_config.clone()).unwrap();
     let mut config = EngineConfig::new("poke-colors");
     config = config.with_workdir(dir.path().join("work"));
     Engine::new(config, source, dest.clone())
         .run()
         .await
         .expect("live run");
-    let n = dest.count_rows("colors").unwrap();
+    let n = duck::testhook::count_rows(&dest_config, "colors").unwrap();
     assert!(n > 8, "the full chain was walked (> 2 pages), got {n}");
 }

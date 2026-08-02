@@ -9,7 +9,7 @@
 //! parts together for the same reason.
 
 use crate::cases::common;
-use rdlt_connector_duckdb::dest::DuckDb;
+use rdlt_connector_duckdb::destination as duck;
 use rdlt_connector_postgres::fixtures::PostgresContainer;
 use rdlt_connector_postgres::source;
 use rdlt_engine::{Engine, EngineConfig};
@@ -30,7 +30,7 @@ fn ev_source(connection_string: &str, cursor_extra: &str) -> source::Shell {
 }
 
 struct Harness {
-    destination: DuckDb,
+    destination: common::DuckDbDest,
 }
 
 impl Harness {
@@ -44,7 +44,7 @@ impl Harness {
         let report = Engine::new(
             EngineConfig::new(pipeline),
             postgres_source,
-            self.destination.clone(),
+            self.destination.shell(),
         )
         .run()
         .await
@@ -404,7 +404,7 @@ async fn merge_by_declared_key_converges_and_keyless_is_rejected() {
         config
     };
     let run_merge = |postgres_source: source::Shell| {
-        let destination = harness.destination.clone();
+        let destination = harness.destination.shell();
         let config = merge_config("inc-merge");
         async move {
             Engine::new(config, postgres_source, destination)
@@ -459,7 +459,8 @@ async fn merge_by_declared_key_converges_and_keyless_is_rejected() {
     ))
     .expect("config");
     let directory = tempfile::tempdir().expect("tempdir");
-    let destination = DuckDb::open(directory.path().join("nokey.duckdb")).expect("open db");
+    let destination = duck::Shell::new(duck::Config::new(directory.path().join("nokey.duckdb")))
+        .expect("open db");
     let mut config = merge_config("inc-merge-nokey");
     config = config.with_write_mode(rdlt_connector_sdk::spi::core::WriteMode::Merge {
         key: vec!["x".into()],
@@ -492,7 +493,7 @@ async fn lag_captures_late_arrivals_with_exact_totals_under_merge() {
         .expect("config")
     };
     let run_merge = |postgres_source: source::Shell| {
-        let destination = harness.destination.clone();
+        let destination = harness.destination.shell();
         async move {
             let mut config = EngineConfig::new("inc-lag");
             config = config.with_write_mode(rdlt_connector_sdk::spi::core::WriteMode::Merge {
@@ -618,7 +619,7 @@ async fn null_cursor_error_policy_fails_typed_and_old_policies_unchanged() {
     let error = Engine::new(
         EngineConfig::new("inc-nulls-err"),
         with_nulls("error"),
-        harness.destination.clone(),
+        harness.destination.shell(),
     )
     .run()
     .await
@@ -642,7 +643,7 @@ async fn null_cursor_error_policy_fails_typed_and_old_policies_unchanged() {
         Engine::new(
             EngineConfig::new("inc-nulls-err"),
             with_nulls("error"),
-            harness.destination.clone()
+            harness.destination.shell()
         )
         .run()
         .await
@@ -675,7 +676,7 @@ async fn null_cursor_error_policy_fails_typed_and_old_policies_unchanged() {
         Engine::new(
             EngineConfig::new("inc-nulls-ex"),
             second_with_nulls("exclude"),
-            exclude_harness.destination.clone()
+            exclude_harness.destination.shell()
         )
         .run()
         .await
@@ -689,7 +690,7 @@ async fn null_cursor_error_policy_fails_typed_and_old_policies_unchanged() {
         Engine::new(
             EngineConfig::new("inc-nulls-in"),
             second_with_nulls("include"),
-            include_harness.destination.clone()
+            include_harness.destination.shell()
         )
         .run()
         .await
@@ -720,7 +721,7 @@ async fn inclusive_end_bound_loads_boundary_rows_exactly_once() {
         Engine::new(
             EngineConfig::new("inc-endx"),
             with_end_bound("exclusive"),
-            harness.destination.clone()
+            harness.destination.shell()
         )
         .run()
         .await
@@ -733,7 +734,7 @@ async fn inclusive_end_bound_loads_boundary_rows_exactly_once() {
     // Inclusive: boundary rows load; re-run stays stable (E2).
     let harness = Harness::new();
     let run = || {
-        let destination = harness.destination.clone();
+        let destination = harness.destination.shell();
         let postgres_source = with_end_bound("inclusive");
         async move {
             Engine::new(EngineConfig::new("inc-endi"), postgres_source, destination)
@@ -818,7 +819,7 @@ async fn magnitude_lag_for_integer_cursors() {
         config = config.with_write_mode(rdlt_connector_sdk::spi::WriteMode::Merge {
             key: vec!["id".into()],
         });
-        Engine::new(config, postgres_source, harness.destination.clone())
+        Engine::new(config, postgres_source, harness.destination.shell())
     };
     run(magnitude_source(&fixture.connection_string))
         .run()
@@ -863,7 +864,7 @@ async fn cursor_column_must_survive_selection() {
     .expect("config parses — the check needs reflection");
     let harness = Harness::new();
     let config = EngineConfig::new("inc-cursor-sel");
-    let error = Engine::new(config, postgres_source, harness.destination.clone())
+    let error = Engine::new(config, postgres_source, harness.destination.shell())
         .run()
         .await
         .expect_err("excluded cursor column must fail typed")
@@ -895,7 +896,7 @@ async fn batch_knobs_cut_batches_observably() {
             ))
             .expect("config");
             let config = EngineConfig::new("inc-knobs");
-            let report = Engine::new(config, postgres_source, harness.destination.clone())
+            let report = Engine::new(config, postgres_source, harness.destination.shell())
                 .run()
                 .await
                 .expect("run");

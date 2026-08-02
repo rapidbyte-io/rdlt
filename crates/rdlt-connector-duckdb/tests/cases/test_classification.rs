@@ -10,7 +10,7 @@
 //! instead of silently reclassifying production errors.
 
 use duckdb::Connection;
-use rdlt_connector_duckdb_v2::destination::{Config, ConfigError, MergeStrategy, Shell};
+use rdlt_connector_duckdb::destination::{Config, ConfigError, MergeStrategy, Shell};
 use rdlt_connector_sdk::spi::core::{
     ColumnDef, ColumnType, LoadId, LogicalType, PipelineId, Provenance, TableSchema, WriteMode,
 };

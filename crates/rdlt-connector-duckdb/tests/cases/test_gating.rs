@@ -4,7 +4,7 @@
 //! feature. One registry over one source tree — never "simplify" the
 //! union form away (the 024 rule).
 
-use rdlt_connector_duckdb_v2::destination::FAIL_POINTS;
+use rdlt_connector_duckdb::destination::FAIL_POINTS;
 
 #[test]
 fn the_registry_matches_the_sources() {

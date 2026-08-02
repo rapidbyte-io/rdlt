@@ -25,7 +25,6 @@ const EXPECTED_DIRECT_NAMES: &[(&str, usize)] = &[
     ("rdlt-connector-rest", 3),
     ("rdlt-connector-iceberg", 3),
     ("rdlt-connector-duckdb", 2),
-    ("rdlt-connector-duckdb-v2", 2),
     // Two `crash_point!` plus two `crash_at` — the crate that proves recognising
     // one arming spelling is not enough.
     ("rdlt-connector-snowflake", 4),

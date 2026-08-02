@@ -8,7 +8,7 @@
 
 #![cfg(feature = "failpoints")]
 
-use rdlt_connector_duckdb::dest::DuckDb;
+use rdlt_connector_duckdb::destination as duck;
 use rdlt_connector_postgres::fixtures::PostgresContainer;
 use rdlt_connector_postgres::source;
 use rdlt_connector_sdk::spi::core::failpoint::fail;
@@ -34,18 +34,21 @@ fn source(connection_string: &str) -> source::Shell {
 }
 
 struct Rig {
-    destination: DuckDb,
+    destination: duck::Shell,
+    config: duck::Config,
     workdir: std::path::PathBuf,
 }
 
 impl Rig {
     fn new() -> Self {
         let directory = tempfile::tempdir().expect("tempdir");
-        let destination = DuckDb::open(directory.path().join("out.duckdb")).expect("open db");
+        let config = duck::Config::new(directory.path().join("out.duckdb"));
+        let destination = duck::Shell::new(config.clone()).expect("open db");
         let workdir = directory.path().join("wal");
         std::mem::forget(directory);
         Self {
             destination,
+            config,
             workdir,
         }
     }
@@ -75,7 +78,7 @@ impl Rig {
     }
 
     fn count(&self) -> u64 {
-        self.destination.count_rows("ev").unwrap_or(0)
+        duck::testhook::count_rows(&self.config, "ev").unwrap_or(0)
     }
 }
 
@@ -217,10 +220,12 @@ async fn container_kill_mid_read_is_typed_and_preserves_commits() {
     // Deterministic kill point: wait until AT LEAST ONE commit landed, so
     // the prefix-integrity assertion below is unconditional — a fixed sleep
     // raced the first commit and could green-wash the test.
-    let watched = rig.destination.clone();
+    // The oracle is CONFIG-keyed and read-only — safe to poll while the
+    // live shell (held by the running engine) owns the file.
+    let watched = rig.config.clone();
     let killer = tokio::spawn(async move {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        while watched.count_rows("ev").unwrap_or(0) == 0 {
+        while duck::testhook::count_rows(&watched, "ev").unwrap_or(0) == 0 {
             assert!(
                 std::time::Instant::now() < deadline,
                 "no commit observed within 60s — cannot kill deterministically"
@@ -243,9 +248,8 @@ async fn container_kill_mid_read_is_typed_and_preserves_commits() {
     // prefix — max(id) == count(*) under the ordered incremental read.
     let count = rig.count();
     assert!(count > 0, "kill protocol guarantees a committed prefix");
-    let max_id = rig
-        .destination
-        .query_string("SELECT CAST(max(id) AS VARCHAR) FROM ev")
-        .expect("max id");
+    let max_id =
+        duck::testhook::query_string(&rig.config, "SELECT CAST(max(id) AS VARCHAR) FROM ev")
+            .expect("max id");
     assert_eq!(max_id, count.to_string(), "committed prefix is contiguous");
 }

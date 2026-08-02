@@ -248,13 +248,14 @@ async fn container_kill_mid_catch_up_is_typed_and_preserves_commits() {
     let connection_string = container.connection_string.clone();
 
     let directory = tempfile::tempdir().expect("tempdir");
+    let dest_config =
+        rdlt_connector_duckdb::destination::Config::new(directory.path().join("out.duckdb"));
     let destination =
-        rdlt_connector_duckdb::dest::DuckDb::open(directory.path().join("out.duckdb"))
-            .expect("open db");
+        rdlt_connector_duckdb::destination::Shell::new(dest_config.clone()).expect("open db");
     let workdir = directory.path().join("wal");
     std::mem::forget(directory);
     let run = |source_connection: String,
-               destination: rdlt_connector_duckdb::dest::DuckDb,
+               destination: rdlt_connector_duckdb::destination::Shell,
                workdir: std::path::PathBuf| async move {
         let config = EngineConfig::new("cdc-kill")
             .with_workdir(workdir)
@@ -295,11 +296,16 @@ async fn container_kill_mid_catch_up_is_typed_and_preserves_commits() {
     }
 
     // Deterministic kill: wait until at least one catch-up commit landed.
-    let watched = destination.clone();
-    let baseline = watched.count_rows("ev").unwrap_or(0);
+    // The oracle is CONFIG-keyed and read-only — safe to poll while the
+    // live shell (held by the running engine) owns the file.
+    let watched = dest_config.clone();
+    let baseline =
+        rdlt_connector_duckdb::destination::testhook::count_rows(&watched, "ev").unwrap_or(0);
     let killer = tokio::spawn(async move {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
-        while watched.count_rows("ev").unwrap_or(0) <= baseline {
+        while rdlt_connector_duckdb::destination::testhook::count_rows(&watched, "ev").unwrap_or(0)
+            <= baseline
+        {
             assert!(
                 std::time::Instant::now() < deadline,
                 "no catch-up commit observed within 120s — cannot kill deterministically"
@@ -317,14 +323,17 @@ async fn container_kill_mid_catch_up_is_typed_and_preserves_commits() {
         "typed error names the source: {error}"
     );
     // Committed work survives: a prefix of whole transactions, no dupes.
-    let count = destination.count_rows("ev").unwrap_or(0);
+    let count =
+        rdlt_connector_duckdb::destination::testhook::count_rows(&dest_config, "ev").unwrap_or(0);
     assert!(
         count > baseline,
         "kill protocol guarantees a committed prefix"
     );
-    let distinct = destination
-        .query_string("SELECT CAST(count(DISTINCT id) AS VARCHAR) FROM ev")
-        .expect("distinct");
+    let distinct = rdlt_connector_duckdb::destination::testhook::query_string(
+        &dest_config,
+        "SELECT CAST(count(DISTINCT id) AS VARCHAR) FROM ev",
+    )
+    .expect("distinct");
     assert_eq!(distinct, count.to_string(), "no double-applied rows");
 }
 

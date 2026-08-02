@@ -21,7 +21,7 @@ use std::sync::Arc;
 use arrow_array::{ArrayRef, BooleanArray, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use async_trait::async_trait;
-use rdlt_connector_duckdb_v2::destination::{self, Config, DestinationOptions};
+use rdlt_connector_duckdb::destination::{self, Config, DestinationOptions};
 use rdlt_connector_postgres::destination::Postgres;
 use rdlt_connector_postgres::fixtures::PostgresContainer;
 use rdlt_connector_sdk::config::Document as _;

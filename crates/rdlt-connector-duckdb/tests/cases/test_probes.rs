@@ -6,7 +6,7 @@
 //! passthrough through the V2 surface (Config → Shell → testhook).
 
 use duckdb::Connection;
-use rdlt_connector_duckdb_v2::destination::{self, Config, Shell};
+use rdlt_connector_duckdb::destination::{self, Config, Shell};
 use rdlt_connector_sdk::config::Document;
 use rdlt_connector_sdk::spi::core::{LoadId, PipelineId, TableName, WriteMode};
 use rdlt_connector_sdk::spi::{Destination, OpenContext};

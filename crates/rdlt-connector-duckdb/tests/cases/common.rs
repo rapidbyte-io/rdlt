@@ -7,7 +7,7 @@ use std::sync::Arc;
 use arrow_array::{ArrayRef, BooleanArray, Int64Array, StringArray};
 use arrow_schema::{Field, Schema};
 use async_trait::async_trait;
-use rdlt_connector_duckdb_v2::destination::{self, Config, Shell};
+use rdlt_connector_duckdb::destination::{self, Config, Shell};
 use rdlt_connector_sdk::spi::{
     ConnectorSpec, Cursor, ReadRequest, RecordBatch, Source, SourceError, StreamSpec, WriteMode,
 };

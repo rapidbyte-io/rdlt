@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use arrow::array::{Int64Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
-use rdlt_connector_duckdb_v2::destination::{self, Config, Shell};
+use rdlt_connector_duckdb::destination::{self, Config, Shell};
 use rdlt_connector_sdk::spi::core::{
     ColumnDef, ColumnType, LoadId, LogicalType, PipelineId, Provenance, TableName, TableSchema,
     WriteMode,

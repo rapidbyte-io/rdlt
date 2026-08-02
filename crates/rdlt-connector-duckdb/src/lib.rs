@@ -1,7 +1,10 @@
-//! # rdlt-connector-duckdb — DuckDB connector
+//! The DuckDB destination, second generation — Arrow-native ingestion
+//! with struct-preserving lowering, TEMP-table staging, and one
+//! atomic transaction per commit that persists state with the data,
+//! born on the rdlt connector sdk.
 //!
-//! Currently destination-only; the module layout mirrors the connector-family
-//! convention (`rdlt-connector-postgres`): the destination lives in [`dest`],
-//! and this root stays a thin façade so a future source slots in beside it.
+//! Everything merge-shaped (strategies, dedup, scopes, scd2) is the
+//! shared sqlcore vocabulary, executed here through the dialect seam.
+//! A future source slots in beside the destination.
 
-pub mod dest;
+pub mod destination;

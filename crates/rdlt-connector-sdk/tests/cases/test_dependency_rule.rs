@@ -32,7 +32,7 @@ const ADOPTED: &[(&str, &[&str])] = &[
     ("rdlt-connector-iceberg", &["rdlt-connector-sdk"]),
     ("rdlt-connector-file", &["rdlt-connector-sdk"]),
     (
-        "rdlt-connector-duckdb-v2",
+        "rdlt-connector-duckdb",
         &["rdlt-connector-sdk", "rdlt-connector-sqlcore"],
     ),
 ];

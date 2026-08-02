@@ -138,10 +138,10 @@ pub enum DestSpec {
         memory_limit: Option<String>,
         /// The SAME destination-options vocabulary as postgres — shared
         /// sqlcore types, one YAML shape.
-        merge_strategy: Option<crate::connector::duckdb::dest::MergeStrategy>,
+        merge_strategy: Option<crate::connector::duckdb::destination::MergeStrategy>,
         /// Per-table option overrides, keyed by table name.
         tables: Option<
-            std::collections::BTreeMap<String, crate::connector::duckdb::dest::TableOptions>,
+            std::collections::BTreeMap<String, crate::connector::duckdb::destination::TableOptions>,
         >,
         /// dlt-parity passthrough: extensions to LOAD and `SET` settings.
         extensions: Option<Vec<String>>,
@@ -396,32 +396,17 @@ fn build_with<S: rdlt_connector::Source>(
             extensions,
             settings,
         } => {
-            let mut dest = crate::connector::duckdb::dest::DuckDb::open(path)
+            // The spec's fields ARE the connector document's fields;
+            // Shell::new runs the one validation gate and opens the
+            // database (settings/extensions applied eagerly).
+            let mut config = crate::connector::duckdb::destination::Config::new(path);
+            config.memory_limit = memory_limit.clone();
+            config.merge_strategy = *merge_strategy;
+            config.tables = tables.clone();
+            config.extensions = extensions.clone();
+            config.settings = settings.clone();
+            let dest = crate::connector::duckdb::destination::Shell::new(config)
                 .map_err(|e| SpecError::resolve(format!("opening duckdb: {e}")))?;
-            for ext in extensions.iter().flatten() {
-                dest = dest
-                    .extension(ext)
-                    .map_err(|e| SpecError::resolve(e.to_string()))?;
-            }
-            for (key, value) in settings.iter().flatten() {
-                dest = dest
-                    .setting(key, value)
-                    .map_err(|e| SpecError::resolve(e.to_string()))?;
-            }
-            if let Some(limit) = memory_limit {
-                dest = dest
-                    .memory_limit(limit)
-                    .map_err(|e| SpecError::resolve(format!("duckdb memory_limit: {e}")))?;
-            }
-            if merge_strategy.is_some() || tables.is_some() {
-                let options = crate::connector::duckdb::dest::DestinationOptions {
-                    merge_strategy: *merge_strategy,
-                    tables: tables.clone().unwrap_or_default(),
-                };
-                dest = dest
-                    .options(options)
-                    .map_err(|e| SpecError::resolve(format!("destination options: {e}")))?;
-            }
             Ok(builder.destination(dest).build()?)
         }
         #[cfg(feature = "postgres-dest")]

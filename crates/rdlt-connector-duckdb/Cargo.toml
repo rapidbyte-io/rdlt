@@ -4,37 +4,43 @@ description = "rdlt DuckDB destination: Arrow ingestion, struct-native lowering,
 keywords = ["elt", "duckdb", "arrow", "olap", "sql"]
 categories = ["database"]
 documentation = "https://docs.rs/rdlt-connector-duckdb"
-readme = "README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+failpoints = ["rdlt-connector-sdk/failpoints"]
+
 [dependencies]
-rdlt-connector = { workspace = true }
+# The sdk plus the TWO recorded exceptions: sqlcore (the shared merge
+# core, as postgres/snowflake) and duckdb itself (the workspace arrow
+# major is coupled to it).
+rdlt-connector-sdk = { workspace = true, features = ["schema"] }
 rdlt-connector-sqlcore = { workspace = true }
 async-trait = { workspace = true }
 duckdb = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
+arrow = { workspace = true }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
-# The 013 cross-destination differential oracle (tests/differential.rs)
-rdlt-connector-postgres = { workspace = true, default-features = false, features = ["destination", "fixtures"] }
-tokio-postgres = { workspace = true }
-testcontainers-modules = { workspace = true }
-rdlt-testkit = { workspace = true }
-rdlt-engine = { workspace = true }
-tempfile = { workspace = true }
 bytes = { workspace = true }
-arrow = { workspace = true }
-tokio = { workspace = true }
+duckdb = { workspace = true }
+jsonschema = { workspace = true }
+rdlt-connector-postgres = { workspace = true, default-features = false, features = ["destination", "fixtures"] }
+rdlt-engine = { workspace = true }
+rdlt-testkit = { workspace = true }
+tempfile = { workspace = true }
+testcontainers-modules = { workspace = true }
+tokio-postgres = { workspace = true }
 
 [lints]
 workspace = true
-
-[features]
-failpoints = ["rdlt-connector/failpoints"]
