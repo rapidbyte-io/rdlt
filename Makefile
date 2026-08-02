@@ -122,6 +122,8 @@ else ifeq ($(TARGET),sweep)
 	cargo nextest run -p rdlt-connector-rest --features failpoints -E 'binary(sweep)'
 	cargo nextest run -p rdlt-connector-file --features failpoints -E 'binary(crash_sweep)'
 	cargo nextest run -p rdlt-connector-iceberg --features failpoints -E 'binary(crash_sweep)'
+	# Oracle self-skips without a container runtime; ~15 s fixture boot.
+	cargo nextest run -p rdlt-connector-oracle --features failpoints -E 'binary(crash_sweep)'
 else ifeq ($(TARGET),prop)
 	# `binary(...)`, not `test(...)`: shred_property is the BINARY; the test
 	# inside it is shred_invariants_hold. A test-name filter matched nothing
