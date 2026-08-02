@@ -114,10 +114,29 @@ scanner locates ENGINE_POINTS by shape — coordinate, don't move).
 ## STATUS
 
 - Branch created; contract inventory committed; this plan written.
-- NEXT: build in the 029 rhythm (incremental commits, offline tests
-  green at each step): location/ + format vocabulary → source half →
-  destination half → connectors/Shells → fresh suite (local-FS cells
-  anywhere, RUSTFS cells skip-not-fail, both conformance kits, weld
-  consts honored, sweep wired beside gen 1) → review rounds to
-  terminus → gates twice clean (baseline 1024; counts predicted and
-  verified; volume-count check in the gate prep per the 029 lesson).
+- BUILD COMPLETE (both halves + Shells + ParquetDir + registries +
+  testhook + the sdk ADOPTED entry) — incremental commits, offline
+  tests green at every step; clippy clean including --all-targets.
+- SUITE COMPLETE under the house layout: 91 offline tests + the
+  failpoints crash_sweep binary (11 points × 3 actions: 2 source + 6
+  pq.* local, 3 file.* against RUSTFS skip-not-fail), wired into
+  `make test TARGET=sweep` beside generation 1. BOTH sdk conformance
+  kits certify the Shells on the local filesystem. The WELD PROOFS
+  carried verbatim; RUSTFS live cells 4/4; registry pin ungated + the
+  gated twin.
+- TWO DEFECTS THE SUITE CAUGHT IN THE FRESH CODE, both fixed + pinned:
+  (1) four cursor-planner refusals had been PARAPHRASED — the weld
+  proof failed on the frozen spellings (shrink, both same-size
+  rewrites, unterminated growth, whole-file size change; now the
+  inventory's exact text). (2) THE PART-INDEX DEFECT (S3 sweep,
+  file.finalize.delete / 1*off->return, measured 6 rows where 4 were
+  loaded): the fresh Backend counted part indices per SESSION; a
+  crash-recovery session resumes from committed state, stages fewer
+  parts, and re-publishes the pending commit under different indices,
+  orphaning the crashed attempt's already-copied finals. The index is
+  per COMMIT (the pending-staged count per (table, partition)) — the
+  inventory's "already-staged parts" means exactly this.
+- NEXT: review rounds to terminus (the 14-item docket; headliner =
+  duplicate stream names, 029's corruption analogue) → gates twice
+  clean (baseline 1024; counts predicted and verified; volume-count
+  check in the gate prep per the 029 lesson).
