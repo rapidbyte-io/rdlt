@@ -139,6 +139,17 @@ as 028 executed it.
   FAIL_POINTS, testhook). 37/37 offline unit tests; clippy clean both
   feature shapes; sdk test_dependency_rule carries
   ("rdlt-connector-iceberg-v2", &["rdlt-connector-sdk"]).
-- NEXT: the fresh integration suite (Polaris+RUSTFS container legs,
-  conformance kit via Shell, pyiceberg read-back, sweep binary), then
-  the review loop and gates (baseline 1011 + this crate's tests).
+- OFFLINE SUITE IN (7d672e71): document corpus vs schema (two gates
+  cannot drift), Shell family through the gate, secrets grep-proof,
+  UNGATED registry check (the 028 lesson), live-group membership pin;
+  the nextest iceberg-live group extended over the v2 package. 43/43.
+- RECORDED TOOL-REUSE DECISION: tests/fixtures/polaris_bootstrap.py is
+  carried as-is from generation 1 — it is a stdlib PROTOCOL tool
+  (SigV4 PUT-bucket + management-API create-catalog + grants), shared
+  identically by both generations like tools/interop, not crate code;
+  re-deriving hand-rolled SigV4 buys risk and nothing else. One copy
+  remains at swap-in.
+- NEXT: the container fixture in cases/common.rs (plain-podman
+  host-network Polaris+RUSTFS, PID-derived ports, skip-not-fail), the
+  live cells per the census, the sweep body, Makefile coexistence
+  lines; then the review loop and gates (baseline 1011).
