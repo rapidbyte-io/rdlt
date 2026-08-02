@@ -204,6 +204,19 @@ prefix allowance was dead-permissive (the appender demands exact
 arity — probed), so the guard is exact-arity with a typed refusal.
 TERMINUS.
 
-- NEXT: gates twice clean (baseline 1024 + this crate's offline
-  tests; counts predicted and verified; hygiene by test image/label
-  only). Crate coexists unconsumed; swap = owner decision (D6).
+## GATE OF RECORD — TWICE CLEAN
+
+Both gates `env -u RUSTUP_TOOLCHAIN make check` on the terminus tree,
+FIRST ATTEMPT each, counts predicted and verified: 1092/1092 both
+runs (= 1024 post-030 baseline + this crate's 67 offline tests +
+sqlcore's new N1 pin), 0 skipped; the 24-cell crash sweep inside
+TARGET=sweep; semver: no update required; 6 benches 0 regressed;
+cold start 19.8/19.8 ms (bar <= 40). Hygiene between gates: test
+images/labels only (never the dev toolbox), volume prune, TIME_WAIT
+drain.
+
+STATUS: COMPLETE. The crate coexists unconsumed (publish = false);
+the swap — delete gen 1, rename, port the facade's DestSpec::Duckdb
+arm to destination::Config + Shell::new, re-point the engine sweep
+and file's e2e, collapse the Makefile line, rename the census row —
+is the owner's decision (D6).
