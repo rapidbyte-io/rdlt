@@ -4273,6 +4273,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "rdlt-connector-duckdb-v2"
+version = "0.3.0"
+dependencies = [
+ "arrow",
+ "arrow-array",
+ "arrow-schema",
+ "async-trait",
+ "bytes",
+ "duckdb",
+ "jsonschema",
+ "rdlt-connector-postgres",
+ "rdlt-connector-sdk",
+ "rdlt-connector-sqlcore",
+ "rdlt-engine",
+ "rdlt-testkit",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "testcontainers-modules",
+ "thiserror",
+ "tokio",
+ "tokio-postgres",
+]
+
+[[package]]
 name = "rdlt-connector-file"
 version = "0.3.0"
 dependencies = [

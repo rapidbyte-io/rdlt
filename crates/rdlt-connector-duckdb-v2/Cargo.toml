@@ -1,0 +1,45 @@
+[package]
+name = "rdlt-connector-duckdb-v2"
+description = "rdlt DuckDB destination, second generation: Arrow ingestion, struct-native lowering, staged atomic commits, born on the connector sdk"
+# Coexists UNCONSUMED beside generation 1 until the owner-decided swap;
+# never published under this name.
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+failpoints = ["rdlt-connector-sdk/failpoints"]
+
+[dependencies]
+# The sdk plus the TWO recorded exceptions: sqlcore (the shared merge
+# core, as postgres/snowflake) and duckdb itself (the workspace arrow
+# major is coupled to it).
+rdlt-connector-sdk = { workspace = true, features = ["schema"] }
+rdlt-connector-sqlcore = { workspace = true }
+async-trait = { workspace = true }
+duckdb = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+arrow = { workspace = true }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+bytes = { workspace = true }
+jsonschema = { workspace = true }
+rdlt-connector-postgres = { workspace = true, default-features = false, features = ["destination", "fixtures"] }
+rdlt-engine = { workspace = true }
+rdlt-testkit = { workspace = true }
+tempfile = { workspace = true }
+testcontainers-modules = { workspace = true }
+tokio-postgres = { workspace = true }
+
+[lints]
+workspace = true
