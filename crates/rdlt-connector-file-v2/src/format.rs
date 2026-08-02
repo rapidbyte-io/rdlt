@@ -26,6 +26,12 @@ pub(crate) enum Codec {
     Zstd,
 }
 
+impl Codec {
+    pub(crate) fn is_plain(self) -> bool {
+        self == Codec::Plain
+    }
+}
+
 /// The per-file rule: `.gz` is gzip, `.zst` is zstd, anything else is
 /// plain bytes.
 pub(crate) fn codec_of(path: &str) -> Codec {
