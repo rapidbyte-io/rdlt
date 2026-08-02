@@ -236,10 +236,12 @@ skipped; the 24-cell crash sweep inside TARGET=sweep; semver: no
 update required; 6 benches 0 regressed; cold start 19.8/19.8 ms (bar
 <= 40). Hygiene between gates: test images/labels only (never the dev
 toolbox), volume prune, TIME_WAIT drain. Post-/code-review gates on
-the terminus tree: recorded below at the predicted 1097 (+4 round-3
-pins, +1 config-conflict pin).
+the terminus tree, FIRST ATTEMPT each, at the PREDICTED 1097/1097
+both runs (= 1092 + the 4 round-3 pins + the config-conflict pin), 0
+skipped; semver clean; 0 regressed; cold 19.3/18.8 ms.
 
-STATUS: COMPLETE. The crate coexists unconsumed (publish = false);
+STATUS: COMPLETE through the /code-review terminus. The crate
+coexists unconsumed (publish = false);
 the swap — delete gen 1, rename, port the facade's DestSpec::Duckdb
 arm to destination::Config + Shell::new, re-point the engine sweep
 and file's e2e, collapse the Makefile line, rename the census row —
