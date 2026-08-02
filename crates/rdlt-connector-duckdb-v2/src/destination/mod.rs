@@ -3,6 +3,7 @@
 mod client;
 mod config;
 mod dialect;
+mod load;
 mod schema;
 
 pub use config::{Config, ConfigError, config_schema};
