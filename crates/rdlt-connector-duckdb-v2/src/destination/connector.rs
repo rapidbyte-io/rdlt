@@ -77,22 +77,32 @@ impl DestinationConnector for DuckDb {
 /// Seams the tests and cross-crate oracles need. Not a public API.
 #[doc(hidden)]
 pub mod testhook {
+    use rdlt_connector_sdk::destination::DestinationConnector as _;
     use rdlt_connector_sdk::spi::DestinationError;
     use rdlt_connector_sdk::spi::core::{TableSchema, WriteMode};
 
+    use super::super::config::Config;
     use super::super::schema;
     use super::DuckDb;
 
+    fn instance(config: &Config) -> Result<DuckDb, DestinationError> {
+        // SEQUENTIAL re-open on the same file is the documented-safe
+        // pattern (a concurrent second instance is not); the oracles
+        // run after the session under test committed.
+        DuckDb::assemble(config.clone()).map_err(|e| DestinationError::fatal(e.to_string()))
+    }
+
     /// Rows under the (quoted) table name — the conformance and sweep
     /// oracle. Counts EVERYTHING including scd2 history.
-    pub fn count_rows(dest: &DuckDb, table: &str) -> Result<u64, DestinationError> {
-        dest.db
+    pub fn count_rows(config: &Config, table: &str) -> Result<u64, DestinationError> {
+        instance(config)?
+            .db
             .query_count(&format!("SELECT count(*) FROM {}", schema::quote(table)))
     }
 
     /// First column of the first row, as text — the probe seam.
-    pub fn query_string(dest: &DuckDb, sql: &str) -> Result<String, DestinationError> {
-        dest.db.query_string(sql)
+    pub fn query_string(config: &Config, sql: &str) -> Result<String, DestinationError> {
+        instance(config)?.db.query_string(sql)
     }
 
     /// The phase-1 ensure DDL as data — the golden-pin seam.
