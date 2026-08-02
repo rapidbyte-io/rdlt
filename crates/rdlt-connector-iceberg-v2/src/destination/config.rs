@@ -301,15 +301,13 @@ impl Config {
             }
             _ => {}
         }
-        if let Some(oauth) = &self.catalog.auth.oauth2_client_credentials {
-            if let Some(url) = &oauth.token_url {
-                if !is_http_url(url) {
-                    return invalid(format!(
-                        "catalog.auth.oauth2_client_credentials.token_url `{url}` must be an \
-                         http(s) URL"
-                    ));
-                }
-            }
+        if let Some(oauth) = &self.catalog.auth.oauth2_client_credentials
+            && let Some(url) = &oauth.token_url
+            && !is_http_url(url)
+        {
+            return invalid(format!(
+                "catalog.auth.oauth2_client_credentials.token_url `{url}` must be an http(s) URL"
+            ));
         }
         if self.namespace.is_empty() || self.namespace.split('.').any(str::is_empty) {
             return invalid(format!(
@@ -317,15 +315,15 @@ impl Config {
                 self.namespace
             ));
         }
-        if let Some(storage) = &self.storage {
-            if storage.s3.is_none() {
-                return invalid("`storage` block declares no kind (expected `s3`)".into());
-            }
+        if let Some(storage) = &self.storage
+            && storage.s3.is_none()
+        {
+            return invalid("`storage` block declares no kind (expected `s3`)".into());
         }
-        if let Some(parquet) = &self.parquet {
-            if let Err(e) = parquet.validate() {
-                return invalid(e.to_string());
-            }
+        if let Some(parquet) = &self.parquet
+            && let Err(e) = parquet.validate()
+        {
+            return invalid(e.to_string());
         }
         for (stream, table) in &self.tables {
             if table.name.as_deref() == Some("") {

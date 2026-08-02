@@ -97,13 +97,6 @@ pub(super) fn to_iceberg_schema(schema: &TableSchema) -> Result<Schema, Destinat
         .map_err(|e| fatal(format!("table `{table}`: building iceberg schema: {e}")))
 }
 
-/// A wanted column's type, standalone — the reconcile path maps one
-/// absent column at a time for its ADD COLUMN.
-pub(super) fn column_type(table: &str, column: &ColumnDef) -> Result<Type, DestinationError> {
-    // IDs here are throwaway: UpdateSchema assigns fresh library IDs.
-    build_field(table, column, &mut 1).map(|field| (*field.field_type).clone())
-}
-
 /// How a wanted column can disagree with the live table — each is a
 /// typed refusal, because contradictory drift is never applied.
 pub(super) enum Drift {

@@ -29,6 +29,7 @@ const ADOPTED: &[(&str, &[&str])] = &[
         "rdlt-connector-snowflake",
         &["rdlt-connector-sdk", "rdlt-connector-sqlcore"],
     ),
+    ("rdlt-connector-iceberg-v2", &["rdlt-connector-sdk"]),
 ];
 
 /// The rdlt crates named in a manifest's `[dependencies]` section (table

@@ -17,7 +17,7 @@ use iceberg::writer::file_writer::location_generator::{
 use iceberg::writer::file_writer::rolling_writer::RollingFileWriterBuilder;
 use iceberg::writer::partitioning::PartitioningWriter as _;
 use iceberg::writer::partitioning::fanout_writer::FanoutWriter;
-use iceberg::writer::{IcebergWriter as _, IcebergWriterBuilder as _};
+use iceberg::writer::{IcebergWriter, IcebergWriterBuilder as _};
 use parquet::basic::{BrotliLevel, Compression, GzipLevel, ZstdLevel};
 use parquet::file::properties::WriterProperties;
 use rdlt_connector_sdk::spi::core::crash_point;
@@ -31,7 +31,7 @@ type StagedWriterBuilder =
 
 /// One table's writer for the current window.
 pub(super) enum Writer {
-    Plain(Box<dyn iceberg::writer::IcebergWriter>),
+    Plain(Box<dyn IcebergWriter>),
     Fanout(Box<Fanout>),
 }
 

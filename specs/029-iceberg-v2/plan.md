@@ -123,7 +123,22 @@ as 028 executed it.
 ## STATUS
 
 - Branch created; contract inventory committed; this plan written.
-- NEXT: build src/ modules (config → client → schema/partition →
-  commit/state/write → load → connector), then the fresh test suite,
-  then the review loop and gates (counts predicted from the post-028
-  baseline 1011).
+- SRC COMPLETE (2026-08-02): all nine modules written fresh — config
+  (the frozen vocabulary + 12 refusal spellings), client (the library
+  boundary: classification with the status-anchor rule, catalog_props
+  as the one credential-audit function), schema (closed type map,
+  depth-first ids, id-ignoring drift), partition (spec building + the
+  fixed-at-creation check), commit (identity keys, the ONE 4-attempt
+  retry, fast-append with per-attempt replay re-check), state (the
+  _rdlt_state marker protocol), write (plain/fanout writers + the
+  parquet-properties seam, defaults COMPRESS), load (the Backend:
+  align/window/reinstall choreography; existing_receipt deliberately
+  None — the RECORDED D7 mapping decision: receipts are per-table
+  snapshot properties, publish converges from partial state, no
+  load-level receipt store exists), connector (capabilities, connect,
+  FAIL_POINTS, testhook). 37/37 offline unit tests; clippy clean both
+  feature shapes; sdk test_dependency_rule carries
+  ("rdlt-connector-iceberg-v2", &["rdlt-connector-sdk"]).
+- NEXT: the fresh integration suite (Polaris+RUSTFS container legs,
+  conformance kit via Shell, pyiceberg read-back, sweep binary), then
+  the review loop and gates (baseline 1011 + this crate's tests).
