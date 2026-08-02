@@ -6,7 +6,7 @@
 max-threads = 3
 
 [[profile.default.overrides]]
-filter = "package(rdlt-connector-iceberg) and not binary(config_schema)"
+filter = "(package(rdlt-connector-iceberg) and not binary(config_schema)) or package(rdlt-connector-iceberg-v2)"
 test-group = "iceberg-live"
 
 # The flake-recording profile (feature 020 US8).
