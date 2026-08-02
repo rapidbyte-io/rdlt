@@ -476,3 +476,42 @@ RECORDED, NOT CHANGED:
 - README title says `rdlt-connector-snowflake`: deliberate pre-swap
   naming — 025/026 renamed the crate at swap-in with zero doc edits;
   the title is written for the name the crate will carry.
+
+
+## REVIEW ROUND 5 (verification lens on round 4, 2026-08-02) — CLEAN, TERMINUS
+
+Every attack on the round-4 changes verified SOUND: the durable-record
+values round-trip exactly (literal escaping correct, case folding
+touches identifiers only, case-insensitive column resolution);
+`clear_target`'s two callers both guarantee an open unit, so DELETE +
+record commit or roll back together; no path can make two durable
+copies of one (load, table) record, and the seed's set absorbs even a
+hypothetical one; the subtle corner — replay PROMOTES marks whose own
+durable INSERTs rolled back — holds by induction: a receipt for the
+replayed unit proves some prior incarnation durably recorded the clear
+(directly, or through its own seed, recursing on strictly earlier
+incarnations), so memory and table cannot diverge and no recovery
+session re-clears committed rows; a seed-read failure fails connect
+BARE, the safe direction; publish's direct path provably never plans a
+ClearTarget, so the record-less step loop cannot miss a record; the
+Boolean count arm is unreachable from any numeric caller; extend-only
+catalog recording masks nothing a re-read would have caught (server-
+side drops were equally invisible before — identical exposure);
+transient_rule and put_sql are extraction-identical; none of the new
+tests is vacuous (the promotion pin drives real publish machinery; the
+absent-retire cell fails if retirement does nothing); both Makefile
+filtersets are valid and necessary. Two observations recorded, neither
+a defect: the consistency argument rests on the engine's single-writer
+session model (concurrent sessions for one load break the receipt
+protocol generally; generation-1 parity), and open_unit's taken-owed
+set dropping on a mid-loop failure is safe because the fresh session
+re-derives clears from its seed (rounds 1-3 machinery, already
+verified).
+
+THE LOOP'S SHAPE: rounds 1-2-4 found (and fixed, each with pins), 3
+and 5 verified clean — round 5 is the terminus. Five inherited
+generation-1 defects were found and CLOSED by this review loop that no
+gate had ever seen: the mid-unit ensure panic/auto-commit, the
+first-write-only COPY column list, the memory-only Replace clear
+guard, the Boolean-unreadable full-feed probe, and the stage leg's
+absent catalog image.
