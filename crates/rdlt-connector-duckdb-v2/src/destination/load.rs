@@ -30,8 +30,11 @@ use super::client::{Db, classify, is_constraint_violation};
 use super::dialect::DuckDialect;
 use super::schema::{merge_ddl, quote, stage_name, table_ddl};
 
-/// The meta tables, ensured at open. BYTE-FROZEN: this DDL is a
-/// persisted format shared with every database generation 1 wrote.
+/// The meta tables, ensured at open. The SCHEMAS are the persisted
+/// format — column-identical with every database generation 1 wrote
+/// (gen 1's literal differed only in insignificant whitespace); the
+/// names here are the same tables sqlcore's STATE_TABLE/COMMITS_TABLE
+/// constants spell in every query. Forward-frozen from here.
 const META_DDL: &str = "CREATE TABLE IF NOT EXISTS _rdlt_state (pipeline VARCHAR PRIMARY KEY, doc VARCHAR);\nCREATE TABLE IF NOT EXISTS _rdlt_commits (\n    load_id VARCHAR, commit_seq BIGINT, PRIMARY KEY (load_id, commit_seq));";
 
 /// The session state.
@@ -49,7 +52,8 @@ pub struct Load {
     /// The schema each table LAST ensured this session — what makes
     /// the widen a within-run rule.
     previous: BTreeMap<TableName, TableSchema>,
-    /// Scoped tables whose single commit unit has run.
+    /// FULL-FEED tables (merge_scope-scoped, or scd2 absent:retire)
+    /// whose single commit unit has run.
     single_unit_done: BTreeSet<TableName>,
 }
 
@@ -285,10 +289,17 @@ impl Backend for Load {
         schema: &TableSchema,
         mode: &WriteMode,
     ) -> Result<(), DestinationError> {
-        // Within a session, re-ensure may only ADD columns — the
-        // engine's evolution contract is append-only. A re-ensure that
-        // DROPS a previously ensured column is therefore not
-        // evolution; refuse before any DDL runs (031 review S1).
+        // Within a session, re-ensure may only APPEND columns — the
+        // engine's evolution contract is append-only, and the physical
+        // TEMP stage's column order is fixed at creation (a reorder
+        // emits NO DDL, only no-op ADD COLUMN IF NOT EXISTS). So the
+        // previously ensured columns must reappear as a PREFIX in the
+        // same order: a drop is not evolution, and a REORDER would
+        // desynchronize `previous` from the physical order the
+        // positional append is verified against — the write guard
+        // would then bless batches that land values in the wrong
+        // columns (031 review S1, and the /code-review round's reorder
+        // trace). Refuse both before any DDL runs.
         if let Some(previous) = self.previous.get(&schema.table) {
             let dropped: Vec<&str> = previous
                 .columns
@@ -304,6 +315,20 @@ impl Backend for Load {
                     schema.table,
                     dropped.join(", ")
                 )));
+            }
+            for (i, was) in previous.columns.iter().enumerate() {
+                let now = schema.columns.get(i).map(|c| c.name.as_str());
+                if now != Some(was.name.as_str()) {
+                    return Err(DestinationError::fatal(format!(
+                        "table `{}`: re-ensure reorders previously ensured columns \
+                         (position {i} was `{}`, now `{}`) — the stage is positional \
+                         and its physical order is fixed at creation; engine evolution \
+                         only appends",
+                        schema.table,
+                        was.name,
+                        now.unwrap_or("nothing"),
+                    )));
+                }
             }
         }
         for sql in table_ddl(schema, self.previous.get(&schema.table)) {

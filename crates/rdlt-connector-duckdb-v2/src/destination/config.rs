@@ -61,6 +61,15 @@ impl Document for Config {
         // 1's, frozen. Values are escaped at connect ('' doubling).
         for key in self.settings.iter().flat_map(|s| s.keys()) {
             check_bare_identifier("setting", "keys", key).or_else(invalid)?;
+            // Both spellings are user-supplied SETs and the later one
+            // would silently win — refuse the ambiguity instead.
+            if key == "memory_limit" && self.memory_limit.is_some() {
+                return invalid(
+                    "`settings.memory_limit` conflicts with the `memory_limit` field — \
+                     set one, not both"
+                        .into(),
+                );
+            }
         }
         for name in self.extensions.iter().flatten() {
             check_bare_identifier("extension", "names", name).or_else(invalid)?;

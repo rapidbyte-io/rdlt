@@ -177,3 +177,152 @@ async fn the_open_claim_outlives_the_shell_while_a_session_lives() {
     drop(session);
     Shell::new(Config::new(&path)).expect("released with the last session");
 }
+
+/// The reorder half of the append-only rule: a re-ensure with the
+/// SAME columns in a DIFFERENT order is refused — the physical stage
+/// keeps creation order and a reorder emits no DDL, so accepting it
+/// would let the positional write guard bless value-swapping batches
+/// (the /code-review round's trace).
+#[tokio::test]
+async fn a_re_ensure_that_reorders_columns_is_refused() {
+    let dir = tempfile::tempdir().expect("dir");
+    let file = dir.path().join("reorder-ensure.duckdb");
+    let dest = dest_with(&file, json!({}));
+    let mut session = dest
+        .open(OpenContext::new(
+            PipelineId::new("reorder"),
+            LoadId::new("load-1"),
+        ))
+        .await
+        .expect("open");
+    session
+        .ensure_table(
+            &table_of("t", &[("a", LogicalType::Int64), ("b", LogicalType::Utf8)]),
+            &WriteMode::Append,
+        )
+        .await
+        .expect("first ensure");
+    let err = session
+        .ensure_table(
+            &table_of("t", &[("b", LogicalType::Utf8), ("a", LogicalType::Int64)]),
+            &WriteMode::Append,
+        )
+        .await
+        .expect_err("reorder refused")
+        .to_string();
+    assert!(
+        err.contains("re-ensure reorders previously ensured columns")
+            && err.contains("position 0 was `a`, now `b`"),
+        "{err}"
+    );
+}
+
+/// The exact-arity branch of the positional guard, pinned: a batch
+/// with FEWER columns than the ensured schema refuses typed, not with
+/// the raw appender error.
+#[tokio::test]
+async fn a_short_batch_is_refused_with_the_arity_message() {
+    let dir = tempfile::tempdir().expect("dir");
+    let file = dir.path().join("arity.duckdb");
+    let dest = dest_with(&file, json!({}));
+    let mut session = dest
+        .open(OpenContext::new(
+            PipelineId::new("arity"),
+            LoadId::new("load-1"),
+        ))
+        .await
+        .expect("open");
+    session
+        .ensure_table(
+            &table_of("t", &[("a", LogicalType::Int64), ("b", LogicalType::Utf8)]),
+            &WriteMode::Append,
+        )
+        .await
+        .expect("ensure");
+    let err = session
+        .write(&TableName::new("t"), unit(&[("a", ints(&[Some(1)]))]))
+        .await
+        .expect_err("short batch refused")
+        .to_string();
+    assert!(
+        err.contains("carries 1 columns but the ensured schema has 2"),
+        "{err}"
+    );
+}
+
+/// The refusal of a second open must leave the FIRST instance's
+/// committed data untouched — the registry's whole purpose is that
+/// the refused open never becomes the truncating act.
+#[tokio::test]
+async fn a_refused_second_open_leaves_committed_data_intact() {
+    use rdlt_connector_duckdb_v2::destination::{self, Config, Shell};
+    use rdlt_connector_sdk::spi::core::{LoadId, PipelineId, TableName, WriteMode};
+    use rdlt_connector_sdk::spi::{Destination, OpenContext};
+    use rdlt_testkit::{batch_of, commit_meta_for, schema_for};
+
+    let dir = tempfile::tempdir().expect("dir");
+    let path = dir.path().join("survivor.duckdb");
+    let shell = Shell::new(Config::new(&path)).expect("valid");
+    let pipeline = PipelineId::new("survivor");
+    let load = LoadId::new("load-1");
+    let mut session = shell
+        .open(OpenContext::new(pipeline.clone(), load.clone()))
+        .await
+        .expect("open");
+    session
+        .ensure_table(&schema_for("rows"), &WriteMode::Append)
+        .await
+        .expect("ensure");
+    session
+        .write(&TableName::new("rows"), batch_of(&[1, 2, 3]))
+        .await
+        .expect("write");
+    session
+        .commit(commit_meta_for(&pipeline, &load, 1))
+        .await
+        .expect("commit");
+
+    Shell::new(Config::new(&path)).expect_err("second open refused");
+
+    // The live instance keeps working AND the committed rows survive.
+    session
+        .write(&TableName::new("rows"), batch_of(&[4]))
+        .await
+        .expect("the live session still writes");
+    session
+        .commit(commit_meta_for(&pipeline, &load, 2))
+        .await
+        .expect("and still commits");
+    drop(session);
+    drop(shell);
+    assert_eq!(
+        destination::testhook::count_rows(&Config::new(&path), "rows").expect("count"),
+        4,
+        "nothing was truncated by the refused open"
+    );
+}
+
+/// Concurrency smoke for the serialized connect: many simultaneous
+/// connects on one path yield exactly ONE holder; after every handle
+/// drops, the path opens again.
+#[tokio::test(flavor = "multi_thread")]
+async fn concurrent_connects_admit_exactly_one_holder() {
+    use rdlt_connector_duckdb_v2::destination::{Config, Shell};
+
+    let dir = tempfile::tempdir().expect("dir");
+    let path = dir.path().join("race.duckdb");
+    let mut handles = Vec::new();
+    for _ in 0..8 {
+        let path = path.clone();
+        handles.push(std::thread::spawn(move || {
+            Shell::new(Config::new(&path)).is_ok()
+        }));
+    }
+    let admitted = handles
+        .into_iter()
+        .map(|h| h.join().expect("no panic"))
+        .filter(|ok| *ok)
+        .count();
+    assert_eq!(admitted, 1, "exactly one connect wins the claim");
+    Shell::new(Config::new(&path)).expect("released after all drops");
+}

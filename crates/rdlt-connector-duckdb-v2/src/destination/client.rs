@@ -107,37 +107,45 @@ impl Db {
         settings: impl IntoIterator<Item = (String, String)>,
         extensions: impl IntoIterator<Item = String>,
     ) -> Result<Self, DestinationError> {
-        // Refuse BEFORE the library open where the hazard is already
-        // knowable: the second read-write `Connection::open` is itself
-        // the WAL-truncating act, so a refusal after it would arrive
-        // with the damage done. The file may not exist yet (first ever
-        // open), in which case nobody can hold it and the check waits
-        // for the definitive claim below.
-        if let Ok(canonical) = path.canonicalize()
-            && open_paths()
-                .lock()
-                .is_ok_and(|open| open.contains(&canonical))
-        {
-            return Err(double_open_refusal(path));
-        }
-        // A locked or I/O-pressured file is the environment's problem,
-        // not the pipeline's: transient, so the engine retries.
-        let conn = Connection::open(path).map_err(classify)?;
-        // Canonicalize AFTER the open — the open creates the file, and
-        // only the canonical spelling makes two documents naming one
-        // file through different paths collide in the registry.
-        let canonical = path.canonicalize().map_err(|e| {
-            DestinationError::fatal(format!("cannot canonicalize `{}`: {e}", path.display()))
-        })?;
+        // The WHOLE check-open-claim sequence holds the registry lock:
+        // the second read-write `Connection::open` is itself the
+        // WAL-truncating act, so the refusal must come before it —
+        // and without the lock held ACROSS the open, a second connect
+        // could pass the check, sleep, and open long after the first
+        // claimed and committed (the TOCTOU the 031 /code-review round
+        // traced). Opens are rare and take milliseconds; serializing
+        // them is free. `Claim::drop` takes this same lock, but no
+        // claim is ever dropped while `connect` holds it.
         let claim = {
             let mut open = open_paths()
                 .lock()
                 .map_err(|_| DestinationError::fatal("open-path registry poisoned"))?;
+            // The file may not exist yet (first ever open) — then
+            // nobody can hold it and the pre-check is moot; the
+            // post-open canonicalize below is the definitive spelling.
+            if let Ok(canonical) = path.canonicalize()
+                && open.contains(&canonical)
+            {
+                return Err(double_open_refusal(path));
+            }
+            // Transient here reaches the engine's retry budget only
+            // through the SESSION path; through `assemble` it survives
+            // as rendered text in the ConfigError (pinned) — either
+            // way a locked or I/O-pressured file is the environment's
+            // problem, not a config defect to rewrite.
+            let conn = Connection::open(path).map_err(classify)?;
+            // Canonicalize AFTER the open — the open creates the file,
+            // and only the canonical spelling makes two documents
+            // naming one file through different paths collide.
+            let canonical = path.canonicalize().map_err(|e| {
+                DestinationError::fatal(format!("cannot canonicalize `{}`: {e}", path.display()))
+            })?;
             if !open.insert(canonical.clone()) {
                 return Err(double_open_refusal(path));
             }
-            Arc::new(Claim(canonical))
+            (conn, Arc::new(Claim(canonical)))
         };
+        let (conn, claim) = claim;
         // Settings are recorded (and applied) BEFORE extensions
         // deliberately: probed benign for bundled builds, and it keeps
         // limits like memory_limit in force before any LOAD runs.
