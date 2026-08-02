@@ -76,9 +76,8 @@ impl Db {
             setup.push(Setup::Extension { name });
         }
         for statement in &setup {
-            conn.execute_batch(&statement.render()).map_err(|e| {
-                DestinationError::fatal(format!("{}: {e}", statement.describe()))
-            })?;
+            conn.execute_batch(&statement.render())
+                .map_err(|e| DestinationError::fatal(format!("{}: {e}", statement.describe())))?;
         }
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
@@ -96,9 +95,8 @@ impl Db {
             .try_clone()
             .map_err(classify)?;
         for statement in self.setup.iter() {
-            conn.execute_batch(&statement.render()).map_err(|e| {
-                DestinationError::fatal(format!("{}: {e}", statement.describe()))
-            })?;
+            conn.execute_batch(&statement.render())
+                .map_err(|e| DestinationError::fatal(format!("{}: {e}", statement.describe())))?;
         }
         Ok(conn)
     }
