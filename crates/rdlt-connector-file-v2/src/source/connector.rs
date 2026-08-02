@@ -150,10 +150,10 @@ async fn resolve_inputs(
         fetched_dir: None,
     };
     match (location, stream.format) {
-        (Location::Local, Format::Jsonl | Format::Csv) => {
+        (Location::Local { .. }, Format::Jsonl | Format::Csv) => {
             Ok(plain(list::local_listing(&stream.path)?))
         }
-        (Location::Local, Format::Parquet) => Ok(plain(
+        (Location::Local { .. }, Format::Parquet) => Ok(plain(
             read::parquet::local_listing_with_row_groups(&stream.path)?,
         )),
         (Location::S3(_), Format::Jsonl | Format::Csv) => {

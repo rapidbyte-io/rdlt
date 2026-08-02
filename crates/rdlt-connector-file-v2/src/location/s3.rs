@@ -35,6 +35,8 @@ pub(crate) struct S3Location {
     store: object_store::aws::AmazonS3,
     endpoint: String,
     bucket: String,
+    /// The write half's key prefix; empty on the read half.
+    prefix: String,
 }
 
 impl S3Location {
@@ -43,6 +45,7 @@ impl S3Location {
             store: build_store(options).map_err(SourceError::fatal)?,
             endpoint: options.endpoint.clone(),
             bucket: options.bucket.clone(),
+            prefix: String::new(),
         })
     }
 
@@ -220,5 +223,131 @@ mod tests {
     #[test]
     fn a_valid_store_builds() {
         build_store(&S3Options::new("http://127.0.0.1:9000", "b", "ak", "sk")).expect("builds");
+    }
+}
+
+// ---- the write half --------------------------------------------------------
+
+/// Classify an object-store failure for the destination: the ONE
+/// shared recoverability rule decides severity.
+pub(crate) fn store_err(e: object_store::Error) -> rdlt_connector_sdk::spi::DestinationError {
+    use rdlt_connector_sdk::spi::DestinationError;
+    if rdlt_connector_sdk::spi::store::is_recoverable(&e) {
+        DestinationError::transient(e.to_string())
+    } else {
+        DestinationError::fatal(e.to_string())
+    }
+}
+
+impl S3Location {
+    /// The write-half constructor: every tail hangs under `prefix`.
+    pub(crate) fn connect_for_dest(
+        options: &S3Options,
+        prefix: String,
+    ) -> Result<Self, rdlt_connector_sdk::spi::DestinationError> {
+        let mut location = Self::connect(options)
+            .map_err(|e| rdlt_connector_sdk::spi::DestinationError::fatal(e.to_string()))?;
+        location.prefix = prefix;
+        Ok(location)
+    }
+
+    /// A tail as a full object key under this location's prefix.
+    fn key(&self, tail: &str) -> object_store::path::Path {
+        let joined = if self.prefix.is_empty() {
+            tail.to_owned()
+        } else {
+            format!("{}/{tail}", self.prefix.trim_end_matches('/'))
+        };
+        object_store::path::Path::from(joined)
+    }
+
+    /// The full key of one file under `{table}/` addressed by tail.
+    pub(crate) fn key_of_table(&self, table: &str, tail: &str) -> object_store::path::Path {
+        self.key(&format!("{table}/{tail}"))
+    }
+
+    /// The table's root key (no trailing separator).
+    pub(crate) fn key_of_table_root(&self, table: &str) -> String {
+        self.key(table).to_string()
+    }
+
+    pub(crate) async fn put(
+        &self,
+        tail: &str,
+        bytes: Vec<u8>,
+    ) -> Result<(), rdlt_connector_sdk::spi::DestinationError> {
+        self.store
+            .put(&self.key(tail), bytes::Bytes::from(bytes).into())
+            .await
+            .map_err(store_err)?;
+        Ok(())
+    }
+
+    pub(crate) async fn copy(
+        &self,
+        from_tail: &str,
+        to_tail: &str,
+    ) -> Result<(), rdlt_connector_sdk::spi::DestinationError> {
+        self.store
+            .copy(&self.key(from_tail), &self.key(to_tail))
+            .await
+            .map_err(store_err)
+    }
+
+    /// Idempotent delete: a replayed finalize may find it gone, which
+    /// is success.
+    pub(crate) async fn delete_idempotent(
+        &self,
+        tail: &str,
+    ) -> Result<(), rdlt_connector_sdk::spi::DestinationError> {
+        match self.store.delete(&self.key(tail)).await {
+            Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
+            Err(e) => Err(store_err(e)),
+        }
+    }
+
+    /// Best-effort delete; the reclaim converges at the next open.
+    pub(crate) async fn delete_best_effort(&self, tail: &str) {
+        let _ = self.store.delete(&self.key(tail)).await;
+    }
+
+    /// Full keys under `tail` — server-side segment-scoped listing.
+    pub(crate) async fn list_keys(
+        &self,
+        tail: &str,
+    ) -> Result<Vec<object_store::path::Path>, rdlt_connector_sdk::spi::DestinationError> {
+        let mut listing = self.store.list(Some(&self.key(tail)));
+        let mut keys = Vec::new();
+        while let Some(entry) = listing.next().await {
+            keys.push(entry.map_err(store_err)?.location);
+        }
+        Ok(keys)
+    }
+
+    pub(crate) async fn delete_key(
+        &self,
+        key: &object_store::path::Path,
+    ) -> Result<(), rdlt_connector_sdk::spi::DestinationError> {
+        self.store.delete(key).await.map_err(store_err)
+    }
+
+    pub(crate) async fn get_key(
+        &self,
+        key: &object_store::path::Path,
+    ) -> Result<Vec<u8>, rdlt_connector_sdk::spi::DestinationError> {
+        let result = self.store.get(key).await.map_err(store_err)?;
+        Ok(result.bytes().await.map_err(store_err)?.to_vec())
+    }
+
+    /// One document's bytes; None when absent.
+    pub(crate) async fn read_doc(
+        &self,
+        name: &str,
+    ) -> Result<Option<Vec<u8>>, rdlt_connector_sdk::spi::DestinationError> {
+        match self.store.get(&self.key(name)).await {
+            Ok(result) => Ok(Some(result.bytes().await.map_err(store_err)?.to_vec())),
+            Err(object_store::Error::NotFound { .. }) => Ok(None),
+            Err(e) => Err(store_err(e)),
+        }
     }
 }

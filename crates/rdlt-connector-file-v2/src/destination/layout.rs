@@ -9,7 +9,7 @@ use rdlt_connector_sdk::spi::DestinationError;
 pub(super) const LAYOUT_FORMAT_VERSION: u32 = 1;
 
 /// The hidden staging prefix.
-pub(super) const STAGING_DIR: &str = ".rdlt-staging";
+pub(crate) const STAGING_DIR: &str = ".rdlt-staging";
 
 /// The per-pipeline scope: a 12-hex identity hash, never the raw name.
 pub(super) fn scope_of(pipeline: &str) -> String {
