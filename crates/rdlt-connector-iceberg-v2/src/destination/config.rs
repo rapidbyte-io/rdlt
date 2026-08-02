@@ -36,7 +36,10 @@ pub struct Config {
     /// path).
     #[serde(default)]
     pub storage: Option<StorageOptions>,
-    /// Per-stream table options, keyed by STREAM name.
+    /// Per-table options, keyed by the ENGINE'S NORMALIZED root-table
+    /// name — lower-cased, non-`[a-z0-9_]` mapped to `_` — not the raw
+    /// stream name (a stream `Order-Items` is keyed `order_items`).
+    /// The frozen generation-1 lookup semantics; pinned live.
     #[serde(default)]
     pub tables: BTreeMap<String, TableOptions>,
     /// Parquet writer tuning; the SPI defaults (snappy) apply when

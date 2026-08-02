@@ -197,3 +197,36 @@ async fn two_streams_sharing_one_table_are_refused() {
         "{err}"
     );
 }
+
+/// The `tables` map is keyed by the ENGINE'S NORMALIZED root-table
+/// name, not the raw stream name — the frozen generation-1 lookup
+/// semantics, pinned live: a stream named `Order-Items` reads its
+/// options under `order_items`.
+#[tokio::test]
+async fn table_options_key_on_the_normalized_name() {
+    let Some(fixture) = CatalogFixture::start().await else {
+        return;
+    };
+    let namespace = "normkey_v2";
+    let mut doc = fixture.doc(namespace);
+    doc["tables"] = json!({"order_items": {"name": "renamed_items"}});
+
+    let workdir = tempfile::tempdir().expect("workdir");
+    Engine::new(
+        EngineConfig::new("ice-normkey-v2").with_workdir(workdir.path().join("wal")),
+        MemorySource::new(vec![MemoryStream::new(
+            StreamSpec::new("Order-Items"),
+            vec![MemoryBatch::new(vec![json!({"id": 1})]).with_checkpoint(1)],
+        )]),
+        Shell::from_value(doc).expect("valid"),
+    )
+    .run()
+    .await
+    .expect("the load settles");
+
+    let metadata = fixture.table_metadata(namespace, "renamed_items").await;
+    assert!(
+        metadata["metadata"]["table-uuid"].is_string(),
+        "the options applied under the normalized key: {metadata}"
+    );
+}

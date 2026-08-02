@@ -651,4 +651,137 @@ mod tests {
     fn session_nonces_are_unique_within_a_process() {
         assert_ne!(session_nonce(), session_nonce());
     }
+
+    /// The contradictory-drift REFUSAL at its enforcement site: a
+    /// wanted type conflicting with the live table refuses with the
+    /// full frozen wording — deleting the reconcile check would let
+    /// align silently arrow-cast the mismatch, with every layer-below
+    /// pin still green (the round-2 lesson, one layer up).
+    #[tokio::test]
+    async fn reconcile_refuses_contradictory_drift_with_the_frozen_wording() {
+        use iceberg::spec::{NestedField, PrimitiveType, Type};
+
+        use super::super::testsupport::ConflictCatalog;
+
+        let catalog = ConflictCatalog::failing(0);
+        let arc: std::sync::Arc<dyn Catalog> = catalog.clone();
+        // The mock table carries `id: long` (required); wanting string
+        // is contradictory drift, never applied.
+        let wanted = iceberg::spec::Schema::builder()
+            .with_fields(vec![std::sync::Arc::new(NestedField::required(
+                1,
+                "id",
+                Type::Primitive(PrimitiveType::String),
+            ))])
+            .build()
+            .expect("schema");
+        let ident = TableIdent::new(iceberg::NamespaceIdent::new("ns".into()), "events".into());
+        let err = reconcile(&arc, &ident, &wanted, &[])
+            .await
+            .expect_err("contradictory drift refuses");
+        let text = format!("{err}");
+        assert!(
+            text.contains(
+                "column `id`: stream type string conflicts with the table\'s long — \
+                           contradictory drift is never applied"
+            ) || (text.contains("column `id`")
+                && text.contains("conflicts with the table\'s")
+                && text.contains("contradictory drift is never applied")),
+            "{text}"
+        );
+        assert_eq!(
+            catalog.commits.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "nothing may commit past the refusal"
+        );
+    }
+
+    /// The retirement choreography OFFLINE (the live mid-window cell
+    /// needs containers; a container-less gate must still catch a
+    /// regression here): an identical re-ensure keeps the writer, a
+    /// changed target retires it and PARKS its closed files, and the
+    /// window counter survives both.
+    #[tokio::test]
+    async fn a_schema_change_retires_the_writer_and_parks_its_files() {
+        use rdlt_connector_sdk::config::Document;
+
+        use super::super::testsupport::{ConflictCatalog, table_with_schema};
+        use super::super::write::writer_properties;
+
+        let table = {
+            use iceberg::spec::{NestedField, PrimitiveType, Schema, Type};
+            table_with_schema(
+                Schema::builder()
+                    .with_fields(vec![std::sync::Arc::new(NestedField::required(
+                        1,
+                        "id",
+                        Type::Primitive(PrimitiveType::Long),
+                    ))])
+                    .build()
+                    .expect("schema"),
+            )
+        };
+        let catalog = ConflictCatalog::failing(0);
+        let arc: std::sync::Arc<dyn Catalog> = catalog.clone();
+        let config = Config::from_value(serde_json::json!({
+            "catalog": {
+                "uri": "http://localhost:1/api/catalog",
+                "warehouse": "wh",
+                "auth": {"bearer": {"token": "t"}},
+            },
+            "namespace": "ns",
+        }))
+        .expect("valid");
+        let mut load = Load::new(
+            config,
+            arc,
+            iceberg::NamespaceIdent::new("ns".into()),
+            &PipelineId::from("p"),
+            LoadId::from("l"),
+            writer_properties(&Default::default()).expect("props"),
+        );
+        let stream = TableName::from("events");
+        let target = arrow_target("table `events`", &table).expect("target");
+        load.reinstall(&stream, "events", table.clone(), target.clone())
+            .await
+            .expect("install");
+
+        // One staged batch opens the window's writer.
+        let batch = RecordBatch::try_new(
+            target.clone(),
+            vec![std::sync::Arc::new(arrow_array::Int64Array::from(vec![
+                1, 2,
+            ]))],
+        )
+        .expect("batch");
+        load.write(&stream, batch).await.expect("write");
+        let seq_before = load.tables[&stream].window_seq;
+        assert!(load.tables[&stream].writer.is_some());
+
+        // Identical target: the writer survives the re-ensure.
+        load.reinstall(&stream, "events", table.clone(), target.clone())
+            .await
+            .expect("re-ensure");
+        assert!(
+            load.tables[&stream].writer.is_some(),
+            "an unchanged schema keeps the in-flight writer"
+        );
+
+        // A changed target retires it; the closed files are PARKED for
+        // the window's publish, and the counter survives.
+        let evolved = std::sync::Arc::new(arrow_schema::Schema::new(vec![
+            arrow_schema::Field::new("id", arrow_schema::DataType::Int64, false),
+            arrow_schema::Field::new("note", arrow_schema::DataType::Utf8, true),
+        ]));
+        load.reinstall(&stream, "events", table, evolved)
+            .await
+            .expect("evolving re-ensure");
+        let state = &load.tables[&stream];
+        assert!(state.writer.is_none(), "the writer was retired");
+        assert!(
+            !state.pending_files.is_empty(),
+            "the retired writer\'s files joined the window"
+        );
+        assert_eq!(state.window_seq, seq_before, "the counter survived");
+    }
 }

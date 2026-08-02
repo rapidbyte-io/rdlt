@@ -56,14 +56,16 @@ impl DestinationConnector for Iceberg {
     }
 
     async fn connect(&self, context: &OpenContext) -> Result<Load, DestinationError> {
+        // Resolved FIRST: the translation is pure and can fail (the
+        // parquet library rejects level ranges the config gate cannot
+        // see), and a refusal must not leave a freshly created
+        // namespace behind as its only trace.
+        let properties =
+            writer_properties(&self.config.parquet.clone().unwrap_or_default()).map_err(fatal)?;
         let catalog = client::connect(&self.config).await?;
         let namespace = NamespaceIdent::from_vec(self.config.namespace_levels())
             .map_err(|e| fatal(format!("namespace `{}`: {e}", self.config.namespace)))?;
         ensure_namespace(&catalog, &namespace, self.config.create_namespace).await?;
-        // Resolved once, here: the translation can fail, and a load
-        // should not discover that partway through writing.
-        let properties =
-            writer_properties(&self.config.parquet.clone().unwrap_or_default()).map_err(fatal)?;
         Ok(Load::new(
             self.config.clone(),
             catalog,

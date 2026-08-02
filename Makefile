@@ -122,8 +122,11 @@ else ifeq ($(TARGET),sweep)
 	cargo nextest run -p rdlt-connector-rest --features failpoints -E 'binary(sweep)'
 	cargo nextest run -p rdlt-connector-file --features failpoints -E 'binary(sweep)'
 	cargo nextest run -p rdlt-connector-iceberg --features failpoints -E 'binary(sweep)'
-	# The coexisting second generation sweeps the same three points; this
-	# line dies with the crate at swap-in (the rename binds the line above).
+	# The coexisting second generation sweeps the same three points. At
+	# swap-in this line dies AND the line above needs its filter edited to
+	# `binary(crash_sweep)` (the v2 binary name; an unedited `binary(sweep)`
+	# would select zero tests, which post-024 fails loudly rather than
+	# passing silently). The deep-tier line below has the same edit owed.
 	cargo nextest run -p rdlt-connector-iceberg-v2 --features failpoints -E 'binary(crash_sweep)'
 else ifeq ($(TARGET),prop)
 	# `binary(...)`, not `test(...)`: shred_property is the BINARY; the test

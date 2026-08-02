@@ -51,9 +51,13 @@ module: library types never cross the public surface (gen 1's rule,
 kept). sdk `test_dependency_rule` gains
 `("rdlt-connector-iceberg-v2", &["rdlt-connector-sdk"])`.
 
-**D2 — Typed ConfigError.** `Yaml(String)`/`Json(String)` variants via
-`From` impls rendering parser text BARE (the 028 pattern), plus typed
-validation variants rendering the inventory's 12 frozen spellings. The
+**D2 — Typed ConfigError.** `Yaml(#[from] serde_yaml::Error)` /
+`Json(#[from] serde_json::Error)` rendered with generation 1's FROZEN
+framing (`invalid iceberg destination YAML: {0}` etc.) — D3's frozen
+surface forecloses the 028 bare-text pattern here — plus the `Invalid`
+variant rendering the inventory's 12 frozen spellings. (Amended at
+round 3: the original prose described the 028 shape the freeze does
+not permit; the code was always as-built.) The
 partition-transform `singleton_map` spelling (`transform: day` vs
 `transform: {bucket: 16}`) is preserved through the sdk Document path
 (same serde_yaml machinery). `config_schema()` from the same structs.
@@ -99,9 +103,14 @@ pure-TOC mod.rs files (lib.rs = façade):
   history-checked data commits [`ice.commit`] → `ice.receipt.visible`
   → state property commit).
 - `connector.rs` — `Iceberg` (DestinationConnector), capabilities
-  (merge=false, structs/lists per gen-1 claims), connect = catalog
-  handshake + namespace ensure + marker-table ensure, FAIL_POINTS,
-  testhook.
+  (merge=false, structs/lists per gen-1 claims), connect = writer
+  properties (pure, FIRST — amended at round 3) + catalog handshake +
+  namespace ensure (the `_rdlt_state` marker table is created LAZILY
+  on first state write, gen-1 parity — the sketch originally said
+  connect ensures it; it never did), FAIL_POINTS, testhook.
+- `testsupport.rs` (cfg(test)) — the ConflictCatalog mock +
+  memory-FileIO table builders (added to this list at round 3; present
+  since the build).
 Naming per the seven rules: `destination::Config`, `destination::
 Iceberg`, `destination::Shell`; no crate-root re-export soup; booleans
 as assertions. Tests = `tests/integration.rs` + `cases/test_<noun>.rs`
@@ -115,6 +124,16 @@ assertions; the conformance kit runs via Shell against the Polaris+
 RUSTFS containers (skip-not-fail, `rdlt-test=1` labels); pyiceberg
 read-back leg kept; the 12 suspicious inventory items are the review
 loop's opening docket.
+
+**D7 — The receipt mapping (numbered at round 3; decided at build
+time and recorded in STATUS).** `existing_receipt` deliberately
+answers `None`: receipts are PER-TABLE snapshot properties, a
+partially published commit is exactly the state `publish` knows how to
+converge from (the per-table `already_committed` check against fresh
+metadata), and no load-level receipt store exists — answering `Some`
+would claim an atomicity the catalog does not offer. The sdk
+choreography tolerates this: `replay` is never invoked and `publish`
+carries the at-least-once burden its history scan discharges.
 
 **D6 — Coexistence.** `publish = false`, consumed by nothing; the swap
 (delete gen 1, rename, port facade `pipeline_spec` to
@@ -172,10 +191,18 @@ classify the oauth `operation: auth` context — decided at review, not
 mid-suite.
 
 
-## COVERAGE MAP (fresh suite vs the gen-1 census, 2026-08-02)
+## COVERAGE MAP (fresh suite vs the gen-1 census, 2026-08-02;
+REFRESHED at round 3 — the original snapshot predated the review
+rounds' cells)
 
-Crate totals: 58 default tests (37 unit + 21 integration) + 2
-failpoints-gated sweep tests. Census answers:
+Crate totals AT ROUND 3: 70 default tests (41 unit + 29 integration)
++ 2 failpoints-gated sweep tests. Rows added by the review rounds:
+test_evolution (mid-window retirement, cross-load ALTER, reserved
+name, closed namespace, shared-table refusal, normalized-key
+semantics), test_providers::open_failures, the exactly-once raw-state
+readback, test_quickstart (README drift pin), and the offline
+drift-refusal/retirement/backoff pins in src. Original census answers
+(counts as of the pre-review snapshot):
 - config_schema (9) → cases/test_document (schema-vs-parser corpus,
   unknown-field parity both gates, Shell family, secrets) +
   cases/test_gating (UNGATED registry check — the 028 lesson — and the
@@ -371,3 +398,62 @@ clean at the predicted count. The crate coexists UNCONSUMED as
 `rdlt-connector-iceberg-v2`; the swap (delete generation 1, rename,
 port the facade pipeline_spec to `destination::Config` + `Shell::new`)
 is the owner's decision, per the 028 precedent.
+
+
+## REVIEW ROUND 3 (four parallel lenses over the whole branch, 2026-08-02)
+
+Compliance: CLEAN (one-dependency rule, layout, naming, error
+taxonomy, rustdoc -D warnings run and passing) with two minor items.
+Fresh-eyes: no gate-breaking defect; every prompted attack cleared
+(writer failure paths, WAL-case publish convergence verified against
+the engine's recovery driver, readiness budgets start after the pull,
+guard drops on panic, filter grammar). Docs: no false behavior claims;
+six documentation-drift items. Test adequacy: one defect-grade vacuity
+plus cheap adjacent pins. ALL DISPOSED:
+
+FIXED, with pins:
+1. The `tables` map's doc claimed "keyed by STREAM name"; the truth
+   (gen-1 frozen semantics) is the ENGINE'S NORMALIZED root-table
+   name — a stream `Order-Items` reads its options under
+   `order_items`, and the old doc invited a silent config miss.
+   Doc corrected; pinned LIVE (`table_options_key_on_the_normalized_name`).
+2. The contradictory-drift refusal's ENFORCEMENT site was
+   test-invisible (the round-2 class one layer up: deleting reconcile's
+   check would silently arrow-cast the mismatch with every layer-below
+   pin green). Pinned offline against the mock catalog, including the
+   nothing-commits-past-the-refusal count.
+3. The writer-retirement choreography gained its OFFLINE pin (a
+   container-less gate previously never exercised it): identical
+   re-ensure keeps the writer, a changed target retires it and parks
+   its files, the window counter survives — driven against a real
+   memory-FileIO writer.
+4. Backoff was entirely untested (a deleted sleep passed 67 tests):
+   the delay computation split pure and pinned — doubling base, jitter
+   inside the window, per-writer reproducibility, cross-writer
+   divergence.
+5. `connect` now resolves writer properties FIRST: the translation is
+   pure and can fail on level ranges the config gate cannot see, and a
+   refusal must not leave a freshly created namespace as its trace.
+6. The README quickstart is now drift-pinned verbatim through the
+   Shell (the snowflake convention); "digest-pinned images" corrected
+   to name which pin is which; the Makefile coexistence comments now
+   state the REAL swap mechanics (the surviving sweep and deep lines
+   need their binary filters edited at rename — an unedited filter
+   empty-selects, which post-024 fails loudly).
+7. Plan drift amended in place: D2's prose matched to the as-built
+   frozen framing; D4's connector sketch corrected (lazy marker table;
+   properties-first ordering) and testsupport added to the module
+   list; D7 promoted to a numbered decision; the coverage map
+   refreshed with the review rounds' cells.
+
+RECORDED, NOT CHANGED:
+- RateLimited (429) is unit-pinned; no live leg exists because Polaris
+  exposes no throttling knob — genuinely unprovokable live.
+- The fixture's port TOCTOU residual (probe-then-bind window while a
+  JVM boots) is mitigated by the PID-disjoint below-ephemeral range +
+  bind probe; ~0.26% per concurrent pair worst case, visible as an 80s
+  readiness panic — on the flake-log suspect list, not fixable short
+  of per-fixture networks that host networking forecloses.
+- All v2 binaries (including offline cells) ride the 3-thread
+  iceberg-live group — a scheduling inefficiency, deliberate for
+  simplicity during coexistence.

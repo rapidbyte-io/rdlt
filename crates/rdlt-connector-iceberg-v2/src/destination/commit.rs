@@ -123,13 +123,20 @@ where
 /// writers diverge, one writer stays reproducible within a run, and no
 /// wall clock or global RNG enters the commit path.
 async fn backoff(entropy: &str, attempt: u32) {
+    tokio::time::sleep(Duration::from_millis(backoff_millis(entropy, attempt))).await;
+}
+
+/// The delay itself, pure — split from the sleep so the shape (a
+/// doubling base plus a full-window keyed jitter) pins without timing
+/// a test.
+fn backoff_millis(entropy: &str, attempt: u32) -> u64 {
     static SEED: OnceLock<std::collections::hash_map::RandomState> = OnceLock::new();
     let base = 50u64 * (1u64 << attempt.min(4));
     let jitter = SEED
         .get_or_init(std::collections::hash_map::RandomState::new)
         .hash_one((entropy, attempt))
         % base;
-    tokio::time::sleep(Duration::from_millis(base + jitter)).await;
+    base + jitter
 }
 
 /// Publish staged data files as ONE fast-append snapshot carrying the
@@ -234,6 +241,31 @@ mod tests {
         );
         assert_eq!(text.matches("exhausted").count(), 1, "{text}");
         assert_eq!(catalog.commits.load(Ordering::SeqCst), COMMIT_ATTEMPTS);
+    }
+
+    /// The backoff shape: base doubles per attempt (capped), the
+    /// jitter never exceeds the base, one writer's schedule is
+    /// reproducible within a process, and two writers diverge.
+    #[test]
+    fn the_backoff_doubles_jitters_within_base_and_diverges_by_writer() {
+        for attempt in 1..=4u32 {
+            let base = 50u64 * (1u64 << attempt.min(4));
+            let delay = backoff_millis("w", attempt);
+            assert!(
+                (base..2 * base).contains(&delay),
+                "attempt {attempt}: {delay} outside [{base}, {})",
+                2 * base
+            );
+            assert_eq!(
+                delay,
+                backoff_millis("w", attempt),
+                "reproducible per writer"
+            );
+        }
+        assert!(
+            (1..=8u32).any(|a| backoff_millis("writer-a", a) != backoff_millis("writer-b", a)),
+            "two writers must not share every schedule"
+        );
     }
 
     /// The identity keys are the frozen spellings, and history

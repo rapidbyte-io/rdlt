@@ -53,7 +53,7 @@ redaction discipline; prefer the typed auth fields.
 
 Offline cells (the document corpus, classification, drift, retry) run
 anywhere. Container cells boot their own Polaris + RUSTFS pair
-(digest-pinned images, `rdlt-test=1` labels) and SKIP visibly without
+(pinned images — Polaris by digest, RUSTFS by version tag — with `rdlt-test=1` labels) and SKIP visibly without
 a runtime; the sdk conformance kit certifies the shell against that
 fixture. The crash sweep is its own failpoints-gated binary in the
 `make test TARGET=sweep` gate.

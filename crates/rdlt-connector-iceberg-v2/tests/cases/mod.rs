@@ -9,3 +9,4 @@ mod test_ingestion;
 mod test_interop;
 mod test_partitioning;
 mod test_providers;
+mod test_quickstart;
