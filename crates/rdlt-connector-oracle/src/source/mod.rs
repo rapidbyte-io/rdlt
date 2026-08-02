@@ -7,7 +7,7 @@ pub mod cursor;
 mod read;
 mod schema;
 
-pub use config::{Config, ConfigError, Stream, config_schema};
+pub use config::{Config, ConfigError, Stream, Tuning, config_schema};
 pub use connector::{FAIL_POINTS, Oracle};
 
 /// The sdk shell around [`Oracle`] — the source's public form.

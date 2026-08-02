@@ -54,6 +54,11 @@ rustdoc-args = [
 name = "oracle_rs"
 path = "src/lib.rs"
 
+# rdlt patch (032): TCP keepalive on the connection socket. Already
+# in the workspace graph via tokio, so this adds no new dependency.
+[dependencies.socket2]
+version = "0.6"
+
 [dependencies.aes]
 version = "0.8"
 

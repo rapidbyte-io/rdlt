@@ -64,10 +64,25 @@ pub struct Tuning {
     /// out has left the protocol mid-conversation.
     #[serde(default = "default_read_timeout")]
     pub read_timeout_ms: u64,
-    /// The session data unit the server negotiates. Raise it here
-    /// only if the LISTENER was raised too; the reply must fit one.
+    /// The session data unit to request. A reply is read as ONE
+    /// packet, and the server's negotiated value is not readable back
+    /// from this driver, so the accepted range is 512..=8192 — see
+    /// `validate`.
     #[serde(default = "default_sdu")]
     pub sdu_bytes: u32,
+    /// TCP keepalive idle time, or `0` to switch keepalive off.
+    ///
+    /// On by default, unlike the driver: a firewall or NAT that reaps
+    /// an idle connection does so SILENTLY, and the read then waits
+    /// out its whole `read_timeout_ms` against a socket nothing will
+    /// answer. This is `oracle.net.keepAlive`.
+    #[serde(default = "default_keepalive")]
+    pub keepalive_secs: u64,
+}
+
+/// Well below the 300 s idle timeout common to firewalls and NAT.
+fn default_keepalive() -> u64 {
+    30
 }
 
 fn default_lob_chunk() -> u64 {
@@ -91,6 +106,7 @@ impl Default for Tuning {
             connect_timeout_ms: default_connect_timeout(),
             read_timeout_ms: default_read_timeout(),
             sdu_bytes: default_sdu(),
+            keepalive_secs: default_keepalive(),
         }
     }
 }

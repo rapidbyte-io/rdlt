@@ -802,6 +802,13 @@ impl Connection {
 
         // Set TCP options
         tcp_stream.set_nodelay(true)?;
+        // rdlt patch (032): keepalive, so an idle-reaped connection
+        // surfaces as a broken socket instead of a statement that
+        // hangs until its budget expires.
+        if let Some(idle) = config.keepalive {
+            socket2::SockRef::from(&tcp_stream)
+                .set_tcp_keepalive(&socket2::TcpKeepalive::new().with_time(idle))?;
+        }
 
         // Wrap with TLS if configured
         let stream = if config.is_tls_enabled() {

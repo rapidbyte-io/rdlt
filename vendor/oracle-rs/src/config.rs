@@ -132,6 +132,16 @@ pub struct Config {
     pub ncharset_id: u16,
     /// Statement cache size (0 = disabled)
     pub stmtcachesize: usize,
+    /// rdlt patch (032): TCP keepalive idle time, or `None` to leave
+    /// the socket without it (upstream's behaviour).
+    ///
+    /// WHY THIS EXISTS: a query whose server-side thinking time
+    /// exceeds a firewall's or NAT's idle timeout has its connection
+    /// reaped SILENTLY — the client then waits out its whole
+    /// statement budget on a socket nothing will ever answer. This is
+    /// the same reason the Oracle JDBC driver exposes
+    /// `oracle.net.keepAlive`.
+    pub keepalive: Option<Duration>,
 }
 
 impl Config {
@@ -156,6 +166,7 @@ impl Config {
             charset_id: charset::UTF8,
             ncharset_id: charset::UTF16,
             stmtcachesize: DEFAULT_STMTCACHESIZE,
+            keepalive: None,
         }
     }
 
@@ -180,6 +191,7 @@ impl Config {
             charset_id: charset::UTF8,
             ncharset_id: charset::UTF16,
             stmtcachesize: DEFAULT_STMTCACHESIZE,
+            keepalive: None,
         }
     }
 
@@ -384,6 +396,7 @@ impl Default for Config {
             charset_id: charset::UTF8,
             ncharset_id: charset::UTF16,
             stmtcachesize: DEFAULT_STMTCACHESIZE,
+            keepalive: None,
         }
     }
 }

@@ -175,3 +175,65 @@ fn the_password_is_grep_proof() {
     let config = Config::from_value(base()).expect("valid");
     assert!(!format!("{config:?}").contains("pw"));
 }
+
+/// Every tuning knob reaches the place it claims to control, and the
+/// defaults are the ones documented.
+///
+/// A config field that parses but changes nothing is worse than an
+/// absent one — it reads as a working control. Round 2 found two of
+/// those (`connect_timeout_ms` and, for LOB reads, `read_timeout_ms`),
+/// so the mapping is asserted rather than assumed.
+#[test]
+fn tuning_defaults_are_the_documented_ones() {
+    let tuning = rdlt_connector_oracle::source::Tuning::default();
+    assert_eq!(tuning.page_rows, None, "derived from column widths");
+    assert_eq!(tuning.lob_chunk_bytes, 1 << 20, "JDBC's LOB prefetch");
+    assert_eq!(tuning.connect_timeout_ms, 60_000);
+    assert_eq!(tuning.read_timeout_ms, 600_000);
+    assert_eq!(tuning.sdu_bytes, 8192);
+    assert_eq!(
+        tuning.keepalive_secs, 30,
+        "ON by default, below the 300 s idle timeout common to firewalls"
+    );
+}
+
+/// The owner's JDBC parameter string maps onto the document.
+#[test]
+fn the_jdbc_parameter_vocabulary_maps() {
+    // defaultRowPrefetch=25 & oracle.jdbc.defaultLobPrefetchSize=1048576
+    // & oracle.jdbc.ReadTimeout=600000 & oracle.net.CONNECT_TIMEOUT=60000
+    // & oracle.net.keepAlive=true
+    let value = serde_json::json!({
+        "host": "db.example.com",
+        "service": "ORCL",
+        "user": "rdlt",
+        "password": "pw",
+        "tuning": {
+            "page_rows": 25,
+            "lob_chunk_bytes": 1_048_576,
+            "read_timeout_ms": 600_000,
+            "connect_timeout_ms": 60_000,
+            "keepalive_secs": 30
+        },
+        "streams": [{"name": "s", "table": "T"}]
+    });
+    let config = Config::from_value(value).expect("the JDBC vocabulary maps");
+    assert_eq!(config.tuning.page_rows, Some(25));
+    assert_eq!(config.tuning.lob_chunk_bytes, 1_048_576);
+    assert_eq!(config.tuning.keepalive_secs, 30);
+
+    // `useFetchSizeWithLongColumn` has NO counterpart and needs none:
+    // it exists because the JDBC driver could not stream LONG columns
+    // alongside a fetch size. LONG is deprecated by Oracle in favour
+    // of CLOB, and this connector reads LOBs through locators, which
+    // is not coupled to the page size at all.
+    assert!(
+        Config::from_value(serde_json::json!({
+            "host": "h", "service": "S", "user": "u", "password": "p",
+            "tuning": {"use_fetch_size_with_long_column": true},
+            "streams": [{"name": "s", "table": "T"}]
+        }))
+        .is_err(),
+        "an unknown tuning key is refused, not silently ignored"
+    );
+}

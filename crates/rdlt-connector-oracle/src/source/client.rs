@@ -51,6 +51,10 @@ impl Client {
         }
         driver.connect_timeout = std::time::Duration::from_millis(config.tuning.connect_timeout_ms);
         driver.sdu = config.tuning.sdu_bytes;
+        driver.keepalive = match config.tuning.keepalive_secs {
+            0 => None,
+            secs => Some(std::time::Duration::from_secs(secs)),
+        };
         let named = config
             .service
             .clone()

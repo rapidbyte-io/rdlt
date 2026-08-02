@@ -219,7 +219,8 @@ LOBs, so chunking is the correctness-and-cost answer), with the
 
 The fork lives at `vendor/oracle-rs` (published 0.1.7 source, MIT OR
 Apache-2.0 preserved; consumed via `[patch.crates-io]`). FOUR patches
-attempted, THREE KEPT, ONE REVERTED ON EVIDENCE:
+attempted, THREE KEPT, ONE REVERTED ON EVIDENCE — plus a FOURTH kept
+patch added later, recorded under "Keepalive" below:
 
 KEPT — and probed working against 23 Free:
 1. `FetchMessage` framing repaired: real sequence number (was
@@ -258,6 +259,49 @@ exceed the SDU — wide tables get small pages, narrow tables get large
 ones — and expose the SDU as config for operators who raise it
 server-side. Wide-row streaming at high throughput is the recorded
 motivation for the resumable-parser work, whoever takes it.
+
+### Keepalive — the fourth kept patch (added at review round 3)
+
+The driver opens its socket with `set_nodelay(true)` and nothing
+else. A query whose server-side thinking time exceeds a firewall's or
+NAT's idle timeout therefore has its connection reaped SILENTLY, and
+the read waits out its ENTIRE statement budget (600 s by default)
+against a socket nothing will ever answer. This is precisely why the
+Oracle JDBC driver exposes `oracle.net.keepAlive`, which the owner's
+own production config sets.
+
+`Config::keepalive: Option<Duration>` now drives `set_tcp_keepalive`
+at the connect site; the vendored default stays `None` (upstream
+behaviour), while the CONNECTOR defaults it ON at 30 s — well below
+the 300 s idle timeout common to firewalls. `socket2` is already in
+the workspace graph via tokio, so this adds no new dependency.
+
+Noted while reading that site: `connect_with_config` uses a bare
+`TcpStream::connect` and never consults `Config::connect_timeout`
+(that field belongs to the `transport::tcp` path, which this
+constructor does not use). The connector enforces its own connect
+budget instead — review round 2, D5.
+
+### The JDBC parameter vocabulary
+
+The owner's production JDBC string maps onto `tuning` one-for-one,
+with one deliberate absence:
+
+| JDBC | document |
+|---|---|
+| `defaultRowPrefetch` | `page_rows` (only ever LOWERS the derived page) |
+| `oracle.jdbc.defaultLobPrefetchSize` | `lob_chunk_bytes` |
+| `oracle.jdbc.ReadTimeout` | `read_timeout_ms` |
+| `oracle.net.CONNECT_TIMEOUT` | `connect_timeout_ms` |
+| `oracle.net.keepAlive` | `keepalive_secs` (`0` disables) |
+| `useFetchSizeWithLongColumn` | **none, and none is needed** |
+
+The last exists because the JDBC driver could not stream LONG columns
+alongside a fetch size. LONG is deprecated by Oracle in favour of
+CLOB, and this connector reads LOBs through locators, which are not
+coupled to the page size at all. An unknown `tuning` key is REFUSED
+rather than ignored, so a config carrying it fails loudly instead of
+appearing to take effect — pinned.
 
 ## REVIEW ROUNDS
 
