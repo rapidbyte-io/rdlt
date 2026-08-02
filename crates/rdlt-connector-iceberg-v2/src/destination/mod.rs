@@ -8,6 +8,8 @@ mod load;
 mod partition;
 mod schema;
 mod state;
+#[cfg(test)]
+mod testsupport;
 mod write;
 
 pub use config::{
