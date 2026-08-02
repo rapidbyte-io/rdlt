@@ -155,14 +155,6 @@ impl Client {
             ))
         }
     }
-
-    /// Run one statement for its side effect, same poison rule.
-    pub(crate) async fn execute(self, context: &str, sql: &str) -> Result<Self, SourceError> {
-        match self.conn.execute(sql, &[]).await {
-            Ok(_) => Ok(self),
-            Err(e) => Err(classify(context, e)),
-        }
-    }
 }
 
 /// The classification rulebook: keyed on the STRUCTURED ORA code.

@@ -61,7 +61,7 @@ impl OracleFixture {
     /// line alone is not enough.
     async fn await_service(&self) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
-        let mut last = String::new();
+        let mut last;
         loop {
             use rdlt_connector_sdk::spi::Source;
             let shell = Shell::new(self.config(&[])).expect("the fixture document is valid");
@@ -69,6 +69,7 @@ impl OracleFixture {
                 Ok(()) => return,
                 Err(e) => last = e.to_string(),
             }
+            let _ = &last;
             assert!(
                 std::time::Instant::now() < deadline,
                 "oracle never accepted a connection within the deadline; last error: {last}"
