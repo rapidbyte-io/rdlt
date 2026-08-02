@@ -153,3 +153,19 @@ as 028 executed it.
   host-network Polaris+RUSTFS, PID-derived ports, skip-not-fail), the
   live cells per the census, the sweep body, Makefile coexistence
   lines; then the review loop and gates (baseline 1011).
+
+
+## REVIEW-DOCKET ADDITION (found live while authoring the suite, 2026-08-02)
+
+A WRONG OAUTH CLIENT SECRET CLASSIFIES TRANSIENT: the library's token-
+endpoint failure renders its context entry as `code: 400 Bad Request`
+— not `status:` — so `status_from_context` reads nothing and the
+frozen table's no-status arm classifies the deterministic credential
+error TRANSIENT (an engine would retry it forever). Generation 1 runs
+the identical parser over the identical flow — inherited. The
+data-path 401 (bad bearer) DOES carry `status:` and classifies Fatal
+with the credential advice (pinned live:
+`a_rejected_token_is_fatal_with_advice`). Joins inventory item #1 in
+the review loop's docket: teach the parser the `code:` spelling, or
+classify the oauth `operation: auth` context — decided at review, not
+mid-suite.
