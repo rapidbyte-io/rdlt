@@ -2,7 +2,7 @@
 //!
 //! Staging lives under `.rdlt-staging/{scope}/{load}/`, receipts
 //! forever in `_rdlt_commits.{scope}.json`, state beside them — the
-//! 4-phase commit is [`load`]'s doc comment.
+//! 4-phase commit is the `load` module's doc comment.
 
 mod config;
 mod connector;

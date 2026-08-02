@@ -6,8 +6,8 @@
 //! azure:) arrive as ADDITIVE fields behind exactly-one-set
 //! validation. Absent entirely means the local filesystem.
 //!
-//! Secrets are revealed in [`build_store`] and nowhere else — the one
-//! function a credential audit reads.
+//! Secrets are revealed in the s3 module's `build_store` and nowhere
+//! else — the one function a credential audit reads.
 
 use rdlt_connector_sdk::spi::secret::Secret;
 
