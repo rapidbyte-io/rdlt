@@ -1,0 +1,49 @@
+[package]
+name = "rdlt-connector-file-v2"
+description = "rdlt file family, second generation: local and S3 files as source and destination, born on the connector sdk"
+# Coexists UNCONSUMED beside generation 1 until the owner-decided swap;
+# never published under this name.
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+failpoints = ["rdlt-connector-sdk/failpoints"]
+
+[dependencies]
+# The ONE rdlt dependency (the one-dependency rule): the SPI is reached
+# through the sdk's `spi` re-export; the object-store recoverability
+# vocabulary arrives through the sdk's forward.
+rdlt-connector-sdk = { workspace = true, features = ["schema", "object-store"] }
+arrow = { workspace = true }
+async-trait = { workspace = true }
+blake3 = { workspace = true }
+bytes = { workspace = true }
+csv = { workspace = true }
+flate2 = { workspace = true }
+futures = { workspace = true }
+glob = { workspace = true }
+memchr = { workspace = true }
+object_store = { workspace = true }
+parquet = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+zstd = { workspace = true }
+
+[dev-dependencies]
+jsonschema = { workspace = true }
+rdlt-connector-duckdb = { workspace = true }
+rdlt-engine = { workspace = true }
+rdlt-testkit = { workspace = true }
+tempfile = { workspace = true }
+testcontainers = { workspace = true }
+
+[lints]
+workspace = true

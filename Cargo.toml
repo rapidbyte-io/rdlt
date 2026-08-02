@@ -10,6 +10,7 @@ members = [
     "crates/rdlt-connector-rest",
     "crates/rdlt-connector-duckdb",
     "crates/rdlt-connector-file",
+    "crates/rdlt-connector-file-v2",
     "crates/rdlt-connector-iceberg",
     "crates/rdlt-connector-postgres",
     "crates/rdlt-cli",
