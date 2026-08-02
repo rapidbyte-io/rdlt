@@ -483,3 +483,37 @@ N3 (token TTL), the props-override Secret bypass, the 12-hex scope
 risk, the frozen "capabilities.merge = false" wording, the fixture
 port-TOCTOU residual, and the swap-mechanics edits owed to the
 Makefile's surviving lines.
+
+
+## GATE OF RECORD, POST-REVIEW-LOOP (2026-08-02, tree @ ac71b017)
+
+`make check` TWICE CLEAN on the round-4 terminus tree, untouched
+between runs, `env -u RUSTUP_TOOLCHAIN`, reclaim + corpse-sweep +
+drain before each. COUNT PREDICTED AND VERIFIED: 1081/1081 both runs
+(1076 + round 3's five pins), 0 skipped, semver clean, 0 regressed,
+cold start 23.2/23.0 ms.
+
+THE GATE HUNT FOUND THE SESSION'S FLAKE AMPLIFIER: gate #1 took three
+attempts and gate #2 two — every failure the recorded rootlessport
+bind flake (file-crate s3 cells, ports in the ephemeral range; each
+failed start leaving a Created-state corpse whose port reservation
+cascaded a paired second failure), every flaked cell proven green in
+isolation. Then gate #2's first attempt failed DIFFERENTLY —
+`allocating lock for new volume: exceeded num_locks (2048)` — and the
+diagnosis landed: this session's hundreds of container cycles had
+leaked 1,988 anonymous volumes, sitting at podman's 2,048-lock
+ceiling, so every container start gambled on the last ~60 locks — THE
+root cause behind the whole session's elevated flake rate, not test
+concurrency. `podman volume prune` (1988 → 4) restored headroom and
+both recorded gates then ran start-to-finish clean, first try each.
+Recorded in the container-flake memory as the third mechanism.
+
+THE /code-review LOOP IS CLOSED: rounds 1 and 3 found (nine fixes
+across them, every one pinned — the shared-table silent corruption,
+the status-parser code-key/tail revision, the normalized-key doc
+truth, three vacuity closures, the connect reorder, the quickstart
+drift pin, the doc-drift sweep), rounds 2 and 4 verified clean.
+Standing owner records: N2 (no-WAL retry duplication), N3 (token
+TTL), the props-override Secret bypass, the 12-hex scope risk, the
+frozen merge-refusal wording, the port-TOCTOU residual, and the
+swap-mechanics filter edits owed to the Makefile's surviving lines.
