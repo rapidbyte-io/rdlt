@@ -171,10 +171,10 @@ impl Config {
         }
         for stream in &self.streams {
             let context = format!("stream `{}`", stream.name);
-            if let Some(location) = &stream.location {
-                if let Err(message) = location.validate(&context) {
-                    return invalid(message);
-                }
+            if let Some(location) = &stream.location
+                && let Err(message) = location.validate(&context)
+            {
+                return invalid(message);
             }
             if stream.csv.is_some() && stream.format != Format::Csv {
                 return invalid(format!(
@@ -182,10 +182,10 @@ impl Config {
                     stream.name
                 ));
             }
-            if let Some(csv) = &stream.csv {
-                if let Err(message) = csv.validate(&context) {
-                    return invalid(message);
-                }
+            if let Some(csv) = &stream.csv
+                && let Err(message) = csv.validate(&context)
+            {
+                return invalid(message);
             }
             if stream.format == Format::Parquet {
                 if stream.primary_key.is_some() {

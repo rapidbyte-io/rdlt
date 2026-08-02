@@ -118,7 +118,7 @@ impl S3Options {
             .endpoint
             .strip_prefix("http://")
             .or_else(|| self.endpoint.strip_prefix("https://"));
-        if !host.is_some_and(|h| !h.is_empty()) {
+        if host.is_none_or(|h| h.is_empty()) {
             return Err(format!(
                 "{context}: location.s3.endpoint `{}` must be an http(s) URL",
                 self.endpoint

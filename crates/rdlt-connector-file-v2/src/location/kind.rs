@@ -11,7 +11,7 @@ use crate::source::list::local_listing;
 
 /// A connected location.
 #[derive(Debug, Clone)]
-pub enum Location {
+pub(crate) enum Location {
     Local,
     S3(S3Location),
 }
@@ -57,7 +57,7 @@ impl Location {
 
 /// A sequential reader over either kind: plain std::fs on the fast
 /// local path, a drained streaming GET on S3.
-pub enum ByteReader {
+pub(crate) enum ByteReader {
     Local(std::fs::File),
     S3(super::s3::S3Reader),
 }
