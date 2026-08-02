@@ -231,7 +231,28 @@ Recorded, not changed: the registries are unconditional `pub const`
 (sibling 028/029 shape; gen 1's were failpoints-gated — the spellings
 are the frozen thing and are pinned).
 
-- NEXT: gates twice clean (baseline 1024; predicted main count 1126 =
-  1024 + the crate's 102 offline tests; volume-count check in the gate
-  prep per the 029 lesson — 135 leaked volumes pruned before the first
-  gate).
+## GATE OF RECORD — TWICE CLEAN
+
+Both gates `env -u RUSTUP_TOOLCHAIN make check` on the terminus tree
+(the docs-link fix commit), counts PREDICTED and VERIFIED:
+- Gate 1: exit 0; main suite 1131/1131, 0 skipped — exactly the
+  prediction (1024 post-029 baseline + this crate's 107 offline
+  tests); all sweep suites green (file-v2's crash_sweep 3/3 among
+  them); semver: no update required; 6 benches 0 regressed; cold
+  start 23.4 ms (bar <= 40).
+- Gate 2 (after the safe hygiene sweep — TEST containers/volumes
+  only, never the dev toolbox — and a TIME_WAIT drain to 1): exit 0;
+  1131/1131, 0 skipped; semver clean; 0 regressed; cold start
+  23.8 ms.
+- One earlier attempt FAILED fast at the docs step (two private
+  intra-doc links in the new crate — `[load]` in the destination TOC,
+  `[build_store]` in options.rs) — fixed, committed, gate restarted;
+  failed attempts never count.
+- Environment notes: 135 leaked anonymous podman volumes pruned
+  before the first attempt (the 029 lesson); container sweeps filter
+  by test image/label because a blanket `podman rm -f $(podman ps
+  -aq)` once removed the session's own fedora-toolbox container.
+
+STATUS: COMPLETE. The crate coexists unconsumed (publish = false);
+the swap — delete gen 1, rename, port the facade arms — is the
+owner's decision (D6).
