@@ -20,11 +20,25 @@ use crate::location::Location;
 #[derive(Debug, Clone)]
 pub struct File {
     config: Config,
+    /// Fetches skipped because recorded progress already covered the
+    /// object — PER INSTANCE (gen 1's process-global counter
+    /// interleaved across concurrent pipelines, docket S14). An
+    /// optimisation that silently stops engaging is indistinguishable
+    /// from one never written; a test proves the skip happened by
+    /// counting it.
+    skipped_fetches: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl File {
     fn stream_config(&self, name: &StreamName) -> Option<&Stream> {
         self.config.streams.iter().find(|s| s.name == name.as_str())
+    }
+
+    /// Test-only view of this instance's skip counter.
+    #[doc(hidden)]
+    pub fn skipped_fetches(&self) -> u64 {
+        self.skipped_fetches
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -36,7 +50,10 @@ impl SourceConnector for File {
     type Config = Config;
 
     fn assemble(config: Config) -> Result<Self, config::ConfigError> {
-        Ok(Self { config })
+        Ok(Self {
+            config,
+            skipped_fetches: Default::default(),
+        })
     }
 
     fn config_schema() -> Option<serde_json::Value> {
@@ -86,7 +103,7 @@ impl SourceConnector for File {
             matched,
             read_paths,
             mut fetched_dir,
-        } = resolve_inputs(&location, stream, &cursor).await?;
+        } = resolve_inputs(&location, stream, &cursor, &self.skipped_fetches).await?;
         crash_point!(
             "file.list",
             Err(SourceError::fatal("injected crash at file.list"))
@@ -143,6 +160,7 @@ async fn resolve_inputs(
     location: &Location,
     stream: &Stream,
     cursor: &FileCursor,
+    skipped: &std::sync::atomic::AtomicU64,
 ) -> Result<ResolvedInputs, SourceError> {
     let plain = |matched| ResolvedInputs {
         matched,
@@ -166,7 +184,7 @@ async fn resolve_inputs(
             let mut paths = BTreeMap::new();
             for (i, meta) in listed.into_iter().enumerate() {
                 if let Some(size_units) = recorded_completion(cursor, &meta) {
-                    SKIPPED_FETCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    skipped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     metas.push(FileMeta { size_units, ..meta });
                     continue;
                 }
@@ -187,18 +205,6 @@ async fn resolve_inputs(
             })
         }
     }
-}
-
-/// Fetches skipped because recorded progress already covered the
-/// object. An optimisation that silently stops engaging is
-/// indistinguishable from one never written — a test can only prove
-/// the skip HAPPENED by counting it.
-static SKIPPED_FETCHES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-/// Test-only view of the skip counter.
-#[doc(hidden)]
-pub fn skipped_fetches() -> u64 {
-    SKIPPED_FETCHES.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// The unit count for an object needing no fetch, or None. PROVABLY is

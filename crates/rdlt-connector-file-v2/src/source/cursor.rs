@@ -121,12 +121,24 @@ pub struct FileTask {
 impl FileCursor {
     /// Decode a persisted cursor; absent means empty; unreadable is
     /// typed (state is precious — silently starting over duplicates).
+    /// A STRICTLY newer format refuses as an upgrade prompt for the
+    /// same reason: a future shape would deserialize as EMPTY through
+    /// the serde defaults and silently re-read everything (030 review
+    /// — the commit log had this guard, the cursor did not).
     pub fn decode(cursor: Option<&Cursor>) -> Result<Self, SourceError> {
-        match cursor {
-            None => Ok(Self::default()),
-            Some(cursor) => serde_json::from_value(cursor.as_value().clone())
-                .map_err(|e| SourceError::fatal(format!("unreadable file cursor: {e}"))),
+        let Some(cursor) = cursor else {
+            return Ok(Self::default());
+        };
+        let decoded: Self = serde_json::from_value(cursor.as_value().clone())
+            .map_err(|e| SourceError::fatal(format!("unreadable file cursor: {e}")))?;
+        if decoded.format_version > CURSOR_FORMAT_VERSION {
+            return Err(SourceError::fatal(format!(
+                "file cursor format v{} is newer than this build supports \
+                 (v{CURSOR_FORMAT_VERSION}); upgrade rdlt instead of clearing state",
+                decoded.format_version
+            )));
         }
+        Ok(decoded)
     }
 
     /// Encode for the checkpoint channel.
@@ -519,5 +531,23 @@ mod tests {
         let decoded = FileCursor::decode(Some(&cursor.encode())).expect("round-trips");
         assert_eq!(decoded.files.len(), 2);
         assert_eq!(decoded, cursor);
+    }
+
+    /// A STRICTLY newer cursor format refuses as an upgrade prompt —
+    /// a future shape would decode as EMPTY through the serde defaults
+    /// and silently re-read everything (030 review).
+    #[test]
+    fn a_future_cursor_format_refuses_upgrade_not_reset() {
+        let cursor = Cursor::new(serde_json::json!({"format_version": 9, "files": {}}));
+        let err = FileCursor::decode(Some(&cursor))
+            .expect_err("refused")
+            .to_string();
+        assert!(
+            err.contains(
+                "file cursor format v9 is newer than this build supports (v1); upgrade \
+                 rdlt instead of clearing state"
+            ),
+            "{err}"
+        );
     }
 }

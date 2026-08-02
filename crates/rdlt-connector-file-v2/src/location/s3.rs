@@ -87,6 +87,18 @@ impl S3Location {
     /// object; only then does glob interpretation apply, and `*`/`?`
     /// never cross `/` (staged keys must never match a data glob).
     pub(crate) async fn list(&self, pattern: &str) -> Result<Vec<FileMeta>, SourceError> {
+        // Listed keys come back NORMALIZED (no leading slash, empty
+        // segments collapsed) while the matcher is built from the
+        // operator's raw pattern — un-normalized they can never agree,
+        // and a `path: /data/*.jsonl` habit carried over from local
+        // paths would match NOTHING, silently (030 review). Normalize
+        // the pattern's segments the same way the store does.
+        let pattern = pattern
+            .split('/')
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("/");
+        let pattern = pattern.as_str();
         let has_glob = pattern.contains(['*', '?', '[']);
         let literal = object_store::path::Path::from(pattern);
         match self.store.head(&literal).await {
@@ -94,7 +106,7 @@ impl S3Location {
                 return Ok(vec![FileMeta {
                     path: pattern.to_owned(),
                     size_units: head.size,
-                    mtime_ms: None,
+                    mtime_ms: mtime_ms_of(head.last_modified),
                     etag: head.e_tag,
                 }]);
             }
@@ -109,8 +121,15 @@ impl S3Location {
         }
         let matcher = glob::Pattern::new(pattern)
             .map_err(|e| SourceError::fatal(format!("invalid glob `{pattern}`: {e}")))?;
+        // `require_literal_separator` keeps `*`/`?` inside one segment;
+        // `require_literal_leading_dot` keeps EVERY wildcard — `**`
+        // included — out of dot-prefixed names, which is what actually
+        // makes `.rdlt-staging` invisible to data globs (030 review: a
+        // recursive glob over a shared prefix read UNCOMMITTED staged
+        // parts without it).
         let match_options = glob::MatchOptions {
             require_literal_separator: true,
+            require_literal_leading_dot: true,
             ..Default::default()
         };
         let prefix = Self::prefix_of(pattern);
@@ -124,7 +143,10 @@ impl S3Location {
                 matched.push(FileMeta {
                     path: key,
                     size_units: entry.size,
-                    mtime_ms: None,
+                    // The second rewrite-tripwire leg: an S3-compatible
+                    // store that omits etags would otherwise have NO
+                    // same-size rewrite detection at all (docket S10).
+                    mtime_ms: mtime_ms_of(entry.last_modified),
                     etag: entry.e_tag,
                 });
             }
@@ -329,6 +351,12 @@ impl S3Location {
             Err(e) => Err(store_err(e)),
         }
     }
+}
+
+/// Service-stamped modification time in ms since epoch (pre-1970
+/// stamps read as absent rather than wrapping).
+fn mtime_ms_of(t: chrono::DateTime<chrono::Utc>) -> Option<u64> {
+    u64::try_from(t.timestamp_millis()).ok()
 }
 
 #[cfg(test)]

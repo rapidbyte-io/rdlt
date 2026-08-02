@@ -127,6 +127,18 @@ impl S3Options {
         if self.bucket.is_empty() {
             return Err(format!("{context}: location.s3.bucket must not be empty"));
         }
+        // The one combination with NO integrity left: unsigned payload
+        // removes the signature over the body, plain HTTP removes TLS —
+        // together nothing checks the bytes (the field's own doc calls
+        // the trade reasonable over trusted HTTPS only; 030 review made
+        // the gate say so rather than trusting prose).
+        if self.unsigned_payload && self.endpoint.starts_with("http://") {
+            return Err(format!(
+                "{context}: `unsigned_payload: true` over a plain-http endpoint leaves \
+                 request bodies with no integrity check at all — use https, or keep \
+                 payload signing on"
+            ));
+        }
         Ok(())
     }
 }
@@ -181,5 +193,23 @@ mod tests {
         let options = S3Options::new("http://s3", "b", "ak-123", "sk-456");
         let rendered = format!("{options:?}");
         assert!(!rendered.contains("ak-123") && !rendered.contains("sk-456"));
+    }
+
+    /// The no-integrity combination is refused at the gate, not left
+    /// to the field's documentation (030 review, docket S8).
+    #[test]
+    fn unsigned_payload_over_plain_http_is_refused() {
+        let options = S3Options::new("http://minio.local:9000", "raw", "ak", "sk")
+            .with_unsigned_payload(true);
+        let err = options.validate("stream `a`").expect_err("refused");
+        assert!(
+            err.contains("`unsigned_payload: true` over a plain-http endpoint"),
+            "{err}"
+        );
+        let https =
+            S3Options::new("https://s3.example", "raw", "ak", "sk").with_unsigned_payload(true);
+        https
+            .validate("stream `a`")
+            .expect("https keeps the trade available");
     }
 }

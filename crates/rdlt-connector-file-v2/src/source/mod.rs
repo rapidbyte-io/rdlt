@@ -12,8 +12,6 @@ pub use config::{Config, ConfigError, CsvOptions, HintType, Stream, config_schem
 /// exactly this list. These spellings are frozen.
 pub const FAIL_POINTS: &[&str] = &["file.list", "file.read"];
 pub use connector::File;
-#[doc(hidden)]
-pub use connector::skipped_fetches;
 
 /// The canonical face: the sdk shell over [`File`].
 pub type Shell = rdlt_connector_sdk::source::Shell<File>;

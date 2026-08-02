@@ -1,6 +1,10 @@
 //! Row counting over the OWNERSHIP listing — verification's view of
 //! what a table holds. Partitions included, staging excluded (the
-//! listing never enters `.rdlt-staging`).
+//! listing never enters `.rdlt-staging`), and only OWNED shapes are
+//! counted: a user's own files under the table directory are not this
+//! destination's rows to report (030 review, docket S12 — gen 1
+//! counted any `.parquet`/`.jsonl`, so a foreign file inflated
+//! verification counts or broke them outright when unreadable).
 
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use rdlt_connector_sdk::spi::DestinationError;
@@ -14,6 +18,9 @@ pub(crate) async fn count_rows_async(
 ) -> Result<u64, DestinationError> {
     let mut rows = 0;
     for tail in location.keys_of_table(table).await? {
+        if !super::truncate::owns(&tail) {
+            continue;
+        }
         let count: u64 = if tail.ends_with(".parquet") {
             let bytes = location.read_table_file(table, &tail).await?;
             let reader = SerializedFileReader::new(bytes::Bytes::from(bytes)).map_err(|e| {

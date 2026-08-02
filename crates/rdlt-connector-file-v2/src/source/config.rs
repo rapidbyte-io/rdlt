@@ -169,6 +169,22 @@ impl Config {
         if self.streams.is_empty() {
             return invalid("at least one stream is required".into());
         }
+        // Duplicate names are refused at the gate (030 review, the 029
+        // shared-table precedent): the reader resolves streams BY NAME,
+        // so a duplicate would silently shadow its twin — and both
+        // would feed one destination table under one part-index
+        // sequence.
+        let mut seen = std::collections::BTreeSet::new();
+        for stream in &self.streams {
+            if !seen.insert(stream.name.as_str()) {
+                return invalid(format!(
+                    "duplicate stream name `{}` — stream names must be unique; a \
+                     duplicate is silently shadowed on read and both streams would \
+                     write one destination table",
+                    stream.name
+                ));
+            }
+        }
         for stream in &self.streams {
             let context = format!("stream `{}`", stream.name);
             if let Some(location) = &stream.location
@@ -335,5 +351,26 @@ mod tests {
         let mut doc = minimal();
         doc["streams"][0]["forma"] = serde_json::json!("typo");
         assert!(schema.validate(&doc).is_err());
+    }
+
+    /// Duplicate stream names are refused at the gate — the reader
+    /// resolves by name and would silently shadow the twin (030
+    /// review, docket S1; the 029 shared-table precedent).
+    #[test]
+    fn duplicate_stream_names_are_refused() {
+        let err = Config::from_value(serde_json::json!({
+            "streams": [
+                {"name": "events", "format": "jsonl", "path": "a/*.jsonl"},
+                {"name": "events", "format": "jsonl", "path": "b/*.jsonl"},
+            ]
+        }))
+        .expect_err("refused")
+        .to_string();
+        assert_eq!(
+            err,
+            "invalid file source config: duplicate stream name `events` — stream names \
+             must be unique; a duplicate is silently shadowed on read and both streams \
+             would write one destination table"
+        );
     }
 }

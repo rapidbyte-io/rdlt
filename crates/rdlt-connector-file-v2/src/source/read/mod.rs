@@ -8,6 +8,37 @@ pub(crate) mod parquet;
 use rdlt_connector_sdk::spi::SourceError;
 
 use crate::format::{Codec, GZIP_MAGIC, ZSTD_MAGIC};
+use crate::source::cursor::FileTask;
+
+/// Whole-file reads reopen the LIVE local file, not the listing's
+/// snapshot — so re-stat immediately before reading and refuse if the
+/// file moved under the plan (030 review, docket S11: a same-size
+/// replacement between listing and read used to load new content
+/// against the old plan silently this run). Staged S3 fetches ARE
+/// snapshots and skip this.
+pub(crate) fn verify_local_snapshot(task: &FileTask) -> Result<(), SourceError> {
+    if task.read_path.is_some() {
+        return Ok(());
+    }
+    let meta = std::fs::metadata(&task.path)
+        .map_err(|e| SourceError::fatal(format!("stat `{}`: {e}", task.path)))?;
+    let mtime_ms = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64);
+    let moved = meta.len() != task.size_units
+        || (task.mtime_ms.is_some() && mtime_ms.is_some() && mtime_ms != task.mtime_ms);
+    if moved {
+        return Err(SourceError::fatal(format!(
+            "file `{}` changed on disk between listing and read (listed {} bytes, found              {}); refusing to load content the plan does not describe — retry the run",
+            task.path,
+            task.size_units,
+            meta.len()
+        )));
+    }
+    Ok(())
+}
 
 /// Open a local file through its declared codec, checking the magic
 /// bytes first — a name that lies about its compression fails loudly

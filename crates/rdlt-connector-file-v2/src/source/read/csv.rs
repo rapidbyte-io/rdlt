@@ -86,6 +86,7 @@ pub(crate) async fn read_task(
 ) -> Result<bool, SourceError> {
     let read_path = task.read_path.as_deref().unwrap_or(&task.path);
     let codec = codec_of(&task.path);
+    super::verify_local_snapshot(task)?;
 
     // Pass 1: headers and the per-column joined kinds.
     let mut reader = reader_for(read_path, codec, options)?;
@@ -148,9 +149,15 @@ pub(crate) async fn read_task(
     let mut record = csv::StringRecord::new();
     let mut row = if options.header { 1u64 } else { 0u64 };
     loop {
-        let more = reader
-            .read_record(&mut record)
-            .map_err(|e| SourceError::fatal(format!("malformed CSV in `{}`: {e}", task.path)))?;
+        // The row context matches pass 1's spelling — its absence here
+        // was gen 1's §9-S7 inconsistency, closed in this generation.
+        let more = reader.read_record(&mut record).map_err(|e| {
+            SourceError::fatal(format!(
+                "malformed CSV in `{}` at row {}: {e}",
+                task.path,
+                row + 1
+            ))
+        })?;
         if !more {
             break;
         }

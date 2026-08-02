@@ -19,8 +19,18 @@ pub(crate) fn local_listing(pattern: &str) -> Result<Vec<FileMeta>, SourceError>
     let mut matched: Vec<String> = if std::path::Path::new(pattern).is_file() {
         vec![pattern.to_owned()]
     } else if pattern.contains(['*', '?', '[']) {
+        // Dot-prefixed names never match a wildcard — `**` included.
+        // This is what keeps `.rdlt-staging` (a file DESTINATION's
+        // uncommitted parts) out of a source glob over the same
+        // directory; without it a recursive glob read staged parts and
+        // duplicated them once they published (030 review). A dotfile
+        // is still readable by naming it literally.
+        let options = glob::MatchOptions {
+            require_literal_leading_dot: true,
+            ..Default::default()
+        };
         let mut paths = Vec::new();
-        for entry in glob::glob(pattern)
+        for entry in glob::glob_with(pattern, options)
             .map_err(|e| SourceError::fatal(format!("invalid glob `{pattern}`: {e}")))?
         {
             let path = entry.map_err(|e| {
@@ -125,5 +135,31 @@ mod tests {
             format!("{err}").contains(&format!("file `{missing}` does not exist")),
             "{err}"
         );
+    }
+
+    /// Wildcards never enter dot-prefixed names — `**` included: the
+    /// invariant that keeps a destination's `.rdlt-staging` invisible
+    /// to a source glob over the same directory (030 review).
+    #[test]
+    fn wildcards_never_match_dot_prefixed_names() {
+        let dir = tempfile::tempdir().expect("dir");
+        let staged = dir.path().join(".rdlt-staging/ab/load-1");
+        std::fs::create_dir_all(&staged).expect("dirs");
+        std::fs::write(staged.join("part.jsonl"), b"{}\n").expect("staged");
+        std::fs::write(dir.path().join("real.jsonl"), b"{}\n").expect("real");
+
+        let recursive = format!("{}/**/*.jsonl", dir.path().display());
+        let names: Vec<String> = local_listing(&recursive)
+            .expect("lists")
+            .into_iter()
+            .map(|m| m.path)
+            .collect();
+        assert_eq!(names.len(), 1, "{names:?}");
+        assert!(names[0].ends_with("real.jsonl"));
+
+        // Naming the dotfile literally still reads it.
+        let literal = staged.join("part.jsonl");
+        let named = local_listing(literal.to_str().expect("utf8")).expect("literal");
+        assert_eq!(named.len(), 1);
     }
 }

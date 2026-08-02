@@ -131,3 +131,66 @@ async fn a_shrunken_file_refuses() {
         "{err}"
     );
 }
+
+/// A PRE-UPGRADE cursor (no tail_hash) resumes unverified — and the
+/// tail it records must cover the full window, or the NEXT resume
+/// falsely refuses a healthy append as "rewritten" (030 review: the
+/// tail was seeded only on the verified path, so every unverified
+/// resume under 4 KiB of growth poisoned the record).
+#[tokio::test]
+async fn an_unverified_resume_records_a_tail_the_next_resume_can_verify() {
+    use rdlt_connector_sdk::spi::core::naming::ident_hash;
+
+    let input = tempfile::tempdir().expect("input");
+    let out = tempfile::tempdir().expect("out");
+    let workdir = tempfile::tempdir().expect("workdir");
+    let config = local_dest(out.path());
+
+    plant(
+        input.path(),
+        "data/events.jsonl",
+        b"{\"id\": 1}\n{\"id\": 2}\n",
+    );
+    run(input.path(), &config, workdir.path())
+        .await
+        .expect("first run");
+
+    // Strip the integrity keys from the persisted state — the exact
+    // shape a pre-tail-hash cursor leaves behind.
+    let scope = ident_hash("file-resume", 12);
+    let state_path = out.path().join(format!("_rdlt_state.{scope}.json"));
+    let mut state: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&state_path).expect("state")).expect("json");
+    let files = state["cursors"]["events"]["files"]
+        .as_object_mut()
+        .expect("files map");
+    for (_, record) in files.iter_mut() {
+        record.as_object_mut().expect("record").remove("tail_hash");
+    }
+    std::fs::write(
+        &state_path,
+        serde_json::to_vec_pretty(&state).expect("bytes"),
+    )
+    .expect("rewrite state");
+
+    // Grow by less than the tail window: resumes unverified, records.
+    let mut bytes = std::fs::read(input.path().join("data/events.jsonl")).expect("read");
+    bytes.extend_from_slice(b"{\"id\": 3}\n");
+    plant(input.path(), "data/events.jsonl", &bytes);
+    run(input.path(), &config, workdir.path())
+        .await
+        .expect("unverified resume");
+
+    // Grow again: THIS resume verifies against what the last recorded.
+    let mut bytes = std::fs::read(input.path().join("data/events.jsonl")).expect("read");
+    bytes.extend_from_slice(b"{\"id\": 4}\n");
+    plant(input.path(), "data/events.jsonl", &bytes);
+    run(input.path(), &config, workdir.path())
+        .await
+        .expect("a healthy append must verify, not refuse");
+    assert_eq!(
+        destination::testhook::count_rows(&config, "events").expect("count"),
+        4,
+        "each run read exactly its delta"
+    );
+}

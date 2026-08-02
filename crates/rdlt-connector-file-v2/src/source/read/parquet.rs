@@ -117,6 +117,20 @@ pub(crate) async fn read_task(
     cursor: &mut FileCursor,
     feed: &mut Feed,
 ) -> Result<bool, SourceError> {
+    // A check of the wrong KIND is refused, not ignored — the jsonl
+    // reader's rule, symmetric here: a byte-window hash recorded by a
+    // record reader says nothing about row groups, and skipping it
+    // would silently disarm verification (030 review). Before any IO —
+    // the refusal needs nothing from the file.
+    if let Some(ResumeCheck::TailBytes { .. }) = task.resume_check.as_ref() {
+        return Err(SourceError::fatal(format!(
+            "file `{}` recorded a byte-window integrity value but is being read as row \
+             groups; refusing to resume without a check this reader can evaluate — clear \
+             it from the pipeline state",
+            task.path
+        )));
+    }
+
     let read_path = task.read_path.as_deref().unwrap_or(&task.path);
     let open = || {
         std::fs::File::open(read_path)
@@ -238,5 +252,43 @@ mod tests {
         let pattern = path.to_str().expect("utf8");
         let listing = local_listing_with_row_groups(pattern).expect("lists");
         assert_eq!(listing[0].size_units, 1, "one batch, one group");
+    }
+}
+
+#[cfg(test)]
+mod wrong_kind_tests {
+    use rdlt_connector_sdk::source::Feed;
+    use rdlt_connector_sdk::spi::records_channel;
+
+    use crate::source::cursor::{FileCursor, FileTask, ResumeCheck};
+
+    /// A byte-window check on a row-group reader is refused, never
+    /// ignored — the symmetric twin of the jsonl reader's rule (030
+    /// review: it used to fall through and silently skip groups).
+    #[tokio::test]
+    async fn a_tail_bytes_check_is_refused_not_ignored() {
+        let (out, _keep) = records_channel(1 << 20);
+        let mut feed = Feed::new(out);
+        let mut cursor = FileCursor::default();
+        let task = FileTask {
+            path: "data/a.parquet".into(),
+            read_path: None,
+            start: 1,
+            size_units: 3,
+            mtime_ms: None,
+            etag: None,
+            resume_check: Some(ResumeCheck::TailBytes {
+                window: 10,
+                hash: "beef".into(),
+            }),
+        };
+        let err = super::read_task(&task, &mut cursor, &mut feed)
+            .await
+            .expect_err("refused")
+            .to_string();
+        assert!(
+            err.contains("recorded a byte-window integrity value but is being read as row groups"),
+            "{err}"
+        );
     }
 }

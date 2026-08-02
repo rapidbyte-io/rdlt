@@ -159,23 +159,28 @@ pub(crate) async fn read_task(
             )));
         }
     };
-    let open_at = match verify {
-        Some((window, _)) => task.start - window,
-        None => task.start,
+    // The window is re-read on EVERY resume, verified or not: the tail
+    // this run records must hash the full `min(done, TAIL_WINDOW)`
+    // window the NEXT resume will re-derive, and only the bytes behind
+    // the offset can complete it. Seeding only on the verified path
+    // poisoned every unverified resume under 4 KiB of growth — the
+    // next run refused a healthy append as "rewritten" (030 review).
+    let window = match verify {
+        Some((window, _)) => *window,
+        None => task.start.min(crate::source::cursor::TAIL_WINDOW),
     };
-    let mut file = location.open_from(&task.path, open_at).await?;
-    let mut tail: Vec<u8> = Vec::new();
+    let mut file = location.open_from(&task.path, task.start - window).await?;
+    let mut tail: Vec<u8> = vec![0u8; window as usize];
+    let n = file
+        .read_full(&mut tail)
+        .await
+        .map_err(|e| classify_read_error(&format!("reading `{}`", task.path), e))?;
+    tail.truncate(n);
     if let Some((window, expected)) = verify {
-        // Re-read the recorded window from the SAME reader and compare
-        // count AND hash before trusting the offset: a genuine append
-        // verifies and continues; a rewritten prefix fails loudly.
-        let mut got = vec![0u8; *window as usize];
-        let n = file
-            .read_full(&mut got)
-            .await
-            .map_err(|e| classify_read_error(&format!("reading `{}`", task.path), e))?;
-        got.truncate(n);
-        let matches = n as u64 == *window && blake3::hash(&got).to_hex().to_string() == *expected;
+        // Compare count AND hash before trusting the offset: a genuine
+        // append verifies and continues; a rewritten prefix fails
+        // loudly.
+        let matches = n as u64 == *window && blake3::hash(&tail).to_hex().to_string() == *expected;
         if !matches {
             return Err(SourceError::fatal(format!(
                 "file `{}` was rewritten before the resume offset (the content preceding byte \
@@ -184,7 +189,6 @@ pub(crate) async fn read_task(
                 task.path, task.start
             )));
         }
-        tail = got;
     }
 
     let total_size = task.size_units;
@@ -226,20 +230,35 @@ pub(crate) async fn read_task(
         }
     }
 
-    cursor.record(
-        &task.path,
-        FileProgress {
-            done_units: offset,
-            size_units: offset.max(task.start),
-            ended_at_record_boundary: ended_on_newline,
-            mtime_ms: task.mtime_ms,
-            etag: task.etag.clone(),
-            tail_hash: Some(blake3::hash(&tail).to_hex().to_string()),
-            row_groups_hash: None,
-        },
-    );
-    if feed.checkpoint(cursor.encode()).await == ControlFlow::Break(()) {
-        return Ok(false);
+    // EOF short of the listing size means the file SHRANK while it was
+    // being read. Recording it complete would cap the size down and
+    // let the next run skip the missing bytes silently (030 review,
+    // docket S3) — refuse instead, like every other impossible history.
+    if offset < total_size {
+        return Err(SourceError::fatal(format!(
+            "file `{}` ended at byte {offset} but its listing recorded {total_size} — the \
+             file shrank while it was being read; clear it from the pipeline state or \
+             restore the file",
+            task.path
+        )));
+    }
+    let completion = FileProgress {
+        done_units: offset,
+        size_units: offset,
+        ended_at_record_boundary: ended_on_newline,
+        mtime_ms: task.mtime_ms,
+        etag: task.etag.clone(),
+        tail_hash: Some(blake3::hash(&tail).to_hex().to_string()),
+        row_groups_hash: None,
+    };
+    // Only when it says something new: the last per-slab record is
+    // usually identical, and a load should not end on a redundant
+    // checkpoint (docket S13).
+    if cursor.files.get(&task.path) != Some(&completion) {
+        cursor.record(&task.path, completion);
+        if feed.checkpoint(cursor.encode()).await == ControlFlow::Break(()) {
+            return Ok(false);
+        }
     }
     Ok(true)
 }
@@ -255,6 +274,7 @@ pub(crate) async fn read_task_whole(
     feed: &mut Feed,
 ) -> Result<bool, SourceError> {
     let read_path = task.read_path.as_deref().unwrap_or(&task.path);
+    super::verify_local_snapshot(task)?;
     let reader = open_decoded(read_path, codec_of(&task.path))?;
     let mut offset = 0u64; // decompressed bytes, for error context only
 
