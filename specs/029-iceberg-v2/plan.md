@@ -343,3 +343,31 @@ BEHIND a real context entry, and the mutation was re-run both ways —
 RED without the truncation, green with it. Test-only; no code change.
 
 TERMINUS: all code attacks held across rounds 1-2; the loop closes.
+
+
+## GATE OF RECORD (2026-08-02, tree @ 627e2757) — FEATURE COMPLETE
+
+`make check` TWICE CLEAN, first attempt both, untouched between runs,
+`env -u RUSTUP_TOOLCHAIN`, reclaim + corpse-sweep + drain before each.
+COUNT PREDICTED AND VERIFIED: 1076/1076 both runs (post-028 baseline
+1011 + this crate's 65), 0 skipped. The `TARGET=sweep` leg ran BOTH
+generations' iceberg sweeps (the coexistence line dies at swap-in);
+semver no update required; 6 benches 0 regressed; cold start 23.1/23.6
+ms (bar <= 40).
+
+029 IS COMPLETE: contract inventoried and committed (with three
+corrections to the 016-era prose — shipped behavior frozen), built
+TRUE-greenfield on the sdk under the one-dependency rule (nine modules
+by noun, the D7 receipt-mapping decision recorded), the fresh suite
+green live end to end (65 default + 2 sweep tests: the conformance
+kit certifies the shell — new over generation 1 — plus exactly-once
+replay/resume, mid-window evolution, partitioning, providers,
+concurrency, and the full crash sweep), the review loop closed at
+round 2 terminus (the shared-table silent-corruption refusal and the
+status-parser revision — a wrong client secret classified
+transient-forever in BOTH generations — fixed and pinned; N2's no-WAL
+retry-duplication is the standing owner record), and the gates twice
+clean at the predicted count. The crate coexists UNCONSUMED as
+`rdlt-connector-iceberg-v2`; the swap (delete generation 1, rename,
+port the facade pipeline_spec to `destination::Config` + `Shell::new`)
+is the owner's decision, per the 028 precedent.
