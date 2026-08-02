@@ -1,1 +1,3 @@
-//! STUB TOC — populated by the build sequence (030 plan D4).
+//! The destination half: files as an exactly-once target.
+
+mod layout;
