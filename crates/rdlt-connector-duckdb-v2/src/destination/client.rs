@@ -7,13 +7,52 @@
 //! two database instances, and the second cannot see the first's
 //! un-checkpointed catalog. A cloned connection inherits neither
 //! session-scoped `SET`s nor `LOAD`s, so the recorded setup statements
-//! replay on every clone; skipping the replay would leave the session
-//! that actually writes silently unconfigured.
+//! replay on every clone; the replay is what configures the clone that
+//! performs the load at all — every `SET` and `LOAD` would otherwise
+//! bind only to the idle builder connection.
 
-use std::sync::{Arc, Mutex};
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use duckdb::Connection;
 use rdlt_connector_sdk::spi::DestinationError;
+
+/// Canonical paths held open READ-WRITE by this process, one entry per
+/// live [`Db`]. Read-only oracles (`testhook`) open the library
+/// directly and are deliberately exempt — a read-only open replays the
+/// WAL without touching it.
+fn open_paths() -> &'static Mutex<HashSet<PathBuf>> {
+    static OPEN: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+    OPEN.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// One registry claim, released on drop. Every clone of a [`Db`]
+/// shares the one claim through its `Arc`, so the path frees when the
+/// LAST clone goes — a sequential re-open stays legal.
+#[derive(Debug)]
+struct Claim(PathBuf);
+
+impl Drop for Claim {
+    fn drop(&mut self) {
+        if let Ok(mut open) = open_paths().lock() {
+            open.remove(&self.0);
+        }
+    }
+}
+
+/// The double-open refusal (031 review N2, measured): a second
+/// read-write instance in this process replays AND TRUNCATES the live
+/// instance's WAL at open, silently swallowing every commit the first
+/// makes afterwards.
+fn double_open_refusal(path: &Path) -> DestinationError {
+    DestinationError::fatal(format!(
+        "duckdb database `{}` is already open in this process — a second \
+         instance cannot see the first's writes and a read-write open \
+         would truncate its WAL; share the one destination",
+        path.display()
+    ))
+}
 
 /// One setup statement, recorded for replay-per-clone.
 #[derive(Debug, Clone)]
@@ -48,6 +87,9 @@ impl Setup {
 pub(crate) struct Db {
     conn: Arc<Mutex<Connection>>,
     setup: Arc<Vec<Setup>>,
+    /// Held for its Drop alone: the registry entry that refuses a
+    /// second in-process open of the same file.
+    _claim: Arc<Claim>,
 }
 
 impl std::fmt::Debug for Db {
@@ -65,9 +107,40 @@ impl Db {
         settings: impl IntoIterator<Item = (String, String)>,
         extensions: impl IntoIterator<Item = String>,
     ) -> Result<Self, DestinationError> {
+        // Refuse BEFORE the library open where the hazard is already
+        // knowable: the second read-write `Connection::open` is itself
+        // the WAL-truncating act, so a refusal after it would arrive
+        // with the damage done. The file may not exist yet (first ever
+        // open), in which case nobody can hold it and the check waits
+        // for the definitive claim below.
+        if let Ok(canonical) = path.canonicalize()
+            && open_paths()
+                .lock()
+                .is_ok_and(|open| open.contains(&canonical))
+        {
+            return Err(double_open_refusal(path));
+        }
         // A locked or I/O-pressured file is the environment's problem,
         // not the pipeline's: transient, so the engine retries.
         let conn = Connection::open(path).map_err(classify)?;
+        // Canonicalize AFTER the open — the open creates the file, and
+        // only the canonical spelling makes two documents naming one
+        // file through different paths collide in the registry.
+        let canonical = path.canonicalize().map_err(|e| {
+            DestinationError::fatal(format!("cannot canonicalize `{}`: {e}", path.display()))
+        })?;
+        let claim = {
+            let mut open = open_paths()
+                .lock()
+                .map_err(|_| DestinationError::fatal("open-path registry poisoned"))?;
+            if !open.insert(canonical.clone()) {
+                return Err(double_open_refusal(path));
+            }
+            Arc::new(Claim(canonical))
+        };
+        // Settings are recorded (and applied) BEFORE extensions
+        // deliberately: probed benign for bundled builds, and it keeps
+        // limits like memory_limit in force before any LOAD runs.
         let mut setup = Vec::new();
         for (key, value) in settings {
             setup.push(Setup::Setting { key, value });
@@ -82,6 +155,7 @@ impl Db {
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             setup: Arc::new(setup),
+            _claim: claim,
         })
     }
 
@@ -107,6 +181,13 @@ impl Db {
 /// the ONE transient key is a stable message prefix: `"IO Error"`
 /// covers file locks (another process holding the database) and disk
 /// pressure — both heal on retry. Everything else is fatal.
+///
+/// Classification is UNIFORM across the whole load path (031 review
+/// S2/A3): the receipt probe, the load-committed probe, and
+/// `read_state`'s read arm all route here too — those reads are
+/// idempotent, so a locked-file IO error there deserves the retry
+/// budget, not a run abort. Only `read_state`'s serde-parse arm stays
+/// unconditionally fatal (a corrupt document never heals on retry).
 pub(crate) fn classify(e: duckdb::Error) -> DestinationError {
     if let duckdb::Error::DuckDBFailure(_, Some(message)) = &e
         && message.starts_with("IO Error")
@@ -122,11 +203,6 @@ pub(crate) fn classify(e: duckdb::Error) -> DestinationError {
 pub(crate) fn is_constraint_violation(e: &duckdb::Error) -> bool {
     matches!(e, duckdb::Error::DuckDBFailure(_, Some(message))
         if message.starts_with("Constraint Error"))
-}
-
-/// The default wrap for statements with no classification story.
-pub(crate) fn fatal(e: duckdb::Error) -> DestinationError {
-    DestinationError::fatal(e.to_string())
 }
 
 #[cfg(test)]
@@ -168,5 +244,47 @@ mod tests {
         .expect_err("refused")
         .to_string();
         assert!(err.contains("duckdb setting `threads`"), "{err}");
+    }
+
+    /// The classifier wiring, pinned directly on constructed library
+    /// errors: an `IO Error`-prefixed failure is TRANSIENT, anything
+    /// else is FATAL. The commit path (receipt probe, load-committed
+    /// probe, `read_state`'s read arm) relies on exactly this split.
+    #[test]
+    fn classify_splits_io_errors_transient_everything_else_fatal() {
+        let failure = |message: &str| {
+            duckdb::Error::DuckDBFailure(duckdb::ffi::Error::new(1), Some(message.to_owned()))
+        };
+        assert!(
+            matches!(
+                classify(failure("IO Error: could not set lock on file")),
+                DestinationError::Transient(_)
+            ),
+            "an IO Error rides the retry budget"
+        );
+        assert!(
+            matches!(
+                classify(failure("Binder Error: no such column")),
+                DestinationError::Fatal(_)
+            ),
+            "everything else stays fatal"
+        );
+    }
+
+    /// The in-process double-open guard at the `Db` seam: a second
+    /// connect on the SAME canonical path is refused typed-fatal, and
+    /// dropping the first instance makes a sequential re-open legal
+    /// again.
+    #[test]
+    fn a_second_in_process_connect_is_refused_until_the_first_drops() {
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("one.duckdb");
+        let first = Db::connect(&path, [], []).expect("first open");
+        let err = Db::connect(&path, [], [])
+            .expect_err("second live instance refused")
+            .to_string();
+        assert!(err.contains("already open in this process"), "{err}");
+        drop(first);
+        Db::connect(&path, [], []).expect("sequential re-open is legal");
     }
 }

@@ -68,6 +68,12 @@ pub enum ValidateError {
         table: String,
         col: String,
     },
+    /// A merge-key column absent from the schema — the key could never
+    /// identify a row.
+    KeyColMissing {
+        table: String,
+        col: String,
+    },
     MergeKeyNeedsKeyed {
         table: String,
     },
@@ -131,6 +137,10 @@ impl fmt::Display for ValidateError {
                 "table `{table}`: dedup_sort column `{col}` is part of the \
                  merge key — constant within each identity group, it can \
                  never order survivors"
+            ),
+            ValidateError::KeyColMissing { table, col } => write!(
+                f,
+                "merge key column `{col}` is not a column of table `{table}`"
             ),
             ValidateError::MergeKeyNeedsKeyed { table } => write!(
                 f,
@@ -204,11 +214,35 @@ pub fn validate_merge(
     facts: &TableFacts<'_>,
 ) -> Result<(), ValidateError> {
     let strategy = options.strategy_for(table);
+    check_key(table, key, facts)?;
     check_hard_delete(options, table, facts)?;
     check_dedup_sort(options, table, key, facts)?;
     check_merge_scope(options, table, facts, strategy)?;
     check_upsert(strategy, facts.has_identity, table)?;
     check_scd2(options, table, facts, strategy)?;
+    Ok(())
+}
+
+/// Every merge-key column must exist on the schema — on the tables
+/// that actually merge BY that key: keyed structured roots. Shredded
+/// and child tables merge on the engine's lineage ids and never bind
+/// the declared key as columns, so the declared key is legitimately
+/// absent there. Without this check a ghost key surfaces as whatever
+/// statement first binds it — a different error on every destination,
+/// and on some paths (the arbiter-index DDL) one that risks borrowing
+/// an unrelated diagnosis.
+fn check_key(table: &str, key: &[String], facts: &TableFacts<'_>) -> Result<(), ValidateError> {
+    if facts.has_identity || facts.is_child {
+        return Ok(());
+    }
+    for col in key {
+        if facts.schema.column(col).is_none() {
+            return Err(ValidateError::KeyColMissing {
+                table: table.to_owned(),
+                col: col.clone(),
+            });
+        }
+    }
     Ok(())
 }
 

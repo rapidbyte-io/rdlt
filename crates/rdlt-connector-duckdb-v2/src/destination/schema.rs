@@ -65,19 +65,27 @@ fn scalar_type(scalar: &LogicalType, is_stage: bool) -> String {
 }
 
 /// `CREATE [TEMP ]TABLE IF NOT EXISTS` carrying every column in
-/// schema order; the stage leg is TEMP and stage-shaped.
+/// schema order; the stage leg is TEMP and stage-shaped. The rendered
+/// text is golden-pinned — the statement grows in place, one clause at
+/// a time.
 pub(crate) fn create_table_sql(name: &str, schema: &TableSchema, temp: bool) -> String {
-    let columns = schema
-        .columns
-        .iter()
-        .map(|c| format!("{} {}", quote(&c.name), sql_type(&c.column_type, temp)))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let keyword = if temp { "TEMP " } else { "" };
-    format!(
-        "CREATE {keyword}TABLE IF NOT EXISTS {} ({columns})",
-        quote(name)
-    )
+    let mut sql = String::from("CREATE ");
+    if temp {
+        sql.push_str("TEMP ");
+    }
+    sql.push_str("TABLE IF NOT EXISTS ");
+    sql.push_str(&quote(name));
+    sql.push_str(" (");
+    for (position, column) in schema.columns.iter().enumerate() {
+        if position > 0 {
+            sql.push_str(", ");
+        }
+        sql.push_str(&quote(&column.name));
+        sql.push(' ');
+        sql.push_str(&sql_type(&column.column_type, temp));
+    }
+    sql.push(')');
+    sql
 }
 
 fn leg_name(leg: Leg, schema: &TableSchema) -> (String, bool) {

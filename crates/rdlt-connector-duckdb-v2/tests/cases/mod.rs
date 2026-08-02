@@ -5,6 +5,7 @@ mod test_differential;
 mod test_document;
 mod test_gating;
 mod test_golden_ensure;
+mod test_guards;
 mod test_json;
 mod test_probes;
 mod test_recovery;

@@ -133,6 +133,24 @@ mod tests {
         assert!(from < to && to < first_index, "{plan:?}");
     }
 
+    /// 031 review N1: a merge key naming a column the schema does not
+    /// carry is refused AT VALIDATION with one shared wording — before
+    /// this check, a ghost key sailed through and surfaced as whatever
+    /// statement first bound it, destination by destination.
+    #[test]
+    fn a_merge_key_column_absent_from_the_schema_is_refused() {
+        let err = merge_steps(
+            &DestinationOptions::default(),
+            &schema(vec![col("id", LogicalType::Int64)]),
+            &merge(&["ghost"]),
+        )
+        .expect_err("a ghost merge-key column is a config error");
+        assert_eq!(
+            err.to_string(),
+            "merge key column `ghost` is not a column of table `events`"
+        );
+    }
+
     #[test]
     fn a_non_merge_mode_plans_nothing_but_still_validates() {
         let plan = merge_steps(

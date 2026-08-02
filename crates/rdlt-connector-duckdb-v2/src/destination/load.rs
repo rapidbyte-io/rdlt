@@ -26,7 +26,7 @@ use rdlt_connector_sqlcore::protocol::{
 };
 use rdlt_connector_sqlcore::{DestinationOptions, MergeDialect as _, column_list, names, root_of};
 
-use super::client::{Db, classify, fatal, is_constraint_violation};
+use super::client::{Db, classify, is_constraint_violation};
 use super::dialect::DuckDialect;
 use super::schema::{merge_ddl, quote, stage_name, table_ddl};
 
@@ -79,8 +79,10 @@ impl Load {
     ) -> Result<bool, DestinationError> {
         let sql = unit::receipt_exists_sql(|_| "?".into());
         let count: u64 = conn
-            .query_row(&sql, params![load.as_str(), seq as i64], |row| row.get(0))
-            .map_err(fatal)?;
+            .query_row(&sql, params![load.as_str(), ledger_seq(seq)?], |row| {
+                row.get(0)
+            })
+            .map_err(classify)?;
         Ok(count > 0)
     }
 
@@ -159,7 +161,7 @@ impl Load {
                 Ok(())
             }
             Step::TruncateStage { table } => {
-                let sql = format!("DELETE FROM {}", quote(&stage_name(table.as_str())));
+                let sql = DuckDialect.clear_table(&quote(&stage_name(table.as_str())));
                 self.conn.execute_batch(&sql).map_err(classify)
             }
             Step::UpsertState => {
@@ -167,7 +169,10 @@ impl Load {
                     .map_err(|e| DestinationError::fatal(e.to_string()))?;
                 self.conn
                     .execute(
-                        "INSERT OR REPLACE INTO _rdlt_state VALUES (?, ?)",
+                        &format!(
+                            "INSERT OR REPLACE INTO {} VALUES (?, ?)",
+                            names::STATE_TABLE
+                        ),
                         params![meta.state.pipeline.as_str(), doc],
                     )
                     .map(|_| ())
@@ -178,22 +183,53 @@ impl Load {
             Step::InsertReceipt => self
                 .conn
                 .execute(
-                    "INSERT INTO _rdlt_commits VALUES (?, ?)",
-                    params![meta.load_id.as_str(), meta.commit_seq as i64],
+                    &format!("INSERT INTO {} VALUES (?, ?)", names::COMMITS_TABLE),
+                    params![meta.load_id.as_str(), ledger_seq(meta.commit_seq)?],
                 )
                 .map(|_| ())
                 .map_err(classify),
         }
     }
 
-    /// Plan and execute one commit unit inside ONE transaction.
-    fn run_commit(&mut self, meta: &CommitMeta, replayed: bool) -> Result<(), DestinationError> {
+    /// Plan and execute one commit unit inside ONE transaction — the
+    /// probes included (031 review A2/D7): the replay probe, the
+    /// load-committed probe, and the stage probes all read under the
+    /// SAME snapshot the steps run in, so nothing can move between the
+    /// decision and its execution. This is generation 1's shape.
+    fn run_commit(&mut self, meta: &CommitMeta) -> Result<(), DestinationError> {
+        self.conn.execute_batch("BEGIN").map_err(classify)?;
+        match self.commit_in_tx(meta) {
+            Ok(marks) => {
+                self.conn.execute_batch("COMMIT").map_err(classify)?;
+                // Marks apply ONLY after the transaction committed; the
+                // planner re-emits them on replay, so a crash-recovery
+                // replay re-marks the single-unit discipline.
+                self.single_unit_done.extend(marks);
+                Ok(())
+            }
+            Err(e) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
+    }
+
+    /// Everything between BEGIN and COMMIT: probes, plan, steps, and
+    /// the crash point. Returns the planner's marks for `run_commit`
+    /// to apply after the COMMIT lands.
+    fn commit_in_tx(&self, meta: &CommitMeta) -> Result<Vec<TableName>, DestinationError> {
+        // The durable truth lives in THIS database: a receipt found
+        // here means the unit already committed, and the planner
+        // reduces the script to stage reclamation — the replay branch
+        // arrives at the same answer whether the choreography routed
+        // publish() or replay().
+        let replayed = Self::receipt_recorded(&self.conn, &meta.load_id, meta.commit_seq)?;
         let load_committed_before = {
             let sql = unit::load_committed_sql(|_| "?".into());
             let count: u64 = self
                 .conn
                 .query_row(&sql, params![meta.load_id.as_str()], |row| row.get(0))
-                .map_err(fatal)?;
+                .map_err(classify)?;
             count > 0
         };
         let staged_nonempty = self.staged_nonempty()?;
@@ -211,35 +247,28 @@ impl Load {
             },
         )
         .map_err(|e| DestinationError::fatal(e.to_string()))?;
-
-        self.conn.execute_batch("BEGIN").map_err(classify)?;
-        let run = || -> Result<(), DestinationError> {
-            for step in &script.steps {
-                self.run_step(step, meta)?;
-            }
-            if !replayed {
-                crash_point!(
-                    "duck.tx.commit",
-                    Err(DestinationError::fatal("injected crash at duck.tx.commit"))
-                );
-            }
-            Ok(())
-        };
-        match run() {
-            Ok(()) => {
-                self.conn.execute_batch("COMMIT").map_err(classify)?;
-                // Marks apply ONLY after the transaction committed; the
-                // planner re-emits them on replay, so a crash-recovery
-                // replay re-marks the single-unit discipline.
-                self.single_unit_done.extend(script.marks.iter().cloned());
-                Ok(())
-            }
-            Err(e) => {
-                let _ = self.conn.execute_batch("ROLLBACK");
-                Err(e)
-            }
+        for step in &script.steps {
+            self.run_step(step, meta)?;
         }
+        if !replayed {
+            crash_point!(
+                "duck.tx.commit",
+                Err(DestinationError::fatal("injected crash at duck.tx.commit"))
+            );
+        }
+        Ok(script.marks)
     }
+}
+
+/// The receipt ledger stores `commit_seq` as BIGINT; the engine hands
+/// a u64. The narrowing is checked deliberately (031 review S7) — a
+/// silent wrap would alias two different sequences in the ledger.
+fn ledger_seq(seq: u64) -> Result<i64, DestinationError> {
+    i64::try_from(seq).map_err(|_| {
+        DestinationError::fatal(format!(
+            "commit_seq {seq} exceeds the receipt ledger's BIGINT range"
+        ))
+    })
 }
 
 #[async_trait]
@@ -249,6 +278,27 @@ impl Backend for Load {
         schema: &TableSchema,
         mode: &WriteMode,
     ) -> Result<(), DestinationError> {
+        // Within a session, re-ensure may only ADD columns — the
+        // engine's evolution contract is append-only. A re-ensure that
+        // DROPS a previously ensured column is therefore not
+        // evolution; refuse before any DDL runs (031 review S1).
+        if let Some(previous) = self.previous.get(&schema.table) {
+            let dropped: Vec<&str> = previous
+                .columns
+                .iter()
+                .filter(|c| schema.column(&c.name).is_none())
+                .map(|c| c.name.as_str())
+                .collect();
+            if !dropped.is_empty() {
+                return Err(DestinationError::fatal(format!(
+                    "table `{}`: re-ensure drops previously ensured columns ({}) — \
+                     engine evolution is append-only, so this is two streams \
+                     colliding on one table or a harness defect",
+                    schema.table,
+                    dropped.join(", ")
+                )));
+            }
+        }
         for sql in table_ddl(schema, self.previous.get(&schema.table)) {
             self.conn.execute_batch(&sql).map_err(classify)?;
         }
@@ -288,6 +338,27 @@ impl Backend for Load {
             "duck.append",
             Err(DestinationError::fatal("injected crash at duck.append"))
         );
+        // The appender is POSITIONAL: batch column i lands in stage
+        // column i. The engine contract delivers batch columns in
+        // ensured-schema order — verify instead of trusting (031
+        // review S4), because a reordered batch would land values in
+        // the wrong columns silently. An unensured table never reaches
+        // here: the sdk choreography refuses write-before-ensure.
+        if let Some(ensured) = self.previous.get(table) {
+            let batch_schema = batch.schema();
+            for (i, field) in batch_schema.fields().iter().enumerate() {
+                let want = ensured.columns.get(i).map(|c| c.name.as_str());
+                if want != Some(field.name().as_str()) {
+                    return Err(DestinationError::fatal(format!(
+                        "table `{table}`: batch column {i} is `{}` but the ensured \
+                         schema has `{}` — the stage append is positional; refusing \
+                         to land values in the wrong columns",
+                        field.name(),
+                        want.unwrap_or("no column at that position"),
+                    )));
+                }
+            }
+        }
         let stage = stage_name(table.as_str());
         let mut appender = self.conn.appender(&stage).map_err(classify)?;
         appender.append_record_batch(batch).map_err(classify)?;
@@ -319,20 +390,20 @@ impl Backend for Load {
         // replay the script is stage truncation and nothing else —
         // the redelivered rows reached no reader, so there is nothing
         // to roll back — plus the re-marking of the single-unit
-        // discipline.
+        // discipline. The in-transaction probe re-finds the receipt
+        // the choreography saw, so this is the same call publish makes.
         debug_assert_eq!(
             unit::replay_disposition(FullLoadPublish::Staged),
             unit::ReplayDisposition::RunScript
         );
-        self.run_commit(meta, true)
+        self.run_commit(meta)
     }
 
     async fn publish(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestinationError> {
-        // Defense in depth: the choreography probed the receipt before
-        // calling publish, but the durable truth lives in THIS
-        // database — re-probe so a racing writer cannot double-publish.
-        let replayed = Self::receipt_recorded(&self.conn, &meta.load_id, meta.commit_seq)?;
-        self.run_commit(&meta, replayed)?;
+        // No pre-probe here: the replay decision is taken INSIDE the
+        // commit transaction (031 review A2/D7), where the durable
+        // truth cannot move between the probe and the steps.
+        self.run_commit(&meta)?;
         Ok(CommitReceipt {
             load_id: meta.load_id,
             commit_seq: meta.commit_seq,
@@ -344,16 +415,38 @@ impl Backend for Load {
         pipeline: &PipelineId,
     ) -> Result<Option<StateDoc>, DestinationError> {
         let doc: Result<String, _> = self.conn.query_row(
-            "SELECT doc FROM _rdlt_state WHERE pipeline = ?",
+            &format!("SELECT doc FROM {} WHERE pipeline = ?", names::STATE_TABLE),
             params![pipeline.as_str()],
             |row| row.get(0),
         );
         match doc {
+            // A document that reads but does not parse is corrupt —
+            // that never heals on retry, so this arm stays fatal.
             Ok(doc) => serde_json::from_str(&doc)
                 .map(Some)
                 .map_err(|e| DestinationError::fatal(e.to_string())),
             Err(duckdb::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(fatal(e)),
+            // An idempotent read: classification decides (an IO error
+            // here rides the retry budget).
+            Err(e) => Err(classify(e)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The checked narrowing: in-range sequences pass through, an
+    /// out-of-range one refuses typed instead of wrapping — `as i64`
+    /// here would alias two different sequences in the ledger.
+    #[test]
+    fn ledger_seq_refuses_instead_of_wrapping() {
+        assert_eq!(ledger_seq(7).expect("in range"), 7);
+        let err = ledger_seq(u64::MAX).expect_err("beyond BIGINT").to_string();
+        assert!(
+            err.contains("exceeds the receipt ledger's BIGINT range"),
+            "{err}"
+        );
     }
 }
