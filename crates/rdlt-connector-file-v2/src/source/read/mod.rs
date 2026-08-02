@@ -1,6 +1,7 @@
 //! Reading: one module per format, plus the codec-checked open they
 //! share.
 
+pub(crate) mod csv;
 pub(crate) mod jsonl;
 
 use rdlt_connector_sdk::spi::SourceError;
