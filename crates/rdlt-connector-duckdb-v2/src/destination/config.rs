@@ -63,7 +63,8 @@ impl Document for Config {
             check_bare_identifier("setting", "keys", key).or_else(invalid)?;
             // Both spellings are user-supplied SETs and the later one
             // would silently win — refuse the ambiguity instead.
-            if key == "memory_limit" && self.memory_limit.is_some() {
+            // Case-insensitive: DuckDB SET keys are.
+            if key.eq_ignore_ascii_case("memory_limit") && self.memory_limit.is_some() {
                 return invalid(
                     "`settings.memory_limit` conflicts with the `memory_limit` field — \
                      set one, not both"

@@ -204,16 +204,40 @@ prefix allowance was dead-permissive (the appender demands exact
 arity — probed), so the guard is exact-arity with a typed refusal.
 TERMINUS.
 
+**Rounds 3-4 — the owner-directed /code-review loop** (the skill's
+5-lens process + rubric scoring). Round 3 found what two rounds had
+not, both scored 75 with traces verified to the library source, both
+fixed + pinned: THE REORDER TRACE — a same-set different-order
+re-ensure passed the drop-guard, emitted no DDL (the physical TEMP
+stage keeps creation order), and overwrote `previous`, so the
+positional write guard then blessed value-swapping batches; the
+ensure guard is now SEQUENCE-PREFIX (drops and reorders each refused
+by name). THE TOCTOU — pre-check, open, and claim were three lock
+scopes, so a connect could pass the check, sleep past the winner's
+commits, and open (the truncating act) before its insert refused;
+the whole check-open-claim sequence now holds the registry lock.
+Plus: the two unpinned guard branches pinned (exact arity, reorder),
+the WAL-survival cell (a refused open truncates nothing), the
+concurrency smoke (8 threads, exactly one holder — hardened in round
+4 so claims outlive all checks after the verifier identified the
+original shape as the one-off transient's likely suspect; 500
+targeted runs clean), the settings/memory_limit conflict refused
+(case-insensitive, DuckDB SET keys are), and three comment
+truth-fixes. Round 4 verified every fix (deadlock analysis, guard
+misfire analysis, smoke determinism, 73/73 twice + 319/319
+cross-crates + clippy 0): TERMINUS.
+
 ## GATE OF RECORD — TWICE CLEAN
 
-Both gates `env -u RUSTUP_TOOLCHAIN make check` on the terminus tree,
-FIRST ATTEMPT each, counts predicted and verified: 1092/1092 both
-runs (= 1024 post-030 baseline + this crate's 67 offline tests +
-sqlcore's new N1 pin), 0 skipped; the 24-cell crash sweep inside
-TARGET=sweep; semver: no update required; 6 benches 0 regressed;
-cold start 19.8/19.8 ms (bar <= 40). Hygiene between gates: test
-images/labels only (never the dev toolbox), volume prune, TIME_WAIT
-drain.
+Pre-/code-review gates on the round-2 tree, FIRST ATTEMPT each,
+counts predicted and verified: 1092/1092 both runs (= 1024 post-030
+baseline + this crate's 67 offline tests + sqlcore's new N1 pin), 0
+skipped; the 24-cell crash sweep inside TARGET=sweep; semver: no
+update required; 6 benches 0 regressed; cold start 19.8/19.8 ms (bar
+<= 40). Hygiene between gates: test images/labels only (never the dev
+toolbox), volume prune, TIME_WAIT drain. Post-/code-review gates on
+the terminus tree: recorded below at the predicted 1097 (+4 round-3
+pins, +1 config-conflict pin).
 
 STATUS: COMPLETE. The crate coexists unconsumed (publish = false);
 the swap — delete gen 1, rename, port the facade's DestSpec::Duckdb

@@ -311,18 +311,21 @@ async fn concurrent_connects_admit_exactly_one_holder() {
 
     let dir = tempfile::tempdir().expect("dir");
     let path = dir.path().join("race.duckdb");
+    // Each thread RETURNS its Shell so every claim outlives every
+    // check — without that, a fast winner's open-and-drop lets a slow
+    // straggler in as a legal sequential re-open and the exactly-one
+    // assertion would constrain the scheduler, not the registry.
     let mut handles = Vec::new();
     for _ in 0..8 {
         let path = path.clone();
-        handles.push(std::thread::spawn(move || {
-            Shell::new(Config::new(&path)).is_ok()
-        }));
+        handles.push(std::thread::spawn(move || Shell::new(Config::new(&path))));
     }
-    let admitted = handles
+    let results: Vec<_> = handles
         .into_iter()
         .map(|h| h.join().expect("no panic"))
-        .filter(|ok| *ok)
-        .count();
+        .collect();
+    let admitted = results.iter().filter(|r| r.is_ok()).count();
     assert_eq!(admitted, 1, "exactly one connect wins the claim");
+    drop(results);
     Shell::new(Config::new(&path)).expect("released after all drops");
 }

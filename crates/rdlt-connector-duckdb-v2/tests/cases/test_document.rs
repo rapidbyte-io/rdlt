@@ -57,3 +57,24 @@ async fn a_first_load_lands_and_counts() {
         3
     );
 }
+
+/// Both memory-limit spellings at once are refused — the later SET
+/// would silently win otherwise; case-insensitive because DuckDB SET
+/// keys are.
+#[test]
+fn memory_limit_in_settings_conflicts_with_the_field() {
+    for spelling in ["memory_limit", "MEMORY_LIMIT"] {
+        let mut config = Config::new("x.duckdb");
+        config.memory_limit = Some("1GB".to_owned());
+        config.settings = Some(
+            [(spelling.to_owned(), "8GB".to_owned())]
+                .into_iter()
+                .collect(),
+        );
+        let err = config.validate().expect_err("refused").to_string();
+        assert!(
+            err.contains("conflicts with the `memory_limit` field"),
+            "{spelling}: {err}"
+        );
+    }
+}
