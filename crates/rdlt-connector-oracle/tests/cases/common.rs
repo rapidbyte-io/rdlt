@@ -12,26 +12,66 @@ use testcontainers::{ContainerAsync, GenericImage, ImageExt};
 
 pub const PASSWORD: &str = "rdlt-probe-pw";
 pub const APP_USER: &str = "rdlt";
-pub const SERVICE: &str = "FREEPDB1";
-/// Pinned: a floating tag re-resolves on upstream's schedule and
-/// would hand their broken day to our gate. Bump deliberately, with
-/// the live cells green on the new tag.
-pub const IMAGE_TAG: &str = "23.26.2-slim-faststart";
+
+/// Which Oracle a cell runs against.
+///
+/// The connector is claimed to work across generations, and a claim
+/// no cell exercises is a wish. The two flavors differ in more than a
+/// tag: the service name, and — the reason this matters — the
+/// server's protocol capabilities. 23ai negotiates a ub8 row-count
+/// token the vendored driver had to be patched for; 21c does not send
+/// it. Running the SAME cells against both is what proves the patch
+/// reads the capability rather than assuming the newer wire.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Flavor {
+    /// Oracle Free 23ai — the default the gate runs.
+    Free23,
+    /// Oracle XE 21c — the older generation.
+    Xe21,
+}
+
+impl Flavor {
+    /// Pinned tags: a floating tag re-resolves on upstream's schedule
+    /// and would hand their broken day to our gate. Bump
+    /// deliberately, with the live cells green on the new tag.
+    pub fn image(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Free23 => ("docker.io/gvenzl/oracle-free", "23.26.2-slim-faststart"),
+            Self::Xe21 => ("docker.io/gvenzl/oracle-xe", "21.3.0-slim-faststart"),
+        }
+    }
+
+    pub fn service(self) -> &'static str {
+        match self {
+            Self::Free23 => "FREEPDB1",
+            Self::Xe21 => "XEPDB1",
+        }
+    }
+}
 
 pub struct OracleFixture {
     _container: ContainerAsync<GenericImage>,
     pub host: String,
     pub port: u16,
+    pub flavor: Flavor,
 }
 
 impl OracleFixture {
-    /// Start Oracle Free, or skip visibly (None) without a runtime.
+    /// Start Oracle Free 23ai, or skip visibly (None) without a
+    /// runtime.
     pub async fn start() -> Option<Self> {
+        Self::start_on(Flavor::Free23).await
+    }
+
+    /// Start the named Oracle, or skip visibly (None) without a
+    /// runtime.
+    pub async fn start_on(flavor: Flavor) -> Option<Self> {
         if !rdlt_testkit::gate::runtime_available() {
             eprintln!("SKIP: no container runtime socket — oracle live cells not run");
             return None;
         }
-        let container = GenericImage::new("docker.io/gvenzl/oracle-free", IMAGE_TAG)
+        let (image, tag) = flavor.image();
+        let container = GenericImage::new(image, tag)
             .with_exposed_port(1521.tcp())
             // The log line fires BEFORE the PDB registers with the
             // listener; the readiness poll below closes that gap
@@ -43,7 +83,7 @@ impl OracleFixture {
             .with_label(rdlt_testkit::gate::RECLAIM_LABEL, "1")
             .start()
             .await
-            .expect("start oracle-free (runtime socket present)");
+            .unwrap_or_else(|e| panic!("start {image}:{tag} (runtime socket present): {e}"));
         let port = container
             .get_host_port_ipv4(1521)
             .await
@@ -52,6 +92,7 @@ impl OracleFixture {
             _container: container,
             host: "127.0.0.1".to_owned(),
             port,
+            flavor,
         };
         fixture.await_service().await;
         Some(fixture)
@@ -83,7 +124,7 @@ impl OracleFixture {
         let value = serde_json::json!({
             "host": self.host,
             "port": self.port,
-            "service": SERVICE,
+            "service": self.flavor.service(),
             "user": APP_USER,
             "password": PASSWORD,
             "streams": if streams.is_empty() {
@@ -106,7 +147,7 @@ impl OracleFixture {
     /// a seeded table read back empty.
     pub async fn seed(&self, statements: &[&str]) {
         let conn = oracle_rs::connection::Connection::connect(
-            &format!("{}:{}/{SERVICE}", self.host, self.port),
+            &format!("{}:{}/{}", self.host, self.port, self.flavor.service()),
             APP_USER,
             PASSWORD,
         )

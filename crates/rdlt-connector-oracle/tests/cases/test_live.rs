@@ -5,7 +5,7 @@ use rdlt_connector_sdk::spi::core::StreamName;
 use rdlt_connector_sdk::spi::{Source, StreamSpec};
 use rdlt_testkit::{assert_conformant, verify_source};
 
-use super::common::{OracleFixture, incremental, stream};
+use super::common::{Flavor, OracleFixture, incremental, stream};
 
 /// Collect one stream's rows through the SPI, returning the JSON
 /// objects and the final cursor.
@@ -312,4 +312,68 @@ async fn a_date_cursor_resumes_across_runs() {
     let (delta, _) = read_all(&shell, "datec", Some(cursor)).await;
     assert_eq!(delta.len(), 1, "a DATE watermark resumes exactly");
     assert_eq!(delta[0]["id"], serde_json::json!(999));
+}
+
+/// The SAME read path against Oracle XE **21c**.
+///
+/// The connector claims to work across Oracle generations, and a
+/// claim no cell exercises is a wish. This is not a tag swap: 23ai
+/// negotiates a ub8 row-count token that the vendored fetch patch had
+/// to learn, and 21c does not send it — so this cell is what proves
+/// the patch READS the capability instead of assuming the newer wire.
+/// It also covers the older server's type and ROWID behaviour through
+/// the same keyset paging.
+///
+/// Deliberately one cell, not the whole suite: 21c costs another
+/// ~75 s of gate time, and what differs across generations is the
+/// wire and the types, both of which this exercises.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_read_path_holds_against_oracle_21c() {
+    let Some(fixture) = OracleFixture::start_on(Flavor::Xe21).await else {
+        return;
+    };
+    fixture
+        .seed(&[
+            "CREATE TABLE XE_T (\
+               ID NUMBER(8) PRIMARY KEY, \
+               NAME VARCHAR2(64), \
+               AMOUNT NUMBER(12,2), \
+               TS TIMESTAMP WITH TIME ZONE NOT NULL, \
+               BODY CLOB, \
+               RAWS BLOB)",
+            "INSERT INTO XE_T VALUES (1, 'first', 10.25, \
+             TIMESTAMP '2026-01-01 10:00:00 +00:00', 'hello', \
+             UTL_RAW.CAST_TO_RAW('bytes'))",
+            "INSERT INTO XE_T VALUES (2, 'sécond', -3.5, \
+             TIMESTAMP '2026-01-02 10:00:00 +00:00', NULL, NULL)",
+            "INSERT INTO XE_T SELECT LEVEL + 10, 'bulk', LEVEL, \
+             TIMESTAMP '2026-02-01 10:00:00 +00:00' + NUMTODSINTERVAL(LEVEL, 'SECOND'), \
+             NULL, NULL FROM DUAL CONNECT BY LEVEL <= 600",
+        ])
+        .await;
+
+    let shell = fixture.shell(&[incremental("xe", "XE_T", "TS")]);
+    let (rows, cursor) = read_all(&shell, "xe", None).await;
+    assert_eq!(rows.len(), 602, "every row crosses the 21c wire");
+    assert_eq!(rows[0]["name"], serde_json::json!("first"));
+    // Exact Decimal crosses as TEXT by design — a JSON number is an
+    // IEEE double and cannot carry NUMBER(12,2) losslessly.
+    assert_eq!(rows[0]["amount"], serde_json::json!("10.25"));
+    assert_eq!(rows[1]["amount"], serde_json::json!("-3.5"));
+    assert_eq!(rows[0]["body"], serde_json::json!("hello"));
+    assert_eq!(rows[1]["name"], serde_json::json!("sécond"), "utf-8 intact");
+    assert!(rows[1]["body"].is_null(), "a NULL LOB stays null");
+
+    // And it resumes: the older server's ROWID and timestamp
+    // renderings have to survive a round trip through the cursor.
+    let cursor = cursor.expect("a checkpoint landed");
+    fixture
+        .seed(&[
+            "INSERT INTO XE_T VALUES (9999, 'late', 1, \
+             TIMESTAMP '2027-01-01 10:00:00 +00:00', NULL, NULL)",
+        ])
+        .await;
+    let (delta, _) = read_all(&shell, "xe", Some(cursor)).await;
+    assert_eq!(delta.len(), 1, "21c resumes exactly");
+    assert_eq!(delta[0]["id"], serde_json::json!(9999));
 }

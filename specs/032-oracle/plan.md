@@ -259,6 +259,52 @@ ones — and expose the SDU as config for operators who raise it
 server-side. Wide-row streaming at high throughput is the recorded
 motivation for the resumable-parser work, whoever takes it.
 
+## REVIEW ROUNDS
+
+The connector was built, then attacked. Each round is recorded with
+what it found, because the pattern of what a round finds is the useful
+part — not the count.
+
+### Round 1 — eleven findings, all fixed
+
+Five reviewers over the fresh code. The class that dominated: the
+connector trusted values it had not checked. A cursor value that was
+NULL, a ROWID that was not shaped like a ROWID, a watermark compared
+as a `String` (so `"99" > "150"` and a 150-row read checkpointed 99),
+numerics arriving as text and rendering as JSON strings. Each fixed
+and pinned.
+
+### Round 2 — eight defects, and the worst was round 1's own fix
+
+D1/D2 are the round's lesson. Round 1 found that a NULL cursor value
+silently SKIPPED its row; the fix kept the row — and
+`unwrap_or_default()` then persisted an EMPTY watermark, which
+`checked_watermark_literal` refuses on the next run. The cursor
+poisoned itself. Both behaviours were wrong for the same reason: a
+watermark has no representation for NULL, so neither keeping nor
+dropping the row is honest. The read now REFUSES and names the three
+remedies. **A fix is not a fix until it has been attacked too.**
+
+The rest:
+
+- **D3** the page was sized from the REQUESTED `sdu_bytes`, but the
+  server negotiates the real value and the driver exposes no accessor
+  for what was agreed — a larger request would size pages for packets
+  that never arrive. Capped at the accepted default (512..=8192).
+- **D4** `read_config`/`is_json` in the facade were cfg-gated without
+  `oracle`, so `--features oracle` alone did not compile.
+- **D5** `connect_timeout` never reached the driver's config path (it
+  belongs to a transport the config constructor does not use) — a
+  black-holed host hung forever. Enforced at the boundary instead.
+- **D6** the statement budget covered queries only; LOB reads (many
+  round trips) and the session pin could stall unbounded.
+- **D7** the vendored `set_prefetch_rows` doc still claimed the
+  multi-packet reader that was attempted and REVERTED.
+- **D8** a persisted tie steered a stream whose cursor had been
+  removed, starting every full read at that ROWID and skipping
+  everything below it — and the full-read path never checkpoints, so
+  nothing corrected it.
+
 ## STATUS
 
 - Branch created; research committed (R1-R3); this plan written;
