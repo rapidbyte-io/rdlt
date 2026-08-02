@@ -9,6 +9,22 @@ max-threads = 3
 filter = "package(rdlt-connector-iceberg) and not binary(config_schema)"
 test-group = "iceberg-live"
 
+# COEXISTENCE ONLY — dies with generation 1 at the snowflake swap-in.
+# The conformance kit fixes its pipeline and load identities
+# ("rdlt-conformance"/"conf-load-a"), and both snowflake generations
+# derive the same LOCAL staging directory from exactly those two names —
+# so the two conformance cells, run concurrently, can reclaim each
+# other's in-flight part out of /tmp (observed in a gate: gen 1's D1
+# write lost its parquet under it). Every other live cell uses a unique
+# pipeline name and an engine-generated load id. Serialise just these
+# two.
+[test-groups.snowflake-conformance]
+max-threads = 1
+
+[[profile.default.overrides]]
+filter = "(package(rdlt-connector-snowflake) or package(rdlt-connector-snowflake-v2)) and test(conformant)"
+test-group = "snowflake-conformance"
+
 # The flake-recording profile (feature 020 US8).
 #
 # Six container flakes are recorded across features 015-019, each handled the
