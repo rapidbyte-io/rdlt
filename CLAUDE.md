@@ -11,6 +11,47 @@ integrity first (this feature), house style second.
 
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
+`specs/030-file-v2/plan.md` (feature: FILE FAMILY SECOND GENERATION —
+COMPLETE on branch `030-file-v2` (off main @ 8a10d0fe; NOT merged, NOT
+swapped): the file family rewritten TRUE-greenfield on the connector
+sdk as `rdlt-connector-file-v2`, BOTH halves (source + destination —
+the postgres shape), coexisting UNCONSUMED beside generation 1; the
+swap is the owner's decision (D6). The committed CONTRACT INVENTORY
+(specs/030-file-v2/contract-inventory.md) is authoritative: persisted
+cursor v1 wire keys done/size/eol (+ additive mtime_ms/etag/tail_hash/
+row_groups_hash), the TAIL-HASH resume rulebook, the 4-phase commit
+(replay dedup from the _rdlt_commits receipt log → receipt-guarded
+once-per-load Replace truncation → deterministic publish → state then
+receipt LAST), the ownership-precise truncation shape rule, all 11
+crash points, every frozen message spelling, and the 14-item
+suspicious docket. FIVE REVIEW ROUNDS (terminus round 5). The big
+catches, all fixed+pinned: the gen-1 STAGED-NAME AMBIGUITY —
+{load}-{table}-{slug}-{index} with `-` legal in tables AND slugs let
+(events, us-east) and (events-us, east) share ONE staging file =
+silent cross-table corruption; amended to table-as-path-segment
+(staging is transient, reclaimed wholesale — not a persisted format);
+a partition VALUE of `..` escaped the table directory via path
+resolution (now __dot__/__dotdot__ sentinels); duplicate CSV headers
+silently dropped a column (typed refusal); tail-hash poisoning on
+unverified resumes (a healthy append refused as rewritten, advice
+that duplicates); wildcards reached dot-prefixed names through `**`
+(uncommitted staged parts readable by a data glob); the parquet
+reader silently ignored a wrong-kind resume check; no future-version
+gate on the cursor; the per-commit part-index defect (caught LIVE by
+the S3 crash sweep: 6 rows where 4 loaded). An anti-transcription
+verdict forced a full re-derivation of the read/location layers
+mid-review (memory: rewrite means no copying). Weld proofs carried
+verbatim from gen 1 caught 4 paraphrased planner spellings. Both sdk
+conformance kits certify the Shells. Suite: 107 offline + the
+failpoints crash_sweep binary (11 points × 3 actions, S3 arm against
+RUSTFS skip-not-fail) wired into TARGET=sweep beside gen 1. GATES
+TWICE CLEAN at the PREDICTED 1131/1131 (= 1024 + 107; semver clean, 0
+regressed, cold 23.4/23.8 ms). STANDING OWNER RECORDS: S4 path_safe
+collisions merge partitions (frozen layout); S6 two concurrent
+sessions of one pipeline destroy each other's staging; S9
+type_hints/validate accepted-and-ignored off their formats. plan.md
+carries D1-D7, the five review rounds, and the gate of record.)
+Previous feature 029 for reference:
 `specs/029-iceberg-v2/plan.md` (feature: ICEBERG SECOND GENERATION —
 COMPLETE and SWAPPED IN on branch `029-iceberg-v2` (stacked on 028's
 branch; NOT merged): the destination rewritten TRUE-greenfield on the
