@@ -4330,6 +4330,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "rdlt-connector-iceberg-v2"
+version = "0.3.0"
+dependencies = [
+ "arrow-array",
+ "arrow-cast",
+ "arrow-schema",
+ "async-trait",
+ "iceberg",
+ "iceberg-catalog-rest",
+ "iceberg-storage-opendal",
+ "jsonschema",
+ "parquet",
+ "rdlt-connector-sdk",
+ "rdlt-engine",
+ "rdlt-testkit",
+ "reqwest 0.12.28",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "rdlt-connector-postgres"
 version = "0.3.0"
 dependencies = [
