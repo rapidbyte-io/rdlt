@@ -158,9 +158,18 @@ impl Document for Config {
         if self.tuning.lob_chunk_bytes == 0 {
             return invalid("`tuning.lob_chunk_bytes` is 0 — a LOB read must make progress".into());
         }
-        if self.tuning.sdu_bytes < 512 {
+        // The page size is derived from THIS number, but the server
+        // negotiates the real SDU and the driver reads one packet per
+        // reply — and it exposes no accessor for what was agreed. So a
+        // value above the universally-accepted default could size
+        // pages for packets the server will never send, truncating
+        // replies while reporting success. Until the negotiated value
+        // is readable, the safe ceiling is the default.
+        if self.tuning.sdu_bytes < 512 || self.tuning.sdu_bytes > 8192 {
             return invalid(format!(
-                "`tuning.sdu_bytes` is {} — Oracle's minimum session data unit is 512",
+                "`tuning.sdu_bytes` is {} — this build reads one packet per reply and \
+                 cannot confirm what the server negotiated, so the supported range is \
+                 512..=8192",
                 self.tuning.sdu_bytes
             ));
         }

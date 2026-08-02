@@ -259,13 +259,18 @@ impl From<crate::RdltError> for SpecError {
 /// Source config files: YAML by default, JSON when the file says so — the same
 /// document shape either way (the library's from_yaml/from_json share
 /// validation; embedders pass serde_json::Value via from_value).
-#[cfg(any(feature = "rest", feature = "file", feature = "postgres-source"))]
+#[cfg(any(
+    feature = "rest",
+    feature = "file",
+    feature = "postgres-source",
+    feature = "oracle"
+))]
 fn is_json(path: &std::path::Path) -> bool {
     path.extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("json"))
 }
 
-#[cfg(any(feature = "rest", feature = "file"))]
+#[cfg(any(feature = "rest", feature = "file", feature = "oracle"))]
 fn read_config(path: &std::path::Path) -> Result<String, SpecError> {
     std::fs::read_to_string(path)
         .map_err(|e| SpecError::resolve(format!("reading {}: {e}", path.display())))

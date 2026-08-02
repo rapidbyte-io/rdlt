@@ -105,7 +105,14 @@ pub(crate) async fn read_stream(
     // page or the stream would end early and call it success.
     client = client.with_page_size(page_rows);
 
-    let mut resume = cursor.streams.get(&stream.name).cloned();
+    // The persisted state steers ONLY a cursor-paged stream. Carrying
+    // a leftover tie into a full read would start every run at that
+    // ROWID and silently skip everything below it — and the full-read
+    // path never checkpoints, so nothing would ever correct it.
+    let mut resume = match &cursor_column {
+        Some(_) => cursor.streams.get(&stream.name).cloned(),
+        None => None,
+    };
 
     loop {
         let where_clause = match (&cursor_column, &resume) {
@@ -195,7 +202,27 @@ pub(crate) async fn read_stream(
                     )
                 })?;
             let watermark = match cursor_at {
-                Some(at) => row.values().get(at).and_then(watermark_text),
+                Some(at) => {
+                    let value = row.values().get(at);
+                    let text = value.and_then(watermark_text);
+                    if text.is_none() {
+                        // NULL (or an unorderable value) in the cursor
+                        // column: a watermark cannot represent it, and
+                        // both alternatives are silent data defects —
+                        // persisting an empty watermark poisons the
+                        // cursor for every later run, and skipping the
+                        // row hides it forever behind `c > w`. Refuse,
+                        // naming the fix.
+                        return Err(SourceError::fatal(format!(
+                            "stream `{}`: cursor column `{}` is NULL (or unorderable) in a \
+                             row — a watermark cannot order it; make the column NOT NULL, \
+                             choose another cursor, or read the stream without one",
+                            stream.name,
+                            stream.cursor.as_deref().unwrap_or_default()
+                        )));
+                    }
+                    text
+                }
                 None => None,
             };
             last_seen = Some((watermark.unwrap_or_default(), rowid));

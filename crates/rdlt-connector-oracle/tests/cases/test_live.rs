@@ -251,3 +251,65 @@ async fn the_source_is_conformant() {
     assert_conformant(verify_source(&shell).await);
     let _ = StreamName::new("conf_stream");
 }
+
+/// A NULL in the cursor column is refused, not absorbed.
+///
+/// Oracle sorts NULLs LAST, so the final row of a full read carries
+/// one — and both silent alternatives are data defects: persisting an
+/// empty watermark poisons every later run, and skipping the row
+/// hides it forever behind `c > w`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_null_cursor_value_is_refused() {
+    let Some(fixture) = OracleFixture::start().await else {
+        return;
+    };
+    fixture
+        .seed(&[
+            "CREATE TABLE NULLC_T (ID NUMBER(8) PRIMARY KEY, TS DATE)",
+            "INSERT INTO NULLC_T SELECT LEVEL, DATE '2026-01-01' FROM DUAL CONNECT BY LEVEL <= 5",
+            "INSERT INTO NULLC_T VALUES (99, NULL)",
+        ])
+        .await;
+    let shell = fixture.shell(&[incremental("nullc", "NULLC_T", "TS")]);
+    let (out, _keep) = rdlt_connector_sdk::spi::records_channel(1 << 20);
+    let err = shell
+        .read(rdlt_connector_sdk::spi::ReadRequest {
+            stream: StreamSpec::new("nullc"),
+            since: None,
+            out,
+        })
+        .await
+        .expect_err("refused")
+        .to_string();
+    assert!(
+        err.contains("cursor column `TS` is NULL") && err.contains("make the column NOT NULL"),
+        "{err}"
+    );
+}
+
+/// A DATE cursor resumes — the rendering and the SQL format model
+/// have to agree exactly, which they did not before this was pinned.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_date_cursor_resumes_across_runs() {
+    let Some(fixture) = OracleFixture::start().await else {
+        return;
+    };
+    fixture
+        .seed(&[
+            "CREATE TABLE DATEC_T (ID NUMBER(8) PRIMARY KEY, TS DATE NOT NULL)",
+            "INSERT INTO DATEC_T SELECT LEVEL, DATE '2026-01-01' + LEVEL FROM DUAL \
+             CONNECT BY LEVEL <= 40",
+        ])
+        .await;
+    let shell = fixture.shell(&[incremental("datec", "DATEC_T", "TS")]);
+    let (first, cursor) = read_all(&shell, "datec", None).await;
+    assert_eq!(first.len(), 40);
+    let cursor = cursor.expect("a checkpoint landed");
+
+    fixture
+        .seed(&["INSERT INTO DATEC_T VALUES (999, DATE '2027-06-01')"])
+        .await;
+    let (delta, _) = read_all(&shell, "datec", Some(cursor)).await;
+    assert_eq!(delta.len(), 1, "a DATE watermark resumes exactly");
+    assert_eq!(delta[0]["id"], serde_json::json!(999));
+}

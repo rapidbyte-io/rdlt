@@ -762,9 +762,15 @@ impl Connection {
     }
 
     /// rdlt patch (032): set how many rows each query round trip
-    /// requests. The wire field is a ub4 and the response is read
-    /// with the multi-packet reader, so a large page is safe and
-    /// removes the round trip per 100 rows.
+    /// requests. The wire field is a ub4, so this is a real knob.
+    ///
+    /// THE STANDING LIMIT: a reply is read as ONE SDU packet — the
+    /// multi-packet read was attempted and REVERTED (it hangs on
+    /// queries; a marker-based terminator cuts wide rows mid-message;
+    /// correct termination needs a resumable parser). A large
+    /// prefetch is therefore safe only while
+    /// `rows * row_width < SDU`, and sizing that is the caller's
+    /// obligation.
     pub fn set_prefetch_rows(&mut self, rows: u32) {
         self.default_prefetch_rows = rows.max(1);
     }

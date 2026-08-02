@@ -58,9 +58,25 @@ impl Client {
             .or_else(|| config.sid.clone().map(|s| format!("SID `{s}`")))
             .unwrap_or_default();
         let connect_string = format!("{}:{} {named}", config.host, config.port);
-        let conn = oracle_rs::connection::Connection::connect_with_config(driver)
-            .await
-            .map_err(|e| classify(&format!("connecting to `{connect_string}`"), e))?;
+        // The driver's own `connect_timeout` never reaches this path
+        // (it belongs to a transport the config constructor does not
+        // use), so the budget is enforced here — a black-holed host
+        // must not hang a pipeline forever.
+        let budget = std::time::Duration::from_millis(config.tuning.connect_timeout_ms);
+        let conn = match tokio::time::timeout(
+            budget,
+            oracle_rs::connection::Connection::connect_with_config(driver),
+        )
+        .await
+        {
+            Ok(Ok(conn)) => conn,
+            Ok(Err(e)) => return Err(classify(&format!("connecting to `{connect_string}`"), e)),
+            Err(_) => {
+                return Err(SourceError::transient(format!(
+                    "connecting to `{connect_string}`: no answer within {budget:?}"
+                )));
+            }
+        };
         let client = Self {
             conn,
             read_timeout: std::time::Duration::from_millis(config.tuning.read_timeout_ms),
@@ -83,15 +99,18 @@ impl Client {
     /// connections, and ignoring it blindly would hide a real miss.
     /// Reading the effect back settles both.
     async fn pin_session(&self) -> Result<(), SourceError> {
-        let _ = self
-            .conn
-            .execute("ALTER SESSION SET TIME_ZONE='UTC'", &[])
-            .await;
-        let observed = self
-            .conn
-            .query("SELECT SESSIONTIMEZONE FROM DUAL", &[])
-            .await
-            .map_err(|e| classify("reading back the session time zone", e))?;
+        let _ = tokio::time::timeout(
+            self.read_timeout,
+            self.conn.execute("ALTER SESSION SET TIME_ZONE='UTC'", &[]),
+        )
+        .await;
+        let observed = tokio::time::timeout(
+            self.read_timeout,
+            self.conn.query("SELECT SESSIONTIMEZONE FROM DUAL", &[]),
+        )
+        .await
+        .map_err(|_| SourceError::transient("reading back the session time zone: no answer"))?
+        .map_err(|e| classify("reading back the session time zone", e))?;
         let zone = observed
             .rows
             .first()
@@ -172,28 +191,33 @@ impl Client {
                 };
             }
         };
+        // The statement budget covers LOB reads too: they are many
+        // round trips, and a stalled one hangs the load exactly as a
+        // stalled query would.
         if locator.is_clob() {
             let mut text = String::new();
-            self.conn
+            tokio::time::timeout(self.read_timeout, self.conn
                 .read_lob_chunked(locator, self.lob_chunk, |chunk| {
                     if let LobData::String(piece) = &chunk {
                         text.push_str(piece);
                     }
                     async { Ok(()) }
-                })
+                }))
                 .await
+                .map_err(|_| SourceError::transient("reading a CLOB: no answer within the budget"))?
                 .map_err(|e| classify("reading a CLOB", e))?;
             Ok(serde_json::Value::String(text))
         } else {
             let mut bytes = Vec::new();
-            self.conn
+            tokio::time::timeout(self.read_timeout, self.conn
                 .read_lob_chunked(locator, self.lob_chunk, |chunk| {
                     if let LobData::Bytes(piece) = &chunk {
                         bytes.extend_from_slice(piece);
                     }
                     async { Ok(()) }
-                })
+                }))
                 .await
+                .map_err(|_| SourceError::transient("reading a BLOB: no answer within the budget"))?
                 .map_err(|e| classify("reading a BLOB", e))?;
             Ok(serde_json::Value::String(
                 bytes.iter().map(|b| format!("{b:02x}")).collect(),

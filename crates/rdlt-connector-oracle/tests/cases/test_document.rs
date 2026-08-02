@@ -118,7 +118,17 @@ fn refusals_name_their_field() {
                 v["tuning"] = serde_json::json!({"sdu_bytes": 128});
                 v
             },
-            "Oracle's minimum session data unit is 512",
+            "the supported range is 512..=8192",
+        ),
+        (
+            {
+                let mut v = base();
+                // Above the default the page would be sized for
+                // packets the server may never send.
+                v["tuning"] = serde_json::json!({"sdu_bytes": 65535});
+                v
+            },
+            "cannot confirm what the server negotiated",
         ),
         (
             {
