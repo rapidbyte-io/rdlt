@@ -1,0 +1,39 @@
+[package]
+name = "rdlt-connector-oracle"
+description = "rdlt Oracle source: pure-Rust wire driver, consistent-snapshot keyset reads, watermark cursors"
+# New connector, unpublished until the workspace's 0.3.0 wave.
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+failpoints = ["rdlt-connector-sdk/failpoints"]
+
+[dependencies]
+# The sdk plus THE recorded driver exception (like duckdb's own
+# driver): oracle-rs is pure Rust (no OCI/Instant Client), rustls,
+# structured ORA codes. Its release defect class is designed around —
+# see specs/032-oracle/plan.md T001.
+rdlt-connector-sdk = { workspace = true, features = ["schema"] }
+async-trait = { workspace = true }
+oracle-rs = "0.1.7"
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+jsonschema = { workspace = true }
+rdlt-engine = { workspace = true }
+rdlt-testkit = { workspace = true }
+rdlt-connector-duckdb = { workspace = true }
+tempfile = { workspace = true }
+testcontainers = { workspace = true }
+
+[lints]
+workspace = true
