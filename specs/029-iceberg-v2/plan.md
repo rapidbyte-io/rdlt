@@ -169,3 +169,48 @@ with the credential advice (pinned live:
 the review loop's docket: teach the parser the `code:` spelling, or
 classify the oauth `operation: auth` context — decided at review, not
 mid-suite.
+
+
+## COVERAGE MAP (fresh suite vs the gen-1 census, 2026-08-02)
+
+Crate totals: 58 default tests (37 unit + 21 integration) + 2
+failpoints-gated sweep tests. Census answers:
+- config_schema (9) → cases/test_document (schema-vs-parser corpus,
+  unknown-field parity both gates, Shell family, secrets) +
+  cases/test_gating (UNGATED registry check — the 028 lesson — and the
+  live-group membership pin, now over the explicit binary list) + the
+  config/client unit matrices in src.
+- catalog_live (5) → test_ingestion (exact totals + identity props via
+  the raw-REST oracle; empty window publishes NO snapshot) + the
+  fixture smoke implicit in every cell.
+- exactly_once (4) → test_exactly_once: the TRUE SPI replay (two
+  sessions, same (load, seq) → one snapshot), the engine-level RESUME
+  cell (republishes nothing, exact totals), narrowed-stream null-fill,
+  Replace refused live with the frozen spelling.
+- conflict (1) → test_concurrency::two_live_writers_lose_no_snapshot
+  (two pipelines × 4 commits, 8 snapshots, 16 rows exact).
+- partitioning (3) → test_partitioning (bucket spec in raw metadata:
+  field-id 1000 + `id_bucket` + `bucket[4]`; spec mismatch refused
+  with drop-or-align) + the unit naming/id pins in partition.rs.
+- providers (4) → test_providers (override works; WRONG override
+  FAILS; bearer loads; data-path 401 = Fatal with credential advice).
+- nested_types (1) → test_concurrency::a_nested_stream_loads_twice…
+  (+ the RED unit pins in schema.rs, which the confirmation cell backs).
+- auth_probe (1) → folded into test_providers (the 401 cell).
+- interop (3→1) → test_interop: pyiceberg reads back the partitioned
+  load (count, partition field, identity props) — skip-not-fail
+  without the venv, flag-form argv matching the shared tool. The
+  plain/post-drift readback variants are covered by the same script
+  path; recorded as a deliberate consolidation.
+- spark_deep (1) → DEFERRED TO SWAP-IN, recorded: the deep tier is
+  by-hand (RDLT_DEEP=1), its Makefile line names generation 1, and the
+  shared script is unchanged — the line binds to this crate at rename.
+- sweep (2) → crash_sweep binary: 3 points × 3 actions armed-twice-
+  recover through the ENGINE, exact totals, duplicate-free identity
+  set, fired == full matrix; registry check in the sweep AND ungated.
+  Wired into `make test TARGET=sweep` beside generation 1 (the
+  coexistence line dies at swap-in).
+- NEW over generation 1: the sdk conformance kit CERTIFIES the shell
+  live (test_conformance — gen 1 predated the kit), and the review
+  docket carries the live-found oauth `code:`-context classification
+  gap.

@@ -122,6 +122,9 @@ else ifeq ($(TARGET),sweep)
 	cargo nextest run -p rdlt-connector-rest --features failpoints -E 'binary(sweep)'
 	cargo nextest run -p rdlt-connector-file --features failpoints -E 'binary(sweep)'
 	cargo nextest run -p rdlt-connector-iceberg --features failpoints -E 'binary(sweep)'
+	# The coexisting second generation sweeps the same three points; this
+	# line dies with the crate at swap-in (the rename binds the line above).
+	cargo nextest run -p rdlt-connector-iceberg-v2 --features failpoints -E 'binary(crash_sweep)'
 else ifeq ($(TARGET),prop)
 	# `binary(...)`, not `test(...)`: shred_property is the BINARY; the test
 	# inside it is shred_invariants_hold. A test-name filter matched nothing
