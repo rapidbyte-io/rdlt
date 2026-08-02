@@ -315,3 +315,31 @@ RECORDED, NOT CHANGED:
   deliberate and correct), #7 (list-element nullability is a forced
   choice; no known catalog rewrites it), #8 (no double-validate in
   v2 — one Document gate), #12 (shipped behavior frozen, verified).
+
+
+## REVIEW ROUND 2 (verification lens on round 1, 2026-08-02) — TERMINUS
+
+Every attack on the round-1 changes held: the shared-table refusal is
+deterministic (BTreeMap order), covers BOTH ensure orders and every
+naming combination (including the explicit-onto-literal and the
+correctly-not-refused freed-name case), excludes self on re-ensure
+(the live mid-window cell rides exactly that path); the status
+parser's truncation is fail-safe under early ` } => ` values
+(insertion-order rendering puts genuine keys first — verified in the
+library's Display), the `code:` acceptance is safe against every
+attachment site in the whole dependency tree (opendal attaches
+neither key; non-numeric first tokens parse to None → transient),
+and no frozen message can be shadowed by the new config refusal (the
+first empty name fires inside its own iteration). Nonce, digest
+(RepoDigest verified locally), and both new live cells' teeth
+confirmed — the mid-window cell fails in a DIFFERENT diagnostic way
+for each plausible regression.
+
+ONE FINDING, F1 (the 024 vacuous-pin class, caught by MUTATION): the
+tail-spoof pin carried no context block, so the parser bailed before
+the truncation it claimed to pin — the verifier deleted the truncation
+and the pin stayed green. FIXED: the spoof now rides a message tail
+BEHIND a real context entry, and the mutation was re-run both ways —
+RED without the truncation, green with it. Test-only; no code change.
+
+TERMINUS: all code attacks held across rounds 1-2; the loop closes.

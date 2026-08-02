@@ -223,13 +223,17 @@ mod tests {
         let err = unexpected_with_status("401 Unauthorized");
         assert_eq!(status_from_context(&err), Some(401));
 
-        // The tail past the context block's ` } => ` is never scanned:
-        // a message carrying a comma-separated `status:` fragment must
-        // not classify.
+        // The tail past the context block's ` } => ` is never scanned.
+        // The error must CARRY a context block for this pin to bite —
+        // without one the parser bails before the truncation, and the
+        // pin passes with the truncation deleted (a mutation proved
+        // it): a keyless context entry puts the block in play, and the
+        // comma-separated `status:` fragment rides the MESSAGE tail.
         let err = iceberg::Error::new(
             ErrorKind::Unexpected,
             "proxy said: retry later, status: 429 somewhere",
-        );
+        )
+        .with_context("operation", "auth");
         assert_eq!(status_from_context(&err), None);
     }
 
