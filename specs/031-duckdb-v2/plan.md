@@ -136,12 +136,62 @@ marks applied only after commit). `read_state` verbatim.
 
 ## STATUS
 
-- Branch created; contract inventory committed; this plan written.
-- NEXT: build in the established rhythm (incremental commits, offline
-  tests green at each step): config → client → schema/dialect → load
-  → connector/Shell → fresh suite (kit + goldens + probes +
-  differential + recovery + strategies + sweep beside gen 1) → review
-  rounds to terminus (docket S1-S13; headliner S1 = shared-table, the
-  029/030 analogue) → gates twice clean (baseline 1024; counts
-  predicted and verified; container hygiene by test image/label only —
-  never the dev toolbox).
+- Branch created; contract inventory committed; plan written.
+- BUILD COMPLETE (config Document / client boundary / dialect /
+  schema seam / Load Backend / connector + Shell + testhook + sdk
+  ADOPTED entry), incremental commits, clippy clean.
+- SUITE COMPLETE: 59 offline + the 24-cell failpoints crash_sweep (4
+  strategies × 2 points × 3 actions, armed-fire matrix pinned), wired
+  into TARGET=sweep beside gen 1; the sdk conformance kit CERTIFIES
+  the Shell (new over gen 1); the cross-destination differential
+  oracle ran LIVE (6 cells vs postgres containers); golden ensure
+  pins as data; the six dialect probes; census row + ungated registry
+  twin. THE SUITE'S TWO CATCHES: (1) a second READ-WRITE instance
+  beside a live one replays AND TRUNCATES the live WAL (measured — a
+  mid-test count made the next session's committed row invisible);
+  testhook oracles went READ-ONLY at once, the full fix below. (2)
+  sqlcore validate_merge never checked merge-key columns (a ghost key
+  column surfaced as a raw Binder error).
+
+## REVIEW ROUNDS
+
+**Round 1** — two lenses (docket audit S1-S13 + the suite catches;
+fresh-eyes + fidelity + anti-transcription), then one fix pass, all
+guards red-proven:
+- N2 (the WAL-truncation hazard, PUBLIC surface): a second in-process
+  open of one database file is refused TYPED via a process-global
+  canonicalized-path registry (pre-open check refuses before the
+  truncating act; post-open claim closes the not-yet-created race;
+  clones share the claim, last drop releases; sequential re-open
+  legal). Cross-process stays the transient lock refusal — recorded.
+- A2: the commit probes moved INSIDE the one transaction (D7 as
+  written); replay/publish share run_commit, the in-tx receipt probe
+  decides replayed; the 24-cell sweep is the net.
+- S2 (+A3 disposition): uniform commit-path classification — the
+  three fatal read sites classify; recorded as a deliberate v2
+  refinement over gen 1 (a locked-file IO Error mid-commit rides the
+  retry budget instead of aborting).
+- S1 partial: re-ensure that DROPS ensured columns refused typed
+  (append-only evolution makes a column regression = colliding
+  streams or a harness defect). The FULL normalized-name collision
+  gate needs the engine's rename knowledge — STANDING OWNER RECORD
+  (engine scope), same family as 029/030's headliners.
+- S4: the positional stage append guarded — batch field names must
+  prefix-match the ensured order; refusal names the first divergent
+  position.
+- N1 (sqlcore, shared with postgres): validate_merge refuses a merge
+  key column absent from the schema; identity/child tables skipped
+  (lineage keys are legitimate); postgres 232/232 live after.
+- S7 checked narrowing; S6 = the sdk refusal supersession recorded
+  (028-030 precedent); S3 (within-run widen) and S5 (IO-prefix
+  transience incl. deterministic paths) standing records; S8/S10/S11/
+  S13 resolved by construction; S12 n/a (no examples).
+- Anti-transcription: two comment residues reworded, create_table_sql
+  re-flowed (output byte-identical, goldens green); the rest of the
+  crate judged genuinely re-derived.
+
+**Round 2** — terminus verification of the fix commit (record below).
+
+- NEXT: gates twice clean (baseline 1024 + this crate's offline
+  tests; counts predicted and verified; hygiene by test image/label
+  only). Crate coexists unconsumed; swap = owner decision (D6).
