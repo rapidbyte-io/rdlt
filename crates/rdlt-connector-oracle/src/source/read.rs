@@ -14,7 +14,7 @@ use std::ops::ControlFlow;
 use rdlt_connector_sdk::source::Feed;
 use rdlt_connector_sdk::spi::SourceError;
 
-use super::client::{Client, quote_upper, value_to_json};
+use super::client::{Client, quote_upper, value_to_json_typed};
 use super::config::Stream;
 use super::cursor::{OracleCursor, checked_watermark_literal};
 use super::schema::{DEFAULT_SDU_BYTES, is_lob, logical_type, rows_per_page};
@@ -30,15 +30,18 @@ pub(crate) async fn read_stream(
     feed: &mut Feed,
 ) -> Result<bool, SourceError> {
     let table = quote_upper(&stream.table);
-    // ONE consistent SCN for every page of this stream: without it a
-    // long read walks a moving table and pages could miss or repeat
-    // rows that other sessions commit meanwhile.
-    client = client
-        .execute(
-            "starting the read-only snapshot",
-            "SET TRANSACTION READ ONLY",
-        )
-        .await?;
+    // CONSISTENCY, stated exactly: each PAGE is its own read-consistent
+    // snapshot; the stream as a whole is not one snapshot. A
+    // transaction-wide snapshot (`SET TRANSACTION READ ONLY`) was
+    // implemented and REMOVED on evidence — probed, it leaves this
+    // driver unable to answer a re-executed statement afterwards
+    // (statement-cache/cursor reuse across the transaction change),
+    // turning a healthy read into a dead connection. What makes the
+    // stream converge is the WATERMARK: rows committed mid-read either
+    // land in a later page or above the recorded watermark, so the
+    // next run collects them. Append-only and watermarked tables are
+    // therefore complete; a table rewritten beneath a long read is not
+    // (recorded — the shape the postgres source's non-CDC reads carry).
 
     // The watermark predicate rides into SQL as a literal, so its
     // shape is checked first (the cursor document is operator-
@@ -52,8 +55,8 @@ pub(crate) async fn read_stream(
     };
 
     let mut page_rows: Option<u32> = None;
+    let mut types: Vec<Option<rdlt_connector_sdk::spi::core::LogicalType>> = Vec::new();
     let mut last_rowid: Option<String> = None;
-    let mut highest: Option<String> = None;
 
     loop {
         let mut predicates = Vec::new();
@@ -93,12 +96,15 @@ pub(crate) async fn read_stream(
         // an unreadable column must refuse before any row is pushed,
         // not halfway through a load.
         if page_rows.is_none() {
+            let mut resolved = Vec::with_capacity(page.columns.len());
             for column in &page.columns {
                 if column.name.eq_ignore_ascii_case("RDLT_ROWID") {
+                    resolved.push(None);
                     continue;
                 }
-                logical_type(column).map_err(SourceError::fatal)?;
+                resolved.push(Some(logical_type(column).map_err(SourceError::fatal)?));
             }
+            types = resolved;
             page_rows = Some(rows_per_page(&page.columns, DEFAULT_SDU_BYTES));
         }
         if page.rows.is_empty() {
@@ -116,6 +122,7 @@ pub(crate) async fn read_stream(
                 .position(|c| c.name.eq_ignore_ascii_case(name))
         });
 
+        let mut saw_cursor_value = false;
         let mut ndjson = Vec::new();
         for row in &page.rows {
             let mut object = serde_json::Map::new();
@@ -130,7 +137,12 @@ pub(crate) async fn read_stream(
                 let rendered = if is_lob(column) {
                     client.read_lob(value).await?
                 } else {
-                    value_to_json(value)
+                    let declared = types
+                        .get(index)
+                        .copied()
+                        .flatten()
+                        .unwrap_or(rdlt_connector_sdk::spi::core::LogicalType::Utf8);
+                    value_to_json_typed(value, declared)
                         .map_err(|e| SourceError::fatal(format!("column `{}`: {e}", column.name)))?
                 };
                 object.insert(column.name.to_lowercase(), rendered);
@@ -139,16 +151,17 @@ pub(crate) async fn read_stream(
                 .map_err(|e| SourceError::fatal(format!("rendering a row: {e}")))?;
             ndjson.push(b'\n');
 
+            // The watermark is raised through the cursor's OWN ordering
+            // (numeric where both sides are numbers, lexical otherwise).
+            // Comparing here with `String` ordering was a real defect:
+            // "99" sorts above "150", so a 150-row read checkpointed 99
+            // and the next run re-read 51 rows.
             if let Some(at) = cursor_at
                 && let Some(value) = row.values().get(at)
+                && let Some(text) = watermark_text(value)
             {
-                let text = watermark_text(value);
-                if let Some(text) = text {
-                    highest = Some(match highest.take() {
-                        Some(previous) if previous >= text => previous,
-                        _ => text,
-                    });
-                }
+                saw_cursor_value = true;
+                cursor.advance(&stream.name, &text);
             }
         }
 
@@ -164,9 +177,10 @@ pub(crate) async fn read_stream(
         if feed.raw_json(bytes::Bytes::from(ndjson)).await == ControlFlow::Break(()) {
             return Ok(false);
         }
-        // The watermark advances only for rows that REACHED the host.
-        if let Some(text) = &highest {
-            cursor.advance(&stream.name, text);
+        // The checkpoint lands only after the rows it covers REACHED
+        // the host — a cursor promising rows the host never saw would
+        // lose them on resume.
+        if saw_cursor_value {
             rdlt_connector_sdk::spi::core::crash_point!(
                 "ora.checkpoint",
                 Err(SourceError::fatal("injected crash at ora.checkpoint"))

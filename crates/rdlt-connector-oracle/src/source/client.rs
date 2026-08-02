@@ -39,12 +39,47 @@ impl Client {
         .await
         .map_err(|e| classify(&format!("connecting to `{connect_string}`"), e))?;
         let client = Self { conn };
-        client
+        client.pin_session().await?;
+        Ok(client)
+    }
+
+    /// Pin the session to UTC and VERIFY it by reading the setting
+    /// back.
+    ///
+    /// The verification is not belt-and-braces: the container's own
+    /// session zone is whatever the host offers (+02:00 on the probe
+    /// machine), so an unpinned session renders
+    /// `TIMESTAMP WITH LOCAL TIME ZONE` differently per machine. And
+    /// the driver mis-parses the ALTER's RESPONSE intermittently
+    /// (`InvalidLengthIndicator`, probed) while the statement itself
+    /// always lands — so trusting the response would fail healthy
+    /// connections, and ignoring it blindly would hide a real miss.
+    /// Reading the effect back settles both.
+    async fn pin_session(&self) -> Result<(), SourceError> {
+        let _ = self
             .conn
             .execute("ALTER SESSION SET TIME_ZONE='UTC'", &[])
+            .await;
+        let observed = self
+            .conn
+            .query("SELECT SESSIONTIMEZONE FROM DUAL", &[])
             .await
-            .map_err(|e| classify("pinning the session time zone", e))?;
-        Ok(client)
+            .map_err(|e| classify("reading back the session time zone", e))?;
+        let zone = observed
+            .rows
+            .first()
+            .and_then(|row| row.values().first())
+            .and_then(|value| match value {
+                oracle_rs::row::Value::String(s) => Some(s.trim().to_owned()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        if zone != "UTC" {
+            return Err(SourceError::fatal(format!(
+                "the session time zone is `{zone}` after pinning it to UTC —                  TIMESTAMP WITH LOCAL TIME ZONE values would depend on the client's                  environment; refusing to read"
+            )));
+        }
+        Ok(())
     }
 
     /// Run one bounded query, consuming the client on failure (the
@@ -170,9 +205,56 @@ const TRANSIENT_ORA: &[u32] = &[
     12541, // no listener
 ];
 
-/// Render one driver value as JSON for the records channel. The
-/// mappings are the D4 rulebook's read side; `Number` rides the
-/// full-precision string (probed exact at 38 digits).
+/// Render one driver value as JSON, GUIDED BY THE DECLARED TYPE.
+///
+/// The type matters because the driver hands most numerics back as
+/// text (probed: `NUMBER` arrives as `Value::String`, whatever its
+/// precision). Rendering by the value's Rust variant alone would emit
+/// every integer as a JSON string; rendering by the DECLARED type
+/// emits a JSON number where the type is exactly representable and
+/// keeps the exact digits as text where it is not — which is the
+/// whole point of the D4 rulebook's NUMBER rows.
+pub(crate) fn value_to_json_typed(
+    value: &oracle_rs::row::Value,
+    declared: rdlt_connector_sdk::spi::core::LogicalType,
+) -> Result<serde_json::Value, String> {
+    use rdlt_connector_sdk::spi::core::LogicalType;
+
+    let rendered = value_to_json(value)?;
+    // Only text needs re-typing; every other variant already renders
+    // as itself.
+    let serde_json::Value::String(text) = &rendered else {
+        return Ok(rendered);
+    };
+    Ok(match declared {
+        LogicalType::Int64 => match text.parse::<i64>() {
+            Ok(i) => serde_json::Value::Number(i.into()),
+            // A value outside i64 under an Int64 declaration means the
+            // catalog and the data disagree — keep the exact digits
+            // rather than truncating silently.
+            Err(_) => rendered,
+        },
+        LogicalType::Float64 => match text.parse::<f64>() {
+            Ok(f) => serde_json::Number::from_f64(f)
+                .map(serde_json::Value::Number)
+                .unwrap_or(rendered),
+            Err(_) => rendered,
+        },
+        LogicalType::Bool => match text.as_str() {
+            "1" | "TRUE" | "true" => serde_json::Value::Bool(true),
+            "0" | "FALSE" | "false" => serde_json::Value::Bool(false),
+            _ => rendered,
+        },
+        // Decimal keeps its exact digits as text (JSON numbers cannot
+        // carry 38 significant digits), and every string-shaped type
+        // is already what it should be.
+        _ => rendered,
+    })
+}
+
+/// Render one driver value by its own variant — the shape-only half
+/// of the rulebook, used where no declared type applies (LOBs, the
+/// rowid bookkeeping column).
 pub(crate) fn value_to_json(value: &oracle_rs::row::Value) -> Result<serde_json::Value, String> {
     use oracle_rs::row::Value;
     Ok(match value {
