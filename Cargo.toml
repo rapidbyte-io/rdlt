@@ -47,6 +47,7 @@ rdlt-connector-duckdb = { path = "crates/rdlt-connector-duckdb", version = "0.3.
 rdlt-connector-snowflake = { path = "crates/rdlt-connector-snowflake", version = "0.3.0" }
 rdlt-connector-file = { path = "crates/rdlt-connector-file", version = "0.3.0" }
 rdlt-connector-iceberg = { path = "crates/rdlt-connector-iceberg", version = "0.3.0" }
+rdlt-connector-oracle = { path = "crates/rdlt-connector-oracle", version = "0.3.0" }
 rdlt-connector-postgres = { path = "crates/rdlt-connector-postgres", version = "0.3.0", default-features = false }
 rdlt-connector-sqlcore = { path = "crates/rdlt-connector-sqlcore", version = "0.3.0" }
 

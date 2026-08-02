@@ -20,6 +20,7 @@ duckdb = ["dep:rdlt-connector-duckdb"]
 postgres = ["postgres-source", "postgres-dest"]
 file = ["dep:rdlt-connector-file"]
 iceberg = ["dep:rdlt-connector-iceberg"]
+oracle = ["dep:rdlt-connector-oracle"]
 snowflake = ["dep:rdlt-connector-snowflake"]
 postgres-source = ["dep:rdlt-connector-postgres", "rdlt-connector-postgres/source"]
 postgres-dest = ["dep:rdlt-connector-postgres", "rdlt-connector-postgres/destination"]
@@ -35,6 +36,7 @@ rdlt-engine = { workspace = true }
 rdlt-connector-rest = { workspace = true, optional = true }
 rdlt-connector-duckdb = { workspace = true, optional = true }
 rdlt-connector-file = { workspace = true, optional = true }
+rdlt-connector-oracle = { workspace = true, optional = true }
 rdlt-connector-iceberg = { workspace = true, optional = true }
 rdlt-connector-snowflake = { workspace = true, optional = true }
 rdlt-connector-postgres = { workspace = true, optional = true }

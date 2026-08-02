@@ -17,6 +17,12 @@ use super::config::Config;
 /// One live connection with the pinned session settings.
 pub(crate) struct Client {
     conn: oracle_rs::connection::Connection,
+    /// How long ONE statement may take. A statement that outlives it
+    /// has left the protocol mid-conversation, so the timeout drops
+    /// the connection exactly as any other failure does.
+    read_timeout: std::time::Duration,
+    /// Bytes per LOB read round trip.
+    lob_chunk: u64,
 }
 
 impl std::fmt::Debug for Client {
@@ -30,15 +36,36 @@ impl Client {
     /// `TIMESTAMP WITH LOCAL TIME ZONE` values do not depend on the
     /// client environment.
     pub(crate) async fn connect(config: &Config) -> Result<Self, SourceError> {
-        let connect_string = format!("{}:{}/{}", config.host, config.port, config.service);
-        let conn = oracle_rs::connection::Connection::connect(
-            &connect_string,
-            &config.user,
-            config.password.reveal(),
-        )
-        .await
-        .map_err(|e| classify(&format!("connecting to `{connect_string}`"), e))?;
-        let client = Self { conn };
+        // The instance is named by SERVICE or by the legacy SID; the
+        // driver's config carries both spellings, and the document
+        // gate already refused having neither or both.
+        let mut driver = oracle_rs::config::Config::new(
+            config.host.clone(),
+            config.port,
+            config.service.clone().unwrap_or_default(),
+            config.user.clone(),
+            config.password.reveal().to_owned(),
+        );
+        if let Some(sid) = &config.sid {
+            driver.service = oracle_rs::config::ServiceMethod::Sid(sid.clone());
+        }
+        driver.connect_timeout = std::time::Duration::from_millis(config.tuning.connect_timeout_ms);
+        driver.sdu = config.tuning.sdu_bytes;
+        let named = config
+            .service
+            .clone()
+            .map(|s| format!("service `{s}`"))
+            .or_else(|| config.sid.clone().map(|s| format!("SID `{s}`")))
+            .unwrap_or_default();
+        let connect_string = format!("{}:{} {named}", config.host, config.port);
+        let conn = oracle_rs::connection::Connection::connect_with_config(driver)
+            .await
+            .map_err(|e| classify(&format!("connecting to `{connect_string}`"), e))?;
+        let client = Self {
+            conn,
+            read_timeout: std::time::Duration::from_millis(config.tuning.read_timeout_ms),
+            lob_chunk: config.tuning.lob_chunk_bytes,
+        };
         client.pin_session().await?;
         Ok(client)
     }
@@ -92,11 +119,15 @@ impl Client {
         sql: &str,
         params: &[oracle_rs::row::Value],
     ) -> Result<(Self, oracle_rs::connection::QueryResult), SourceError> {
-        match self.conn.query(sql, params).await {
-            Ok(result) => Ok((self, result)),
+        match tokio::time::timeout(self.read_timeout, self.conn.query(sql, params)).await {
+            Ok(Ok(result)) => Ok((self, result)),
             // `self` drops here: the connection is poisoned by its own
             // failure and must never answer again.
-            Err(e) => Err(classify(context, e)),
+            Ok(Err(e)) => Err(classify(context, e)),
+            Err(_) => Err(SourceError::transient(format!(
+                "{context}: no answer within {:?} — abandoning the connection",
+                self.read_timeout
+            ))),
         }
     }
 
@@ -125,7 +156,6 @@ impl Client {
         use oracle_rs::row::Value;
         use oracle_rs::{LobData, LobValue};
 
-        const CHUNK: u64 = 1 << 20;
         let Value::Lob(lob) = value else {
             // Not a locator after all (an empty LOB reads as NULL):
             // fall back to the ordinary rendering.
@@ -145,7 +175,7 @@ impl Client {
         if locator.is_clob() {
             let mut text = String::new();
             self.conn
-                .read_lob_chunked(locator, CHUNK, |chunk| {
+                .read_lob_chunked(locator, self.lob_chunk, |chunk| {
                     if let LobData::String(piece) = &chunk {
                         text.push_str(piece);
                     }
@@ -157,7 +187,7 @@ impl Client {
         } else {
             let mut bytes = Vec::new();
             self.conn
-                .read_lob_chunked(locator, CHUNK, |chunk| {
+                .read_lob_chunked(locator, self.lob_chunk, |chunk| {
                     if let LobData::Bytes(piece) = &chunk {
                         bytes.extend_from_slice(piece);
                     }

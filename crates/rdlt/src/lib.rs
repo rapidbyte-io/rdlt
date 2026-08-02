@@ -51,6 +51,8 @@ pub mod connector {
 
     #[cfg(feature = "file")]
     pub use rdlt_connector_file as file;
+    #[cfg(feature = "oracle")]
+    pub use rdlt_connector_oracle as oracle;
 
     #[cfg(feature = "iceberg")]
     pub use rdlt_connector_iceberg as iceberg;

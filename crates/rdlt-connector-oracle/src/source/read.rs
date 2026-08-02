@@ -25,7 +25,7 @@ use rdlt_connector_sdk::spi::core::LogicalType;
 use super::client::{Client, quote_upper, value_to_json_typed};
 use super::config::Stream;
 use super::cursor::{OracleCursor, checked_watermark_literal};
-use super::schema::{DEFAULT_SDU_BYTES, is_lob, logical_type, rows_per_page};
+use super::schema::{is_lob, logical_type, rows_per_page};
 
 /// The types a watermark can be built from: they order the same way
 /// in SQL and in the persisted rendering.
@@ -48,6 +48,7 @@ fn cursor_capable(kind: LogicalType) -> bool {
 pub(crate) async fn read_stream(
     mut client: Client,
     stream: &Stream,
+    tuning: &super::config::Tuning,
     cursor: &mut OracleCursor,
     feed: &mut Feed,
 ) -> Result<bool, SourceError> {
@@ -93,7 +94,12 @@ pub(crate) async fn read_stream(
     // The rowid column rides along at the END of every page's
     // projection, so its index is known from the described width.
     let rowid_at = described.columns.len();
-    let page_rows = rows_per_page(&described.columns, DEFAULT_SDU_BYTES);
+    // The derived page is the SAFETY bound (one reply, one SDU); an
+    // operator's `page_rows` may only lower it — raising it past what
+    // the SDU holds would truncate replies, which is the defect this
+    // whole design exists to prevent.
+    let derived = rows_per_page(&described.columns, tuning.sdu_bytes);
+    let page_rows = tuning.page_rows.map_or(derived, |asked| asked.min(derived));
     // The driver returns at most its prefetch, and this read treats a
     // SHORT page as the last page — so the prefetch must cover the
     // page or the stream would end early and call it success.

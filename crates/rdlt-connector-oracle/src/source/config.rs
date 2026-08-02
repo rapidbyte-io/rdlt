@@ -17,12 +17,82 @@ pub struct Config {
     #[serde(default = "default_port")]
     pub port: u16,
     /// The service name (a PDB service such as `FREEPDB1`).
-    pub service: String,
+    /// Exactly one of `service` or `sid` is required.
+    #[serde(default)]
+    pub service: Option<String>,
+    /// The legacy SID, for instances that predate service names —
+    /// the shape older estates still hand out.
+    #[serde(default)]
+    pub sid: Option<String>,
     pub user: String,
     pub password: Secret,
+    /// Connection and fetch tuning. Absent means the defaults.
+    #[serde(default)]
+    pub tuning: Tuning,
     /// The streams to read; at least one.
     #[schemars(length(min = 1))]
     pub streams: Vec<Stream>,
+}
+
+/// The knobs an Oracle operator expects to turn.
+///
+/// The names are rdlt's, but each one is the JDBC parameter an Oracle
+/// estate already tunes, so a known-good JDBC string translates
+/// directly:
+/// `defaultRowPrefetch` → `page_rows`,
+/// `oracle.jdbc.defaultLobPrefetchSize` → `lob_chunk_bytes`,
+/// `oracle.net.CONNECT_TIMEOUT` → `connect_timeout_ms`,
+/// `oracle.jdbc.ReadTimeout` → `read_timeout_ms`,
+/// and the session's SDU → `sdu_bytes`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct Tuning {
+    /// Rows per round trip. The connector DERIVES a safe page from
+    /// the described column widths; this only ever LOWERS it, because
+    /// a page above the derived size cannot fit one SDU reply.
+    #[serde(default)]
+    pub page_rows: Option<u32>,
+    /// Bytes per LOB read round trip.
+    #[serde(default = "default_lob_chunk")]
+    pub lob_chunk_bytes: u64,
+    /// How long a connect attempt may take.
+    #[serde(default = "default_connect_timeout")]
+    pub connect_timeout_ms: u64,
+    /// How long ONE statement may take before it is abandoned. The
+    /// connection is dropped when it fires — a statement that timed
+    /// out has left the protocol mid-conversation.
+    #[serde(default = "default_read_timeout")]
+    pub read_timeout_ms: u64,
+    /// The session data unit the server negotiates. Raise it here
+    /// only if the LISTENER was raised too; the reply must fit one.
+    #[serde(default = "default_sdu")]
+    pub sdu_bytes: u32,
+}
+
+fn default_lob_chunk() -> u64 {
+    1 << 20
+}
+fn default_connect_timeout() -> u64 {
+    60_000
+}
+fn default_read_timeout() -> u64 {
+    600_000
+}
+fn default_sdu() -> u32 {
+    8192
+}
+
+impl Default for Tuning {
+    fn default() -> Self {
+        Self {
+            page_rows: None,
+            lob_chunk_bytes: default_lob_chunk(),
+            connect_timeout_ms: default_connect_timeout(),
+            read_timeout_ms: default_read_timeout(),
+            sdu_bytes: default_sdu(),
+        }
+    }
 }
 
 fn default_port() -> u16 {
@@ -70,8 +140,29 @@ impl Document for Config {
         if self.host.is_empty() {
             return invalid("`host` must not be empty".into());
         }
-        if self.service.is_empty() {
-            return invalid("`service` must not be empty".into());
+        match (&self.service, &self.sid) {
+            (Some(s), None) if !s.is_empty() => {}
+            (None, Some(s)) if !s.is_empty() => {}
+            (Some(_), Some(_)) => {
+                return invalid(
+                    "`service` and `sid` are two ways to name one instance — set one".into(),
+                );
+            }
+            _ => {
+                return invalid("one of `service` (modern) or `sid` (legacy) is required".into());
+            }
+        }
+        if self.tuning.page_rows == Some(0) {
+            return invalid("`tuning.page_rows` is 0 — a page must hold at least one row".into());
+        }
+        if self.tuning.lob_chunk_bytes == 0 {
+            return invalid("`tuning.lob_chunk_bytes` is 0 — a LOB read must make progress".into());
+        }
+        if self.tuning.sdu_bytes < 512 {
+            return invalid(format!(
+                "`tuning.sdu_bytes` is {} — Oracle's minimum session data unit is 512",
+                self.tuning.sdu_bytes
+            ));
         }
         if self.streams.is_empty() {
             return invalid("at least one stream is required".into());
