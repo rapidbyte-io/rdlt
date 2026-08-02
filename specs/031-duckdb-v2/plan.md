@@ -240,9 +240,28 @@ the terminus tree, FIRST ATTEMPT each, at the PREDICTED 1097/1097
 both runs (= 1092 + the 4 round-3 pins + the config-conflict pin), 0
 skipped; semver clean; 0 regressed; cold 19.3/18.8 ms.
 
-STATUS: COMPLETE through the /code-review terminus. The crate
-coexists unconsumed (publish = false);
-the swap — delete gen 1, rename, port the facade's DestSpec::Duckdb
-arm to destination::Config + Shell::new, re-point the engine sweep
-and file's e2e, collapse the Makefile line, rename the census row —
-is the owner's decision (D6).
+## SWAP-IN RECORD
+
+THE SWAP EXECUTED (owner decision, 2026-08-02): generation 1 DELETED;
+the crate renamed `rdlt-connector-duckdb` (publish=false dropped, gen
+1's metadata carried; NO README yet — the readme key dropped, an
+owner item alongside the recorded LICENSE-file observation).
+Consumers ported across FIVE crates: the facade's DestSpec::Duckdb
+arm builds destination::Config + Shell::new (the spec's fields ARE
+the document's; the frozen `opening duckdb` context kept); the
+engine's crash_sweep drives both duckdb cells through the Shell with
+config-keyed READ-ONLY testhook counting; the postgres suites' oracle
+plumbing wrapped once so ~50 call-site spellings survived; both
+postgres container-kill watchers poll the read-only oracle instead of
+a second live handle; the rest suites alias `destination as duck`;
+file's e2e counts through the testhook; Makefile collapsed to one
+binary(crash_sweep) line; census + sdk-rule rows renamed. The
+single-writer registry tripped NOTHING: every prior double-open was
+either made read-only or was already sequential.
+
+POST-SWAP GATES TWICE CLEAN, first attempt each, at the PREDICTED
+1046/1046 (= 1097 − gen 1's 51 tests), 0 skipped, semver clean, 0
+regressed, cold 18.7/18.7 ms.
+
+STATUS: COMPLETE, SWAPPED IN. NOT merged to main; NOT pushed (CI
+blocked by org billing). Merge = owner decision.
