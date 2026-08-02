@@ -2,8 +2,10 @@
 //!
 //! Three modules ride the one bounded retry (append, state property
 //! write, schema evolution); they share this ONE mock catalog whose
-//! `update_table` conflicts a configured number of times — a live
-//! competitor cannot be timed into the load→commit window reliably.
+//! `update_table` conflicts a configured number of times. The mock
+//! exists because the race is untimeable: no live competitor can be
+//! steered into the narrow load→commit window on demand, so the
+//! conflict is injected where timing cannot flake.
 //!
 //! `table_with_schema` builds a table through
 //! `TableMetadataBuilder::from_table_creation`, which RE-ASSIGNS field

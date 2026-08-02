@@ -79,9 +79,7 @@ impl DestinationConnector for Iceberg {
 /// API.
 #[doc(hidden)]
 pub mod testhook {
-    use std::sync::Arc;
-
-    use iceberg::{Catalog, NamespaceIdent};
+    use iceberg::NamespaceIdent;
     use rdlt_connector_sdk::spi::DestinationError;
 
     use super::super::config::Config;
@@ -90,11 +88,6 @@ pub mod testhook {
     /// The marker table's name, for cells asserting the reserved-name
     /// refusal and the state protocol against the live catalog.
     pub const STATE_TABLE: &str = state::STATE_TABLE;
-
-    /// Open a raw catalog handle from a validated config.
-    pub async fn connect_catalog(config: &Config) -> Result<Arc<dyn Catalog>, DestinationError> {
-        client::connect(config).await
-    }
 
     /// Read a pipeline scope's raw state JSON off the marker table.
     pub async fn read_raw_state(

@@ -93,10 +93,11 @@ pure-TOC mod.rs files (lib.rs = façade):
   `rdlt.state.{scope}` property protocol.
 - `write.rs` — parquet file writing through the library writer,
   `ice.files.write`.
-- `load.rs` — the Backend: session state, ensure/write/existing_receipt/
-  replay/publish choreography mapped onto snapshots (existing_receipt =
-  history scan; replay = discard staged files; publish = data commit
-  [`ice.commit`] → `ice.receipt.visible` → state property commit).
+- `load.rs` — the Backend: session state, ensure/write/publish
+  choreography mapped onto snapshots (existing_receipt deliberately
+  None — superseded by the recorded D7 decision; publish = per-table
+  history-checked data commits [`ice.commit`] → `ice.receipt.visible`
+  → state property commit).
 - `connector.rs` — `Iceberg` (DestinationConnector), capabilities
   (merge=false, structs/lists per gen-1 claims), connect = catalog
   handshake + namespace ensure + marker-table ensure, FAIL_POINTS,
@@ -214,3 +215,103 @@ failpoints-gated sweep tests. Census answers:
   live (test_conformance — gen 1 predated the kit), and the review
   docket carries the live-found oauth `code:`-context classification
   gap.
+
+
+## REVIEW ROUND 1 (three parallel lenses, 2026-08-02)
+
+CONTRACT FIDELITY: CLEAN across every area (config spellings,
+classification, identity/retry/backoff, state protocol, crash points,
+type map/drift, partitioning, session semantics, library boundary —
+per-area confidence 97-99); D7 verified sound and tolerated by the sdk
+choreography. ANTI-TRANSCRIPTION: fresh at design level (merged
+boundary module, extracted partition noun, relocated Drift rendering,
+re-typed comparisons, wholly re-authored integration tree — 0/208
+distinctive gen-1 test comment lines reappear); five flagged passages
+all addressed below.
+
+FIXED, with pins:
+
+1. TWO STREAMS, ONE TABLE (new find, high severity): nothing refused
+   two streams resolving to one physical table — colliding data-file
+   paths (same load/window/nonce prefixes) let one stream's bytes
+   shadow the other's, and the shared commit identity read the second
+   stream's publish as a REPLAY, discarding its files silently. Now
+   refused TWICE: the config gate rejects duplicate explicit names
+   (new spelling, recorded: "tables.{a} and tables.{b} both resolve to
+   table `{name}` — two streams may not share one table"), and ensure
+   rejects the rename-onto-default collision only visible at
+   resolution time. Pinned offline (the refusal matrix) and live
+   (`two_streams_sharing_one_table_are_refused`).
+2. THE STATUS PARSER, REVISED (docket #1 + the live find, one
+   change): the scanned context block is now TRUNCATED at its closing
+   ` } => ` (the tail-scan made the "outside the block" defense a
+   false claim — the old pinning test's spoof merely lacked a comma),
+   and the parser accepts the `code:` entry key beside `status:` — the
+   library's token-endpoint path attaches the HTTP status under
+   `code`, so a wrong client secret (deterministic 400/401) classified
+   TRANSIENT and retried forever, in BOTH generations; both attachment
+   sites verified in the library source (the third `code` site rides
+   DataInvalid and never reaches the parser). Behavior improvement
+   recorded; pinned: the code-key classification, the credential
+   advice on a code-carried 401, and the tail spoof.
+3. POLARIS PINNED BY DIGEST (docket #3): `latest` re-resolved on every
+   upstream push; the digest every recorded gate ran against is now
+   explicit (no stable upstream version tag exists).
+4. SESSION NONCE carries the pid (docket #10): closes the
+   two-processes-in-one-nanosecond window the per-process counter
+   cannot see.
+5. TEST ADEQUACY (that lens's findings): the mid-window
+   schema-evolution path — the 028 defect class, previously defended
+   by unexercised code — is now pinned LIVE
+   (`a_column_added_mid_window_keeps_every_row`: two batches one
+   checkpoint, writer retired, 2 rows in 2 data files under ONE
+   snapshot, the evolved column visible in raw metadata); additive
+   cross-load evolution pinned live; the reserved-name and
+   closed-namespace refusals pinned live with their frozen spellings;
+   open failures pinned end-to-end (wrong warehouse named; dead uri
+   typed — the catalog handshake is LAZY, surfacing at the first
+   namespace operation, which the cell now documents); the
+   wrong-credentials leg gained a context needle; the resume cell now
+   also reads the RAW state protocol through the testhook; the interop
+   module doc no longer overstates; the dead `connect_catalog` hook
+   removed (every remaining hook is used). Crate suite 60 default + 5
+   evolution/refusal cells = 65, all green live.
+6. README shipped (the 028 pattern: written pre-swap for the name the
+   crate will carry), including the catalog.props Secret-bypass
+   warning (docket #2's docs half).
+7. ANTI-TRANSCRIPTION flags: both verbatim prose sentences rewritten;
+   the align/state test literals re-derived; the container fixture's
+   carry is now RECORDED (below) alongside the bootstrap tool's.
+
+RECORDED, NOT CHANGED:
+
+- N2 (design-level, the most consequential record): WITHOUT a WAL
+  workdir, a mid-publish transient failure restarts the run under a
+  NEW load id, and snapshot-history convergence cannot recognise the
+  prior attempt's partial commits — table A's rows can append twice.
+  WAL recovery (the tested path) replays under the SPAN's original
+  load id and converges. Owner options: require/document workdir for
+  this destination, retry transients inside publish, or a
+  retry-stable identity component. Inherent to the catalog's
+  non-atomic multi-table publish; generation-1 parity.
+- N3: the library caches the OAuth token forever (upstream TODO); a
+  load outliving the TTL fails FATAL with credential advice for a
+  credential that is correct. Library limitation, recorded.
+- Docket #2 (props override Secrets): deliberate, documented, pinned;
+  README warns. #4 (ice.files.write at writer open): naming nit; the
+  ID is frozen and every point between open and commit is equivalent
+  to recovery. #6 (linear history scan): O(already-loaded metadata);
+  the real bound is snapshot expiry, already documented. #9 (12-hex
+  scope): accepted risk — state collision degrades to a clean
+  first-run; replay collision additionally needs equal engine-minted
+  load ids. #11 ("capabilities.merge = false" in an operator string):
+  the frozen spelling; recorded for the next sanctioned wording
+  window. Fixture carry: tests/cases/common.rs re-derives gen 1's
+  fixture with rewritten prose but carries its measured mechanics
+  (the PID-derived port formula, readiness rules, image envs) — like
+  the bootstrap tool, those mechanics are shared verified
+  infrastructure, now recorded as such.
+- REFUTED by the lens: docket #5 (all-empty-commit state write is
+  deliberate and correct), #7 (list-element nullability is a forced
+  choice; no known catalog rewrites it), #8 (no double-validate in
+  v2 — one Document gate), #12 (shipped behavior frozen, verified).

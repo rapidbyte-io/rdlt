@@ -51,6 +51,24 @@ async fn a_resumed_pipeline_republishes_nothing() {
         total, 2,
         "run 2 resumed past the checkpoint and republished nothing: {summaries:?}"
     );
+
+    // The raw state protocol behind the resume: the marker table holds
+    // this pipeline's scope key.
+    use rdlt_connector_iceberg_v2::destination::{Config, testhook};
+    use rdlt_connector_sdk::config::Document;
+    let config = Config::from_value(doc).expect("valid");
+    let raw = testhook::read_raw_state(
+        &config,
+        &[namespace.to_owned()],
+        &testhook::scope_of("ice-resume-v2"),
+    )
+    .await
+    .expect("state readable")
+    .expect("state present after a committed load");
+    assert!(
+        raw.contains("ice-resume-v2"),
+        "the doc names its pipeline: {raw}"
+    );
 }
 
 /// A REPLAYED commit publishes nothing: the same (load, seq)

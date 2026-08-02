@@ -325,7 +325,21 @@ impl Config {
         {
             return invalid(e.to_string());
         }
+        // Two streams resolving to ONE physical table would interleave
+        // colliding data-file paths and let one stream's commit read as
+        // the other's replay — refused here for explicit names, and
+        // again at ensure time where defaulted names are visible.
+        let mut resolved: std::collections::BTreeMap<&str, &str> =
+            std::collections::BTreeMap::new();
         for (stream, table) in &self.tables {
+            if let Some(name) = table.name.as_deref()
+                && let Some(other) = resolved.insert(name, stream)
+            {
+                return invalid(format!(
+                    "tables.{other} and tables.{stream} both resolve to table `{name}` — two \
+                     streams may not share one table"
+                ));
+            }
             if table.name.as_deref() == Some("") {
                 return invalid(format!("tables.{stream}.name must not be empty"));
             }
@@ -489,6 +503,17 @@ mod tests {
                     doc
                 },
                 "tables.events.name must not be empty",
+            ),
+            (
+                {
+                    let mut doc = minimal();
+                    doc["tables"] = serde_json::json!({
+                        "a": {"name": "shared"}, "b": {"name": "shared"}
+                    });
+                    doc
+                },
+                "tables.a and tables.b both resolve to table `shared` — two streams may not \
+                 share one table",
             ),
             (
                 {

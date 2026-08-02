@@ -69,16 +69,28 @@ pub(super) fn classify(context: &str, error: iceberg::Error) -> DestinationError
 /// The library exposes no getter for its context entries, so this
 /// reads the RENDERED error — the one deliberate, pinned exception to
 /// the never-match-prose rule. It anchors on the context BLOCK
-/// (`", context: { "`) and then the entry KEY (`status: `), so a
-/// status merely quoted in a response body — which renders after
-/// ` => `, outside the block — can never be mistaken for the
-/// transport's.
+/// (`", context: { "`), TRUNCATED at the block's closing ` } => ` so
+/// the message/source tail is never scanned, and then on an entry KEY.
+/// TWO keys are accepted: the data path attaches `status`, while the
+/// library's token-endpoint path attaches the HTTP status under
+/// `code` — generation 1 read only `status`, so a wrong client secret
+/// (a deterministic 400/401) classified TRANSIENT and would retry
+/// forever; found live while authoring the suite, verified against
+/// both attachment sites in the library source (the third `code`
+/// site, ErrorModel's numeric body code, rides DataInvalid and never
+/// reaches this parser). First match wins — genuine entries are
+/// inserted before anything an error body could carry.
 fn status_from_context(error: &iceberg::Error) -> Option<u16> {
     let rendered = format!("{error}");
     let (_, block) = rendered.split_once(", context: { ")?;
+    let block = block.split(" } => ").next().unwrap_or(block);
     block
         .split(", ")
-        .find_map(|entry| entry.strip_prefix("status: "))?
+        .find_map(|entry| {
+            entry
+                .strip_prefix("status: ")
+                .or_else(|| entry.strip_prefix("code: "))
+        })?
         .split_whitespace()
         .next()?
         .parse()
@@ -210,6 +222,37 @@ mod tests {
 
         let err = unexpected_with_status("401 Unauthorized");
         assert_eq!(status_from_context(&err), Some(401));
+
+        // The tail past the context block's ` } => ` is never scanned:
+        // a message carrying a comma-separated `status:` fragment must
+        // not classify.
+        let err = iceberg::Error::new(
+            ErrorKind::Unexpected,
+            "proxy said: retry later, status: 429 somewhere",
+        );
+        assert_eq!(status_from_context(&err), None);
+    }
+
+    /// The token-endpoint path attaches the HTTP status under `code` —
+    /// generation 1 read only `status`, so a wrong client secret (a
+    /// deterministic 400) classified TRANSIENT and retried forever.
+    /// Found live; both attachment sites verified in the library.
+    #[test]
+    fn the_token_endpoint_code_key_classifies_like_a_status() {
+        let err = iceberg::Error::new(ErrorKind::Unexpected, "auth failed")
+            .with_context("code", "400 Bad Request");
+        assert_eq!(status_from_context(&err), Some(400));
+        assert!(matches!(
+            classify("catalog `c` warehouse `w`", err),
+            DestinationError::Fatal(_)
+        ));
+
+        let err = iceberg::Error::new(ErrorKind::Unexpected, "auth failed")
+            .with_context("code", "401 Unauthorized");
+        assert!(
+            format!("{}", classify("catalog `c` warehouse `w`", err))
+                .contains("fix the credential or its grants")
+        );
     }
 
     /// Conflict exhaustion renders "exhausted" EXACTLY once — the

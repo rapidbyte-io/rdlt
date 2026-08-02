@@ -1,7 +1,8 @@
-//! Interop: an INDEPENDENT implementation (pyiceberg) reads back what
-//! this crate wrote — plain, partitioned, and after additive drift.
-//! Skip-not-fail without the venv (tools/interop; RDLT_INTEROP_PYTHON
-//! overrides).
+//! Interop: an INDEPENDENT implementation (pyiceberg) reads back a
+//! PARTITIONED load this crate wrote — count, partition field, and
+//! the identity properties (the recorded consolidation of the gen-1
+//! trio). Skip-not-fail without the venv (tools/interop;
+//! RDLT_INTEROP_PYTHON overrides).
 
 use rdlt_connector_iceberg_v2::destination::Shell;
 use rdlt_connector_sdk::spi::StreamSpec;

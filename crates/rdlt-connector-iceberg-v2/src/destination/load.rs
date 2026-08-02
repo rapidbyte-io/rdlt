@@ -216,7 +216,14 @@ fn session_nonce() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0);
-    format!("{:x}-{}", nanos, SEQ.fetch_add(1, Ordering::Relaxed))
+    // The pid closes the two-processes-in-one-nanosecond window the
+    // per-process counter cannot see.
+    format!(
+        "{:x}-{}-{}",
+        nanos,
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 /// The table's field-id-annotated arrow schema — recomputed at ensure
@@ -377,6 +384,21 @@ impl Backend for Load {
                 "table name `{name}` is reserved for the rdlt state marker table"
             )));
         }
+        // The config gate refuses duplicate EXPLICIT names; a rename
+        // onto another stream's DEFAULT name is only visible here,
+        // where both resolutions exist. Sharing one physical table
+        // would interleave colliding file paths and read one stream's
+        // commit as the other's replay.
+        if let Some(other) = self
+            .tables
+            .keys()
+            .find(|s| s.as_str() != stream && self.config.table_name(s.as_str()) == name)
+        {
+            return Err(fatal(format!(
+                "streams `{other}` and `{stream}` both resolve to table `{name}` — two streams \
+                 may not share one table"
+            )));
+        }
         let wanted = schema::to_iceberg_schema(table_schema)?;
         let fields = self.config.partition_fields(stream);
         let table =
@@ -517,17 +539,17 @@ mod tests {
     #[test]
     fn align_null_fills_a_missing_nullable_column() {
         let target = target(vec![
-            Field::new("id", DataType::Int64, false),
-            Field::new("email", DataType::Utf8, true),
+            Field::new("seq", DataType::Int64, false),
+            Field::new("label", DataType::Utf8, true),
         ]);
         let batch = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)])),
-            vec![Arc::new(Int64Array::from(vec![1, 2]))],
+            Arc::new(Schema::new(vec![Field::new("seq", DataType::Int64, false)])),
+            vec![Arc::new(Int64Array::from(vec![7, 8, 9]))],
         )
         .expect("batch");
         let aligned = Load::align("table `t`", &target, &batch).expect("aligns");
         assert_eq!(aligned.num_columns(), 2);
-        assert_eq!(aligned.column(1).null_count(), 2);
+        assert_eq!(aligned.column(1).null_count(), 3);
     }
 
     /// A REQUIRED column the stream stopped providing is typed and
@@ -535,18 +557,18 @@ mod tests {
     #[test]
     fn align_types_a_missing_required_column_naming_the_table() {
         let target = target(vec![
-            Field::new("id", DataType::Int64, false),
-            Field::new("must", DataType::Utf8, false),
+            Field::new("seq", DataType::Int64, false),
+            Field::new("mandatory", DataType::Utf8, false),
         ]);
         let batch = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)])),
-            vec![Arc::new(Int64Array::from(vec![1]))],
+            Arc::new(Schema::new(vec![Field::new("seq", DataType::Int64, false)])),
+            vec![Arc::new(Int64Array::from(vec![7]))],
         )
         .expect("batch");
         let err = Load::align("table `t`", &target, &batch).expect_err("typed");
         let text = format!("{err}");
         assert!(
-            text.contains("live table requires column `must`")
+            text.contains("live table requires column `mandatory`")
                 && text.contains("stream no longer provides"),
             "{text}"
         );
@@ -555,10 +577,10 @@ mod tests {
     /// Present columns cast where representations differ.
     #[test]
     fn align_casts_present_columns() {
-        let target = target(vec![Field::new("name", DataType::LargeUtf8, true)]);
+        let target = target(vec![Field::new("label", DataType::LargeUtf8, true)]);
         let batch = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new("name", DataType::Utf8, true)])),
-            vec![Arc::new(StringArray::from(vec!["a"]))],
+            Arc::new(Schema::new(vec![Field::new("label", DataType::Utf8, true)])),
+            vec![Arc::new(StringArray::from(vec!["wide"]))],
         )
         .expect("batch");
         let aligned = Load::align("table `t`", &target, &batch).expect("casts");
@@ -587,8 +609,10 @@ mod tests {
         );
     }
 
-    /// Reconcile's schema commit rides the SAME bounded retry as data
-    /// commits — one conflict must not fail the load.
+    /// One CAS conflict against the schema commit must not fail the
+    /// load: reconcile rides the same bounded retry as every other
+    /// commit kind, and the attempt count proves it retried rather
+    /// than resigned.
     #[tokio::test]
     async fn reconcile_retries_schema_commit_conflicts() {
         use std::sync::atomic::Ordering;

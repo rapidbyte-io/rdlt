@@ -138,13 +138,13 @@ mod tests {
     #[test]
     fn the_write_and_read_keys_are_one_composition() {
         let mut properties: HashMap<String, String> = HashMap::new();
-        properties.insert(state_key("abc123"), "{\"v\":1}".to_owned());
+        properties.insert(state_key("scope-a"), "{\"cursor\":9}".to_owned());
         assert_eq!(
-            properties.get(&state_key("abc123")).map(String::as_str),
-            Some("{\"v\":1}")
+            properties.get(&state_key("scope-a")).map(String::as_str),
+            Some("{\"cursor\":9}")
         );
-        assert_ne!(state_key("abc123"), state_key("def456"));
-        assert!(state_key("abc123").starts_with(PROP_STATE_PREFIX));
+        assert_ne!(state_key("scope-a"), state_key("scope-b"));
+        assert!(state_key("scope-a").starts_with(PROP_STATE_PREFIX));
     }
 
     /// The property-commit exhaustion is reachable, typed, and names

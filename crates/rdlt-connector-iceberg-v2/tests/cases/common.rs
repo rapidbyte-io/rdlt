@@ -166,9 +166,14 @@ impl CatalogFixture {
         // never 2xx — listening is the readiness signal.
         wait_http_answers(&format!("{s3_endpoint}/"), 100, false).await;
 
+        // Pinned by DIGEST: the upstream publishes no stable version
+        // tag yet, `latest` re-resolves whenever upstream pushes (a
+        // behavior change would silently mutate the gate — the exact
+        // trap the RUSTFS pin above avoids), and this digest is the
+        // image every recorded gate ran against.
         let polaris = run_container(
             "polaris",
-            "docker.io/apache/polaris:latest",
+            "docker.io/apache/polaris@sha256:5b574ce52708e8402af2305e6e64a588af1a33e1cf5f106df4dcbd17852d706c",
             &[
                 (
                     "POLARIS_BOOTSTRAP_CREDENTIALS".into(),

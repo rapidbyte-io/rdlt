@@ -59,9 +59,13 @@ async fn the_override_matrix_works_and_wrong_credentials_fail() {
         "access_key": "wrong-key",
         "secret_key": "wrong-secret",
     }});
-    run(doc, "ice-prov-bad")
+    let err = run(doc, "ice-prov-bad")
         .await
         .expect_err("wrong credentials must fail, never be ignored");
+    assert!(
+        err.contains("table `events`"),
+        "the failure carries the table context, not a fixture accident: {err}"
+    );
 }
 
 /// Bearer auth (the fixture's admin token) drives a load end to end.
@@ -88,5 +92,35 @@ async fn a_rejected_token_is_fatal_with_advice() {
     assert!(
         err.contains("fix the credential or its grants"),
         "the 401 carries the credential advice: {err}"
+    );
+}
+
+/// Open failures carry the context frame, end to end: a wrong
+/// warehouse names itself (the catalog handshake is lazy — the
+/// refusal surfaces at the first namespace operation inside connect),
+/// and an unreachable catalog is typed.
+#[tokio::test]
+async fn open_failures_carry_the_catalog_context() {
+    let Some(fixture) = CatalogFixture::start().await else {
+        return;
+    };
+    let mut doc = fixture.doc("openfail_v2");
+    doc["catalog"]["warehouse"] = json!("no-such-warehouse");
+    let err = run(doc, "ice-openfail")
+        .await
+        .expect_err("a wrong warehouse refuses");
+    assert!(
+        err.contains("no-such-warehouse"),
+        "the failure names the warehouse: {err}"
+    );
+
+    let mut doc = fixture.doc("unreachable_v2");
+    doc["catalog"]["uri"] = json!("http://127.0.0.1:9");
+    let err = run(doc, "ice-unreach")
+        .await
+        .expect_err("an unreachable catalog refuses");
+    assert!(
+        err.contains("namespace `unreachable_v2`") || err.contains("catalog `http://127.0.0.1:9`"),
+        "typed with a context frame: {err}"
     );
 }
