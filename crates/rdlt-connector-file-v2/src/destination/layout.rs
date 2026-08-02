@@ -48,7 +48,7 @@ pub(super) fn staged_name(
 /// A published part's tail under the destination root. The index
 /// counts per TABLE+PARTITION, so cross-table arrival order can never
 /// change a final name.
-pub(super) fn final_tail(
+pub(crate) fn final_tail(
     table: &str,
     partition: Option<&str>,
     load: &str,

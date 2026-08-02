@@ -224,9 +224,9 @@ impl Location {
         }
     }
 
-    /// Write one durable document. Local: atomic temp + fsync + rename
-    /// + parent-dir fsync — metadata must not be LESS durable than the
-    /// parts it describes. S3: a single PUT.
+    /// Write one durable document. Local: atomic temp file, fsync,
+    /// rename, parent-dir fsync — metadata must not be LESS durable
+    /// than the parts it describes. S3: a single PUT.
     pub(crate) async fn write_doc<T: Serialize>(
         &self,
         name: &str,

@@ -205,27 +205,6 @@ impl S3Reader {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The listing scope: everything before the first metacharacter's
-    /// last separator; a glob-free pattern scopes to itself.
-    #[test]
-    fn the_listing_prefix_stops_at_the_first_metacharacter() {
-        assert_eq!(S3Location::prefix_of("landed/2026/*.jsonl"), "landed/2026/");
-        assert_eq!(S3Location::prefix_of("landed/y=*/f.jsonl"), "landed/");
-        assert_eq!(S3Location::prefix_of("*.jsonl"), "");
-        assert_eq!(S3Location::prefix_of("plain/key.jsonl"), "plain/key.jsonl");
-    }
-
-    /// The store builds from valid options — the one boundary works.
-    #[test]
-    fn a_valid_store_builds() {
-        build_store(&S3Options::new("http://127.0.0.1:9000", "b", "ak", "sk")).expect("builds");
-    }
-}
-
 // ---- the write half --------------------------------------------------------
 
 /// Classify an object-store failure for the destination: the ONE
@@ -349,5 +328,26 @@ impl S3Location {
             Err(object_store::Error::NotFound { .. }) => Ok(None),
             Err(e) => Err(store_err(e)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The listing scope: everything before the first metacharacter's
+    /// last separator; a glob-free pattern scopes to itself.
+    #[test]
+    fn the_listing_prefix_stops_at_the_first_metacharacter() {
+        assert_eq!(S3Location::prefix_of("landed/2026/*.jsonl"), "landed/2026/");
+        assert_eq!(S3Location::prefix_of("landed/y=*/f.jsonl"), "landed/");
+        assert_eq!(S3Location::prefix_of("*.jsonl"), "");
+        assert_eq!(S3Location::prefix_of("plain/key.jsonl"), "plain/key.jsonl");
+    }
+
+    /// The store builds from valid options — the one boundary works.
+    #[test]
+    fn a_valid_store_builds() {
+        build_store(&S3Options::new("http://127.0.0.1:9000", "b", "ak", "sk")).expect("builds");
     }
 }
