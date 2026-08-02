@@ -11,6 +11,47 @@ integrity first (this feature), house style second.
 
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
+`specs/028-snowflake-v2/plan.md` (feature: SNOWFLAKE SECOND GENERATION —
+COMPLETE and SWAPPED IN on branch `028-snowflake-v2` (off main @
+8cc1c22e, NOT merged): the destination rewritten TRUE-greenfield on the
+connector sdk as `rdlt-connector-snowflake-v2`, then — owner decision —
+generation 1 DELETED and the crate renamed `rdlt-connector-snowflake`
+(facade pipeline_spec ported to destination::Config + Shell::new, which
+validates the hand-parsed document). Fresh design D1-D6: born on the
+sdk under the one-dependency rule (sdk + the recorded sqlcore
+exception), unit.rs owns the transaction AND the DML-only executor
+discipline, catalog.rs the read-before-write image, client.rs the ONE
+library boundary (4-method Executor), typed ConfigError with options
+validated at parse; every frozen surface byte-identical (messages,
+classification, crash points sf.stage.write/upload + sf.unit.publish +
+sf.receipt.visible, SQL text, PUT/COPY staging semantics, protocol
+dispositions). FIVE REVIEW ROUNDS (terminus round 5), EIGHT defects
+fixed+pinned — five inherited from generation 1 that no gate ever saw:
+the engine ensures MID-UNIT on schema evolution (gen 1 panicked in
+debug / DDL auto-committed the partial unit in release; now the unit is
+deliberately ended by rollback first, with rolled-back Replace clears
+OWED and re-executed by open_unit on every unit-opening path); the COPY
+column list followed the FIRST write only (a mid-unit added column
+landed NULL silently; now the latest write's superset); the Replace
+clear guard was memory-only against sqlcore's DirectToTarget contract
+(now the third bookkeeping table `_rdlt_cleared`, written in the
+clear's own transaction and seeded at connect); the shared SELECT
+EXISTS full-feed probe answers BOOLEAN and was unreadable through the
+numeric scalar arms (measured live — merge_scope/scd2-absent:retire
+publishes failed in BOTH generations; Boolean arm + live retire cell);
+a just-created merge stage table never joined the catalog image so
+same-session evolution skipped its ADD COLUMN (leg folds in;
+record_created EXTENDS). Plus the cross-table owed-clears and phase-2
+gate-bypass fixes, and a gate-caught coexistence collision (both
+generations' conformance cells shared /tmp staging derived from the
+kit's fixed identity — serialised while coexisting, scaffolding died at
+swap). Gates twice clean at every stage, counts predicted and verified:
+1106 → 1122 (review rounds) → 1011 post-swap (= 1122 − gen 1's 111; 0
+skips now — the two #[ignore]d instrument skips died with gen 1's
+suites). Cross-type Widen stays a recorded limitation (loud service
+refusal, gen-1 parity). plan.md carries D1-D6, five review rounds, the
+swap-in record, and three gate-of-record blocks.)
+Previous feature 027 for reference:
 `specs/027-sdk-trio/plan.md` (feature: THE SDK TRIO — the connector-facing
 foundation as three deliberate layers, ALL SECOND-GENERATION and SWAPPED
 IN on branch `027-sdk-trio` (off main @ cb130ee8, NOT merged): the SPI

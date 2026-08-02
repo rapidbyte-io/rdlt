@@ -585,3 +585,25 @@ Verified before the gates: workspace builds `--all-features`, clippy
 clean workspace-wide AND the failpoints shape, crate suite + facade +
 CLI 124/124 (the snowflake crate's 108 among them), workspace count
 1011 = 1122 − generation 1's 111, as predicted.
+
+
+## SWAP GATE OF RECORD (2026-08-02, tree @ 7f2b27b1) — FEATURE COMPLETE
+
+`make check` TWICE CLEAN post-swap, first attempt both, untouched
+between runs, `env -u RUSTUP_TOOLCHAIN`, reclaim + drain before each.
+COUNT PREDICTED AND VERIFIED: 1011/1011 both runs (= 1122 − generation
+1's 111 tests) — and 0 SKIPPED: the two long-standing #[ignore]d
+instrument skips lived in generation 1's suites and died with it.
+Semver no update required, six in-gate sweep suites green, 6 benches 0
+regressed, cold start 23.0/22.9 ms (bar <= 40). The crash sweep
+remains by-hand (its Makefile type-check line now binds to this crate,
+as recorded).
+
+028 IS COMPLETE: designed fresh (D1-D6), built greenfield on the sdk,
+five review rounds (eight defects fixed and pinned, five of them
+inherited generation-1 defects no gate had ever seen), gates twice
+clean at every stage with counts predicted and verified (1106 → 1122 →
+1011), and the swap executed on the owner's decision with generation 1
+deleted. The one deliberately-open owner item: a real migration
+strategy for cross-type Widen, if the case ever arises (recorded at
+the render site and in round 4).
