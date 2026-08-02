@@ -2,6 +2,7 @@
 
 mod client;
 mod config;
+mod dialect;
 
 pub use config::{Config, ConfigError, config_schema};
 // The sqlcore vocabulary IS this destination's options vocabulary —
