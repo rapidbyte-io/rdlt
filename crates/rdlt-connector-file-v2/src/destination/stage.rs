@@ -30,9 +30,9 @@ pub(crate) fn writer_props(options: &ParquetOptions) -> Result<WriterProperties,
         props = props.set_data_page_size_limit(bytes);
     }
     match options.max_row_group_rows {
-        // An unset option must NOT be forwarded: to this setter `None`
-        // means "no bound at all", so passing it through would swap
-        // the library's 1,048,576-row default for unbounded row
+        // An unset option must NOT be forwarded: this setter reads
+        // `None` as "no bound at all", and forwarding it would quietly
+        // trade the library's own row-group ceiling for unbounded
         // groups. (`Some(0)` would panic inside the setter — config
         // validation refused that value long before this point.)
         None => {}
@@ -223,9 +223,11 @@ mod tests {
         .expect("batch builds")
     }
 
-    /// The shipped defaults COMPRESS. Before generation 1 pinned this,
-    /// every writer here took the library default — uncompressed, the
-    /// whole reason rdlt once wrote 210 MB where dlt wrote 74.
+    /// The shipped defaults COMPRESS. The parquet library's own
+    /// default is uncompressed output, and an earlier era of this
+    /// connector shipped it — files roughly three times the size a
+    /// competing tool wrote from the same rows. The pin keeps that
+    /// from coming back.
     #[test]
     fn the_default_props_compress_with_snappy() {
         let props = writer_props(&ParquetOptions::default()).expect("defaults valid");

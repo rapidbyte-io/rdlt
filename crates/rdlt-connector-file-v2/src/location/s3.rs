@@ -86,9 +86,10 @@ impl S3Location {
         }
     }
 
-    /// Source-side failure rendering. Severity is decided FIRST by the
-    /// shared recoverability rulebook; the wording below is chosen
-    /// after, so no message can ever contradict a classification.
+    /// Source-side failure rendering. The transient/fatal call is made
+    /// before any text is composed — by the SPI's shared recoverability
+    /// predicate — which leaves the branches below with nothing to
+    /// decide except phrasing.
     fn read_failure(&self, verb: &str, subject: &str, cause: object_store::Error) -> SourceError {
         let heading = format!(
             "{verb} `{subject}` (s3 `{}` bucket `{}`)",

@@ -339,8 +339,8 @@ fn convert_hinted(
             .map(serde_json::Value::Number)
             .ok_or_else(|| unmet("float64"))?,
         HintType::Json => serde_json::from_str(cell).map_err(|_| unmet("json"))?,
-        // The string-shaped logical types pass through as strings; the
-        // stream spec's hint types them downstream. Spelled out one by
+        // Everything string-shaped stays a JSON string here — the
+        // engine applies the declared type further down. Spelled out one by
         // one ON PURPOSE: a future hint variant must break this match
         // and force a decision about its CSV conversion, instead of
         // arriving silently as text.

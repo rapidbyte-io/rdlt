@@ -1,7 +1,7 @@
-//! RUSTFS container fixture: one Apache-2.0 S3-compatible server per
-//! fixture through testcontainers, health-checked by a signed request,
-//! seeded through `object_store` directly. SKIP-NOT-FAIL: cells return
-//! `None` visibly when no container runtime socket is reachable.
+//! The live object-store fixture: one RUSTFS server per test, run
+//! through testcontainers. A cell that cannot get a runtime socket
+//! gets `None` back and skips VISIBLY — the container-optional gate
+//! posture — rather than failing on a machine without podman.
 
 #![allow(dead_code)] // shared across two binaries; neither uses every helper
 
@@ -14,22 +14,21 @@ use testcontainers::{ContainerAsync, GenericImage, ImageExt};
 pub const ACCESS_KEY: &str = "rdlt-test-access";
 pub const SECRET_KEY: &str = "rdlt-test-secret";
 pub const BUCKET: &str = "raw";
-/// An exact tag, never `latest`: under a floating tag the image our
-/// gate runs against silently changes each time upstream publishes,
-/// and their broken build turns into our red gate on a diff of
-/// nothing. Upgrades are taken on purpose — edit the tag, then prove
-/// the live cells still pass.
+/// The image tag is a PIN, not a preference: `latest` would re-resolve
+/// on upstream's schedule and hand their broken day to our gate. Move
+/// it on purpose, with the live cells green on the new tag first.
 pub const RUSTFS_TAG: &str = "1.0.0-beta.11";
 
 pub struct S3Fixture {
-    // Never read — kept only so its Drop, which stops the container,
-    // runs when the fixture goes away.
+    /// Dropping the fixture drops the container handle, which stops
+    /// and removes the server.
     _container: ContainerAsync<GenericImage>,
     pub endpoint: String,
 }
 
 impl S3Fixture {
-    /// Start RUSTFS, or skip visibly (None) without a runtime socket.
+    /// Bring a server up and hand back its endpoint — or `None`, out
+    /// loud, when this machine offers no container runtime.
     pub async fn start() -> Option<Self> {
         if !rdlt_testkit::gate::runtime_available() {
             eprintln!("SKIP: no container runtime socket — s3 live cell not run");
@@ -52,25 +51,33 @@ impl S3Fixture {
             _container: container,
             endpoint: format!("http://127.0.0.1:{port}"),
         };
-        fixture.wait_ready().await;
-        create_bucket(&fixture.endpoint, BUCKET);
+        fixture.await_signed_answers().await;
+        provision_bucket(&fixture.endpoint, BUCKET);
         Some(fixture)
     }
 
-    /// Readiness = a signed request answering; NotFound counts (the
-    /// server is up, the object simply is not there).
-    async fn wait_ready(&self) {
-        let store = self.store();
-        for _ in 0..100 {
+    /// The log line only says the process launched; ready means a
+    /// SIGNED request comes back answered. `NotFound` qualifies — the
+    /// probe object does not exist, but something authenticated us and
+    /// said so.
+    async fn await_signed_answers(&self) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        let store = self.client();
+        loop {
             match store.head(&object_store::path::Path::from("probe")).await {
                 Ok(_) | Err(object_store::Error::NotFound { .. }) => return,
-                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(150)).await,
+                Err(e) => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "rustfs never answered a signed request: {e}"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                }
             }
         }
-        panic!("rustfs did not become ready within the deadline");
     }
 
-    fn store(&self) -> object_store::aws::AmazonS3 {
+    fn client(&self) -> object_store::aws::AmazonS3 {
         object_store::aws::AmazonS3Builder::new()
             .with_endpoint(&self.endpoint)
             .with_bucket_name(BUCKET)
@@ -79,41 +86,35 @@ impl S3Fixture {
             .with_secret_access_key(SECRET_KEY)
             .with_allow_http(true)
             .build()
-            .expect("seed client")
+            .expect("fixture client")
     }
 
-    /// Write one seed object, with retries: the full suite brings up
-    /// many fixtures at once, and a single transient put failure
-    /// should cost an attempt, not the whole cell.
+    /// Seed one object. The full suite launches several fixtures at
+    /// once, so a single flaky PUT gets a couple of spaced retries
+    /// before it is allowed to sink the cell.
     pub async fn put(&self, key: &str, body: &[u8]) {
-        let store = self.store();
-        let mut last = None;
-        for attempt in 0..3u64 {
-            match store
-                .put(
-                    &object_store::path::Path::from(key),
-                    bytes::Bytes::copy_from_slice(body).into(),
-                )
-                .await
-            {
+        let store = self.client();
+        let target = object_store::path::Path::from(key);
+        for attempt in 1u64..=3 {
+            let payload = bytes::Bytes::copy_from_slice(body);
+            match store.put(&target, payload.into()).await {
                 Ok(_) => return,
-                Err(e) => {
-                    last = Some(e);
-                    tokio::time::sleep(std::time::Duration::from_millis(200 * (attempt + 1))).await;
+                Err(e) if attempt == 3 => panic!("seeding `{key}` kept failing: {e:?}"),
+                Err(_) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(250 * attempt)).await;
                 }
             }
         }
-        panic!("seed put `{key}` failed after retries: {last:?}");
     }
 
     pub async fn exists(&self, key: &str) -> bool {
-        self.store()
+        self.client()
             .head(&object_store::path::Path::from(key))
             .await
             .is_ok()
     }
 
-    /// The `location:` block for this fixture.
+    /// The `location:` block pointing at this server.
     pub fn location_options(&self) -> LocationOptions {
         LocationOptions::s3(S3Options::new(
             self.endpoint.clone(),
@@ -124,42 +125,68 @@ impl S3Fixture {
     }
 }
 
-/// Minimal SigV4 PUT-bucket — `object_store` exposes no bucket admin
-/// ops, and python3 + stdlib does the signing in twenty lines (fixture
-/// only, never product code).
-fn create_bucket(endpoint: &str, bucket: &str) {
+/// Create the bucket with one hand-signed SigV4 PUT. `object_store`
+/// deliberately has no bucket-admin surface, and pulling in an AWS SDK
+/// for a single fixture call would be absurd — python's stdlib carries
+/// hmac/sha256/urllib, so the fixture shells out. Test scaffolding
+/// only; product code never signs by hand.
+fn provision_bucket(endpoint: &str, bucket: &str) {
     let script = format!(
         r#"
-import datetime, hashlib, hmac, urllib.request, sys
-ak, sk, region = "{ACCESS_KEY}", "{SECRET_KEY}", "us-east-1"
-endpoint = "{endpoint}"
-host = endpoint.split("://", 1)[1]
-t = datetime.datetime.now(datetime.timezone.utc)
-amz, ds = t.strftime("%Y%m%dT%H%M%SZ"), t.strftime("%Y%m%d")
-payload = hashlib.sha256(b"").hexdigest()
-creq = f"PUT\n/{bucket}\n\nhost:{{host}}\nx-amz-content-sha256:{{payload}}\nx-amz-date:{{amz}}\n\nhost;x-amz-content-sha256;x-amz-date\n{{payload}}"
-scope = f"{{ds}}/{{region}}/s3/aws4_request"
-sts = "AWS4-HMAC-SHA256\n" + amz + "\n" + scope + "\n" + hashlib.sha256(creq.encode()).hexdigest()
-def sign(k, m): return hmac.new(k, m.encode(), hashlib.sha256).digest()
-sig = hmac.new(sign(sign(sign(sign(("AWS4"+sk).encode(), ds), region), "s3"), "aws4_request"), sts.encode(), hashlib.sha256).hexdigest()
-req = urllib.request.Request(endpoint + "/{bucket}", method="PUT", headers={{
-    "x-amz-date": amz, "x-amz-content-sha256": payload,
-    "Authorization": f"AWS4-HMAC-SHA256 Credential={{ak}}/{{scope}}, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature={{sig}}"}})
+import datetime as dt, hashlib, hmac, urllib.request, urllib.error, sys
+
+aid, sec, reg, svc = "{ACCESS_KEY}", "{SECRET_KEY}", "us-east-1", "s3"
+url = "{endpoint}/{bucket}"
+host = "{endpoint}".split("://", 1)[1]
+
+now = dt.datetime.now(dt.timezone.utc)
+stamp = now.strftime("%Y%m%dT%H%M%SZ")
+day = now.strftime("%Y%m%d")
+empty = hashlib.sha256(b"").hexdigest()
+signed_headers = "host;x-amz-content-sha256;x-amz-date"
+
+canonical = "\n".join([
+    "PUT", "/{bucket}", "",
+    f"host:{{host}}",
+    f"x-amz-content-sha256:{{empty}}",
+    f"x-amz-date:{{stamp}}",
+    "", signed_headers, empty,
+])
+scope = f"{{day}}/{{reg}}/{{svc}}/aws4_request"
+to_sign = "\n".join([
+    "AWS4-HMAC-SHA256", stamp, scope,
+    hashlib.sha256(canonical.encode()).hexdigest(),
+])
+
+def hkey(key, msg):
+    return hmac.new(key, msg.encode(), hashlib.sha256).digest()
+
+signing = hkey(hkey(hkey(hkey(("AWS4" + sec).encode(), day), reg), svc), "aws4_request")
+signature = hmac.new(signing, to_sign.encode(), hashlib.sha256).hexdigest()
+
+request = urllib.request.Request(url, method="PUT", headers={{
+    "x-amz-date": stamp,
+    "x-amz-content-sha256": empty,
+    "Authorization": (
+        f"AWS4-HMAC-SHA256 Credential={{aid}}/{{scope}}, "
+        f"SignedHeaders={{signed_headers}}, Signature={{signature}}"
+    ),
+}})
 try:
-    urllib.request.urlopen(req, timeout=10)
+    urllib.request.urlopen(request, timeout=10)
 except urllib.error.HTTPError as e:
-    if e.code not in (200, 409):  # 409 = already exists
-        sys.exit(f"create bucket: HTTP {{e.code}}: {{e.read()[:200]}}")
+    if e.code != 409:  # an already-existing bucket is fine
+        sys.exit(f"bucket PUT answered {{e.code}}: {{e.read()[:200]}}")
 "#
     );
     let out = std::process::Command::new("python3")
         .arg("-c")
         .arg(&script)
         .output()
-        .expect("python3 for the fixture bucket-create");
+        .expect("python3 for the fixture's bucket PUT");
     assert!(
         out.status.success(),
-        "create bucket failed: {}",
+        "bucket provisioning failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
 }

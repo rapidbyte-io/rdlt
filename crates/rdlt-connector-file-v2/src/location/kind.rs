@@ -447,8 +447,9 @@ fn descend(dir: &Path, rel: Option<&str>, found: &mut Vec<String>) -> Result<(),
 }
 
 /// What remains of a listed key once the table root is stripped off
-/// the FRONT — stripping, never searching, because a partition value
-/// is free to repeat the table's own name. A key the prefix does not
+/// the FRONT — stripping, never searching: nothing stops a partition
+/// directory from being named like the table, and a substring search
+/// would cut at the wrong occurrence. A key the prefix does not
 /// cover is a typed listing violation: silently dropping it would
 /// shrink ownership and let Replace strand data. The single tolerated
 /// exception is the zero-byte directory marker whose key equals the
@@ -498,7 +499,7 @@ mod tests {
         assert_eq!(
             tail_under_root("out/t/t/part.parquet", "out/t/").expect("ok"),
             Some("t/part.parquet"),
-            "a partition value may spell the table's own name"
+            "a same-named partition directory must not confuse the strip"
         );
         assert_eq!(tail_under_root("out/t", "out/t/").expect("marker"), None);
 
