@@ -28,7 +28,7 @@ pub(crate) const TAIL_WINDOW: u64 = 4096;
 
 /// The whole persisted cursor: one record per path ever matched.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct FileCursor {
+pub struct FileCursor {
     #[serde(default = "default_version")]
     pub format_version: u32,
     #[serde(default)]
@@ -54,7 +54,7 @@ impl Default for FileCursor {
 /// One file's progress. The serde renames ARE the wire format; the
 /// Rust names say what the numbers mean.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct FileProgress {
+pub struct FileProgress {
     /// Units consumed and checkpointed (bytes or row groups).
     #[serde(rename = "done")]
     pub done_units: u64,
@@ -86,7 +86,7 @@ fn default_eol() -> bool {
 
 /// One file's listing metadata, as the planners consume it.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct FileMeta {
+pub struct FileMeta {
     pub path: String,
     pub size_units: u64,
     pub mtime_ms: Option<u64>,
@@ -95,7 +95,7 @@ pub(crate) struct FileMeta {
 
 /// What a resume must verify before its offset is trusted.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum ResumeCheck {
+pub enum ResumeCheck {
     /// Re-hash `window` bytes ending at the resume offset.
     TailBytes { window: u64, hash: String },
     /// Re-derive the parquet prefix digest over the consumed groups.
@@ -104,7 +104,7 @@ pub(crate) enum ResumeCheck {
 
 /// One planned read.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct FileTask {
+pub struct FileTask {
     /// The cursor key: the object key or the operator-named path.
     pub path: String,
     /// Where to actually READ — a staged local copy for fetched S3
@@ -154,10 +154,10 @@ impl FileCursor {
             if record.done_units < record.size_units || record.done_units < meta.size_units {
                 if !record.ended_at_record_boundary {
                     return Err(SourceError::fatal(format!(
-                        "file `{}` grew but the previous read did not end at a record \
-                         boundary — the tail was rewritten, not appended; clear state or \
-                         re-create the file",
-                        meta.path
+                        "file `{}` grew after a run that consumed an unterminated final \
+                         line; the recorded offset {} points mid-record — clear it from \
+                         the pipeline state or restore the file",
+                        meta.path, record.done_units
                     )));
                 }
                 tasks.push(FileTask {
@@ -188,9 +188,9 @@ impl FileCursor {
             };
             if meta.size_units != record.size_units {
                 return Err(SourceError::fatal(format!(
-                    "file `{}` changed size ({} -> {} bytes) but its format is read as a \
-                     whole file — whole-file formats never grow in place; clear state or \
-                     re-create the file",
+                    "file `{}` changed size ({} → {}) — whole-file formats (csv, \
+                     compressed) never grow in place; deliver new data as a new file, or \
+                     clear this file from the pipeline state",
                     meta.path, record.size_units, meta.size_units
                 )));
             }
@@ -218,9 +218,10 @@ fn fresh(meta: &FileMeta) -> FileTask {
 fn check_shrink(meta: &FileMeta, record: &FileProgress) -> Result<(), SourceError> {
     if meta.size_units < record.size_units || record.done_units > meta.size_units {
         return Err(SourceError::fatal(format!(
-            "file `{}` shrank ({} -> {} units) beneath its recorded progress — the file \
-             was replaced; clear state or re-create it",
-            meta.path, record.size_units, meta.size_units
+            "file `{}` shrank or was rewritten (recorded {} of {} bytes, now {}); \
+             refusing to read from a stale offset — clear it from the pipeline state or \
+             restore the file",
+            meta.path, record.done_units, record.size_units, meta.size_units
         )));
     }
     Ok(())
@@ -241,12 +242,20 @@ fn check_rewrite(meta: &FileMeta, record: &FileProgress) -> Result<(), SourceErr
         (meta.mtime_ms, record.mtime_ms),
         (Some(a), Some(b)) if a != b
     );
-    if etag_differs || mtime_differs {
+    if etag_differs {
         return Err(SourceError::fatal(format!(
-            "file `{}` was rewritten in place (same size, changed {}) — its recorded \
-             progress no longer describes this content; clear state or re-create the file",
-            meta.path,
-            if etag_differs { "etag" } else { "mtime" }
+            "file `{}` was rewritten in place (same size, different etag); refusing to \
+             trust recorded progress — clear it from the pipeline state or restore the \
+             object",
+            meta.path
+        )));
+    }
+    if mtime_differs {
+        return Err(SourceError::fatal(format!(
+            "file `{}` was rewritten in place (same size, but modified since the last \
+             run); refusing to trust recorded progress — clear it from the pipeline \
+             state or restore the file",
+            meta.path
         )));
     }
     Ok(())
@@ -393,7 +402,8 @@ mod tests {
         rewritten.mtime_ms = Some(9_999);
         let err = cursor.plan(&[rewritten]).expect_err("rewritten in place");
         assert!(
-            format!("{err}").contains("rewritten in place (same size, changed mtime)"),
+            format!("{err}")
+                .contains("rewritten in place (same size, but modified since the last run)"),
             "{err}"
         );
 
@@ -412,10 +422,7 @@ mod tests {
         let err = cursor
             .plan(&[meta("torn.jsonl", 30)])
             .expect_err("unterminated growth");
-        assert!(
-            format!("{err}").contains("did not end at a record boundary"),
-            "{err}"
-        );
+        assert!(format!("{err}").contains("points mid-record"), "{err}");
     }
 
     /// The whole-file planner: any size change refuses; incomplete
@@ -446,7 +453,7 @@ mod tests {
             .plan_whole(&[meta("half.csv", 11)])
             .expect_err("grew");
         assert!(
-            format!("{err}").contains("whole-file formats never grow in place"),
+            format!("{err}").contains("whole-file formats (csv, compressed) never grow in place"),
             "{err}"
         );
     }

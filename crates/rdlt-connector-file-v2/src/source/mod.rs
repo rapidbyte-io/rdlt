@@ -2,7 +2,7 @@
 
 mod config;
 mod connector;
-pub(crate) mod cursor;
+pub mod cursor;
 pub(crate) mod list;
 pub(crate) mod read;
 
