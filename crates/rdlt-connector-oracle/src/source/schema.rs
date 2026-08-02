@@ -63,7 +63,10 @@ pub(crate) fn is_lob(column: &ColumnInfo) -> bool {
 
 /// The SDU a connection negotiates by default; pages are sized to fit
 /// ONE of these (T003 — a reply spanning packets cannot be read).
-pub(crate) const DEFAULT_SDU_BYTES: u32 = 8192;
+/// The live value comes from `Tuning::sdu_bytes`; this is the number
+/// that default matches, and what the page-size pins measure against.
+#[cfg(test)]
+const DEFAULT_SDU_BYTES: u32 = 8192;
 
 /// The share of the SDU a page may claim. The rest absorbs the
 /// message framing, the column metadata echo, and the terminator —
