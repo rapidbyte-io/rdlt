@@ -12,11 +12,16 @@ integrity first (this feature), house style second.
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
 `specs/030-file-v2/plan.md` (feature: FILE FAMILY SECOND GENERATION —
-COMPLETE on branch `030-file-v2` (off main @ 8a10d0fe; NOT merged, NOT
-swapped): the file family rewritten TRUE-greenfield on the connector
-sdk as `rdlt-connector-file-v2`, BOTH halves (source + destination —
-the postgres shape), coexisting UNCONSUMED beside generation 1; the
-swap is the owner's decision (D6). The committed CONTRACT INVENTORY
+COMPLETE, SWAPPED IN, and MERGED to main @ 892951bd (fast-forward from
+8a10d0fe): the file family rewritten TRUE-greenfield on the connector
+sdk, BOTH halves (source + destination — the postgres shape), then —
+owner decision — generation 1 DELETED and the crate renamed
+`rdlt-connector-file` (facade pipeline_spec ported to the sdk Shells;
+the engine's crash_sweep re-pointed; the swap's ONE gate catch: gen 1
+carried the workspace's only e2e-named binaries, so TARGET=e2e came up
+EMPTY and failed per the 024 discipline — tests/e2e.rs restores the
+cross-connector jsonl→duckdb cell under the load-bearing name).
+Post-swap gates twice clean 1024/1024. The committed CONTRACT INVENTORY
 (specs/030-file-v2/contract-inventory.md) is authoritative: persisted
 cursor v1 wire keys done/size/eol (+ additive mtime_ms/etag/tail_hash/
 row_groups_hash), the TAIL-HASH resume rulebook, the 4-phase commit

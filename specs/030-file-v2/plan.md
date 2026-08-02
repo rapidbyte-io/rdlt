@@ -253,6 +253,42 @@ Both gates `env -u RUSTUP_TOOLCHAIN make check` on the terminus tree
   by test image/label because a blanket `podman rm -f $(podman ps
   -aq)` once removed the session's own fedora-toolbox container.
 
-STATUS: COMPLETE. The crate coexists unconsumed (publish = false);
-the swap — delete gen 1, rename, port the facade arms — is the
-owner's decision (D6).
+## SWAP-IN AND MERGE RECORD
+
+THE SWAP EXECUTED (owner decision, 2026-08-02): generation 1 DELETED;
+the crate renamed `rdlt-connector-file` (publish=false dropped, gen
+1's metadata carried; the per-crate LICENSE drop follows the recorded
+025-029 pattern, still an owner observation). Consumers ported: the
+facade pipeline_spec's three arms (SourceSpec::File →
+source::Shell::from_yaml/from_json; DestSpec::Parquet{path} →
+destination::Shell::new(Config::new(path)) keeping the frozen
+`opening parquet dir` context; DestSpec::File embeds
+destination::Config); the CLI spec assertion; the ENGINE's
+crash_sweep drives the six pq.* points against the new ParquetDir
+(the count closure now takes the cell dir and reads through the
+crate's testhook); Makefile sweep lines collapsed to one
+binary(crash_sweep); the sdk rule entry renamed; the scanner-selfcheck
+census entry unchanged at 11.
+
+THE GATE CAUGHT ONE REAL SWAP GAP (the 024 empty-selection class):
+`TARGET=e2e` selects `binary(/e2e/)` and generation 1 carried the
+workspace's ONLY e2e-named binaries — the fresh suite had folded that
+coverage into cases/, so the selection came up empty and the gate
+FAILED rather than passing vacuously. tests/e2e.rs restores the
+binary with the cross-connector cell (jsonl → duckdb through the
+engine, two runs, delta-only resume); its name is load-bearing and
+says so.
+
+POST-SWAP GATES TWICE CLEAN, counts predicted and verified: gate 1 on
+the branch tree 1024/1024 (= 1131 − gen 1's 108 + the restored e2e
+test; the same figure as the pre-030 baseline by coincidence), 0
+skipped, semver clean, 0 regressed, cold 20.3 ms; MERGED TO MAIN
+fast-forward 8a10d0fe → 892951bd (empty diff verified); gate 2 = the
+confirming gate on main, 1024/1024, cold 19.5 ms. One flake attempt
+between them recorded, never re-rolled blind: the postgres CDC
+identity-preflight cell hit the recorded `rootlessport bind` family
+with a Created-state postgres corpse holding the port — cell proven
+isolated, corpses swept, rerun clean.
+
+STATUS: COMPLETE, SWAPPED IN, AND MERGED. Branch `030-file-v2` left
+in place (identical to main); NOT pushed (CI blocked by org billing).
