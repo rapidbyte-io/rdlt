@@ -1,5 +1,8 @@
 pub mod common;
 mod test_conformance;
 mod test_document;
+mod test_exactly_once;
 mod test_gating;
+mod test_partitioning;
 mod test_preservation;
+mod test_replace;
