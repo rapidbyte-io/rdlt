@@ -178,9 +178,11 @@ crates/rdlt-connector-snowflake-v2/
     load.rs             — Load (Backend): the coordinator
   tests/
     integration.rs cases/{mod,common}.rs
-    cases/test_<noun>.rs — config, conformance, ingestion, load, merge,
-                          auth_matrix, economy, semantics, reclaim,
-                          oracle, quickstart, options
+    cases/test_<noun>.rs — auth, client, conformance, economy, gating,
+                          ingestion, load, merge, oracle, options,
+                          quickstart, reclaim, secret_hygiene,
+                          semantics (config coverage lives as unit
+                          tests inside src/destination/config.rs)
     crash_sweep.rs      — own binary (by-hand sweep selects by name)
 ```
 
@@ -341,8 +343,8 @@ changed inside the review loop.
 `make check` TWICE CLEAN, untouched between runs, `env -u
 RUSTUP_TOOLCHAIN`, reclaim + TIME_WAIT drain before each. COUNT
 PREDICTED AND VERIFIED: 1106 (the 1014 pre-028 workspace + this
-crate's 92: 57 unit-and-offline + 35 live/gated — 89 at round 1, +3
-review pins). Run 1: 1106/1106, 2 skips (both #[ignore]d instruments),
+crate's 92: 59 in the unit binary + 33 in the integration binary — 89
+at round 1, +3 review pins, two of which landed in the unit binary). Run 1: 1106/1106, 2 skips (both #[ignore]d instruments),
 six in-gate sweep suites green (postgres source sweep 64.7 s the one
 SLOW), semver no update required, 6 benches 0 regressed, cold start
 22.9 ms (bar <= 40). Run 2: 1106/1106, same 2 skips, semver clean, 0
@@ -371,3 +373,106 @@ the owner's decision, as 025/026 precedent. The crash sweep remains
 by-hand and was NOT run in these gates (its own binary, failpoints-
 gated, spends real account time). One recorded owner item stands open:
 the non-durable Replace-clear guard (review round 2's observation).
+
+
+## REVIEW ROUND 4 (full-crate, four parallel lenses, 2026-08-02)
+
+Fresh-eyes bug scan, house-style compliance, test adequacy, and
+docs/plan accuracy over the whole crate. NOT clean — findings and
+dispositions:
+
+FIXED, with pins (suite 92 → 108: 71 unit binary + 37 integration):
+
+1. THE DURABLE CLEAR GUARD (bug lens, escalating round 2's
+   observation; two lenses independently): Replace's once-per-load
+   clear guard lived only in session memory, against sqlcore's OWN
+   contract for a DirectToTarget destination (the executor seeds
+   `cleared_targets` from a durable record; `names::CLEARED_TABLE`
+   exists for exactly this; postgres implements it). A crash between
+   two units of one load re-cleared — DELETED — rows the first unit
+   committed, silently. NOW IMPLEMENTED the snowflake-shaped way: the
+   third bookkeeping table `_rdlt_cleared` created at connect; every
+   ClearTarget executes through `clear_target`, which writes the
+   durable record in the SAME unit transaction (rolled back together
+   or durable together — this covers the owed re-clears too, whose
+   first record rolled back with the unit); `cleared` is SEEDED once
+   at connect from the record (one round trip, not per-write probes —
+   the SaaS economy). Pinned offline: record-beside-DELETE order, the
+   seed-then-never-reclear path, the cross-unit promoted-never-rerun
+   path, and the COPY-shortfall abandon. Generation 1 never wrote the
+   record — inherited, now CLOSED rather than re-recorded.
+
+2. THE FULL-FEED PROBE WAS UNREADABLE (bug lens, MEASURED LIVE before
+   fixing): sqlcore's stage probe `SELECT EXISTS (SELECT 1 FROM …)`
+   COMPILES on the service and answers BOOLEAN — which `cell_as_u64`'s
+   numeric-only arms refused ("expected one integer … got nothing
+   usable", reproduced against the qual account). Every publish of a
+   full-feed merge config (`merge_scope`, scd2 `absent: retire`)
+   failed — in BOTH generations, which ran the identical probe through
+   identical arms with zero coverage of the vocabulary. FIX: a Boolean
+   arm (plus the "true"/"false" string forms). Pinned offline
+   (`a_count_is_read_from_every_representation_the_service_uses`) and
+   live end-to-end
+   (`an_absent_key_retires_through_the_full_feed_probe`).
+
+3. THE STAGE LEG'S CATALOG IMAGE (bug lens): a merge stage table
+   created this session was never `record_created`, so a later
+   same-session evolution SKIPPED the stage's ADD COLUMN (the
+   re-rendered CREATE IF NOT EXISTS is a service no-op) and the COPY
+   named a column the stage never gained. Inherited from generation 1.
+   FIX: the stage leg folds into the image (columns + arrival), and
+   `record_created` now EXTENDS rather than replaces — closing round
+   3's recorded observation too (replacement wiped recorded validity
+   columns, re-rendering their ALTERs and spuriously ending a unit).
+   Pinned live: `a_column_added_mid_unit_reaches_the_merge_stage`
+   (delete_insert merge, mid-unit widening, value read back through
+   the stage).
+
+4. TEST ADEQUACY (that lens's nine findings): the one genuinely
+   vacuous test (the PUT pin asserted on a string the test itself
+   wrote) now pins the statement `upload` actually renders (`put_sql`
+   extracted); per-row upload verification pinned against scripted
+   mixed/empty/renamed reports — the 023-measured service fact finally
+   has a test that can fail; the transient decision table extracted
+   (`transient_rule`) and pinned exhaustively with the allowlist
+   contents; `reclaim_local` pinned (own directory only, the other
+   load's survives); the shipped 24 h window pinned; scd2 now also
+   asserts exactly ONE current version; dedup_sort finally READ BACK
+   (the declared survivor, not a count — 023 D-32's failure class);
+   the crash sweep asserts the settled load's local directory empty.
+
+5. GATE WIRING (compliance + adequacy — the 024 "compiled by no gate
+   command" class): the Makefile's failpoints type-check named
+   generation 1 only, so v2's sweep was compiled by NO gate command;
+   the coverage exclusion likewise missed v2 (its live sweep would
+   have RUN inside a routine coverage pass on this machine). Both
+   lines now name the v2 crate and die naturally at swap-in. The
+   registry-vs-sources check also runs UNGATED now
+   (tests/cases/test_gating.rs) — drift fails a routine gate instead
+   of waiting for the next by-hand sweep.
+
+6. NAMING (compliance): `SnowflakeConfig` → `destination::Config` and
+   `SnowflakeDialect` → `Dialect`, per the second-generation naming
+   rules both reference crates follow (types don't repeat the crate
+   noun; 025 made the same rename for postgres). Rust API names are
+   not a frozen surface.
+
+7. COMMENT HONESTY (compliance + bug lens): the key-pair passphrase
+   doc claimed an up-front check that never existed in either
+   generation (the mismatch surfaces at connect through the library —
+   the comment now says so); `explain_merge_failure`'s doc claimed the
+   service error "is kept as the cause" while the code (frozen,
+   generation-1 parity) replaces it with the diagnosis naming the
+   code — the comment now matches the code. The plan's design-era test
+   list and the gate block's binary split corrected above.
+
+RECORDED, NOT CHANGED:
+
+- Widen (bug lens): `ALTER COLUMN … SET DATA TYPE` renders for
+  conversions the service refuses (only VARCHAR length and NUMBER
+  precision widen in place); a genuine cross-type widen fails LOUDLY
+  at execution, generation-1 parity, and a typed refusal would leave
+  the pipeline exactly as stuck. Documented at the render site.
+- README title says `rdlt-connector-snowflake`: deliberate pre-swap
+  naming — 025/026 renamed the crate at swap-in with zero doc edits;
+  the title is written for the name the crate will carry.

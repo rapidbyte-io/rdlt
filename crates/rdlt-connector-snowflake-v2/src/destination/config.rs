@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
-pub struct SnowflakeConfig {
+pub struct Config {
     /// Account identifier as it appears in the host name (`MYORG-MYACCT`
     /// for `myorg-myacct.snowflakecomputing.com`). A pasted URL is
     /// refused rather than mangled into a host that resolves nowhere.
@@ -101,9 +101,11 @@ pub struct Auth {
 pub struct KeyPair {
     /// The private key: a path to a `.p8` file, or inline PEM text.
     pub private_key: PemSource,
-    /// Required exactly when the key is encrypted. Checked up front —
-    /// left to connect time, the library's own error surfaces far from
-    /// the field that caused it.
+    /// Required exactly when the key is encrypted. The mismatch
+    /// surfaces at CONNECT time through the library, wrapped in the
+    /// connect identity frame — parse-time validation cannot check it
+    /// earlier without reading the key file, which may not exist where
+    /// the document is validated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub passphrase: Option<Secret>,
 }
@@ -198,15 +200,15 @@ impl From<serde_json::Error> for ConfigError {
 }
 
 /// The sdk gate: parse (any entry), then THIS, with no way around it.
-impl Document for SnowflakeConfig {
+impl Document for Config {
     type Error = ConfigError;
 
     fn validate(&self) -> Result<(), ConfigError> {
-        SnowflakeConfig::validate(self)
+        Config::validate(self)
     }
 }
 
-impl SnowflakeConfig {
+impl Config {
     /// Everything checkable without a connection.
     ///
     /// Also inherent, not only the trait method: assembly calls it, and
@@ -365,8 +367,7 @@ impl Password {
 /// The JSON Schema, generated from the same structs the parser reads —
 /// declaration and parser cannot drift.
 pub fn config_schema() -> serde_json::Value {
-    serde_json::to_value(schemars::schema_for!(SnowflakeConfig))
-        .expect("a generated schema serializes")
+    serde_json::to_value(schemars::schema_for!(Config)).expect("a generated schema serializes")
 }
 
 #[cfg(test)]
@@ -386,7 +387,7 @@ mod tests {
     /// The smallest valid document, and what defaults fill in.
     #[test]
     fn a_minimal_document_parses_and_defaults_the_rest() {
-        let config = SnowflakeConfig::from_value(minimal()).expect("valid");
+        let config = Config::from_value(minimal()).expect("valid");
         assert_eq!(config.table_type, TableType::Permanent);
         assert!(config.warehouse.is_none() && config.role.is_none());
         assert!(config.session_parameters.is_empty());
@@ -400,7 +401,7 @@ mod tests {
     fn an_unknown_field_is_refused_and_typed() {
         let mut doc = minimal();
         doc["wharehouse"] = serde_json::json!("TYPO_WH");
-        let err = SnowflakeConfig::from_value(doc).expect_err("the typo is refused");
+        let err = Config::from_value(doc).expect_err("the typo is refused");
         assert!(matches!(err, ConfigError::Json(_)), "{err:?}");
         assert!(err.to_string().contains("wharehouse"), "{err}");
     }
@@ -409,9 +410,9 @@ mod tests {
     /// text is the parser's own, bare.
     #[test]
     fn yaml_parse_failures_are_typed_and_render_bare() {
-        let err = SnowflakeConfig::from_yaml(": not yaml").expect_err("refused");
+        let err = Config::from_yaml(": not yaml").expect_err("refused");
         assert!(matches!(err, ConfigError::Yaml(_)), "{err:?}");
-        let parser_text = serde_yaml::from_str::<SnowflakeConfig>(": not yaml")
+        let parser_text = serde_yaml::from_str::<Config>(": not yaml")
             .expect_err("parse fails")
             .to_string();
         assert_eq!(err.to_string(), parser_text);
@@ -423,7 +424,7 @@ mod tests {
         for field in ["account", "user", "database", "schema"] {
             let mut doc = minimal();
             doc[field] = serde_json::json!("  ");
-            let err = SnowflakeConfig::from_value(doc).expect_err("blank refused");
+            let err = Config::from_value(doc).expect_err("blank refused");
             assert_eq!(err, ConfigError::Missing { field }, "{err}");
             assert!(err.to_string().contains(field), "{err}");
         }
@@ -439,7 +440,7 @@ mod tests {
         ] {
             let mut doc = minimal();
             doc["account"] = serde_json::json!(wrong);
-            let err = SnowflakeConfig::from_value(doc).expect_err("not an identifier");
+            let err = Config::from_value(doc).expect_err("not an identifier");
             assert!(err.to_string().contains("account"), "{err}");
         }
     }
@@ -449,7 +450,7 @@ mod tests {
     fn the_host_override_replaces_the_derived_name() {
         let mut doc = minimal();
         doc["host"] = serde_json::json!("acct.privatelink.snowflakecomputing.com");
-        let config = SnowflakeConfig::from_value(doc).expect("valid");
+        let config = Config::from_value(doc).expect("valid");
         assert_eq!(config.host(), "acct.privatelink.snowflakecomputing.com");
     }
 
@@ -459,7 +460,7 @@ mod tests {
     fn auth_must_name_exactly_one_method() {
         let mut none = minimal();
         none["auth"] = serde_json::json!({});
-        let err = SnowflakeConfig::from_value(none).expect_err("no method");
+        let err = Config::from_value(none).expect_err("no method");
         assert!(err.to_string().contains("names no method"), "{err}");
 
         let mut two = minimal();
@@ -467,7 +468,7 @@ mod tests {
             "key_pair": {"private_key": "/k.p8"},
             "pat": "tok",
         });
-        let rendered = SnowflakeConfig::from_value(two)
+        let rendered = Config::from_value(two)
             .expect_err("two methods")
             .to_string();
         assert!(
@@ -489,7 +490,7 @@ mod tests {
         ] {
             let mut doc = minimal();
             doc["auth"] = auth.clone();
-            SnowflakeConfig::from_value(doc).unwrap_or_else(|e| panic!("{auth}: {e}"));
+            Config::from_value(doc).unwrap_or_else(|e| panic!("{auth}: {e}"));
         }
     }
 
@@ -504,7 +505,7 @@ mod tests {
         ] {
             let mut doc = minimal();
             doc["auth"] = auth;
-            let rendered = format!("{:?}", SnowflakeConfig::from_value(doc).expect("valid"));
+            let rendered = format!("{:?}", Config::from_value(doc).expect("valid"));
             for leak in [
                 "PASSPHRASE-LEAK",
                 "PW-LEAK",
@@ -524,7 +525,7 @@ mod tests {
         inline["auth"] = serde_json::json!({
             "key_pair": {"private_key": "-----BEGIN PRIVATE KEY-----\nabc\n"}
         });
-        let inline = SnowflakeConfig::from_value(inline).expect("valid");
+        let inline = Config::from_value(inline).expect("valid");
         assert!(
             inline
                 .auth
@@ -534,7 +535,7 @@ mod tests {
                 .is_inline()
         );
 
-        let path = SnowflakeConfig::from_value(minimal()).expect("valid");
+        let path = Config::from_value(minimal()).expect("valid");
         assert!(
             !path
                 .auth
@@ -551,7 +552,7 @@ mod tests {
     fn the_shared_option_vocabulary_is_flattened_into_the_document() {
         let mut doc = minimal();
         doc["merge_strategy"] = serde_json::json!("upsert");
-        let config = SnowflakeConfig::from_value(doc).expect("valid");
+        let config = Config::from_value(doc).expect("valid");
         assert!(config.options.merge_strategy.is_some());
     }
 

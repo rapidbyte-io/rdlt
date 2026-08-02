@@ -4,7 +4,7 @@
 //! leak), not Debug output.
 
 use rdlt_connector_sdk::config::Document;
-use rdlt_connector_snowflake_v2::destination::SnowflakeConfig;
+use rdlt_connector_snowflake_v2::destination::Config;
 use serde_json::json;
 
 /// Every auth method, each carrying a marked secret.
@@ -50,7 +50,7 @@ fn validation_errors_carry_no_secret() {
             "user": "U", "database": "D", "schema": "S",
             "auth": auth,
         });
-        let err = SnowflakeConfig::from_value(doc).expect_err("the URL account refuses");
+        let err = Config::from_value(doc).expect_err("the URL account refuses");
         assert_clean("a validation error", method, &err.to_string());
     }
 }
@@ -63,7 +63,7 @@ fn parse_errors_carry_no_secret() {
         let doc = format!(
             r#"{{"account":"A","user":"U","database":"D","schema":"S","typo":1,"auth":{auth}}}"#
         );
-        let err = SnowflakeConfig::from_json(&doc).expect_err("the typo refuses");
+        let err = Config::from_json(&doc).expect_err("the typo refuses");
         assert_clean("a parse error", method, &err.to_string());
     }
 }
@@ -76,7 +76,7 @@ fn debug_output_carries_no_secret() {
             "account": "A", "user": "U", "database": "D", "schema": "S",
             "auth": auth,
         });
-        let config = SnowflakeConfig::from_value(doc).expect("valid");
+        let config = Config::from_value(doc).expect("valid");
         assert_clean("Debug output", method, &format!("{config:?}"));
     }
 }

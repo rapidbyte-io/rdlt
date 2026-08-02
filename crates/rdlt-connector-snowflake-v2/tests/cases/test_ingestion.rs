@@ -18,7 +18,7 @@ async fn an_append_load_lands_every_row_and_leaves_no_local_residue() {
     let shell = Shell::from_value(doc.clone()).expect("valid document");
     let config = {
         use rdlt_connector_sdk::config::Document;
-        rdlt_connector_snowflake_v2::destination::SnowflakeConfig::from_value(doc).expect("valid")
+        rdlt_connector_snowflake_v2::destination::Config::from_value(doc).expect("valid")
     };
 
     let source = MemorySource::new(vec![MemoryStream::new(
@@ -90,8 +90,7 @@ async fn a_column_added_mid_unit_keeps_its_data() {
     let doc = config_for(&creds, &schema);
     let config = {
         use rdlt_connector_sdk::config::Document;
-        rdlt_connector_snowflake_v2::destination::SnowflakeConfig::from_value(doc.clone())
-            .expect("valid")
+        rdlt_connector_snowflake_v2::destination::Config::from_value(doc.clone()).expect("valid")
     };
 
     // Two batches, ONE checkpoint at the end: both land in the same
@@ -129,6 +128,72 @@ async fn a_column_added_mid_unit_keeps_its_data() {
     assert_eq!(
         landed[0][0], "kept",
         "the mid-unit column's value must survive the COPY"
+    );
+
+    let _ = testhook::connect_and_run(
+        &config,
+        &format!(
+            "DROP SCHEMA IF EXISTS \"{}\".\"{}\" CASCADE",
+            config.database.to_uppercase(),
+            schema.to_uppercase()
+        ),
+    )
+    .await;
+}
+
+/// The same mid-unit widening under MERGE mode, where rows travel
+/// through the stage TABLE: the review found the just-created stage leg
+/// was never folded into the catalog image, so a later same-session
+/// evolution skipped the stage's ADD COLUMN (its re-rendered CREATE IF
+/// NOT EXISTS is a service no-op) and the COPY named a column the stage
+/// never gained. Inherited from generation 1.
+#[tokio::test]
+async fn a_column_added_mid_unit_reaches_the_merge_stage() {
+    let Some(creds) = credentials() else { return };
+    let schema = scratch_schema("mwid");
+    let mut doc = config_for(&creds, &schema);
+    doc["merge_strategy"] = json!("delete_insert");
+    let config = {
+        use rdlt_connector_sdk::config::Document;
+        rdlt_connector_snowflake_v2::destination::Config::from_value(doc.clone()).expect("valid")
+    };
+
+    let source = MemorySource::new(vec![MemoryStream::new(
+        StreamSpec::new("events").with_primary_key(["id".to_owned()]),
+        vec![
+            MemoryBatch::new(vec![json!({"id": 1})]),
+            MemoryBatch::new(vec![json!({"id": 2, "extra": "kept"})]).with_checkpoint(1),
+        ],
+    )]);
+
+    let workdir = tempfile::tempdir().expect("workdir");
+    Engine::new(
+        EngineConfig::new("sf-mwid")
+            .with_workdir(workdir.path().join("wal"))
+            .with_write_mode(rdlt_connector_sdk::spi::core::WriteMode::Merge {
+                key: vec!["id".to_owned()],
+            }),
+        source,
+        Shell::from_value(doc).expect("valid"),
+    )
+    .run()
+    .await
+    .expect("the load settles");
+
+    let landed = testhook::rows(
+        &config,
+        &format!(
+            "SELECT \"EXTRA\" AS V FROM \"{}\".\"{}\".\"EVENTS\" WHERE \"ID\" = 2",
+            config.database.to_uppercase(),
+            schema.to_uppercase()
+        ),
+        &["v"],
+    )
+    .await
+    .expect("read back");
+    assert_eq!(
+        landed[0][0], "kept",
+        "the widened column must land through the stage leg"
     );
 
     let _ = testhook::connect_and_run(

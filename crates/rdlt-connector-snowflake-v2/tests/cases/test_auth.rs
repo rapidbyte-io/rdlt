@@ -15,7 +15,7 @@ use super::common::{TokenKind, config_for, credentials, token};
 async fn probe(doc: serde_json::Value) {
     let config = {
         use rdlt_connector_sdk::config::Document;
-        rdlt_connector_snowflake_v2::destination::SnowflakeConfig::from_value(doc).expect("valid")
+        rdlt_connector_snowflake_v2::destination::Config::from_value(doc).expect("valid")
     };
     let one = testhook::connect_and_run(&config, "SELECT 1")
         .await

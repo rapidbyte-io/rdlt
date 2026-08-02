@@ -9,7 +9,7 @@ use rdlt_connector_sdk::spi::core::naming::IdentRules;
 use rdlt_connector_sdk::spi::{DestinationCapabilities, DestinationError, OpenContext};
 
 use super::client;
-use super::config::{ConfigError, SnowflakeConfig, TableType, config_schema};
+use super::config::{Config, ConfigError, TableType, config_schema};
 use super::load::Load;
 use super::stage::Stage;
 use super::{catalog, ddl};
@@ -35,7 +35,7 @@ pub const FAIL_POINTS: &[&str] = &[
 /// The Snowflake destination.
 #[derive(Debug, Clone)]
 pub struct Snowflake {
-    config: SnowflakeConfig,
+    config: Config,
 }
 
 #[async_trait]
@@ -43,10 +43,10 @@ impl DestinationConnector for Snowflake {
     const NAME: &'static str = "snowflake";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
-    type Config = SnowflakeConfig;
+    type Config = Config;
     type Backend = Load;
 
-    fn assemble(config: SnowflakeConfig) -> Result<Self, ConfigError> {
+    fn assemble(config: Config) -> Result<Self, ConfigError> {
         Ok(Self { config })
     }
 
@@ -104,6 +104,15 @@ impl DestinationConnector for Snowflake {
                 ddl::quote("load_id"),
                 ddl::quote("commit_seq")
             ),
+            format!(
+                "CREATE {transient}TABLE IF NOT EXISTS {} ({} VARCHAR, {} VARCHAR, \
+                 PRIMARY KEY ({}, {}))",
+                qualified(rdlt_connector_sqlcore::names::CLEARED_TABLE),
+                ddl::quote("load_id"),
+                ddl::quote("table_name"),
+                ddl::quote("load_id"),
+                ddl::quote("table_name")
+            ),
         ] {
             executor.execute(&sql).await?;
         }
@@ -125,6 +134,18 @@ impl DestinationConnector for Snowflake {
             .reclaim_remote(&*executor, &qualified(stage.name()))
             .await;
 
+        // The durable half of the Replace once-per-load guard: what a
+        // COMMITTED unit of THIS load already cleared. A recovery
+        // session's memory is empty, and without this seed its next
+        // write would re-clear — DELETE — rows the earlier unit
+        // committed.
+        let cleared = super::load::read_cleared_targets(
+            &*executor,
+            &qualified(rdlt_connector_sqlcore::names::CLEARED_TABLE),
+            &context.load_id,
+        )
+        .await?;
+
         Ok(Load {
             config: self.config.clone(),
             executor,
@@ -132,7 +153,7 @@ impl DestinationConnector for Snowflake {
             load_id: context.load_id.clone(),
             catalog: catalog::Catalog::default(),
             tables: std::collections::BTreeMap::new(),
-            cleared: std::collections::BTreeSet::new(),
+            cleared,
             cleared_in_unit: std::collections::BTreeSet::new(),
             reclear_owed: std::collections::BTreeSet::new(),
             unit: super::unit::Unit::default(),
@@ -153,7 +174,7 @@ pub mod testhook {
     use rdlt_connector_sdk::spi::core::{TableSchema, WriteMode};
 
     use super::super::client::Executor as _;
-    use super::super::config::{SnowflakeConfig, TableType};
+    use super::super::config::{Config, TableType};
     use super::super::unit::DmlOnly;
     use super::super::{catalog, client, ddl, stage};
 
@@ -167,10 +188,7 @@ pub mod testhook {
 
     /// Connect and run one statement; a SELECT returns its first scalar
     /// as text.
-    pub async fn connect_and_run(
-        config: &SnowflakeConfig,
-        sql: &str,
-    ) -> Result<String, DestinationError> {
+    pub async fn connect_and_run(config: &Config, sql: &str) -> Result<String, DestinationError> {
         let executor = client::connect(config).await?;
         if sql.trim_start().to_ascii_uppercase().starts_with("SELECT") {
             Ok(executor.scalar_u64(sql, &[]).await?.to_string())
@@ -182,7 +200,7 @@ pub mod testhook {
     /// Run a script on ONE session, returning the last scalar. A
     /// session per statement cannot observe anything transactional.
     pub async fn connect_and_run_script(
-        config: &SnowflakeConfig,
+        config: &Config,
         script: &[&str],
     ) -> Result<String, DestinationError> {
         let executor = client::connect(config).await?;
@@ -200,7 +218,7 @@ pub mod testhook {
     /// A query's first column as a set of strings — the shape the
     /// scalar hook (which parses counts) cannot serve.
     pub async fn read_column(
-        config: &SnowflakeConfig,
+        config: &Config,
         sql: &str,
     ) -> Result<std::collections::BTreeSet<String>, DestinationError> {
         let executor = client::connect(config).await?;
@@ -210,7 +228,7 @@ pub mod testhook {
 
     /// Named columns from every row of one statement.
     pub async fn rows(
-        config: &SnowflakeConfig,
+        config: &Config,
         sql: &str,
         columns: &[&str],
     ) -> Result<Vec<Vec<String>>, DestinationError> {
@@ -220,7 +238,7 @@ pub mod testhook {
     /// Named columns from every row, after a setup script on the SAME
     /// session.
     pub async fn script_rows(
-        config: &SnowflakeConfig,
+        config: &Config,
         setup: &[&str],
         sql: &str,
         columns: &[&str],
@@ -233,7 +251,7 @@ pub mod testhook {
     }
 
     /// One statement through the UNIT executor — the DDL-refusing one.
-    pub async fn run_in_unit(config: &SnowflakeConfig, sql: &str) -> Result<(), DestinationError> {
+    pub async fn run_in_unit(config: &Config, sql: &str) -> Result<(), DestinationError> {
         let executor = client::connect(config).await?;
         DmlOnly(executor.as_ref()).execute(sql).await
     }
@@ -247,7 +265,7 @@ pub mod testhook {
     /// waits a day no test can sit out; parameterising the age lets a
     /// cell prove both outcomes — stale removed, fresh kept.
     pub async fn reclaim_staged_older_than(
-        config: &SnowflakeConfig,
+        config: &Config,
         pipeline: &str,
         load: &str,
         qualified_stage: &str,
@@ -294,7 +312,7 @@ pub mod testhook {
     /// One table's columns as the live catalog reports them — proving
     /// the read-then-emit-nothing loop against a real account.
     pub async fn read_catalog(
-        config: &SnowflakeConfig,
+        config: &Config,
         table: &str,
     ) -> Result<std::collections::BTreeSet<String>, DestinationError> {
         let executor = client::connect(config).await?;
@@ -302,7 +320,7 @@ pub mod testhook {
     }
 
     /// Apply one statement against the account.
-    pub async fn apply(config: &SnowflakeConfig, sql: &str) -> Result<(), DestinationError> {
+    pub async fn apply(config: &Config, sql: &str) -> Result<(), DestinationError> {
         client::connect(config).await?.execute(sql).await
     }
 }

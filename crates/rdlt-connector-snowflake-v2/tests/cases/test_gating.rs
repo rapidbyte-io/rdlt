@@ -88,3 +88,17 @@ fn scratch_schemas_are_unique_and_uppercase() {
     assert!(one.starts_with("RDLT_T_MERGE_"), "{one}");
     assert_eq!(one, one.to_uppercase(), "{one}");
 }
+
+/// The crash-point registry agrees with the sources — checked HERE, in
+/// the ungated suite, because the sweep binary that also checks it is
+/// feature-gated and by-hand: registry-vs-source drift must fail a
+/// routine gate, not wait for the next manual sweep.
+#[test]
+fn the_crash_registry_matches_the_sources_in_gate() {
+    rdlt_testkit::assert_registry_matches_sources(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .as_path(),
+        &[rdlt_connector_snowflake_v2::destination::FAIL_POINTS],
+    );
+}

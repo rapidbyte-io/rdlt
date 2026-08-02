@@ -59,12 +59,15 @@ impl Catalog {
     }
 
     /// Fold a just-created table into the image, so a second ensure at
-    /// the same schema version emits nothing.
+    /// the same schema version emits nothing. EXTENDS rather than
+    /// replaces: columns never leave a table under additive evolution,
+    /// and replacing wiped columns this session recorded that the
+    /// schema does not carry (the scd2 validity pair), making a
+    /// re-ensure re-render their ALTERs — and, mid-unit, end a unit for
+    /// work the service would not perform.
     pub fn record_created(&mut self, table: &str, columns: &[String]) {
-        self.tables.insert(
-            catalog_name(table),
-            columns.iter().map(|c| catalog_name(c)).collect(),
-        );
+        let entry = self.tables.entry(catalog_name(table)).or_default();
+        entry.extend(columns.iter().map(|c| catalog_name(c)));
     }
 
     /// Fold a just-added column into the image.

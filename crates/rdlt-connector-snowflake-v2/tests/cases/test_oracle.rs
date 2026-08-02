@@ -53,7 +53,7 @@ async fn both_destinations_land_the_same_rows_for_every_strategy() {
         sf_doc["tables"] = table_options.clone();
         let sf_config = {
             use rdlt_connector_sdk::config::Document;
-            rdlt_connector_snowflake_v2::destination::SnowflakeConfig::from_value(sf_doc.clone())
+            rdlt_connector_snowflake_v2::destination::Config::from_value(sf_doc.clone())
                 .expect("valid")
         };
         let pg_doc = json!({

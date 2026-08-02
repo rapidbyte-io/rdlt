@@ -149,6 +149,11 @@ pub(super) fn table_ddl_stmts(
                 ));
             }
             EnsureStep::Widen { leg, column } => {
+                // The service widens in place only along VARCHAR length
+                // and NUMBER precision; a cross-type widen (NUMBER to
+                // FLOAT/VARCHAR/VARIANT) is refused at execution with a
+                // compilation error — loud, and a recorded limitation
+                // (generation-1 parity), never a silent misload.
                 let def = &schema.columns[column];
                 out.push(format!(
                     "ALTER TABLE {} ALTER COLUMN {} SET DATA TYPE {}",

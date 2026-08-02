@@ -21,9 +21,9 @@ use super::ddl::quote;
 /// assignment list is built from whatever the dialect names.
 const INCOMING: &str = "SRC";
 
-pub(super) struct SnowflakeDialect;
+pub(super) struct Dialect;
 
-impl MergeDialect for SnowflakeDialect {
+impl MergeDialect for Dialect {
     fn quote(&self, ident: &str) -> String {
         quote(ident)
     }
@@ -125,7 +125,7 @@ mod tests {
     }
 
     fn render(action: UpsertAction<'_>, keys: &[String], columns: &[String]) -> String {
-        SnowflakeDialect.upsert_stmt(&Upsert {
+        Dialect.upsert_stmt(&Upsert {
             target: "\"DB\".\"S\".\"EVENTS\"",
             columns,
             cols_sql: "\"ID\", \"REGION\", \"NOTE\"",
@@ -188,7 +188,7 @@ mod tests {
     fn the_keep_predicate_rides_the_source_subquery() {
         let keys = vec![quote("id")];
         let cols = columns();
-        let sql = SnowflakeDialect.upsert_stmt(&Upsert {
+        let sql = Dialect.upsert_stmt(&Upsert {
             target: "\"T\"",
             columns: &cols,
             cols_sql: "\"ID\"",
@@ -208,14 +208,13 @@ mod tests {
     /// tie-break, after any declared sort.
     #[test]
     fn the_survivor_subquery_uses_qualify_with_arrival_as_tie_break() {
-        let bare = SnowflakeDialect.dedup_subquery("\"ID\"", "", "\"STG\"");
+        let bare = Dialect.dedup_subquery("\"ID\"", "", "\"STG\"");
         assert_eq!(
             bare,
             "(SELECT * FROM \"STG\" QUALIFY ROW_NUMBER() OVER \
              (PARTITION BY \"ID\" ORDER BY \"__RDLT_ARRIVAL\" DESC) = 1)"
         );
-        let sorted =
-            SnowflakeDialect.dedup_subquery("\"ID\"", "\"V\" DESC NULLS LAST, ", "\"STG\"");
+        let sorted = Dialect.dedup_subquery("\"ID\"", "\"V\" DESC NULLS LAST, ", "\"STG\"");
         assert!(
             sorted.contains("ORDER BY \"V\" DESC NULLS LAST, \"__RDLT_ARRIVAL\" DESC"),
             "{sorted}"
@@ -226,21 +225,18 @@ mod tests {
     /// the NULL-safe unset.
     #[test]
     fn the_flag_predicates_use_the_service_spellings() {
-        assert_eq!(SnowflakeDialect.flag_set("\"D\""), "\"D\" = TRUE");
-        assert_eq!(
-            SnowflakeDialect.flag_unset("\"D\""),
-            "\"D\" IS DISTINCT FROM TRUE"
-        );
+        assert_eq!(Dialect.flag_set("\"D\""), "\"D\" = TRUE");
+        assert_eq!(Dialect.flag_unset("\"D\""), "\"D\" IS DISTINCT FROM TRUE");
     }
 
     /// Clears delete; the boundary reads the captured instant.
     #[test]
     fn clears_delete_and_the_boundary_reads_the_captured_instant() {
-        assert_eq!(SnowflakeDialect.clear_table("\"T\""), "DELETE FROM \"T\"");
-        assert_eq!(SnowflakeDialect.tx_timestamp(), "$rdlt_tx_ts");
+        assert_eq!(Dialect.clear_table("\"T\""), "DELETE FROM \"T\"");
+        assert_eq!(Dialect.tx_timestamp(), "$rdlt_tx_ts");
         assert_eq!(
             format!("${}", super::super::unit::TX_TIMESTAMP_VAR),
-            SnowflakeDialect.tx_timestamp(),
+            Dialect.tx_timestamp(),
             "the dialect reads exactly the variable the unit captures"
         );
     }
@@ -248,7 +244,7 @@ mod tests {
     /// The identifier policy flows through the seam.
     #[test]
     fn identifiers_and_arrival_follow_the_quoted_upper_policy() {
-        assert_eq!(SnowflakeDialect.quote("events"), "\"EVENTS\"");
-        assert_eq!(SnowflakeDialect.arrival_order(), "\"__RDLT_ARRIVAL\"");
+        assert_eq!(Dialect.quote("events"), "\"EVENTS\"");
+        assert_eq!(Dialect.arrival_order(), "\"__RDLT_ARRIVAL\"");
     }
 }

@@ -3,7 +3,7 @@
 //! sqlcore's validation fires through this crate's document gate.
 
 use rdlt_connector_sdk::config::Document;
-use rdlt_connector_snowflake_v2::destination::SnowflakeConfig;
+use rdlt_connector_snowflake_v2::destination::Config;
 use serde_json::json;
 
 fn minimal() -> serde_json::Value {
@@ -33,7 +33,7 @@ fn the_family_option_spellings_parse_flattened() {
             "scd2": {"valid_from": "vf", "valid_to": "vt"},
         },
     });
-    let config = SnowflakeConfig::from_value(doc).expect("the family vocabulary parses");
+    let config = Config::from_value(doc).expect("the family vocabulary parses");
     assert!(config.options.merge_strategy.is_some());
     assert_eq!(config.options.tables.len(), 2);
     assert!(config.options.tables["events"].hard_delete.is_some());
@@ -49,8 +49,7 @@ fn invalid_option_combinations_are_refused_through_the_gate() {
     doc["tables"] = json!({
         "events": {"scd2": {"valid_from": "vf"}},
     });
-    let err = SnowflakeConfig::from_value(doc)
-        .expect_err("scd2 options without the strategy are refused");
+    let err = Config::from_value(doc).expect_err("scd2 options without the strategy are refused");
     let rendered = err.to_string();
     assert!(rendered.contains("events"), "names the table: {rendered}");
     assert!(rendered.contains("scd2"), "names the option: {rendered}");

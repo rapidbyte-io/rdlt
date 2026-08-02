@@ -30,10 +30,7 @@ async fn run_load(doc: &serde_json::Value, pipeline: &str, rows: Vec<(i64, &'sta
     .expect("the load settles");
 }
 
-fn qualified(
-    config: &rdlt_connector_snowflake_v2::destination::SnowflakeConfig,
-    schema: &str,
-) -> String {
+fn qualified(config: &rdlt_connector_snowflake_v2::destination::Config, schema: &str) -> String {
     format!(
         "\"{}\".\"{}\".\"EVENTS\"",
         config.database.to_uppercase(),
@@ -41,10 +38,7 @@ fn qualified(
     )
 }
 
-async fn drop_schema(
-    config: &rdlt_connector_snowflake_v2::destination::SnowflakeConfig,
-    schema: &str,
-) {
+async fn drop_schema(config: &rdlt_connector_snowflake_v2::destination::Config, schema: &str) {
     let _ = testhook::connect_and_run(
         config,
         &format!(
@@ -66,8 +60,7 @@ async fn an_upsert_converges_on_the_key_and_leaves_no_duplicates() {
     doc["merge_strategy"] = json!("upsert");
     let config = {
         use rdlt_connector_sdk::config::Document;
-        rdlt_connector_snowflake_v2::destination::SnowflakeConfig::from_value(doc.clone())
-            .expect("valid")
+        rdlt_connector_snowflake_v2::destination::Config::from_value(doc.clone()).expect("valid")
     };
 
     run_load(&doc, "sf-ups", vec![(1, "old", false), (2, "keep", false)]).await;
@@ -111,8 +104,7 @@ async fn a_hard_delete_flag_removes_the_row() {
     doc["tables"] = json!({"events": {"hard_delete": "gone"}});
     let config = {
         use rdlt_connector_sdk::config::Document;
-        rdlt_connector_snowflake_v2::destination::SnowflakeConfig::from_value(doc.clone())
-            .expect("valid")
+        rdlt_connector_snowflake_v2::destination::Config::from_value(doc.clone()).expect("valid")
     };
 
     run_load(&doc, "sf-hd", vec![(1, "x", false), (2, "x", false)]).await;
@@ -141,8 +133,7 @@ async fn scd2_versions_meet_exactly_because_the_unit_shares_one_instant() {
     doc["merge_strategy"] = json!("scd2");
     let config = {
         use rdlt_connector_sdk::config::Document;
-        rdlt_connector_snowflake_v2::destination::SnowflakeConfig::from_value(doc.clone())
-            .expect("valid")
+        rdlt_connector_snowflake_v2::destination::Config::from_value(doc.clone()).expect("valid")
     };
 
     run_load(&doc, "sf-scd", vec![(1, "v1", false)]).await;
@@ -165,6 +156,98 @@ async fn scd2_versions_meet_exactly_because_the_unit_shares_one_instant() {
     assert_eq!(
         rows[0][0], "1",
         "retirement and insertion share one captured instant"
+    );
+
+    // And exactly ONE version is current — a retirement that missed
+    // (two open versions) or overshot (none) both read back here.
+    let current = testhook::rows(
+        &config,
+        &format!(
+            "SELECT COUNT(*) AS C FROM {} WHERE \"_RDLT_VALID_TO\" IS NULL",
+            qualified(&config, &schema)
+        ),
+        &["c"],
+    )
+    .await
+    .expect("read back");
+    assert_eq!(current[0][0], "1", "one current version for the one key");
+
+    drop_schema(&config, &schema).await;
+}
+
+/// dedup_sort picks the DECLARED survivor among in-load duplicates and
+/// reads it back — the survivor is the whole point, and an arbitrary
+/// one (023's D-32 failure class) is invisible to a count.
+#[tokio::test]
+async fn dedup_sort_picks_the_declared_survivor() {
+    let Some(creds) = credentials() else { return };
+    let schema = scratch_schema("ddp");
+    let mut doc = config_for(&creds, &schema);
+    doc["merge_strategy"] = json!("upsert");
+    doc["tables"] = json!({"events": {"dedup_sort": {"column": "note", "order": "desc"}}});
+    let config = {
+        use rdlt_connector_sdk::config::Document;
+        rdlt_connector_snowflake_v2::destination::Config::from_value(doc.clone()).expect("valid")
+    };
+
+    // Two rows, ONE key, one load: without dedup the upsert MERGE would
+    // refuse the duplicate outright; with it, the declared order picks
+    // `b`.
+    run_load(&doc, "sf-ddp", vec![(1, "a", false), (1, "b", false)]).await;
+
+    let rows = testhook::rows(
+        &config,
+        &format!(
+            "SELECT COUNT(*) AS N, MAX(\"NOTE\") AS V FROM {}",
+            qualified(&config, &schema)
+        ),
+        &["n", "v"],
+    )
+    .await
+    .expect("read back");
+    assert_eq!(rows[0][0], "1", "one survivor");
+    assert_eq!(
+        rows[0][1], "b",
+        "the declared order's survivor, not an arbitrary one"
+    );
+
+    drop_schema(&config, &schema).await;
+}
+
+/// scd2 `absent: retire` — the FULL-FEED leg: the publish first probes
+/// which stages hold rows (`SELECT EXISTS`, answered BOOLEAN by the
+/// service — the probe this rewrite's review found unreadable through
+/// the numeric-only scalar arms, in both generations) and then retires
+/// every active key the load did not deliver.
+#[tokio::test]
+async fn an_absent_key_retires_through_the_full_feed_probe() {
+    let Some(creds) = credentials() else { return };
+    let schema = scratch_schema("ret");
+    let mut doc = config_for(&creds, &schema);
+    doc["merge_strategy"] = json!("scd2");
+    doc["tables"] = json!({"events": {"scd2": {"absent": "retire"}}});
+    let config = {
+        use rdlt_connector_sdk::config::Document;
+        rdlt_connector_snowflake_v2::destination::Config::from_value(doc.clone()).expect("valid")
+    };
+
+    run_load(&doc, "sf-ret", vec![(1, "keep", false), (2, "drop", false)]).await;
+    run_load(&doc, "sf-ret", vec![(1, "keep", false)]).await;
+
+    let rows = testhook::rows(
+        &config,
+        &format!(
+            "SELECT \"ID\" AS I FROM {} WHERE \"_RDLT_VALID_TO\" IS NULL ORDER BY \"ID\"",
+            qualified(&config, &schema)
+        ),
+        &["i"],
+    )
+    .await
+    .expect("read back");
+    assert_eq!(
+        rows,
+        vec![vec!["1".to_string()]],
+        "the absent key retired; the delivered key stays current"
     );
 
     drop_schema(&config, &schema).await;

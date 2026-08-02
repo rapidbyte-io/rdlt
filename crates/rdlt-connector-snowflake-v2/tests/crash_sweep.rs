@@ -55,7 +55,7 @@ async fn every_registered_point_recovers_exactly_once() {
         let doc = config_for(&creds, &schema);
         let config = {
             use rdlt_connector_sdk::config::Document;
-            rdlt_connector_snowflake_v2::destination::SnowflakeConfig::from_value(doc.clone())
+            rdlt_connector_snowflake_v2::destination::Config::from_value(doc.clone())
                 .expect("valid")
         };
         let rows = vec![json!({"id": 1}), json!({"id": 2}), json!({"id": 3})];
@@ -82,7 +82,7 @@ async fn every_registered_point_recovers_exactly_once() {
         );
 
         // Recovery: the same pipeline, unarmed, settles exactly-once.
-        Engine::new(
+        let report = Engine::new(
             engine_config(),
             source_of(rows.clone()),
             Shell::from_value(doc.clone()).expect("valid"),
@@ -90,6 +90,24 @@ async fn every_registered_point_recovers_exactly_once() {
         .run()
         .await
         .unwrap_or_else(|e| panic!("[{point}] recovery must settle: {e:?}"));
+
+        // The settled load's local part directory must be gone or
+        // empty — the "no local residue" half of the doc's claim,
+        // asserted rather than trusted (the sf.stage.write cell leaves
+        // exactly the file local reclaim exists for).
+        let local = testhook::local_part_dir(
+            &format!("sweep-{}", point.replace('.', "-")),
+            report.load_id.as_str(),
+        );
+        let leftover = std::fs::read_dir(&local)
+            .map(|entries| entries.count())
+            .unwrap_or(0);
+        assert_eq!(
+            leftover,
+            0,
+            "[{point}] local residue at {}",
+            local.display()
+        );
 
         let landed = testhook::rows(
             &config,

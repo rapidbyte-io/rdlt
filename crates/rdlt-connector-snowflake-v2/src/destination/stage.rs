@@ -176,16 +176,7 @@ impl Stage {
         prefix: &str,
         file_name: &str,
     ) -> Result<(), DestinationError> {
-        // Verb FIRST: the library switches result format on the first
-        // token, and a leading comment would request a format the
-        // service refuses for uploads. AUTO_COMPRESS off keeps the
-        // staged name equal to the local one (compression appends a
-        // suffix the load statement would not find); OVERWRITE on lets
-        // a retried unit re-upload the same part.
-        let sql = format!(
-            "PUT 'file://{}' @{qualified_stage}/{prefix}/ AUTO_COMPRESS = FALSE OVERWRITE = TRUE",
-            path.display()
-        );
+        let sql = put_sql(path, qualified_stage, prefix);
         let report = executor
             .rows(&sql, &[], &[UPLOAD_TARGET, UPLOAD_STATUS, UPLOAD_MESSAGE])
             .await?;
@@ -313,6 +304,19 @@ impl Stage {
     }
 }
 
+/// The PUT uploading one local part. Verb FIRST: the library switches
+/// result format on the first token, and a leading comment would
+/// request a format the service refuses for uploads. AUTO_COMPRESS off
+/// keeps the staged name equal to the local one (compression appends a
+/// suffix the load statement would not find); OVERWRITE on lets a
+/// retried unit re-upload the same part.
+fn put_sql(path: &Path, qualified_stage: &str, prefix: &str) -> String {
+    format!(
+        "PUT 'file://{}' @{qualified_stage}/{prefix}/ AUTO_COMPRESS = FALSE OVERWRITE = TRUE",
+        path.display()
+    )
+}
+
 /// The COPY loading a set of parts into one table.
 ///
 /// Columns are projected EXPLICITLY out of the file — never
@@ -419,21 +423,175 @@ mod tests {
         assert_ne!(stage.prefix("events"), stage.prefix("orders"));
     }
 
-    /// The PUT's two silent-breakage guards: verb-first (result format
-    /// switches on the first token) and compression off (renaming).
+    /// The PUT's silent-breakage guards, on the statement the upload
+    /// ACTUALLY renders (an earlier pin asserted on a string the test
+    /// itself had written, which no code change could fail): verb
+    /// first, compression off, overwrite on, and it passes the unit
+    /// guard.
     #[test]
     fn the_upload_statement_starts_with_its_verb_and_disables_renaming() {
         let stage = Stage::new("sales", "load-1");
-        let sql = format!(
-            "PUT 'file:///tmp/x/00000000.parquet' @\"S\"/{}/ AUTO_COMPRESS = FALSE OVERWRITE = TRUE",
-            stage.prefix("events")
+        let sql = put_sql(
+            Path::new("/tmp/x/00000000.parquet"),
+            "\"DB\".\"S\".\"ST\"",
+            &stage.prefix("events"),
         );
-        assert!(sql.starts_with("PUT "), "{sql}");
+        assert!(
+            sql.starts_with("PUT 'file:///tmp/x/00000000.parquet' @"),
+            "{sql}"
+        );
         assert!(sql.contains("AUTO_COMPRESS = FALSE"), "{sql}");
+        assert!(sql.contains("OVERWRITE = TRUE"), "{sql}");
         assert!(
             !super::super::unit::is_ddl(&sql),
             "an upload must pass the unit guard"
         );
+    }
+
+    /// A scripted executor: records what it is asked and answers `rows`
+    /// with a canned upload report.
+    struct Scripted {
+        log: std::sync::Mutex<Vec<String>>,
+        report: Vec<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Executor for Scripted {
+        async fn execute(&self, sql: &str) -> Result<(), DestinationError> {
+            self.log.lock().expect("lock").push(sql.to_owned());
+            Ok(())
+        }
+        async fn scalar_u64(&self, _: &str, _: &[&str]) -> Result<u64, DestinationError> {
+            Ok(0)
+        }
+        async fn sum_column(&self, _: &str, _: &str) -> Result<u64, DestinationError> {
+            Ok(0)
+        }
+        async fn rows(
+            &self,
+            sql: &str,
+            _: &[&str],
+            _: &[&str],
+        ) -> Result<Vec<Vec<String>>, DestinationError> {
+            self.log.lock().expect("lock").push(sql.to_owned());
+            Ok(self.report.clone())
+        }
+    }
+
+    fn scripted(report: Vec<Vec<String>>) -> Scripted {
+        Scripted {
+            log: std::sync::Mutex::new(Vec::new()),
+            report,
+        }
+    }
+
+    fn row(target: &str, status: &str, message: &str) -> Vec<String> {
+        vec![target.to_owned(), status.to_owned(), message.to_owned()]
+    }
+
+    /// The measured service fact the verification exists for: a
+    /// multi-file PUT returns Ok with a MIXED rowset, so EVERY row must
+    /// be inspected — a report that is success-overall but carries one
+    /// failed row abandons the unit, naming the failed file.
+    #[tokio::test]
+    async fn an_upload_with_one_failed_row_fails_even_among_successes() {
+        let stage = Stage::new("sales", "load-1");
+        let executor = scripted(vec![
+            row("00000000.parquet", "UPLOADED", ""),
+            row("00000000.parquet", "SKIPPED", "stale"),
+        ]);
+        let err = stage
+            .upload(
+                &executor,
+                Path::new("/tmp/x/00000000.parquet"),
+                "\"DB\".\"S\".\"ST\"",
+                "seg/tab",
+                "00000000.parquet",
+            )
+            .await
+            .expect_err("one failed row abandons the unit");
+        let rendered = format!("{err}");
+        assert!(rendered.contains("SKIPPED"), "{rendered}");
+        assert!(rendered.contains("(stale)"), "{rendered}");
+    }
+
+    /// An empty report proves nothing arrived — and must not pass.
+    #[tokio::test]
+    async fn an_upload_reporting_nothing_is_refused() {
+        let stage = Stage::new("sales", "load-1");
+        let executor = scripted(Vec::new());
+        let err = stage
+            .upload(
+                &executor,
+                Path::new("/tmp/x/00000000.parquet"),
+                "\"DB\".\"S\".\"ST\"",
+                "seg/tab",
+                "00000000.parquet",
+            )
+            .await
+            .expect_err("no result at all");
+        assert!(format!("{err}").contains("no result at all"), "{err}");
+    }
+
+    /// A rename under us means the COPY would miss the file — refused,
+    /// naming both spellings. Status matching stays case-insensitive.
+    #[tokio::test]
+    async fn a_renamed_upload_is_refused_and_status_case_is_ignored() {
+        let stage = Stage::new("sales", "load-1");
+        let executor = scripted(vec![row("00000000.parquet.gz", "uploaded", "")]);
+        let err = stage
+            .upload(
+                &executor,
+                Path::new("/tmp/x/00000000.parquet"),
+                "\"DB\".\"S\".\"ST\"",
+                "seg/tab",
+                "00000000.parquet",
+            )
+            .await
+            .expect_err("renamed");
+        let rendered = format!("{err}");
+        assert!(rendered.contains("00000000.parquet.gz"), "{rendered}");
+
+        let ok = scripted(vec![row("00000000.parquet", "Uploaded", "")]);
+        stage
+            .upload(
+                &ok,
+                Path::new("/tmp/x/00000000.parquet"),
+                "\"DB\".\"S\".\"ST\"",
+                "seg/tab",
+                "00000000.parquet",
+            )
+            .await
+            .expect("case-insensitive status, unchanged name");
+        assert!(
+            ok.log.lock().expect("lock")[0].starts_with("PUT "),
+            "the rendered statement reached the executor"
+        );
+    }
+
+    /// Local reclaim removes the load's OWN directory — whole,
+    /// unconditionally — and leaves everything else where it is.
+    #[test]
+    fn local_reclaim_removes_this_loads_directory_only() {
+        let mine = Stage::new("sales-reclaim-pin", "load-1");
+        let other = Stage::new("sales-reclaim-pin", "load-2");
+        std::fs::create_dir_all(mine.local_dir()).expect("mine");
+        std::fs::write(mine.local_dir().join("00000000.parquet"), b"x").expect("part");
+        std::fs::create_dir_all(other.local_dir()).expect("other");
+        std::fs::write(other.local_dir().join("00000000.parquet"), b"y").expect("part");
+
+        mine.reclaim_local();
+        assert!(!mine.local_dir().exists(), "my residue is gone");
+        assert!(other.local_dir().exists(), "the other load's survives");
+        let _ = std::fs::remove_dir_all(other.local_dir());
+    }
+
+    /// The shipped window is the recorded one: generous on purpose (a
+    /// day of storage versus deleting a live load's parts), and any
+    /// change to it must show up here.
+    #[test]
+    fn the_shipped_reclaim_window_is_twenty_four_hours() {
+        assert_eq!(STALE_AFTER_HOURS, 24);
     }
 
     /// The COPY names exactly this unit's parts, keeps the case

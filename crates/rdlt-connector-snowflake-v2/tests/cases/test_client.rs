@@ -15,10 +15,8 @@ async fn a_missing_object_is_fatal_and_carries_its_code() {
     let Some(creds) = credentials() else { return };
     let config = {
         use rdlt_connector_sdk::config::Document;
-        rdlt_connector_snowflake_v2::destination::SnowflakeConfig::from_value(config_for(
-            &creds, "PUBLIC",
-        ))
-        .expect("valid")
+        rdlt_connector_snowflake_v2::destination::Config::from_value(config_for(&creds, "PUBLIC"))
+            .expect("valid")
     };
 
     let err = testhook::connect_and_run(&config, "SELECT * FROM \"RDLT_DOES_NOT_EXIST_ANYWHERE\"")
@@ -48,7 +46,7 @@ async fn a_bad_credential_fails_fatal_naming_the_identity() {
     });
     let config = {
         use rdlt_connector_sdk::config::Document;
-        rdlt_connector_snowflake_v2::destination::SnowflakeConfig::from_value(doc).expect("valid")
+        rdlt_connector_snowflake_v2::destination::Config::from_value(doc).expect("valid")
     };
 
     let err = testhook::connect_and_run(&config, "SELECT 1")

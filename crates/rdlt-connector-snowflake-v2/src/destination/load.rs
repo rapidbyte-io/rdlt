@@ -30,8 +30,8 @@ use rdlt_connector_sqlcore::{
 
 use super::catalog::{self, Catalog};
 use super::client::{self, Executor};
-use super::config::SnowflakeConfig;
-use super::dialect::SnowflakeDialect;
+use super::config::Config;
+use super::dialect::Dialect;
 use super::encode;
 use super::stage::{self, Part, Stage};
 use super::unit::{DmlOnly, Unit};
@@ -67,7 +67,7 @@ fn crash_at(_name: &str) -> Option<DestinationError> {
 /// the sdk session drives it. Public only as the connector's associated
 /// `Backend` type; everything inside is crate-internal.
 pub struct Load {
-    pub(super) config: SnowflakeConfig,
+    pub(super) config: Config,
     pub(super) executor: Box<dyn Executor>,
     pub(super) pipeline: PipelineId,
     pub(super) load_id: LoadId,
@@ -145,18 +145,41 @@ impl Load {
     async fn open_unit(&mut self) -> Result<(), DestinationError> {
         self.unit.begin_if_closed(&*self.executor).await?;
         for table in std::mem::take(&mut self.reclear_owed) {
-            let step = Step::ClearTarget {
-                table: table.clone(),
-            };
-            let executor = DmlOnly(&*self.executor);
-            self.execute_step(
-                &executor,
-                &prepare_meta(&self.load_id, &self.pipeline),
-                &step,
-            )
-            .await?;
-            self.cleared_in_unit.insert(table);
+            self.clear_target(table).await?;
         }
+        Ok(())
+    }
+
+    /// Execute one Replace clear: the DELETE, the durable record beside
+    /// it in the SAME transaction, and the in-unit mark — rolled back
+    /// together or durable together, so the record and the empty target
+    /// cannot disagree. The record is sqlcore's contract for a
+    /// DirectToTarget destination: a crash-recovery session has fresh
+    /// memory, and without it the next write would re-clear a target an
+    /// earlier unit of this load already cleared and COMMITTED —
+    /// deleting its rows silently. Generation 1 never wrote the record.
+    async fn clear_target(&mut self, table: TableName) -> Result<(), DestinationError> {
+        let step = Step::ClearTarget {
+            table: table.clone(),
+        };
+        let executor = DmlOnly(&*self.executor);
+        self.execute_step(
+            &executor,
+            &prepare_meta(&self.load_id, &self.pipeline),
+            &step,
+        )
+        .await?;
+        executor
+            .execute(&format!(
+                "INSERT INTO {cleared} ({load_col}, {table_col}) VALUES ('{load}', '{t}')",
+                cleared = self.qualified(rdlt_connector_sqlcore::names::CLEARED_TABLE),
+                load_col = quote("load_id"),
+                table_col = quote("table_name"),
+                load = encode::sql_literal_body(self.load_id.as_str()),
+                t = encode::sql_literal_body(table.as_str()),
+            ))
+            .await?;
+        self.cleared_in_unit.insert(table);
         Ok(())
     }
 
@@ -261,7 +284,7 @@ impl Load {
                 // The dialect spells this DELETE — TRUNCATE would commit
                 // the unit (see the unit module).
                 executor
-                    .execute(&SnowflakeDialect.clear_table(&self.qualified(table.as_str())))
+                    .execute(&Dialect.clear_table(&self.qualified(table.as_str())))
                     .await
             }
             Step::UpsertState => {
@@ -306,7 +329,7 @@ impl Load {
             Step::ScopeReplace { table, scope } => {
                 executor
                     .execute(&scope_replace_sql(
-                        &SnowflakeDialect,
+                        &Dialect,
                         &self.qualified(table.as_str()),
                         &self.qualified(&ddl::stage_name(self.pipeline.as_str(), table)),
                         scope,
@@ -323,7 +346,7 @@ impl Load {
             }
             Step::TruncateStage { table } => {
                 executor
-                    .execute(&SnowflakeDialect.clear_table(
+                    .execute(&Dialect.clear_table(
                         &self.qualified(&ddl::stage_name(self.pipeline.as_str(), table)),
                     ))
                     .await
@@ -357,7 +380,7 @@ impl Load {
         let stage_table = self.qualified(&ddl::stage_name(pipeline, table));
         let columns = column_list_with(schema, quote);
         let plan = build_merge_plan(
-            &SnowflakeDialect,
+            &Dialect,
             &self.config.options,
             table,
             schema,
@@ -373,10 +396,11 @@ impl Load {
     }
 
     /// Exchange a duplicate-merge-key failure for the SHARED diagnosis,
-    /// recognised by structured CODE — the service's wording is its own
-    /// to change and is kept as the cause. Everything else passes
-    /// through: replacing an unrelated error with merge advice would
-    /// send an operator hunting a duplicate that is not there.
+    /// recognised by structured CODE, never by message text — the
+    /// wording is the service's to change, and the diagnosis names the
+    /// code rather than carrying the discarded error. Everything else
+    /// passes through: replacing an unrelated error with merge advice
+    /// would send an operator hunting a duplicate that is not there.
     fn explain_merge_failure(
         &self,
         table: &TableName,
@@ -461,6 +485,21 @@ impl Backend for Load {
                 .map(|c| c.name.clone())
                 .collect::<Vec<_>>(),
         );
+        if matches!(mode, WriteMode::Merge { .. }) {
+            // The stage leg folds in too. Left "read, absent", a later
+            // same-session evolution SKIPPED the stage's ADD COLUMN
+            // (its re-rendered CREATE IF NOT EXISTS is a no-op on the
+            // service), so the COPY into the stage named a column the
+            // table never gained. Inherited from generation 1; pinned
+            // live by the merge-mode mid-unit widening cell.
+            let mut stage_columns: Vec<String> =
+                schema.columns.iter().map(|c| c.name.clone()).collect();
+            stage_columns.push(rdlt_connector_sqlcore::names::ARRIVAL_COL.to_owned());
+            self.catalog.record_created(
+                &ddl::stage_name(self.pipeline.as_str(), &schema.table),
+                &stage_columns,
+            );
+        }
 
         for sql in merge_statements {
             self.executor.execute(&self.qualify_ddl(&sql)).await?;
@@ -517,17 +556,17 @@ impl Backend for Load {
             table,
         );
         for step in steps {
-            let executor = DmlOnly(&*self.executor);
-            self.execute_step(
-                &executor,
-                &prepare_meta(&self.load_id, &self.pipeline),
-                &step,
-            )
-            .await?;
-            if let Step::ClearTarget { table } = step {
-                // In-unit until the unit commits: a rolled-back DELETE
-                // cleared nothing.
-                self.cleared_in_unit.insert(table);
+            match step {
+                Step::ClearTarget { table } => self.clear_target(table).await?,
+                other => {
+                    let executor = DmlOnly(&*self.executor);
+                    self.execute_step(
+                        &executor,
+                        &prepare_meta(&self.load_id, &self.pipeline),
+                        &other,
+                    )
+                    .await?;
+                }
             }
         }
 
@@ -761,6 +800,32 @@ impl Backend for Load {
     }
 }
 
+/// The tables a COMMITTED unit of this load already cleared, from the
+/// durable record — the seed for `cleared` at connect. A recovery
+/// session's memory is empty; only this read stops its next write from
+/// re-clearing (deleting) rows an earlier unit committed.
+pub(super) async fn read_cleared_targets(
+    executor: &dyn Executor,
+    qualified_cleared: &str,
+    load_id: &LoadId,
+) -> Result<BTreeSet<TableName>, DestinationError> {
+    let rows = executor
+        .rows(
+            &format!(
+                "SELECT {col} FROM {qualified_cleared} WHERE {load} = ?",
+                col = quote("table_name"),
+                load = quote("load_id"),
+            ),
+            &[load_id.as_str()],
+            &["table_name"],
+        )
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|mut row| TableName::from(row.remove(0).as_str()))
+        .collect())
+}
+
 // ---- helpers ---------------------------------------------------------------
 
 /// The column an `ADD COLUMN` statement adds, so the catalog image can
@@ -882,7 +947,7 @@ mod tests {
                 doc.insert(key.clone(), value.clone());
             }
         }
-        let config = SnowflakeConfig::from_value(doc).expect("valid");
+        let config = Config::from_value(doc).expect("valid");
         let log = Arc::new(Mutex::new(Vec::new()));
         let load = Load {
             config,
@@ -1036,5 +1101,202 @@ mod tests {
             deletes[0] < rollback && rollback < reopen && reopen < deletes[1],
             "clear → rollback → reopen → re-clear: {log:?}"
         );
+    }
+
+    /// The clear's durable record rides in the SAME transaction as its
+    /// DELETE — the sqlcore contract for a DirectToTarget destination.
+    /// Without it a crash-recovery session (fresh memory) re-clears a
+    /// target an earlier unit of this load already cleared and
+    /// COMMITTED, silently deleting its rows; generation 1 never wrote
+    /// the record.
+    #[tokio::test]
+    async fn a_clear_writes_its_durable_record_beside_it_in_the_unit() {
+        let (mut load, log) = recorded_load(serde_json::json!({}));
+        load.catalog
+            .observe("a", ["ID".to_owned()].into_iter().collect());
+        load.tables.insert(
+            TableName::from("a"),
+            (table_schema("a", &["id"]), WriteMode::Replace),
+        );
+        let empty = RecordBatch::new_empty(Arc::new(arrow_schema::Schema::new(vec![
+            arrow_schema::Field::new("id", arrow_schema::DataType::Int64, true),
+        ])));
+        load.write(&TableName::from("a"), empty)
+            .await
+            .expect("write");
+
+        let log = log.lock().expect("lock");
+        let delete = log
+            .iter()
+            .position(|s| s.starts_with("DELETE FROM"))
+            .expect("the clear ran");
+        let record = log
+            .iter()
+            .position(|s| s.contains("\"_RDLT_CLEARED\""))
+            .expect("the durable record ran");
+        assert!(delete < record, "record beside its DELETE: {log:?}");
+        assert!(
+            log[record].contains("'load-1'") && log[record].contains("'a'"),
+            "keyed by load and table: {}",
+            log[record]
+        );
+        assert!(
+            !log.iter().any(|s| s == "COMMIT"),
+            "both still inside the open unit: {log:?}"
+        );
+    }
+
+    /// An executor whose `rows` answers a canned result — the seed
+    /// read's shape.
+    struct Canned(Vec<Vec<String>>);
+
+    #[async_trait]
+    impl Executor for Canned {
+        async fn execute(&self, _: &str) -> Result<(), DestinationError> {
+            Ok(())
+        }
+        async fn scalar_u64(&self, _: &str, _: &[&str]) -> Result<u64, DestinationError> {
+            Ok(0)
+        }
+        async fn sum_column(&self, _: &str, _: &str) -> Result<u64, DestinationError> {
+            Ok(0)
+        }
+        async fn rows(
+            &self,
+            _: &str,
+            _: &[&str],
+            _: &[&str],
+        ) -> Result<Vec<Vec<String>>, DestinationError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    /// The recovery half: a target the durable record says an earlier
+    /// unit cleared is seeded into `cleared` and never cleared again —
+    /// the DELETE that would have destroyed the committed rows is not
+    /// planned at all.
+    #[tokio::test]
+    async fn a_durably_cleared_target_seeds_the_guard_and_is_not_cleared_again() {
+        let seeded = read_cleared_targets(
+            &Canned(vec![vec!["a".to_owned()]]),
+            "\"DB\".\"S\".\"_RDLT_CLEARED\"",
+            &LoadId::from("load-1"),
+        )
+        .await
+        .expect("seed read");
+        assert_eq!(seeded.len(), 1);
+        assert!(seeded.contains(&TableName::from("a")));
+
+        let (mut load, log) = recorded_load(serde_json::json!({}));
+        load.cleared = seeded;
+        load.catalog
+            .observe("a", ["ID".to_owned()].into_iter().collect());
+        load.tables.insert(
+            TableName::from("a"),
+            (table_schema("a", &["id"]), WriteMode::Replace),
+        );
+        let empty = RecordBatch::new_empty(Arc::new(arrow_schema::Schema::new(vec![
+            arrow_schema::Field::new("id", arrow_schema::DataType::Int64, true),
+        ])));
+        load.write(&TableName::from("a"), empty)
+            .await
+            .expect("write");
+        assert!(
+            !log.lock()
+                .expect("lock")
+                .iter()
+                .any(|s| s.starts_with("DELETE FROM")),
+            "an already-durable clear must not re-run"
+        );
+    }
+
+    /// Across units of ONE session: a committed unit's clear promotes,
+    /// and a later unit neither re-clears (which would DELETE the
+    /// earlier unit's committed rows) nor forgets it cleared.
+    #[tokio::test]
+    async fn a_committed_units_clear_is_promoted_and_never_rerun() {
+        let (mut load, log) = recorded_load(serde_json::json!({}));
+        load.catalog
+            .observe("a", ["ID".to_owned()].into_iter().collect());
+        load.tables.insert(
+            TableName::from("a"),
+            (table_schema("a", &["id"]), WriteMode::Replace),
+        );
+        let empty = || {
+            RecordBatch::new_empty(Arc::new(arrow_schema::Schema::new(vec![
+                arrow_schema::Field::new("id", arrow_schema::DataType::Int64, true),
+            ])))
+        };
+        load.write(&TableName::from("a"), empty())
+            .await
+            .expect("unit 1");
+        load.publish(CommitMeta {
+            load_id: LoadId::from("load-1"),
+            commit_seq: 1,
+            state: StateDoc::new(PipelineId::from("p"), ""),
+            counters: Default::default(),
+        })
+        .await
+        .expect("unit 1 commits");
+        assert!(load.cleared.contains(&TableName::from("a")), "promoted");
+
+        load.write(&TableName::from("a"), empty())
+            .await
+            .expect("unit 2");
+        let log = log.lock().expect("lock");
+        assert_eq!(
+            log.iter().filter(|s| s.starts_with("DELETE FROM")).count(),
+            1,
+            "one load, one clear: {log:?}"
+        );
+    }
+
+    /// The COPY shortfall guard: fewer rows loaded than staged abandons
+    /// the unit with the frozen wording — never a short commit.
+    #[tokio::test]
+    async fn a_short_copy_load_abandons_the_unit_rather_than_committing() {
+        let (mut load, log) = recorded_load(serde_json::json!({}));
+        load.tables.insert(
+            TableName::from("a"),
+            (table_schema("a", &["id"]), WriteMode::Append),
+        );
+        load.pending.insert(
+            TableName::from("a"),
+            (
+                vec!["id".to_owned()],
+                vec![Part {
+                    tail: "seg/tab/00000000.parquet".to_owned(),
+                    rows: 3,
+                }],
+            ),
+        );
+        let err = load
+            .publish(CommitMeta {
+                load_id: LoadId::from("load-1"),
+                commit_seq: 1,
+                state: StateDoc::new(PipelineId::from("p"), ""),
+                counters: Default::default(),
+            })
+            .await
+            .expect_err("the recorder loads 0 of 3 staged rows");
+        let rendered = format!("{err}");
+        assert!(
+            rendered.contains("staged 3 rows") && rendered.contains("reported 0 loaded"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("abandoned rather than committed short"),
+            "{rendered}"
+        );
+        let log = log.lock().expect("lock");
+        let rollback = log
+            .iter()
+            .position(|s| s == "ROLLBACK")
+            .expect("the unit is abandoned");
+        let remove = log
+            .iter()
+            .position(|s| s.starts_with("REMOVE @"))
+            .expect("the staged parts are discarded");
+        assert!(rollback < remove, "abandon, then discard: {log:?}");
     }
 }

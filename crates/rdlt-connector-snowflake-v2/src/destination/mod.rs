@@ -21,7 +21,7 @@ mod load;
 mod stage;
 mod unit;
 
-pub use config::{Auth, ConfigError, KeyPair, Password, SnowflakeConfig, TableType, config_schema};
+pub use config::{Auth, Config, ConfigError, KeyPair, Password, TableType, config_schema};
 pub use connector::{FAIL_POINTS, Snowflake, testhook};
 pub use load::Load;
 

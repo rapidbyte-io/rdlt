@@ -17,7 +17,7 @@ use snowflake_connector_rs::{
     KeyPairConfig, PasswordConfig, Session, SessionConfig,
 };
 
-use super::config::{Auth, SnowflakeConfig};
+use super::config::{Auth, Config};
 
 /// The service's code for a MERGE whose source carried two rows for one
 /// target key — the closest thing to a unique violation on a service
@@ -76,9 +76,7 @@ pub(crate) trait Executor: Send + Sync {
 
 /// Open a session. Every auth method the vocabulary accepts maps here
 /// and nowhere else.
-pub(crate) async fn connect(
-    config: &SnowflakeConfig,
-) -> Result<Box<dyn Executor>, DestinationError> {
+pub(crate) async fn connect(config: &Config) -> Result<Box<dyn Executor>, DestinationError> {
     let auth = library_auth(&config.auth)?;
     let mut client = ClientConfig::new(config.user.clone(), config.account.clone(), auth);
 
@@ -146,12 +144,16 @@ pub(crate) fn classify(err: SfError) -> DestinationError {
 /// The retry decision alone — the connect path wraps identity around an
 /// error before classifying, and the rule must not be restated there.
 fn is_transient(err: &SfError) -> bool {
-    match err.kind() {
+    transient_rule(err.kind(), err.snowflake_code())
+}
+
+/// The decision table itself, over the two discriminators — split from
+/// the error so it pins without a library error to carry it.
+fn transient_rule(kind: ErrorKind, server_code: Option<&str>) -> bool {
+    match kind {
         // The work is unchanged; the next attempt is a fresh session.
         ErrorKind::Network | ErrorKind::Timeout | ErrorKind::SessionExpired => true,
-        ErrorKind::Server => err
-            .snowflake_code()
-            .is_some_and(|code| TRANSIENT_SERVER_CODES.contains(&code)),
+        ErrorKind::Server => server_code.is_some_and(|code| TRANSIENT_SERVER_CODES.contains(&code)),
         // Config/Auth/Cancelled/Protocol/BindEncode/Decode/Internal/
         // Other: a retry cannot change these. Auth happens before any
         // SQL and carries no server code — which is why KIND, not code,
@@ -368,13 +370,23 @@ fn index_of(row: &DynamicRow, sql: &str, wanted: &str) -> Result<usize, Destinat
 
 /// A count, however the library represents it: Snowflake NUMBERs arrive
 /// as integers or fixed-point decimals depending on the query, and a
-/// probe must not fail on the representation.
+/// probe must not fail on the representation. Booleans count too —
+/// `SELECT EXISTS (…)` is the shared planner's stage probe, the service
+/// answers it BOOLEAN (measured live: the statement compiles and the
+/// cell arrives as a Boolean, which the numeric arms alone refused,
+/// killing every full-feed merge publish — an inherited generation-1
+/// defect, since it read the same probe through the same arms).
 fn cell_as_u64(cell: &snowflake_connector_rs::CellValue) -> Option<u64> {
     use snowflake_connector_rs::CellValue;
     match cell {
         CellValue::Integer(v) => u64::try_from(*v).ok(),
         CellValue::Decimal(d) => d.to_string().parse().ok(),
-        CellValue::String(s) => s.parse().ok(),
+        CellValue::Boolean(b) => Some(u64::from(*b)),
+        CellValue::String(s) => match s.as_str() {
+            "true" => Some(1),
+            "false" => Some(0),
+            _ => s.parse().ok(),
+        },
         _ => None,
     }
 }
@@ -393,5 +405,70 @@ fn cell_as_display(cell: &snowflake_connector_rs::CellValue) -> String {
         CellValue::Boolean(b) => b.to_string(),
         CellValue::Float(f) => f.to_string(),
         other => format!("{other:?}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The whole retry decision table, pinned: kind first, then — for
+    /// server errors only — the code allowlist. Emptying the allowlist
+    /// or dropping a kind arm must fail HERE, because no live cell can
+    /// provoke a warehouse resize on demand.
+    #[test]
+    fn the_transient_decision_table_holds_kind_first_then_code() {
+        for kind in [
+            ErrorKind::Network,
+            ErrorKind::Timeout,
+            ErrorKind::SessionExpired,
+        ] {
+            assert!(transient_rule(kind, None), "{kind:?} retries codeless");
+            assert!(
+                transient_rule(kind, Some("999999")),
+                "{kind:?} retries whatever the code"
+            );
+        }
+        for code in TRANSIENT_SERVER_CODES {
+            assert!(
+                transient_rule(ErrorKind::Server, Some(code)),
+                "allowlisted server code {code} retries"
+            );
+        }
+        assert!(!transient_rule(ErrorKind::Server, Some("000904")));
+        assert!(!transient_rule(ErrorKind::Server, None));
+        for kind in [ErrorKind::Config, ErrorKind::Auth, ErrorKind::Cancelled] {
+            assert!(
+                !transient_rule(kind, Some("000629")),
+                "{kind:?} never retries — kind decides before code"
+            );
+        }
+    }
+
+    /// The allowlist is the recorded one: warehouse resize/suspend
+    /// aborts and concurrent-DDL serialisation, nothing else.
+    #[test]
+    fn the_transient_allowlist_is_exactly_the_recorded_three() {
+        assert_eq!(TRANSIENT_SERVER_CODES, &["000629", "000630", "000625"]);
+    }
+
+    /// A count arrives however the service spells it — including the
+    /// BOOLEAN a `SELECT EXISTS` probe answers with (measured live; the
+    /// numeric-only arms refused it and killed every full-feed merge
+    /// publish, in both generations).
+    #[test]
+    fn a_count_is_read_from_every_representation_the_service_uses() {
+        use snowflake_connector_rs::CellValue;
+        assert_eq!(cell_as_u64(&CellValue::Integer(3)), Some(3));
+        assert_eq!(cell_as_u64(&CellValue::Boolean(true)), Some(1));
+        assert_eq!(cell_as_u64(&CellValue::Boolean(false)), Some(0));
+        assert_eq!(cell_as_u64(&CellValue::String("true".to_owned())), Some(1));
+        assert_eq!(cell_as_u64(&CellValue::String("7".to_owned())), Some(7));
+        assert_eq!(cell_as_u64(&CellValue::String("maybe".to_owned())), None);
+        assert_eq!(
+            cell_as_u64(&CellValue::Integer(-1)),
+            None,
+            "no negative count"
+        );
     }
 }
