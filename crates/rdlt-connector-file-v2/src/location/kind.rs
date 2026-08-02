@@ -1,7 +1,12 @@
-//! The unified Location: one enum over the local filesystem and S3,
-//! serving the source's list/open primitives and the destination's
-//! staging/publish/document protocol.
+//! Storage dispatch. A [`Location`] is the single value through which
+//! every disk-versus-bucket decision in the crate flows: the source's
+//! listing and sequential reads on one side, the destination's
+//! staging, atomic publish, durable documents, and table-ownership
+//! sweeps on the other. Each method matches once and hands the local
+//! arm to the disk helpers at the bottom of this file; the S3 arm
+//! delegates to [`S3Location`].
 
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use rdlt_connector_sdk::spi::core::crash_point;
@@ -14,12 +19,14 @@ use crate::destination::STAGING_DIR;
 use crate::source::cursor::FileMeta;
 use crate::source::list::local_listing;
 
-fn fatal(e: impl std::fmt::Display) -> DestinationError {
-    DestinationError::fatal(e.to_string())
+/// Render any displayable cause as a fatal destination error.
+fn to_fatal<E: std::fmt::Display>(cause: E) -> DestinationError {
+    DestinationError::fatal(cause.to_string())
 }
 
-/// A connected location. `root` is the output directory (write half)
-/// or empty (read half, which names whole paths).
+/// One connected storage target. The destination form carries `root`,
+/// the directory everything hangs under; the source form is rootless
+/// and addresses whole paths (or keys) directly.
 #[derive(Debug, Clone)]
 pub(crate) enum Location {
     Local { root: PathBuf },
@@ -27,54 +34,54 @@ pub(crate) enum Location {
 }
 
 impl Location {
-    /// The read-half constructor: full paths/keys, no root.
+    /// Source-side constructor — rootless, since streams name their
+    /// files in full.
     pub(crate) fn from_options(options: Option<&LocationOptions>) -> Result<Self, SourceError> {
-        match options.and_then(|o| o.s3.as_ref()) {
-            None => Ok(Self::Local {
+        let Some(s3) = options.and_then(|o| o.s3.as_ref()) else {
+            return Ok(Self::Local {
                 root: PathBuf::new(),
-            }),
-            Some(s3) => Ok(Self::S3(S3Location::connect(s3)?)),
-        }
+            });
+        };
+        Ok(Self::S3(S3Location::connect(s3)?))
     }
 
-    /// The write-half constructor: `path` is the output directory
-    /// (local, created) or the key prefix (S3).
+    /// Destination-side constructor. On disk `path` is the output
+    /// directory (created here); on S3 it becomes the key prefix.
     pub(crate) fn for_dest(
         path: &str,
         options: Option<&LocationOptions>,
     ) -> Result<Self, DestinationError> {
-        match options.and_then(|o| o.s3.as_ref()) {
-            None => Self::local_dir(PathBuf::from(path)),
-            Some(s3) => Ok(Self::S3(S3Location::connect_for_dest(
-                s3,
-                path.trim_matches('/').to_owned(),
-            )?)),
+        if let Some(s3) = options.and_then(|o| o.s3.as_ref()) {
+            let prefix = path.trim_matches('/').to_owned();
+            return Ok(Self::S3(S3Location::connect_for_dest(s3, prefix)?));
         }
+        Self::local_dir(PathBuf::from(path))
     }
 
-    /// A LOCAL output directory, created if needed — the plain-path
-    /// form; the PathBuf is used AS-IS (non-UTF-8 paths keep their
-    /// bytes).
+    /// A local output directory, created if absent. The `PathBuf` is
+    /// taken verbatim — a non-UTF-8 path keeps its exact bytes.
     pub(crate) fn local_dir(root: PathBuf) -> Result<Self, DestinationError> {
-        std::fs::create_dir_all(&root).map_err(fatal)?;
+        std::fs::create_dir_all(&root).map_err(to_fatal)?;
         Ok(Self::Local { root })
     }
 
-    /// Is this the local filesystem? The local-only durability steps
-    /// (and their crash points) key off this.
+    /// True on disk. The durability steps that only exist locally —
+    /// and the crash points guarding them — branch on this.
     pub(crate) fn is_local(&self) -> bool {
         matches!(self, Self::Local { .. })
     }
 
-    /// The output root, for the local-only synchronous row counter.
+    /// The output directory, when there is one; the synchronous local
+    /// row counter needs the concrete path.
     pub(crate) fn local_root(&self) -> Option<&Path> {
-        match self {
-            Self::Local { root } => Some(root),
-            Self::S3(_) => None,
+        if let Self::Local { root } = self {
+            Some(root)
+        } else {
+            None
         }
     }
 
-    /// The complete-or-fail listing, either kind (read half).
+    /// List everything a pattern names — complete, or a typed error.
     pub(crate) async fn list(&self, pattern: &str) -> Result<Vec<FileMeta>, SourceError> {
         match self {
             Self::Local { .. } => local_listing(pattern),
@@ -82,13 +89,14 @@ impl Location {
         }
     }
 
-    /// A sequential byte reader positioned at `start` (read half).
+    /// A byte reader positioned `start` bytes in.
     pub(crate) async fn open_from(
         &self,
         name: &str,
         start: u64,
     ) -> Result<ByteReader, SourceError> {
         match self {
+            Self::S3(s3) => s3.open_from(name, start).await,
             Self::Local { .. } => {
                 use std::io::{Seek as _, SeekFrom};
                 let mut file = std::fs::File::open(name)
@@ -99,45 +107,47 @@ impl Location {
                 }
                 Ok(ByteReader::Local(file))
             }
-            Self::S3(s3) => s3.open_from(name, start).await,
         }
     }
 
-    /// Reclaim THIS scope's dead-session staging (a crashed session's
-    /// staged-but-uncommitted data must never survive into a fresh
-    /// load), then ready the fresh load's area. Scoped — a sibling
-    /// pipeline sharing the output keeps its live staged data.
+    /// Clear whatever a dead session left staged under this scope —
+    /// staged-but-never-committed bytes must not leak into a new load —
+    /// then make room for the fresh one. The scope key keeps a sibling
+    /// pipeline's live staging untouched.
     pub(crate) async fn prepare_staging(
         &self,
         scope: &str,
         load: &str,
     ) -> Result<(), DestinationError> {
         match self {
-            Self::Local { root } => {
-                let scope_root = root.join(STAGING_DIR).join(scope);
-                if scope_root.exists() {
-                    std::fs::remove_dir_all(&scope_root).map_err(fatal)?;
+            Self::S3(s3) => {
+                let scope_prefix = format!("{STAGING_DIR}/{scope}");
+                for stale in s3.list_keys(&scope_prefix).await? {
+                    s3.delete_key(&stale).await?;
                 }
-                std::fs::create_dir_all(scope_root.join(load)).map_err(fatal)?;
                 Ok(())
             }
-            Self::S3(s3) => {
-                for key in s3.list_keys(&format!("{STAGING_DIR}/{scope}")).await? {
-                    s3.delete_key(&key).await?;
+            Self::Local { root } => {
+                let scope_dir = root.join(STAGING_DIR).join(scope);
+                if scope_dir.exists() {
+                    std::fs::remove_dir_all(&scope_dir).map_err(to_fatal)?;
                 }
-                Ok(())
+                std::fs::create_dir_all(scope_dir.join(load)).map_err(to_fatal)
             }
         }
     }
 
-    /// Write one staged part (the S3 staging crash point fires here).
+    /// Write one part into staging. The S3 staging crash point sits
+    /// immediately ahead of the PUT.
     pub(crate) async fn stage_put(
         &self,
         staging_tail: &str,
         bytes: Vec<u8>,
     ) -> Result<(), DestinationError> {
         match self {
-            Self::Local { root } => std::fs::write(root.join(staging_tail), &bytes).map_err(fatal),
+            Self::Local { root } => {
+                std::fs::write(root.join(staging_tail), &bytes).map_err(to_fatal)
+            }
             Self::S3(s3) => {
                 crash_point!(
                     "file.stage.put",
@@ -148,46 +158,30 @@ impl Location {
         }
     }
 
-    /// Best-effort staged-part removal (a replayed commit discards its
-    /// staging before returning the prior receipt).
+    /// Drop one staged part without caring whether it succeeds — a
+    /// replayed commit clears its staging before handing back the
+    /// receipt it already earned.
     pub(crate) async fn stage_remove(&self, staging_tail: &str) {
         match self {
+            Self::S3(s3) => s3.delete_best_effort(staging_tail).await,
             Self::Local { root } => {
                 let _ = std::fs::remove_file(root.join(staging_tail));
             }
-            Self::S3(s3) => s3.delete_best_effort(staging_tail).await,
         }
     }
 
-    /// Publish one staged part to its deterministic final name — the
-    /// atomic visibility step. Local: fsync then rename (per-file
-    /// atomic). S3: COPY then idempotent DELETE (a replayed finalize
-    /// tolerates a missing staged object). The crash points fire
-    /// between the sub-steps of their own arms.
+    /// Make one staged part visible under its deterministic final
+    /// name. Disk gets fsync-then-rename (atomic per file); S3 gets
+    /// COPY followed by an idempotent DELETE, so a replayed finalize
+    /// that finds the staged object already gone still succeeds. Each
+    /// arm's crash points separate its own sub-steps.
     pub(crate) async fn publish_part(
         &self,
         staging_tail: &str,
         final_tail: &str,
     ) -> Result<(), DestinationError> {
         match self {
-            Self::Local { root } => {
-                let from = root.join(staging_tail);
-                let to = root.join(final_tail);
-                if let Some(parent) = to.parent() {
-                    std::fs::create_dir_all(parent).map_err(fatal)?;
-                }
-                crash_point!(
-                    "pq.staged.sync",
-                    Err(DestinationError::fatal("injected crash at pq.staged.sync"))
-                );
-                let file = std::fs::File::open(&from).map_err(fatal)?;
-                file.sync_all().map_err(fatal)?;
-                crash_point!(
-                    "pq.part.rename",
-                    Err(DestinationError::fatal("injected crash at pq.part.rename"))
-                );
-                std::fs::rename(&from, &to).map_err(fatal)
-            }
+            Self::Local { root } => promote_on_disk(root, staging_tail, final_tail),
             Self::S3(s3) => {
                 crash_point!(
                     "file.finalize.copy",
@@ -207,73 +201,76 @@ impl Location {
         }
     }
 
-    /// Fsync one directory so a rename inside it survives power loss.
-    /// No-op on object stores.
+    /// Fsync a directory so a rename it contains survives power loss.
+    /// Object stores have no such step — nothing to do there.
     pub(crate) fn sync_dir(&self, dir_tail: &str) -> Result<(), DestinationError> {
-        if let Self::Local { root } = self {
-            fsync_dir(&root.join(dir_tail))?;
+        match self {
+            Self::S3(_) => Ok(()),
+            Self::Local { root } => sync_directory(&root.join(dir_tail)),
         }
-        Ok(())
     }
 
-    /// Read one durable document's verbatim bytes; None when absent.
+    /// One durable document's exact bytes, or `None` if it does not
+    /// exist.
     pub(crate) async fn read_doc(&self, name: &str) -> Result<Option<Vec<u8>>, DestinationError> {
         match self {
-            Self::Local { root } => read_raw(&root.join(name)),
+            Self::Local { root } => read_optional(&root.join(name)),
             Self::S3(s3) => s3.read_doc(name).await,
         }
     }
 
-    /// Write one durable document. Local: atomic temp file, fsync,
-    /// rename, parent-dir fsync — metadata must not be LESS durable
-    /// than the parts it describes. S3: a single PUT.
+    /// Persist one document. Metadata may never be flimsier than the
+    /// data parts it describes, so the disk arm goes through the full
+    /// atomic sequence (temp file, fsync, rename, parent-dir fsync);
+    /// on S3 a lone PUT already is the atomic step.
     pub(crate) async fn write_doc<T: Serialize>(
         &self,
         name: &str,
         value: &T,
     ) -> Result<(), DestinationError> {
         match self {
-            Self::Local { root } => write_json_atomic(&root.join(name), value),
+            Self::Local { root } => write_doc_durably(&root.join(name), value),
             Self::S3(s3) => {
-                let bytes = serde_json::to_vec_pretty(value).map_err(fatal)?;
-                s3.put(name, bytes).await
+                let body = serde_json::to_vec_pretty(value).map_err(to_fatal)?;
+                s3.put(name, body).await
             }
         }
     }
 
-    /// THE ownership listing: every file under `{table}/`, as tails
-    /// relative to the table root. Row counting and Replace truncation
-    /// both consume it, so the scope rule lives exactly once.
+    /// The ownership sweep: every file under `{table}/`, expressed as
+    /// tails relative to the table root. Both consumers — row counting
+    /// and Replace truncation — read this one method, so what "owned"
+    /// means is decided in exactly one place.
     pub(crate) async fn keys_of_table(&self, table: &str) -> Result<Vec<String>, DestinationError> {
         match self {
-            Self::Local { root } => walk_local_files(&root.join(table)),
+            Self::Local { root } => files_under(&root.join(table)),
             Self::S3(s3) => {
-                let root = format!("{}/", s3.key_of_table_root(table));
-                let mut tails = Vec::new();
+                let table_root = format!("{}/", s3.key_of_table_root(table));
+                let mut owned = Vec::new();
                 for key in s3.list_keys(table).await? {
-                    let name = key.to_string();
-                    if let Some(tail) = tail_of_key(&name, &root)? {
-                        tails.push(tail.to_owned());
+                    let full = key.to_string();
+                    if let Some(rest) = tail_under_root(&full, &table_root)? {
+                        owned.push(rest.to_owned());
                     }
                 }
-                Ok(tails)
+                Ok(owned)
             }
         }
     }
 
-    /// Read one owned file by its tail (row counting).
+    /// Fetch one owned file, addressed by tail (row counting).
     pub(crate) async fn read_table_file(
         &self,
         table: &str,
         tail: &str,
     ) -> Result<Vec<u8>, DestinationError> {
         match self {
-            Self::Local { root } => std::fs::read(root.join(table).join(tail)).map_err(fatal),
+            Self::Local { root } => std::fs::read(root.join(table).join(tail)).map_err(to_fatal),
             Self::S3(s3) => s3.get_key(&s3.key_of_table(table, tail)).await,
         }
     }
 
-    /// Delete one owned file by its tail (Replace truncation).
+    /// Remove one owned file, addressed by tail (Replace truncation).
     pub(crate) async fn delete_table_file(
         &self,
         table: &str,
@@ -281,109 +278,14 @@ impl Location {
     ) -> Result<(), DestinationError> {
         match self {
             Self::Local { root } => {
-                std::fs::remove_file(root.join(table).join(tail)).map_err(fatal)
+                std::fs::remove_file(root.join(table).join(tail)).map_err(to_fatal)
             }
             Self::S3(s3) => s3.delete_key(&s3.key_of_table(table, tail)).await,
         }
     }
 }
 
-/// Recursively list every FILE under `base` as slash-joined tails. A
-/// missing base is an empty listing (no data yet). Symlinks are
-/// SKIPPED — never staged by us, and descending one would let
-/// truncation unlink outside the root. A non-UTF-8 name is a TYPED
-/// error: naming it empty would report children at the wrong depth
-/// and hand truncation a path it never listed.
-fn walk_local_files(base: &Path) -> Result<Vec<String>, DestinationError> {
-    fn walk(dir: &Path, prefix: &str, out: &mut Vec<String>) -> Result<(), DestinationError> {
-        let entries = match std::fs::read_dir(dir) {
-            Ok(entries) => entries,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(e) => return Err(fatal(e)),
-        };
-        for entry in entries {
-            let entry = entry.map_err(fatal)?;
-            let path = entry.path();
-            let kind = entry.file_type().map_err(fatal)?;
-            if kind.is_symlink() {
-                continue;
-            }
-            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-                return Err(fatal(format!(
-                    "output directory contains a non-UTF-8 name under `{}`; rename it or move \
-                     it outside the destination",
-                    dir.display()
-                )));
-            };
-            let tail = if prefix.is_empty() {
-                name.to_owned()
-            } else {
-                format!("{prefix}/{name}")
-            };
-            if kind.is_dir() {
-                walk(&path, &tail, out)?;
-            } else {
-                out.push(tail);
-            }
-        }
-        Ok(())
-    }
-    let mut out = Vec::new();
-    walk(base, "", &mut out)?;
-    Ok(out)
-}
-
-/// The part of a listed key below the table root. The root is
-/// STRIPPED, never searched — a partition value can spell the table's
-/// own name. A key outside the prefix is a TYPED listing violation
-/// (skipping would under-report ownership and Replace would leave data
-/// behind); the ONE non-violation is the zero-byte directory MARKER
-/// whose key IS the table root — carried by consoles and `put-object`
-/// on folder paths, holding no data, skipped.
-fn tail_of_key<'k>(key: &'k str, root: &str) -> Result<Option<&'k str>, DestinationError> {
-    if key == root.trim_end_matches('/') {
-        return Ok(None);
-    }
-    match key.strip_prefix(root) {
-        Some(tail) => Ok(Some(tail)),
-        None => Err(fatal(format!(
-            "listing returned key `{key}`, which is not under the prefix `{root}` it was \
-             listed by"
-        ))),
-    }
-}
-
-fn fsync_dir(path: &Path) -> Result<(), DestinationError> {
-    std::fs::File::open(path)
-        .and_then(|f| f.sync_all())
-        .map_err(fatal)
-}
-
-/// Atomic durable JSON rewrite: temp + fsync + rename + parent fsync.
-fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), DestinationError> {
-    use std::io::Write as _;
-    let tmp = path.with_extension("json.tmp");
-    let bytes = serde_json::to_vec_pretty(value).map_err(fatal)?;
-    let mut file = std::fs::File::create(&tmp).map_err(fatal)?;
-    file.write_all(&bytes).map_err(fatal)?;
-    file.sync_all().map_err(fatal)?;
-    drop(file);
-    std::fs::rename(&tmp, path).map_err(fatal)?;
-    if let Some(parent) = path.parent() {
-        fsync_dir(parent)?;
-    }
-    Ok(())
-}
-
-fn read_raw(path: &Path) -> Result<Option<Vec<u8>>, DestinationError> {
-    match std::fs::read(path) {
-        Ok(bytes) => Ok(Some(bytes)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(fatal(e)),
-    }
-}
-
-/// A sequential reader over either kind.
+/// A byte stream over either storage kind.
 pub(crate) enum ByteReader {
     Local(std::fs::File),
     S3(super::s3::S3Reader),
@@ -399,72 +301,208 @@ impl std::fmt::Debug for ByteReader {
 }
 
 impl ByteReader {
-    /// Fill `buf` as far as possible — short only at end-of-stream.
+    /// Read until `buf` is full; a shorter count means the stream
+    /// ended.
     pub(crate) async fn read_full(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         match self {
+            Self::S3(reader) => reader.read_full(buf).await,
             Self::Local(file) => {
                 use std::io::Read as _;
-                let mut filled = 0;
-                while filled < buf.len() {
-                    match file.read(&mut buf[filled..]) {
-                        Ok(0) => break,
-                        Ok(n) => filled += n,
-                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                let mut done = 0;
+                while done < buf.len() {
+                    let n = match file.read(&mut buf[done..]) {
+                        Err(e) if e.kind() == ErrorKind::Interrupted => continue,
                         Err(e) => return Err(e),
+                        Ok(n) => n,
+                    };
+                    if n == 0 {
+                        break;
                     }
+                    done += n;
                 }
-                Ok(filled)
+                Ok(done)
             }
-            Self::S3(reader) => reader.read_full(buf).await,
         }
     }
 }
 
-/// Classify a `read_full` failure: the retryable kind rides the engine
-/// budget; everything else is fatal, subject named.
+/// Turn a `read_full` failure into a source error: the one retryable
+/// io kind becomes transient (the engine budget absorbs it); anything
+/// else is fatal with the subject named.
 pub(crate) fn classify_read_error(context: &str, e: std::io::Error) -> SourceError {
-    if e.kind() == std::io::ErrorKind::ConnectionReset {
-        SourceError::transient(format!("{context}: {e}"))
-    } else {
-        SourceError::fatal(format!("{context}: {e}"))
+    let rendered = format!("{context}: {e}");
+    match e.kind() {
+        ErrorKind::ConnectionReset => SourceError::transient(rendered),
+        _ => SourceError::fatal(rendered),
     }
+}
+
+// ---- disk helpers ----------------------------------------------------------
+
+/// Local promotion of one staged part: ensure the target's directory,
+/// force the staged bytes to stable storage, then rename them into
+/// place. The two crash points bracket the fsync and the rename so
+/// the sweep can interrupt either side.
+fn promote_on_disk(
+    root: &Path,
+    staging_tail: &str,
+    final_tail: &str,
+) -> Result<(), DestinationError> {
+    let staged = root.join(staging_tail);
+    let target = root.join(final_tail);
+    if let Some(dir) = target.parent() {
+        std::fs::create_dir_all(dir).map_err(to_fatal)?;
+    }
+    crash_point!(
+        "pq.staged.sync",
+        Err(DestinationError::fatal("injected crash at pq.staged.sync"))
+    );
+    std::fs::File::open(&staged)
+        .and_then(|f| f.sync_all())
+        .map_err(to_fatal)?;
+    crash_point!(
+        "pq.part.rename",
+        Err(DestinationError::fatal("injected crash at pq.part.rename"))
+    );
+    std::fs::rename(&staged, &target).map_err(to_fatal)
+}
+
+/// Fsync one directory through an open handle.
+fn sync_directory(dir: &Path) -> Result<(), DestinationError> {
+    std::fs::File::open(dir)
+        .and_then(|f| f.sync_all())
+        .map_err(to_fatal)
+}
+
+/// Durable JSON replacement: serialize, write a `.json.tmp` sibling,
+/// fsync it, rename over the destination, fsync the parent directory.
+fn write_doc_durably<T: Serialize>(path: &Path, value: &T) -> Result<(), DestinationError> {
+    use std::io::Write as _;
+    let body = serde_json::to_vec_pretty(value).map_err(to_fatal)?;
+    let scratch = path.with_extension("json.tmp");
+    {
+        let mut out = std::fs::File::create(&scratch).map_err(to_fatal)?;
+        out.write_all(&body).map_err(to_fatal)?;
+        out.sync_all().map_err(to_fatal)?;
+    }
+    std::fs::rename(&scratch, path).map_err(to_fatal)?;
+    match path.parent() {
+        Some(dir) => sync_directory(dir),
+        None => Ok(()),
+    }
+}
+
+/// A file's bytes, with absence mapped to `None` rather than an error.
+fn read_optional(path: &Path) -> Result<Option<Vec<u8>>, DestinationError> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(to_fatal(e)),
+    }
+}
+
+/// Every regular file below `base`, depth-first, as slash-joined
+/// tails. An absent `base` simply means nothing has been written yet.
+/// Symlinks are never followed: this crate never stages one, and
+/// walking through one would let truncation delete files the root
+/// does not own. A name that is not valid UTF-8 is refused with a
+/// typed error — inventing a tail for it would misplace its children
+/// and give truncation a path the listing never produced.
+fn files_under(base: &Path) -> Result<Vec<String>, DestinationError> {
+    let mut found = Vec::new();
+    descend(base, None, &mut found)?;
+    Ok(found)
+}
+
+fn descend(dir: &Path, rel: Option<&str>, found: &mut Vec<String>) -> Result<(), DestinationError> {
+    let listing = match std::fs::read_dir(dir) {
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(()),
+        other => other.map_err(to_fatal)?,
+    };
+    for item in listing {
+        let item = item.map_err(to_fatal)?;
+        let file_type = item.file_type().map_err(to_fatal)?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        let path = item.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            return Err(to_fatal(format!(
+                "output directory contains a non-UTF-8 name under `{}`; rename it or move \
+                 it outside the destination",
+                dir.display()
+            )));
+        };
+        let tail = match rel {
+            Some(above) => format!("{above}/{name}"),
+            None => name.to_owned(),
+        };
+        if file_type.is_dir() {
+            descend(&path, Some(&tail), found)?;
+        } else {
+            found.push(tail);
+        }
+    }
+    Ok(())
+}
+
+/// What remains of a listed key once the table root is stripped off
+/// the FRONT — stripping, never searching, because a partition value
+/// is free to repeat the table's own name. A key the prefix does not
+/// cover is a typed listing violation: silently dropping it would
+/// shrink ownership and let Replace strand data. The single tolerated
+/// exception is the zero-byte directory marker whose key equals the
+/// table root itself (consoles and folder-path `put-object` create
+/// these); it carries no data and yields no tail.
+fn tail_under_root<'k>(key: &'k str, root: &str) -> Result<Option<&'k str>, DestinationError> {
+    if let Some(tail) = key.strip_prefix(root) {
+        return Ok(Some(tail));
+    }
+    if key == root.trim_end_matches('/') {
+        return Ok(None);
+    }
+    Err(to_fatal(format!(
+        "listing returned key `{key}`, which is not under the prefix `{root}` it was \
+         listed by"
+    )))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The walk: files at every depth as tails, symlinks skipped, a
-    /// missing base empty.
+    /// Nested files come back as tails, symlinks are invisible, and a
+    /// base that does not exist lists as empty.
     #[test]
-    fn the_walk_lists_files_skips_symlinks_and_tolerates_absence() {
+    fn ownership_walk_covers_depth_skips_symlinks_and_tolerates_absence() {
         let dir = tempfile::tempdir().expect("dir");
-        std::fs::create_dir_all(dir.path().join("t/us")).expect("dirs");
-        std::fs::write(dir.path().join("t/a.parquet"), b"x").expect("write");
-        std::fs::write(dir.path().join("t/us/b.parquet"), b"x").expect("write");
+        let table = dir.path().join("t");
+        std::fs::create_dir_all(table.join("us")).expect("dirs");
+        std::fs::write(table.join("a.parquet"), b"x").expect("write");
+        std::fs::write(table.join("us/b.parquet"), b"x").expect("write");
         #[cfg(unix)]
-        std::os::unix::fs::symlink("/etc", dir.path().join("t/link")).expect("symlink");
-        let mut tails = walk_local_files(&dir.path().join("t")).expect("walk");
+        std::os::unix::fs::symlink("/etc", table.join("link")).expect("symlink");
+
+        let mut tails = files_under(&table).expect("walk");
         tails.sort();
         assert_eq!(tails, vec!["a.parquet", "us/b.parquet"]);
-        assert!(
-            walk_local_files(&dir.path().join("missing"))
-                .expect("empty")
-                .is_empty()
-        );
+
+        let nothing = files_under(&dir.path().join("missing")).expect("empty");
+        assert!(nothing.is_empty());
     }
 
-    /// tail_of_key: strip-not-search, the marker skip, and the typed
-    /// violation.
+    /// The root is stripped rather than searched for, the directory
+    /// marker yields no tail, and an out-of-prefix key is refused.
     #[test]
     fn tails_are_stripped_never_searched() {
         assert_eq!(
-            tail_of_key("out/t/t/part.parquet", "out/t/").expect("ok"),
+            tail_under_root("out/t/t/part.parquet", "out/t/").expect("ok"),
             Some("t/part.parquet"),
             "a partition value may spell the table's own name"
         );
-        assert_eq!(tail_of_key("out/t", "out/t/").expect("marker"), None);
-        let err = tail_of_key("elsewhere/k", "out/t/").expect_err("violation");
+        assert_eq!(tail_under_root("out/t", "out/t/").expect("marker"), None);
+
+        let err = tail_under_root("elsewhere/k", "out/t/").expect_err("violation");
         assert!(
             format!("{err}").contains(
                 "listing returned key `elsewhere/k`, which is not under the prefix `out/t/`"
@@ -473,19 +511,21 @@ mod tests {
         );
     }
 
-    /// The atomic doc write round-trips and leaves no temp file.
+    /// A written document reads back byte-faithfully, the temp sibling
+    /// is gone, and an absent document is `None`.
     #[test]
     fn doc_writes_are_atomic_and_clean() {
         let dir = tempfile::tempdir().expect("dir");
         let path = dir.path().join("doc.json");
-        write_json_atomic(&path, &serde_json::json!({"v": 1})).expect("writes");
-        let read: serde_json::Value =
-            serde_json::from_slice(&read_raw(&path).expect("read").expect("present"))
-                .expect("parses");
-        assert_eq!(read, serde_json::json!({"v": 1}));
+        write_doc_durably(&path, &serde_json::json!({"v": 1})).expect("writes");
+
+        let bytes = read_optional(&path).expect("read").expect("present");
+        let value: serde_json::Value = serde_json::from_slice(&bytes).expect("parses");
+        assert_eq!(value, serde_json::json!({"v": 1}));
+
         assert!(!path.with_extension("json.tmp").exists(), "no temp residue");
         assert!(
-            read_raw(&dir.path().join("absent.json"))
+            read_optional(&dir.path().join("absent.json"))
                 .expect("ok")
                 .is_none()
         );

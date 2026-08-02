@@ -1,9 +1,13 @@
-//! The framework face: [`File`] implements the sdk's `SourceConnector`,
-//! and `read_stream` runs the whole choreography — snapshot listing,
-//! planning against the cursor, object staging, and the per-format
-//! readers.
+//! Where the sdk drives the file source. [`File`] answers the
+//! `SourceConnector` questions; `read_stream` walks one stream end to
+//! end — resolve the inputs, plan against recorded progress, put local
+//! copies behind any remote reads, then hand each task to its format's
+//! reader.
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use rdlt_connector_sdk::source::{Feed, SourceConnector};
@@ -16,29 +20,28 @@ use super::{list, read};
 use crate::format::{Format, codec_of};
 use crate::location::Location;
 
-/// The file source: one validated document, streams over files.
+/// The file source: a validated document in, streams of files out.
 #[derive(Debug, Clone)]
 pub struct File {
     config: Config,
-    /// Fetches skipped because recorded progress already covered the
-    /// object — PER INSTANCE (gen 1's process-global counter
-    /// interleaved across concurrent pipelines, docket S14). An
-    /// optimisation that silently stops engaging is indistinguishable
-    /// from one never written; a test proves the skip happened by
-    /// counting it.
-    skipped_fetches: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// How many object fetches this instance declined because the
+    /// cursor already proved the object done. Held per instance: one
+    /// process may run several pipelines at once, and a shared tally
+    /// would blur them together (docket S14). The counter exists so a
+    /// test can PROVE the shortcut fired — a shortcut nobody can
+    /// observe is free to quietly stop firing.
+    skipped_fetches: Arc<AtomicU64>,
 }
 
 impl File {
-    fn stream_config(&self, name: &StreamName) -> Option<&Stream> {
+    fn declared_stream(&self, name: &StreamName) -> Option<&Stream> {
         self.config.streams.iter().find(|s| s.name == name.as_str())
     }
 
-    /// Test-only view of this instance's skip counter.
+    /// This instance's skip tally, exposed for tests.
     #[doc(hidden)]
     pub fn skipped_fetches(&self) -> u64 {
-        self.skipped_fetches
-            .load(std::sync::atomic::Ordering::Relaxed)
+        self.skipped_fetches.load(Ordering::Relaxed)
     }
 }
 
@@ -61,29 +64,26 @@ impl SourceConnector for File {
     }
 
     async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
-        Ok(self
-            .config
-            .streams
-            .iter()
-            .map(|stream| {
-                let mut spec = StreamSpec::new(stream.name.as_str());
-                match stream.format {
-                    // Record streams — jsonl and csv alike.
-                    Format::Jsonl | Format::Csv => {
-                        if let Some(key) = &stream.primary_key {
-                            spec = spec.with_primary_key(key.iter().cloned());
-                        }
-                        for (column, hint) in &stream.type_hints {
-                            spec = spec.with_type_hint(column.clone(), (*hint).into());
-                        }
+        let mut specs = Vec::with_capacity(self.config.streams.len());
+        for declared in &self.config.streams {
+            let mut spec = StreamSpec::new(declared.name.as_str());
+            match declared.format {
+                // Parquet arrives as Arrow batches: a structured
+                // stream, provenance at run level only.
+                Format::Parquet => spec = spec.with_structured(),
+                // The record formats carry keys and hints.
+                Format::Jsonl | Format::Csv => {
+                    if let Some(key) = &declared.primary_key {
+                        spec = spec.with_primary_key(key.iter().cloned());
                     }
-                    // Parquet is structured: Arrow batches, run-level
-                    // provenance only.
-                    Format::Parquet => spec = spec.with_structured(),
+                    for (column, hint) in &declared.type_hints {
+                        spec = spec.with_type_hint(column.clone(), (*hint).into());
+                    }
                 }
-                spec
-            })
-            .collect())
+            }
+            specs.push(spec);
+        }
+        Ok(specs)
     }
 
     async fn read_stream(
@@ -92,250 +92,277 @@ impl SourceConnector for File {
         since: Option<Cursor>,
         feed: &mut Feed,
     ) -> Result<(), SourceError> {
-        let stream = self
-            .stream_config(&stream.name)
+        let declared = self
+            .declared_stream(&stream.name)
             .ok_or_else(|| SourceError::fatal(format!("unknown stream {}", stream.name)))?;
 
         let mut cursor = FileCursor::decode(since.as_ref())?;
-        let location = Location::from_options(stream.location.as_ref())?;
+        let location = Location::from_options(declared.location.as_ref())?;
 
-        let ResolvedInputs {
-            matched,
-            read_paths,
-            mut fetched_dir,
-        } = resolve_inputs(&location, stream, &cursor, &self.skipped_fetches).await?;
+        let (listing, mut copies) =
+            snapshot(&location, declared, &cursor, &self.skipped_fetches).await?;
         crash_point!(
             "file.list",
             Err(SourceError::fatal("injected crash at file.list"))
         );
-        let mut tasks = plan_tasks(&cursor, stream, matched)?;
-        stage_fetches(&location, stream, &mut tasks, &read_paths, &mut fetched_dir).await?;
+        let mut work = plan_work(&cursor, declared, listing)?;
+        localize_reads(&location, declared, &mut work, &mut copies).await?;
 
-        let csv_options = stream.csv.clone().unwrap_or_default();
-        for task in &tasks {
+        let csv_options = declared.csv.clone().unwrap_or_default();
+        for task in &work {
             crash_point!(
                 "file.read",
                 Err(SourceError::fatal("injected crash at file.read"))
             );
-            let proceeded = match stream.format {
+            let keep_going = match declared.format {
+                Format::Csv => {
+                    read::csv::read_task(
+                        task,
+                        &csv_options,
+                        &declared.type_hints,
+                        &mut cursor,
+                        feed,
+                    )
+                    .await?
+                }
+                Format::Parquet => read::parquet::read_task(task, &mut cursor, feed).await?,
                 Format::Jsonl if codec_of(&task.path).is_plain() => {
-                    read::jsonl::read_task(&location, task, stream.validate, &mut cursor, feed)
-                        .await
+                    read::jsonl::read_task(&location, task, declared.validate, &mut cursor, feed)
+                        .await?
                 }
                 Format::Jsonl => {
-                    read::jsonl::read_task_whole(task, stream.validate, &mut cursor, feed).await
+                    read::jsonl::read_task_whole(task, declared.validate, &mut cursor, feed).await?
                 }
-                Format::Csv => {
-                    read::csv::read_task(task, &csv_options, &stream.type_hints, &mut cursor, feed)
-                        .await
-                }
-                Format::Parquet => read::parquet::read_task(task, &mut cursor, feed).await,
             };
-            match proceeded {
-                Ok(true) => {}
-                Ok(false) => break, // the host hung up — return promptly
-                Err(e) => return Err(e),
+            if !keep_going {
+                // The host asked to stop; oblige without ceremony.
+                break;
             }
         }
-        // `fetched_dir` drops here — its directory is released on EVERY
-        // exit, including the error and cancellation paths.
+        // `copies` — scratch directory included — lives to this closing
+        // brace, so success, error, and cancellation all release the
+        // fetched files the same way.
         Ok(())
     }
 }
 
-/// The run's resolved inputs: the snapshot listing, and — for
-/// object-store parquet, fetched up front — per-object temp paths.
-struct ResolvedInputs {
-    matched: Vec<FileMeta>,
-    read_paths: Option<BTreeMap<String, String>>,
-    fetched_dir: Option<FetchDir>,
+/// Local files standing in for remote objects during one read, plus
+/// the scratch directory that owns them.
+struct LocalCopies {
+    by_object: BTreeMap<String, String>,
+    scratch: Option<ScratchDir>,
 }
 
-/// Snapshot once per run. Local parquet lists row groups; object-store
-/// parquet fetches to temp files FIRST (correctness over streaming),
-/// the cursor still keyed by the object — unless the object is
-/// PROVABLY unchanged and complete, where the recorded count stands in
-/// for the fetch it would have reproduced.
-async fn resolve_inputs(
+impl LocalCopies {
+    fn none() -> Self {
+        Self {
+            by_object: BTreeMap::new(),
+            scratch: None,
+        }
+    }
+
+    /// The scratch directory's root, created on first demand.
+    fn scratch_root(&mut self, stream: &str) -> Result<PathBuf, SourceError> {
+        if self.scratch.is_none() {
+            self.scratch = Some(ScratchDir::create(stream)?);
+        }
+        let dir = self.scratch.as_ref().expect("filled just above");
+        Ok(dir.path().to_path_buf())
+    }
+}
+
+/// One listing per run: whatever appears later waits for the next run.
+/// Object-store parquet additionally comes down to temp files here,
+/// before anything is planned — correctness beats streaming, and the
+/// cursor keys on the OBJECT either way. The one exception: an object
+/// the cursor can PROVE both unchanged and fully ingested keeps its
+/// recorded unit count and is not fetched at all.
+async fn snapshot(
     location: &Location,
     stream: &Stream,
     cursor: &FileCursor,
-    skipped: &std::sync::atomic::AtomicU64,
-) -> Result<ResolvedInputs, SourceError> {
-    let plain = |matched| ResolvedInputs {
-        matched,
-        read_paths: None,
-        fetched_dir: None,
-    };
-    match (location, stream.format) {
-        (Location::Local { .. }, Format::Jsonl | Format::Csv) => {
-            Ok(plain(list::local_listing(&stream.path)?))
+    skip_tally: &AtomicU64,
+) -> Result<(Vec<FileMeta>, LocalCopies), SourceError> {
+    if matches!(location, Location::Local { .. }) {
+        let listing = match stream.format {
+            Format::Parquet => read::parquet::local_listing_with_row_groups(&stream.path)?,
+            Format::Jsonl | Format::Csv => list::local_listing(&stream.path)?,
+        };
+        return Ok((listing, LocalCopies::none()));
+    }
+
+    let listed = location.list(&stream.path).await?;
+    if stream.format != Format::Parquet {
+        return Ok((listed, LocalCopies::none()));
+    }
+
+    let scratch = ScratchDir::create(&stream.name)?;
+    let mut described = Vec::with_capacity(listed.len());
+    let mut by_object = BTreeMap::new();
+    for (slot, meta) in listed.into_iter().enumerate() {
+        if let Some(units) = settled_unit_count(cursor, &meta) {
+            skip_tally.fetch_add(1, Ordering::Relaxed);
+            described.push(FileMeta {
+                size_units: units,
+                ..meta
+            });
+            continue;
         }
-        (Location::Local { .. }, Format::Parquet) => Ok(plain(
-            read::parquet::local_listing_with_row_groups(&stream.path)?,
-        )),
-        (Location::S3(_), Format::Jsonl | Format::Csv) => {
-            Ok(plain(location.list(&stream.path).await?))
-        }
-        (Location::S3(_), Format::Parquet) => {
-            let listed = location.list(&stream.path).await?;
-            let dir = temp_fetch_dir(&stream.name)?;
-            let mut metas = Vec::with_capacity(listed.len());
-            let mut paths = BTreeMap::new();
-            for (i, meta) in listed.into_iter().enumerate() {
-                if let Some(size_units) = recorded_completion(cursor, &meta) {
-                    skipped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    metas.push(FileMeta { size_units, ..meta });
-                    continue;
-                }
-                let local = fetch_to_temp(location, &meta.path, dir.path(), i).await?;
-                let counted =
-                    read::parquet::local_listing_with_row_groups(&local.to_string_lossy())?;
-                let groups = counted.first().map(|m| m.size_units).unwrap_or(0);
-                paths.insert(meta.path.clone(), local.to_string_lossy().into_owned());
-                metas.push(FileMeta {
-                    size_units: groups,
-                    ..meta
-                });
-            }
-            Ok(ResolvedInputs {
-                matched: metas,
-                read_paths: Some(paths),
-                fetched_dir: Some(dir),
-            })
-        }
+        let local = download_object(location, &meta.path, scratch.path(), slot).await?;
+        let local = local.to_string_lossy().into_owned();
+        let row_groups = read::parquet::local_listing_with_row_groups(&local)?
+            .first()
+            .map_or(0, |m| m.size_units);
+        by_object.insert(meta.path.clone(), local);
+        described.push(FileMeta {
+            size_units: row_groups,
+            ..meta
+        });
+    }
+    Ok((
+        described,
+        LocalCopies {
+            by_object,
+            scratch: Some(scratch),
+        },
+    ))
+}
+
+/// The recorded unit count for an object whose fetch would prove
+/// nothing new — else None. PROVE carries the weight: progress must be
+/// complete AND an etag must exist on both sides AND the two must be
+/// equal. Every other combination falls through to the fetch and the
+/// usual tripwires, so the worst this can do is download needlessly;
+/// it can never vouch for something `plan` would have rejected.
+fn settled_unit_count(cursor: &FileCursor, meta: &FileMeta) -> Option<u64> {
+    let seen = cursor.files.get(&meta.path)?;
+    let complete = seen.done_units == seen.size_units;
+    match (complete, seen.etag.as_deref(), meta.etag.as_deref()) {
+        (true, Some(then), Some(now)) if then == now => Some(seen.size_units),
+        _ => None,
     }
 }
 
-/// The unit count for an object needing no fetch, or None. PROVABLY is
-/// the load-bearing word — conservative three ways: both etags must be
-/// present and equal; the recorded progress must be COMPLETE; and
-/// anything else falls through to the fetch and the ordinary
-/// tripwires. This can fetch needlessly; it can never trust what
-/// `plan` would have rejected.
-fn recorded_completion(cursor: &FileCursor, meta: &FileMeta) -> Option<u64> {
-    let progress = cursor.files.get(&meta.path)?;
-    if progress.done_units != progress.size_units {
-        return None;
-    }
-    let (recorded, listed) = (progress.etag.as_deref()?, meta.etag.as_deref()?);
-    (recorded == listed).then_some(progress.size_units)
-}
-
-/// Plan per the format's incremental unit. A jsonl glob may match both
-/// plain and compressed files — each follows its own rule, and the
-/// tasks re-sort by path.
-fn plan_tasks(
+/// Turn the listing into tasks under each format's incremental unit.
+/// Jsonl needs care: one glob can cover plain files (byte-resumable)
+/// and compressed ones (whole-file units) at once, so the two halves
+/// plan under their own rules and the result re-sorts by path.
+fn plan_work(
     cursor: &FileCursor,
     stream: &Stream,
-    matched: Vec<FileMeta>,
+    listing: Vec<FileMeta>,
 ) -> Result<Vec<FileTask>, SourceError> {
     match stream.format {
-        Format::Parquet => cursor.plan(&matched),
-        Format::Csv => cursor.plan_whole(&matched),
+        Format::Parquet => cursor.plan(&listing),
+        Format::Csv => cursor.plan_whole(&listing),
         Format::Jsonl => {
-            let (tail, whole): (Vec<_>, Vec<_>) = matched
-                .into_iter()
-                .partition(|m| codec_of(&m.path).is_plain());
-            let mut tasks = cursor.plan(&tail)?;
-            tasks.extend(cursor.plan_whole(&whole)?);
-            tasks.sort_by(|a, b| a.path.cmp(&b.path));
-            Ok(tasks)
+            let mut resumable = Vec::new();
+            let mut opaque = Vec::new();
+            for meta in listing {
+                match codec_of(&meta.path).is_plain() {
+                    true => resumable.push(meta),
+                    false => opaque.push(meta),
+                }
+            }
+            let mut work = cursor.plan(&resumable)?;
+            work.append(&mut cursor.plan_whole(&opaque)?);
+            work.sort_by(|a, b| a.path.cmp(&b.path));
+            Ok(work)
         }
     }
 }
 
-/// Wire local read paths: object-store parquet uses the up-front
-/// fetches; object-store csv and compressed jsonl fetch their planned
-/// (non-skipped) tasks here, so they read through a LOCAL decode.
-async fn stage_fetches(
+/// Give every task that must decode locally a local path. Object-store
+/// parquet tasks point at the copies `snapshot` already fetched;
+/// object-store csv and compressed jsonl fetch here, AFTER planning,
+/// so only planned (never skipped) tasks cost a download.
+async fn localize_reads(
     location: &Location,
     stream: &Stream,
-    tasks: &mut [FileTask],
-    read_paths: &Option<BTreeMap<String, String>>,
-    fetched_dir: &mut Option<FetchDir>,
+    work: &mut [FileTask],
+    copies: &mut LocalCopies,
 ) -> Result<(), SourceError> {
-    if let Some(paths) = read_paths {
-        for task in tasks.iter_mut() {
-            task.read_path = paths.get(&task.path).cloned();
+    let remote = matches!(location, Location::S3(_));
+    for (slot, task) in work.iter_mut().enumerate() {
+        if let Some(local) = copies.by_object.get(&task.path) {
+            task.read_path = Some(local.clone());
+            continue;
         }
-    }
-    if matches!(location, Location::S3(_)) && stream.format != Format::Parquet {
-        for (i, task) in tasks.iter_mut().enumerate() {
-            let needs_local = stream.format == Format::Csv || !codec_of(&task.path).is_plain();
-            if needs_local && task.read_path.is_none() {
-                if fetched_dir.is_none() {
-                    *fetched_dir = Some(temp_fetch_dir(&stream.name)?);
-                }
-                let dir = fetched_dir.as_ref().expect("created above");
-                let local = fetch_to_temp(location, &task.path, dir.path(), i).await?;
-                task.read_path = Some(local.to_string_lossy().into_owned());
-            }
+        if !remote || stream.format == Format::Parquet {
+            continue;
         }
+        let must_decode_locally = stream.format == Format::Csv || !codec_of(&task.path).is_plain();
+        if !must_decode_locally || task.read_path.is_some() {
+            continue;
+        }
+        let dir = copies.scratch_root(&stream.name)?;
+        let local = download_object(location, &task.path, &dir, slot).await?;
+        task.read_path = Some(local.to_string_lossy().into_owned());
     }
     Ok(())
 }
 
-/// A per-read temp dir, unique per call (pid + process counter) so
-/// concurrent in-process pipelines never share fetch files.
-fn temp_fetch_dir(stream: &str) -> Result<FetchDir, SourceError> {
-    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let path =
-        std::env::temp_dir().join(format!("rdlt-file-{}-{seq}-{stream}", std::process::id()));
-    std::fs::create_dir_all(&path)
-        .map_err(|e| SourceError::fatal(format!("temp dir for object fetch: {e}")))?;
-    Ok(FetchDir { path })
-}
-
-/// A fetch directory that removes itself — ownership, not a cleanup
-/// call: the read loop has failure and cancellation exits, and a
-/// directory released only on success leaks a listing's worth of
-/// fetches on every other one.
+/// A scratch directory that is its own janitor. Deleting on Drop is a
+/// deliberate ownership choice: the read loop exits by success, error,
+/// AND cancellation, and cleanup tied to only one of those paths would
+/// leak a listing's worth of fetches on the other two.
 #[derive(Debug)]
-struct FetchDir {
-    path: std::path::PathBuf,
+struct ScratchDir {
+    root: PathBuf,
 }
 
-impl FetchDir {
-    fn path(&self) -> &std::path::Path {
-        &self.path
+impl ScratchDir {
+    /// Create a directory no concurrent pipeline can collide with:
+    /// the name folds in the pid and a process-wide counter.
+    fn create(stream: &str) -> Result<Self, SourceError> {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
+        let root =
+            std::env::temp_dir().join(format!("rdlt-file-{}-{nonce}-{stream}", std::process::id()));
+        std::fs::create_dir_all(&root)
+            .map_err(|e| SourceError::fatal(format!("temp dir for object fetch: {e}")))?;
+        Ok(Self { root })
+    }
+
+    fn path(&self) -> &Path {
+        &self.root
     }
 }
 
-impl Drop for FetchDir {
+impl Drop for ScratchDir {
     fn drop(&mut self) {
-        // Best effort by construction: Drop has no error channel, and
-        // a failure here must not mask what unwound us.
-        let _ = std::fs::remove_dir_all(&self.path);
+        // Drop offers no error channel, and if we are unwinding, a
+        // removal failure must not eclipse the error that got us here
+        // — so this is best-effort by design.
+        let _ = std::fs::remove_dir_all(&self.root);
     }
 }
 
-/// Drain one object into a temp file through a bounded buffer.
-async fn fetch_to_temp(
+/// Stream one object into a temp file, one bounded slab at a time.
+async fn download_object(
     location: &Location,
     key: &str,
-    dir: &std::path::Path,
-    i: usize,
-) -> Result<std::path::PathBuf, SourceError> {
+    dir: &Path,
+    slot: usize,
+) -> Result<PathBuf, SourceError> {
     use std::io::Write as _;
     let mut reader = location.open_from(key, 0).await?;
-    let path = dir.join(format!("obj-{i}"));
-    let mut file = std::fs::File::create(&path)
+    let target = dir.join(format!("obj-{slot}"));
+    let mut sink = std::fs::File::create(&target)
         .map_err(|e| SourceError::fatal(format!("temp file for `{key}`: {e}")))?;
-    let mut buf = vec![0u8; crate::format::SLAB_BYTES];
+    let mut slab = vec![0u8; crate::format::SLAB_BYTES];
     loop {
-        let n = reader
-            .read_full(&mut buf)
+        let got = reader
+            .read_full(&mut slab)
             .await
             .map_err(|e| crate::location::classify_read_error(&format!("fetching `{key}`"), e))?;
-        if n == 0 {
+        if got == 0 {
             break;
         }
-        file.write_all(&buf[..n])
+        sink.write_all(&slab[..got])
             .map_err(|e| SourceError::fatal(format!("writing temp for `{key}`: {e}")))?;
     }
-    Ok(path)
+    Ok(target)
 }
 
 #[cfg(test)]
@@ -343,7 +370,7 @@ mod tests {
     use super::*;
     use crate::source::cursor::FileProgress;
 
-    fn meta(path: &str, etag: Option<&str>) -> FileMeta {
+    fn listed(path: &str, etag: Option<&str>) -> FileMeta {
         FileMeta {
             path: path.into(),
             size_units: 3,
@@ -352,7 +379,7 @@ mod tests {
         }
     }
 
-    fn cursor_with(path: &str, done: u64, size: u64, etag: Option<&str>) -> FileCursor {
+    fn remembered(path: &str, done: u64, size: u64, etag: Option<&str>) -> FileCursor {
         let mut cursor = FileCursor::default();
         cursor.record(
             path,
@@ -369,35 +396,36 @@ mod tests {
         cursor
     }
 
-    /// The skip is conservative three ways: complete + both etags
-    /// present + equal, or it fetches.
+    /// A skip needs ALL of: complete recorded progress, an etag on
+    /// both sides, and the two equal. Anything less downloads.
     #[test]
-    fn the_skip_fetch_rule_is_conservative_three_ways() {
-        let m = meta("k", Some("e1"));
+    fn a_fetch_is_skipped_only_on_complete_progress_and_matching_etags() {
+        let object = listed("k", Some("e1"));
         assert_eq!(
-            recorded_completion(&cursor_with("k", 3, 3, Some("e1")), &m),
+            settled_unit_count(&remembered("k", 3, 3, Some("e1")), &object),
             Some(3),
             "provably unchanged and complete"
         );
-        assert!(recorded_completion(&cursor_with("k", 2, 3, Some("e1")), &m).is_none());
-        assert!(recorded_completion(&cursor_with("k", 3, 3, None), &m).is_none());
-        assert!(recorded_completion(&cursor_with("k", 3, 3, Some("e2")), &m).is_none());
+        assert!(settled_unit_count(&remembered("k", 2, 3, Some("e1")), &object).is_none());
+        assert!(settled_unit_count(&remembered("k", 3, 3, None), &object).is_none());
+        assert!(settled_unit_count(&remembered("k", 3, 3, Some("e2")), &object).is_none());
         assert!(
-            recorded_completion(&cursor_with("k", 3, 3, Some("e1")), &meta("k", None)).is_none()
+            settled_unit_count(&remembered("k", 3, 3, Some("e1")), &listed("k", None)).is_none()
         );
-        assert!(recorded_completion(&FileCursor::default(), &m).is_none());
+        assert!(settled_unit_count(&FileCursor::default(), &object).is_none());
     }
 
-    /// Temp fetch dirs are unique per call and remove themselves.
+    /// Two scratch dirs from one process never share a path, and each
+    /// deletes itself when dropped.
     #[test]
-    fn fetch_dirs_are_unique_and_self_removing() {
-        let a = temp_fetch_dir("events").expect("a");
-        let b = temp_fetch_dir("events").expect("b");
-        assert_ne!(a.path(), b.path());
-        let path = a.path().to_path_buf();
-        assert!(path.exists());
-        drop(a);
-        assert!(!path.exists(), "released on drop");
-        drop(b);
+    fn scratch_dirs_are_distinct_and_delete_themselves() {
+        let first = ScratchDir::create("events").expect("first");
+        let second = ScratchDir::create("events").expect("second");
+        assert_ne!(first.path(), second.path());
+        let kept = first.path().to_path_buf();
+        assert!(kept.exists());
+        drop(first);
+        assert!(!kept.exists(), "gone once dropped");
+        drop(second);
     }
 }

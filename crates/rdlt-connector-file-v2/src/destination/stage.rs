@@ -17,81 +17,103 @@ use rdlt_connector_sdk::spi::{DestinationError, ParquetCompression, ParquetOptio
 use super::DestFormat;
 use crate::destination::layout::{NULL_PARTITION, path_safe};
 
-/// Translate the SPI options into writer properties, or say exactly
-/// what could not be honoured.
+/// Build the `WriterProperties` a session writes every part with.
 ///
-/// Resolved ONCE per session: a translation failure must surface before
-/// a load gets halfway in.
+/// This runs once, at session open — an option the library cannot
+/// honour is refused BEFORE any data moves, naming what was wrong.
 pub(crate) fn writer_props(options: &ParquetOptions) -> Result<WriterProperties, DestinationError> {
-    let mut builder = WriterProperties::builder()
-        .set_compression(codec_of(options)?)
+    let mut props = WriterProperties::builder()
+        .set_compression(compression_of(options)?)
         .set_dictionary_enabled(options.dictionary_enabled)
         .set_dictionary_page_size_limit(options.dictionary_page_size_limit);
-    if let Some(limit) = options.data_page_size_limit {
-        builder = builder.set_data_page_size_limit(limit);
+    if let Some(bytes) = options.data_page_size_limit {
+        props = props.set_data_page_size_limit(bytes);
     }
-    // Only when set: the setter's `None` means UNLIMITED, not "keep the
-    // default" — passing the field through would silently replace
-    // parquet's 1,048,576-row bound with unbounded row groups. (It also
-    // panics on `Some(0)`, which config validation refused earlier.)
-    if options.max_row_group_rows.is_some() {
-        builder = builder.set_max_row_group_row_count(options.max_row_group_rows);
+    match options.max_row_group_rows {
+        // An unset option must NOT be forwarded: to this setter `None`
+        // means "no bound at all", so passing it through would swap
+        // the library's 1,048,576-row default for unbounded row
+        // groups. (`Some(0)` would panic inside the setter — config
+        // validation refused that value long before this point.)
+        None => {}
+        bound @ Some(_) => props = props.set_max_row_group_row_count(bound),
     }
-    Ok(builder.build())
+    Ok(props.build())
 }
 
-/// The codec with its level applied where the codec takes one.
+/// Resolve the configured codec, applying the level on codecs that
+/// carry one.
 ///
-/// Validation already refused a level on a levelless codec, so the
-/// missing-value arm is a bug guard, not a user path.
-fn codec_of(options: &ParquetOptions) -> Result<Compression, DestinationError> {
+/// A level on a levelless codec was already refused at validation, so
+/// the missing-value branch inside `unsigned_level` guards against a
+/// future bug, not against any reachable user input.
+fn compression_of(options: &ParquetOptions) -> Result<Compression, DestinationError> {
     let level = options.compression_level;
-    // Gzip and brotli levels are unsigned; zstd's are signed (it
-    // defines negative "fast" levels). A negative value for the first
-    // two is a mistake to refuse, never a clamp.
-    let unsigned = |what: &str| -> Result<u32, DestinationError> {
-        let Some(level) = level else {
-            return Err(DestinationError::fatal(format!(
-                "internal: {what} level requested without a value"
-            )));
-        };
-        u32::try_from(level).map_err(|_| {
-            DestinationError::fatal(format!(
-                "`compression_level` {level} is negative — {what} levels start at 0"
-            ))
-        })
-    };
-    let invalid = |what: &str, e: parquet::errors::ParquetError| {
-        DestinationError::fatal(format!(
-            "`compression_level` {} is not valid for {what}: {e}",
-            level.unwrap_or_default()
-        ))
-    };
-    Ok(match (options.compression, level) {
-        (ParquetCompression::Uncompressed, _) => Compression::UNCOMPRESSED,
-        (ParquetCompression::Snappy, _) => Compression::SNAPPY,
-        (ParquetCompression::Lz4Raw, _) => Compression::LZ4_RAW,
-        (ParquetCompression::Gzip, None) => Compression::GZIP(GzipLevel::default()),
-        (ParquetCompression::Gzip, Some(_)) => Compression::GZIP(
-            GzipLevel::try_new(unsigned("gzip")?).map_err(|e| invalid("gzip", e))?,
-        ),
-        (ParquetCompression::Brotli, None) => Compression::BROTLI(BrotliLevel::default()),
-        (ParquetCompression::Brotli, Some(_)) => Compression::BROTLI(
-            BrotliLevel::try_new(unsigned("brotli")?).map_err(|e| invalid("brotli", e))?,
-        ),
-        (ParquetCompression::Zstd, None) => Compression::ZSTD(ZstdLevel::default()),
-        (ParquetCompression::Zstd, Some(level)) => {
-            Compression::ZSTD(ZstdLevel::try_new(level).map_err(|e| invalid("zstd", e))?)
-        }
-        // The SPI vocabulary is non_exhaustive: a codec this build does
-        // not know is refused by name, never silently uncompressed.
-        (other, _) => {
+    Ok(match options.compression {
+        ParquetCompression::Uncompressed => Compression::UNCOMPRESSED,
+        ParquetCompression::Snappy => Compression::SNAPPY,
+        ParquetCompression::Lz4Raw => Compression::LZ4_RAW,
+        ParquetCompression::Gzip => match level {
+            None => Compression::GZIP(GzipLevel::default()),
+            Some(_) => Compression::GZIP(
+                GzipLevel::try_new(unsigned_level(level, "gzip")?)
+                    .map_err(|e| out_of_range(level, "gzip", e))?,
+            ),
+        },
+        ParquetCompression::Brotli => match level {
+            None => Compression::BROTLI(BrotliLevel::default()),
+            Some(_) => Compression::BROTLI(
+                BrotliLevel::try_new(unsigned_level(level, "brotli")?)
+                    .map_err(|e| out_of_range(level, "brotli", e))?,
+            ),
+        },
+        ParquetCompression::Zstd => match level {
+            None => Compression::ZSTD(ZstdLevel::default()),
+            // Zstd is the signed one — the format defines negative
+            // "fast" levels — so the value goes to the library as-is
+            // and its own bound does any refusing.
+            Some(value) => Compression::ZSTD(
+                ZstdLevel::try_new(value).map_err(|e| out_of_range(level, "zstd", e))?,
+            ),
+        },
+        // The SPI's codec vocabulary is non_exhaustive. A variant this
+        // build has never heard of gets refused BY NAME — falling back
+        // to uncompressed silently is exactly the wrong default.
+        other => {
             return Err(DestinationError::fatal(format!(
                 "compression `{}` is not supported by the file destination",
                 other.as_str()
             )));
         }
     })
+}
+
+/// Gzip and brotli take unsigned levels only: a negative value is a
+/// user mistake to refuse outright, never something to clamp.
+fn unsigned_level(level: Option<i32>, codec: &str) -> Result<u32, DestinationError> {
+    let Some(value) = level else {
+        return Err(DestinationError::fatal(format!(
+            "internal: {codec} level requested without a value"
+        )));
+    };
+    u32::try_from(value).map_err(|_| {
+        DestinationError::fatal(format!(
+            "`compression_level` {value} is negative — {codec} levels start at 0"
+        ))
+    })
+}
+
+/// A level the library's own bounds rejected, wrapped with the option
+/// name so the user sees what to change.
+fn out_of_range(
+    level: Option<i32>,
+    codec: &str,
+    e: parquet::errors::ParquetError,
+) -> DestinationError {
+    DestinationError::fatal(format!(
+        "`compression_level` {} is not valid for {codec}: {e}",
+        level.unwrap_or_default()
+    ))
 }
 
 /// Split one batch by the partition column, or hand it back whole.

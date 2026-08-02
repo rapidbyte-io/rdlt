@@ -14,13 +14,16 @@ use testcontainers::{ContainerAsync, GenericImage, ImageExt};
 pub const ACCESS_KEY: &str = "rdlt-test-access";
 pub const SECRET_KEY: &str = "rdlt-test-secret";
 pub const BUCKET: &str = "raw";
-/// Pinned: a floating `latest` re-resolves whenever upstream pushes,
-/// so a broken upstream build would fail our gate with no change on
-/// our side. Bump deliberately, with the live cells green.
+/// An exact tag, never `latest`: under a floating tag the image our
+/// gate runs against silently changes each time upstream publishes,
+/// and their broken build turns into our red gate on a diff of
+/// nothing. Upgrades are taken on purpose — edit the tag, then prove
+/// the live cells still pass.
 pub const RUSTFS_TAG: &str = "1.0.0-beta.11";
 
 pub struct S3Fixture {
-    // Held for Drop: the container stops when the fixture drops.
+    // Never read — kept only so its Drop, which stops the container,
+    // runs when the fixture goes away.
     _container: ContainerAsync<GenericImage>,
     pub endpoint: String,
 }
@@ -79,8 +82,9 @@ impl S3Fixture {
             .expect("seed client")
     }
 
-    /// Seed one object, retried — many fixtures start concurrently
-    /// under the full suite and one hiccup must not kill a cell.
+    /// Write one seed object, with retries: the full suite brings up
+    /// many fixtures at once, and a single transient put failure
+    /// should cost an attempt, not the whole cell.
     pub async fn put(&self, key: &str, body: &[u8]) {
         let store = self.store();
         let mut last = None;

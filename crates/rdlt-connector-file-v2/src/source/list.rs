@@ -1,87 +1,100 @@
-//! Listing: turning a stream's path-or-glob into a COMPLETE, sorted
-//! file list — or failing, never returning a partial one.
+//! Resolving a stream's `path` on the local filesystem: the result is
+//! the WHOLE matching set, sorted — a listing that cannot be completed
+//! is an error, never a shorter list.
 //!
-//! One rule governs ambiguity on both location kinds: a path naming an
-//! EXISTING file is always literal, even when it contains glob
-//! metacharacters — `events[prod].jsonl` is a file, not a character
-//! class. The listing is snapshotted once per run; files created after
-//! it arrive next run.
+//! Both location kinds share one tie-breaker for ambiguous input: if
+//! the path names a file that exists, it is taken literally, glob
+//! metacharacters and all — `events[prod].jsonl` names that file, not
+//! a character class. Resolution happens once per run; anything
+//! created afterwards belongs to the next one.
 
 use rdlt_connector_sdk::spi::SourceError;
 
 use super::cursor::FileMeta;
 
-/// Resolve a local path-or-glob. A named missing file is an error; an
-/// empty glob is an empty stream; a directory is a typed suggestion,
-/// never an implicit expansion — which files a stream reads is the
-/// operator's declaration, not a guess.
+/// A path-or-glob into file metadata. The refusals are deliberate:
+/// naming a file that is missing is an error, and naming a directory
+/// earns a suggestion rather than an implicit expansion — the operator
+/// declares what a stream reads, the connector does not guess. Only an
+/// empty GLOB is an empty stream.
 pub(crate) fn local_listing(pattern: &str) -> Result<Vec<FileMeta>, SourceError> {
-    let mut matched: Vec<String> = if std::path::Path::new(pattern).is_file() {
-        vec![pattern.to_owned()]
-    } else if pattern.contains(['*', '?', '[']) {
-        // Dot-prefixed names never match a wildcard — `**` included.
-        // This is what keeps `.rdlt-staging` (a file DESTINATION's
-        // uncommitted parts) out of a source glob over the same
-        // directory; without it a recursive glob read staged parts and
-        // duplicated them once they published (030 review). A dotfile
-        // is still readable by naming it literally.
-        let options = glob::MatchOptions {
-            require_literal_leading_dot: true,
-            ..Default::default()
-        };
-        let mut paths = Vec::new();
-        for entry in glob::glob_with(pattern, options)
-            .map_err(|e| SourceError::fatal(format!("invalid glob `{pattern}`: {e}")))?
-        {
-            let path = entry.map_err(|e| {
-                SourceError::fatal(format!(
-                    "expanding glob `{pattern}`: {e}; refusing to load a partial file list"
-                ))
-            })?;
-            if path.is_file() {
-                paths.push(path.to_string_lossy().into_owned());
-            }
-        }
-        paths
-    } else if std::path::Path::new(pattern).is_dir() {
+    let mut found = resolve(pattern)?;
+    found.sort();
+    found.into_iter().map(describe).collect()
+}
+
+fn resolve(pattern: &str) -> Result<Vec<String>, SourceError> {
+    let as_path = std::path::Path::new(pattern);
+    if as_path.is_file() {
+        return Ok(vec![pattern.to_owned()]);
+    }
+    if pattern.contains(['*', '?', '[']) {
+        return expand_glob(pattern);
+    }
+    if as_path.is_dir() {
         return Err(SourceError::fatal(format!(
             "`{pattern}` is a directory, not a file — name a file, or use a pattern such as \
              `{pattern}/*.jsonl`"
         )));
-    } else {
-        return Err(SourceError::fatal(format!(
-            "file `{pattern}` does not exist"
-        )));
+    }
+    Err(SourceError::fatal(format!(
+        "file `{pattern}` does not exist"
+    )))
+}
+
+fn expand_glob(pattern: &str) -> Result<Vec<String>, SourceError> {
+    // No wildcard — `**` included — ever reaches into a dot-prefixed
+    // name. That single option is what hides a file DESTINATION's
+    // `.rdlt-staging` (uncommitted parts) from a source glob sweeping
+    // the same directory; before it, a recursive glob would read
+    // staged parts and read them AGAIN once published (030 review).
+    // Spelling a dotfile out literally still works.
+    let options = glob::MatchOptions {
+        require_literal_leading_dot: true,
+        ..Default::default()
     };
-    matched.sort();
-    matched
-        .into_iter()
-        .map(|path| {
-            let meta = std::fs::metadata(&path)
-                .map_err(|e| SourceError::fatal(format!("stat `{path}`: {e}")))?;
-            let mtime_ms = meta
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_millis() as u64);
-            Ok(FileMeta {
-                path,
-                size_units: meta.len(),
-                mtime_ms,
-                etag: None,
-            })
-        })
-        .collect()
+    let walk = glob::glob_with(pattern, options)
+        .map_err(|e| SourceError::fatal(format!("invalid glob `{pattern}`: {e}")))?;
+    let mut files = Vec::new();
+    for entry in walk {
+        match entry {
+            Ok(path) if path.is_file() => files.push(path.to_string_lossy().into_owned()),
+            // Directories can match a glob; only files enter a stream.
+            Ok(_) => {}
+            Err(e) => {
+                return Err(SourceError::fatal(format!(
+                    "expanding glob `{pattern}`: {e}; refusing to load a partial file list"
+                )));
+            }
+        }
+    }
+    Ok(files)
+}
+
+fn describe(path: String) -> Result<FileMeta, SourceError> {
+    let stat =
+        std::fs::metadata(&path).map_err(|e| SourceError::fatal(format!("stat `{path}`: {e}")))?;
+    let mtime_ms = stat
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64);
+    Ok(FileMeta {
+        path,
+        size_units: stat.len(),
+        mtime_ms,
+        etag: None,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The ambiguity rule: an existing file with metacharacters in its
-    /// name is LITERAL, never a character class.
+    /// The tie-breaker: metacharacters in the name of a file that
+    /// EXISTS mean nothing — the path is the file.
     #[test]
-    fn an_existing_file_with_metacharacters_is_literal() {
+    fn a_real_file_wins_over_its_own_metacharacters() {
         let dir = tempfile::tempdir().expect("dir");
         let tricky = dir.path().join("events[prod].jsonl");
         std::fs::write(&tricky, b"{}\n").expect("write");
@@ -91,10 +104,10 @@ mod tests {
         assert!(listing[0].mtime_ms.is_some() && listing[0].etag.is_none());
     }
 
-    /// Globs list only FILES, sorted; an empty glob is an empty
-    /// stream, not an error.
+    /// A glob yields files only, in sorted order — and matching
+    /// nothing is an empty stream, not a failure.
     #[test]
-    fn globs_list_only_files_sorted_and_empty_is_empty() {
+    fn a_glob_yields_sorted_files_and_no_match_is_fine() {
         let dir = tempfile::tempdir().expect("dir");
         std::fs::write(dir.path().join("b.jsonl"), b"x").expect("write");
         std::fs::write(dir.path().join("a.jsonl"), b"x").expect("write");
@@ -115,10 +128,10 @@ mod tests {
         );
     }
 
-    /// The refusals: a directory suggests the pattern; a named missing
-    /// file is an error.
+    /// Naming a directory earns the pattern suggestion; naming an
+    /// absent file is refused — both with the frozen spellings.
     #[test]
-    fn directories_and_missing_files_refuse_with_the_frozen_spellings() {
+    fn a_directory_suggests_a_pattern_and_an_absent_file_refuses() {
         let dir = tempfile::tempdir().expect("dir");
         let path = dir.path().to_str().expect("utf8").to_owned();
         let err = local_listing(&path).expect_err("directory refused");
@@ -137,11 +150,12 @@ mod tests {
         );
     }
 
-    /// Wildcards never enter dot-prefixed names — `**` included: the
-    /// invariant that keeps a destination's `.rdlt-staging` invisible
-    /// to a source glob over the same directory (030 review).
+    /// Dot-prefixed names stay invisible to every wildcard, `**`
+    /// included — the guarantee that keeps a co-located destination's
+    /// `.rdlt-staging` out of a source glob (030 review). Naming such
+    /// a file literally still reads it.
     #[test]
-    fn wildcards_never_match_dot_prefixed_names() {
+    fn dot_prefixed_names_stay_out_of_wildcard_reach() {
         let dir = tempfile::tempdir().expect("dir");
         let staged = dir.path().join(".rdlt-staging/ab/load-1");
         std::fs::create_dir_all(&staged).expect("dirs");
@@ -157,7 +171,6 @@ mod tests {
         assert_eq!(names.len(), 1, "{names:?}");
         assert!(names[0].ends_with("real.jsonl"));
 
-        // Naming the dotfile literally still reads it.
         let literal = staged.join("part.jsonl");
         let named = local_listing(literal.to_str().expect("utf8")).expect("literal");
         assert_eq!(named.len(), 1);

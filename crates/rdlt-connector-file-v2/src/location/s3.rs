@@ -1,20 +1,29 @@
-//! The S3 half: store construction (the one Secret boundary), the
-//! complete-or-fail listing, and the streaming range reader.
+//! The object-store side of [`Location`](super::Location): the one
+//! place credentials are revealed into a client, a listing that drains
+//! every continuation page or fails typed, a chunked range reader for
+//! resumed tails, and the key-space primitives behind the
+//! destination's staging/publish protocol.
 
 use futures::StreamExt as _;
 use object_store::ObjectStore as _;
-use rdlt_connector_sdk::spi::SourceError;
+use object_store::path::Path as Key;
+use rdlt_connector_sdk::spi::{DestinationError, SourceError};
 
 use super::options::S3Options;
 use crate::source::cursor::FileMeta;
 
-/// Build the raw S3 client. Every `Secret::reveal` in the crate
-/// happens here.
+/// The glob metacharacters this crate recognises in a pattern.
+const GLOB_META: [char; 3] = ['*', '?', '['];
+
+/// Construct the raw client. This function is the crate's entire
+/// `Secret::reveal` surface — a credential audit reads it and nothing
+/// else.
 pub(crate) fn build_store(options: &S3Options) -> Result<object_store::aws::AmazonS3, String> {
+    let region = options.region.as_deref().unwrap_or("us-east-1");
     object_store::aws::AmazonS3Builder::new()
         .with_endpoint(&options.endpoint)
         .with_bucket_name(&options.bucket)
-        .with_region(options.region.as_deref().unwrap_or("us-east-1"))
+        .with_region(region)
         .with_access_key_id(options.access_key.reveal())
         .with_secret_access_key(options.secret_key.reveal())
         .with_virtual_hosted_style_request(!options.path_style)
@@ -29,17 +38,30 @@ pub(crate) fn build_store(options: &S3Options) -> Result<object_store::aws::Amaz
         })
 }
 
-/// A connected S3 location — the read half: full keys, no prefix.
+/// Severity for a destination-side store failure comes from the one
+/// shared recoverability rulebook — never re-derived locally.
+fn dest_failure(cause: object_store::Error) -> DestinationError {
+    if rdlt_connector_sdk::spi::store::is_recoverable(&cause) {
+        DestinationError::transient(cause.to_string())
+    } else {
+        DestinationError::fatal(cause.to_string())
+    }
+}
+
+/// One connected bucket. The source builds it with an empty `prefix`
+/// and speaks full keys; the destination hangs every tail under its
+/// prefix.
 #[derive(Debug, Clone)]
 pub(crate) struct S3Location {
     store: object_store::aws::AmazonS3,
     endpoint: String,
     bucket: String,
-    /// The write half's key prefix; empty on the read half.
+    /// Key prefix for the write half; the read half leaves it empty.
     prefix: String,
 }
 
 impl S3Location {
+    /// Read-half constructor: no prefix, callers name keys in full.
     pub(crate) fn connect(options: &S3Options) -> Result<Self, SourceError> {
         Ok(Self {
             store: build_store(options).map_err(SourceError::fatal)?,
@@ -49,143 +71,260 @@ impl S3Location {
         })
     }
 
-    /// Severity comes from the ONE shared recoverability rulebook; the
-    /// match below only chooses wording, so a message can never
-    /// disagree with a classification.
-    fn classify(&self, action: &str, subject: &str, error: object_store::Error) -> SourceError {
-        let name = format!(
-            "{action} `{subject}` (s3 `{}` bucket `{}`)",
+    /// Write-half constructor: `prefix` becomes the root every tail
+    /// hangs under.
+    pub(crate) fn connect_for_dest(
+        options: &S3Options,
+        prefix: String,
+    ) -> Result<Self, DestinationError> {
+        match Self::connect(options) {
+            Ok(mut location) => {
+                location.prefix = prefix;
+                Ok(location)
+            }
+            Err(e) => Err(DestinationError::fatal(e.to_string())),
+        }
+    }
+
+    /// Source-side failure rendering. Severity is decided FIRST by the
+    /// shared recoverability rulebook; the wording below is chosen
+    /// after, so no message can ever contradict a classification.
+    fn read_failure(&self, verb: &str, subject: &str, cause: object_store::Error) -> SourceError {
+        let heading = format!(
+            "{verb} `{subject}` (s3 `{}` bucket `{}`)",
             self.endpoint, self.bucket
         );
-        if rdlt_connector_sdk::spi::store::is_recoverable(&error) {
-            return SourceError::transient(format!("{name}: {error}"));
+        if rdlt_connector_sdk::spi::store::is_recoverable(&cause) {
+            return SourceError::transient(format!("{heading}: {cause}"));
         }
-        match &error {
+        match &cause {
             object_store::Error::NotFound { .. } => {
-                SourceError::fatal(format!("{name}: not found"))
+                SourceError::fatal(format!("{heading}: not found"))
             }
             object_store::Error::Unauthenticated { .. }
-            | object_store::Error::PermissionDenied { .. } => {
-                SourceError::fatal(format!("{name}: unauthorized — check credentials/bucket"))
-            }
-            _ => SourceError::fatal(format!("{name}: {error}")),
+            | object_store::Error::PermissionDenied { .. } => SourceError::fatal(format!(
+                "{heading}: unauthorized — check credentials/bucket"
+            )),
+            _ => SourceError::fatal(format!("{heading}: {cause}")),
         }
     }
 
-    /// The fixed key prefix ahead of the first glob metacharacter —
-    /// what the server-side listing scopes to.
-    fn prefix_of(pattern: &str) -> &str {
-        match pattern.find(['*', '?', '[']) {
-            Some(at) => &pattern[..pattern[..at].rfind('/').map(|s| s + 1).unwrap_or(0)],
-            None => pattern,
+    /// The literal key prefix a server-side listing can scope to:
+    /// everything up to (and including) the last `/` before the first
+    /// glob metacharacter. No metacharacter means the whole pattern is
+    /// literal.
+    fn listing_scope(pattern: &str) -> &str {
+        let Some(meta_at) = pattern.find(GLOB_META) else {
+            return pattern;
+        };
+        match pattern[..meta_at].rfind('/') {
+            Some(slash) => &pattern[..=slash],
+            None => "",
         }
     }
 
-    /// COMPLETE listing: continuation pages fully drained or a typed
-    /// failure. The local ambiguity rule holds — one HEAD decides
-    /// whether a metacharacter-bearing pattern names an existing
-    /// object; only then does glob interpretation apply, and `*`/`?`
-    /// never cross `/` (staged keys must never match a data glob).
+    /// The complete listing for one pattern: every continuation page
+    /// drained, or a typed failure. The local ambiguity rule carries
+    /// over unchanged — a single HEAD first decides whether a
+    /// metacharacter-bearing pattern names a real object, and only
+    /// when it does not is the pattern read as a glob, in which
+    /// `*`/`?` never span a `/` (a staged key must never satisfy a
+    /// data glob).
     pub(crate) async fn list(&self, pattern: &str) -> Result<Vec<FileMeta>, SourceError> {
-        // Listed keys come back NORMALIZED (no leading slash, empty
-        // segments collapsed) while the matcher is built from the
-        // operator's raw pattern — un-normalized they can never agree,
-        // and a `path: /data/*.jsonl` habit carried over from local
-        // paths would match NOTHING, silently (030 review). Normalize
-        // the pattern's segments the same way the store does.
-        let pattern = pattern
-            .split('/')
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>()
-            .join("/");
-        let pattern = pattern.as_str();
-        let has_glob = pattern.contains(['*', '?', '[']);
-        let literal = object_store::path::Path::from(pattern);
-        match self.store.head(&literal).await {
+        // The store hands keys back in normalized form — leading
+        // slash gone, empty segments collapsed — but the matcher is
+        // compiled from whatever the operator typed. Left raw, a
+        // local-path habit like `path: /data/*.jsonl` compiles into a
+        // pattern no normalized key can ever satisfy, and the run
+        // reports zero files with no hint why (030 review). So the
+        // pattern's segments get the same normalization first.
+        let mut normalized = String::with_capacity(pattern.len());
+        for segment in pattern.split('/').filter(|s| !s.is_empty()) {
+            if !normalized.is_empty() {
+                normalized.push('/');
+            }
+            normalized.push_str(segment);
+        }
+        let pattern = normalized.as_str();
+
+        let wildcarded = pattern.contains(GLOB_META);
+        match self.store.head(&Key::from(pattern)).await {
             Ok(head) => {
                 return Ok(vec![FileMeta {
                     path: pattern.to_owned(),
                     size_units: head.size,
-                    mtime_ms: mtime_ms_of(head.last_modified),
+                    mtime_ms: epoch_millis(head.last_modified),
                     etag: head.e_tag,
                 }]);
             }
-            Err(object_store::Error::NotFound { .. }) if has_glob => {}
             Err(object_store::Error::NotFound { .. }) => {
-                return Err(SourceError::fatal(format!(
-                    "object `{pattern}` (s3 `{}` bucket `{}`): not found",
-                    self.endpoint, self.bucket
-                )));
+                if !wildcarded {
+                    return Err(SourceError::fatal(format!(
+                        "object `{pattern}` (s3 `{}` bucket `{}`): not found",
+                        self.endpoint, self.bucket
+                    )));
+                }
             }
-            Err(e) => return Err(self.classify("object", pattern, e)),
+            Err(e) => return Err(self.read_failure("object", pattern, e)),
         }
+
         let matcher = glob::Pattern::new(pattern)
             .map_err(|e| SourceError::fatal(format!("invalid glob `{pattern}`: {e}")))?;
-        // `require_literal_separator` keeps `*`/`?` inside one segment;
-        // `require_literal_leading_dot` keeps EVERY wildcard — `**`
-        // included — out of dot-prefixed names, which is what actually
-        // makes `.rdlt-staging` invisible to data globs (030 review: a
-        // recursive glob over a shared prefix read UNCOMMITTED staged
-        // parts without it).
-        let match_options = glob::MatchOptions {
+        // `require_literal_separator` confines `*`/`?` to a single
+        // segment. `require_literal_leading_dot` is the load-bearing
+        // one: it bars EVERY wildcard, `**` included, from matching a
+        // dot-led name, and that — not the separator rule — is what
+        // hides `.rdlt-staging` from data globs (030 review found a
+        // recursive glob over a shared prefix reading uncommitted
+        // staged parts without it).
+        let rules = glob::MatchOptions {
             require_literal_separator: true,
             require_literal_leading_dot: true,
             ..Default::default()
         };
-        let prefix = Self::prefix_of(pattern);
-        let prefix_path = (!prefix.is_empty()).then(|| object_store::path::Path::from(prefix));
-        let mut listing = self.store.list(prefix_path.as_ref());
-        let mut matched = Vec::new();
-        while let Some(entry) = listing.next().await {
-            let entry = entry.map_err(|e| self.classify("listing", pattern, e))?;
-            let key = entry.location.to_string();
-            if matcher.matches_with(&key, match_options) {
-                matched.push(FileMeta {
-                    path: key,
-                    size_units: entry.size,
-                    // The second rewrite-tripwire leg: an S3-compatible
-                    // store that omits etags would otherwise have NO
-                    // same-size rewrite detection at all (docket S10).
-                    mtime_ms: mtime_ms_of(entry.last_modified),
-                    etag: entry.e_tag,
-                });
+
+        let scope = Self::listing_scope(pattern);
+        let scope_key = (!scope.is_empty()).then(|| Key::from(scope));
+        let mut pages = self.store.list(scope_key.as_ref());
+        let mut found = Vec::new();
+        while let Some(next) = pages.next().await {
+            let object = next.map_err(|e| self.read_failure("listing", pattern, e))?;
+            let key = object.location.to_string();
+            if !matcher.matches_with(&key, rules) {
+                continue;
             }
+            found.push(FileMeta {
+                path: key,
+                size_units: object.size,
+                // The mtime is the rewrite tripwire's second leg: on an
+                // S3-compatible store that serves no etags, a same-size
+                // rewrite would otherwise go completely undetected
+                // (docket S10).
+                mtime_ms: epoch_millis(object.last_modified),
+                etag: object.e_tag,
+            });
         }
-        matched.sort_by(|a, b| a.path.cmp(&b.path));
-        Ok(matched)
+        found.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(found)
     }
 
-    /// Streaming GET from `start` — the range read a resumed tail uses.
+    /// A streaming GET beginning at `start` — how a resumed tail picks
+    /// up mid-object.
     pub(crate) async fn open_from(
         &self,
         name: &str,
         start: u64,
     ) -> Result<super::ByteReader, SourceError> {
-        let path = object_store::path::Path::from(name);
         let options = object_store::GetOptions {
             range: (start > 0).then_some(object_store::GetRange::Offset(start)),
             ..Default::default()
         };
-        let result = self
+        let body = self
             .store
-            .get_opts(&path, options)
+            .get_opts(&Key::from(name), options)
             .await
-            .map_err(|e| self.classify("reading", name, e))?;
+            .map_err(|e| self.read_failure("reading", name, e))?;
         Ok(super::ByteReader::S3(S3Reader {
-            stream: result.into_stream().boxed(),
-            pending: bytes::Bytes::new(),
+            chunks: body.into_stream().boxed(),
+            held: bytes::Bytes::new(),
             subject: format!("{name} (s3 `{}` bucket `{}`)", self.endpoint, self.bucket),
         }))
     }
+
+    // ---- write-half key space and operations -------------------------------
+
+    /// Expand a tail into its full object key under this location's
+    /// prefix.
+    fn object_key(&self, tail: &str) -> Key {
+        if self.prefix.is_empty() {
+            return Key::from(tail);
+        }
+        Key::from(format!("{}/{tail}", self.prefix.trim_end_matches('/')))
+    }
+
+    /// Full key of one file that lives under `{table}/`.
+    pub(crate) fn key_of_table(&self, table: &str, tail: &str) -> Key {
+        self.object_key(&format!("{table}/{tail}"))
+    }
+
+    /// The table's root key, without a trailing separator.
+    pub(crate) fn key_of_table_root(&self, table: &str) -> String {
+        self.object_key(table).to_string()
+    }
+
+    pub(crate) async fn put(&self, tail: &str, bytes: Vec<u8>) -> Result<(), DestinationError> {
+        self.store
+            .put(&self.object_key(tail), bytes::Bytes::from(bytes).into())
+            .await
+            .map_err(dest_failure)?;
+        Ok(())
+    }
+
+    pub(crate) async fn copy(
+        &self,
+        from_tail: &str,
+        to_tail: &str,
+    ) -> Result<(), DestinationError> {
+        self.store
+            .copy(&self.object_key(from_tail), &self.object_key(to_tail))
+            .await
+            .map_err(dest_failure)
+    }
+
+    /// Delete where already-gone counts as done — the shape a replayed
+    /// finalize needs.
+    pub(crate) async fn delete_idempotent(&self, tail: &str) -> Result<(), DestinationError> {
+        match self.store.delete(&self.object_key(tail)).await {
+            Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
+            Err(e) => Err(dest_failure(e)),
+        }
+    }
+
+    /// Delete and ignore the outcome; the next open's reclaim sweep
+    /// converges whatever this missed.
+    pub(crate) async fn delete_best_effort(&self, tail: &str) {
+        let _ = self.store.delete(&self.object_key(tail)).await;
+    }
+
+    /// Every full key below `tail`, gathered by a server-side
+    /// segment-scoped listing.
+    pub(crate) async fn list_keys(&self, tail: &str) -> Result<Vec<Key>, DestinationError> {
+        let mut pages = self.store.list(Some(&self.object_key(tail)));
+        let mut keys = Vec::new();
+        while let Some(next) = pages.next().await {
+            keys.push(next.map_err(dest_failure)?.location);
+        }
+        Ok(keys)
+    }
+
+    pub(crate) async fn delete_key(&self, key: &Key) -> Result<(), DestinationError> {
+        self.store.delete(key).await.map_err(dest_failure)
+    }
+
+    pub(crate) async fn get_key(&self, key: &Key) -> Result<Vec<u8>, DestinationError> {
+        let body = self.store.get(key).await.map_err(dest_failure)?;
+        let bytes = body.bytes().await.map_err(dest_failure)?;
+        Ok(bytes.to_vec())
+    }
+
+    /// One document's bytes; absence is `None`, not an error.
+    pub(crate) async fn read_doc(&self, name: &str) -> Result<Option<Vec<u8>>, DestinationError> {
+        match self.store.get(&self.object_key(name)).await {
+            Err(object_store::Error::NotFound { .. }) => Ok(None),
+            Err(e) => Err(dest_failure(e)),
+            Ok(body) => Ok(Some(body.bytes().await.map_err(dest_failure)?.to_vec())),
+        }
+    }
 }
 
-/// Sequential reader draining a streaming GET. A mid-stream transport
-/// failure keeps a RETRYABLE io kind, so consumers classify it
-/// transient instead of failing the run — recoverability carried
-/// through the io seam.
+/// Sequential reader over a streaming GET, buffering the chunk in
+/// flight. A transport failure mid-stream surfaces as a RETRYABLE io
+/// kind when the shared rulebook says so, letting the consumer call it
+/// transient instead of killing the run — recoverability preserved
+/// across the io seam.
 pub(crate) struct S3Reader {
-    stream: futures::stream::BoxStream<'static, object_store::Result<bytes::Bytes>>,
-    pending: bytes::Bytes,
+    chunks: futures::stream::BoxStream<'static, object_store::Result<bytes::Bytes>>,
+    held: bytes::Bytes,
     subject: String,
 }
 
@@ -198,164 +337,37 @@ impl std::fmt::Debug for S3Reader {
 }
 
 impl S3Reader {
+    fn io_error(&self, cause: object_store::Error) -> std::io::Error {
+        let kind = if rdlt_connector_sdk::spi::store::is_recoverable(&cause) {
+            std::io::ErrorKind::ConnectionReset
+        } else {
+            std::io::ErrorKind::Other
+        };
+        std::io::Error::new(kind, format!("reading {}: {cause}", self.subject))
+    }
+
     pub(crate) async fn read_full(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let mut filled = 0;
-        while filled < buf.len() {
-            if self.pending.is_empty() {
-                match self.stream.next().await {
-                    None => break,
-                    Some(Err(e)) => {
-                        let kind = if rdlt_connector_sdk::spi::store::is_recoverable(&e) {
-                            std::io::ErrorKind::ConnectionReset
-                        } else {
-                            std::io::ErrorKind::Other
-                        };
-                        return Err(std::io::Error::new(
-                            kind,
-                            format!("reading {}: {e}", self.subject),
-                        ));
-                    }
-                    Some(Ok(chunk)) => self.pending = chunk,
+        let mut done = 0;
+        while done < buf.len() {
+            if self.held.is_empty() {
+                match self.chunks.next().await {
+                    Some(Ok(chunk)) => self.held = chunk,
+                    Some(Err(cause)) => return Err(self.io_error(cause)),
+                    None => return Ok(done),
                 }
             }
-            let take = self.pending.len().min(buf.len() - filled);
-            buf[filled..filled + take].copy_from_slice(&self.pending[..take]);
-            bytes::Buf::advance(&mut self.pending, take);
-            filled += take;
+            let n = self.held.len().min(buf.len() - done);
+            buf[done..done + n].copy_from_slice(&self.held[..n]);
+            bytes::Buf::advance(&mut self.held, n);
+            done += n;
         }
-        Ok(filled)
+        Ok(done)
     }
 }
 
-// ---- the write half --------------------------------------------------------
-
-/// Classify an object-store failure for the destination: the ONE
-/// shared recoverability rule decides severity.
-pub(crate) fn store_err(e: object_store::Error) -> rdlt_connector_sdk::spi::DestinationError {
-    use rdlt_connector_sdk::spi::DestinationError;
-    if rdlt_connector_sdk::spi::store::is_recoverable(&e) {
-        DestinationError::transient(e.to_string())
-    } else {
-        DestinationError::fatal(e.to_string())
-    }
-}
-
-impl S3Location {
-    /// The write-half constructor: every tail hangs under `prefix`.
-    pub(crate) fn connect_for_dest(
-        options: &S3Options,
-        prefix: String,
-    ) -> Result<Self, rdlt_connector_sdk::spi::DestinationError> {
-        let mut location = Self::connect(options)
-            .map_err(|e| rdlt_connector_sdk::spi::DestinationError::fatal(e.to_string()))?;
-        location.prefix = prefix;
-        Ok(location)
-    }
-
-    /// A tail as a full object key under this location's prefix.
-    fn key(&self, tail: &str) -> object_store::path::Path {
-        let joined = if self.prefix.is_empty() {
-            tail.to_owned()
-        } else {
-            format!("{}/{tail}", self.prefix.trim_end_matches('/'))
-        };
-        object_store::path::Path::from(joined)
-    }
-
-    /// The full key of one file under `{table}/` addressed by tail.
-    pub(crate) fn key_of_table(&self, table: &str, tail: &str) -> object_store::path::Path {
-        self.key(&format!("{table}/{tail}"))
-    }
-
-    /// The table's root key (no trailing separator).
-    pub(crate) fn key_of_table_root(&self, table: &str) -> String {
-        self.key(table).to_string()
-    }
-
-    pub(crate) async fn put(
-        &self,
-        tail: &str,
-        bytes: Vec<u8>,
-    ) -> Result<(), rdlt_connector_sdk::spi::DestinationError> {
-        self.store
-            .put(&self.key(tail), bytes::Bytes::from(bytes).into())
-            .await
-            .map_err(store_err)?;
-        Ok(())
-    }
-
-    pub(crate) async fn copy(
-        &self,
-        from_tail: &str,
-        to_tail: &str,
-    ) -> Result<(), rdlt_connector_sdk::spi::DestinationError> {
-        self.store
-            .copy(&self.key(from_tail), &self.key(to_tail))
-            .await
-            .map_err(store_err)
-    }
-
-    /// Idempotent delete: a replayed finalize may find it gone, which
-    /// is success.
-    pub(crate) async fn delete_idempotent(
-        &self,
-        tail: &str,
-    ) -> Result<(), rdlt_connector_sdk::spi::DestinationError> {
-        match self.store.delete(&self.key(tail)).await {
-            Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
-            Err(e) => Err(store_err(e)),
-        }
-    }
-
-    /// Best-effort delete; the reclaim converges at the next open.
-    pub(crate) async fn delete_best_effort(&self, tail: &str) {
-        let _ = self.store.delete(&self.key(tail)).await;
-    }
-
-    /// Full keys under `tail` — server-side segment-scoped listing.
-    pub(crate) async fn list_keys(
-        &self,
-        tail: &str,
-    ) -> Result<Vec<object_store::path::Path>, rdlt_connector_sdk::spi::DestinationError> {
-        let mut listing = self.store.list(Some(&self.key(tail)));
-        let mut keys = Vec::new();
-        while let Some(entry) = listing.next().await {
-            keys.push(entry.map_err(store_err)?.location);
-        }
-        Ok(keys)
-    }
-
-    pub(crate) async fn delete_key(
-        &self,
-        key: &object_store::path::Path,
-    ) -> Result<(), rdlt_connector_sdk::spi::DestinationError> {
-        self.store.delete(key).await.map_err(store_err)
-    }
-
-    pub(crate) async fn get_key(
-        &self,
-        key: &object_store::path::Path,
-    ) -> Result<Vec<u8>, rdlt_connector_sdk::spi::DestinationError> {
-        let result = self.store.get(key).await.map_err(store_err)?;
-        Ok(result.bytes().await.map_err(store_err)?.to_vec())
-    }
-
-    /// One document's bytes; None when absent.
-    pub(crate) async fn read_doc(
-        &self,
-        name: &str,
-    ) -> Result<Option<Vec<u8>>, rdlt_connector_sdk::spi::DestinationError> {
-        match self.store.get(&self.key(name)).await {
-            Ok(result) => Ok(Some(result.bytes().await.map_err(store_err)?.to_vec())),
-            Err(object_store::Error::NotFound { .. }) => Ok(None),
-            Err(e) => Err(store_err(e)),
-        }
-    }
-}
-
-/// Service-stamped modification time in ms since epoch (pre-1970
-/// stamps read as absent rather than wrapping).
-fn mtime_ms_of(t: chrono::DateTime<chrono::Utc>) -> Option<u64> {
+/// The service's stamped modification time as ms since the epoch; a
+/// pre-1970 stamp reads as absent instead of wrapping around.
+fn epoch_millis(t: chrono::DateTime<chrono::Utc>) -> Option<u64> {
     u64::try_from(t.timestamp_millis()).ok()
 }
 
@@ -363,17 +375,23 @@ fn mtime_ms_of(t: chrono::DateTime<chrono::Utc>) -> Option<u64> {
 mod tests {
     use super::*;
 
-    /// The listing scope: everything before the first metacharacter's
-    /// last separator; a glob-free pattern scopes to itself.
+    /// The scope runs to the last separator before the first
+    /// metacharacter; with no metacharacter the pattern IS the scope.
     #[test]
     fn the_listing_prefix_stops_at_the_first_metacharacter() {
-        assert_eq!(S3Location::prefix_of("landed/2026/*.jsonl"), "landed/2026/");
-        assert_eq!(S3Location::prefix_of("landed/y=*/f.jsonl"), "landed/");
-        assert_eq!(S3Location::prefix_of("*.jsonl"), "");
-        assert_eq!(S3Location::prefix_of("plain/key.jsonl"), "plain/key.jsonl");
+        assert_eq!(
+            S3Location::listing_scope("landed/2026/*.jsonl"),
+            "landed/2026/"
+        );
+        assert_eq!(S3Location::listing_scope("landed/y=*/f.jsonl"), "landed/");
+        assert_eq!(S3Location::listing_scope("*.jsonl"), "");
+        assert_eq!(
+            S3Location::listing_scope("plain/key.jsonl"),
+            "plain/key.jsonl"
+        );
     }
 
-    /// The store builds from valid options — the one boundary works.
+    /// Well-formed options produce a client — the boundary holds.
     #[test]
     fn a_valid_store_builds() {
         build_store(&S3Options::new("http://127.0.0.1:9000", "b", "ak", "sk")).expect("builds");

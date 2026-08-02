@@ -1,5 +1,6 @@
-//! Reading: one module per format, plus the codec-checked open they
-//! share.
+//! The read layer: one submodule per format, plus the two entry
+//! checks every local read shares — the pre-read re-stat and the
+//! magic-verified codec open.
 
 pub(crate) mod csv;
 pub(crate) mod jsonl;
@@ -10,26 +11,30 @@ use rdlt_connector_sdk::spi::SourceError;
 use crate::format::{Codec, GZIP_MAGIC, ZSTD_MAGIC};
 use crate::source::cursor::FileTask;
 
-/// Whole-file reads reopen the LIVE local file, not the listing's
-/// snapshot — so re-stat immediately before reading and refuse if the
-/// file moved under the plan (030 review, docket S11: a same-size
-/// replacement between listing and read used to load new content
-/// against the old plan silently this run). Staged S3 fetches ARE
-/// snapshots and skip this.
+/// Refuse a local whole-file read whose target no longer matches its
+/// listing entry. Local paths are opened LIVE at read time, so a file
+/// swapped in the gap between planning and reading would be loaded
+/// against a plan that never described it (030 review, docket S11: a
+/// same-size replacement slid through exactly that gap this run).
+/// Staged S3 fetches carry a `read_path` and are already immutable
+/// copies, so they pass without a stat.
 pub(crate) fn verify_local_snapshot(task: &FileTask) -> Result<(), SourceError> {
     if task.read_path.is_some() {
         return Ok(());
     }
     let meta = std::fs::metadata(&task.path)
         .map_err(|e| SourceError::fatal(format!("stat `{}`: {e}", task.path)))?;
-    let mtime_ms = meta
+    let seen_mtime = meta
         .modified()
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_millis() as u64);
-    let moved = meta.len() != task.size_units
-        || (task.mtime_ms.is_some() && mtime_ms.is_some() && mtime_ms != task.mtime_ms);
-    if moved {
+    let size_differs = meta.len() != task.size_units;
+    let mtime_differs = matches!(
+        (task.mtime_ms, seen_mtime),
+        (Some(listed), Some(seen)) if listed != seen
+    );
+    if size_differs || mtime_differs {
         return Err(SourceError::fatal(format!(
             "file `{}` changed on disk between listing and read (listed {} bytes, found              {}); refusing to load content the plan does not describe — retry the run",
             task.path,
@@ -40,9 +45,11 @@ pub(crate) fn verify_local_snapshot(task: &FileTask) -> Result<(), SourceError> 
     Ok(())
 }
 
-/// Open a local file through its declared codec, checking the magic
-/// bytes first — a name that lies about its compression fails loudly
-/// with the observed bytes, never by parsing garbage.
+/// Open a local file, decoding through the codec its name declares.
+/// The stream's first bytes are sniffed against the codec's magic
+/// number before any decoder touches them: an extension that lies
+/// about the content fails here with the bytes as evidence, instead
+/// of surfacing as decoder garbage.
 pub(crate) fn open_decoded(
     path: &str,
     codec: Codec,
@@ -50,42 +57,40 @@ pub(crate) fn open_decoded(
     use std::io::Read as _;
     let mut file = std::fs::File::open(path)
         .map_err(|e| SourceError::fatal(format!("opening `{path}`: {e}")))?;
-    match codec {
-        Codec::Plain => Ok(Box::new(file)),
-        Codec::Gzip | Codec::Zstd => {
-            let mut magic = [0u8; 4];
-            let mut got = 0;
-            while got < 4 {
-                match file.read(&mut magic[got..]) {
-                    Ok(0) => break,
-                    Ok(n) => got += n,
-                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                    Err(e) => return Err(SourceError::fatal(format!("reading `{path}`: {e}"))),
-                }
-            }
-            let ok = match codec {
-                Codec::Gzip => got >= 2 && magic[..2] == GZIP_MAGIC,
-                Codec::Zstd => got >= 4 && magic == ZSTD_MAGIC,
-                Codec::Plain => unreachable!("handled above"),
-            };
-            if !ok {
-                return Err(SourceError::fatal(format!(
-                    "file `{path}` does not match its compression extension (magic bytes \
-                     {:02x?}) — fix the name or the content",
-                    &magic[..got]
-                )));
-            }
-            // The sniffed bytes rejoin the stream ahead of the file.
-            let chained = std::io::Cursor::new(magic[..got].to_vec()).chain(file);
-            match codec {
-                Codec::Gzip => Ok(Box::new(flate2::read::GzDecoder::new(chained))),
-                Codec::Zstd => Ok(Box::new(
-                    zstd::stream::read::Decoder::new(chained)
-                        .map_err(|e| SourceError::fatal(format!("zstd `{path}`: {e}")))?,
-                )),
-                Codec::Plain => unreachable!("handled above"),
-            }
+    let magic: &[u8] = match codec {
+        Codec::Plain => return Ok(Box::new(file)),
+        Codec::Gzip => &GZIP_MAGIC,
+        Codec::Zstd => &ZSTD_MAGIC,
+    };
+
+    // Sniff up to four bytes, riding out short reads and EINTR.
+    let mut head = [0u8; 4];
+    let mut have = 0usize;
+    while have < head.len() {
+        match file.read(&mut head[have..]) {
+            Ok(0) => break,
+            Ok(n) => have += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(SourceError::fatal(format!("reading `{path}`: {e}"))),
         }
+    }
+    if have < magic.len() || head[..magic.len()] != *magic {
+        return Err(SourceError::fatal(format!(
+            "file `{path}` does not match its compression extension (magic bytes {:02x?}) — fix the name or the content",
+            &head[..have]
+        )));
+    }
+
+    // The sniffed prefix goes back in front of the file handle so the
+    // decoder sees the stream from byte zero.
+    let stream = std::io::Cursor::new(head[..have].to_vec()).chain(file);
+    match codec {
+        Codec::Gzip => Ok(Box::new(flate2::read::GzDecoder::new(stream))),
+        Codec::Zstd => Ok(Box::new(
+            zstd::stream::read::Decoder::new(stream)
+                .map_err(|e| SourceError::fatal(format!("zstd `{path}`: {e}")))?,
+        )),
+        Codec::Plain => unreachable!("returned before the sniff"),
     }
 }
 
@@ -93,8 +98,9 @@ pub(crate) fn open_decoded(
 mod tests {
     use super::*;
 
-    /// A lying extension fails with the observed bytes — on both
-    /// codecs — and an honest one decodes.
+    /// Both halves of the magic check: a plain file behind a `.gz`
+    /// name refuses with the observed bytes, and a genuinely gzipped
+    /// one decodes back to its original content.
     #[test]
     fn lying_extensions_fail_with_the_observed_bytes() {
         use std::io::Read as _;
