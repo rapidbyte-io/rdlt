@@ -4,7 +4,7 @@
 //! leak), not Debug output.
 
 use rdlt_connector_sdk::config::Document;
-use rdlt_connector_snowflake_v2::destination::Config;
+use rdlt_connector_snowflake::destination::Config;
 use serde_json::json;
 
 /// Every auth method, each carrying a marked secret.

@@ -2,7 +2,7 @@
 //! a running destination, and the vocabulary 023 REMOVED stays removed —
 //! a document carrying it is refused by name, not silently ignored.
 
-use rdlt_connector_snowflake_v2::destination::{ConfigError, Shell};
+use rdlt_connector_snowflake::destination::{ConfigError, Shell};
 
 /// The quickstart, as the README spells it (keep the two in step).
 const QUICKSTART: &str = r#"

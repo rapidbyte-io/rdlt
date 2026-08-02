@@ -197,13 +197,13 @@ pub enum DestSpec {
     Iceberg(Box<crate::connector::iceberg::IcebergConfig>),
     /// The Snowflake destination — the crate's full config vocabulary inline
     /// (account/auth, database, schema, warehouse, role, table type, session
-    /// parameters, the optional staging bucket, and the shared merge options).
+    /// parameters, and the shared merge options).
     ///
     /// Embedded, like the file and iceberg blocks: a hand-mirrored struct fails
     /// silently in one direction, leaving a field configurable from the library
     /// and invisible from YAML with no error anywhere.
     #[cfg(feature = "snowflake")]
-    Snowflake(Box<crate::connector::snowflake::dest::SnowflakeConfig>),
+    Snowflake(Box<crate::connector::snowflake::destination::Config>),
 }
 
 /// A spec that could not be turned into a pipeline. Two shapes so consumers
@@ -468,7 +468,9 @@ fn build_with<S: rdlt_connector::Source>(
         }
         #[cfg(feature = "snowflake")]
         DestSpec::Snowflake(config) => {
-            let dest = crate::connector::snowflake::dest::Snowflake::new((**config).clone())
+            // Shell::new validates the hand-parsed document — the spec
+            // enum's serde parse is not the Document gate.
+            let dest = crate::connector::snowflake::destination::Shell::new((**config).clone())
                 .map_err(|e| SpecError::resolve(format!("snowflake destination: {e}")))?;
             Ok(builder.destination(dest).build()?)
         }

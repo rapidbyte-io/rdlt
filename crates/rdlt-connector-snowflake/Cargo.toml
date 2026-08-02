@@ -1,6 +1,6 @@
 [package]
 name = "rdlt-connector-snowflake"
-description = "rdlt Snowflake destination: key-pair auth, merge parity, staged and batched ingestion"
+description = "rdlt Snowflake destination: internal-stage parquet ingestion, sqlcore-planned merges, exactly-once units"
 keywords = ["elt", "snowflake", "warehouse", "sql", "arrow"]
 categories = ["database"]
 documentation = "https://docs.rs/rdlt-connector-snowflake"
@@ -11,33 +11,34 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+failpoints = ["rdlt-connector-sdk/failpoints"]
+
 [dependencies]
-rdlt-connector = { workspace = true, features = ["schema"] }
+# The ONE rdlt dependency (the one-dependency rule): the SPI is reached
+# through the sdk's `spi` re-export. sqlcore is the RECORDED exception
+# for SQL destinations — the shared merge core.
+rdlt-connector-sdk = { workspace = true, features = ["schema"] }
 rdlt-connector-sqlcore = { workspace = true }
-async-trait = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-schemars = { workspace = true }
-snowflake-connector-rs = { workspace = true }
-serde_yaml = { workspace = true }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
-tokio = { workspace = true }
-# Parts are encoded as parquet before they are uploaded.
+async-trait = { workspace = true }
+# Parts travel as parquet.
 parquet = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+snowflake-connector-rs = { workspace = true }
+tokio = { workspace = true }
 
 [dev-dependencies]
-rdlt-testkit = { workspace = true }
-rdlt-connector-postgres = { workspace = true, features = ["destination", "fixtures"] }
-tokio-postgres = { workspace = true }
-arrow-schema = { workspace = true }
-tempfile = { workspace = true }
 futures = { workspace = true }
+rdlt-connector-postgres = { workspace = true, features = ["destination", "fixtures"] }
 rdlt-engine = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+rdlt-testkit = { workspace = true }
+tempfile = { workspace = true }
+tokio-postgres = { workspace = true }
 
 [lints]
 workspace = true
-
-[features]
-failpoints = ["rdlt-connector/failpoints"]

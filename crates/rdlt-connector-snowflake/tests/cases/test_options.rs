@@ -3,7 +3,7 @@
 //! sqlcore's validation fires through this crate's document gate.
 
 use rdlt_connector_sdk::config::Document;
-use rdlt_connector_snowflake_v2::destination::Config;
+use rdlt_connector_snowflake::destination::Config;
 use serde_json::json;
 
 fn minimal() -> serde_json::Value {

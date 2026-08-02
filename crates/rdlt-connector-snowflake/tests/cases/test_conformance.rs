@@ -3,14 +3,14 @@
 
 use async_trait::async_trait;
 use rdlt_connector_sdk::spi::core::TableName;
-use rdlt_connector_snowflake_v2::destination::{Shell, testhook};
+use rdlt_connector_snowflake::destination::{Shell, testhook};
 use rdlt_testkit::{TableProbe, assert_conformant, verify_destination};
 
 use super::common::{config_for, credentials, scratch_schema};
 
 /// Reader-visible rows, straight off the warehouse.
 struct LiveProbe {
-    config: rdlt_connector_snowflake_v2::destination::Config,
+    config: rdlt_connector_snowflake::destination::Config,
     schema: String,
 }
 
@@ -40,7 +40,7 @@ async fn the_destination_is_conformant_against_the_live_service() {
     let shell = Shell::from_value(doc.clone()).expect("valid credentials document");
     let config = {
         use rdlt_connector_sdk::config::Document;
-        rdlt_connector_snowflake_v2::destination::Config::from_value(doc).expect("valid")
+        rdlt_connector_snowflake::destination::Config::from_value(doc).expect("valid")
     };
     let probe = LiveProbe {
         config: config.clone(),

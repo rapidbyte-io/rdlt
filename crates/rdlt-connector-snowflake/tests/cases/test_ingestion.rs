@@ -3,7 +3,7 @@
 //! the load settles — the cleanup claim checked rather than trusted.
 
 use rdlt_connector_sdk::spi::StreamSpec;
-use rdlt_connector_snowflake_v2::destination::{Shell, testhook};
+use rdlt_connector_snowflake::destination::{Shell, testhook};
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{MemoryBatch, MemorySource, MemoryStream};
 use serde_json::json;
@@ -18,7 +18,7 @@ async fn an_append_load_lands_every_row_and_leaves_no_local_residue() {
     let shell = Shell::from_value(doc.clone()).expect("valid document");
     let config = {
         use rdlt_connector_sdk::config::Document;
-        rdlt_connector_snowflake_v2::destination::Config::from_value(doc).expect("valid")
+        rdlt_connector_snowflake::destination::Config::from_value(doc).expect("valid")
     };
 
     let source = MemorySource::new(vec![MemoryStream::new(
@@ -90,7 +90,7 @@ async fn a_column_added_mid_unit_keeps_its_data() {
     let doc = config_for(&creds, &schema);
     let config = {
         use rdlt_connector_sdk::config::Document;
-        rdlt_connector_snowflake_v2::destination::Config::from_value(doc.clone()).expect("valid")
+        rdlt_connector_snowflake::destination::Config::from_value(doc.clone()).expect("valid")
     };
 
     // Two batches, ONE checkpoint at the end: both land in the same
@@ -155,7 +155,7 @@ async fn a_column_added_mid_unit_reaches_the_merge_stage() {
     doc["merge_strategy"] = json!("delete_insert");
     let config = {
         use rdlt_connector_sdk::config::Document;
-        rdlt_connector_snowflake_v2::destination::Config::from_value(doc.clone()).expect("valid")
+        rdlt_connector_snowflake::destination::Config::from_value(doc.clone()).expect("valid")
     };
 
     let source = MemorySource::new(vec![MemoryStream::new(

@@ -4,7 +4,7 @@
 //! the scd2 single-instant boundary.
 
 use rdlt_connector_sdk::spi::core::WriteMode;
-use rdlt_connector_snowflake_v2::destination::{Shell, testhook};
+use rdlt_connector_snowflake::destination::{Shell, testhook};
 use rdlt_engine::{Engine, EngineConfig};
 use serde_json::json;
 
@@ -30,7 +30,7 @@ async fn run_load(doc: &serde_json::Value, pipeline: &str, rows: Vec<(i64, &'sta
     .expect("the load settles");
 }
 
-fn qualified(config: &rdlt_connector_snowflake_v2::destination::Config, schema: &str) -> String {
+fn qualified(config: &rdlt_connector_snowflake::destination::Config, schema: &str) -> String {
     format!(
         "\"{}\".\"{}\".\"EVENTS\"",
         config.database.to_uppercase(),
@@ -38,7 +38,7 @@ fn qualified(config: &rdlt_connector_snowflake_v2::destination::Config, schema: 
     )
 }
 
-async fn drop_schema(config: &rdlt_connector_snowflake_v2::destination::Config, schema: &str) {
+async fn drop_schema(config: &rdlt_connector_snowflake::destination::Config, schema: &str) {
     let _ = testhook::connect_and_run(
         config,
         &format!(
@@ -60,7 +60,7 @@ async fn an_upsert_converges_on_the_key_and_leaves_no_duplicates() {
     doc["merge_strategy"] = json!("upsert");
     let config = {
         use rdlt_connector_sdk::config::Document;
-        rdlt_connector_snowflake_v2::destination::Config::from_value(doc.clone()).expect("valid")
+        rdlt_connector_snowflake::destination::Config::from_value(doc.clone()).expect("valid")
     };
 
     run_load(&doc, "sf-ups", vec![(1, "old", false), (2, "keep", false)]).await;
@@ -104,7 +104,7 @@ async fn a_hard_delete_flag_removes_the_row() {
     doc["tables"] = json!({"events": {"hard_delete": "gone"}});
     let config = {
         use rdlt_connector_sdk::config::Document;
-        rdlt_connector_snowflake_v2::destination::Config::from_value(doc.clone()).expect("valid")
+        rdlt_connector_snowflake::destination::Config::from_value(doc.clone()).expect("valid")
     };
 
     run_load(&doc, "sf-hd", vec![(1, "x", false), (2, "x", false)]).await;
@@ -133,7 +133,7 @@ async fn scd2_versions_meet_exactly_because_the_unit_shares_one_instant() {
     doc["merge_strategy"] = json!("scd2");
     let config = {
         use rdlt_connector_sdk::config::Document;
-        rdlt_connector_snowflake_v2::destination::Config::from_value(doc.clone()).expect("valid")
+        rdlt_connector_snowflake::destination::Config::from_value(doc.clone()).expect("valid")
     };
 
     run_load(&doc, "sf-scd", vec![(1, "v1", false)]).await;
@@ -187,7 +187,7 @@ async fn dedup_sort_picks_the_declared_survivor() {
     doc["tables"] = json!({"events": {"dedup_sort": {"column": "note", "order": "desc"}}});
     let config = {
         use rdlt_connector_sdk::config::Document;
-        rdlt_connector_snowflake_v2::destination::Config::from_value(doc.clone()).expect("valid")
+        rdlt_connector_snowflake::destination::Config::from_value(doc.clone()).expect("valid")
     };
 
     // Two rows, ONE key, one load: without dedup the upsert MERGE would
@@ -228,7 +228,7 @@ async fn an_absent_key_retires_through_the_full_feed_probe() {
     doc["tables"] = json!({"events": {"scd2": {"absent": "retire"}}});
     let config = {
         use rdlt_connector_sdk::config::Document;
-        rdlt_connector_snowflake_v2::destination::Config::from_value(doc.clone()).expect("valid")
+        rdlt_connector_snowflake::destination::Config::from_value(doc.clone()).expect("valid")
     };
 
     run_load(&doc, "sf-ret", vec![(1, "keep", false), (2, "drop", false)]).await;

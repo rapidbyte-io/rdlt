@@ -99,6 +99,6 @@ fn the_crash_registry_matches_the_sources_in_gate() {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("src")
             .as_path(),
-        &[rdlt_connector_snowflake_v2::destination::FAIL_POINTS],
+        &[rdlt_connector_snowflake::destination::FAIL_POINTS],
     );
 }

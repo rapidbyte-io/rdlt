@@ -1,24 +1,27 @@
-//! # rdlt-connector-snowflake — Snowflake connector
+//! # rdlt-connector-snowflake — Snowflake connector, second generation
 //!
-//! Destination-only; the module layout mirrors the connector-family
-//! convention (`rdlt-connector-postgres`, `rdlt-connector-duckdb`): the
-//! destination lives in [`dest`], and this root stays a thin façade so a
-//! future source slots in beside it.
+//! Destination-only, and the first connector born on the sdk: the
+//! framework session drives the protocol, this crate supplies the
+//! system IO. The root stays a façade — the destination lives in
+//! [`destination`], and a future source would slot in beside it.
 //!
-//! ## Where Snowflake differs from the other SQL destinations
+//! ## The three service facts everything here bends around
 //!
-//! Three service facts shape the whole design, and each is proven rather than
-//! assumed (the feature's research records the probes):
+//! Measured against the real service (022/023's research holds the
+//! probes), not assumed:
 //!
-//! - **DDL auto-commits an open transaction.** A schema statement issued
-//!   inside a unit silently commits everything before it, which would turn a
-//!   partial unit into a published one. The unit is therefore pure DML, and
-//!   the executor that runs it refuses DDL rather than trusting callers.
-//! - **No enforced unique constraints.** Primary keys are informational, so
-//!   key identity is delivered by the merge statement's own dedup rather than
-//!   by an arbiter index the database polices.
-//! - **Unquoted identifiers fold to upper case**, and a quoted lower-case name
-//!   is a *different* object. Every identifier this crate emits is quoted
-//!   upper case, which is what an unquoted user query resolves to anyway.
+//! 1. **A DDL statement commits whatever transaction is open.** There
+//!    is no error and no visible sign — a half-written commit unit
+//!    simply becomes durable. Schema work therefore runs strictly
+//!    before a unit opens, and the executor a unit runs on refuses DDL
+//!    in code ([`destination`]'s unit module) instead of trusting call
+//!    sites.
+//! 2. **Nothing enforces uniqueness.** Primary keys are metadata, so
+//!    merge correctness comes entirely from the SQL the shared planner
+//!    emits — and every merge suite reads its results back.
+//! 3. **Identifier case is destiny.** Unquoted names fold upper; a
+//!    quoted lower-case name is a DIFFERENT object. This crate emits
+//!    every identifier quoted upper case — the spelling an unquoted
+//!    user query resolves to.
 
-pub mod dest;
+pub mod destination;

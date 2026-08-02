@@ -93,10 +93,6 @@ lint:
 	# credentials. The feature is enabled for this crate ALONE, because turning it
 	# on workspace-wide changes what compiles in seven others.
 	cargo clippy -p rdlt-connector-snowflake --all-targets --features failpoints -- -D warnings
-	# The coexisting second generation carries the same by-hand sweep and needs
-	# the same type-check for the same reason; this line dies with the crate at
-	# swap-in (the rename makes the line above bind to it).
-	cargo clippy -p rdlt-connector-snowflake-v2 --all-targets --features failpoints -- -D warnings
 
 test:
 ifeq ($(TARGET),)
@@ -290,7 +286,7 @@ coverage:
 	# to look for it. The sweep costs 101.5 min against live credentials and is
 	# run separately; every other crate's sweep still runs here, at seconds each.
 	cargo llvm-cov nextest --features failpoints \
-	  -E 'not (package(rdlt-connector-snowflake) and binary(crash_sweep)) and not (package(rdlt-connector-snowflake-v2) and binary(crash_sweep))'
+	  -E 'not (package(rdlt-connector-snowflake) and binary(crash_sweep))'
 
 # Public-surface comparison for the two semver-sacred crates.
 #

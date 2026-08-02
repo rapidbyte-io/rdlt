@@ -3,7 +3,7 @@
 //! check what this crate makes of them.
 
 use rdlt_connector_sdk::spi::DestinationError;
-use rdlt_connector_snowflake_v2::destination::testhook;
+use rdlt_connector_snowflake::destination::testhook;
 
 use super::common::{config_for, credentials};
 
@@ -15,7 +15,7 @@ async fn a_missing_object_is_fatal_and_carries_its_code() {
     let Some(creds) = credentials() else { return };
     let config = {
         use rdlt_connector_sdk::config::Document;
-        rdlt_connector_snowflake_v2::destination::Config::from_value(config_for(&creds, "PUBLIC"))
+        rdlt_connector_snowflake::destination::Config::from_value(config_for(&creds, "PUBLIC"))
             .expect("valid")
     };
 
@@ -46,7 +46,7 @@ async fn a_bad_credential_fails_fatal_naming_the_identity() {
     });
     let config = {
         use rdlt_connector_sdk::config::Document;
-        rdlt_connector_snowflake_v2::destination::Config::from_value(doc).expect("valid")
+        rdlt_connector_snowflake::destination::Config::from_value(doc).expect("valid")
     };
 
     let err = testhook::connect_and_run(&config, "SELECT 1")

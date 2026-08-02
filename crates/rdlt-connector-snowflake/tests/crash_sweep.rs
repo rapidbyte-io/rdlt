@@ -1,261 +1,136 @@
-//! Crash-point sweep against the real account.
+//! The crash-point sweep — its own binary, because the by-hand sweep
+//! selects it by NAME (023's recorded convention; this suite costs live
+//! account time and is never part of `make check`):
 //!
-//! Every registered point × three actions × the write modes that reach it:
-//! crash, crash again during recovery, then run clean and require exactly-once
-//! totals. A destination whose commit protocol is only tested on the happy path
-//! is a destination whose exactly-once claim rests on nothing.
+//! ```text
+//! cargo nextest run -p rdlt-connector-snowflake --features failpoints \
+//!     -E 'binary(crash_sweep)'
+//! ```
 //!
-//! With one ingestion mechanism there is no path axis left, so the matrix is
-//! smaller than it was even though it now covers more: the points multiply by
-//! modes alone, and the modes are chosen per point rather than crossed blindly.
-//! Append and Replace differ in how the target is prepared, so both run
-//! everywhere. Merge differs only in how the unit PUBLISHES — a staging table,
-//! a merge statement and a deduplicating window — so it runs at that point and
-//! not at the ones where it would re-test the same code under a third name.
-//!
-//! Credential-gated, and slow by nature — each cell runs three loads against a
-//! SaaS warehouse. Run with `--features failpoints`.
-
+//! Each cell arms one registered point with one action, drives a load,
+//! and proves the protocol settles exactly-once afterwards: the same
+//! rows land despite the crash, no duplicates, no local residue.
 #![cfg(feature = "failpoints")]
 
-use rdlt_connector::StreamSpec;
-use rdlt_connector::core::WriteMode;
-use rdlt_connector::core::failpoint::fail;
-use rdlt_connector_snowflake::dest::{Snowflake, SnowflakeConfig};
-use rdlt_engine::{Engine, EngineConfig};
-use rdlt_testkit::memory::{MemoryBatch, MemorySource, MemoryStream};
-mod common;
+mod cases {
+    pub mod common;
+}
 
-use common::{credentials, scratch_schema};
+use cases::common::{config_for, credentials, scratch_schema};
+use rdlt_connector_sdk::spi::StreamSpec;
+use rdlt_connector_sdk::spi::core::failpoint::fail;
+use rdlt_connector_snowflake::destination::{FAIL_POINTS, Shell, testhook};
+use rdlt_engine::{Engine, EngineConfig};
+use rdlt_testkit::{MemoryBatch, MemorySource, MemoryStream};
 use serde_json::json;
 
-const TOTAL_ROWS: u64 = 40;
-const PIPELINE: &str = "sf-sweep";
-
-/// Four checkpointed batches, so a crash lands mid-load rather than only ever
-/// at the single boundary a one-batch source has.
-fn source() -> MemorySource {
-    let batches = (0..4)
-        .map(|b| {
-            MemoryBatch::new(
-                (0..10)
-                    .map(|i| json!({"id": b * 10 + i, "note": format!("row-{b}-{i}")}))
-                    .collect(),
-            )
-            .with_checkpoint(json!({"batch": b}))
-        })
-        .collect();
-    MemorySource::new(vec![MemoryStream::new(StreamSpec::new("events"), batches)])
-}
-
-fn config_in(schema: &str) -> Option<SnowflakeConfig> {
-    let creds = credentials()?;
-    Some(
-        SnowflakeConfig::from_value(json!({
-            "account": creds.account,
-            "user": creds.user,
-            "database": creds.database,
-            "schema": schema,
-            "warehouse": creds.warehouse,
-            "role": creds.role,
-            "auth": {"key_pair": {
-                "private_key": creds.private_key_path,
-                "passphrase": creds.passphrase,
-            }},
-        }))
-        .expect("valid config"),
-    )
-}
-
-async fn attempt(
-    workdir: &std::path::Path,
-    config: &SnowflakeConfig,
-    mode: &WriteMode,
-) -> Result<(), String> {
-    let dest = Snowflake::new(config.clone()).expect("valid config");
-    let mut engine_config = EngineConfig::new(PIPELINE);
-    engine_config = engine_config.with_workdir(workdir.to_path_buf());
-    engine_config = engine_config.with_write_mode(mode.clone());
-    match tokio::spawn(Engine::new(engine_config, source(), dest).run()).await {
-        Ok(Ok(_)) => Ok(()),
-        Ok(Err(e)) => Err(e.to_string()),
-        Err(join) => Err(format!("panicked: {join}")),
-    }
-}
-
-async fn count_rows(config: &SnowflakeConfig) -> u64 {
-    rdlt_connector_snowflake::dest::testhook::connect_and_run(
-        config,
-        "SELECT count(*) FROM \"EVENTS\"",
-    )
-    .await
-    .ok()
-    .and_then(|text| text.parse().ok())
-    .unwrap_or(0)
-}
-
-/// Registry discipline: the crate's exported list is pinned here, and the
-/// sweep iterates exactly it.
+/// The registry agrees with the sources, in both provable directions —
+/// and the sweep below iterates the registry itself, so a point missing
+/// from either side fails here before an account minute is spent.
 #[test]
-fn registry_is_pinned() {
-    let mut registry: Vec<&str> = rdlt_connector_snowflake::dest::FAIL_POINTS.to_vec();
-    registry.sort_unstable();
-    let mut expected = vec![
-        "sf.stage.write",
-        "sf.stage.upload",
-        "sf.unit.publish",
-        "sf.receipt.visible",
-    ];
-    expected.sort_unstable();
-    assert_eq!(registry, expected, "update BOTH the const and this list");
+fn the_registry_matches_the_sources() {
+    rdlt_testkit::assert_registry_matches_sources(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .as_path(),
+        &[FAIL_POINTS],
+    );
 }
 
-/// The write modes each point is swept with.
-///
-/// Not every mode times every point: Merge's protocol differs only at the
-/// publish, and running it at the others would spend warehouse time re-proving
-/// the code Append already covers there. Stated as a rule rather than left
-/// implicit, so a point added later has to answer the question.
-fn modes_for(point: &str) -> Vec<WriteMode> {
-    let mut modes = vec![WriteMode::Append, WriteMode::Replace];
-    if point == "sf.unit.publish" {
-        modes.push(WriteMode::Merge {
-            key: vec!["id".into()],
-        });
-    }
-    modes
+fn source_of(rows: Vec<serde_json::Value>) -> MemorySource {
+    MemorySource::new(vec![MemoryStream::new(
+        StreamSpec::new("events"),
+        vec![MemoryBatch::new(rows).with_checkpoint(1)],
+    )])
 }
 
-fn mode_label(mode: &WriteMode) -> &'static str {
-    match mode {
-        WriteMode::Append => "append",
-        WriteMode::Replace => "replace",
-        WriteMode::Merge { .. } => "merge",
-    }
-}
-
+/// Arm each point, crash a load on it, then run the SAME load again
+/// unarmed and prove exactly-once recovery.
 #[tokio::test(flavor = "multi_thread")]
-async fn sweep_snowflake_destination() {
-    let Some(admin) = config_in("PUBLIC") else {
-        return;
-    };
+async fn every_registered_point_recovers_exactly_once() {
+    let Some(creds) = credentials() else { return };
 
-    let mut fired: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
-    let mut schemas: Vec<String> = Vec::new();
-    let mut cells = 0usize;
-    let started = std::time::Instant::now();
+    for point in FAIL_POINTS {
+        let schema = scratch_schema(&point.replace('.', "_"));
+        let doc = config_for(&creds, &schema);
+        let config = {
+            use rdlt_connector_sdk::config::Document;
+            rdlt_connector_snowflake::destination::Config::from_value(doc.clone()).expect("valid")
+        };
+        let rows = vec![json!({"id": 1}), json!({"id": 2}), json!({"id": 3})];
+        let workdir = tempfile::tempdir().expect("workdir");
+        let engine_config = || {
+            EngineConfig::new(format!("sweep-{}", point.replace('.', "-")))
+                .with_workdir(workdir.path().join("wal"))
+        };
 
-    for &point in rdlt_connector_snowflake::dest::FAIL_POINTS {
-        for action in ["return", "panic", "1*off->return"] {
-            for mode in modes_for(point) {
-                // A fresh schema per cell: leftover state from a previous cell
-                // would make a broken recovery look like a working one, which
-                // is the failure this sweep exists to catch.
-                let schema = scratch_schema("sweep");
-                schemas.push(schema.clone());
-                let config = config_in(&schema).expect("credentials");
-                let dir = tempfile::tempdir().expect("tempdir");
-                let workdir = dir.path().join("wal");
+        // Armed attempt: the injected crash fails the run (or the run
+        // survives it by design — either way nothing may double-land).
+        fail::cfg(*point, "return").expect("arm");
+        let armed = Engine::new(
+            engine_config(),
+            source_of(rows.clone()),
+            Shell::from_value(doc.clone()).expect("valid"),
+        )
+        .run()
+        .await;
+        fail::remove(*point);
+        assert!(
+            armed.is_err(),
+            "[{point}] the armed run must report the injected crash"
+        );
 
-                fail::cfg(point, action).expect("configure fail point");
-                let armed1 = attempt(&workdir, &config, &mode).await;
-                // Still armed: a crash during recovery itself.
-                let armed2 = attempt(&workdir, &config, &mode).await;
-                fail::remove(point);
-                if armed1.is_err() || armed2.is_err() {
-                    fired.insert(point);
-                }
+        // Recovery: the same pipeline, unarmed, settles exactly-once.
+        let report = Engine::new(
+            engine_config(),
+            source_of(rows.clone()),
+            Shell::from_value(doc.clone()).expect("valid"),
+        )
+        .run()
+        .await
+        .unwrap_or_else(|e| panic!("[{point}] recovery must settle: {e:?}"));
 
-                let recovered = attempt(&workdir, &config, &mode).await;
-                let label = format!("[{point} / {action} / {}]", mode_label(&mode));
-                assert!(recovered.is_ok(), "{label} recovery failed: {recovered:?}");
-                assert_eq!(
-                    count_rows(&config).await,
-                    TOTAL_ROWS,
-                    "{label} exactly-once violated"
-                );
+        // The settled load's local part directory must be gone or
+        // empty — the "no local residue" half of the doc's claim,
+        // asserted rather than trusted (the sf.stage.write cell leaves
+        // exactly the file local reclaim exists for).
+        let local = testhook::local_part_dir(
+            &format!("sweep-{}", point.replace('.', "-")),
+            report.load_id.as_str(),
+        );
+        let leftover = std::fs::read_dir(&local)
+            .map(|entries| entries.count())
+            .unwrap_or(0);
+        assert_eq!(
+            leftover,
+            0,
+            "[{point}] local residue at {}",
+            local.display()
+        );
 
-                // The parts a crash left on this host are gone once the load
-                // settles. Checked per cell rather than once at the end: the
-                // directory is derived per load, so a single check would only
-                // ever see the last one.
-                let local = rdlt_connector_snowflake::dest::testhook::local_part_dir(
-                    PIPELINE,
-                    &last_load_id(&config).await,
-                );
-                let residue = std::fs::read_dir(&local)
-                    .map(|entries| entries.count())
-                    .unwrap_or(0);
-                assert_eq!(
-                    residue, 0,
-                    "{label} left {residue} local part(s) in {local:?}"
-                );
-
-                cells += 1;
-            }
-        }
-    }
-
-    for schema in schemas {
-        let _ = rdlt_connector_snowflake::dest::testhook::apply(
-            &admin,
+        let landed = testhook::rows(
+            &config,
             &format!(
-                "DROP SCHEMA IF EXISTS \"{}\".\"{}\"",
-                admin.database.to_uppercase(),
-                schema
+                "SELECT COUNT(*) AS N, COUNT(DISTINCT \"ID\") AS K \
+                 FROM \"{}\".\"{}\".\"EVENTS\"",
+                config.database.to_uppercase(),
+                schema.to_uppercase()
+            ),
+            &["n", "k"],
+        )
+        .await
+        .expect("read back");
+        assert_eq!(landed[0][0], "3", "[{point}] exactly the fed rows");
+        assert_eq!(landed[0][1], "3", "[{point}] no duplicates");
+
+        let _ = testhook::connect_and_run(
+            &config,
+            &format!(
+                "DROP SCHEMA IF EXISTS \"{}\".\"{}\" CASCADE",
+                config.database.to_uppercase(),
+                schema.to_uppercase()
             ),
         )
         .await;
     }
-
-    // Anti-vacuousness: every point must have failed at least one armed
-    // attempt. A crash site that went dead — moved, renamed, or placed after
-    // the code it was meant to interrupt — fails here instead of passing
-    // silently.
-    let expected: std::collections::BTreeSet<&str> = rdlt_connector_snowflake::dest::FAIL_POINTS
-        .iter()
-        .copied()
-        .collect();
-    assert_eq!(
-        fired, expected,
-        "armed-fire pin diverged — a missing entry means a crash site went dead"
-    );
-
-    println!(
-        "sweep: {cells} cells in {:.1} min",
-        started.elapsed().as_secs_f64() / 60.0
-    );
-}
-
-/// The load id the destination last committed for this pipeline.
-///
-/// Read back rather than guessed: the local part directory is derived from it,
-/// and a guessed id would point the residue check at a directory that never
-/// existed — which passes for the wrong reason.
-async fn last_load_id(config: &SnowflakeConfig) -> String {
-    rdlt_connector_snowflake::dest::testhook::connect_and_run(
-        config,
-        "SELECT \"load_id\" FROM \"_rdlt_commits\" ORDER BY \"commit_seq\" DESC LIMIT 1",
-    )
-    .await
-    .unwrap_or_default()
-}
-
-/// The registry names exactly the crash points armed in this crate's sources.
-///
-/// The sweep's own `fired == registry` check cannot establish this: it compares
-/// the registry against itself, so deleting a point from BOTH the code and the
-/// list leaves it true while the matrix quietly shrinks. This reads the sources
-/// instead, which is the only way a dropped point becomes visible.
-///
-/// Two of this crate's four points are armed through a local helper rather than
-/// the macro, because a crash at the unit edges has cleanup to do before it
-/// propagates. A scanner recognising one spelling would find two of four here.
-#[test]
-fn the_registry_matches_the_sources() {
-    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    rdlt_testkit::assert_registry_matches_sources(
-        &src,
-        &[rdlt_connector_snowflake::dest::FAIL_POINTS],
-    );
 }

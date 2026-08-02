@@ -554,3 +554,34 @@ probe, the stage leg's absent catalog image; plus the cross-table owed
 clears, the phase-2 gate bypass, and the coexistence conformance
 collision), gates twice clean at 1122. The crate remains coexisting
 and unconsumed; the swap is the owner's decision.
+
+
+## SWAP-IN RECORD (2026-08-02, owner decision)
+
+Generation 1 DELETED; this crate renamed `rdlt-connector-snowflake`
+(publish=false dropped, the docs.rs/keywords/readme metadata restored,
+description updated to the second generation's substance). Blast
+radius, all ported in the same commit:
+
+- Facade: `pipeline_spec::DestSpec::Snowflake` now embeds
+  `destination::Config` and resolves through `destination::Shell::new`
+  — which VALIDATES the hand-parsed document (the spec enum's serde
+  parse is not the Document gate; gen 1's `Snowflake::new` validated at
+  the same moment). The `rdlt::connector::snowflake` re-export line is
+  unchanged (crate name identical). CLI tests pass as written —
+  `Config::validate` is public and `host()` carries over.
+- Root workspace: the `-v2` member removed; the workspace dependency
+  entry already pointed at `crates/rdlt-connector-snowflake`.
+- Makefile: the coexistence clippy line and the coverage filter's
+  second clause removed — the original lines now bind to this crate,
+  exactly as their comments predicted.
+- .config/nextest.toml: the coexistence-only `snowflake-conformance`
+  test-group removed (one crate, no collision).
+- sdk `test_dependency_rule`: the ADOPTED entry renamed.
+- The crate's tests: `rdlt_connector_snowflake_v2` →
+  `rdlt_connector_snowflake` (mechanical).
+
+Verified before the gates: workspace builds `--all-features`, clippy
+clean workspace-wide AND the failpoints shape, crate suite + facade +
+CLI 124/124 (the snowflake crate's 108 among them), workspace count
+1011 = 1122 − generation 1's 111, as predicted.

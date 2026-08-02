@@ -5,7 +5,7 @@
 
 use rdlt_connector_sdk::spi::core::{LoadId, PipelineId, TableName, WriteMode};
 use rdlt_connector_sdk::spi::{Destination, OpenContext};
-use rdlt_connector_snowflake_v2::destination::{Shell, testhook};
+use rdlt_connector_snowflake::destination::{Shell, testhook};
 use rdlt_testkit::{batch_of, schema_for};
 
 use super::common::{config_for, credentials, scratch_schema};
@@ -39,7 +39,7 @@ async fn stale_parts_are_reclaimed_and_fresh_parts_survive() {
     let doc = config_for(&creds, &schema);
     let config = {
         use rdlt_connector_sdk::config::Document;
-        rdlt_connector_snowflake_v2::destination::Config::from_value(doc.clone()).expect("valid")
+        rdlt_connector_snowflake::destination::Config::from_value(doc.clone()).expect("valid")
     };
     let pipeline = "sf-rcl";
 
@@ -65,7 +65,7 @@ async fn stale_parts_are_reclaimed_and_fresh_parts_survive() {
         stage_names[0][0]
     );
 
-    let listed = |cfg: rdlt_connector_snowflake_v2::destination::Config, stage: String| async move {
+    let listed = |cfg: rdlt_connector_snowflake::destination::Config, stage: String| async move {
         testhook::rows(&cfg, &format!("LIST @{stage}"), &["name"])
             .await
             .map(|rows| rows.len())

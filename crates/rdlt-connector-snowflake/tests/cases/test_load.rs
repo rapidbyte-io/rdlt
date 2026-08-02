@@ -5,7 +5,7 @@
 
 use rdlt_connector_sdk::spi::StreamSpec;
 use rdlt_connector_sdk::spi::core::WriteMode;
-use rdlt_connector_snowflake_v2::destination::{Shell, testhook};
+use rdlt_connector_snowflake::destination::{Shell, testhook};
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{MemoryBatch, MemorySource, MemoryStream};
 use serde_json::json;
@@ -26,7 +26,7 @@ async fn a_replace_load_leaves_only_the_newest_rows() {
     let doc = config_for(&creds, &schema);
     let config = {
         use rdlt_connector_sdk::config::Document;
-        rdlt_connector_snowflake_v2::destination::Config::from_value(doc.clone()).expect("valid")
+        rdlt_connector_snowflake::destination::Config::from_value(doc.clone()).expect("valid")
     };
 
     for (pipeline, rows) in [
@@ -87,7 +87,7 @@ async fn a_replace_clear_survives_another_tables_mid_unit_evolution() {
     let doc = config_for(&creds, &schema);
     let config = {
         use rdlt_connector_sdk::config::Document;
-        rdlt_connector_snowflake_v2::destination::Config::from_value(doc.clone()).expect("valid")
+        rdlt_connector_snowflake::destination::Config::from_value(doc.clone()).expect("valid")
     };
 
     // Run 1 seeds `events` with the rows a vanished re-clear would
@@ -170,7 +170,7 @@ async fn a_repeat_ensure_against_the_live_catalog_emits_nothing() {
     let doc = config_for(&creds, &schema);
     let config = {
         use rdlt_connector_sdk::config::Document;
-        rdlt_connector_snowflake_v2::destination::Config::from_value(doc.clone()).expect("valid")
+        rdlt_connector_snowflake::destination::Config::from_value(doc.clone()).expect("valid")
     };
 
     let workdir = tempfile::tempdir().expect("workdir");
@@ -209,7 +209,7 @@ async fn a_repeat_ensure_against_the_live_catalog_emits_nothing() {
         "sf-eco",
         &schema_shape,
         &rdlt_connector_sdk::spi::core::WriteMode::Append,
-        rdlt_connector_snowflake_v2::destination::TableType::Permanent,
+        rdlt_connector_snowflake::destination::TableType::Permanent,
         None,
         &catalog,
     );

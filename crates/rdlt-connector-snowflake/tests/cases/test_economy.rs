@@ -6,8 +6,8 @@
 use rdlt_connector_sdk::spi::core::{
     ColumnDef, ColumnType, LogicalType, Provenance, TableName, TableSchema, WriteMode,
 };
-use rdlt_connector_snowflake_v2::destination::TableType;
-use rdlt_connector_snowflake_v2::destination::testhook::{
+use rdlt_connector_snowflake::destination::TableType;
+use rdlt_connector_snowflake::destination::testhook::{
     Catalog, ensure_merge_sql, ensure_table_sql,
 };
 

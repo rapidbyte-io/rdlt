@@ -2,20 +2,20 @@
 //! is invisible in syntax and would break exactly-once silently if it
 //! drifted, which is why they are measured rather than trusted.
 
-use rdlt_connector_snowflake_v2::destination::testhook;
+use rdlt_connector_snowflake::destination::testhook;
 
 use super::common::{config_for, credentials, scratch_schema};
 
-async fn config_in(schema: &str) -> Option<rdlt_connector_snowflake_v2::destination::Config> {
+async fn config_in(schema: &str) -> Option<rdlt_connector_snowflake::destination::Config> {
     let creds = credentials()?;
     use rdlt_connector_sdk::config::Document;
     Some(
-        rdlt_connector_snowflake_v2::destination::Config::from_value(config_for(&creds, schema))
+        rdlt_connector_snowflake::destination::Config::from_value(config_for(&creds, schema))
             .expect("valid"),
     )
 }
 
-fn q(config: &rdlt_connector_snowflake_v2::destination::Config, schema: &str, t: &str) -> String {
+fn q(config: &rdlt_connector_snowflake::destination::Config, schema: &str, t: &str) -> String {
     format!(
         "\"{}\".\"{}\".\"{}\"",
         config.database.to_uppercase(),
@@ -24,7 +24,7 @@ fn q(config: &rdlt_connector_snowflake_v2::destination::Config, schema: &str, t:
     )
 }
 
-async fn drop_schema(config: &rdlt_connector_snowflake_v2::destination::Config, schema: &str) {
+async fn drop_schema(config: &rdlt_connector_snowflake::destination::Config, schema: &str) {
     let _ = testhook::connect_and_run(
         config,
         &format!(

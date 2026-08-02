@@ -26,7 +26,7 @@ const ADOPTED: &[(&str, &[&str])] = &[
         &["rdlt-connector-sdk", "rdlt-connector-sqlcore"],
     ),
     (
-        "rdlt-connector-snowflake-v2",
+        "rdlt-connector-snowflake",
         &["rdlt-connector-sdk", "rdlt-connector-sqlcore"],
     ),
 ];
