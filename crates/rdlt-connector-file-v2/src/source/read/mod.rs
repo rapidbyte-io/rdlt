@@ -3,6 +3,7 @@
 
 pub(crate) mod csv;
 pub(crate) mod jsonl;
+pub(crate) mod parquet;
 
 use rdlt_connector_sdk::spi::SourceError;
 
