@@ -42,9 +42,6 @@ pub(crate) fn sql_type(column: &ColumnType, is_stage: bool) -> String {
             format!("STRUCT({inner})")
         }
         ColumnType::ScalarList { item } => format!("{}[]", scalar_type(item, is_stage)),
-        // The SPI vocabulary is non_exhaustive: refusing loudly at the
-        // DDL seam beats guessing a lowering.
-        other => unreachable!("unmapped column type {other:?}"),
     }
 }
 
@@ -64,7 +61,6 @@ fn scalar_type(scalar: &LogicalType, is_stage: bool) -> String {
         LogicalType::TimestampNaive => "TIMESTAMP".into(),
         LogicalType::Date => "DATE".into(),
         LogicalType::Time => "TIME".into(),
-        other => unreachable!("unmapped scalar type {other:?}"),
     }
 }
 

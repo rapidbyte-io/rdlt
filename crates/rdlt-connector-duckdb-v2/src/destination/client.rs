@@ -101,12 +101,6 @@ impl Db {
         Ok(conn)
     }
 
-    /// Run one statement batch on the SHARED connection (meta-table
-    /// DDL at open; the inspection probes).
-    pub(crate) fn execute_batch(&self, sql: &str) -> Result<(), DestinationError> {
-        self.shared(|conn| conn.execute_batch(sql).map_err(classify))
-    }
-
     /// One scalar string off the shared connection — the probe seam.
     pub(crate) fn query_string(&self, sql: &str) -> Result<String, DestinationError> {
         self.shared(|conn| {
