@@ -49,11 +49,15 @@ pub struct Load {
     /// Write dispositions recorded by `ensure_table` — Replace is what
     /// truncation iterates.
     tables: BTreeMap<TableName, WriteMode>,
-    /// Staged parts awaiting the next publish, in staging order.
+    /// Staged parts awaiting the next publish, in staging order. The
+    /// part INDEX is this list's per-(table, partition) count — per
+    /// COMMIT, not per session, deliberately: a crash-recovery session
+    /// resumes from committed state and stages FEWER parts, so a
+    /// session-lifetime count would re-publish the pending commit
+    /// under different indices and orphan the crashed attempt's
+    /// already-copied finals (measured live in the S3 sweep: 6 rows
+    /// where 4 were loaded).
     staged: Vec<StagedPart>,
-    /// Session-lifetime part counts per (table, partition) — the index
-    /// in both staged and final names.
-    counts: BTreeMap<(String, Option<String>), usize>,
 }
 
 #[derive(Debug)]
@@ -85,7 +89,6 @@ impl Load {
             load_id,
             tables: BTreeMap::new(),
             staged: Vec::new(),
-            counts: BTreeMap::new(),
         })
     }
 
@@ -131,12 +134,11 @@ impl Backend for Load {
     ) -> Result<(), DestinationError> {
         for (partition, group) in split_partitions(table, &batch, self.partition_by.as_deref())? {
             let bytes = encode_part(self.format, &group, &self.props)?;
-            let count = self
-                .counts
-                .entry((table.to_string(), partition.clone()))
-                .or_insert(0);
-            let index = *count;
-            *count += 1;
+            let index = self
+                .staged
+                .iter()
+                .filter(|s| s.table == table.as_str() && s.partition == partition)
+                .count();
             let name = staged_name(
                 self.load_id.as_str(),
                 table.as_str(),
