@@ -136,7 +136,65 @@ scanner locates ENGINE_POINTS by shape — coordinate, don't move).
   orphaning the crashed attempt's already-copied finals. The index is
   per COMMIT (the pending-staged count per (table, partition)) — the
   inventory's "already-staged parts" means exactly this.
-- NEXT: review rounds to terminus (the 14-item docket; headliner =
-  duplicate stream names, 029's corruption analogue) → gates twice
-  clean (baseline 1024; counts predicted and verified; volume-count
-  check in the gate prep per the 029 lesson).
+## REVIEW ROUNDS
+
+**Round 1** — three parallel lenses (docket audit S1-S14, fresh-eyes
+correctness, contract fidelity + anti-transcription):
+- Docket: S2/S5 resolved by construction, S7's off-by-one half
+  resolved; 11 items inherited. TAKEN in the fix pass: S1 (duplicate
+  stream names refused at the gate — the headliner, 029's shared-table
+  precedent), S3 (mid-read shrink refuses instead of recording
+  complete), S7's row-less pass-2 CSV error, S8 (unsigned_payload over
+  plain http refused), S10 (S3 listing/HEAD stamp last_modified — the
+  second rewrite-tripwire leg; etag-less stores were blind), S11
+  (whole-file local reads re-stat against the listing snapshot), S12
+  (row counting filters through the ownership shape rule), S13
+  (redundant completion checkpoint suppressed), S14 (skip-fetch
+  counter per instance). STANDING OWNER RECORDS (not fixed, recorded):
+  S4 path_safe collisions silently merge partitions (fixing changes
+  the FROZEN partition-dir naming — a persisted layout); S6 two
+  CONCURRENT sessions of the same pipeline destroy each other's
+  staging (inherent to scope-wide reclaim; lease design is owner
+  scope); S9 type_hints/validate accepted-and-ignored off their
+  formats (typed refusal = behavior change, owner call). Fidelity
+  notes recorded: the write-before-ensure spelling is now the sdk's
+  longer one (the same 027-era supersession snowflake/iceberg v2
+  shipped); v2's truncation spares a file literally named `.parquet`
+  (safer than gen 1's exact rule; deliberate).
+- Fresh-eyes: FIVE fresh-code bugs, all fixed + pinned (cb342f03) —
+  the unverified-resume tail-hash poisoning (a healthy append refused
+  as rewritten, with advice that duplicates), wildcards matching
+  dot-prefixed names through `**` (a recursive glob over a shared
+  prefix read UNCOMMITTED staged parts — require_literal_leading_dot
+  on both listing paths), the parquet reader silently ignoring a
+  byte-window resume check, no future-version gate on the cursor
+  (decoded as EMPTY and re-read everything), S3 patterns matched
+  un-normalized against normalized keys (leading slash = silent empty
+  stream).
+- Anti-transcription: VERDICT NOT CLEAN — the read stack, location
+  layer, and writer-props translation carried gen-1 statement
+  sequences beyond what the frozen contract forces. Executed at
+  7b55ea68: all nine files re-derived (Fill enum, Slabs, ValueShape
+  lattice with a shared record-puller, LocalCopies, thin Location
+  dispatchers over a disk-helper section) with the 100-test suite
+  holding behavior; every rendered message verified byte-identical by
+  literal extraction; digest input order untouched (persisted format).
+
+**Round 2** — verification: fresh-eyes HELD every focus area
+(tail-window arithmetic hand-traced across six resume shapes; lattice;
+digest order; crash placements; per-commit index) but caught the S11
+message's botched wrap (14 embedded spaces — gen 1's §9-S2 defect
+class reborn) and five round-1 fixes without pins; the transcription
+recheck passed all eight source pairs but flagged the RUSTFS fixture
+as a light paraphrase plus four single-sentence comment residues.
+Fixed at ed4c153a (fixture rewritten from its verified facts; comments
+reworded) and d89e9169 (message evidence names the tripwire that
+fired; all five fixes pinned — the skip-fetch wiring proven LIVE with
+one instance, two runs, counter exactly 1).
+
+**Round 3/terminus** — the last two commits verified clean (see below).
+
+- NEXT: gates twice clean (baseline 1024; predicted main count 1126 =
+  1024 + the crate's 102 offline tests; volume-count check in the gate
+  prep per the 029 lesson — 135 leaked volumes pruned before the first
+  gate).
