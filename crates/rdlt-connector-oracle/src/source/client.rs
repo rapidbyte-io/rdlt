@@ -63,6 +63,64 @@ impl Client {
         }
     }
 
+    /// Fetch one LOB's content through the driver's locator read —
+    /// the ONLY way LOB data crosses the wire (probed: SELECT returns
+    /// a locator at every size). Chunked above a megabyte because the
+    /// driver rescans its whole accumulation buffer per packet, which
+    /// is quadratic on a large single read.
+    pub(crate) async fn read_lob(
+        &self,
+        value: &oracle_rs::row::Value,
+    ) -> Result<serde_json::Value, SourceError> {
+        use oracle_rs::row::Value;
+        use oracle_rs::{LobData, LobValue};
+
+        const CHUNK: u64 = 1 << 20;
+        let Value::Lob(lob) = value else {
+            // Not a locator after all (an empty LOB reads as NULL):
+            // fall back to the ordinary rendering.
+            return value_to_json(value).map_err(SourceError::fatal);
+        };
+        let locator = match lob {
+            LobValue::Locator(locator) => locator,
+            // Already inline: render it directly.
+            other => {
+                return match other.as_string() {
+                    Ok(Some(text)) => Ok(serde_json::Value::String(text)),
+                    Ok(None) => Ok(serde_json::Value::Null),
+                    Err(e) => Err(SourceError::fatal(format!("reading an inline LOB: {e}"))),
+                };
+            }
+        };
+        if locator.is_clob() {
+            let mut text = String::new();
+            self.conn
+                .read_lob_chunked(locator, CHUNK, |chunk| {
+                    if let LobData::String(piece) = &chunk {
+                        text.push_str(piece);
+                    }
+                    async { Ok(()) }
+                })
+                .await
+                .map_err(|e| classify("reading a CLOB", e))?;
+            Ok(serde_json::Value::String(text))
+        } else {
+            let mut bytes = Vec::new();
+            self.conn
+                .read_lob_chunked(locator, CHUNK, |chunk| {
+                    if let LobData::Bytes(piece) = &chunk {
+                        bytes.extend_from_slice(piece);
+                    }
+                    async { Ok(()) }
+                })
+                .await
+                .map_err(|e| classify("reading a BLOB", e))?;
+            Ok(serde_json::Value::String(
+                bytes.iter().map(|b| format!("{b:02x}")).collect(),
+            ))
+        }
+    }
+
     /// Run one statement for its side effect, same poison rule.
     pub(crate) async fn execute(self, context: &str, sql: &str) -> Result<Self, SourceError> {
         match self.conn.execute(sql, &[]).await {

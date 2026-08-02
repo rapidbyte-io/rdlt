@@ -4382,6 +4382,7 @@ name = "rdlt-connector-oracle"
 version = "0.3.0"
 dependencies = [
  "async-trait",
+ "bytes",
  "jsonschema",
  "oracle-rs",
  "rdlt-connector-duckdb",

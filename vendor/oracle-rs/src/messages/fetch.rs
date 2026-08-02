@@ -3,11 +3,11 @@
 //! This module implements the fetch message used to retrieve additional
 //! rows from an already-executed query cursor.
 
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::Bytes;
 
 use crate::buffer::WriteBuffer;
 use crate::capabilities::Capabilities;
-use crate::constants::{FetchOrientation, FunctionCode, MessageType, PacketType, PACKET_HEADER_SIZE};
+use crate::constants::{FetchOrientation, FunctionCode, MessageType};
 use crate::error::Result;
 
 /// Fetch message to retrieve rows from a cursor

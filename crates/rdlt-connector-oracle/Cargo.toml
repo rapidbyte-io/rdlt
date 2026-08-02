@@ -19,6 +19,7 @@ failpoints = ["rdlt-connector-sdk/failpoints"]
 # see specs/032-oracle/plan.md T001.
 rdlt-connector-sdk = { workspace = true, features = ["schema"] }
 async-trait = { workspace = true }
+bytes = { workspace = true }
 oracle-rs = "0.1.7"
 schemars = { workspace = true }
 serde = { workspace = true }
