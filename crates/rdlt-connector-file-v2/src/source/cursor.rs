@@ -105,7 +105,11 @@ pub(crate) enum ResumeCheck {
 /// One planned read.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct FileTask {
+    /// The cursor key: the object key or the operator-named path.
     pub path: String,
+    /// Where to actually READ — a staged local copy for fetched S3
+    /// objects; absent means `path` itself.
+    pub read_path: Option<String>,
     /// First unit to read.
     pub start: u64,
     pub size_units: u64,
@@ -131,30 +135,8 @@ impl FileCursor {
     }
 
     /// Record progress for one path (insert or overwrite).
-    #[allow(clippy::too_many_arguments)]
-    pub fn record(
-        &mut self,
-        path: &str,
-        done_units: u64,
-        size_units: u64,
-        ended_at_record_boundary: bool,
-        mtime_ms: Option<u64>,
-        etag: Option<String>,
-        tail_hash: Option<String>,
-        row_groups_hash: Option<String>,
-    ) {
-        self.files.insert(
-            path.to_owned(),
-            FileProgress {
-                done_units,
-                size_units,
-                ended_at_record_boundary,
-                mtime_ms,
-                etag,
-                tail_hash,
-                row_groups_hash,
-            },
-        );
+    pub fn record(&mut self, path: &str, progress: FileProgress) {
+        self.files.insert(path.to_owned(), progress);
     }
 
     /// The byte/row-group planner (plain jsonl, parquet): fresh files
@@ -180,6 +162,7 @@ impl FileCursor {
                 }
                 tasks.push(FileTask {
                     path: meta.path.clone(),
+                    read_path: None,
                     start: record.done_units,
                     size_units: meta.size_units,
                     mtime_ms: meta.mtime_ms,
@@ -223,6 +206,7 @@ impl FileCursor {
 fn fresh(meta: &FileMeta) -> FileTask {
     FileTask {
         path: meta.path.clone(),
+        read_path: None,
         start: 0,
         size_units: meta.size_units,
         mtime_ms: meta.mtime_ms,
@@ -309,13 +293,15 @@ mod tests {
         let mut cursor = FileCursor::default();
         cursor.record(
             "a.jsonl",
-            10,
-            20,
-            false,
-            None,
-            None,
-            Some("abc".into()),
-            None,
+            FileProgress {
+                done_units: 10,
+                size_units: 20,
+                ended_at_record_boundary: false,
+                mtime_ms: None,
+                etag: None,
+                tail_hash: Some("abc".into()),
+                row_groups_hash: None,
+            },
         );
         let value = serde_json::to_value(&cursor).expect("encodes");
         assert_eq!(
@@ -359,23 +345,27 @@ mod tests {
         let mut cursor = FileCursor::default();
         cursor.record(
             "done.jsonl",
-            20,
-            20,
-            true,
-            Some(1_000),
-            None,
-            Some("h".into()),
-            None,
+            FileProgress {
+                done_units: 20,
+                size_units: 20,
+                ended_at_record_boundary: true,
+                mtime_ms: Some(1_000),
+                etag: None,
+                tail_hash: Some("h".into()),
+                row_groups_hash: None,
+            },
         );
         cursor.record(
             "grown.jsonl",
-            10,
-            10,
-            true,
-            Some(1_000),
-            None,
-            Some("h".into()),
-            None,
+            FileProgress {
+                done_units: 10,
+                size_units: 10,
+                ended_at_record_boundary: true,
+                mtime_ms: Some(1_000),
+                etag: None,
+                tail_hash: Some("h".into()),
+                row_groups_hash: None,
+            },
         );
 
         let tasks = cursor
@@ -407,7 +397,18 @@ mod tests {
             "{err}"
         );
 
-        cursor.record("torn.jsonl", 10, 10, false, Some(1_000), None, None, None);
+        cursor.record(
+            "torn.jsonl",
+            FileProgress {
+                done_units: 10,
+                size_units: 10,
+                ended_at_record_boundary: false,
+                mtime_ms: Some(1_000),
+                etag: None,
+                tail_hash: None,
+                row_groups_hash: None,
+            },
+        );
         let err = cursor
             .plan(&[meta("torn.jsonl", 30)])
             .expect_err("unterminated growth");
@@ -422,7 +423,18 @@ mod tests {
     #[test]
     fn the_whole_file_planner_rereads_or_refuses() {
         let mut cursor = FileCursor::default();
-        cursor.record("half.csv", 3, 10, true, Some(1_000), None, None, None);
+        cursor.record(
+            "half.csv",
+            FileProgress {
+                done_units: 3,
+                size_units: 10,
+                ended_at_record_boundary: true,
+                mtime_ms: Some(1_000),
+                etag: None,
+                tail_hash: None,
+                row_groups_hash: None,
+            },
+        );
         let tasks = cursor.plan_whole(&[meta("half.csv", 10)]).expect("plans");
         assert_eq!(
             (tasks[0].start, tasks[0].size_units),
@@ -473,8 +485,30 @@ mod tests {
     #[test]
     fn every_path_ever_recorded_is_retained() {
         let mut cursor = FileCursor::default();
-        cursor.record("a", 1, 1, true, None, None, None, None);
-        cursor.record("b", 1, 1, true, None, None, None, None);
+        cursor.record(
+            "a",
+            FileProgress {
+                done_units: 1,
+                size_units: 1,
+                ended_at_record_boundary: true,
+                mtime_ms: None,
+                etag: None,
+                tail_hash: None,
+                row_groups_hash: None,
+            },
+        );
+        cursor.record(
+            "b",
+            FileProgress {
+                done_units: 1,
+                size_units: 1,
+                ended_at_record_boundary: true,
+                mtime_ms: None,
+                etag: None,
+                tail_hash: None,
+                row_groups_hash: None,
+            },
+        );
         let decoded = FileCursor::decode(Some(&cursor.encode())).expect("round-trips");
         assert_eq!(decoded.files.len(), 2);
         assert_eq!(decoded, cursor);
