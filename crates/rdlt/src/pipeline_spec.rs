@@ -194,7 +194,7 @@ pub enum DestSpec {
     /// (catalog/auth, namespace, storage override, per-stream tables with
     /// partition_by).
     #[cfg(feature = "iceberg")]
-    Iceberg(Box<crate::connector::iceberg::IcebergConfig>),
+    Iceberg(Box<crate::connector::iceberg::destination::Config>),
     /// The Snowflake destination — the crate's full config vocabulary inline
     /// (account/auth, database, schema, warehouse, role, table type, session
     /// parameters, and the shared merge options).
@@ -462,7 +462,9 @@ fn build_with<S: rdlt_connector::Source>(
         }
         #[cfg(feature = "iceberg")]
         DestSpec::Iceberg(config) => {
-            let dest = crate::connector::iceberg::IcebergDest::from_config((**config).clone())
+            // Shell::new validates the hand-parsed document — the spec
+            // enum's serde parse is not the Document gate.
+            let dest = crate::connector::iceberg::destination::Shell::new((**config).clone())
                 .map_err(|e| SpecError::resolve(format!("iceberg destination: {e}")))?;
             Ok(builder.destination(dest).build()?)
         }

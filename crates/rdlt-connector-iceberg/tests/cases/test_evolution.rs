@@ -4,7 +4,7 @@
 //! refusals speak their frozen spellings; and two streams may not
 //! share one table.
 
-use rdlt_connector_iceberg_v2::destination::{Shell, testhook};
+use rdlt_connector_iceberg::destination::{Shell, testhook};
 use rdlt_connector_sdk::spi::StreamSpec;
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{MemoryBatch, MemorySource, MemoryStream};

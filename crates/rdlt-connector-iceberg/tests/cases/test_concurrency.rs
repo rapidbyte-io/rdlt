@@ -2,7 +2,7 @@
 //! snapshot is lost; a nested stream loads twice without phantom
 //! drift; the sdk conformance kit certifies the shell.
 
-use rdlt_connector_iceberg_v2::destination::Shell;
+use rdlt_connector_iceberg::destination::Shell;
 use rdlt_connector_sdk::spi::StreamSpec;
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{MemoryBatch, MemorySource, MemoryStream};

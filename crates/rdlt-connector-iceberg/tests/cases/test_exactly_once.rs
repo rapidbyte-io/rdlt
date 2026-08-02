@@ -2,7 +2,7 @@
 //! state, a narrowed stream null-fills, and Replace refuses against a
 //! real catalog.
 
-use rdlt_connector_iceberg_v2::destination::Shell;
+use rdlt_connector_iceberg::destination::Shell;
 use rdlt_connector_sdk::spi::StreamSpec;
 use rdlt_connector_sdk::spi::core::WriteMode;
 use rdlt_engine::{Engine, EngineConfig};
@@ -54,7 +54,7 @@ async fn a_resumed_pipeline_republishes_nothing() {
 
     // The raw state protocol behind the resume: the marker table holds
     // this pipeline's scope key.
-    use rdlt_connector_iceberg_v2::destination::{Config, testhook};
+    use rdlt_connector_iceberg::destination::{Config, testhook};
     use rdlt_connector_sdk::config::Document;
     let config = Config::from_value(doc).expect("valid");
     let raw = testhook::read_raw_state(

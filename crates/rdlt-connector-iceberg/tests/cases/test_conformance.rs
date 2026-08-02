@@ -2,7 +2,7 @@
 //! conformance", through the same Shell every embedder gets. NEW over
 //! generation 1, which predated the kit.
 
-use rdlt_connector_iceberg_v2::destination::Shell;
+use rdlt_connector_iceberg::destination::Shell;
 use rdlt_connector_sdk::spi::core::TableName;
 use rdlt_testkit::{TableProbe, assert_conformant, verify_destination};
 

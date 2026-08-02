@@ -2,7 +2,7 @@
 //! explicit S3 override works, a WRONG override FAILS (never silently
 //! ignored), and bearer auth talks to the catalog.
 
-use rdlt_connector_iceberg_v2::destination::Shell;
+use rdlt_connector_iceberg::destination::Shell;
 use rdlt_connector_sdk::spi::StreamSpec;
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{MemoryBatch, MemorySource, MemoryStream};

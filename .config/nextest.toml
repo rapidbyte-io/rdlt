@@ -1,12 +1,14 @@
 # Live container cells: each iceberg cell boots its own Polaris (JVM) +
 # RUSTFS pair. Unbounded parallelism starts 6+ JVMs at once and health
 # checks time out under the load — bound the group, everything else
-# keeps full parallelism.
+# keeps full parallelism. The whole package rides the group (offline
+# cells included — a scheduling simplification the membership pin in
+# tests/cases/test_gating.rs makes explicit).
 [test-groups.iceberg-live]
 max-threads = 3
 
 [[profile.default.overrides]]
-filter = "(package(rdlt-connector-iceberg) and not binary(config_schema)) or package(rdlt-connector-iceberg-v2)"
+filter = "package(rdlt-connector-iceberg)"
 test-group = "iceberg-live"
 
 # The flake-recording profile (feature 020 US8).

@@ -2,7 +2,7 @@
 //! with the convention names, transformed writes fan out, and a
 //! config that disagrees with the live spec refuses typed.
 
-use rdlt_connector_iceberg_v2::destination::Shell;
+use rdlt_connector_iceberg::destination::Shell;
 use rdlt_connector_sdk::spi::StreamSpec;
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{MemoryBatch, MemorySource, MemoryStream};

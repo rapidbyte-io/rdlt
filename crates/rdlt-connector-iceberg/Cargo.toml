@@ -1,6 +1,6 @@
 [package]
 name = "rdlt-connector-iceberg"
-description = "rdlt Iceberg destination: provider-agnostic REST catalog, snapshot-native exactly-once"
+description = "rdlt Iceberg destination: provider-agnostic REST catalog, snapshot-native exactly-once, born on the connector sdk"
 keywords = ["elt", "iceberg", "lakehouse", "parquet", "catalog"]
 categories = ["database"]
 documentation = "https://docs.rs/rdlt-connector-iceberg"
@@ -11,16 +11,24 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+failpoints = ["rdlt-connector-sdk/failpoints"]
+
 [dependencies]
-rdlt-connector = { workspace = true, features = ["schema"] }
+# The ONE rdlt dependency (the one-dependency rule): the SPI is reached
+# through the sdk's `spi` re-export. No sqlcore — this is not a SQL
+# destination and no recorded exception applies.
+rdlt-connector-sdk = { workspace = true, features = ["schema"] }
+# The library trio stays behind ONE boundary module (client.rs); its
+# types never cross the crate's public surface.
 iceberg = { workspace = true }
 iceberg-catalog-rest = { workspace = true }
 iceberg-storage-opendal = { workspace = true }
 arrow-array = { workspace = true }
-arrow-schema = { workspace = true }
 arrow-cast = { workspace = true }
-parquet = { workspace = true }
+arrow-schema = { workspace = true }
 async-trait = { workspace = true }
+parquet = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -30,13 +38,10 @@ tokio = { workspace = true }
 
 [dev-dependencies]
 jsonschema = { workspace = true }
-reqwest = { workspace = true }
 rdlt-engine = { workspace = true }
 rdlt-testkit = { workspace = true }
+reqwest = { workspace = true }
 tempfile = { workspace = true }
 
 [lints]
 workspace = true
-
-[features]
-failpoints = ["rdlt-connector/failpoints"]

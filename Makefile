@@ -121,13 +121,7 @@ else ifeq ($(TARGET),sweep)
 	cargo nextest run -p rdlt-connector-duckdb --features failpoints -E 'binary(sweep)'
 	cargo nextest run -p rdlt-connector-rest --features failpoints -E 'binary(sweep)'
 	cargo nextest run -p rdlt-connector-file --features failpoints -E 'binary(sweep)'
-	cargo nextest run -p rdlt-connector-iceberg --features failpoints -E 'binary(sweep)'
-	# The coexisting second generation sweeps the same three points. At
-	# swap-in this line dies AND the line above needs its filter edited to
-	# `binary(crash_sweep)` (the v2 binary name; an unedited `binary(sweep)`
-	# would select zero tests, which post-024 fails loudly rather than
-	# passing silently). The deep-tier line below has the same edit owed.
-	cargo nextest run -p rdlt-connector-iceberg-v2 --features failpoints -E 'binary(crash_sweep)'
+	cargo nextest run -p rdlt-connector-iceberg --features failpoints -E 'binary(crash_sweep)'
 else ifeq ($(TARGET),prop)
 	# `binary(...)`, not `test(...)`: shred_property is the BINARY; the test
 	# inside it is shred_invariants_hold. A test-name filter matched nothing
@@ -230,7 +224,9 @@ else ifeq ($(TARGET),deep)
 	# sweep: sweep is part of the PR gate, which stays container-optional.
 	RDLT_HEAVY=1 cargo nextest run -p rdlt-connector-postgres -E 'binary(memory_bound)'
 	# Spark read-back (016): heavyweight JVM leg, deep tier only.
-	RDLT_DEEP=1 cargo nextest run -p rdlt-connector-iceberg -E 'binary(spark_deep)'
+	# The iceberg spark leg died with generation 1 (the second generation's
+	# interop consolidation is recorded in specs/029-iceberg-v2/plan.md; a
+	# fresh spark deep-tier cell is owed if the owner re-opens the tier).
 	$(MAKE) test TARGET=prop
 	$(MAKE) test TARGET=sweep
 	$(MAKE) test TARGET=mutants

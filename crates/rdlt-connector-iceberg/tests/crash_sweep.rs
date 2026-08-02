@@ -11,7 +11,7 @@ mod common;
 use std::path::Path;
 
 use common::CatalogFixture;
-use rdlt_connector_iceberg_v2::destination::{FAIL_POINTS, Shell};
+use rdlt_connector_iceberg::destination::{FAIL_POINTS, Shell};
 use rdlt_connector_sdk::spi::StreamSpec;
 use rdlt_connector_sdk::spi::core::failpoint::fail;
 use rdlt_engine::{Engine, EngineConfig};

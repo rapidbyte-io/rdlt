@@ -4,7 +4,7 @@
 //! trio). Skip-not-fail without the venv (tools/interop;
 //! RDLT_INTEROP_PYTHON overrides).
 
-use rdlt_connector_iceberg_v2::destination::Shell;
+use rdlt_connector_iceberg::destination::Shell;
 use rdlt_connector_sdk::spi::StreamSpec;
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{MemoryBatch, MemorySource, MemoryStream};

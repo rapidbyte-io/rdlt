@@ -2,7 +2,7 @@
 //! block the README shows must parse through the Shell — drift in
 //! either direction fails here, not in a user's first five minutes.
 
-use rdlt_connector_iceberg_v2::destination::Shell;
+use rdlt_connector_iceberg::destination::Shell;
 
 const QUICKSTART: &str = r#"catalog:
   uri: https://polaris.example.com/api/catalog

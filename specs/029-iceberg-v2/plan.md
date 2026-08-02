@@ -517,3 +517,34 @@ Standing owner records: N2 (no-WAL retry duplication), N3 (token
 TTL), the props-override Secret bypass, the 12-hex scope risk, the
 frozen merge-refusal wording, the port-TOCTOU residual, and the
 swap-mechanics filter edits owed to the Makefile's surviving lines.
+
+
+## SWAP-IN RECORD (2026-08-02, owner decision)
+
+Generation 1 DELETED; this crate renamed `rdlt-connector-iceberg`
+(publish=false dropped; the keywords/categories/docs.rs/readme
+metadata restored; the description updated to the second generation's
+substance). Blast radius, all ported in the same commit:
+
+- Facade: `pipeline_spec::DestSpec::Iceberg` now embeds
+  `destination::Config` and resolves through `destination::Shell::new`
+  (which VALIDATES the hand-parsed document, exactly as
+  `IcebergDest::from_config` did). The `rdlt::connector::iceberg`
+  re-export line is unchanged (crate name identical); the CLI test
+  passes as written — `namespace_levels`/`partition_fields`/`validate`
+  all carried over.
+- Makefile: the surviving sweep line's filter edited to
+  `binary(crash_sweep)` and the coexistence line removed — exactly the
+  mechanics its comment recorded; the spark deep-tier line DIES with
+  generation 1 (the interop consolidation is the recorded substitute;
+  a fresh spark cell is owed only if the owner re-opens the tier).
+- .config/nextest.toml: the iceberg-live filter collapses to the one
+  package, whole-package membership documented beside the pin.
+- sdk `test_dependency_rule`: the ADOPTED entry renamed.
+- Root workspace member removed; the crate's tests re-pathed
+  (mechanical).
+
+Verified before the gates: workspace builds `--all-features`, clippy
+clean workspace-wide AND the failpoints shape, crate+facade+CLI+sdk
+124-binary sweep 108/108, workspace count 1024 = 1081 − generation
+1's 57, as predicted.

@@ -2,7 +2,7 @@
 //! totals, one identity-stamped snapshot per commit, and no snapshot
 //! at all for an empty window.
 
-use rdlt_connector_iceberg_v2::destination::{Shell, testhook};
+use rdlt_connector_iceberg::destination::{Shell, testhook};
 use rdlt_connector_sdk::spi::StreamSpec;
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{MemoryBatch, MemorySource, MemoryStream};

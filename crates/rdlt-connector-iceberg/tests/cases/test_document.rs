@@ -3,7 +3,7 @@
 //! refuses; secrets never render; the Shell family is the whole entry
 //! surface.
 
-use rdlt_connector_iceberg_v2::destination::{Config, Shell, config_schema};
+use rdlt_connector_iceberg::destination::{Config, Shell, config_schema};
 use rdlt_connector_sdk::config::Document;
 
 use super::common::minimal_doc;

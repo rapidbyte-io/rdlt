@@ -1,22 +1,14 @@
-//! # rdlt-connector-iceberg — provider-agnostic Iceberg destination
+//! The Iceberg REST-catalog destination, second generation — born on
+//! the rdlt connector sdk.
 //!
-//! One Iceberg REST catalog protocol, many providers (Polaris/Snowflake
-//! Open Catalog, Databricks UC, …). Engine commits map onto atomic Iceberg
-//! snapshots with the commit identity in snapshot summary properties —
-//! exactly-once readable from table history alone. The Iceberg mechanics
-//! (manifests, metadata, field IDs, the REST commit machinery) come from
-//! Apache iceberg-rust, wrapped at ONE boundary: nothing from that library
-//! crosses this crate's public surface.
+//! Rows land as parquet data files committed through Iceberg
+//! snapshots, and exactly-once is SNAPSHOT-NATIVE: every data commit
+//! stamps its identity into the snapshot summary, replay is detected by
+//! scanning the table's own snapshot history, and pipeline state rides
+//! as table properties on a marker table — the catalog is the only
+//! store this destination needs.
 //!
-//! Family layout: `dest/` (this crate is destination-only until a reading
-//! feature exists); this façade re-exports the public surface.
+//! The underlying iceberg library is confined to ONE boundary module;
+//! its types never cross this crate's public surface.
 
-pub mod dest;
-
-pub use dest::IcebergDest;
-pub use dest::config::{
-    AuthOptions, CatalogOptions, ConfigError, IcebergConfig, PartitionField, PartitionTransform,
-    S3Override, StorageOptions, TableOptions, config_schema,
-};
-/// The shared credential newtype, re-exported once at this crate's root.
-pub use rdlt_connector::Secret;
+pub mod destination;
