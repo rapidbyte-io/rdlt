@@ -11,6 +11,43 @@ integrity first (this feature), house style second.
 
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
+`specs/031-duckdb-v2/plan.md` (feature: DUCKDB SECOND GENERATION —
+COMPLETE and SWAPPED IN on branch `031-duckdb-v2` (off main @
+961d0b77; NOT merged): the duckdb destination rewritten
+TRUE-greenfield on the connector sdk as `rdlt-connector-duckdb-v2`,
+then — owner decision — generation 1 DELETED and the crate renamed
+`rdlt-connector-duckdb` (facade DestSpec::Duckdb arm ported to
+destination::Config + Shell::new; consumers across FIVE crates ported
+to config-keyed READ-ONLY testhook oracles; Makefile collapsed to one
+binary(crash_sweep) line). Every second-generation rewrite is now
+LIVE under its real name. The committed CONTRACT INVENTORY corrects
+the 017-era record: duckdb classification is MESSAGE-PREFIX keyed
+("IO Error" transient, "Constraint Error" the duplicate-key
+diagnosis) — the structured channel is degenerate, probe-pinned. A
+config DOCUMENT is born in v2 (gen 1 was builder-only; schema
+attached). FOUR REVIEW ROUNDS (terminus round 4 under /code-review),
+the big catches all fixed+pinned with guards red-proven: the suite
+MEASURED the two-instance WAL-truncation hazard (a second read-write
+open beside a live one truncates its WAL = silent commit loss) → a
+process-global canonicalized-path registry refuses the second
+in-process open, the claim outliving SESSIONS (round 2's catch) and
+the whole check-open-claim sequence under ONE lock (round 3's TOCTOU
+catch); THE REORDER TRACE (round 3): a same-set different-order
+re-ensure passed the drop guard, emitted no DDL, and overwrote
+`previous`, so the positional write guard blessed value-swapping
+batches — the ensure guard is now SEQUENCE-PREFIX (drops AND reorders
+refused); commit probes hoisted INSIDE the one transaction; uniform
+commit-path classification; the positional append exact-arity;
+sqlcore's validate_merge gained the merge-key-existence check (shared
+with postgres). STANDING OWNER RECORDS: the full shared-table
+collision gate needs the ENGINE's rename knowledge (S1 remainder);
+within-run widen (S3); IO-prefix transience incl. deterministic paths
+(S5); no README on the renamed crate. Gates twice clean at every
+stage, first attempt each, counts predicted and verified: 1092 →
+1097 (review rounds) → 1046 post-swap (= 1097 − gen 1's 51). plan.md
+carries D1-D7, the four review rounds, the gate blocks, and the
+swap-in record.)
+Previous feature 030 for reference:
 `specs/030-file-v2/plan.md` (feature: FILE FAMILY SECOND GENERATION —
 COMPLETE, SWAPPED IN, and MERGED to main @ 892951bd (fast-forward from
 8a10d0fe): the file family rewritten TRUE-greenfield on the connector
