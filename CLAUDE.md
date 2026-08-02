@@ -11,6 +11,49 @@ integrity first (this feature), house style second.
 
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
+`specs/029-iceberg-v2/plan.md` (feature: ICEBERG SECOND GENERATION —
+COMPLETE and SWAPPED IN on branch `029-iceberg-v2` (stacked on 028's
+branch; NOT merged): the destination rewritten TRUE-greenfield on the
+connector sdk as `rdlt-connector-iceberg-v2`, then — owner decision —
+generation 1 DELETED and the crate renamed `rdlt-connector-iceberg`
+(facade pipeline_spec ported to destination::Config + Shell::new; the
+Makefile sweep filter edited to binary(crash_sweep); the spark
+deep-tier line retired with gen 1). The committed CONTRACT INVENTORY
+(specs/029-iceberg-v2/contract-inventory.md) is authoritative and
+corrected three 016-era claims: Replace shipped TYPED-UNSUPPORTED,
+state lives in `_rdlt_state` marker-table properties under
+`rdlt.state.{scope}` in a SEPARATE post-data property commit, and the
+identity scope is ident_hash(pipeline, 12). Fresh design D1-D7 under
+the one-dependency rule (sdk alone — NO sqlcore; the library trio
+behind ONE boundary module); D7: existing_receipt deliberately None
+(receipts are per-table snapshot properties; publish converges from
+partial state via the per-attempt already_committed history scan).
+FOUR REVIEW ROUNDS (terminus round 4), NINE fixes pinned — the big
+ones: two streams resolving to ONE physical table was SILENT
+CORRUPTION (colliding file paths + replay-discard; refused at both the
+config and ensure gates); the status parser missed the library
+token-endpoint's `code:` context key so a wrong client secret
+classified TRANSIENT-forever in BOTH generations (measured live,
+verified in library source; the tail-scan truncated too, its pin
+mutation-proven); the `tables` map keys on the ENGINE'S NORMALIZED
+root-table name (doc corrected, pinned live); three vacuity closures
+(drift-refusal enforcement site, writer retirement offline against
+memory FileIO, backoff shape). STANDING OWNER RECORDS: N2 — without a
+WAL workdir a mid-publish transient restart mints a new load id and
+snapshot convergence cannot see the prior attempt (rows can append
+twice; inherent to the catalog's non-atomic multi-table publish); N3
+token-TTL fatal; props-override Secret bypass; 12-hex scope risk.
+Fixture: Polaris pinned BY DIGEST + RUSTFS by version tag, plain
+podman host-network, PID-derived ports; the sdk conformance kit
+CERTIFIES the shell live (new over gen 1). Gates twice clean at every
+stage, counts predicted and verified: 1076 → 1081 (review) → 1024
+post-swap (= 1081 − gen 1's 57). THE SESSION LESSON the gates
+surfaced: 1,988 leaked anonymous podman volumes at the 2,048-lock
+ceiling were the flake amplifier — `podman volume prune` is the fix
+and `make reclaim` does NOT sweep volumes. plan.md carries D1-D7,
+four review rounds, the coverage map, the swap-in record, and three
+gate-of-record blocks.)
+Previous feature 028 for reference:
 `specs/028-snowflake-v2/plan.md` (feature: SNOWFLAKE SECOND GENERATION —
 COMPLETE and SWAPPED IN on branch `028-snowflake-v2` (off main @
 8cc1c22e, NOT merged): the destination rewritten TRUE-greenfield on the

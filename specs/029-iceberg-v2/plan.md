@@ -548,3 +548,27 @@ Verified before the gates: workspace builds `--all-features`, clippy
 clean workspace-wide AND the failpoints shape, crate+facade+CLI+sdk
 124-binary sweep 108/108, workspace count 1024 = 1081 − generation
 1's 57, as predicted.
+
+
+## SWAP GATE OF RECORD (2026-08-02, tree @ 23c4b5e7) — FEATURE COMPLETE
+
+`make check` TWICE CLEAN post-swap, untouched between runs, `env -u
+RUSTUP_TOOLCHAIN`, reclaim + corpse-sweep + drain before each. COUNT
+PREDICTED AND VERIFIED: 1024/1024 both runs (= 1081 − generation 1's
+57), 0 skipped, semver no update required, 6 benches 0 regressed,
+cold start 23.2/23.9 ms. Gate #1's first attempt hit the recorded
+rootlessport flake once (one rustfs cell, proven 1/1 in isolation —
+the residual base-rate mechanism; podman volumes healthy at 65 after
+the amplifier fix); the recorded pair then ran start-to-finish clean.
+
+029 IS CLOSED END TO END: designed and planned against a committed
+contract inventory, built TRUE-greenfield on the sdk, the fresh suite
+proven live including the conformance-kit certification generation 1
+never had, four review rounds (nine fixes pinned; two clean
+verification rounds), gates twice clean at every stage with counts
+predicted and verified (1076 → 1081 → 1024), and the swap executed on
+the owner's decision with generation 1 deleted. Standing owner
+records: N2 (no-WAL retry duplication), N3 (token TTL), the
+props-override Secret bypass, the 12-hex scope risk, the frozen
+merge-refusal wording, the port-TOCTOU residual, and the spark
+deep-tier cell owed only if the owner re-opens the tier.
