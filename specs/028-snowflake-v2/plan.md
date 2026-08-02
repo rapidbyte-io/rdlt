@@ -515,3 +515,42 @@ gate had ever seen: the mid-unit ensure panic/auto-commit, the
 first-write-only COPY column list, the memory-only Replace clear
 guard, the Boolean-unreadable full-feed probe, and the stage leg's
 absent catalog image.
+
+
+## GATE OF RECORD, POST-REVIEW-LOOP (2026-08-02, tree @ 9d83f9ef)
+
+`make check` TWICE CLEAN on the round-5 terminus tree, untouched
+between runs, `env -u RUSTUP_TOOLCHAIN`, reclaim + drain before each.
+COUNT PREDICTED AND VERIFIED: 1122 (previous 1106 + round 4's 16 new
+tests; crate now 108 = 71 unit binary + 37 integration). Run 1:
+1122/1122, 2 instrument skips, sweeps green, semver no update
+required, 6 benches 0 regressed, cold start 23.6 ms. Run 2: 1122/1122,
+same skips, semver clean, 0 regressed, cold start 22.8 ms.
+
+THE GATE EARNED ITS KEEP ONCE MORE: the first run-2 attempt (tree @
+25d212e0) failed generation 1's conformance cell with a vanished local
+part — a REAL coexistence defect, not a flake: the conformance kit
+fixes its pipeline and load names, both generations derive the same
+/tmp staging directory from exactly those names, and the two cells
+scheduled together let one generation's connect-time local reclaim
+delete the other's in-flight part. FIXED at 9d83f9ef by a nextest
+test-group serialising exactly those two cells (coexistence-only; dies
+with generation 1 at swap-in), both proven green together. After the
+fix, two occurrences of the RECORDED rootlessport bind flake
+(intra-run mechanism: postgres @ 45527, then rustfs @ 42207 — crates
+untouched by 028), each cell proven 1/1 in isolation; before the final
+rerun a stale `Created`-state container corpse (the failed start's
+leftover, which can hold a port reservation in podman's bookkeeping
+with no live process) was removed — noted as a plausible amplifier for
+the unusual flake frequency this session. Both recorded gates then ran
+start to finish clean.
+
+STATUS: the /code-review loop is CLOSED — five rounds, terminus at
+round 5, eight defects fixed and pinned across the loop (five
+inherited from generation 1 and never caught by any gate: the mid-unit
+ensure panic/auto-commit, the first-write-only COPY column list, the
+memory-only Replace clear guard, the Boolean-unreadable full-feed
+probe, the stage leg's absent catalog image; plus the cross-table owed
+clears, the phase-2 gate bypass, and the coexistence conformance
+collision), gates twice clean at 1122. The crate remains coexisting
+and unconsumed; the swap is the owner's decision.
