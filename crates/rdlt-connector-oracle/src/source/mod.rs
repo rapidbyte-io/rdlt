@@ -3,5 +3,6 @@
 mod client;
 mod config;
 pub mod cursor;
+mod schema;
 
 pub use config::{Config, ConfigError, Stream, config_schema};

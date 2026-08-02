@@ -158,17 +158,24 @@ mod tests {
     #[test]
     fn a_future_format_refuses_upgrade_not_reset() {
         let value = Cursor::new(serde_json::json!({"format_version": 9}));
-        let err = OracleCursor::decode(Some(&value)).expect_err("refused").to_string();
-        assert!(err.contains("v9 is newer than this build supports (v1)"), "{err}");
+        let err = OracleCursor::decode(Some(&value))
+            .expect_err("refused")
+            .to_string();
+        assert!(
+            err.contains("v9 is newer than this build supports (v1)"),
+            "{err}"
+        );
     }
 
     /// The injection gate on the watermark literal.
     #[test]
     fn watermark_literals_are_shape_checked() {
         assert_eq!(checked_watermark_literal("42.5").expect("num"), "42.5");
-        assert!(checked_watermark_literal("2026-01-01T00:00:00.000000Z")
-            .expect("ts")
-            .starts_with("TO_TIMESTAMP_TZ"));
+        assert!(
+            checked_watermark_literal("2026-01-01T00:00:00.000000Z")
+                .expect("ts")
+                .starts_with("TO_TIMESTAMP_TZ")
+        );
         let err = checked_watermark_literal("1; DROP TABLE x --")
             .expect_err("refused")
             .to_string();

@@ -191,3 +191,9 @@ missing_debug_implementations = "warn"
 [workspace.lints.clippy]
 dbg_macro = "warn"
 todo = "warn"
+
+[patch.crates-io]
+# The vendored driver: three protocol fixes the published 0.1.7
+# lacks (specs/032-oracle/plan.md T003). Path-patched, never a git
+# dependency — the workspace stays publishable.
+oracle-rs = { path = "vendor/oracle-rs" }
