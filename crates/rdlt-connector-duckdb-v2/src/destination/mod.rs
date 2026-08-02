@@ -1,5 +1,6 @@
 //! The DuckDB destination: one shared database instance, sdk-shelled.
 
+mod client;
 mod config;
 
 pub use config::{Config, ConfigError, config_schema};
