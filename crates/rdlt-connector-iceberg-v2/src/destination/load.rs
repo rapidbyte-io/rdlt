@@ -758,8 +758,12 @@ mod tests {
         let seq_before = load.tables[&stream].window_seq;
         assert!(load.tables[&stream].writer.is_some());
 
-        // Identical target: the writer survives the re-ensure.
-        load.reinstall(&stream, "events", table.clone(), target.clone())
+        // Identical target: the writer survives the re-ensure. The
+        // target is RECOMPUTED, not the same Arc — production always
+        // derives a fresh one, so a value-eq-to-pointer-eq regression
+        // must fail here rather than silently retiring every window.
+        let recomputed = arrow_target("table `events`", &table).expect("target");
+        load.reinstall(&stream, "events", table.clone(), recomputed)
             .await
             .expect("re-ensure");
         assert!(

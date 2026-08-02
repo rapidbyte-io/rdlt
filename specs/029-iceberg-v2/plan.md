@@ -457,3 +457,29 @@ RECORDED, NOT CHANGED:
 - All v2 binaries (including offline cells) ride the 3-thread
   iceberg-live group — a scheduling inefficiency, deliberate for
   simplicity during coexistence.
+
+
+## REVIEW ROUND 4 (verification lens on round 3, 2026-08-02) — CLEAN, TERMINUS
+
+Every round-3 change verified sound: the connect reorder breaks no
+pinned precedence (the frozen surface is spellings, not incidental
+failure sequencing; the improvement is recorded); the backoff pin is
+deterministic with a divergence-flake probability of ~1 in 2.6×10²¹
+per process and independently restates the formula (not a tautology);
+the drift-refusal pin dies with the enforcement check and its
+zero-commits assert is airtight; the retirement pin is genuinely
+offline (memory FileIO, no network) — its identical-branch now feeds a
+RECOMPUTED target so a value-eq→pointer-eq regression fails rather
+than silently retiring every window (the lens's one note, taken); the
+quickstart const is byte-identical to the README block; the
+normalized-key cell's tooth is the table-uuid assert (a 404 parses as
+an error body, loudly failing the assert — noted so nobody mistakes
+the expect for the tooth); the map's 70 = 41 + 29 recounted exact.
+
+THE LOOP'S FULL SHAPE ACROSS THE FEATURE: rounds 1 and 3 found (and
+fixed, each with pins), rounds 2 and 4 verified clean — terminus at
+round 4. The standing owner records: N2 (no-WAL retry duplication),
+N3 (token TTL), the props-override Secret bypass, the 12-hex scope
+risk, the frozen "capabilities.merge = false" wording, the fixture
+port-TOCTOU residual, and the swap-mechanics edits owed to the
+Makefile's surviving lines.
