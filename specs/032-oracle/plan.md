@@ -171,6 +171,50 @@ image exists, and the driver has KNOWN breakage there (issues
 as the remedy; the owner's target version should be probed the moment
 media/connectivity for it exists.
 
+## T002 PROBE + PATCH-DIFFICULTY RECORD (2026-08-02)
+
+LOBs, probed live at 1 KB / 1 MB / 8 MB (CLOB and BLOB): the driver
+returns a LOCATOR at EVERY size — never inline content — so a plain
+SELECT alone cannot deliver LOB data at all. The locator carries
+`size` and `chunk_size`, and the driver's SEPARATE LOB-read path
+(`read_lob`/`read_clob`/`read_blob`/`read_lob_chunked`) is correctly
+implemented (right sequence numbers, the 23ai token, large-SDU
+header, MULTI-PACKET receive). `DBMS_LOB.SUBSTR` chunking also works
+as a pure-SQL fallback (4000 chars / 2000 bytes per call).
+
+SOURCE READING OF THE DRIVER (the patch question) found the decisive
+fact — A STANDING CORRECTNESS HOLE BEYOND ROW COUNTS: the query path
+reads a SINGLE TNS packet (`receive()`, one ~8 KB SDU) while the LOB
+path uses the multi-packet `receive_response()`. Any result page
+whose WIRE size exceeds one packet is cut — loudly if the cut lands
+mid-row, SILENTLY if it lands on a message boundary. At the hardcoded
+100-row prefetch that is ~80 bytes/row before the hole opens, so
+KEYSET PAGING ALONE DOES NOT MAKE WIDE-ROW TABLES SAFE. Also: the
+`has_more_rows` flag is hardcoded `false` (connection.rs:2743) — the
+truth is in the TTC end-of-batch flags the query path discards — and
+`FetchMessage` is malformed for modern servers (hardcoded sequence 0,
+missing the ub8 token required at ttc_field_version >= 18, small-SDU
+header under a negotiated large SDU, no Marker handling) — which is
+exactly the probe-A signature (0 rows, then a dead connection).
+
+**D8/D9 REVISED — THE DECISION: PATCH AND VENDOR.** The workspace
+carries a rev-pinned fork of the driver (023's packaging rules: git
+WITHOUT version, so `cargo package` REFUSES rather than silently
+publishing a crate that resolves upstream). The patch is ~100-150 LOC
+in two files: plumb `prefetch_rows` (the wire field is ub4 — 10k is
+legal), switch the query path's two `receive()` calls to
+`receive_response()`, return an honest `has_more_rows`, and repair
+`FetchMessage` (sequence, token, header, Marker). This closes the
+silent-truncation hole AND the throughput ceiling on the 23 leg. The
+21c leg keeps KEYSET PAGING (its capabilities force
+`supports_end_of_response = false`, so multi-packet query termination
+would need a resumable parser — structural, out of v1) with a
+conservative page size and a recorded wide-row caveat. LOBs need NO
+patch: the connector reads locators via `read_lob_chunked` (~1 MB
+chunks; the driver's whole-buffer rescan is quadratic-ish on huge
+LOBs, so chunking is the correctness-and-cost answer), with the
+`DBMS_LOB.SUBSTR` path kept as the documented fallback.
+
 ## STATUS
 
 - Branch created; research committed (R1-R3); this plan written;
