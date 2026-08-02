@@ -1,0 +1,49 @@
+//! The sdk conformance kits over BOTH Shells — "certified = passes
+//! conformance" — on the local filesystem, so certification runs
+//! anywhere the gate does.
+
+use rdlt_connector_sdk::spi::core::TableName;
+use rdlt_testkit::{TableProbe, assert_conformant, verify_destination, verify_source};
+
+use super::common::{jsonl_source, local_dest, plant};
+
+/// Counts through the destination's own testhook — the ownership
+/// listing, independent of the session under test.
+struct DirProbe {
+    config: rdlt_connector_file_v2::destination::Config,
+}
+
+#[async_trait::async_trait]
+impl TableProbe for DirProbe {
+    async fn count(&self, table: &TableName) -> u64 {
+        rdlt_connector_file_v2::destination::testhook::count_rows_async(
+            &self.config,
+            table.as_str(),
+        )
+        .await
+        .unwrap_or(0)
+    }
+}
+
+#[tokio::test]
+async fn the_destination_is_conformant_on_the_local_filesystem() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = local_dest(dir.path());
+    let shell = rdlt_connector_file_v2::destination::Shell::new(config.clone()).expect("valid");
+    let probe = DirProbe { config };
+    assert_conformant(verify_destination(&shell, &probe).await);
+}
+
+#[tokio::test]
+async fn the_source_is_conformant_over_planted_files() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    plant(
+        dir.path(),
+        "data/events.jsonl",
+        b"{\"id\": 1}\n{\"id\": 2}\n{\"id\": 3}\n",
+    );
+    let shell =
+        rdlt_connector_file_v2::source::Shell::new(jsonl_source(dir.path(), "data/*.jsonl"))
+            .expect("valid");
+    assert_conformant(verify_source(&shell).await);
+}
