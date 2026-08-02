@@ -167,6 +167,73 @@ async fn the_read_path_holds_against_a_live_database() {
     assert_eq!(second[0]["id"], serde_json::json!(151));
 }
 
+/// Resume must hold when PHYSICAL order disagrees with cursor order.
+///
+/// Rows are paged by `(cursor, ROWID)` precisely so a checkpoint is a
+/// true low-water boundary. Seeding rows whose ROWID order is the
+/// REVERSE of their ID order makes a ROWID-ordered read checkpoint a
+/// watermark it has not reached — the defect this shape pins.
+#[tokio::test(flavor = "multi_thread")]
+async fn resume_holds_when_physical_order_disagrees_with_the_cursor() {
+    let Some(fixture) = OracleFixture::start().await else {
+        return;
+    };
+    fixture
+        .seed(&[
+            "CREATE TABLE SHUFFLE_T (ID NUMBER(8) PRIMARY KEY, V VARCHAR2(20))",
+            // Descending inserts: physical order is the reverse of ID order.
+            "INSERT INTO SHUFFLE_T SELECT 400 - LEVEL, 'v' FROM DUAL CONNECT BY LEVEL <= 300",
+        ])
+        .await;
+    let shell = fixture.shell(&[incremental("shuffled", "SHUFFLE_T", "ID")]);
+    let (rows, cursor) = read_all(&shell, "shuffled", None).await;
+    assert_eq!(rows.len(), 300);
+    let cursor = cursor.expect("a checkpoint landed");
+
+    // Everything at or below the watermark was delivered, so a resume
+    // reads nothing — and adding a row above it reads exactly that one.
+    let (again, _) = read_all(&shell, "shuffled", Some(cursor.clone())).await;
+    assert!(
+        again.is_empty(),
+        "a completed stream re-reads nothing: {}",
+        again.len()
+    );
+    fixture
+        .seed(&["INSERT INTO SHUFFLE_T VALUES (9999, 'new')"])
+        .await;
+    let (delta, _) = read_all(&shell, "shuffled", Some(cursor)).await;
+    assert_eq!(delta.len(), 1);
+    assert_eq!(delta[0]["id"], serde_json::json!(9999));
+}
+
+/// A cursor column that does not exist is refused — silently
+/// re-reading the whole table on every run is not an option.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_missing_cursor_column_is_refused() {
+    let Some(fixture) = OracleFixture::start().await else {
+        return;
+    };
+    fixture
+        .seed(&["CREATE TABLE GHOST_T (ID NUMBER(8) PRIMARY KEY)"])
+        .await;
+    let shell = fixture.shell(&[incremental("ghost", "GHOST_T", "CREATED_ON")]);
+    let (out, _keep) = rdlt_connector_sdk::spi::records_channel(1 << 20);
+    let err = shell
+        .read(rdlt_connector_sdk::spi::ReadRequest {
+            stream: StreamSpec::new("ghost"),
+            since: None,
+            out,
+        })
+        .await
+        .expect_err("refused")
+        .to_string();
+    assert!(
+        err.contains("cursor column `CREATED_ON` is not a column")
+            && err.contains("silently re-read everything"),
+        "{err}"
+    );
+}
+
 /// The sdk conformance kit certifies the Shell against the live
 /// database — "certified = passes conformance".
 #[tokio::test(flavor = "multi_thread")]

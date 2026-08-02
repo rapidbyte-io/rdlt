@@ -40,6 +40,15 @@ impl Default for OracleCursor {
 pub struct StreamCursor {
     /// The rendered high-water mark of the cursor column.
     pub watermark: String,
+    /// The ROWID of the LAST row read at exactly that watermark.
+    ///
+    /// Rows sharing a cursor value would otherwise be indivisible: a
+    /// page boundary inside them either re-reads them (`>=`) or drops
+    /// them (`>`). The tie-break makes the resume predicate exact —
+    /// `c > w OR (c = w AND ROWID > tie)`. Additive at v1: cursors
+    /// written before it simply carry none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tie: Option<String>,
 }
 
 impl OracleCursor {
@@ -68,16 +77,27 @@ impl OracleCursor {
         Cursor::new(serde_json::to_value(self).expect("cursor serialization"))
     }
 
-    /// Raise (never lower) one stream's watermark.
-    pub fn advance(&mut self, stream: &str, candidate: &str) {
+    /// Record progress at `candidate`, carrying the row's ROWID as
+    /// the tie-break.
+    ///
+    /// The watermark never lowers; at an EQUAL watermark the tie
+    /// advances, because rows are read in `(cursor, ROWID)` order and
+    /// a later row at the same cursor value is strictly further along.
+    pub fn advance(&mut self, stream: &str, candidate: &str, tie: Option<&str>) {
+        let tie = tie.map(str::to_owned);
         match self.streams.get_mut(stream) {
-            Some(existing) if !watermark_less(&existing.watermark, candidate) => {}
-            Some(existing) => existing.watermark = candidate.to_owned(),
+            Some(existing) if watermark_less(&existing.watermark, candidate) => {
+                existing.watermark = candidate.to_owned();
+                existing.tie = tie;
+            }
+            Some(existing) if existing.watermark == candidate => existing.tie = tie,
+            Some(_) => {}
             None => {
                 self.streams.insert(
                     stream.to_owned(),
                     StreamCursor {
                         watermark: candidate.to_owned(),
+                        tie,
                     },
                 );
             }
@@ -110,6 +130,8 @@ pub fn checked_watermark_literal(value: &str) -> Result<String, SourceError> {
     if numeric {
         Ok(value.to_owned())
     } else if timestampish {
+        // The model matches `watermark_text`'s ONE canonical shape:
+        // fraction and offset always present.
         Ok(format!(
             "TO_TIMESTAMP_TZ('{value}', 'YYYY-MM-DD\"T\"HH24:MI:SS.FF6TZH:TZM')"
         ))
@@ -129,7 +151,7 @@ mod tests {
     #[test]
     fn the_wire_shape_is_frozen() {
         let mut cursor = OracleCursor::default();
-        cursor.advance("events", "42");
+        cursor.advance("events", "42", None);
         assert_eq!(
             serde_json::to_value(&cursor).expect("json"),
             serde_json::json!({
@@ -144,14 +166,34 @@ mod tests {
     #[test]
     fn watermarks_never_lower() {
         let mut cursor = OracleCursor::default();
-        cursor.advance("s", "9");
-        cursor.advance("s", "10");
+        cursor.advance("s", "9", None);
+        cursor.advance("s", "10", None);
         assert_eq!(cursor.streams["s"].watermark, "10");
-        cursor.advance("s", "2");
+        cursor.advance("s", "2", None);
         assert_eq!(cursor.streams["s"].watermark, "10", "never lowered");
-        cursor.advance("t", "2026-01-02T00:00:00.000000Z");
-        cursor.advance("t", "2026-01-01T00:00:00.000000Z");
+        cursor.advance("t", "2026-01-02T00:00:00.000000Z", None);
+        cursor.advance("t", "2026-01-01T00:00:00.000000Z", None);
         assert!(cursor.streams["t"].watermark.starts_with("2026-01-02"));
+    }
+
+    /// At an EQUAL watermark the tie-break advances — that is what
+    /// lets a page boundary fall inside a run of equal cursor values
+    /// without dropping or repeating them.
+    #[test]
+    fn the_tie_break_advances_at_an_equal_watermark() {
+        let mut cursor = OracleCursor::default();
+        cursor.advance("s", "5", Some("AAA"));
+        cursor.advance("s", "5", Some("BBB"));
+        assert_eq!(cursor.streams["s"].tie.as_deref(), Some("BBB"));
+        cursor.advance("s", "9", Some("CCC"));
+        assert_eq!(cursor.streams["s"].watermark, "9");
+        assert_eq!(cursor.streams["s"].tie.as_deref(), Some("CCC"));
+        cursor.advance("s", "1", Some("ZZZ"));
+        assert_eq!(
+            cursor.streams["s"].tie.as_deref(),
+            Some("CCC"),
+            "a lower watermark changes nothing"
+        );
     }
 
     /// A future cursor format refuses as an upgrade prompt.

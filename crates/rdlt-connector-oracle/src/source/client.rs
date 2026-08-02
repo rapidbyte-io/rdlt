@@ -76,7 +76,9 @@ impl Client {
             .unwrap_or_default();
         if zone != "UTC" {
             return Err(SourceError::fatal(format!(
-                "the session time zone is `{zone}` after pinning it to UTC —                  TIMESTAMP WITH LOCAL TIME ZONE values would depend on the client's                  environment; refusing to read"
+                "the session time zone is `{zone}` after pinning it to UTC — \
+                 TIMESTAMP WITH LOCAL TIME ZONE values would depend on the \
+                 client's environment; refusing to read"
             )));
         }
         Ok(())
@@ -96,6 +98,19 @@ impl Client {
             // failure and must never answer again.
             Err(e) => Err(classify(context, e)),
         }
+    }
+
+    /// Raise the driver's per-round-trip prefetch to cover a page.
+    ///
+    /// The read path treats a SHORT page as the last page. That rule
+    /// is only sound when the server may return as many rows as the
+    /// page asked for — the driver caps every reply at its prefetch
+    /// (100 by default), so a derived page above that would end the
+    /// stream early AND call it success. This is the knob the
+    /// vendored patch exists to expose.
+    pub(crate) fn with_page_size(mut self, rows: u32) -> Self {
+        self.conn.set_prefetch_rows(rows);
+        self
     }
 
     /// Fetch one LOB's content through the driver's locator read —
@@ -232,6 +247,17 @@ pub(crate) fn value_to_json_typed(
                 .unwrap_or(rendered),
             Err(_) => rendered,
         },
+        // A zoned timestamp carries its offset; the driver hands the
+        // offset separately, so it is appended here where the
+        // declaration says it belongs.
+        LogicalType::TimestampTz => match value {
+            oracle_rs::row::Value::Timestamp(t) => serde_json::Value::String(format!(
+                "{text}{:+03}:{:02}",
+                t.tz_hour_offset,
+                t.tz_minute_offset.unsigned_abs()
+            )),
+            _ => rendered,
+        },
         LogicalType::Bool => match text.as_str() {
             "1" | "TRUE" | "true" => serde_json::Value::Bool(true),
             "0" | "FALSE" | "false" => serde_json::Value::Bool(false),
@@ -274,22 +300,14 @@ pub(crate) fn value_to_json(value: &oracle_rs::row::Value) -> Result<serde_json:
             "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
             d.year, d.month, d.day, d.hour, d.minute, d.second
         )),
-        Value::Timestamp(t) => {
-            let base = format!(
-                "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:06}",
-                t.year, t.month, t.day, t.hour, t.minute, t.second, t.microsecond
-            );
-            let rendered = if t.tz_hour_offset == 0 && t.tz_minute_offset == 0 {
-                format!("{base}Z")
-            } else {
-                format!(
-                    "{base}{:+03}:{:02}",
-                    t.tz_hour_offset,
-                    t.tz_minute_offset.unsigned_abs()
-                )
-            };
-            serde_json::Value::String(rendered)
-        }
+        // NO zone designator here: whether this value carries one is
+        // the DECLARED type's business (`value_to_json_typed` appends
+        // it for TimestampTz). Stamping every timestamp `Z` would
+        // claim UTC for naive wall-clock values.
+        Value::Timestamp(t) => serde_json::Value::String(format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:06}",
+            t.year, t.month, t.day, t.hour, t.minute, t.second, t.microsecond
+        )),
         Value::RowId(r) => serde_json::Value::String(r.to_string().unwrap_or_default()),
         Value::Bytes(b) => {
             // Binary travels as lowercase hex — the workspace's

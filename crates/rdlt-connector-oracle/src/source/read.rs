@@ -1,23 +1,45 @@
-//! The read path: one stream, paged by keyset inside a consistent
-//! snapshot, with LOB content fetched through the driver's locator
-//! reads.
+//! The read path: one stream, paged by a keyset the CURSOR defines,
+//! with LOB content fetched through the driver's locator reads.
 //!
-//! Paging is by ROWID keyset rather than OFFSET because OFFSET makes
-//! the server re-walk the prefix on every page (quadratic on a large
-//! table) while ROWID is a physical address with a total order and a
-//! usable index. Page SIZE comes from the described column widths
-//! (see [`super::schema::rows_per_page`]) so a reply always fits one
-//! SDU packet.
+//! The keyset is `(cursor, ROWID)` when a cursor column is
+//! configured, and `ROWID` alone otherwise. That choice is the whole
+//! correctness story for resume: a checkpoint may only promise that
+//! everything BELOW the watermark has been delivered, and that is
+//! true only when rows arrive in watermark order. Paging by ROWID
+//! while checkpointing a cursor value would promise rows the run had
+//! never looked at — ROWID order has no relation to column order —
+//! so a mid-stream failure would skip them forever.
+//!
+//! Page SIZE comes from the widths the server described (see
+//! [`super::schema::rows_per_page`]) because one reply must fit one
+//! SDU packet, and the driver's prefetch is raised to match so a
+//! short page always means "the last page" rather than "the driver
+//! stopped early".
 
 use std::ops::ControlFlow;
 
 use rdlt_connector_sdk::source::Feed;
 use rdlt_connector_sdk::spi::SourceError;
+use rdlt_connector_sdk::spi::core::LogicalType;
 
 use super::client::{Client, quote_upper, value_to_json_typed};
 use super::config::Stream;
 use super::cursor::{OracleCursor, checked_watermark_literal};
 use super::schema::{DEFAULT_SDU_BYTES, is_lob, logical_type, rows_per_page};
+
+/// The types a watermark can be built from: they order the same way
+/// in SQL and in the persisted rendering.
+fn cursor_capable(kind: LogicalType) -> bool {
+    matches!(
+        kind,
+        LogicalType::Int64
+            | LogicalType::Float64
+            | LogicalType::Decimal { .. }
+            | LogicalType::TimestampNaive
+            | LogicalType::TimestampTz
+            | LogicalType::Date
+    )
+}
 
 /// Read one stream to completion, checkpointing as pages land.
 ///
@@ -30,100 +52,104 @@ pub(crate) async fn read_stream(
     feed: &mut Feed,
 ) -> Result<bool, SourceError> {
     let table = quote_upper(&stream.table);
-    // CONSISTENCY, stated exactly: each PAGE is its own read-consistent
-    // snapshot; the stream as a whole is not one snapshot. A
-    // transaction-wide snapshot (`SET TRANSACTION READ ONLY`) was
-    // implemented and REMOVED on evidence — probed, it leaves this
-    // driver unable to answer a re-executed statement afterwards
-    // (statement-cache/cursor reuse across the transaction change),
-    // turning a healthy read into a dead connection. What makes the
-    // stream converge is the WATERMARK: rows committed mid-read either
-    // land in a later page or above the recorded watermark, so the
-    // next run collects them. Append-only and watermarked tables are
-    // therefore complete; a table rewritten beneath a long read is not
-    // (recorded — the shape the postgres source's non-CDC reads carry).
+    let cursor_column = stream.cursor.as_deref().map(quote_upper);
 
-    // The watermark predicate rides into SQL as a literal, so its
-    // shape is checked first (the cursor document is operator-
-    // editable — see checked_watermark_literal).
-    let watermark_predicate = match (&stream.cursor, cursor.streams.get(&stream.name)) {
-        (Some(column), Some(state)) => {
-            let literal = checked_watermark_literal(&state.watermark)?;
-            Some(format!("{} > {literal}", quote_upper(column)))
+    // Learn the shape BEFORE the first data page: the page size is
+    // derived from the described widths, so asking for rows before
+    // knowing them is the one request that could overflow the SDU.
+    let describe_sql = format!("SELECT t.* FROM {table} t WHERE 1 = 0");
+    let (returned, described) = client
+        .query(&format!("describing `{}`", stream.name), &describe_sql, &[])
+        .await?;
+    client = returned;
+
+    let mut types = Vec::with_capacity(described.columns.len());
+    for column in &described.columns {
+        types.push(logical_type(column).map_err(SourceError::fatal)?);
+    }
+    // A cursor column that is not in the projection, or cannot order,
+    // would silently disable incremental reads — every run re-reading
+    // the whole table while reporting success.
+    if let Some(name) = &stream.cursor {
+        let at = described
+            .columns
+            .iter()
+            .position(|c| c.name.eq_ignore_ascii_case(name))
+            .ok_or_else(|| {
+                SourceError::fatal(format!(
+                    "stream `{}`: cursor column `{name}` is not a column of `{}` — \
+                     incremental reads would silently re-read everything",
+                    stream.name, stream.table
+                ))
+            })?;
+        if !cursor_capable(types[at]) {
+            return Err(SourceError::fatal(format!(
+                "stream `{}`: cursor column `{name}` is {:?}, which has no usable order \
+                 for a watermark — choose a numeric or timestamp column",
+                stream.name, types[at]
+            )));
         }
-        _ => None,
-    };
+    }
+    // The rowid column rides along at the END of every page's
+    // projection, so its index is known from the described width.
+    let rowid_at = described.columns.len();
+    let page_rows = rows_per_page(&described.columns, DEFAULT_SDU_BYTES);
+    // The driver returns at most its prefetch, and this read treats a
+    // SHORT page as the last page — so the prefetch must cover the
+    // page or the stream would end early and call it success.
+    client = client.with_page_size(page_rows);
 
-    let mut page_rows: Option<u32> = None;
-    let mut types: Vec<Option<rdlt_connector_sdk::spi::core::LogicalType>> = Vec::new();
-    let mut last_rowid: Option<String> = None;
+    let mut resume = cursor.streams.get(&stream.name).cloned();
 
     loop {
-        let mut predicates = Vec::new();
-        if let Some(predicate) = &watermark_predicate {
-            predicates.push(predicate.clone());
-        }
-        if let Some(rowid) = &last_rowid {
-            // ROWID literals are the server's own opaque strings; the
-            // shape check keeps an edited cursor from injecting.
-            if !rowid
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/')
-            {
-                return Err(SourceError::fatal(
-                    "resume rowid has an unexpected shape — refusing to interpolate it",
-                ));
+        let where_clause = match (&cursor_column, &resume) {
+            (Some(column), Some(state)) => {
+                let literal = checked_watermark_literal(&state.watermark)?;
+                match &state.tie {
+                    Some(tie) => format!(
+                        " WHERE {column} > {literal} OR ({column} = {literal} AND \
+                         t.ROWID > {})",
+                        rowid_literal(tie)?
+                    ),
+                    None => format!(" WHERE {column} > {literal}"),
+                }
             }
-            predicates.push(format!("ROWID > CHARTOROWID('{rowid}')"));
-        }
-        let where_clause = if predicates.is_empty() {
-            String::new()
-        } else {
-            format!(" WHERE {}", predicates.join(" AND "))
+            // No cursor configured: a full read every run, ordered by
+            // ROWID so the paging itself is stable.
+            (None, _) => match &resume {
+                Some(state) => match &state.tie {
+                    Some(tie) => format!(" WHERE t.ROWID > {}", rowid_literal(tie)?),
+                    None => String::new(),
+                },
+                None => String::new(),
+            },
+            (Some(_), None) => String::new(),
         };
-        let limit = page_rows.unwrap_or(100);
+        let order = match &cursor_column {
+            Some(column) => format!("{column}, t.ROWID"),
+            None => "t.ROWID".to_owned(),
+        };
         let sql = format!(
             "SELECT t.*, ROWIDTOCHAR(t.ROWID) AS RDLT_ROWID FROM {table} t{where_clause} \
-             ORDER BY t.ROWID FETCH FIRST {limit} ROWS ONLY"
+             ORDER BY {order} FETCH FIRST {page_rows} ROWS ONLY"
         );
 
         let (returned, page) = client
             .query(&format!("reading `{}`", stream.name), &sql, &[])
             .await?;
         client = returned;
-
-        // The FIRST page teaches us the widths AND settles the types:
-        // an unreadable column must refuse before any row is pushed,
-        // not halfway through a load.
-        if page_rows.is_none() {
-            let mut resolved = Vec::with_capacity(page.columns.len());
-            for column in &page.columns {
-                if column.name.eq_ignore_ascii_case("RDLT_ROWID") {
-                    resolved.push(None);
-                    continue;
-                }
-                resolved.push(Some(logical_type(column).map_err(SourceError::fatal)?));
-            }
-            types = resolved;
-            page_rows = Some(rows_per_page(&page.columns, DEFAULT_SDU_BYTES));
-        }
         if page.rows.is_empty() {
             break;
         }
 
-        let rowid_at = page
-            .columns
-            .iter()
-            .position(|c| c.name.eq_ignore_ascii_case("RDLT_ROWID"))
-            .ok_or_else(|| SourceError::fatal("the page did not carry its rowid column"))?;
         let cursor_at = stream.cursor.as_ref().and_then(|name| {
             page.columns
                 .iter()
                 .position(|c| c.name.eq_ignore_ascii_case(name))
         });
 
-        let mut saw_cursor_value = false;
         let mut ndjson = Vec::new();
+        let mut last_seen: Option<(String, String)> = None;
         for row in &page.rows {
             let mut object = serde_json::Map::new();
             for (index, column) in page.columns.iter().enumerate() {
@@ -137,11 +163,7 @@ pub(crate) async fn read_stream(
                 let rendered = if is_lob(column) {
                     client.read_lob(value).await?
                 } else {
-                    let declared = types
-                        .get(index)
-                        .copied()
-                        .flatten()
-                        .unwrap_or(rdlt_connector_sdk::spi::core::LogicalType::Utf8);
+                    let declared = types.get(index).copied().unwrap_or(LogicalType::Utf8);
                     value_to_json_typed(value, declared)
                         .map_err(|e| SourceError::fatal(format!("column `{}`: {e}", column.name)))?
                 };
@@ -151,53 +173,84 @@ pub(crate) async fn read_stream(
                 .map_err(|e| SourceError::fatal(format!("rendering a row: {e}")))?;
             ndjson.push(b'\n');
 
-            // The watermark is raised through the cursor's OWN ordering
-            // (numeric where both sides are numbers, lexical otherwise).
-            // Comparing here with `String` ordering was a real defect:
-            // "99" sorts above "150", so a 150-row read checkpointed 99
-            // and the next run re-read 51 rows.
-            if let Some(at) = cursor_at
-                && let Some(value) = row.values().get(at)
-                && let Some(text) = watermark_text(value)
-            {
-                saw_cursor_value = true;
-                cursor.advance(&stream.name, &text);
-            }
+            // The resume key of the row just rendered. Its absence is
+            // fatal: without it the next page would repeat this one
+            // forever, duplicating rows at full speed.
+            let rowid = row
+                .values()
+                .get(rowid_at)
+                .and_then(|value| match value {
+                    oracle_rs::row::Value::String(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .ok_or_else(|| {
+                    SourceError::fatal(
+                        "a page arrived without its rowid column — refusing to page blindly",
+                    )
+                })?;
+            let watermark = match cursor_at {
+                Some(at) => row.values().get(at).and_then(watermark_text),
+                None => None,
+            };
+            last_seen = Some((watermark.unwrap_or_default(), rowid));
         }
-
-        last_rowid = page
-            .rows
-            .last()
-            .and_then(|row| row.values().get(rowid_at))
-            .and_then(|value| match value {
-                oracle_rs::row::Value::String(s) => Some(s.clone()),
-                _ => None,
-            });
 
         if feed.raw_json(bytes::Bytes::from(ndjson)).await == ControlFlow::Break(()) {
             return Ok(false);
         }
-        // The checkpoint lands only after the rows it covers REACHED
-        // the host — a cursor promising rows the host never saw would
-        // lose them on resume.
-        if saw_cursor_value {
-            rdlt_connector_sdk::spi::core::crash_point!(
-                "ora.checkpoint",
-                Err(SourceError::fatal("injected crash at ora.checkpoint"))
-            );
-            if feed.checkpoint(cursor.encode()).await == ControlFlow::Break(()) {
-                return Ok(false);
+
+        // Rows arrived in watermark order, so the LAST row's values
+        // are a true low-water boundary: everything at or below them
+        // has been delivered.
+        if let Some((watermark, rowid)) = last_seen {
+            let state = super::cursor::StreamCursor {
+                watermark: watermark.clone(),
+                tie: Some(rowid.clone()),
+            };
+            resume = Some(state);
+            if cursor_at.is_some() {
+                cursor.advance(&stream.name, &watermark, Some(&rowid));
+                rdlt_connector_sdk::spi::core::crash_point!(
+                    "ora.checkpoint",
+                    Err(SourceError::fatal("injected crash at ora.checkpoint"))
+                );
+                if feed.checkpoint(cursor.encode()).await == ControlFlow::Break(()) {
+                    return Ok(false);
+                }
             }
         }
 
-        if (page.rows.len() as u32) < limit {
-            break; // a short page is the last page
+        if (page.rows.len() as u32) < page_rows {
+            break; // a short page is the last page — the prefetch covers a full one
         }
     }
     Ok(true)
 }
 
+/// A ROWID travelling back into SQL as a literal. The shape check is
+/// the injection gate: the persisted cursor is an operator-editable
+/// document.
+fn rowid_literal(rowid: &str) -> Result<String, SourceError> {
+    if rowid.is_empty()
+        || !rowid
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/')
+    {
+        return Err(SourceError::fatal(format!(
+            "resume rowid `{rowid}` has an unexpected shape — refusing to interpolate it \
+             into SQL; clear the pipeline state"
+        )));
+    }
+    Ok(format!("CHARTOROWID('{rowid}')"))
+}
+
 /// The comparable rendering of a cursor value.
+///
+/// Timestamps are rendered in ONE canonical shape — fraction and
+/// offset always present — because the resume predicate parses them
+/// back with a fixed format model. A shorter rendering (what a naive
+/// `TIMESTAMP` or a `DATE` produces) would fail that parse on every
+/// run after the first.
 fn watermark_text(value: &oracle_rs::row::Value) -> Option<String> {
     use oracle_rs::row::Value;
     match value {
@@ -206,12 +259,20 @@ fn watermark_text(value: &oracle_rs::row::Value) -> Option<String> {
         Value::Number(n) => Some(n.as_str().to_owned()),
         Value::String(s) => Some(s.clone()),
         Value::Date(d) => Some(format!(
-            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.000000+00:00",
             d.year, d.month, d.day, d.hour, d.minute, d.second
         )),
         Value::Timestamp(t) => Some(format!(
-            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:06}",
-            t.year, t.month, t.day, t.hour, t.minute, t.second, t.microsecond
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:06}{:+03}:{:02}",
+            t.year,
+            t.month,
+            t.day,
+            t.hour,
+            t.minute,
+            t.second,
+            t.microsecond,
+            t.tz_hour_offset,
+            t.tz_minute_offset.unsigned_abs()
         )),
         _ => None,
     }

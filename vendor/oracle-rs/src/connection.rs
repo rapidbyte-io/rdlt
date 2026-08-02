@@ -923,7 +923,7 @@ impl Connection {
 
         // Step 3: Wait for OOB reset response
         // The server sends back a MARKER packet or reset acknowledgment
-        let response = inner.receive_response().await?;
+        let response = inner.receive().await?;
 
         // Validate response - should be a MARKER packet type (12)
         if response.len() > 4 && response[4] == PacketType::Marker as u8 {
@@ -2412,11 +2412,9 @@ impl Connection {
     /// Internal: Execute a query statement with optional bind parameters
     async fn execute_query_with_params(&self, statement: &Statement, params: &[Value]) -> Result<QueryResult> {
         // rdlt patch (032): the prefetch is a knob, not a constant —
-        // the wire field is ub4. Callers pick the page size; the
-        // response is read with the MULTI-PACKET reader below, which
-        // is what makes a large prefetch safe (the published 0.1.7
-        // read ONE ~8 KB SDU packet and silently truncated anything
-        // larger, even at 100 rows of wide columns).
+        // the wire field is ub4. The reply is still read as ONE SDU
+        // packet (see `set_prefetch_rows`), so the caller owns the
+        // obligation to keep `rows * row_width` under the SDU.
         let prefetch_rows = self.default_prefetch_rows;
 
         // For first execution, check if we might have LOBs (no prefetch for safety)
