@@ -138,10 +138,46 @@ git WITHOUT version so publishing REFUSES) restoring true streaming +
 plumbed prefetch is the owner's upgrade path; upstream is stalled
 (2026-03) so the fork means owning the rev.
 
+**D8 — Performance (owner requirement, 2026-08-02).** The 100-row
+page ceiling is a THROUGHPUT defect, not just a nuisance. Two levers,
+staged: (1) v1 pipelines the keyset reads (the next page's query is
+in flight while the current page renders to the channel) so the
+round-trip cost overlaps; (2) the PATCH PATH is promoted from
+"recorded option" to ACTIVE INVESTIGATION — the driver's internal
+`ExecuteOptions::for_query(prefetch_rows)` exists and query hardcodes
+100 at one site; if plumbing a real prefetch (and/or fixing the fetch
+continuation) is a small patch, the workspace carries a patched
+driver ([patch.crates-io] path or rev-pinned fork per 023's
+packaging-refusal rules) and page size becomes a config knob. A
+100k-row timing cell records the measured throughput either way.
+
+**D9 — LOBs, flawless at any size (owner requirement).** The type
+rulebook must not freeze until a LIVE LOB probe answers: what does
+the driver return for CLOB/BLOB at 1 KB / 1 MB / 64 MB (inline value
+vs locator vs error)? The design ladder: inline values pass through
+the D4 mappings; if large LOBs arrive as locators or fail, the read
+path falls back to SQL-side CHUNKING (DBMS_LOB.SUBSTR loops stitched
+connector-side — always works over the wire, any size, bounded
+memory); refusal is NOT an acceptable end state for CLOB/BLOB.
+Correctness pins at each probed size band; a large-LOB cell in the
+suite.
+
+**D10 — The version matrix (owner requirement: an older-Oracle use
+case exists).** Fixture legs: 23 Free (primary, R2) AND 21c XE
+(`gvenzl/oracle-xe:21-slim` — containerizable, inside the driver's
+claimed envelope), both skip-not-fail. 19c/12c: NO free container
+image exists, and the driver has KNOWN breakage there (issues
+#13/#9) — recorded as a standing limitation with the patch path (D8)
+as the remedy; the owner's target version should be probed the moment
+media/connectivity for it exists.
+
 ## STATUS
 
 - Branch created; research committed (R1-R3); this plan written;
-  T001 PROBED LIVE and the driver strategy DECIDED (above).
+  T001 PROBED LIVE and the driver strategy DECIDED (above); D8-D10
+  added on owner requirements (performance, LOBs, version matrix) —
+  T002 probes LOB behavior + the patch difficulty + 21c XE before the
+  read path freezes.
 - NEXT: build in the established rhythm
   (config → client boundary (drop-and-reconnect posture) → type
   rulebook → cursor rulebook → connector/Shell) → fresh suite (kit
