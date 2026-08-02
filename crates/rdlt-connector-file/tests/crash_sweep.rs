@@ -13,8 +13,8 @@ mod s3;
 use std::path::Path;
 
 use common::{jsonl_source, local_dest, plant};
-use rdlt_connector_file_v2::destination::{self, FAIL_POINTS, S3_FAIL_POINTS};
-use rdlt_connector_file_v2::source;
+use rdlt_connector_file::destination::{self, FAIL_POINTS, S3_FAIL_POINTS};
+use rdlt_connector_file::source;
 use rdlt_connector_sdk::spi::core::failpoint::fail;
 use rdlt_engine::{Engine, EngineConfig};
 use s3::S3Fixture;

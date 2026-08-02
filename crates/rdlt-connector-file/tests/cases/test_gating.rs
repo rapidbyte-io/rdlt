@@ -2,8 +2,8 @@
 //! source tree, checked against their union (the 024 rule — never
 //! "simplify" this to per-registry equality).
 
-use rdlt_connector_file_v2::destination::{FAIL_POINTS, S3_FAIL_POINTS};
-use rdlt_connector_file_v2::source;
+use rdlt_connector_file::destination::{FAIL_POINTS, S3_FAIL_POINTS};
+use rdlt_connector_file::source;
 
 #[test]
 fn the_registries_match_the_sources() {

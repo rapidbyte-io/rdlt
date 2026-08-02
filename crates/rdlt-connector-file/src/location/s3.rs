@@ -1,145 +1,32 @@
-//! S3-compatible object storage via `object_store` (the `aws` feature only). Listings
-//! drain every continuation page or fail — a partial listing must never pass as a
-//! complete one. Errors classify by kind (transient vs fatal) and name
-//! endpoint/bucket/key.
+//! The object-store side of [`Location`](super::Location): the one
+//! place credentials are revealed into a client, a listing that drains
+//! every continuation page or fails typed, a chunked range reader for
+//! resumed tails, and the key-space primitives behind the
+//! destination's staging/publish protocol.
 
-use futures::StreamExt;
-use object_store::ObjectStore;
-use object_store::aws::{AmazonS3, AmazonS3Builder};
-use rdlt_connector::{DestinationError, SourceError};
-use serde::{Deserialize, Serialize};
+use futures::StreamExt as _;
+use object_store::ObjectStore as _;
+use object_store::path::Path as Key;
+use rdlt_connector_sdk::spi::{DestinationError, SourceError};
 
-use rdlt_connector::Secret;
+use super::options::S3Options;
+use crate::source::cursor::FileMeta;
 
-use super::store_err;
-use crate::location::types::FileMeta;
+/// The glob metacharacters this crate recognises in a pattern.
+const GLOB_META: [char; 3] = ['*', '?', '['];
 
-/// Configuration for an S3-compatible location: `location: {s3: {...}}`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-#[non_exhaustive]
-pub struct S3Options {
-    /// e.g. `http://127.0.0.1:9000` or `https://s3.amazonaws.com`
-    pub endpoint: String,
-    pub bucket: String,
-    /// Default `us-east-1` (S3-compatible servers commonly ignore it).
-    #[serde(default)]
-    pub region: Option<String>,
-    pub access_key: Secret,
-    pub secret_key: Secret,
-    /// Path-style addressing (default true — the test-server form; AWS
-    /// itself accepts it for most operations).
-    #[serde(default = "default_path_style")]
-    pub path_style: bool,
-    /// Send `UNSIGNED-PAYLOAD` instead of the body's SHA-256 in the SigV4
-    /// canonical request. **Off by default, and deliberately never inferred.**
-    ///
-    /// Hashing the body is 6.72% of the parquet-to-S3 cell, so this is real
-    /// throughput — but it is a security setting, not a tuning knob, and the
-    /// trade must be made by the person who knows the deployment:
-    ///
-    /// Signing the payload means the request signature covers the BODY. A
-    /// proxy, a compromised intermediary, or a corrupted transfer cannot alter
-    /// the bytes without invalidating the signature. With this on, the
-    /// signature covers only the headers and the request line: the transport
-    /// (TLS) becomes the only thing standing between the body and
-    /// modification in flight.
-    ///
-    /// So: reasonable over HTTPS to an endpoint you trust, on a network you
-    /// control. Not reasonable over plain HTTP, where it removes the last
-    /// integrity check the request had.
-    #[serde(default)]
-    pub unsigned_payload: bool,
-}
-
-pub(crate) fn default_path_style() -> bool {
-    true
-}
-
-impl S3Options {
-    /// Programmatic construction seam (config documents are the primary
-    /// path; fixtures and embedders build options directly).
-    pub fn new(
-        endpoint: impl Into<String>,
-        bucket: impl Into<String>,
-        access_key: impl Into<Secret>,
-        secret_key: impl Into<Secret>,
-    ) -> Self {
-        Self {
-            endpoint: endpoint.into(),
-            bucket: bucket.into(),
-            region: None,
-            access_key: access_key.into(),
-            secret_key: secret_key.into(),
-            path_style: true,
-            unsigned_payload: false,
-        }
-    }
-
-    /// Opt out of payload signing. Read [`Self::unsigned_payload`] before
-    /// calling this — it trades request-body integrity for throughput.
-    #[must_use]
-    pub fn with_unsigned_payload(mut self, unsigned: bool) -> Self {
-        self.unsigned_payload = unsigned;
-        self
-    }
-
-    pub fn with_region(mut self, region: impl Into<String>) -> Self {
-        self.region = Some(region.into());
-        self
-    }
-
-    pub fn with_path_style(mut self, path_style: bool) -> Self {
-        self.path_style = path_style;
-        self
-    }
-
-    pub fn validate(&self, context: &str) -> Result<(), String> {
-        let rest = self
-            .endpoint
-            .strip_prefix("http://")
-            .or_else(|| self.endpoint.strip_prefix("https://"));
-        match rest {
-            Some(host) if !host.is_empty() => {}
-            _ => {
-                return Err(format!(
-                    "{context}: location.s3.endpoint `{}` must be an http(s) URL",
-                    self.endpoint
-                ));
-            }
-        }
-        if self.bucket.is_empty() {
-            return Err(format!("{context}: location.s3.bucket must not be empty"));
-        }
-        Ok(())
-    }
-}
-
-/// A connected S3-compatible location — the S3 half of the unified
-/// [`super::Location`], serving BOTH the source read path (list/get) and the
-/// destination write path (put/copy/delete/list-by-table). `prefix` is the key
-/// prefix all write-side tails hang under (the destination's `path`); it is
-/// EMPTY on the read side, where callers pass full keys.
-#[derive(Debug, Clone)]
-pub struct S3Location {
-    store: AmazonS3,
-    endpoint: String,
-    bucket: String,
-    prefix: String,
-}
-
-/// Build the raw client (shared by the source Location and the dest
-/// store). Secrets are revealed HERE only.
-pub(crate) fn build_store(options: &S3Options) -> Result<AmazonS3, String> {
-    AmazonS3Builder::new()
+/// Construct the raw client. This function is the crate's entire
+/// `Secret::reveal` surface — a credential audit reads it and nothing
+/// else.
+pub(crate) fn build_store(options: &S3Options) -> Result<object_store::aws::AmazonS3, String> {
+    let region = options.region.as_deref().unwrap_or("us-east-1");
+    object_store::aws::AmazonS3Builder::new()
         .with_endpoint(&options.endpoint)
         .with_bucket_name(&options.bucket)
-        .with_region(options.region.as_deref().unwrap_or("us-east-1"))
+        .with_region(region)
         .with_access_key_id(options.access_key.reveal())
         .with_secret_access_key(options.secret_key.reveal())
         .with_virtual_hosted_style_request(!options.path_style)
-        // Only ever what the user asked for; `false` is object_store's own
-        // default, so passing it through changes nothing.
         .with_unsigned_payload(options.unsigned_payload)
         .with_allow_http(true)
         .build()
@@ -151,258 +38,294 @@ pub(crate) fn build_store(options: &S3Options) -> Result<AmazonS3, String> {
         })
 }
 
+/// Severity for a destination-side store failure comes from the one
+/// shared recoverability rulebook — never re-derived locally.
+fn dest_failure(cause: object_store::Error) -> DestinationError {
+    if rdlt_connector_sdk::spi::store::is_recoverable(&cause) {
+        DestinationError::transient(cause.to_string())
+    } else {
+        DestinationError::fatal(cause.to_string())
+    }
+}
+
+/// One connected bucket. The source builds it with an empty `prefix`
+/// and speaks full keys; the destination hangs every tail under its
+/// prefix.
+#[derive(Debug, Clone)]
+pub(crate) struct S3Location {
+    store: object_store::aws::AmazonS3,
+    endpoint: String,
+    bucket: String,
+    /// Key prefix for the write half; the read half leaves it empty.
+    prefix: String,
+}
+
 impl S3Location {
-    /// Read-side connect: full keys, no prefix (the source names whole objects).
-    pub fn connect(options: &S3Options) -> Result<Self, SourceError> {
-        Self::build(options, String::new()).map_err(SourceError::fatal)
+    /// Read-half constructor: no prefix, callers name keys in full.
+    pub(crate) fn connect(options: &S3Options) -> Result<Self, SourceError> {
+        Ok(Self {
+            store: build_store(options).map_err(SourceError::fatal)?,
+            endpoint: options.endpoint.clone(),
+            bucket: options.bucket.clone(),
+            prefix: String::new(),
+        })
     }
 
-    /// Write-side connect: `prefix` is the destination's key prefix; every
-    /// staged, published, state, and receipt key hangs under it.
+    /// Write-half constructor: `prefix` becomes the root every tail
+    /// hangs under.
     pub(crate) fn connect_for_dest(
         options: &S3Options,
         prefix: String,
     ) -> Result<Self, DestinationError> {
-        Self::build(options, prefix).map_err(DestinationError::fatal)
-    }
-
-    fn build(options: &S3Options, prefix: String) -> Result<Self, String> {
-        Ok(Self {
-            store: build_store(options)?,
-            endpoint: options.endpoint.clone(),
-            bucket: options.bucket.clone(),
-            prefix,
-        })
-    }
-
-    /// Resolve a tail into a full object key under this location's prefix.
-    fn key(&self, tail: &str) -> object_store::path::Path {
-        let joined = if self.prefix.is_empty() {
-            tail.to_owned()
-        } else {
-            format!("{}/{tail}", self.prefix.trim_end_matches('/'))
-        };
-        object_store::path::Path::from(joined)
-    }
-
-    /// Read one document's bytes (state / commit log); `None` when absent.
-    pub(crate) async fn read_doc(&self, name: &str) -> Result<Option<Vec<u8>>, DestinationError> {
-        match self.store.get(&self.key(name)).await {
-            Ok(result) => Ok(Some(result.bytes().await.map_err(store_err)?.to_vec())),
-            Err(object_store::Error::NotFound { .. }) => Ok(None),
-            Err(e) => Err(store_err(e)),
+        match Self::connect(options) {
+            Ok(mut location) => {
+                location.prefix = prefix;
+                Ok(location)
+            }
+            Err(e) => Err(DestinationError::fatal(e.to_string())),
         }
     }
 
-    /// Put raw bytes at `tail` (atomic per key: no partial object is ever
-    /// visible under the final name).
+    /// Source-side failure rendering. The transient/fatal call is made
+    /// before any text is composed — by the SPI's shared recoverability
+    /// predicate — which leaves the branches below with nothing to
+    /// decide except phrasing.
+    fn read_failure(&self, verb: &str, subject: &str, cause: object_store::Error) -> SourceError {
+        let heading = format!(
+            "{verb} `{subject}` (s3 `{}` bucket `{}`)",
+            self.endpoint, self.bucket
+        );
+        if rdlt_connector_sdk::spi::store::is_recoverable(&cause) {
+            return SourceError::transient(format!("{heading}: {cause}"));
+        }
+        match &cause {
+            object_store::Error::NotFound { .. } => {
+                SourceError::fatal(format!("{heading}: not found"))
+            }
+            object_store::Error::Unauthenticated { .. }
+            | object_store::Error::PermissionDenied { .. } => SourceError::fatal(format!(
+                "{heading}: unauthorized — check credentials/bucket"
+            )),
+            _ => SourceError::fatal(format!("{heading}: {cause}")),
+        }
+    }
+
+    /// The literal key prefix a server-side listing can scope to:
+    /// everything up to (and including) the last `/` before the first
+    /// glob metacharacter. No metacharacter means the whole pattern is
+    /// literal.
+    fn listing_scope(pattern: &str) -> &str {
+        let Some(meta_at) = pattern.find(GLOB_META) else {
+            return pattern;
+        };
+        match pattern[..meta_at].rfind('/') {
+            Some(slash) => &pattern[..=slash],
+            None => "",
+        }
+    }
+
+    /// The complete listing for one pattern: every continuation page
+    /// drained, or a typed failure. The local ambiguity rule carries
+    /// over unchanged — a single HEAD first decides whether a
+    /// metacharacter-bearing pattern names a real object, and only
+    /// when it does not is the pattern read as a glob, in which
+    /// `*`/`?` never span a `/` (a staged key must never satisfy a
+    /// data glob).
+    pub(crate) async fn list(&self, pattern: &str) -> Result<Vec<FileMeta>, SourceError> {
+        // The store hands keys back in normalized form — leading
+        // slash gone, empty segments collapsed — but the matcher is
+        // compiled from whatever the operator typed. Left raw, a
+        // local-path habit like `path: /data/*.jsonl` compiles into a
+        // pattern no normalized key can ever satisfy, and the run
+        // reports zero files with no hint why (030 review). So the
+        // pattern's segments get the same normalization first.
+        let mut normalized = String::with_capacity(pattern.len());
+        for segment in pattern.split('/').filter(|s| !s.is_empty()) {
+            if !normalized.is_empty() {
+                normalized.push('/');
+            }
+            normalized.push_str(segment);
+        }
+        let pattern = normalized.as_str();
+
+        let wildcarded = pattern.contains(GLOB_META);
+        match self.store.head(&Key::from(pattern)).await {
+            Ok(head) => {
+                return Ok(vec![FileMeta {
+                    path: pattern.to_owned(),
+                    size_units: head.size,
+                    mtime_ms: epoch_millis(head.last_modified),
+                    etag: head.e_tag,
+                }]);
+            }
+            Err(object_store::Error::NotFound { .. }) => {
+                if !wildcarded {
+                    return Err(SourceError::fatal(format!(
+                        "object `{pattern}` (s3 `{}` bucket `{}`): not found",
+                        self.endpoint, self.bucket
+                    )));
+                }
+            }
+            Err(e) => return Err(self.read_failure("object", pattern, e)),
+        }
+
+        let matcher = glob::Pattern::new(pattern)
+            .map_err(|e| SourceError::fatal(format!("invalid glob `{pattern}`: {e}")))?;
+        // `require_literal_separator` confines `*`/`?` to a single
+        // segment. `require_literal_leading_dot` is the load-bearing
+        // one: it bars EVERY wildcard, `**` included, from matching a
+        // dot-led name, and that — not the separator rule — is what
+        // hides `.rdlt-staging` from data globs (030 review found a
+        // recursive glob over a shared prefix reading uncommitted
+        // staged parts without it).
+        let rules = glob::MatchOptions {
+            require_literal_separator: true,
+            require_literal_leading_dot: true,
+            ..Default::default()
+        };
+
+        let scope = Self::listing_scope(pattern);
+        let scope_key = (!scope.is_empty()).then(|| Key::from(scope));
+        let mut pages = self.store.list(scope_key.as_ref());
+        let mut found = Vec::new();
+        while let Some(next) = pages.next().await {
+            let object = next.map_err(|e| self.read_failure("listing", pattern, e))?;
+            let key = object.location.to_string();
+            if !matcher.matches_with(&key, rules) {
+                continue;
+            }
+            found.push(FileMeta {
+                path: key,
+                size_units: object.size,
+                // The mtime is the rewrite tripwire's second leg: on an
+                // S3-compatible store that serves no etags, a same-size
+                // rewrite would otherwise go completely undetected
+                // (docket S10).
+                mtime_ms: epoch_millis(object.last_modified),
+                etag: object.e_tag,
+            });
+        }
+        found.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(found)
+    }
+
+    /// A streaming GET beginning at `start` — how a resumed tail picks
+    /// up mid-object.
+    pub(crate) async fn open_from(
+        &self,
+        name: &str,
+        start: u64,
+    ) -> Result<super::ByteReader, SourceError> {
+        let options = object_store::GetOptions {
+            range: (start > 0).then_some(object_store::GetRange::Offset(start)),
+            ..Default::default()
+        };
+        let body = self
+            .store
+            .get_opts(&Key::from(name), options)
+            .await
+            .map_err(|e| self.read_failure("reading", name, e))?;
+        Ok(super::ByteReader::S3(S3Reader {
+            chunks: body.into_stream().boxed(),
+            held: bytes::Bytes::new(),
+            subject: format!("{name} (s3 `{}` bucket `{}`)", self.endpoint, self.bucket),
+        }))
+    }
+
+    // ---- write-half key space and operations -------------------------------
+
+    /// Expand a tail into its full object key under this location's
+    /// prefix.
+    fn object_key(&self, tail: &str) -> Key {
+        if self.prefix.is_empty() {
+            return Key::from(tail);
+        }
+        Key::from(format!("{}/{tail}", self.prefix.trim_end_matches('/')))
+    }
+
+    /// Full key of one file that lives under `{table}/`.
+    pub(crate) fn key_of_table(&self, table: &str, tail: &str) -> Key {
+        self.object_key(&format!("{table}/{tail}"))
+    }
+
+    /// The table's root key, without a trailing separator.
+    pub(crate) fn key_of_table_root(&self, table: &str) -> String {
+        self.object_key(table).to_string()
+    }
+
     pub(crate) async fn put(&self, tail: &str, bytes: Vec<u8>) -> Result<(), DestinationError> {
         self.store
-            .put(&self.key(tail), bytes::Bytes::from(bytes).into())
+            .put(&self.object_key(tail), bytes::Bytes::from(bytes).into())
             .await
-            .map_err(store_err)?;
+            .map_err(dest_failure)?;
         Ok(())
     }
 
-    /// COPY `from_tail` → `to_tail` (per-key atomic publish).
     pub(crate) async fn copy(
         &self,
         from_tail: &str,
         to_tail: &str,
     ) -> Result<(), DestinationError> {
         self.store
-            .copy(&self.key(from_tail), &self.key(to_tail))
+            .copy(&self.object_key(from_tail), &self.object_key(to_tail))
             .await
-            .map_err(store_err)
+            .map_err(dest_failure)
     }
 
-    /// Delete `tail`; a replayed finalize may find it already gone, which is
-    /// success (idempotent).
+    /// Delete where already-gone counts as done — the shape a replayed
+    /// finalize needs.
     pub(crate) async fn delete_idempotent(&self, tail: &str) -> Result<(), DestinationError> {
-        match self.store.delete(&self.key(tail)).await {
+        match self.store.delete(&self.object_key(tail)).await {
             Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
-            Err(e) => Err(store_err(e)),
+            Err(e) => Err(dest_failure(e)),
         }
     }
 
-    /// Best-effort delete (staging cleanup on a replayed commit); errors are
-    /// swallowed — the reclaim converges on the next open.
+    /// Delete and ignore the outcome; the next open's reclaim sweep
+    /// converges whatever this missed.
     pub(crate) async fn delete_best_effort(&self, tail: &str) {
-        let _ = self.store.delete(&self.key(tail)).await;
+        let _ = self.store.delete(&self.object_key(tail)).await;
     }
 
-    /// List full keys under `tail` (server-side segment-scoped: listing
-    /// `foo/a` never returns `foo/ab/*` — pinned by tests/prefix_semantics.rs).
-    pub(crate) async fn list_keys(
-        &self,
-        tail: &str,
-    ) -> Result<Vec<object_store::path::Path>, DestinationError> {
-        let mut listing = self.store.list(Some(&self.key(tail)));
+    /// Every full key below `tail`, gathered by a server-side
+    /// segment-scoped listing.
+    pub(crate) async fn list_keys(&self, tail: &str) -> Result<Vec<Key>, DestinationError> {
+        let mut pages = self.store.list(Some(&self.object_key(tail)));
         let mut keys = Vec::new();
-        while let Some(entry) = listing.next().await {
-            keys.push(entry.map_err(store_err)?.location);
+        while let Some(next) = pages.next().await {
+            keys.push(next.map_err(dest_failure)?.location);
         }
         Ok(keys)
     }
 
-    /// Delete a full object key (already resolved by a prior listing).
-    pub(crate) async fn delete_key(
-        &self,
-        key: &object_store::path::Path,
-    ) -> Result<(), DestinationError> {
-        self.store.delete(key).await.map_err(store_err)
+    pub(crate) async fn delete_key(&self, key: &Key) -> Result<(), DestinationError> {
+        self.store.delete(key).await.map_err(dest_failure)
     }
 
-    /// The full object key for one file under `{table}/` addressed by its tail.
-    pub(crate) fn key_of_table(&self, table: &str, tail: &str) -> object_store::path::Path {
-        self.key(&format!("{table}/{tail}"))
+    pub(crate) async fn get_key(&self, key: &Key) -> Result<Vec<u8>, DestinationError> {
+        let body = self.store.get(key).await.map_err(dest_failure)?;
+        let bytes = body.bytes().await.map_err(dest_failure)?;
+        Ok(bytes.to_vec())
     }
 
-    /// The key prefix every one of a table's objects sits under. Ownership
-    /// listing strips this exactly rather than searching for it: a partition
-    /// value can spell the table's own name, and a search would then split the
-    /// key at the wrong place.
-    pub(crate) fn key_of_table_root(&self, table: &str) -> object_store::path::Path {
-        self.key(table)
-    }
-
-    /// Read a full object key's bytes (already resolved by a prior listing).
-    pub(crate) async fn get_key(
-        &self,
-        key: &object_store::path::Path,
-    ) -> Result<Vec<u8>, DestinationError> {
-        Ok(self
-            .store
-            .get(key)
-            .await
-            .map_err(store_err)?
-            .bytes()
-            .await
-            .map_err(store_err)?
-            .to_vec())
-    }
-
-    fn classify(&self, action: &str, subject: &str, error: object_store::Error) -> SourceError {
-        let name = format!(
-            "{action} `{subject}` (s3 `{}` bucket `{}`)",
-            self.endpoint, self.bucket
-        );
-        // Severity comes from the ONE rulebook; this match only chooses the
-        // wording, so a message can never disagree with a classification.
-        if rdlt_connector::store::is_recoverable(&error) {
-            return SourceError::transient(format!("{name}: {error}"));
-        }
-        match &error {
-            object_store::Error::NotFound { .. } => {
-                SourceError::fatal(format!("{name}: not found"))
-            }
-            // Auth/permission failures are configuration problems: fatal,
-            // named — never a silent empty load.
-            object_store::Error::Unauthenticated { .. }
-            | object_store::Error::PermissionDenied { .. } => {
-                SourceError::fatal(format!("{name}: unauthorized — check credentials/bucket"))
-            }
-            _ => SourceError::fatal(format!("{name}: {error}")),
+    /// One document's bytes; absence is `None`, not an error.
+    pub(crate) async fn read_doc(&self, name: &str) -> Result<Option<Vec<u8>>, DestinationError> {
+        match self.store.get(&self.object_key(name)).await {
+            Err(object_store::Error::NotFound { .. }) => Ok(None),
+            Err(e) => Err(dest_failure(e)),
+            Ok(body) => Ok(Some(body.bytes().await.map_err(dest_failure)?.to_vec())),
         }
     }
 }
 
-impl S3Location {
-    /// Split a `path` pattern into the fixed prefix and an optional glob
-    /// remainder (`landed/2026/*.jsonl` → prefix `landed/2026/`, glob over
-    /// the full key).
-    fn prefix_of(pattern: &str) -> &str {
-        match pattern.find(['*', '?', '[']) {
-            Some(at) => &pattern[..pattern[..at].rfind('/').map(|s| s + 1).unwrap_or(0)],
-            None => pattern,
-        }
-    }
-
-    /// COMPLETE listing (continuation pages fully drained or typed
-    /// failure), deterministic order, glob-filtered. Semantics mirror the
-    /// local rules: a glob with zero matches is success; a pattern WITHOUT
-    /// glob metacharacters names one object — missing is a typed error.
-    pub async fn list(&self, pattern: &str) -> Result<Vec<FileMeta>, SourceError> {
-        let has_glob = pattern.contains(['*', '?', '[']);
-        // The LOCAL rule holds here too: a pattern naming an EXISTING object
-        // is taken literally, even when it contains glob metacharacters
-        // (`events[v1].jsonl` is a key, not a character class). One HEAD
-        // decides; only then does glob interpretation apply.
-        let literal = object_store::path::Path::from(pattern);
-        match self.store.head(&literal).await {
-            Ok(head) => {
-                return Ok(vec![FileMeta {
-                    path: pattern.to_owned(),
-                    size_units: head.size,
-                    mtime_ms: None,
-                    etag: head.e_tag,
-                }]);
-            }
-            Err(object_store::Error::NotFound { .. }) if has_glob => {}
-            Err(object_store::Error::NotFound { .. }) => {
-                return Err(SourceError::fatal(format!(
-                    "object `{pattern}` (s3 `{}` bucket `{}`): not found",
-                    self.endpoint, self.bucket
-                )));
-            }
-            Err(e) => return Err(self.classify("object", pattern, e)),
-        }
-        let matcher = glob::Pattern::new(pattern)
-            .map_err(|e| SourceError::fatal(format!("invalid glob `{pattern}`: {e}")))?;
-        // `*`/`?` must NOT cross `/` — the local glob walks per component,
-        // and staged keys under .rdlt-staging/ must never match a data glob.
-        let match_options = glob::MatchOptions {
-            require_literal_separator: true,
-            ..Default::default()
-        };
-        let prefix = Self::prefix_of(pattern);
-        let prefix_path = (!prefix.is_empty()).then(|| object_store::path::Path::from(prefix));
-        let mut listing = self.store.list(prefix_path.as_ref());
-        let mut matched = Vec::new();
-        while let Some(entry) = listing.next().await {
-            let entry = entry.map_err(|e| self.classify("listing", pattern, e))?;
-            let key = entry.location.to_string();
-            if matcher.matches_with(&key, match_options) {
-                matched.push(FileMeta {
-                    path: key,
-                    size_units: entry.size,
-                    mtime_ms: None,
-                    etag: entry.e_tag,
-                });
-            }
-        }
-        matched.sort_by(|a, b| a.path.cmp(&b.path));
-        Ok(matched)
-    }
-
-    /// Streaming GET from `start` (range read for resumed tails).
-    pub async fn open_from(
-        &self,
-        name: &str,
-        start: u64,
-    ) -> Result<super::ByteReader, SourceError> {
-        let path = object_store::path::Path::from(name);
-        let options = object_store::GetOptions {
-            range: (start > 0).then_some(object_store::GetRange::Offset(start)),
-            ..Default::default()
-        };
-        let result = self
-            .store
-            .get_opts(&path, options)
-            .await
-            .map_err(|e| self.classify("reading", name, e))?;
-        Ok(super::ByteReader::S3(S3Reader {
-            stream: result.into_stream().boxed(),
-            pending: bytes::Bytes::new(),
-            subject: format!("{name} (s3 `{}` bucket `{}`)", self.endpoint, self.bucket),
-        }))
-    }
-}
-
-/// Sequential reader draining a streaming GET.
-pub struct S3Reader {
-    stream: futures::stream::BoxStream<'static, object_store::Result<bytes::Bytes>>,
-    pending: bytes::Bytes,
+/// Sequential reader over a streaming GET, buffering the chunk in
+/// flight. A transport failure mid-stream surfaces as a RETRYABLE io
+/// kind when the shared rulebook says so, letting the consumer call it
+/// transient instead of killing the run — recoverability preserved
+/// across the io seam.
+pub(crate) struct S3Reader {
+    chunks: futures::stream::BoxStream<'static, object_store::Result<bytes::Bytes>>,
+    held: bytes::Bytes,
     subject: String,
 }
 
@@ -415,35 +338,63 @@ impl std::fmt::Debug for S3Reader {
 }
 
 impl S3Reader {
-    pub async fn read_full(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let mut filled = 0;
-        while filled < buf.len() {
-            if self.pending.is_empty() {
-                match self.stream.next().await {
-                    None => break,
-                    Some(Err(e)) => {
-                        // Carry recoverability through the io::Error seam:
-                        // a mid-stream transport failure keeps a retryable
-                        // kind so consumers classify it transient instead
-                        // of failing the whole run.
-                        let kind = if rdlt_connector::store::is_recoverable(&e) {
-                            std::io::ErrorKind::ConnectionReset
-                        } else {
-                            std::io::ErrorKind::Other
-                        };
-                        return Err(std::io::Error::new(
-                            kind,
-                            format!("reading {}: {e}", self.subject),
-                        ));
-                    }
-                    Some(Ok(chunk)) => self.pending = chunk,
+    fn io_error(&self, cause: object_store::Error) -> std::io::Error {
+        let kind = if rdlt_connector_sdk::spi::store::is_recoverable(&cause) {
+            std::io::ErrorKind::ConnectionReset
+        } else {
+            std::io::ErrorKind::Other
+        };
+        std::io::Error::new(kind, format!("reading {}: {cause}", self.subject))
+    }
+
+    pub(crate) async fn read_full(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let mut done = 0;
+        while done < buf.len() {
+            if self.held.is_empty() {
+                match self.chunks.next().await {
+                    Some(Ok(chunk)) => self.held = chunk,
+                    Some(Err(cause)) => return Err(self.io_error(cause)),
+                    None => return Ok(done),
                 }
             }
-            let take = self.pending.len().min(buf.len() - filled);
-            buf[filled..filled + take].copy_from_slice(&self.pending[..take]);
-            bytes::Buf::advance(&mut self.pending, take);
-            filled += take;
+            let n = self.held.len().min(buf.len() - done);
+            buf[done..done + n].copy_from_slice(&self.held[..n]);
+            bytes::Buf::advance(&mut self.held, n);
+            done += n;
         }
-        Ok(filled)
+        Ok(done)
+    }
+}
+
+/// The service's stamped modification time as ms since the epoch; a
+/// pre-1970 stamp reads as absent instead of wrapping around.
+fn epoch_millis(t: chrono::DateTime<chrono::Utc>) -> Option<u64> {
+    u64::try_from(t.timestamp_millis()).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The scope runs to the last separator before the first
+    /// metacharacter; with no metacharacter the pattern IS the scope.
+    #[test]
+    fn the_listing_prefix_stops_at_the_first_metacharacter() {
+        assert_eq!(
+            S3Location::listing_scope("landed/2026/*.jsonl"),
+            "landed/2026/"
+        );
+        assert_eq!(S3Location::listing_scope("landed/y=*/f.jsonl"), "landed/");
+        assert_eq!(S3Location::listing_scope("*.jsonl"), "");
+        assert_eq!(
+            S3Location::listing_scope("plain/key.jsonl"),
+            "plain/key.jsonl"
+        );
+    }
+
+    /// Well-formed options produce a client — the boundary holds.
+    #[test]
+    fn a_valid_store_builds() {
+        build_store(&S3Options::new("http://127.0.0.1:9000", "b", "ak", "sk")).expect("builds");
     }
 }

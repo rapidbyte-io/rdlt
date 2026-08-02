@@ -6,7 +6,7 @@
 #![allow(dead_code)] // shared across two binaries; neither uses every helper
 
 use object_store::ObjectStore;
-use rdlt_connector_file_v2::{LocationOptions, S3Options};
+use rdlt_connector_file::{LocationOptions, S3Options};
 use testcontainers::core::{IntoContainerPort, WaitFor};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage, ImageExt};

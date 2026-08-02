@@ -5,7 +5,7 @@ use std::path::Path;
 
 use rdlt_connector_sdk::config::Document;
 
-use rdlt_connector_file_v2::{destination, source};
+use rdlt_connector_file::{destination, source};
 
 /// Plant one file under the directory, creating parents.
 pub fn plant(dir: &Path, name: &str, bytes: &[u8]) {

@@ -30,7 +30,7 @@ const ADOPTED: &[(&str, &[&str])] = &[
         &["rdlt-connector-sdk", "rdlt-connector-sqlcore"],
     ),
     ("rdlt-connector-iceberg", &["rdlt-connector-sdk"]),
-    ("rdlt-connector-file-v2", &["rdlt-connector-sdk"]),
+    ("rdlt-connector-file", &["rdlt-connector-sdk"]),
 ];
 
 /// The rdlt crates named in a manifest's `[dependencies]` section (table

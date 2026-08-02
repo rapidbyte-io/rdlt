@@ -1,18 +1,18 @@
-//! # rdlt-connector-file — the file family (source + destination)
+//! The file family, second generation — local and S3 files as BOTH a
+//! source and a destination, born on the rdlt connector sdk.
 //!
-//! Reads and writes JSONL, CSV, and Parquet files — by explicit path or glob — on the
-//! local filesystem or S3-compatible object storage. Sources track per-file incremental
-//! cursors (completed files skipped, in-progress files resumed at their offset,
-//! shrunk/rewritten files rejected loudly); Parquet streams are STRUCTURED (Arrow
-//! batches with run-level provenance only). Layout: `source/` and `dest/` sides over a
-//! shared `location/` (where files live) and `formats/` (how they are encoded); this
-//! façade re-exports the public surface.
+//! The source's resume integrity is the tail-hash cursor rulebook: a
+//! persisted per-file progress record whose offsets are trusted only
+//! after the file's tail bytes re-hash to what the cursor remembered.
+//! The destination is direct-to-storage exactly-once: parts stage
+//! under a hidden prefix and publish atomically behind a durable
+//! receipt log, with Replace truncation owning exactly the shapes it
+//! wrote.
 
-pub mod dest;
-pub mod formats;
-pub mod location;
+pub mod destination;
+mod format;
+mod location;
 pub mod source;
 
-pub use dest::ParquetDir;
-pub use formats::Format;
-pub use source::{FileConfig, FileSource, FileStream, config, config_schema, cursor};
+pub use format::Format;
+pub use location::{LocationOptions, S3Options};

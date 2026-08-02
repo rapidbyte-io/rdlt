@@ -582,7 +582,7 @@ destination:
                 // disagree with it.
                 assert!(matches!(
                     config.format,
-                    rdlt::connector::file::dest::DestFormat::Jsonl
+                    rdlt::connector::file::destination::DestFormat::Jsonl
                 ));
                 assert!(config.location.is_some());
                 assert_eq!(config.partition_by.as_deref(), Some("day"));

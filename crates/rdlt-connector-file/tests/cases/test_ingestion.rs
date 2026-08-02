@@ -1,7 +1,7 @@
 //! Real loads through the ENGINE: memory → file, and file → file (the
 //! whole family round-trips through one pipeline).
 
-use rdlt_connector_file_v2::{destination, source};
+use rdlt_connector_file::{destination, source};
 use rdlt_connector_sdk::spi::StreamSpec;
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{MemoryBatch, MemorySource, MemoryStream};

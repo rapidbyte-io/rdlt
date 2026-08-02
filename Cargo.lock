@@ -4280,37 +4280,6 @@ dependencies = [
  "async-trait",
  "blake3",
  "bytes",
- "csv",
- "flate2",
- "futures",
- "glob",
- "jsonschema",
- "memchr",
- "object_store",
- "parquet",
- "rdlt-connector",
- "rdlt-connector-duckdb",
- "rdlt-engine",
- "rdlt-testkit",
- "schemars 1.2.1",
- "serde",
- "serde_json",
- "serde_yaml",
- "tempfile",
- "testcontainers",
- "thiserror",
- "tokio",
- "zstd",
-]
-
-[[package]]
-name = "rdlt-connector-file-v2"
-version = "0.3.0"
-dependencies = [
- "arrow",
- "async-trait",
- "blake3",
- "bytes",
  "chrono",
  "csv",
  "flate2",

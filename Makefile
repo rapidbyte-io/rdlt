@@ -120,8 +120,7 @@ else ifeq ($(TARGET),sweep)
 	cargo nextest run -p rdlt-connector-postgres --features failpoints -E 'binary(source_crash_sweep) or binary(destination_crash_sweep) or binary(cdc_crash_sweep)'
 	cargo nextest run -p rdlt-connector-duckdb --features failpoints -E 'binary(sweep)'
 	cargo nextest run -p rdlt-connector-rest --features failpoints -E 'binary(sweep)'
-	cargo nextest run -p rdlt-connector-file --features failpoints -E 'binary(sweep)'
-	cargo nextest run -p rdlt-connector-file-v2 --features failpoints -E 'binary(crash_sweep)'
+	cargo nextest run -p rdlt-connector-file --features failpoints -E 'binary(crash_sweep)'
 	cargo nextest run -p rdlt-connector-iceberg --features failpoints -E 'binary(crash_sweep)'
 else ifeq ($(TARGET),prop)
 	# `binary(...)`, not `test(...)`: shred_property is the BINARY; the test

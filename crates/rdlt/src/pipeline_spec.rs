@@ -183,13 +183,13 @@ pub enum DestSpec {
     /// The connector's own config type IS the document shape, embedded rather
     /// than mirrored. Previously this was a struct variant restating each field
     /// by hand, which failed silently in one direction: a field added to
-    /// `FileDestConfig` and not added here compiled fine and was simply
+    /// the config and not added here compiled fine and was simply
     /// unreachable from any pipeline document — configurable in the library,
     /// invisible from YAML, with no error anywhere. Embedding removes the
     /// possibility rather than guarding against it. Boxed because the config
     /// dwarfs the other variants.
     #[cfg(feature = "file")]
-    File(Box<crate::connector::file::dest::FileDestConfig>),
+    File(Box<crate::connector::file::destination::Config>),
     /// The Iceberg destination — the crate's full config vocabulary inline
     /// (catalog/auth, namespace, storage override, per-stream tables with
     /// partition_by).
@@ -344,9 +344,9 @@ pub fn build_pipeline(spec: &Spec) -> Result<Pipeline, SpecError> {
         SourceSpec::File { config } => {
             let text = read_config(config)?;
             let source = if is_json(config) {
-                crate::connector::file::FileSource::from_json(&text)
+                crate::connector::file::source::Shell::from_json(&text)
             } else {
-                crate::connector::file::FileSource::from_yaml(&text)
+                crate::connector::file::source::Shell::from_yaml(&text)
             }
             .map_err(|e| SpecError::resolve(e.to_string()))?;
             build_with(builder.source(source), &spec.destination)
@@ -450,13 +450,18 @@ fn build_with<S: rdlt_connector::Source>(
         }
         #[cfg(feature = "file")]
         DestSpec::Parquet { path } => {
-            let dest = crate::connector::file::ParquetDir::open(path)
+            // The canonical local-parquet spelling: the sdk Shell over a
+            // plain-path config (Shell::new validates the document).
+            let config = crate::connector::file::destination::Config::new(
+                path.to_string_lossy().into_owned(),
+            );
+            let dest = crate::connector::file::destination::Shell::new(config)
                 .map_err(|e| SpecError::resolve(format!("opening parquet dir: {e}")))?;
             Ok(builder.destination(dest).build()?)
         }
         #[cfg(feature = "file")]
         DestSpec::File(config) => {
-            let dest = crate::connector::file::dest::FileDest::from_config((**config).clone())
+            let dest = crate::connector::file::destination::Shell::new((**config).clone())
                 .map_err(|e| SpecError::resolve(format!("file destination: {e}")))?;
             Ok(builder.destination(dest).build()?)
         }

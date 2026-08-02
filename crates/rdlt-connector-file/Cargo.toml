@@ -4,45 +4,47 @@ description = "rdlt file connectors: JSONL/Parquet/CSV source and destination ov
 keywords = ["elt", "parquet", "jsonl", "csv", "s3"]
 categories = ["database", "encoding"]
 documentation = "https://docs.rs/rdlt-connector-file"
-readme = "README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+failpoints = ["rdlt-connector-sdk/failpoints"]
+
 [dependencies]
-rdlt-connector = { workspace = true, features = ["schema", "object-store"] }
+# The ONE rdlt dependency (the one-dependency rule): the SPI is reached
+# through the sdk's `spi` re-export; the object-store recoverability
+# vocabulary arrives through the sdk's forward.
+rdlt-connector-sdk = { workspace = true, features = ["schema", "object-store"] }
 arrow = { workspace = true }
-blake3 = { workspace = true }
-schemars = { workspace = true }
 async-trait = { workspace = true }
+blake3 = { workspace = true }
 bytes = { workspace = true }
-memchr = { workspace = true }
-glob = { workspace = true }
+chrono = { workspace = true }
 csv = { workspace = true }
 flate2 = { workspace = true }
-zstd = { workspace = true }
-object_store = { workspace = true }
 futures = { workspace = true }
+glob = { workspace = true }
+memchr = { workspace = true }
+object_store = { workspace = true }
 parquet = { workspace = true }
+schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+zstd = { workspace = true }
 
 [dev-dependencies]
 jsonschema = { workspace = true }
-object_store = { workspace = true }
-testcontainers = { workspace = true }
-rdlt-testkit = { workspace = true }
-rdlt-engine = { workspace = true }
 rdlt-connector-duckdb = { workspace = true }
+rdlt-engine = { workspace = true }
+rdlt-testkit = { workspace = true }
 tempfile = { workspace = true }
+testcontainers = { workspace = true }
 
 [lints]
 workspace = true
-
-[features]
-failpoints = ["rdlt-connector/failpoints"]

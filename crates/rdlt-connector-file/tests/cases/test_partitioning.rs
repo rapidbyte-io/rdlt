@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use arrow::array::{Int64Array, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
-use rdlt_connector_file_v2::destination;
+use rdlt_connector_file::destination;
 use rdlt_connector_sdk::spi::core::types::LogicalType;
 use rdlt_connector_sdk::spi::core::{
     ColumnDef, ColumnType, LoadId, PipelineId, Provenance, TableName, TableSchema, WriteMode,

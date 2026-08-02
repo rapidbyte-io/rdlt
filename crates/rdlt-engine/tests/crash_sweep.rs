@@ -86,7 +86,7 @@ async fn sweep<D, F, C>(
 ) where
     D: Destination + Clone,
     F: Fn(&Path) -> D,
-    C: Fn(&D) -> u64,
+    C: Fn(&Path, &D) -> u64,
 {
     let mut fired: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
     for &point in points {
@@ -117,7 +117,7 @@ async fn sweep<D, F, C>(
                 "[{point} / {action} / {mode:?}] recovery failed: {recovered:?}"
             );
             assert_eq!(
-                count(&dest),
+                count(dir.path(), &dest),
                 TOTAL_ROWS,
                 "[{point} / {action} / {mode:?}] exactly-once violated"
             );
@@ -143,7 +143,7 @@ async fn sweep_memory_destination() {
         &points,
         WriteMode::Append,
         |_dir| MemoryDestination::new(),
-        |dest| dest.committed_rows("s").len() as u64,
+        |_dir, dest| dest.committed_rows("s").len() as u64,
         ENGINE_POINTS,
     )
     .await;
@@ -151,18 +151,30 @@ async fn sweep_memory_destination() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn sweep_parquet_destination() {
-    let points = engine_and(rdlt_connector_file::dest::FAIL_POINTS);
+    let points = engine_and(rdlt_connector_file::destination::FAIL_POINTS);
     // Measured 2026-07-20: EVERY parquet boundary fires in BOTH modes —
     // the receipt-log and truncate guards run on every publish, not just
     // Replace (which is why the second-occurrence pass caught the 003
     // Replace-recovery bug class in the first place).
     for mode in [WriteMode::Append, WriteMode::Replace] {
-        let expected_fired = [ENGINE_POINTS, rdlt_connector_file::dest::FAIL_POINTS].concat();
+        let expected_fired =
+            [ENGINE_POINTS, rdlt_connector_file::destination::FAIL_POINTS].concat();
+        // The second generation's ParquetDir is the sdk Shell over the
+        // canonical local-parquet config; counting goes through the
+        // crate's own testhook (the ownership listing).
+        let config_for = |dir: &Path| {
+            rdlt_connector_file::destination::Config::new(
+                dir.join("out").to_string_lossy().into_owned(),
+            )
+        };
         sweep(
             &points,
             mode,
-            |dir| rdlt_connector_file::ParquetDir::open(dir.join("out")).expect("open"),
-            |dest| dest.count_rows("s").expect("count"),
+            |dir| rdlt_connector_file::destination::Shell::new(config_for(dir)).expect("open"),
+            |dir, _dest| {
+                rdlt_connector_file::destination::testhook::count_rows(&config_for(dir), "s")
+                    .expect("count")
+            },
             &expected_fired,
         )
         .await;
@@ -186,7 +198,7 @@ async fn sweep_duckdb_destination() {
             &points,
             mode,
             |dir| rdlt_connector_duckdb::dest::DuckDb::open(dir.join("out.duckdb")).expect("open"),
-            |dest| dest.count_rows("s").expect("count"),
+            |_dir, dest| dest.count_rows("s").expect("count"),
             &expected_fired,
         )
         .await;
@@ -210,7 +222,7 @@ fn sweep_covers_entire_registry() {
     // Destination side: the exported registries, pinned against this list.
     // (The Postgres registry is pinned in ITS crate's crash_sweep test — the
     // engine's test tree does not depend on the postgres stack.)
-    let mut registry: Vec<&str> = rdlt_connector_file::dest::FAIL_POINTS
+    let mut registry: Vec<&str> = rdlt_connector_file::destination::FAIL_POINTS
         .iter()
         .chain(rdlt_connector_duckdb::dest::FAIL_POINTS)
         .copied()

@@ -3,7 +3,7 @@
 //! generated from the same structs, and these cells keep that claim
 //! honest through the Shell entry points every embedder uses.
 
-use rdlt_connector_file_v2::{destination, source};
+use rdlt_connector_file::{destination, source};
 
 fn compiled(schema: serde_json::Value) -> jsonschema::Validator {
     jsonschema::validator_for(&schema).expect("schema compiles")

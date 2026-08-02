@@ -1,17 +1,21 @@
-//! Feature 015 T004 (FF1): the behavior-preservation net, PINNED.
-//! Committed pre-015 artifacts — a cursor document, an on-disk commit log,
-//! config spellings — must keep their exact meaning through the family
-//! merge and everything after it.
+//! The WELD PROOFS, carried verbatim from generation 1: committed
+//! pre-015 artifacts — a cursor document, an on-disk commit log, the
+//! layout names, config spellings — must keep their exact meaning
+//! through the rewrite. These bytes are the persisted-format contract.
 
-use rdlt_connector::Cursor;
-use rdlt_connector::core::{LoadId, PipelineId, TableName, WriteMode, naming::ident_hash};
-use rdlt_connector::{Destination, OpenContext};
+use rdlt_connector_file::destination;
 use rdlt_connector_file::source::cursor::{FileCursor, FileMeta};
-use rdlt_connector_file::{FileConfig, ParquetDir};
+use rdlt_connector_sdk::config::Document;
+use rdlt_connector_sdk::spi::core::naming::ident_hash;
+use rdlt_connector_sdk::spi::core::{Cursor, LoadId, PipelineId, TableName, WriteMode};
+use rdlt_connector_sdk::spi::{Destination, OpenContext};
 use rdlt_testkit::{batch_of, commit_meta_for, schema_for};
 
-/// A cursor document EXACTLY as pre-015 runs persisted it (format_version 1).
-/// Parsing and plan decisions must never change for these bytes.
+use super::common::local_dest;
+
+/// A cursor document EXACTLY as pre-015 runs persisted it
+/// (format_version 1). Parsing and plan decisions must never change
+/// for these bytes.
 const PRE_015_CURSOR: &str = r#"{
   "format_version": 1,
   "files": {
@@ -86,13 +90,14 @@ fn pre_015_cursor_document_parses_and_plans_identically() {
     );
 }
 
-/// The on-disk artifact NAMES and shapes are the persisted-format contract
-/// (LAYOUT_FORMAT_VERSION 1): part-file pattern, state/commit-log file
-/// names keyed by the pipeline scope hash, commit-log JSON shape.
+/// The on-disk artifact NAMES and shapes are the persisted-format
+/// contract (LAYOUT_FORMAT_VERSION 1): part-file pattern, state and
+/// commit-log file names keyed by the pipeline scope hash, commit-log
+/// JSON shape.
 #[tokio::test]
 async fn pre_015_artifact_names_and_commit_log_shape_are_frozen() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let dest = ParquetDir::open(dir.path()).expect("open");
+    let dest = destination::Shell::new(local_dest(dir.path())).expect("valid");
     let pipeline = PipelineId::new("pin-pipeline");
     let load = LoadId::new("load-a");
     let scope = ident_hash(pipeline.as_str(), 12);
@@ -111,7 +116,6 @@ async fn pre_015_artifact_names_and_commit_log_shape_are_frozen() {
         .await
         .expect("commit");
 
-    // Frozen names.
     assert!(
         dir.path().join("events/part-load-a-1-0.parquet").is_file(),
         "part-file naming per (load, seq, per-table n) is frozen"
@@ -132,21 +136,22 @@ async fn pre_015_artifact_names_and_commit_log_shape_are_frozen() {
     );
 }
 
-/// A commit log written by pre-015 runs keeps driving D3 receipt dedup: a
-/// replayed (load, seq) discards its staged data and republishes NOTHING.
+/// A commit log written by pre-015 runs keeps driving D3 receipt
+/// dedup: a replayed (load, seq) discards its staged data and
+/// republishes NOTHING.
 #[tokio::test]
 async fn pre_015_commit_log_fixture_drives_receipt_dedup() {
     let dir = tempfile::tempdir().expect("tempdir");
     let pipeline = PipelineId::new("pin-pipeline");
     let scope = ident_hash(pipeline.as_str(), 12);
-    // The committed fixture: pre-015 bytes claiming ("load-x", 1) landed.
     std::fs::write(
         dir.path().join(format!("_rdlt_commits.{scope}.json")),
         r#"{"format_version": 1, "receipts": [["load-x", 1]]}"#,
     )
     .expect("plant fixture");
 
-    let dest = ParquetDir::open(dir.path()).expect("open");
+    let config = local_dest(dir.path());
+    let dest = destination::Shell::new(config.clone()).expect("valid");
     let load = LoadId::new("load-x");
     let mut s = dest
         .open(OpenContext::new(pipeline.clone(), load.clone()))
@@ -164,7 +169,7 @@ async fn pre_015_commit_log_fixture_drives_receipt_dedup() {
         .expect("replayed commit returns the prior receipt");
     assert_eq!(receipt.commit_seq, 1);
     assert_eq!(
-        dest.count_rows("events").expect("count"),
+        destination::testhook::count_rows(&config, "events").expect("count"),
         0,
         "a replayed (load, seq) publishes nothing — the pre-015 log governs"
     );
@@ -173,7 +178,7 @@ async fn pre_015_commit_log_fixture_drives_receipt_dedup() {
 /// Every pre-015 source-config spelling parses with identical meaning.
 #[test]
 fn pre_015_source_config_spellings_parse() {
-    let config = FileConfig::from_yaml(
+    let config = rdlt_connector_file::source::Config::from_yaml(
         r#"
 streams:
   - name: events

@@ -2,7 +2,7 @@
 //! reading only the delta, and the same-size rewrite tripwire refuses
 //! rather than trusting a stale offset.
 
-use rdlt_connector_file_v2::{destination, source};
+use rdlt_connector_file::{destination, source};
 use rdlt_engine::{Engine, EngineConfig};
 
 use super::common::{jsonl_source, local_dest, plant};

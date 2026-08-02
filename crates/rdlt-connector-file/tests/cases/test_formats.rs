@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use arrow::array::Int64Array;
 use arrow::datatypes::{DataType, Field, Schema};
-use rdlt_connector_file_v2::{destination, source};
+use rdlt_connector_file::{destination, source};
 use rdlt_connector_sdk::config::Document;
 use rdlt_engine::{Engine, EngineConfig};
 

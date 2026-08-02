@@ -2,7 +2,7 @@
 //! through the engine, the destination's COPY+DELETE publish, Replace
 //! ownership on a real bucket, and the etag rewrite tripwire.
 
-use rdlt_connector_file_v2::{destination, source};
+use rdlt_connector_file::{destination, source};
 use rdlt_connector_sdk::config::Document;
 use rdlt_engine::{Engine, EngineConfig};
 
