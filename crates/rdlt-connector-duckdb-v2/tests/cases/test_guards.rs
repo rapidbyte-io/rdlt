@@ -141,3 +141,39 @@ async fn a_reordered_batch_is_refused_before_the_positional_append() {
         "states why: {err}"
     );
 }
+
+/// The registry claim must outlive every SESSION, not just the shell:
+/// dropping the shell while a session still writes must not free the
+/// path for a second open (031 round 2 — the truncation hazard would
+/// reopen exactly for the embedder shapes the registry protects).
+#[tokio::test]
+async fn the_open_claim_outlives_the_shell_while_a_session_lives() {
+    use rdlt_connector_duckdb_v2::destination::{Config, Shell};
+    use rdlt_connector_sdk::spi::core::{LoadId, PipelineId, WriteMode};
+    use rdlt_connector_sdk::spi::{Destination, OpenContext};
+    use rdlt_testkit::schema_for;
+
+    let dir = tempfile::tempdir().expect("dir");
+    let path = dir.path().join("held.duckdb");
+    let shell = Shell::new(Config::new(&path)).expect("valid");
+    let mut session = shell
+        .open(OpenContext::new(
+            PipelineId::new("claim-life"),
+            LoadId::new("load-1"),
+        ))
+        .await
+        .expect("open");
+    session
+        .ensure_table(&schema_for("rows"), &WriteMode::Append)
+        .await
+        .expect("ensure");
+    drop(shell);
+
+    let err = Shell::new(Config::new(&path))
+        .expect_err("the live session still holds the claim")
+        .to_string();
+    assert!(err.contains("already open in this process"), "{err}");
+
+    drop(session);
+    Shell::new(Config::new(&path)).expect("released with the last session");
+}

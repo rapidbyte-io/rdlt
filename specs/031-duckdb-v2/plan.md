@@ -190,7 +190,19 @@ guards red-proven:
   re-flowed (output byte-identical, goldens green); the rest of the
   crate judged genuinely re-derived.
 
-**Round 2** — terminus verification of the fix commit (record below).
+**Round 2** — terminus verification of the fix commit: every round-1
+fix held (registry claim/release paths traced; the in-tx shape exact;
+S1 cannot misfire on additive re-ensure; N1's identity/child skip
+matches what shredded tables are; the STRUCT-key vector genuinely
+non-constraint; postgres 232/232 live) — with ONE catch, fixed +
+pinned: the registry claim's lifetime was the Db's, not the
+session's, so dropping the shell while a session still wrote freed
+the path and a second open could truncate the live WAL — the Load
+now holds the Db (the claim outlives every session; pinned with
+shell-drop-then-second-open). Plus the S4 observation executed: the
+prefix allowance was dead-permissive (the appender demands exact
+arity — probed), so the guard is exact-arity with a typed refusal.
+TERMINUS.
 
 - NEXT: gates twice clean (baseline 1024 + this crate's offline
   tests; counts predicted and verified; hygiene by test image/label

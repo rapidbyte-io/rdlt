@@ -37,6 +37,12 @@ const META_DDL: &str = "CREATE TABLE IF NOT EXISTS _rdlt_state (pipeline VARCHAR
 /// The session state.
 pub struct Load {
     conn: duckdb::Connection,
+    /// Held for the CLAIM, not for queries: the session's cloned
+    /// connection is its own database handle, so without this the
+    /// registry would free the path while the session still writes —
+    /// and a second open would truncate this session's WAL (031
+    /// round-2 catch: the claim must outlive every session).
+    _db: Db,
     options: DestinationOptions,
     /// Everything this session ensured — the planner's world.
     tables: BTreeMap<TableName, (TableSchema, WriteMode)>,
@@ -62,6 +68,7 @@ impl Load {
         conn.execute_batch(META_DDL).map_err(classify)?;
         Ok(Self {
             conn,
+            _db: db.clone(),
             options,
             tables: BTreeMap::new(),
             previous: BTreeMap::new(),
@@ -357,6 +364,19 @@ impl Backend for Load {
                         want.unwrap_or("no column at that position"),
                     )));
                 }
+            }
+            // Exact arity, not a prefix: the appender itself demands
+            // it (probed: a shorter batch fails "incorrect column
+            // count in AppendDataChunk"), so a prefix allowance would
+            // only trade this typed refusal for the raw library error.
+            if batch_schema.fields().len() != ensured.columns.len() {
+                return Err(DestinationError::fatal(format!(
+                    "table `{table}`: the batch carries {} columns but the ensured \
+                     schema has {} — the stage append is positional and exact; \
+                     re-ensure before writing a changed shape",
+                    batch_schema.fields().len(),
+                    ensured.columns.len(),
+                )));
             }
         }
         let stage = stage_name(table.as_str());
