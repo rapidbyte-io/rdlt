@@ -15,4 +15,4 @@ mod location;
 pub mod source;
 
 pub use format::Format;
-pub use location::{LocationOptions, S3Options};
+pub use location::{ByteReader, Location, LocationOptions, S3Options};

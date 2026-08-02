@@ -131,27 +131,6 @@ impl S3Options {
     }
 }
 
-/// Build the raw S3 client. Every `Secret::reveal` in the crate
-/// happens here.
-pub(crate) fn build_store(options: &S3Options) -> Result<object_store::aws::AmazonS3, String> {
-    object_store::aws::AmazonS3Builder::new()
-        .with_endpoint(&options.endpoint)
-        .with_bucket_name(&options.bucket)
-        .with_region(options.region.as_deref().unwrap_or("us-east-1"))
-        .with_access_key_id(options.access_key.reveal())
-        .with_secret_access_key(options.secret_key.reveal())
-        .with_virtual_hosted_style_request(!options.path_style)
-        .with_unsigned_payload(options.unsigned_payload)
-        .with_allow_http(true)
-        .build()
-        .map_err(|e| {
-            format!(
-                "s3 location `{}` bucket `{}`: {e}",
-                options.endpoint, options.bucket
-            )
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,11 +181,5 @@ mod tests {
         let options = S3Options::new("http://s3", "b", "ak-123", "sk-456");
         let rendered = format!("{options:?}");
         assert!(!rendered.contains("ak-123") && !rendered.contains("sk-456"));
-    }
-
-    /// The store builds from valid options — the one boundary works.
-    #[test]
-    fn a_valid_store_builds() {
-        build_store(&S3Options::new("http://127.0.0.1:9000", "b", "ak", "sk")).expect("builds");
     }
 }
