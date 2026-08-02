@@ -1,1 +1,5 @@
-//! STUB TOC — populated by the build sequence (030 plan D4).
+//! The source half: files as streams.
+
+mod config;
+
+pub use config::{Config, ConfigError, CsvOptions, HintType, Stream, config_schema};
