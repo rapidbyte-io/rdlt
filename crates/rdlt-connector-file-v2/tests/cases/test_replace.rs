@@ -131,3 +131,21 @@ async fn append_never_truncates() {
         .expect("commit");
     assert!(dir.path().join("events/anything.parquet").is_file());
 }
+
+/// Row counting reports OWNED shapes only: a user's own files under
+/// the table directory — including an unreadable foreign parquet —
+/// neither inflate nor break the count (030 review, docket S12 pin).
+#[tokio::test]
+async fn count_rows_ignores_foreign_files() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    plant(dir.path(), "events/part-0.parquet", b"not real parquet");
+    plant(dir.path(), "events/notes.jsonl", b"{}\n{}\n{}\n");
+
+    let config = local_dest(dir.path()).with_format(DestFormat::Jsonl);
+    replace_load(&config, "count-filter", "load-a", &[1, 2]).await;
+    assert_eq!(
+        destination::testhook::count_rows(&config, "events").expect("count"),
+        2,
+        "only the owned part's rows count; foreign files are invisible"
+    );
+}

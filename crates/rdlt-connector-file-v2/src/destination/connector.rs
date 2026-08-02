@@ -86,6 +86,29 @@ impl DestinationConnector for File {
     }
 }
 
+/// Seams the tests need and nothing else may use. Not a public API.
+#[doc(hidden)]
+pub mod testhook {
+    use rdlt_connector_sdk::spi::DestinationError;
+
+    use crate::location::Location;
+
+    /// Count rows over the ownership listing, both protocols.
+    pub async fn count_rows_async(
+        config: &super::super::Config,
+        table: &str,
+    ) -> Result<u64, DestinationError> {
+        let location = Location::for_dest(&config.path, config.location.as_ref())?;
+        super::super::inspect::count_rows_async(&location, table).await
+    }
+
+    /// The synchronous local-only form with its frozen refusal.
+    pub fn count_rows(config: &super::super::Config, table: &str) -> Result<u64, DestinationError> {
+        let location = Location::for_dest(&config.path, config.location.as_ref())?;
+        super::super::inspect::count_rows(&location, table)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

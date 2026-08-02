@@ -123,6 +123,19 @@ fn survey(
     } else {
         Vec::new()
     };
+    // A repeated header name is refused, never merged: rows become
+    // name-keyed JSON objects, so the later column would silently
+    // OVERWRITE the earlier one's value — and under a shape inferred
+    // per INDEX, possibly as the wrong type (030 review).
+    let mut seen = std::collections::BTreeSet::new();
+    for name in &header_names {
+        if !seen.insert(name.as_str()) {
+            return Err(SourceError::fatal(format!(
+                "duplicate CSV column `{name}` in `{shown_path}` — every header name must \
+                 be unique; rename the column, or drop the duplicate"
+            )));
+        }
+    }
 
     let mut shapes: Vec<ValueShape> = Vec::new();
     let mut record = csv::StringRecord::new();
@@ -429,6 +442,46 @@ mod tests {
         .expect_err("non-finite");
         assert!(
             format!("{err}").contains("declare a utf8 type hint to load it as a string"),
+            "{err}"
+        );
+    }
+
+    /// A repeated header name refuses — name-keyed rows would silently
+    /// drop the earlier column (030 review).
+    #[tokio::test]
+    async fn duplicate_header_names_are_refused() {
+        use rdlt_connector_sdk::source::Feed;
+        use rdlt_connector_sdk::spi::records_channel;
+
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("rows.csv");
+        let bytes: &[u8] = b"id,name,id\n1,a,2\n";
+        std::fs::write(&path, bytes).expect("plant");
+        let (out, _hold) = records_channel(1 << 20);
+        let mut feed = Feed::new(out);
+        let mut cursor = FileCursor::default();
+        let task = FileTask {
+            path: path.to_str().expect("utf8").to_owned(),
+            read_path: None,
+            start: 0,
+            size_units: bytes.len() as u64,
+            mtime_ms: None,
+            etag: None,
+            resume_check: None,
+        };
+        let err = read_task(
+            &task,
+            &CsvOptions::default(),
+            &Default::default(),
+            &mut cursor,
+            &mut feed,
+        )
+        .await
+        .expect_err("refused")
+        .to_string();
+        assert!(
+            err.contains("duplicate CSV column `id`")
+                && err.contains("every header name must be unique"),
             "{err}"
         );
     }

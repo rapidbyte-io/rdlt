@@ -146,7 +146,11 @@ impl Location {
     ) -> Result<(), DestinationError> {
         match self {
             Self::Local { root } => {
-                std::fs::write(root.join(staging_tail), &bytes).map_err(to_fatal)
+                let path = root.join(staging_tail);
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent).map_err(to_fatal)?;
+                }
+                std::fs::write(path, &bytes).map_err(to_fatal)
             }
             Self::S3(s3) => {
                 crash_point!(

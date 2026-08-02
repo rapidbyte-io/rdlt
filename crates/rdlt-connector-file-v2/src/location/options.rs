@@ -112,7 +112,9 @@ impl S3Options {
         self
     }
 
-    /// The two facts a document can get wrong, each named.
+    /// Everything a document can get wrong here, each refusal naming
+    /// its field: a non-http(s) endpoint, an empty bucket, and the
+    /// no-integrity unsigned-payload-over-plain-http combination.
     pub fn validate(&self, context: &str) -> Result<(), String> {
         let host = self
             .endpoint

@@ -65,8 +65,12 @@ pub struct FileProgress {
     /// lack the key; true is the benign reading.
     #[serde(rename = "eol", default = "default_eol")]
     pub ended_at_record_boundary: bool,
-    /// Local mtime in ms since epoch — SERIALIZED even when None
-    /// (S3 has no trustworthy mtime; the etag is its tripwire).
+    /// Modification time in ms since epoch, SERIALIZED even when None
+    /// (the frozen v1 wire shape). Local listings stamp the
+    /// filesystem's; S3 listings stamp the service's `last_modified`,
+    /// the rewrite tripwire's second leg beside the etag (docket S10 —
+    /// an etag-less store would otherwise have no same-size rewrite
+    /// detection at all).
     #[serde(default)]
     pub mtime_ms: Option<u64>,
     /// S3 etag from the listing.

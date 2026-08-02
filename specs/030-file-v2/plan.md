@@ -87,7 +87,8 @@ vocabulary; the 9 shared type-hint names.
   (the ownership-precise Replace rule), `load.rs` (the Backend:
   4-phase commit mapped onto the sdk hooks per D7), `connector.rs`
   (`File`, capabilities, connect = staging reclaim obligation,
-  FAIL_POINTS, testhook, the `ParquetDir` alias), `destination::Shell`.
+  FAIL_POINTS, testhook), with the `ParquetDir`/`Shell` aliases in the
+  destination TOC, `destination::Shell`.
 
 **D5 — Parity = coverage + needles.** Fresh tests answer the census
 (109 + 3 across 15 binaries → the house layout); the WELD PROOFS carry
@@ -192,7 +193,43 @@ reworded) and d89e9169 (message evidence names the tripwire that
 fired; all five fixes pinned — the skip-fetch wiring proven LIVE with
 one instance, two runs, counter exactly 1).
 
-**Round 3/terminus** — the last two commits verified clean (see below).
+**Round 3/terminus** — the last two commits verified clean (SigV4
+script, readiness/retry loops, pin premises all held; 105/105).
+
+**Round 4 — /code-review (owner-directed loop)** — the skill's
+5-lens process (CLAUDE.md audit, shallow bug scan, git-history,
+prior-work, comment compliance) with per-issue confidence scoring.
+Eleven findings; fixed:
+- STAGED-NAME COLLISION (shallow scan; verified deterministic): the
+  gen-1 flat staged name `{load}-{table}-{slug}-{index}` was AMBIGUOUS
+  under dashed tables/slugs — (`events`, `us-east`) and (`events-us`,
+  `east`) shared one staging file; second write overwrote the first,
+  publish promoted wrong rows then failed NotFound. AMENDED (recorded
+  deviation from the inventory's frozen staged shape — staging is
+  transient, reclaimed wholesale, never re-interpreted across
+  versions): the table is its own path segment,
+  `{load}/{table}/{slug}-{index}.{ext}`; injectivity pinned in layout
+  and live (both dashed tables publish their own rows).
+- `..`/`.` PARTITION ESCAPE (verified on the filesystem): path_safe
+  passed `..` through and the part published OUTSIDE its table dir,
+  invisible to counting and truncation. Now `__dot__`/`__dotdot__`
+  sentinels; pinned unit + live (nothing escapes to the root).
+- DUPLICATE CSV HEADERS (scored 100): name-keyed rows silently dropped
+  the earlier column, convertible under the wrong per-index shape.
+  Typed refusal in the survey pass; pinned.
+- The two unpinned round-1 fixes pinned: the S3-side dot-key glob
+  exclusion (live planted `.rdlt-staging` key) and the S12 ownership
+  filter on count_rows (foreign unreadable parquet + foreign jsonl
+  neither break nor inflate the count).
+- mod.rs purity (house layout): source FAIL_POINTS → connector.rs,
+  testhook → destination/connector.rs, read/mod.rs's entry checks →
+  read/checks.rs; every mod.rs a pure TOC again.
+- Comment/doc drift: the pre-S10 mtime rationale on FileProgress, the
+  "two facts" validate doc, the "every local read" overclaim (resolved
+  by the checks.rs extraction), and D4's testhook location below.
+Recorded, not changed: the registries are unconditional `pub const`
+(sibling 028/029 shape; gen 1's were failpoints-gated — the spellings
+are the frozen thing and are pinned).
 
 - NEXT: gates twice clean (baseline 1024; predicted main count 1126 =
   1024 + the crate's 102 offline tests; volume-count check in the gate

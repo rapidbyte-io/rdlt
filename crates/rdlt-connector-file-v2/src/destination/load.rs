@@ -140,7 +140,6 @@ impl Backend for Load {
                 .filter(|s| s.table == table.as_str() && s.partition == partition)
                 .count();
             let name = staged_name(
-                self.load_id.as_str(),
                 table.as_str(),
                 partition.as_deref(),
                 index,

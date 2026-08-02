@@ -31,18 +31,28 @@ pub(super) fn staging_tail(scope: &str, load: &str, name: &str) -> String {
     format!("{STAGING_DIR}/{scope}/{load}/{name}")
 }
 
-/// A staged part's NAME: load, table, partition slug (or `all`), and
-/// the per-(table, partition) index — deterministic, so a crash-replay
-/// stages the same names it staged before.
+/// A staged part's NAME under the load's staging directory: the table
+/// as its OWN path segment, then `{slug}-{index}.{ext}` — deterministic,
+/// so a crash-replay stages the same names it staged before.
+///
+/// 030 review amendment to the gen-1 flat shape
+/// `{load}-{table}-{slug}-{index}`: both table and slug may contain
+/// `-`, so the flat join was AMBIGUOUS — (`events`, `us-east`) and
+/// (`events-us`, `east`) collided to one staging file, the second
+/// overwriting the first's bytes (the 029 colliding-path corruption
+/// class, in the staging namespace). A path segment cannot contain
+/// `/`, so the segment form is injective; the `{slug}-{index}` half is
+/// unambiguous because the index is purely numeric and last. Staging
+/// is TRANSIENT (reclaimed wholesale at open, never re-interpreted
+/// across versions), so this is not a persisted-format change.
 pub(super) fn staged_name(
-    load: &str,
     table: &str,
     partition: Option<&str>,
     index: usize,
     extension: &str,
 ) -> String {
     let slug = partition.unwrap_or("all");
-    format!("{load}-{table}-{slug}-{index}.{extension}")
+    format!("{table}/{slug}-{index}.{extension}")
 }
 
 /// A published part's tail under the destination root. The index
@@ -67,7 +77,18 @@ pub(crate) fn final_tail(
 /// `__empty__`. NULL is rendered `__null__` by the splitter before it
 /// gets here. Partition directories are BARE values, not Hive
 /// `col=value`.
+///
+/// `.` and `..` are the two names path resolution INTERPRETS instead
+/// of storing: a partition value of `..` used to walk the part OUT of
+/// its table directory entirely — published where no ownership rule
+/// could count or reclaim it (030 review). They map to sentinel
+/// directories in the `__empty__` family instead.
 pub(super) fn path_safe(value: &str) -> String {
+    match value {
+        "." => return "__dot__".to_owned(),
+        ".." => return "__dotdot__".to_owned(),
+        _ => {}
+    }
     let safe: String = value
         .chars()
         .map(|c| {
@@ -137,16 +158,16 @@ mod tests {
         assert_eq!(state_file("abc123def456"), "_rdlt_state.abc123def456.json");
         assert_eq!(commits_file("abc"), "_rdlt_commits.abc.json");
         assert_eq!(
-            staging_tail("abc", "load-1", "load-1-t-all-0.parquet"),
-            ".rdlt-staging/abc/load-1/load-1-t-all-0.parquet"
+            staging_tail("abc", "load-1", "t/all-0.parquet"),
+            ".rdlt-staging/abc/load-1/t/all-0.parquet"
         );
-        assert_eq!(
-            staged_name("l", "t", None, 0, "parquet"),
-            "l-t-all-0.parquet"
-        );
-        assert_eq!(
-            staged_name("l", "t", Some("us"), 2, "jsonl"),
-            "l-t-us-2.jsonl"
+        assert_eq!(staged_name("t", None, 0, "parquet"), "t/all-0.parquet");
+        assert_eq!(staged_name("t", Some("us"), 2, "jsonl"), "t/us-2.jsonl");
+        // The 030 injectivity amendment: dashed table and slug pairs
+        // that collided under the gen-1 flat join stay distinct.
+        assert_ne!(
+            staged_name("events", Some("us-east"), 0, "parquet"),
+            staged_name("events-us", Some("east"), 0, "parquet"),
         );
         assert_eq!(
             final_tail("t", None, "l", 3, 0, "parquet"),
@@ -167,6 +188,11 @@ mod tests {
         assert_eq!(path_safe("a b/c"), "a_b_c");
         assert_eq!(path_safe("日本"), "__", "non-ascii replaced per char");
         assert_eq!(path_safe(""), "__empty__");
+        // Path resolution must never INTERPRET a partition directory:
+        // `..` used to walk the part out of its table dir (030 review).
+        assert_eq!(path_safe("."), "__dot__");
+        assert_eq!(path_safe(".."), "__dotdot__");
+        assert_eq!(path_safe("..."), "...", "only the two special names map");
     }
 
     /// The commit log: v0 accepted, the current version round-trips,

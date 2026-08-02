@@ -20,6 +20,10 @@ use super::{list, read};
 use crate::format::{Format, codec_of};
 use crate::location::Location;
 
+/// The crash points this source arms — exported so the sweep iterates
+/// exactly this list. These spellings are frozen.
+pub const FAIL_POINTS: &[&str] = &["file.list", "file.read"];
+
 /// The file source: a validated document in, streams of files out.
 #[derive(Debug, Clone)]
 pub struct File {

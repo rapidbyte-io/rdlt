@@ -159,3 +159,102 @@ async fn final_names_independent_of_cross_table_arrival_order() {
         );
     }
 }
+
+/// The 030 staging-injectivity amendment, live: dashed table names and
+/// dashed partition values that COLLIDED under the gen-1 flat staged
+/// name (`events` + `us-east` vs `events-us` + `east`) publish their
+/// own rows — no overwrite, no NotFound at promote.
+#[tokio::test]
+async fn dashed_tables_and_partitions_never_share_a_staged_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = local_dest(dir.path()).with_partition_by("region");
+    let dest = destination::Shell::new(config.clone()).expect("valid");
+    let pipeline = PipelineId::new("staging-injective");
+    let load = LoadId::new("l");
+    let mut s = dest
+        .open(OpenContext::new(pipeline.clone(), load.clone()))
+        .await
+        .expect("open");
+    for table in ["events", "events-us"] {
+        s.ensure_table(&partitioned_schema(table), &WriteMode::Append)
+            .await
+            .expect("ensure");
+    }
+    s.write(
+        &TableName::new("events"),
+        regional_batch(&[Some("us-east")]),
+    )
+    .await
+    .expect("write");
+    s.write(
+        &TableName::new("events-us"),
+        regional_batch(&[Some("east")]),
+    )
+    .await
+    .expect("write");
+    s.commit(commit_meta_for(&pipeline, &load, 1))
+        .await
+        .expect("commit");
+
+    for part in [
+        "events/us-east/part-l-1-0.parquet",
+        "events-us/east/part-l-1-0.parquet",
+    ] {
+        assert!(dir.path().join(part).is_file(), "{part} must exist");
+    }
+    for (table, want) in [("events", 1), ("events-us", 1)] {
+        assert_eq!(
+            destination::testhook::count_rows(&config, table).expect("count"),
+            want,
+            "{table} carries its own row"
+        );
+    }
+}
+
+/// A partition VALUE of `..` (or `.`) must never be interpreted by
+/// path resolution: the part lands INSIDE the table directory under a
+/// sentinel, where counting and Replace can reach it (030 review).
+#[tokio::test]
+async fn dot_partition_values_cannot_escape_the_table_directory() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = local_dest(dir.path()).with_partition_by("region");
+    let dest = destination::Shell::new(config.clone()).expect("valid");
+    let pipeline = PipelineId::new("dot-escape");
+    let load = LoadId::new("l");
+    let mut s = dest
+        .open(OpenContext::new(pipeline.clone(), load.clone()))
+        .await
+        .expect("open");
+    s.ensure_table(&partitioned_schema("events"), &WriteMode::Append)
+        .await
+        .expect("ensure");
+    s.write(
+        &TableName::new("events"),
+        regional_batch(&[Some(".."), Some(".")]),
+    )
+    .await
+    .expect("write");
+    s.commit(commit_meta_for(&pipeline, &load, 1))
+        .await
+        .expect("commit");
+
+    assert!(
+        dir.path()
+            .join("events/__dotdot__/part-l-1-0.parquet")
+            .is_file()
+    );
+    assert!(
+        dir.path()
+            .join("events/__dot__/part-l-1-0.parquet")
+            .is_file()
+    );
+    assert!(
+        !dir.path().join("part-l-1-0.parquet").exists(),
+        "nothing escaped to the destination root"
+    );
+    assert_eq!(
+        destination::testhook::count_rows(&config, "events").expect("count"),
+        2,
+        "both rows are countable inside the table"
+    );
+}

@@ -288,3 +288,35 @@ async fn an_unchanged_parquet_object_skips_its_second_fetch() {
         "the completed, etag-matched object skipped exactly its second download"
     );
 }
+
+/// Staged keys stay invisible to data globs on the OBJECT store too:
+/// a planted dot-prefixed key never matches a recursive pattern, while
+/// a sibling data key does (the S3 twin of the local planted
+/// `.rdlt-staging` pin — 030 review found the S3 side unpinned).
+#[tokio::test]
+async fn s3_wildcards_never_match_dot_prefixed_keys() {
+    let Some(fixture) = S3Fixture::start().await else {
+        return;
+    };
+    fixture
+        .put(".rdlt-staging/ab/load-1/t/all-0.jsonl", b"{\"id\": 99}\n")
+        .await;
+    fixture.put("in/a.jsonl", b"{\"id\": 1}\n").await;
+
+    let out = tempfile::tempdir().expect("out");
+    let workdir = tempfile::tempdir().expect("workdir");
+    let config = local_dest(out.path());
+    run(
+        s3_source(&fixture, "**/*.jsonl"),
+        &config,
+        "s3-dot-keys",
+        workdir.path(),
+    )
+    .await
+    .expect("the load settles");
+    assert_eq!(
+        destination::testhook::count_rows(&config, "events").expect("count"),
+        1,
+        "the staged key's row must not load"
+    );
+}
