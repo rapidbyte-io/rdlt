@@ -262,6 +262,48 @@ impl Location {
         }
     }
 
+    /// File names DIRECTLY inside one final directory (`{table}` or
+    /// `{table}/{partition}`) — basenames only, deeper levels
+    /// excluded. The crash-replay convergence sweep reads this; it is
+    /// scoped to one directory rather than the whole table because the
+    /// sweep runs on EVERY commit and a table grows without bound.
+    pub(crate) async fn files_in_final_dir(
+        &self,
+        dir_tail: &str,
+    ) -> Result<Vec<String>, DestinationError> {
+        match self {
+            Self::Local { root } => {
+                let listing = match std::fs::read_dir(root.join(dir_tail)) {
+                    Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+                    other => other.map_err(to_fatal)?,
+                };
+                let mut names = Vec::new();
+                for item in listing {
+                    let item = item.map_err(to_fatal)?;
+                    if item.file_type().map_err(to_fatal)?.is_file()
+                        && let Ok(name) = item.file_name().into_string()
+                    {
+                        names.push(name);
+                    }
+                }
+                Ok(names)
+            }
+            Self::S3(s3) => {
+                let dir_root = format!("{}/", s3.key_of_table_root(dir_tail));
+                let mut names = Vec::new();
+                for key in s3.list_keys(dir_tail).await? {
+                    let full = key.to_string();
+                    if let Some(rest) = tail_under_root(&full, &dir_root)?
+                        && !rest.contains('/')
+                    {
+                        names.push(rest.to_owned());
+                    }
+                }
+                Ok(names)
+            }
+        }
+    }
+
     /// Fetch one owned file, addressed by tail (row counting).
     pub(crate) async fn read_table_file(
         &self,

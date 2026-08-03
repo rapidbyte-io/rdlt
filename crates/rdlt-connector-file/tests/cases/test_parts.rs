@@ -312,6 +312,149 @@ async fn the_memory_ceiling_closes_parts_before_their_target() {
     }
 }
 
+/// The crash-replay CONVERGENCE SWEEP, pinned with a planted fixture.
+///
+/// The scenario it reproduces: an attempt of this very commit crashed
+/// AFTER publishing (no receipt landed), and — because
+/// `roll_after_seconds` makes part boundaries a function of wall clock
+/// — the retry splits the same rows into FEWER parts. Without the
+/// sweep, the crashed attempt's higher-index finals survive beside the
+/// retry's files and hold the same rows again: 030's part-index
+/// defect (6 rows where 4 loaded), reopened through a new mechanism.
+///
+/// Planted rather than crash-injected: the crashed attempt's residue
+/// is fully characterised by the files it left, so the fixture IS the
+/// crash, with nothing probabilistic about it.
+#[tokio::test]
+async fn a_replayed_commit_sweeps_a_predecessors_differently_split_finals() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let pipeline = PipelineId::new("sweep");
+    let load = LoadId::new("load-a");
+
+    // The crashed attempt: same load, same seq 1, split into three
+    // parts — indices 0..3.
+    let events = dir.path().join("events");
+    std::fs::create_dir_all(&events).expect("table dir");
+    for index in 0..3 {
+        std::fs::write(
+            events.join(format!("part-load-a-1-{index}.parquet")),
+            b"crashed attempt residue",
+        )
+        .expect("plant");
+    }
+    // Bystanders that must SURVIVE: another load's final, another
+    // seq's final, and a foreign dataset file.
+    for name in [
+        "part-other-load-1-0.parquet",
+        "part-load-a-2-0.parquet",
+        "part-00000-1a2b3c4d-c000.snappy.parquet",
+    ] {
+        std::fs::write(events.join(name), b"bystander").expect("plant");
+    }
+
+    // The retry: everything in ONE part (the default target), same
+    // load and commit seq.
+    let mut session = session_over(local_dest(dir.path()), &pipeline, &load).await;
+    session
+        .write(&TableName::new("events"), batch_of(0, 300))
+        .await
+        .expect("write");
+    session
+        .commit(commit_meta_for(&pipeline, &load, 1))
+        .await
+        .expect("commit");
+
+    let names: Vec<String> = std::fs::read_dir(&events)
+        .expect("table dir")
+        .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        names.contains(&"part-load-a-1-0.parquet".to_owned()),
+        "the retry's own part landed: {names:?}"
+    );
+    for stale in ["part-load-a-1-1.parquet", "part-load-a-1-2.parquet"] {
+        assert!(
+            !names.iter().any(|n| n == stale),
+            "{stale}: a crashed predecessor's same-commit final must be swept: {names:?}"
+        );
+    }
+    for survivor in [
+        "part-other-load-1-0.parquet",
+        "part-load-a-2-0.parquet",
+        "part-00000-1a2b3c4d-c000.snappy.parquet",
+    ] {
+        assert!(
+            names.iter().any(|n| n == survivor),
+            "{survivor}: the sweep is same-commit ONLY: {names:?}"
+        );
+    }
+    // Index 0 was OVERWRITTEN by the retry, not left as residue.
+    let kept = std::fs::read(events.join("part-load-a-1-0.parquet")).expect("read");
+    assert_ne!(
+        kept, b"crashed attempt residue",
+        "index 0 is the retry's file"
+    );
+}
+
+/// The same sweep, partitioned: the residue lives under the partition
+/// directory, and only that directory's same-commit strays go.
+#[tokio::test]
+async fn the_sweep_reaches_partition_directories() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let pipeline = PipelineId::new("sweep-part");
+    let load = LoadId::new("load-a");
+
+    let eu = dir.path().join("events").join("eu");
+    std::fs::create_dir_all(&eu).expect("partition dir");
+    std::fs::write(eu.join("part-load-a-1-1.parquet"), b"residue").expect("plant");
+    std::fs::write(eu.join("part-other-1-0.parquet"), b"bystander").expect("plant");
+
+    let config = local_dest(dir.path()).with_partition_by("payload");
+    let dest = destination::Shell::new(config).expect("valid");
+    let mut session = dest
+        .open(OpenContext::new(pipeline.clone(), load.clone()))
+        .await
+        .expect("open");
+    session
+        .ensure_table(&schema_of("events", &["id", "payload"]), &WriteMode::Append)
+        .await
+        .expect("ensure");
+    // One row whose partition value is exactly `eu`.
+    let batch = RecordBatch::try_from_iter(vec![
+        ("id", Arc::new(Int64Array::from(vec![1_i64])) as _),
+        (
+            "payload",
+            Arc::new(StringArray::from(vec![Some("eu")])) as _,
+        ),
+    ])
+    .expect("batch");
+    session
+        .write(&TableName::new("events"), batch)
+        .await
+        .expect("write");
+    session
+        .commit(commit_meta_for(&pipeline, &load, 1))
+        .await
+        .expect("commit");
+
+    let names: Vec<String> = std::fs::read_dir(&eu)
+        .expect("partition dir")
+        .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        !names.iter().any(|n| n == "part-load-a-1-1.parquet"),
+        "same-commit residue under the partition is swept: {names:?}"
+    );
+    assert!(
+        names.iter().any(|n| n == "part-other-1-0.parquet"),
+        "another load's file survives: {names:?}"
+    );
+    assert!(
+        names.iter().any(|n| n == "part-load-a-1-0.parquet"),
+        "the retry's own part landed: {names:?}"
+    );
+}
+
 /// The refusals, with the frozen spellings. Zero would silently mean
 /// "one part per batch", which is what `parts` exists to prevent.
 #[test]

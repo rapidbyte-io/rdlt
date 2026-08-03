@@ -32,8 +32,13 @@ pub(super) fn staging_tail(scope: &str, load: &str, name: &str) -> String {
 }
 
 /// A staged part's NAME under the load's staging directory: the table
-/// as its OWN path segment, then `{slug}-{index}.{ext}` — deterministic,
-/// so a crash-replay stages the same names it staged before.
+/// as its OWN path segment, then `{slug}-{index}.{ext}` — deterministic
+/// GIVEN the same part boundaries, so a crash-replay that splits its
+/// rows the same way stages the same names it staged before. Since 034
+/// the boundaries themselves need not reproduce (`roll_after_seconds`
+/// is wall clock), so name determinism alone no longer carries
+/// convergence — publish's same-commit sweep removes whatever a
+/// differently-split predecessor left behind.
 ///
 /// 030 review amendment to the gen-1 flat shape
 /// `{load}-{table}-{slug}-{index}`: both table and slug may contain

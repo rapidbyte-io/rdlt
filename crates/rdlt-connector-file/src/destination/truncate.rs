@@ -76,6 +76,41 @@ pub(super) fn owns(tail: &str) -> bool {
     numeric(index) && numeric(seq) && !load.is_empty()
 }
 
+/// Is `name` (a bare file name, no directories) a part THIS commit
+/// wrote — same load id AND same commit seq?
+///
+/// Parsed from the RIGHT exactly like [`owns`], then compared EXACTLY,
+/// never by prefix: a load id may itself end in `-<digits>`, so the
+/// name `part-a-1-5-0.parquet` is (load `a-1`, seq 5) — a prefix test
+/// against load `a`, seq 1 would claim it and delete another load's
+/// data.
+///
+/// This is the crash-replay convergence sweep's question: a retry of a
+/// partially-published commit may split its rows into DIFFERENT part
+/// boundaries than the crashed attempt (`roll_after_seconds` is wall
+/// clock), so after publishing, every same-commit final that this
+/// attempt did not just write is a crashed predecessor's and must go —
+/// left in place it holds the same rows again under a stale index.
+pub(super) fn same_commit_part(name: &str, load: &str, seq: u64) -> bool {
+    let Some(stem) = name.strip_prefix("part-") else {
+        return false;
+    };
+    let Some(stem) = DestFormat::ALL
+        .iter()
+        .find_map(|f| stem.strip_suffix(&format!(".{}", f.extension())))
+    else {
+        return false;
+    };
+    let Some((rest, index)) = stem.rsplit_once('-') else {
+        return false;
+    };
+    let Some((found_load, found_seq)) = rest.rsplit_once('-') else {
+        return false;
+    };
+    let numeric = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    numeric(index) && found_seq == seq.to_string() && found_load == load
+}
+
 /// The frozen pre-015 rule: a TOP-LEVEL `*.parquet` of any name.
 fn plain_top_level_parquet(tail: &str) -> bool {
     !tail.contains('/') && tail.ends_with(".parquet") && tail != ".parquet"
@@ -122,6 +157,25 @@ mod tests {
         // The partitioned form of a foreign name is equally foreign.
         assert!(!owns("eu/part-0.parquet"));
         assert!(owns("eu/part-load-1-0.jsonl"));
+    }
+
+    /// The sweep matcher: exact load AND seq, parsed from the right —
+    /// with the dash-ambiguity case that makes prefix matching unsafe.
+    #[test]
+    fn the_same_commit_matcher_is_exact_never_prefix() {
+        assert!(same_commit_part("part-load-a-1-0.parquet", "load-a", 1));
+        assert!(same_commit_part("part-load-a-1-7.jsonl", "load-a", 1));
+        // Another LOAD whose name extends this one: `part-a-1-…` is a
+        // legal spelling of (load `a-1`, seq 5, index 0) and must NOT
+        // match (load `a`, seq 1).
+        assert!(!same_commit_part("part-a-1-5-0.parquet", "a", 1));
+        assert!(same_commit_part("part-a-1-5-0.parquet", "a-1", 5));
+        // Other seq, other load, foreign shapes.
+        assert!(!same_commit_part("part-load-a-2-0.parquet", "load-a", 1));
+        assert!(!same_commit_part("part-other-1-0.parquet", "load-a", 1));
+        assert!(!same_commit_part("part-0.parquet", "load-a", 1));
+        assert!(!same_commit_part("part-load-a-1-0.csv", "load-a", 1));
+        assert!(!same_commit_part("part-load-a-1-x.parquet", "load-a", 1));
     }
 
     /// The frozen rule adds ONLY top-level `*.parquet`.

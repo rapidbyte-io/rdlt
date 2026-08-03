@@ -67,9 +67,6 @@ pub struct Config {
     /// for load parallelism, so the shared default sits inside its
     /// recommended band. Rows accumulate in memory until a part
     /// closes, which is what `max_open_bytes` bounds.
-    ///
-    /// Declared BEFORE the flattened options: `flatten` consumes
-    /// whatever is left, so a field after it would never be seen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parts: Option<rdlt_connector_sdk::spi::PartOptions>,
     /// The shared SQL-destination options (merge strategy, hard delete,

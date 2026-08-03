@@ -338,8 +338,15 @@ call sites from holding a `DmlOnly` borrow across the call. The file
 destination hit the identical wall in `commit_log`, resolved there by
 making it a free function.
 
-**`parts` is declared BEFORE the flattened `options`.** `serde(flatten)`
-consumes whatever is left, so a field declared after it is never seen.
+**A claim about `serde(flatten)` here was WRONG and is retracted.**
+Stage 4 originally recorded that `parts` had to be declared before the
+flattened `options` because "flatten consumes whatever is left, so a
+field after it is never seen." Review round 1 tested it: a field
+declared after a flatten field deserializes fine from JSON and YAML —
+the derive dispatches by key name, not declaration position. The
+comment was deleted; the ordering is stylistic. (The same commit
+message repeats the claim; this paragraph is the correction of
+record.)
 
 **A part is asked for its rowcount BEFORE it is finished.** An empty
 part has no file worth finalising, and a zero-row part in `pending`
@@ -426,3 +433,93 @@ factor here. The rerun was clean.
 
 Nothing in 034 touches container lifecycle; the failing cell has no
 `parts` involvement at all.
+
+---
+
+## Review round 1 (2026-08-03, five independent passes)
+
+Passes: CLAUDE.md/constitution compliance, shallow bug scan, git
+history, prior review records (the specs/* plan and contract files),
+code-comment compliance. Every finding verified directly before being
+acted on; the clean reports were spot-checked rather than trusted.
+
+### R1-1 (SEVERE, fixed + pinned red-proven): `roll_after_seconds`
+reopened 030's part-index defect on the file destination
+
+Found INDEPENDENTLY by the history pass and the prior-records pass,
+which is the strongest signal a round can give.
+
+The file destination's whole crash-replay correctness mechanism is
+"publish overwrites by deterministic name" (contract-inventory §4.3:
+NO set-atomic multi-file publish). That held because part boundaries
+were a pure function of the WAL-replayed batch sequence. 034 made
+them ALSO a function of wall clock: `roll_after_seconds` reads
+`Instant::elapsed`, which no retry reproduces. A commit that crashes
+after publishing but before its receipt is redelivered in full; if
+the retry's time-rolls land differently it stages FEWER parts, and
+the crashed attempt's higher-index finals survive beside the retry's
+files carrying the same rows again — exactly the "6 rows where 4
+loaded" defect 030 fixed, through a new mechanism. Snowflake is
+immune (COPY is inside the atomic unit) and iceberg is immune
+(snapshot-atomic publish, nonce-named files), so this was
+file-specific.
+
+THE FIX IS CONVERGENCE BY CONSTRUCTION, not restored determinism:
+publish now records exactly what it published per final directory and
+then SWEEPS — every file in those directories that parses as THIS
+(load, seq) and was not just published is a crashed predecessor's and
+is deleted. The matcher (`same_commit_part`) parses from the RIGHT
+like the ownership rule and compares load and seq EXACTLY, never by
+prefix — a load id may itself end in `-<digits>`, so
+`part-a-1-5-0.parquet` is (load `a-1`, seq 5) and a prefix test
+against (load `a`, seq 1) would delete another load's data (pinned).
+The sweep runs before the dir fsync (deletions ride the same
+durability barrier) and before the receipt (a crash mid-sweep is
+re-swept by the next replay; replay-dedup only short-circuits once
+the receipt — written after the sweep — exists).
+
+Scope and cost, stated: one directory listing per (table, partition)
+the commit wrote to, per commit — bounded by the partition directory's
+file count, not the table's. `layout.rs`'s "deterministic names"
+comment now states the narrowed guarantee.
+
+Pins, ALL RED-PROVEN against the pre-sweep code (2 failed, then 2
+passed): the planted-fixture replay (crashed attempt's 3 parts vs
+retry's 1 — stale indices 1,2 swept; another load's final, another
+seq's final, and a Spark-named foreign file all survive; index 0
+overwritten not residual), the partitioned variant, and a live S3 arm
+(the listing is per-storage-kind) against RUSTFS. Plus the matcher
+unit pin with the dash-ambiguity case.
+
+### R1-2 (fixed): a false claim in a load-bearing comment
+
+The snowflake `parts` field comment asserted a field declared after
+`#[serde(flatten)]` "would never be seen". Tested with a minimal
+repro against the workspace serde: FALSE — the derive dispatches by
+key name, order is irrelevant. Comment deleted; the stage-4 record
+above carries the correction (the commit message repeats the claim
+and is immutable).
+
+### R1-3 (fixed): doc-comment splice in the postgres refusal pin
+
+The new test was inserted BETWEEN `mod schema`'s doc comment and the
+module it documented, merging the two `///` blocks into one garbled
+comment on the wrong item. The schema comment is back on its module.
+
+### R1-4 (fixed): phase-number collision
+
+The new close-all-parts step in the file publish was labelled
+"Phase 1", but the contract inventory's four named phases start at
+1 = replay dedup. Renumbered Phase 0 with the reason inline.
+
+### Verified non-findings
+
+The bug-scan pass (state machines, naming, thresholds, error paths)
+and the remaining record checks came back clean; spot-checked its
+claims about `close_part` index derivation and the snowflake COPY
+superset rule directly. The zero-row guards it called unreachable are
+deliberate defence and stay.
+
+Gate after round 1: file+snowflake+postgres crates 465/465 (the one
+memory_bound failure was the recorded tmpfs mode — passes with TMPDIR
+on real disk), clippy clean.

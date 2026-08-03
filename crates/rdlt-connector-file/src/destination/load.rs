@@ -33,7 +33,7 @@ use super::layout::{
     state_file,
 };
 use super::stage::{OpenPart, split_partitions};
-use super::truncate::truncate_table;
+use super::truncate::{same_commit_part, truncate_table};
 use crate::location::Location;
 
 /// The session state: where to write, how to encode, and what has been
@@ -281,10 +281,14 @@ impl Backend for Load {
     }
 
     async fn publish(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestinationError> {
-        // Phase 1 — no part spans a commit. Publish moves WHOLE staged
+        // Phase 0 — no part spans a commit. Publish moves WHOLE staged
         // files, and a part still open has no file to move, so every
         // one is closed and staged before anything else happens. This
         // makes the commit cadence an upper bound on part size.
+        // Numbered 0 deliberately: the contract inventory's four named
+        // phases start at 1 = replay dedup (which the sdk choreography
+        // performs through `existing_receipt` before publish is ever
+        // called), and this step precedes them all.
         self.close_all_parts().await?;
 
         let mut log = commit_log(&self.location, &self.scope).await?;
@@ -320,6 +324,10 @@ impl Backend for Load {
         // Phase 3 — publish every staged part to its deterministic
         // final name, then make the renames durable (local only).
         let mut touched: BTreeSet<String> = BTreeSet::new();
+        // What THIS attempt published, per final directory — the
+        // convergence sweep below deletes everything same-commit that
+        // is not in here.
+        let mut published: BTreeMap<(String, Option<String>), BTreeSet<String>> = BTreeMap::new();
         for part in std::mem::take(&mut self.staged) {
             let tail = final_tail(
                 &part.table,
@@ -332,9 +340,47 @@ impl Backend for Load {
             self.location
                 .publish_part(&part.staging_tail, &tail)
                 .await?;
+            let name = tail.rsplit('/').next().expect("split is never empty");
+            published
+                .entry((part.table.clone(), part.partition.clone()))
+                .or_default()
+                .insert(name.to_owned());
             touched.insert(part.table.clone());
             if let Some(partition) = &part.partition {
                 touched.insert(format!("{}/{partition}", part.table));
+            }
+        }
+
+        // Phase 3b — the crash-replay CONVERGENCE SWEEP. Publish
+        // overwrites by deterministic name, which converges only while
+        // a replayed commit re-stages the SAME set of names — and with
+        // `roll_after_seconds` it need not: part boundaries become a
+        // function of wall clock, so a retry of a commit that crashed
+        // after publishing can stage FEWER parts than its predecessor,
+        // and the predecessor's higher-index finals would keep rows
+        // that the retry's files also carry (030's part-index defect,
+        // 6 rows where 4 loaded, reopened through a new mechanism).
+        // So every final in a directory this commit wrote to that
+        // parses as THIS (load, seq) and was not published just now is
+        // a crashed predecessor's, and is removed. Idempotent — a
+        // crash mid-sweep is re-swept by the next replay, and the
+        // receipt (which alone makes the commit claimable) lands only
+        // after the sweep.
+        for ((table, partition), names) in &published {
+            let dir = match partition {
+                Some(partition) => format!("{table}/{partition}"),
+                None => table.clone(),
+            };
+            for name in self.location.files_in_final_dir(&dir).await? {
+                if same_commit_part(&name, meta.load_id.as_str(), meta.commit_seq)
+                    && !names.contains(&name)
+                {
+                    let tail = match partition {
+                        Some(partition) => format!("{partition}/{name}"),
+                        None => name.clone(),
+                    };
+                    self.location.delete_table_file(table, &tail).await?;
+                }
             }
         }
         if self.location.is_local() {

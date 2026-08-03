@@ -107,6 +107,71 @@ async fn the_destination_publishes_and_clears_its_staging() {
 
 /// Replace over a real bucket clears ONLY owned shapes: a user object
 /// under the table prefix survives.
+/// The crash-replay convergence sweep on the OBJECT-STORE path, whose
+/// listing differs from the local one: a same-commit final a crashed
+/// predecessor published is removed, bystanders survive. The scenario
+/// and its full rationale are pinned locally in `test_parts.rs`; this
+/// cell exists because the sweep's directory listing is a per-kind
+/// implementation.
+#[tokio::test]
+async fn s3_publish_sweeps_a_predecessors_same_commit_finals() {
+    let Some(fixture) = S3Fixture::start().await else {
+        return;
+    };
+    // A crashed attempt of (load-a, seq 1) split into two parts; the
+    // retry below stages ONE. Plus bystanders that must survive.
+    fixture
+        .put("lake/events/part-load-a-1-1.jsonl", b"crashed residue")
+        .await;
+    fixture
+        .put("lake/events/part-other-1-0.jsonl", b"another load")
+        .await;
+    fixture
+        .put("lake/events/part-0.parquet", b"a user's dataset")
+        .await;
+
+    let dest_config = s3_dest(&fixture, "lake");
+    let mut value = serde_json::to_value(&dest_config).expect("value");
+    value["format"] = "jsonl".into();
+    let dest_config = destination::Config::from_value(value).expect("valid");
+    use rdlt_connector_sdk::spi::core::{LoadId, PipelineId, TableName, WriteMode};
+    use rdlt_connector_sdk::spi::{Destination, OpenContext};
+    use rdlt_testkit::{batch_of, commit_meta_for, schema_for};
+    let dest = destination::Shell::new(dest_config).expect("valid");
+    let pipeline = PipelineId::new("s3-sweep");
+    let load = LoadId::new("load-a");
+    let mut s = dest
+        .open(OpenContext::new(pipeline.clone(), load.clone()))
+        .await
+        .expect("open");
+    s.ensure_table(&schema_for("events"), &WriteMode::Append)
+        .await
+        .expect("ensure");
+    s.write(&TableName::new("events"), batch_of(&[1, 2]))
+        .await
+        .expect("write");
+    s.commit(commit_meta_for(&pipeline, &load, 1))
+        .await
+        .expect("commit");
+
+    assert!(
+        fixture.exists("lake/events/part-load-a-1-0.jsonl").await,
+        "the retry's own part landed"
+    );
+    assert!(
+        !fixture.exists("lake/events/part-load-a-1-1.jsonl").await,
+        "the crashed predecessor's same-commit final is swept"
+    );
+    assert!(
+        fixture.exists("lake/events/part-other-1-0.jsonl").await,
+        "another load's final survives the sweep"
+    );
+    assert!(
+        fixture.exists("lake/events/part-0.parquet").await,
+        "a foreign dataset file survives the sweep"
+    );
+}
+
 #[tokio::test]
 async fn s3_replace_never_deletes_user_files() {
     let Some(fixture) = S3Fixture::start().await else {

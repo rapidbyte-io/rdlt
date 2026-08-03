@@ -219,13 +219,7 @@ async fn non_bool_hard_delete_flag_uses_is_not_null() {
     );
 }
 
-/// The generated JSON Schema for the destination OPTIONS document — the
-/// artifact an editor or a config linter consumes, distinct from
-/// `destination::config_schema()` which describes the whole destination
-/// block. Each cell asks the schema and the parser the same question, so a
-/// drift between the two shows up as a disagreement rather than as a
-/// document that validates and then fails to load.
-/// 034: `parts` is REFUSED here, not accepted and ignored.
+/// `parts` is REFUSED here, not accepted and ignored.
 ///
 /// This destination writes rows into tables — there is no output file
 /// for a part size to describe. `deny_unknown_fields` already does the
@@ -246,6 +240,12 @@ fn part_sizing_is_refused_because_there_are_no_files() {
     assert!(err.contains("unknown field"), "{err}");
 }
 
+/// The generated JSON Schema for the destination OPTIONS document — the
+/// artifact an editor or a config linter consumes, distinct from
+/// `destination::config_schema()` which describes the whole destination
+/// block. Each cell asks the schema and the parser the same question, so a
+/// drift between the two shows up as a disagreement rather than as a
+/// document that validates and then fails to load.
 mod schema {
     use jsonschema::validator_for;
     use rdlt_connector_postgres::destination::DestinationOptions;
