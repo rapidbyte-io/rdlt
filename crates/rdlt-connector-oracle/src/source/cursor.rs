@@ -288,9 +288,9 @@ mod tests {
         assert!(watermark_less("9", "10"), "lexical order would say 9 > 10");
         assert!(watermark_less("-5", "3"));
         assert!(watermark_less("-10", "-5"), "more negative is less");
-        assert!(watermark_less("1.5", "1.45") == false);
+        assert!(!watermark_less("1.5", "1.45"));
         assert!(watermark_less("1.45", "1.5"));
-        assert!(watermark_less("0.1", "0.10") == false, "equal is not less");
+        assert!(!watermark_less("0.1", "0.10"), "equal is not less");
     }
 
     #[test]
