@@ -22,7 +22,7 @@ use rdlt_connector_sdk::source::Feed;
 use rdlt_connector_sdk::spi::SourceError;
 use rdlt_connector_sdk::spi::core::LogicalType;
 
-use super::client::{Client, quote_upper, value_to_json_typed};
+use super::client::{Client, quote_table, quote_upper, value_to_json_typed};
 use super::config::Stream;
 use super::cursor::{OracleCursor, checked_watermark_literal};
 use super::schema::{is_lob, logical_type, rows_per_page};
@@ -52,7 +52,7 @@ pub(crate) async fn read_stream(
     cursor: &mut OracleCursor,
     feed: &mut Feed,
 ) -> Result<bool, SourceError> {
-    let table = quote_upper(&stream.table);
+    let table = quote_table(&stream.table);
     let cursor_column = stream.cursor.as_deref().map(quote_upper);
 
     // Learn the shape BEFORE the first data page: the page size is
@@ -83,6 +83,26 @@ pub(crate) async fn read_stream(
                     stream.name, stream.table
                 ))
             })?;
+        // A NULLABLE cursor column is refused HERE, before a single
+        // row moves.
+        //
+        // Refusing at the row was worse than useless: Oracle sorts
+        // NULLs LAST, so the failure landed on the final page of the
+        // FIRST run — after most of the table was delivered and
+        // checkpointed. Every later run then resumed with
+        // `WHERE c > :watermark`, which never matches NULL, so the
+        // run went green and those rows were silently absent for the
+        // life of the pipeline. The loud refusal was unreachable
+        // exactly when it mattered.
+        if described.columns[at].nullable {
+            return Err(SourceError::fatal(format!(
+                "stream `{}`: cursor column `{name}` admits NULLs, which a watermark cannot \
+                 order — rows holding one would be delivered once and then skipped by every \
+                 resume. Make the column NOT NULL, choose another cursor, or drop `cursor` \
+                 to read the stream in full",
+                stream.name
+            )));
+        }
         if !cursor_capable(types[at]) {
             return Err(SourceError::fatal(format!(
                 "stream `{}`: cursor column `{name}` is {:?}, which has no usable order \
@@ -94,11 +114,35 @@ pub(crate) async fn read_stream(
     // The rowid column rides along at the END of every page's
     // projection, so its index is known from the described width.
     let rowid_at = described.columns.len();
+    // Row keys are lower-cased for the JSON payload, so two columns
+    // differing only in case would collapse into one and the first
+    // value would vanish with no diagnostic — 030's duplicate-CSV-
+    // header defect wearing a different costume. Refuse by name.
+    {
+        let mut seen = std::collections::HashSet::new();
+        for column in &described.columns {
+            let key = column.name.to_lowercase();
+            if !seen.insert(key.clone()) {
+                return Err(SourceError::fatal(format!(
+                    "stream `{}`: `{}` has two columns that differ only in case (`{key}`) — \
+                     the emitted row would keep only one of them",
+                    stream.name, stream.table
+                )));
+            }
+        }
+    }
     // The derived page is the SAFETY bound (one reply, one SDU); an
     // operator's `page_rows` may only lower it — raising it past what
     // the SDU holds would truncate replies, which is the defect this
     // whole design exists to prevent.
-    let derived = rows_per_page(&described.columns, tuning.sdu_bytes);
+    let Some(derived) = rows_per_page(&described.columns, tuning.sdu_bytes) else {
+        return Err(SourceError::fatal(format!(
+            "stream `{}`: a single row of `{}` is wider than one session data unit \
+             ({} bytes), and this build reads one packet per reply — no page size can \
+             make it readable",
+            stream.name, stream.table, tuning.sdu_bytes
+        )));
+    };
     let page_rows = tuning.page_rows.map_or(derived, |asked| asked.min(derived));
     // The driver returns at most its prefetch, and this read treats a
     // SHORT page as the last page — so the prefetch must cover the
@@ -147,6 +191,17 @@ pub(crate) async fn read_stream(
              ORDER BY {order} FETCH FIRST {page_rows} ROWS ONLY"
         );
 
+        // Armed INSIDE the loop, on purpose. Above the connection it
+        // aborted every sweep cell before a single row moved, so
+        // recovery always restarted from nothing and the assertion
+        // held no matter what the read path did — a vacuous cell of
+        // the 024 class. Here it can fail on page 3 with pages 1-2
+        // already delivered and checkpointed, which is the case the
+        // sweep exists to prove.
+        rdlt_connector_sdk::spi::core::crash_point!(
+            "ora.query",
+            Err(SourceError::fatal("injected crash at ora.query"))
+        );
         let (returned, page) = client
             .query(&format!("reading `{}`", stream.name), &sql, &[])
             .await?;
@@ -206,17 +261,15 @@ pub(crate) async fn read_stream(
                     let value = row.values().get(at);
                     let text = value.and_then(watermark_text);
                     if text.is_none() {
-                        // NULL (or an unorderable value) in the cursor
-                        // column: a watermark cannot represent it, and
-                        // both alternatives are silent data defects —
-                        // persisting an empty watermark poisons the
-                        // cursor for every later run, and skipping the
-                        // row hides it forever behind `c > w`. Refuse,
-                        // naming the fix.
+                        // The column was proven NOT NULL at describe,
+                        // so reaching here means the value could not
+                        // be rendered as a watermark at all. Persisting
+                        // an empty one would poison the cursor for
+                        // every later run; skipping the row would hide
+                        // it behind `c > w` forever.
                         return Err(SourceError::fatal(format!(
-                            "stream `{}`: cursor column `{}` is NULL (or unorderable) in a \
-                             row — a watermark cannot order it; make the column NOT NULL, \
-                             choose another cursor, or read the stream without one",
+                            "stream `{}`: cursor column `{}` yielded a value no watermark can \
+                             represent — choose another cursor, or read the stream without one",
                             stream.name,
                             stream.cursor.as_deref().unwrap_or_default()
                         )));
@@ -226,6 +279,25 @@ pub(crate) async fn read_stream(
                 None => None,
             };
             last_seen = Some((watermark.unwrap_or_default(), rowid));
+        }
+
+        // Every index into a page row — the payload columns, their
+        // declared types, and the ROWID that rides at the end — was
+        // fixed from the describe taken before the first page. A
+        // concurrent `ALTER TABLE … ADD` shifts them all, which would
+        // silently drop the new column as bookkeeping and read the
+        // resume key out of it. The arity is the cheap proof.
+        if let Some(row) = page.rows.first()
+            && row.values().len() != rowid_at + 1
+        {
+            return Err(SourceError::fatal(format!(
+                "stream `{}`: `{}` returned {} columns where the describe found {} — the \
+                 table's shape changed mid-read; re-run to pick up the new shape",
+                stream.name,
+                stream.table,
+                row.values().len().saturating_sub(1),
+                rowid_at
+            )));
         }
 
         if feed.raw_json(bytes::Bytes::from(ndjson)).await == ControlFlow::Break(()) {
@@ -253,8 +325,32 @@ pub(crate) async fn read_stream(
             }
         }
 
+        // END OF STREAM, and ONLY from evidence.
+        //
+        // A short page alone proves nothing: a reply is read as ONE
+        // packet, so a page can also come back short because the
+        // packet ended on a message boundary before the server's
+        // terminator. Treating that as "done" would checkpoint the
+        // truncation and report success — the very defect the
+        // driver's `has_more_rows` was patched into existence to
+        // report (it hardcoded `false` and so called every truncated
+        // batch complete).
+        //
+        // So: a FULL page always continues. A short page ends the
+        // stream only when the server said it was exhausted; a short
+        // page WITH continuation is a truncated reply, and that is an
+        // error, never a quiet finish.
         if (page.rows.len() as u32) < page_rows {
-            break; // a short page is the last page — the prefetch covers a full one
+            if page.has_more_rows {
+                return Err(SourceError::fatal(format!(
+                    "stream `{}`: the server returned {} of {page_rows} requested rows and \
+                     reported more to come — the reply did not fit one session data unit; \
+                     lower `tuning.page_rows` for this table",
+                    stream.name,
+                    page.rows.len()
+                )));
+            }
+            break;
         }
     }
     Ok(true)

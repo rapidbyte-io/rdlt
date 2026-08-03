@@ -21,7 +21,12 @@ pub(crate) struct Client {
     /// has left the protocol mid-conversation, so the timeout drops
     /// the connection exactly as any other failure does.
     read_timeout: std::time::Duration,
-    /// Bytes per LOB read round trip.
+    /// The largest single LOB value this read will materialize.
+    max_lob_bytes: u64,
+    /// CHARACTERS per CLOB round trip, BYTES per BLOB round trip —
+    /// Oracle interprets the amount by LOB kind, so the JDBC
+    /// parameter this mirrors (`defaultLobPrefetchSize`, always
+    /// bytes) is only an exact analogue for BLOBs.
     lob_chunk: u64,
 }
 
@@ -85,6 +90,7 @@ impl Client {
             conn,
             read_timeout: std::time::Duration::from_millis(config.tuning.read_timeout_ms),
             lob_chunk: config.tuning.lob_chunk_bytes,
+            max_lob_bytes: config.tuning.max_lob_bytes,
         };
         client.pin_session().await?;
         Ok(client)
@@ -198,6 +204,12 @@ impl Client {
         // The statement budget covers LOB reads too: they are many
         // round trips, and a stalled one hangs the load exactly as a
         // stalled query would.
+        // A CEILING, enforced while reading. Without it a single
+        // oversized value could be materialized in full — and a page
+        // holds many of them — so peak memory was a property of the
+        // DATA, not of any configured bound. Refusing by name beats
+        // being killed by the OOM reaper with no diagnostic.
+        let max = self.max_lob_bytes;
         if locator.is_clob() {
             let mut text = String::new();
             tokio::time::timeout(self.read_timeout, self.conn
@@ -205,7 +217,15 @@ impl Client {
                     if let LobData::String(piece) = &chunk {
                         text.push_str(piece);
                     }
-                    async { Ok(()) }
+                    let over = text.len() as u64 > max;
+                    async move {
+                        if over {
+                            return Err(oracle_rs::error::Error::Internal(format!(
+                                "CLOB exceeds `tuning.max_lob_bytes` ({max})"
+                            )));
+                        }
+                        Ok(())
+                    }
                 }))
                 .await
                 .map_err(|_| SourceError::transient("reading a CLOB: no answer within the budget"))?
@@ -218,14 +238,29 @@ impl Client {
                     if let LobData::Bytes(piece) = &chunk {
                         bytes.extend_from_slice(piece);
                     }
-                    async { Ok(()) }
+                    let over = bytes.len() as u64 > max;
+                    async move {
+                        if over {
+                            return Err(oracle_rs::error::Error::Internal(format!(
+                                "BLOB exceeds `tuning.max_lob_bytes` ({max})"
+                            )));
+                        }
+                        Ok(())
+                    }
                 }))
                 .await
                 .map_err(|_| SourceError::transient("reading a BLOB: no answer within the budget"))?
                 .map_err(|e| classify("reading a BLOB", e))?;
-            Ok(serde_json::Value::String(
-                bytes.iter().map(|b| format!("{b:02x}")).collect(),
-            ))
+            // ONE allocation, sized exactly. The previous
+            // `map(|b| format!("{b:02x}")).collect()` allocated a
+            // heap String PER BYTE — two billion of them for a 2 GB
+            // value.
+            let mut hex = String::with_capacity(bytes.len() * 2);
+            for byte in &bytes {
+                use std::fmt::Write as _;
+                let _ = write!(hex, "{byte:02x}");
+            }
+            Ok(serde_json::Value::String(hex))
         }
     }
 }
@@ -249,6 +284,53 @@ pub(crate) fn classify(context: &str, e: oracle_rs::error::Error) -> SourceError
         // Socket-level failures: the server or network went away
         // mid-conversation; a fresh connection may well succeed.
         Error::Io(_) => SourceError::transient(format!("{context}: {e}")),
+
+        // CREDENTIALS. These never carry an ORA code (the driver
+        // raises its own variants before the server's error reaches
+        // us), so without this arm they fell to the catch-all and
+        // were RETRIED. Oracle's DEFAULT profile locks an account
+        // after 10 failed logins and the engine attempts a run 5
+        // times: two runs after a rotated password would lock the
+        // user for every other consumer of it. Never retryable.
+        Error::InvalidCredentials | Error::AuthenticationFailed(_) => {
+            SourceError::fatal(format!("{context}: {e} — check `user` and `password`"))
+        }
+
+        // NAMING. A wrong service, SID, or host is a configuration
+        // fact; it does not become right on the next attempt.
+        Error::InvalidServiceName { .. }
+        | Error::InvalidSid { .. }
+        | Error::InvalidConnectionString(_) => {
+            SourceError::fatal(format!("{context}: {e} — check `service`/`sid`, `host`, `port`"))
+        }
+
+        // THE SERVER IS TOO OLD. Two independent floors: this driver
+        // refuses a TNS protocol below 12.1, and the read path emits
+        // `FETCH FIRST … ROWS ONLY`, which is 12.1 syntax. Retrying
+        // cannot change the server's version.
+        Error::ProtocolVersionNotSupported(..) => SourceError::fatal(format!(
+            "{context}: {e} — this connector requires Oracle 12.1 or newer"
+        )),
+
+        // A VALUE THAT CANNOT BE READ. Deterministic: the identical
+        // page query reproduces it exactly after any reconnect, so
+        // retrying only spends the budget and hides the cause.
+        Error::DataConversionError(_) | Error::InvalidOracleType(_) | Error::InvalidDataType(_) => {
+            SourceError::fatal(format!("{context}: {e}"))
+        }
+
+        // A REPLY THAT DID NOT FIT ONE PACKET. The standing SDU limit
+        // (plan.md T003): deterministic for a given row width, so it
+        // must fail by name pointing at the remedy rather than retry
+        // an impossible read to exhaustion.
+        Error::BufferUnderflow { .. } | Error::BufferOverflow { .. } => {
+            SourceError::fatal(format!(
+                "{context}: {e} — the reply exceeded one session data unit; this build reads \
+                 one packet per reply, so a row (or a very wide describe) larger than \
+                 `tuning.sdu_bytes` cannot be read"
+            ))
+        }
+
         // Driver-internal protocol/state errors (the T001 poisoning
         // class): the CONNECTION is undefined, the condition is not —
         // transient, and the reconnect starts clean.
@@ -337,15 +419,20 @@ pub(crate) fn value_to_json(value: &oracle_rs::row::Value) -> Result<serde_json:
         Value::Null => serde_json::Value::Null,
         Value::String(s) => serde_json::Value::String(s.clone()),
         Value::Integer(i) => serde_json::Value::Number((*i).into()),
+        // NaN and +/-Infinity are LEGAL, storable BINARY_FLOAT and
+        // BINARY_DOUBLE values, not corruption. JSON has no literal
+        // for them, so they cross as null — refusing the row would
+        // make one sensor reading render an entire table unreadable
+        // with no remedy short of editing production data.
         Value::Float(f) => serde_json::Number::from_f64(*f)
             .map(serde_json::Value::Number)
-            .ok_or("non-finite BINARY_FLOAT/DOUBLE value has no JSON representation")?,
+            .unwrap_or(serde_json::Value::Null),
         Value::Number(n) => {
-            // Full-precision NUMBER: emit as a JSON number when the
-            // text IS one (serde_json preserves arbitrary precision
-            // via its Number repr? no — so keep integers under i64,
-            // everything else as the exact STRING; the type_hints
-            // channel types it downstream).
+            // Full-precision NUMBER. `serde_json::Number` without
+            // `arbitrary_precision` cannot hold Oracle's 38 digits,
+            // so only values that fit an i64 become JSON numbers and
+            // everything else keeps its exact digits as text; the
+            // declared type carries the real type downstream.
             let text = n.as_str();
             if let Ok(i) = text.parse::<i64>() {
                 serde_json::Value::Number(i.into())
@@ -386,4 +473,29 @@ pub(crate) fn value_to_json(value: &oracle_rs::row::Value) -> Result<serde_json:
 /// (the 022 rule), with embedded quotes doubled.
 pub(crate) fn quote_upper(ident: &str) -> String {
     format!("\"{}\"", ident.to_uppercase().replace('"', "\"\""))
+}
+
+/// Quote a possibly QUALIFIED table name, one part at a time.
+///
+/// `HR.EMPLOYEES` is the ordinary shape of an Oracle estate — an app
+/// schema read by a separate read-only user — and quoting the whole
+/// string produced the single identifier `"HR.EMPLOYEES"`, which no
+/// table has ever been called. Each part is quoted on its own.
+///
+/// A part already written in double quotes is taken VERBATIM (minus
+/// the quotes), which is the only way to name a table created as
+/// `"lower_t"`: unquoted Oracle identifiers fold upper-case, so
+/// without this escape hatch a case-sensitive table is unreachable.
+pub(crate) fn quote_table(table: &str) -> String {
+    table
+        .split('.')
+        .map(|part| {
+            let part = part.trim();
+            match part.strip_prefix('"').and_then(|p| p.strip_suffix('"')) {
+                Some(verbatim) => format!("\"{}\"", verbatim.replace('"', "\"\"")),
+                None => quote_upper(part),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(".")
 }

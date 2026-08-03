@@ -3210,9 +3210,15 @@ impl Connection {
                         Ok(Value::String(num.value))
                     }
                     OracleType::Varchar | OracleType::Char | OracleType::Long => {
-                        let s = String::from_utf8_lossy(&bytes).to_string();
-                        Ok(Value::String(s))
+                        Ok(Value::String(decode_character(&bytes, col.csfrm)))
                     }
+                    // rdlt patch (032): these had NO arm, so the
+                    // catch-all applied from_utf8_lossy to raw IEEE
+                    // bytes and every value came back as mojibake.
+                    OracleType::BinaryFloat => {
+                        Ok(Value::Float(f64::from(decode_binary_float(&bytes)?)))
+                    }
+                    OracleType::BinaryDouble => Ok(Value::Float(decode_binary_double(&bytes)?)),
                     OracleType::Raw | OracleType::LongRaw => {
                         // RAW/LONG RAW types - return as bytes
                         Ok(Value::Bytes(bytes.to_vec()))
@@ -3888,7 +3894,12 @@ impl Connection {
             let _oid = buf.read_bytes_with_length()?; // OID
             buf.skip_ub2()?; // version
             buf.skip_ub2()?; // charset_id
-            let _csfrm = buf.read_u8()?; // charset form
+            // rdlt patch (032): csfrm is CAPTURED, not discarded. The
+            // connect handshake advertises UTF-16 for the national
+            // character set, so an NCHAR-form column arrives UTF-16BE
+            // and decoding it as UTF-8 destroys it. This byte is the
+            // only thing that distinguishes the two.
+            let csfrm = buf.read_u8()?; // charset form
             let max_size = buf.read_ub4()?;
 
             // For TTC field version >= 12.2 (8), skip oaccolid
@@ -3896,7 +3907,11 @@ impl Connection {
                 buf.skip_ub4()?; // oaccolid
             }
 
-            let _nulls_allowed = buf.read_u8()?;
+            // rdlt patch (032): nullability is CAPTURED, not
+            // discarded — a cursor column that admits NULLs cannot
+            // order a watermark, and the only honest moment to say so
+            // is before any row is read.
+            let nulls_allowed = buf.read_u8()? != 0;
             buf.skip_ub1()?; // v7 length of name
             let name = buf.read_string_with_ub4_length()?.unwrap_or_default();
             let _schema = buf.read_string_with_ub4_length()?; // schema
@@ -3941,8 +3956,16 @@ impl Connection {
 
             let mut col = ColumnInfo::new(&name, oracle_type);
             col.data_size = if max_size > 0 { max_size } else { buffer_size };
-            col.precision = precision as i16;
-            col.scale = scale as i16;
+            col.buffer_size = buffer_size;
+            col.csfrm = csfrm;
+            col.nullable = nulls_allowed;
+            // rdlt patch (032): precision and scale are SB1 on the
+            // wire — SIGNED. Casting the raw u8 straight to i16 turned
+            // Oracle's -127 (FLOAT / floating-scale NUMBER) into 129
+            // and a legal NUMBER(10,-2) into 254, yielding decimals
+            // whose scale exceeds their precision.
+            col.precision = i16::from(precision as i8);
+            col.scale = i16::from(scale as i8);
             columns.push(col);
         }
 
@@ -5450,4 +5473,56 @@ mod tests {
         let collected: Vec<Row> = result.into_iter().collect();
         assert_eq!(collected.len(), 2);
     }
+}
+
+/// rdlt patch (032): decode a character column honouring its
+/// charset FORM. Form 2 (`SQLCS_NCHAR`) is the national character
+/// set, which this driver negotiates as UTF-16 at connect, so those
+/// bytes are UTF-16BE and decoding them as UTF-8 destroys them.
+fn decode_character(bytes: &[u8], csfrm: u8) -> String {
+    const SQLCS_NCHAR: u8 = 2;
+    if csfrm != SQLCS_NCHAR {
+        return String::from_utf8_lossy(bytes).to_string();
+    }
+    let units: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
+        .collect();
+    String::from_utf16_lossy(&units)
+}
+
+/// rdlt patch (032): Oracle's BINARY_FLOAT wire form — IEEE 754 with
+/// the sign bit flipped for positives, and every bit inverted for
+/// negatives, so that raw byte order sorts numerically.
+fn decode_binary_float(bytes: &[u8]) -> Result<f32> {
+    let raw: [u8; 4] = bytes.try_into().map_err(|_| {
+        Error::DataConversionError(format!(
+            "BINARY_FLOAT is 4 bytes on the wire, got {}",
+            bytes.len()
+        ))
+    })?;
+    let mut bits = u32::from_be_bytes(raw);
+    if bits & 0x8000_0000 != 0 {
+        bits &= 0x7fff_ffff;
+    } else {
+        bits = !bits;
+    }
+    Ok(f32::from_bits(bits))
+}
+
+/// rdlt patch (032): BINARY_DOUBLE, same transform at 8 bytes.
+fn decode_binary_double(bytes: &[u8]) -> Result<f64> {
+    let raw: [u8; 8] = bytes.try_into().map_err(|_| {
+        Error::DataConversionError(format!(
+            "BINARY_DOUBLE is 8 bytes on the wire, got {}",
+            bytes.len()
+        ))
+    })?;
+    let mut bits = u64::from_be_bytes(raw);
+    if bits & 0x8000_0000_0000_0000 != 0 {
+        bits &= 0x7fff_ffff_ffff_ffff;
+    } else {
+        bits = !bits;
+    }
+    Ok(f64::from_bits(bits))
 }

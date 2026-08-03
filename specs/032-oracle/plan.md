@@ -303,6 +303,61 @@ coupled to the page size at all. An unknown `tuning` key is REFUSED
 rather than ignored, so a config carrying it fails loudly instead of
 appearing to take effect — pinned.
 
+## T004 — THE ROUND-3 MEASUREMENTS THAT BLOCK THE DESIGN (2026-08-03)
+
+Round 3's driver lens claimed the read path leaks a server cursor per
+page. PROBED LIVE, twice, independently (this session and the
+benchmark harness), and CONFIRMED — with a second defect the probe
+exposed on its own:
+
+**M1 — a read dies at ~297 pages, whatever the page size.** 5,000 rows
+at `page_rows: 5` delivered 1,475 rows (295 pages) and then Oracle
+closed the connection. The benchmark harness measured the same wall at
+297 pages on a different shape, INDEPENDENT of `page_rows` (7 and 14
+both die there) and of table size, and PROVED the cause by raising the
+server's `open_cursors` to 20,000 — at which the identical 20k read
+completes (1,429 pages). Stock Oracle allows 300. Every page is a
+distinct SQL text (the watermark and ROWID are interpolated literals),
+the driver's statement cache holds a server cursor per distinct text,
+and NOTHING ever closes one: `FunctionCode::CloseCursors` has no
+sender in the driver, `close_cursor` only flips a local bool, and
+`evict_lru` drops entries silently.
+
+**M2 — constant SQL does NOT fix it, and binds are broken.** Probed
+directly: 600 executions of one BYTE-IDENTICAL query died at 299, so
+the statement cache does not reuse the server cursor. The obvious
+alternative — bind the watermark and ROWID as parameters — fails at
+the FIRST call with `connection closed unexpectedly`. Neither of the
+cheap fixes exists.
+
+**M3 — the read is super-linear in TABLE SIZE.** With the cursor limit
+worked around: 20k rows 2.87 s, 40k 10.5 s, 80k 31.8 s. At an
+identical 2,858 pages a 20k table costs 2.17 ms/page and a 40k table
+3.68 ms/page — per-page cost tracks the TABLE's size, not the page
+count, i.e. each page rescans. `WHERE ROWID > :last ORDER BY ROWID`
+re-walks the blocks below the watermark every time. Extrapolated, 200k
+rows is ~3-7 minutes; the plan predicted 8-31 s. NOT measured at 200k,
+and no figure is claimed for it.
+
+**THE COMMON ROOT.** M1 and M3 are the same defect wearing two hats:
+the driver cannot STREAM a result set. Continuation past the prefetch
+is broken (T001), the multi-packet read that would fix it was
+attempted and reverted on evidence (T003), so the read path re-queries
+per page — which forces both a fresh cursor per page and a rescan per
+page. Every remedy short of fixing the driver's row streaming is a
+workaround for that one thing.
+
+**Two more defects the benchmark fixture found live:**
+- `BINARY_DOUBLE`/`BINARY_FLOAT` are SILENTLY CORRUPTED. The driver's
+  `parse_column_value` has no arm for either, so the `_ =>` catch-all
+  returns `String::from_utf8_lossy(&bytes)` — raw wire bytes as
+  mojibake — and the connector's `Float64` declaration then fails to
+  parse and KEEPS the garbage. It surfaced only because Postgres
+  refused the embedded NUL. `row.rs` decodes both correctly, so the
+  fix is two arms in the driver.
+- Named time-zone regions are refused on read
+  (`FROM_TZ(..., 'UTC')` fails the whole stream).
+
 ## REVIEW ROUNDS
 
 The connector was built, then attacked. Each round is recorded with

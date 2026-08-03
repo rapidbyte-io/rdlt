@@ -21,6 +21,15 @@ use rdlt_connector_sdk::spi::core::LogicalType;
 /// - `TIMESTAMP WITH LOCAL TIME ZONE` is normalized by the session,
 ///   which the client pins to UTC at connect.
 pub(crate) fn logical_type(column: &ColumnInfo) -> Result<LogicalType, String> {
+    // Oracle's NEGATIVE scales (-127 for FLOAT and floating-scale
+    // NUMBER, or a declared NUMBER(10,-2)) describe a value that is
+    // rounded ABOVE the decimal point. `LogicalType::Decimal` has no
+    // way to say that — its scale is unsigned — so these keep their
+    // exact digits as text rather than being declared a decimal whose
+    // scale would be nonsense.
+    if column.scale < 0 {
+        return Ok(LogicalType::Utf8);
+    }
     Ok(match column.oracle_type {
         OracleType::Number => {
             if column.scale > 0 && column.precision > 0 {
@@ -75,18 +84,29 @@ const DEFAULT_SDU_BYTES: u32 = 8192;
 /// round trip.
 const PAGE_BUDGET: f64 = 0.55;
 
+/// The wire width the ROWID column adds to EVERY page row.
+///
+/// The describe is taken over `SELECT t.*`, but each executed page
+/// also projects `ROWIDTOCHAR(t.ROWID)` — 18 characters, on every
+/// row, unconditionally. Sizing the page from the describe alone left
+/// that unbudgeted, which is how a narrow table could derive a page
+/// whose reply exceeded the packet.
+const ROWID_BYTES: u32 = 18;
+
 /// How many rows may be requested per round trip, DERIVED from the
-/// widths the server described.
+/// widths the server described — or `None` when a SINGLE row cannot
+/// fit, which no page size can rescue.
 ///
 /// A LOB column contributes its locator, not its content (the content
-/// is read separately), so a table of CLOBs still pages sanely. The
-/// floor of 1 keeps a pathologically wide row readable one row at a
-/// time; the ceiling keeps a narrow table from asking for a page the
-/// server would spend real memory materializing.
-pub(crate) fn rows_per_page(columns: &[ColumnInfo], sdu_bytes: u32) -> u32 {
+/// is read separately), so a table of CLOBs still pages sanely.
+///
+/// Returning `None` rather than clamping to 1 is the point. The old
+/// floor of 1 abandoned the invariant the whole design rests on — one
+/// reply, one packet — and handed the failure to the wire, where it
+/// surfaced as a buffer underflow on a read that can never succeed.
+pub(crate) fn rows_per_page(columns: &[ColumnInfo], sdu_bytes: u32) -> Option<u32> {
     const LOCATOR_BYTES: u32 = 128;
     const PER_COLUMN_OVERHEAD: u32 = 2;
-    const MAX_ROWS: u32 = 5_000;
 
     let row_bytes: u32 = columns
         .iter()
@@ -94,17 +114,27 @@ pub(crate) fn rows_per_page(columns: &[ColumnInfo], sdu_bytes: u32) -> u32 {
             let width = if is_lob(c) {
                 LOCATOR_BYTES
             } else {
-                // `data_size` is the DECLARED maximum; it is the only
-                // width the server gives us before reading, and
-                // over-estimating is the safe direction.
-                c.data_size.max(1)
+                // `buffer_size` is the width THE SERVER ALLOCATED, in
+                // bytes. `data_size` is the DECLARED size, which for a
+                // character-semantics column is a CHARACTER count —
+                // `VARCHAR2(1000 CHAR)` describes as 1000 while the
+                // server allocates 4000. Budgeting from the declared
+                // number under-counted by up to 4x on any multibyte
+                // database, deriving pages that could not fit.
+                c.buffer_size.max(c.data_size).max(1)
             };
-            width + PER_COLUMN_OVERHEAD
+            // Saturating: these are server-supplied ub4s, and a sum
+            // that wrapped would produce a tiny row width and a
+            // catastrophically large page.
+            width.saturating_add(PER_COLUMN_OVERHEAD)
         })
-        .sum::<u32>()
+        .fold(ROWID_BYTES + PER_COLUMN_OVERHEAD, u32::saturating_add)
         .max(1);
     let budget = (f64::from(sdu_bytes) * PAGE_BUDGET) as u32;
-    (budget / row_bytes).clamp(1, MAX_ROWS)
+    match budget / row_bytes {
+        0 => None,
+        rows => Some(rows),
+    }
 }
 
 #[cfg(test)]
@@ -177,13 +207,15 @@ mod tests {
             column("id", OracleType::Number, 22),
             column("pad", OracleType::Varchar, 4000),
         ];
-        let narrow_page = rows_per_page(&narrow, DEFAULT_SDU_BYTES);
-        let wide_page = rows_per_page(&wide, DEFAULT_SDU_BYTES);
+        let narrow_page = rows_per_page(&narrow, DEFAULT_SDU_BYTES).expect("narrow fits");
+        let wide_page = rows_per_page(&wide, DEFAULT_SDU_BYTES).expect("a 4 KB row still fits");
         assert!(narrow_page > wide_page, "{narrow_page} vs {wide_page}");
         assert_eq!(wide_page, 1, "a 4 KB row leaves room for exactly one");
-        // Every page must fit the budget it was derived from.
+        // Every page must fit the budget it was derived from — and
+        // the ROWID column every page projects is part of the row.
         for (columns, page) in [(&narrow[..], narrow_page), (&wide[..], wide_page)] {
-            let row_bytes: u32 = columns.iter().map(|c| c.data_size + 2).sum();
+            let row_bytes: u32 =
+                columns.iter().map(|c| c.data_size + 2).sum::<u32>() + ROWID_BYTES + 2;
             assert!(
                 page * row_bytes <= DEFAULT_SDU_BYTES,
                 "page {page} × {row_bytes} exceeds the SDU"
@@ -191,6 +223,37 @@ mod tests {
         }
         // A table of LOBs pages by locator width, not content.
         let lobs = [column("doc", OracleType::Clob, 4000)];
-        assert!(rows_per_page(&lobs, DEFAULT_SDU_BYTES) > 20);
+        assert!(rows_per_page(&lobs, DEFAULT_SDU_BYTES).expect("locators are small") > 20);
+    }
+
+    /// A row wider than the whole packet is REFUSED, not clamped to a
+    /// one-row page that cannot be read either.
+    #[test]
+    fn a_row_wider_than_the_packet_has_no_page_size() {
+        let huge = [
+            column("a", OracleType::Varchar, 4000),
+            column("b", OracleType::Varchar, 4000),
+        ];
+        assert_eq!(
+            rows_per_page(&huge, DEFAULT_SDU_BYTES),
+            None,
+            "8 KB of declared width cannot fit a 4.5 KB budget at any page size"
+        );
+    }
+
+    /// Character-semantics columns are budgeted by the SERVER'S byte
+    /// width, not the declared character count — the two differ by up
+    /// to 4x on a multibyte database.
+    #[test]
+    fn the_budget_uses_the_servers_byte_width() {
+        // VARCHAR2(1000 CHAR) on AL32UTF8: declared 1000, allocated 4000.
+        let mut col = ColumnInfo::new("txt", OracleType::Varchar);
+        col.data_size = 1000;
+        col.buffer_size = 4000;
+        let page = rows_per_page(&[col], DEFAULT_SDU_BYTES).expect("one row fits");
+        assert_eq!(
+            page, 1,
+            "budgeting by the declared 1000 would have derived 4 rows of up to 16 KB"
+        );
     }
 }

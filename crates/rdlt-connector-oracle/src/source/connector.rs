@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use rdlt_connector_sdk::source::{Feed, SourceConnector};
-use rdlt_connector_sdk::spi::core::{Cursor, StreamName, crash_point};
+use rdlt_connector_sdk::spi::core::{Cursor, StreamName};
 use rdlt_connector_sdk::spi::{SourceError, StreamSpec};
 
 use super::client::Client;
@@ -46,19 +46,53 @@ impl SourceConnector for Oracle {
         Client::connect(&self.config).await.map(|_| ())
     }
 
+    /// Declare each stream — INCLUDING its column types.
+    ///
+    /// The rows themselves cross as raw JSON, where a decimal is a
+    /// string and a BLOB is hex, so `type_hints` is the ONLY channel
+    /// that tells the engine what those strings mean. Without it every
+    /// `NUMBER(12,2)` landed as TEXT in the destination, every RAW as
+    /// text, every DATE as text — the connector derived the exact type
+    /// from the server's own describe and then threw it away.
+    ///
+    /// This costs one describe round trip per stream, which is why it
+    /// lives in discovery rather than the read path.
     async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
-        Ok(self
-            .config
-            .streams
-            .iter()
-            .map(|stream| {
-                let mut spec = StreamSpec::new(stream.name.as_str());
-                if let Some(key) = &stream.primary_key {
-                    spec = spec.with_primary_key(key.iter().cloned());
-                }
-                spec
-            })
-            .collect())
+        let mut client = Client::connect(&self.config).await?;
+        let mut specs = Vec::with_capacity(self.config.streams.len());
+        for stream in &self.config.streams {
+            let mut spec = StreamSpec::new(stream.name.as_str());
+            if let Some(key) = &stream.primary_key {
+                spec = spec.with_primary_key(key.iter().cloned());
+            }
+            if let Some(cursor) = &stream.cursor {
+                spec = spec.with_cursor_field(cursor.clone());
+            }
+            let (returned, described) = client
+                .query(
+                    &format!("describing `{}`", stream.name),
+                    &format!(
+                        "SELECT t.* FROM {} t WHERE 1 = 0",
+                        super::client::quote_table(&stream.table)
+                    ),
+                    &[],
+                )
+                .await?;
+            client = returned;
+            for column in &described.columns {
+                let derived = super::schema::logical_type(column).map_err(SourceError::fatal)?;
+                spec = spec.with_type_hint(column.name.to_lowercase(), derived);
+            }
+            // The operator's own hints WIN — that is what the escape
+            // hatch is for, chiefly bare `NUMBER`, which is derived
+            // conservatively as text because Oracle accepts any
+            // magnitude in it.
+            for (column, hint) in &stream.type_hints {
+                spec = spec.with_type_hint(column.to_lowercase(), (*hint).into());
+            }
+            specs.push(spec);
+        }
+        Ok(specs)
     }
 
     async fn read_stream(
@@ -74,10 +108,6 @@ impl SourceConnector for Oracle {
             )));
         };
         let mut cursor = OracleCursor::decode(since.as_ref())?;
-        crash_point!(
-            "ora.query",
-            Err(SourceError::fatal("injected crash at ora.query"))
-        );
         // A fresh connection per stream: the boundary's poison rule
         // means a connection that errored is gone, and a stream that
         // starts clean can retry independently.

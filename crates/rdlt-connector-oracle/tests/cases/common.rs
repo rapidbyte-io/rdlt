@@ -136,6 +136,20 @@ impl OracleFixture {
         Config::from_value(value).expect("valid fixture document")
     }
 
+    /// A shell whose `tuning` carries the given overrides.
+    pub fn shell_tuned(&self, streams: &[Stream], tuning: serde_json::Value) -> Shell {
+        let mut value = serde_json::json!({
+            "host": self.host,
+            "port": self.port,
+            "service": self.flavor.service(),
+            "user": APP_USER,
+            "password": PASSWORD,
+            "streams": serde_json::to_value(streams).expect("streams"),
+        });
+        value["tuning"] = tuning;
+        Shell::new(Config::from_value(value).expect("valid tuned document")).expect("valid")
+    }
+
     pub fn shell(&self, streams: &[Stream]) -> Shell {
         Shell::new(self.config(streams)).expect("valid")
     }

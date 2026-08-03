@@ -5,6 +5,7 @@ use rdlt_connector_sdk::spi::core::StreamName;
 use rdlt_connector_sdk::spi::{Source, StreamSpec};
 use rdlt_testkit::{assert_conformant, verify_source};
 
+use super::common;
 use super::common::{Flavor, OracleFixture, incremental, stream};
 
 /// Collect one stream's rows through the SPI, returning the JSON
@@ -252,12 +253,15 @@ async fn the_source_is_conformant() {
     let _ = StreamName::new("conf_stream");
 }
 
-/// A NULL in the cursor column is refused, not absorbed.
+/// A NULLABLE cursor column is refused BEFORE any row moves.
 ///
-/// Oracle sorts NULLs LAST, so the final row of a full read carries
-/// one — and both silent alternatives are data defects: persisting an
-/// empty watermark poisons every later run, and skipping the row
-/// hides it forever behind `c > w`.
+/// The timing is the whole point. Refusing at the row was worse than
+/// useless: Oracle sorts NULLs LAST, so the failure landed on the
+/// final page of the FIRST run, after most of the table had already
+/// been delivered and checkpointed. Every later run resumed with
+/// `WHERE c > :watermark`, which never matches NULL, so it went green
+/// and those rows were silently absent forever — the loud refusal was
+/// unreachable exactly when it mattered.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_null_cursor_value_is_refused() {
     let Some(fixture) = OracleFixture::start().await else {
@@ -282,9 +286,26 @@ async fn a_null_cursor_value_is_refused() {
         .expect_err("refused")
         .to_string();
     assert!(
-        err.contains("cursor column `TS` is NULL") && err.contains("make the column NOT NULL"),
+        err.contains("cursor column `TS` admits NULLs") && err.contains("NOT NULL"),
         "{err}"
     );
+    // And it is refused on a table where no row is NULL yet — the
+    // COLUMN's nullability is the fact, not today's contents.
+    fixture
+        .seed(&["CREATE TABLE NULLC_EMPTY (ID NUMBER(8) PRIMARY KEY, TS DATE)"])
+        .await;
+    let shell = fixture.shell(&[incremental("e", "NULLC_EMPTY", "TS")]);
+    let (out, _keep) = rdlt_connector_sdk::spi::records_channel(1 << 20);
+    let err = shell
+        .read(rdlt_connector_sdk::spi::ReadRequest {
+            stream: StreamSpec::new("e"),
+            since: None,
+            out,
+        })
+        .await
+        .expect_err("refused before a single row")
+        .to_string();
+    assert!(err.contains("admits NULLs"), "{err}");
 }
 
 /// A DATE cursor resumes — the rendering and the SQL format model
@@ -376,4 +397,210 @@ async fn the_read_path_holds_against_oracle_21c() {
     let (delta, _) = read_all(&shell, "xe", Some(cursor)).await;
     assert_eq!(delta.len(), 1, "21c resumes exactly");
     assert_eq!(delta[0]["id"], serde_json::json!(9999));
+}
+
+/// NVARCHAR2 and NCHAR survive the wire.
+///
+/// They did not. The driver advertises UTF-16 for the national
+/// character set at connect but decoded every character column as
+/// UTF-8, so `N'zażółć'` arrived as `"\0z\0a\u{1}|..."` — destroyed,
+/// unrecoverable, with no error anywhere, while the VARCHAR2 twin in
+/// the same row was fine. Both research.md and plan.md claimed these
+/// types were lossless and no cell covered them.
+#[tokio::test(flavor = "multi_thread")]
+async fn national_character_types_survive_the_wire() {
+    let Some(fixture) = OracleFixture::start().await else {
+        return;
+    };
+    fixture
+        .seed(&[
+            "CREATE TABLE NCHAR_T (ID NUMBER(4) PRIMARY KEY, NV NVARCHAR2(50), \
+             NC NCHAR(6), V VARCHAR2(50))",
+            "INSERT INTO NCHAR_T VALUES (1, N'zażółć', N'abc', 'zażółć')",
+        ])
+        .await;
+    let shell = fixture.shell(&[stream("n", "NCHAR_T")]);
+    let (rows, _) = read_all(&shell, "n", None).await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["nv"], serde_json::json!("zażółć"), "NVARCHAR2");
+    assert_eq!(rows[0]["nc"], serde_json::json!("abc   "), "NCHAR is padded");
+    assert_eq!(rows[0]["v"], serde_json::json!("zażółć"), "VARCHAR2 twin");
+}
+
+/// BINARY_FLOAT and BINARY_DOUBLE decode as numbers, and the
+/// non-finite values Oracle legally stores do not kill the table.
+///
+/// The driver had no arm for either type, so the catch-all applied a
+/// lossy UTF-8 decode to raw IEEE bytes and the connector kept the
+/// mojibake. It surfaced only because Postgres refused an embedded
+/// NUL.
+#[tokio::test(flavor = "multi_thread")]
+async fn binary_float_and_double_decode_as_numbers() {
+    let Some(fixture) = OracleFixture::start().await else {
+        return;
+    };
+    fixture
+        .seed(&[
+            "CREATE TABLE BINF_T (ID NUMBER(4) PRIMARY KEY, F BINARY_FLOAT, D BINARY_DOUBLE)",
+            "INSERT INTO BINF_T VALUES (1, 1.5F, 2.25D)",
+            "INSERT INTO BINF_T VALUES (2, -0.5F, -1234.5D)",
+            "INSERT INTO BINF_T VALUES (3, BINARY_FLOAT_INFINITY, BINARY_DOUBLE_NAN)",
+        ])
+        .await;
+    let shell = fixture.shell(&[stream("b", "BINF_T")]);
+    let (rows, _) = read_all(&shell, "b", None).await;
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0]["f"], serde_json::json!(1.5));
+    assert_eq!(rows[0]["d"], serde_json::json!(2.25));
+    assert_eq!(rows[1]["f"], serde_json::json!(-0.5), "negatives invert");
+    assert_eq!(rows[1]["d"], serde_json::json!(-1234.5));
+    // JSON has no literal for these; null beats making one sensor
+    // reading render the whole table unreadable.
+    assert!(rows[2]["f"].is_null(), "infinity crosses as null");
+    assert!(rows[2]["d"].is_null(), "NaN crosses as null");
+}
+
+/// A table is reachable by its SCHEMA-qualified name, and a
+/// case-sensitive name is reachable by quoting it.
+///
+/// `HR.EMPLOYEES` — an app schema read by a separate user, the
+/// ordinary Oracle estate shape — was quoted as ONE identifier,
+/// `"HR.EMPLOYEES"`, which no table has ever been called.
+#[tokio::test(flavor = "multi_thread")]
+async fn qualified_and_case_sensitive_tables_are_reachable() {
+    let Some(fixture) = OracleFixture::start().await else {
+        return;
+    };
+    fixture
+        .seed(&[
+            "CREATE TABLE QUAL_T (ID NUMBER(4) PRIMARY KEY)",
+            "INSERT INTO QUAL_T VALUES (7)",
+            "CREATE TABLE \"lower_t\" (ID NUMBER(4) PRIMARY KEY)",
+            "INSERT INTO \"lower_t\" VALUES (9)",
+        ])
+        .await;
+    let shell = fixture.shell(&[
+        stream("qualified", &format!("{}.QUAL_T", common::APP_USER)),
+        stream("lower", "\"lower_t\""),
+    ]);
+    let (qualified, _) = read_all(&shell, "qualified", None).await;
+    assert_eq!(qualified.len(), 1);
+    assert_eq!(qualified[0]["id"], serde_json::json!(7));
+
+    let (lower, _) = read_all(&shell, "lower", None).await;
+    assert_eq!(lower.len(), 1, "a quoted lower-case name reaches its table");
+    assert_eq!(lower[0]["id"], serde_json::json!(9));
+}
+
+/// Two columns differing only in case are refused, not silently
+/// collapsed — 030's duplicate-CSV-header defect in a new costume.
+#[tokio::test(flavor = "multi_thread")]
+async fn columns_differing_only_in_case_are_refused() {
+    let Some(fixture) = OracleFixture::start().await else {
+        return;
+    };
+    fixture
+        .seed(&["CREATE TABLE DUPC_T (\"id\" NUMBER(4), \"ID\" NUMBER(4))"])
+        .await;
+    let shell = fixture.shell(&[stream("d", "DUPC_T")]);
+    let (out, _keep) = rdlt_connector_sdk::spi::records_channel(1 << 20);
+    let err = shell
+        .read(rdlt_connector_sdk::spi::ReadRequest {
+            stream: StreamSpec::new("d"),
+            since: None,
+            out,
+        })
+        .await
+        .expect_err("refused")
+        .to_string();
+    assert!(err.contains("differ only in case"), "{err}");
+}
+
+/// A row too wide for one packet fails BY NAME, and FATALLY.
+///
+/// It used to derive a one-row page anyway, hand the impossible read
+/// to the wire, and surface as a buffer underflow — which classified
+/// TRANSIENT, so the engine retried a permanently impossible read
+/// until its budget ran out, giving the operator protocol noise
+/// instead of the remedy.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_row_wider_than_the_packet_is_refused_by_name() {
+    let Some(fixture) = OracleFixture::start().await else {
+        return;
+    };
+    fixture
+        .seed(&[
+            "CREATE TABLE WIDE_T (ID NUMBER(4), A VARCHAR2(4000), B VARCHAR2(4000))",
+            "INSERT INTO WIDE_T VALUES (1, RPAD('a',4000,'a'), RPAD('b',4000,'b'))",
+        ])
+        .await;
+    let shell = fixture.shell(&[stream("w", "WIDE_T")]);
+    let (out, _keep) = rdlt_connector_sdk::spi::records_channel(1 << 20);
+    let err = shell
+        .read(rdlt_connector_sdk::spi::ReadRequest {
+            stream: StreamSpec::new("w"),
+            since: None,
+            out,
+        })
+        .await
+        .expect_err("refused");
+    let text = err.to_string();
+    assert!(
+        text.contains("wider than one session data unit"),
+        "names the cause: {text}"
+    );
+    assert!(
+        !matches!(err, rdlt_connector_sdk::spi::SourceError::Transient(_)),
+        "a permanently impossible read must not be retried: {text}"
+    );
+}
+
+/// The connector DECLARES the types it derived, so a decimal does not
+/// land as TEXT downstream.
+///
+/// Every column's exact `LogicalType` was computed from the server's
+/// describe and then thrown away — nothing reached the engine, and
+/// the config's own `type_hints` escape hatch had zero readers. An
+/// operator's hint overrides the derivation, which is what the hatch
+/// is for.
+#[tokio::test(flavor = "multi_thread")]
+async fn derived_types_are_declared_and_hints_override_them() {
+    use rdlt_connector_sdk::spi::core::LogicalType;
+
+    let Some(fixture) = OracleFixture::start().await else {
+        return;
+    };
+    fixture
+        .seed(&[
+            "CREATE TABLE DECL_T (ID NUMBER(8) PRIMARY KEY, AMOUNT NUMBER(12,2), \
+             RAWS RAW(16), TS TIMESTAMP WITH TIME ZONE, BIG NUMBER)",
+        ])
+        .await;
+    let declared: rdlt_connector_oracle::source::Stream = serde_json::from_value(serde_json::json!({
+        "name": "d", "table": "DECL_T",
+        // Bare NUMBER is derived conservatively as text; the operator
+        // knows this one's real domain.
+        "type_hints": {"big": "int64"}
+    }))
+    .expect("stream document");
+    let shell = fixture.shell(&[declared]);
+    let specs = shell.streams().await.expect("discovery");
+    let hints = &specs[0].type_hints;
+
+    assert_eq!(hints.get("id"), Some(&LogicalType::Int64));
+    assert_eq!(
+        hints.get("amount"),
+        Some(&LogicalType::Decimal {
+            precision: 12,
+            scale: 2
+        }),
+        "a decimal is declared exactly, not left to land as TEXT"
+    );
+    assert_eq!(hints.get("raws"), Some(&LogicalType::Binary));
+    assert_eq!(hints.get("ts"), Some(&LogicalType::TimestampTz));
+    assert_eq!(
+        hints.get("big"),
+        Some(&LogicalType::Int64),
+        "the operator's hint wins over the conservative derivation"
+    );
 }
