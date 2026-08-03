@@ -1,6 +1,6 @@
 [package]
 name = "rdlt-connector-oracle"
-description = "rdlt Oracle source: pure-Rust wire driver, consistent-snapshot keyset reads, watermark cursors"
+description = "rdlt Oracle source: streaming reads into Arrow, watermark cursors"
 # New connector, unpublished until the workspace's 0.3.0 wave.
 publish = false
 version.workspace = true
@@ -14,13 +14,18 @@ failpoints = ["rdlt-connector-sdk/failpoints"]
 
 [dependencies]
 # The sdk plus THE recorded driver exception (like duckdb's own
-# driver): oracle-rs is pure Rust (no OCI/Instant Client), rustls,
-# structured ORA codes. Its release defect class is designed around —
-# see specs/032-oracle/plan.md T001.
+# driver). `oracle` wraps ODPI-C: it needs Oracle Client libraries at
+# RUNTIME (not at build — ODPI-C compiles from vendored C source), and
+# it is SYNCHRONOUS, so every call crosses `spawn_blocking`. The
+# pure-Rust alternative was tried first and abandoned on measurement:
+# specs/032-oracle/plan.md T005 records what each driver does with the
+# same data.
 rdlt-connector-sdk = { workspace = true, features = ["schema"] }
+arrow = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
-oracle-rs = "0.1.7"
+chrono = { workspace = true }
+oracle = { version = "0.6.3", features = ["chrono"] }
 schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -30,6 +35,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
+arrow = { workspace = true }
 tokio = { workspace = true }
 jsonschema = { workspace = true }
 rdlt-engine = { workspace = true }
@@ -37,7 +43,6 @@ rdlt-testkit = { workspace = true }
 rdlt-connector-duckdb = { workspace = true }
 tempfile = { workspace = true }
 testcontainers = { workspace = true }
-oracle-rs = "0.1.7"
 
 [lints]
 workspace = true

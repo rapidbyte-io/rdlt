@@ -1,0 +1,31 @@
+# 032 e2e matrix cell oracle-to-pg-200k: Oracle 23ai Free (RDLT.EVENTS, 200k×12)
+# → postgres destination (dest_rdlt), full replace. Fixtures [oracle, pg]:
+# oracle is PRIMARY, so `{{data}}` is its data dir; the postgres destination is
+# addressed by its database name on the pg fixture's server (fixed port 5439),
+# the way every cross-store cell does it.
+#
+# The Oracle source document is a FILE, not inline: the facade's
+# `source: oracle: {config: …}` arm takes a path (the rest/file precedent —
+# only the postgres source accepts an inline document). The oracle fixture's
+# generate_sh writes it to {{data}}/oracle.yaml, so the connection facts are
+# spelled once, beside the port and credentials that produce them — exactly
+# what the rustfs fixture does with files.yaml.
+#
+# That document leaves `tuning` absent, i.e. every knob at its default, and
+# that IS the measurement this cell exists to record:
+#   * page_rows only ever LOWERS the page the connector derives from the
+#     described column widths, so setting it here could only slow the read;
+#   * sdu_bytes above 8192 needs the LISTENER raised to match — tuning the
+#     fixture's Oracle would measure a tuned deployment rather than the stock
+#     one every arm reads;
+#   * the connect/read timeouts are ceilings, not throughput knobs.
+pipeline: bench-oracle-to-pg
+workdir: {{workdir}}/.rdlt
+write_mode: replace
+source:
+  oracle:
+    config: {{data}}/oracle.yaml
+destination:
+  postgres:
+    conn: "host=127.0.0.1 port=5439 user=postgres password=postgres dbname=dest_rdlt"
+    dataset: bench

@@ -11,6 +11,19 @@ max-threads = 3
 filter = "package(rdlt-connector-iceberg)"
 test-group = "iceberg-live"
 
+# Live container cells: every oracle cell boots its own Oracle
+# database, which is the heaviest fixture the gate has (~75 s to
+# readiness, and a real RAM footprint). Unbounded parallelism started
+# SIXTEEN of them at once and the machine thrashed — measured, not
+# feared. Bounding the group is the fix; nextest runs a process per
+# test, so no amount of in-process sharing can do it.
+[test-groups.oracle-live]
+max-threads = 3
+
+[[profile.default.overrides]]
+filter = "package(rdlt-connector-oracle)"
+test-group = "oracle-live"
+
 # The flake-recording profile (feature 020 US8).
 #
 # Six container flakes are recorded across features 015-019, each handled the

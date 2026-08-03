@@ -57,17 +57,37 @@ pub struct OracleFixture {
 }
 
 impl OracleFixture {
-    /// Start Oracle Free 23ai, or skip visibly (None) without a
-    /// runtime.
+    /// Start Oracle Free 23ai, or skip visibly (None) when a
+    /// prerequisite is missing.
+    ///
+    /// ONE CONTAINER PER CELL, deliberately, and NOT shared through a
+    /// `static`. That was tried and reverted on measurement: a static
+    /// is never dropped at process exit, so testcontainers' own
+    /// cleanup never ran and every cell LEAKED its database — 18 of
+    /// them left behind by one run. It bought nothing either, because
+    /// nextest gives each test its own process.
+    ///
+    /// What keeps the machine sane is the `oracle-live` test-group in
+    /// .config/nextest.toml: unbounded parallelism was measured
+    /// starting SIXTEEN Oracle databases at once, and this is the
+    /// heaviest fixture the gate has.
     pub async fn start() -> Option<Self> {
         Self::start_on(Flavor::Free23).await
     }
 
-    /// Start the named Oracle, or skip visibly (None) without a
-    /// runtime.
+    /// Start a container of the named flavor, or skip visibly (None)
+    /// when either prerequisite is missing.
     pub async fn start_on(flavor: Flavor) -> Option<Self> {
         if !rdlt_testkit::gate::runtime_available() {
             eprintln!("SKIP: no container runtime socket — oracle live cells not run");
+            return None;
+        }
+        if !oracle_client_available() {
+            eprintln!(
+                "SKIP: no Oracle Client library — this driver wraps ODPI-C and dlopens \
+                 libclntsh at RUNTIME. Install Instant Client and put it on \
+                 LD_LIBRARY_PATH; oracle live cells not run"
+            );
             return None;
         }
         let (image, tag) = flavor.image();
@@ -160,19 +180,34 @@ impl OracleFixture {
     /// before any later COMMIT could reach it — probed the hard way:
     /// a seeded table read back empty.
     pub async fn seed(&self, statements: &[&str]) {
-        let conn = oracle_rs::connection::Connection::connect(
-            &format!("{}:{}/{}", self.host, self.port, self.flavor.service()),
-            APP_USER,
-            PASSWORD,
-        )
+        let dsn = format!("//{}:{}/{}", self.host, self.port, self.flavor.service());
+        let owned: Vec<String> = statements.iter().map(|s| (*s).to_owned()).collect();
+        tokio::task::spawn_blocking(move || {
+            let conn = oracle::Connection::connect(APP_USER, PASSWORD, &dsn)
+                .expect("fixture connect");
+            for sql in &owned {
+                conn.execute(sql, &[])
+                    .unwrap_or_else(|e| panic!("{sql}: {e}"));
+            }
+            conn.commit().expect("fixture commit");
+        })
         .await
-        .expect("fixture connect");
-        for sql in statements {
-            conn.execute(sql, &[])
-                .await
-                .unwrap_or_else(|e| panic!("{sql}: {e}"));
-        }
-        conn.execute("COMMIT", &[]).await.expect("fixture commit");
+        .expect("seed thread");
+    }
+}
+
+/// Is an Oracle Client library loadable?
+///
+/// ODPI-C compiles from vendored source, so the BUILD needs nothing —
+/// but the connection dlopens Oracle's client at runtime, and its
+/// absence must skip these cells rather than fail them (024's
+/// skip-not-fail rule). Probed by attempting a connection to an
+/// address nothing answers: a client-library failure is reported
+/// differently from a network one.
+pub fn oracle_client_available() -> bool {
+    match oracle::Connection::connect("x", "x", "//127.0.0.1:1/NOPE") {
+        Ok(_) => true,
+        Err(e) => !e.to_string().contains("DPI-1047"),
     }
 }
 
@@ -188,4 +223,53 @@ pub fn incremental(name: &str, table: &str, cursor: &str) -> Stream {
         "name": name, "table": table, "cursor": cursor
     }))
     .expect("stream document")
+}
+
+/// One Arrow batch as JSON objects, for assertions.
+///
+/// This is a TEST convenience, not the transport: the connector
+/// pushes Arrow and the engine consumes Arrow. Values are rendered so
+/// a reader can see what actually crossed — exact decimals as text,
+/// binary as hex, timestamps as ISO — rather than what a JSON
+/// encoder would have had to invent.
+pub fn batch_to_json(batch: &arrow::array::RecordBatch) -> Vec<serde_json::Value> {
+    use arrow::array::{self, Array};
+
+    let mut out = Vec::with_capacity(batch.num_rows());
+    for row in 0..batch.num_rows() {
+        let mut object = serde_json::Map::new();
+        for (at, field) in batch.schema().fields().iter().enumerate() {
+            let column = batch.column(at);
+            let value = if column.is_null(row) {
+                serde_json::Value::Null
+            } else if let Some(a) = column.as_any().downcast_ref::<array::Int64Array>() {
+                serde_json::json!(a.value(row))
+            } else if let Some(a) = column.as_any().downcast_ref::<array::Float64Array>() {
+                serde_json::json!(a.value(row))
+            } else if let Some(a) = column.as_any().downcast_ref::<array::StringArray>() {
+                serde_json::json!(a.value(row))
+            } else if let Some(a) = column.as_any().downcast_ref::<array::BinaryArray>() {
+                serde_json::json!(a.value(row).iter().map(|b| format!("{b:02x}")).collect::<String>())
+            } else if let Some(a) = column.as_any().downcast_ref::<array::BooleanArray>() {
+                serde_json::json!(a.value(row))
+            } else if let Some(a) = column.as_any().downcast_ref::<array::Decimal128Array>() {
+                serde_json::json!(a.value_as_string(row))
+            } else if let Some(a) = column
+                .as_any()
+                .downcast_ref::<array::TimestampMicrosecondArray>()
+            {
+                // ISO, so the rendering matches the watermark's own
+                // spelling and a reader can compare them by eye.
+                serde_json::json!(
+                    a.value_as_datetime(row)
+                        .map(|d| d.format("%Y-%m-%dT%H:%M:%S%.6f").to_string())
+                )
+            } else {
+                serde_json::json!(format!("<unrendered {}>", field.data_type()))
+            };
+            object.insert(field.name().clone(), value);
+        }
+        out.push(serde_json::Value::Object(object));
+    }
+    out
 }

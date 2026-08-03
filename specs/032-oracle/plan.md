@@ -17,6 +17,12 @@ registry facts, fixture facts, semantics facts; every claim sourced).
 
 ## Decisions
 
+> **D1 IS SUPERSEDED BY T005.** The driver choice below — `oracle-rs`,
+> pure Rust, no Instant Client — was reversed on measurement after
+> review round 3 showed most severe defects were the driver's own.
+> The connector now rides `oracle` 0.6.3 (ODPI-C) and pushes ARROW
+> rather than NDJSON. Everything else in D1 stands.
+
 **D1 — SOURCE only, born on the sdk.** `SourceConnector` + `Feed`
 (the rest shape; a destination is a future feature — the dominant
 Oracle ELT direction is out). Dependencies: the sdk (SPI via `spi`)
@@ -420,10 +426,110 @@ land as TEXT, why NaN/Infinity are forced to null, and why the whole
 `type_hints` mechanism had to be built at all — with Arrow the schema
 travels with the batch. Oracle moves to Arrow.
 
+## THE REWRITE ON `oracle` 0.6.3 + ARROW (2026-08-03)
+
+Executed on the owner's call after T005. What it DELETED is the point:
+
+- `vendor/oracle-rs` and all FOUR patches, plus the
+  `[patch.crates-io]` stanza. The workspace no longer forks a driver.
+- ROWID keyset paging, session-data-unit page sizing, the
+  `has_more_rows` end-of-stream rule, and the 250-page connection
+  recycler — every one of them a workaround for a driver that could
+  not stream.
+- The `type_hints` mechanism, in both the config and the connector.
+  Arrow carries its own schema, so a second copy could only
+  disagree with it. The derivation survives as an EARLY REFUSAL: a
+  table holding an unmappable type fails at discovery, naming the
+  column.
+- The LOB byte ceiling, with its knob (the driver materializes LOBs
+  itself; an inert knob is worse than none).
+
+What replaced them: `client.rs` owns the SYNCHRONOUS connection on a
+dedicated thread and hands out futures; `schema.rs` maps Oracle types
+straight to Arrow; `batch.rs` builds arrays BY DECLARED TYPE;
+`read.rs` runs ONE query per stream and streams it.
+
+**WHAT ARROW FIXED THAT NDJSON COULD NOT CARRY.** Exact decimals are
+`Decimal128` via a scaled `i128` — all 38 of Oracle's digits, and a
+value that exceeds its declared scale is REFUSED rather than
+truncated. Binary is `Binary`, not hex text at double the size. NaN
+and Infinity are held natively instead of null-ified for want of a
+JSON literal. And the round trip itself is gone: the connector no
+longer renders typed values to text for the engine to parse back into
+these very builders.
+
+**THE CURSOR RULEBOOK SURVIVED**, because it is about correctness
+across RUNS rather than within one: watermark ordering with ROWID as
+the tie-break, and `c > w OR (c = w AND ROWID > tie)` on resume.
+
+### The new driver has one of its own, and a pin caught it
+
+`TIMESTAMP WITH TIME ZONE` was arriving with its OFFSET DISCARDED.
+`03:04:05.678 +02:00` should be the instant `01:04:05.678Z`; the
+driver's `DateTime<Utc>` conversion keeps the wall-clock fields and
+relabels them UTC, so it arrived as `03:04:05.678Z` — every zoned
+value silently shifted by its own zone, in the direction that makes
+the data look plausible.
+
+Measured, not reasoned: the live cell asserted the instant and
+failed by exactly two hours. The connector now reads
+`oracle::sql_type::Timestamp` and applies `tz_hour_offset` /
+`tz_minute_offset` itself, on BOTH the stored value and the
+watermark so the two cannot disagree, with a unit pin covering
+positive and negative offsets so a sign error cannot pass.
+
+The lesson is the one this whole feature keeps teaching: a mature
+driver is not a correct one, and the only thing that ever caught
+these was asserting the VALUE rather than that the read succeeded.
+
+### Four defects the rewrite itself introduced, all caught by pins
+
+1. **The empty watermark, AGAIN.** The batch builder was never told
+   which column carried the cursor, so every checkpoint persisted
+   `""` — round 2's D1 in new clothes. Caught by the existing resume
+   cells.
+2. **The watermark rendered by asking for a String first**, which for
+   a DATE returns Oracle's NLS spelling (`02-JAN-26`); the resume
+   literal then rejected it with ORA-01861 on the very next run. Now
+   rendered strictly by the DECLARED Arrow type.
+3. **THE STALE STATEMENT.** The driver's cursor cannot outlive the
+   closure that owns the connection, so each batch re-queries — and
+   the statement was built ONCE, from the position the read started
+   at. Every batch therefore re-ran the same SQL and returned rows
+   1-25 forever: an infinite loop AND duplicate data, which presented
+   as the crash sweep running past twenty minutes with no output.
+   Found by tracing the emitted SQL, not by reading it: the trace
+   showed the `WHERE` clause never appearing. The statement is now
+   rebuilt from a position that advances with every batch, and the
+   cursorless path gained the `ROWID >` predicate it was missing for
+   the same reason. Sweep: hung indefinitely → 11.5 s.
+4. **A container leak of my own making.** "Share one fixture through
+   a `static OnceCell`" is wrong twice over: a static is never
+   dropped at process exit, so testcontainers' cleanup never ran and
+   one run left EIGHTEEN databases behind — and it bought nothing,
+   because nextest gives each test its own process. Reverted. The
+   real bound is a `oracle-live` test-group (max-threads 3) in
+   .config/nextest.toml, added after unbounded parallelism was
+   measured starting SIXTEEN Oracle databases at once.
+
+### The operational price, stated plainly
+
+ODPI-C compiles from vendored C source, so the BUILD needs only a C
+toolchain — verified: `cargo check` passes with no Oracle client
+present. The CONNECTION dlopens Oracle Client at runtime. Instant
+Client Basic Lite is a 70 MB unauthenticated download under the OTN
+licence: CI can fetch it, we may NOT vendor it, and on Fedora it also
+needs `libaio`. The live cells skip-not-fail without it, naming the
+remedy.
+
 ## STANDING OWNER RECORDS (round 3)
 
-Fixed and pinned in round 3, but the following remain TRUE of the
-shipped connector and are the owner's to schedule:
+> **O1, O2, O4, O5 and O7 ARE DISSOLVED** by the move to `oracle`
+> 0.6.3 — they were properties of the pure-Rust driver, not of
+> Oracle. O3 (connections never closed) is also gone: the driver
+> sends a real logoff. What remains of this list is O6.
+
+Recorded against the PREVIOUS driver, kept for the record:
 
 **O1 — the read is SUPER-LINEAR in table size.** Measured: 20k rows
 2.87 s, 40k 10.5 s, 80k 31.8 s; per-page cost tracks the TABLE's size,

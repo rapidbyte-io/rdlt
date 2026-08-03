@@ -1,0 +1,62 @@
+# The 032 e2e matrix cell: Oracle → Postgres. Its own file rather than a sixth
+# entry in e2e.toml — the cells dir globs, so this joins the default
+# `TARGET=e2e make bench` run either way, and keeping the 018 five together
+# leaves that file's recorded matrix legible.
+#
+# SCOREBOARD ONLY — deliberately NOT in bars.toml (benches/GOVERNANCE.md,
+# constitution v1.1.0, 018 BR8). Bars are measurement-first: no bar without a
+# recorded three-way session, and a cell whose rdlt arm is architecturally
+# capped should never carry a ratio bar at all. See the `note`.
+
+# ---------------------------------------------------------------------------
+# oracle-to-pg-200k — Oracle 23ai Free → Postgres, 200k rows, full replace.
+# ---------------------------------------------------------------------------
+[[cell]]
+id = "oracle-to-pg-200k"
+# oracle is PRIMARY (it supplies {{data}}, where its generate_sh leaves the
+# source document); the postgres destination is addressed by database name at
+# its fixed port, as every cross-store cell does. The pg fixture's reset
+# recreates dest_rdlt/dest_dlt/dest_airbyte before every run.
+fixtures = ["oracle", "pg"]
+pipeline = "cells/pipelines/oracle-to-pg.yaml"
+note = "Oracle 23ai Free → Postgres, 200k×12 rows, full replace — the legacy-relational extract. rdlt reads through `oracle` (ODPI-C), streaming ONE cursor per stream into Arrow batches. The v1 SDU-bounded paging this note used to describe is gone with the pure-Rust driver it worked around (plan.md T005). dlt runs python-oracledb THIN mode: its connectorx backend needs Oracle Instant Client, which is not pip-installable, so it is deliberately not run — recorded, not hidden."
+[cell.verify]
+events = 200_000
+
+# Recorded verbatim into the artifact, so the number is interpretable rather
+# than mysterious.
+[cell.workload]
+rows = 200_000
+columns = 12
+oracle_image = "gvenzl/oracle-free:23.26.2-slim-faststart"
+# The read is no longer paged: one cursor streams the whole result set, and
+# the batch is a downstream buffering choice rather than a protocol limit.
+batch_rows = 8192
+read_strategy = "one streaming cursor per stream, Arrow batches"
+transport = "arrow"
+
+# dlt: sql_database over SQLAlchemy's oracle+oracledb dialect, THIN mode (no
+# Oracle Instant Client anywhere in the image). The backend is an A/B decided
+# by measurement before recording — pyarrow here, with the sqlalchemy default
+# as the interleaved comparison whose loser goes in the session record.
+[[cell.competitor]]
+variant = "dlt"
+args = [
+  "pipeline_oracle_pg.py",
+  "oracle+oracledb://RDLT:rdlt-bench@127.0.0.1:15210/?service_name=FREEPDB1",
+  "postgresql://postgres:postgres@127.0.0.1:5439/dest_dlt",
+  "pyarrow",
+  "EVENTS",
+  "RDLT",
+]
+network = "host"
+
+# Airbyte: driver.py drives the pre-created connection (setup.py). Full-refresh
+# overwrite. airbyte/source-oracle is alpha/community (ELv2, in the default OSS
+# catalog — no custom registration) and documented as tested only through 21c,
+# so an arm that cannot read 23ai records Missing{reason}. That is the correct
+# outcome; substituting a 21c fixture would give this arm a different source
+# server and break the same-conditions rule the whole matrix rests on.
+[[cell.competitor]]
+variant = "airbyte"
+args = ["oracle-to-pg-200k", "200000"]

@@ -1,5 +1,6 @@
 //! The source half: Oracle tables as streams.
 
+mod batch;
 mod client;
 mod config;
 mod connector;

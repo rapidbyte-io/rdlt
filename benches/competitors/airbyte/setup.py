@@ -13,13 +13,14 @@ connection ids + per-cell destination-verify recipe the driver reads).
 state.json is gitignored.
 
 Fixtures: it targets the same endpoints the bench fixtures publish — postgres
-on :5439 (databases `src` + `dest_airbyte`, user postgres) and RUSTFS on :19110
-(buckets `raw` + `lake`). Connector PODS reach them at 169.254.1.2 (pasta host
-mapping); this host-side script reaches them at 127.0.0.1. If the fixtures are
-not up when setup runs, bring them up first (the harness owns them) — setup
-does not seed 1M rows itself; discover needs only the schema. For a standalone
-smoke run, seed a tiny schema-identical postgres on :5439 (see README) and pass
-AB_* overrides if your throwaway differs.
+on :5439 (databases `src` + `dest_airbyte`, user postgres), RUSTFS on :19110
+(buckets `raw` + `lake`), and Oracle 23ai Free on :15210 (service FREEPDB1,
+schema RDLT). Connector PODS reach them at 169.254.1.2 (pasta host mapping);
+this host-side script reaches them at 127.0.0.1. If the fixtures are not up
+when setup runs, bring them up first (the harness owns them) — setup does not
+seed 1M rows itself; discover needs only the schema. For a standalone smoke
+run, seed a tiny schema-identical postgres on :5439 (see README) and pass AB_*
+overrides if your throwaway differs.
 
 Each cell is built independently; a connector that fails (e.g. an S3 image that
 will not pull) records its reason in state.json and the driver reports that arm
@@ -46,6 +47,10 @@ S3_KEY = os.environ.get("AB_S3_KEY", "rdlt-bench")
 S3_SECRET = os.environ.get("AB_S3_SECRET", "rdlt-bench-secret")
 S3_RAW_BUCKET = os.environ.get("AB_S3_RAW", "raw")
 S3_LAKE_BUCKET = os.environ.get("AB_S3_LAKE", "lake")
+ORACLE_PORT = os.environ.get("AB_ORACLE_PORT", "15210")
+ORACLE_USER = os.environ.get("AB_ORACLE_USER", "RDLT")
+ORACLE_PASS = os.environ.get("AB_ORACLE_PASS", "rdlt-bench")
+ORACLE_SERVICE = os.environ.get("AB_ORACLE_SERVICE", "FREEPDB1")
 # The pg fixture container name (driver counts rows via `podman exec` into it).
 PG_CONTAINER = os.environ.get("AB_PG_CONTAINER", "rdlt-bench-pg")
 # Host-side view of the endpoints (this script + the driver's verification).
@@ -76,6 +81,41 @@ def pg_destination_config(db):
     }
 
 
+def oracle_source_config():
+    """airbyte/source-oracle — community/alpha, ELv2, and present in the
+    DEFAULT OSS catalog (registryOverrides.oss.enabled), so it needs no
+    create_custom registration and this ordinary source create works.
+
+    NOT source-oracle-enterprise, which is a separate paid, license-key-gated
+    connector (LogMiner CDC) and out of scope.
+
+    Field names follow the connector's spec.json: `connection_data` is a oneOf
+    discriminated by connection_type (service_name | sid); `encryption` is a
+    oneOf (unencrypted | client_nne | encrypted_verify_certificate); `schemas`
+    is an array that defaults to the upper-cased username. `tunnel_method` is
+    the standard JDBC-base shape used by the pg source above — it did not
+    render in the fetched spec extraction, so if a create is rejected naming
+    it, drop the key.
+
+    The connector's docs claim testing through 21c only, and the fixture is
+    23ai. Nothing documents a 23ai failure, but nothing verifies one either:
+    if discover or sync fails, main()'s per-cell try/except records the reason
+    and driver.py turns it into Missing{reason}. That is the correct outcome —
+    substituting a 21c container for this arm alone would give it a DIFFERENT
+    source server and break the matrix's same-conditions rule.
+    """
+    return {
+        "sourceType": "oracle",
+        "host": POD_HOST, "port": int(ORACLE_PORT),
+        "connection_data": {"connection_type": "service_name",
+                            "service_name": ORACLE_SERVICE},
+        "username": ORACLE_USER, "password": ORACLE_PASS,
+        "schemas": [ORACLE_USER],
+        "encryption": {"encryption_method": "unencrypted"},
+        "tunnel_method": {"tunnel_method": "NO_TUNNEL"},
+    }
+
+
 def s3_source_config(stream_name, glob):
     return {
         "sourceType": "s3", "bucket": S3_RAW_BUCKET, "endpoint": S3_ENDPOINT,
@@ -99,7 +139,7 @@ def s3_destination_config(path):
     }
 
 
-# --- the five cells, declaratively ---------------------------------------
+# --- the cells, declaratively --------------------------------------------
 # stream = the source stream Airbyte selects; sync_mode per regime; verify =
 # how the driver independently checks the landed rowcount.
 
@@ -157,6 +197,20 @@ CELLS = [
         "primary_key": [["id"]], "cursor_field": ["id"],
         "reset_state_before_run": True,
         "verify": pg_verify("events_v2", 1_000_000),
+    },
+    {
+        # 032: Oracle 23ai Free -> postgres, full replace. The stream name is
+        # the Oracle table as the connector discovers it (Oracle folds
+        # unquoted names UPPERCASE, so `EVENTS`, in namespace `RDLT`), and the
+        # landed destination table is whatever Airbyte's pg destination
+        # normalizes that to. BOTH are unverified against a live 23ai — no
+        # abctl cluster was reachable when this was wired — so if setup or the
+        # first sync disagrees, correct these two strings from the discover
+        # output rather than assuming the sync is broken.
+        "id": "oracle-to-pg-200k",
+        "source": ("oracle", None), "destination": ("pg", DEST_DB),
+        "stream": "EVENTS", "sync_mode": "full_refresh_overwrite",
+        "verify": pg_verify("events", 200_000),
     },
 ]
 
@@ -274,6 +328,9 @@ def build_source(token, ws, cell, cache):
     if kind == "pg":
         sid, token = create_source(token, ws, NAME_PREFIX + "src-pg-" + arg,
                                    pg_source_config(arg))
+    elif kind == "oracle":
+        sid, token = create_source(token, ws, NAME_PREFIX + "src-oracle",
+                                   oracle_source_config())
     else:
         stream_name, glob = arg
         sid, token = create_source(
@@ -318,7 +375,7 @@ def main():
     state = {"workspaceId": ws, "apiBase": ab.API_BASE, "cells": {}}
     src_cache, dst_cache = {}, {}
     # AB_CELLS=<comma-separated ids> restricts which cells to build (smoke /
-    # incremental setup); default is all five.
+    # incremental setup); default is every cell in CELLS.
     only = {c for c in os.environ.get("AB_CELLS", "").split(",") if c}
     cells = [c for c in CELLS if not only or c["id"] in only]
     for cell in cells:

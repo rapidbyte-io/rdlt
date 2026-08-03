@@ -49,7 +49,7 @@ fn the_defaults_match_the_jdbc_equivalents() {
         config.tuning.read_timeout_ms, 600_000,
         "oracle.jdbc.ReadTimeout"
     );
-    assert_eq!(config.tuning.sdu_bytes, 8192);
+    assert_eq!(config.tuning.statement_cache, 20);
     assert!(
         config.tuning.page_rows.is_none(),
         "derived from widths unless set"
@@ -115,24 +115,6 @@ fn refusals_name_their_field() {
         (
             {
                 let mut v = base();
-                v["tuning"] = serde_json::json!({"sdu_bytes": 128});
-                v
-            },
-            "the supported range is 512..=8192",
-        ),
-        (
-            {
-                let mut v = base();
-                // Above the default the page would be sized for
-                // packets the server may never send.
-                v["tuning"] = serde_json::json!({"sdu_bytes": 65535});
-                v
-            },
-            "cannot confirm what the server negotiated",
-        ),
-        (
-            {
-                let mut v = base();
                 v["streams"] = serde_json::json!([]);
                 v
             },
@@ -190,7 +172,7 @@ fn tuning_defaults_are_the_documented_ones() {
     assert_eq!(tuning.lob_chunk_bytes, 1 << 20, "JDBC's LOB prefetch");
     assert_eq!(tuning.connect_timeout_ms, 60_000);
     assert_eq!(tuning.read_timeout_ms, 600_000);
-    assert_eq!(tuning.sdu_bytes, 8192);
+    assert_eq!(tuning.statement_cache, 20);
     assert_eq!(
         tuning.keepalive_secs, 30,
         "ON by default, below the 300 s idle timeout common to firewalls"

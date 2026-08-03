@@ -46,19 +46,14 @@ impl SourceConnector for Oracle {
         Client::connect(&self.config).await.map(|_| ())
     }
 
-    /// Declare each stream — INCLUDING its column types.
+    /// Declare each stream, INCLUDING its Arrow schema.
     ///
-    /// The rows themselves cross as raw JSON, where a decimal is a
-    /// string and a BLOB is hex, so `type_hints` is the ONLY channel
-    /// that tells the engine what those strings mean. Without it every
-    /// `NUMBER(12,2)` landed as TEXT in the destination, every RAW as
-    /// text, every DATE as text — the connector derived the exact type
-    /// from the server's own describe and then threw it away.
-    ///
-    /// This costs one describe round trip per stream, which is why it
-    /// lives in discovery rather than the read path.
+    /// The rows themselves now cross as Arrow, so the schema travels
+    /// with the batch and the engine needs no hints — under the old
+    /// NDJSON transport the exact types were derived here and then
+    /// thrown away, and every decimal landed as TEXT downstream.
     async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
-        let mut client = Client::connect(&self.config).await?;
+        let client = Client::connect(&self.config).await?;
         let mut specs = Vec::with_capacity(self.config.streams.len());
         for stream in &self.config.streams {
             let mut spec = StreamSpec::new(stream.name.as_str());
@@ -68,28 +63,21 @@ impl SourceConnector for Oracle {
             if let Some(cursor) = &stream.cursor {
                 spec = spec.with_cursor_field(cursor.clone());
             }
-            let (returned, described) = client
-                .query(
-                    &format!("describing `{}`", stream.name),
-                    &format!(
-                        "SELECT t.* FROM {} t WHERE 1 = 0",
-                        super::client::quote_table(&stream.table)
-                    ),
-                    &[],
-                )
-                .await?;
-            client = returned;
-            for column in &described.columns {
-                let derived = super::schema::logical_type(column).map_err(SourceError::fatal)?;
-                spec = spec.with_type_hint(column.name.to_lowercase(), derived);
-            }
-            // The operator's own hints WIN — that is what the escape
-            // hatch is for, chiefly bare `NUMBER`, which is derived
-            // conservatively as text because Oracle accepts any
-            // magnitude in it.
-            for (column, hint) in &stream.type_hints {
-                spec = spec.with_type_hint(column.to_lowercase(), (*hint).into());
-            }
+            let described = super::read::describe(
+                &client,
+                &stream.name,
+                &super::client::quote_table(&stream.table),
+            )
+            .await?;
+            // The schema is DERIVED here but not attached: an Arrow
+            // batch carries its own, so hints would be a second copy
+            // that could disagree with it. What this buys is an early
+            // refusal — a table holding a type the rulebook has no
+            // mapping for fails at discovery, naming the column,
+            // rather than part-way through a load.
+            super::schema::schema_of(&described).map_err(|e| {
+                SourceError::fatal(format!("stream `{}`: `{}`: {e}", stream.name, stream.table))
+            })?;
             specs.push(spec);
         }
         Ok(specs)
@@ -108,19 +96,8 @@ impl SourceConnector for Oracle {
             )));
         };
         let mut cursor = OracleCursor::decode(since.as_ref())?;
-        // A fresh connection per stream: the boundary's poison rule
-        // means a connection that errored is gone, and a stream that
-        // starts clean can retry independently.
         let client = Client::connect(&self.config).await?;
-        read_stream(
-            client,
-            &self.config,
-            config,
-            &self.config.tuning,
-            &mut cursor,
-            feed,
-        )
-        .await?;
+        read_stream(&client, &self.config, config, &mut cursor, feed).await?;
         Ok(())
     }
 }

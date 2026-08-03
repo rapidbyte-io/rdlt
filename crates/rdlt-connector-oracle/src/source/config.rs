@@ -48,14 +48,17 @@ pub struct Config {
 /// `oracle.jdbc.defaultLobPrefetchSize` → `lob_chunk_bytes`,
 /// `oracle.net.CONNECT_TIMEOUT` → `connect_timeout_ms`,
 /// `oracle.jdbc.ReadTimeout` → `read_timeout_ms`,
-/// and the session's SDU → `sdu_bytes`.
+/// and `oracle.jdbc.implicitStatementCacheSize` → `statement_cache`.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
 pub struct Tuning {
-    /// Rows per round trip. The connector DERIVES a safe page from
-    /// the described column widths; this only ever LOWERS it, because
-    /// a page above the derived size cannot fit one SDU reply.
+    /// Rows the CLIENT prefetches per round trip.
+    ///
+    /// This is a throughput knob, not a correctness one: the read
+    /// streams a single cursor whatever the value, so raising it
+    /// trades client memory for fewer round trips. Absent means the
+    /// driver's own default.
     #[serde(default)]
     pub page_rows: Option<u32>,
     /// Bytes per LOB read round trip.
@@ -69,12 +72,17 @@ pub struct Tuning {
     /// out has left the protocol mid-conversation.
     #[serde(default = "default_read_timeout")]
     pub read_timeout_ms: u64,
-    /// The session data unit to request. A reply is read as ONE
-    /// packet, and the server's negotiated value is not readable back
-    /// from this driver, so the accepted range is 512..=8192 — see
-    /// `validate`.
-    #[serde(default = "default_sdu")]
-    pub sdu_bytes: u32,
+    /// Rows per Arrow batch pushed downstream.
+    ///
+    /// The batch is the unit of backpressure AND of the checkpoint
+    /// that follows it, so this trades memory against how much work a
+    /// crash costs. It is not a protocol limit — the old page size
+    /// was, because a reply had to fit one network packet.
+    #[serde(default = "default_batch_rows")]
+    pub batch_rows: u32,
+    /// Statements the driver may keep open for reuse.
+    #[serde(default = "default_statement_cache")]
+    pub statement_cache: u32,
     /// The largest single LOB value a read will materialize.
     ///
     /// A LOB is read whole into memory before it becomes a JSON
@@ -114,8 +122,11 @@ fn default_connect_timeout() -> u64 {
 fn default_read_timeout() -> u64 {
     600_000
 }
-fn default_sdu() -> u32 {
-    8192
+fn default_batch_rows() -> u32 {
+    8_192
+}
+fn default_statement_cache() -> u32 {
+    20
 }
 
 impl Default for Tuning {
@@ -125,7 +136,8 @@ impl Default for Tuning {
             lob_chunk_bytes: default_lob_chunk(),
             connect_timeout_ms: default_connect_timeout(),
             read_timeout_ms: default_read_timeout(),
-            sdu_bytes: default_sdu(),
+            batch_rows: default_batch_rows(),
+            statement_cache: default_statement_cache(),
             max_lob_bytes: default_max_lob(),
             keepalive_secs: default_keepalive(),
         }
@@ -217,6 +229,20 @@ pub enum ConfigError {
     Invalid(String),
 }
 
+impl Config {
+    /// The Easy Connect descriptor the driver takes.
+    ///
+    /// A SID is spelled with a colon rather than a slash — the legacy
+    /// form older estates still hand out.
+    pub(crate) fn connect_string(&self) -> String {
+        match (&self.service, &self.sid) {
+            (Some(service), _) => format!("//{}:{}/{}", self.host, self.port, service),
+            (_, Some(sid)) => format!("{}:{}:{}", self.host, self.port, sid),
+            _ => format!("//{}:{}", self.host, self.port),
+        }
+    }
+}
+
 impl Document for Config {
     type Error = ConfigError;
 
@@ -249,20 +275,8 @@ impl Document for Config {
         if self.tuning.lob_chunk_bytes == 0 {
             return invalid("`tuning.lob_chunk_bytes` is 0 — a LOB read must make progress".into());
         }
-        // The page size is derived from THIS number, but the server
-        // negotiates the real SDU and the driver reads one packet per
-        // reply — and it exposes no accessor for what was agreed. So a
-        // value above the universally-accepted default could size
-        // pages for packets the server will never send, truncating
-        // replies while reporting success. Until the negotiated value
-        // is readable, the safe ceiling is the default.
-        if self.tuning.sdu_bytes < 512 || self.tuning.sdu_bytes > 8192 {
-            return invalid(format!(
-                "`tuning.sdu_bytes` is {} — this build reads one packet per reply and \
-                 cannot confirm what the server negotiated, so the supported range is \
-                 512..=8192",
-                self.tuning.sdu_bytes
-            ));
+        if self.tuning.batch_rows == 0 {
+            return invalid("`tuning.batch_rows` is 0 — a batch must hold at least one row".into());
         }
         if self.tuning.max_lob_bytes == 0 {
             return invalid("`tuning.max_lob_bytes` is 0 — no LOB could ever be read".into());

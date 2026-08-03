@@ -8,6 +8,33 @@ use rdlt_testkit::{assert_conformant, verify_source};
 use super::common;
 use super::common::{Flavor, OracleFixture, incremental, stream};
 
+/// The Arrow schema the connector actually pushes.
+async fn read_schema(
+    shell: &rdlt_connector_oracle::source::Shell,
+    name: &str,
+) -> std::sync::Arc<arrow::datatypes::Schema> {
+    use rdlt_connector_sdk::spi::PushPayload;
+
+    let (out, mut incoming) = rdlt_connector_sdk::spi::records_channel(64 << 20);
+    let reader = shell.read(rdlt_connector_sdk::spi::ReadRequest {
+        stream: StreamSpec::new(name),
+        since: None,
+        out,
+    });
+    let collect = async {
+        let mut schema = None;
+        while let Some(push) = incoming.recv().await {
+            if let PushPayload::Arrow(batch) = push.payload {
+                schema.get_or_insert_with(|| batch.schema());
+            }
+        }
+        schema
+    };
+    let (res, schema) = tokio::join!(reader, collect);
+    res.expect("the read settles");
+    schema.expect("a batch was pushed")
+}
+
 /// Collect one stream's rows through the SPI, returning the JSON
 /// objects and the final cursor.
 async fn read_all(
@@ -32,14 +59,7 @@ async fn read_all(
         let mut cursor = None;
         while let Some(push) = incoming.recv().await {
             match push.payload {
-                PushPayload::RawJson(bytes) => {
-                    for line in bytes.split(|b| *b == b'\n') {
-                        if line.is_empty() {
-                            continue;
-                        }
-                        rows.push(serde_json::from_slice(line).expect("ndjson line"));
-                    }
-                }
+                PushPayload::Arrow(batch) => rows.extend(super::common::batch_to_json(&batch)),
                 PushPayload::Checkpoint(c) => cursor = Some(c),
                 _ => {}
             }
@@ -99,10 +119,15 @@ async fn the_read_path_holds_against_a_live_database() {
         "Oracle DATE carries time-of-day: {}",
         row["d"]
     );
-    assert!(
-        row["tstz"].as_str().expect("tstz").contains("+02:00"),
-        "{}",
-        row["tstz"]
+    // TIMESTAMP WITH TIME ZONE is normalized to the UTC INSTANT.
+    // Arrow stamps the array `UTC` and stores micros since epoch, so
+    // `03:04:05.678 +02:00` must land at 01:04:05.678 — keeping the
+    // wall-clock and dropping the offset would move every value by
+    // its zone.
+    assert_eq!(
+        row["tstz"].as_str().expect("tstz"),
+        "2026-01-02T01:04:05.678000",
+        "the offset must be applied, not discarded"
     );
     assert_eq!(row["b"], serde_json::json!("deadbeef"));
 
@@ -383,7 +408,7 @@ async fn the_read_path_holds_against_oracle_21c() {
     // Exact Decimal crosses as TEXT by design — a JSON number is an
     // IEEE double and cannot carry NUMBER(12,2) losslessly.
     assert_eq!(rows[0]["amount"], serde_json::json!("10.25"));
-    assert_eq!(rows[1]["amount"], serde_json::json!("-3.5"));
+    assert_eq!(rows[1]["amount"], serde_json::json!("-3.50"), "exact at the declared scale");
     assert_eq!(rows[0]["body"], serde_json::json!("hello"));
     assert_eq!(rows[1]["name"], serde_json::json!("sécond"), "utf-8 intact");
     assert!(rows[1]["body"].is_null(), "a NULL LOB stays null");
@@ -519,15 +544,14 @@ async fn columns_differing_only_in_case_are_refused() {
     assert!(err.contains("differ only in case"), "{err}");
 }
 
-/// A row too wide for one packet fails BY NAME, and FATALLY.
+/// A very wide row READS.
 ///
-/// It used to derive a one-row page anyway, hand the impossible read
-/// to the wire, and surface as a buffer underflow — which classified
-/// TRANSIENT, so the engine retried a permanently impossible read
-/// until its budget ran out, giving the operator protocol noise
-/// instead of the remedy.
+/// Under the pure-Rust driver this table was unreadable at any page
+/// size: one query reply had to fit one network packet, and 8 KB of
+/// declared width did not. The limit belonged to that driver, not to
+/// Oracle, and it is gone.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_row_wider_than_the_packet_is_refused_by_name() {
+async fn a_very_wide_row_reads() {
     let Some(fixture) = OracleFixture::start().await else {
         return;
     };
@@ -538,37 +562,21 @@ async fn a_row_wider_than_the_packet_is_refused_by_name() {
         ])
         .await;
     let shell = fixture.shell(&[stream("w", "WIDE_T")]);
-    let (out, _keep) = rdlt_connector_sdk::spi::records_channel(1 << 20);
-    let err = shell
-        .read(rdlt_connector_sdk::spi::ReadRequest {
-            stream: StreamSpec::new("w"),
-            since: None,
-            out,
-        })
-        .await
-        .expect_err("refused");
-    let text = err.to_string();
-    assert!(
-        text.contains("wider than one session data unit"),
-        "names the cause: {text}"
-    );
-    assert!(
-        !matches!(err, rdlt_connector_sdk::spi::SourceError::Transient(_)),
-        "a permanently impossible read must not be retried: {text}"
-    );
+    let (rows, _) = read_all(&shell, "w", None).await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["a"].as_str().expect("a").len(), 4000);
+    assert_eq!(rows[0]["b"].as_str().expect("b").len(), 4000);
 }
 
-/// The connector DECLARES the types it derived, so a decimal does not
-/// land as TEXT downstream.
+/// The batch carries EXACT types, so a decimal is a decimal.
 ///
-/// Every column's exact `LogicalType` was computed from the server's
-/// describe and then thrown away — nothing reached the engine, and
-/// the config's own `type_hints` escape hatch had zero readers. An
-/// operator's hint overrides the derivation, which is what the hatch
-/// is for.
+/// Under NDJSON the connector derived every column's type from the
+/// describe and then threw it away: a `NUMBER(12,2)` crossed as a
+/// JSON string and landed as TEXT in the destination, a RAW as hex
+/// text, a DATE as text. Arrow carries the schema with the data.
 #[tokio::test(flavor = "multi_thread")]
-async fn derived_types_are_declared_and_hints_override_them() {
-    use rdlt_connector_sdk::spi::core::LogicalType;
+async fn the_batch_carries_exact_types() {
+    use arrow::datatypes::{DataType, TimeUnit};
 
     let Some(fixture) = OracleFixture::start().await else {
         return;
@@ -576,36 +584,30 @@ async fn derived_types_are_declared_and_hints_override_them() {
     fixture
         .seed(&[
             "CREATE TABLE DECL_T (ID NUMBER(8) PRIMARY KEY, AMOUNT NUMBER(12,2), \
-             RAWS RAW(16), TS TIMESTAMP WITH TIME ZONE, BIG NUMBER)",
+             RAWS RAW(16), TS TIMESTAMP WITH TIME ZONE, BIG NUMBER, D BINARY_DOUBLE)",
+            "INSERT INTO DECL_T VALUES (1, 10.25, UTL_RAW.CAST_TO_RAW('ab'), \
+             TIMESTAMP '2026-01-01 10:00:00 +00:00', 123456789012345678901234567890, 1.5D)",
         ])
         .await;
-    let declared: rdlt_connector_oracle::source::Stream = serde_json::from_value(serde_json::json!({
-        "name": "d", "table": "DECL_T",
-        // Bare NUMBER is derived conservatively as text; the operator
-        // knows this one's real domain.
-        "type_hints": {"big": "int64"}
-    }))
-    .expect("stream document");
-    let shell = fixture.shell(&[declared]);
-    let specs = shell.streams().await.expect("discovery");
-    let hints = &specs[0].type_hints;
+    let shell = fixture.shell(&[stream("d", "DECL_T")]);
+    let schema = read_schema(&shell, "d").await;
+    let field = |name: &str| schema.field_with_name(name).expect(name).data_type().clone();
 
-    assert_eq!(hints.get("id"), Some(&LogicalType::Int64));
+    assert_eq!(field("id"), DataType::Int64);
     assert_eq!(
-        hints.get("amount"),
-        Some(&LogicalType::Decimal {
-            precision: 12,
-            scale: 2
-        }),
-        "a decimal is declared exactly, not left to land as TEXT"
+        field("amount"),
+        DataType::Decimal128(12, 2),
+        "an exact decimal, not TEXT"
     );
-    assert_eq!(hints.get("raws"), Some(&LogicalType::Binary));
-    assert_eq!(hints.get("ts"), Some(&LogicalType::TimestampTz));
+    assert_eq!(field("raws"), DataType::Binary, "binary, not hex text");
     assert_eq!(
-        hints.get("big"),
-        Some(&LogicalType::Int64),
-        "the operator's hint wins over the conservative derivation"
+        field("ts"),
+        DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
     );
+    assert_eq!(field("d"), DataType::Float64);
+    // Bare NUMBER accepts 38 digits, which no binary type holds
+    // exactly, so it keeps its digits as text — deliberately.
+    assert_eq!(field("big"), DataType::Utf8);
 }
 
 /// A read of many pages survives the server's open-cursor limit.
@@ -673,14 +675,15 @@ async fn a_bare_number_works_as_a_cursor() {
     assert_eq!(delta[0]["id"], serde_json::json!("99999"));
 }
 
-/// Exceeding the LOB ceiling fails FATALLY, not transiently.
+/// A CLOB written by a plain INSERT reads back whole — including at
+/// the size that used to be unreadable.
 ///
-/// The ceiling is a property of the data, so it reproduces exactly on
-/// every retry. Raised as a driver-internal error it landed in the
-/// classifier's catch-all and became transient — a permanently
-/// impossible read retried until the run's budget was spent.
+/// Recorded as O7 against the previous driver: 3,999 characters
+/// raised a buffer underflow inside the locator read while 3,000 was
+/// fine and a 2 MiB value written with DBMS_LOB was also fine. The
+/// boundary was the driver's, not Oracle's.
 #[tokio::test(flavor = "multi_thread")]
-async fn an_oversized_lob_fails_fatally() {
+async fn a_plain_insert_clob_reads_at_the_old_boundary() {
     let Some(fixture) = OracleFixture::start().await else {
         return;
     };
@@ -688,37 +691,20 @@ async fn an_oversized_lob_fails_fatally() {
         .seed(&[
             "CREATE TABLE BIGLOB_T (ID NUMBER(4) PRIMARY KEY, DOC CLOB)",
             "INSERT INTO BIGLOB_T VALUES (1, RPAD('x', 3000, 'x'))",
+            "INSERT INTO BIGLOB_T VALUES (2, RPAD('y', 3999, 'y'))",
+            // 4,000 is RPAD's own ceiling in SQL (VARCHAR2), not a
+            // driver limit — the DBMS_LOB path below goes past it.
+            "INSERT INTO BIGLOB_T VALUES (3, RPAD('z', 4000, 'z'))",
         ])
         .await;
-    // Read it once with no ceiling first: the value must be readable
-    // at all. 3,000 characters is deliberately below the measured
-    // boundary recorded as O7 in specs/032-oracle/plan.md.
-    let plain = fixture.shell_tuned(&[stream("l", "BIGLOB_T")], serde_json::json!({}));
-    let (rows, _) = read_all(&plain, "l", None).await;
+    let shell = fixture.shell(&[stream("l", "BIGLOB_T")]);
+    let (rows, _) = read_all(&shell, "l", None).await;
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0]["doc"].as_str().expect("clob").len(), 3_000);
     assert_eq!(
-        rows[0]["doc"].as_str().expect("clob").len(),
-        3_000,
-        "a CLOB written by a plain INSERT reads back whole"
+        rows[1]["doc"].as_str().expect("clob").len(),
+        3_999,
+        "the exact size recorded as unreadable (O7)"
     );
-
-
-    let shell = fixture.shell_tuned(
-        &[stream("l", "BIGLOB_T")],
-        serde_json::json!({"max_lob_bytes": 1024}),
-    );
-    let (out, _keep) = rdlt_connector_sdk::spi::records_channel(1 << 20);
-    let err = shell
-        .read(rdlt_connector_sdk::spi::ReadRequest {
-            stream: StreamSpec::new("l"),
-            since: None,
-            out,
-        })
-        .await
-        .expect_err("refused");
-    let text = err.to_string();
-    assert!(text.contains("max_lob_bytes"), "names the knob: {text}");
-    assert!(
-        !matches!(err, rdlt_connector_sdk::spi::SourceError::Transient(_)),
-        "must not be retried: {text}"
-    );
+    assert_eq!(rows[2]["doc"].as_str().expect("clob").len(), 4_000);
 }

@@ -129,6 +129,32 @@ Stated so the numbers stay honest as the matrix fills:
   source declares `tables: []` so only the query stream is delivered — without
   that, schema discovery adds every table in `public` on top, which is what the
   superseded 0.8× figure was measuring (see the policy log).
+- **Oracle cell — rdlt's paging ceiling is the point** (`oracle-to-pg-200k`,
+  032): rdlt's v1 Oracle read pages by ROWID keyset and sizes each page so one
+  query reply fits ONE 8 KB SDU packet — **14 rows per round trip** on this
+  table (measured). Both competitor arms stream multi-packet (Airbyte's source
+  is JDBC thin; python-oracledb thin has a tunable `arraysize`). Read that row
+  as *v1's SDU-bounded paging vs the competitors' streaming reads*, not as an
+  engine comparison. It carries **no bar** and should not acquire one while the
+  cap stands: a cell whose rdlt arm is architecturally capped cannot support a
+  ratio bar. It is the number the resumable-parser work would be measured
+  against.
+- **Oracle cell — dlt's fastest backend is deliberately NOT run**: ConnectorX
+  does support Oracle, but through ODPI-C, which dlopen's `libclntsh` from
+  Oracle Instant Client at run time. Instant Client is not pip-installable and
+  carries Oracle's OTN license, so the pg cells' headline `backend=connectorx`
+  does not transfer. dlt's arm here runs python-oracledb **thin** mode
+  (verified: no `libclntsh` anywhere in the baseline image). This is a recorded
+  handicap, not a hidden one; closing it means adding Instant Client to the
+  competitor image and a third arm — an owner decision, not a default.
+- **Oracle cell — the Airbyte arm may be a documented absence**:
+  `airbyte/source-oracle` is alpha/community (ELv2, in the default OSS catalog,
+  so no custom registration) and its docs claim testing only through 21c, while
+  the fixture is 23ai. Nothing documents a 23ai failure and nothing verifies
+  one. If discover or sync fails, the arm records `Missing{reason}` and the
+  matrix runs two-way. Substituting a 21c container for that arm alone is
+  refused: it would give one arm a different source server and break the
+  same-conditions rule the whole matrix rests on.
 - **Cold start** lives on the instruments track, not the matrix: a one-row
   file → duckdb pipeline, ≤ 40 ms absolute (`benches/check-cold-start.sh`,
   run by `TARGET=iai make bench` and therefore `make check`).

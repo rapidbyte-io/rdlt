@@ -2,8 +2,9 @@
 # seed (identity recorded) → shared within one invocation → teardown.
 # Container fixtures are named rdlt-bench-<id>; prepare scripts rely on that.
 #
-# Two same-conditions benchmark fixtures back the five-cell e2e matrix
-# (feature 018, research D-07), plus the exempt harness self-test `none`:
+# Three same-conditions benchmark fixtures back the e2e matrix (feature 018,
+# research D-07; the `oracle` store joined with 032's sixth cell), plus the
+# exempt harness self-test `none`:
 #
 #   pg     — ONE postgres:16 container. Database `src` is seeded 1M×12 (the
 #            `events` table) plus a 50%-changed `events_v2` for the dedup
@@ -17,6 +18,9 @@
 #            lake/airbyte). The lake prefixes need no explicit reset seam — the
 #            file destination's Replace mode is the ownership-precise prefix
 #            truncation.
+#   oracle — ONE Oracle Database 23ai Free container, same image tag the Oracle
+#            connector's live suite pins. Schema RDLT holds EVENTS, 200k×12 —
+#            the Oracle mirror of pg's `events`. Read-only.
 #
 # A cross-store cell (postgres source → s3 destination, or the reverse) lists
 # BOTH fixtures; the harness brings both up and resets both before each run.
@@ -76,3 +80,44 @@ container_port = 9000
 run_args = ["-e", "RUSTFS_ACCESS_KEY=rdlt-bench", "-e", "RUSTFS_SECRET_KEY=rdlt-bench-secret"]
 generate_sh = "python3 {{benches}}/fixtures/gen_jsonl.py 200000 {{data}}/rows.jsonl && python3 {{benches}}/fixtures/seed_s3.py http://127.0.0.1:19110 rdlt-bench rdlt-bench-secret raw landed/rows.jsonl {{data}}/rows.jsonl && python3 {{benches}}/fixtures/s3_bucket.py http://127.0.0.1:19110 rdlt-bench rdlt-bench-secret lake && printf 'streams:\n  - name: events\n    format: jsonl\n    path: \"landed/*.jsonl\"\n    location:\n      s3:\n        endpoint: \"http://127.0.0.1:19110\"\n        bucket: raw\n        access_key: rdlt-bench\n        secret_key: rdlt-bench-secret\n' > {{data}}/files.yaml"
 hash = ["{{data}}/rows.jsonl"]
+
+# One Oracle Database 23ai Free, pinned to the SAME tag the Oracle connector's
+# live suite uses (crates/rdlt-connector-oracle/tests/cases/common.rs) — one
+# Oracle version for the gate and for the bench. Seeded once per session with
+# EVENTS 200k×12, the Oracle mirror of the pg `events` shape, so the two
+# source cells differ in the SOURCE, not the data. Read-only: no reset seam
+# (the pg fixture's reset_dest_schemas already covers every destination this
+# cell writes, and `reset_sql` is refused on non-postgres kinds at load time).
+#
+# Readiness is NOT the harness's TCP probe: Oracle's listener accepts long
+# before FREEPDB1 registers with it (ORA-12514 in the gap), so seed_oracle.sh
+# does the real wait — the log line, THEN a live query — before it seeds.
+#
+# Port 15210 reads as 1521 in the house's five-digit style (5439 pg, 19110
+# rustfs). No `conn`: the rdlt source document takes discrete host/port/service
+# fields and the dlt arm needs a SQLAlchemy URL, so each consumer spells its own
+# rather than overloading one `{{conn}}` string (the runner handles an absent
+# `conn`). generate_sh therefore also writes the oracle source document the
+# cell's pipeline references as `{{data}}/oracle.yaml` — the same shape the
+# rustfs fixture uses for `files.yaml`, and the form the facade's
+# `source: oracle: {config: …}` arm takes. The container name is deterministic
+# (rdlt-bench-<id>), which is what lets the seed script exec into it.
+#
+# Startup is the slowest thing in the matrix (15-40 s typical, longer on a cold
+# page cache); fixtures are shared across cells within one invocation, so it is
+# paid once per session. The image declares no VOLUME (verified with
+# `podman image inspect`), so the harness's `rm -f` teardown leaks no anonymous
+# volume — the 029 flake amplifier does not apply here.
+[[fixture]]
+id = "oracle"
+kind = "container"
+image = "docker.io/gvenzl/oracle-free:23.26.2-slim-faststart"
+port = 15210
+container_port = 1521
+run_args = [
+  "-e", "ORACLE_PASSWORD=rdlt-bench-sys",
+  "-e", "APP_USER=RDLT",
+  "-e", "APP_USER_PASSWORD=rdlt-bench",
+]
+generate_sh = "sh {{benches}}/fixtures/seed_oracle.sh rdlt-bench-oracle 15210 RDLT rdlt-bench 200000 {{data}}/oracle-identity.txt && printf 'host: 127.0.0.1\nport: 15210\nservice: FREEPDB1\nuser: RDLT\npassword: rdlt-bench\nstreams:\n  - name: events\n    table: EVENTS\n' > {{data}}/oracle.yaml"
+hash = ["{{data}}/oracle-identity.txt"]

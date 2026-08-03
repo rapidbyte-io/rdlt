@@ -40,9 +40,7 @@ async fn attempt(
         let (mut rows, mut cursor) = (0usize, None);
         while let Some(push) = incoming.recv().await {
             match push.payload {
-                PushPayload::RawJson(bytes) => {
-                    rows += bytes.iter().filter(|b| **b == b'\n').count();
-                }
+                PushPayload::Arrow(batch) => rows += batch.num_rows(),
                 PushPayload::Checkpoint(c) => cursor = Some(c),
                 _ => {}
             }
@@ -74,7 +72,13 @@ async fn every_fail_point_recovers_exactly_once() {
             ),
         ])
         .await;
-    let shell = fixture.shell(&[incremental("sweep", "SWEEP_T", "ID")]);
+    // Small batches on purpose: the crash points fire PER BATCH, and
+    // an action like `1*off->return` needs more than one to reach.
+    // With one batch per read the second cell never armed at all.
+    let shell = fixture.shell_tuned(
+        &[incremental("sweep", "SWEEP_T", "ID")],
+        serde_json::json!({"batch_rows": 25}),
+    );
 
     let mut fired = std::collections::BTreeSet::new();
     for &point in FAIL_POINTS {
