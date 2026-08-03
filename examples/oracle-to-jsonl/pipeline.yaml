@@ -1,18 +1,25 @@
-# Oracle -> newline-delimited JSON on the local filesystem.
+# Oracle -> newline-delimited JSON on the local filesystem,
+# INCREMENTALLY: this is the suite's live cursor + merge example.
 #
+#   docker compose -f examples/oracle-to-jsonl/compose.yaml up -d
 #   rdlt run examples/oracle-to-jsonl/pipeline.yaml
 #
-# UNLIKE the pokemon example this one needs two things first: an Oracle
-# you can reach (edit the connection facts below) and Oracle Client
-# libraries on the machine. See examples/README.md.
+# The compose file starts an Oracle Free seeded with 250 employees.
+# One more thing is needed on the MACHINE THAT RUNS rdlt: Oracle
+# Instant Client, loaded at runtime — see examples/README.md.
 pipeline: oracle-to-jsonl
 
 workdir: examples/oracle-to-jsonl/.rdlt
 
-# `replace` mirrors the table each run. Switch to `merge` to upsert on
-# the stream's primary_key, or `append` to accumulate — `merge` is the
-# one that pairs with a `cursor:` for incremental loads.
-write_mode: replace
+# Append + cursor is the incremental pairing for a FILE destination:
+# the first run reads all 250 rows, later runs append only what
+# changed since the checkpoint. `merge` (upsert-by-key) belongs to
+# SQL destinations — files cannot update a row in place, and rdlt
+# REFUSES the combination rather than quietly appending duplicates;
+# jsonl-to-postgres demonstrates it. Under `replace` (mirror) a
+# cursor is deliberately not applied — a mirror rebuilt from
+# only-the-new-rows would lose every old one.
+write_mode: append
 
 source:
   # Written INLINE. Every connector also accepts `config: <path>`
@@ -24,9 +31,9 @@ source:
   #     oracle:
   #       config: examples/oracle-to-jsonl/oracle.yaml
   oracle:
-    # EDIT THESE — every value is a placeholder.
+    # These values match compose.yaml; edit them for a real estate.
     host: 127.0.0.1
-    port: 1521
+    port: 11521
 
     # Name the instance ONE way. `service` is the modern spelling (a
     # PDB service such as FREEPDB1); `sid` is the legacy form older
@@ -37,7 +44,7 @@ source:
     # sid: ORCL
 
     user: rdlt
-    password: change-me
+    password: rdlt
 
     streams:
       - name: employees
@@ -53,21 +60,22 @@ source:
         # fallback for a typed stream.
         primary_key: [employee_id]
 
-        # Uncomment to read INCREMENTALLY: only rows whose cursor
-        # column is above the last checkpoint. The column must be NOT
-        # NULL — a watermark cannot order a NULL, and admitting one
-        # would silently skip those rows on every later run, so it is
-        # refused up front.
-        #
-        # cursor: updated_at
+        # Incremental reads: only rows whose cursor column is above
+        # the last checkpoint. The column must be NOT NULL — a
+        # watermark cannot order a NULL, and admitting one would
+        # silently skip those rows on every later run, so it is
+        # refused up front. Delete the line to read in full each run.
+        cursor: updated_at
 
     # Tuning is optional; every knob has a working default and each
     # maps to the JDBC parameter an Oracle estate already tunes.
     # tuning:
     #   page_rows: 1000            # defaultRowPrefetch
+    #   batch_rows: 8192           # rows per Arrow batch downstream
     #   read_timeout_ms: 600000    # oracle.jdbc.ReadTimeout
     #   connect_timeout_ms: 60000  # oracle.net.CONNECT_TIMEOUT
     #   keepalive_minutes: 1       # oracle.net.keepAlive / EXPIRE_TIME
+    #   statement_cache: 20        # implicitStatementCacheSize
 
 destination:
   file:

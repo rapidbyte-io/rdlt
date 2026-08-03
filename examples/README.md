@@ -1,53 +1,72 @@
 # Examples
 
-Runnable pipelines. Both were executed exactly as written before being
-committed — the row counts below are what they actually produced, not
-what they ought to produce.
+Runnable pipelines covering EVERY connector, each executed exactly as
+written before being committed — the row counts below are what they
+actually produced. Where a database is involved, a `compose.yaml` in
+the example's directory starts it seeded; the images are the exact
+pins rdlt's own test suites run against.
 
-| example | needs | runs in |
-|---|---|---|
-| [`pokemon-to-jsonl`](pokemon-to-jsonl/) | a network connection | ~5 s |
-| [`oracle-to-jsonl`](oracle-to-jsonl/) | an Oracle + client libraries | ~0.1 s for 250 rows |
+| example | flow | needs | verified result |
+|---|---|---|---|
+| [`pokemon-to-jsonl`](pokemon-to-jsonl/) | REST → jsonl files | network | 1,351 rows, 2 files (147 KB + 104 KB) |
+| [`csv-to-duckdb`](csv-to-duckdb/) | CSV → DuckDB | nothing | 60 rows; re-run adds 0 |
+| [`postgres-to-parquet`](postgres-to-parquet/) | PostgreSQL → parquet | compose | 5,000 + 200 + 3 rows, idempotent |
+| [`jsonl-to-postgres`](jsonl-to-postgres/) | jsonl → PostgreSQL | compose | 40 rows merged; re-run leaves 40 |
+| [`oracle-to-jsonl`](oracle-to-jsonl/) | Oracle → jsonl files | compose + Instant Client | 250 rows, then 0 (incremental) |
+| [`postgres-to-iceberg`](postgres-to-iceberg/) | PostgreSQL → Iceberg (Polaris + S3) | compose | 5,200 rows, 1 snapshot/table, partitioned |
+| [`jsonl-to-snowflake`](jsonl-to-snowflake/) | jsonl → Snowflake | an account | 40 rows merged; re-run leaves 40 |
 
 Run one with:
 
 ```sh
+# if it has a compose.yaml (docker compose and podman-compose both work):
+docker compose -f examples/<name>/compose.yaml up -d
 rdlt run examples/<name>/pipeline.yaml
 ```
 
-Each example is a SINGLE file. Every connector accepts its config
-either inline — as these do — or as `config: <path>` pointing at a
-separate YAML/JSON document with the identical shape:
-
-```yaml
-source:
-  oracle:
-    config: secrets/oracle.yaml     # the same document, kept apart
-```
-
-Inline keeps a small pipeline in one place; a path is better once a
-document is shared between pipelines, or holds a credential you want
-gitignored on its own. Mixing the two — `config:` alongside inline
-keys — is refused, so half a document can never be silently ignored.
-
 Paths in the pipeline files are relative to the repository root, so
 run them from there. If you have not built the CLI yet:
+`cargo build --release -p rdlt-cli` (binary at `target/release/rdlt`).
 
-```sh
-cargo build --release -p rdlt-cli    # binary at target/release/rdlt
-```
+## The full configuration, enforced
+
+Each connector has ONE example that is the reference for its complete
+vocabulary — every field appears there, active where the example uses
+it, commented with a real value where it does not:
+
+| connector | its reference example |
+|---|---|
+| rest source | pokemon-to-jsonl |
+| postgres source | postgres-to-parquet |
+| oracle source | oracle-to-jsonl |
+| file source | jsonl-to-postgres |
+| file destination | postgres-to-parquet |
+| postgres destination | jsonl-to-postgres |
+| duckdb destination | csv-to-duckdb |
+| snowflake destination | jsonl-to-snowflake |
+| iceberg destination | postgres-to-iceberg |
+
+This is a GATE PROPERTY, not a promise: `crates/rdlt/tests/examples.rs`
+parses and builds every pipeline through the real Spec gate, and fails
+if a reference example omits any field of its connector's config
+schema. A config field added without a home in the examples fails the
+suite.
+
+Every connector accepts its config inline (as these do) or as
+`config: <path>` pointing at a separate YAML/JSON document with the
+identical shape; mixing the two is refused, so half a document can
+never be silently ignored.
+
+Fixed host ports, chosen high to avoid dev services: postgres 15432
+(parquet example) / 15433 (postgres-destination example) / 15434
+(iceberg example), oracle 11521, RUSTFS 19000, Polaris 18181.
 
 ---
 
 ## `pokemon-to-jsonl` — REST → newline-delimited JSON
 
-Reads every Pokémon from [PokéAPI](https://pokeapi.co) and writes it
-to `examples/pokemon-to-jsonl/out/`. It needs no credentials and no
-setup, which is why it is the one to try first.
-
-```sh
-rdlt run examples/pokemon-to-jsonl/pipeline.yaml
-```
+Reads every Pokémon from [PokéAPI](https://pokeapi.co); no
+credentials, no setup — the one to try first.
 
 **Verified:** 1,351 rows, matching the `count` PokéAPI reports for the
 same endpoint — so pagination followed every page rather than stopping
@@ -57,98 +76,167 @@ truncates rather than appends.
 
 What the pipeline says:
 
-- The `rest:` block is the source document. PokéAPI returns
-  `{count, next, previous, results: [...]}`, so `records_path: results`
-  says where the rows are, and the `next_url` paginator follows the
-  fully-formed `next` link the API supplies. When an API gives you the
-  next URL, following it beats doing arithmetic on `offset`/`limit`.
-- Around it, `workdir` is where rdlt keeps its write-ahead log, and
-  `write_mode` decides whether a re-run replaces, appends, or merges.
-- The destination's `parts` block sizes the output FILES. It is set
-  to a deliberately tiny 128 KiB so the mechanics are visible at this
-  dataset's size: the first file spans TWO of the engine's 400-row
-  writes and closes just after crossing the target (147 KB — a part
-  overshoots, because a write is never split), and the second is
-  smaller (104 KB) because the commit closed it — no part ever spans
-  a commit. Delete the block and all 1,351 rows land in one file: the
-  real default is 128 MiB, the size data lakes want.
+- The `rest:` block shows the full vocabulary: all six auth forms,
+  all seven pagination families, incremental windows, response
+  actions, a parent-child stream (commented — it makes 1,351 polite
+  requests), and type hints.
+- The active parts: PokéAPI's `next` link is followed
+  (`pagination: next_url`) because arithmetic on offset/limit is how
+  off-by-one bugs are born; `min_request_interval_ms` keeps rdlt a
+  good citizen of someone else's free API.
+- The destination's `parts` block is a deliberately tiny 128 KiB so
+  the file-sizing mechanics are visible: the first file spans TWO of
+  the engine's 400-row writes and closes just after crossing the
+  target (147 KB — a part overshoots, a write is never split), and
+  the second is smaller (104 KB) because the commit closed it — no
+  part ever spans a commit. Delete the block and all 1,351 rows land
+  in one file: the real default is 128 MiB.
 
-Output rows carry two engine columns beside your data:
-
-```json
-{"_rdlt_load_id":"19fc713958c-dbf6b-0","_rdlt_id":"0599eb7c…","name":"bulbasaur","url":"https://pokeapi.co/api/v2/pokemon/1/"}
-```
-
-`_rdlt_id` is the row identity used for deduplication and merges;
-`_rdlt_load_id` says which load wrote the row.
+Output rows carry two engine columns beside your data: `_rdlt_id` is
+the row identity used for deduplication and merges; `_rdlt_load_id`
+says which load wrote the row.
 
 ---
 
-## `oracle-to-jsonl` — Oracle → newline-delimited JSON
+## `csv-to-duckdb` — CSV → DuckDB
 
-Reads an Oracle table and writes it to
-`examples/oracle-to-jsonl/out/`. Unlike the Pokémon example this one
-needs two things before it will run.
+No containers, no credentials. The sample data is `;`-delimited with
+a quoted note column, so the `csv:` options block is load-bearing.
 
-**1. Edit the `oracle:` block in `pipeline.yaml`.** Every value is a
-placeholder — host, service, user, password, and the table name. The
-password sits in the pipeline file, which is exactly the case for
-moving it to `config: <path>` and gitignoring that document instead.
+**Verified:** 60 rows, `sum(amount) = 23660.51`, and `placed_on` is a
+real DATE column — the `type_hints` did the parsing, not luck. A
+second run adds 0 rows: the file source's own cursor knows a
+fully-read file and re-reads only what grew.
 
-**2. Install Oracle Client libraries.** rdlt's Oracle source is built
-on ODPI-C, which loads them at RUNTIME. Nothing is needed to *build*
-rdlt; the requirement appears when a connection is opened, and its
-absence is reported as `DPI-1047`.
+The `duckdb:` block is the reference for that destination:
+`memory_limit` (worth pinning on shared machines — DuckDB's own
+default is a fraction of SYSTEM memory), bare-identifier-only
+`settings:` passthrough, `extensions:`, and the shared SQL merge
+options.
 
-Instant Client Basic Lite is a free download from Oracle under their
-OTN licence (we cannot redistribute it):
+---
+
+## `postgres-to-parquet` — PostgreSQL → parquet
 
 ```sh
-# Linux x86-64; see Oracle's downloads page for other platforms.
-curl -LO https://download.oracle.com/otn_software/linux/instantclient/instantclient-basiclite-linuxx64.zip
-unzip instantclient-basiclite-linuxx64.zip
-export LD_LIBRARY_PATH=$PWD/instantclient_23_8:$LD_LIBRARY_PATH
+docker compose -f examples/postgres-to-parquet/compose.yaml up -d
+rdlt run examples/postgres-to-parquet/pipeline.yaml
 ```
 
-On Fedora/RHEL it also needs `libaio` (`sudo dnf install libaio`); on
-Debian/Ubuntu, `libaio1`.
+**Verified:** 5,000 orders + 200 customers + 3 rows from a join QUERY
+stream, as zstd parquet; a second run produces the same counts —
+`replace` is a mirror.
 
-Then:
+This is the reference for BOTH the postgres source (tables, query
+streams, the full cursor vocabulary, CDC, TLS, batch shaping) and the
+file destination (parquet tuning, partitioning, `parts`, S3). One
+interaction stated in the file because it surprises people: under
+`replace` a cursor is deliberately NOT applied — a mirror rebuilt
+from only-the-new-rows would lose every old one. Cursors pair with
+`append` and `merge`.
+
+---
+
+## `jsonl-to-postgres` — files → PostgreSQL, merged
 
 ```sh
+docker compose -f examples/jsonl-to-postgres/compose.yaml up -d
+rdlt run examples/jsonl-to-postgres/pipeline.yaml
+```
+
+**Verified:** 40 rows land in `raw.events`; running it again leaves
+40, twice over — the file source re-reads nothing (its cursor knows
+the file), and `merge` upserts by key rather than appending.
+
+The reference for the file SOURCE (formats, globs, per-extension
+compression, CSV shape, S3 reading, hints, validation) and the
+postgres DESTINATION — including the whole shared SQL option
+vocabulary in prose: `merge_strategy` (delete_insert | upsert |
+scd2), `hard_delete`, `dedup_sort`, `merge_scope`, and the full
+`scd2` block. Those options read identically on duckdb and snowflake;
+this file is where each is explained.
+
+---
+
+## `oracle-to-jsonl` — Oracle → jsonl, INCREMENTALLY
+
+```sh
+docker compose -f examples/oracle-to-jsonl/compose.yaml up -d
 rdlt run examples/oracle-to-jsonl/pipeline.yaml
 ```
 
-**Verified** against Oracle Free 23ai with a 250-row `EMPLOYEES`
-table. A row comes out like this:
+The compose file starts an Oracle Free seeded with 250 employees
+(first start takes a minute or two). One more thing is needed on the
+machine that RUNS rdlt: **Oracle Instant Client**, loaded at runtime
+(nothing is needed to build rdlt; its absence reports as `DPI-1047`).
+It is a free download under Oracle's OTN licence — we cannot
+redistribute it:
 
-```json
-{"_rdlt_load_id":"19fc71538ff-de58e-0","employee_id":151,"name":"employee-151","salary":51585.50,"hired":"2020-05-31T00:00:00","updated_at":"2026-08-03T10:04:34.844871Z"}
+```sh
+curl -LO https://download.oracle.com/otn_software/linux/instantclient/instantclient-basiclite-linuxx64.zip
+unzip instantclient-basiclite-linuxx64.zip
+export LD_LIBRARY_PATH=$PWD/instantclient_23_26:$LD_LIBRARY_PATH
+# Fedora/RHEL: sudo dnf install libaio    Debian/Ubuntu: libaio1
 ```
 
-Three things in that row are worth noticing, because they are choices
-rather than accidents:
+**Verified:** run 1 reads 250 rows; run 2 reads **0** — the
+`cursor: updated_at` + `write_mode: append` pairing reads only what
+changed since the checkpoint. (`merge` is refused by a FILE
+destination — files cannot update a row in place — which is why the
+upsert demo lives in jsonl-to-postgres.) A row shows three deliberate
+choices: `salary: 79704.41` is an exact decimal, not a rounded float;
+`hired` keeps its TIME because Oracle's DATE carries one; and
+`updated_at` arrives as the UTC instant. The cursor column must be
+NOT NULL — Oracle sorts NULLs last, so a nullable cursor would
+deliver those rows once and then silently skip them forever; it is
+refused up front instead.
 
-- `salary` is `51585.50` — an exact decimal at its declared scale.
-  `NUMBER(12,2)` crosses as a real decimal, not as a rounded float and
-  not as a quoted string.
-- `hired` has a **time component**. Oracle's `DATE` carries one, so it
-  maps to a timestamp rather than a date; treating it as a date would
-  silently drop the time.
-- `updated_at` is UTC. `TIMESTAMP WITH TIME ZONE` is normalised to the
-  instant, so a value stored as `+02:00` arrives as the UTC moment it
-  denotes rather than its wall-clock face.
+---
 
-### Reading only what changed
+## `postgres-to-iceberg` — PostgreSQL → Apache Iceberg
 
-Uncomment `cursor:` in the `oracle:` block and switch `write_mode` to
-`merge`. Each run then reads only rows whose cursor column is above
-the last checkpoint, and upserts them on `primary_key`.
+```sh
+docker compose -f examples/postgres-to-iceberg/compose.yaml up -d
+# wait for: docker compose -f ... logs bootstrap -> "polaris bootstrap complete"
+rdlt run examples/postgres-to-iceberg/pipeline.yaml
+```
 
-The cursor column must be `NOT NULL`. That is enforced before any row
-is read, and the reason is worth knowing: Oracle sorts NULLs last, so
-a nullable cursor would deliver those rows once and then silently skip
-them on every later run — the failure would look like success.
+The compose file is the whole stack: seeded PostgreSQL, RUSTFS (S3),
+Apache Polaris (REST catalog, pinned by digest — upstream publishes
+no stable tag), and a one-shot bootstrap that creates the bucket,
+catalog and grants.
+
+**Verified, read back from the CATALOG rather than from rdlt's own
+report:** orders = 1 snapshot, 5,000 rows, partitioned
+`(status, identity)`; customers = 1 snapshot, 200 rows. A second run
+reads 0 rows — cursors make append incremental, so re-running does
+not duplicate.
+
+The reference for the iceberg destination: catalog auth (oauth2 and
+bearer), vended credentials vs an explicit `storage.s3` override,
+per-stream `tables` with all seven partition transforms, `parquet`
+tuning and `parts` sizing (rdlt's 128 MiB default becomes the table's
+`write.target-file-size-bytes`).
+
+---
+
+## `jsonl-to-snowflake` — files → Snowflake, merged
+
+The one example with no container: Snowflake is a service, so the
+connection facts in the pipeline are placeholders to edit. Everything
+else runs as written.
+
+**Verified against a real account** (with the placeholders swapped
+for credentials): 40 rows merged into `EVENTS`; a second run is a
+clean no-op; `SELECT COUNT(*)` through Snowflake's own SQL API
+answers 40.
+
+The reference for the snowflake destination: all four auth methods
+(key-pair, password + MFA passcode, OAuth token, PAT), the
+account-identifier refusals (a URL or a full host is refused with a
+pointer), warehouse/role/table_type/session_parameters/query_tag,
+PrivateLink `host` override, staged-part sizing, and the shared SQL
+merge options.
 
 ---
 
@@ -183,13 +271,14 @@ time still produces data-lake-sized files rather than one file per
 page. Measured on 1.5M rows in a single commit: parts of 141.5 MB,
 141.3 MB and 126.4 MB against that target. The pokemon example ships
 with a scaled-down live demonstration (128 KiB target, two files of
-147 KB and 104 KB) — the comments in its pipeline read the result.
+147 KB and 104 KB).
 
 Two honest caveats. Parts OVERSHOOT — a batch is never split, so a
-part closes just after crossing its target, not at it. And
-`roll_after_seconds` fires only when data arrives; there is no
-background timer, so a quiet stream rolls at its next write or at its
-next commit.
+part closes just after crossing its target, not at it; and with a
+target BELOW one write's size, the floor on file size is simply the
+write (the batch is delivered whole). `roll_after_seconds` fires only
+when data arrives; there is no background timer, so a quiet stream
+rolls at its next write or at its next commit.
 
 `max_open_bytes` (default 512 MiB) is a safety valve rather than a
 tuning knob. An open part lives in memory until it closes, and a
@@ -234,12 +323,10 @@ batch_policy:
 `every_bytes` counts the ARROW IN-MEMORY footprint, not the bytes
 written. **It is a memory bound, not an output-size one** — if you
 came here wanting 128 MB files, `parts.target_bytes` above is the
-setting, not this one. Arrow reports
-allocated capacity — buffers grow geometrically, and per-value offsets
-and validity bitmaps count too — and the output format is the
-destination's business, JSONL text here but compressed parquet
-elsewhere. Measured on the pokemon stream: `every_bytes: 100000` gave
-400-row writes of ~73 KB.
+setting, not this one. Arrow reports allocated capacity — buffers grow
+geometrically, and per-value offsets and validity bitmaps count too.
+Measured on the pokemon stream: `every_bytes: 100000` gave 400-row
+writes of ~73 KB.
 
 Both thresholds are FLOORS, not targets: a source batch is never
 split, so accumulation stops at the first batch to cross the line.
@@ -257,8 +344,8 @@ which is what happened before this existed.
 ### Durability: `commit_policy`
 
 **How often work is committed** — a durability decision, not a
-file-size one. A commit is the unit a crash can cost
-you and the point a resume restarts from.
+file-size one. A commit is the unit a crash can cost you and the point
+a resume restarts from.
 
 ```yaml
 commit_policy:
@@ -277,12 +364,12 @@ would hold everything uncommitted until the run ended. An empty
 an upper bound on both.** Measured: the same 1.5M-row run that gave
 141 MB parts under one commit gave **9.5 MB parts across 44 commits**
 under the default cadence — the 128 MiB target never came close to
-binding. If your files are smaller than you asked for, this is why. The same holds one level down: set
-`batch_policy: {every_rows: 50000}` while committing at every
-checkpoint, and if checkpoints arrive every 100 rows you will still
-get 100-row writes — the commit flushes what has accumulated before it
-closes. To get large writes, and large files, commits must be at least
-as coarse:
+binding. If your files are smaller than you asked for, this is why.
+The same holds one level down: set `batch_policy: {every_rows: 50000}`
+while committing at every checkpoint, and if checkpoints arrive every
+100 rows you will still get 100-row writes — the commit flushes what
+has accumulated before it closes. To get large writes, and large
+files, commits must be at least as coarse:
 
 ```yaml
 batch_policy:  {every_rows: 50000}
@@ -304,7 +391,9 @@ default commit policy: everything is one commit.
   and where it resumed from.
 - Delete a `workdir` to force a fresh run; keep it to let a crashed
   run resume where it stopped.
-- The `out/` directories also hold `_rdlt_state.*.json` and
-  `_rdlt_commits.*.json`. Those are rdlt's bookkeeping — the receipt
-  log that makes a re-run idempotent instead of duplicating. Leave
-  them beside the data.
+- File-destination `out/` directories also hold `_rdlt_state.*.json`,
+  `_rdlt_commits.*.json` and `_rdlt_manifest.*.json`. Those are
+  rdlt's bookkeeping — what makes a re-run idempotent instead of
+  duplicating. Leave them beside the data.
+- `docker compose -f examples/<name>/compose.yaml down -v` resets an
+  example's database entirely (the seed runs again on next start).

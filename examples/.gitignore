@@ -2,3 +2,5 @@
 # reproducible by running the example, and neither belongs in git.
 .rdlt/
 out/
+*.duckdb
+*.duckdb.wal
