@@ -382,6 +382,30 @@ wide rows mid-message. Correct termination needs a RESUMABLE PARSER.
 Until then: one reply must fit one packet, every page is a fresh
 query, and O1 follows.
 
+**O7 — a CLOB just under 4 KB, written by a PLAIN INSERT, is
+UNREADABLE.** Found by measurement at round 4 while pinning something
+else, and reproduced from three directions:
+
+- 3,000 characters reads back whole; **3,999 fails**
+  (`buffer underflow: need 114 bytes but only 96 available`, raised
+  inside the LOB LOCATOR read, not the row parse).
+- It is NOT about size in general: the 2 MiB CLOB written with
+  `DBMS_LOB.WRITEAPPEND` reads back whole, and always has.
+- It is NOT the read parameters: identical error at
+  `lob_chunk_bytes` of 4,000, 8,000 and 1 MiB, and at every page size.
+
+The distinguishing factor is how the value is STORED — around
+Oracle's inline/out-of-line threshold (`ENABLE STORAGE IN ROW`, just
+under 4,000 bytes), which a plain `INSERT` of that length straddles
+and `DBMS_LOB.WRITEAPPEND` does not. The existing 2 MiB cell never
+caught it because every LOB it writes goes through `DBMS_LOB`.
+
+CONSEQUENCE: LOB support is NOT the "flawless" the feature goal asks
+for. It fails LOUDLY and fatally (not silently, and not retried — the
+round-3 classification work covers it), but an ordinary estate whose
+CLOBs were inserted normally will hit this. Diagnosing the driver's
+locator parse is the fix and is not attempted here.
+
 **O3 — no connection is ever closed.** `Connection::close()` sends a
 proper logoff; nothing calls it, and `Drop` only sets a flag. A
 many-stream pipeline that retries leaves sessions for the server to

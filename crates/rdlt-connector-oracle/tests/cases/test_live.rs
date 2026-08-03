@@ -672,3 +672,53 @@ async fn a_bare_number_works_as_a_cursor() {
     // in it and a JSON number is an IEEE double.
     assert_eq!(delta[0]["id"], serde_json::json!("99999"));
 }
+
+/// Exceeding the LOB ceiling fails FATALLY, not transiently.
+///
+/// The ceiling is a property of the data, so it reproduces exactly on
+/// every retry. Raised as a driver-internal error it landed in the
+/// classifier's catch-all and became transient — a permanently
+/// impossible read retried until the run's budget was spent.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_oversized_lob_fails_fatally() {
+    let Some(fixture) = OracleFixture::start().await else {
+        return;
+    };
+    fixture
+        .seed(&[
+            "CREATE TABLE BIGLOB_T (ID NUMBER(4) PRIMARY KEY, DOC CLOB)",
+            "INSERT INTO BIGLOB_T VALUES (1, RPAD('x', 3000, 'x'))",
+        ])
+        .await;
+    // Read it once with no ceiling first: the value must be readable
+    // at all. 3,000 characters is deliberately below the measured
+    // boundary recorded as O7 in specs/032-oracle/plan.md.
+    let plain = fixture.shell_tuned(&[stream("l", "BIGLOB_T")], serde_json::json!({}));
+    let (rows, _) = read_all(&plain, "l", None).await;
+    assert_eq!(
+        rows[0]["doc"].as_str().expect("clob").len(),
+        3_000,
+        "a CLOB written by a plain INSERT reads back whole"
+    );
+
+
+    let shell = fixture.shell_tuned(
+        &[stream("l", "BIGLOB_T")],
+        serde_json::json!({"max_lob_bytes": 1024}),
+    );
+    let (out, _keep) = rdlt_connector_sdk::spi::records_channel(1 << 20);
+    let err = shell
+        .read(rdlt_connector_sdk::spi::ReadRequest {
+            stream: StreamSpec::new("l"),
+            since: None,
+            out,
+        })
+        .await
+        .expect_err("refused");
+    let text = err.to_string();
+    assert!(text.contains("max_lob_bytes"), "names the knob: {text}");
+    assert!(
+        !matches!(err, rdlt_connector_sdk::spi::SourceError::Transient(_)),
+        "must not be retried: {text}"
+    );
+}

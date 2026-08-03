@@ -241,7 +241,22 @@ impl Client {
                 }))
                 .await
                 .map_err(|_| SourceError::transient("reading a CLOB: no answer within the budget"))?
-                .map_err(|e| classify("reading a CLOB", e))?;
+                // The ceiling is a property of the DATA, so it
+                // reproduces exactly on every retry: it must be
+                // FATAL. Deciding that from the accumulated length
+                // rather than the error's text keeps it out of the
+                // classifier's catch-all, which would have made a
+                // permanently impossible read retry to exhaustion.
+                .map_err(|e| {
+                    if text.len() as u64 > max {
+                        SourceError::fatal(format!(
+                            "a CLOB exceeds `tuning.max_lob_bytes` ({max}) — raise it \
+                             deliberately if the estate really holds values that large"
+                        ))
+                    } else {
+                        classify("reading a CLOB", e)
+                    }
+                })?;
             Ok(serde_json::Value::String(text))
         } else {
             let mut bytes = Vec::new();
@@ -262,7 +277,16 @@ impl Client {
                 }))
                 .await
                 .map_err(|_| SourceError::transient("reading a BLOB: no answer within the budget"))?
-                .map_err(|e| classify("reading a BLOB", e))?;
+                .map_err(|e| {
+                    if bytes.len() as u64 > max {
+                        SourceError::fatal(format!(
+                            "a BLOB exceeds `tuning.max_lob_bytes` ({max}) — raise it \
+                             deliberately if the estate really holds values that large"
+                        ))
+                    } else {
+                        classify("reading a BLOB", e)
+                    }
+                })?;
             // ONE allocation, sized exactly. The previous
             // `map(|b| format!("{b:02x}")).collect()` allocated a
             // heap String PER BYTE — two billion of them for a 2 GB
