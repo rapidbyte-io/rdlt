@@ -11,10 +11,10 @@
       "dlt": "dlt 1.29.0"
     },
     "dataset_hashes": {
-      "oracle:/tmp/.tmpGPQgHm/oracle-identity.txt": "33a19236805284f512e046f17b9040c4e131de1cf9777bad120a9e64ffa9ea1f",
+      "oracle:/tmp/.tmpaVKhLV/oracle-identity.txt": "33a19236805284f512e046f17b9040c4e131de1cf9777bad120a9e64ffa9ea1f",
       "pg:seed_output": "dataset  |  rows   |           content_md5 | -----------+---------+---------------------------------- | events    | 1000000 | e840f51738a6b4b15f9f085ea85e3df8 | events_v2 | 1000000 | 7e208273f4d5333658fff2fa1c9839d9 | (2 rows)"
     },
-    "loadavg_at_start": 6.2,
+    "loadavg_at_start": 5.3,
     "quiet_note": null
   },
   "workload": {
@@ -27,56 +27,76 @@
   },
   "rdlt": {
     "runs_ms": [
-      847.192633,
-      844.782786,
-      857.5276739999999,
-      845.923058,
-      827.407971
+      834.113021,
+      815.462672,
+      832.621898,
+      821.818224,
+      849.611393
     ],
-    "median_ms": 845.923058,
-    "p95_ms": 857.5276739999999,
+    "median_ms": 832.621898,
+    "p95_ms": 849.611393,
     "rows": 200000,
     "bytes": 40939288,
-    "rows_per_s": 236428.12204795107,
-    "mb_per_s": 46.1540173522006,
+    "rows_per_s": 240205.06844752718,
+    "mb_per_s": 46.89132917515292,
     "cpu": {
-      "mean_util": 0.374664024115378,
-      "peak_util": 0.8333333333333334,
+      "mean_util": 0.36487269656940674,
+      "peak_util": 0.819672131147541,
       "user_sys_ms": 310,
       "note": "process TREE sampled at 50ms (root VmHWM exact; tree spikes between polls can be missed; cpu undercounts up to one interval)"
     },
     "rss": {
-      "peak_bytes": 62423040,
+      "peak_bytes": 63488000,
       "note": "process TREE sampled at 50ms (root VmHWM exact; tree spikes between polls can be missed; cpu undercounts up to one interval)"
     }
   },
   "competitors": {
     "airbyte": {
-      "status": "missing",
-      "reason": "driver airbyte (/var/home/netf/Repos/rapidbyte/rdlt/benches/competitors/airbyte/driver.py) failed: [oracle-to-pg-200k] triggering sync on connection 55953e09-7f3d-4e76-9bdb-c5bf7ab52176 (expected 200000 rows)\nTraceback (most recent call last):\n  File \"/var/home/netf/Repos/rapidbyte/rdlt/benches/competitors/airbyte/driver.py\", line 143, in <module>\n    main()\n    ~~~~^^\n  File \"/var/home/netf/Repos/rapidbyte/rdlt/benches/competitors/airbyte/driver.py\", line 119, in main\n    job = ab.poll_job(token, job_id, cap_s=3600)\n  File \"/var/home/netf/Repos/rapidbyte/rdlt/benches/competitors/airbyte/airbyte_api.py\", line 268, in poll_job\n    status, data, token = api(\"GET\", f\"/api/public/v1/jobs/{job_id}\", token)\n                          ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/var/home/netf/Repos/rapidbyte/rdlt/benches/competitors/airbyte/airbyte_api.py\", line 235, in api\n    ensure_port_forward()\n    ~~~~~~~~~~~~~~~~~~~^^\n  File \"/var/home/netf/Repos/rapidbyte/rdlt/benches/competitors/airbyte/airbyte_api.py\", line 200, in ensure_port_forward\n    raise RuntimeError(\"port-forward did not become healthy within 15s\")\nRuntimeError: port-forward did not become healthy within 15s\n"
+      "status": "ok",
+      "runs_ms": [
+        45480.21208302816,
+        45454.90505505586,
+        45449.12662199931
+      ],
+      "median_ms": 45454.90505505586,
+      "self_timed": true,
+      "cpu": {
+        "mean_util": null,
+        "peak_util": null,
+        "user_sys_ms": null,
+        "note": "driver-run external system — no per-process CPU accounting"
+      },
+      "rss": {
+        "peak_bytes": 11209101312,
+        "note": "driver-reported (the module states which system statistic this is)"
+      },
+      "ratio_vs_rdlt": 54.592492900127716,
+      "extra": {
+        "sync_s": 33.0
+      }
     },
     "dlt": {
       "status": "ok",
       "runs_ms": [
-        3355.8095570188016,
-        3358.457312977407,
-        3369.934981048573,
-        3374.601616000291,
-        3356.050140981097
+        3508.0933999852277,
+        3404.0147089981474,
+        3411.735446017701,
+        3422.723527997732,
+        3447.7105920086615
       ],
-      "median_ms": 3358.457312977407,
+      "median_ms": 3422.723527997732,
       "self_timed": true,
       "cpu": {
-        "mean_util": 1.371434747731308,
+        "mean_util": 1.3574559760100184,
         "peak_util": null,
-        "user_sys_ms": 5979,
+        "user_sys_ms": 6147,
         "note": "cgroup v2 cpu.stat, last poll before exit"
       },
       "rss": {
-        "peak_bytes": 399499264,
+        "peak_bytes": 373837824,
         "note": "self-reported ru_maxrss — the recorded statistic (bar derivation)"
       },
-      "ratio_vs_rdlt": 3.9701687774272814
+      "ratio_vs_rdlt": 4.110777696598285
     }
   },
   "verify": {

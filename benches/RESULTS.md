@@ -181,8 +181,8 @@ invocation) — the latest two medians per pair and their delta.
 | Cell | Variant | Latest | Previous | Δ |
 |---|---|---|---|---|
 | oracle-to-pg-200k | airbyte | 45.45 s | — | — |
-| oracle-to-pg-200k | dlt | 3.42 s | 3.51 s | -2.6% |
-| oracle-to-pg-200k | rdlt | 832.6 ms | 838.1 ms | -0.7% |
+| oracle-to-pg-200k | dlt | 3.36 s | 3.61 s | -7.0% |
+| oracle-to-pg-200k | rdlt | 845.9 ms | 923.5 ms | -8.4% |
 | pg-to-pg-1m | airbyte | 60.44 s | 45.37 s | +33.2% |
 | pg-to-pg-1m | dlt | 10.17 s | 10.26 s | -0.9% |
 | pg-to-pg-1m | dlt-pyarrow | 17.19 s | 17.46 s | -1.6% |
