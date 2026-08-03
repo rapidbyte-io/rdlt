@@ -5,8 +5,9 @@
 #
 # SCOREBOARD ONLY — deliberately NOT in bars.toml (benches/GOVERNANCE.md,
 # constitution v1.1.0, 018 BR8). Bars are measurement-first: no bar without a
-# recorded three-way session, and a cell whose rdlt arm is architecturally
-# capped should never carry a ratio bar at all. See the `note`.
+# recorded three-way session. The rdlt arm is no longer architecturally
+# capped (the paging ceiling died with the pure-Rust driver, plan.md T005),
+# but one recorded session is still not a basis for a bar.
 
 # ---------------------------------------------------------------------------
 # oracle-to-pg-200k — Oracle 23ai Free → Postgres, 200k rows, full replace.

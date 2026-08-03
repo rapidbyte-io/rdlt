@@ -1,23 +1,26 @@
-//! The Oracle source — a pure-Rust wire connection, keyset-paged
-//! reads, and the watermark cursor rulebook, born on the rdlt
-//! connector sdk.
+//! The Oracle source: streaming reads into Arrow, and the watermark
+//! cursor rulebook, born on the rdlt connector sdk.
 //!
-//! CONSISTENCY IS PER PAGE, NOT PER READ. Oracle's default is
-//! statement-level consistency and this connector opens no
-//! transaction, so a multi-page read sees each page at its own SCN.
-//! A cursor-paged stream converges — rows are ordered by the
-//! watermark and the next run resumes from it — but a full-refresh
-//! stream under concurrent DML can miss or repeat rows depending on
-//! where they land physically. `SET TRANSACTION READ ONLY` would fix
-//! it and is NOT used: it was probed and it poisons this driver's
-//! connection (specs/032-oracle/plan.md).
+//! ONE QUERY PER STREAM, streamed from a live cursor into Arrow
+//! batches. The batch size is a buffering choice, not a protocol
+//! limit — an earlier generation on a pure-Rust driver had to page
+//! by ROWID keyset because that driver could not continue a cursor,
+//! and every consequence of that (a server cursor per page, a rescan
+//! per page) died with it. specs/032-oracle/plan.md T005 records the
+//! measurement that decided it.
 //!
-//! THE READ PATH NEVER CONTINUES A CURSOR. What forces that is the
-//! standing SDU limit (plan.md T003): one query reply is read as ONE
-//! packet, and the multi-packet read that would lift it was
-//! attempted and reverted on evidence. So every page is a fresh
-//! bounded query sized from the described column widths, the
-//! connection is recycled before the server's open-cursor limit, and
-//! a connection that has seen ANY error is dropped, never reused.
+//! ROWS CROSS AS ARROW, so the schema travels with the data: exact
+//! decimals stay exact, binary stays binary, and NaN and Infinity
+//! survive. Streams are declared `structured` for that reason.
+//!
+//! CONSISTENCY IS PER STATEMENT. Oracle's default is
+//! statement-level, and this connector opens no transaction — but
+//! the read is now ONE statement per batch rather than one per page,
+//! and a cursor-paged stream converges by watermark. A full-refresh
+//! stream under concurrent DML can still miss or repeat rows.
+//!
+//! THE DRIVER IS SYNCHRONOUS (`oracle`, wrapping ODPI-C), so the
+//! connection lives on its own thread behind `source::client`, and
+//! Oracle Client libraries must be present AT RUNTIME.
 
 pub mod source;

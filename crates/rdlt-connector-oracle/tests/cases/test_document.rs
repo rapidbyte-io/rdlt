@@ -38,10 +38,6 @@ fn the_defaults_match_the_jdbc_equivalents() {
     let config = Config::from_value(base()).expect("valid");
     assert_eq!(config.port, 1521);
     assert_eq!(
-        config.tuning.lob_chunk_bytes, 1_048_576,
-        "defaultLobPrefetchSize"
-    );
-    assert_eq!(
         config.tuning.connect_timeout_ms, 60_000,
         "oracle.net.CONNECT_TIMEOUT"
     );
@@ -65,8 +61,8 @@ fn a_legacy_sid_instance_with_jdbc_tuning_parses() {
     document.as_object_mut().expect("object").remove("service");
     document["sid"] = "ORCL".into();
     document["tuning"] = serde_json::json!({
-        "page_rows": 25,                 // defaultRowPrefetch=25
-        "lob_chunk_bytes": 1_048_576,    // oracle.jdbc.defaultLobPrefetchSize
+        "page_rows": 25,                 // defaultRowPrefetch=25 & oracle.jdbc.ReadTimeout=600000
+    // & oracle.net.CONNECT_TIMEOUT=60000 & oracle.net.keepAlive=true    // oracle.jdbc.defaultLobPrefetchSize
         "read_timeout_ms": 600_000,      // oracle.jdbc.ReadTimeout
         "connect_timeout_ms": 60_000,    // oracle.net.CONNECT_TIMEOUT
     });
@@ -158,31 +154,66 @@ fn the_password_is_grep_proof() {
     assert!(!format!("{config:?}").contains("pw"));
 }
 
-/// Every tuning knob reaches the place it claims to control, and the
-/// defaults are the ones documented.
+/// The tuning defaults are the documented ones.
 ///
-/// A config field that parses but changes nothing is worse than an
-/// absent one — it reads as a working control. Round 2 found two of
-/// those (`connect_timeout_ms` and, for LOB reads, `read_timeout_ms`),
-/// so the mapping is asserted rather than assumed.
+/// This asserts VALUES only, and says so: it is NOT evidence that a
+/// knob reaches anything. An earlier version of this doc claimed it
+/// was, which is exactly how six inert knobs survived a review —
+/// what actually catches that is `every_tuning_knob_has_a_consumer`
+/// below.
 #[test]
 fn tuning_defaults_are_the_documented_ones() {
     let tuning = rdlt_connector_oracle::source::Tuning::default();
-    assert_eq!(tuning.page_rows, None, "derived from column widths");
-    assert_eq!(tuning.lob_chunk_bytes, 1 << 20, "JDBC's LOB prefetch");
+    assert_eq!(tuning.page_rows, None, "the driver's own prefetch");
+    assert_eq!(tuning.batch_rows, 8_192);
     assert_eq!(tuning.connect_timeout_ms, 60_000);
     assert_eq!(tuning.read_timeout_ms, 600_000);
     assert_eq!(tuning.statement_cache, 20);
-    assert_eq!(
-        tuning.keepalive_secs, 30,
-        "ON by default, below the 300 s idle timeout common to firewalls"
-    );
+    assert_eq!(tuning.keepalive_minutes, 1, "minutes: EXPIRE_TIME's unit");
+}
+
+/// EVERY knob has a consumer in the source tree.
+///
+/// The defect this guards is the one that has now escaped THREE
+/// reviews: a field that parses, is documented as a control, and
+/// reaches nothing. A knob with no consumer is worse than an absent
+/// one — it reads as a working control.
+#[test]
+fn every_tuning_knob_has_a_consumer() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut body = String::new();
+    for entry in std::fs::read_dir(src.join("source")).expect("source dir") {
+        let path = entry.expect("entry").path();
+        if path.extension().is_some_and(|e| e == "rs") {
+            body.push_str(&std::fs::read_to_string(&path).expect("read"));
+        }
+    }
+    // A CONSUMER is a field ACCESS (`tuning.<knob>`), not a mention:
+    // the declaration is `pub <knob>:` and the default fn names the
+    // knob too, so counting mentions would pass on the declaration
+    // alone. Note `connect_timeout_ms` is legitimately consumed
+    // inside config.rs itself, by `connect_string`.
+    for knob in [
+        "page_rows",
+        "batch_rows",
+        "connect_timeout_ms",
+        "read_timeout_ms",
+        "statement_cache",
+        "keepalive_minutes",
+    ] {
+        assert!(
+            body.contains(&format!("tuning.{knob}")),
+            "`tuning.{knob}` is never read — it parses, it is documented as a control, \
+             and it controls nothing"
+        );
+    }
 }
 
 /// The owner's JDBC parameter string maps onto the document.
 #[test]
 fn the_jdbc_parameter_vocabulary_maps() {
-    // defaultRowPrefetch=25 & oracle.jdbc.defaultLobPrefetchSize=1048576
+    // defaultRowPrefetch=25 & oracle.jdbc.ReadTimeout=600000
+    // & oracle.net.CONNECT_TIMEOUT=60000 & oracle.net.keepAlive=true
     // & oracle.jdbc.ReadTimeout=600000 & oracle.net.CONNECT_TIMEOUT=60000
     // & oracle.net.keepAlive=true
     let value = serde_json::json!({
@@ -192,17 +223,15 @@ fn the_jdbc_parameter_vocabulary_maps() {
         "password": "pw",
         "tuning": {
             "page_rows": 25,
-            "lob_chunk_bytes": 1_048_576,
             "read_timeout_ms": 600_000,
             "connect_timeout_ms": 60_000,
-            "keepalive_secs": 30
+            "keepalive_minutes": 1
         },
         "streams": [{"name": "s", "table": "T"}]
     });
     let config = Config::from_value(value).expect("the JDBC vocabulary maps");
     assert_eq!(config.tuning.page_rows, Some(25));
-    assert_eq!(config.tuning.lob_chunk_bytes, 1_048_576);
-    assert_eq!(config.tuning.keepalive_secs, 30);
+    assert_eq!(config.tuning.keepalive_minutes, 1);
 
     // `useFetchSizeWithLongColumn` has NO counterpart and needs none:
     // it exists because the JDBC driver could not stream LONG columns

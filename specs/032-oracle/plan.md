@@ -482,7 +482,7 @@ The lesson is the one this whole feature keeps teaching: a mature
 driver is not a correct one, and the only thing that ever caught
 these was asserting the VALUE rather than that the read succeeded.
 
-### Four defects the rewrite itself introduced, all caught by pins
+### Five defects the rewrite itself introduced
 
 1. **The empty watermark, AGAIN.** The batch builder was never told
    which column carried the cursor, so every checkpoint persisted
@@ -503,7 +503,17 @@ these was asserting the VALUE rather than that the read succeeded.
    rebuilt from a position that advances with every batch, and the
    cursorless path gained the `ROWID >` predicate it was missing for
    the same reason. Sweep: hung indefinitely → 11.5 s.
-4. **A container leak of my own making.** "Share one fixture through
+4. **THE STREAM WAS NEVER DECLARED `structured`.** The engine
+   refuses Arrow batches on a stream that has not said it pushes
+   them, and `streams()` never said so. EVERY offline and live cell
+   passed — the conformance kit included — because none of them runs
+   a load through the ENGINE. It surfaced the first time the
+   benchmark tried an end-to-end oracle→postgres pipeline:
+   `source pushed Arrow batches on a stream not declared
+   structured`. Pinned now, but the lesson is that a connector suite
+   which never crosses the engine boundary cannot see this class at
+   all.
+5. **A container leak of my own making.** "Share one fixture through
    a `static OnceCell`" is wrong twice over: a static is never
    dropped at process exit, so testcontainers' cleanup never ran and
    one run left EIGHTEEN databases behind — and it bought nothing,
@@ -521,6 +531,79 @@ Client Basic Lite is a 70 MB unauthenticated download under the OTN
 licence: CI can fetch it, we may NOT vendor it, and on Fedora it also
 needs `libaio`. The live cells skip-not-fail without it, naming the
 remedy.
+
+## REVIEW ROUND 5 — the rewrite reviewed (2026-08-03)
+
+Thirteen verified findings against the new code. The severe ones,
+fixed and pinned:
+
+**R5-1 — A CURSORLESS STREAM LARGER THAN ONE BATCH NEVER TERMINATED.**
+The position advanced only from the watermark, and a cursorless
+stream has none, so the same statement was re-issued forever,
+re-delivering the first batch until something killed the process.
+This is the stale-statement defect UNCURED on the no-cursor path —
+the third appearance of the same root in this feature. Every existing
+cursorless cell was smaller than one batch (5,000 rows against a
+default 8,192), so the suite could not see it; the 200k benchmark hit
+it on the first run. The ROWID now advances the position whether or
+not a watermark exists, and a 500-row / 25-row-batch cell pins both
+termination AND exactly-once.
+
+**R5-2 — `--` IN A WATERMARK COMMENTED OUT THE `ORDER BY`.** The
+numeric gate allowed `-` anywhere, so a persisted watermark of `1--1`
+produced `WHERE "ID" > 1--1 OR (…) ORDER BY …` — still VALID SQL with
+everything from the `--` gone, including the ordering. Rows then
+arrive in server order, the tie records whatever came last, and the
+next run skips everything below it. SILENT LOSS, from a document the
+rulebook itself calls operator-editable, and the existing pin missed
+it because it only tried `1; DROP TABLE x --` (rejected for the `;`).
+A sign may now only LEAD, and `--` is refused outright.
+
+**R5-3 — SIX INERT KNOBS**, the defect class this project has now
+fixed three times. `lob_chunk_bytes`, `max_lob_bytes` and
+`type_hints` had no mechanism left after the rewrite and are DELETED
+rather than left as controls that read as working. `read_timeout_ms`
+is now `Connection::set_call_timeout` (it armed nothing, so a hung
+query parked a job forever), and `connect_timeout_ms` and keepalive
+ride the Easy Connect Plus descriptor as `connect_timeout` and
+`expire_time`. The keepalive knob is renamed `keepalive_minutes`
+because MINUTES is the unit `EXPIRE_TIME` accepts — `_secs` was a
+name that lied. A new guard, `every_tuning_knob_has_a_consumer`,
+fails if any knob is named only where it is declared; the old pin
+asserted default VALUES while its doc claimed it proved wiring, which
+is how six of them survived.
+
+**R5-4 — `FLOAT` WAS ROUNDED THROUGH f64.** Oracle's `FLOAT` is not
+an IEEE float despite the name: it is a NUMBER subtype with a BINARY
+precision (`FLOAT(126)` ≈ 38 decimal digits, `REAL` = FLOAT(63)),
+stored as decimal and handed over as exact text. It now follows the
+NUMBER rules; `1234567890123456789` was arriving as
+`1234567890123456768`.
+
+**R5-5 — `NUMBER(2,5)` MADE A TABLE UNREADABLE.** Legal Oracle (it
+holds `0.00012`), invalid Arrow (scale above precision). The builder
+silently fell back to (38,10) and batch assembly then failed with a
+message about Arrow rather than about the column. Such columns now
+travel as exact text.
+
+**R5-6 — THE FRONT-PAGE DOC DESCRIBED THE DELETED ARCHITECTURE.**
+lib.rs still promised "keyset-paged reads", "every page is a fresh
+bounded query", and a connection recycler — every clause false, on
+the docs.rs landing page.
+
+**R5-7 — `primary_key` PROMISED A FALLBACK THE ENGINE REFUSES.** Now
+that every stream is `structured`, a structured stream with no key
+cannot Merge at all; the doc still offered content-hash keying.
+
+STILL OPEN, recorded not fixed: the crash sweep discards a failed
+attempt's partial rows so it still never resumes from a NON-EMPTY
+cursor (R5-8); `watermark_less` compares as f64 so a bare-NUMBER key
+past 2^53 stops advancing the checkpoint (R5-9); a non-finite float
+cursor persists `inf` and then refuses to parse it (R5-10); a panic
+on the connection thread becomes TRANSIENT and is retried five times
+(R5-11); `OracleType::Json` maps to Utf8 but the driver cannot fetch
+it, so a native JSON column dies in describe (R5-12); and four pins
+assert less than their names claim (R5-13).
 
 ## STANDING OWNER RECORDS (round 3)
 

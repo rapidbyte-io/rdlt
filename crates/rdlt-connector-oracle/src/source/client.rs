@@ -39,6 +39,7 @@ impl Client {
         let user = config.user.clone();
         let password = config.password.reveal().to_owned();
         let cache = config.tuning.statement_cache;
+        let call_timeout = std::time::Duration::from_millis(config.tuning.read_timeout_ms);
         let context = format!("connecting to `{connect_string}`");
 
         let (jobs, inbox) = mpsc::channel::<Job>();
@@ -63,6 +64,16 @@ impl Client {
                     return;
                 }
                 let _ = conn.set_stmt_cache_size(cache);
+                // The statement budget, enforced by the CLIENT
+                // library: a round trip that outlives it is aborted
+                // rather than waited on forever. Without this the
+                // knob was documented and inert, and a hung query
+                // parked a job on this thread with nothing to
+                // interrupt it.
+                if let Err(e) = conn.set_call_timeout(Some(call_timeout)) {
+                    let _ = ready_tx.send(Err(classify("setting the statement timeout", &e)));
+                    return;
+                }
                 if ready_tx.send(Ok(())).is_err() {
                     return;
                 }

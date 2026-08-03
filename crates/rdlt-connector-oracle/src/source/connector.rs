@@ -56,7 +56,13 @@ impl SourceConnector for Oracle {
         let client = Client::connect(&self.config).await?;
         let mut specs = Vec::with_capacity(self.config.streams.len());
         for stream in &self.config.streams {
-            let mut spec = StreamSpec::new(stream.name.as_str());
+            // STRUCTURED: the rows cross as Arrow, and the engine
+            // refuses Arrow on a stream that has not said so
+            // ("source pushed Arrow batches on a stream not declared
+            // `structured`"). The whole suite passed without this —
+            // it only shows up end-to-end, which is what the
+            // benchmark caught.
+            let mut spec = StreamSpec::new(stream.name.as_str()).with_structured();
             if let Some(key) = &stream.primary_key {
                 spec = spec.with_primary_key(key.iter().cloned());
             }

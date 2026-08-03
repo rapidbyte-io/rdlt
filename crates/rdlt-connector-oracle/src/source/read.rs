@@ -78,11 +78,13 @@ pub(crate) async fn read_stream(
         }
         if let Some((watermark, tie)) = chunk.last_seen.clone() {
             position = Some(super::cursor::StreamCursor {
-                watermark,
+                // A cursorless stream pages by ROWID alone, so an
+                // absent watermark is expected here, not a defect.
+                watermark: watermark.unwrap_or_default(),
                 tie: Some(tie),
             });
         }
-        if let (Some(_), Some((watermark, tie))) = (cursor_at, chunk.last_seen) {
+        if let (Some(_), Some((Some(watermark), tie))) = (cursor_at, chunk.last_seen) {
             cursor.advance(&name, &watermark, Some(&tie));
             rdlt_connector_sdk::spi::core::crash_point!(
                 "ora.checkpoint",
@@ -218,7 +220,12 @@ fn select_sql(
 /// One assembled batch, plus where it left off.
 struct Chunk {
     batch: RecordBatch,
-    last_seen: Option<(String, String)>,
+    /// The last row's `(watermark, rowid)`. The WATERMARK is optional
+    /// — a cursorless stream has none — but the ROWID always exists,
+    /// and it is what advances the position. Tying the pair's
+    /// existence to the watermark is how a cursorless read came to
+    /// re-issue the same statement forever.
+    last_seen: Option<(Option<String>, String)>,
     exhausted: bool,
 }
 
@@ -265,9 +272,7 @@ async fn fetch_chunk(
                     .get(schema.fields().len())
                     .map_err(|e| super::client::classify("reading the rowid", &e))?;
                 let watermark = batch.append(&row)?;
-                if let Some(watermark) = watermark {
-                    last_seen = Some((watermark, rowid));
-                }
+                last_seen = Some((watermark, rowid));
                 if batch.len() >= batch_rows {
                     exhausted = false;
                     break;

@@ -13,10 +13,12 @@
 //!   travels as `Utf8` holding the exact digits. Decimal128 cannot
 //!   express a negative scale, and silently rounding through f64
 //!   would lose the value.
-//! - `BINARY_FLOAT`/`BINARY_DOUBLE`/`FLOAT` are `Float64`. These are
-//!   true binary floats, so NaN and Infinity are legal values and
-//!   Arrow holds them natively — JSON had no literal and had to
-//!   null them.
+//! - `BINARY_FLOAT`/`BINARY_DOUBLE` are `Float64`. These are true
+//!   binary floats, so NaN and Infinity are legal values and Arrow
+//!   holds them natively — JSON had no literal and had to null them.
+//! - `FLOAT` is NOT one of those, despite the name: it is a NUMBER
+//!   subtype with a BINARY precision, stored as decimal. It follows
+//!   the NUMBER rules above, because f64 would round it.
 //! - `DATE` CARRIES A TIME in Oracle, so it is a naive timestamp,
 //!   NEVER an Arrow `Date32`.
 //! - `TIMESTAMP WITH [LOCAL] TIME ZONE` is UTC-stamped; the session
@@ -38,9 +40,14 @@ use oracle::sql_type::OracleType;
 pub(crate) fn arrow_type(name: &str, oracle_type: &OracleType) -> Result<DataType, String> {
     Ok(match oracle_type {
         OracleType::Number(precision, scale) => number_type(*precision, *scale),
-        OracleType::Float(_) | OracleType::BinaryFloat | OracleType::BinaryDouble => {
-            DataType::Float64
-        }
+        // BINARY_FLOAT/BINARY_DOUBLE are true IEEE binary floats.
+        OracleType::BinaryFloat | OracleType::BinaryDouble => DataType::Float64,
+        // `FLOAT` is NOT one of those. It is a NUMBER subtype with a
+        // BINARY precision — `FLOAT(126)` is ~38 decimal digits and
+        // `REAL` is FLOAT(63), ~18 — stored as decimal and handed
+        // over as exact text. Routing it through f64 silently rounded
+        // it: 1234567890123456789 came back 1234567890123456768.
+        OracleType::Float(precision) => number_type(*precision, -127),
         OracleType::Int64 => DataType::Int64,
         OracleType::UInt64 => DataType::Decimal128(20, 0),
 
@@ -79,6 +86,14 @@ pub(crate) fn arrow_type(name: &str, oracle_type: &OracleType) -> Result<DataTyp
 /// NUMBER's three cases, kept in one place because the boundaries
 /// are the whole point.
 fn number_type(precision: u8, scale: i8) -> DataType {
+    // Arrow REFUSES a decimal whose scale exceeds its precision, but
+    // `NUMBER(2,5)` is legal Oracle (it holds values like 0.00012).
+    // Letting it through produced a builder that silently fell back
+    // to (38,10) and then failed batch assembly with a message about
+    // Arrow rather than about the column.
+    if scale as i16 > precision as i16 {
+        return DataType::Utf8;
+    }
     if scale < 0 || precision == 0 || precision > 38 {
         // Bare NUMBER, over-precise NUMBER, and negative scales:
         // exact digits as text. Decimal128 cannot say "rounded above
@@ -159,6 +174,23 @@ mod tests {
         assert_eq!(number_type(18, 0), DataType::Int64);
         assert_eq!(number_type(12, 2), DataType::Decimal128(12, 2));
         assert_eq!(number_type(38, 10), DataType::Decimal128(38, 10));
+    }
+
+    /// Oracle allows a scale ABOVE the precision; Arrow does not.
+    #[test]
+    fn a_scale_above_the_precision_travels_as_text() {
+        // NUMBER(2,5) holds 0.00012 — legal, and not a Decimal128.
+        assert_eq!(number_type(2, 5), DataType::Utf8);
+    }
+
+    /// FLOAT is a NUMBER subtype, not an IEEE float — f64 would
+    /// round its 38 digits.
+    #[test]
+    fn float_follows_the_number_rules() {
+        assert_eq!(
+            arrow_type("f", &OracleType::Float(126)).expect("mapped"),
+            DataType::Utf8
+        );
     }
 
     /// The cases Decimal128 cannot express, and f64 would corrupt.

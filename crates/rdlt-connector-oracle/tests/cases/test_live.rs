@@ -590,6 +590,17 @@ async fn the_batch_carries_exact_types() {
         ])
         .await;
     let shell = fixture.shell(&[stream("d", "DECL_T")]);
+
+    // STRUCTURED, or the engine refuses the batches outright with
+    // "source pushed Arrow batches on a stream not declared
+    // `structured`". Every offline and live cell passed without this
+    // — only an end-to-end load caught it, so it is pinned here.
+    let specs = shell.streams().await.expect("discovery");
+    assert!(
+        specs.iter().all(|s| s.structured),
+        "an Arrow source must declare its streams structured"
+    );
+
     let schema = read_schema(&shell, "d").await;
     let field = |name: &str| schema.field_with_name(name).expect(name).data_type().clone();
 
@@ -707,4 +718,38 @@ async fn a_plain_insert_clob_reads_at_the_old_boundary() {
         "the exact size recorded as unreadable (O7)"
     );
     assert_eq!(rows[2]["doc"].as_str().expect("clob").len(), 4_000);
+}
+
+/// A CURSORLESS stream larger than one batch terminates, and
+/// delivers each row exactly once.
+///
+/// It did neither. The position advanced only from the watermark,
+/// and a cursorless stream has none — so the same statement was
+/// re-issued forever, re-delivering the first batch until something
+/// killed the process. Every existing cursorless cell was smaller
+/// than one batch (5,000 rows against a default of 8,192), so
+/// nothing could see it; the 200k benchmark hit it immediately.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cursorless_stream_past_one_batch_terminates() {
+    let Some(fixture) = OracleFixture::start().await else {
+        return;
+    };
+    fixture
+        .seed(&[
+            "CREATE TABLE NOCUR_T (ID NUMBER(8) PRIMARY KEY, V VARCHAR2(16))",
+            "INSERT INTO NOCUR_T SELECT LEVEL, 'v' FROM DUAL CONNECT BY LEVEL <= 500",
+        ])
+        .await;
+    // Batches far smaller than the table: 20 of them.
+    let shell = fixture.shell_tuned(&[stream("n", "NOCUR_T")], serde_json::json!({"batch_rows": 25}));
+    let (rows, _) = read_all(&shell, "n", None).await;
+
+    assert_eq!(rows.len(), 500, "every row once, and the read ENDS");
+    let mut ids: Vec<i64> = rows
+        .iter()
+        .map(|r| r["id"].as_i64().expect("id"))
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(ids.len(), 500, "no row delivered twice");
 }

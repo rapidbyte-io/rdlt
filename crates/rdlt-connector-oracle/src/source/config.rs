@@ -1,8 +1,6 @@
 //! The source document: connection facts, and streams over tables —
 //! parse-then-validate through the sdk Document gate.
 
-use std::collections::BTreeMap;
-
 use rdlt_connector_sdk::config::Document;
 use rdlt_connector_sdk::spi::secret::Secret;
 
@@ -45,7 +43,6 @@ pub struct Config {
 /// estate already tunes, so a known-good JDBC string translates
 /// directly:
 /// `defaultRowPrefetch` → `page_rows`,
-/// `oracle.jdbc.defaultLobPrefetchSize` → `lob_chunk_bytes`,
 /// `oracle.net.CONNECT_TIMEOUT` → `connect_timeout_ms`,
 /// `oracle.jdbc.ReadTimeout` → `read_timeout_ms`,
 /// and `oracle.jdbc.implicitStatementCacheSize` → `statement_cache`.
@@ -61,9 +58,6 @@ pub struct Tuning {
     /// driver's own default.
     #[serde(default)]
     pub page_rows: Option<u32>,
-    /// Bytes per LOB read round trip.
-    #[serde(default = "default_lob_chunk")]
-    pub lob_chunk_bytes: u64,
     /// How long a connect attempt may take.
     #[serde(default = "default_connect_timeout")]
     pub connect_timeout_ms: u64,
@@ -83,39 +77,25 @@ pub struct Tuning {
     /// Statements the driver may keep open for reuse.
     #[serde(default = "default_statement_cache")]
     pub statement_cache: u32,
-    /// The largest single LOB value a read will materialize.
+    /// Dead-connection detection interval, in MINUTES, or `0` for
+    /// off.
     ///
-    /// A LOB is read whole into memory before it becomes a JSON
-    /// string, and a page holds many rows, so without a ceiling peak
-    /// memory is a property of the DATA rather than of anything
-    /// configured. Exceeding it fails the stream by name; raise it
-    /// deliberately if the estate really holds values that large.
-    #[serde(default = "default_max_lob")]
-    pub max_lob_bytes: u64,
-    /// TCP keepalive idle time, or `0` to switch keepalive off.
-    ///
-    /// On by default, unlike the driver: a firewall or NAT that reaps
-    /// an idle connection does so SILENTLY, and the read then waits
-    /// out its whole `read_timeout_ms` against a socket nothing will
-    /// answer. This is `oracle.net.keepAlive`.
+    /// Minutes, not seconds, because that is the granularity Oracle's
+    /// `EXPIRE_TIME` accepts — naming it `_secs` would have been a
+    /// knob whose units were a lie. A firewall or NAT that reaps an
+    /// idle connection does so SILENTLY, and the read then waits out
+    /// its whole `read_timeout_ms` against a socket nothing will
+    /// answer. This is `oracle.net.keepAlive` / `EXPIRE_TIME`.
     #[serde(default = "default_keepalive")]
-    pub keepalive_secs: u64,
+    pub keepalive_minutes: u64,
 }
 
-/// 256 MiB: generous for documents and images, far below the point
-/// where one value decides the process's fate.
-fn default_max_lob() -> u64 {
-    256 << 20
-}
-
-/// Well below the 300 s idle timeout common to firewalls and NAT.
+/// One minute — under the 5-minute idle timeout common to firewalls
+/// and NAT, and the smallest value Oracle acts on.
 fn default_keepalive() -> u64 {
-    30
+    1
 }
 
-fn default_lob_chunk() -> u64 {
-    1 << 20
-}
 fn default_connect_timeout() -> u64 {
     60_000
 }
@@ -133,13 +113,11 @@ impl Default for Tuning {
     fn default() -> Self {
         Self {
             page_rows: None,
-            lob_chunk_bytes: default_lob_chunk(),
             connect_timeout_ms: default_connect_timeout(),
             read_timeout_ms: default_read_timeout(),
             batch_rows: default_batch_rows(),
             statement_cache: default_statement_cache(),
-            max_lob_bytes: default_max_lob(),
-            keepalive_secs: default_keepalive(),
+            keepalive_minutes: default_keepalive(),
         }
     }
 }
@@ -162,59 +140,14 @@ pub struct Stream {
     #[serde(default)]
     pub cursor: Option<String>,
     /// Keyed identity for the engine's merge/dedup layers.
+    ///
+    /// REQUIRED for `Merge`. Every oracle stream is `structured`
+    /// (rows cross as Arrow), and the engine refuses to plan a Merge
+    /// on a structured stream with no declared key — there is no
+    /// content-hash fallback for one. Omit this only for `Append` or
+    /// `Replace`.
     #[serde(default)]
     pub primary_key: Option<Vec<String>>,
-    /// Per-column type OVERRIDES.
-    ///
-    /// The connector already declares every column from the server's
-    /// own describe, so this is only needed where that derivation is
-    /// deliberately conservative — chiefly BARE `NUMBER` (no declared
-    /// scale), which lands `Utf8` because Oracle will accept any
-    /// magnitude in it. An operator who knows the real domain says so
-    /// here.
-    #[serde(default)]
-    pub type_hints: BTreeMap<String, HintType>,
-}
-
-/// The type vocabulary an operator may override a column with.
-///
-/// A CLOSED enum, not free text: serde refuses an unknown spelling at
-/// parse, so a typo fails the document instead of being accepted and
-/// then silently ignored.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-pub enum HintType {
-    Bool,
-    Int64,
-    Float64,
-    Utf8,
-    Binary,
-    Json,
-    TimestampTz,
-    TimestampNaive,
-    Date,
-    /// Exact decimal; both bounds cap at Oracle's own 38.
-    Decimal { precision: u8, scale: u8 },
-}
-
-impl From<HintType> for rdlt_connector_sdk::spi::core::LogicalType {
-    fn from(hint: HintType) -> Self {
-        use rdlt_connector_sdk::spi::core::LogicalType as L;
-        match hint {
-            HintType::Bool => L::Bool,
-            HintType::Int64 => L::Int64,
-            HintType::Float64 => L::Float64,
-            HintType::Utf8 => L::Utf8,
-            HintType::Binary => L::Binary,
-            HintType::Json => L::Json,
-            HintType::TimestampTz => L::TimestampTz,
-            HintType::TimestampNaive => L::TimestampNaive,
-            HintType::Date => L::Date,
-            HintType::Decimal { precision, scale } => L::Decimal { precision, scale },
-        }
-    }
 }
 
 /// Parse and validation failures, typed, with the sdk from-text
@@ -235,10 +168,28 @@ impl Config {
     /// A SID is spelled with a colon rather than a slash — the legacy
     /// form older estates still hand out.
     pub(crate) fn connect_string(&self) -> String {
+        // Easy Connect Plus carries the two network knobs that have
+        // no API on the connection: CONNECT_TIMEOUT bounds a connect
+        // against a black-holed host, EXPIRE_TIME is Oracle's own
+        // dead-connection detection (the keepalive). Both are
+        // expressed in the units the descriptor accepts — seconds
+        // and minutes respectively.
+        let mut params = vec![format!(
+            "connect_timeout={}",
+            self.tuning.connect_timeout_ms.div_ceil(1_000).max(1)
+        )];
+        if self.tuning.keepalive_minutes > 0 {
+            params.push(format!("expire_time={}", self.tuning.keepalive_minutes));
+        }
+        let query = format!("?{}", params.join("&"));
         match (&self.service, &self.sid) {
-            (Some(service), _) => format!("//{}:{}/{}", self.host, self.port, service),
+            (Some(service), _) => {
+                format!("//{}:{}/{}{query}", self.host, self.port, service)
+            }
+            // The legacy SID form is not Easy Connect Plus, so it
+            // takes no parameters.
             (_, Some(sid)) => format!("{}:{}:{}", self.host, self.port, sid),
-            _ => format!("//{}:{}", self.host, self.port),
+            _ => format!("//{}:{}{query}", self.host, self.port),
         }
     }
 }
@@ -272,23 +223,13 @@ impl Document for Config {
         if self.tuning.page_rows == Some(0) {
             return invalid("`tuning.page_rows` is 0 — a page must hold at least one row".into());
         }
-        if self.tuning.lob_chunk_bytes == 0 {
-            return invalid("`tuning.lob_chunk_bytes` is 0 — a LOB read must make progress".into());
-        }
         if self.tuning.batch_rows == 0 {
             return invalid("`tuning.batch_rows` is 0 — a batch must hold at least one row".into());
         }
-        if self.tuning.max_lob_bytes == 0 {
-            return invalid("`tuning.max_lob_bytes` is 0 — no LOB could ever be read".into());
-        }
-        // socket2 clamps an out-of-range idle time to c_int::MAX,
-        // which the kernel then treats as "effectively never" — the
-        // exact OPPOSITE of what the knob says it does. Refuse it
-        // instead of silently meaning "off".
-        if self.tuning.keepalive_secs > 86_400 {
+        if self.tuning.keepalive_minutes > 1_440 {
             return invalid(format!(
-                "`tuning.keepalive_secs` is {} — the supported range is 0 (off) to 86400",
-                self.tuning.keepalive_secs
+                "`tuning.keepalive_minutes` is {} — the supported range is 0 (off) to 1440",
+                self.tuning.keepalive_minutes
             ));
         }
         if self.streams.is_empty() {
@@ -328,8 +269,8 @@ impl Document for Config {
             // that on purpose; an empty list means it by accident.
             if stream.primary_key.as_deref() == Some(&[]) {
                 return invalid(format!(
-                    "stream `{}`: `primary_key` is an empty list — omit the field to key rows \
-                     by content hash, or name the columns",
+                    "stream `{}`: `primary_key` is an empty list — omit the field entirely \
+                     (Append/Replace need no key), or name the columns (Merge requires them)",
                     stream.name
                 ));
             }

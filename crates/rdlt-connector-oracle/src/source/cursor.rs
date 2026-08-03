@@ -119,14 +119,32 @@ fn watermark_less(a: &str, b: &str) -> bool {
 /// timestamp — never quoted free text (the injection gate; the
 /// cursor document is operator-editable).
 pub fn checked_watermark_literal(value: &str) -> Result<String, SourceError> {
+    // `--` STARTS A COMMENT IN SQL, and a character-class gate that
+    // allows `-` allows it. A persisted watermark of `1--1` produced
+    // `WHERE "ID" > 1--1 OR (…) ORDER BY …`, where everything from
+    // the `--` vanishes: still-valid SQL, but with the ORDER BY GONE.
+    // Rows then arrive in server order, the tie records whatever came
+    // last, and the next run's `ROWID > tie` skips everything below
+    // it — silent loss, from a document this rulebook itself calls
+    // operator-editable. A sign may only LEAD.
+    let well_signed = |value: &str| {
+        let body = value.strip_prefix(['-', '+']).unwrap_or(value);
+        !body.is_empty() && !body.contains(['-', '+'])
+    };
     let numeric = !value.is_empty()
         && value
             .chars()
-            .all(|c| c.is_ascii_digit() || matches!(c, '.' | '-' | '+'));
+            .all(|c| c.is_ascii_digit() || matches!(c, '.' | '-' | '+'))
+        && well_signed(value);
     let timestampish = !value.is_empty()
         && value
             .chars()
-            .all(|c| c.is_ascii_digit() || matches!(c, '-' | ':' | 'T' | 'Z' | '.' | '+' | ' '));
+            .all(|c| c.is_ascii_digit() || matches!(c, '-' | ':' | 'T' | 'Z' | '.' | '+' | ' '))
+        // The timestamp branch is QUOTED, so it cannot end the
+        // literal — but a `--` inside it would still comment out the
+        // format model and everything after it if the quoting ever
+        // changed. Refuse it here rather than depend on that.
+        && !value.contains("--");
     if numeric {
         Ok(value.to_owned())
     } else if timestampish {
@@ -163,6 +181,32 @@ mod tests {
 
     /// Watermarks only rise — numerically for numbers ("9" < "10"),
     /// lexically for timestamps.
+    /// `--` opens a SQL comment, and a numeric gate that allows `-`
+    /// allows it. The danger is NOT a dropped table — it is that the
+    /// statement stays VALID with its `ORDER BY` commented out, so
+    /// rows arrive unordered and the next resume skips whatever fell
+    /// below the recorded tie. Silent loss, not a crash.
+    #[test]
+    fn a_watermark_cannot_open_a_sql_comment() {
+        for poison in ["1--1", "--1", "1--1", "1--", "2026-01-01T00:00:00--x"] {
+            assert!(
+                checked_watermark_literal(poison).is_err(),
+                "`{poison}` must be refused"
+            );
+        }
+        // And the legitimate shapes still pass.
+        for ok in ["150", "-3.5", "+42", "0.0001"] {
+            assert!(
+                checked_watermark_literal(ok).is_ok(),
+                "`{ok}` must be accepted"
+            );
+        }
+        assert!(
+            checked_watermark_literal("2026-01-02T03:04:05.678000+00:00").is_ok(),
+            "the canonical timestamp shape must be accepted"
+        );
+    }
+
     #[test]
     fn watermarks_never_lower() {
         let mut cursor = OracleCursor::default();
