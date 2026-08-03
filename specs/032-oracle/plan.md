@@ -532,6 +532,45 @@ licence: CI can fetch it, we may NOT vendor it, and on Fedora it also
 needs `libaio`. The live cells skip-not-fail without it, naming the
 remedy.
 
+## THE GATE, AND A PRE-EXISTING FAILURE THAT IS NOT 032's
+
+`make check` reached **1094/1096 tests with ONE failure**:
+`rdlt-connector-postgres::memory_bound
+a_table_ten_times_the_memory_ceiling_still_snapshots_within_it`. The
+oracle count is exactly as predicted — 1046 on main + this crate's
+50 = 1096.
+
+**IT IS NOT CAUSED BY THIS FEATURE, and that was established rather
+than assumed:**
+
+1. 032 touches NOTHING in postgres or the engine —
+   `git diff main...HEAD` over `rdlt-connector-postgres`,
+   `rdlt-engine`, `rdlt-connector-sdk` and `rdlt-connector` is ONE
+   line (adding oracle to the sdk's dependency-rule list).
+2. The `Cargo.lock` diff only ADDS oracle crates; no shared
+   dependency changed version, so the rebuilt lock cannot have moved
+   anything underneath postgres.
+3. The CLI links ODPI-C now, which was the plausible mechanism (the
+   test bounds the process with `prlimit --data=256MiB`, and a
+   statically linked C library grows exactly that segment). REFUTED
+   by measurement: a release CLI built WITHOUT the `oracle` feature
+   fails identically, and the binary differs by only 653 KB
+   (85,652,624 vs 84,999,616 bytes).
+4. **The test fails on `main` itself** — checked out, release CLI
+   rebuilt, same failure at the same ~46 s.
+
+SYMPTOM: the CLI streams many `+65536 rows` batches and then dies
+with NO diagnostic, which is what an RLIMIT_DATA kill looks like.
+This machine has 32 cores, and glibc scales malloc arenas with
+thread count — a plausible reason the ceiling is reachable here and
+not where the claim was recorded. NOT investigated further: it is
+another feature's contract, and quietly "fixing" a memory claim
+belonging to postgres inside an Oracle feature is how contracts rot.
+
+RECORDED, NOT RE-ROLLED, per the house rule. The gate is therefore
+**not twice clean on this machine**, and the reason is a
+pre-existing failure the owner should schedule against postgres.
+
 ## THE BENCHMARK, RECORDED (2026-08-03)
 
 `oracle-to-pg-200k` — Oracle 23ai Free → Postgres, 200,000 rows × 12
