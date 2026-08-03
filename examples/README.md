@@ -24,6 +24,17 @@ docker compose -f examples/<name>/compose.yaml up -d
 rdlt run examples/<name>/pipeline.yaml
 ```
 
+Podman users: `podman compose` is only a delegator and finds its
+provider through podman's own lookup, not your shell's PATH. Either
+call `podman-compose` directly (`pip install podman-compose`), or
+name it once in `~/.config/containers/containers.conf` so
+`podman compose` works everywhere:
+
+```toml
+[engine]
+compose_providers = ["/home/you/.local/bin/podman-compose"]
+```
+
 Paths in the pipeline files are relative to the repository root, so
 run them from there. If you have not built the CLI yet:
 `cargo build --release -p rdlt-cli` (binary at `target/release/rdlt`).
