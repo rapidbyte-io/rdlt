@@ -242,6 +242,7 @@ fn sweep_covers_entire_registry() {
     registry.sort_unstable();
     let mut expected = vec![
         "pq.replace.truncate",
+        "pq.manifest.write",
         "pq.staged.sync",
         "pq.part.rename",
         "pq.dir.fsync",

@@ -685,3 +685,65 @@ in the combined re-run (180/180).
 
 Gate after round 3: connector + file + testkit 180/180; file crash
 sweep 3/3 over the extended registry; clippy clean all-features.
+
+---
+
+## Review round 4 — TERMINUS (2026-08-03)
+
+Round 3's own changes attacked plus one final fresh pass. NOTHING
+REAL SURVIVED:
+
+- `pq.manifest.write` placement: convergence traced through the
+  crash (prior manifest untouched → retry skips the sweep and
+  republishes everything — correct); local-only guard consistent with
+  `pq.state.write`/`pq.receipt.write` (S3 non-coverage of doc writes
+  is pre-existing); the sweep genuinely drives it through real WAL
+  retry.
+- `unbounded()` semantics change: no production caller relied on the
+  old ceiling; validate unaffected; docs consistent.
+- The version-gate pin: byte-identical to the source spelling
+  (verified via cat -A), and the manifest read genuinely fires
+  through the full publish path.
+- Registry counts recounted independently: 12 = 7 + 3 + 2.
+- The fresh pass: no engine files in the diff; the refusals are
+  structural; nothing new.
+
+ONE catch by the gate itself, fixed before the runs of record: the
+ENGINE's sweep-coverage test (G2.2) pins the file+duckdb registries
+against the list of points it drives, and failed at the new point —
+which is that gate doing exactly what 024 built it for. The engine
+sweep list now carries `pq.manifest.write`, so the point is driven by
+BOTH sweeps (the crate's and the engine's, each through real WAL
+retry). Engine sweep 5/5.
+
+## Gate of record — review terminus
+
+`make check` TWICE CLEAN, `TMPDIR` off the tmpfs:
+
+| | run 1 | run 2 |
+|---|---|---|
+| suite | 1143/1143, 0 skipped | 1143/1143, 0 skipped |
+| semver | no update required | no update required |
+| benches | 6, 0 regressed | 6, 0 regressed |
+| cold start | 25.0 ms | 25.9 ms (bar ≤ 40) |
+
+1143 = 1138 (034 close) + 5 review-round pins net of reworks.
+
+ENVIRONMENT NOTE, recorded not hidden: before the clean runs, single
+container cells failed three times across attempts with the recorded
+`rootlessport bind` class, each passing isolated, each in cells
+untouched by 034. The drain that preceded the clean runs removed 14
+leaked labelled fixtures AND 269 anonymous volumes (272 → 3) — the
+029 volume-amplifier was rebuilding; `make reclaim` does not sweep
+anonymous volumes, `podman volume prune` does.
+
+## The review record
+
+Four rounds, ~12 findings fixed and pinned, the arc being the
+project's recurring lesson twice over: round 2's severe finding was
+round 1's own fix (the listing sweep's cross-pipeline blast radius),
+and round 3's yield was round 2's mechanism refined (garbled unpinned
+spelling, coverage, honest boundaries). The manifest mechanism itself
+survived two dedicated attack rounds. Standing records out of the
+review: the no-WAL/degraded-WAL residue boundary (the file cousin of
+iceberg's N2) and S6's extension to commit bookkeeping.
