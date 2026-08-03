@@ -127,3 +127,5 @@
 {"ts":"2026-08-01","cell":"pg-to-pg-dedup-1m","variant":"dlt","median_ms":12445.75380400056,"rows":1000000}
 {"ts":"2026-08-01","cell":"pg-to-pg-dedup-1m","variant":"dlt-pyarrow","median_ms":20735.607348004123,"rows":1000000}
 {"ts":"2026-08-01","cell":"selftest-protocol","variant":"rdlt","median_ms":21.987949999999998,"rows":null}
+{"ts":"2026-08-03","cell":"oracle-to-pg-200k","variant":"rdlt","median_ms":837.329634,"rows":200000}
+{"ts":"2026-08-03","cell":"oracle-to-pg-200k","variant":"dlt","median_ms":3349.4821049971506,"rows":200000}

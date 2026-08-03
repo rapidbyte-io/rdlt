@@ -1,0 +1,86 @@
+{
+  "format_version": 3,
+  "cell_id": "oracle-to-pg-200k",
+  "recorded_at": "2026-08-03",
+  "fingerprint": {
+    "cpu_model": "AMD RYZEN AI MAX+ 395 w/ Radeon 8060S",
+    "kernel": "7.0.12-201.fc44.x86_64",
+    "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+    "competitor_pins": {
+      "airbyte": "airbyte 2.1.1",
+      "dlt": "dlt 1.29.0"
+    },
+    "dataset_hashes": {
+      "oracle:/tmp/.tmpydV88F/oracle-identity.txt": "33a19236805284f512e046f17b9040c4e131de1cf9777bad120a9e64ffa9ea1f",
+      "pg:seed_output": "dataset  |  rows   |           content_md5 | -----------+---------+---------------------------------- | events    | 1000000 | e840f51738a6b4b15f9f085ea85e3df8 | events_v2 | 1000000 | 7e208273f4d5333658fff2fa1c9839d9 | (2 rows)"
+    },
+    "loadavg_at_start": 5.17,
+    "quiet_note": null
+  },
+  "workload": {
+    "batch_rows": 8192,
+    "columns": 12,
+    "oracle_image": "gvenzl/oracle-free:23.26.2-slim-faststart",
+    "read_strategy": "one streaming cursor per stream, Arrow batches",
+    "rows": 200000,
+    "transport": "arrow"
+  },
+  "rdlt": {
+    "runs_ms": [
+      824.9764349999999,
+      857.49794,
+      837.329634,
+      837.085112,
+      839.0397710000001
+    ],
+    "median_ms": 837.329634,
+    "p95_ms": 857.49794,
+    "rows": 200000,
+    "bytes": 40939288,
+    "rows_per_s": 238854.55844263118,
+    "mb_per_s": 46.62769106958251,
+    "cpu": {
+      "mean_util": 0.41714351583460274,
+      "peak_util": 0.8771929824561403,
+      "user_sys_ms": 350,
+      "note": "process TREE sampled at 50ms (root VmHWM exact; tree spikes between polls can be missed; cpu undercounts up to one interval)"
+    },
+    "rss": {
+      "peak_bytes": 63619072,
+      "note": "process TREE sampled at 50ms (root VmHWM exact; tree spikes between polls can be missed; cpu undercounts up to one interval)"
+    }
+  },
+  "competitors": {
+    "airbyte": {
+      "status": "missing",
+      "reason": "prerequisite failed for `airbyte`: abctl cluster unreachable (kubectl get ns airbyte-abctl)"
+    },
+    "dlt": {
+      "status": "ok",
+      "runs_ms": [
+        3356.8577020196244,
+        3349.4821049971506,
+        3338.423117005732,
+        3313.644971989561,
+        3362.416730960831
+      ],
+      "median_ms": 3349.4821049971506,
+      "self_timed": true,
+      "cpu": {
+        "mean_util": 1.4168576179809809,
+        "peak_util": null,
+        "user_sys_ms": 5969,
+        "note": "cgroup v2 cpu.stat, last poll before exit"
+      },
+      "rss": {
+        "peak_bytes": 412958720,
+        "note": "self-reported ru_maxrss — the recorded statistic (bar derivation)"
+      },
+      "ratio_vs_rdlt": 4.000195346002946
+    }
+  },
+  "verify": {
+    "events": 200000
+  },
+  "forced": false
+}

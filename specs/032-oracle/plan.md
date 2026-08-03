@@ -532,6 +532,40 @@ licence: CI can fetch it, we may NOT vendor it, and on Fedora it also
 needs `libaio`. The live cells skip-not-fail without it, naming the
 remedy.
 
+## THE BENCHMARK, RECORDED (2026-08-03)
+
+`oracle-to-pg-200k` — Oracle 23ai Free → Postgres, 200,000 rows × 12
+columns, full replace, 5 runs, deterministic seed (content hash
+`429429133253851b7c666…`, so every arm reads identical data):
+
+| arm | median | notes |
+|---|---|---|
+| **rdlt** | **837.3 ms** (±4%) | 238,855 rows/s, 46.6 MB/s, 60 MB peak RSS |
+| dlt 1.29.0 | 3.35 s | python-oracledb THIN mode |
+| Airbyte 2.1.1 | **MISSING** | `abctl cluster unreachable` |
+
+**4.0× versus dlt.** SCOREBOARD ONLY — no bar (018 BR8: one recorded
+session is not a basis for one).
+
+WHAT THIS MEASURES AGAINST T004. The same read was extrapolated at
+3-7 MINUTES on the pure-Rust driver and could not complete past ~297
+pages at all. It is now under a second. The O(n²) rescan and the
+cursor ceiling are both gone, which is what T005 predicted — and the
+reason the cell was left defined at 200k rather than shrunk to a
+number that would have expired the moment the driver changed.
+
+AIRBYTE IS UNPERFORMED, NOT GREEN. The harness reports the reason
+rather than hiding it: no `kubectl` on this machine and no running
+kind cluster. The wiring exists (`benches/competitors/airbyte/setup.py`
+carries `oracle_source_config()` and the CELLS entry) and is
+unexercised. Recorded exactly as 020's CI-only verifications were.
+
+THE BENCHMARK EARNED ITS KEEP AS A TEST. It found two defects the
+whole 50-cell suite could not see, because no cell runs a load
+through the ENGINE: the streams were never declared `structured` (the
+engine refuses Arrow otherwise), and a cursorless stream past one
+batch never terminated. Both are now pinned.
+
 ## REVIEW ROUND 5 — the rewrite reviewed (2026-08-03)
 
 Thirteen verified findings against the new code. The severe ones,

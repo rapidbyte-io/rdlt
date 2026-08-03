@@ -24,7 +24,7 @@ const ACTIONS: [&str; 3] = ["return", "panic", "1*off->return"];
 async fn attempt(
     shell: Shell,
     since: Option<rdlt_connector_sdk::spi::core::Cursor>,
-) -> Result<(usize, Option<rdlt_connector_sdk::spi::core::Cursor>), String> {
+) -> Attempt {
     let (out, mut incoming) = rdlt_connector_sdk::spi::records_channel(32 << 20);
     let reader = tokio::spawn(async move {
         shell
@@ -37,22 +37,43 @@ async fn attempt(
             .map_err(|e| e.to_string())
     });
     let collect = async {
-        let (mut rows, mut cursor) = (0usize, None);
+        let (mut ids, mut cursor) = (Vec::new(), None);
         while let Some(push) = incoming.recv().await {
             match push.payload {
-                PushPayload::Arrow(batch) => rows += batch.num_rows(),
+                PushPayload::Arrow(batch) => {
+                    let column = batch.column(0);
+                    let column = column
+                        .as_any()
+                        .downcast_ref::<arrow::array::Int64Array>()
+                        .expect("ID is Int64");
+                    ids.extend((0..batch.num_rows()).map(|row| column.value(row)));
+                }
                 PushPayload::Checkpoint(c) => cursor = Some(c),
                 _ => {}
             }
         }
-        (rows, cursor)
+        (ids, cursor)
     };
-    let (joined, (rows, cursor)) = tokio::join!(reader, collect);
-    match joined {
-        Ok(Ok(())) => Ok((rows, cursor)),
-        Ok(Err(e)) => Err(e),
-        Err(join) => Err(format!("panicked: {join}")),
-    }
+    let (joined, (ids, cursor)) = tokio::join!(reader, collect);
+    let failed = match joined {
+        Ok(Ok(())) => None,
+        Ok(Err(e)) => Some(e),
+        Err(join) => Some(format!("panicked: {join}")),
+    };
+    // WHAT IT DELIVERED AND HOW FAR IT GOT ARE RETURNED EITHER WAY.
+    // Discarding them on failure is what made this sweep vacuous:
+    // every armed attempt fails by construction, so recovery always
+    // restarted from `None` and the assertion was satisfied by a
+    // plain uncrashed read.
+    Attempt { ids, cursor, failed }
+}
+
+/// One read attempt: what it delivered, where it got to, and whether
+/// it failed.
+struct Attempt {
+    ids: Vec<i64>,
+    cursor: Option<rdlt_connector_sdk::spi::core::Cursor>,
+    failed: Option<String>,
 }
 
 /// Every point × action: armed twice (a crash during recovery too),
@@ -81,6 +102,12 @@ async fn every_fail_point_recovers_exactly_once() {
     );
 
     let mut fired = std::collections::BTreeSet::new();
+    // Did ANY cell actually resume from a non-empty cursor? The
+    // previous sweep passed without ever doing so — recovery always
+    // restarted from `None`, so a plain uncrashed read satisfied it.
+    // A green sweep that never crossed a checkpoint is worth nothing,
+    // and this is what says so.
+    let mut ever_crossed = false;
     for &point in FAIL_POINTS {
         for action in ACTIONS {
             fail::cfg(point, action).expect("configure fail point");
@@ -93,41 +120,54 @@ async fn every_fail_point_recovers_exactly_once() {
             // did. The property these cells exist to prove — that a
             // crash costs no rows and a resume repeats none — was the
             // one thing untested.
-            let mut crashed_seen = 0usize;
+            let mut seen: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
             let mut cursor = None;
             let mut any_err = false;
             for _ in 0..2 {
-                match attempt(shell.clone(), cursor.clone()).await {
-                    Ok((rows, next)) => {
-                        crashed_seen += rows;
-                        if next.is_some() {
-                            cursor = next;
-                        }
-                    }
-                    Err(_) => any_err = true,
+                let a = attempt(shell.clone(), cursor.clone()).await;
+                seen.extend(&a.ids);
+                if a.cursor.is_some() {
+                    cursor = a.cursor;
                 }
+                any_err |= a.failed.is_some();
             }
             fail::remove(point);
             if any_err {
                 fired.insert((point, action));
             }
+            let crossed = cursor.is_some();
+            ever_crossed |= crossed;
 
             // Recovery resumes FROM the crashed run's checkpoint.
-            let mut seen = crashed_seen;
-            for _ in 0..3 {
-                let (rows, next) = attempt(shell.clone(), cursor.clone())
-                    .await
-                    .unwrap_or_else(|e| panic!("[{point} / {action}] recovery failed: {e}"));
-                seen += rows;
-                if next.is_none() || rows == 0 {
+            for _ in 0..4 {
+                let a = attempt(shell.clone(), cursor.clone()).await;
+                let fresh = a.ids.len();
+                seen.extend(&a.ids);
+                if let Some(e) = a.failed {
+                    panic!("[{point} / {action}] recovery failed: {e}");
+                }
+                if a.cursor.is_some() {
+                    cursor = a.cursor;
+                }
+                if fresh == 0 {
                     break;
                 }
-                cursor = next;
             }
+
+            // AT-LEAST-ONCE: no row may be LOST. A raw SUM could
+            // never express this — a resumed run may legitimately
+            // re-deliver the rows after its last checkpoint, so the
+            // total can exceed N — which is why the property is over
+            // DISTINCT identities.
             assert_eq!(
-                seen, TOTAL_ROWS,
-                "[{point} / {action}] a crash must cost no rows and a resume must repeat \
-                 none — {crashed_seen} delivered before recovery"
+                seen.len(),
+                TOTAL_ROWS,
+                "[{point} / {action}] a crash must cost no rows (crossed a checkpoint: {crossed})"
+            );
+            assert_eq!(
+                (*seen.first().expect("rows"), *seen.last().expect("rows")),
+                (1, TOTAL_ROWS as i64),
+                "[{point} / {action}] the delivered identities must be exactly 1..=N"
             );
         }
     }
@@ -136,6 +176,11 @@ async fn every_fail_point_recovers_exactly_once() {
         .flat_map(|p| ACTIONS.iter().map(move |a| (*p, *a)))
         .collect();
     assert_eq!(fired, expected, "the armed-fire matrix must be complete");
+    assert!(
+        ever_crossed,
+        "no cell resumed from a non-empty cursor — the sweep proved nothing about \
+         recovery, which is the whole reason it exists"
+    );
 }
 
 /// The registry names exactly the points armed in the sources — the
