@@ -18,3 +18,17 @@ benches/results/selftest-protocol.json
 benches/competitors/airbyte/state.json
 benches/competitors/airbyte/.venv/
 benches/competitors/airbyte/__pycache__/
+
+# Internal development records — the working memory of the project's
+# plan-driven process (feature specs, the session driver document, the
+# speckit machinery). They live on disk for local work and stay out of
+# the public repository.
+/specs/
+/CLAUDE.md
+/REFACTORING.md
+/.claude/
+/.specify/
+/docs/superpowers/
+/2026-07-18-rdlt-engine-design.md
+# Run artifacts at the repo root (workdirs from ad-hoc pipeline runs).
+/.rdlt*/

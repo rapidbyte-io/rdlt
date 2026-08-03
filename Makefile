@@ -227,7 +227,7 @@ else ifeq ($(TARGET),deep)
 	RDLT_HEAVY=1 cargo nextest run -p rdlt-connector-postgres -E 'binary(memory_bound)'
 	# Spark read-back (016): heavyweight JVM leg, deep tier only.
 	# The iceberg spark leg died with generation 1 (the second generation's
-	# interop consolidation is recorded in specs/029-iceberg-v2/plan.md; a
+	# interop consolidation is recorded in the iceberg crate's history; a
 	# fresh spark deep-tier cell is owed if the owner re-opens the tier).
 	$(MAKE) test TARGET=prop
 	$(MAKE) test TARGET=sweep

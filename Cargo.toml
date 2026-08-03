@@ -26,7 +26,7 @@ edition = "2024"
 # is the minimum the workspace commits to supporting, inherited by every crate.
 rust-version = "1.96"
 license = "Apache-2.0"
-repository = "https://github.com/rapidbyte/rdlt"
+repository = "https://github.com/rapidbyte-io/rdlt"
 
 [workspace.dependencies]
 fail = "0.5"

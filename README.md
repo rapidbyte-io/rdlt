@@ -3,12 +3,12 @@
 A small, embeddable ELT engine in Rust, with a few deeply verified
 connectors.
 
-rdlt moves data from sources (Postgres incl. CDC, REST APIs, JSONL/CSV/
-Parquet files locally or on S3-compatible storage) into destinations
-(Postgres, DuckDB, parquet/jsonl files, Iceberg REST catalogs) with
-exactly-once commits, crash recovery via a write-ahead log, schema
-inference and evolution, and typed error classification the engine's
-retry budget can act on.
+rdlt moves data from sources (Postgres incl. CDC, Oracle, REST APIs,
+JSONL/CSV/Parquet files locally or on S3-compatible storage) into
+destinations (Postgres, DuckDB, Snowflake, Iceberg REST catalogs,
+parquet/jsonl files) with exactly-once commits, crash recovery via a
+write-ahead log, schema inference and evolution, and typed error
+classification the engine's retry budget can act on.
 
 The scope is deliberately narrow: a core one person can audit end-to-end,
 where every connector is certified against a shared conformance suite,
@@ -32,7 +32,8 @@ let report = Pipeline::builder("orders")
 ```
 
 Connectors live behind cargo features on the `rdlt` facade crate
-(`rest`, `postgres`, `duckdb`, `file`, `parquet`, `iceberg`).
+(`rest`, `postgres`, `oracle`, `duckdb`, `file`, `parquet`,
+`iceberg`, `snowflake`).
 
 ## Use it from the CLI
 
@@ -43,8 +44,12 @@ capability beyond parsing it:
 rdlt run pipeline.yaml
 ```
 
-Runnable pipelines live in [`examples/`](examples/) — both were
-executed as written before being committed. Start with
+Runnable pipelines covering every connector live in
+[`examples/`](examples/), each executed as written before being
+committed. Every connector has one example showing its COMPLETE
+configuration (a property the test suite enforces), and the
+containerised ones ship a seeded `compose.yaml` — `docker compose up`
+and run. Start with
 [`pokemon-to-jsonl`](examples/pokemon-to-jsonl/), which reads a public
 API and needs no setup at all:
 
@@ -124,3 +129,7 @@ benchmarks and their governance under `benches/`.
 ## License
 
 Apache-2.0
+
+## License
+
+Apache-2.0 — see [LICENSE](LICENSE).
