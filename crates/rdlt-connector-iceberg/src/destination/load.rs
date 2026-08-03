@@ -489,6 +489,13 @@ impl Backend for Load {
         };
         for (table_name, state) in self.tables.iter_mut() {
             let context = format!("table `{}`", self.config.table_name(table_name.as_str()));
+            // `take` empties the parked files BEFORE the fallible
+            // commit below. Safe ONLY because a failed publish is
+            // never retried on this session — the engine restarts a
+            // whole run from committed state, with fresh TableState —
+            // so the emptied list is never consulted again. An
+            // in-process retry policy added later would silently drop
+            // these files; move the take after the commit first.
             let mut files = std::mem::take(&mut state.pending_files);
             if let Some(writer) = state.writer.take() {
                 files.extend(writer.close(&context).await?);

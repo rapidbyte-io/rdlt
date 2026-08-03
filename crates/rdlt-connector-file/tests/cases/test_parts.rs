@@ -166,8 +166,9 @@ async fn a_reached_target_rolls_and_every_part_meets_it() {
         parts.len() > 1,
         "a 4 KiB target must roll across 1,600 padded rows: {parts:?}"
     );
-    // Every part but the LAST crossed the target before closing; the
-    // last one closed because the commit did, at whatever size it had.
+    // EVERY part sits in the band here — each 200-row write alone
+    // crosses the 4 KiB target, so even the final part was closed by
+    // the roll, not by the commit.
     for (name, size) in &parts {
         assert!(
             (3_200..8_192).contains(size),
@@ -322,9 +323,10 @@ async fn the_memory_ceiling_closes_parts_before_their_target() {
 /// retry's files and hold the same rows again: 030's part-index
 /// defect (6 rows where 4 loaded), reopened through a new mechanism.
 ///
-/// Planted rather than crash-injected: the crashed attempt's residue
-/// is fully characterised by the files it left, so the fixture IS the
-/// crash, with nothing probabilistic about it.
+/// Planted rather than crash-injected: a crashed attempt's residue is
+/// fully characterised by the files it left AND the manifest it wrote
+/// before publishing them, so the fixture IS the crash, with nothing
+/// probabilistic about it.
 #[tokio::test]
 async fn a_replayed_commit_sweeps_a_predecessors_differently_split_finals() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -332,7 +334,7 @@ async fn a_replayed_commit_sweeps_a_predecessors_differently_split_finals() {
     let load = LoadId::new("load-a");
 
     // The crashed attempt: same load, same seq 1, split into three
-    // parts — indices 0..3.
+    // parts — indices 0..3 — and the manifest it wrote FIRST.
     let events = dir.path().join("events");
     std::fs::create_dir_all(&events).expect("table dir");
     for index in 0..3 {
@@ -342,6 +344,22 @@ async fn a_replayed_commit_sweeps_a_predecessors_differently_split_finals() {
         )
         .expect("plant");
     }
+    let scope = rdlt_connector_sdk::spi::core::naming::ident_hash(pipeline.as_str(), 12);
+    std::fs::write(
+        dir.path().join(format!("_rdlt_manifest.{scope}.json")),
+        serde_json::json!({
+            "format_version": 1,
+            "load_id": "load-a",
+            "commit_seq": 1,
+            "names": [
+                "events/part-load-a-1-0.parquet",
+                "events/part-load-a-1-1.parquet",
+                "events/part-load-a-1-2.parquet",
+            ],
+        })
+        .to_string(),
+    )
+    .expect("plant manifest");
     // Bystanders that must SURVIVE: another load's final, another
     // seq's final, and a foreign dataset file.
     for name in [
@@ -375,7 +393,7 @@ async fn a_replayed_commit_sweeps_a_predecessors_differently_split_finals() {
     for stale in ["part-load-a-1-1.parquet", "part-load-a-1-2.parquet"] {
         assert!(
             !names.iter().any(|n| n == stale),
-            "{stale}: a crashed predecessor's same-commit final must be swept: {names:?}"
+            "{stale}: a crashed predecessor's manifested final must be swept: {names:?}"
         );
     }
     for survivor in [
@@ -385,7 +403,7 @@ async fn a_replayed_commit_sweeps_a_predecessors_differently_split_finals() {
     ] {
         assert!(
             names.iter().any(|n| n == survivor),
-            "{survivor}: the sweep is same-commit ONLY: {names:?}"
+            "{survivor}: the sweep deletes only what the manifest names: {names:?}"
         );
     }
     // Index 0 was OVERWRITTEN by the retry, not left as residue.
@@ -396,8 +414,53 @@ async fn a_replayed_commit_sweeps_a_predecessors_differently_split_finals() {
     );
 }
 
+/// ROUND 2's regression pin — the reason the sweep is manifest-based
+/// and not listing-based. Final names carry no pipeline marker and
+/// load ids are unique only WITHIN a pipeline, so another pipeline
+/// sharing this output table can legitimately own files whose names
+/// parse as OUR (load, seq). A listing sweep deleted them; the
+/// manifest sweep cannot, because our manifest never named them.
+#[tokio::test]
+async fn anothers_colliding_names_survive_because_the_manifest_never_named_them() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let pipeline = PipelineId::new("sweep-collide");
+    let load = LoadId::new("load-a");
+
+    // Another pipeline's files under the SAME table, whose load id and
+    // seq COLLIDE with ours by coincidence. No manifest of ours names
+    // them — that pipeline's manifest lives under its own scope.
+    let events = dir.path().join("events");
+    std::fs::create_dir_all(&events).expect("table dir");
+    for index in 1..3 {
+        std::fs::write(
+            events.join(format!("part-load-a-1-{index}.parquet")),
+            b"another pipeline's rows",
+        )
+        .expect("plant");
+    }
+
+    let mut session = session_over(local_dest(dir.path()), &pipeline, &load).await;
+    session
+        .write(&TableName::new("events"), batch_of(0, 100))
+        .await
+        .expect("write");
+    session
+        .commit(commit_meta_for(&pipeline, &load, 1))
+        .await
+        .expect("commit");
+
+    for foreign in ["part-load-a-1-1.parquet", "part-load-a-1-2.parquet"] {
+        let bytes = std::fs::read(events.join(foreign)).expect("survives");
+        assert_eq!(
+            bytes, b"another pipeline's rows",
+            "{foreign}: a colliding name our manifest never claimed must survive"
+        );
+    }
+}
+
 /// The same sweep, partitioned: the residue lives under the partition
-/// directory, and only that directory's same-commit strays go.
+/// directory, named by the predecessor's manifest, and only what the
+/// manifest names goes.
 #[tokio::test]
 async fn the_sweep_reaches_partition_directories() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -408,6 +471,21 @@ async fn the_sweep_reaches_partition_directories() {
     std::fs::create_dir_all(&eu).expect("partition dir");
     std::fs::write(eu.join("part-load-a-1-1.parquet"), b"residue").expect("plant");
     std::fs::write(eu.join("part-other-1-0.parquet"), b"bystander").expect("plant");
+    let scope = rdlt_connector_sdk::spi::core::naming::ident_hash(pipeline.as_str(), 12);
+    std::fs::write(
+        dir.path().join(format!("_rdlt_manifest.{scope}.json")),
+        serde_json::json!({
+            "format_version": 1,
+            "load_id": "load-a",
+            "commit_seq": 1,
+            "names": [
+                "events/eu/part-load-a-1-0.parquet",
+                "events/eu/part-load-a-1-1.parquet",
+            ],
+        })
+        .to_string(),
+    )
+    .expect("plant manifest");
 
     let config = local_dest(dir.path()).with_partition_by("payload");
     let dest = destination::Shell::new(config).expect("valid");
@@ -443,11 +521,11 @@ async fn the_sweep_reaches_partition_directories() {
         .collect();
     assert!(
         !names.iter().any(|n| n == "part-load-a-1-1.parquet"),
-        "same-commit residue under the partition is swept: {names:?}"
+        "manifested residue under the partition is swept: {names:?}"
     );
     assert!(
         names.iter().any(|n| n == "part-other-1-0.parquet"),
-        "another load's file survives: {names:?}"
+        "an unmanifested file survives: {names:?}"
     );
     assert!(
         names.iter().any(|n| n == "part-load-a-1-0.parquet"),

@@ -29,11 +29,11 @@ use rdlt_connector_sdk::spi::{DestinationError, RecordBatch};
 
 use super::config::DestFormat;
 use super::layout::{
-    CommitLog, LAYOUT_FORMAT_VERSION, commits_file, final_tail, staged_name, staging_tail,
-    state_file,
+    CommitLog, LAYOUT_FORMAT_VERSION, Manifest, commits_file, final_tail, manifest_file,
+    staged_name, staging_tail, state_file,
 };
 use super::stage::{OpenPart, split_partitions};
-use super::truncate::{same_commit_part, truncate_table};
+use super::truncate::truncate_table;
 use crate::location::Location;
 
 /// The session state: where to write, how to encode, and what has been
@@ -321,13 +321,82 @@ impl Backend for Load {
             }
         }
 
+        // Phase 3a — the crash-replay CONVERGENCE MANIFEST. Publish
+        // overwrites by deterministic name, which converges only while
+        // a replayed commit re-stages the SAME set of names — and with
+        // `roll_after_seconds` it need not: part boundaries become a
+        // function of wall clock, so a retry of a commit that crashed
+        // after publishing can stage FEWER parts than its predecessor,
+        // and the predecessor's higher-index finals would keep rows the
+        // retry's files also carry (030's part-index defect, 6 rows
+        // where 4 loaded, reopened through a new mechanism).
+        //
+        // The mechanism is intent-based, NEVER listing-based: the
+        // manifest under this pipeline's scope records the final names
+        // this commit is about to publish, durably, BEFORE any of them
+        // lands. A retry reads its predecessor's manifest and removes
+        // exactly (predecessor's names − its own) — tolerant of
+        // absence, since intent covers more than a crash let land.
+        // Deleting by directory listing was built first and REJECTED in
+        // review: final names carry no pipeline marker and load ids are
+        // unique only within a pipeline, so on a load-id collision
+        // between pipelines sharing one output table a listing sweep
+        // deletes the OTHER pipeline's rows. The manifest can only ever
+        // name files this pipeline itself intended.
+        //
+        // Ordering is load-bearing, twice: the predecessor's stale
+        // names are removed while its manifest is STILL the one on
+        // record (sweeping after overwriting it would orphan them
+        // forever if this attempt then crashed), and the new manifest
+        // is durable before the first publish (so no file ever lands
+        // unmanifested for the NEXT retry to miss).
+        let new_names: BTreeSet<String> = self
+            .staged
+            .iter()
+            .map(|part| {
+                final_tail(
+                    &part.table,
+                    part.partition.as_deref(),
+                    meta.load_id.as_str(),
+                    meta.commit_seq,
+                    part.index,
+                    self.format.extension(),
+                )
+            })
+            .collect();
+        let manifest_doc = manifest_file(&self.scope);
+        let prior = Manifest::decode(
+            self.location.read_doc(&manifest_doc).await?.as_deref(),
+            &manifest_doc,
+        )?;
+        let mut touched: BTreeSet<String> = BTreeSet::new();
+        if let Some(prior) = prior
+            && prior.load_id == meta.load_id.as_str()
+            && prior.commit_seq == meta.commit_seq
+        {
+            for stale in prior.names.iter().filter(|n| !new_names.contains(*n)) {
+                self.location.remove_final_if_present(stale).await?;
+                if let Some((dir, _)) = stale.rsplit_once('/') {
+                    // The deletion rides the same fsync barrier as the
+                    // publishes below.
+                    touched.insert(dir.to_owned());
+                }
+            }
+        }
+        self.location
+            .write_doc(
+                &manifest_doc,
+                &Manifest {
+                    format_version: LAYOUT_FORMAT_VERSION,
+                    load_id: meta.load_id.as_str().to_owned(),
+                    commit_seq: meta.commit_seq,
+                    names: new_names.iter().cloned().collect(),
+                },
+            )
+            .await?;
+
         // Phase 3 — publish every staged part to its deterministic
         // final name, then make the renames durable (local only).
-        let mut touched: BTreeSet<String> = BTreeSet::new();
-        // What THIS attempt published, per final directory — the
-        // convergence sweep below deletes everything same-commit that
-        // is not in here.
-        let mut published: BTreeMap<(String, Option<String>), BTreeSet<String>> = BTreeMap::new();
         for part in std::mem::take(&mut self.staged) {
             let tail = final_tail(
                 &part.table,
@@ -340,47 +409,9 @@ impl Backend for Load {
             self.location
                 .publish_part(&part.staging_tail, &tail)
                 .await?;
-            let name = tail.rsplit('/').next().expect("split is never empty");
-            published
-                .entry((part.table.clone(), part.partition.clone()))
-                .or_default()
-                .insert(name.to_owned());
             touched.insert(part.table.clone());
             if let Some(partition) = &part.partition {
                 touched.insert(format!("{}/{partition}", part.table));
-            }
-        }
-
-        // Phase 3b — the crash-replay CONVERGENCE SWEEP. Publish
-        // overwrites by deterministic name, which converges only while
-        // a replayed commit re-stages the SAME set of names — and with
-        // `roll_after_seconds` it need not: part boundaries become a
-        // function of wall clock, so a retry of a commit that crashed
-        // after publishing can stage FEWER parts than its predecessor,
-        // and the predecessor's higher-index finals would keep rows
-        // that the retry's files also carry (030's part-index defect,
-        // 6 rows where 4 loaded, reopened through a new mechanism).
-        // So every final in a directory this commit wrote to that
-        // parses as THIS (load, seq) and was not published just now is
-        // a crashed predecessor's, and is removed. Idempotent — a
-        // crash mid-sweep is re-swept by the next replay, and the
-        // receipt (which alone makes the commit claimable) lands only
-        // after the sweep.
-        for ((table, partition), names) in &published {
-            let dir = match partition {
-                Some(partition) => format!("{table}/{partition}"),
-                None => table.clone(),
-            };
-            for name in self.location.files_in_final_dir(&dir).await? {
-                if same_commit_part(&name, meta.load_id.as_str(), meta.commit_seq)
-                    && !names.contains(&name)
-                {
-                    let tail = match partition {
-                        Some(partition) => format!("{partition}/{name}"),
-                        None => name.clone(),
-                    };
-                    self.location.delete_table_file(table, &tail).await?;
-                }
             }
         }
         if self.location.is_local() {

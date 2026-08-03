@@ -523,3 +523,85 @@ deliberate defence and stay.
 Gate after round 1: file+snowflake+postgres crates 465/465 (the one
 memory_bound failure was the recorded tmpfs mode — passes with TMPDIR
 on real disk), clippy clean.
+
+---
+
+## Review round 2 (2026-08-03, three passes: attack round 1's fix, exactly-once lens, test vacuity)
+
+### R2-1 (SEVERE, round 1's own fix, REPLACED): the listing sweep
+could delete another pipeline's rows
+
+The recurring lesson holds again — a fix is not finished until
+attacked. R1-1's sweep parsed directory listings and deleted any file
+matching THIS (load, seq) that this attempt had not published. But
+final names carry NO pipeline marker, and the engine's load ids are
+documented as unique only WITHIN a pipeline
+(`{millis:x}-{pid:x}-{seq:x}`, counter restarting per process, pid
+commonly 1 in containers). Two pipelines legitimately sharing one
+landing-zone table plus one load-id collision — and every first
+commit is seq 1 — meant pipeline B's sweep would ACTIVELY DELETE
+pipeline A's rows. Strictly worse than the pre-sweep behaviour, where
+a collision could only overwrite the one same-named index.
+
+THE REPLACEMENT IS INTENT-BASED, NEVER LISTING-BASED: publish now
+writes a MANIFEST (`_rdlt_manifest.{scope}.json`, beside the state
+doc and receipt log, pipeline-scoped like both) recording the final
+names this commit is about to publish, durably, BEFORE any of them
+lands. A retry reads its predecessor's manifest and removes exactly
+(predecessor's names − its own), tolerant of absence since intent
+covers more than a crash let land. The sweep can never name a file
+this pipeline did not itself intend, so the collision hazard is
+structurally gone — and so is the per-commit directory LISTing the
+round-1 fix cost (replaced by one doc read + one doc write per
+commit). `same_commit_part` and `files_in_final_dir` were REMOVED
+with the mechanism that needed them.
+
+Ordering, load-bearing twice and stated in the code: stale names are
+removed while the predecessor's manifest is STILL the one on record
+(sweeping after overwriting it would orphan them forever if this
+attempt then crashed), and the new manifest is durable before the
+first publish (no file ever lands unmanifested). Only the LAST
+commit's manifest is kept: a commit is only left behind once its
+receipt landed, and a receipted commit has nothing to sweep. The
+manifest carries the layout format_version with the same
+newer-refuses gate as the receipt log.
+
+Pins reworked to plant the manifest beside the residue (a real
+crashed attempt always wrote one first), and a NEW regression pin —
+`anothers_colliding_names_survive_because_the_manifest_never_named_them`
+— RED-PROVEN against the round-1 listing sweep (fails there, passes
+now): colliding same-(load, seq) files with no manifest entry
+survive byte-identical. The S3 arm plants the manifest doc and
+exercises the per-kind doc read and tolerant delete.
+
+### R2-2 (recorded, pre-existing, NOT 034's): config-change residue
+
+If the operator changes `partition_by`/`format`/`streams` between a
+crashed attempt and its retry, residue under the old scheme sits in
+directories the retry never visits. Pre-existing: name-determinism
+convergence assumed identical config across a retry SINCE 030, and
+the manifest sweep inherits exactly that boundary (the manifest DOES
+now name the old files — but only a retry of the SAME commit reads
+it). Recorded as a standing note, not fixed from inside 034.
+
+### R2-3 (annotated): iceberg's take-before-fallible-commit
+
+`publish` empties `pending_files` via `mem::take` before the fallible
+snapshot commit. Safe only because a failed publish is never retried
+on the same session (the engine restarts a run from committed state);
+an in-process retry policy added later would silently drop the parked
+files. Now said at the call site.
+
+### Clean passes
+
+The exactly-once lens traced snowflake (pending-list COPY, budget
+close vs column list, mid-unit rollback, rowcount sum) and iceberg
+(window_seq/writer_opened_at pairing, identity scan) and refuted
+every candidate — both destinations reference parts by explicit
+in-memory list, never by listing-and-trusting-names, which is why the
+file destination alone needed the manifest. The vacuity audit found
+every 034 pin binding; its one catch was a stale comment on the
+rolling-band loop (fixed before it landed).
+
+Gate after round 2: file + iceberg 195/195, 0 skipped, live cells
+included; clippy clean.

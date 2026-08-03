@@ -108,20 +108,39 @@ async fn the_destination_publishes_and_clears_its_staging() {
 /// Replace over a real bucket clears ONLY owned shapes: a user object
 /// under the table prefix survives.
 /// The crash-replay convergence sweep on the OBJECT-STORE path, whose
-/// listing differs from the local one: a same-commit final a crashed
-/// predecessor published is removed, bystanders survive. The scenario
-/// and its full rationale are pinned locally in `test_parts.rs`; this
-/// cell exists because the sweep's directory listing is a per-kind
-/// implementation.
+/// doc reads/deletes differ from the local ones: a final the crashed
+/// predecessor's MANIFEST names is removed, everything unmanifested
+/// survives. The scenario and its full rationale are pinned locally in
+/// `test_parts.rs`; this cell exists because the manifest read and the
+/// tolerant delete are per-kind implementations.
 #[tokio::test]
 async fn s3_publish_sweeps_a_predecessors_same_commit_finals() {
     let Some(fixture) = S3Fixture::start().await else {
         return;
     };
-    // A crashed attempt of (load-a, seq 1) split into two parts; the
-    // retry below stages ONE. Plus bystanders that must survive.
+    // A crashed attempt of (load-a, seq 1) split into two parts, with
+    // the manifest it wrote before publishing; the retry below stages
+    // ONE. Plus bystanders that must survive: another load's file and
+    // a user's own object — neither manifested.
     fixture
         .put("lake/events/part-load-a-1-1.jsonl", b"crashed residue")
+        .await;
+    let scope = rdlt_connector_sdk::spi::core::naming::ident_hash("s3-sweep", 12);
+    fixture
+        .put(
+            &format!("lake/_rdlt_manifest.{scope}.json"),
+            serde_json::json!({
+                "format_version": 1,
+                "load_id": "load-a",
+                "commit_seq": 1,
+                "names": [
+                    "events/part-load-a-1-0.jsonl",
+                    "events/part-load-a-1-1.jsonl",
+                ],
+            })
+            .to_string()
+            .as_bytes(),
+        )
         .await;
     fixture
         .put("lake/events/part-other-1-0.jsonl", b"another load")
@@ -160,11 +179,11 @@ async fn s3_publish_sweeps_a_predecessors_same_commit_finals() {
     );
     assert!(
         !fixture.exists("lake/events/part-load-a-1-1.jsonl").await,
-        "the crashed predecessor's same-commit final is swept"
+        "the crashed predecessor's manifested final is swept"
     );
     assert!(
         fixture.exists("lake/events/part-other-1-0.jsonl").await,
-        "another load's final survives the sweep"
+        "an unmanifested final survives the sweep"
     );
     assert!(
         fixture.exists("lake/events/part-0.parquet").await,

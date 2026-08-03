@@ -302,6 +302,15 @@ impl S3Location {
         self.store.delete(key).await.map_err(dest_failure)
     }
 
+    /// Delete a tail where absence is success — the manifest sweep's
+    /// shape (intent covers more than a crash let land).
+    pub(crate) async fn delete_tail_if_present(&self, tail: &str) -> Result<(), DestinationError> {
+        match self.store.delete(&self.object_key(tail)).await {
+            Err(object_store::Error::NotFound { .. }) | Ok(()) => Ok(()),
+            Err(e) => Err(dest_failure(e)),
+        }
+    }
+
     pub(crate) async fn get_key(&self, key: &Key) -> Result<Vec<u8>, DestinationError> {
         let body = self.store.get(key).await.map_err(dest_failure)?;
         let bytes = body.bytes().await.map_err(dest_failure)?;

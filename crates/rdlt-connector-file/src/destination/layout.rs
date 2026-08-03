@@ -26,6 +26,11 @@ pub(super) fn commits_file(scope: &str) -> String {
     format!("_rdlt_commits.{scope}.json")
 }
 
+/// The publish manifest's file name for one scope.
+pub(super) fn manifest_file(scope: &str) -> String {
+    format!("_rdlt_manifest.{scope}.json")
+}
+
 /// A staged part's tail under the staging prefix.
 pub(super) fn staging_tail(scope: &str, load: &str, name: &str) -> String {
     format!("{STAGING_DIR}/{scope}/{load}/{name}")
@@ -37,7 +42,7 @@ pub(super) fn staging_tail(scope: &str, load: &str, name: &str) -> String {
 /// rows the same way stages the same names it staged before. Since 034
 /// the boundaries themselves need not reproduce (`roll_after_seconds`
 /// is wall clock), so name determinism alone no longer carries
-/// convergence — publish's same-commit sweep removes whatever a
+/// convergence — publish's [`Manifest`] sweep removes whatever a
 /// differently-split predecessor left behind.
 ///
 /// 030 review amendment to the gen-1 flat shape
@@ -125,6 +130,58 @@ pub(super) struct CommitLog {
     pub format_version: u32,
     #[serde(default)]
     pub receipts: Vec<(String, u64)>,
+}
+
+/// The publish MANIFEST: the final names ONE commit intends to
+/// publish, written durably before any of them is, so a retry of a
+/// crashed attempt knows exactly which files its predecessor may have
+/// left and removes the ones it no longer writes itself.
+///
+/// PIPELINE-SCOPED like the state doc and the commit log — which is
+/// the safety property: final file names carry no pipeline marker and
+/// load ids are only unique WITHIN a pipeline, so any sweep that
+/// worked by parsing directory listings could, on a load-id collision
+/// between two pipelines sharing one output table, delete the other
+/// pipeline's rows. The manifest never names a file this pipeline did
+/// not itself intend, so the sweep cannot either.
+///
+/// Only the LAST commit's manifest is kept: a commit is only left
+/// behind once its receipt landed (WAL replay re-drives a pending
+/// commit before anything newer), and a receipted commit's manifest
+/// has nothing left to sweep.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(super) struct Manifest {
+    /// Absent in none — the manifest is new at layout v1.
+    #[serde(default)]
+    pub format_version: u32,
+    #[serde(default)]
+    pub load_id: String,
+    #[serde(default)]
+    pub commit_seq: u64,
+    /// Final tails (relative to the output root) this commit publishes.
+    #[serde(default)]
+    pub names: Vec<String>,
+}
+
+impl Manifest {
+    /// Decode verbatim bytes; absent means "no prior attempt".
+    pub(super) fn decode(
+        bytes: Option<&[u8]>,
+        file: &str,
+    ) -> Result<Option<Self>, DestinationError> {
+        let Some(bytes) = bytes else {
+            return Ok(None);
+        };
+        let manifest: Self = serde_json::from_slice(bytes)
+            .map_err(|e| DestinationError::fatal(format!("unreadable manifest `{file}`: {e}")))?;
+        if manifest.format_version > LAYOUT_FORMAT_VERSION {
+            return Err(DestinationError::fatal(format!(
+                "manifest `{file}` format v{} is newer than this build supports                  (v{LAYOUT_FORMAT_VERSION}); upgrade rdlt instead of resetting",
+                manifest.format_version
+            )));
+        }
+        Ok(Some(manifest))
+    }
 }
 
 impl CommitLog {
