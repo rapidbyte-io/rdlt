@@ -51,8 +51,9 @@ rdlt run examples/pokemon-to-jsonl/pipeline.yaml
 
 **Verified:** 1,351 rows, matching the `count` PokéAPI reports for the
 same endpoint — so pagination followed every page rather than stopping
-at the first. Running it a second time leaves 1,351, not 2,702:
-`write_mode: replace` truncates rather than appends.
+at the first, landing in **two files of 147 KB and 104 KB**. Running
+it a second time leaves 1,351, not 2,702: `write_mode: replace`
+truncates rather than appends.
 
 What the pipeline says:
 
@@ -63,6 +64,14 @@ What the pipeline says:
   next URL, following it beats doing arithmetic on `offset`/`limit`.
 - Around it, `workdir` is where rdlt keeps its write-ahead log, and
   `write_mode` decides whether a re-run replaces, appends, or merges.
+- The destination's `parts` block sizes the output FILES. It is set
+  to a deliberately tiny 128 KiB so the mechanics are visible at this
+  dataset's size: the first file spans TWO of the engine's 400-row
+  writes and closes just after crossing the target (147 KB — a part
+  overshoots, because a write is never split), and the second is
+  smaller (104 KB) because the commit closed it — no part ever spans
+  a commit. Delete the block and all 1,351 rows land in one file: the
+  real default is 128 MiB, the size data lakes want.
 
 Output rows carry two engine columns beside your data:
 
@@ -172,7 +181,9 @@ destination:
 The default is 128 MiB, so a source paging a few hundred rows at a
 time still produces data-lake-sized files rather than one file per
 page. Measured on 1.5M rows in a single commit: parts of 141.5 MB,
-141.3 MB and 126.4 MB against that target.
+141.3 MB and 126.4 MB against that target. The pokemon example ships
+with a scaled-down live demonstration (128 KiB target, two files of
+147 KB and 104 KB) — the comments in its pipeline read the result.
 
 Two honest caveats. Parts OVERSHOOT — a batch is never split, so a
 part closes just after crossing its target, not at it. And
@@ -235,9 +246,12 @@ split, so accumulation stops at the first batch to cross the line.
 With 100-row pages you get multiples of 100.
 
 Measured on the pokemon example, whose source still pages 100 rows at
-a time: without it, 14 parts of 100; with `every_rows: 600`, **3 parts
-of 600/600/151**. Read granularity and write granularity are separate
-decisions. Omitting it writes each source batch straight through,
+a time: without it, 14 destination writes of 100 rows; with
+`every_rows: 600`, **3 writes of 600/600/151**. Read granularity and
+write granularity are separate decisions — and neither is FILE
+granularity, which `parts` owns: the shipped example batches 400 rows
+per write and still produces two files, each spanning writes.
+Omitting `batch_policy` hands each source batch straight through,
 which is what happened before this existed.
 
 ### Durability: `commit_policy`
@@ -281,8 +295,8 @@ make.
 
 A source also only checkpoints where it has a resumable position. The
 pokemon stream declares no cursor, so it checkpoints once at the end —
-which is exactly why `every_rows: 600` works there with the default
-commit policy.
+which is exactly why its batching and part sizing work there with the
+default commit policy: everything is one commit.
 
 ## Where to go next
 

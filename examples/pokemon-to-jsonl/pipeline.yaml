@@ -15,11 +15,11 @@ workdir: examples/pokemon-to-jsonl/.rdlt
 # `merge` to upsert on the declared primary key.
 write_mode: replace
 
-# How much the engine accumulates before each destination write —
-# and so how many rows land in each output file. Destination-agnostic:
-# the engine does the accumulating, so this means the same to a file,
-# a table or a warehouse. Without it, each source page (100 rows here)
-# becomes its own part.
+# How much the engine accumulates before each destination write — a
+# memory/throughput setting, destination-agnostic: the engine does the
+# accumulating, so this means the same to a file, a table or a
+# warehouse. NOT the output file size; that is `parts` on the
+# destination below.
 batch_policy:
   every_rows: 400
 
@@ -68,3 +68,16 @@ destination:
   file:
     path: examples/pokemon-to-jsonl/out
     format: jsonl
+
+    # How large an output FILE grows before it is closed and the next
+    # begun — measured on the ENCODED bytes, which only the
+    # destination can see. The default is 128 MiB (the size data
+    # lakes and query engines want); this dataset is ~250 KB TOTAL,
+    # so the default would give one file and demonstrate nothing.
+    # 128 KiB here makes the mechanics visible: each file spans TWO
+    # of the 400-row writes above and closes just after crossing the
+    # target, and the final file is smaller because the COMMIT closed
+    # it — no part ever spans a commit. Delete the block to get the
+    # default.
+    parts:
+      target_bytes: 131072

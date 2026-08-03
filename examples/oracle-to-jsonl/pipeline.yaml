@@ -73,3 +73,13 @@ destination:
   file:
     path: examples/oracle-to-jsonl/out
     format: jsonl
+
+    # Output file sizing is optional; the default already targets
+    # 128 MiB files — the size data lakes and query engines want — so
+    # a source paging a few thousand rows at a time still lands in
+    # lake-sized files rather than one file per page. Uncomment to
+    # size differently, or to close a long-lived file on time so a
+    # slow incremental stream ships what it has:
+    # parts:
+    #   target_bytes: 134217728    # ~128 MB (the default)
+    #   roll_after_seconds: 900    # … or every 15 min, whichever first
