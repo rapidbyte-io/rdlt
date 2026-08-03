@@ -109,11 +109,23 @@ impl Client {
     /// connections, and ignoring it blindly would hide a real miss.
     /// Reading the effect back settles both.
     async fn pin_session(&self) -> Result<(), SourceError> {
-        let _ = tokio::time::timeout(
+        // The ERROR is ignored deliberately (the driver mis-parses
+        // this statement's response while the statement itself
+        // lands), but a TIMEOUT is different in kind: the request was
+        // written and its reply is UNREAD, so the next statement on
+        // this connection would read the ALTER's reply as its own.
+        // That is the poison law's case, not the mis-parse's.
+        if tokio::time::timeout(
             self.read_timeout,
             self.conn.execute("ALTER SESSION SET TIME_ZONE='UTC'", &[]),
         )
-        .await;
+        .await
+        .is_err()
+        {
+            return Err(SourceError::transient(
+                "pinning the session time zone: no answer within the budget",
+            ));
+        }
         let observed = tokio::time::timeout(
             self.read_timeout,
             self.conn.query("SELECT SESSIONTIMEZONE FROM DUAL", &[]),

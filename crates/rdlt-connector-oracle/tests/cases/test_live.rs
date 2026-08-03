@@ -338,12 +338,15 @@ async fn a_date_cursor_resumes_across_runs() {
 /// The SAME read path against Oracle XE **21c**.
 ///
 /// The connector claims to work across Oracle generations, and a
-/// claim no cell exercises is a wish. This is not a tag swap: 23ai
-/// negotiates a ub8 row-count token that the vendored fetch patch had
-/// to learn, and 21c does not send it — so this cell is what proves
-/// the patch READS the capability instead of assuming the newer wire.
-/// It also covers the older server's type and ROWID behaviour through
-/// the same keyset paging.
+/// claim no cell exercises is a wish. What this actually exercises is
+/// the EXECUTE path's capability negotiation, the older server's type
+/// and ROWID behaviour, and a cursor resume — all on a wire that
+/// omits fields 23ai sends.
+///
+/// It does NOT certify the vendored FETCH patch, whatever an earlier
+/// version of this comment claimed: `FetchMessage` is built at one
+/// site, `fetch_more`, and this connector never continues a cursor,
+/// so that capability read is unreachable from here.
 ///
 /// Deliberately one cell, not the whole suite: 21c costs another
 /// ~75 s of gate time, and what differs across generations is the
@@ -603,4 +606,69 @@ async fn derived_types_are_declared_and_hints_override_them() {
         Some(&LogicalType::Int64),
         "the operator's hint wins over the conservative derivation"
     );
+}
+
+/// A read of many pages survives the server's open-cursor limit.
+///
+/// It did not. Every page is a distinct SQL text, the driver's
+/// statement cache holds a server cursor per text, and nothing ever
+/// closes one — so a read died at ~297 pages whatever the page size,
+/// which for an ordinary table is somewhere around 60,000 rows.
+/// MEASURED twice independently, and confirmed by raising the
+/// server's own `open_cursors` to 20,000, at which the identical read
+/// completed.
+///
+/// 1,000 pages here is four connection recycles.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_read_survives_more_pages_than_the_server_allows_cursors() {
+    let Some(fixture) = OracleFixture::start().await else {
+        return;
+    };
+    fixture
+        .seed(&[
+            "CREATE TABLE MANYP_T (ID NUMBER(8) PRIMARY KEY, V VARCHAR2(16))",
+            "INSERT INTO MANYP_T SELECT LEVEL, 'v' FROM DUAL CONNECT BY LEVEL <= 5000",
+        ])
+        .await;
+    let shell = fixture.shell_tuned(&[stream("m", "MANYP_T")], serde_json::json!({"page_rows": 5}));
+    let (rows, _) = read_all(&shell, "m", None).await;
+    assert_eq!(
+        rows.len(),
+        5000,
+        "1000 pages on a server that allows 300 open cursors"
+    );
+}
+
+/// A bare `NUMBER` works as a cursor.
+///
+/// It did not, and that is how Oracle estates spell a
+/// sequence-backed surrogate key — the single most common
+/// incremental cursor there is. Because Oracle accepts any magnitude
+/// in a bare NUMBER it maps to text (exact digits), and the cursor
+/// gate refused it with a message saying the column was not numeric,
+/// about a column that is numeric and monotonic. The operator's only
+/// recourse was redeclaring the table.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bare_number_works_as_a_cursor() {
+    let Some(fixture) = OracleFixture::start().await else {
+        return;
+    };
+    fixture
+        .seed(&[
+            "CREATE TABLE BAREN_T (ID NUMBER NOT NULL PRIMARY KEY, V VARCHAR2(16))",
+            "INSERT INTO BAREN_T SELECT LEVEL, 'v' FROM DUAL CONNECT BY LEVEL <= 150",
+        ])
+        .await;
+    let shell = fixture.shell(&[incremental("bare", "BAREN_T", "ID")]);
+    let (rows, cursor) = read_all(&shell, "bare", None).await;
+    assert_eq!(rows.len(), 150);
+
+    fixture
+        .seed(&["INSERT INTO BAREN_T VALUES (99999, 'late')"])
+        .await;
+    let (delta, _) = read_all(&shell, "bare", Some(cursor.expect("checkpoint"))).await;
+    assert_eq!(delta.len(), 1, "and it resumes numerically, not lexically");
+    // Bare NUMBER crosses as exact TEXT — Oracle accepts 38 digits
+    // in it and a JSON number is an IEEE double.
+    assert_eq!(delta[0]["id"], serde_json::json!("99999"));
 }

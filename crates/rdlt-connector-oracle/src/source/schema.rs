@@ -66,6 +66,17 @@ pub(crate) fn logical_type(column: &ColumnInfo) -> Result<LogicalType, String> {
 
 /// Is this column read through a LOB LOCATOR rather than inline?
 /// (Probed at every size: CLOB/BLOB always arrive as locators.)
+/// Is this column an Oracle NUMBER whose logical type is text only
+/// because its magnitude has no exact binary home?
+///
+/// It still ORDERS numerically, which is what a watermark needs —
+/// and `NUMBER` with no precision is how Oracle estates spell a
+/// sequence-backed surrogate key, i.e. the single most common
+/// incremental cursor there is.
+pub(crate) fn is_numeric(column: &ColumnInfo) -> bool {
+    matches!(column.oracle_type, OracleType::Number)
+}
+
 pub(crate) fn is_lob(column: &ColumnInfo) -> bool {
     matches!(column.oracle_type, OracleType::Clob | OracleType::Blob)
 }

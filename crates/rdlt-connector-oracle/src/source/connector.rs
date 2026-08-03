@@ -112,7 +112,15 @@ impl SourceConnector for Oracle {
         // means a connection that errored is gone, and a stream that
         // starts clean can retry independently.
         let client = Client::connect(&self.config).await?;
-        read_stream(client, config, &self.config.tuning, &mut cursor, feed).await?;
+        read_stream(
+            client,
+            &self.config,
+            config,
+            &self.config.tuning,
+            &mut cursor,
+            feed,
+        )
+        .await?;
         Ok(())
     }
 }

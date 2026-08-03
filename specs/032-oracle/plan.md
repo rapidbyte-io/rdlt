@@ -358,6 +358,50 @@ workaround for that one thing.
 - Named time-zone regions are refused on read
   (`FROM_TZ(..., 'UTC')` fails the whole stream).
 
+## STANDING OWNER RECORDS (round 3)
+
+Fixed and pinned in round 3, but the following remain TRUE of the
+shipped connector and are the owner's to schedule:
+
+**O1 — the read is SUPER-LINEAR in table size.** Measured: 20k rows
+2.87 s, 40k 10.5 s, 80k 31.8 s; per-page cost tracks the TABLE's size,
+not the page count, because `WHERE ROWID > :last ORDER BY ROWID`
+re-walks the blocks below the watermark on every page. The cursor
+ceiling is fixed (connections are recycled at 250 pages), so a large
+read now COMPLETES — it is simply slow. The remedy is either paging
+by an INDEXED primary key instead of ROWID, or the driver work in O2.
+The 200k benchmark cell is defined and deliberately unrecorded until
+this moves.
+
+**O2 — the driver cannot stream a result set, and that is the root of
+everything above.** Continuation past the prefetch (`fetch_more`)
+HANGS — re-probed at round 3 with all four patches in place, so it is
+not fixed by them. `receive_response` waits for an end-of-response
+flag that row replies never set, and a marker-based terminator cuts
+wide rows mid-message. Correct termination needs a RESUMABLE PARSER.
+Until then: one reply must fit one packet, every page is a fresh
+query, and O1 follows.
+
+**O3 — no connection is ever closed.** `Connection::close()` sends a
+proper logoff; nothing calls it, and `Drop` only sets a flag. A
+many-stream pipeline that retries leaves sessions for the server to
+reap by dead-connection detection.
+
+**O4 — a server negotiating an SDU BELOW 8192 is undetectable.** The
+gate caps the request at 8192, but `inner.sdu_size` from the ACCEPT
+has no accessor, so an estate whose `sqlnet.ora` lowers the default
+would derive pages for packets larger than it will send.
+
+**O5 — sub-microsecond precision is truncated.** The driver decodes
+fractional seconds as `nanos / 1000`, so `TIMESTAMP(9)` loses three
+digits, and a resume at that boundary can re-deliver the rows inside
+the truncated microsecond.
+
+**O6 — TIMESTAMP WITH TIME ZONE watermarks are compared LEXICALLY.**
+Correct while every value shares one offset (and SQL-side comparison
+is always correct); with MIXED offsets the persisted watermark can
+stall, which duplicates rows on the next run rather than losing them.
+
 ## REVIEW ROUNDS
 
 The connector was built, then attacked. Each round is recorded with
@@ -372,6 +416,58 @@ NULL, a ROWID that was not shaped like a ROWID, a watermark compared
 as a `String` (so `"99" > "150"` and a 150-row read checkpointed 99),
 numerics arriving as text and rendering as JSON strings. Each fixed
 and pinned.
+
+### Round 3 — five lenses, ~35 verified defects, two measured blockers
+
+The heaviest round by far, and the first where reviewers MEASURED
+rather than reasoned: three findings were reproduced live against the
+container before being reported. Recorded in full at T004 above; the
+classes were —
+
+**Silent corruption.** NVARCHAR2/NCHAR were destroyed on every read
+(the handshake advertises UTF-16, the decoder assumed UTF-8, and
+`from_utf8_lossy` cannot fail); BINARY_FLOAT/BINARY_DOUBLE had no
+decode arm at all and returned mojibake; `precision`/`scale` lost
+their sign, so `FLOAT(126)` described as a decimal whose scale
+exceeded its precision.
+
+**Silent loss.** A short page was taken as end-of-stream without
+consulting `has_more_rows` — reproducing one layer up the exact
+defect that flag was patched into existence to report. The page
+budget counted CHARACTERS where the server counts bytes and ignored
+the ROWID column every page projects. A nullable cursor column
+refused only at the row, which (NULLs sorting last) fired on the
+final page of the first run and then never again, so those rows were
+absent for the life of the pipeline. Two columns differing only in
+case collapsed into one JSON key.
+
+**Reachability.** `HR.EMPLOYEES` was quoted as ONE identifier, so no
+table outside the login schema — the ordinary estate shape — could be
+read; nor could a case-sensitive name. A bare `NUMBER`, which is how
+Oracle spells a sequence-backed surrogate key, was rejected as a
+cursor with a message claiming it was not numeric.
+
+**Classification.** A wrong password was TRANSIENT and retried five
+times per run; Oracle's default profile locks an account after ten
+failed logins, so two runs would lock the user for every consumer of
+it. Deterministic failures — unreadable values, over-SDU replies, a
+pre-12.1 server — were all retried to exhaustion instead of failing
+by name.
+
+**Vacuity.** `ora.query` was armed above the connection, so all three
+sweep cells aborted before a row moved and the assertion held
+regardless; and the sweep discarded the crashed run's cursor, so
+"a crash costs no rows and a resume repeats none" was satisfied by a
+plain uncrashed read. Both are the 024 class.
+
+**A guarantee that did not exist.** The crate's front-page doc
+advertised consistent-SCN snapshot reads; nothing opened a
+transaction, and the one that would was removed in T002 because it
+poisons this driver.
+
+**And the type declarations reached nothing at all** — every column's
+exact type was derived from the describe and thrown away, so
+`NUMBER(12,2)` landed as TEXT in the destination.
 
 ### Round 2 — eight defects, and the worst was round 1's own fix
 

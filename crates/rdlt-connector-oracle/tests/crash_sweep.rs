@@ -80,17 +80,36 @@ async fn every_fail_point_recovers_exactly_once() {
     for &point in FAIL_POINTS {
         for action in ACTIONS {
             fail::cfg(point, action).expect("configure fail point");
-            let armed1 = attempt(shell.clone(), None).await;
-            let armed2 = attempt(shell.clone(), None).await;
+            // The armed attempts CARRY THEIR CURSOR forward.
+            //
+            // Discarding it made the whole sweep vacuous: recovery
+            // restarted from `None` with the fail point already
+            // removed, so `seen == TOTAL_ROWS` was satisfied by a
+            // plain uncrashed full read no matter what the read path
+            // did. The property these cells exist to prove — that a
+            // crash costs no rows and a resume repeats none — was the
+            // one thing untested.
+            let mut crashed_seen = 0usize;
+            let mut cursor = None;
+            let mut any_err = false;
+            for _ in 0..2 {
+                match attempt(shell.clone(), cursor.clone()).await {
+                    Ok((rows, next)) => {
+                        crashed_seen += rows;
+                        if next.is_some() {
+                            cursor = next;
+                        }
+                    }
+                    Err(_) => any_err = true,
+                }
+            }
             fail::remove(point);
-            if armed1.is_err() || armed2.is_err() {
+            if any_err {
                 fired.insert((point, action));
             }
 
-            // Recovery from wherever the armed attempts left off: a
-            // crashed read must never cost rows, and a resumed one
-            // must never repeat what it already delivered.
-            let (mut seen, mut cursor) = (0usize, None);
+            // Recovery resumes FROM the crashed run's checkpoint.
+            let mut seen = crashed_seen;
             for _ in 0..3 {
                 let (rows, next) = attempt(shell.clone(), cursor.clone())
                     .await
@@ -103,7 +122,8 @@ async fn every_fail_point_recovers_exactly_once() {
             }
             assert_eq!(
                 seen, TOTAL_ROWS,
-                "[{point} / {action}] the recovered run must see every row exactly once"
+                "[{point} / {action}] a crash must cost no rows and a resume must repeat \
+                 none — {crashed_seen} delivered before recovery"
             );
         }
     }

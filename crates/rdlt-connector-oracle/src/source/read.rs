@@ -37,16 +37,40 @@ fn cursor_capable(kind: LogicalType) -> bool {
             | LogicalType::Decimal { .. }
             | LogicalType::TimestampNaive
             | LogicalType::TimestampTz
-            | LogicalType::Date
     )
+    // No `Date` arm: Oracle's DATE carries a time and maps to
+    // TimestampNaive, so `logical_type` can never yield `Date`.
+    // Listing it advertised a case that cannot occur.
 }
 
 /// Read one stream to completion, checkpointing as pages land.
 ///
 /// Returns `false` when the host hung up (the sdk's cancellation
 /// contract) — the caller returns Ok promptly.
+/// How many pages one connection may issue before it is recycled.
+///
+/// EVERY page is a distinct SQL text (the watermark and ROWID are
+/// interpolated), the driver's statement cache holds a server cursor
+/// per distinct text, and NOTHING in the driver ever closes one:
+/// `FunctionCode::CloseCursors` has no sender, `close_cursor` only
+/// flips a local flag, and cache eviction drops entries silently. So
+/// a long read walks into `ORA-01000`.
+///
+/// MEASURED, twice and independently: reads die at ~297 pages,
+/// whatever the page size — stock Oracle allows 300 open cursors, and
+/// raising the server to 20,000 lets the identical read finish. Below
+/// that wall the connector reconnects, which costs one connect per
+/// 250 pages and returns every cursor at once.
+///
+/// The RIGHT fix is for the driver to close its cursors; this is the
+/// fix that does not require inventing an unprobed protocol message
+/// against a driver whose own source warns that raw function messages
+/// make this server hang up.
+const PAGES_PER_CONNECTION: u32 = 250;
+
 pub(crate) async fn read_stream(
     mut client: Client,
+    config: &super::config::Config,
     stream: &Stream,
     tuning: &super::config::Tuning,
     cursor: &mut OracleCursor,
@@ -103,7 +127,12 @@ pub(crate) async fn read_stream(
                 stream.name
             )));
         }
-        if !cursor_capable(types[at]) {
+        // A bare NUMBER carries exact digits as TEXT (Oracle accepts
+        // any magnitude in it), but it still orders numerically —
+        // and it is how estates spell a sequence-backed surrogate
+        // key, so refusing it rejected the commonest cursor there is
+        // with a message claiming the column was not numeric.
+        if !cursor_capable(types[at]) && !super::schema::is_numeric(&described.columns[at]) {
             return Err(SourceError::fatal(format!(
                 "stream `{}`: cursor column `{name}` is {:?}, which has no usable order \
                  for a watermark — choose a numeric or timestamp column",
@@ -158,6 +187,7 @@ pub(crate) async fn read_stream(
         None => None,
     };
 
+    let mut pages_on_connection: u32 = 0;
     loop {
         let where_clause = match (&cursor_column, &resume) {
             (Some(column), Some(state)) => {
@@ -190,6 +220,14 @@ pub(crate) async fn read_stream(
             "SELECT t.*, ROWIDTOCHAR(t.ROWID) AS RDLT_ROWID FROM {table} t{where_clause} \
              ORDER BY {order} FETCH FIRST {page_rows} ROWS ONLY"
         );
+
+        // Recycle before the server's cursor limit rather than after.
+        if pages_on_connection == PAGES_PER_CONNECTION {
+            client = Client::connect(config).await?;
+            client = client.with_page_size(page_rows);
+            pages_on_connection = 0;
+        }
+        pages_on_connection += 1;
 
         // Armed INSIDE the loop, on purpose. Above the connection it
         // aborted every sweep cell before a single row moved, so

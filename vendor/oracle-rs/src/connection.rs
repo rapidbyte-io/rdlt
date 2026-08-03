@@ -1808,15 +1808,27 @@ impl Connection {
         // rdlt patch (032): the fetch body now rides the connection's
         // own multi-packet sender with a real sequence number (the
         // published 0.1.7 hardcoded sequence 0 and framed the packet
-        // itself with a small-SDU header), and the reply is read with
-        // the MULTI-PACKET reader — a fetch of any useful size does
-        // not fit one SDU.
+        // itself with a small-SDU header).
+        //
+        // THE REPLY IS READ AS ONE PACKET, like every other query
+        // reply. The multi-packet reader was tried here and REVERTED
+        // on evidence: `receive_response` waits for an end-of-
+        // response flag that row replies never set, so it HANGS
+        // (probed — even `SELECT 1 FROM DUAL`), and a marker-based
+        // terminator cuts wide rows mid-message because the marker
+        // byte occurs inside binary row data. Correct termination
+        // needs a resumable parser (plan.md T003).
+        //
+        // Nothing in rdlt calls this: the connector re-queries per
+        // page rather than continuing a cursor, precisely because
+        // this path does not work.
         let sequence_number = inner.next_sequence_number();
         let request = fetch_msg.build_request(&inner.capabilities, sequence_number)?;
         inner.send_multi_packet(&request, 0).await?;
 
-        // Receive and parse response
-        let response = inner.receive_response().await?;
+        // Receive and parse response — ONE packet, matching every
+        // other query reply and the standing limit above.
+        let response = inner.receive().await?;
         if response.len() <= PACKET_HEADER_SIZE {
             return Err(Error::Protocol("Empty fetch response".to_string()));
         }
