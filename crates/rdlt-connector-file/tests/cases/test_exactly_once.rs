@@ -162,6 +162,46 @@ async fn open_does_not_destroy_another_pipelines_staging_or_state() {
     );
 }
 
+/// A future MANIFEST version refuses the same way — planted beside
+/// the commit-log pin because the two gates must never drift. Review
+/// round 3 caught this path unpinned, hiding a garbled spelling (a
+/// run of literal spaces baked into the message).
+#[tokio::test]
+async fn a_future_manifest_version_refuses_upgrade_not_reset() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = local_dest(dir.path());
+    let pipeline = PipelineId::new("future-manifest");
+    let scope = rdlt_connector_sdk::spi::core::naming::ident_hash(pipeline.as_str(), 12);
+    let file = format!("_rdlt_manifest.{scope}.json");
+    std::fs::write(
+        dir.path().join(&file),
+        r#"{"format_version": 99, "load_id": "x", "commit_seq": 1, "names": []}"#,
+    )
+    .expect("plant");
+
+    let dest = destination::Shell::new(config).expect("valid");
+    let load = LoadId::new("load-1");
+    let mut s = dest
+        .open(OpenContext::new(pipeline.clone(), load.clone()))
+        .await
+        .expect("open");
+    s.ensure_table(&schema_for("events"), &WriteMode::Append)
+        .await
+        .expect("ensure");
+    let err = s
+        .commit(commit_meta_for(&pipeline, &load, 1))
+        .await
+        .expect_err("refused")
+        .to_string();
+    assert!(
+        err.contains(&format!(
+            "manifest `{file}` format v99 is newer than this build supports \
+             (v1); upgrade rdlt instead of resetting"
+        )),
+        "{err}"
+    );
+}
+
 /// A future commit-log version refuses as an upgrade prompt with the
 /// frozen spelling — never a reset.
 #[tokio::test]

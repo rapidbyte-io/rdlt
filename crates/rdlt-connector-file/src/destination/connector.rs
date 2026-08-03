@@ -17,6 +17,7 @@ use crate::location::Location;
 /// nobody ever crashes at. These spellings are frozen.
 pub const FAIL_POINTS: &[&str] = &[
     "pq.replace.truncate",
+    "pq.manifest.write",
     "pq.staged.sync",
     "pq.part.rename",
     "pq.dir.fsync",
@@ -123,6 +124,7 @@ mod tests {
             FAIL_POINTS,
             &[
                 "pq.replace.truncate",
+                "pq.manifest.write",
                 "pq.staged.sync",
                 "pq.part.rename",
                 "pq.dir.fsync",

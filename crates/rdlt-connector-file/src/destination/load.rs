@@ -383,6 +383,14 @@ impl Backend for Load {
                 }
             }
         }
+        if self.location.is_local() {
+            crash_point!(
+                "pq.manifest.write",
+                Err(DestinationError::fatal(
+                    "injected crash at pq.manifest.write"
+                ))
+            );
+        }
         self.location
             .write_doc(
                 &manifest_doc,

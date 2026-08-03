@@ -605,3 +605,83 @@ rolling-band loop (fixed before it landed).
 
 Gate after round 2: file + iceberg 195/195, 0 skipped, live cells
 included; clippy clean.
+
+---
+
+## Review round 3 (2026-08-03, two passes: attack the manifest, fresh full-diff)
+
+The manifest mechanism SURVIVED the attack — convergence verified by
+induction across repeated differently-split attempts, ordering and
+doc-atomicity claims traced and upheld, "receipt lands LAST" intact,
+the empty-commit and older-seq paths refuted as hazards. What the
+round yielded instead: two smaller real defects, one coverage gap
+closed, and two standing records named.
+
+### R3-1 (fixed + pinned): the manifest refusal text was garbled
+
+`Manifest::decode`'s future-version message carried a run of ~18
+literal spaces mid-sentence — a heredoc transcription artifact — and
+the path was UNPINNED, so nothing could catch it. Now spelled like
+its CommitLog sibling and pinned beside that sibling's test
+(`a_future_manifest_version_refuses_upgrade_not_reset`), planted
+future-version doc and exact message.
+
+### R3-2 (fixed + pinned): `unbounded()` did not mean unbounded
+
+The constructor kept the 512 MiB `max_open_bytes` default, so on the
+accumulating destinations (file, snowflake) a >512 MiB
+table-partition-commit still split — while the doc promised "one part
+per commit, however much lands in it" (true only on iceberg, which
+never accumulates). The name now wins: `unbounded()` clears the
+ceiling too, the doc says the caller accepts the memory consequence,
+and the pin asserts `over_budget` can never fire on it. The DEFAULT
+still carries the valve — nobody gets these semantics without asking.
+
+### R3-3 (coverage closed): `pq.manifest.write` armed
+
+The load-bearing Phase 3a ordering had zero crash-point coverage —
+hand-planted fixtures encode the author's model of a crash, and this
+project's standard is injected crashes. The point is armed before the
+manifest write (local-guarded like its siblings), added to
+FAIL_POINTS, the frozen-spelling pin, and the 024 scanner selfcheck
+(file crate 11 → 12 — the selfcheck is the deliberate second place a
+new point must be named, and it FAILED first, which is it working).
+Live sweep green: 3/3 suites over the extended registry.
+
+### R3-4 (standing record, NAMED): no-WAL / degraded-WAL residue
+
+Under a working WAL a crashed commit is re-driven under its ORIGINAL
+load id (verified in the engine: replay commits with `span.load_id`),
+so the manifest match holds. WITHOUT a workdir — or when a damaged
+segment degrades to re-extraction — the next attempt runs under a NEW
+load id, the old manifest never matches, and a partially-published
+commit's files are beyond any in-connector mechanism (duplicates if
+state had not advanced, orphans if it had). This is the file
+connector's cousin of iceberg's recorded N2, inherited from 030's
+determinism design, NOT introduced by 034; the Manifest doc comment
+now states the boundary instead of overclaiming.
+
+### R3-5 (standing record extended): S6 reaches the commit path
+
+Two concurrent sessions of one pipeline now also race the manifest
+doc (read-then-write, one per scope): a sibling's write between this
+session's read and write means a later retry reads the wrong
+predecessor. S6 already disclaims live concurrent sessions at
+staging; the disclaimer now covers commit bookkeeping too.
+
+### Also refuted this round
+
+Engine-retry double-append (every failure restarts a full run — no
+in-place write retry), roll/index gaps (indices are live counts of
+staged entries), snowflake's double projection (pure, cheap — a nit),
+`shape_differs` swallowing errors (deliberate; append surfaces the
+named error), iceberg pending_files across reinstall, the `max(1)`
+dead defences, and the README's claims (all verified against code).
+
+One flake during verification, recorded not hidden: the S3 sweep arm
+failed once while running beside another suite's postgres fixtures —
+the recorded intra-run rootlessport class — and passed isolated and
+in the combined re-run (180/180).
+
+Gate after round 3: connector + file + testkit 180/180; file crash
+sweep 3/3 over the extended registry; clippy clean all-features.

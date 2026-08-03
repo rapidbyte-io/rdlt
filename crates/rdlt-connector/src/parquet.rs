@@ -533,17 +533,22 @@ impl PartOptions {
         Ok(())
     }
 
-    /// Never roll on size or time.
+    /// Never roll — no size target, no time bound, and NO memory
+    /// ceiling either, because a ceiling splits parts exactly like a
+    /// target does and "unbounded" must not quietly mean "512 MiB".
     ///
     /// NOT "one part per write" — a part still closes at every commit,
     /// because no part may span one. This is therefore ONE part per
-    /// table, partition and commit, however much lands in it.
+    /// table, partition and commit, however much lands in it — and the
+    /// caller accepts that an accumulating destination holds that much
+    /// in MEMORY. The default exists precisely so nobody gets these
+    /// semantics without asking.
     #[must_use]
     pub fn unbounded() -> Self {
         Self {
             target_bytes: None,
             roll_after_seconds: None,
-            max_open_bytes: default_max_open_bytes(),
+            max_open_bytes: None,
         }
     }
 
@@ -681,6 +686,11 @@ mod part_options_tests {
     fn unbounded_never_rolls() {
         let options = PartOptions::unbounded();
         assert!(!options.should_roll(u64::MAX, u64::MAX));
+        // Including the memory ceiling: review round 3 caught the
+        // constructor keeping the 512 MiB default, which split parts
+        // on the accumulating destinations while the doc promised one
+        // part per commit "however much lands in it".
+        assert!(!options.over_budget(u64::MAX));
     }
 
     /// `per_write` rolls on any content and on no empty part.

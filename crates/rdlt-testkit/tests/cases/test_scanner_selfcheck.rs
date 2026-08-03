@@ -21,7 +21,11 @@ use std::path::Path;
 /// `assert_registry_matches_sources`.
 const EXPECTED_DIRECT_NAMES: &[(&str, usize)] = &[
     ("rdlt-engine", 7),
-    ("rdlt-connector-file", 11),
+    // 12 since 034's review round 3 armed `pq.manifest.write` around
+    // the publish manifest — the count moves WITH the registry, and
+    // this line is the deliberate second place a new point must be
+    // named.
+    ("rdlt-connector-file", 12),
     ("rdlt-connector-rest", 3),
     ("rdlt-connector-iceberg", 3),
     ("rdlt-connector-duckdb", 2),

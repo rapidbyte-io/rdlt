@@ -145,10 +145,15 @@ pub(super) struct CommitLog {
 /// pipeline's rows. The manifest never names a file this pipeline did
 /// not itself intend, so the sweep cannot either.
 ///
-/// Only the LAST commit's manifest is kept: a commit is only left
-/// behind once its receipt landed (WAL replay re-drives a pending
-/// commit before anything newer), and a receipted commit's manifest
-/// has nothing left to sweep.
+/// Only the LAST commit's manifest is kept. UNDER A WORKING WAL a
+/// commit is only left behind once its receipt landed (replay
+/// re-drives a pending commit under its ORIGINAL load id before
+/// anything newer), so the superseded manifest has nothing left to
+/// sweep. Without a workdir, or when a damaged WAL degrades to
+/// re-extraction, the next attempt runs under a NEW load id, the old
+/// manifest never matches, and its files are beyond this mechanism —
+/// the file connector's cousin of iceberg's recorded N2, carried as a
+/// standing record rather than pretended away.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(super) struct Manifest {
     /// Absent in none — the manifest is new at layout v1.
@@ -176,7 +181,8 @@ impl Manifest {
             .map_err(|e| DestinationError::fatal(format!("unreadable manifest `{file}`: {e}")))?;
         if manifest.format_version > LAYOUT_FORMAT_VERSION {
             return Err(DestinationError::fatal(format!(
-                "manifest `{file}` format v{} is newer than this build supports                  (v{LAYOUT_FORMAT_VERSION}); upgrade rdlt instead of resetting",
+                "manifest `{file}` format v{} is newer than this build supports \
+                 (v{LAYOUT_FORMAT_VERSION}); upgrade rdlt instead of resetting",
                 manifest.format_version
             )));
         }
