@@ -1,0 +1,43 @@
+# Connection facts for the Oracle source. EDIT THIS FILE — every value
+# below is a placeholder.
+host: 127.0.0.1
+port: 1521
+
+# Name the instance ONE way. `service` is the modern spelling (a PDB
+# service such as FREEPDB1); `sid` is the legacy form older estates
+# still hand out. Setting both is refused, because they are two names
+# for one thing and disagreeing is worse than missing.
+service: FREEPDB1
+# sid: ORCL
+
+user: rdlt
+password: change-me
+
+streams:
+  - name: employees
+    # Bare names fold UPPER-CASE, as Oracle's own rules do, so
+    # `employees` reaches EMPLOYEES. A schema-qualified name works
+    # too — `HR.EMPLOYEES` — which is the ordinary shape when a
+    # read-only user reads an app schema. To reach a table created
+    # case-sensitively, quote it: '"lower_t"'.
+    table: employees
+
+    # Keyed identity. REQUIRED for `write_mode: merge`, because the
+    # rows cross as Arrow and there is no content-hash fallback for a
+    # typed stream.
+    primary_key: [employee_id]
+
+    # Uncomment to read INCREMENTALLY: only rows whose cursor column
+    # is above the last checkpoint. The column must be NOT NULL — a
+    # watermark cannot order a NULL, and admitting one would silently
+    # skip those rows on every later run, so it is refused up front.
+    #
+    # cursor: updated_at
+
+# Tuning is optional; every knob below has a working default and each
+# one maps to the JDBC parameter an Oracle estate already tunes.
+# tuning:
+#   page_rows: 1000            # defaultRowPrefetch
+#   read_timeout_ms: 600000    # oracle.jdbc.ReadTimeout
+#   connect_timeout_ms: 60000  # oracle.net.CONNECT_TIMEOUT
+#   keepalive_minutes: 1       # oracle.net.keepAlive / EXPIRE_TIME

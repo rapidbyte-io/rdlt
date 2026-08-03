@@ -1,0 +1,25 @@
+# Pokémon REST API -> newline-delimited JSON on the local filesystem.
+#
+#   rdlt run examples/pokemon-to-jsonl/pipeline.yaml
+#
+# Needs nothing but a network connection. See examples/README.md.
+pipeline: pokemon-to-jsonl
+
+# rdlt's write-ahead log lives here. It is what makes a crashed run
+# resumable rather than half-applied, so it belongs on real disk you
+# are willing to keep between runs.
+workdir: examples/pokemon-to-jsonl/.rdlt
+
+# `replace` rewrites the table each run — the right choice for a small
+# reference dataset you want to mirror. Use `append` to accumulate, or
+# `merge` to upsert on the declared primary key.
+write_mode: replace
+
+source:
+  rest:
+    config: examples/pokemon-to-jsonl/rest.yaml
+
+destination:
+  file:
+    path: examples/pokemon-to-jsonl/out
+    format: jsonl

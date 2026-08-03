@@ -1,0 +1,24 @@
+# Oracle -> newline-delimited JSON on the local filesystem.
+#
+#   rdlt run examples/oracle-to-jsonl/pipeline.yaml
+#
+# UNLIKE the pokemon example this one needs two things first: an Oracle
+# you can reach (edit oracle.yaml) and Oracle Client libraries on the
+# machine. See examples/README.md.
+pipeline: oracle-to-jsonl
+
+workdir: examples/oracle-to-jsonl/.rdlt
+
+# `replace` mirrors the table each run. Switch to `merge` to upsert on
+# the stream's primary_key, or `append` to accumulate — `merge` is the
+# one that pairs with a `cursor:` for incremental loads.
+write_mode: replace
+
+source:
+  oracle:
+    config: examples/oracle-to-jsonl/oracle.yaml
+
+destination:
+  file:
+    path: examples/oracle-to-jsonl/out
+    format: jsonl

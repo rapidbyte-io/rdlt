@@ -43,6 +43,15 @@ capability beyond parsing it:
 rdlt run pipeline.yaml
 ```
 
+Runnable pipelines live in [`examples/`](examples/) — both were
+executed as written before being committed. Start with
+[`pokemon-to-jsonl`](examples/pokemon-to-jsonl/), which reads a public
+API and needs no setup at all:
+
+```sh
+rdlt run examples/pokemon-to-jsonl/pipeline.yaml
+```
+
 ### Parquet output is compressed
 
 Parquet destinations write **snappy-compressed** files. Earlier versions wrote
