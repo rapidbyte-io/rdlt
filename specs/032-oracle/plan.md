@@ -358,6 +358,68 @@ workaround for that one thing.
 - Named time-zone regions are refused on read
   (`FROM_TZ(..., 'UTC')` fails the whole stream).
 
+## T005 — THE DRIVER DECISION REOPENED, AND PROBED (2026-08-03)
+
+Round 3 established that the majority of the SEVERE defects are not
+in the connector but in `oracle-rs` itself, and that most of this
+crate's machinery (ROWID keyset paging, SDU page-size derivation,
+connection recycling, four vendored patches) exists only to route
+around them. So D1's rejection of the OCI route was reopened and the
+alternative PROBED LIVE, T001-style, before any decision.
+
+**The candidate:** `oracle` 0.6.3 (github.com/kubo/rust-oracle),
+UPL-1.0/Apache-2.0, actively maintained, wrapping ODPI-C. It is
+SYNCHRONOUS — no async feature exists — so it would sit behind
+`spawn_blocking`. ODPI-C compiles from vendored source (needs only a
+C toolchain, no client at BUILD time) but dlopens Oracle Client
+libraries at RUNTIME.
+
+**The runtime cost, measured rather than assumed.** Instant Client
+Basic Lite is a 70 MB download from Oracle, no authentication, under
+the OTN licence — so it can be fetched by CI but NOT vendored into
+this repo. On this Fedora toolbox it additionally needed `libaio`,
+which was not installed. That is the real price of this route: every
+developer machine and CI runner needs a proprietary shared library
+that we may not redistribute.
+
+**THE PROBE, against the same 23ai container.** Every defect that
+defeats `oracle-rs` is simply absent:
+
+| what | `oracle-rs` (measured) | `oracle` 0.6.3 (measured) |
+|---|---|---|
+| NVARCHAR2 `N'zażółć'` | `"\0z\0a\u{1}|…"` destroyed | `"zażółć"` |
+| BINARY_DOUBLE | mojibake (no decode arm) | `2.25`; Infinity as `inf` |
+| FLOAT(126) describe | `Decimal{126,129}` (sign lost) | `Float(126)` |
+| NUMBER(10,-2) describe | `Decimal{10,254}` | `Number(10, -2)`, value exact |
+| CLOB of 3,999 by plain INSERT | UNREADABLE (O7) | reads whole |
+| rows through ONE cursor | impossible (`fetch_more` hangs) | **50,000 in 22.7 ms** |
+| consecutive statements | died at 299 | **2,000/2,000** |
+| bound parameters | fail on the FIRST call | work |
+| column nullability | discarded (patched in) | present |
+
+The 22.7 ms is DRIVER-LEVEL fetch only, not a connector-path
+comparison — the honest point is not the ratio but that there is no
+per-page rescan and no cursor ceiling at all, which is what O1 and O2
+are.
+
+**THE CONSEQUENCE.** Adopting it DELETES rather than fixes: the
+vendored fork and its four patches, ROWID keyset paging, SDU-derived
+page sizing, connection recycling, the has_more_rows end-of-stream
+rule, and O1-O7 in their entirety. The connector gets substantially
+smaller.
+
+**AND THE TRANSPORT CHANGES WITH IT (owner call, 2026-08-03).** The
+SPI carries both `RawJson` and `Arrow`, and the house rule is already
+implemented everywhere but here — postgres pushes Arrow (4 sites),
+rest pushes JSON (natively JSON), file pushes JSON for jsonl/csv and
+Arrow for parquet. Oracle is a TYPED source pushing NDJSON, which
+means rendering typed values to JSON text so the engine's shredder
+can parse them back into Arrow builders. That round trip is why BLOBs
+are hex-encoded (double the bytes), why decimals cross as strings and
+land as TEXT, why NaN/Infinity are forced to null, and why the whole
+`type_hints` mechanism had to be built at all — with Arrow the schema
+travels with the batch. Oracle moves to Arrow.
+
 ## STANDING OWNER RECORDS (round 3)
 
 Fixed and pinned in round 3, but the following remain TRUE of the
