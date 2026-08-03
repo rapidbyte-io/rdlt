@@ -392,9 +392,37 @@ the measured commit-cadence trap.
 
 ## Gate of record — 034 complete
 
-`cargo nextest run --workspace`: **1138/1138, 0 skipped**, with live
-Polaris, RUSTFS, Postgres, Oracle and Snowflake cells all running.
-Clippy clean workspace-wide, all targets. `TMPDIR` off the tmpfs.
+`make check` TWICE CLEAN on the pinned toolchain, `TMPDIR` off the
+tmpfs:
+
+| | run 1 | run 2 |
+|---|---|---|
+| suite | 1138/1138, 0 skipped | 1138/1138, 0 skipped |
+| semver | no update required | no update required |
+| benches | 6, 0 regressed | 6, 0 regressed |
+| cold start | 25.0 ms | 24.7 ms (bar ≤ 40) |
+
+Live Polaris, RUSTFS, Postgres, Oracle and Snowflake cells all ran;
+the e2e and sweep targets are in the gate. Clippy clean
+workspace-wide, all targets.
 
 Counts by stage: 1129 (stages 1-2) → 1132 (stage 3) → 1136 (stage 4)
 → 1138 (stage 5).
+
+### The one environment flake, recorded rather than re-rolled
+
+Run 2 first died at
+`test_merge_strategies::shredded_upsert_is_rejected_typed_at_ensure`
+with `rootlessport listen tcp 0.0.0.0:46413: bind: address already in
+use` — the recorded podman port flake, which has an inter-run residue
+mechanism and an intra-run concurrency one.
+
+The residue mechanism was DIAGNOSED and removed rather than waited
+out: the cancelled first attempt had left 11 labelled postgres
+fixtures behind, and `make reclaim` (which filters by
+`label=rdlt-test=1`) cleared them. Volumes were at 176, far below the
+2,048-lock ceiling that amplified this in 029, so that was not a
+factor here. The rerun was clean.
+
+Nothing in 034 touches container lifecycle; the failing cell has no
+`parts` involvement at all.
