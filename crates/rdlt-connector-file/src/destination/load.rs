@@ -32,7 +32,7 @@ use super::layout::{
     CommitLog, LAYOUT_FORMAT_VERSION, commits_file, final_tail, staged_name, staging_tail,
     state_file,
 };
-use super::stage::{encode_part, split_partitions};
+use super::stage::{OpenPart, split_partitions};
 use super::truncate::truncate_table;
 use crate::location::Location;
 
@@ -58,6 +58,24 @@ pub struct Load {
     /// already-copied finals (measured live in the S3 sweep: 6 rows
     /// where 4 were loaded).
     staged: Vec<StagedPart>,
+    /// When a part is closed and the next begun.
+    parts: rdlt_connector_sdk::spi::PartOptions,
+    /// Parts still being written, keyed by table and partition — a
+    /// part holds one table's rows for one partition, so those two
+    /// are what identify it.
+    open: BTreeMap<(String, Option<String>), (OpenPart, std::time::Instant)>,
+}
+
+/// Read the receipt log.
+///
+/// A FREE function rather than a method, and the reason is load-bearing:
+/// `Load` holds an open `ArrowWriter`, which is `Send` but never `Sync`,
+/// so a `&self` borrow held across an await would not compile. Taking
+/// the two fields it reads keeps the borrow narrow enough to be `Send`.
+async fn commit_log(location: &Location, scope: &str) -> Result<CommitLog, DestinationError> {
+    let file = commits_file(scope);
+    let bytes = location.read_doc(&file).await?;
+    CommitLog::decode(bytes.as_deref(), &file)
 }
 
 #[derive(Debug)]
@@ -78,9 +96,12 @@ impl Load {
         props: WriterProperties,
         scope: String,
         load_id: LoadId,
+        parts: rdlt_connector_sdk::spi::PartOptions,
     ) -> Result<Self, DestinationError> {
         location.prepare_staging(&scope, load_id.as_str()).await?;
         Ok(Self {
+            parts,
+            open: BTreeMap::new(),
             location,
             format,
             partition_by,
@@ -92,10 +113,72 @@ impl Load {
         })
     }
 
-    async fn commit_log(&self) -> Result<CommitLog, DestinationError> {
-        let file = commits_file(&self.scope);
-        let bytes = self.location.read_doc(&file).await?;
-        CommitLog::decode(bytes.as_deref(), &file)
+    /// Close one open part and stage it.
+    ///
+    /// Staging is what makes the part real: until then it exists only
+    /// as encoded bytes in memory, and a crash simply loses it — which
+    /// is correct, because nothing has claimed it landed.
+    async fn close_part(&mut self, key: &(String, Option<String>)) -> Result<(), DestinationError> {
+        let Some((open, _)) = self.open.remove(key) else {
+            return Ok(());
+        };
+        let (table, partition) = key;
+        let bytes = open.finish()?;
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        let index = self
+            .staged
+            .iter()
+            .filter(|s| &s.table == table && &s.partition == partition)
+            .count();
+        let name = staged_name(table, partition.as_deref(), index, self.format.extension());
+        let tail = staging_tail(&self.scope, self.load_id.as_str(), &name);
+        self.location.stage_put(&tail, bytes).await?;
+        self.staged.push(StagedPart {
+            table: table.clone(),
+            partition: partition.clone(),
+            index,
+            staging_tail: tail,
+        });
+        Ok(())
+    }
+
+    /// Keep the open parts inside their memory ceiling.
+    ///
+    /// The LARGEST is closed first: it is nearest its target, so the
+    /// part this produces is the least undersized one available. The
+    /// loop terminates because each pass removes one part, and an
+    /// empty set holds nothing.
+    async fn enforce_open_budget(&mut self) -> Result<(), DestinationError> {
+        loop {
+            let total: u64 = self.open.values().map(|(open, _)| open.encoded_len()).sum();
+            if !self.parts.over_budget(total) {
+                return Ok(());
+            }
+            let Some(largest) = self
+                .open
+                .iter()
+                .max_by_key(|(_, (open, _))| open.encoded_len())
+                .map(|(key, _)| key.clone())
+            else {
+                return Ok(());
+            };
+            self.close_part(&largest).await?;
+        }
+    }
+
+    /// Close EVERY open part.
+    ///
+    /// Called before publish: a part never spans a commit, because the
+    /// publish protocol moves whole staged files and a half-written
+    /// one has nothing to move.
+    async fn close_all_parts(&mut self) -> Result<(), DestinationError> {
+        let keys: Vec<_> = self.open.keys().cloned().collect();
+        for key in keys {
+            self.close_part(&key).await?;
+        }
+        Ok(())
     }
 
     /// The frozen pre-015 truncation addendum applies only to the
@@ -133,28 +216,35 @@ impl Backend for Load {
         batch: RecordBatch,
     ) -> Result<(), DestinationError> {
         for (partition, group) in split_partitions(table, &batch, self.partition_by.as_deref())? {
-            let bytes = encode_part(self.format, &group, &self.props)?;
-            let index = self
-                .staged
-                .iter()
-                .filter(|s| s.table == table.as_str() && s.partition == partition)
-                .count();
-            let name = staged_name(
-                table.as_str(),
-                partition.as_deref(),
-                index,
-                self.format.extension(),
-            );
-            let tail = staging_tail(&self.scope, self.load_id.as_str(), &name);
-            self.location.stage_put(&tail, bytes).await?;
-            self.staged.push(StagedPart {
-                table: table.to_string(),
-                partition,
-                index,
-                staging_tail: tail,
-            });
+            let key = (table.to_string(), partition.clone());
+            // A parquet file carries ONE schema, so a schema change
+            // closes the part rather than being appended into it.
+            let schema_changed = self
+                .open
+                .get(&key)
+                .is_some_and(|(open, _)| open.schema_differs(&group));
+            if schema_changed {
+                self.close_part(&key).await?;
+            }
+            let (open, opened_at) = match self.open.remove(&key) {
+                Some(existing) => existing,
+                None => (
+                    OpenPart::begin(self.format, &group, &self.props)?,
+                    std::time::Instant::now(),
+                ),
+            };
+            let mut open = open;
+            open.append(&group)?;
+            let encoded = open.encoded_len();
+            self.open.insert(key.clone(), (open, opened_at));
+            if self
+                .parts
+                .should_roll(encoded, opened_at.elapsed().as_secs())
+            {
+                self.close_part(&key).await?;
+            }
         }
-        Ok(())
+        self.enforce_open_budget().await
     }
 
     async fn existing_receipt(
@@ -162,7 +252,7 @@ impl Backend for Load {
         load_id: &LoadId,
         commit_seq: u64,
     ) -> Result<Option<CommitReceipt>, DestinationError> {
-        let log = self.commit_log().await?;
+        let log = commit_log(&self.location, &self.scope).await?;
         let key = (load_id.as_str().to_owned(), commit_seq);
         Ok(log
             .receipts
@@ -179,8 +269,11 @@ impl Backend for Load {
         _meta: &CommitMeta,
         _receipt: &CommitReceipt,
     ) -> Result<(), DestinationError> {
-        // A redelivered commit's staged parts must not linger for a
-        // later genuine commit to find — discard them, best-effort.
+        // A redelivered commit's parts must not linger for a later
+        // genuine commit to find. The OPEN ones are dropped outright —
+        // they exist only in memory and were never claimed to land —
+        // and the staged ones are removed best-effort.
+        self.open.clear();
         for part in self.staged.drain(..) {
             self.location.stage_remove(&part.staging_tail).await;
         }
@@ -188,7 +281,13 @@ impl Backend for Load {
     }
 
     async fn publish(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestinationError> {
-        let mut log = self.commit_log().await?;
+        // Phase 1 — no part spans a commit. Publish moves WHOLE staged
+        // files, and a part still open has no file to move, so every
+        // one is closed and staged before anything else happens. This
+        // makes the commit cadence an upper bound on part size.
+        self.close_all_parts().await?;
+
+        let mut log = commit_log(&self.location, &self.scope).await?;
 
         // Phase 2 — Replace truncation, once per LOAD, guarded by the
         // durable receipt log: any earlier commit of this load means

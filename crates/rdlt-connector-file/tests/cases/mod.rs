@@ -7,6 +7,7 @@ mod test_formats;
 mod test_gating;
 mod test_ingestion;
 mod test_partitioning;
+mod test_parts;
 mod test_preservation;
 mod test_replace;
 mod test_resume;

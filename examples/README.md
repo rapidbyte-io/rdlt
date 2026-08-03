@@ -145,13 +145,53 @@ them on every later run — the failure would look like success.
 
 ## Controlling how rows are grouped
 
-Two DIFFERENT things decide the shape of the output, and it is worth
-keeping them apart.
+THREE different things decide the shape of the output, and it is worth
+keeping them apart. You normally touch one.
 
-**How many rows land in each part FILE** is `batch_policy` — how much
-the engine accumulates before each destination write. It is
-destination-agnostic: the engine does the accumulating, so the same
-setting means the same thing to a file, a table or a warehouse.
+| you want | set |
+|---|---|
+| ~128 MB output files | `parts.target_bytes` on the destination |
+| less memory, fewer writes | `batch_policy` |
+| less work lost to a crash | `commit_policy` |
+
+### Output file size: `parts`
+
+Only the destination knows how big a file is, because only it has
+encoded one. So this is a destination setting, not an engine one:
+
+```yaml
+destination:
+  file:
+    path: out
+    format: parquet
+    parts:
+      target_bytes: 134217728    # ~128 MB files (the default)
+      roll_after_seconds: 900    # … or every 15 min, whichever first
+```
+
+The default is 128 MiB, so a source paging a few hundred rows at a
+time still produces data-lake-sized files rather than one file per
+page. Measured on 1.5M rows in a single commit: parts of 141.5 MB,
+141.3 MB and 126.4 MB against that target.
+
+Two honest caveats. Parts OVERSHOOT — a batch is never split, so a
+part closes just after crossing its target, not at it. And
+`roll_after_seconds` fires only when data arrives; there is no
+background timer, so a quiet stream rolls at its next write or at its
+next commit.
+
+`max_open_bytes` (default 512 MiB) is a safety valve rather than a
+tuning knob. An open part lives in memory until it closes, and a
+`partition_by` destination holds one per partition — without a ceiling
+the footprint would be partitions × target. When the ceiling is
+reached the largest open part is closed early, which costs file size,
+not correctness.
+
+### Write granularity: `batch_policy`
+
+**How many rows the engine accumulates before each destination write.**
+It is destination-agnostic: the engine does the accumulating, so the
+same setting means the same thing to a file, a table or a warehouse.
 
 ```yaml
 batch_policy:
@@ -160,13 +200,14 @@ batch_policy:
 ```
 
 `every_bytes` counts the ARROW IN-MEMORY footprint, not the bytes
-written. It is a memory bound, not an output-size one. Arrow reports
+written. **It is a memory bound, not an output-size one** — if you
+came here wanting 128 MB files, `parts.target_bytes` above is the
+setting, not this one. Arrow reports
 allocated capacity — buffers grow geometrically, and per-value offsets
 and validity bitmaps count too — and the output format is the
 destination's business, JSONL text here but compressed parquet
 elsewhere. Measured on the pokemon stream: `every_bytes: 100000` gave
-400-row parts of ~73 KB. Use `every_rows` when you want a predictable
-file size.
+400-row writes of ~73 KB.
 
 Both thresholds are FLOORS, not targets: a source batch is never
 split, so accumulation stops at the first batch to cross the line.
@@ -178,8 +219,10 @@ of 600/600/151**. Read granularity and write granularity are separate
 decisions. Omitting it writes each source batch straight through,
 which is what happened before this existed.
 
-**How often work is COMMITTED** is `commit_policy` — a durability
-decision, not a file-size one. A commit is the unit a crash can cost
+### Durability: `commit_policy`
+
+**How often work is committed** — a durability decision, not a
+file-size one. A commit is the unit a crash can cost
 you and the point a resume restarts from.
 
 ```yaml
@@ -195,17 +238,25 @@ would hold everything uncommitted until the run ended. An empty
 
 ### The one interaction worth knowing
 
-**A batch never spans a commit, so the commit cadence is an upper
-bound on batching.** Set `batch_policy: {every_rows: 50000}` while
-committing at every checkpoint, and if checkpoints arrive every 100
-rows you will still get 100-row writes — the commit flushes what has
-accumulated before it closes. To get large writes you must let commits
-be at least as coarse:
+**Neither a batch nor a part spans a commit, so the commit cadence is
+an upper bound on both.** Measured: the same 1.5M-row run that gave
+141 MB parts under one commit gave **9.5 MB parts across 44 commits**
+under the default cadence — the 128 MiB target never came close to
+binding. If your files are smaller than you asked for, this is why. The same holds one level down: set
+`batch_policy: {every_rows: 50000}` while committing at every
+checkpoint, and if checkpoints arrive every 100 rows you will still
+get 100-row writes — the commit flushes what has accumulated before it
+closes. To get large writes, and large files, commits must be at least
+as coarse:
 
 ```yaml
 batch_policy:  {every_rows: 50000}
 commit_policy: {every_checkpoints: 500}
 ```
+
+The cost is what a crash loses: a coarser commit policy means more
+work replayed on resume. That is the trade the knob exists to let you
+make.
 
 A source also only checkpoints where it has a resumable position. The
 pokemon stream declares no cursor, so it checkpoints once at the end —

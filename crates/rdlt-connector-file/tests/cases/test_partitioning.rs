@@ -118,10 +118,17 @@ async fn a_missing_partition_column_refuses_at_write() {
 
 /// Final names count per TABLE+PARTITION: interleaving a second
 /// table's writes cannot change the first table's final names.
+///
+/// Parts close per WRITE here, which is what makes there be two
+/// `alpha` parts to index at all: the subject is the index
+/// arithmetic, and under the shipping 128 MiB default both `alpha`
+/// writes coalesce into one file and the interleaving has nothing
+/// left to disturb.
 #[tokio::test]
 async fn final_names_independent_of_cross_table_arrival_order() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let config = local_dest(dir.path());
+    let config =
+        local_dest(dir.path()).with_parts(rdlt_connector_sdk::spi::PartOptions::per_write());
     let dest = destination::Shell::new(config).expect("valid");
     let pipeline = PipelineId::new("arrival-order");
     let load = LoadId::new("load-a");

@@ -2,7 +2,7 @@
 //! kinds, single-column partitioning, and the parquet tuning block.
 
 use rdlt_connector_sdk::config::Document;
-use rdlt_connector_sdk::spi::ParquetOptions;
+use rdlt_connector_sdk::spi::{ParquetOptions, PartOptions};
 
 use crate::location::LocationOptions;
 
@@ -27,6 +27,11 @@ pub struct Config {
     /// Parquet writer tuning; absent = the COMPRESSED defaults.
     #[serde(default)]
     pub parquet: Option<ParquetOptions>,
+    /// How large an output part grows before it is closed; absent =
+    /// the 128 MiB default. This is the OUTPUT size, measured after
+    /// encoding — not `batch_policy`, which bounds Arrow memory.
+    #[serde(default)]
+    pub parts: Option<PartOptions>,
 }
 
 /// The output kinds this destination writes.
@@ -93,6 +98,7 @@ impl Config {
             format: DestFormat::Parquet,
             partition_by: None,
             parquet: None,
+            parts: None,
         }
     }
 
@@ -122,6 +128,16 @@ impl Config {
         self.parquet.clone().unwrap_or_default()
     }
 
+    /// The configured part sizing, or the 128 MiB default.
+    pub fn part_options(&self) -> PartOptions {
+        self.parts.unwrap_or_default()
+    }
+
+    pub fn with_parts(mut self, parts: PartOptions) -> Self {
+        self.parts = Some(parts);
+        self
+    }
+
     /// The one gate, context-framed by the caller.
     pub(crate) fn validate_in(&self, context: &str) -> Result<(), String> {
         if self.path.is_empty() {
@@ -145,6 +161,13 @@ impl Config {
         }
         if let Some(parquet) = &self.parquet
             && let Err(e) = parquet.validate()
+        {
+            return Err(format!("{context}: {e}"));
+        }
+        // `parts` applies to BOTH formats — a JSONL part has a size
+        // too — so unlike `parquet` there is no format rule here.
+        if let Some(parts) = &self.parts
+            && let Err(e) = parts.validate()
         {
             return Err(format!("{context}: {e}"));
         }

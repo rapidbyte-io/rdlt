@@ -96,7 +96,7 @@ pub use error::{BoxError, DestinationError, SourceError};
 /// How a destination writes parquet — plain data, no parquet dependency
 /// in the SPI. Connectors re-export these from their own config paths and
 /// translate them into `WriterProperties` at their own boundary.
-pub use parquet::{ParquetCompression, ParquetOptions};
+pub use parquet::{ParquetCompression, ParquetOptions, PartOptions, PartsError};
 pub use pem::PemSource;
 /// The rdlt vocabulary. Connectors MUST take these types from here
 /// (single-version identity across the workspace).

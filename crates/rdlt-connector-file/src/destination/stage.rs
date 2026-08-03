@@ -168,32 +168,111 @@ pub(crate) fn split_partitions(
         .collect()
 }
 
-/// Encode one partition group as one part's bytes.
-pub(crate) fn encode_part(
-    format: DestFormat,
-    batch: &RecordBatch,
-    props: &WriterProperties,
-) -> Result<Vec<u8>, DestinationError> {
-    match format {
-        DestFormat::Parquet => {
-            let mut writer = ArrowWriter::try_new(Vec::new(), batch.schema(), Some(props.clone()))
-                .map_err(|e| DestinationError::fatal(format!("parquet encode: {e}")))?;
-            writer
-                .write(batch)
-                .map_err(|e| DestinationError::fatal(format!("parquet encode: {e}")))?;
-            writer
-                .into_inner()
-                .map_err(|e| DestinationError::fatal(format!("parquet encode: {e}")))
+/// A part still being written.
+///
+/// Holds the ENCODED bytes so the roll decision is made on what will
+/// actually land, not on the Arrow footprint that produced it.
+pub(crate) enum OpenPart {
+    /// Parquet appends row groups; the writer reports what it has
+    /// encoded so far. The schema is carried alongside because
+    /// `ArrowWriter` does not expose its own, and a part must refuse
+    /// rows that would change it.
+    Parquet {
+        writer: Box<ArrowWriter<Vec<u8>>>,
+        schema: arrow::datatypes::SchemaRef,
+    },
+    /// JSONL is its own encoding — the buffer IS the file.
+    Jsonl(Vec<u8>),
+}
+
+impl std::fmt::Debug for OpenPart {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `ArrowWriter` is not `Debug`, and the encoded bytes are not
+        // worth printing — the SIZE is what a reader wants.
+        write!(
+            f,
+            "OpenPart({}, {} encoded bytes)",
+            match self {
+                Self::Parquet { .. } => "parquet",
+                Self::Jsonl(_) => "jsonl",
+            },
+            self.encoded_len()
+        )
+    }
+}
+
+impl OpenPart {
+    /// Bytes encoded so far, including whatever is buffered for the
+    /// row group still being built.
+    ///
+    /// EXACT for jsonl and for flushed parquet row groups; for parquet
+    /// pages not yet flushed the library reports its ANTICIPATED
+    /// encoded size, which runs slightly high. So a part can close a
+    /// little under its target — measured at 88-94% when a 4 KiB
+    /// target left everything unflushed. The overshoot is bounded by
+    /// one page per column and so vanishes as the target grows.
+    pub(crate) fn encoded_len(&self) -> u64 {
+        match self {
+            Self::Parquet { writer, .. } => {
+                (writer.bytes_written() + writer.in_progress_size()) as u64
+            }
+            Self::Jsonl(buffer) => buffer.len() as u64,
         }
-        DestFormat::Jsonl => {
-            let mut writer = arrow::json::LineDelimitedWriter::new(Vec::new());
-            writer
+    }
+
+    /// Start a part shaped for `batch`'s schema.
+    pub(crate) fn begin(
+        format: DestFormat,
+        batch: &RecordBatch,
+        props: &WriterProperties,
+    ) -> Result<Self, DestinationError> {
+        match format {
+            DestFormat::Parquet => Ok(Self::Parquet {
+                writer: Box::new(
+                    ArrowWriter::try_new(Vec::new(), batch.schema(), Some(props.clone()))
+                        .map_err(|e| DestinationError::fatal(format!("parquet encode: {e}")))?,
+                ),
+                schema: batch.schema(),
+            }),
+            DestFormat::Jsonl => Ok(Self::Jsonl(Vec::new())),
+        }
+    }
+
+    /// Would appending `batch` change the part's schema?
+    ///
+    /// Only parquet cares — a file has one schema — but JSONL is
+    /// answered the same way so the caller needs no special case.
+    pub(crate) fn schema_differs(&self, batch: &RecordBatch) -> bool {
+        match self {
+            Self::Parquet { schema, .. } => schema != &batch.schema(),
+            Self::Jsonl(_) => false,
+        }
+    }
+
+    /// Append rows, encoding them now so the size is real.
+    pub(crate) fn append(&mut self, batch: &RecordBatch) -> Result<(), DestinationError> {
+        match self {
+            Self::Parquet { writer, .. } => writer
                 .write(batch)
-                .map_err(|e| DestinationError::fatal(format!("jsonl encode: {e}")))?;
-            writer
-                .finish()
-                .map_err(|e| DestinationError::fatal(format!("jsonl encode: {e}")))?;
-            Ok(writer.into_inner())
+                .map_err(|e| DestinationError::fatal(format!("parquet encode: {e}"))),
+            Self::Jsonl(buffer) => {
+                let mut writer = arrow::json::LineDelimitedWriter::new(&mut *buffer);
+                writer
+                    .write(batch)
+                    .map_err(|e| DestinationError::fatal(format!("jsonl encode: {e}")))?;
+                writer
+                    .finish()
+                    .map_err(|e| DestinationError::fatal(format!("jsonl encode: {e}")))
+            }
+        }
+    }
+
+    pub(crate) fn finish(self) -> Result<Vec<u8>, DestinationError> {
+        match self {
+            Self::Parquet { writer, .. } => writer
+                .into_inner()
+                .map_err(|e| DestinationError::fatal(format!("parquet encode: {e}"))),
+            Self::Jsonl(buffer) => Ok(buffer),
         }
     }
 }
@@ -345,19 +424,107 @@ mod tests {
     fn both_encoders_produce_readable_parts() {
         let b = batch(&[Some("eu"), Some("us")]);
         let props = writer_props(&ParquetOptions::default()).expect("valid");
-        let parquet_bytes = encode_part(DestFormat::Parquet, &b, &props).expect("encodes");
-        let reader =
-            parquet::file::reader::SerializedFileReader::new(bytes::Bytes::from(parquet_bytes))
-                .expect("readable");
+
+        let mut part = OpenPart::begin(DestFormat::Parquet, &b, &props).expect("begins");
+        part.append(&b).expect("encodes");
+        let reader = parquet::file::reader::SerializedFileReader::new(bytes::Bytes::from(
+            part.finish().expect("finishes"),
+        ))
+        .expect("readable");
         use parquet::file::reader::FileReader;
         assert_eq!(reader.metadata().file_metadata().num_rows(), 2);
 
-        let jsonl_bytes = encode_part(DestFormat::Jsonl, &b, &props).expect("encodes");
-        let text = String::from_utf8(jsonl_bytes).expect("utf8");
+        let mut part = OpenPart::begin(DestFormat::Jsonl, &b, &props).expect("begins");
+        part.append(&b).expect("encodes");
+        let text = String::from_utf8(part.finish().expect("finishes")).expect("utf8");
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 2);
         for line in lines {
             serde_json::from_str::<serde_json::Value>(line).expect("each line is JSON");
         }
+    }
+
+    /// A part spans MANY appends — the whole point of part sizing. All
+    /// the rows land in ONE file, in order, for both kinds.
+    #[test]
+    fn many_appends_make_one_part() {
+        let b = batch(&[Some("eu"), Some("us")]);
+        let props = writer_props(&ParquetOptions::default()).expect("valid");
+
+        let mut part = OpenPart::begin(DestFormat::Parquet, &b, &props).expect("begins");
+        for _ in 0..3 {
+            part.append(&b).expect("encodes");
+        }
+        use parquet::file::reader::FileReader;
+        let reader = parquet::file::reader::SerializedFileReader::new(bytes::Bytes::from(
+            part.finish().expect("finishes"),
+        ))
+        .expect("readable");
+        assert_eq!(reader.metadata().file_metadata().num_rows(), 6);
+
+        let mut part = OpenPart::begin(DestFormat::Jsonl, &b, &props).expect("begins");
+        for _ in 0..3 {
+            part.append(&b).expect("encodes");
+        }
+        let text = String::from_utf8(part.finish().expect("finishes")).expect("utf8");
+        assert_eq!(text.lines().count(), 6);
+    }
+
+    /// D2: the size of an OPEN parquet part is observable. Without
+    /// `in_progress_size` the answer would stay 0 until a row group
+    /// flushed, and the roll decision would be blind for the whole
+    /// first row group — i.e. for most small streams, forever.
+    ///
+    /// MEASURED, and worth knowing: the size is observable but NOT
+    /// monotone per append. Re-appending identical rows moved it 4 ->
+    /// 37 -> 37 bytes, because the dictionary already held those
+    /// values and the encoders buffer. Distinct data is what grows it.
+    /// The roll decision tolerates this — a part overshoots its target
+    /// rather than undershooting it, and at 128 MiB the granularity is
+    /// irrelevant.
+    #[test]
+    fn an_open_parquet_part_reports_its_encoded_size() {
+        let props = writer_props(&ParquetOptions::default()).expect("valid");
+        let first: Vec<Option<String>> = (0..500).map(|i| Some(format!("region-{i}"))).collect();
+        let second: Vec<Option<String>> =
+            (500..1_000).map(|i| Some(format!("region-{i}"))).collect();
+        fn as_refs(v: &[Option<String>]) -> Vec<Option<&str>> {
+            v.iter().map(Option::as_deref).collect()
+        }
+
+        let mut part =
+            OpenPart::begin(DestFormat::Parquet, &batch(&as_refs(&first)), &props).expect("begins");
+        let empty = part.encoded_len();
+        part.append(&batch(&as_refs(&first))).expect("encodes");
+        let after_one = part.encoded_len();
+        part.append(&batch(&as_refs(&second))).expect("encodes");
+        let after_two = part.encoded_len();
+        assert!(
+            after_one > empty && after_two > after_one,
+            "an open part must report growth before any row group flushes: \
+             {empty} -> {after_one} -> {after_two}"
+        );
+    }
+
+    /// A parquet file carries ONE schema, so a part must be able to
+    /// say when the next batch no longer belongs in it.
+    #[test]
+    fn a_parquet_part_notices_a_changed_schema() {
+        let props = writer_props(&ParquetOptions::default()).expect("valid");
+        let b = batch(&[Some("eu")]);
+        let part = OpenPart::begin(DestFormat::Parquet, &b, &props).expect("begins");
+        assert!(!part.schema_differs(&b));
+
+        let widened = RecordBatch::try_from_iter(vec![
+            ("id", Arc::new(Int64Array::from(vec![1_i64])) as _),
+            ("region", Arc::new(StringArray::from(vec![Some("eu")])) as _),
+            ("extra", Arc::new(Int64Array::from(vec![9_i64])) as _),
+        ])
+        .expect("batch");
+        assert!(part.schema_differs(&widened));
+
+        // JSONL has no file-level schema, so it never rolls for one.
+        let jsonl = OpenPart::begin(DestFormat::Jsonl, &b, &props).expect("begins");
+        assert!(!jsonl.schema_differs(&widened));
     }
 }

@@ -125,3 +125,132 @@ controls file size and does not.
 Each stage gated before the next; no stage lands without a measured
 proof, per the 033 lesson that a green check is not evidence until you
 know what it measures.
+
+---
+
+## Build record
+
+### Stage 1 — SPI `PartOptions` (`rdlt-connector`, beside `ParquetOptions`)
+
+Three fields, not the two D1 sketched. The third was added on
+measurement, not on design — see the ceiling below.
+
+| field | default | question it answers |
+|---|---|---|
+| `target_bytes` | 128 MiB | how big is an output file |
+| `roll_after_seconds` | off | how stale may an open file get |
+| `max_open_bytes` | 512 MiB | how much RAM may open parts hold |
+
+Constructors: `unbounded()` (never roll on size or time — note this is
+one part per COMMIT, not per write) and `per_write()` (the pre-034
+behaviour, spelled as a one-byte target).
+
+Refusals are typed and named: zero for any of the three, plus
+`max_open_bytes < target_bytes`, which is a contradiction that would
+otherwise miss the target SILENTLY.
+
+### D2 CORRECTED — the size is observable, but partly ESTIMATED
+
+The plan claimed "No estimation, no compression-ratio guessing." That
+is right for jsonl and for flushed parquet row groups, and WRONG for
+the tail. `ArrowWriter::in_progress_size()` is documented as the
+*anticipated* encoded size of pages not yet flushed, and it runs high.
+
+MEASURED at a 4 KiB target, the worst case since nothing flushes:
+parts of 3,616–3,845 bytes, i.e. 88–94% of target. The error is
+bounded by one page per column, so it shrinks toward nothing as the
+target grows. At 128 MiB it is under a percent — see below.
+
+A related measurement, pinned in `stage.rs`: re-appending IDENTICAL
+rows moved the reported size 4 → 37 → 37 bytes, because the dictionary
+already held those values. The size is observable, not monotone per
+append. Test data has to be distinct or the threshold is untestable.
+
+### The measured proof — real 128 MiB parts
+
+1.5M rows of incompressible hex (365 MB jsonl) → parquet, one commit,
+`target_bytes: 134217728`:
+
+| part | bytes | % of target |
+|---|---|---|
+| 0 | 141,482,718 | 105.4% |
+| 1 | 141,331,126 | 105.3% |
+| 2 | 126,427,992 | 94.2% |
+
+The two rolled parts OVERSHOOT by ~5% — a batch is never split, so the
+part closes after crossing. The last is UNDER because the commit
+closed it, not the target. Both are D4 behaving as written.
+
+### D4's trap, measured rather than asserted
+
+The SAME run under the default commit policy produced **44 commits and
+9.5 MB parts** — the 128 MiB target never came close to binding.
+Commit cadence is an upper bound on part size, and at default cadence
+it is the ONLY bound that matters. The examples README says so where
+the previous confusion happened.
+
+### The ceiling, and why it exists
+
+An open part lives in RAM until it closes, and a partitioned
+destination holds ONE PER PARTITION. Before 034 every write went
+straight to staging, so RSS was O(one batch); now it is O(uncommitted
+data), bounded by `partitions × target_bytes`.
+
+Measured on the same 1.5M rows partitioned 97 ways in one commit:
+
+| ceiling | peak RSS | parts written |
+|---|---|---|
+| 512 MiB (default) | 536 MB | 97 |
+| 64 MiB | 252 MB | 353 |
+
+So the valve works and its cost is fragmentation, which is the right
+trade: undersized files beat an unbounded heap. The largest open part
+is closed first, being nearest its target and so the least undersized
+part available.
+
+### Stage 2 gate
+
+`rdlt-connector` + `rdlt-connector-file`: 166/166, 0 skipped.
+
+One existing test changed, deliberately:
+`final_names_independent_of_cross_table_arrival_order` pinned
+one-part-per-write, which the default now coalesces. Its subject is
+the per-table index arithmetic, so it takes `PartOptions::per_write()`
+and tests the same thing.
+
+New suite `tests/cases/test_parts.rs` (6 cells): default coalescing,
+rolling with every part in band, commit-closes-the-part,
+schema-change-rolls, the memory ceiling, and the four refusals.
+
+### What the gate caught: the memory floor moved
+
+`rdlt-connector-postgres::memory_bound` failed with **"memory
+allocation of 6553600 bytes failed"** — a real OOM under the 256 MiB
+`prlimit --data` ceiling it enforces. That test drives a PARQUET
+destination, and 034 had just put up to 128 MiB of open part inside
+its ceiling.
+
+The consequence, stated plainly rather than papered over: **a
+file-destination pipeline's memory floor rose by up to
+`parts.target_bytes`.** Before 034 every write went straight to
+staging; now a part accumulates in RAM until it closes. A deployment
+under a tight cgroup must size `parts` to fit, and `max_open_bytes`
+exists so that sizing is one number rather than an emergent property
+of partition count.
+
+The test itself was fixed by pinning `parts` to 8 MiB, since its
+subject is the SOURCE/engine path — it says so in its own header — and
+the default would have made it measure destination file sizing
+instead. It also moved from the frozen path-only `parquet:` shorthand
+to `file:`, the only spelling that can carry `parts`.
+
+Worth recording for the next session: the failure MOVED when fixed —
+from an allocation failure to `Disk quota exceeded` on `/tmp`, which
+is a 32 GB tmpfs on this machine and had 9 GB free against a 6.9 GB
+table. `TMPDIR` off the tmpfs is the fix; the two failures are
+unrelated and only the first was 034's.
+
+### Stage 2 gate of record
+
+`cargo nextest run --workspace`: **1129/1129, 0 skipped**, with
+`TMPDIR` on real disk. Clippy clean workspace-wide, all targets.

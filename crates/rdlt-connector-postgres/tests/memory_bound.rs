@@ -104,8 +104,21 @@ async fn a_table_ten_times_the_memory_ceiling_still_snapshots_within_it() {
     std::fs::write(
         &spec,
         format!(
+            // `parts` is pinned SMALL on purpose. The destination
+            // accumulates an output part in memory before writing it,
+            // so the shipping 128 MiB default would put half the
+            // ceiling into the writer and make this measure the
+            // DESTINATION's file sizing rather than the source path
+            // it claims to measure. 8 MiB keeps the destination's
+            // contribution a known constant. The consequence is worth
+            // stating plainly: a file-destination pipeline under a
+            // tight memory limit must size `parts` to fit it.
+            // `file:` rather than the frozen path-only `parquet:`
+            // shorthand, because only the full vocabulary can say
+            // `parts`.
             "pipeline: membound\nworkdir: {}\nsource:\n  postgres: {{config: {}}}\n\
-             destination:\n  parquet: {{path: {}}}\n",
+             destination:\n  file:\n    path: {}\n    format: parquet\n    parts:\n      \
+             target_bytes: 8388608\n      max_open_bytes: 8388608\n",
             directory.path().join(".rdlt").display(),
             source_yaml.display(),
             directory.path().join("pq-out").display()
