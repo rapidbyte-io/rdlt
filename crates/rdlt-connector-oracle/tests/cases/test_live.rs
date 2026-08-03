@@ -8,6 +8,36 @@ use rdlt_testkit::{assert_conformant, verify_source};
 use super::common;
 use super::common::{Flavor, OracleFixture, incremental, stream};
 
+/// The first Arrow batch the connector pushes, for assertions that
+/// must see the ARRAY rather than a JSON rendering of it.
+async fn read_batch(
+    shell: &rdlt_connector_oracle::source::Shell,
+    name: &str,
+) -> arrow::array::RecordBatch {
+    use rdlt_connector_sdk::spi::PushPayload;
+
+    let (out, mut incoming) = rdlt_connector_sdk::spi::records_channel(64 << 20);
+    let reader = shell.read(rdlt_connector_sdk::spi::ReadRequest {
+        stream: StreamSpec::new(name),
+        since: None,
+        out,
+    });
+    let collect = async {
+        let mut first = None;
+        while let Some(push) = incoming.recv().await {
+            if let PushPayload::Arrow(batch) = push.payload
+                && batch.num_rows() > 0
+            {
+                first.get_or_insert(batch);
+            }
+        }
+        first
+    };
+    let (res, batch) = tokio::join!(reader, collect);
+    res.expect("the read settles");
+    batch.expect("a batch was pushed")
+}
+
 /// The Arrow schema the connector actually pushes.
 async fn read_schema(
     shell: &rdlt_connector_oracle::source::Shell,
@@ -482,10 +512,28 @@ async fn binary_float_and_double_decode_as_numbers() {
     assert_eq!(rows[0]["d"], serde_json::json!(2.25));
     assert_eq!(rows[1]["f"], serde_json::json!(-0.5), "negatives invert");
     assert_eq!(rows[1]["d"], serde_json::json!(-1234.5));
-    // JSON has no literal for these; null beats making one sensor
-    // reading render the whole table unreadable.
-    assert!(rows[2]["f"].is_null(), "infinity crosses as null");
-    assert!(rows[2]["d"].is_null(), "NaN crosses as null");
+    // Non-finite values are held NATIVELY by Arrow — the earlier
+    // "crosses as null" assertion was vacuous, because the test's own
+    // JSON view renders any non-finite f64 as null and so passed
+    // whatever the connector did. Assert the ARRAY instead.
+    let batch_f = read_batch(&shell, "b").await;
+    let floats = batch_f
+        .column_by_name("f")
+        .expect("f")
+        .as_any()
+        .downcast_ref::<arrow::array::Float64Array>()
+        .expect("Float64");
+    let doubles = batch_f
+        .column_by_name("d")
+        .expect("d")
+        .as_any()
+        .downcast_ref::<arrow::array::Float64Array>()
+        .expect("Float64");
+    assert!(
+        floats.value(2).is_infinite() && floats.value(2) > 0.0,
+        "BINARY_FLOAT_INFINITY survives as an actual infinity"
+    );
+    assert!(doubles.value(2).is_nan(), "BINARY_DOUBLE_NAN survives as NaN");
 }
 
 /// A table is reachable by its SCHEMA-qualified name, and a
@@ -621,19 +669,17 @@ async fn the_batch_carries_exact_types() {
     assert_eq!(field("big"), DataType::Utf8);
 }
 
-/// A read of many pages survives the server's open-cursor limit.
+/// A read far larger than one batch delivers every row exactly once.
 ///
-/// It did not. Every page is a distinct SQL text, the driver's
-/// statement cache holds a server cursor per text, and nothing ever
-/// closes one — so a read died at ~297 pages whatever the page size,
-/// which for an ordinary table is somewhere around 60,000 rows.
-/// MEASURED twice independently, and confirmed by raising the
-/// server's own `open_cursors` to 20,000, at which the identical read
-/// completed.
-///
-/// 1,000 pages here is four connection recycles.
+/// Its ancestor was called "survives more pages than the server
+/// allows cursors" and described four connection recycles — true of
+/// the pure-Rust driver, where every page opened a server cursor that
+/// was never closed and a read died at ~297 of them. There is no
+/// paging and no recycler now, so the name and doc were describing
+/// absent machinery. What is still worth asserting is that a
+/// many-batch read is exact.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_read_survives_more_pages_than_the_server_allows_cursors() {
+async fn a_many_batch_read_delivers_every_row_once() {
     let Some(fixture) = OracleFixture::start().await else {
         return;
     };
@@ -648,8 +694,12 @@ async fn a_read_survives_more_pages_than_the_server_allows_cursors() {
     assert_eq!(
         rows.len(),
         5000,
-        "1000 pages on a server that allows 300 open cursors"
+        "every row of a 1,000-batch read"
     );
+    let mut ids: Vec<i64> = rows.iter().map(|r| r["id"].as_i64().expect("id")).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(ids.len(), 5000, "and none of them twice");
 }
 
 /// A bare `NUMBER` works as a cursor.

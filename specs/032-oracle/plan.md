@@ -629,15 +629,49 @@ the docs.rs landing page.
 that every stream is `structured`, a structured stream with no key
 cannot Merge at all; the doc still offered content-hash keying.
 
-STILL OPEN, recorded not fixed: the crash sweep discards a failed
-attempt's partial rows so it still never resumes from a NON-EMPTY
-cursor (R5-8); `watermark_less` compares as f64 so a bare-NUMBER key
-past 2^53 stops advancing the checkpoint (R5-9); a non-finite float
-cursor persists `inf` and then refuses to parse it (R5-10); a panic
-on the connection thread becomes TRANSIENT and is retried five times
-(R5-11); `OracleType::Json` maps to Utf8 but the driver cannot fetch
-it, so a native JSON column dies in describe (R5-12); and four pins
-assert less than their names claim (R5-13).
+**R5-8 THE CRASH SWEEP PROVED NOTHING** — closed. `attempt` threw
+away what a failed read had already delivered, and every armed
+attempt fails by construction, so recovery always restarted from
+`None` and a plain uncrashed read satisfied it. It now carries the
+crashed cursor forward and asserts over DISTINCT identities (a raw
+sum cannot express at-least-once — a resumed run may legitimately
+re-deliver rows after its checkpoint), and a new assertion fails the
+sweep outright if NO cell ever resumed from a non-empty cursor.
+
+**R5-9 THE CHECKPOINT STOPPED ADVANCING PAST 2^53** — closed.
+`watermark_less` compared through f64, so two consecutive sequence
+values above 2^53 (`100000000000000001` / `…002` — a snowflake id or
+an epoch-nanosecond key) were the SAME number: neither `<` nor `==`
+held, `advance` fell through, and the checkpoint froze for the rest
+of the run while the read carried on. The next run then re-read
+everything after it, forever. Decimal strings are now compared
+digit-wise, exact at any magnitude, pinned to Oracle's full 38.
+
+**R5-10 A NON-FINITE FLOAT CURSOR POISONED THE STATE** — closed.
+`inf` rendered, `advance` treated it as the highest value there is
+and persisted it, and the next run refused to parse it — state only a
+human could clear. Non-finite values are no longer watermarks, so the
+failure stays inside the run that caused it.
+
+**R5-11 A PANIC ON THE CONNECTION THREAD WAS TRANSIENT** — closed. It
+unwound out of the job loop, killed the connection, and surfaced as
+"the thread dropped the job", so the engine retried a genuine bug
+five times, `close()` never ran, and the panic message reached only
+stderr. The job is now caught so the connection survives it.
+
+**R5-12 NATIVE JSON ADVERTISED A CAPABILITY THAT DIES IN DESCRIBE** —
+closed. The driver has no fetch path for a 21c+ `JSON` column, so
+the Utf8 mapping only moved the failure into its internals. Refused
+by name, naming the `JSON_SERIALIZE` workaround.
+
+**R5-13 FOUR PINS ASSERTED LESS THAN THEIR NAMES CLAIMED** — closed.
+The float pin asserted "crosses as null" through a helper that
+renders ANY non-finite f64 as null, so it passed whichever way the
+connector behaved; it now asserts the Arrow array. The "1,000 pages /
+four connection recycles" cell described machinery that no longer
+exists; it is now a many-batch exactly-once read. The tuning-defaults
+doc claimed to prove wiring it never checked — that claim moved to
+the new consumer guard.
 
 ## STANDING OWNER RECORDS (round 3)
 

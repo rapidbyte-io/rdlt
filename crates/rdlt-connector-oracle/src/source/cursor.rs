@@ -107,11 +107,69 @@ impl OracleCursor {
 
 /// Order two rendered watermarks: numerically when both parse, else
 /// lexically (ISO timestamps order lexically by construction).
+/// Order two rendered watermarks.
+///
+/// NOT through f64. Oracle's NUMBER carries 38 digits and f64 has ~15
+/// of precision, so two consecutive sequence values above 2^53 —
+/// `100000000000000001` and `...002`, the ordinary shape of a
+/// snowflake id or an epoch-nanosecond key — collapse to the SAME
+/// f64. Neither `<` nor `==` then held, `advance` fell through its
+/// catch-all, and the checkpoint stopped moving for the rest of the
+/// run while the read carried on: the next run re-read everything
+/// after it, forever.
+///
+/// Decimal strings are compared DIGIT-WISE instead, which is exact at
+/// any magnitude. Anything that is not a decimal (an ISO timestamp)
+/// falls back to lexical order, which is correct for the one
+/// canonical shape `watermark_text` renders.
 fn watermark_less(a: &str, b: &str) -> bool {
-    match (a.parse::<f64>(), b.parse::<f64>()) {
-        (Ok(x), Ok(y)) => x < y,
+    match (decimal_parts(a), decimal_parts(b)) {
+        (Some(x), Some(y)) => decimal_less(x, y),
         _ => a < b,
     }
+}
+
+/// `(negative, integer digits, fraction digits)` for a decimal, or
+/// `None` if the text is not one.
+fn decimal_parts(value: &str) -> Option<(bool, &str, &str)> {
+    let value = value.trim();
+    let (negative, body) = match value.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, value.strip_prefix('+').unwrap_or(value)),
+    };
+    let (whole, fraction) = body.split_once('.').unwrap_or((body, ""));
+    let digits = |s: &str| s.bytes().all(|b| b.is_ascii_digit());
+    if whole.is_empty() || !digits(whole) || !digits(fraction) {
+        return None;
+    }
+    Some((negative, whole, fraction))
+}
+
+/// Digit-wise `<` over two decimals, exact at any magnitude.
+fn decimal_less((a_neg, a_int, a_frac): (bool, &str, &str), (b_neg, b_int, b_frac): (bool, &str, &str)) -> bool {
+    if a_neg != b_neg {
+        return a_neg;
+    }
+    let a_int_trimmed = a_int.trim_start_matches('0');
+    let b_int_trimmed = b_int.trim_start_matches('0');
+    let magnitude_less = match a_int_trimmed.len().cmp(&b_int_trimmed.len()) {
+        std::cmp::Ordering::Less => true,
+        std::cmp::Ordering::Greater => false,
+        std::cmp::Ordering::Equal => match a_int_trimmed.cmp(b_int_trimmed) {
+            std::cmp::Ordering::Less => true,
+            std::cmp::Ordering::Greater => false,
+            // Same integer part: compare fractions padded to a
+            // common length so `.5` and `.45` order correctly.
+            std::cmp::Ordering::Equal => {
+                let width = a_frac.len().max(b_frac.len());
+                let pad = |f: &str| format!("{f:0<width$}");
+                pad(a_frac) < pad(b_frac)
+            }
+        },
+    };
+    // For negatives the magnitude order reverses, and equal values
+    // are never "less".
+    if a_neg { !magnitude_less && (a_int_trimmed, a_frac) != (b_int_trimmed, b_frac) } else { magnitude_less }
 }
 
 /// A watermark travels back into SQL as a LITERAL, so its shape is
@@ -205,6 +263,34 @@ mod tests {
             checked_watermark_literal("2026-01-02T03:04:05.678000+00:00").is_ok(),
             "the canonical timestamp shape must be accepted"
         );
+    }
+
+    /// Two consecutive keys above 2^53 are DISTINCT.
+    ///
+    /// Through f64 they were the same number, so the checkpoint
+    /// stopped advancing for the rest of the run while the read
+    /// carried on — and the next run re-read everything after it.
+    /// Bare NUMBER is exactly how Oracle spells a sequence key.
+    #[test]
+    fn large_integer_keys_stay_distinct() {
+        assert!(watermark_less("100000000000000001", "100000000000000002"));
+        assert!(!watermark_less("100000000000000002", "100000000000000001"));
+        assert!(!watermark_less("100000000000000001", "100000000000000001"));
+        // 38 digits, Oracle's own limit.
+        let a = format!("{}1", "9".repeat(37));
+        let b = format!("{}2", "9".repeat(37));
+        assert!(watermark_less(&a, &b));
+    }
+
+    /// Magnitude, sign and fraction all order correctly.
+    #[test]
+    fn decimals_order_by_value_not_by_text() {
+        assert!(watermark_less("9", "10"), "lexical order would say 9 > 10");
+        assert!(watermark_less("-5", "3"));
+        assert!(watermark_less("-10", "-5"), "more negative is less");
+        assert!(watermark_less("1.5", "1.45") == false);
+        assert!(watermark_less("1.45", "1.5"));
+        assert!(watermark_less("0.1", "0.10") == false, "equal is not less");
     }
 
     #[test]

@@ -262,10 +262,17 @@ fn watermark_text(
             .ok()
             .flatten()
             .map(|v| v.to_string()),
+        // A non-finite value is a legal BINARY_DOUBLE but NOT a
+        // watermark: `inf` renders, `advance` treats it as the
+        // highest value there is and persists it, and the NEXT run
+        // refuses to parse it — leaving state that only a human can
+        // clear. Refusing here keeps the failure inside the run that
+        // caused it.
         DataType::Float64 => row
             .get::<_, Option<f64>>(at)
             .ok()
             .flatten()
+            .filter(|v| v.is_finite())
             .map(|v| v.to_string()),
         // Exact decimals and bare NUMBER both keep their digits.
         _ => row.get::<_, Option<String>>(at).ok().flatten(),

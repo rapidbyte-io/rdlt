@@ -80,7 +80,25 @@ impl Client {
                 // One job at a time, in order, on the one thread that
                 // owns the connection.
                 while let Ok(job) = inbox.recv() {
-                    job(&mut conn);
+                    // A panicking job must not take the thread with
+                    // it. Unwinding out of this loop killed the
+                    // connection, dropped the reply channel, and the
+                    // caller then saw "the thread dropped the job" —
+                    // a TRANSIENT, so the engine retried a genuine
+                    // bug five times while the panic message went
+                    // only to stderr, and `close()` never ran.
+                    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        job(&mut conn);
+                    }))
+                    .is_err()
+                    {
+                        // The reply channel is already gone (the
+                        // job's sender dropped while unwinding), so
+                        // the caller learns of it as a dropped job —
+                        // but the connection survives for the next
+                        // one, and the logoff below still runs.
+                        continue;
+                    }
                 }
                 let _ = conn.close();
             })

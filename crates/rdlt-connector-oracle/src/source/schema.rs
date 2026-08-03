@@ -29,6 +29,9 @@
 //! - `CLOB`/`NCLOB`/`NVARCHAR2`/`NCHAR` are `Utf8` — the national
 //!   character set included, which the previous driver silently
 //!   destroyed.
+//! - Native `JSON` (21c+) is REFUSED: the driver has no fetch path
+//!   for it, so claiming a mapping only moved the failure into its
+//!   internals.
 //!
 //! Anything else is a typed refusal naming the column: a type this
 //! rulebook has not considered must not be guessed at.
@@ -59,7 +62,6 @@ pub(crate) fn arrow_type(name: &str, oracle_type: &OracleType) -> Result<DataTyp
         | OracleType::CLOB
         | OracleType::NCLOB
         | OracleType::Rowid
-        | OracleType::Json
         | OracleType::Xml => DataType::Utf8,
 
         OracleType::Raw(_) | OracleType::LongRaw | OracleType::BLOB => DataType::Binary,
@@ -73,6 +75,18 @@ pub(crate) fn arrow_type(name: &str, oracle_type: &OracleType) -> Result<DataTyp
         }
 
         OracleType::Boolean => DataType::Boolean,
+
+        // The driver has no fetch path for a native 21c+ JSON
+        // column, so mapping it to Utf8 only moved the failure into
+        // its own internal error at describe time. Refused by name
+        // instead, with the workaround that does work.
+        OracleType::Json => {
+            return Err(format!(
+                "column `{name}` is native JSON, which this driver cannot fetch — select it \
+                 as `JSON_SERIALIZE({name} RETURNING VARCHAR2)` through a view, or exclude \
+                 it from the stream"
+            ));
+        }
 
         other => {
             return Err(format!(
