@@ -52,6 +52,9 @@ struct TableState {
     /// re-ensure: resetting it would regenerate window 1's exact path
     /// and overwrite a committed file.
     window_seq: u64,
+    /// When the current writer opened — the clock `roll_after_seconds`
+    /// reads. `None` while no writer is open.
+    writer_opened_at: Option<std::time::Instant>,
 }
 
 /// The session the connector opens — the sdk drives it.
@@ -67,6 +70,10 @@ pub struct Load {
     /// Resolved once at connect: the translation can fail, and a load
     /// should not discover that partway through writing.
     pub(super) writer_properties: parquet::file::properties::WriterProperties,
+    /// Output file sizing. `target_bytes` reaches the library's own
+    /// rolling writer; `roll_after_seconds` is applied here, since the
+    /// library has no time trigger.
+    pub(super) parts: rdlt_connector_sdk::spi::PartOptions,
     tables: BTreeMap<TableName, TableState>,
 }
 
@@ -87,8 +94,10 @@ impl Load {
         pipeline: &PipelineId,
         load_id: LoadId,
         writer_properties: parquet::file::properties::WriterProperties,
+        parts: rdlt_connector_sdk::spi::PartOptions,
     ) -> Self {
         Self {
+            parts,
             config,
             catalog,
             namespace,
@@ -130,23 +139,24 @@ impl Load {
         table: iceberg::table::Table,
         arrow_target: Arc<arrow_schema::Schema>,
     ) -> Result<(), DestinationError> {
-        let (window_seq, prev_writer, prev_target, mut pending_files) =
+        let (window_seq, prev_writer, prev_target, mut pending_files, prev_opened_at) =
             match self.tables.remove(stream) {
                 Some(prev) => (
                     prev.window_seq,
                     prev.writer,
                     Some(prev.arrow_target),
                     prev.pending_files,
+                    prev.writer_opened_at,
                 ),
-                None => (0, None, None, Vec::new()),
+                None => (0, None, None, Vec::new(), None),
             };
-        let writer = match prev_writer {
+        let (writer, writer_opened_at) = match prev_writer {
             Some(writer) if prev_target.as_deref() != Some(arrow_target.as_ref()) => {
                 let context = format!("table `{name}` (schema-change writer retirement)");
                 pending_files.extend(writer.close(&context).await?);
-                None
+                (None, None)
             }
-            other => other,
+            other => (other, prev_opened_at),
         };
         self.tables.insert(
             stream.clone(),
@@ -156,6 +166,7 @@ impl Load {
                 writer,
                 pending_files,
                 window_seq,
+                writer_opened_at,
             },
         );
         Ok(())
@@ -419,6 +430,18 @@ impl Backend for Load {
             .ok_or_else(|| fatal(format!("write before ensure_table for `{table}`")))?;
         let context = format!("table `{}`", self.config.table_name(table.as_str()));
         let aligned = Self::align(&context, &state.arrow_target, &batch)?;
+        // The TIME threshold is applied here because the library's
+        // rolling writer has no clock — only a size. Retiring the whole
+        // writer is the same move a mid-window schema change makes: its
+        // files park in `pending_files` and join the window's publish.
+        if let Some(opened_at) = state.writer_opened_at
+            && self.parts.rolls_on_time(opened_at.elapsed().as_secs())
+            && let Some(writer) = state.writer.take()
+        {
+            let retire = format!("{context} (roll_after_seconds writer retirement)");
+            state.pending_files.extend(writer.close(&retire).await?);
+            state.writer_opened_at = None;
+        }
         if state.writer.is_none() {
             state.window_seq += 1;
             let prefix = format!("{}-{}", self.load_id, state.window_seq);
@@ -428,9 +451,11 @@ impl Backend for Load {
                     &prefix,
                     &self.nonce,
                     self.writer_properties.clone(),
+                    self.parts.target_file_size(),
                 )
                 .await?,
             );
+            state.writer_opened_at = Some(std::time::Instant::now());
         }
         state
             .writer
@@ -467,6 +492,7 @@ impl Backend for Load {
             let mut files = std::mem::take(&mut state.pending_files);
             if let Some(writer) = state.writer.take() {
                 files.extend(writer.close(&context).await?);
+                state.writer_opened_at = None;
             }
             if files.is_empty() {
                 // An empty window publishes no snapshot.
@@ -739,6 +765,7 @@ mod tests {
             &PipelineId::from("p"),
             LoadId::from("l"),
             writer_properties(&Default::default()).expect("props"),
+            rdlt_connector_sdk::spi::PartOptions::default(),
         );
         let stream = TableName::from("events");
         let target = arrow_target("table `events`", &table).expect("target");
@@ -787,5 +814,133 @@ mod tests {
             "the retired writer\'s files joined the window"
         );
         assert_eq!(state.window_seq, seq_before, "the counter survived");
+    }
+
+    /// 034: `parts.target_bytes` reaches the LIBRARY's rolling writer
+    /// rather than being reimplemented above it, and `None` means the
+    /// library never rolls on size.
+    ///
+    /// The library takes a `usize` with no "unlimited" spelling, so
+    /// absence has to become a number no file reaches. Pinning it
+    /// here because the conversion is the only place that decision
+    /// lives, and a silent truncation of a `u64` target would shrink
+    /// files rather than fail.
+    #[test]
+    fn the_target_size_reaches_the_library_and_absence_never_rolls() {
+        use rdlt_connector_sdk::spi::PartOptions;
+
+        // The shipping default: 128 MiB, NOT the library's own 512.
+        assert_eq!(PartOptions::default().target_file_size(), 128 * 1024 * 1024);
+        assert_eq!(PartOptions::unbounded().target_file_size(), usize::MAX);
+        assert_eq!(
+            PartOptions {
+                target_bytes: Some(64 * 1024 * 1024),
+                ..PartOptions::default()
+            }
+            .target_file_size(),
+            64 * 1024 * 1024
+        );
+    }
+
+    /// 034: the TIME threshold is rdlt's to apply — the library rolls
+    /// on size only. Pinned as its own predicate because asking
+    /// `should_roll` here would answer the size half twice, once from
+    /// each side, and the two would disagree.
+    #[test]
+    fn the_time_threshold_is_answered_without_the_size_one() {
+        use rdlt_connector_sdk::spi::PartOptions;
+
+        let timed = PartOptions {
+            roll_after_seconds: Some(900),
+            ..PartOptions::default()
+        };
+        assert!(!timed.rolls_on_time(899));
+        assert!(timed.rolls_on_time(900));
+        // The default names no time bound, so no elapsed time rolls.
+        assert!(!PartOptions::default().rolls_on_time(u64::MAX));
+    }
+
+    /// 034: a writer retired ON TIME parks its files exactly as a
+    /// schema change does, and the next write opens a fresh one.
+    #[tokio::test]
+    async fn an_elapsed_writer_is_retired_and_its_files_parked() {
+        use rdlt_connector_sdk::config::Document;
+        use rdlt_connector_sdk::spi::PartOptions;
+
+        use super::super::testsupport::{ConflictCatalog, table_with_schema};
+        use super::super::write::writer_properties;
+
+        let table = {
+            use iceberg::spec::{NestedField, PrimitiveType, Schema, Type};
+            table_with_schema(
+                Schema::builder()
+                    .with_fields(vec![std::sync::Arc::new(NestedField::required(
+                        1,
+                        "id",
+                        Type::Primitive(PrimitiveType::Long),
+                    ))])
+                    .build()
+                    .expect("schema"),
+            )
+        };
+        let catalog = ConflictCatalog::failing(0);
+        let arc: std::sync::Arc<dyn Catalog> = catalog.clone();
+        let config = Config::from_value(serde_json::json!({
+            "catalog": {
+                "uri": "http://localhost:1/api/catalog",
+                "warehouse": "wh",
+                "auth": {"bearer": {"token": "t"}},
+            },
+            "namespace": "ns",
+        }))
+        .expect("valid");
+        let mut load = Load::new(
+            config,
+            arc,
+            iceberg::NamespaceIdent::new("ns".into()),
+            &PipelineId::from("p"),
+            LoadId::from("load-a"),
+            writer_properties(&Default::default()).expect("props"),
+            // Zero seconds is not configurable — the gate refuses it —
+            // but constructed directly it makes "already elapsed" the
+            // condition under test without sleeping.
+            PartOptions {
+                roll_after_seconds: Some(0),
+                ..PartOptions::default()
+            },
+        );
+        let stream = TableName::from("events");
+        // The FIELD-ID-annotated target, as production derives it — a
+        // bare arrow schema writes batches the library cannot place.
+        let target = arrow_target("table `events`", &table).expect("target");
+        load.reinstall(&stream, "events", table, target.clone())
+            .await
+            .expect("ensure");
+
+        let batch = RecordBatch::try_new(
+            target.clone(),
+            vec![std::sync::Arc::new(arrow_array::Int64Array::from(vec![
+                1_i64,
+            ]))],
+        )
+        .expect("batch");
+        load.write(&stream, batch.clone()).await.expect("write");
+        let seq_after_first = load.tables[&stream].window_seq;
+        assert!(load.tables[&stream].pending_files.is_empty());
+
+        // The second write finds the first writer already elapsed.
+        load.write(&stream, batch).await.expect("write");
+        let state = &load.tables[&stream];
+        assert!(
+            !state.pending_files.is_empty(),
+            "the elapsed writer's files were parked for the window"
+        );
+        assert!(state.writer.is_some(), "a fresh writer took over");
+        assert_eq!(
+            state.window_seq,
+            seq_after_first + 1,
+            "the new writer got its own window prefix — reusing one \
+             would overwrite the retired writer's files"
+        );
     }
 }

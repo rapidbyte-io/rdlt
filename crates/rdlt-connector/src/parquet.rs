@@ -395,6 +395,20 @@ mod tests {
 /// closes the open part. The commit cadence is therefore an UPPER
 /// BOUND on part size: parts cannot grow past what one commit unit
 /// contains.
+///
+/// # What each adopting destination does with these
+///
+/// `target_bytes` and `roll_after_seconds` are behavioural promises
+/// and every adopting destination honours both. `max_open_bytes` is a
+/// resource bound, and a destination that streams its part out rather
+/// than accumulating it in memory MEETS the bound trivially — Iceberg
+/// hands rows to the library's own rolling file writer, so nothing
+/// accumulates for the ceiling to cap. It is satisfied there, not
+/// ignored.
+///
+/// A destination that cannot honour a field must REFUSE it at its
+/// config gate. Accepting a setting and not applying it is the defect
+/// class this whole feature exists to end.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
@@ -546,6 +560,30 @@ impl PartOptions {
             roll_after_seconds: None,
             max_open_bytes: default_max_open_bytes(),
         }
+    }
+
+    /// The size threshold as a destination that does its OWN rolling
+    /// wants it: a plain byte count, with `None` spelled as "never".
+    ///
+    /// Iceberg hands this to the library's rolling file writer, which
+    /// takes a `usize` and has no way to say "no limit" — so `None`
+    /// becomes the largest value it can hold, which no file reaches.
+    #[must_use]
+    pub fn target_file_size(&self) -> usize {
+        self.target_bytes
+            .and_then(|bytes| usize::try_from(bytes).ok())
+            .unwrap_or(usize::MAX)
+    }
+
+    /// Has an open part been open long enough to close on time alone?
+    ///
+    /// Split out of [`PartOptions::should_roll`] for destinations that
+    /// delegate SIZE to something else — the size half would be
+    /// answered twice, and the two answers would disagree.
+    #[must_use]
+    pub fn rolls_on_time(&self, open_for_secs: u64) -> bool {
+        self.roll_after_seconds
+            .is_some_and(|secs| open_for_secs >= u64::from(secs))
     }
 
     /// Are the open parts together holding too much?

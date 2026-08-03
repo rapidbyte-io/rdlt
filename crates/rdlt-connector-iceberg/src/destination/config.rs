@@ -46,6 +46,19 @@ pub struct Config {
     /// absent.
     #[serde(default)]
     pub parquet: Option<rdlt_connector_sdk::spi::ParquetOptions>,
+    /// Data-file sizing; absent = the SPI's 128 MiB default.
+    ///
+    /// `target_bytes` becomes the library's `target_file_size`, i.e.
+    /// the Iceberg table property `write.target-file-size-bytes`. NOTE
+    /// this is NOT the library's own default of 512 MiB: rdlt uses one
+    /// size across every destination it writes files from, and 128 MiB
+    /// is that size.
+    ///
+    /// `max_open_bytes` is met trivially here — the library's rolling
+    /// writer streams each file out rather than accumulating it, so
+    /// there is nothing for a memory ceiling to cap.
+    #[serde(default)]
+    pub parts: Option<rdlt_connector_sdk::spi::PartOptions>,
 }
 
 /// Where the catalog lives and how to talk to it.
@@ -325,6 +338,11 @@ impl Config {
         }
         if let Some(parquet) = &self.parquet
             && let Err(e) = parquet.validate()
+        {
+            return invalid(e.to_string());
+        }
+        if let Some(parts) = &self.parts
+            && let Err(e) = parts.validate()
         {
             return invalid(e.to_string());
         }

@@ -53,6 +53,7 @@ impl Writer {
         file_prefix: &str,
         session_nonce: &str,
         properties: WriterProperties,
+        target_file_size: usize,
     ) -> Result<Self, DestinationError> {
         let context = || format!("table `{}`", table.identifier());
         let location =
@@ -67,8 +68,14 @@ impl Writer {
         // engine pointed at the catalog, not only by rdlt.
         let parquet =
             ParquetWriterBuilder::new(properties, table.metadata().current_schema().clone());
-        let rolling = RollingFileWriterBuilder::new_with_default_file_size(
+        // The library rolls files for us — `parts.target_bytes` is fed
+        // straight into it rather than reimplemented above it. Its own
+        // default is the Iceberg spec's 512 MiB
+        // (`write.target-file-size-bytes`), which is what this used
+        // before the size became configurable.
+        let rolling = RollingFileWriterBuilder::new(
             parquet,
+            target_file_size,
             table.file_io().clone(),
             location,
             names,

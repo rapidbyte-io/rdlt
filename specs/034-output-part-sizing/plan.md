@@ -254,3 +254,65 @@ unrelated and only the first was 034's.
 
 `cargo nextest run --workspace`: **1129/1129, 0 skipped**, with
 `TMPDIR` on real disk. Clippy clean workspace-wide, all targets.
+
+---
+
+### Stage 3 — iceberg
+
+D3 called this "the smallest change of the three" because the writer
+is already long-lived. It turned out smaller still, and for a better
+reason than the plan guessed: **iceberg-rust already has a rolling
+file writer.** `Writer::open` was calling
+`RollingFileWriterBuilder::new_with_default_file_size`, so this
+destination has always rolled files — at the library's default, which
+is the Iceberg spec's `write.target-file-size-bytes` of 512 MiB.
+
+So `target_bytes` is FED to the library rather than reimplemented
+above it: `RollingFileWriterBuilder::new(.., target_file_size, ..)`.
+Reimplementing would have meant two rolling mechanisms disagreeing
+about the same file.
+
+This CHANGES the effective default from the library's 512 MiB to
+rdlt's 128 MiB. Deliberate, and the reason is D1: one size across
+every destination rdlt writes files from, or the shared vocabulary is
+a fiction. Recorded here because it is a behaviour change nothing else
+would announce.
+
+**`roll_after_seconds` is applied by rdlt**, because the library's
+rolling writer has a size trigger and no clock. It retires the whole
+window writer, which is the exact move a mid-window schema change
+already makes — the closed files park in `pending_files` and join the
+window's publish, and the next write opens a fresh writer under a NEW
+window prefix (reusing one would overwrite the retired writer's
+files).
+
+This forced a split in the SPI: `rolls_on_time` answers the time half
+alone, because a destination that delegates SIZE elsewhere would
+otherwise get the size question answered twice, once from each side,
+with the two able to disagree.
+
+**`max_open_bytes` is met trivially here** and says so in the config
+doc. The library streams each file out rather than accumulating it, so
+there is nothing for a memory ceiling to cap. That is different from
+ignoring it, and the distinction is now written into `PartOptions`
+itself: a behavioural promise must be honoured or REFUSED; a resource
+bound with no resource to bound is satisfied.
+
+#### Stage 3 proof — live, against Polaris
+
+`test_parts.rs`: the same 16,000 rows through the engine into two
+namespaces differing only in `parts.target_bytes`, with the file count
+read off the CATALOG's own snapshot summary (`added-data-files`) —
+an oracle independent of the code under test.
+
+| target | data files |
+|---|---|
+| 64 KiB | 8 |
+| 128 MiB (default) | 1 |
+
+Both arms landed exactly 16,000 records.
+
+#### Stage 3 gate
+
+`rdlt-connector-iceberg`: **74/74, 0 skipped**, live cells included
+(Polaris + RUSTFS). Clippy clean.
