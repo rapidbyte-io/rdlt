@@ -295,14 +295,22 @@ def pg_count(container, db, schema, table):
     """Row count of <schema>.<table> in database <db>, via psql inside the
     already-running fixture postgres container (stdlib-only — no pg driver).
     Returns None if the table does not exist."""
-    sql = (f"SELECT count(*) FROM information_schema.tables WHERE "
-           f"table_schema='{schema}' AND table_name='{table}';")
-    exists = podman("exec", container, "psql", "-U", "postgres", "-d", db,
-                    "-tAc", sql, check=False)
-    if exists.strip() != "1":
+    # The name is matched CASE-INSENSITIVELY and the real one is read
+    # back, because a destination normalizes stream names however it
+    # likes: the oracle cell's stream is `EVENTS` (Oracle folds
+    # identifiers upper) while every other cell's is `events`, and a
+    # literal lower-case guess reported "table missing" for a sync
+    # that had in fact landed all 200,000 rows. Verifying the ROWS is
+    # the point; the casing is the destination's business.
+    sql = (f"SELECT table_name FROM information_schema.tables WHERE "
+           f"table_schema='{schema}' AND lower(table_name)=lower('{table}') "
+           f"ORDER BY table_name LIMIT 1;")
+    found = podman("exec", container, "psql", "-U", "postgres", "-d", db,
+                   "-tAc", sql, check=False).strip()
+    if not found:
         return None
     got = podman("exec", container, "psql", "-U", "postgres", "-d", db,
-                 "-tAc", f'SELECT count(*) FROM "{schema}"."{table}";')
+                 "-tAc", f'SELECT count(*) FROM "{schema}"."{found}";')
     return int(got.strip())
 
 

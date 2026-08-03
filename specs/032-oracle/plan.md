@@ -579,12 +579,28 @@ columns, full replace, 5 runs, deterministic seed (content hash
 
 | arm | median | notes |
 |---|---|---|
-| **rdlt** | **837.3 ms** (±4%) | 238,855 rows/s, 46.6 MB/s, 60 MB peak RSS |
-| dlt 1.29.0 | 3.35 s | python-oracledb THIN mode |
-| Airbyte 2.1.1 | **MISSING** | `abctl cluster unreachable` |
+| **rdlt** | **832.6 ms** (±4%) | 240,205 rows/s, 46.9 MB/s, 60 MB peak RSS |
+| dlt 1.29.0 | 3.42 s | **4.1×** — python-oracledb THIN mode |
+| Airbyte 2.1.1 | 45.45 s | **54.6×** — community `source-oracle`, see caveat |
 
-**4.0× versus dlt.** SCOREBOARD ONLY — no bar (018 BR8: one recorded
-session is not a basis for one).
+SCOREBOARD ONLY — no bar (018 BR8: one recorded session is not a
+basis for one).
+
+STABILITY: rdlt and dlt were measured across FOUR independent runs
+on a loaded machine — 837.3/876.7/838.1/832.6 ms against
+3.35/3.48/3.51/3.42 s — landing on 4.0-4.2× every time. That
+reproducibility is worth more than any single figure.
+
+**READ THE AIRBYTE RATIO WITH 018's CAVEAT.** 45.45 s is JOB WALL
+CLOCK including orchestration: a Kubernetes pod per check, per
+discover and per replication attempt on a single-node kind cluster.
+018 recorded Airbyte's floor at ~45-60 s across every cell REGARDLESS
+of dataset size, and 45.45 s sits squarely in that band — so this row
+measures Airbyte's fixed startup cost far more than its Oracle read
+throughput. Its sync is CORRECT (200,000 rows verified in the
+destination). The dlt ratio is the informative comparison; the
+Airbyte one bounds the difference between an embedded engine and an
+orchestrated platform.
 
 WHAT THIS MEASURES AGAINST T004. The same read was extrapolated at
 3-7 MINUTES on the pure-Rust driver and could not complete past ~297
@@ -593,7 +609,57 @@ cursor ceiling are both gone, which is what T005 predicted — and the
 reason the cell was left defined at 200k rather than shrunk to a
 number that would have expired the moment the driver changed.
 
-AIRBYTE IS UNPERFORMED, NOT GREEN. The harness reports the reason
+AIRBYTE, AND HOW IT WAS RUN WITHOUT TOUCHING THE OWNER'S STATE.
+The `abctl` cluster was gone (no kind node at all), and reinstalling
+failed on a leftover PG 17 volume in `~/.airbyte` owned by UID 69
+under rootless podman's userns mapping — unreadable to `abctl` itself.
+It CANNOT be made readable: Postgres refuses a data directory that is
+not `0700`, so loosening permissions breaks the thing it enables.
+Deleting the owner's data was NOT done. `abctl` derives its state
+directory from `HOME`, so the cluster was installed under
+`HOME=~/.cache/rdlt-bench-airbyte` instead, leaving `~/.airbyte`
+untouched.
+
+TWO THINGS THAT COST TIME, both worth knowing:
+- The FIRST attempt put that HOME on `/tmp`, which is a 32 GB
+  RAM-BACKED tmpfs on this machine. A Kubernetes cluster's storage
+  consuming the memory you are already short of is the wrong choice;
+  it died, and while it did, the shell itself began failing any
+  command that produced OUTPUT while `true` still succeeded — 0 GB
+  free with 17 GB in shared tmpfs pages. Use real disk.
+- `abctl local install` EXITS 1 even on success here, on its final
+  ingress step: `ingress-nginx` never becomes ready under rootless
+  podman (018 spike/01 recorded this), and scaling it to 0 — which
+  018 REQUIRES — makes the admission webhook unreachable, so the
+  ingress creation fails. The core Helm chart is installed and every
+  pod is Running; the harness reaches the API by PORT-FORWARD, not
+  ingress. A non-zero abctl exit is therefore NOT evidence the
+  cluster is unusable.
+The node's pids-limit was raised 2048 → 8192 (018 spike/01).
+
+THE VERIFICATION BUG THE FIRST SYNC EXPOSED. Airbyte synced all
+200,000 rows on its very first attempt (`rowsSynced=200000`,
+`driver_wall=91.0s`) and the harness still reported the arm MISSING:
+`destination rowcount None != expected 200000 (public.events)`.
+
+The sync was never wrong; the LOOKUP was. Oracle folds identifiers
+upper, so the stream is `EVENTS` where every other cell's is
+`events`, and Airbyte's postgres destination preserved that case —
+CONFIRMED by querying the fixture directly:
+`public."EVENTS"` holds exactly 200000 rows. `setup.py` had flagged
+this possibility in a comment ("the landed destination table is
+whatever Airbyte's pg destination normalizes that to … correct these
+two strings from the discover output rather than assuming the sync is
+broken"), which is precisely what happened.
+
+Fixed in `airbyte_api.py::pg_count` by matching the table name
+CASE-INSENSITIVELY and reading the real one back, rather than
+swapping one hard-coded guess for another: verifying that the ROWS
+landed is the point, and how a destination normalizes a stream name
+is its own business. The next connector whose identifiers case
+differently will not hit this.
+
+WHAT THE MISSING ARM MEANT BEFORE THIS. The harness reports the reason
 rather than hiding it: no `kubectl` on this machine and no running
 kind cluster. The wiring exists (`benches/competitors/airbyte/setup.py`
 carries `oracle_source_config()` and the CELLS entry) and is

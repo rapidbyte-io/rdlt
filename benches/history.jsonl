@@ -129,3 +129,10 @@
 {"ts":"2026-08-01","cell":"selftest-protocol","variant":"rdlt","median_ms":21.987949999999998,"rows":null}
 {"ts":"2026-08-03","cell":"oracle-to-pg-200k","variant":"rdlt","median_ms":837.329634,"rows":200000}
 {"ts":"2026-08-03","cell":"oracle-to-pg-200k","variant":"dlt","median_ms":3349.4821049971506,"rows":200000}
+{"ts":"2026-08-03","cell":"oracle-to-pg-200k","variant":"rdlt","median_ms":876.707065,"rows":200000}
+{"ts":"2026-08-03","cell":"oracle-to-pg-200k","variant":"dlt","median_ms":3477.596740005538,"rows":200000}
+{"ts":"2026-08-03","cell":"oracle-to-pg-200k","variant":"rdlt","median_ms":838.098651,"rows":200000}
+{"ts":"2026-08-03","cell":"oracle-to-pg-200k","variant":"dlt","median_ms":3514.17575601954,"rows":200000}
+{"ts":"2026-08-03","cell":"oracle-to-pg-200k","variant":"rdlt","median_ms":832.621898,"rows":200000}
+{"ts":"2026-08-03","cell":"oracle-to-pg-200k","variant":"airbyte","median_ms":45454.90505505586,"rows":200000}
+{"ts":"2026-08-03","cell":"oracle-to-pg-200k","variant":"dlt","median_ms":3422.723527997732,"rows":200000}
