@@ -301,8 +301,24 @@ pub struct BatchPolicy {
     /// Write once this many rows have accumulated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub every_rows: Option<u64>,
-    /// Write once the accumulated rows reach this many bytes, measured
-    /// as Arrow's in-memory size.
+    /// Write once the accumulated rows reach this many bytes of
+    /// ARROW IN-MEMORY FOOTPRINT — which is NOT the size of the
+    /// output.
+    ///
+    /// This is a memory-pressure bound, not an output-size one, and
+    /// the two differ in both directions:
+    ///
+    /// - It counts ALLOCATED CAPACITY. Arrow grows buffers
+    ///   geometrically, so a buffer holding 60 KB of text may occupy
+    ///   128 KB; per-value offsets and validity bitmaps are counted
+    ///   too, and neither appears in the output at all.
+    /// - The output is the DESTINATION's format. The same batch is
+    ///   JSONL text at one destination and snappy-compressed parquet
+    ///   at another. Accumulation happens before the destination sees
+    ///   the rows, so the serialized size is not knowable here.
+    ///
+    /// Measured, for scale: on a 4-column REST stream, 100 KB of
+    /// in-memory footprint produced ~73 KB JSONL files.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub every_bytes: Option<u64>,
 }

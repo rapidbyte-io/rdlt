@@ -156,8 +156,21 @@ setting means the same thing to a file, a table or a warehouse.
 ```yaml
 batch_policy:
   every_rows: 50000
-  every_bytes: 134217728      # … or 128 MB, whichever first
+  every_bytes: 134217728      # … or 128 MB in memory, whichever first
 ```
+
+`every_bytes` counts the ARROW IN-MEMORY footprint, not the bytes
+written. It is a memory bound, not an output-size one. Arrow reports
+allocated capacity — buffers grow geometrically, and per-value offsets
+and validity bitmaps count too — and the output format is the
+destination's business, JSONL text here but compressed parquet
+elsewhere. Measured on the pokemon stream: `every_bytes: 100000` gave
+400-row parts of ~73 KB. Use `every_rows` when you want a predictable
+file size.
+
+Both thresholds are FLOORS, not targets: a source batch is never
+split, so accumulation stops at the first batch to cross the line.
+With 100-row pages you get multiples of 100.
 
 Measured on the pokemon example, whose source still pages 100 rows at
 a time: without it, 14 parts of 100; with `every_rows: 600`, **3 parts
