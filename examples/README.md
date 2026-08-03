@@ -15,6 +15,21 @@ Run one with:
 rdlt run examples/<name>/pipeline.yaml
 ```
 
+Each example is a SINGLE file. Every connector accepts its config
+either inline — as these do — or as `config: <path>` pointing at a
+separate YAML/JSON document with the identical shape:
+
+```yaml
+source:
+  oracle:
+    config: secrets/oracle.yaml     # the same document, kept apart
+```
+
+Inline keeps a small pipeline in one place; a path is better once a
+document is shared between pipelines, or holds a credential you want
+gitignored on its own. Mixing the two — `config:` alongside inline
+keys — is refused, so half a document can never be silently ignored.
+
 Paths in the pipeline files are relative to the repository root, so
 run them from there. If you have not built the CLI yet:
 
@@ -39,15 +54,15 @@ same endpoint — so pagination followed every page rather than stopping
 at the first. Running it a second time leaves 1,351, not 2,702:
 `write_mode: replace` truncates rather than appends.
 
-What the two files show:
+What the pipeline says:
 
-- `rest.yaml` — the source. PokéAPI returns
+- The `rest:` block is the source document. PokéAPI returns
   `{count, next, previous, results: [...]}`, so `records_path: results`
   says where the rows are, and the `next_url` paginator follows the
   fully-formed `next` link the API supplies. When an API gives you the
   next URL, following it beats doing arithmetic on `offset`/`limit`.
-- `pipeline.yaml` — what connects to what, plus the `workdir` where
-  rdlt keeps its write-ahead log.
+- Around it, `workdir` is where rdlt keeps its write-ahead log, and
+  `write_mode` decides whether a re-run replaces, appends, or merges.
 
 Output rows carry two engine columns beside your data:
 
@@ -66,8 +81,10 @@ Reads an Oracle table and writes it to
 `examples/oracle-to-jsonl/out/`. Unlike the Pokémon example this one
 needs two things before it will run.
 
-**1. Edit `oracle.yaml`.** Every value in it is a placeholder — host,
-service, user, password, and the table name.
+**1. Edit the `oracle:` block in `pipeline.yaml`.** Every value is a
+placeholder — host, service, user, password, and the table name. The
+password sits in the pipeline file, which is exactly the case for
+moving it to `config: <path>` and gitignoring that document instead.
 
 **2. Install Oracle Client libraries.** rdlt's Oracle source is built
 on ODPI-C, which loads them at RUNTIME. Nothing is needed to *build*
@@ -115,7 +132,7 @@ rather than accidents:
 
 ### Reading only what changed
 
-Uncomment `cursor:` in `oracle.yaml` and switch `write_mode` to
+Uncomment `cursor:` in the `oracle:` block and switch `write_mode` to
 `merge`. Each run then reads only rows whose cursor column is above
 the last checkpoint, and upserts them on `primary_key`.
 

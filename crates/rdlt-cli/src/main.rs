@@ -221,7 +221,7 @@ async fn drive(pipeline: rdlt::Pipeline, report_path: Option<PathBuf>) -> Result
 
 #[cfg(test)]
 mod tests {
-    use rdlt::pipeline_spec::{DestSpec, PgSourceSpec, SourceSpec, Spec, WriteModeSpec};
+    use rdlt::pipeline_spec::{ConfigSpec, DestSpec, SourceSpec, Spec, WriteModeSpec};
     use rdlt::sdk::config::Document;
     use serde::Deserialize;
 
@@ -451,16 +451,16 @@ destination:
   postgres: {conn: host=x, dataset: d}
 "#,
         );
-        let SourceSpec::Postgres(PgSourceSpec::Inline(inline)) = &parsed.source else {
-            panic!("inline postgres source");
-        };
-        let table = &inline.tables.as_ref().expect("tables")[0];
+        // Resolved through the PUBLIC accessor — the same path `run()`
+        // takes, so this exercises the validation gate rather than
+        // reaching past it into the parsed shape.
+        let config = parsed
+            .pg_source_config()
+            .expect("postgres source")
+            .expect("valid inline");
+        let table = &config.tables.as_ref().expect("tables")[0];
         assert_eq!(table.name, "orders");
         assert_eq!(table.cursor.as_ref().expect("cursor").column, "updated_at");
-        // The run() path re-validates through from_value — prove the gate
-        // holds for inline documents too.
-        let value = serde_json::to_value(inline).expect("serialize");
-        rdlt::connector::postgres::source::Config::from_value(value).expect("valid inline");
 
         // …and rejects invalid shapes identically — cdc and cursor are
         // mutually exclusive on the same table.
@@ -478,11 +478,9 @@ destination:
   postgres: {conn: host=x, dataset: d}
 "#,
         );
-        let SourceSpec::Postgres(PgSourceSpec::Inline(inline)) = &bad.source else {
-            panic!("inline postgres source");
-        };
-        let value = serde_json::to_value(inline).expect("serialize");
-        let err = rdlt::connector::postgres::source::Config::from_value(value)
+        let err = bad
+            .pg_source_config()
+            .expect("postgres source")
             .expect_err("cdc + cursor rejected inline")
             .to_string();
         assert!(err.contains("mutually exclusive"), "{err}");
@@ -512,7 +510,7 @@ destination:
         );
         assert!(matches!(
             file.source,
-            SourceSpec::Postgres(PgSourceSpec::File(_))
+            SourceSpec::Postgres(ConfigSpec::Path(_))
         ));
     }
 

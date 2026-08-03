@@ -16,8 +16,45 @@ workdir: examples/pokemon-to-jsonl/.rdlt
 write_mode: replace
 
 source:
+  # The source document, written INLINE. Every connector also accepts
+  # `config: <path>` instead, which is the better choice once a
+  # document is shared between pipelines or holds a credential you
+  # want to keep out of this file.
   rest:
-    config: examples/pokemon-to-jsonl/rest.yaml
+    base_url: https://pokeapi.co/api/v2
+
+    # `none` is spelled out to show where credentials WOULD go.
+    # Anything secret belongs under `auth:`, never in `headers:` or
+    # `params:` — only `auth:` values are Secret-wrapped and masked.
+    auth: none
+
+    # Be a good citizen of someone else's free API: one request at a
+    # time, with a floor between sends.
+    max_concurrency: 1
+    min_request_interval_ms: 200
+
+    streams:
+      - name: pokemon
+        path: /pokemon
+
+        # PokéAPI answers {count, next, previous, results:[...]} — the
+        # rows are under `results`, not at the top level.
+        records_path: results
+
+        # It hands back a fully-formed `next` URL, so follow that
+        # rather than doing arithmetic on offset/limit. When an API
+        # gives you the next link, using it is both simpler and less
+        # likely to be wrong.
+        pagination:
+          type: next_url
+          next_url_path: next
+
+        params:
+          limit: "100"
+
+        # Each row is {name, url}; `name` is unique and stable, which
+        # makes re-runs idempotent instead of appending duplicates.
+        primary_key: [name]
 
 destination:
   file:

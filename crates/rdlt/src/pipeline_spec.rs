@@ -15,7 +15,6 @@
 //! to none): a spec that names a connector this build did not compile in fails
 //! to parse (the variant does not exist), never silently.
 
-use rdlt_connector_sdk::config::Document;
 use std::path::PathBuf;
 
 use serde::Deserialize;
@@ -76,58 +75,24 @@ pub enum WriteModeSpec {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum SourceSpec {
-    /// Path to the declarative REST source YAML.
+    /// The REST source: a document inline, or `config: <path>`.
     #[cfg(feature = "rest")]
-    Rest {
-        /// The REST source document.
-        config: PathBuf,
-    },
-    /// Path to the Oracle source YAML (tables with watermark cursors).
+    Rest(ConfigSpec<crate::connector::rest::source::Config>),
+    /// The Oracle source (tables with watermark cursors).
     #[cfg(feature = "oracle")]
-    Oracle {
-        /// The Oracle source document.
-        config: PathBuf,
-    },
-    /// Path to the file source YAML (jsonl/parquet streams).
+    Oracle(ConfigSpec<crate::connector::oracle::source::Config>),
+    /// The file source (jsonl/csv/parquet streams).
     #[cfg(feature = "file")]
-    File {
-        /// The file source document.
-        config: PathBuf,
-    },
-    /// Postgres source: the config document INLINE (the natural form — the
-    /// pipeline is one YAML document), or `config: path` referencing a
-    /// reusable YAML/JSON file with the identical shape.
+    File(ConfigSpec<crate::connector::file::source::Config>),
+    /// The postgres source.
     #[cfg(feature = "postgres-source")]
-    Postgres(PgSourceSpec),
-}
-
-#[cfg(feature = "postgres-source")]
-#[derive(Debug, Deserialize)]
-/// The two ways a postgres source can be written in a pipeline document.
-///
-/// `untagged`, so the form is inferred from the shape rather than declared.
-#[serde(untagged)]
-pub enum PgSourceSpec {
-    /// `source: postgres: {config: source.yaml}` — tried first; strict
-    /// (`deny_unknown_fields`), so `config` mixed with inline fields is a
-    /// loud error, never a silently-ignored document.
-    File(PgSourceFile),
-    /// The full source document inline (boxed — it dwarfs the path form).
-    Inline(Box<PostgresConfig>),
+    Postgres(ConfigSpec<PostgresConfig>),
 }
 
 /// The path form of a postgres source: `postgres: {config: source.yaml}`.
 ///
 /// `deny_unknown_fields`, so mixing `config` with inline fields is a loud error
 /// rather than a document half of which is silently ignored.
-#[cfg(feature = "postgres-source")]
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PgSourceFile {
-    /// The reusable postgres source document.
-    pub config: PathBuf,
-}
-
 /// Which destination a document selects, and how it is configured.
 ///
 /// Each variant is gated on its connector feature, so a build that excludes a
@@ -270,7 +235,104 @@ fn is_json(path: &std::path::Path) -> bool {
         .is_some_and(|e| e.eq_ignore_ascii_case("json"))
 }
 
-#[cfg(any(feature = "rest", feature = "file", feature = "oracle"))]
+/// A connector's configuration: EITHER a path to a document, OR the
+/// document written inline.
+///
+/// One spelling for every connector, because the alternative — some
+/// taking a path and some taking a document — is a difference the
+/// reader has to memorise per connector for no benefit.
+///
+/// Untagged, and the ORDER MATTERS: [`ConfigPath`] denies unknown
+/// fields, so it matches ONLY the exact `{config: <path>}` shape and
+/// every other map falls through to the inline arm.
+#[cfg(any(
+    feature = "rest",
+    feature = "file",
+    feature = "oracle",
+    feature = "postgres-source"
+))]
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum ConfigSpec<T> {
+    /// `config: path/to/document.yaml`
+    Path(ConfigPath),
+    /// The document itself, written where the path would go. TYPED,
+    /// not a free-form value: mixing `config:` with inline keys then
+    /// fails at PARSE — neither arm matches — instead of parsing as
+    /// an inline document with a stray key that only the connector
+    /// notices later.
+    Inline(Box<T>),
+}
+
+#[cfg(any(
+    feature = "rest",
+    feature = "file",
+    feature = "oracle",
+    feature = "postgres-source"
+))]
+/// The path form: `config: path/to/document.yaml`.
+///
+/// `deny_unknown_fields` is what makes the untagged choice
+/// unambiguous AND makes a half-written document loud: `config`
+/// mixed with inline keys is an error rather than a document half of
+/// which is silently ignored.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigPath {
+    /// The document to read. YAML unless the extension is `.json`.
+    pub config: PathBuf,
+}
+
+#[cfg(any(
+    feature = "rest",
+    feature = "file",
+    feature = "oracle",
+    feature = "postgres-source"
+))]
+impl<T> ConfigSpec<T> {
+    /// Resolve to the connector's own validated document.
+    ///
+    /// BOTH arms go through the connector's `Document` gate, so an
+    /// inline document is validated exactly as a file-backed one is —
+    /// untagged deserialization alone would have skipped `validate`
+    /// — and a failure carries the connector's own frozen wording
+    /// rather than a facade paraphrase.
+    fn document(&self) -> Result<T, SpecError>
+    where
+        T: rdlt_connector_sdk::config::Document + Clone,
+        T::Error: std::fmt::Display,
+    {
+        match self {
+            ConfigSpec::Path(spelled) => {
+                let path = &spelled.config;
+                let text = read_config(path)?;
+                if is_json(path) {
+                    T::from_json(&text)
+                } else {
+                    T::from_yaml(&text)
+                }
+                .map_err(|e| SpecError::resolve(e.to_string()))
+            }
+            // Deserialization alone does NOT validate, so the inline
+            // arm is put through the connector's own gate here — the
+            // same one the path arm passes through.
+            ConfigSpec::Inline(document) => {
+                let document = document.as_ref().clone();
+                document
+                    .validate()
+                    .map(|()| document.clone())
+                    .map_err(|e| SpecError::resolve(e.to_string()))
+            }
+        }
+    }
+}
+
+#[cfg(any(
+    feature = "rest",
+    feature = "file",
+    feature = "oracle",
+    feature = "postgres-source"
+))]
 fn read_config(path: &std::path::Path) -> Result<String, SpecError> {
     std::fs::read_to_string(path)
         .map_err(|e| SpecError::resolve(format!("reading {}: {e}", path.display())))
@@ -286,31 +348,9 @@ impl Spec {
     /// [`build_pipeline`] resolves it the same way for the source it builds.
     pub fn pg_source_config(&self) -> Option<Result<PostgresConfig, SpecError>> {
         match &self.source {
-            SourceSpec::Postgres(pg) => Some(resolve_pg(pg)),
+            SourceSpec::Postgres(spec) => Some(spec.document()),
             #[allow(unreachable_patterns)]
             _ => None,
-        }
-    }
-}
-
-#[cfg(feature = "postgres-source")]
-fn resolve_pg(pg: &PgSourceSpec) -> Result<PostgresConfig, SpecError> {
-    match pg {
-        PgSourceSpec::File(file) => {
-            let path = &file.config;
-            let text = std::fs::read_to_string(path)
-                .map_err(|e| SpecError::resolve(format!("reading {}: {e}", path.display())))?;
-            if is_json(path) {
-                PostgresConfig::from_json(&text)
-            } else {
-                PostgresConfig::from_yaml(&text)
-            }
-            .map_err(|e| SpecError::resolve(e.to_string()))
-        }
-        PgSourceSpec::Inline(inline) => {
-            let value =
-                serde_json::to_value(inline).map_err(|e| SpecError::resolve(e.to_string()))?;
-            PostgresConfig::from_value(value).map_err(|e| SpecError::resolve(e.to_string()))
         }
     }
 }
@@ -341,42 +381,26 @@ pub fn build_pipeline(spec: &Spec) -> Result<Pipeline, SpecError> {
 
     match &spec.source {
         #[cfg(feature = "rest")]
-        SourceSpec::Rest { config } => {
-            let text = read_config(config)?;
-            let source = if is_json(config) {
-                crate::connector::rest::source::Shell::from_json(&text)
-            } else {
-                crate::connector::rest::source::Shell::from_yaml(&text)
-            }
-            .map_err(|e| SpecError::resolve(e.to_string()))?;
+        SourceSpec::Rest(spec_config) => {
+            let source = crate::connector::rest::source::Shell::new(spec_config.document()?)
+                .map_err(|e| SpecError::resolve(e.to_string()))?;
             build_with(builder.source(source), &spec.destination)
         }
         #[cfg(feature = "oracle")]
-        SourceSpec::Oracle { config } => {
-            let text = read_config(config)?;
-            let source = if is_json(config) {
-                crate::connector::oracle::source::Shell::from_json(&text)
-            } else {
-                crate::connector::oracle::source::Shell::from_yaml(&text)
-            }
-            .map_err(|e| SpecError::resolve(e.to_string()))?;
+        SourceSpec::Oracle(spec_config) => {
+            let source = crate::connector::oracle::source::Shell::new(spec_config.document()?)
+                .map_err(|e| SpecError::resolve(e.to_string()))?;
             build_with(builder.source(source), &spec.destination)
         }
         #[cfg(feature = "file")]
-        SourceSpec::File { config } => {
-            let text = read_config(config)?;
-            let source = if is_json(config) {
-                crate::connector::file::source::Shell::from_json(&text)
-            } else {
-                crate::connector::file::source::Shell::from_yaml(&text)
-            }
-            .map_err(|e| SpecError::resolve(e.to_string()))?;
+        SourceSpec::File(spec_config) => {
+            let source = crate::connector::file::source::Shell::new(spec_config.document()?)
+                .map_err(|e| SpecError::resolve(e.to_string()))?;
             build_with(builder.source(source), &spec.destination)
         }
         #[cfg(feature = "postgres-source")]
-        SourceSpec::Postgres(pg) => {
-            let config = resolve_pg(pg)?;
-            let source = crate::connector::postgres::source::Shell::new(config)
+        SourceSpec::Postgres(spec_config) => {
+            let source = crate::connector::postgres::source::Shell::new(spec_config.document()?)
                 .map_err(|e| SpecError::resolve(e.to_string()))?;
             build_with(builder.source(source), &spec.destination)
         }

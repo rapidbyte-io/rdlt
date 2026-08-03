@@ -52,6 +52,8 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 rdlt-testkit = { workspace = true }
+serde_yaml = { workspace = true }
+tempfile = { workspace = true }
 tokio = { workspace = true }
 
 [lints]
