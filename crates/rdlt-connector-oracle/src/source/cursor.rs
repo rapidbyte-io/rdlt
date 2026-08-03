@@ -146,7 +146,10 @@ fn decimal_parts(value: &str) -> Option<(bool, &str, &str)> {
 }
 
 /// Digit-wise `<` over two decimals, exact at any magnitude.
-fn decimal_less((a_neg, a_int, a_frac): (bool, &str, &str), (b_neg, b_int, b_frac): (bool, &str, &str)) -> bool {
+fn decimal_less(
+    (a_neg, a_int, a_frac): (bool, &str, &str),
+    (b_neg, b_int, b_frac): (bool, &str, &str),
+) -> bool {
     if a_neg != b_neg {
         return a_neg;
     }
@@ -169,7 +172,11 @@ fn decimal_less((a_neg, a_int, a_frac): (bool, &str, &str), (b_neg, b_int, b_fra
     };
     // For negatives the magnitude order reverses, and equal values
     // are never "less".
-    if a_neg { !magnitude_less && (a_int_trimmed, a_frac) != (b_int_trimmed, b_frac) } else { magnitude_less }
+    if a_neg {
+        !magnitude_less && (a_int_trimmed, a_frac) != (b_int_trimmed, b_frac)
+    } else {
+        magnitude_less
+    }
 }
 
 /// A watermark travels back into SQL as a LITERAL, so its shape is

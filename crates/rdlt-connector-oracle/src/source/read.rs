@@ -42,9 +42,10 @@ pub(crate) async fn read_stream(
     // Learn the shape first: the Arrow schema, and whether the
     // configured cursor column can actually carry a watermark.
     let described = describe(client, &name, &table).await?;
-    let schema = std::sync::Arc::new(schema_of(&described).map_err(|e| {
-        SourceError::fatal(format!("stream `{name}`: `{}`: {e}", stream.table))
-    })?);
+    let schema =
+        std::sync::Arc::new(schema_of(&described).map_err(|e| {
+            SourceError::fatal(format!("stream `{name}`: `{}`: {e}", stream.table))
+        })?);
 
     let cursor_at = match &stream.cursor {
         Some(column) => Some(validate_cursor(&name, &stream.table, &described, column)?),
@@ -68,8 +69,15 @@ pub(crate) async fn read_stream(
     let mut sent_any = false;
     loop {
         let sql = select_sql(&table, stream, position.as_ref())?;
-        let chunk =
-            fetch_chunk(client, &sql, prefetch, schema.clone(), cursor_at, batch_rows).await?;
+        let chunk = fetch_chunk(
+            client,
+            &sql,
+            prefetch,
+            schema.clone(),
+            cursor_at,
+            batch_rows,
+        )
+        .await?;
         let Some(chunk) = chunk else { break };
         sent_any = true;
 

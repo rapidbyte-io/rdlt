@@ -438,7 +438,11 @@ async fn the_read_path_holds_against_oracle_21c() {
     // Exact Decimal crosses as TEXT by design — a JSON number is an
     // IEEE double and cannot carry NUMBER(12,2) losslessly.
     assert_eq!(rows[0]["amount"], serde_json::json!("10.25"));
-    assert_eq!(rows[1]["amount"], serde_json::json!("-3.50"), "exact at the declared scale");
+    assert_eq!(
+        rows[1]["amount"],
+        serde_json::json!("-3.50"),
+        "exact at the declared scale"
+    );
     assert_eq!(rows[0]["body"], serde_json::json!("hello"));
     assert_eq!(rows[1]["name"], serde_json::json!("sécond"), "utf-8 intact");
     assert!(rows[1]["body"].is_null(), "a NULL LOB stays null");
@@ -447,10 +451,8 @@ async fn the_read_path_holds_against_oracle_21c() {
     // renderings have to survive a round trip through the cursor.
     let cursor = cursor.expect("a checkpoint landed");
     fixture
-        .seed(&[
-            "INSERT INTO XE_T VALUES (9999, 'late', 1, \
-             TIMESTAMP '2027-01-01 10:00:00 +00:00', NULL, NULL)",
-        ])
+        .seed(&["INSERT INTO XE_T VALUES (9999, 'late', 1, \
+             TIMESTAMP '2027-01-01 10:00:00 +00:00', NULL, NULL)"])
         .await;
     let (delta, _) = read_all(&shell, "xe", Some(cursor)).await;
     assert_eq!(delta.len(), 1, "21c resumes exactly");
@@ -481,7 +483,11 @@ async fn national_character_types_survive_the_wire() {
     let (rows, _) = read_all(&shell, "n", None).await;
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["nv"], serde_json::json!("zażółć"), "NVARCHAR2");
-    assert_eq!(rows[0]["nc"], serde_json::json!("abc   "), "NCHAR is padded");
+    assert_eq!(
+        rows[0]["nc"],
+        serde_json::json!("abc   "),
+        "NCHAR is padded"
+    );
     assert_eq!(rows[0]["v"], serde_json::json!("zażółć"), "VARCHAR2 twin");
 }
 
@@ -533,7 +539,10 @@ async fn binary_float_and_double_decode_as_numbers() {
         floats.value(2).is_infinite() && floats.value(2) > 0.0,
         "BINARY_FLOAT_INFINITY survives as an actual infinity"
     );
-    assert!(doubles.value(2).is_nan(), "BINARY_DOUBLE_NAN survives as NaN");
+    assert!(
+        doubles.value(2).is_nan(),
+        "BINARY_DOUBLE_NAN survives as NaN"
+    );
 }
 
 /// A table is reachable by its SCHEMA-qualified name, and a
@@ -650,7 +659,13 @@ async fn the_batch_carries_exact_types() {
     );
 
     let schema = read_schema(&shell, "d").await;
-    let field = |name: &str| schema.field_with_name(name).expect(name).data_type().clone();
+    let field = |name: &str| {
+        schema
+            .field_with_name(name)
+            .expect(name)
+            .data_type()
+            .clone()
+    };
 
     assert_eq!(field("id"), DataType::Int64);
     assert_eq!(
@@ -689,13 +704,12 @@ async fn a_many_batch_read_delivers_every_row_once() {
             "INSERT INTO MANYP_T SELECT LEVEL, 'v' FROM DUAL CONNECT BY LEVEL <= 5000",
         ])
         .await;
-    let shell = fixture.shell_tuned(&[stream("m", "MANYP_T")], serde_json::json!({"page_rows": 5}));
-    let (rows, _) = read_all(&shell, "m", None).await;
-    assert_eq!(
-        rows.len(),
-        5000,
-        "every row of a 1,000-batch read"
+    let shell = fixture.shell_tuned(
+        &[stream("m", "MANYP_T")],
+        serde_json::json!({"page_rows": 5}),
     );
+    let (rows, _) = read_all(&shell, "m", None).await;
+    assert_eq!(rows.len(), 5000, "every row of a 1,000-batch read");
     let mut ids: Vec<i64> = rows.iter().map(|r| r["id"].as_i64().expect("id")).collect();
     ids.sort_unstable();
     ids.dedup();
@@ -791,14 +805,14 @@ async fn a_cursorless_stream_past_one_batch_terminates() {
         ])
         .await;
     // Batches far smaller than the table: 20 of them.
-    let shell = fixture.shell_tuned(&[stream("n", "NOCUR_T")], serde_json::json!({"batch_rows": 25}));
+    let shell = fixture.shell_tuned(
+        &[stream("n", "NOCUR_T")],
+        serde_json::json!({"batch_rows": 25}),
+    );
     let (rows, _) = read_all(&shell, "n", None).await;
 
     assert_eq!(rows.len(), 500, "every row once, and the read ENDS");
-    let mut ids: Vec<i64> = rows
-        .iter()
-        .map(|r| r["id"].as_i64().expect("id"))
-        .collect();
+    let mut ids: Vec<i64> = rows.iter().map(|r| r["id"].as_i64().expect("id")).collect();
     ids.sort_unstable();
     ids.dedup();
     assert_eq!(ids.len(), 500, "no row delivered twice");

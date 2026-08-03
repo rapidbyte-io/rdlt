@@ -128,10 +128,7 @@ fn number_type(precision: u8, scale: i8) -> DataType {
 pub(crate) fn cursor_capable(kind: &DataType) -> bool {
     matches!(
         kind,
-        DataType::Int64
-            | DataType::Float64
-            | DataType::Decimal128(..)
-            | DataType::Timestamp(..)
+        DataType::Int64 | DataType::Float64 | DataType::Decimal128(..) | DataType::Timestamp(..)
     )
     // NOTE: no `Date32` arm. Oracle's DATE carries a time and maps to
     // a naive timestamp, so `arrow_type` can never yield `Date32`.

@@ -49,8 +49,9 @@ impl BatchBuilder {
                 DataType::Int64 => Column::Int64(Int64Builder::new()),
                 DataType::Float64 => Column::Float64(Float64Builder::new()),
                 DataType::Decimal128(p, s) => Column::Decimal(
-                    Decimal128Builder::new().with_precision_and_scale(*p, *s).
-                        unwrap_or_else(|_| Decimal128Builder::new()),
+                    Decimal128Builder::new()
+                        .with_precision_and_scale(*p, *s)
+                        .unwrap_or_else(|_| Decimal128Builder::new()),
                     *p,
                     *s,
                 ),
@@ -90,7 +91,11 @@ impl BatchBuilder {
         }
         self.rows += 1;
         match self.cursor_at {
-            Some(at) => Ok(Some(watermark_text(row, at, self.schema.field(at).data_type())?)),
+            Some(at) => Ok(Some(watermark_text(
+                row,
+                at,
+                self.schema.field(at).data_type(),
+            )?)),
             None => Ok(None),
         }
     }
@@ -133,9 +138,7 @@ fn append_one(
     at: usize,
     name: &str,
 ) -> Result<(), SourceError> {
-    let bad = |e: oracle::Error| {
-        SourceError::fatal(format!("reading column `{name}`: {e}"))
-    };
+    let bad = |e: oracle::Error| SourceError::fatal(format!("reading column `{name}`: {e}"));
     match column {
         Column::Int64(b) => b.append_option(row.get::<_, Option<i64>>(at).map_err(bad)?),
         // NaN and Infinity are legal BINARY_DOUBLE values and Arrow
@@ -193,10 +196,16 @@ fn append_one(
 fn utc_micros(stamp: oracle::sql_type::Timestamp) -> Result<i64, String> {
     let naive = chrono::NaiveDate::from_ymd_opt(stamp.year(), stamp.month(), stamp.day())
         .and_then(|d| {
-            d.and_hms_nano_opt(stamp.hour(), stamp.minute(), stamp.second(), stamp.nanosecond())
+            d.and_hms_nano_opt(
+                stamp.hour(),
+                stamp.minute(),
+                stamp.second(),
+                stamp.nanosecond(),
+            )
         })
         .ok_or_else(|| format!("`{stamp}` is not a representable instant"))?;
-    let offset_minutes = i64::from(stamp.tz_hour_offset()) * 60 + i64::from(stamp.tz_minute_offset());
+    let offset_minutes =
+        i64::from(stamp.tz_hour_offset()) * 60 + i64::from(stamp.tz_minute_offset());
     Ok(naive.and_utc().timestamp_micros() - offset_minutes * 60 * 1_000_000)
 }
 
@@ -232,11 +241,7 @@ fn scaled_i128(text: &str, scale: i8) -> Option<i128> {
 
 /// The watermark, rendered so it can be compared and written back
 /// into SQL on the next run.
-fn watermark_text(
-    row: &oracle::Row,
-    at: usize,
-    kind: &DataType,
-) -> Result<String, SourceError> {
+fn watermark_text(row: &oracle::Row, at: usize, kind: &DataType) -> Result<String, SourceError> {
     // BY THE DECLARED TYPE, never by asking for a String first: the
     // driver will happily render a DATE in the session's NLS format
     // (`02-JAN-26`), and the resume literal's format string then

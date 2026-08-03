@@ -183,8 +183,8 @@ impl OracleFixture {
         let dsn = format!("//{}:{}/{}", self.host, self.port, self.flavor.service());
         let owned: Vec<String> = statements.iter().map(|s| (*s).to_owned()).collect();
         tokio::task::spawn_blocking(move || {
-            let conn = oracle::Connection::connect(APP_USER, PASSWORD, &dsn)
-                .expect("fixture connect");
+            let conn =
+                oracle::Connection::connect(APP_USER, PASSWORD, &dsn).expect("fixture connect");
             for sql in &owned {
                 conn.execute(sql, &[])
                     .unwrap_or_else(|e| panic!("{sql}: {e}"));
@@ -249,7 +249,12 @@ pub fn batch_to_json(batch: &arrow::array::RecordBatch) -> Vec<serde_json::Value
             } else if let Some(a) = column.as_any().downcast_ref::<array::StringArray>() {
                 serde_json::json!(a.value(row))
             } else if let Some(a) = column.as_any().downcast_ref::<array::BinaryArray>() {
-                serde_json::json!(a.value(row).iter().map(|b| format!("{b:02x}")).collect::<String>())
+                serde_json::json!(
+                    a.value(row)
+                        .iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect::<String>()
+                )
             } else if let Some(a) = column.as_any().downcast_ref::<array::BooleanArray>() {
                 serde_json::json!(a.value(row))
             } else if let Some(a) = column.as_any().downcast_ref::<array::Decimal128Array>() {

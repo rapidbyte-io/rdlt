@@ -21,10 +21,7 @@ const ACTIONS: [&str; 3] = ["return", "panic", "1*off->return"];
 /// The read runs in its own task: the `panic` fail-point action
 /// panics inside it, and a panic must be an ATTEMPT failure to
 /// observe, not the death of the sweep.
-async fn attempt(
-    shell: Shell,
-    since: Option<rdlt_connector_sdk::spi::core::Cursor>,
-) -> Attempt {
+async fn attempt(shell: Shell, since: Option<rdlt_connector_sdk::spi::core::Cursor>) -> Attempt {
     let (out, mut incoming) = rdlt_connector_sdk::spi::records_channel(32 << 20);
     let reader = tokio::spawn(async move {
         shell
@@ -65,7 +62,11 @@ async fn attempt(
     // every armed attempt fails by construction, so recovery always
     // restarted from `None` and the assertion was satisfied by a
     // plain uncrashed read.
-    Attempt { ids, cursor, failed }
+    Attempt {
+        ids,
+        cursor,
+        failed,
+    }
 }
 
 /// One read attempt: what it delivered, where it got to, and whether
