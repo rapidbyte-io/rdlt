@@ -11,6 +11,48 @@ integrity first (this feature), house style second.
 
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
+`specs/032-oracle/plan.md` (feature: ORACLE SOURCE — a NEW connector,
+not a second generation, on branch `032-oracle` off main @ 662ccaf4.
+Built greenfield on the connector sdk, then REBUILT ONCE MID-FEATURE
+on the owner's call after review measured the driver, not the
+connector, as the problem. THE DRIVER DECISION IS THE FEATURE'S SPINE
+(plan.md T001/T003/T005): it started on `oracle-rs` (pure Rust, no
+Instant Client) which was VENDORED and patched four times, and review
+round 3 then showed most SEVERE defects were the driver's own —
+NVARCHAR2 silently destroyed, BINARY_DOUBLE mojibake, signed scale
+lost, a ~297-page cursor ceiling (measured twice: it never closes a
+server cursor) and an O(n^2) rescan, with 200k extrapolated at 3-7
+MINUTES. The alternative was PROBED LIVE and every one of those
+defects was simply absent, so D1 was reversed: the connector now
+rides `oracle` 0.6.3 (kubo/rust-oracle, ODPI-C, SYNCHRONOUS behind a
+dedicated thread) and the vendored fork plus ROWID keyset paging, SDU
+page sizing, connection recycling and the type_hints mechanism were
+DELETED rather than fixed — net -25,000 lines. THE TRANSPORT CHANGED
+WITH IT: oracle pushes ARROW, not NDJSON, joining postgres; the house
+rule is JSON for natively-JSON sources (rest, jsonl/csv) and Arrow
+for typed/columnar ones, and oracle was the outlier. Arrow is why
+decimals stay Decimal128 (exact at 38 digits, refusing rather than
+truncating), binary stays Binary (NDJSON hex-DOUBLED it), and NaN/Inf
+survive. THE PRICE, measured not assumed: ODPI-C compiles from
+vendored C source so the BUILD needs no Oracle client (verified — the
+e2e suite passes with none present, and there is no link-time
+libclntsh), but the CONNECTION dlopens one at RUNTIME; Instant Client
+is a 70 MB unauthenticated OTN download, fetchable by CI, NOT
+vendorable, and needs libaio. Live cells skip-not-fail without it.
+FIVE REVIEW ROUNDS, ~35 defects fixed and pinned; the recurring
+lesson is that a fix is not finished until attacked — round 2's D1
+was round 1's own fix, and the stale-statement infinite loop appeared
+THREE times (cursored, then cursorless). THE BENCHMARK IS THREE-WAY
+and recorded: rdlt 832.6 ms vs dlt 3.42 s (4.1x) vs Airbyte 45.45 s
+(54.6x) at 200k x 12 — but read the Airbyte ratio with 018's caveat,
+it is JOB WALL CLOCK including orchestration and sits in Airbyte's
+recorded ~45-60 s floor regardless of dataset size. rdlt/dlt
+reproduced across FOUR runs at 4.0-4.2x. GATE: 1094/1096, count
+exactly as predicted (1046 + 50), with ONE failure —
+postgres's memory_bound — PROVEN pre-existing on main four ways and
+left for postgres to own, NOT patched from inside this feature.
+STANDING: no README on the crate.)
+Previous feature 031 for reference:
 `specs/031-duckdb-v2/plan.md` (feature: DUCKDB SECOND GENERATION —
 COMPLETE and SWAPPED IN on branch `031-duckdb-v2` (off main @
 961d0b77; NOT merged): the duckdb destination rewritten

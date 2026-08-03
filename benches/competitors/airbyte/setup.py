@@ -210,7 +210,12 @@ CELLS = [
         "id": "oracle-to-pg-200k",
         "source": ("oracle", None), "destination": ("pg", DEST_DB),
         "stream": "EVENTS", "sync_mode": "full_refresh_overwrite",
-        "verify": pg_verify("events", 200_000),
+        # VERIFIED LIVE (032): Oracle folds identifiers upper, so the
+        # stream is `EVENTS`, and Airbyte's postgres destination
+        # PRESERVES that case — `public."EVENTS"`, confirmed by
+        # querying the fixture after the first successful sync. This
+        # is the correction the comment above anticipated.
+        "verify": pg_verify("EVENTS", 200_000),
     },
 ]
 

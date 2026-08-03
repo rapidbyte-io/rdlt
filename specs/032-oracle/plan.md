@@ -652,12 +652,36 @@ whatever Airbyte's pg destination normalizes that to … correct these
 two strings from the discover output rather than assuming the sync is
 broken"), which is precisely what happened.
 
-Fixed in `airbyte_api.py::pg_count` by matching the table name
-CASE-INSENSITIVELY and reading the real one back, rather than
-swapping one hard-coded guess for another: verifying that the ROWS
-landed is the point, and how a destination normalizes a stream name
-is its own business. The next connector whose identifiers case
-differently will not hit this.
+THE FIRST FIX WAS WRONG AND WAS REVERTED — worth recording, because
+it looked like the clean one. `pg_count` was made to match the table
+name CASE-INSENSITIVELY, on the reasoning that verifying the ROWS is
+the point and casing is the destination's business. That is unsafe
+HERE: every airbyte cell lands in the SAME `dest_airbyte.public`,
+where `pg-to-pg-1m` writes `events` (1,000,000 rows) and this cell
+writes `EVENTS` (200,000). A case-insensitive match with `LIMIT 1`
+picks ONE table for BOTH cells and verifies the wrong count — a
+verification turned into a coin flip, which is worse than the false
+negative it replaced.
+
+The PROPER fix is the one setup.py's comment prescribed: find out
+what the table is called and NAME it. The cell now declares
+`pg_verify("EVENTS", 200_000)` and `pg_count` keeps EXACT matching,
+which cannot collide. Both sites carry a comment recording why the
+loose version was rejected, so it does not get "simplified" back.
+
+PROVEN DIRECTLY rather than by another 90 s sync: with BOTH tables in
+one schema — `EVENTS` at 200,000 rows and `events` at 7 — the real
+`pg_count` returns 200000, 7 and `None` for a missing name. The
+case-insensitive version returned 200000 for BOTH, which is exactly
+the cross-cell mix-up it would have caused.
+
+TWO ENVIRONMENT FAILURES RECORDED, NOT RE-ROLLED, from re-running the
+cell to watch the corrected verification print: Airbyte's server
+raised `unable to create native thread` (2 GB free at the time; 7
+completed job pods and a 2.6 GB abctl image tarball were reclaimed,
+taking free memory to 7 GB) and then `port-forward did not become
+healthy within 15s`. Neither is a code fault and neither changes the
+recorded figures, which come from the run that succeeded.
 
 WHAT THE MISSING ARM MEANT BEFORE THIS. The harness reports the reason
 rather than hiding it: no `kubectl` on this machine and no running
