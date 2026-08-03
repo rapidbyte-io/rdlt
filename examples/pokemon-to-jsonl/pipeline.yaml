@@ -21,8 +21,7 @@ write_mode: replace
 # a table or a warehouse. Without it, each source page (100 rows here)
 # becomes its own part.
 batch_policy:
-  # every_rows: 1000
-  every_bytes: 100000
+  every_rows: 400
 
 source:
   # The source document, written INLINE. Every connector also accepts
