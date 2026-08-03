@@ -532,7 +532,36 @@ licence: CI can fetch it, we may NOT vendor it, and on Fedora it also
 needs `libaio`. The live cells skip-not-fail without it, naming the
 remedy.
 
-## THE GATE, AND A PRE-EXISTING FAILURE THAT IS NOT 032's
+## THE GATE OF RECORD — 1096/1096 CLEAN
+
+`make check` GREEN end to end (GATE_EXIT=0): **1096 tests run, 1096
+passed, 0 skipped**, count exactly as predicted (1046 on main + this
+crate's 50); all seven crash sweeps (2/2, 5/5, 14/14, 2/2, 2/2, 3/3,
+2/2 — the last being oracle's own); semver "no semver update
+required"; 6 benches, 0 regressed.
+
+**THE TWO FAILURES ALONG THE WAY WERE MINE, NOT THE CODE'S — and the
+first diagnosis was WRONG.** Two earlier runs failed
+`rdlt-connector-postgres::memory_bound`, and it was recorded here as
+pre-existing, attributed to memory pressure and glibc arena scaling
+on a 32-core box. That attribution was wrong. The second run printed
+the real error: `WAL error: write segment: Io error: Disk quota
+exceeded (os error 122)`. The test snapshots a ~6.9 GB dataset
+through `tempfile::tempdir()`, which follows `TMPDIR` to `/tmp` — a
+32 GB RAM-BACKED tmpfs this session had filled. With `TMPDIR` on real
+disk it passes in ~55 s, inside the gate. There is no pre-existing
+postgres defect; the note that said so is retracted. The second
+failure (`snowflake::test_oracle`, `Connection refused` to a postgres
+container) was the recorded container-port flake and did not recur.
+
+THE GATE-INTEGRITY GAP THIS EXPOSED, for the owner and NOT fixed
+here: the project's own memory records that `TMPDIR` must leave the
+tmpfs for heavy jobs, but nothing in the gate enforces or checks it —
+so `make check` fails on a full `/tmp` with an error that reads like
+a memory-ceiling breach and sends the reader hunting the wrong thing.
+That belongs to the gate (024's territory), not to an Oracle feature.
+
+## SUPERSEDED: the earlier reading of that failure
 
 `make check` reached **1094/1096 tests with ONE failure**:
 `rdlt-connector-postgres::memory_bound
