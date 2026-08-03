@@ -36,7 +36,7 @@ pub mod schema;
 pub mod state;
 pub mod types;
 
-pub use commit::{CommitCounters, CommitMeta, CommitPolicy, CommitReceipt, WriteMode};
+pub use commit::{BatchPolicy, CommitCounters, CommitMeta, CommitPolicy, CommitReceipt, WriteMode};
 pub use cursor::Cursor;
 pub use error::{ContractViolation, RdltError};
 pub use event::PipelineEvent;

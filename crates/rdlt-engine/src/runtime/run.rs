@@ -236,7 +236,10 @@ async fn run_once(
         report,
         base_state,
         load_id.clone(),
-        config.commit_policy,
+        crate::load::Policies {
+            commit: config.commit_policy,
+            batch: config.batch_policy,
+        },
         wal,
         events.clone(),
     );

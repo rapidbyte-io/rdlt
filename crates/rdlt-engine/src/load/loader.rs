@@ -7,7 +7,7 @@
 
 use std::time::Instant;
 
-use rdlt_connector::{DestinationCapabilities, LoadSession};
+use rdlt_connector::{DestinationCapabilities, LoadSession, RecordBatch};
 use rdlt_core::{
     CommitCounters, CommitMeta, CommitPolicy, LoadId, RdltError, RunReport, StateDoc, TableName,
     crash_point,
@@ -32,6 +32,15 @@ pub(crate) struct Loader {
     state: StateDoc,
     load_id: LoadId,
     policy: CommitPolicy,
+    /// How much to accumulate before each destination write. The
+    /// default writes straight through.
+    batch_policy: rdlt_core::BatchPolicy,
+    /// Rows waiting to be written, per table.
+    ///
+    /// Keyed by TABLE because a batch belongs to one, and Arrow
+    /// concatenation requires a single schema — two tables' rows
+    /// could never be one write.
+    pending: std::collections::BTreeMap<TableName, Pending>,
     counters: CommitCounters,
     commit_seq: u64,
     checkpoints_since_commit: u32,
@@ -49,13 +58,29 @@ pub(crate) struct Loader {
     structured_merge_keys: std::collections::BTreeMap<TableName, Vec<String>>,
 }
 
+/// The two cadences the loader obeys, passed together because they
+/// are read together and interact: a batch never spans a commit.
+pub(crate) struct Policies {
+    /// When a commit unit closes.
+    pub(crate) commit: CommitPolicy,
+    /// How much accumulates before each destination write.
+    pub(crate) batch: rdlt_core::BatchPolicy,
+}
+
+/// Rows accumulated for one table, waiting for a threshold.
+struct Pending {
+    batches: Vec<RecordBatch>,
+    rows: u64,
+    bytes: u64,
+}
+
 impl Loader {
     pub(crate) fn new(
         sink: Sink,
         report: RunReport,
         base_state: StateDoc,
         load_id: LoadId,
-        policy: CommitPolicy,
+        policies: Policies,
         wal: Option<Wal>,
         events: tokio::sync::broadcast::Sender<rdlt_core::PipelineEvent>,
     ) -> Self {
@@ -64,7 +89,9 @@ impl Loader {
             report,
             state: base_state,
             load_id,
-            policy,
+            policy: policies.commit,
+            batch_policy: policies.batch,
+            pending: std::collections::BTreeMap::new(),
             counters: CommitCounters::default(),
             commit_seq: 0,
             checkpoints_since_commit: 0,
@@ -158,13 +185,17 @@ impl Loader {
                 }
                 let rows = batch.num_rows() as u64;
                 let bytes = batch.get_array_memory_size() as u64;
-                apply::apply_batch(
-                    &mut *self.sink.session,
-                    &self.sink.capabilities,
-                    &table,
-                    &batch,
-                )
-                .await?;
+                if self.batch_policy.accumulates() {
+                    self.accumulate(&table, batch).await?;
+                } else {
+                    apply::apply_batch(
+                        &mut *self.sink.session,
+                        &self.sink.capabilities,
+                        &table,
+                        &batch,
+                    )
+                    .await?;
+                }
                 crash_point!(
                     "session.after_write",
                     Err(RdltError::config("injected crash after write (failpoint)",))
@@ -213,6 +244,75 @@ impl Loader {
         Ok(())
     }
 
+    /// Hold a batch until a threshold is reached.
+    ///
+    /// A SCHEMA CHANGE forces the buffer out first: Arrow can only
+    /// concatenate batches that share a schema, and mid-stream
+    /// evolution is exactly when they stop doing so.
+    async fn accumulate(&mut self, table: &TableName, batch: RecordBatch) -> Result<(), RdltError> {
+        let rows = batch.num_rows() as u64;
+        let bytes = batch.get_array_memory_size() as u64;
+        let schema_changed = self
+            .pending
+            .get(table)
+            .and_then(|pending| pending.batches.first())
+            .is_some_and(|held| held.schema() != batch.schema());
+        if schema_changed {
+            self.flush_table(table).await?;
+        }
+        let pending = self.pending.entry(table.clone()).or_insert(Pending {
+            batches: Vec::new(),
+            rows: 0,
+            bytes: 0,
+        });
+        pending.batches.push(batch);
+        pending.rows += rows;
+        pending.bytes += bytes;
+        if self.batch_policy.triggers(pending.rows, pending.bytes) {
+            self.flush_table(table).await?;
+        }
+        Ok(())
+    }
+
+    /// Write one table's accumulated rows as a SINGLE batch.
+    async fn flush_table(&mut self, table: &TableName) -> Result<(), RdltError> {
+        let Some(pending) = self.pending.remove(table) else {
+            return Ok(());
+        };
+        if pending.batches.is_empty() {
+            return Ok(());
+        }
+        let schema = pending.batches[0].schema();
+        let batch = if pending.batches.len() == 1 {
+            // The common case once a threshold is small relative to
+            // the source's batches: no copy at all.
+            pending.batches.into_iter().next().expect("one batch")
+        } else {
+            arrow::compute::concat_batches(&schema, pending.batches.iter())
+                .map_err(|e| RdltError::config(format!("coalescing batches for `{table}`: {e}")))?
+        };
+        apply::apply_batch(
+            &mut *self.sink.session,
+            &self.sink.capabilities,
+            table,
+            &batch,
+        )
+        .await
+    }
+
+    /// Write EVERY table's accumulated rows.
+    ///
+    /// Called before a commit closes and before the run ends, so a
+    /// commit is always made of whole writes and nothing is left
+    /// buffered when the loader stops.
+    async fn flush_all(&mut self) -> Result<(), RdltError> {
+        let tables: Vec<TableName> = self.pending.keys().cloned().collect();
+        for table in tables {
+            self.flush_table(&table).await?;
+        }
+        Ok(())
+    }
+
     /// Whichever threshold is reached FIRST ends the commit unit; the
     /// policy owns that rule, so the three counters this loader keeps
     /// are all it has to supply.
@@ -228,6 +328,10 @@ impl Loader {
     /// checkpointed) gets one final commit; a clean no-op run still commits once so a
     /// fresh pipeline's state document exists.
     pub(crate) async fn finish(&mut self) -> Result<(), RdltError> {
+        // Rows can be accumulating without the run being `dirty` in
+        // the commit sense, so the flush is unconditional: leaving
+        // buffered rows unwritten would lose them silently.
+        self.flush_all().await?;
         if self.dirty || self.commit_seq == 0 {
             self.commit().await?;
         }
@@ -235,6 +339,10 @@ impl Loader {
     }
 
     async fn commit(&mut self) -> Result<(), RdltError> {
+        // A BATCH NEVER SPANS A COMMIT. Whatever is still accumulating
+        // is written first, so the commit unit is made of whole
+        // writes and a resume never has to reason about half a batch.
+        self.flush_all().await?;
         self.commit_seq += 1;
         self.state.last_commit = Some(rdlt_core::LastCommit {
             load_id: self.load_id.clone(),
@@ -340,7 +448,10 @@ mod tests {
             RunReport::new(pipeline.clone(), load_id.clone()),
             StateDoc::new(pipeline, "test"),
             load_id,
-            policy,
+            Policies {
+                commit: policy,
+                batch: rdlt_core::BatchPolicy::default(),
+            },
             None,
             events,
         )

@@ -147,7 +147,10 @@ mod drain_loader_tests {
             RunReport::new(pipeline.clone(), load_id.clone()),
             StateDoc::new(pipeline, "test"),
             load_id,
-            CommitPolicy::default(),
+            crate::load::Policies {
+                commit: CommitPolicy::default(),
+                batch: rdlt_core::BatchPolicy::default(),
+            },
             None,
             events,
         )

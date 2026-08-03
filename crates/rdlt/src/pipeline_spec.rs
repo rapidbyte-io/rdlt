@@ -43,6 +43,20 @@ pub struct Spec {
     /// How rows land at the destination. Absent defaults to `Append`.
     #[serde(default, with = "serde_yaml::with::singleton_map")]
     pub write_mode: Option<WriteModeSpec>,
+    /// How many rows the engine accumulates before each destination
+    /// WRITE — and so, for file destinations, how many rows land in
+    /// each part.
+    ///
+    /// Destination-agnostic: `{every_rows: 50000}` means the same to
+    /// a file, a table and a warehouse. Absent writes each source
+    /// batch straight through, which is what happened before this
+    /// existed — so part size followed the SOURCE's paging.
+    ///
+    /// Distinct from `commit_policy`: this is write granularity
+    /// (throughput and memory), that is durability (what a crash
+    /// costs). A batch never spans a commit.
+    #[serde(default)]
+    pub batch_policy: Option<rdlt_core::BatchPolicy>,
     /// When accumulated rows are committed — and so, for file
     /// destinations, how many rows land in each part.
     ///
@@ -387,6 +401,10 @@ pub fn build_pipeline(spec: &Spec) -> Result<Pipeline, SpecError> {
     let builder = match &spec.workdir {
         Some(dir) => builder.workdir(dir),
         None => builder.workdir(".rdlt"),
+    };
+    let builder = match &spec.batch_policy {
+        Some(policy) => builder.batch_policy(*policy),
+        None => builder,
     };
     let builder = match &spec.commit_policy {
         // Refused here rather than honoured: a policy with no

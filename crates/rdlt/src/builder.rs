@@ -79,6 +79,13 @@ impl<S, D> PipelineBuilder<S, D> {
         self
     }
 
+    /// How much to accumulate before each destination WRITE
+    /// (default: write each source batch straight through).
+    pub fn batch_policy(mut self, policy: rdlt_core::BatchPolicy) -> Self {
+        self.config = self.config.with_batch_policy(policy);
+        self
+    }
+
     /// Commit grouping policy (default: every checkpoint).
     pub fn commit_policy(mut self, policy: CommitPolicy) -> Self {
         self.config = self.config.with_commit_policy(policy);

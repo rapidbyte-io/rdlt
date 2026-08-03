@@ -273,3 +273,119 @@ mod commit_policy_tests {
         policy.check().expect("valid");
     }
 }
+
+/// How many rows the engine accumulates before writing them to the
+/// destination.
+///
+/// Destination-AGNOSTIC on purpose. Every destination wants larger
+/// writes for the same reasons — fewer round trips, better parquet
+/// row groups, better bulk-load paths — so the accumulation belongs
+/// in the engine rather than being re-solved, and re-spelled, in each
+/// connector.
+///
+/// Thresholds behave like [`CommitPolicy`]'s: ANY of them ends the
+/// batch, whichever is reached first.
+///
+/// THE EMPTY POLICY IS MEANINGFUL HERE, unlike `CommitPolicy`'s. No
+/// threshold means "write each source batch straight through", which
+/// is the default and was the only behaviour before this existed. An
+/// empty `CommitPolicy` would mean "never commit", which is why that
+/// one is refused and this one is not.
+///
+/// A batch NEVER spans a commit: whatever has accumulated is flushed
+/// before the commit unit closes, so a commit is always made of whole
+/// writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct BatchPolicy {
+    /// Write once this many rows have accumulated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub every_rows: Option<u64>,
+    /// Write once the accumulated rows reach this many bytes, measured
+    /// as Arrow's in-memory size.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub every_bytes: Option<u64>,
+}
+
+impl BatchPolicy {
+    /// Accumulate to `rows` before each write.
+    pub fn every_rows(rows: u64) -> Self {
+        Self {
+            every_rows: Some(rows),
+            every_bytes: None,
+        }
+    }
+
+    /// Accumulate to `bytes` before each write.
+    pub fn every_bytes(bytes: u64) -> Self {
+        Self {
+            every_rows: None,
+            every_bytes: Some(bytes),
+        }
+    }
+
+    /// Add a byte threshold, keeping any already set.
+    #[must_use]
+    pub fn or_every_bytes(mut self, bytes: u64) -> Self {
+        self.every_bytes = Some(bytes);
+        self
+    }
+
+    /// Does this policy accumulate at all? A policy with no threshold
+    /// writes straight through, which is the default.
+    #[must_use]
+    pub fn accumulates(&self) -> bool {
+        self.every_rows.is_some() || self.every_bytes.is_some()
+    }
+
+    /// Has enough accumulated to write? `true` when ANY threshold is
+    /// reached.
+    #[must_use]
+    pub fn triggers(&self, rows: u64, bytes: u64) -> bool {
+        // `max(1)` so a zero threshold cannot ask for a write with
+        // nothing in hand.
+        self.every_rows.is_some_and(|n| rows >= n.max(1))
+            || self.every_bytes.is_some_and(|b| bytes >= b.max(1))
+    }
+}
+
+#[cfg(test)]
+mod batch_policy_tests {
+    use super::BatchPolicy;
+
+    /// The default writes straight through — exactly the behaviour
+    /// that existed before the policy did.
+    #[test]
+    fn the_default_does_not_accumulate() {
+        let policy = BatchPolicy::default();
+        assert!(!policy.accumulates());
+        assert!(!policy.triggers(u64::MAX, u64::MAX));
+    }
+
+    /// First threshold to be reached ends the batch.
+    #[test]
+    fn any_threshold_alone_triggers() {
+        let policy = BatchPolicy::every_rows(50_000).or_every_bytes(128 << 20);
+        assert!(policy.triggers(50_000, 0));
+        assert!(policy.triggers(0, 128 << 20));
+        assert!(!policy.triggers(49_999, (128 << 20) - 1));
+    }
+
+    /// A zero threshold must not ask for a write with nothing in hand.
+    #[test]
+    fn a_zero_threshold_still_needs_a_row() {
+        let policy = BatchPolicy::every_rows(0);
+        assert!(!policy.triggers(0, 0));
+        assert!(policy.triggers(1, 0));
+    }
+
+    /// The document form is what a pipeline writes.
+    #[test]
+    fn the_document_form_reads_as_written() {
+        let policy: BatchPolicy =
+            serde_yaml::from_str("every_rows: 50000\nevery_bytes: 134217728\n").expect("parses");
+        assert_eq!(policy.every_rows, Some(50_000));
+        assert_eq!(policy.every_bytes, Some(134_217_728));
+        assert!(policy.accumulates());
+    }
+}

@@ -148,24 +148,26 @@ them on every later run — the failure would look like success.
 Two DIFFERENT things decide the shape of the output, and it is worth
 keeping them apart.
 
-**How many rows land in each part FILE** is decided by the SOURCE's
-batch size — each batch the source pushes becomes one part. Measured
-on the pokemon example: `limit: "100"` gives 14 parts of 100 rows;
-`limit: "500"` gives 3 parts of 500. For Oracle the equivalent knob is
-`tuning.batch_rows` (default 8192).
+**How many rows land in each part FILE** is `batch_policy` — how much
+the engine accumulates before each destination write. It is
+destination-agnostic: the engine does the accumulating, so the same
+setting means the same thing to a file, a table or a warehouse.
 
 ```yaml
-source:
-  rest:
-    streams:
-      - name: pokemon
-        params:
-          limit: "500"        # → 500-row parts
+batch_policy:
+  every_rows: 50000
+  every_bytes: 134217728      # … or 128 MB, whichever first
 ```
 
-**How often work is COMMITTED** is `commit_policy`, and that is a
-durability decision, not a file-size one. A commit is the unit a crash
-can cost you and the point at which a resume restarts.
+Measured on the pokemon example, whose source still pages 100 rows at
+a time: without it, 14 parts of 100; with `every_rows: 600`, **3 parts
+of 600/600/151**. Read granularity and write granularity are separate
+decisions. Omitting it writes each source batch straight through,
+which is what happened before this existed.
+
+**How often work is COMMITTED** is `commit_policy` — a durability
+decision, not a file-size one. A commit is the unit a crash can cost
+you and the point a resume restarts from.
 
 ```yaml
 commit_policy:
@@ -173,24 +175,29 @@ commit_policy:
   every_seconds: 900          # … or every 15 minutes, whichever first
 ```
 
-Thresholds are a disjunction — whichever is reached first ends the
-commit unit — and any combination of `every_checkpoints`, `every_bytes`
-and `every_seconds` is allowed. Omitting it commits at every source
-checkpoint, which is the safest cadence because a crash then costs at
-most one checkpoint of re-extraction. A policy naming NO threshold is
-refused rather than honoured: it would hold everything uncommitted
-until the run ended.
+Both take any combination of thresholds and fire on whichever is
+reached first. A `commit_policy` naming NO threshold is refused — it
+would hold everything uncommitted until the run ended. An empty
+`batch_policy` is fine and means "write straight through".
 
-One caveat worth knowing: a source only checkpoints where it has a
-resumable position. The pokemon stream declares no cursor, so it
-checkpoints once at the end and the whole run is a single commit
-whatever `commit_policy` says. Add `incremental`/`cursor` and the
-per-page checkpoints — and so the policy — start to matter.
+### The one interaction worth knowing
 
-There is currently NO destination-side coalescing: rdlt will not merge
-small source batches into larger files. If you want 100 MB parts from
-a source that pages in hundreds of rows, today the lever is the
-source's batch size.
+**A batch never spans a commit, so the commit cadence is an upper
+bound on batching.** Set `batch_policy: {every_rows: 50000}` while
+committing at every checkpoint, and if checkpoints arrive every 100
+rows you will still get 100-row writes — the commit flushes what has
+accumulated before it closes. To get large writes you must let commits
+be at least as coarse:
+
+```yaml
+batch_policy:  {every_rows: 50000}
+commit_policy: {every_checkpoints: 500}
+```
+
+A source also only checkpoints where it has a resumable position. The
+pokemon stream declares no cursor, so it checkpoints once at the end —
+which is exactly why `every_rows: 600` works there with the default
+commit policy.
 
 ## Where to go next
 

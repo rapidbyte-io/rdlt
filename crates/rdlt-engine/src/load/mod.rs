@@ -8,4 +8,4 @@ mod loader;
 mod lowering;
 
 pub(crate) use item::LoadItem;
-pub(crate) use loader::{Loader, Sink};
+pub(crate) use loader::{Loader, Policies, Sink};

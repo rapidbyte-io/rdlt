@@ -42,6 +42,13 @@ struct Inner {
     committed: BTreeMap<TableName, Vec<Row>>,
     /// Ordered uncommitted writes of the current session.
     staged: Vec<(TableName, Vec<Row>)>,
+    /// Rows per `write` CALL, in order, across the whole run.
+    ///
+    /// The row totals alone cannot distinguish one write of 100 rows
+    /// from ten of 10, which is exactly the difference an engine-side
+    /// batch policy makes — so the granularity is recorded, not just
+    /// the contents.
+    write_sizes: Vec<usize>,
     schemas: BTreeMap<TableName, TableSchema>,
     modes: BTreeMap<TableName, WriteMode>,
     state: Option<StateDoc>,
@@ -113,6 +120,12 @@ impl MemoryDestination {
     }
 
     /// How many sessions were opened against this warehouse.
+    /// Rows per `write` call, in order — how the engine GROUPED the
+    /// rows, which row contents cannot show.
+    pub fn write_sizes(&self) -> Vec<usize> {
+        self.lock().write_sizes.clone()
+    }
+
     pub fn opens(&self) -> u64 {
         self.lock().opens
     }
@@ -217,6 +230,7 @@ impl LoadSession for MemorySession {
             )));
         }
         let mut inner = self.lock();
+        inner.write_sizes.push(rows.len());
         inner.staged.push((table.clone(), rows));
         Ok(())
     }

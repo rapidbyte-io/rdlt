@@ -19,6 +19,7 @@ pub struct EngineConfig {
     pub(crate) write_modes: BTreeMap<StreamName, WriteMode>,
     pub(crate) schema_policy: SchemaPolicy,
     pub(crate) commit_policy: CommitPolicy,
+    pub(crate) batch_policy: rdlt_core::BatchPolicy,
     pub(crate) workdir: Option<PathBuf>,
     pub(crate) byte_budget: usize,
 }
@@ -31,6 +32,7 @@ impl EngineConfig {
             write_modes: BTreeMap::new(),
             schema_policy: SchemaPolicy::evolve(),
             commit_policy: CommitPolicy::default(),
+            batch_policy: rdlt_core::BatchPolicy::default(),
             workdir: None,
             byte_budget: DEFAULT_BYTE_BUDGET,
         }
@@ -58,6 +60,16 @@ impl EngineConfig {
     }
 
     /// Sets when the engine commits: per checkpoint batch, or at run end.
+    /// How much to accumulate before each destination write.
+    ///
+    /// Destination-agnostic: the engine does the accumulating, so
+    /// every connector benefits without re-solving it. The default
+    /// writes each source batch straight through.
+    pub fn with_batch_policy(mut self, policy: rdlt_core::BatchPolicy) -> Self {
+        self.batch_policy = policy;
+        self
+    }
+
     pub fn with_commit_policy(mut self, policy: CommitPolicy) -> Self {
         self.commit_policy = policy;
         self

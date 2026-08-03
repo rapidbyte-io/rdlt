@@ -15,6 +15,14 @@ workdir: examples/pokemon-to-jsonl/.rdlt
 # `merge` to upsert on the declared primary key.
 write_mode: replace
 
+# How much the engine accumulates before each destination write —
+# and so how many rows land in each output file. Destination-agnostic:
+# the engine does the accumulating, so this means the same to a file,
+# a table or a warehouse. Without it, each source page (100 rows here)
+# becomes its own part.
+batch_policy:
+  every_rows: 600
+
 source:
   # The source document, written INLINE. Every connector also accepts
   # `config: <path>` instead, which is the better choice once a
