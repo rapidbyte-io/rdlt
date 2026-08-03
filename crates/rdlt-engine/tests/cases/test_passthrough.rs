@@ -155,7 +155,7 @@ async fn passthrough_freeze_rejects_before_publication() {
     let mut config = EngineConfig::new("pt-freeze");
     config =
         config.with_schema_policy(SchemaPolicy::evolve().table("metrics", PolicyAction::Freeze));
-    config = config.with_commit_policy(rdlt_core::CommitPolicy::EveryCheckpoints(1));
+    config = config.with_commit_policy(rdlt_core::CommitPolicy::every_checkpoints(1));
 
     let err = Engine::new(config, source, dest.clone())
         .run()
@@ -202,7 +202,7 @@ async fn structured_segments_replay_from_wal() {
     let flaky = CrashDestination::new(inner.clone(), FaultPoint::BeforeCommit(2));
     let mut config = EngineConfig::new("pt-crash");
     config = config.with_workdir(dir.path().to_path_buf());
-    config = config.with_commit_policy(rdlt_core::CommitPolicy::EveryCheckpoints(1));
+    config = config.with_commit_policy(rdlt_core::CommitPolicy::every_checkpoints(1));
 
     let source = ArrowSource {
         batches: vec![batch_ab(&[1], &["a"]), batch_ab(&[2], &["b"])],

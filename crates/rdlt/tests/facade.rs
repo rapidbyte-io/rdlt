@@ -181,3 +181,64 @@ destination:
         "`config:` mixed with inline keys must fail at parse"
     );
 }
+
+/// `commit_policy` reaches the engine from the pipeline document, and
+/// a policy that can never fire is REFUSED there.
+///
+/// The commit cadence is what decides how many rows land in each
+/// destination part, so without this the only way to change file size
+/// was to change how the SOURCE pages — conflating two decisions that
+/// are not the same one.
+#[cfg(all(feature = "rest", feature = "file"))]
+#[test]
+fn commit_policy_is_read_from_the_document_and_checked() {
+    use rdlt::pipeline_spec::Spec;
+
+    let with_policy = r#"
+pipeline: p
+workdir: /tmp/rdlt-commit-policy
+commit_policy:
+  every_bytes: 104857600
+  every_seconds: 900
+source:
+  rest:
+    base_url: https://example.invalid
+    auth: none
+    streams:
+      - name: s
+        path: /s
+destination:
+  file:
+    path: /tmp/rdlt-commit-policy-out
+    format: jsonl
+"#;
+    let spec: Spec = serde_yaml::from_str(with_policy).expect("parses");
+    let policy = spec.commit_policy.expect("present");
+    assert_eq!(policy.every_bytes, Some(104_857_600));
+    assert_eq!(policy.every_seconds, Some(900));
+    // 100 MB OR 15 minutes — whichever first.
+    assert!(policy.triggers(0, 104_857_600, 0));
+    assert!(policy.triggers(0, 0, 900));
+    rdlt::pipeline_spec::build_pipeline(&spec).expect("builds");
+
+    // A policy naming no threshold would never commit until the run
+    // ended, so it is refused rather than honoured.
+    let empty = with_policy.replace(
+        "commit_policy:\n  every_bytes: 104857600\n  every_seconds: 900",
+        "commit_policy: {}",
+    );
+    let spec: Spec = serde_yaml::from_str(&empty).expect("parses");
+    let err = rdlt::pipeline_spec::build_pipeline(&spec)
+        .expect_err("a policy with no threshold must not build")
+        .to_string();
+    assert!(err.contains("no threshold"), "{err}");
+
+    // Absent is the safe default, not an error.
+    let none = with_policy.replace(
+        "commit_policy:\n  every_bytes: 104857600\n  every_seconds: 900\n",
+        "",
+    );
+    let spec: Spec = serde_yaml::from_str(&none).expect("parses");
+    assert!(spec.commit_policy.is_none());
+    rdlt::pipeline_spec::build_pipeline(&spec).expect("builds with the default");
+}

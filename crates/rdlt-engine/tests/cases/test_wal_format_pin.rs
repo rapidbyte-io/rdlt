@@ -63,7 +63,7 @@ fn config(workdir: &Path) -> EngineConfig {
         .with_workdir(workdir.to_path_buf())
         // Both checkpoints accumulate into one span, so the fixture pins a
         // multi-batch, multi-checkpoint replay rather than the smallest one.
-        .with_commit_policy(CommitPolicy::EveryCheckpoints(2))
+        .with_commit_policy(CommitPolicy::every_checkpoints(2))
 }
 
 /// Copy every WAL file (manifest + segments) between directories, replacing

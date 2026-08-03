@@ -26,7 +26,7 @@ async fn second_run_resumes_from_committed_cursor() {
     let source1 = stream_with_batches(rdlt_connector::StreamSpec::new("events"), batches());
     let log1 = source1.since_log();
     let mut config = EngineConfig::new("incr");
-    config = config.with_commit_policy(CommitPolicy::EveryCheckpoints(1));
+    config = config.with_commit_policy(CommitPolicy::every_checkpoints(1));
     let report1 = Engine::new(config.clone(), source1, dest.clone())
         .run()
         .await
@@ -157,7 +157,7 @@ async fn replace_mode_replaces_per_run_not_per_commit() {
     let dest = MemoryDestination::new();
     let mut config = EngineConfig::new("replace");
     config = config.with_write_mode(WriteMode::Replace);
-    config = config.with_commit_policy(CommitPolicy::EveryCheckpoints(1));
+    config = config.with_commit_policy(CommitPolicy::every_checkpoints(1));
 
     let batches = vec![
         MemoryBatch::new(vec![json!({"v": "run1-a"})]).with_checkpoint(1),

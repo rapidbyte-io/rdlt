@@ -115,7 +115,7 @@ async fn mid_stream_transient_retry_does_not_duplicate_staged_rows() {
         .transient_fail_after_once(2), // …then the source dies transiently
     ]);
     let mut config = EngineConfig::new("retry-nodup");
-    config = config.with_commit_policy(rdlt_core::CommitPolicy::EveryCheckpoints(1));
+    config = config.with_commit_policy(rdlt_core::CommitPolicy::every_checkpoints(1));
 
     let report = Engine::new(config, source, dest.clone())
         .run()

@@ -18,7 +18,7 @@ async fn events_are_causally_ordered_and_report_matches_reality() {
     let dest = MemoryDestination::new();
     let source = stream_with_batches(rdlt_connector::StreamSpec::new("s"), evolving_batches());
     let mut config = EngineConfig::new("obs");
-    config = config.with_commit_policy(rdlt_core::CommitPolicy::EveryCheckpoints(1));
+    config = config.with_commit_policy(rdlt_core::CommitPolicy::every_checkpoints(1));
 
     let engine = Engine::new(config, source, dest.clone());
     let mut events = engine.events();

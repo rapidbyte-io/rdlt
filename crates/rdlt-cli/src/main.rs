@@ -222,7 +222,6 @@ async fn drive(pipeline: rdlt::Pipeline, report_path: Option<PathBuf>) -> Result
 #[cfg(test)]
 mod tests {
     use rdlt::pipeline_spec::{ConfigSpec, DestSpec, SourceSpec, Spec, WriteModeSpec};
-    use rdlt::sdk::config::Document;
     use serde::Deserialize;
 
     fn spec(yaml: &str) -> Spec {

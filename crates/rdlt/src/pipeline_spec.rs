@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use serde::Deserialize;
 
 use crate::builder::{Missing, PipelineBuilder};
-use crate::{Pipeline, WriteMode};
+use crate::{CommitPolicy, Pipeline, WriteMode};
 
 #[cfg(feature = "postgres-source")]
 use crate::connector::postgres::source::Config as PostgresConfig;
@@ -43,6 +43,16 @@ pub struct Spec {
     /// How rows land at the destination. Absent defaults to `Append`.
     #[serde(default, with = "serde_yaml::with::singleton_map")]
     pub write_mode: Option<WriteModeSpec>,
+    /// When accumulated rows are committed — and so, for file
+    /// destinations, how many rows land in each part.
+    ///
+    /// Thresholds, ANY of which ends the commit unit, whichever is
+    /// reached first: `{every_bytes: 104857600, every_seconds: 900}`
+    /// is "100 MB or every 15 minutes". Absent defaults to committing
+    /// at every source checkpoint, which is the safest cadence
+    /// because a crash can then cost at most one checkpoint of work.
+    #[serde(default)]
+    pub commit_policy: Option<CommitPolicy>,
     /// Where rows come from.
     #[serde(with = "serde_yaml::with::singleton_map")]
     pub source: SourceSpec,
@@ -377,6 +387,16 @@ pub fn build_pipeline(spec: &Spec) -> Result<Pipeline, SpecError> {
     let builder = match &spec.workdir {
         Some(dir) => builder.workdir(dir),
         None => builder.workdir(".rdlt"),
+    };
+    let builder = match &spec.commit_policy {
+        // Refused here rather than honoured: a policy with no
+        // threshold never fires, so the run would hold everything
+        // uncommitted until it ended.
+        Some(policy) => {
+            policy.check().map_err(SpecError::resolve)?;
+            builder.commit_policy(*policy)
+        }
+        None => builder,
     };
 
     match &spec.source {

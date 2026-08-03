@@ -143,6 +143,55 @@ them on every later run — the failure would look like success.
 
 ---
 
+## Controlling how rows are grouped
+
+Two DIFFERENT things decide the shape of the output, and it is worth
+keeping them apart.
+
+**How many rows land in each part FILE** is decided by the SOURCE's
+batch size — each batch the source pushes becomes one part. Measured
+on the pokemon example: `limit: "100"` gives 14 parts of 100 rows;
+`limit: "500"` gives 3 parts of 500. For Oracle the equivalent knob is
+`tuning.batch_rows` (default 8192).
+
+```yaml
+source:
+  rest:
+    streams:
+      - name: pokemon
+        params:
+          limit: "500"        # → 500-row parts
+```
+
+**How often work is COMMITTED** is `commit_policy`, and that is a
+durability decision, not a file-size one. A commit is the unit a crash
+can cost you and the point at which a resume restarts.
+
+```yaml
+commit_policy:
+  every_bytes: 104857600      # 100 MB …
+  every_seconds: 900          # … or every 15 minutes, whichever first
+```
+
+Thresholds are a disjunction — whichever is reached first ends the
+commit unit — and any combination of `every_checkpoints`, `every_bytes`
+and `every_seconds` is allowed. Omitting it commits at every source
+checkpoint, which is the safest cadence because a crash then costs at
+most one checkpoint of re-extraction. A policy naming NO threshold is
+refused rather than honoured: it would hold everything uncommitted
+until the run ended.
+
+One caveat worth knowing: a source only checkpoints where it has a
+resumable position. The pokemon stream declares no cursor, so it
+checkpoints once at the end and the whole run is a single commit
+whatever `commit_policy` says. Add `incremental`/`cursor` and the
+per-page checkpoints — and so the policy — start to matter.
+
+There is currently NO destination-side coalescing: rdlt will not merge
+small source batches into larger files. If you want 100 MB parts from
+a source that pages in hundreds of rows, today the lever is the
+source's batch size.
+
 ## Where to go next
 
 - `rdlt run <pipeline>` prints a JSON report: rows, commits, retries,

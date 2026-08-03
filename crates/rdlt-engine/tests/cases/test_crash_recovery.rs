@@ -29,7 +29,7 @@ fn source() -> MemorySource {
 
 fn config(workdir: &std::path::Path) -> EngineConfig {
     let mut config = EngineConfig::new("crash");
-    config = config.with_commit_policy(CommitPolicy::EveryCheckpoints(1));
+    config = config.with_commit_policy(CommitPolicy::every_checkpoints(1));
     config = config.with_workdir(workdir.to_path_buf());
     config
 }

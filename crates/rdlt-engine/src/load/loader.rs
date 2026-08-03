@@ -213,14 +213,15 @@ impl Loader {
         Ok(())
     }
 
+    /// Whichever threshold is reached FIRST ends the commit unit; the
+    /// policy owns that rule, so the three counters this loader keeps
+    /// are all it has to supply.
     fn policy_triggers(&self) -> bool {
-        match self.policy {
-            CommitPolicy::EveryCheckpoints(n) => self.checkpoints_since_commit >= n.max(1),
-            CommitPolicy::EveryBytes(bytes) => self.bytes_since_commit >= bytes,
-            CommitPolicy::EverySeconds(secs) => {
-                self.last_commit_at.elapsed().as_secs() >= u64::from(secs)
-            }
-        }
+        self.policy.triggers(
+            self.checkpoints_since_commit,
+            self.bytes_since_commit,
+            self.last_commit_at.elapsed().as_secs(),
+        )
     }
 
     /// Trailing work (rows after the last checkpoint, or a run that never
@@ -352,7 +353,7 @@ mod tests {
     /// commits at all — both caught here.
     #[test]
     fn every_seconds_boundary_fires_only_past_the_threshold() {
-        let mut loader = loader_with(CommitPolicy::EverySeconds(30));
+        let mut loader = loader_with(CommitPolicy::every_seconds(30));
         loader.last_commit_at = Instant::now() - Duration::from_secs(1);
         assert!(
             !loader.policy_triggers(),
@@ -367,7 +368,7 @@ mod tests {
 
     #[test]
     fn checkpoint_and_byte_policy_boundaries_are_exact() {
-        let mut loader = loader_with(CommitPolicy::EveryCheckpoints(2));
+        let mut loader = loader_with(CommitPolicy::every_checkpoints(2));
         loader.checkpoints_since_commit = 1;
         assert!(!loader.policy_triggers(), "one short of the threshold");
         loader.checkpoints_since_commit = 2;
@@ -381,7 +382,7 @@ mod tests {
         // only checks a nonzero count. Pinned as the function's own contract:
         // with nothing accumulated there is nothing to commit, and a commit
         // covering no new checkpoint would publish a cursor it does not own.
-        let mut loader = loader_with(CommitPolicy::EveryCheckpoints(0));
+        let mut loader = loader_with(CommitPolicy::every_checkpoints(0));
         loader.checkpoints_since_commit = 0;
         assert!(
             !loader.policy_triggers(),
@@ -393,7 +394,7 @@ mod tests {
             "EveryCheckpoints(0) behaves as 1, so one checkpoint commits"
         );
 
-        let mut loader = loader_with(CommitPolicy::EveryBytes(100));
+        let mut loader = loader_with(CommitPolicy::every_bytes(100));
         loader.bytes_since_commit = 99;
         assert!(!loader.policy_triggers(), "one byte short");
         loader.bytes_since_commit = 100;
