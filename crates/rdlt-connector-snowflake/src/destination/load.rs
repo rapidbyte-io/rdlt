@@ -103,6 +103,12 @@ pub struct Load {
     /// commit: one statement names every part a table accumulated,
     /// and the SaaS round trip is the cost that matters.
     pub(super) pending: BTreeMap<TableName, (Vec<String>, Vec<Part>)>,
+    /// How large a staged part grows before it is uploaded.
+    pub(super) parts: rdlt_connector_sdk::spi::PartOptions,
+    /// Parts still accumulating, keyed by DESTINATION table — the same
+    /// key `pending` uses, so a part and the COPY that will name it
+    /// cannot disagree about which table they belong to.
+    pub(super) open: BTreeMap<String, encode::OpenPart>,
 }
 
 // Debug is the workspace lint's requirement; the executor handle and
@@ -162,13 +168,9 @@ impl Load {
         let step = Step::ClearTarget {
             table: table.clone(),
         };
+        self.execute_step(&prepare_meta(&self.load_id, &self.pipeline), &step)
+            .await?;
         let executor = DmlOnly(&*self.executor);
-        self.execute_step(
-            &executor,
-            &prepare_meta(&self.load_id, &self.pipeline),
-            &step,
-        )
-        .await?;
         executor
             .execute(&format!(
                 "INSERT INTO {cleared} ({load_col}, {table_col}) VALUES ('{load}', '{t}')",
@@ -199,12 +201,86 @@ impl Load {
         Ok(())
     }
 
+    /// Close one open part, upload it, and record it for the COPY.
+    ///
+    /// The upload is where a part becomes real — before it, the bytes
+    /// exist only in this process and a crash simply loses them, which
+    /// is correct because nothing has claimed they landed.
+    async fn close_part(&mut self, table: &str) -> Result<(), DestinationError> {
+        let Some(part) = self.open.remove(table) else {
+            return Ok(());
+        };
+        // Asked BEFORE finishing: an empty part has no file worth
+        // finalising, and a zero-row part in `pending` would make the
+        // COPY name a file the service has nothing to load from.
+        if part.rows() == 0 {
+            return Ok(());
+        }
+        let (bytes, rows) = part.finish()?;
+        let Self {
+            stage,
+            executor,
+            config,
+            ..
+        } = self;
+        let qualified_stage = format!(
+            "{}.{}.{}",
+            quote(&config.database),
+            quote(&config.schema),
+            quote(stage.name())
+        );
+        let staged = stage
+            .put_part(&**executor, &qualified_stage, table, bytes, rows)
+            .await?;
+        // `or_default` rather than `expect`: the column list is written
+        // by `write` on the same path, but a part closed by the memory
+        // ceiling can reach here for a table whose entry is a beat
+        // behind, and an empty list would be repaired by that write.
+        self.pending
+            .entry(TableName::from(table))
+            .or_default()
+            .1
+            .push(staged);
+        Ok(())
+    }
+
+    /// Close EVERY open part — no part spans a commit, because the
+    /// COPY names whole staged files and a part still open has none.
+    async fn close_all_parts(&mut self) -> Result<(), DestinationError> {
+        for table in self.open.keys().cloned().collect::<Vec<_>>() {
+            self.close_part(&table).await?;
+        }
+        Ok(())
+    }
+
+    /// Keep the open parts inside their memory ceiling, closing the
+    /// LARGEST first — it is nearest its target, so it is the least
+    /// undersized part available.
+    async fn enforce_open_budget(&mut self) -> Result<(), DestinationError> {
+        loop {
+            let total: u64 = self.open.values().map(encode::OpenPart::encoded_len).sum();
+            if !self.parts.over_budget(total) {
+                return Ok(());
+            }
+            let Some(largest) = self
+                .open
+                .iter()
+                .max_by_key(|(_, part)| part.encoded_len())
+                .map(|(table, _)| table.clone())
+            else {
+                return Ok(());
+            };
+            self.close_part(&largest).await?;
+        }
+    }
+
     /// Load every pending part into its table, inside the open unit —
     /// one COPY per table, its loaded rowcount checked against what was
     /// written. Nothing should be able to make those differ, which is
     /// exactly why a difference means an assumption broke and the unit
     /// must not commit on it.
     async fn load_staged_parts(&mut self) -> Result<(), DestinationError> {
+        self.close_all_parts().await?;
         let pending = std::mem::take(&mut self.pending);
         for (table, (columns, parts)) in pending {
             if parts.is_empty() {
@@ -237,6 +313,9 @@ impl Load {
     /// COPY), and a cleanup failure must not fail a committed load; the
     /// aged reclaim at the next open sweeps the rest.
     async fn discard_staged(&mut self) {
+        // The OPEN parts are dropped outright — they exist only in
+        // memory and were never claimed to land.
+        self.open.clear();
         self.pending.clear();
         let qualified_stage = self.qualified(self.stage.name());
         self.stage.remove(&*self.executor, &qualified_stage).await;
@@ -273,12 +352,18 @@ impl Load {
     /// construction — the planner emits no schema work — and runs
     /// through the guarded executor, which enforces that instead of
     /// assuming it.
+    /// Takes `&mut self` although it mutates nothing, and builds its
+    /// own guarded executor rather than being handed one. Both are
+    /// forced by the same fact: this session holds an open parquet
+    /// writer, which is `Send` but never `Sync`, so a `&self` borrow
+    /// held across an await would not compile. `&mut self` reborrows
+    /// shared inside the body, so the reads below are unaffected.
     async fn execute_step(
-        &self,
-        executor: &DmlOnly<'_>,
+        &mut self,
         meta: &CommitMeta,
         step: &Step,
     ) -> Result<(), DestinationError> {
+        let executor = &DmlOnly(&*self.executor);
         match step {
             Step::ClearTarget { table } => {
                 // The dialect spells this DELETE — TRUNCATE would commit
@@ -559,13 +644,8 @@ impl Backend for Load {
             match step {
                 Step::ClearTarget { table } => self.clear_target(table).await?,
                 other => {
-                    let executor = DmlOnly(&*self.executor);
-                    self.execute_step(
-                        &executor,
-                        &prepare_meta(&self.load_id, &self.pipeline),
-                        &other,
-                    )
-                    .await?;
+                    self.execute_step(&prepare_meta(&self.load_id, &self.pipeline), &other)
+                        .await?;
                 }
             }
         }
@@ -579,33 +659,31 @@ impl Backend for Load {
             return Ok(());
         }
 
-        // The rows leave as one parquet part. The fields are split out
-        // of `self` because the upload needs the executor and the
-        // staging state at once, and both are the session's.
-        let part = {
-            let Self {
-                stage,
-                executor,
-                config,
-                ..
-            } = self;
-            let qualified_stage = format!(
-                "{}.{}.{}",
-                quote(&config.database),
-                quote(&config.schema),
-                quote(stage.name())
-            );
-            let bytes = encode::parquet_part(&schema, &batch)?;
-            stage
-                .put_part(
-                    &**executor,
-                    &qualified_stage,
-                    &destination_table,
-                    bytes,
-                    rows,
-                )
-                .await?
-        };
+        // The rows join the table's OPEN part, which spans as many
+        // writes as `parts` allows before it is uploaded. A parquet
+        // file holds one schema, so a widened projection closes the
+        // part first rather than trying to grow into it.
+        let key = destination_table.to_string();
+        if self
+            .open
+            .get(&key)
+            .is_some_and(|part| part.shape_differs(&schema, &batch))
+        {
+            self.close_part(&key).await?;
+        }
+        match self.open.get_mut(&key) {
+            Some(part) => part.append(&schema, &batch)?,
+            None => {
+                self.open
+                    .insert(key.clone(), encode::OpenPart::begin(&schema, &batch)?);
+            }
+        }
+        let part = self.open.get(&key).expect("just opened");
+        let (encoded, open_for) = (part.encoded_len(), part.open_for_secs());
+        if self.parts.should_roll(encoded, open_for) {
+            self.close_part(&key).await?;
+        }
+
         // The column list follows the LATEST write's schema, not the
         // first's: evolution is additive, so the newest set is a
         // superset covering every earlier part (whose files simply lack
@@ -620,8 +698,7 @@ impl Backend for Load {
             .entry(TableName::from(destination_table.as_str()))
             .or_default();
         entry.0 = schema.columns.iter().map(|c| c.name.clone()).collect();
-        entry.1.push(part);
-        Ok(())
+        self.enforce_open_budget().await
     }
 
     async fn existing_receipt(
@@ -738,8 +815,7 @@ impl Backend for Load {
         .map_err(DestinationError::fatal)?;
 
         for step in &script.steps {
-            let executor = DmlOnly(&*self.executor);
-            if let Err(e) = self.execute_step(&executor, &meta, step).await {
+            if let Err(e) = self.execute_step(&meta, step).await {
                 self.unit.rollback(&*self.executor).await;
                 self.cleared_in_unit.clear();
                 self.discard_staged().await;
@@ -963,6 +1039,8 @@ mod tests {
             single_unit_done: BTreeSet::new(),
             stage: Stage::new("p", "load-1"),
             pending: BTreeMap::new(),
+            parts: rdlt_connector_sdk::spi::PartOptions::default(),
+            open: BTreeMap::new(),
         };
         (load, log)
     }

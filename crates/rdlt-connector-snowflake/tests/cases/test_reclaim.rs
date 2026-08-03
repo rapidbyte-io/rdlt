@@ -12,8 +12,17 @@ use super::common::{config_for, credentials, scratch_schema};
 
 /// Stage a part WITHOUT committing (open a session, ensure, write, drop
 /// the session), leaving remote debris exactly as a crashed load would.
+///
+/// `parts` is forced to close on every write, because since 034 a
+/// write ACCUMULATES into an open part and only uploads it when the
+/// part rolls or a commit closes it. Under the shipping 128 MiB
+/// default three rows leave nothing remote at all — which is a real
+/// improvement (a crashed load below the target orphans nothing), and
+/// exactly why this test has to ask for the upload it wants to reclaim.
 async fn stage_orphan(doc: &serde_json::Value, pipeline: &str, load: &str) {
-    let shell = Shell::from_value(doc.clone()).expect("valid");
+    let mut doc = doc.clone();
+    doc["parts"] = serde_json::json!({"target_bytes": 1});
+    let shell = Shell::from_value(doc).expect("valid");
     let mut session = shell
         .open(OpenContext::new(
             PipelineId::from(pipeline),

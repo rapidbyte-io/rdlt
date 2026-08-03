@@ -316,3 +316,85 @@ Both arms landed exactly 16,000 records.
 
 `rdlt-connector-iceberg`: **74/74, 0 skipped**, live cells included
 (Polaris + RUSTFS). Clippy clean.
+
+---
+
+### Stage 4 — snowflake
+
+The file-destination shape again: one part per write, PUT immediately.
+Now an `OpenPart` per DESTINATION table (the same key `pending` uses,
+so a part and the COPY that will name it cannot disagree about which
+table they belong to), uploaded when it rolls or when the commit
+closes it.
+
+Three things the restructure forced:
+
+**`execute_step` had to stop taking `&self`.** Holding `&Load` across
+an await requires `Load: Sync`, and an open `ArrowWriter` is `Send`
+but never `Sync`. It now takes `&mut self` — mutating nothing, and
+reborrowing shared inside its own body — and builds its own guarded
+executor rather than being handed one, which is what freed the three
+call sites from holding a `DmlOnly` borrow across the call. The file
+destination hit the identical wall in `commit_log`, resolved there by
+making it a free function.
+
+**`parts` is declared BEFORE the flattened `options`.** `serde(flatten)`
+consumes whatever is left, so a field declared after it is never seen.
+
+**A part is asked for its rowcount BEFORE it is finished.** An empty
+part has no file worth finalising, and a zero-row part in `pending`
+would make the COPY name a file the service has nothing to load from.
+
+#### What the gate caught: fewer orphans
+
+`test_reclaim::stale_parts_are_reclaimed_and_fresh_parts_survive`
+failed at "the orphaned part is really there". Its setup writes three
+rows and drops the session without committing, expecting remote debris
+— but a write no longer uploads, so under the 128 MiB default there
+was nothing remote to reclaim.
+
+That is an IMPROVEMENT worth naming: **a load that crashes below the
+target now orphans nothing remotely**, because a part is only uploaded
+once it rolls or a commit closes it. The test now asks for the upload
+it wants to reclaim (`target_bytes: 1`), and says why.
+
+#### Stage 4 proof — live, against the account
+
+`test_parts.rs`: the same 2,000 rows into two scratch schemas
+differing only in `parts.target_bytes`, with the file count read from
+the service's own `INFORMATION_SCHEMA.COPY_HISTORY` — one row per file
+it loaded, an oracle independent of this crate.
+
+| target | files staged | rows landed |
+|---|---|---|
+| 4 KiB | 8 | 2,000 |
+| 128 MiB (default) | 1 | 2,000 |
+
+The target decides the file count and never the row count.
+
+### Stage 5 — the refusals
+
+`postgres` and `duckdb` REFUSE `parts`: rows going into a table have
+no file whose size it could describe. `deny_unknown_fields` was
+already doing the refusing, so the work was to PIN it — one cell each,
+asserting the error names the field — so that removing the attribute,
+or adding a field that shadows it, fails a test instead of silently
+making a meaningless setting look effective.
+
+### Stage 6 — docs
+
+`examples/README.md` now opens the grouping section with the three
+questions and which knob answers each, since the confusion that
+started this feature was picking `batch_policy` for a file-size
+question. It carries the per-destination table, the two honest
+caveats (overshoot, and no background timer), the memory ceiling, and
+the measured commit-cadence trap.
+
+## Gate of record — 034 complete
+
+`cargo nextest run --workspace`: **1138/1138, 0 skipped**, with live
+Polaris, RUSTFS, Postgres, Oracle and Snowflake cells all running.
+Clippy clean workspace-wide, all targets. `TMPDIR` off the tmpfs.
+
+Counts by stage: 1129 (stages 1-2) → 1132 (stage 3) → 1136 (stage 4)
+→ 1138 (stage 5).

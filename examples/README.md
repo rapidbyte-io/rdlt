@@ -185,7 +185,28 @@ tuning knob. An open part lives in memory until it closes, and a
 `partition_by` destination holds one per partition — without a ceiling
 the footprint would be partitions × target. When the ceiling is
 reached the largest open part is closed early, which costs file size,
-not correctness.
+not correctness. A ceiling below `target_bytes` is refused: the target
+could never be reached, and you would never be told.
+
+### Which destinations take `parts`
+
+The ones that write files. `file`, `iceberg` and `snowflake` all
+accept the block and honour it; `postgres` and `duckdb` REFUSE it,
+because rows going into a table have no file whose size it could
+describe. A refusal is deliberate — a setting quietly accepted and
+never applied is worse than one that is rejected.
+
+Two per-destination notes:
+
+- **iceberg** hands `target_bytes` to the Iceberg library's own
+  rolling file writer, i.e. the table property
+  `write.target-file-size-bytes`. rdlt's 128 MiB applies rather than
+  the library's 512 MiB default, so every destination writes the same
+  size. `max_open_bytes` has nothing to bound there: the library
+  streams each file out instead of accumulating it in memory.
+- **snowflake** stages parts and then loads them with one `COPY`. The
+  service's own guidance is 100-250 MB compressed per file for load
+  parallelism, which the default sits inside.
 
 ### Write granularity: `batch_policy`
 

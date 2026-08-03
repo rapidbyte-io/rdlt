@@ -61,6 +61,17 @@ pub struct Config {
     /// similar deployments front the account under their own name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
+    /// Staged-part sizing; absent = the SPI's 128 MiB default.
+    ///
+    /// The service's own guidance is 100-250 MB compressed per file
+    /// for load parallelism, so the shared default sits inside its
+    /// recommended band. Rows accumulate in memory until a part
+    /// closes, which is what `max_open_bytes` bounds.
+    ///
+    /// Declared BEFORE the flattened options: `flatten` consumes
+    /// whatever is left, so a field after it would never be seen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parts: Option<rdlt_connector_sdk::spi::PartOptions>,
     /// The shared SQL-destination options (merge strategy, hard delete,
     /// dedup sort, merge scope, scd2), flattened so the document reads
     /// identically on every SQL destination.
@@ -247,6 +258,12 @@ impl Config {
         // contradictory merge options parsed clean and failed mid-load);
         // the fresh suite exposed the gap and this closes it, with
         // sqlcore's own frozen sentence as the detail.
+        if let Some(parts) = &self.parts {
+            parts.validate().map_err(|e| ConfigError::Invalid {
+                field: "parts",
+                detail: e.to_string(),
+            })?;
+        }
         self.options
             .validate()
             .map_err(|detail| ConfigError::Invalid {

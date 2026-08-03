@@ -225,6 +225,27 @@ async fn non_bool_hard_delete_flag_uses_is_not_null() {
 /// block. Each cell asks the schema and the parser the same question, so a
 /// drift between the two shows up as a disagreement rather than as a
 /// document that validates and then fails to load.
+/// 034: `parts` is REFUSED here, not accepted and ignored.
+///
+/// This destination writes rows into tables — there is no output file
+/// for a part size to describe. `deny_unknown_fields` already does the
+/// refusing; the pin exists so that removing it, or adding a field
+/// that shadows it, fails a test rather than silently making a
+/// meaningless setting look effective.
+#[test]
+fn part_sizing_is_refused_because_there_are_no_files() {
+    use rdlt_connector_sdk::config::Document;
+
+    let err = rdlt_connector_postgres::destination::Config::from_value(json!({
+        "conn": "host=localhost",
+        "parts": {"target_bytes": 134217728},
+    }))
+    .expect_err("refused")
+    .to_string();
+    assert!(err.contains("parts"), "the refusal names the field: {err}");
+    assert!(err.contains("unknown field"), "{err}");
+}
+
 mod schema {
     use jsonschema::validator_for;
     use rdlt_connector_postgres::destination::DestinationOptions;

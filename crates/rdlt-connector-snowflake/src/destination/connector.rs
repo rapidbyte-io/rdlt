@@ -160,6 +160,8 @@ impl DestinationConnector for Snowflake {
             single_unit_done: std::collections::BTreeSet::new(),
             stage,
             pending: std::collections::BTreeMap::new(),
+            parts: self.config.parts.unwrap_or_default(),
+            open: std::collections::BTreeMap::new(),
         })
     }
 }

@@ -23,6 +23,25 @@ fn setting_keys_and_extension_names_must_be_bare() {
     );
 }
 
+/// 034: `parts` is REFUSED here, not accepted and ignored.
+///
+/// This destination appends into tables — there is no output file for
+/// a part size to describe. `deny_unknown_fields` already does the
+/// refusing; the pin exists so that removing it, or adding a field
+/// that shadows it, fails a test rather than silently making a
+/// meaningless setting look effective.
+#[test]
+fn part_sizing_is_refused_because_there_are_no_files() {
+    let err = Config::from_value(serde_json::json!({
+        "path": "x.duckdb",
+        "parts": {"target_bytes": 134217728},
+    }))
+    .expect_err("refused")
+    .to_string();
+    assert!(err.contains("parts"), "the refusal names the field: {err}");
+    assert!(err.contains("unknown field"), "{err}");
+}
+
 /// A full write→commit→read-back round trip through the Shell against
 /// a real database file — the Backend works before the suite grows.
 #[tokio::test]

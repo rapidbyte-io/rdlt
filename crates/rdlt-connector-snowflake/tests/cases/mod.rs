@@ -12,6 +12,7 @@ mod test_load;
 mod test_merge;
 mod test_options;
 mod test_oracle;
+mod test_parts;
 mod test_quickstart;
 mod test_reclaim;
 mod test_secret_hygiene;
