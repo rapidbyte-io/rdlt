@@ -136,3 +136,96 @@ fn a_real_run_holds_the_stdout_stderr_and_report_contract() {
             .expect("report file parses");
     assert_eq!(written["pipeline"], "contract");
 }
+
+/// `validate` runs the real gates and nothing after them: a valid
+/// pipeline says so and exits 0 without touching the source; an
+/// invalid one carries the same exit code a run would.
+#[test]
+fn validate_gates_without_running() {
+    let (_dir, spec) = fresh_pipeline();
+    let out = rdlt().arg("validate").arg(&spec).output().expect("spawn");
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(out.stdout.is_empty(), "validate writes no machine output");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("ok: pipeline contract is valid"),
+        "{:?}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let bad = dir.path().join("bad.yaml");
+    std::fs::write(&bad, "pipeline: p\nsource:\n  file:\n    streams: []\n").expect("write");
+    let out = rdlt().arg("validate").arg(&bad).output().expect("spawn");
+    assert_eq!(out.status.code(), Some(2));
+}
+
+/// `schema` prints exactly one JSON document to stdout, for every
+/// spelling the flag accepts.
+#[test]
+fn schema_prints_json_for_every_connector() {
+    for name in [
+        "rest-source",
+        "postgres-source",
+        "oracle-source",
+        "file-source",
+        "file-dest",
+        "postgres-dest",
+        "duckdb-dest",
+        "snowflake-dest",
+        "iceberg-dest",
+    ] {
+        let out = rdlt().args(["schema", name]).output().expect("spawn");
+        assert_eq!(out.status.code(), Some(0), "{name}");
+        let schema: serde_json::Value = serde_json::from_slice(&out.stdout)
+            .unwrap_or_else(|e| panic!("{name}: stdout is one JSON document: {e}"));
+        assert!(
+            schema.get("properties").is_some() || schema.get("$defs").is_some(),
+            "{name}: looks like a JSON Schema: {schema}"
+        );
+    }
+}
+
+/// `--events` writes the feed as NDJSON: one JSON object per line,
+/// run_started first, committed present. `--events -` without
+/// `--report` is refused before anything runs — stdout belongs to one
+/// machine output at a time.
+#[test]
+fn events_ndjson_sink_holds_its_contract() {
+    let (dir, spec) = fresh_pipeline();
+    let events_path = dir.path().join("events.ndjson");
+    let out = rdlt()
+        .arg("run")
+        .arg(&spec)
+        .arg("--events")
+        .arg(&events_path)
+        .output()
+        .expect("spawn");
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let ndjson = std::fs::read_to_string(&events_path).expect("events file");
+    let events: Vec<serde_json::Value> = ndjson
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("each line is JSON: {e}: {l}")))
+        .collect();
+    assert_eq!(
+        events.first().and_then(|e| e["event"].as_str()),
+        Some("run_started"),
+        "the feed identifies the run first"
+    );
+    assert!(
+        events.iter().any(|e| e["event"] == "committed"),
+        "the commit is in the feed"
+    );
+
+    let (_dir, spec) = fresh_pipeline();
+    let out = rdlt()
+        .args(["run"])
+        .arg(&spec)
+        .args(["--events", "-"])
+        .output()
+        .expect("spawn");
+    assert_eq!(out.status.code(), Some(2), "stdout collision refused");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("--report"),
+        "the refusal names the fix"
+    );
+}

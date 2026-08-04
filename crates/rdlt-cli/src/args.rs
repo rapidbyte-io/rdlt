@@ -44,7 +44,46 @@ pub enum Command {
         /// Write the JSON run report here instead of stdout.
         #[arg(long, value_name = "path")]
         report: Option<PathBuf>,
+
+        /// Also write every pipeline event as NDJSON — to a file, or
+        /// to stdout with `-` (which then requires `--report`, so the
+        /// two machine outputs never interleave).
+        #[arg(long, value_name = "path|-")]
+        events: Option<PathBuf>,
     },
+    /// Parse and build a pipeline through the real gates, run nothing.
+    ///
+    /// Every refusal a run would hit at build time surfaces here:
+    /// document typos, contradictory options, unsupported write modes.
+    /// One caveat: destinations are constructed for real, so the
+    /// duckdb destination creates its (empty) database file exactly as
+    /// a run would.
+    Validate {
+        /// The pipeline document.
+        #[arg(value_name = "pipeline.yaml")]
+        spec: PathBuf,
+    },
+    /// Print a connector's configuration JSON Schema to stdout.
+    Schema {
+        /// Which connector's document to describe.
+        #[arg(value_enum)]
+        connector: SchemaFor,
+    },
+}
+
+/// Every connector document the CLI can describe, spelled
+/// `<system>-<side>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum SchemaFor {
+    RestSource,
+    PostgresSource,
+    OracleSource,
+    FileSource,
+    FileDest,
+    PostgresDest,
+    DuckdbDest,
+    SnowflakeDest,
+    IcebergDest,
 }
 
 /// The color ladder. `console` already honours NO_COLOR under
@@ -88,13 +127,17 @@ mod tests {
     #[test]
     fn the_frozen_run_spelling_parses() {
         let cli = Cli::try_parse_from(["rdlt", "run", "p.yaml"]).expect("parses");
-        let Command::Run { spec, report } = cli.command;
+        let Command::Run { spec, report, .. } = cli.command else {
+            panic!("run parses as Run");
+        };
         assert_eq!(spec, PathBuf::from("p.yaml"));
         assert_eq!(report, None);
 
         let cli =
             Cli::try_parse_from(["rdlt", "run", "p.yaml", "--report", "r.json"]).expect("parses");
-        let Command::Run { report, .. } = cli.command;
+        let Command::Run { report, .. } = cli.command else {
+            panic!("run parses as Run");
+        };
         assert_eq!(report, Some(PathBuf::from("r.json")));
     }
 

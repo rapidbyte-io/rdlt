@@ -14,10 +14,50 @@ use crate::{CliError, cdc, ui};
 pub(crate) async fn run(
     spec_path: PathBuf,
     report_path: Option<PathBuf>,
+    events_path: Option<PathBuf>,
     verbosity: Verbosity,
     renderer: RendererKind,
 ) -> Result<(), CliError> {
-    let raw = std::fs::read_to_string(&spec_path)
+    // `--events -` claims stdout, which is the report's channel: the
+    // two machine outputs must never interleave, so the report has to
+    // be redirected first.
+    let events_to_stdout = events_path.as_deref() == Some(std::path::Path::new("-"));
+    if events_to_stdout && report_path.is_none() {
+        return Err(CliError::Usage(
+            "`--events -` writes NDJSON to stdout, where the report would go —              add `--report <path>` to give the report its own destination"
+                .into(),
+        ));
+    }
+
+    let (spec, pipeline_name) = load_spec(&spec_path)?;
+    let pipeline = pipeline_spec::build_pipeline(&spec)?;
+    let events_sink = match events_path {
+        None => None,
+        Some(path) if events_to_stdout => {
+            drop(path);
+            Some(EventSink::Stdout)
+        }
+        Some(path) => Some(EventSink::File(std::io::BufWriter::new(
+            std::fs::File::create(&path)
+                .map_err(|e| CliError::Io(format!("creating {}: {e}", path.display())))?,
+        ))),
+    };
+    drive(
+        pipeline,
+        pipeline_name,
+        report_path,
+        events_sink,
+        verbosity,
+        renderer,
+    )
+    .await
+}
+
+/// Parse the document and surface the CDC composition advisories —
+/// shared by `run` and `validate`, so the two can never disagree
+/// about what a valid document is.
+fn load_spec(spec_path: &std::path::Path) -> Result<(Spec, String), CliError> {
+    let raw = std::fs::read_to_string(spec_path)
         .map_err(|e| CliError::Io(format!("reading {}: {e}", spec_path.display())))?;
     let spec: Spec =
         serde_yaml::from_str(&raw).map_err(|e| CliError::Usage(format!("parsing spec: {e}")))?;
@@ -30,10 +70,48 @@ pub(crate) async fn run(
             eprintln!("warning: {warning}");
         }
     }
+    let name = spec.pipeline.clone();
+    Ok((spec, name))
+}
 
-    let pipeline_name = spec.pipeline.clone();
-    let pipeline = pipeline_spec::build_pipeline(&spec)?;
-    drive(pipeline, pipeline_name, report_path, verbosity, renderer).await
+/// `rdlt validate` — the same gates a run passes on its way to the
+/// first byte, and nothing after them.
+pub(crate) async fn validate(spec_path: PathBuf) -> Result<(), CliError> {
+    let (spec, pipeline_name) = load_spec(&spec_path)?;
+    let _pipeline = pipeline_spec::build_pipeline(&spec)?;
+    eprintln!("ok: pipeline {pipeline_name} is valid");
+    Ok(())
+}
+
+/// Where `--events` NDJSON goes.
+enum EventSink {
+    Stdout,
+    File(std::io::BufWriter<std::fs::File>),
+}
+
+impl EventSink {
+    fn write(&mut self, event: &rdlt::prelude::PipelineEvent) {
+        use std::io::Write as _;
+        // Advisory, like the feed itself: a sink failure warns once at
+        // flush, never fails the run.
+        if let Ok(line) = serde_json::to_string(event) {
+            match self {
+                EventSink::Stdout => println!("{line}"),
+                EventSink::File(w) => {
+                    let _ = writeln!(w, "{line}");
+                }
+            }
+        }
+    }
+
+    fn finish(self) {
+        use std::io::Write as _;
+        if let EventSink::File(mut w) = self {
+            if let Err(e) = w.flush() {
+                eprintln!("warning: flushing --events file: {e}");
+            }
+        }
+    }
 }
 
 /// Event feed + run + report emission (shared tail after the pipeline
@@ -44,15 +122,25 @@ async fn drive(
     pipeline: rdlt::Pipeline,
     pipeline_name: String,
     report_path: Option<PathBuf>,
+    mut events_sink: Option<EventSink>,
     verbosity: Verbosity,
     renderer: RendererKind,
 ) -> Result<(), CliError> {
     let mut events = pipeline.events();
     let feed = tokio::spawn(async move {
         match renderer {
-            RendererKind::Quiet => while events.recv().await.is_some() {},
+            RendererKind::Quiet => {
+                while let Some(event) = events.recv().await {
+                    if let Some(sink) = &mut events_sink {
+                        sink.write(&event);
+                    }
+                }
+            }
             RendererKind::Plain => {
                 while let Some(event) = events.recv().await {
+                    if let Some(sink) = &mut events_sink {
+                        sink.write(&event);
+                    }
                     if let Some(line) = ui::plain::line(&event, verbosity) {
                         eprintln!("{line}");
                     }
@@ -64,7 +152,12 @@ async fn drive(
                 loop {
                     tokio::select! {
                         event = events.recv() => match event {
-                            Some(event) => display.apply(&event),
+                            Some(event) => {
+                                if let Some(sink) = &mut events_sink {
+                                    sink.write(&event);
+                                }
+                                display.apply(&event);
+                            }
                             None => break,
                         },
                         _ = tick.tick() => display.redraw(),
@@ -74,6 +167,9 @@ async fn drive(
                 // carries the durable numbers.
                 display.clear();
             }
+        }
+        if let Some(sink) = events_sink {
+            sink.finish();
         }
     });
 

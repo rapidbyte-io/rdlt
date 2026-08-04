@@ -23,6 +23,7 @@
 mod args;
 mod cdc;
 mod run;
+mod schema;
 mod ui;
 
 use std::process::ExitCode;
@@ -106,9 +107,13 @@ fn main() -> ExitCode {
     );
     let verbosity = cli.verbosity();
     let outcome = match cli.command {
-        args::Command::Run { spec, report } => {
-            runtime.block_on(run::run(spec, report, verbosity, renderer))
-        }
+        args::Command::Run {
+            spec,
+            report,
+            events,
+        } => runtime.block_on(run::run(spec, report, events, verbosity, renderer)),
+        args::Command::Validate { spec } => runtime.block_on(run::validate(spec)),
+        args::Command::Schema { connector } => schema::print(connector),
     };
     match outcome {
         Ok(()) => ExitCode::SUCCESS,
