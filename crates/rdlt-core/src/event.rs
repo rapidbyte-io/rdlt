@@ -10,7 +10,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::cursor::Cursor;
-use crate::ids::{StreamName, TableName};
+use crate::ids::{LoadId, StreamName, TableName};
+use crate::report::ResumedFrom;
 use crate::schema::SchemaDelta;
 
 /// What a run reports as it happens.
@@ -24,6 +25,16 @@ use crate::schema::SchemaDelta;
 #[serde(tag = "event", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum PipelineEvent {
+    /// The run is identified and about to start its streams. The FIRST
+    /// event of every run — the feed's answer to "which load is this,
+    /// and did it resume": before it, a consumer knows only the
+    /// pipeline it subscribed to.
+    RunStarted {
+        /// This run's identity — the same id the report will carry.
+        load_id: LoadId,
+        /// How the run started relative to previous state.
+        resumed_from: ResumedFrom,
+    },
     /// A stream began reading.
     StreamStarted {
         /// The stream.

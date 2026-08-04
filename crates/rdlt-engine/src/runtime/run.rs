@@ -197,7 +197,11 @@ async fn run_once(
         .transpose()?;
 
     let mut report = RunReport::new(config.pipeline.clone(), load_id.clone());
-    report.resumed_from = resumed_from;
+    report.resumed_from = resumed_from.clone();
+    let _ = events.send(rdlt_core::PipelineEvent::RunStarted {
+        load_id: load_id.clone(),
+        resumed_from,
+    });
     report.retries = prior_retries;
 
     // ---- Wire the graph ----

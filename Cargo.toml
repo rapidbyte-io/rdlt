@@ -126,6 +126,8 @@ rcgen = "0.13"
 toml = "0.8"
 # rdlt-bench (dev-only, publish=false) exclusively — never a runtime dep.
 clap = { version = "4", features = ["derive"] }
+console = "0.16"
+indicatif = "0.18"
 
 # Adopted 2026-07-25 from a recorded four-arm sweep (stock / cgu1 / thin / fat+cgu1,
 # 9 interleaved runs each on the 1M-row relational cell): fat+cgu1 is the only arm

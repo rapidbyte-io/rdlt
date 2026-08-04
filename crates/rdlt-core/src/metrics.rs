@@ -211,7 +211,7 @@ impl Metrics {
             // Deliberately exhaustive IN-CRATE: a new event variant must
             // decide here what the fold does with it, at compile time —
             // foreign consumers see `#[non_exhaustive]` instead.
-            PipelineEvent::Heartbeat { .. } => {}
+            PipelineEvent::RunStarted { .. } | PipelineEvent::Heartbeat { .. } => {}
         }
     }
 

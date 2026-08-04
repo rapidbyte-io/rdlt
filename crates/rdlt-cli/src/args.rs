@@ -19,6 +19,16 @@ pub struct Cli {
     #[arg(short, long, global = true, action = ArgAction::Count)]
     pub verbose: u8,
 
+    /// Never draw the live progress display; log a line per event
+    /// instead (the automatic behaviour when stderr is not a
+    /// terminal).
+    #[arg(long, global = true)]
+    pub no_progress: bool,
+
+    /// When to color output. `auto` follows the terminal and NO_COLOR.
+    #[arg(long, global = true, value_enum, default_value_t = ColorChoice::Auto)]
+    pub color: ColorChoice,
+
     #[command(subcommand)]
     pub command: Command,
 }
@@ -35,6 +45,15 @@ pub enum Command {
         #[arg(long, value_name = "path")]
         report: Option<PathBuf>,
     },
+}
+
+/// The color ladder. `console` already honours NO_COLOR under
+/// `auto`; the explicit forms override both it and the TTY check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum ColorChoice {
+    Auto,
+    Always,
+    Never,
 }
 
 /// The verbosity ladder the renderers read, resolved from the flags.

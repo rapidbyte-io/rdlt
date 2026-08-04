@@ -40,10 +40,20 @@ async fn events_are_causally_ordered_and_report_matches_reality() {
         .position(|e| matches!(e, PipelineEvent::BatchLoaded { .. }))
         .expect("batch event");
     assert!(first_evolve < first_batch, "delta before batch");
+    // 036: RunStarted identifies the run before anything else; the
+    // first STREAM event follows it.
     assert!(
-        matches!(seen.first(), Some(PipelineEvent::StreamStarted { .. })),
-        "stream start first, got {:?}",
+        matches!(seen.first(), Some(PipelineEvent::RunStarted { .. })),
+        "run identity first, got {:?}",
         seen.first()
+    );
+    assert!(
+        seen.iter()
+            .position(|e| matches!(e, PipelineEvent::StreamStarted { .. }))
+            < seen
+                .iter()
+                .position(|e| matches!(e, PipelineEvent::BatchLoaded { .. })),
+        "stream start precedes its batches"
     );
     let commits = seen
         .iter()

@@ -94,9 +94,21 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    match cli.color {
+        args::ColorChoice::Auto => {}
+        args::ColorChoice::Always => console::set_colors_enabled_stderr(true),
+        args::ColorChoice::Never => console::set_colors_enabled_stderr(false),
+    }
+    let renderer = ui::select(
+        cli.quiet,
+        cli.no_progress,
+        console::Term::stderr().is_term(),
+    );
     let verbosity = cli.verbosity();
     let outcome = match cli.command {
-        args::Command::Run { spec, report } => runtime.block_on(run::run(spec, report, verbosity)),
+        args::Command::Run { spec, report } => {
+            runtime.block_on(run::run(spec, report, verbosity, renderer))
+        }
     };
     match outcome {
         Ok(()) => ExitCode::SUCCESS,
