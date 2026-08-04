@@ -38,7 +38,6 @@ use crate::location::Location;
 
 /// The session state: where to write, how to encode, and what has been
 /// staged so far.
-#[derive(Debug)]
 pub struct Load {
     location: Location,
     format: DestFormat,
@@ -64,6 +63,24 @@ pub struct Load {
     /// part holds one table's rows for one partition, so those two
     /// are what identify it.
     open: BTreeMap<(String, Option<String>), (OpenPart, std::time::Instant)>,
+    /// Where closed parts are reported. Advisory: absent changes
+    /// nothing about what is written.
+    part_events: Option<rdlt_connector_sdk::spi::PartEventFn>,
+}
+
+impl std::fmt::Debug for Load {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Manual because the part-event listener is a function: whether
+        // one is attached is the only fact worth printing about it.
+        f.debug_struct("Load")
+            .field("scope", &self.scope)
+            .field("load_id", &self.load_id)
+            .field("format", &self.format)
+            .field("staged", &self.staged.len())
+            .field("open", &self.open.len())
+            .field("part_events", &self.part_events.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 /// Read the receipt log.
@@ -97,10 +114,12 @@ impl Load {
         scope: String,
         load_id: LoadId,
         parts: rdlt_connector_sdk::spi::PartOptions,
+        part_events: Option<rdlt_connector_sdk::spi::PartEventFn>,
     ) -> Result<Self, DestinationError> {
         location.prepare_staging(&scope, load_id.as_str()).await?;
         Ok(Self {
             parts,
+            part_events,
             open: BTreeMap::new(),
             location,
             format,
@@ -118,7 +137,11 @@ impl Load {
     /// Staging is what makes the part real: until then it exists only
     /// as encoded bytes in memory, and a crash simply loses it — which
     /// is correct, because nothing has claimed it landed.
-    async fn close_part(&mut self, key: &(String, Option<String>)) -> Result<(), DestinationError> {
+    async fn close_part(
+        &mut self,
+        key: &(String, Option<String>),
+        reason: rdlt_connector_sdk::spi::PartCloseReason,
+    ) -> Result<(), DestinationError> {
         let Some((open, _)) = self.open.remove(key) else {
             return Ok(());
         };
@@ -127,6 +150,7 @@ impl Load {
         if bytes.is_empty() {
             return Ok(());
         }
+        let encoded_bytes = bytes.len() as u64;
         let index = self
             .staged
             .iter()
@@ -141,6 +165,15 @@ impl Load {
             index,
             staging_tail: tail,
         });
+        // Reported once STAGED — the bytes are final and durable-ish;
+        // the exact size is the file's, never an estimate.
+        if let Some(listener) = &self.part_events {
+            listener(rdlt_connector_sdk::spi::PartClosed::new(
+                rdlt_connector_sdk::spi::core::TableName::new(table.as_str()),
+                encoded_bytes,
+                reason,
+            ));
+        }
         Ok(())
     }
 
@@ -164,7 +197,8 @@ impl Load {
             else {
                 return Ok(());
             };
-            self.close_part(&largest).await?;
+            self.close_part(&largest, rdlt_connector_sdk::spi::PartCloseReason::Budget)
+                .await?;
         }
     }
 
@@ -176,7 +210,8 @@ impl Load {
     async fn close_all_parts(&mut self) -> Result<(), DestinationError> {
         let keys: Vec<_> = self.open.keys().cloned().collect();
         for key in keys {
-            self.close_part(&key).await?;
+            self.close_part(&key, rdlt_connector_sdk::spi::PartCloseReason::Commit)
+                .await?;
         }
         Ok(())
     }
@@ -224,7 +259,8 @@ impl Backend for Load {
                 .get(&key)
                 .is_some_and(|(open, _)| open.schema_differs(&group));
             if schema_changed {
-                self.close_part(&key).await?;
+                self.close_part(&key, rdlt_connector_sdk::spi::PartCloseReason::Schema)
+                    .await?;
             }
             let (open, opened_at) = match self.open.remove(&key) {
                 Some(existing) => existing,
@@ -241,7 +277,14 @@ impl Backend for Load {
                 .parts
                 .should_roll(encoded, opened_at.elapsed().as_secs())
             {
-                self.close_part(&key).await?;
+                // Which threshold fired decides the reported reason;
+                // when both did in one write, size is the truer cause.
+                let reason = if self.parts.target_bytes.is_some_and(|t| encoded >= t.max(1)) {
+                    rdlt_connector_sdk::spi::PartCloseReason::Target
+                } else {
+                    rdlt_connector_sdk::spi::PartCloseReason::Time
+                };
+                self.close_part(&key, reason).await?;
             }
         }
         self.enforce_open_budget().await

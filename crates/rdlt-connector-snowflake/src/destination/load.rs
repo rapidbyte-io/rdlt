@@ -109,6 +109,8 @@ pub struct Load {
     /// key `pending` uses, so a part and the COPY that will name it
     /// cannot disagree about which table they belong to.
     pub(super) open: BTreeMap<String, encode::OpenPart>,
+    /// Where closed parts are reported. Advisory.
+    pub(super) part_events: Option<rdlt_connector_sdk::spi::PartEventFn>,
 }
 
 // Debug is the workspace lint's requirement; the executor handle and
@@ -206,7 +208,11 @@ impl Load {
     /// The upload is where a part becomes real — before it, the bytes
     /// exist only in this process and a crash simply loses them, which
     /// is correct because nothing has claimed they landed.
-    async fn close_part(&mut self, table: &str) -> Result<(), DestinationError> {
+    async fn close_part(
+        &mut self,
+        table: &str,
+        reason: rdlt_connector_sdk::spi::PartCloseReason,
+    ) -> Result<(), DestinationError> {
         let Some(part) = self.open.remove(table) else {
             return Ok(());
         };
@@ -229,9 +235,19 @@ impl Load {
             quote(&config.schema),
             quote(stage.name())
         );
+        let encoded_bytes = bytes.len() as u64;
         let staged = stage
             .put_part(&**executor, &qualified_stage, table, bytes, rows)
             .await?;
+        // Reported once UPLOADED — the bytes are final and the size is
+        // the file's own, never an estimate.
+        if let Some(listener) = &self.part_events {
+            listener(rdlt_connector_sdk::spi::PartClosed::new(
+                rdlt_connector_sdk::spi::core::TableName::new(table),
+                encoded_bytes,
+                reason,
+            ));
+        }
         // `or_default` rather than `expect`: the column list is written
         // by `write` on the same path, but a part closed by the memory
         // ceiling can reach here for a table whose entry is a beat
@@ -248,7 +264,8 @@ impl Load {
     /// COPY names whole staged files and a part still open has none.
     async fn close_all_parts(&mut self) -> Result<(), DestinationError> {
         for table in self.open.keys().cloned().collect::<Vec<_>>() {
-            self.close_part(&table).await?;
+            self.close_part(&table, rdlt_connector_sdk::spi::PartCloseReason::Commit)
+                .await?;
         }
         Ok(())
     }
@@ -270,7 +287,8 @@ impl Load {
             else {
                 return Ok(());
             };
-            self.close_part(&largest).await?;
+            self.close_part(&largest, rdlt_connector_sdk::spi::PartCloseReason::Budget)
+                .await?;
         }
     }
 
@@ -669,7 +687,8 @@ impl Backend for Load {
             .get(&key)
             .is_some_and(|part| part.shape_differs(&schema, &batch))
         {
-            self.close_part(&key).await?;
+            self.close_part(&key, rdlt_connector_sdk::spi::PartCloseReason::Schema)
+                .await?;
         }
         match self.open.get_mut(&key) {
             Some(part) => part.append(&schema, &batch)?,
@@ -681,7 +700,12 @@ impl Backend for Load {
         let part = self.open.get(&key).expect("just opened");
         let (encoded, open_for) = (part.encoded_len(), part.open_for_secs());
         if self.parts.should_roll(encoded, open_for) {
-            self.close_part(&key).await?;
+            let reason = if self.parts.target_bytes.is_some_and(|t| encoded >= t.max(1)) {
+                rdlt_connector_sdk::spi::PartCloseReason::Target
+            } else {
+                rdlt_connector_sdk::spi::PartCloseReason::Time
+            };
+            self.close_part(&key, reason).await?;
         }
 
         // The column list follows the LATEST write's schema, not the
@@ -1041,6 +1065,7 @@ mod tests {
             pending: BTreeMap::new(),
             parts: rdlt_connector_sdk::spi::PartOptions::default(),
             open: BTreeMap::new(),
+            part_events: None,
         };
         (load, log)
     }

@@ -575,3 +575,95 @@ fn a_zero_threshold_is_refused_at_the_config_gate() {
         );
     }
 }
+
+/// 036: closed parts REPORT themselves through the engine's event
+/// feed, with exact encoded sizes and the reason that closed them —
+/// the end-to-end pin for the whole telemetry seam (connector
+/// callback -> engine forwarder -> PipelineEvent), asserted against
+/// the bytes on disk rather than the connector's own bookkeeping.
+#[tokio::test]
+async fn closed_parts_report_their_size_and_reason_through_the_event_feed() {
+    use rdlt_connector_sdk::config::Document;
+    use rdlt_engine::{Engine, EngineConfig};
+    use rdlt_testkit::{MemoryBatch, MemorySource, MemoryStream};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = destination::Config::from_value(serde_json::json!({
+        "path": dir.path().to_str().expect("utf8"),
+        "format": "jsonl",
+        "parts": {"target_bytes": 4096},
+    }))
+    .expect("valid");
+
+    // Three batches that each cross the 4 KiB target alone (Target
+    // rolls), then a tiny tail that stays open until the commit
+    // closes it (the Commit reason).
+    let batch = |range: std::ops::Range<i64>| {
+        MemoryBatch::new(
+            range
+                .map(|i| {
+                    serde_json::json!({"id": i, "payload": format!("row-{i}-{}", "x".repeat(64))})
+                })
+                .collect(),
+        )
+    };
+    let source = MemorySource::new(vec![MemoryStream::new(
+        rdlt_connector_sdk::spi::StreamSpec::new("events"),
+        vec![
+            batch(0..200),
+            batch(200..400),
+            batch(400..600),
+            batch(600..605),
+        ],
+    )]);
+
+    let engine = Engine::new(
+        EngineConfig::new("parts-events"),
+        source,
+        destination::Shell::new(config).expect("valid"),
+    );
+    let mut events = engine.events();
+    engine.run().await.expect("run");
+
+    let mut closed = Vec::new();
+    while let Some(event) = events.recv().await {
+        if let rdlt_engine::PipelineEvent::PartClosed {
+            table,
+            encoded_bytes,
+            reason,
+        } = event
+        {
+            closed.push((table, encoded_bytes, reason));
+        }
+    }
+    assert!(
+        closed.len() > 1,
+        "a 4 KiB target over ~45 KB of rows rolls several parts: {closed:?}"
+    );
+    // Reasons: every roll is Target here; the tail part is closed by
+    // the commit.
+    assert!(
+        closed
+            .iter()
+            .filter(|(_, _, r)| *r == rdlt_engine::PartClose::Target)
+            .count()
+            >= 1,
+        "size-rolled parts say Target: {closed:?}"
+    );
+    assert!(
+        closed
+            .iter()
+            .any(|(_, _, r)| *r == rdlt_engine::PartClose::Commit),
+        "the tail part says Commit: {closed:?}"
+    );
+    // The reported sizes are the FILES', exactly.
+    let reported: u64 = closed.iter().map(|(_, b, _)| b).sum();
+    let on_disk: u64 = std::fs::read_dir(dir.path().join("events"))
+        .expect("table dir")
+        .map(|e| e.expect("entry").metadata().expect("meta").len())
+        .sum();
+    assert_eq!(
+        reported, on_disk,
+        "reported part bytes are the on-disk bytes, not an estimate"
+    );
+}

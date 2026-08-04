@@ -74,6 +74,12 @@ pub struct Load {
     /// rolling writer; `roll_after_seconds` is applied here, since the
     /// library has no time trigger.
     pub(super) parts: rdlt_connector_sdk::spi::PartOptions,
+    /// Where closed data files are reported. Advisory. One caveat this
+    /// destination owns: the LIBRARY rolls files on size internally
+    /// and surfaces them only when the writer closes, so every file of
+    /// one writer reports the close's cause rather than its own —
+    /// sizes are exact, attribution is per-window.
+    pub(super) part_events: Option<rdlt_connector_sdk::spi::PartEventFn>,
     tables: BTreeMap<TableName, TableState>,
 }
 
@@ -95,9 +101,11 @@ impl Load {
         load_id: LoadId,
         writer_properties: parquet::file::properties::WriterProperties,
         parts: rdlt_connector_sdk::spi::PartOptions,
+        part_events: Option<rdlt_connector_sdk::spi::PartEventFn>,
     ) -> Self {
         Self {
             parts,
+            part_events,
             config,
             catalog,
             namespace,
@@ -121,6 +129,29 @@ impl Load {
                  exposes no overwrite transaction, which Replace requires; use Append, or a SQL \
                  destination for replace semantics",
             )),
+        }
+    }
+
+    /// Report a closed writer's data files. The engine table name is
+    /// the STREAM's normalized root — the same name the event feed
+    /// uses everywhere else — not the physical iceberg table. An
+    /// associated fn over a cloned listener handle, because the call
+    /// sites hold `&mut` borrows into the table map.
+    fn report_closed(
+        listener: &Option<rdlt_connector_sdk::spi::PartEventFn>,
+        stream: &TableName,
+        files: &[iceberg::spec::DataFile],
+        reason: rdlt_connector_sdk::spi::PartCloseReason,
+    ) {
+        let Some(listener) = listener else {
+            return;
+        };
+        for file in files {
+            listener(rdlt_connector_sdk::spi::PartClosed::new(
+                rdlt_connector_sdk::spi::core::TableName::new(stream.as_str()),
+                file.file_size_in_bytes(),
+                reason,
+            ));
         }
     }
 
@@ -153,7 +184,14 @@ impl Load {
         let (writer, writer_opened_at) = match prev_writer {
             Some(writer) if prev_target.as_deref() != Some(arrow_target.as_ref()) => {
                 let context = format!("table `{name}` (schema-change writer retirement)");
-                pending_files.extend(writer.close(&context).await?);
+                let closed = writer.close(&context).await?;
+                Self::report_closed(
+                    &self.part_events,
+                    stream,
+                    &closed,
+                    rdlt_connector_sdk::spi::PartCloseReason::Schema,
+                );
+                pending_files.extend(closed);
                 (None, None)
             }
             other => (other, prev_opened_at),
@@ -424,6 +462,7 @@ impl Backend for Load {
         table: &TableName,
         batch: RecordBatch,
     ) -> Result<(), DestinationError> {
+        let listener = self.part_events.clone();
         let state = self
             .tables
             .get_mut(table)
@@ -439,7 +478,14 @@ impl Backend for Load {
             && let Some(writer) = state.writer.take()
         {
             let retire = format!("{context} (roll_after_seconds writer retirement)");
-            state.pending_files.extend(writer.close(&retire).await?);
+            let closed = writer.close(&retire).await?;
+            Self::report_closed(
+                &listener,
+                table,
+                &closed,
+                rdlt_connector_sdk::spi::PartCloseReason::Time,
+            );
+            state.pending_files.extend(closed);
             state.writer_opened_at = None;
         }
         if state.writer.is_none() {
@@ -487,6 +533,7 @@ impl Backend for Load {
             load_id: meta.load_id.as_str().to_owned(),
             commit_seq: meta.commit_seq,
         };
+        let listener = self.part_events.clone();
         for (table_name, state) in self.tables.iter_mut() {
             let context = format!("table `{}`", self.config.table_name(table_name.as_str()));
             // `take` empties the parked files BEFORE the fallible
@@ -498,7 +545,14 @@ impl Backend for Load {
             // these files; move the take after the commit first.
             let mut files = std::mem::take(&mut state.pending_files);
             if let Some(writer) = state.writer.take() {
-                files.extend(writer.close(&context).await?);
+                let closed = writer.close(&context).await?;
+                Self::report_closed(
+                    &listener,
+                    table_name,
+                    &closed,
+                    rdlt_connector_sdk::spi::PartCloseReason::Commit,
+                );
+                files.extend(closed);
                 state.writer_opened_at = None;
             }
             if files.is_empty() {
@@ -773,6 +827,7 @@ mod tests {
             LoadId::from("l"),
             writer_properties(&Default::default()).expect("props"),
             rdlt_connector_sdk::spi::PartOptions::default(),
+            None,
         );
         let stream = TableName::from("events");
         let target = arrow_target("table `events`", &table).expect("target");
@@ -915,6 +970,7 @@ mod tests {
                 roll_after_seconds: Some(0),
                 ..PartOptions::default()
             },
+            None,
         );
         let stream = TableName::from("events");
         // The FIELD-ID-annotated target, as production derives it — a

@@ -155,6 +155,7 @@ pub(super) async fn stream_task(
         let Some(push) = push else { break Ok(()) };
         match push.payload {
             PushPayload::RawJson(bytes) => {
+                let payload_bytes = bytes.len() as u64;
                 // CPU-bound shred on the blocking pool; the owner keeps the
                 // shredder single-owner without locks. The tape path parses the
                 // slab into an arena and drains it in one call — no per-row trees.
@@ -168,7 +169,23 @@ pub(super) async fn stream_task(
                     )
                     .await?;
                 owner = returned;
-                for item in items? {
+                let items = items?;
+                // Rows READ: what the source payload decoded to. For a
+                // JSON source the row count is only knowable after the
+                // shred; the bytes are the raw payload's.
+                let rows_read: u64 = items
+                    .iter()
+                    .map(|item| match item {
+                        LoadItem::Batch { batch, .. } => batch.num_rows() as u64,
+                        _ => 0,
+                    })
+                    .sum();
+                let _ = events.send(rdlt_core::PipelineEvent::BatchRead {
+                    stream: stream_name.clone(),
+                    rows: rows_read,
+                    bytes: payload_bytes,
+                });
+                for item in items {
                     if tx.send(item).await.is_err() {
                         break;
                     }
@@ -184,6 +201,11 @@ pub(super) async fn stream_task(
                          `structured`",
                     ));
                 }
+                let _ = events.send(rdlt_core::PipelineEvent::BatchRead {
+                    stream: stream_name.clone(),
+                    rows: batch.num_rows() as u64,
+                    bytes: batch.get_array_memory_size() as u64,
+                });
                 let (returned, items) = owner
                     .passthrough(
                         batch,

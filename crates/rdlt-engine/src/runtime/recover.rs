@@ -20,6 +20,7 @@ pub(super) async fn recover_wal(
     load_id: &LoadId,
     wal_dir: Option<&Path>,
     capabilities: DestinationCapabilities,
+    events: &tokio::sync::broadcast::Sender<rdlt_core::PipelineEvent>,
 ) -> Result<(Box<dyn LoadSession>, StateDoc, ResumedFrom), RdltError> {
     // Replay runs on its OWN session, opened under the CRASHED run's load id —
     // scanning therefore has to happen before any session exists. A session's
@@ -40,7 +41,7 @@ pub(super) async fn recover_wal(
             crate::wal::resume::ScanOutcome::Discard => crate::wal::clear(wal_dir),
             crate::wal::resume::ScanOutcome::Recover(span) => {
                 resumed_from =
-                    replay_span(destination, config, wal_dir, span, capabilities).await?;
+                    replay_span(destination, config, wal_dir, span, capabilities, events).await?;
                 crate::wal::clear(wal_dir);
             }
             crate::wal::resume::ScanOutcome::Damaged(reason) => {
@@ -62,7 +63,10 @@ pub(super) async fn recover_wal(
     // The run's own session. Its state read happens AFTER any replay commit,
     // so it observes the recovered cursors rather than the pre-crash ones.
     let mut session = destination
-        .open(OpenContext::new(config.pipeline.clone(), load_id.clone()))
+        .open(
+            OpenContext::new(config.pipeline.clone(), load_id.clone())
+                .with_part_events(part_event_forwarder(events.clone())),
+        )
         .await
         .map_err(|e| classify_dest_error(&e))?;
     let recovered = read_state_checked(&mut *session, config).await?;
@@ -103,12 +107,13 @@ async fn replay_span(
     wal_dir: &Path,
     span: crate::wal::resume::RecoverySpan,
     capabilities: DestinationCapabilities,
+    events: &tokio::sync::broadcast::Sender<rdlt_core::PipelineEvent>,
 ) -> Result<Option<ResumedFrom>, RdltError> {
     let mut session = destination
-        .open(OpenContext::new(
-            config.pipeline.clone(),
-            span.load_id.clone(),
-        ))
+        .open(
+            OpenContext::new(config.pipeline.clone(), span.load_id.clone())
+                .with_part_events(part_event_forwarder(events.clone())),
+        )
         .await
         .map_err(|e| classify_dest_error(&e))?;
     let mut state = read_state_checked(&mut *session, config)
@@ -127,4 +132,32 @@ async fn replay_span(
             Ok(None)
         }
     }
+}
+
+/// Bridge a destination's part reports into the event feed. One
+/// translation, used by every session the engine opens — the SPI's
+/// reason vocabulary and the event enum's must not drift apart, and
+/// having exactly one match is what enforces that.
+fn part_event_forwarder(
+    events: tokio::sync::broadcast::Sender<rdlt_core::PipelineEvent>,
+) -> rdlt_connector::PartEventFn {
+    std::sync::Arc::new(move |part: rdlt_connector::PartClosed| {
+        use rdlt_connector::PartCloseReason as Spi;
+        let reason = match part.reason {
+            Spi::Target => rdlt_core::PartClose::Target,
+            Spi::Time => rdlt_core::PartClose::Time,
+            Spi::Budget => rdlt_core::PartClose::Budget,
+            Spi::Commit => rdlt_core::PartClose::Commit,
+            Spi::Schema => rdlt_core::PartClose::Schema,
+            // The SPI enum is non_exhaustive: an unknown reason is
+            // still a closed part, and Commit is the least-wrong
+            // attribution for "the protocol closed it".
+            _ => rdlt_core::PartClose::Commit,
+        };
+        let _ = events.send(rdlt_core::PipelineEvent::PartClosed {
+            table: rdlt_core::TableName::new(part.table.as_str()),
+            encoded_bytes: part.encoded_bytes,
+            reason,
+        });
+    })
 }

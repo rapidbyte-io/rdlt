@@ -87,13 +87,29 @@ pub(crate) async fn run(
     let mut attempt: u32 = 0;
     loop {
         let attempt_cancel = cancel.child_token();
-        let result = run_once(
-            &config,
-            Arc::clone(&source),
-            Arc::clone(&destination),
-            attempt_cancel,
-            events.clone(),
-            u64::from(attempt),
+        // The ROOT of the documented span contract (docs/telemetry.md):
+        // everything under `rdlt.run` inherits the identity fields.
+        // `Instrument` binds it to the attempt's FUTURE — a guard held
+        // across an await would leak onto whichever worker thread polls
+        // other tasks (the same reasoning as the per-stream spans).
+        // `rdlt.load_id` is declared EMPTY and recorded inside, where
+        // the id is minted.
+        let span = tracing::info_span!(
+            "rdlt.run",
+            rdlt.pipeline = %config.pipeline,
+            rdlt.load_id = tracing::field::Empty,
+            rdlt.attempt = attempt,
+        );
+        let result = tracing::Instrument::instrument(
+            run_once(
+                &config,
+                Arc::clone(&source),
+                Arc::clone(&destination),
+                attempt_cancel,
+                events.clone(),
+                u64::from(attempt),
+            ),
+            span,
         )
         .await;
         // Retryable failures from EITHER side restart the run from
@@ -143,6 +159,10 @@ async fn run_once(
 ) -> Result<RunReport, RdltError> {
     let started = Instant::now();
     let load_id = new_load_id();
+    // The load id is minted HERE, so the root span cannot carry it from
+    // the caller; it is recorded onto the current span (installed by
+    // `run`, bound to this attempt's future) instead.
+    tracing::Span::current().record("rdlt.load_id", tracing::field::display(&load_id));
     let capabilities = destination.capabilities();
 
     // ---- Discovery & build-time validation ----
@@ -167,6 +187,7 @@ async fn run_once(
         &load_id,
         wal_dir.as_deref(),
         capabilities,
+        &events,
     )
     .await?;
 
@@ -227,6 +248,25 @@ async fn run_once(
     }
     drop(load_tx);
 
+    // ---- Heartbeat: a liveness tick while the run is active ----
+    // Advisory like every event; aborted when the run ends. One
+    // second is coarse enough to cost nothing and fine enough that a
+    // consumer can call a silent MINUTE a stall with confidence.
+    let heartbeat = {
+        let events = events.clone();
+        let started = started;
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                let _ = events.send(rdlt_core::PipelineEvent::Heartbeat {
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                });
+            }
+        })
+    };
+
     // ---- Loader: drain the channel, join the streams, commit the tail ----
     let loader = Loader::new(
         crate::load::Sink {
@@ -245,11 +285,13 @@ async fn run_once(
     );
     // The loader is one task; its span binds to that future rather than to
     // whichever worker thread happens to poll it.
-    let mut report = tracing::Instrument::instrument(
+    let drained = tracing::Instrument::instrument(
         drain_loader(loader, load_rx, stream_tasks, &cancel),
         tracing::info_span!("rdlt.load"),
     )
-    .await?;
+    .await;
+    heartbeat.abort();
+    let mut report = drained?;
 
     // Clean finish: nothing left to replay.
     if let Some(dir) = &wal_dir {

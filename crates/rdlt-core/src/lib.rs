@@ -29,6 +29,7 @@ pub mod event;
 pub mod failpoint;
 pub mod identity;
 pub mod ids;
+pub mod metrics;
 pub mod naming;
 pub mod policy;
 pub mod report;
@@ -39,8 +40,9 @@ pub mod types;
 pub use commit::{BatchPolicy, CommitCounters, CommitMeta, CommitPolicy, CommitReceipt, WriteMode};
 pub use cursor::Cursor;
 pub use error::{ContractViolation, RdltError};
-pub use event::PipelineEvent;
+pub use event::{PartClose, PipelineEvent};
 pub use ids::{InvalidHexId, LoadId, PipelineId, RowId, SchemaHash, StreamName, TableName};
+pub use metrics::{Metrics, MetricsSnapshot};
 pub use policy::{ColumnRef, PolicyAction, SchemaPolicy};
 pub use report::{ResumedFrom, RunReport, TableReport};
 pub use schema::{

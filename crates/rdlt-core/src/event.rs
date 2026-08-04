@@ -1,7 +1,9 @@
 //! Typed observability events.
 //!
 //! Causal-order guarantees: a table's `SchemaEvolved` precedes the first `BatchLoaded`
-//! at the new version; `Committed` follows everything it covers.
+//! at the new version; `Committed` follows everything it covers; a stream's
+//! `BatchRead` precedes the `BatchLoaded` carrying those rows;
+//! `CommitStarted` precedes its `Committed`.
 
 use std::collections::BTreeMap;
 
@@ -75,4 +77,62 @@ pub enum PipelineEvent {
         /// The stream.
         stream: StreamName,
     },
+    /// A batch arrived FROM the source — before batching, merging, or
+    /// discard policies touch it. `BatchLoaded` is the destination side
+    /// of the same rows; the two diverging is how coalescing and
+    /// discards become visible.
+    BatchRead {
+        /// The stream that delivered it.
+        stream: StreamName,
+        /// Rows decoded from the source payload.
+        rows: u64,
+        /// Payload size: raw bytes for a JSON source, the Arrow
+        /// in-memory footprint for a structured one.
+        bytes: u64,
+    },
+    /// A commit began. Paired with the `Committed` that follows it, it
+    /// makes commit LATENCY observable — `Committed` alone only gives
+    /// intervals.
+    CommitStarted {
+        /// The sequence number the following `Committed` will carry.
+        commit_seq: u64,
+    },
+    /// A destination closed one output part (a file it will publish).
+    /// Emitted by destinations that materialise files; SQL destinations
+    /// never emit it. `encoded_bytes` is the part's ON-THE-WIRE size —
+    /// the only honest basis for output throughput, since a batch's
+    /// in-memory footprint differs from its encoded form by multiples.
+    PartClosed {
+        /// The table the part belongs to.
+        table: TableName,
+        /// Encoded size of the closed part.
+        encoded_bytes: u64,
+        /// What closed it.
+        reason: PartClose,
+    },
+    /// A liveness tick on a coarse timer while the run is active. Lets
+    /// a consumer distinguish "the wire is quiet" from "the process is
+    /// stalled": events may legitimately stop for a while, heartbeats
+    /// may not.
+    Heartbeat {
+        /// Milliseconds since the run started.
+        elapsed_ms: u64,
+    },
+}
+
+/// Why a destination closed an output part.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum PartClose {
+    /// The part reached its size target.
+    Target,
+    /// The part was open longer than `roll_after_seconds`.
+    Time,
+    /// The memory ceiling across open parts closed it early.
+    Budget,
+    /// A commit closed it — no part spans a commit.
+    Commit,
+    /// A schema change closed it — a file holds one schema.
+    Schema,
 }

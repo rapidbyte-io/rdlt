@@ -47,7 +47,7 @@ pub trait Destination: Send + Sync + 'static {
 /// Deliberately an exhaustive pub-field struct (a DX choice, semver
 /// gated); [`OpenContext::new`] is the compatibility hedge, and every
 /// consumer in the tree constructs through it.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct OpenContext {
     /// The pipeline whose state this session reads and republishes — the
     /// key `StateDoc` persists under.
@@ -56,6 +56,11 @@ pub struct OpenContext {
     /// makes a re-commit idempotent, and what distinguishes this
     /// session's staging from a crashed predecessor's.
     pub load_id: LoadId,
+    /// Where a file-writing destination reports each output part it
+    /// closes. ADVISORY, like every telemetry signal: absent means
+    /// nobody is listening and the destination must behave identically.
+    /// SQL destinations never call it.
+    pub part_events: Option<PartEventFn>,
 }
 
 impl OpenContext {
@@ -63,9 +68,86 @@ impl OpenContext {
     /// breaking change for callers constructing through here rather than
     /// with a struct literal.
     pub fn new(pipeline: PipelineId, load_id: LoadId) -> Self {
-        Self { pipeline, load_id }
+        Self {
+            pipeline,
+            load_id,
+            part_events: None,
+        }
+    }
+
+    /// Attach a part-event listener.
+    #[must_use]
+    pub fn with_part_events(mut self, listener: PartEventFn) -> Self {
+        self.part_events = Some(listener);
+        self
+    }
+
+    /// Report a closed part to the listener, if any. Connectors call
+    /// this at the moment a part's bytes are final; it must never fail
+    /// and never block.
+    pub fn notify_part_closed(&self, event: PartClosed) {
+        if let Some(listener) = &self.part_events {
+            listener(event);
+        }
     }
 }
+
+impl std::fmt::Debug for OpenContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The listener is a function with no useful rendering; whether
+        // one is attached is the fact worth printing.
+        f.debug_struct("OpenContext")
+            .field("pipeline", &self.pipeline)
+            .field("load_id", &self.load_id)
+            .field("part_events", &self.part_events.is_some())
+            .finish()
+    }
+}
+
+/// A closed-part report: the file-writing destinations' telemetry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct PartClosed {
+    /// The table the part belongs to.
+    pub table: TableName,
+    /// The part's encoded, on-the-wire size.
+    pub encoded_bytes: u64,
+    /// What closed it.
+    pub reason: PartCloseReason,
+}
+
+impl PartClosed {
+    /// Build a report. The hedge for later field additions, like
+    /// [`OpenContext::new`].
+    pub fn new(table: TableName, encoded_bytes: u64, reason: PartCloseReason) -> Self {
+        Self {
+            table,
+            encoded_bytes,
+            reason,
+        }
+    }
+}
+
+/// Why a part closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PartCloseReason {
+    /// It reached its size target.
+    Target,
+    /// It was open longer than the configured time bound.
+    Time,
+    /// The memory ceiling across open parts closed it early.
+    Budget,
+    /// A commit closed it — no part spans a commit.
+    Commit,
+    /// A schema change closed it — a file holds one schema.
+    Schema,
+}
+
+/// The listener shape: a plain callback, so the SPI carries no channel
+/// or runtime dependency for what is a fire-and-forget signal. `Arc`d
+/// because sessions and contexts are moved around freely.
+pub type PartEventFn = std::sync::Arc<dyn Fn(PartClosed) + Send + Sync>;
 
 /// One destination load session. Writes are staged and invisible until
 /// `commit`; publication is atomic with pipeline state and idempotent per

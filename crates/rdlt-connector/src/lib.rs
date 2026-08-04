@@ -91,7 +91,9 @@ pub use arrow_array as arrow;
 pub use arrow_array::RecordBatch;
 pub use capabilities::DestinationCapabilities;
 pub use channel::{ChannelClosed, PushPayload, RecordsIn, RecordsOut, SourcePush, records_channel};
-pub use destination::{Destination, LoadSession, OpenContext};
+pub use destination::{
+    Destination, LoadSession, OpenContext, PartCloseReason, PartClosed, PartEventFn,
+};
 pub use error::{BoxError, DestinationError, SourceError};
 /// How a destination writes parquet — plain data, no parquet dependency
 /// in the SPI. Connectors re-export these from their own config paths and

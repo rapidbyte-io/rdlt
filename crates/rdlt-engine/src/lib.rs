@@ -45,7 +45,7 @@ mod wal;
 
 pub use config::EngineConfig;
 pub use engine::{Engine, EventStream};
-pub use rdlt_core::{PipelineEvent, RdltError, RunReport};
+pub use rdlt_core::{Metrics, MetricsSnapshot, PartClose, PipelineEvent, RdltError, RunReport};
 
 #[doc(hidden)]
 pub mod fuzzing;

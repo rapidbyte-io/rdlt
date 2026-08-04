@@ -74,6 +74,7 @@ impl DestinationConnector for Iceberg {
             context.load_id.clone(),
             properties,
             self.config.parts.unwrap_or_default(),
+            context.part_events.clone(),
         ))
     }
 }

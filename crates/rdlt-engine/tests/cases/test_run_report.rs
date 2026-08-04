@@ -437,3 +437,95 @@ async fn a_conforming_run_under_a_discard_policy_emits_no_discards() {
         }
     }
 }
+
+/// The 036 telemetry additions hold their causal contract: every
+/// `BatchLoaded` row was announced by a `BatchRead` first (read
+/// precedes write for the same rows), every `Committed` was preceded
+/// by its `CommitStarted`, and the liveness heartbeat ticks even on a
+/// short run (the first tick is immediate by design).
+#[tokio::test]
+async fn read_commit_and_heartbeat_events_hold_their_order() {
+    let dest = MemoryDestination::new();
+    let source = stream_with_batches(rdlt_connector::StreamSpec::new("s"), evolving_batches());
+    let mut config = EngineConfig::new("obs-036");
+    config = config.with_commit_policy(rdlt_core::CommitPolicy::every_checkpoints(1));
+
+    let engine = Engine::new(config, source, dest.clone());
+    let mut events = engine.events();
+    engine.run().await.expect("run");
+
+    let mut seen = Vec::new();
+    while let Some(event) = events.recv().await {
+        seen.push(event);
+    }
+
+    // Read precedes write, cumulatively: at every point in the feed,
+    // rows announced as read are >= rows announced as loaded.
+    let (mut read, mut loaded) = (0u64, 0u64);
+    for event in &seen {
+        match event {
+            PipelineEvent::BatchRead { rows, .. } => read += rows,
+            PipelineEvent::BatchLoaded { rows, .. } => {
+                loaded += rows;
+                assert!(
+                    read >= loaded,
+                    "rows were loaded before being announced as read: {read} < {loaded}"
+                );
+            }
+            _ => {}
+        }
+    }
+    assert!(read > 0, "the source's batches were announced as read");
+    assert_eq!(
+        read, loaded,
+        "everything read was loaded — no discards here"
+    );
+
+    // Every Committed is preceded by ITS CommitStarted.
+    let mut started = Vec::new();
+    for event in &seen {
+        match event {
+            PipelineEvent::CommitStarted { commit_seq } => started.push(*commit_seq),
+            PipelineEvent::Committed { commit_seq, .. } => assert!(
+                started.contains(commit_seq),
+                "commit {commit_seq} completed without starting"
+            ),
+            _ => {}
+        }
+    }
+    assert!(!started.is_empty(), "commits announce their start");
+
+    // Liveness: the ticker's first beat is immediate, so even a
+    // fast run carries at least one.
+    assert!(
+        seen.iter()
+            .any(|e| matches!(e, PipelineEvent::Heartbeat { .. })),
+        "a heartbeat ticked"
+    );
+}
+
+/// The canonical fold agrees with the run report on the totals the
+/// report owns — one spot-check that `Metrics` and the exactly-once
+/// numbers cannot silently diverge for a clean run.
+#[tokio::test]
+async fn the_metrics_fold_agrees_with_the_report_for_a_clean_run() {
+    let dest = MemoryDestination::new();
+    let source = stream_with_batches(rdlt_connector::StreamSpec::new("s"), evolving_batches());
+    let engine = Engine::new(EngineConfig::new("obs-fold"), source, dest.clone());
+    let mut events = engine.events();
+    let report = engine.run().await.expect("run");
+
+    let mut metrics = rdlt_core::Metrics::new();
+    while let Some(event) = events.recv().await {
+        metrics.apply(&event);
+    }
+    let snap = metrics.snapshot();
+    let report_rows: u64 = report.tables.values().map(|t| t.rows).sum();
+    assert_eq!(snap.rows_written, report_rows);
+    assert_eq!(snap.commits, report.commits);
+    assert_eq!(snap.retries, report.retries);
+    assert_eq!(
+        snap.schema_migrations,
+        report.schema_migrations.len() as u64
+    );
+}

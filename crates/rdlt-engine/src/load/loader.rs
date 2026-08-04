@@ -344,6 +344,9 @@ impl Loader {
         // writes and a resume never has to reason about half a batch.
         self.flush_all().await?;
         self.commit_seq += 1;
+        self.emit(rdlt_core::PipelineEvent::CommitStarted {
+            commit_seq: self.commit_seq,
+        });
         self.state.last_commit = Some(rdlt_core::LastCommit {
             load_id: self.load_id.clone(),
             commit_seq: self.commit_seq,
