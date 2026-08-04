@@ -7,6 +7,7 @@ use rdlt_connector_sdk::config::Document;
 use rdlt_engine::{Engine, EngineConfig};
 
 use super::common::local_dest;
+use super::s3;
 use super::s3::S3Fixture;
 
 fn s3_source(fixture: &S3Fixture, pattern: &str) -> source::Config {
@@ -402,5 +403,73 @@ async fn s3_wildcards_never_match_dot_prefixed_keys() {
         destination::testhook::count_rows(&config, "events").expect("count"),
         1,
         "the staged key's row must not load"
+    );
+}
+
+/// PROBE (037 US2): the lease design rides object_store conditional
+/// writes — `PutMode::Create` must refuse an existing key, and
+/// `PutMode::Update` must CAS on the version a read returned. If
+/// RUSTFS stops honoring either, this cell fails and the lease's S3
+/// arm must be re-designed BEFORE trusting it.
+#[tokio::test]
+async fn rustfs_honors_conditional_create_and_cas_update() {
+    use object_store::aws::AmazonS3Builder;
+    use object_store::{ObjectStore, PutMode, PutOptions, UpdateVersion, path::Path};
+
+    let Some(fixture) = S3Fixture::start().await else {
+        return;
+    };
+    // `S3Fixture::client()` is private to its module; built the same
+    // way here, straight from the fixture's public endpoint and the
+    // module's credential constants.
+    let store = AmazonS3Builder::new()
+        .with_endpoint(&fixture.endpoint)
+        .with_bucket_name(s3::BUCKET)
+        .with_region("us-east-1")
+        .with_access_key_id(s3::ACCESS_KEY)
+        .with_secret_access_key(s3::SECRET_KEY)
+        .with_allow_http(true)
+        .build()
+        .expect("probe client");
+
+    let key = Path::from("probe/lease.json");
+    let create = PutOptions::from(PutMode::Create);
+    let first = store
+        .put_opts(&key, "one".into(), create.clone())
+        .await
+        .expect("first exclusive create succeeds");
+    let second = store.put_opts(&key, "two".into(), create).await;
+    assert!(
+        matches!(second, Err(object_store::Error::AlreadyExists { .. })),
+        "second exclusive create must refuse: {second:?}"
+    );
+
+    let good = UpdateVersion {
+        e_tag: first.e_tag.clone(),
+        version: first.version.clone(),
+    };
+    store
+        .put_opts(
+            &key,
+            "three".into(),
+            PutOptions::from(PutMode::Update(good)),
+        )
+        .await
+        .expect("CAS on the current version succeeds");
+
+    let stale = UpdateVersion {
+        e_tag: first.e_tag,
+        version: first.version,
+    };
+    let lost = store
+        .put_opts(
+            &key,
+            "four".into(),
+            PutOptions::from(PutMode::Update(stale)),
+        )
+        .await;
+    assert!(
+        lost.is_err(),
+        "CAS on a superseded version must refuse: {lost:?}"
     );
 }
