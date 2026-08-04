@@ -468,8 +468,12 @@ async fn rustfs_honors_conditional_create_and_cas_update() {
             PutOptions::from(PutMode::Update(stale)),
         )
         .await;
+    // Measured live against RUSTFS 1.0.0-beta.11: HTTP 412
+    // PreconditionFailed, decoded to `Error::Precondition` — matching
+    // object_store 0.12.5's documented CAS-failure contract exactly
+    // (no divergence to pin).
     assert!(
-        lost.is_err(),
-        "CAS on a superseded version must refuse: {lost:?}"
+        matches!(lost, Err(object_store::Error::Precondition { .. })),
+        "CAS on a superseded version must refuse with Precondition: {lost:?}"
     );
 }
