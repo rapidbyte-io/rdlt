@@ -13,7 +13,7 @@ mod s3;
 use std::path::Path;
 
 use common::{jsonl_source, local_dest, plant};
-use rdlt_connector_file::destination::{self, FAIL_POINTS, S3_FAIL_POINTS};
+use rdlt_connector_file::destination::{self, FAIL_POINTS, LEASE_FAIL_POINTS, S3_FAIL_POINTS};
 use rdlt_connector_file::source;
 use rdlt_connector_sdk::spi::core::failpoint::fail;
 use rdlt_engine::{Engine, EngineConfig};
@@ -126,13 +126,21 @@ async fn every_s3_fail_point_recovers_exactly_once() {
 
 /// The registry names exactly the points armed in the sources — the
 /// self-check before container minutes are spent (the ungated twin
-/// lives in cases/test_gating.rs).
+/// lives in cases/test_gating.rs). `LEASE_FAIL_POINTS` is declared but
+/// not yet swept by a matrix in this file — T7/T8 wire that; until
+/// then this assertion is what keeps the two armed lease points
+/// (`lease.rs`) agreeing with their registry.
 #[test]
 fn the_registry_matches_the_sources() {
     rdlt_testkit::assert_registry_matches_sources(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("src")
             .as_path(),
-        &[FAIL_POINTS, S3_FAIL_POINTS, source::FAIL_POINTS],
+        &[
+            FAIL_POINTS,
+            S3_FAIL_POINTS,
+            LEASE_FAIL_POINTS,
+            source::FAIL_POINTS,
+        ],
     );
 }

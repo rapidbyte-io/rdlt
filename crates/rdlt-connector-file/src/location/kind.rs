@@ -92,12 +92,10 @@ impl std::error::Error for StaleDocVersion {}
 /// see the error `replace_doc_if` returned directly, not a
 /// context-wrapped copy of it.
 ///
-/// Not yet re-exported through `location/mod.rs` (pure-TOC, and an
-/// unused `pub(crate) use` fails this crate's own lint gate) — its
-/// only caller today is `probe_conditional_docs` below, in the same
-/// module. The lease module (037 US2 T6), once it exists outside
-/// `location`, is the first real reason to add
-/// `pub(crate) use kind::is_stale_version;` there.
+/// Re-exported through `location/mod.rs` (`pub(crate) use
+/// kind::{CreateDoc, is_stale_version};`) since 037 US2 T6: the lease
+/// module lives outside `location` and is the first real caller
+/// beyond `probe_conditional_docs` below, which stays in this module.
 pub(crate) fn is_stale_version(error: &DestinationError) -> bool {
     std::error::Error::source(error)
         .is_some_and(|cause| cause.downcast_ref::<StaleDocVersion>().is_some())

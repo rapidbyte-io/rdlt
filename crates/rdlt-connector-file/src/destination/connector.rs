@@ -33,6 +33,20 @@ pub const S3_FAIL_POINTS: &[&str] = &[
     "file.finalize.delete",
 ];
 
+/// The session lease's crash points (037 US2 T6) — armed in `lease.rs`
+/// on BOTH storage arms (`Lease::acquire`'s create/CAS,
+/// `Lease::release`'s delete), unlike the two lists above which each
+/// belong to one arm only. Declared as its own registry rather than
+/// folded into either: `FAIL_POINTS`'s doc claims local-protocol-only
+/// and `S3_FAIL_POINTS`'s claims S3-only, and a lease point would make
+/// either claim false. Not yet driven by a sweep — that is T7/T8's
+/// job — but the registry-vs-sources scanner
+/// (`tests/cases/test_gating.rs`) is ungated and runs on every
+/// `cargo nextest run`, and it asserts an armed name is ALWAYS
+/// declared somewhere in the union it is given, so this had to exist
+/// before `lease.rs` could compile clean through that gate.
+pub const LEASE_FAIL_POINTS: &[&str] = &["file.lease.acquire", "file.lease.release"];
+
 /// The file destination.
 #[derive(Debug, Clone)]
 pub struct File {
@@ -129,6 +143,27 @@ pub mod testhook {
         let location = Location::for_dest(&config.path, config.location.as_ref())?;
         location.probe_conditional_docs(name).await
     }
+
+    /// Drive the session lease end to end through a real `Location`:
+    /// acquire, start its heartbeat, confirm it reads as still held,
+    /// release. `Lease` is `pub(super)` to `destination`, so this
+    /// bridge — the same shape as `probe_conditional_docs` above — is
+    /// what lets a live S3 probe exercise it without the write path
+    /// depending on it yet (037 US2 T6; T7 wires the write path).
+    pub async fn probe_lease(
+        config: &super::super::Config,
+        pipeline: &str,
+        owner: &str,
+    ) -> Result<(), DestinationError> {
+        let location = Location::for_dest(&config.path, config.location.as_ref())?;
+        let scope = super::super::layout::scope_of(pipeline);
+        let mut lease =
+            super::super::lease::Lease::acquire(location, &scope, pipeline, owner).await?;
+        lease.start_heartbeat();
+        lease.check_still_held()?;
+        lease.release().await;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -159,6 +194,10 @@ mod tests {
                 "file.finalize.copy",
                 "file.finalize.delete"
             ]
+        );
+        assert_eq!(
+            LEASE_FAIL_POINTS,
+            &["file.lease.acquire", "file.lease.release"]
         );
     }
 

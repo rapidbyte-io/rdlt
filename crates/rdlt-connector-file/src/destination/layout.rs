@@ -31,6 +31,11 @@ pub(super) fn manifest_file(scope: &str) -> String {
     format!("_rdlt_manifest.{scope}.json")
 }
 
+/// The session lease's file name for one scope (037 US2).
+pub(super) fn lease_file(scope: &str) -> String {
+    format!("_rdlt_lease.{scope}.json")
+}
+
 /// A staged part's tail under the staging prefix.
 pub(super) fn staging_tail(scope: &str, load: &str, name: &str) -> String {
     format!("{STAGING_DIR}/{scope}/{load}/{name}")
@@ -225,6 +230,7 @@ mod tests {
     fn every_name_shape_is_the_frozen_one() {
         assert_eq!(state_file("abc123def456"), "_rdlt_state.abc123def456.json");
         assert_eq!(commits_file("abc"), "_rdlt_commits.abc.json");
+        assert_eq!(lease_file("abc"), "_rdlt_lease.abc.json");
         assert_eq!(
             staging_tail("abc", "load-1", "t/all-0.parquet"),
             ".rdlt-staging/abc/load-1/t/all-0.parquet"

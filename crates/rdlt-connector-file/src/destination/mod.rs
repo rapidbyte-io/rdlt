@@ -8,6 +8,7 @@ mod config;
 mod connector;
 mod inspect;
 mod layout;
+mod lease;
 mod load;
 mod stage;
 mod truncate;
@@ -15,7 +16,7 @@ mod truncate;
 pub use config::{Config, ConfigError, DestFormat, config_schema};
 #[doc(hidden)]
 pub use connector::testhook;
-pub use connector::{FAIL_POINTS, File, S3_FAIL_POINTS};
+pub use connector::{FAIL_POINTS, File, LEASE_FAIL_POINTS, S3_FAIL_POINTS};
 pub(crate) use layout::STAGING_DIR;
 
 /// The sdk shell around [`File`] — the destination's public form.
