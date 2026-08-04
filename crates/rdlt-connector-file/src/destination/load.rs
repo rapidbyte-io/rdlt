@@ -32,6 +32,7 @@ use super::layout::{
     CommitLog, LAYOUT_FORMAT_VERSION, Manifest, commits_file, final_tail, manifest_file,
     staged_name, staging_tail, state_file,
 };
+use super::lease::Lease;
 use super::stage::{OpenPart, split_partitions};
 use super::truncate::truncate_table;
 use crate::location::Location;
@@ -41,6 +42,23 @@ use crate::location::Location;
 pub(super) struct PartsWiring {
     pub(super) options: rdlt_connector_sdk::spi::PartOptions,
     pub(super) events: Option<rdlt_connector_sdk::spi::PartEventFn>,
+}
+
+/// The identity `Load::open` acquires the session lease under (037 US2
+/// T7): the raw pipeline name (the lease's messages name it verbatim —
+/// `scope_of` is a one-way hash, unsuitable for a human-facing refusal)
+/// and this connector instance's process-unique owner token.
+pub(super) struct LeaseWiring {
+    pub(super) pipeline: String,
+    pub(super) owner: String,
+}
+
+/// How this session encodes output — grouped so `Load::open` stays
+/// under clippy's argument-count ceiling.
+pub(super) struct WriterWiring {
+    pub(super) format: DestFormat,
+    pub(super) partition_by: Option<String>,
+    pub(super) props: WriterProperties,
 }
 
 /// The session state: where to write, how to encode, and what has been
@@ -73,6 +91,16 @@ pub struct Load {
     /// Where closed parts are reported. Advisory: absent changes
     /// nothing about what is written.
     part_events: Option<rdlt_connector_sdk::spi::PartEventFn>,
+    /// This session's hold on the destination scope (037 US2 T7).
+    /// `Some` from a successful `open` until a successful `publish`
+    /// releases it (see `Backend::publish`'s doc for the residual this
+    /// leaves for any LATER commit on this same session); `None`
+    /// afterward, at which point `check_still_held` has nothing left to
+    /// check and treats the session as still entitled to write — the
+    /// destination was durably consistent at the moment of that
+    /// release, and no later hazard this fence would have caught is
+    /// covered once it is gone.
+    lease: Option<Lease>,
 }
 
 impl std::fmt::Debug for Load {
@@ -86,6 +114,7 @@ impl std::fmt::Debug for Load {
             .field("staged", &self.staged.len())
             .field("open", &self.open.len())
             .field("part_events", &self.part_events.is_some())
+            .field("lease_held", &self.lease.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -111,30 +140,42 @@ struct StagedPart {
 }
 
 impl Load {
-    /// Open one session: reclaim the scope's staging (a crashed
-    /// predecessor's debris), then ready this load's area.
+    /// Open one session: acquire the scope's lease FIRST (037 US2 T7),
+    /// then reclaim the scope's staging (a crashed predecessor's
+    /// debris) — in that order, deliberately: the lease is what makes
+    /// `prepare_staging`'s scope-wide wipe safe to run at all, since it
+    /// is the lease that refuses a second live session before that wipe
+    /// could ever run against one. Ready this load's area last.
     pub(super) async fn open(
         location: Location,
-        format: DestFormat,
-        partition_by: Option<String>,
-        props: WriterProperties,
+        writer: WriterWiring,
         scope: String,
         load_id: LoadId,
         parts: PartsWiring,
+        lease_wiring: LeaseWiring,
     ) -> Result<Self, DestinationError> {
+        let mut lease = Lease::acquire(
+            location.clone(),
+            &scope,
+            &lease_wiring.pipeline,
+            &lease_wiring.owner,
+        )
+        .await?;
+        lease.start_heartbeat();
         location.prepare_staging(&scope, load_id.as_str()).await?;
         Ok(Self {
             parts: parts.options,
             part_events: parts.events,
             open: BTreeMap::new(),
             location,
-            format,
-            partition_by,
-            props,
+            format: writer.format,
+            partition_by: writer.partition_by,
+            props: writer.props,
             scope,
             load_id,
             tables: BTreeMap::new(),
             staged: Vec::new(),
+            lease: Some(lease),
         })
     }
 
@@ -229,6 +270,19 @@ impl Load {
             && self.format == DestFormat::Parquet
             && self.partition_by.is_none()
     }
+
+    /// The write-path fence (037 US2 T7): refuse rather than write once
+    /// this session's hold on the scope is provably gone. A `None`
+    /// lease (a prior successful `publish` already released it — see
+    /// the `lease` field's doc) has nothing left to check and passes;
+    /// everything else defers to `Lease::check_still_held`'s own
+    /// symmetric fence.
+    fn check_lease_still_held(&self) -> Result<(), DestinationError> {
+        match &self.lease {
+            Some(lease) => lease.check_still_held(),
+            None => Ok(()),
+        }
+    }
 }
 
 #[async_trait]
@@ -256,6 +310,7 @@ impl Backend for Load {
         table: &TableName,
         batch: RecordBatch,
     ) -> Result<(), DestinationError> {
+        self.check_lease_still_held()?;
         for (partition, group) in split_partitions(table, &batch, self.partition_by.as_deref())? {
             let key = (table.to_string(), partition.clone());
             // A parquet file carries ONE schema, so a schema change
@@ -330,6 +385,7 @@ impl Backend for Load {
     }
 
     async fn publish(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestinationError> {
+        self.check_lease_still_held()?;
         // Phase 0 — no part spans a commit. Publish moves WHOLE staged
         // files, and a part still open has no file to move, so every
         // one is closed and staged before anything else happens. This
@@ -505,6 +561,26 @@ impl Backend for Load {
         self.location
             .write_doc(&commits_file(&self.scope), &log)
             .await?;
+
+        // 037 US2 T7: release the session lease at the successful end
+        // of publish — after the receipt write, the last durable step
+        // above. Deliberately per-publish rather than deferred to
+        // session end (the `Backend` contract has no separate close
+        // hook to defer to): a session that never commits again ends
+        // here promptly instead of leaving a phantom hold for another
+        // `TTL_SECS` after it is really done. The residual this leaves
+        // — a LATER commit on this same session (crash sweep and the
+        // conformance kit exercise this) runs with `check_lease_still_held`
+        // now a no-op, since `self.lease` is `None` — is recorded, not
+        // hidden: it narrows this story's guarantee to "no second
+        // session's `open` interleaves with this session's FIRST
+        // commit", the crash-recovery case this feature's crash sweep
+        // exists to prove, rather than every commit of a multi-commit
+        // session.
+        if let Some(lease) = self.lease.take() {
+            lease.release().await;
+        }
+
         Ok(CommitReceipt {
             load_id: meta.load_id,
             commit_seq: meta.commit_seq,

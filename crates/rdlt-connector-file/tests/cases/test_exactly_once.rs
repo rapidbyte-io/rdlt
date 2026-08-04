@@ -9,6 +9,49 @@ use rdlt_testkit::{batch_of, commit_meta_for, schema_for};
 
 use super::common::local_dest;
 
+/// Open one session against a FRESH `File` connector — a distinct
+/// instance every call, so this mints a distinct owner token each time
+/// (037 US2 T7's mandatory rule: the owner is process-unique, never
+/// derived from config/pipeline/path). This is the shape two separate
+/// `rdlt run` invocations of the SAME pipeline take, as opposed to
+/// `run_load`'s single shared `dest`, whose repeated `.open()` calls
+/// all share one owner.
+async fn open_session(
+    dir: &std::path::Path,
+    pipeline: &str,
+    load: &str,
+) -> Result<Box<dyn rdlt_connector_sdk::spi::LoadSession>, rdlt_connector_sdk::spi::DestinationError>
+{
+    let config = local_dest(dir);
+    let dest = destination::Shell::new(config).expect("valid");
+    dest.open(OpenContext::new(
+        PipelineId::new(pipeline),
+        LoadId::new(load),
+    ))
+    .await
+}
+
+/// S6 (030): scope-wide reclaim meant two live sessions of ONE
+/// pipeline silently destroyed each other's staging. Now the second
+/// open refuses typed while the first holds the lease.
+#[tokio::test]
+async fn a_second_session_of_the_same_pipeline_is_refused_not_destroyed() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let first = open_session(dir.path(), "one-pipeline", "load-a")
+        .await
+        .expect("first opens");
+    let second = open_session(dir.path(), "one-pipeline", "load-b").await;
+    let err = match second {
+        Ok(_) => panic!("the lease refuses a concurrent same-pipeline session"),
+        Err(e) => e,
+    };
+    assert!(
+        err.to_string().contains("holds the destination lease"),
+        "{err}"
+    );
+    drop(first);
+}
+
 async fn run_load(
     config: &destination::Config,
     pipeline: &PipelineId,

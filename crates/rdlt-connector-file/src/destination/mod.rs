@@ -8,16 +8,10 @@ mod config;
 mod connector;
 mod inspect;
 mod layout;
-// 037 US2: not yet consumed by `Load` — Task 7 wires `Lease` into the
-// write path (acquire on connect, `check_still_held` on every write,
-// `release` on publish). Until then this module's public surface is
-// exercised only by its own `#[cfg(test)]` tests (037 US2 review round
-// 1, M9 — the earlier `testhook::probe_lease` bridge was DELETED as a
-// dangerous unused mutation surface on a production doc; those in-file
-// tests now carry the same lint-suppression role), so a plain `--lib`
-// build (as `clippy --all-targets` checks separately from the test
-// target) would otherwise see it as entirely dead code.
-#[allow(dead_code)]
+// 037 US2 T7: `Lease` is wired into `Load` (acquire on open, before
+// `prepare_staging`; `check_still_held` at the top of `write` and
+// `publish`; `release` at the end of a successful `publish`) — see
+// `load.rs`.
 mod lease;
 mod load;
 mod stage;

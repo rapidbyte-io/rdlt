@@ -1,5 +1,7 @@
 //! The destination connector: config in, [`Load`] sessions out.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use async_trait::async_trait;
 use rdlt_connector_sdk::destination::DestinationConnector;
 use rdlt_connector_sdk::spi::core::naming::IdentRules;
@@ -10,6 +12,29 @@ use super::layout::scope_of;
 use super::load::Load;
 use super::stage::writer_props;
 use crate::location::Location;
+
+/// A process-lifetime nonce, advanced once per minted owner token — see
+/// [`mint_owner`].
+static OWNER_NONCE: AtomicU64 = AtomicU64::new(0);
+
+/// Mint a fresh session-lease owner token: `{pid}-{nonce:x}` (037 US2
+/// T7 — the ledger's mandatory rule). PROCESS-UNIQUE and nothing else:
+/// never derived from `config`, the pipeline name, the output path, or
+/// the host, because any of those would make every `File` instance
+/// opened against the SAME config mint the SAME token, and the lease's
+/// "same owner reacquires" branch would then treat every concurrent
+/// `rdlt run` of one pipeline as this session's own retry — silently
+/// defeating the whole story (S6). The pid separates processes; the
+/// nonce separates instances minted within one process (each `assemble`
+/// call advances it), so two `File`s built back-to-back in one test or
+/// one embedder never collide. Deliberately NOT stable across a process
+/// restart — a genuine new process is a genuinely new session, and the
+/// TTL-based takeover path (`lease.rs`) is what lets it eventually
+/// claim an abandoned lease, never a coincidental identity match.
+fn mint_owner() -> String {
+    let nonce = OWNER_NONCE.fetch_add(1, Ordering::Relaxed);
+    format!("{}-{nonce:x}", std::process::id())
+}
 
 /// The LOCAL-protocol crash points the ENGINE's sweep drives against
 /// [`super::ParquetDir`] — exported so the sweep iterates exactly this
@@ -51,6 +76,16 @@ pub const LEASE_FAIL_POINTS: &[&str] = &["file.lease.acquire", "file.lease.relea
 #[derive(Debug, Clone)]
 pub struct File {
     config: Config,
+    /// This instance's session-lease identity (037 US2 T7) — minted
+    /// ONCE in [`DestinationConnector::assemble`] and stable for the
+    /// lifetime of this `File` value, including across every `connect`
+    /// call it serves (the engine's own retry of a failed attempt
+    /// reopening the SAME connector instance reacquires its own lease
+    /// rather than being refused as a foreign session — see
+    /// `lease.rs`'s module doc, step 3). `Clone` copies the token
+    /// verbatim, which is deliberate: a cloned `File` still IS this
+    /// same session's identity, never a new one.
+    owner: String,
 }
 
 #[async_trait]
@@ -62,7 +97,10 @@ impl DestinationConnector for File {
     type Backend = Load;
 
     fn assemble(config: Config) -> Result<Self, ConfigError> {
-        Ok(Self { config })
+        Ok(Self {
+            config,
+            owner: mint_owner(),
+        })
     }
 
     fn config_schema() -> Option<serde_json::Value> {
@@ -91,14 +129,20 @@ impl DestinationConnector for File {
         let location = Location::for_dest(&self.config.path, self.config.location.as_ref())?;
         Load::open(
             location,
-            self.config.format,
-            self.config.partition_by.clone(),
-            props,
+            super::load::WriterWiring {
+                format: self.config.format,
+                partition_by: self.config.partition_by.clone(),
+                props,
+            },
             scope_of(context.pipeline.as_str()),
             context.load_id.clone(),
             super::load::PartsWiring {
                 options: self.config.part_options(),
                 events: context.part_events.clone(),
+            },
+            super::load::LeaseWiring {
+                pipeline: context.pipeline.as_str().to_owned(),
+                owner: self.owner.clone(),
             },
         )
         .await
@@ -191,5 +235,24 @@ mod tests {
         assert!(caps.scalar_lists);
         assert!(!caps.json_type);
         assert!(caps.decimal);
+    }
+
+    /// 037 US2 T7's mandatory ledger rule, pinned directly: two `File`
+    /// instances built from the SAME config — the shape two concurrent
+    /// `rdlt run` invocations of one pipeline take — must mint DISTINCT
+    /// session-lease owners. A config-derived token would make every
+    /// such pair collide on the lease's "same owner reacquires" branch,
+    /// silently defeating S6's whole point.
+    #[test]
+    fn two_connector_instances_mint_distinct_owners() {
+        let config = Config::new("out");
+        let a = File::assemble(config.clone()).expect("assembles");
+        let b = File::assemble(config).expect("assembles");
+        assert_ne!(a.owner, b.owner);
+        // Also process-unique in shape: both carry this process's pid
+        // as the token's prefix.
+        let pid_prefix = format!("{}-", std::process::id());
+        assert!(a.owner.starts_with(&pid_prefix), "{}", a.owner);
+        assert!(b.owner.starts_with(&pid_prefix), "{}", b.owner);
     }
 }
