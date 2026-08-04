@@ -21,6 +21,7 @@ pub(super) async fn recover_wal(
     wal_dir: Option<&Path>,
     capabilities: DestinationCapabilities,
     events: &tokio::sync::broadcast::Sender<rdlt_core::PipelineEvent>,
+    output_totals: &std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, u64>>>,
 ) -> Result<(Box<dyn LoadSession>, StateDoc, ResumedFrom), RdltError> {
     // Replay runs on its OWN session, opened under the CRASHED run's load id —
     // scanning therefore has to happen before any session exists. A session's
@@ -64,8 +65,9 @@ pub(super) async fn recover_wal(
     // so it observes the recovered cursors rather than the pre-crash ones.
     let mut session = destination
         .open(
-            OpenContext::new(config.pipeline.clone(), load_id.clone())
-                .with_part_events(part_event_forwarder(events.clone())),
+            OpenContext::new(config.pipeline.clone(), load_id.clone()).with_part_events(
+                part_event_forwarder(events.clone(), Some(std::sync::Arc::clone(output_totals))),
+            ),
         )
         .await
         .map_err(|e| classify_dest_error(&e))?;
@@ -109,10 +111,13 @@ async fn replay_span(
     capabilities: DestinationCapabilities,
     events: &tokio::sync::broadcast::Sender<rdlt_core::PipelineEvent>,
 ) -> Result<Option<ResumedFrom>, RdltError> {
+    // The replay session's parts belong to the CRASHED load; they
+    // reach the event feed but not this run's report totals — the
+    // same line `report.tables` draws for replayed batches.
     let mut session = destination
         .open(
             OpenContext::new(config.pipeline.clone(), span.load_id.clone())
-                .with_part_events(part_event_forwarder(events.clone())),
+                .with_part_events(part_event_forwarder(events.clone(), None)),
         )
         .await
         .map_err(|e| classify_dest_error(&e))?;
@@ -140,8 +145,16 @@ async fn replay_span(
 /// having exactly one match is what enforces that.
 fn part_event_forwarder(
     events: tokio::sync::broadcast::Sender<rdlt_core::PipelineEvent>,
+    output_totals: Option<
+        std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, u64>>>,
+    >,
 ) -> rdlt_connector::PartEventFn {
     std::sync::Arc::new(move |part: rdlt_connector::PartClosed| {
+        if let Some(totals) = &output_totals
+            && let Ok(mut totals) = totals.lock()
+        {
+            *totals.entry(part.table.as_str().to_owned()).or_default() += part.encoded_bytes;
+        }
         use rdlt_connector::PartCloseReason as Spi;
         let reason = match part.reason {
             Spi::Target => rdlt_core::PartClose::Target,

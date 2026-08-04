@@ -623,7 +623,7 @@ async fn closed_parts_report_their_size_and_reason_through_the_event_feed() {
         destination::Shell::new(config).expect("valid"),
     );
     let mut events = engine.events();
-    engine.run().await.expect("run");
+    let report = engine.run().await.expect("run");
 
     let mut closed = Vec::new();
     while let Some(event) = events.recv().await {
@@ -665,5 +665,12 @@ async fn closed_parts_report_their_size_and_reason_through_the_event_feed() {
     assert_eq!(
         reported, on_disk,
         "reported part bytes are the on-disk bytes, not an estimate"
+    );
+    // 036 stage 5: the run report carries the same total — the
+    // machine-readable copy of the output size, exact regardless of
+    // event-feed lag.
+    assert_eq!(
+        report.tables[&closed[0].0].output_bytes, on_disk,
+        "the report's output_bytes are the on-disk bytes"
     );
 }

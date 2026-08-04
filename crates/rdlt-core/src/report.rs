@@ -30,6 +30,11 @@ pub struct TableReport {
     pub discarded_rows: u64,
     /// Individual values nulled by a Discard* policy, with their rows kept.
     pub discarded_values: u64,
+    /// Encoded bytes of the output parts this table's rows landed in —
+    /// zero for destinations that write no files. `#[serde(default)]`
+    /// so pre-036 reports still deserialize.
+    #[serde(default)]
+    pub output_bytes: u64,
 }
 
 /// A commit unit's totals projected into report shape. The two types are
@@ -42,6 +47,7 @@ impl From<CommitCounters> for TableReport {
             bytes: counters.bytes,
             discarded_rows: counters.discarded_rows,
             discarded_values: counters.discarded_values,
+            output_bytes: 0,
         }
     }
 }
@@ -91,6 +97,28 @@ pub struct RunReport {
     pub commits: u64,
     /// Wall-clock duration of the run.
     pub elapsed_ms: u64,
+    /// Read-side totals per stream. Distinct from `tables`: a stream's
+    /// rows are counted as the SOURCE delivered them, before discard
+    /// policies and merges. `#[serde(default)]` so pre-036 reports
+    /// still deserialize.
+    #[serde(default)]
+    pub streams: BTreeMap<StreamName, StreamReport>,
+    /// Rows per second averaged over the run — `rows / elapsed`,
+    /// precomputed so consumers do not each re-derive it (and get the
+    /// division-by-near-zero edge wrong independently).
+    #[serde(default)]
+    pub rows_per_sec_avg: Option<f64>,
+}
+
+/// One stream's read-side totals.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct StreamReport {
+    /// Rows decoded from the source's payloads.
+    pub rows_read: u64,
+    /// Payload bytes: raw for a JSON source, the Arrow in-memory
+    /// footprint for a structured one.
+    pub bytes_read: u64,
 }
 
 impl RunReport {
@@ -108,6 +136,8 @@ impl RunReport {
             resumed_from: ResumedFrom::Fresh,
             commits: 0,
             elapsed_ms: 0,
+            streams: BTreeMap::new(),
+            rows_per_sec_avg: None,
         }
     }
 

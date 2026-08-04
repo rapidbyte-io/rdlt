@@ -181,6 +181,11 @@ async fn run_once(
     let wal_dir = config.workdir.as_deref().map(crate::wal::dir_in);
 
     // ---- Session open + state recovery + WAL replay ----
+    // Output bytes per table, accumulated in the part-event forwarder
+    // ITSELF (synchronous with the connectors), so the report's copy
+    // is exact regardless of broadcast lag.
+    let output_totals: Arc<std::sync::Mutex<std::collections::BTreeMap<String, u64>>> =
+        Arc::default();
     let (session, base_state, resumed_from) = recover_wal(
         destination.as_ref(),
         config,
@@ -188,6 +193,7 @@ async fn run_once(
         wal_dir.as_deref(),
         capabilities,
         &events,
+        &output_totals,
     )
     .await?;
 
@@ -203,6 +209,11 @@ async fn run_once(
         resumed_from,
     });
     report.retries = prior_retries;
+
+    // Read-side totals per stream, exact for the report (see the
+    // extract task's note).
+    let read_totals: Arc<std::sync::Mutex<std::collections::BTreeMap<StreamName, (u64, u64)>>> =
+        Arc::default();
 
     // ---- Wire the graph ----
     let (load_tx, load_rx) = byte_channel::<LoadItem>(config.byte_budget, STAGE_MSG_CAPACITY);
@@ -246,6 +257,7 @@ async fn run_once(
                 load_tx.clone(),
                 cancel.clone(),
                 events.clone(),
+                Arc::clone(&read_totals),
             ),
             span,
         ));
@@ -302,6 +314,24 @@ async fn run_once(
     }
 
     report.elapsed_ms = started.elapsed().as_millis() as u64;
+    if let Ok(totals) = read_totals.lock() {
+        for (stream, (rows_read, bytes_read)) in totals.iter() {
+            let entry = report.streams.entry(stream.clone()).or_default();
+            entry.rows_read = *rows_read;
+            entry.bytes_read = *bytes_read;
+        }
+    }
+    if let Ok(outputs) = output_totals.lock() {
+        for (table, bytes) in outputs.iter() {
+            report
+                .table_mut(&rdlt_core::TableName::new(table.as_str()))
+                .output_bytes = *bytes;
+        }
+    }
+    let total_rows: u64 = report.tables.values().map(|t| t.rows).sum();
+    let elapsed_secs = report.elapsed_ms as f64 / 1_000.0;
+    report.rows_per_sec_avg =
+        (elapsed_secs > f64::EPSILON && total_rows > 0).then(|| total_rows as f64 / elapsed_secs);
     Ok(report)
 }
 

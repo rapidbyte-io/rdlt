@@ -118,6 +118,7 @@ pub(super) async fn stream_task(
     tx: ByteSender<LoadItem>,
     cancel: CancellationToken,
     events: broadcast::Sender<PipelineEvent>,
+    read_totals: Arc<std::sync::Mutex<std::collections::BTreeMap<StreamName, (u64, u64)>>>,
 ) -> Result<(), RdltError> {
     let StreamPlan {
         spec,
@@ -185,6 +186,14 @@ pub(super) async fn stream_task(
                     rows: rows_read,
                     bytes: payload_bytes,
                 });
+                // The REPORT's copy of the same numbers — counted here,
+                // not folded from the lossy broadcast, because report
+                // numbers must be exact.
+                if let Ok(mut totals) = read_totals.lock() {
+                    let entry = totals.entry(stream_name.clone()).or_default();
+                    entry.0 += rows_read;
+                    entry.1 += payload_bytes;
+                }
                 for item in items {
                     if tx.send(item).await.is_err() {
                         break;
@@ -201,11 +210,20 @@ pub(super) async fn stream_task(
                          `structured`",
                     ));
                 }
+                let (rows_read, payload_bytes) = (
+                    batch.num_rows() as u64,
+                    batch.get_array_memory_size() as u64,
+                );
                 let _ = events.send(rdlt_core::PipelineEvent::BatchRead {
                     stream: stream_name.clone(),
-                    rows: batch.num_rows() as u64,
-                    bytes: batch.get_array_memory_size() as u64,
+                    rows: rows_read,
+                    bytes: payload_bytes,
                 });
+                if let Ok(mut totals) = read_totals.lock() {
+                    let entry = totals.entry(stream_name.clone()).or_default();
+                    entry.0 += rows_read;
+                    entry.1 += payload_bytes;
+                }
                 let (returned, items) = owner
                     .passthrough(
                         batch,

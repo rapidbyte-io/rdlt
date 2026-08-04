@@ -41,8 +41,19 @@ One YAML document describes the whole pipeline; the CLI adds zero engine
 capability beyond parsing it:
 
 ```sh
-rdlt run pipeline.yaml
+rdlt run pipeline.yaml        # live progress on a terminal, plain lines in CI
+rdlt validate pipeline.yaml   # the run's gates, without the run
+rdlt schema postgres-source   # a connector's config JSON Schema
 ```
+
+On a terminal, `run` draws a live display — per-stream rows read and
+written, bytes, rows/s, commit recency — and ends with a summary table
+of the exactly-once totals. Off a terminal it logs a line per event;
+`-q` silences, `-v` adds detail, `--events` captures the raw feed as
+NDJSON. Exit codes are stable and scriptable. The numbers come from
+the library's own telemetry seams — events, the `Metrics` fold, and
+`tracing` spans — documented in [docs/telemetry.md](docs/telemetry.md)
+for anyone embedding rdlt directly.
 
 Runnable pipelines covering every connector live in
 [`examples/`](examples/), each executed as written before being

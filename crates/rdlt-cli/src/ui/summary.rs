@@ -37,7 +37,11 @@ pub fn render(report: &RunReport) -> String {
         format::commits(report.commits),
     ));
 
-    // The per-table block, aligned by hand: four columns, name first.
+    // The per-table block, aligned by hand; the `output` column
+    // appears only when some table wrote files — a faked zero column
+    // on SQL destinations would imply a measurement that never
+    // happened.
+    let any_output = report.tables.values().any(|t| t.output_bytes > 0);
     let name_width = report
         .tables
         .keys()
@@ -45,8 +49,13 @@ pub fn render(report: &RunReport) -> String {
         .max()
         .unwrap_or(5)
         .max("table".len());
+    let output_header = if any_output {
+        format!("  {:>10}", style("output").dim())
+    } else {
+        String::new()
+    };
     out.push_str(&format!(
-        "\n  {:<name_width$}  {:>10}  {:>10}  {:>10}\n",
+        "\n  {:<name_width$}  {:>10}  {:>10}{output_header}  {:>10}\n",
         style("table").dim(),
         style("rows").dim(),
         style("bytes").dim(),
@@ -59,8 +68,13 @@ pub fn render(report: &RunReport) -> String {
         } else {
             "—".to_owned()
         };
+        let output = if any_output {
+            format!("  {:>10}", format::bytes(totals.output_bytes))
+        } else {
+            String::new()
+        };
         out.push_str(&format!(
-            "  {:<name_width$}  {:>10}  {:>10}  {:>10}\n",
+            "  {:<name_width$}  {:>10}  {:>10}{output}  {:>10}\n",
             table.as_str(),
             format::count(totals.rows),
             format::bytes(totals.bytes),
@@ -78,13 +92,20 @@ pub fn render(report: &RunReport) -> String {
         }
     }
 
-    let avg = if elapsed_secs > f64::EPSILON && total_rows > 0 {
-        format!(" · {} avg", format::rate(total_rows as f64 / elapsed_secs))
+    // The precomputed average — the report's own number, not a local
+    // re-derivation.
+    let avg = report
+        .rows_per_sec_avg
+        .map(|r| format!(" · {} avg", format::rate(r)))
+        .unwrap_or_default();
+    let total_output: u64 = report.tables.values().map(|t| t.output_bytes).sum();
+    let output = if total_output > 0 {
+        format!(" · output {}", format::bytes(total_output))
     } else {
         String::new()
     };
     out.push_str(&format!(
-        "\n  total {} rows · {} in-mem{avg}\n",
+        "\n  total {} rows · {} in-mem{output}{avg}\n",
         format::count(total_rows),
         format::bytes(total_bytes),
     ));
