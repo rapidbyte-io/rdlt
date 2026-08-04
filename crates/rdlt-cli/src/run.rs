@@ -106,10 +106,10 @@ impl EventSink {
 
     fn finish(self) {
         use std::io::Write as _;
-        if let EventSink::File(mut w) = self {
-            if let Err(e) = w.flush() {
-                eprintln!("warning: flushing --events file: {e}");
-            }
+        if let EventSink::File(mut w) = self
+            && let Err(e) = w.flush()
+        {
+            eprintln!("warning: flushing --events file: {e}");
         }
     }
 }
