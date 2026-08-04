@@ -64,7 +64,7 @@ fn load_spec(spec_path: &std::path::Path) -> Result<(Spec, String), CliError> {
     if let Some(config) = spec.pg_source_config() {
         let config = config?;
         for warning in cdc::cdc_composition_warnings(&spec, &config) {
-            eprintln!("warning: {warning}");
+            crate::ui::stderr_line(&format!("warning: {warning}"));
         }
     }
     let name = spec.pipeline.clone();
@@ -77,7 +77,7 @@ pub(crate) async fn validate(spec_path: PathBuf, verbosity: Verbosity) -> Result
     let (spec, pipeline_name) = load_spec(&spec_path)?;
     let _pipeline = pipeline_spec::build_pipeline(&spec)?;
     if verbosity != Verbosity::Quiet {
-        eprintln!("ok: pipeline {pipeline_name} is valid");
+        crate::ui::stderr_line(&format!("ok: pipeline {pipeline_name} is valid"));
     }
     Ok(())
 }
@@ -146,7 +146,7 @@ async fn drive(
                         sink.write(&event);
                     }
                     if let Some(line) = ui::plain::line(&event, verbosity) {
-                        eprintln!("{line}");
+                        ui::stderr_line(&line);
                     }
                 }
             }
@@ -182,7 +182,7 @@ async fn drive(
     // load has succeeded and the report is in hand, so exiting non-zero would
     // misreport the outcome.
     if let Err(e) = feed.await {
-        eprintln!("warning: event feed stopped: {e}");
+        ui::stderr_line(&format!("warning: event feed stopped: {e}"));
     }
     // The FINAL numbers, from the exactly-once report — never the live
     // fold. Quiet suppresses it; both other renderers end with it.

@@ -66,7 +66,7 @@ pub(super) async fn recover_wal(
     let mut session = destination
         .open(
             OpenContext::new(config.pipeline.clone(), load_id.clone()).with_part_events(
-                part_event_forwarder(events.clone(), Some(std::sync::Arc::clone(output_totals))),
+                part_event_forwarder(events.clone(), std::sync::Arc::clone(output_totals)),
             ),
         )
         .await
@@ -148,14 +148,10 @@ async fn replay_span(
 /// having exactly one match is what enforces that.
 fn part_event_forwarder(
     events: tokio::sync::broadcast::Sender<rdlt_core::PipelineEvent>,
-    output_totals: Option<
-        std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, u64>>>,
-    >,
+    output_totals: std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, u64>>>,
 ) -> rdlt_connector::PartEventFn {
     std::sync::Arc::new(move |part: rdlt_connector::PartClosed| {
-        if let Some(totals) = &output_totals
-            && let Ok(mut totals) = totals.lock()
-        {
+        if let Ok(mut totals) = output_totals.lock() {
             *totals.entry(part.table.as_str().to_owned()).or_default() += part.encoded_bytes;
         }
         use rdlt_connector::PartCloseReason as Spi;

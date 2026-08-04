@@ -303,3 +303,140 @@ async fn cancellation_surfaces_the_cancelled_error() {
     let err = run.await.expect("join").expect_err("cancelled");
     assert!(matches!(err, RdltError::Cancelled), "got: {err:?}");
 }
+
+/// Review round 2's regression pin for the RunStarted-first guarantee
+/// on the WAL-REPLAY path — the one the fresh-run pins cannot see.
+///
+/// The wrapper destination reports a part on every commit through the
+/// SPI listener, exactly like a file-writing connector. Run 1 crashes
+/// mid-commit, leaving a pending WAL span; run 2 recovers by REPLAY.
+/// The guarantee under test: the replay session is opened with NO
+/// listener, so nothing reaches the feed before RunStarted — rewiring
+/// the replay session's forwarder (the round-1 defect) turns this pin
+/// red.
+mod run_started_first_on_replay {
+    use super::*;
+    use rdlt_connector::{CommitMeta, CommitReceipt, DestinationError, RecordBatch, StateDoc};
+    use rdlt_connector::{
+        Destination, DestinationCapabilities, LoadSession, OpenContext, PartCloseReason,
+        PartClosed, PartEventFn,
+    };
+    use rdlt_core::PipelineEvent;
+
+    /// MemoryDestination, plus a part report per commit — the shape of
+    /// every file-writing destination, reduced to the seam under test.
+    #[derive(Clone)]
+    struct PartEmitting {
+        inner: MemoryDestination,
+    }
+
+    struct PartEmittingSession {
+        inner: Box<dyn LoadSession>,
+        listener: Option<PartEventFn>,
+    }
+
+    #[async_trait::async_trait]
+    impl Destination for PartEmitting {
+        fn spec(&self) -> rdlt_connector::ConnectorSpec {
+            self.inner.spec()
+        }
+        fn capabilities(&self) -> DestinationCapabilities {
+            self.inner.capabilities()
+        }
+        async fn open(
+            &self,
+            context: OpenContext,
+        ) -> Result<Box<dyn LoadSession>, DestinationError> {
+            let listener = context.part_events.clone();
+            let inner = self.inner.open(context).await?;
+            Ok(Box::new(PartEmittingSession { inner, listener }))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LoadSession for PartEmittingSession {
+        async fn ensure_table(
+            &mut self,
+            schema: &rdlt_connector::TableSchema,
+            mode: &rdlt_connector::WriteMode,
+        ) -> Result<(), DestinationError> {
+            self.inner.ensure_table(schema, mode).await
+        }
+        async fn write(
+            &mut self,
+            table: &rdlt_connector::TableName,
+            batch: RecordBatch,
+        ) -> Result<(), DestinationError> {
+            self.inner.write(table, batch).await
+        }
+        async fn commit(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestinationError> {
+            if let Some(listener) = &self.listener {
+                listener(PartClosed::new(
+                    rdlt_connector::TableName::new("events"),
+                    64,
+                    PartCloseReason::Commit,
+                ));
+            }
+            self.inner.commit(meta).await
+        }
+        async fn read_state(
+            &mut self,
+            pipeline: &rdlt_connector::PipelineId,
+        ) -> Result<Option<StateDoc>, DestinationError> {
+            self.inner.read_state(pipeline).await
+        }
+    }
+
+    #[tokio::test]
+    async fn replay_emits_nothing_before_run_started() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        // Run 1: crash during the second commit — a WAL span is left
+        // pending with committed work behind it.
+        let crash = CrashDestination::new(MemoryDestination::new(), FaultPoint::BeforeCommit(2));
+        let outcome = Engine::new(config(dir.path()), source(), crash).run().await;
+        assert!(outcome.is_err(), "the fixture must crash");
+
+        // Run 2: recover. The wrapper reports a part on EVERY commit —
+        // including replay's, if replay were (wrongly) given a
+        // listener.
+        let dest = PartEmitting {
+            inner: MemoryDestination::new(),
+        };
+        let engine = Engine::new(config(dir.path()), source(), dest);
+        let mut events = engine.events();
+        let report = engine.run().await.expect("recovery run");
+        assert!(
+            matches!(report.resumed_from, rdlt_core::ResumedFrom::Wal { .. }),
+            "the pin must exercise the REPLAY path, got {:?}",
+            report.resumed_from
+        );
+
+        let mut seen = Vec::new();
+        while let Some(event) = events.recv().await {
+            seen.push(event);
+        }
+        assert!(
+            matches!(seen.first(), Some(PipelineEvent::RunStarted { .. })),
+            "nothing precedes RunStarted, replay included — got {:?}",
+            seen.first()
+        );
+        // The wrapper's own-session reports DO reach the feed — the
+        // listener seam works; only replay is excluded.
+        let started_at = 0;
+        let part_positions: Vec<usize> = seen
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| matches!(e, PipelineEvent::PartClosed { .. }))
+            .map(|(i, _)| i)
+            .collect();
+        assert!(
+            !part_positions.is_empty(),
+            "the run's own commits report parts"
+        );
+        assert!(
+            part_positions.iter().all(|&i| i > started_at),
+            "every part event follows RunStarted: {part_positions:?}"
+        );
+    }
+}

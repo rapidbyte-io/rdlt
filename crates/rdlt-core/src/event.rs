@@ -18,7 +18,9 @@ use crate::schema::SchemaDelta;
 ///
 /// Subscribed to by a host that wants progress rather than only a final report.
 /// Events are advisory: dropping them changes nothing about the load, and a
-/// consumer that lags is disconnected rather than allowed to slow the pipeline.
+/// consumer that lags LOSES THE OLDEST EVENTS rather than being allowed to slow
+/// the pipeline — a still-connected consumer must not infer a complete feed.
+/// The `RunReport` is the complete record either way.
 ///
 /// `#[non_exhaustive]`: new events can be added without a breaking change.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -73,7 +75,10 @@ pub enum PipelineEvent {
         /// The committed cursor per stream.
         cursors: BTreeMap<StreamName, Cursor>,
     },
-    /// A transient connector failure was retried by the engine.
+    /// A transient connector failure was retried by the engine. One
+    /// ordering asymmetry, stated rather than implied: `Retried`
+    /// announces the UPCOMING attempt, so it precedes that attempt's
+    /// own `RunStarted`.
     Retried {
         /// The stream involved, where the failure was attributable to one.
         stream: Option<StreamName>,

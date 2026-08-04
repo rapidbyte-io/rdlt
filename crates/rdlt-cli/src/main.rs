@@ -136,16 +136,18 @@ pub(crate) enum CliError {
 impl CliError {
     fn render_and_exit_code(self) -> ExitCode {
         match self {
+            // Best-effort reporting: even with stderr closed, the CODE
+            // is the contract and must still be exited with.
             CliError::Io(message) => {
-                eprintln!("error: {message}");
+                ui::stderr_line(&format!("error: {message}"));
                 ExitCode::from(74) // EX_IOERR: the invocation was fine, the filesystem was not
             }
             CliError::Usage(message) => {
-                eprintln!("error: {message}");
+                ui::stderr_line(&format!("error: {message}"));
                 ExitCode::from(2)
             }
             CliError::Run(error) => {
-                eprintln!("error: {error}");
+                ui::stderr_line(&format!("error: {error}"));
                 ExitCode::from(exit_code_for(&error))
             }
         }

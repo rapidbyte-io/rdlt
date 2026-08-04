@@ -21,14 +21,14 @@ way.
 | event | carries | meaning |
 |---|---|---|
 | `run_started` | load_id, resumed_from | The FIRST event: which load this is, and whether it resumed (fresh / cursor / WAL replay). Replayed recovery work itself emits nothing — it belongs to the crashed load; `resumed_from: wal` is its record. |
-| `stream_started` / `stream_finished` | stream | Read-side lifecycle. |
+| `stream_started` / `stream_finished` | stream (+ `table` on start: the destination ROOT table its rows land in, the engine's normalization applied) | Read-side lifecycle. Nested payloads may shred into further child tables beyond the announced one. |
 | `batch_read` | stream, rows, bytes | What the SOURCE delivered, before batching/merges/discards. Bytes are the raw payload for JSON sources, the Arrow footprint for structured ones. |
 | `batch_loaded` | table, rows, bytes | A batch reached the destination (not yet committed). Bytes are the Arrow IN-MEMORY footprint. |
 | `schema_evolved` | delta | Always precedes the first batch at the new version. |
 | `commit_started` | commit_seq | Paired with `committed`, makes commit latency observable. |
 | `committed` | commit_seq, cursors | Durable; follows everything it covers. |
 | `part_closed` | table, encoded_bytes, reason | A destination closed one output file. `encoded_bytes` is the EXACT on-the-wire size — the only honest basis for output throughput (in-memory bytes differ from encoded by multiples). Reasons: `target`, `time`, `budget`, `commit`, `schema`. Emitted by the file-materialising destinations (file, iceberg, snowflake's staged uploads); postgres and duckdb never emit it. |
-| `retried` | stream?, attempt | An engine retry of a transient failure. |
+| `retried` | stream?, attempt | An engine retry of a transient failure. Announces the UPCOMING attempt, so it precedes that attempt's `run_started`. |
 | `discarded` | table, rows, values, reason | Data dropped under a Discard* policy — counted, never silent. |
 | `heartbeat` | elapsed_ms | A liveness tick (1 s) once the streams are wired (discovery, session open and WAL recovery precede the ticker): events may legitimately go quiet, heartbeats may not. |
 
@@ -67,9 +67,10 @@ tokio::spawn(async move {
 });
 ```
 
-`MetricsSnapshot` carries per-stream read totals, per-table write and
-output totals, sliding-window and cumulative rates, commit recency,
-and whether a commit is in flight. The fold is advisory like the feed
+`MetricsSnapshot` carries per-stream read totals, the stream→table
+mapping the engine announced, per-table write and output totals,
+sliding-window and cumulative rates, commit recency, and whether a
+commit is in flight. The fold is advisory like the feed
 that drives it: FINAL totals belong to the `RunReport` — the
 exactly-once record — and a consumer showing final numbers must take
 them from there.

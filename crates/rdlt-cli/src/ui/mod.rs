@@ -1,6 +1,17 @@
 //! Rendering the event feed. Presentation ONLY — the constitution's
 //! line: everything the CLI shows, the library computed.
 
+/// Best-effort stderr line: `eprintln!` PANICS on a closed stderr,
+/// which would turn a finished run into exit 101 — the human channel
+/// failing must never change the outcome or the exit code.
+pub fn stderr_line(line: &str) {
+    use std::io::Write as _;
+    let mut stderr = std::io::stderr().lock();
+    let _ = stderr
+        .write_all(line.as_bytes())
+        .and_then(|()| stderr.write_all(b"\n"));
+}
+
 pub mod format;
 pub mod plain;
 pub mod pretty;
