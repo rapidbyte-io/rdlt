@@ -9,6 +9,27 @@ use rdlt_core::{
 
 use crate::EngineConfig;
 
+/// Rule 1: `a`'s table plus a trailing `_` equals `b`'s table — a
+/// `_`-leading source field mints the same child table under either root.
+/// `a` is always the stream owning the shorter (prefix) table.
+fn trailing_underscore_collision(a: &StreamName, ta: &str, b: &StreamName, tb: &str) -> RdltError {
+    RdltError::config(format!(
+        "streams `{a}` and `{b}` normalize to tables `{ta}` and `{tb}`, which differ only by \
+         a trailing `_` — a `_`-leading source field would mint the same child table for both; \
+         rename one stream"
+    ))
+}
+
+/// Rule 2: `b`'s table sits inside `a`'s child namespace (`b` starts with
+/// `a` + `__`). `a` is always the stream owning the shorter (prefix) table.
+fn child_namespace_collision(a: &StreamName, ta: &str, b: &StreamName, tb: &str) -> RdltError {
+    RdltError::config(format!(
+        "streams `{a}` and `{b}` normalize to tables `{ta}` and `{tb}`, and `{tb}` sits inside \
+         `{ta}`'s child-table namespace (`__` separates parent from child); rename one stream \
+         so neither table extends the other"
+    ))
+}
+
 /// The destination table a stream owns, by name normalization.
 ///
 /// One decision with two consumers that must agree by construction: validation
@@ -32,43 +53,65 @@ pub(super) fn validate_streams(
     let mut root_tables: BTreeMap<TableName, StreamName> = BTreeMap::new();
     for spec in streams {
         let table = root_table(&spec.name, capabilities.ident_rules);
+        // Child tables are minted at shred time as `{root}__{field}`. A
+        // collision between two DISTINCT streams' table spaces needs their
+        // roots A (shorter) and B (longer) to satisfy `B = A + "_" + s` for
+        // some suffix `s`: if `s` is empty, B is just A's own table with a
+        // trailing `_` and a `_`-leading source field mints the identical
+        // child table under either (rule 1, `orders_`/`orders`); if `s`
+        // starts with `_`, B already sits inside A's child namespace (rule
+        // 2, `__` is A's separator plus that leading `_`); any other `s`
+        // mismatches at the boundary character right after A and cannot
+        // collide. So checking every pair for rules 1 and 2 (both
+        // directions — the shorter root is not known in advance) makes
+        // every pair of distinct roots' table spaces disjoint, without
+        // refusing a table that merely LOOKS dangerous in isolation: a lone
+        // root containing `__` or ending in `_` cannot collide with
+        // itself, and postgres discovery mints exactly such roots from
+        // hostile identifiers (`Order "Items"` -> `order__items_`) that the
+        // operator does not own and cannot rename — refusing it outright
+        // broke a pinned product capability (rdlt-connector-postgres's
+        // `hostile_identifiers_and_column_selection` conformance cell).
+        for (existing_table, existing_stream) in &root_tables {
+            let et = existing_table.as_str();
+            let nt = table.as_str();
+            if nt == format!("{et}_") {
+                return Err(trailing_underscore_collision(
+                    existing_stream,
+                    et,
+                    &spec.name,
+                    nt,
+                ));
+            }
+            if et == format!("{nt}_") {
+                return Err(trailing_underscore_collision(
+                    &spec.name,
+                    nt,
+                    existing_stream,
+                    et,
+                ));
+            }
+            if nt.starts_with(&format!("{et}__")) {
+                return Err(child_namespace_collision(
+                    existing_stream,
+                    et,
+                    &spec.name,
+                    nt,
+                ));
+            }
+            if et.starts_with(&format!("{nt}__")) {
+                return Err(child_namespace_collision(
+                    &spec.name,
+                    nt,
+                    existing_stream,
+                    et,
+                ));
+            }
+        }
         if let Some(owner) = root_tables.insert(table.clone(), spec.name.clone()) {
             // Clause E2: exactly one stream owns a table.
             return Err(RdltError::config(format!(
                 "streams `{owner}` and `{}` both map to table `{table}`",
-                spec.name
-            )));
-        }
-        // Child tables are minted at shred time as `{root}__{field}` — a root
-        // containing `__` sits inside some stream's child namespace, and two
-        // streams writing one physical table is silent corruption (029's
-        // headliner). Completeness needs BOTH clauses below: a cross-stream
-        // child/child (or child/deeper) collision requires one root to be a
-        // PREFIX of the other's child string. The boundary character right
-        // after the shorter root is then `_` (the separator's first byte),
-        // which forces the longer root to either contain `__` itself (this
-        // clause) or END with a bare `_` that the separator's second `_`
-        // completes into `__` (the next clause). Refusing both makes every
-        // pair of distinct `__`-free, non-`_`-terminated roots disjoint —
-        // even against raw source keys that themselves start with `_`
-        // (Mongo's `_id`), which is exactly what a bare `__`-substring check
-        // alone misses: `orders_` and `orders` are both legal under that
-        // check alone, yet `child_table_name("orders_", "id")` and
-        // `child_table_name("orders", "_id")` both mint `orders___id`.
-        if table.as_str().contains("__") {
-            return Err(RdltError::config(format!(
-                "stream `{}` normalizes to table `{table}`, which collides with \
-                 the child-table namespace (`__` separates parent from child); \
-                 rename the stream so its table carries no `__`",
-                spec.name
-            )));
-        }
-        if table.as_str().ends_with('_') {
-            return Err(RdltError::config(format!(
-                "stream `{}` normalizes to table `{table}`, which ends with `_` and can \
-                 collide with the child-table namespace (a sibling root plus a `_`-leading \
-                 field mints the same child table); rename the stream so its table does not \
-                 end with `_`",
                 spec.name
             )));
         }
@@ -206,53 +249,67 @@ mod hint_validation_tests {
     }
 
     #[test]
-    fn a_root_table_containing_the_child_separator_is_refused() {
+    fn a_root_table_inside_another_streams_child_namespace_is_refused() {
         // `users..emails` normalizes to `users__emails` (each `.` maps to a
         // single `_`) — the exact name the `users` stream's `emails`
-        // list-of-objects child would get.
+        // list-of-objects child would get. Refused because it is PAIRED
+        // with the actual `users` stream; see the lone-stream capability
+        // pin below for the same table name with nothing to collide
+        // against.
         let error = check_streams(&["users..emails", "users"])
             .expect_err("a root inside another stream's child namespace");
         let text = error.to_string();
         assert!(
-            text.contains("collides with the child-table namespace"),
+            text.contains("sits inside") && text.contains("child-table namespace"),
             "{text}"
         );
     }
 
     #[test]
-    fn the_separator_rule_applies_even_to_a_single_stream() {
-        // One stream today, a second tomorrow: the rule must not depend
-        // on who else is currently configured.
-        assert!(check_streams(&["users__emails"]).is_err());
+    fn a_lone_root_containing_the_child_separator_is_accepted() {
+        // The bare `__`-substring is not dangerous in isolation — a lone
+        // root cannot collide with itself, and postgres table discovery
+        // mints exactly this shape from hostile identifiers the operator
+        // does not own and cannot rename (`rdlt-connector-postgres`'s
+        // `hostile_identifiers_and_column_selection` conformance cell:
+        // `Order "Items"` normalizes to `order__items_`). An earlier
+        // version of this gate refused any `__`-containing root outright
+        // and broke that pinned capability; only PAIRWISE ambiguity
+        // between distinct streams is refused now.
+        assert!(check_streams(&["users..emails"]).is_ok());
     }
 
     #[test]
-    fn a_root_table_ending_in_the_separator_is_refused() {
-        // Both roots are legal under the bare `__`-substring check alone —
-        // neither `orders_` nor `orders` contains `__`. But a `_`-leading
-        // raw source key (Mongo's `_id`) mints an identical child table from
-        // either: `child_table_name("orders_", "id")` and
+    fn two_roots_differing_only_by_a_trailing_separator_are_refused() {
+        // Both roots are legal in isolation — neither `orders_` nor
+        // `orders` contains `__`. But together, a `_`-leading raw source
+        // key (Mongo's `_id`) mints an identical child table from either:
+        // `child_table_name("orders_", "id")` and
         // `child_table_name("orders", "_id")` both produce `orders___id`.
-        // Refusing any root ending in `_` closes that gap.
         let error = check_streams(&["orders_", "orders"])
-            .expect_err("a root ending in `_` collides via a `_`-leading field");
+            .expect_err("roots differing only by a trailing `_` collide via a `_`-leading field");
         let text = error.to_string();
-        assert!(text.contains("ends with `_`"), "{text}");
+        assert!(
+            text.contains("differ only by") && text.contains("trailing `_`"),
+            "{text}"
+        );
     }
 
     #[test]
-    fn a_root_normalizing_to_a_bare_separator_is_also_refused() {
-        // `?` (one character with no letter/digit/underscore mapping) is
-        // the degenerate "ends with `_`" case: it normalizes to the single
-        // character `_`, not to `__`, so this exercises the trailing-`_`
-        // clause specifically rather than the `__`-substring clause above
-        // it (two question marks, `??`, would normalize to `__` and get
-        // caught by that earlier clause instead — not this one). Refusing
-        // a bare `_` root is a side effect of the same rule, not a special
-        // case: it is exactly as dangerous (it collides with any other
-        // stream's child of an empty-prefix field) and there is no
-        // legitimate use for a table name that is just `_`.
-        let error = check_streams(&["?"]).expect_err("a bare `_` root ends with `_`");
-        assert!(error.to_string().contains("ends with `_`"), "{error}");
+    fn a_lone_root_ending_in_the_separator_is_accepted() {
+        // Same reasoning as the lone `__`-containing case above: `orders_`
+        // cannot collide with itself when it is the only stream, and a
+        // hostile source identifier can normalize to exactly this shape
+        // too.
+        assert!(check_streams(&["orders_"]).is_ok());
+    }
+
+    #[test]
+    fn a_lone_root_normalizing_to_a_bare_separator_is_accepted() {
+        // `?` (one character with no letter/digit/underscore mapping)
+        // normalizes to the single character `_` — the degenerate case of
+        // "ends with `_`", legal alone for the same reason as the other
+        // lone-root pins: nothing exists to collide with.
+        assert!(check_streams(&["?"]).is_ok());
     }
 }
