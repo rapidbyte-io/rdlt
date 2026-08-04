@@ -112,7 +112,16 @@ fn main() -> ExitCode {
             spec,
             report,
             events,
-        } => runtime.block_on(run::run(spec, report, events, verbosity, renderer)),
+        } => runtime.block_on(run::run(
+            spec,
+            run::Outputs {
+                report_path: report,
+                events_path: events,
+                stdout_is_tty: console::Term::stdout().is_term(),
+            },
+            verbosity,
+            renderer,
+        )),
         args::Command::Validate { spec } => runtime.block_on(run::validate(spec, verbosity)),
         args::Command::Schema { connector } => schema::print(connector),
     };

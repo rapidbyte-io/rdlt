@@ -48,7 +48,8 @@ rdlt schema postgres-source   # a connector's config JSON Schema
 
 On a terminal, `run` draws a live display — per-stream rows read and
 written, bytes, rows/s, commit recency — and ends with a summary table
-of the exactly-once totals. Off a terminal it logs a line per event;
+of the exactly-once totals (the full JSON report goes to stdout when
+redirected, or to `--report`). Off a terminal it logs a line per event;
 `-q` silences, `-v` adds detail, `--events` captures the raw feed as
 NDJSON. Exit codes are stable and scriptable. The numbers come from
 the library's own telemetry seams — events, the `Metrics` fold, and

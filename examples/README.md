@@ -398,8 +398,9 @@ default commit policy: everything is one commit.
 
 ## Where to go next
 
-- `rdlt run <pipeline>` prints a JSON report: rows, commits, retries,
-  and where it resumed from.
+- `rdlt run <pipeline>` ends with a summary; the full JSON report
+  (rows, commits, retries, where it resumed from) lands on stdout
+  when stdout is redirected, or wherever `--report <path>` points.
 - Delete a `workdir` to force a fresh run; keep it to let a crashed
   run resume where it stopped.
 - File-destination `out/` directories also hold `_rdlt_state.*.json`,

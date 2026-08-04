@@ -11,13 +11,29 @@ use crate::args::Verbosity;
 use crate::ui::RendererKind;
 use crate::{CliError, cdc, ui};
 
+/// Where the run's outputs go — grouped so the drive signature stays
+/// readable as destinations accrue.
+pub(crate) struct Outputs {
+    pub report_path: Option<PathBuf>,
+    pub events_path: Option<PathBuf>,
+    /// Is stdout an interactive terminal? A terminal gets the summary
+    /// and a hint; the report JSON lands on stdout only when stdout is
+    /// a pipe or file — machine output for machine consumers, exactly
+    /// as before for every script that redirects.
+    pub stdout_is_tty: bool,
+}
+
 pub(crate) async fn run(
     spec_path: PathBuf,
-    report_path: Option<PathBuf>,
-    events_path: Option<PathBuf>,
+    outputs: Outputs,
     verbosity: Verbosity,
     renderer: RendererKind,
 ) -> Result<(), CliError> {
+    let Outputs {
+        report_path,
+        events_path,
+        stdout_is_tty,
+    } = outputs;
     // `--events -` claims stdout, which is the report's channel: the
     // two machine outputs must never interleave, so the report has to
     // be redirected first.
@@ -44,6 +60,7 @@ pub(crate) async fn run(
         pipeline_name,
         report_path,
         events_sink,
+        stdout_is_tty,
         verbosity,
         renderer,
     )
@@ -122,11 +139,13 @@ impl EventSink {
 /// is built). Contract, pinned by tests/cli_contract.rs: human text on
 /// stderr, the report JSON on stdout (or `--report`), and a failed
 /// renderer never fails the run.
+#[allow(clippy::too_many_arguments)]
 async fn drive(
     pipeline: rdlt::Pipeline,
     pipeline_name: String,
     report_path: Option<PathBuf>,
     mut events_sink: Option<EventSink>,
+    stdout_is_tty: bool,
     verbosity: Verbosity,
     renderer: RendererKind,
 ) -> Result<(), CliError> {
@@ -199,6 +218,16 @@ async fn drive(
     match report_path {
         Some(path) => std::fs::write(&path, json)
             .map_err(|e| CliError::Io(format!("writing {}: {e}", path.display())))?,
+        // An INTERACTIVE stdout never gets the JSON dump: the summary
+        // above is the human report, and three hundred lines of
+        // machine output after it buried exactly the thing a person
+        // wanted to read. Redirected stdout keeps the byte-identical
+        // contract every script depends on.
+        None if stdout_is_tty => {
+            if renderer != RendererKind::Quiet {
+                ui::stderr_line("  (full report: redirect stdout, or pass --report <path>)");
+            }
+        }
         // Not `println!`: a closed stdout (the consumer exited) would
         // PANIC and exit 101, outside the documented code set. A
         // failed report write is an IO failure like any other — 74.
