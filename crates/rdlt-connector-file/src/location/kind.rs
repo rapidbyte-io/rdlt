@@ -55,6 +55,54 @@ pub(crate) enum CreateDoc {
     AlreadyExists,
 }
 
+/// The CAS replace lost: the document's version moved under us
+/// (someone else's write landed between the read and this write). A
+/// TYPED marker, carried as `replace_doc_if`'s `DestinationError`
+/// SOURCE — matched by [`is_stale_version`] downcasting through
+/// `source()`, never by rendered text (the constitution forbids
+/// substring-matching a rendered error, and a future reword of the
+/// message must not silently break the lease's takeover detection).
+/// S3-arm only: see `replace_doc_if`'s doc for why the local arm has
+/// no equivalent signal.
+#[derive(Debug)]
+pub(crate) struct StaleDocVersion {
+    /// The document whose version was stale, for an operator-readable
+    /// message; not part of the typed check.
+    pub(crate) name: String,
+}
+
+impl std::fmt::Display for StaleDocVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "document version is stale (CAS replace lost) for `{}`",
+            self.name
+        )
+    }
+}
+
+impl std::error::Error for StaleDocVersion {}
+
+/// Was this `replace_doc_if` failure a lost CAS — the document moved
+/// under us — as opposed to a genuine store/transport failure? Walks
+/// exactly the one `source()` frame `replace_doc_if` attaches the
+/// marker at; a `DestinationError::context` applied in between would
+/// re-box the cause as rendered text and end the chain there (by
+/// design — see `DestinationError::context`'s own doc), so this must
+/// see the error `replace_doc_if` returned directly, not a
+/// context-wrapped copy of it.
+///
+/// Not yet re-exported through `location/mod.rs` (pure-TOC, and an
+/// unused `pub(crate) use` fails this crate's own lint gate) — its
+/// only caller today is `probe_conditional_docs` below, in the same
+/// module. The lease module (037 US2 T6), once it exists outside
+/// `location`, is the first real reason to add
+/// `pub(crate) use kind::is_stale_version;` there.
+pub(crate) fn is_stale_version(error: &DestinationError) -> bool {
+    std::error::Error::source(error)
+        .is_some_and(|cause| cause.downcast_ref::<StaleDocVersion>().is_some())
+}
+
 impl Location {
     /// Source-side constructor — rootless, since streams name their
     /// files in full.
@@ -316,14 +364,24 @@ impl Location {
         }
     }
 
-    /// CAS replace: local plain tmp+rename, S3 `PutMode::Update`. The
-    /// local arm carries no real version check — a lease's own
-    /// `create_doc_exclusive` already serializes same-machine takeover
-    /// races (only the current holder ever reaches this call), so this
-    /// is durability shape only, not a compare step. `Err(..)` on
-    /// version loss; it is the caller's job to decide what losing
-    /// means (give up the lease, re-read and retry, ...) — this method
-    /// only reports that the write did not happen.
+    /// CAS replace: local plain tmp+rename, S3 `PutMode::Update`.
+    ///
+    /// The STALENESS SIGNAL IS S3-ARM ONLY. The local arm performs no
+    /// version check at all — `version` is accepted but never
+    /// inspected, and a stale one still writes successfully. That is
+    /// safe only because a lease's own `create_doc_exclusive` already
+    /// serializes same-machine takeover through O_EXCL: a single
+    /// filesystem has exactly one process holding the lease at a time
+    /// by construction, so nothing on that machine can ever present
+    /// this call with a version that lost a race. S3 has no such
+    /// single-writer guarantee (a takeover can run on a different
+    /// machine entirely), which is why only that arm needs, and gets,
+    /// a real compare-and-swap.
+    ///
+    /// On S3, a lost CAS returns `Err` carrying [`StaleDocVersion`] as
+    /// the cause — check with [`is_stale_version`], never by matching
+    /// this method's rendered error text, to tell "the lease was taken
+    /// over" apart from "the store failed".
     pub(crate) async fn replace_doc_if(
         &self,
         name: &str,
@@ -362,16 +420,18 @@ impl Location {
     }
 
     /// One CAS round-trip through the abstraction itself: create,
-    /// versioned read, CAS replace, stale-CAS refusal, delete. Flattened
-    /// to `Result<(), DestinationError>` — no step needs the caller to
-    /// name [`CreateDoc`] or [`DocVersion`], which is what lets the live
-    /// S3 probe in `tests/cases/test_s3.rs` drive it through
-    /// `destination::testhook` without either type crossing out of this
-    /// module (037 US2). Real CAS refusal only exists on the S3 arm —
-    /// the local arm's `replace_doc_if` never refuses (see its own
-    /// doc), so this exercise is meaningful there and not against
-    /// `Local`; the local sibling tests below cover the local shape
-    /// directly instead.
+    /// versioned read, CAS replace, stale-CAS refusal, delete — the
+    /// stale-CAS step asserts the refusal carries the TYPED
+    /// [`StaleDocVersion`] marker via [`is_stale_version`], not merely
+    /// that it errored. Flattened to `Result<(), DestinationError>` —
+    /// no step needs the caller to name [`CreateDoc`] or [`DocVersion`],
+    /// which is what lets the live S3 probe in `tests/cases/test_s3.rs`
+    /// drive it through `destination::testhook` without either type
+    /// crossing out of this module (037 US2). Real CAS refusal only
+    /// exists on the S3 arm — the local arm's `replace_doc_if` never
+    /// refuses (see its own doc), so this exercise is meaningful there
+    /// and not against `Local`; the local sibling tests below cover the
+    /// local shape directly instead.
     pub(crate) async fn probe_conditional_docs(&self, name: &str) -> Result<(), DestinationError> {
         let first = self.create_doc_exclusive(name, b"one".to_vec()).await?;
         let CreateDoc::Created(created_version) = first else {
@@ -399,14 +459,22 @@ impl Location {
         self.replace_doc_if(name, b"three".to_vec(), version)
             .await?;
 
-        if self
+        match self
             .replace_doc_if(name, b"four".to_vec(), created_version)
             .await
-            .is_ok()
         {
-            return Err(DestinationError::fatal(
-                "probe_conditional_docs: CAS on the superseded version must be refused",
-            ));
+            Ok(_) => {
+                return Err(DestinationError::fatal(
+                    "probe_conditional_docs: CAS on the superseded version must be refused",
+                ));
+            }
+            Err(e) if is_stale_version(&e) => {}
+            Err(e) => {
+                return Err(DestinationError::fatal(format!(
+                    "probe_conditional_docs: CAS refusal must carry the typed StaleDocVersion \
+                     marker, not just any error: {e}"
+                )));
+            }
         }
 
         self.delete_doc(name).await?;
@@ -835,5 +903,52 @@ mod tests {
             .delete_doc("lease.json")
             .await
             .expect("second delete");
+    }
+
+    /// (Fix round 1, 037 US2) Pin the local arm's documented gap
+    /// itself, not just assert it in prose: an out-of-band rewrite
+    /// (standing in for a second process, since a single machine can
+    /// have only one) makes the version `replace_doc_if` is handed
+    /// genuinely stale, and the local arm still writes — no staleness
+    /// signal exists there. That is the flip side of the doc comment's
+    /// safety argument: it is sound only because `create_doc_exclusive`
+    /// already keeps two LOCAL processes from both holding the lease at
+    /// once, which this test does not (and cannot) exercise.
+    #[tokio::test]
+    async fn local_replace_has_no_staleness_signal() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let location = Location::local_dir(dir.path().to_path_buf()).expect("local");
+        let created = location
+            .create_doc_exclusive("lease.json", b"one".to_vec())
+            .await
+            .expect("io");
+        let CreateDoc::Created(stale_version) = created else {
+            panic!("fresh key must create");
+        };
+
+        // Out-of-band rewrite: bypasses `Location` entirely, the way a
+        // takeover on a DIFFERENT machine would land on S3 — but here,
+        // on one filesystem, nothing detects it.
+        std::fs::write(dir.path().join("lease.json"), b"rewritten-out-of-band")
+            .expect("simulated external rewrite");
+
+        let outcome = location
+            .replace_doc_if(
+                "lease.json",
+                b"replace-after-stale-read".to_vec(),
+                stale_version,
+            )
+            .await;
+        assert!(
+            outcome.is_ok(),
+            "documented gap: the local arm has no CAS, so a stale version still writes: \
+             {outcome:?}"
+        );
+        let (bytes, _) = location
+            .read_doc_versioned("lease.json")
+            .await
+            .expect("io")
+            .expect("present");
+        assert_eq!(bytes, b"replace-after-stale-read");
     }
 }

@@ -10,7 +10,7 @@ use object_store::path::Path as Key;
 use object_store::{PutMode, PutOptions, UpdateVersion};
 use rdlt_connector_sdk::spi::{DestinationError, SourceError};
 
-use super::kind::{CreateDoc, DocVersion};
+use super::kind::{CreateDoc, DocVersion, StaleDocVersion};
 use super::options::S3Options;
 use crate::source::cursor::FileMeta;
 
@@ -379,10 +379,14 @@ impl S3Location {
     /// CAS replace: `PutMode::Update`. `Error::Precondition` here is
     /// the same kind of determined outcome as `AlreadyExists` above —
     /// this call's own conditional request lost the race, which is
-    /// exactly what a lease's stale heartbeat needs to learn — so it is
-    /// turned into a typed refusal instead of riding the shared
-    /// recoverability rule (which would call it worth retrying, the
-    /// right answer for an UNconditional put but not this one).
+    /// exactly what a lease's stale heartbeat needs to learn — so
+    /// instead of riding the shared recoverability rule (which would
+    /// call it worth retrying, the right answer for an UNconditional
+    /// put but not this one), it carries [`StaleDocVersion`] as the
+    /// `DestinationError`'s SOURCE. That is what makes it a genuinely
+    /// TYPED outcome the caller can [`super::kind::is_stale_version`]-
+    /// check, rather than a fatal error indistinguishable from any
+    /// other one except by reading its rendered text.
     pub(crate) async fn replace_doc_if(
         &self,
         name: &str,
@@ -399,10 +403,11 @@ impl S3Location {
             .await
         {
             Ok(put) => Ok(DocVersion::S3(UpdateVersion::from(put))),
-            Err(object_store::Error::Precondition { .. }) => Err(DestinationError::fatal(
-                "replace_doc_if: the document changed since it was read — the CAS version is \
-                 stale",
-            )),
+            Err(object_store::Error::Precondition { .. }) => {
+                Err(DestinationError::fatal(StaleDocVersion {
+                    name: name.to_owned(),
+                }))
+            }
             Err(e) => Err(dest_failure(e)),
         }
     }
