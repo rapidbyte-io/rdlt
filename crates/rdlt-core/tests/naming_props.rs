@@ -2,7 +2,7 @@
 //! names never silently merge, and assigned names are stable.
 
 use proptest::prelude::*;
-use rdlt_core::naming::{IdentRules, UniqueNamer, normalize_ident};
+use rdlt_core::naming::{IdentRules, UniqueNamer, child_table_name, normalize_ident};
 
 proptest! {
     /// UniqueNamer is injective over distinct source names.
@@ -39,5 +39,41 @@ proptest! {
     fn normalize_is_deterministic(source in ".{1,200}") {
         let rules = IdentRules::default();
         prop_assert_eq!(normalize_ident(&source, rules), normalize_ident(&source, rules));
+    }
+
+    /// The engine's collision gate is complete: for any two distinct
+    /// stream names whose normalized roots are distinct and
+    /// `__`-free, no chain of child derivations from one can equal
+    /// the other root or any child of the other root.
+    ///
+    /// The source alphabet deliberately excludes `_` and `.`: measured live,
+    /// including either in the class makes `normalize_ident`'s output contain
+    /// `__` in the large majority of samples (proptest's regex-derived string
+    /// strategy does not sample chars i.i.d. — a class containing `_` lands
+    /// adjacent underscores far more often than uniform sampling would), which
+    /// starves the `prop_assume!` below and aborts the run on "too many global
+    /// rejects" before real coverage happens. An alnum-only class can never
+    /// itself produce `__` (each truncation-hash boundary inserts exactly one
+    /// `_`), so the precondition holds by construction while still exercising
+    /// the truncation path (lengths run past `IdentRules::default().max_len`
+    /// = 63). The `__`-free unit tests in `runtime/validate.rs`
+    /// (`users__emails`, `users..emails`) cover the literal-separator input
+    /// this property's alphabet no longer generates.
+    #[test]
+    fn distinct_separator_free_roots_have_disjoint_table_spaces(
+        a in "[a-z][a-z0-9]{0,80}",
+        b in "[a-z][a-z0-9]{0,80}",
+        field in "[a-z][a-z0-9]{0,20}",
+    ) {
+        let rules = IdentRules::default();
+        let ra = normalize_ident(&a, rules);
+        let rb = normalize_ident(&b, rules);
+        prop_assume!(ra != rb && !ra.contains("__") && !rb.contains("__"));
+        let child_a = child_table_name(&ra, &field, rules);
+        prop_assert_ne!(&child_a, &rb, "child of a equals root b");
+        prop_assert!(
+            !child_a.starts_with(&format!("{rb}__")),
+            "child of a ({child_a}) sits inside b's child space"
+        );
     }
 }

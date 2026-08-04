@@ -39,6 +39,20 @@ pub(super) fn validate_streams(
                 spec.name
             )));
         }
+        // Child tables are minted at shred time as
+        // `{root}__{field}` — a root containing `__` sits inside
+        // some stream's child namespace, and two streams writing one
+        // physical table is silent corruption (029's headliner). The
+        // rule is static and complete: distinct `__`-free roots make
+        // every root/child and child/child pair disjoint.
+        if table.as_str().contains("__") {
+            return Err(RdltError::config(format!(
+                "stream `{}` normalizes to table `{table}`, which collides with \
+                 the child-table namespace (`__` separates parent from child); \
+                 rename the stream so its table carries no `__`",
+                spec.name
+            )));
+        }
         if matches!(config.write_mode_for(&spec.name), WriteMode::Merge { .. })
             && !capabilities.merge
         {
@@ -150,10 +164,7 @@ mod hint_validation_tests {
     }
 
     fn check_streams(names: &[&str]) -> Result<(), RdltError> {
-        let specs: Vec<_> = names
-            .iter()
-            .map(|&name| StreamSpec::new(name))
-            .collect();
+        let specs: Vec<_> = names.iter().map(|&name| StreamSpec::new(name)).collect();
         let dest = MemoryDestination::new();
         validate_streams(
             &EngineConfig::new("streams"),
@@ -173,5 +184,26 @@ mod hint_validation_tests {
         );
         let text = error.to_string();
         assert!(text.contains("both map to table"), "{text}");
+    }
+
+    #[test]
+    fn a_root_table_containing_the_child_separator_is_refused() {
+        // `users..emails` normalizes to `users__emails` (each `.` maps to a
+        // single `_`) — the exact name the `users` stream's `emails`
+        // list-of-objects child would get.
+        let error = check_streams(&["users..emails", "users"])
+            .expect_err("a root inside another stream's child namespace");
+        let text = error.to_string();
+        assert!(
+            text.contains("collides with the child-table namespace"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn the_separator_rule_applies_even_to_a_single_stream() {
+        // One stream today, a second tomorrow: the rule must not depend
+        // on who else is currently configured.
+        assert!(check_streams(&["users__emails"]).is_err());
     }
 }
