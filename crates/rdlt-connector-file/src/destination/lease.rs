@@ -11,13 +11,17 @@
 //! and a `renewed_at_ms` heartbeat stamp. Acquisition order:
 //!
 //! 1. Exclusive create. Wins outright on a fresh scope.
-//! 2. `AlreadyExists` — read the holder. Undecodable bytes (a doc that
-//!    exists but will not parse) are treated as neither a live holder
-//!    nor an error outright: wait one full `HEARTBEAT_SECS` and read
-//!    again, since a live acquirer's own create-then-write can look
-//!    identical to abandoned debris for a brief window (see the
-//!    `acquire` body). Still undecodable that much later is debris,
-//!    reclaimed exactly like step 4 below.
+//! 2. `AlreadyExists` — read the holder. Two ways reading it can fail,
+//!    kept TYPED and handled differently (037 US2 review round 2, N1
+//!    — see [`DecodeFailure`]): a `format_version` NEWER than this
+//!    build understands refuses IMMEDIATELY, no wait and no takeover
+//!    attempt — a newer build wrote it and is presumptively alive.
+//!    Bytes that will not parse AT ALL are genuinely ambiguous: wait
+//!    `UNDECODABLE_WAIT` and read again, since a live acquirer's own
+//!    create-then-write can look identical to abandoned debris for a
+//!    brief window (see the `acquire_with_wait` body). Still
+//!    unparseable that much later is debris, reclaimed exactly like
+//!    step 4 below.
 //! 3. Same `owner` as the caller — this is the engine's own retry of
 //!    a failed attempt reopening the connector, not a second session
 //!    — CAS-replace to reacquire with fresh stamps.
@@ -29,11 +33,13 @@
 //!    [`is_stale_version`]); the LOCAL arm has no such CAS
 //!    (`replace_doc_if`'s own doc explains why), so two local
 //!    processes racing to take over the SAME stale lease instead race
-//!    [`Location::delete_doc_exclusive`]'s atomic unlink — the winner
-//!    loops back to `create_doc_exclusive` (which now finds nothing in
-//!    its way), the loser loops back and finds a FRESH doc under
-//!    whoever's create actually landed, and refuses it exactly like
-//!    step 5 below.
+//!    [`Location::delete_doc_exclusive`]'s atomic unlink, GUARDED by
+//!    an immediate pre-unlink recheck (037 US2 review round 2, N3 —
+//!    see `takeover`'s doc for the residual this narrows but does not
+//!    close) — the winner loops back to `create_doc_exclusive` (which
+//!    now finds nothing in its way), the loser loops back and finds a
+//!    FRESH doc under whoever's create actually landed, and refuses
+//!    it exactly like step 5 below.
 //! 5. A different owner whose lease is still fresh — refuse, typed,
 //!    naming the holder and the ages (the frozen spelling below).
 //!
@@ -43,18 +49,22 @@
 //! — [`Lease::check_still_held`] — is SYMMETRIC, and deliberately does
 //! not simply trust that the beat ran at all:
 //!
-//! - If a beat ever finds the document gone or foreign-owned, or loses
-//!   its CAS, it flips `lost` immediately — a DEFINITIVE observation
-//!   that this session has been outvoted.
+//! - If a beat ever finds the document gone, foreign-owned, or a
+//!   NEWER format it cannot understand, or loses its CAS, it flips
+//!   `lost` immediately — a DEFINITIVE observation that this session
+//!   has been outvoted.
 //! - Independently, `check_still_held` also self-expires when
 //!   `last_ok_ms` (stamped at acquire and on every successful
-//!   renewal) is older than `TTL_SECS` — covering the case `lost`
-//!   cannot: a heartbeat task that is starved, panicked, or wedged
-//!   behind a stuck IO call never gets to observe anything, so `lost`
-//!   would stay `false` forever even though this session's own
+//!   renewal) is older than `SELF_EXPIRY_SECS` — covering the case
+//!   `lost` cannot: a heartbeat task that is starved, panicked, or
+//!   wedged behind a stuck IO call never gets to observe anything, so
+//!   `lost` would stay `false` forever even though this session's own
 //!   evidence of still holding the lease is just as stale as a dead
 //!   competitor's would be. The write path does not trust the beat to
-//!   have run; it trusts the CLOCK.
+//!   have run; it trusts the CLOCK. `SELF_EXPIRY_SECS` fires with a
+//!   margin BEFORE `TTL_SECS` (037 US2 review round 2, N4) precisely
+//!   so a session's own refusal and a competitor's takeover
+//!   eligibility are never a coin flip about which fires first.
 //!
 //! Both arms refuse with a typed, frozen message (see
 //! `check_still_held`'s two spellings) rather than let this session
@@ -87,6 +97,25 @@ pub(super) const LEASE_FORMAT_VERSION: u32 = 1;
 /// How often a held lease renews its stamp.
 pub(super) const HEARTBEAT_SECS: u64 = 15;
 
+/// How long `acquire` waits before treating a genuinely-unparseable
+/// document as debris rather than a live acquirer's in-flight write
+/// (037 US2 review round 1, I6). Pinned to one full `HEARTBEAT_SECS`
+/// — see the unit test asserting this — because that is the shortest
+/// interval a live writer's OWN process could plausibly still be
+/// mid-`write_all` without something having gone genuinely wrong;
+/// anything shorter risks mistaking a live acquirer for debris.
+///
+/// Parameterized out of `acquire` into `acquire_with_wait` (037 US2
+/// review round 2, N2) so tests can drive this disambiguation in
+/// milliseconds: the two-racer test's own RECREATE race occasionally
+/// lands inside the `create_doc_exclusive`-is-not-atomic window (see
+/// that test's doc) and would otherwise pay this real wait ~10% of
+/// runs. Production always calls through `acquire`, which passes this
+/// constant unchanged — accepting the real wait, when it genuinely
+/// happens live, as the deliberate and honest cost of debris
+/// disambiguation, never shortened there.
+pub(super) const UNDECODABLE_WAIT: Duration = Duration::from_secs(HEARTBEAT_SECS);
+
 /// How old a holder's `renewed_at_ms` must be before a competitor may
 /// take the lease over as a dead session's.
 ///
@@ -104,6 +133,22 @@ pub(super) const HEARTBEAT_SECS: u64 = 15;
 /// (waiting a few extra minutes for a genuinely dead session's lease
 /// to expire) costs nothing but patience.
 pub(super) const TTL_SECS: u64 = 300;
+
+/// The threshold [`Lease::check_still_held`]'s SELF-expiry fires at —
+/// deliberately BELOW `TTL_SECS`, not equal to it (037 US2 review
+/// round 2, N4). Equal thresholds give no ordering guarantee: a
+/// wedged session's own self-expiry and a competitor's takeover
+/// eligibility could fire in the exact same instant, and nothing
+/// would say which happens first. Subtracting two missed beats' worth
+/// of margin (`2 * HEARTBEAT_SECS`) means a session only slightly
+/// behind — one or two missed beats, well within the noise this
+/// protocol already tolerates (see `TTL_SECS`'s own doc) — still
+/// passes `check_still_held`, while a session that is TRULY stuck
+/// refuses ITSELF with room to spare before any competitor's clock
+/// even reaches `TTL_SECS` and starts a takeover. The write path
+/// stops on its own before the two ever need to agree about who is
+/// right.
+pub(super) const SELF_EXPIRY_SECS: u64 = TTL_SECS - 2 * HEARTBEAT_SECS;
 
 /// Milliseconds since the epoch, on this process's clock. The lease
 /// protocol never compares this against a remote clock (see
@@ -131,14 +176,29 @@ fn now_ms() -> u64 {
 
 /// The persisted lease: who holds it, and when they last proved they
 /// are still alive.
+///
+/// `owner` and `pipeline` are the only two fields WITHOUT
+/// `#[serde(default)]` (037 US2 review round 2, N1) — a lease document
+/// missing either is meaningless, and defaulting them would FABRICATE
+/// an identity rather than describe a real one (an empty-string
+/// default `owner` could then read as a match for another document's
+/// equally-defaulted, equally-fake owner). Every other field defaults,
+/// so a future field this build does not know to write yet still lets
+/// this build parse a document a NEWER one wrote — the additive-
+/// evolution half of the version gate `decode` enforces (see
+/// `LEASE_FORMAT_VERSION`'s doc): only "newer than I understand"
+/// refuses; "missing a field I don't have yet" still parses.
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct LeaseDoc {
+    #[serde(default)]
     pub format_version: u32,
     pub pipeline: String,
     /// The connector instance's token — stable across the engine's
     /// run-level retry attempts, distinct across processes.
     pub owner: String,
+    #[serde(default)]
     pub acquired_at_ms: u64,
+    #[serde(default)]
     pub renewed_at_ms: u64,
 }
 
@@ -162,31 +222,54 @@ fn encode(doc: &LeaseDoc) -> Result<Vec<u8>, DestinationError> {
         .map_err(|e| DestinationError::fatal(format!("encoding the destination lease: {e}")))
 }
 
-/// Decode a lease document read back from storage, naming `path` (the
-/// document's name) in both failure messages this can raise:
-///
-/// - Bytes that will not parse as JSON at all are a genuine read
-///   failure, not "no holder" — inventing absence for bytes that ARE
-///   there could let a second session past a live lock it merely
-///   could not read. (`acquire`'s caller treats THIS specific failure
-///   specially — see its body — rather than propagating it outright,
-///   because it is also what a live acquirer's own in-progress write
-///   looks like for a brief window.)
-/// - Bytes that parse but declare a `format_version` newer than this
-///   build understands (037 US2 review round 1, I5) refuse rather
-///   than being renewed over blind: an older build CAS-replacing a
-///   newer doc's fields it does not know how to preserve would
-///   silently drop them.
-fn decode(bytes: &[u8], path: &str) -> Result<LeaseDoc, DestinationError> {
-    let doc: LeaseDoc = serde_json::from_slice(bytes).map_err(|e| {
-        DestinationError::fatal(format!("unreadable destination lease `{path}`: {e}"))
-    })?;
+/// A [`decode`] failure, kept TYPED rather than collapsed into one
+/// error shape (037 US2 review round 2, N1). Collapsing them was the
+/// defect: a freshly-renewed `format_version: 2` document, undecodable
+/// only because THIS build understands v1, fell into the
+/// undecodable-reclaim path (`acquire_with_wait`'s I6 handling) and
+/// was destroyed as "debris" — proven live before this fix (see the
+/// fix report's planted-doc test evidence), because that path had no
+/// way to tell "I cannot understand this NEWER doc" apart from "this
+/// is garbage".
+enum DecodeFailure {
+    /// The bytes are not valid JSON for this shape at all. Could be
+    /// genuine corruption — or, as `acquire_with_wait`'s handling
+    /// explains, a live acquirer's own create-then-write still in
+    /// flight.
+    Unparseable(String),
+    /// The bytes parse, but declare a `format_version` this build
+    /// does not understand. NEVER treated as debris, regardless of
+    /// how fresh or stale the rest of the document looks: a newer
+    /// build wrote it, and a newer build is presumptively alive.
+    NewerVersion { found: u32 },
+}
+
+impl DecodeFailure {
+    /// Render the one frozen spelling each variant ever surfaces to a
+    /// caller as, naming `path` — the document's name.
+    fn into_destination_error(self, path: &str) -> DestinationError {
+        match self {
+            DecodeFailure::Unparseable(msg) => {
+                DestinationError::fatal(format!("unreadable destination lease `{path}`: {msg}"))
+            }
+            DecodeFailure::NewerVersion { found } => DestinationError::fatal(format!(
+                "destination lease `{path}` format v{found} is newer than this build supports \
+                 (v{LEASE_FORMAT_VERSION}); upgrade rdlt"
+            )),
+        }
+    }
+}
+
+/// Decode a lease document read back from storage. See
+/// [`DecodeFailure`] for why the two ways this can fail are kept
+/// distinguishable rather than collapsed into one opaque error.
+fn decode(bytes: &[u8]) -> Result<LeaseDoc, DecodeFailure> {
+    let doc: LeaseDoc =
+        serde_json::from_slice(bytes).map_err(|e| DecodeFailure::Unparseable(e.to_string()))?;
     if doc.format_version > LEASE_FORMAT_VERSION {
-        return Err(DestinationError::fatal(format!(
-            "destination lease `{path}` format v{} is newer than this build supports \
-             (v{LEASE_FORMAT_VERSION}); upgrade rdlt",
-            doc.format_version
-        )));
+        return Err(DecodeFailure::NewerVersion {
+            found: doc.format_version,
+        });
     }
     Ok(doc)
 }
@@ -203,17 +286,29 @@ pub(super) struct Lease {
     owner: String,
     /// Flipped the moment a beat can no longer prove this session
     /// still holds the lease — a DEFINITIVE observation (foreign
-    /// owner, absence, or a lost CAS). See the module doc: this is
-    /// only HALF of `check_still_held`'s fence.
+    /// owner, absence, a newer format this build cannot understand,
+    /// or a lost CAS). See the module doc: this is only HALF of
+    /// `check_still_held`'s fence.
     lost: Arc<AtomicBool>,
     /// Milliseconds-since-epoch of the last proof this session held
     /// the lease — stamped at acquire and on every successful
     /// renewal. The other half of the fence: even if `lost` was never
     /// set because the beat never got to run at all, a write can
-    /// still see that its evidence has gone stale (037 US2 review
-    /// round 1, I3).
+    /// still see that its evidence has gone stale against
+    /// `SELF_EXPIRY_SECS` (037 US2 review round 1, I3; margin added
+    /// review round 2, N4).
     last_ok_ms: Arc<AtomicU64>,
     heartbeat: Option<tokio::task::JoinHandle<()>>,
+}
+
+/// What `takeover`'s immediate pre-unlink recheck (037 US2 review
+/// round 2, N3) expects to still find on the LOCAL arm — either a
+/// specific stale snapshot (the TTL-stale path, which has a decoded
+/// `LeaseDoc` to compare against) or continued unparseability (the I6
+/// debris path, which never successfully decoded one at all).
+enum Expected<'a> {
+    Stale(&'a LeaseDoc),
+    StillUndecodable,
 }
 
 /// The result of one takeover attempt against a specific document
@@ -225,9 +320,10 @@ enum Takeover {
     /// LOCAL: the exclusive delete was ours; the caller loops back to
     /// `create_doc_exclusive`, which now finds nothing in its way.
     Cleared,
-    /// Someone else's write (S3) or delete (LOCAL) got there first;
-    /// loop back and re-evaluate the — now fresh — document from
-    /// scratch rather than assume anything about who holds it now.
+    /// Someone else's write (S3), delete (LOCAL), or a recheck
+    /// mismatch (LOCAL, N3) got there first; loop back and re-evaluate
+    /// the — now fresh — document from scratch rather than assume
+    /// anything about who holds it now.
     LostRace,
 }
 
@@ -238,13 +334,46 @@ enum Takeover {
 /// checks the version it is handed (see `replace_doc_if`'s amended
 /// safety doc in `location/kind.rs`). S3 keeps the real CAS-replace,
 /// which genuinely serializes there.
+///
+/// LOCAL RESIDUAL (037 US2 review round 2, N3-residual — recorded in
+/// the 037 close-out as an owner-visible limitation, not something
+/// this fix pretends to remove): the pre-unlink recheck below narrows
+/// the window a version-unaware unlink can go wrong in, from "the
+/// entire time since this racer decided the document was stale" down
+/// to "the syscall pair between this recheck's read and the unlink
+/// itself" — a racer's own re-read+decode+unlink sequence still is
+/// not one atomic operation. Fully closing it needs a fencing token
+/// the write side does not have room for on the local arm's plain
+/// O_EXCL create (no real CAS at all — see `replace_doc_if`'s doc).
 async fn takeover(
     location: &Location,
     doc_name: &str,
+    expected: Expected<'_>,
     version: DocVersion,
     fresh: &LeaseDoc,
 ) -> Result<Takeover, DestinationError> {
     if location.is_local() {
+        let Some((recheck_bytes, _)) = location.read_doc_versioned(doc_name).await? else {
+            // Already gone — a takeover (or a release) beat us to it
+            // either way; nothing left here to take.
+            return Ok(Takeover::LostRace);
+        };
+        let unchanged = match expected {
+            Expected::Stale(stale) => matches!(
+                decode(&recheck_bytes),
+                Ok(doc) if doc.owner == stale.owner && doc.renewed_at_ms == stale.renewed_at_ms
+            ),
+            // A `NewerVersion` failure here does NOT count as "still
+            // undecodable" — treating it that way would let this
+            // exact call unlink a live newer-format doc, the precise
+            // mistake N1 fixed one layer up.
+            Expected::StillUndecodable => {
+                matches!(decode(&recheck_bytes), Err(DecodeFailure::Unparseable(_)))
+            }
+        };
+        if !unchanged {
+            return Ok(Takeover::LostRace);
+        }
         return Ok(if location.delete_doc_exclusive(doc_name).await? {
             Takeover::Cleared
         } else {
@@ -281,12 +410,33 @@ impl Lease {
     }
 
     /// Acquire the scope's lease, or refuse. See the module doc for
-    /// the five-way order this implements.
+    /// the five-way order this implements. Always waits
+    /// `UNDECODABLE_WAIT` (one real `HEARTBEAT_SECS` in production)
+    /// before treating an unparseable document as debris — see
+    /// `acquire_with_wait` and `UNDECODABLE_WAIT`'s own doc for why
+    /// that wait is never shortened here.
     pub(super) async fn acquire(
         location: Location,
         scope: &str,
         pipeline: &str,
         owner: &str,
+    ) -> Result<Lease, DestinationError> {
+        Self::acquire_with_wait(location, scope, pipeline, owner, UNDECODABLE_WAIT).await
+    }
+
+    /// The real acquire implementation, parameterized on the
+    /// undecodable-doc wait (037 US2 review round 2, N2) — a
+    /// `pub(super)` test seam, same shape as `renew_once`: production
+    /// code only ever reaches this through `acquire` above, which
+    /// pins the wait to `UNDECODABLE_WAIT`. Tests call this directly
+    /// with a millisecond wait to drive I6's disambiguation path
+    /// without paying its real cost every time it is exercised.
+    pub(super) async fn acquire_with_wait(
+        location: Location,
+        scope: &str,
+        pipeline: &str,
+        owner: &str,
+        undecodable_wait: Duration,
     ) -> Result<Lease, DestinationError> {
         let doc_name = lease_file(scope);
         crash_point!(
@@ -325,9 +475,19 @@ impl Lease {
                 continue;
             };
 
-            let holder = match decode(&bytes, &doc_name) {
+            let holder = match decode(&bytes) {
                 Ok(holder) => holder,
-                Err(_first_err) => {
+                Err(DecodeFailure::NewerVersion { found }) => {
+                    // (037 US2 review round 2, N1) A newer build wrote
+                    // this doc — NEVER debris, no matter how the
+                    // undecodable-reclaim path below would otherwise
+                    // have read it. Refuse immediately: no wait, no
+                    // takeover attempt.
+                    return Err(
+                        DecodeFailure::NewerVersion { found }.into_destination_error(&doc_name)
+                    );
+                }
+                Err(DecodeFailure::Unparseable(_first_err)) => {
                     // Undecodable is ambiguous by itself (037 US2
                     // review round 1, I6): it could be a LIVE
                     // acquirer mid-`create_doc_exclusive` — that call
@@ -338,30 +498,42 @@ impl Lease {
                     // open and the write. Or it could be debris from
                     // a process that crashed in that exact window. A
                     // live writer's `write_all` completes in
-                    // milliseconds; waiting one full heartbeat
-                    // interval and reading again resolves the
-                    // ambiguity honestly — still undecodable that
-                    // much later cannot be an in-progress acquire.
-                    tokio::time::sleep(Duration::from_secs(HEARTBEAT_SECS)).await;
+                    // milliseconds; waiting `undecodable_wait` and
+                    // reading again resolves the ambiguity honestly —
+                    // still undecodable that much later cannot be an
+                    // in-progress acquire.
+                    tokio::time::sleep(undecodable_wait).await;
                     let Some((retry_bytes, retry_version)) =
                         location.read_doc_versioned(&doc_name).await?
                     else {
                         continue;
                     };
-                    match decode(&retry_bytes, &doc_name) {
+                    match decode(&retry_bytes) {
                         Ok(holder) => holder,
-                        Err(_second_err) => {
+                        Err(DecodeFailure::NewerVersion { found }) => {
+                            return Err(DecodeFailure::NewerVersion { found }
+                                .into_destination_error(&doc_name));
+                        }
+                        Err(DecodeFailure::Unparseable(_second_err)) => {
                             // Confirmed debris: reclaim it exactly
                             // like a stale lease, through the same
                             // per-arm takeover primitive. Timestamps
                             // are recomputed here rather than reusing
-                            // the loop-top `now`/`fresh` — a
-                            // `HEARTBEAT_SECS` sleep just happened,
-                            // and the doc this call may write should
-                            // not claim a stamp that old.
+                            // the loop-top `now`/`fresh` — the wait
+                            // above just happened, and the doc this
+                            // call may write should not claim a stamp
+                            // that old.
                             let now = now_ms();
                             let fresh = fresh_doc(pipeline, owner, now);
-                            match takeover(&location, &doc_name, retry_version, &fresh).await? {
+                            match takeover(
+                                &location,
+                                &doc_name,
+                                Expected::StillUndecodable,
+                                retry_version,
+                                &fresh,
+                            )
+                            .await?
+                            {
                                 Takeover::Won => {
                                     return Ok(Lease::new(
                                         location,
@@ -414,7 +586,15 @@ impl Lease {
             if age_secs > TTL_SECS {
                 // The holder has missed too many beats to still be
                 // alive — take the lease over.
-                match takeover(&location, &doc_name, holder_version, &fresh).await? {
+                match takeover(
+                    &location,
+                    &doc_name,
+                    Expected::Stale(&holder),
+                    holder_version,
+                    &fresh,
+                )
+                .await?
+                {
                     Takeover::Won => {
                         return Ok(Lease::new(
                             location,
@@ -487,9 +667,10 @@ impl Lease {
     /// both when a beat definitively observed a takeover (`lost`) and
     /// when this session's own evidence of holding the lease has
     /// gone stale regardless of why (`last_ok_ms` older than
-    /// `TTL_SECS`), which covers a heartbeat that never got to run at
-    /// all. Synchronous and cheap on purpose — every write can afford
-    /// to check a bool and a clock, not a round trip to storage.
+    /// `SELF_EXPIRY_SECS`), which covers a heartbeat that never got to
+    /// run at all. Synchronous and cheap on purpose — every write can
+    /// afford to check a bool and a clock, not a round trip to
+    /// storage.
     pub(super) fn check_still_held(&self) -> Result<(), DestinationError> {
         if self.lost.load(Ordering::SeqCst) {
             return Err(DestinationError::fatal(format!(
@@ -500,7 +681,7 @@ impl Lease {
             )));
         }
         let last_ok = self.last_ok_ms.load(Ordering::SeqCst);
-        if now_ms().saturating_sub(last_ok) > TTL_SECS * 1000 {
+        if now_ms().saturating_sub(last_ok) > SELF_EXPIRY_SECS * 1000 {
             return Err(DestinationError::fatal(format!(
                 "the destination lease for pipeline `{}` has not been renewed within its TTL \
                  (heartbeat starved or stopped); aborting rather than risking a takeover \
@@ -513,10 +694,17 @@ impl Lease {
 
     /// Best-effort delete, called at the end of a successful publish.
     ///
-    /// The heartbeat is stopped FIRST, before any IO (037 US2 review
-    /// round 1, I4) — a beat still in flight while this deletes could
-    /// otherwise race the delete, or a subsequent takeover's write,
-    /// with its own renewal. Once stopped, a lease already marked
+    /// The heartbeat is stopped and FENCED first, before any IO (037
+    /// US2 review round 1, I4; properly fenced in review round 2,
+    /// N5): `abort()` alone only REQUESTS cancellation — a beat that
+    /// is genuinely mid-poll (blocked in a synchronous IO call, which
+    /// every call inside `renew` is on the local arm) keeps running
+    /// until its OWN next await point, so an unfenced abort could
+    /// still leave a beat in flight, racing the delete below (or a
+    /// subsequent takeover's write) with its own renewal. Awaiting the
+    /// aborted handle blocks until the task is genuinely finished — or
+    /// confirms it never started running at all — before anything
+    /// past this point executes. Once fenced, a lease already marked
     /// `lost` has nothing of OURS left on the document — it now
     /// belongs to whoever took it over, and deleting it would destroy
     /// THEIR lease, not release ours — so the delete is skipped
@@ -530,6 +718,7 @@ impl Lease {
     pub(super) async fn release(mut self) {
         if let Some(handle) = self.heartbeat.take() {
             handle.abort();
+            let _ = handle.await;
         }
         if self.lost.load(Ordering::SeqCst) {
             return;
@@ -541,10 +730,13 @@ impl Lease {
 
 impl Drop for Lease {
     fn drop(&mut self) {
-        // Synchronous and safe: `JoinHandle::abort` only requests
-        // cancellation, it does not await the task's teardown, so
-        // this needs no runtime context of its own. A no-op when
-        // `release` already took the handle.
+        // Best-effort only — Drop cannot be async, so unlike
+        // `release` (037 US2 review round 2, N5) this cannot AWAIT the
+        // abort to confirm the task has genuinely stopped before
+        // returning; it can only request cancellation and move on. A
+        // no-op when `release` already took the handle (the normal
+        // path); this exists for the abnormal ones (an early return,
+        // a panic unwind) where `release` never ran at all.
         if let Some(handle) = self.heartbeat.take() {
             handle.abort();
         }
@@ -556,27 +748,32 @@ impl Drop for Lease {
 /// `renew_once` test seam (borrowing the live `Lease`).
 ///
 /// Every failure mode maps to exactly one of three outcomes:
-/// - The document is gone, or is owned by someone else: the lease is
-///   LOST. This is also what restores takeover detection on the
-///   LOCAL storage arm, which otherwise has none — `replace_doc_if`'s
-///   own doc explains that a local write always "succeeds" no matter
-///   how stale the version handed to it. Re-reading the document
-///   fresh on every beat and comparing its `owner` closes that gap: a
-///   local takeover changes the file's `owner` field, and the very
-///   next beat sees it and stops, even though the write that landed
-///   it raised no CAS alarm of its own.
+/// - The document is gone, is owned by someone else, or declares a
+///   `format_version` newer than this build understands (037 US2
+///   review round 2, N1): the lease is LOST, definitively — the
+///   version case can never be a torn read, unlike a plain parse
+///   failure, because a well-formed document that merely declares a
+///   number this build cannot compare past is not damaged, just
+///   ahead. The absence/foreign-owner half is also what restores
+///   takeover detection on the LOCAL storage arm, which otherwise has
+///   none — `replace_doc_if`'s own doc explains that a local write
+///   always "succeeds" no matter how stale the version handed to it.
+///   Re-reading the document fresh on every beat and comparing its
+///   `owner` closes that gap: a local takeover changes the file's
+///   `owner` field, and the very next beat sees it and stops, even
+///   though the write that landed it raised no CAS alarm of its own.
 /// - The CAS-replace lost (`is_stale_version`): another write — a
 ///   real takeover, on the S3 arm where CAS is real — landed between
 ///   this beat's read and its write. LOST.
-/// - Any other error (a transport blip, a timeout, an undecodable
+/// - Any other error (a transport blip, a timeout, an unparseable
 ///   snapshot presumed torn mid-write): NOT lost. A single failed
 ///   beat must not end a healthy lease — `TTL_SECS` carries a
-///   deliberate 20-beat margin over `HEARTBEAT_SECS` precisely so
-///   that a run of blips is absorbed rather than treated as death.
-///   Only a confirmed absence, a confirmed foreign owner, or a
-///   confirmed lost CAS may set `lost`; everything else is left to
-///   `check_still_held`'s independent `last_ok_ms` fence (see the
-///   module doc) to catch IF the blips never stop.
+///   deliberate margin over `HEARTBEAT_SECS` precisely so that a run
+///   of blips is absorbed rather than treated as death. Only a
+///   confirmed absence, a confirmed foreign owner, a confirmed newer
+///   format, or a confirmed lost CAS may set `lost`; everything else
+///   is left to `check_still_held`'s independent `last_ok_ms` fence
+///   (see the module doc) to catch IF the blips never stop.
 ///
 /// On success, `last_ok_ms` is stamped with the instant just written
 /// — the other half of that same fence.
@@ -595,11 +792,22 @@ async fn renew(
         lost.store(true, Ordering::SeqCst);
         return;
     };
-    let Ok(doc) = decode(&bytes, doc_name) else {
+    let doc = match decode(&bytes) {
+        Ok(doc) => doc,
+        // (037 US2 review round 2, N1) A newer-format doc on a beat
+        // is a DEFINITIVE signal, not a torn read to tolerate: only a
+        // build that understands stamps this one does not could have
+        // produced it, so this session's evidence of holding the
+        // lease is already void regardless of what `renewed_at_ms`
+        // says.
+        Err(DecodeFailure::NewerVersion { .. }) => {
+            lost.store(true, Ordering::SeqCst);
+            return;
+        }
         // An unreadable snapshot is presumed to be a torn mid-write
         // read rather than proof of loss — try again next beat rather
         // than ending a lease over a decode hiccup.
-        return;
+        Err(DecodeFailure::Unparseable(_)) => return,
     };
     if doc.owner != owner {
         lost.store(true, Ordering::SeqCst);
@@ -665,6 +873,18 @@ mod tests {
                     .expect("replace");
             }
         }
+    }
+
+    /// Write an arbitrary JSON value as the lease doc directly — the
+    /// N1 tests need a `format_version` this build cannot understand,
+    /// which `plant_lease`'s typed `LeaseDoc` cannot express.
+    async fn plant_raw(location: &Location, scope: &str, value: &serde_json::Value) -> Vec<u8> {
+        let bytes = serde_json::to_vec(value).expect("encodes");
+        location
+            .create_doc_exclusive(&lease_file(scope), bytes.clone())
+            .await
+            .expect("io");
+        bytes
     }
 
     /// Read the lease doc back and decode it — the two-racer and
@@ -757,17 +977,19 @@ mod tests {
     /// the same instant, rather than one incidentally running to
     /// completion before the other starts.
     ///
-    /// Occasionally (observed ~1 run in 15) this test genuinely takes
-    /// `HEARTBEAT_SECS` real seconds rather than milliseconds — this
-    /// is CORRECT, not flaky, and is I6 in action: the two racers'
-    /// RECREATE step (after the delete race) is itself a second race
-    /// on `create_doc_exclusive`, whose local implementation is
-    /// O_EXCL-open-then-`write_all`, not atomic — if the loser's own
-    /// `read_doc_versioned` lands in that narrow window it observes a
-    /// just-created, still-empty document, which is indistinguishable
-    /// from debris until the one-heartbeat-interval wait in `acquire`
-    /// resolves the ambiguity (see the module doc's step 2 and I6's
-    /// comment in `acquire`). The assertions below hold either way.
+    /// Drives the `acquire_with_wait` seam with a millisecond
+    /// `undecodable_wait` (037 US2 review round 2, N2) rather than
+    /// public `acquire`: this test's own RECREATE race (after the
+    /// delete race) is itself a second race on `create_doc_exclusive`,
+    /// whose local implementation is O_EXCL-open-then-`write_all`, not
+    /// atomic — if the loser's own `read_doc_versioned` lands in that
+    /// narrow window it observes a just-created, still-empty document,
+    /// indistinguishable from debris until the undecodable-wait
+    /// resolves it (see the module doc's step 2 and I6's comment in
+    /// `acquire_with_wait`). Against the real `UNDECODABLE_WAIT` this
+    /// cost ~10% of runs a genuine `HEARTBEAT_SECS`-long real stall;
+    /// the assertions below hold identically either way, so there is
+    /// nothing lost by making the disambiguation itself fast here.
     #[tokio::test(flavor = "multi_thread")]
     async fn exactly_one_of_two_racing_takeovers_wins_a_stale_local_lease() {
         let (location, scope) = test_location();
@@ -787,7 +1009,8 @@ mod tests {
             let barrier = Arc::clone(&barrier);
             tasks.push(tokio::spawn(async move {
                 barrier.wait().await;
-                Lease::acquire(location, &scope, "p", owner).await
+                Lease::acquire_with_wait(location, &scope, "p", owner, Duration::from_millis(50))
+                    .await
             }));
         }
 
@@ -813,6 +1036,22 @@ mod tests {
             winner_owner,
             "the document on disk must actually name the racer that won"
         );
+    }
+
+    /// N2: the wait `acquire_with_wait`'s undecodable-doc handling
+    /// takes in PRODUCTION is pinned to exactly one heartbeat interval
+    /// — never silently shortened, since that is the margin the whole
+    /// disambiguation argument rests on (see `UNDECODABLE_WAIT`'s doc).
+    #[test]
+    fn undecodable_wait_is_pinned_to_one_heartbeat_interval() {
+        assert_eq!(UNDECODABLE_WAIT, Duration::from_secs(HEARTBEAT_SECS));
+    }
+
+    /// N4: the self-expiry threshold is pinned to carry a genuine
+    /// two-beat margin below `TTL_SECS`, not merely "less than".
+    #[test]
+    fn self_expiry_carries_a_two_beat_margin_before_ttl() {
+        assert_eq!(SELF_EXPIRY_SECS + 2 * HEARTBEAT_SECS, TTL_SECS);
     }
 
     /// Renamed from `losing_the_cas_flips_check_still_held` (037 US2
@@ -847,7 +1086,7 @@ mod tests {
     /// starved or wedged heartbeat produces, which never gets to flip
     /// `lost` at all. `last_ok_ms` is poked directly (a private field,
     /// reachable from this same module) rather than actually waiting
-    /// out a `TTL_SECS` heartbeat gap.
+    /// out the gap.
     #[tokio::test]
     async fn the_self_expiry_refusal_message_is_pinned_exactly() {
         let (location, scope) = test_location();
@@ -881,7 +1120,9 @@ mod tests {
             "renewed_at_ms": 0,
         });
         let bytes = serde_json::to_vec(&future).expect("encodes");
-        let err = decode(&bytes, "_rdlt_lease.abc.json").expect_err("refuses a future version");
+        let err = decode(&bytes)
+            .expect_err("refuses a future version")
+            .into_destination_error("_rdlt_lease.abc.json");
         assert_eq!(
             err.to_string(),
             format!(
@@ -892,11 +1133,96 @@ mod tests {
         );
     }
 
+    /// N1(a): the blocker this round fixed, pinned directly. A doc
+    /// declaring a format newer than this build understands, with a
+    /// brand-new `renewed_at_ms` — the shape the OLD collapsed decode
+    /// handling proved live: it fell into the undecodable-reclaim path
+    /// and was destroyed as debris despite being obviously alive.
+    /// `acquire` must refuse IMMEDIATELY with the frozen upgrade
+    /// message, and the document must survive completely untouched —
+    /// proof this never went through the wait-then-reclaim path at
+    /// all, let alone the takeover primitive.
+    #[tokio::test]
+    async fn a_newer_format_version_refuses_immediately_without_touching_the_doc() {
+        let (location, scope) = test_location();
+        let future = serde_json::json!({
+            "format_version": 99,
+            "pipeline": "p",
+            "owner": "owner-future",
+            "acquired_at_ms": now_ms(),
+            "renewed_at_ms": now_ms(),
+        });
+        let planted = plant_raw(&location, &scope, &future).await;
+
+        let err = Lease::acquire(location.clone(), &scope, "p", "owner-b")
+            .await
+            .expect_err("a newer-format doc refuses rather than being reclaimed as debris");
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "fatal destination error: destination lease `_rdlt_lease.{scope}.json` format \
+                 v99 is newer than this build supports (v{LEASE_FORMAT_VERSION}); upgrade rdlt"
+            )
+        );
+
+        let (survived, _) = location
+            .read_doc_versioned(&lease_file(&scope))
+            .await
+            .expect("io")
+            .expect("the doc must still exist — not reclaimed as debris");
+        assert_eq!(
+            survived, planted,
+            "the doc must be byte-identical, completely untouched"
+        );
+    }
+
+    /// N1(b): the same carve-out on the heartbeat side — a beat that
+    /// reads a newer-format doc must flip `lost` DEFINITIVELY (not the
+    /// "presumed torn read, try again" tolerance an `Unparseable`
+    /// result gets). Plants the newer doc under the SAME owner this
+    /// session holds, so a plain owner-mismatch cannot be what trips
+    /// `lost` here — only the version gate can be.
+    #[tokio::test]
+    async fn a_beat_against_a_newer_format_doc_flips_lost_definitively() {
+        let (location, scope) = test_location();
+        let lease = Lease::acquire(location.clone(), &scope, "p", "owner-a")
+            .await
+            .expect("acquire");
+
+        let future = serde_json::json!({
+            "format_version": 99,
+            "pipeline": "p",
+            "owner": "owner-a",
+            "acquired_at_ms": now_ms(),
+            "renewed_at_ms": now_ms(),
+        });
+        let bytes = serde_json::to_vec(&future).expect("encodes");
+        let (_, version) = location
+            .read_doc_versioned(&lease_file(&scope))
+            .await
+            .expect("io")
+            .expect("present");
+        location
+            .replace_doc_if(&lease_file(&scope), bytes, version)
+            .await
+            .expect("replace");
+
+        lease.renew_once().await;
+        assert!(
+            lease.check_still_held().is_err(),
+            "a newer-format doc on a beat must definitively end the lease, not be tolerated \
+             like a torn read"
+        );
+    }
+
     /// I6: a doc that exists but never decodes — the shape a process
     /// crashing between `create_doc_exclusive`'s O_EXCL open and its
     /// `write_all` leaves behind — must not wedge every future
     /// `acquire` forever. Paused time drives the built-in
-    /// `HEARTBEAT_SECS` wait instantly instead of actually sleeping.
+    /// `UNDECODABLE_WAIT` wait instantly instead of actually sleeping,
+    /// through the PRODUCTION `acquire` entry point (not the fast
+    /// test seam) — this is the one test that exists specifically to
+    /// prove the real, unshortened wait is wired up end to end.
     #[tokio::test(start_paused = true)]
     async fn an_undecodable_lease_is_reclaimed_after_one_heartbeat_interval() {
         let (location, scope) = test_location();
@@ -989,15 +1315,15 @@ mod tests {
         );
     }
 
-    /// I4/I7: a normal (not lost) release deletes the document, and —
-    /// because the heartbeat is aborted BEFORE that delete — no beat
-    /// is left running to observe (or otherwise act on) the document
-    /// afterward. Advancing well past another beat interval and
-    /// finding the document still gone is the observable proof: a
-    /// heartbeat that outlived `release` would still find nothing to
-    /// renew (its `renew` only ever sets `lost` on absence, never
-    /// recreates), so the real assertion is that the deletion itself
-    /// is not undone or raced by anything left running.
+    /// I4/I7/N5: a normal (not lost) release deletes the document,
+    /// and — because the heartbeat is aborted AND FENCED before that
+    /// delete — no beat is left running to observe (or otherwise act
+    /// on) the document afterward. Advancing well past another beat
+    /// interval and finding the document still gone is the observable
+    /// proof: a heartbeat that outlived `release` would still find
+    /// nothing to renew (its `renew` only ever sets `lost` on absence,
+    /// never recreates), so the real assertion is that the deletion
+    /// itself is not undone or raced by anything left running.
     #[tokio::test(start_paused = true)]
     async fn release_deletes_the_doc_and_it_stays_deleted() {
         let (location, scope) = test_location();
