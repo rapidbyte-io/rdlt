@@ -73,8 +73,10 @@ impl DestinationConnector for Iceberg {
             &context.pipeline,
             context.load_id.clone(),
             properties,
-            self.config.parts.unwrap_or_default(),
-            context.part_events.clone(),
+            super::load::PartsWiring {
+                options: self.config.parts.unwrap_or_default(),
+                events: context.part_events.clone(),
+            },
         ))
     }
 }

@@ -254,7 +254,6 @@ async fn run_once(
     // consumer can call a silent MINUTE a stall with confidence.
     let heartbeat = {
         let events = events.clone();
-        let started = started;
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);

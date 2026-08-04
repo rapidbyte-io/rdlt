@@ -37,8 +37,9 @@ pub use builder::{Pipeline, PipelineBuilder};
 /// behind every connector's `from_yaml`/`from_json`/`from_value`).
 pub use rdlt_connector_sdk as sdk;
 pub use rdlt_core::{
-    CommitPolicy, Cursor, PipelineEvent, PolicyAction, RdltError, ResumedFrom, RunReport,
-    SchemaPolicy, TableReport, WriteMode,
+    BatchPolicy, CommitPolicy, Cursor, Metrics, MetricsSnapshot, PartClose, PipelineEvent,
+    PolicyAction, RdltError, ResumedFrom, RunReport, SchemaPolicy, StreamName, TableName,
+    TableReport, WriteMode,
 };
 
 /// The bundled connectors, one module per system — the same pattern as the
@@ -85,7 +86,8 @@ pub mod connector {
 /// for the submodules. Anything reachable at the crate root is reachable here.
 pub mod prelude {
     pub use crate::{
-        CommitPolicy, Cursor, Pipeline, PipelineEvent, PolicyAction, RdltError, ResumedFrom,
-        RunReport, SchemaPolicy, TableReport, WriteMode,
+        BatchPolicy, CommitPolicy, Cursor, Metrics, MetricsSnapshot, PartClose, Pipeline,
+        PipelineEvent, PolicyAction, RdltError, ResumedFrom, RunReport, SchemaPolicy, StreamName,
+        TableName, TableReport, WriteMode,
     };
 }

@@ -37,6 +37,13 @@ use super::write::Writer;
 /// with MUST equal the width `read_state` re-derives with.
 pub(super) const SCOPE_HASH_LEN: usize = 12;
 
+/// Part sizing and its telemetry, grouped: the options that decide
+/// when files roll travel with the listener told when they close.
+pub(super) struct PartsWiring {
+    pub(super) options: rdlt_connector_sdk::spi::PartOptions,
+    pub(super) events: Option<rdlt_connector_sdk::spi::PartEventFn>,
+}
+
 /// One stream table's session state.
 struct TableState {
     /// The live handle, refreshed at ensure and publish boundaries.
@@ -100,12 +107,11 @@ impl Load {
         pipeline: &PipelineId,
         load_id: LoadId,
         writer_properties: parquet::file::properties::WriterProperties,
-        parts: rdlt_connector_sdk::spi::PartOptions,
-        part_events: Option<rdlt_connector_sdk::spi::PartEventFn>,
+        parts: PartsWiring,
     ) -> Self {
         Self {
-            parts,
-            part_events,
+            parts: parts.options,
+            part_events: parts.events,
             config,
             catalog,
             namespace,
@@ -826,8 +832,10 @@ mod tests {
             &PipelineId::from("p"),
             LoadId::from("l"),
             writer_properties(&Default::default()).expect("props"),
-            rdlt_connector_sdk::spi::PartOptions::default(),
-            None,
+            PartsWiring {
+                options: rdlt_connector_sdk::spi::PartOptions::default(),
+                events: None,
+            },
         );
         let stream = TableName::from("events");
         let target = arrow_target("table `events`", &table).expect("target");
@@ -966,11 +974,13 @@ mod tests {
             // Zero seconds is not configurable — the gate refuses it —
             // but constructed directly it makes "already elapsed" the
             // condition under test without sleeping.
-            PartOptions {
-                roll_after_seconds: Some(0),
-                ..PartOptions::default()
+            PartsWiring {
+                options: PartOptions {
+                    roll_after_seconds: Some(0),
+                    ..PartOptions::default()
+                },
+                events: None,
             },
-            None,
         );
         let stream = TableName::from("events");
         // The FIELD-ID-annotated target, as production derives it — a

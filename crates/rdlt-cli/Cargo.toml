@@ -16,6 +16,7 @@ name = "rdlt"
 path = "src/main.rs"
 
 [dependencies]
+clap = { workspace = true }
 libc = { workspace = true }
 # postgres implies postgres-source; parquet implies file (see crates/rdlt features).
 rdlt = { workspace = true, features = ["rest", "duckdb", "postgres", "parquet", "iceberg", "snowflake", "oracle"] }

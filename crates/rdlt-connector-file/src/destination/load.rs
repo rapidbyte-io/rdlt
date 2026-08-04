@@ -36,6 +36,13 @@ use super::stage::{OpenPart, split_partitions};
 use super::truncate::truncate_table;
 use crate::location::Location;
 
+/// Part sizing and its telemetry, grouped: the options that decide
+/// when a part closes travel with the listener told when one does.
+pub(super) struct PartsWiring {
+    pub(super) options: rdlt_connector_sdk::spi::PartOptions,
+    pub(super) events: Option<rdlt_connector_sdk::spi::PartEventFn>,
+}
+
 /// The session state: where to write, how to encode, and what has been
 /// staged so far.
 pub struct Load {
@@ -113,13 +120,12 @@ impl Load {
         props: WriterProperties,
         scope: String,
         load_id: LoadId,
-        parts: rdlt_connector_sdk::spi::PartOptions,
-        part_events: Option<rdlt_connector_sdk::spi::PartEventFn>,
+        parts: PartsWiring,
     ) -> Result<Self, DestinationError> {
         location.prepare_staging(&scope, load_id.as_str()).await?;
         Ok(Self {
-            parts,
-            part_events,
+            parts: parts.options,
+            part_events: parts.events,
             open: BTreeMap::new(),
             location,
             format,

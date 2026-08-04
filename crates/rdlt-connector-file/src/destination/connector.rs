@@ -82,8 +82,10 @@ impl DestinationConnector for File {
             props,
             scope_of(context.pipeline.as_str()),
             context.load_id.clone(),
-            self.config.part_options(),
-            context.part_events.clone(),
+            super::load::PartsWiring {
+                options: self.config.part_options(),
+                events: context.part_events.clone(),
+            },
         )
         .await
     }
