@@ -113,7 +113,7 @@ impl EventSink {
         if let EventSink::File(mut w) = self
             && let Err(e) = w.flush()
         {
-            eprintln!("warning: flushing --events file: {e}");
+            crate::ui::stderr_line(&format!("warning: flushing --events file: {e}"));
         }
     }
 }

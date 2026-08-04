@@ -32,7 +32,10 @@ way.
 | `discarded` | table, rows, values, reason | Data dropped under a Discard* policy — counted, never silent. |
 | `heartbeat` | elapsed_ms | A liveness tick (1 s) once the streams are wired (discovery, session open and WAL recovery precede the ticker): events may legitimately go quiet, heartbeats may not. |
 
-Causal-order guarantees: `run_started` first; a stream's `batch_read`
+Causal-order guarantees: `run_started` first (within an attempt — a
+`retried` announcing the next attempt precedes ITS `run_started`, and
+an attempt that fails before identification emits only that
+`retried`); a stream's `batch_read`
 precedes the `batch_loaded` carrying those rows; `schema_evolved`
 precedes the first batch at its version; `commit_started` precedes
 its `committed`; `committed` follows everything it covers. One

@@ -28,12 +28,13 @@ use crate::schema::SchemaDelta;
 #[non_exhaustive]
 pub enum PipelineEvent {
     /// The run is identified and about to start its streams. The FIRST
-    /// event of every run — the feed's answer to "which load is this,
-    /// and did it resume": before it, a consumer knows only the
-    /// pipeline it subscribed to. WAL-replay recovery happens before
-    /// this event and deliberately emits nothing: replayed work
-    /// belongs to the crashed load, and `resumed_from: wal` is its
-    /// record in the feed.
+    /// event of every attempt that gets far enough to be identified —
+    /// the feed's answer to "which load is this, and did it resume".
+    /// WAL-replay recovery happens before this event and deliberately
+    /// emits nothing (replayed work belongs to the crashed load;
+    /// `resumed_from: wal` is its record), and an attempt that fails
+    /// during discovery or recovery emits only the `Retried` that
+    /// announces its successor.
     RunStarted {
         /// This run's identity — the same id the report will carry.
         load_id: LoadId,
@@ -82,7 +83,8 @@ pub enum PipelineEvent {
     Retried {
         /// The stream involved, where the failure was attributable to one.
         stream: Option<StreamName>,
-        /// Which attempt this is, 1-based.
+        /// The RETRY ordinal, 1-based: the first retry announces 1
+        /// (which is the run's second attempt).
         attempt: u32,
     },
     /// Rows or values were discarded under a Discard* policy — counted, never silent.

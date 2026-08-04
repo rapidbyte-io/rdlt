@@ -23,61 +23,68 @@ pub fn cdc_composition_warnings(spec: &Spec, config: &PostgresConfig) -> Vec<Str
         );
     }
     match &spec.destination {
+        // Every destination on the shared SQL merge core takes the same
+        // options vocabulary; ONE checker, so the advisories cannot
+        // drift apart per destination. (An earlier version of this file
+        // claimed snowflake and duckdb "cannot remove a flagged row" —
+        // false since both ride sqlcore's hard-delete arms — which is
+        // exactly the drift one implementation prevents.)
         DestSpec::Postgres {
             merge_strategy,
             tables,
             ..
-        } => {
-            if !matches!(
+        } => sql_destination_warnings(
+            &mut warnings,
+            config,
+            &cdc.flag_column,
+            matches!(
                 merge_strategy,
                 Some(rdlt::connector::postgres::destination::MergeStrategy::Upsert)
-            ) {
-                warnings.push(
-                    "cdc: destination merge_strategy is not upsert — the \
-                     recommended composition is merge_strategy = \"upsert\""
-                        .to_string(),
-                );
-            }
-            match &config.tables {
-                // Schema-wide discovery: the table set is unknown here, so the
-                // per-table check below can't run — emit one generic notice
-                // rather than staying silent about the missing hard_delete.
-                None => warnings.push(format!(
-                    "cdc: schema-wide discovery (no `tables:` list) — give every \
-                     CDC table hard_delete = \"{}\" in the destination options, \
-                     or deletes land as flagged rows (soft delete) instead of \
-                     removals",
-                    cdc.flag_column
-                )),
-                Some(listed) => {
-                    for table in listed {
-                        let has_flag = tables
-                            .as_ref()
-                            .and_then(|t| t.get(&table.name))
-                            .and_then(|t| t.hard_delete.as_deref())
-                            == Some(cdc.flag_column.as_str());
-                        if !has_flag {
-                            warnings.push(format!(
-                                "cdc: table `{}` has no hard_delete = \"{}\" — \
-                                 deletes will land as flagged rows (soft delete) \
-                                 instead of removals",
-                                table.name, cdc.flag_column
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-        // Snowflake sits here only while its merge dialect is unbuilt: it
-        // accepts the shared options vocabulary, so once merges execute it
-        // belongs with the arm above, checking merge_strategy and hard_delete.
-        // Until then it genuinely cannot remove a flagged row, and saying so
-        // is the honest warning.
-        DestSpec::Duckdb { .. }
-        | DestSpec::Parquet { .. }
-        | DestSpec::File(_)
-        | DestSpec::Iceberg(_)
-        | DestSpec::Snowflake(_) => {
+            ),
+            &|table| {
+                tables
+                    .as_ref()
+                    .and_then(|t| t.get(table))
+                    .and_then(|t| t.hard_delete.clone())
+            },
+        ),
+        DestSpec::Duckdb {
+            merge_strategy,
+            tables,
+            ..
+        } => sql_destination_warnings(
+            &mut warnings,
+            config,
+            &cdc.flag_column,
+            matches!(
+                merge_strategy,
+                Some(rdlt::connector::postgres::destination::MergeStrategy::Upsert)
+            ),
+            &|table| {
+                tables
+                    .as_ref()
+                    .and_then(|t| t.get(table))
+                    .and_then(|t| t.hard_delete.clone())
+            },
+        ),
+        DestSpec::Snowflake(dest) => sql_destination_warnings(
+            &mut warnings,
+            config,
+            &cdc.flag_column,
+            matches!(
+                dest.options.merge_strategy,
+                Some(rdlt::connector::postgres::destination::MergeStrategy::Upsert)
+            ),
+            &|table| {
+                dest.options
+                    .tables
+                    .get(table)
+                    .and_then(|t| t.hard_delete.clone())
+            },
+        ),
+        // These genuinely have no delete path: files are append/replace
+        // media, and iceberg ships append-only this release.
+        DestSpec::Parquet { .. } | DestSpec::File(_) | DestSpec::Iceberg(_) => {
             warnings.push(format!(
                 "cdc: this destination has no hard-delete support — the \
                  deletion flag `{}` lands as data (soft delete); deletes are \
@@ -87,6 +94,50 @@ pub fn cdc_composition_warnings(spec: &Spec, config: &PostgresConfig) -> Vec<Str
         }
     }
     warnings
+}
+
+/// The merge-core composition check, shared by every SQL destination:
+/// upsert strategy recommended, and each CDC table needs the flag
+/// column wired as its hard_delete.
+fn sql_destination_warnings(
+    warnings: &mut Vec<String>,
+    config: &PostgresConfig,
+    flag_column: &str,
+    strategy_is_upsert: bool,
+    hard_delete_of: &dyn Fn(&str) -> Option<String>,
+) {
+    if !strategy_is_upsert {
+        warnings.push(
+            "cdc: destination merge_strategy is not upsert — the \
+             recommended composition is merge_strategy = \"upsert\""
+                .to_string(),
+        );
+    }
+    match &config.tables {
+        // Schema-wide discovery: the table set is unknown here, so the
+        // per-table check below can't run — emit one generic notice
+        // rather than staying silent about the missing hard_delete.
+        None => warnings.push(format!(
+            "cdc: schema-wide discovery (no `tables:` list) — give every \
+             CDC table hard_delete = \"{}\" in the destination options, \
+             or deletes land as flagged rows (soft delete) instead of \
+             removals",
+            flag_column
+        )),
+        Some(listed) => {
+            for table in listed {
+                let has_flag = hard_delete_of(&table.name).as_deref() == Some(flag_column);
+                if !has_flag {
+                    warnings.push(format!(
+                        "cdc: table `{}` has no hard_delete = \"{}\" — \
+                         deletes will land as flagged rows (soft delete) \
+                         instead of removals",
+                        table.name, flag_column
+                    ));
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -146,7 +197,51 @@ destination:
             "{warnings:?}"
         );
 
-        let duckdb = spec(
+        // duckdb and snowflake ride the SAME merge core as postgres: a
+        // correctly-composed pipeline warns NOTHING (an earlier version
+        // of the advisory falsely told them they could not hard-delete),
+        // and a bare one gets the same two composition warnings.
+        let duckdb_recommended = spec(
+            r#"
+pipeline: p
+write_mode: {merge: {key: [id]}}
+source:
+  postgres: {config: src.yaml}
+destination:
+  duckdb:
+    path: out.db
+    merge_strategy: upsert
+    tables:
+      orders: {hard_delete: _rdlt_deleted}
+"#,
+        );
+        assert!(
+            cdc_composition_warnings(&duckdb_recommended, &cdc_config()).is_empty(),
+            "a correct duckdb composition must not be told it soft-deletes"
+        );
+        let snowflake_recommended = spec(
+            r#"
+pipeline: p
+write_mode: {merge: {key: [id]}}
+source:
+  postgres: {config: src.yaml}
+destination:
+  snowflake:
+    account: MYORG-MYACCT
+    user: u
+    auth: {password: {password: x}}
+    database: DB
+    schema: S
+    merge_strategy: upsert
+    tables:
+      orders: {hard_delete: _rdlt_deleted}
+"#,
+        );
+        assert!(
+            cdc_composition_warnings(&snowflake_recommended, &cdc_config()).is_empty(),
+            "a correct snowflake composition must not be told it soft-deletes"
+        );
+        let duckdb_bare = spec(
             r#"
 pipeline: p
 write_mode: {merge: {key: [id]}}
@@ -156,7 +251,24 @@ destination:
   duckdb: {path: out.db}
 "#,
         );
-        let warnings = cdc_composition_warnings(&duckdb, &cdc_config());
+        let warnings = cdc_composition_warnings(&duckdb_bare, &cdc_config());
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(warnings[0].contains("upsert"), "{warnings:?}");
+        assert!(warnings[1].contains("hard_delete"), "{warnings:?}");
+
+        // A destination with genuinely no delete path keeps the honest
+        // soft-delete warning.
+        let file_dest = spec(
+            r#"
+pipeline: p
+write_mode: {merge: {key: [id]}}
+source:
+  postgres: {config: src.yaml}
+destination:
+  parquet: {path: out}
+"#,
+        );
+        let warnings = cdc_composition_warnings(&file_dest, &cdc_config());
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(warnings[0].contains("soft delete"), "{warnings:?}");
 

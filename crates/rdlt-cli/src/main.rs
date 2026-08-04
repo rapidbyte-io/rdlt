@@ -91,7 +91,7 @@ fn main() -> ExitCode {
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
         Err(e) => {
-            eprintln!("error: starting runtime: {e}");
+            ui::stderr_line(&format!("error: starting runtime: {e}"));
             return ExitCode::from(2);
         }
     };
