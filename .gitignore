@@ -30,5 +30,7 @@ benches/competitors/airbyte/__pycache__/
 /.specify/
 /docs/superpowers/
 /2026-07-18-rdlt-engine-design.md
-# Run artifacts at the repo root (workdirs from ad-hoc pipeline runs).
+# Run artifacts at the repo root (workdirs from ad-hoc pipeline runs),
+# and the on-disk TMPDIR the gate uses to stay off the RAM tmpfs.
 /.rdlt*/
+/.tmp-real/

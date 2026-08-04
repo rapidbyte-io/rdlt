@@ -134,13 +134,10 @@ make test     # cargo nextest + doc-tests (container suites skip without a runti
 make check    # everything a PR must pass
 ```
 
-Architectural decisions and per-feature contracts live under `specs/`;
+Architectural decisions are recorded in the code's own load-bearing
+comments and in `docs/`;
 benchmarks and their governance under `benches/`.
 
 ## License
 
 Apache-2.0
-
-## License
-
-Apache-2.0 — see [LICENSE](LICENSE).

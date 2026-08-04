@@ -9,9 +9,9 @@
 //! here are live approximations for humans and dashboards. The
 //! exactly-once numbers are the [`crate::RunReport`]'s, and a consumer
 //! showing final totals must take them from there — a lagging event
-//! subscriber is disconnected rather than allowed to slow the
-//! pipeline, so the live fold may have missed events the report did
-//! not.
+//! subscriber loses the oldest events rather than being allowed to
+//! slow the pipeline, so the live fold may have missed events the
+//! report did not.
 //!
 //! Time is a PARAMETER (`apply_at`, `snapshot_at`), which is what
 //! makes rates testable; the `apply`/`snapshot` sugar passes
@@ -76,6 +76,11 @@ pub struct MetricsSnapshot {
     /// Per-stream state, kept beside rather than inside the totals so
     /// the totals stay `Copy`.
     pub stream_states: BTreeMap<StreamName, StreamState>,
+    /// Each stream's destination ROOT table, as announced by
+    /// `StreamStarted` — the join a renderer needs, published rather
+    /// than re-derived (the normalization rules are the
+    /// destination's).
+    pub stream_tables: BTreeMap<StreamName, TableName>,
     /// Per-table write totals.
     pub tables: BTreeMap<TableName, TableMetrics>,
     /// Total rows read across streams.
@@ -113,6 +118,7 @@ pub struct Metrics {
     started: Instant,
     streams: BTreeMap<StreamName, StreamMetrics>,
     stream_states: BTreeMap<StreamName, StreamState>,
+    stream_tables: BTreeMap<StreamName, TableName>,
     tables: BTreeMap<TableName, TableMetrics>,
     commits: u64,
     last_commit_seq: Option<u64>,
@@ -136,6 +142,7 @@ impl Metrics {
             started,
             streams: BTreeMap::new(),
             stream_states: BTreeMap::new(),
+            stream_tables: BTreeMap::new(),
             tables: BTreeMap::new(),
             commits: 0,
             last_commit_seq: None,
@@ -155,10 +162,11 @@ impl Metrics {
     /// Fold one event in at an explicit instant — the testable form.
     pub fn apply_at(&mut self, event: &PipelineEvent, at: Instant) {
         match event {
-            PipelineEvent::StreamStarted { stream } => {
+            PipelineEvent::StreamStarted { stream, table } => {
                 self.streams.entry(stream.clone()).or_default();
                 self.stream_states
                     .insert(stream.clone(), StreamState::Reading);
+                self.stream_tables.insert(stream.clone(), table.clone());
             }
             PipelineEvent::StreamFinished { stream } => {
                 self.stream_states
@@ -256,6 +264,7 @@ impl Metrics {
         MetricsSnapshot {
             streams: self.streams.clone(),
             stream_states: self.stream_states.clone(),
+            stream_tables: self.stream_tables.clone(),
             tables: self.tables.clone(),
             rows_read: self.streams.values().map(|s| s.rows_read).sum(),
             rows_written,

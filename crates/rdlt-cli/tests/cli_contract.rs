@@ -152,6 +152,16 @@ fn validate_gates_without_running() {
         String::from_utf8_lossy(&out.stderr)
     );
 
+    // -q silences the ok line; the exit code still answers.
+    let (_dir, spec) = fresh_pipeline();
+    let out = rdlt()
+        .args(["-q", "validate"])
+        .arg(&spec)
+        .output()
+        .expect("spawn");
+    assert_eq!(out.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&out.stderr).is_empty());
+
     let dir = tempfile::tempdir().expect("tempdir");
     let bad = dir.path().join("bad.yaml");
     std::fs::write(&bad, "pipeline: p\nsource:\n  file:\n    streams: []\n").expect("write");

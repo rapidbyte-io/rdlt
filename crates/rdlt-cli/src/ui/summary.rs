@@ -4,14 +4,21 @@
 
 use std::time::Duration;
 
-use console::style;
+use console::style as style_any;
 use rdlt::prelude::{ResumedFrom, RunReport};
 
 use super::format;
 
-/// Render the summary block to a string (stderr's, ultimately).
-/// Styling degrades to plain text when the stream is not a terminal
-/// or color is disabled — `console` handles both.
+/// `console::style`, pointed at the stream this module renders for.
+fn style<D>(value: D) -> console::StyledObject<D> {
+    style_any(value).for_stderr()
+}
+
+/// Render the summary block to a string, written to STDERR by the
+/// caller — which is why every style is `for_stderr()`: `console`
+/// gates a default `style()` on STDOUT's color state, and the common
+/// `rdlt run … > report.json` on a terminal would silently lose
+/// styling (while `--color never` failed to strip it).
 pub fn render(report: &RunReport) -> String {
     let elapsed = Duration::from_millis(report.elapsed_ms);
     let total_rows: u64 = report.tables.values().map(|t| t.rows).sum();
@@ -110,11 +117,10 @@ pub fn render(report: &RunReport) -> String {
         format::bytes(total_bytes),
     ));
     let mut facts: Vec<String> = Vec::new();
-    if !report.schema_migrations.is_empty() {
-        facts.push(format!(
-            "schema: {} migrations",
-            report.schema_migrations.len()
-        ));
+    match report.schema_migrations.len() {
+        0 => {}
+        1 => facts.push("schema: 1 migration".to_owned()),
+        n => facts.push(format!("schema: {n} migrations")),
     }
     if report.retries > 0 {
         facts.push(format!("retries: {}", report.retries));
@@ -144,6 +150,7 @@ mod tests {
         assert!(rendered.contains("exactly-once"), "{rendered}");
         assert!(rendered.contains("2 commits"), "{rendered}");
         assert!(!rendered.contains("1 commits"), "{rendered}");
+        assert!(!rendered.contains("1 migrations"), "{rendered}");
         assert!(rendered.contains("fresh"), "{rendered}");
         assert!(rendered.contains("total 0 rows"), "{rendered}");
     }

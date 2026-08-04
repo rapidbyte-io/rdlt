@@ -539,3 +539,38 @@ async fn the_metrics_fold_agrees_with_the_report_for_a_clean_run() {
         report.schema_migrations.len() as u64
     );
 }
+
+/// Review round 1's counting fix, pinned: `rows_read` counts what the
+/// payload DECODED to — including whole rows a Discard policy then
+/// dropped — so read-vs-loaded divergence exposes discards instead of
+/// silently pre-subtracting them.
+#[tokio::test]
+async fn rows_read_includes_discarded_rows() {
+    use rdlt_core::{PolicyAction, SchemaPolicy};
+    let mut config = EngineConfig::new("discard-read");
+    config = config.with_schema_policy(SchemaPolicy::with_default(PolicyAction::DiscardRow));
+    let batches = vec![
+        MemoryBatch::new(vec![json!({"id": 1})]).with_checkpoint(json!({"b": 0})),
+        // The surprise column gets this whole row discarded.
+        MemoryBatch::new(vec![json!({"id": 2, "surprise": "x"}), json!({"id": 3})])
+            .with_checkpoint(json!({"b": 1})),
+    ];
+    let report = Engine::new(
+        config,
+        stream_with_batches(StreamSpec::new("s"), batches),
+        MemoryDestination::new(),
+    )
+    .run()
+    .await
+    .expect("run");
+
+    let read: u64 = report.streams.values().map(|s| s.rows_read).sum();
+    let loaded: u64 = report.tables.values().map(|t| t.rows).sum();
+    let discarded: u64 = report.tables.values().map(|t| t.discarded_rows).sum();
+    assert!(discarded > 0, "the fixture must discard a row");
+    assert_eq!(
+        read,
+        loaded + discarded,
+        "reads = loads + discards, so the divergence is the discard"
+    );
+}

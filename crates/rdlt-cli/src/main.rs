@@ -102,6 +102,7 @@ fn main() -> ExitCode {
     }
     let renderer = ui::select(
         cli.quiet,
+        cli.verbose > 0,
         cli.no_progress,
         console::Term::stderr().is_term(),
     );
@@ -112,7 +113,7 @@ fn main() -> ExitCode {
             report,
             events,
         } => runtime.block_on(run::run(spec, report, events, verbosity, renderer)),
-        args::Command::Validate { spec } => runtime.block_on(run::validate(spec)),
+        args::Command::Validate { spec } => runtime.block_on(run::validate(spec, verbosity)),
         args::Command::Schema { connector } => schema::print(connector),
     };
     match outcome {

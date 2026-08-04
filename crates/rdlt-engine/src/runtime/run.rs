@@ -232,6 +232,7 @@ async fn run_once(
 
         let _ = events.send(rdlt_core::PipelineEvent::StreamStarted {
             stream: spec.name.clone(),
+            table: root_table.clone(),
         });
 
         // Instrumented HERE rather than with a guard inside the task. A guard

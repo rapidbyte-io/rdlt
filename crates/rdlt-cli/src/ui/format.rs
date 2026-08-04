@@ -1,7 +1,7 @@
 //! Human-scale number rendering, shared by the live display and the
 //! summary so the two can never disagree about what "1.2M" means.
 
-/// `1234` → `1,234` for counts small enough to read; `1.23M` beyond.
+/// Plain digits up to 9,999; `10.0k`, `1.23M`, `4.56B` beyond.
 pub fn count(n: u64) -> String {
     match n {
         0..=9_999 => n.to_string(),
@@ -28,9 +28,14 @@ pub fn bytes(n: u64) -> String {
     }
 }
 
-/// A rate, already per-second: `861k/s`.
+/// A rate, already per-second: `861k/s` — and `0.4/s` below one,
+/// because a slow pipeline and a stalled one must not read the same.
 pub fn rate(per_sec: f64) -> String {
-    format!("{}/s", count(per_sec.round() as u64))
+    if per_sec > 0.0 && per_sec < 1.0 {
+        format!("{per_sec:.1}/s")
+    } else {
+        format!("{}/s", count(per_sec.round() as u64))
+    }
 }
 
 /// `1 commit`, `2 commits` — the difference between a tool and a
@@ -70,6 +75,8 @@ mod tests {
         assert_eq!(bytes(999), "999 B");
         assert_eq!(bytes(96_400_000), "96.4 MB");
         assert_eq!(rate(861_000.4), "861.0k/s");
+        assert_eq!(rate(0.4), "0.4/s");
+        assert_eq!(rate(0.0), "0/s");
         assert_eq!(commits(1), "1 commit");
         assert_eq!(commits(3), "3 commits");
         assert_eq!(duration(std::time::Duration::from_millis(450)), "450ms");

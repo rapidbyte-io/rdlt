@@ -1,6 +1,6 @@
-//! The line-per-event renderer: CI logs, pipes, and anyone who reads
-//! scrollback. The default until the pretty renderer lands, and the
-//! permanent form off-TTY.
+//! The line-per-event renderer: CI logs, pipes, anyone who reads
+//! scrollback — selected off-TTY, under `--no-progress`, and at `-v`
+//! (detail lines want scrollback, not a redrawing display).
 
 use rdlt::prelude::PipelineEvent;
 
@@ -15,7 +15,7 @@ pub fn line(event: &PipelineEvent, verbosity: Verbosity) -> Option<String> {
     }
     let verbose = verbosity >= Verbosity::Verbose;
     match event {
-        PipelineEvent::StreamStarted { stream } => Some(format!("-> stream {stream} started")),
+        PipelineEvent::StreamStarted { stream, .. } => Some(format!("-> stream {stream} started")),
         PipelineEvent::StreamFinished { stream } => Some(format!("-> stream {stream} finished")),
         PipelineEvent::BatchLoaded { table, rows, .. } => Some(format!("  {table}: +{rows} rows")),
         PipelineEvent::SchemaEvolved { delta } => Some(format!(

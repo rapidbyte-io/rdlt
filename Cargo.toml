@@ -124,7 +124,7 @@ testcontainers-modules = { version = "0.11", features = ["postgres"] }
 tempfile = "3"
 rcgen = "0.13"
 toml = "0.8"
-# rdlt-bench (dev-only, publish=false) exclusively — never a runtime dep.
+# The CLI's argument surface (and rdlt-bench's).
 clap = { version = "4", features = ["derive"] }
 console = "0.16"
 indicatif = "0.18"

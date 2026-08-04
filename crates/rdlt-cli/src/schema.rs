@@ -19,6 +19,12 @@ pub(crate) fn print(connector: SchemaFor) -> Result<(), CliError> {
     };
     let json = serde_json::to_string_pretty(&schema)
         .map_err(|e| CliError::Usage(format!("encoding schema: {e}")))?;
-    println!("{json}");
+    // Not `println!`: a closed stdout must be exit 74, not a panic.
+    use std::io::Write as _;
+    let mut stdout = std::io::stdout().lock();
+    stdout
+        .write_all(json.as_bytes())
+        .and_then(|()| stdout.write_all(b"\n"))
+        .map_err(|e| CliError::Io(format!("writing schema to stdout: {e}")))?;
     Ok(())
 }

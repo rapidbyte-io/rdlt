@@ -42,7 +42,7 @@ pub(super) async fn recover_wal(
             crate::wal::resume::ScanOutcome::Discard => crate::wal::clear(wal_dir),
             crate::wal::resume::ScanOutcome::Recover(span) => {
                 resumed_from =
-                    replay_span(destination, config, wal_dir, span, capabilities, events).await?;
+                    replay_span(destination, config, wal_dir, span, capabilities).await?;
                 crate::wal::clear(wal_dir);
             }
             crate::wal::resume::ScanOutcome::Damaged(reason) => {
@@ -109,16 +109,19 @@ async fn replay_span(
     wal_dir: &Path,
     span: crate::wal::resume::RecoverySpan,
     capabilities: DestinationCapabilities,
-    events: &tokio::sync::broadcast::Sender<rdlt_core::PipelineEvent>,
 ) -> Result<Option<ResumedFrom>, RdltError> {
-    // The replay session's parts belong to the CRASHED load; they
-    // reach the event feed but not this run's report totals — the
-    // same line `report.tables` draws for replayed batches.
+    // The replay session gets NO part-event listener: its parts belong
+    // to the CRASHED load, and the feed describes THIS run — replayed
+    // batches never emit BatchLoaded either, and report totals draw
+    // the same line. Wiring it (an earlier draft did) also broke the
+    // "RunStarted is the first event" guarantee, since replay finishes
+    // before the run's identity is known. `resumed_from: wal` is the
+    // feed's record that replay happened.
     let mut session = destination
-        .open(
-            OpenContext::new(config.pipeline.clone(), span.load_id.clone())
-                .with_part_events(part_event_forwarder(events.clone(), None)),
-        )
+        .open(OpenContext::new(
+            config.pipeline.clone(),
+            span.load_id.clone(),
+        ))
         .await
         .map_err(|e| classify_dest_error(&e))?;
     let mut state = read_state_checked(&mut *session, config)

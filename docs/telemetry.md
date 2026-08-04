@@ -13,27 +13,31 @@ computed anywhere but the library.
 data movement, serde-serializable (`{"event": "batch_loaded", ...}`),
 `#[non_exhaustive]` so new variants are additive. Events are
 ADVISORY: dropping them changes nothing about the load, and a
-consumer that lags is disconnected rather than allowed to slow the
-pipeline. The `RunReport` remains the complete record either way.
+consumer that lags loses the OLDEST events rather than being allowed
+to slow the pipeline — a still-connected consumer must not infer a
+complete feed. The `RunReport` remains the complete record either
+way.
 
 | event | carries | meaning |
 |---|---|---|
-| `run_started` | load_id, resumed_from | The FIRST event: which load this is, and whether it resumed (fresh / cursor / WAL replay). |
+| `run_started` | load_id, resumed_from | The FIRST event: which load this is, and whether it resumed (fresh / cursor / WAL replay). Replayed recovery work itself emits nothing — it belongs to the crashed load; `resumed_from: wal` is its record. |
 | `stream_started` / `stream_finished` | stream | Read-side lifecycle. |
 | `batch_read` | stream, rows, bytes | What the SOURCE delivered, before batching/merges/discards. Bytes are the raw payload for JSON sources, the Arrow footprint for structured ones. |
 | `batch_loaded` | table, rows, bytes | A batch reached the destination (not yet committed). Bytes are the Arrow IN-MEMORY footprint. |
 | `schema_evolved` | delta | Always precedes the first batch at the new version. |
 | `commit_started` | commit_seq | Paired with `committed`, makes commit latency observable. |
 | `committed` | commit_seq, cursors | Durable; follows everything it covers. |
-| `part_closed` | table, encoded_bytes, reason | A destination closed one output file. `encoded_bytes` is the EXACT on-the-wire size — the only honest basis for output throughput (in-memory bytes differ from encoded by multiples). Reasons: `target`, `time`, `budget`, `commit`, `schema`. SQL destinations never emit it. |
+| `part_closed` | table, encoded_bytes, reason | A destination closed one output file. `encoded_bytes` is the EXACT on-the-wire size — the only honest basis for output throughput (in-memory bytes differ from encoded by multiples). Reasons: `target`, `time`, `budget`, `commit`, `schema`. Emitted by the file-materialising destinations (file, iceberg, snowflake's staged uploads); postgres and duckdb never emit it. |
 | `retried` | stream?, attempt | An engine retry of a transient failure. |
 | `discarded` | table, rows, values, reason | Data dropped under a Discard* policy — counted, never silent. |
-| `heartbeat` | elapsed_ms | A liveness tick (1 s) while the run is active: events may legitimately go quiet, heartbeats may not. |
+| `heartbeat` | elapsed_ms | A liveness tick (1 s) once the streams are wired (discovery, session open and WAL recovery precede the ticker): events may legitimately go quiet, heartbeats may not. |
 
 Causal-order guarantees: `run_started` first; a stream's `batch_read`
 precedes the `batch_loaded` carrying those rows; `schema_evolved`
 precedes the first batch at its version; `commit_started` precedes
-its `committed`; `committed` follows everything it covers.
+its `committed`; `committed` follows everything it covers. One
+honest asymmetry: a `commit_started` whose attempt then failed has no
+matching `committed` — the next attempt runs under a new load id.
 
 ### 2. `Metrics` — the canonical fold
 

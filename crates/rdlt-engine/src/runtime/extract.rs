@@ -171,13 +171,19 @@ pub(super) async fn stream_task(
                     .await?;
                 owner = returned;
                 let items = items?;
-                // Rows READ: what the source payload decoded to. For a
-                // JSON source the row count is only knowable after the
-                // shred; the bytes are the raw payload's.
+                // Rows READ: what the source payload DECODED to — batch
+                // rows plus whole rows a Discard policy dropped, so the
+                // read-vs-loaded divergence the event doc promises is
+                // real for discards on this path too (the structured
+                // path counts at arrival, before its policies, and the
+                // two must agree on what "read" means). For a JSON
+                // source the count is only knowable after the shred;
+                // the bytes are the raw payload's.
                 let rows_read: u64 = items
                     .iter()
                     .map(|item| match item {
                         LoadItem::Batch { batch, .. } => batch.num_rows() as u64,
+                        LoadItem::Discarded { rows, .. } => *rows,
                         _ => 0,
                     })
                     .sum();

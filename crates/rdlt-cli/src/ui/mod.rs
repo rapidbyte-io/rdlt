@@ -19,11 +19,12 @@ pub enum RendererKind {
 
 /// Resolve the renderer from flags and the terminal. `is_tty` is a
 /// parameter so the decision is testable; the caller passes the real
-/// stderr's answer.
-pub fn select(quiet: bool, no_progress: bool, is_tty: bool) -> RendererKind {
+/// stderr's answer. `-v` forces plain: its detail lines are the point
+/// of asking, and a redrawing display would swallow them.
+pub fn select(quiet: bool, verbose: bool, no_progress: bool, is_tty: bool) -> RendererKind {
     if quiet {
         RendererKind::Quiet
-    } else if no_progress || !is_tty {
+    } else if verbose || no_progress || !is_tty {
         RendererKind::Plain
     } else {
         RendererKind::Pretty
@@ -34,13 +35,15 @@ pub fn select(quiet: bool, no_progress: bool, is_tty: bool) -> RendererKind {
 mod tests {
     use super::*;
 
-    /// The selection ladder: quiet beats everything, a pipe forces
-    /// plain, a terminal without --no-progress gets the live display.
+    /// The selection ladder: quiet beats everything; -v, a pipe, or
+    /// --no-progress force plain; a bare terminal gets the live
+    /// display.
     #[test]
     fn renderer_selection_ladder() {
-        assert_eq!(select(true, false, true), RendererKind::Quiet);
-        assert_eq!(select(false, true, true), RendererKind::Plain);
-        assert_eq!(select(false, false, false), RendererKind::Plain);
-        assert_eq!(select(false, false, true), RendererKind::Pretty);
+        assert_eq!(select(true, false, false, true), RendererKind::Quiet);
+        assert_eq!(select(false, true, false, true), RendererKind::Plain);
+        assert_eq!(select(false, false, true, true), RendererKind::Plain);
+        assert_eq!(select(false, false, false, false), RendererKind::Plain);
+        assert_eq!(select(false, false, false, true), RendererKind::Pretty);
     }
 }

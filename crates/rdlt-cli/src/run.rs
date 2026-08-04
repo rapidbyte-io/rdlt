@@ -33,10 +33,7 @@ pub(crate) async fn run(
     let pipeline = pipeline_spec::build_pipeline(&spec)?;
     let events_sink = match events_path {
         None => None,
-        Some(path) if events_to_stdout => {
-            drop(path);
-            Some(EventSink::Stdout)
-        }
+        Some(_) if events_to_stdout => Some(EventSink::Stdout),
         Some(path) => Some(EventSink::File(std::io::BufWriter::new(
             std::fs::File::create(&path)
                 .map_err(|e| CliError::Io(format!("creating {}: {e}", path.display())))?,
@@ -76,10 +73,12 @@ fn load_spec(spec_path: &std::path::Path) -> Result<(Spec, String), CliError> {
 
 /// `rdlt validate` — the same gates a run passes on its way to the
 /// first byte, and nothing after them.
-pub(crate) async fn validate(spec_path: PathBuf) -> Result<(), CliError> {
+pub(crate) async fn validate(spec_path: PathBuf, verbosity: Verbosity) -> Result<(), CliError> {
     let (spec, pipeline_name) = load_spec(&spec_path)?;
     let _pipeline = pipeline_spec::build_pipeline(&spec)?;
-    eprintln!("ok: pipeline {pipeline_name} is valid");
+    if verbosity != Verbosity::Quiet {
+        eprintln!("ok: pipeline {pipeline_name} is valid");
+    }
     Ok(())
 }
 
@@ -96,7 +95,12 @@ impl EventSink {
         // flush, never fails the run.
         if let Ok(line) = serde_json::to_string(event) {
             match self {
-                EventSink::Stdout => println!("{line}"),
+                // Not `println!`: a closed consumer must degrade, not
+                // panic the feed task.
+                EventSink::Stdout => {
+                    let mut stdout = std::io::stdout().lock();
+                    let _ = writeln!(stdout, "{line}");
+                }
                 EventSink::File(w) => {
                     let _ = writeln!(w, "{line}");
                 }
@@ -182,8 +186,12 @@ async fn drive(
     }
     // The FINAL numbers, from the exactly-once report — never the live
     // fold. Quiet suppresses it; both other renderers end with it.
+    // Best-effort BY HAND: `eprint!` panics on a closed stderr, which
+    // would turn a finished run into exit 101 — the human channel
+    // failing must never misreport the outcome.
     if renderer != RendererKind::Quiet {
-        eprint!("{}", ui::summary::render(&report));
+        use std::io::Write as _;
+        let _ = std::io::stderr().write_all(ui::summary::render(&report).as_bytes());
     }
 
     let json = serde_json::to_string_pretty(&report)
@@ -191,7 +199,17 @@ async fn drive(
     match report_path {
         Some(path) => std::fs::write(&path, json)
             .map_err(|e| CliError::Io(format!("writing {}: {e}", path.display())))?,
-        None => println!("{json}"),
+        // Not `println!`: a closed stdout (the consumer exited) would
+        // PANIC and exit 101, outside the documented code set. A
+        // failed report write is an IO failure like any other — 74.
+        None => {
+            use std::io::Write as _;
+            let mut stdout = std::io::stdout().lock();
+            stdout
+                .write_all(json.as_bytes())
+                .and_then(|()| stdout.write_all(b"\n"))
+                .map_err(|e| CliError::Io(format!("writing report to stdout: {e}")))?;
+        }
     }
     Ok(())
 }

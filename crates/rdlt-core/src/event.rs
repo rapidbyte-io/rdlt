@@ -28,7 +28,10 @@ pub enum PipelineEvent {
     /// The run is identified and about to start its streams. The FIRST
     /// event of every run — the feed's answer to "which load is this,
     /// and did it resume": before it, a consumer knows only the
-    /// pipeline it subscribed to.
+    /// pipeline it subscribed to. WAL-replay recovery happens before
+    /// this event and deliberately emits nothing: replayed work
+    /// belongs to the crashed load, and `resumed_from: wal` is its
+    /// record in the feed.
     RunStarted {
         /// This run's identity — the same id the report will carry.
         load_id: LoadId,
@@ -39,6 +42,11 @@ pub enum PipelineEvent {
     StreamStarted {
         /// The stream.
         stream: StreamName,
+        /// The destination ROOT table its rows land in — the engine's
+        /// normalization applied, so a consumer never re-derives it
+        /// (the rules depend on the destination). Nested payloads may
+        /// shred into further child tables beyond this one.
+        table: TableName,
     },
     /// A batch reached the destination. Not yet committed — and therefore not
     /// yet visible to readers of that table.

@@ -12,10 +12,11 @@ mod tests {
         serde_yaml::from_str(yaml).expect("spec parses")
     }
 
-    /// Every document in the shared parity fixture must parse as a Spec. The
-    /// bench harness pins the SAME file against the SAME shared model
-    /// (`rdlt::pipeline_spec`), so this fixture — the one place a destination
-    /// or source kind is added first — is exercised from both consumers.
+    /// Every document in the shared parity fixture must parse as a Spec.
+    /// The bench harness reaches the same shared model INDIRECTLY (it
+    /// execs `rdlt run <spec> --report`), so this pin is the one place
+    /// the fixture — where a destination or source kind is added first —
+    /// is held against the model directly.
     #[test]
     fn shared_parity_specs_all_parse() {
         let raw = include_str!(concat!(

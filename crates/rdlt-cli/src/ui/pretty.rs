@@ -3,9 +3,10 @@
 //! construction: everything shown is LIVE and approximate; the final
 //! summary re-renders from the RunReport, the exactly-once record.
 //!
-//! indicatif rather than a full-screen TUI, deliberately (plan D4): a
-//! batch tool must compose with scrollback, pipes and CI logs, and
-//! leave the terminal exactly as found.
+//! indicatif rather than a full-screen TUI, deliberately: a batch
+//! tool must compose with scrollback, pipes and CI logs, and leave
+//! the terminal exactly as found — a full-screen takeover erases the
+//! run's visible history on exit.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -74,7 +75,7 @@ impl Pretty {
                 self.header
                     .set_message(format!("{current} · load {load_id} · {resumed}"));
             }
-            PipelineEvent::StreamStarted { stream } => {
+            PipelineEvent::StreamStarted { stream, .. } => {
                 let bar = self
                     .multi
                     .insert_before(&self.totals, ProgressBar::no_length());
@@ -100,14 +101,16 @@ impl Pretty {
         let snap = self.metrics.snapshot();
         for (stream, bar) in &self.streams {
             let read = snap.streams.get(stream).copied().unwrap_or_default();
-            // The written side joins by NAME where a table matches this
-            // stream (the overwhelmingly common case); tables that
-            // match no stream surface in the totals regardless.
+            // The written side joins through the mapping StreamStarted
+            // ANNOUNCED — never by string equality, which breaks the
+            // moment the destination's normalization touches a name.
+            // Child tables shredded out of nested payloads have no
+            // stream row and surface in the totals.
             let written = snap
-                .tables
-                .iter()
-                .find(|(table, _)| table.as_str() == stream.as_str())
-                .map(|(_, t)| *t)
+                .stream_tables
+                .get(stream)
+                .and_then(|table| snap.tables.get(table))
+                .copied()
                 .unwrap_or_default();
             let done = self.finished.get(stream).copied().unwrap_or(false);
             let mut line = format!(
