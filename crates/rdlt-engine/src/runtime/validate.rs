@@ -148,4 +148,30 @@ mod hint_validation_tests {
         assert!(check(max + 1, 0).is_err(), "beyond 128-bit precision");
         assert!(check(5, 6).is_err(), "scale exceeding precision");
     }
+
+    fn check_streams(names: &[&str]) -> Result<(), RdltError> {
+        let specs: Vec<_> = names
+            .iter()
+            .map(|&name| StreamSpec::new(name))
+            .collect();
+        let dest = MemoryDestination::new();
+        validate_streams(
+            &EngineConfig::new("streams"),
+            &specs,
+            dest.capabilities(),
+            &dest,
+        )
+    }
+
+    #[test]
+    fn two_streams_normalizing_to_one_root_table_are_refused() {
+        // `Users` and `users` both normalize to root table `users`.
+        let error = check_streams(&["Users", "users"]).expect_err("E2: one stream owns a table");
+        assert!(
+            matches!(error, RdltError::Config { .. }),
+            "a root-table collision is a config refusal: {error:?}"
+        );
+        let text = error.to_string();
+        assert!(text.contains("both map to table"), "{text}");
+    }
 }
