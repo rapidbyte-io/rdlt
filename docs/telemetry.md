@@ -20,7 +20,7 @@ way.
 
 | event | carries | meaning |
 |---|---|---|
-| `run_started` | load_id, resumed_from | The FIRST event: which load this is, and whether it resumed (fresh / cursor / WAL replay). Replayed recovery work itself emits nothing — it belongs to the crashed load; `resumed_from: wal` is its record. |
+| `run_started` | load_id, resumed_from | The first event of an attempt that reaches identification: which load this is, and whether it resumed (fresh / cursor / WAL replay). Replayed recovery work itself emits nothing — it belongs to the crashed load; `resumed_from: wal` is its record. |
 | `stream_started` / `stream_finished` | stream (+ `table` on start: the destination ROOT table its rows land in, the engine's normalization applied) | Read-side lifecycle. Nested payloads may shred into further child tables beyond the announced one. |
 | `batch_read` | stream, rows, bytes | What the SOURCE delivered, before batching/merges/discards. Bytes are the raw payload for JSON sources, the Arrow footprint for structured ones. |
 | `batch_loaded` | table, rows, bytes | A batch reached the destination (not yet committed). Bytes are the Arrow IN-MEMORY footprint. |
