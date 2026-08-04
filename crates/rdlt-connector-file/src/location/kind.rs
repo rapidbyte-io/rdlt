@@ -93,9 +93,10 @@ impl std::error::Error for StaleDocVersion {}
 /// context-wrapped copy of it.
 ///
 /// Re-exported through `location/mod.rs` (`pub(crate) use
-/// kind::{CreateDoc, is_stale_version};`) since 037 US2 T6: the lease
-/// module lives outside `location` and is the first real caller
-/// beyond `probe_conditional_docs` below, which stays in this module.
+/// kind::{CreateDoc, DocVersion, is_stale_version};`) since 037 US2 T6:
+/// the lease module lives outside `location` and is the first real
+/// caller beyond `probe_conditional_docs` below, which stays in this
+/// module.
 pub(crate) fn is_stale_version(error: &DestinationError) -> bool {
     std::error::Error::source(error)
         .is_some_and(|cause| cause.downcast_ref::<StaleDocVersion>().is_some())
@@ -366,15 +367,39 @@ impl Location {
     ///
     /// The STALENESS SIGNAL IS S3-ARM ONLY. The local arm performs no
     /// version check at all — `version` is accepted but never
-    /// inspected, and a stale one still writes successfully. That is
-    /// safe only because a lease's own `create_doc_exclusive` already
-    /// serializes same-machine takeover through O_EXCL: a single
-    /// filesystem has exactly one process holding the lease at a time
-    /// by construction, so nothing on that machine can ever present
-    /// this call with a version that lost a race. S3 has no such
-    /// single-writer guarantee (a takeover can run on a different
-    /// machine entirely), which is why only that arm needs, and gets,
-    /// a real compare-and-swap.
+    /// inspected, and a stale one still writes successfully.
+    ///
+    /// (037 US2 review round 1, C2) An EARLIER version of this doc
+    /// claimed that was safe unconditionally, on the theory that
+    /// `create_doc_exclusive`'s O_EXCL already serializes same-machine
+    /// takeover so nothing could ever present a stale version here.
+    /// That claim was FALSE for a takeover race specifically: two
+    /// local processes racing to take over the SAME stale lease both
+    /// pass `create_doc_exclusive` → `AlreadyExists` → read the same
+    /// stale doc → and would BOTH have their `replace_doc_if` "succeed"
+    /// here, since this arm never checks the version — two winners,
+    /// last-writer-wins. The lease's takeover step therefore does not
+    /// call this method at all on the local arm; it uses
+    /// [`Location::delete_doc_exclusive`] instead, whose atomic unlink
+    /// genuinely picks one winner, and loops back to
+    /// `create_doc_exclusive` (see `lease.rs`'s module doc).
+    ///
+    /// What remains true, and is what actually makes the local arm's
+    /// lack of CAS safe for the calls that DO still reach it: every
+    /// surviving local caller (the lease's own-owner reacquire, and
+    /// its heartbeat's renewal) only ever replaces a document that
+    /// caller's own identity already owns — never a foreign takeover.
+    /// Two heartbeats of the SAME owner do not run concurrently
+    /// (`Load` holds one `Lease`), and an own-owner reacquire race is
+    /// the engine retrying its own failed attempt, not a competing
+    /// session. Nothing outside those callers on one filesystem calls
+    /// `replace_doc_if` against a lease document at all.
+    ///
+    /// S3 has no single-writer guarantee even for those calls (a
+    /// second machine can run either one), which is why only that arm
+    /// needs, and gets, a real compare-and-swap; S3's takeover path
+    /// keeps using this method precisely because its CAS IS sound
+    /// there — `Error::Precondition` genuinely serializes it.
     ///
     /// On S3, a lost CAS returns `Err` carrying [`StaleDocVersion`] as
     /// the cause — check with [`is_stale_version`], never by matching
@@ -414,6 +439,45 @@ impl Location {
                 Err(e) => Err(to_fatal(e)),
             },
             Self::S3(s3) => s3.delete_doc(name).await,
+        }
+    }
+
+    /// Exclusive delete: "did *I* remove this document?", as opposed
+    /// to `delete_doc`'s "is it now gone". `Ok(true)` means THIS call
+    /// is the one that removed it; `Ok(false)` means it was already
+    /// gone (someone else's remove — or an earlier release — got
+    /// there first).
+    ///
+    /// LOCAL ARM ONLY, in practice (037 US2 review round 1, C2). POSIX
+    /// `unlink` is atomic across processes on one filesystem: of two
+    /// concurrent removers of the same path, the kernel hands exactly
+    /// one of them success and the other `NotFound` — which is the
+    /// primitive the lease's local takeover race decides its ONE
+    /// winner with (see `lease.rs`'s module doc and
+    /// `replace_doc_if`'s amended safety paragraph, which explains why
+    /// a plain CAS-replace takeover was unsound there).
+    ///
+    /// The S3 arm below exists only so this method's `match` stays
+    /// exhaustive over both storage kinds — object_store 0.12.5's
+    /// `ObjectStore::delete` has no conditional/precondition form (only
+    /// `put_opts` and similar writes do; checked directly against the
+    /// vendored 0.12.5 source, not assumed), so there is no primitive
+    /// to build a genuinely exclusive delete on there. Nothing in this
+    /// crate calls this method on the S3 arm — the lease's S3 takeover
+    /// keeps using `replace_doc_if`'s real CAS instead, which the S3
+    /// store DOES support. This arm's `Ok(true)` is therefore not a
+    /// meaningful exclusivity claim, only a type-compatible stand-in.
+    pub(crate) async fn delete_doc_exclusive(&self, name: &str) -> Result<bool, DestinationError> {
+        match self {
+            Self::Local { root } => match std::fs::remove_file(root.join(name)) {
+                Ok(()) => Ok(true),
+                Err(e) if e.kind() == ErrorKind::NotFound => Ok(false),
+                Err(e) => Err(to_fatal(e)),
+            },
+            Self::S3(s3) => {
+                s3.delete_doc(name).await?;
+                Ok(true)
+            }
         }
     }
 

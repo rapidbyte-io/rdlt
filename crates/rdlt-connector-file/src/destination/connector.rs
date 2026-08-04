@@ -143,27 +143,6 @@ pub mod testhook {
         let location = Location::for_dest(&config.path, config.location.as_ref())?;
         location.probe_conditional_docs(name).await
     }
-
-    /// Drive the session lease end to end through a real `Location`:
-    /// acquire, start its heartbeat, confirm it reads as still held,
-    /// release. `Lease` is `pub(super)` to `destination`, so this
-    /// bridge — the same shape as `probe_conditional_docs` above — is
-    /// what lets a live S3 probe exercise it without the write path
-    /// depending on it yet (037 US2 T6; T7 wires the write path).
-    pub async fn probe_lease(
-        config: &super::super::Config,
-        pipeline: &str,
-        owner: &str,
-    ) -> Result<(), DestinationError> {
-        let location = Location::for_dest(&config.path, config.location.as_ref())?;
-        let scope = super::super::layout::scope_of(pipeline);
-        let mut lease =
-            super::super::lease::Lease::acquire(location, &scope, pipeline, owner).await?;
-        lease.start_heartbeat();
-        lease.check_still_held()?;
-        lease.release().await;
-        Ok(())
-    }
 }
 
 #[cfg(test)]

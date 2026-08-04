@@ -24,8 +24,9 @@ const EXPECTED_DIRECT_NAMES: &[(&str, usize)] = &[
     // 12 since 034's review round 3 armed `pq.manifest.write` around
     // the publish manifest — the count moves WITH the registry, and
     // this line is the deliberate second place a new point must be
-    // named.
-    ("rdlt-connector-file", 12),
+    // named. 14 since 037 US2's lease module armed `file.lease.acquire`
+    // and `file.lease.release` (T6, `destination/lease.rs`).
+    ("rdlt-connector-file", 14),
     ("rdlt-connector-rest", 3),
     ("rdlt-connector-iceberg", 3),
     ("rdlt-connector-duckdb", 2),

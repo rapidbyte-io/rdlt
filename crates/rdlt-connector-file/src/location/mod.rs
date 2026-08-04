@@ -7,12 +7,13 @@ mod s3;
 
 pub(crate) use kind::classify_read_error;
 pub(crate) use kind::{ByteReader, Location};
-// `DocVersion` is not named here: nothing outside `location/` (kind.rs,
-// s3.rs) needs to spell the type, only pass it through — `lease.rs`
-// destructures `CreateDoc::Created(_)` and threads `read_doc_versioned`'s
-// result straight into `replace_doc_if` without ever naming it. An
+// `DocVersion` is named here (037 US2 review round 1, C2): `lease.rs`'s
+// `takeover` helper takes one as a plain function PARAMETER
+// (`version: DocVersion`), and a parameter's type must be spelled —
+// unlike the earlier callers, which only ever destructured or
+// threaded a version through without ever writing the type name. An
 // unused `pub(crate) use` fails this crate's own lint gate (see
-// `kind.rs`'s `is_stale_version` doc), so it stays un-re-exported until
-// a real caller needs the name.
-pub(crate) use kind::{CreateDoc, is_stale_version};
+// kind.rs's `is_stale_version` doc for the same rule) — so this stays
+// re-exported only because there is now a real caller.
+pub(crate) use kind::{CreateDoc, DocVersion, is_stale_version};
 pub use options::{LocationOptions, S3Options};
