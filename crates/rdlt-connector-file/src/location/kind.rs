@@ -33,6 +33,28 @@ pub(crate) enum Location {
     S3(S3Location),
 }
 
+/// The compare-and-swap handle a conditional document write needs. A
+/// local write has nothing to compare against — the exclusivity a
+/// lease needs comes entirely from `create_doc_exclusive`'s O_EXCL, so
+/// the local variant carries no data; the S3 variant carries the
+/// store's own version identity, which `replace_doc_if` sends back
+/// unmodified.
+#[derive(Debug, Clone)]
+pub(crate) enum DocVersion {
+    Local,
+    S3(object_store::UpdateVersion),
+}
+
+/// The outcome of an exclusive create. `AlreadyExists` is a normal
+/// result a losing racer expects to see — not an error — so the lease
+/// acquire step can branch on it without an error path standing in
+/// for a business outcome.
+#[derive(Debug)]
+pub(crate) enum CreateDoc {
+    Created(DocVersion),
+    AlreadyExists,
+}
+
 impl Location {
     /// Source-side constructor — rootless, since streams name their
     /// files in full.
@@ -241,6 +263,161 @@ impl Location {
         }
     }
 
+    /// Exclusive create: local O_EXCL (`create_new`), S3
+    /// `PutMode::Create`. Used for the lease's acquire step, where two
+    /// processes racing to create the SAME document must have exactly
+    /// one of them win — the loser gets `AlreadyExists`, not an error.
+    pub(crate) async fn create_doc_exclusive(
+        &self,
+        name: &str,
+        bytes: Vec<u8>,
+    ) -> Result<CreateDoc, DestinationError> {
+        match self {
+            Self::Local { root } => {
+                let path = root.join(name);
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent).map_err(to_fatal)?;
+                }
+                // Deliberately not the tmp+rename shape the other doc
+                // writers use: a rename replaces unconditionally, so it
+                // cannot express "only if nothing is there yet". O_EXCL
+                // is the one primitive the OS gives us for that, and
+                // it's also what makes the local arm race-safe without
+                // any lock file of its own.
+                use std::io::Write as _;
+                match std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&path)
+                {
+                    Ok(mut file) => {
+                        file.write_all(&bytes).map_err(to_fatal)?;
+                        Ok(CreateDoc::Created(DocVersion::Local))
+                    }
+                    Err(e) if e.kind() == ErrorKind::AlreadyExists => Ok(CreateDoc::AlreadyExists),
+                    Err(e) => Err(to_fatal(e)),
+                }
+            }
+            Self::S3(s3) => s3.create_doc_exclusive(name, bytes).await,
+        }
+    }
+
+    /// Read with the CAS handle a later `replace_doc_if` needs.
+    /// `None` means the document does not exist.
+    pub(crate) async fn read_doc_versioned(
+        &self,
+        name: &str,
+    ) -> Result<Option<(Vec<u8>, DocVersion)>, DestinationError> {
+        match self {
+            Self::Local { root } => {
+                Ok(read_optional(&root.join(name))?.map(|bytes| (bytes, DocVersion::Local)))
+            }
+            Self::S3(s3) => s3.read_doc_versioned(name).await,
+        }
+    }
+
+    /// CAS replace: local plain tmp+rename, S3 `PutMode::Update`. The
+    /// local arm carries no real version check — a lease's own
+    /// `create_doc_exclusive` already serializes same-machine takeover
+    /// races (only the current holder ever reaches this call), so this
+    /// is durability shape only, not a compare step. `Err(..)` on
+    /// version loss; it is the caller's job to decide what losing
+    /// means (give up the lease, re-read and retry, ...) — this method
+    /// only reports that the write did not happen.
+    pub(crate) async fn replace_doc_if(
+        &self,
+        name: &str,
+        bytes: Vec<u8>,
+        version: DocVersion,
+    ) -> Result<DocVersion, DestinationError> {
+        match self {
+            Self::Local { root } => {
+                write_bytes_durably(&root.join(name), &bytes)?;
+                Ok(DocVersion::Local)
+            }
+            Self::S3(s3) => {
+                let DocVersion::S3(update) = version else {
+                    return Err(DestinationError::fatal(
+                        "replace_doc_if: an S3 location needs an S3 version handle, not a \
+                         local one",
+                    ));
+                };
+                s3.replace_doc_if(name, bytes, update).await
+            }
+        }
+    }
+
+    /// Delete a document where absence already counts as done — the
+    /// lease's best-effort release must not fail just because a
+    /// takeover, or an earlier crashed release, already removed it.
+    pub(crate) async fn delete_doc(&self, name: &str) -> Result<(), DestinationError> {
+        match self {
+            Self::Local { root } => match std::fs::remove_file(root.join(name)) {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(to_fatal(e)),
+            },
+            Self::S3(s3) => s3.delete_doc(name).await,
+        }
+    }
+
+    /// One CAS round-trip through the abstraction itself: create,
+    /// versioned read, CAS replace, stale-CAS refusal, delete. Flattened
+    /// to `Result<(), DestinationError>` — no step needs the caller to
+    /// name [`CreateDoc`] or [`DocVersion`], which is what lets the live
+    /// S3 probe in `tests/cases/test_s3.rs` drive it through
+    /// `destination::testhook` without either type crossing out of this
+    /// module (037 US2). Real CAS refusal only exists on the S3 arm —
+    /// the local arm's `replace_doc_if` never refuses (see its own
+    /// doc), so this exercise is meaningful there and not against
+    /// `Local`; the local sibling tests below cover the local shape
+    /// directly instead.
+    pub(crate) async fn probe_conditional_docs(&self, name: &str) -> Result<(), DestinationError> {
+        let first = self.create_doc_exclusive(name, b"one".to_vec()).await?;
+        let CreateDoc::Created(created_version) = first else {
+            return Err(DestinationError::fatal(
+                "probe_conditional_docs: first exclusive create must succeed on a fresh key",
+            ));
+        };
+
+        let second = self.create_doc_exclusive(name, b"two".to_vec()).await?;
+        if !matches!(second, CreateDoc::AlreadyExists) {
+            return Err(DestinationError::fatal(
+                "probe_conditional_docs: second exclusive create must refuse an existing key",
+            ));
+        }
+
+        let (bytes, version) = self.read_doc_versioned(name).await?.ok_or_else(|| {
+            DestinationError::fatal("probe_conditional_docs: doc must read back after create")
+        })?;
+        if bytes != b"one" {
+            return Err(DestinationError::fatal(
+                "probe_conditional_docs: doc bytes must match what was created",
+            ));
+        }
+
+        self.replace_doc_if(name, b"three".to_vec(), version)
+            .await?;
+
+        if self
+            .replace_doc_if(name, b"four".to_vec(), created_version)
+            .await
+            .is_ok()
+        {
+            return Err(DestinationError::fatal(
+                "probe_conditional_docs: CAS on the superseded version must be refused",
+            ));
+        }
+
+        self.delete_doc(name).await?;
+        if self.read_doc(name).await?.is_some() {
+            return Err(DestinationError::fatal(
+                "probe_conditional_docs: doc must be gone after delete",
+            ));
+        }
+        Ok(())
+    }
+
     /// The ownership sweep: every file under `{table}/`, expressed as
     /// tails relative to the table root. Both consumers — row counting
     /// and Replace truncation — read this one method, so what "owned"
@@ -392,15 +569,26 @@ fn sync_directory(dir: &Path) -> Result<(), DestinationError> {
         .map_err(to_fatal)
 }
 
-/// Durable JSON replacement: serialize, write a `.json.tmp` sibling,
-/// fsync it, rename over the destination, fsync the parent directory.
+/// Durable JSON replacement: serialize, then hand off to
+/// [`write_bytes_durably`] for the atomic tmp+fsync+rename shape.
 fn write_doc_durably<T: Serialize>(path: &Path, value: &T) -> Result<(), DestinationError> {
-    use std::io::Write as _;
     let body = serde_json::to_vec_pretty(value).map_err(to_fatal)?;
-    let scratch = path.with_extension("json.tmp");
+    write_bytes_durably(path, &body)
+}
+
+/// Durable byte replacement: write a `.tmp` sibling next to `path`,
+/// fsync it, rename over the destination, fsync the parent directory.
+/// Appending `.tmp` to the whole file name (rather than swapping the
+/// extension) keeps this correct for names that already carry one, and
+/// for names that carry none — both shapes this crate's documents use.
+fn write_bytes_durably(path: &Path, bytes: &[u8]) -> Result<(), DestinationError> {
+    use std::io::Write as _;
+    let mut tmp_name = path.file_name().unwrap_or_default().to_os_string();
+    tmp_name.push(".tmp");
+    let scratch = path.with_file_name(tmp_name);
     {
         let mut out = std::fs::File::create(&scratch).map_err(to_fatal)?;
-        out.write_all(&body).map_err(to_fatal)?;
+        out.write_all(bytes).map_err(to_fatal)?;
         out.sync_all().map_err(to_fatal)?;
     }
     std::fs::rename(&scratch, path).map_err(to_fatal)?;
@@ -548,5 +736,104 @@ mod tests {
                 .expect("ok")
                 .is_none()
         );
+    }
+
+    /// (037 US2 T5, red step) The failing shape the lease's acquire
+    /// step rides: two exclusive creates racing for the same document
+    /// name, the second finding the first already there. Before
+    /// `create_doc_exclusive`/`CreateDoc` existed this did not compile
+    /// — that non-compile IS the red step this task's TDD cycle
+    /// records, since the method and type were simply absent.
+    #[tokio::test]
+    async fn exclusive_create_refuses_the_second_writer() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let location = Location::local_dir(dir.path().to_path_buf()).expect("local");
+        let first = location
+            .create_doc_exclusive("x/lease.json", b"a".to_vec())
+            .await
+            .expect("io");
+        assert!(matches!(first, CreateDoc::Created(_)));
+        let second = location
+            .create_doc_exclusive("x/lease.json", b"b".to_vec())
+            .await
+            .expect("io");
+        assert!(matches!(second, CreateDoc::AlreadyExists));
+
+        // The loser's bytes never landed — the winner's are still there.
+        let (bytes, _version) = location
+            .read_doc_versioned("x/lease.json")
+            .await
+            .expect("io")
+            .expect("present");
+        assert_eq!(bytes, b"a");
+    }
+
+    /// `replace_doc_if`'s local arm carries no real CAS — only the
+    /// durable-write shape — so any version value round-trips the
+    /// bytes; this pins that the write itself lands and the temp
+    /// sibling is cleaned up, matching `write_doc_durably`'s own
+    /// atomicity test above.
+    #[tokio::test]
+    async fn replace_doc_if_round_trips_locally() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let location = Location::local_dir(dir.path().to_path_buf()).expect("local");
+        let created = location
+            .create_doc_exclusive("lease.json", b"one".to_vec())
+            .await
+            .expect("io");
+        let CreateDoc::Created(version) = created else {
+            panic!("fresh key must create");
+        };
+
+        let replaced = location
+            .replace_doc_if("lease.json", b"two".to_vec(), version)
+            .await
+            .expect("replace succeeds locally");
+        assert!(matches!(replaced, DocVersion::Local));
+
+        let (bytes, _) = location
+            .read_doc_versioned("lease.json")
+            .await
+            .expect("io")
+            .expect("present");
+        assert_eq!(bytes, b"two");
+        assert!(
+            !dir.path().join("lease.json.tmp").exists(),
+            "no temp residue after replace"
+        );
+    }
+
+    /// The lease's release step calls `delete_doc` best-effort — a
+    /// takeover, or an earlier crashed release, may have already
+    /// removed the document, and that must not be an error: deleting
+    /// twice (or deleting what was never there) is `Ok(())` both times.
+    #[tokio::test]
+    async fn delete_doc_is_idempotent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let location = Location::local_dir(dir.path().to_path_buf()).expect("local");
+
+        // Never existed at all.
+        location.delete_doc("never-was.json").await.expect("ok");
+
+        location
+            .create_doc_exclusive("lease.json", b"one".to_vec())
+            .await
+            .expect("io");
+        location
+            .delete_doc("lease.json")
+            .await
+            .expect("first delete");
+        assert!(
+            location
+                .read_doc_versioned("lease.json")
+                .await
+                .expect("io")
+                .is_none()
+        );
+        // Already gone — still Ok, not NotFound surfaced as an error.
+        location
+            .delete_doc("lease.json")
+            .await
+            .expect("second delete");
     }
 }

@@ -476,4 +476,15 @@ async fn rustfs_honors_conditional_create_and_cas_update() {
         matches!(lost, Err(object_store::Error::Precondition { .. })),
         "CAS on a superseded version must refuse with Precondition: {lost:?}"
     );
+
+    // The raw client above pinned that RUSTFS honors the two
+    // primitives. This second half pins that `Location`'s own
+    // conditional-doc verbs (037 US2 T5) ride those same primitives
+    // correctly end to end — create exclusive, versioned read, CAS
+    // replace, stale-CAS refusal, delete — against the real store, not
+    // just against each other in a local-only test.
+    let config = s3_dest(&fixture, "probe-loc");
+    destination::testhook::probe_conditional_docs(&config, "lease.json")
+        .await
+        .expect("the conditional-doc verbs round-trip against RUSTFS");
 }

@@ -112,6 +112,23 @@ pub mod testhook {
         let location = Location::for_dest(&config.path, config.location.as_ref())?;
         super::super::inspect::count_rows(&location, table)
     }
+
+    /// Drive the lease's conditional-doc verbs (`create_doc_exclusive`,
+    /// `read_doc_versioned`, `replace_doc_if`, `delete_doc`) through a
+    /// real `Location`, end to end. `CreateDoc`/`DocVersion` are
+    /// private to `crate::location`, so the round-trip runs and
+    /// asserts entirely inside `Location::probe_conditional_docs` —
+    /// this wrapper only opens the location and forwards the plain
+    /// `Result`. Used by the live S3 probe in `tests/cases/test_s3.rs`
+    /// (037 US2 T5) to pin the verbs against a real store, not just
+    /// the raw client the sibling probe drives directly.
+    pub async fn probe_conditional_docs(
+        config: &super::super::Config,
+        name: &str,
+    ) -> Result<(), DestinationError> {
+        let location = Location::for_dest(&config.path, config.location.as_ref())?;
+        location.probe_conditional_docs(name).await
+    }
 }
 
 #[cfg(test)]
