@@ -39,17 +39,36 @@ pub(super) fn validate_streams(
                 spec.name
             )));
         }
-        // Child tables are minted at shred time as
-        // `{root}__{field}` — a root containing `__` sits inside
-        // some stream's child namespace, and two streams writing one
-        // physical table is silent corruption (029's headliner). The
-        // rule is static and complete: distinct `__`-free roots make
-        // every root/child and child/child pair disjoint.
+        // Child tables are minted at shred time as `{root}__{field}` — a root
+        // containing `__` sits inside some stream's child namespace, and two
+        // streams writing one physical table is silent corruption (029's
+        // headliner). Completeness needs BOTH clauses below: a cross-stream
+        // child/child (or child/deeper) collision requires one root to be a
+        // PREFIX of the other's child string. The boundary character right
+        // after the shorter root is then `_` (the separator's first byte),
+        // which forces the longer root to either contain `__` itself (this
+        // clause) or END with a bare `_` that the separator's second `_`
+        // completes into `__` (the next clause). Refusing both makes every
+        // pair of distinct `__`-free, non-`_`-terminated roots disjoint —
+        // even against raw source keys that themselves start with `_`
+        // (Mongo's `_id`), which is exactly what a bare `__`-substring check
+        // alone misses: `orders_` and `orders` are both legal under that
+        // check alone, yet `child_table_name("orders_", "id")` and
+        // `child_table_name("orders", "_id")` both mint `orders___id`.
         if table.as_str().contains("__") {
             return Err(RdltError::config(format!(
                 "stream `{}` normalizes to table `{table}`, which collides with \
                  the child-table namespace (`__` separates parent from child); \
                  rename the stream so its table carries no `__`",
+                spec.name
+            )));
+        }
+        if table.as_str().ends_with('_') {
+            return Err(RdltError::config(format!(
+                "stream `{}` normalizes to table `{table}`, which ends with `_` and can \
+                 collide with the child-table namespace (a sibling root plus a `_`-leading \
+                 field mints the same child table); rename the stream so its table does not \
+                 end with `_`",
                 spec.name
             )));
         }
@@ -205,5 +224,35 @@ mod hint_validation_tests {
         // One stream today, a second tomorrow: the rule must not depend
         // on who else is currently configured.
         assert!(check_streams(&["users__emails"]).is_err());
+    }
+
+    #[test]
+    fn a_root_table_ending_in_the_separator_is_refused() {
+        // Both roots are legal under the bare `__`-substring check alone —
+        // neither `orders_` nor `orders` contains `__`. But a `_`-leading
+        // raw source key (Mongo's `_id`) mints an identical child table from
+        // either: `child_table_name("orders_", "id")` and
+        // `child_table_name("orders", "_id")` both produce `orders___id`.
+        // Refusing any root ending in `_` closes that gap.
+        let error = check_streams(&["orders_", "orders"])
+            .expect_err("a root ending in `_` collides via a `_`-leading field");
+        let text = error.to_string();
+        assert!(text.contains("ends with `_`"), "{text}");
+    }
+
+    #[test]
+    fn a_root_normalizing_to_a_bare_separator_is_also_refused() {
+        // `?` (one character with no letter/digit/underscore mapping) is
+        // the degenerate "ends with `_`" case: it normalizes to the single
+        // character `_`, not to `__`, so this exercises the trailing-`_`
+        // clause specifically rather than the `__`-substring clause above
+        // it (two question marks, `??`, would normalize to `__` and get
+        // caught by that earlier clause instead — not this one). Refusing
+        // a bare `_` root is a side effect of the same rule, not a special
+        // case: it is exactly as dangerous (it collides with any other
+        // stream's child of an empty-prefix field) and there is no
+        // legitimate use for a table name that is just `_`.
+        let error = check_streams(&["?"]).expect_err("a bare `_` root ends with `_`");
+        assert!(error.to_string().contains("ends with `_`"), "{error}");
     }
 }
