@@ -69,6 +69,25 @@
 //! Both arms refuse with a typed, frozen message (see
 //! `check_still_held`'s two spellings) rather than let this session
 //! keep writing into what might now be another session's staging.
+//!
+//! 037 US2 fix round 2 (T7, I1) taught the ENGINE to close a session's
+//! lease best-effort on every abandonment path (a failed or cancelled
+//! run), not just the strict success path — a dead session protects
+//! nothing, so holding the lease past the point this process will
+//! write no more only costs the NEXT session (possibly a different
+//! process, possibly this same one retrying) a wait. 037 LEASE-ABANDON
+//! RESIDUAL, for the record: a HARD crash (SIGKILL, a panic that
+//! unwinds past even `Drop`, power loss) still leaves the fresh lease
+//! held until `TTL_SECS` — deliberate, not an oversight. A dead process
+//! cannot run its own cleanup, best-effort or otherwise; the only way
+//! to shrink this further would be a competitor PROVING the holder is
+//! actually dead (e.g. checking the owner pid is still alive) rather
+//! than merely stale, and that was considered and rejected as
+//! ARM-ASYMMETRIC: pid-liveness is answerable on the LOCAL arm (the
+//! owner token embeds a pid on the same machine) but has no meaning at
+//! all on the S3 arm (the holder may be a different host entirely), so
+//! the two arms' takeover eligibility would diverge in a way nothing
+//! else in this module does.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

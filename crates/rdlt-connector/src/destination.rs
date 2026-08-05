@@ -188,10 +188,12 @@ pub trait LoadSession: Send {
         pipeline: &PipelineId,
     ) -> Result<Option<StateDoc>, DestinationError>;
 
-    /// The session's orderly end, called by the engine exactly once
-    /// after the run's LAST commit succeeded (never on failure paths —
-    /// a failed session is dropped and its resources reclaimed by
-    /// their own safety nets). Default: nothing to do.
+    /// Called exactly once whenever the session ends. After the run's
+    /// last successful commit its error PROPAGATES (a cleanup failure
+    /// is a real destination error); on failure/cancellation paths the
+    /// engine invokes it best-effort and ignores its error — the
+    /// session must tolerate being closed after arbitrary partial
+    /// work (037 US2 T7 fix round 2, I1). Default: nothing to do.
     async fn close(&mut self) -> Result<(), DestinationError> {
         Ok(())
     }

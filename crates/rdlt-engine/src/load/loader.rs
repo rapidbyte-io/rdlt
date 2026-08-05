@@ -338,19 +338,44 @@ impl Loader {
         Ok(())
     }
 
-    /// The session's orderly end (037 US2 T7 fix round 1) — called by
+    /// The session's orderly end on the SUCCESS path (037 US2 T7 fix
+    /// round 1; semantics corrected in fix round 2, M4) — called by
     /// `drain_loader` exactly once, after [`Loader::finish`]'s last
-    /// commit has already succeeded, never on a failure path. A
-    /// destination that fails to close may have failed to make
-    /// something durable, so the error propagates as the run's own
-    /// (the file backend's own close is internally best-effort where
-    /// that is safe — see its `Lease::release` doc).
+    /// commit has already succeeded. Every commit is ALREADY durable by
+    /// the time this runs, so a close failure here can never mean lost
+    /// data — it means some OTHER resource (a lock, a lease document,
+    /// ...) failed to release, and the prefixed message says so
+    /// explicitly rather than leaving the operator to wonder if the
+    /// run's data survived. Classified NON-RETRYABLE unconditionally
+    /// (`RdltError::destination`, never `classify_dest_error`, which
+    /// would trust the destination's OWN transient/fatal classification
+    /// — a destination has no way to know this specific failure can
+    /// never be helped by re-running the WHOLE load from committed
+    /// state, since retrying would re-execute a commit that already
+    /// landed). The error still propagates, never swallowed: an
+    /// operator should know close failed even though the run itself
+    /// did not. The ABANDONMENT path (a failed or cancelled run) never
+    /// calls this — see [`Loader::close_best_effort`].
     pub(crate) async fn close(&mut self) -> Result<(), RdltError> {
-        self.sink
-            .session
-            .close()
-            .await
-            .map_err(|e| crate::runtime::classify_dest_error(&e))
+        self.sink.session.close().await.map_err(|e| {
+            RdltError::destination(format!(
+                "session close failed AFTER all commits were durable (the data is committed): {e}"
+            ))
+        })
+    }
+
+    /// Best-effort close on an ABANDONMENT path (037 US2 fix round 2,
+    /// I1) — a failed or cancelled run whose session would otherwise
+    /// simply be dropped. The lease (or whatever a destination's close
+    /// releases) protects CONCURRENT sessions, not dead ones: once this
+    /// run will write no more, holding it protects nothing, and the
+    /// next session's own reclaim runs under ITS OWN lease regardless.
+    /// The close error is deliberately swallowed and never returned —
+    /// the run's REAL error must not be masked by a cleanup failure on
+    /// the way out; a caller calls this and then still returns the
+    /// error that made it abandon the session in the first place.
+    pub(crate) async fn close_best_effort(&mut self) {
+        let _ = self.sink.session.close().await;
     }
 
     async fn commit(&mut self) -> Result<(), RdltError> {

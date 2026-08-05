@@ -5,7 +5,10 @@
 use rdlt_connector_file::destination::{self, DestFormat};
 use rdlt_connector_sdk::spi::core::{LoadId, PipelineId, TableName, WriteMode};
 use rdlt_connector_sdk::spi::{Destination, OpenContext};
-use rdlt_testkit::{batch_of, commit_meta_for, schema_for};
+use rdlt_engine::{Engine, EngineConfig};
+use rdlt_testkit::{
+    MemoryBatch, MemorySource, MemoryStream, batch_of, commit_meta_for, schema_for,
+};
 
 use super::common::local_dest;
 
@@ -116,6 +119,92 @@ async fn a_second_session_is_refused_between_two_commits_of_one_session() {
     open_session(dir.path(), "multi-commit-lease", "load-c")
         .await
         .expect("a session opens freely once the prior one has closed");
+}
+
+/// 037 US2 fix round 2, M6: a write after `close` is refused typed,
+/// not silently allowed. The engine itself never reaches this path
+/// (the SDK choreography never calls `write`/`commit` again after
+/// `close`), so this is specifically the embedder-misuse guard — the
+/// frozen spelling, pinned exactly.
+#[tokio::test]
+async fn a_write_after_close_is_refused_not_silently_allowed() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let pipeline = PipelineId::new("write-after-close");
+    let config = local_dest(dir.path());
+    let dest = destination::Shell::new(config).expect("valid");
+    let load = LoadId::new("load-a");
+    let mut session = dest
+        .open(OpenContext::new(pipeline.clone(), load.clone()))
+        .await
+        .expect("open");
+    session
+        .ensure_table(&schema_for("events"), &WriteMode::Append)
+        .await
+        .expect("ensure");
+    session
+        .write(&TableName::new("events"), batch_of(&[1]))
+        .await
+        .expect("write");
+    session
+        .commit(commit_meta_for(&pipeline, &load, 1))
+        .await
+        .expect("commit");
+    session.close().await.expect("close");
+
+    let err = session
+        .write(&TableName::new("events"), batch_of(&[2]))
+        .await
+        .expect_err("a write after close must be refused, not silently accepted");
+    assert_eq!(
+        err.to_string(),
+        "fatal destination error: the destination session is closed; writes after close are a \
+         host defect"
+    );
+}
+
+/// 037 US2 fix round 2, I1: the DECISION this round made — the lease
+/// protects CONCURRENT sessions, not dead ones, so a FAILED run must
+/// release it too (best-effort, from the engine's abandonment path),
+/// not just a clean one. Red-proved against fix round 1's code (which
+/// only closed on the strict success path): there, this test's final
+/// open is refused for the lease's full TTL, since the failed run's
+/// session was simply dropped, never closed.
+#[tokio::test]
+async fn a_run_that_fails_mid_way_still_releases_the_lease() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let dest_config = local_dest(dir.path());
+    let dest = destination::Shell::new(dest_config).expect("valid");
+    // One batch reaches the destination (proving the session did real
+    // work, not just an open-then-immediately-fail), then the source
+    // fails FATALLY — the engine never retries a fatal source error,
+    // so the run reports Err promptly rather than exhausting a retry
+    // budget first.
+    let source = MemorySource::new(vec![
+        MemoryStream::new(
+            rdlt_connector_sdk::spi::StreamSpec::new("events"),
+            vec![MemoryBatch::new(vec![serde_json::json!({"id": 1})])],
+        )
+        .fatal_after(1),
+    ]);
+    let pipeline = "run-fails-mid-way";
+    let result = Engine::new(EngineConfig::new(pipeline), source, dest)
+        .run()
+        .await;
+    assert!(
+        result.is_err(),
+        "the injected fatal source error must fail the run"
+    );
+
+    // A NEW connector instance (new owner) must be welcome IMMEDIATELY
+    // — the failed run's session was best-effort closed on the way out,
+    // not left holding the lease for a different process to wait out.
+    let opened = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        open_session(dir.path(), pipeline, "load-recovery"),
+    )
+    .await
+    .expect("must not need to wait out any part of the 300s TTL");
+    opened.expect("a failed run's session releases the lease, best-effort, on the way out");
 }
 
 /// 037 US2 T7 fix round 1: the UX half of the same fix. A clean run

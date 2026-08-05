@@ -279,14 +279,22 @@ impl Load {
 
     /// The write-path fence (037 US2 T7): refuse rather than write once
     /// this session's hold on the scope is provably gone. A `None`
-    /// lease (a prior successful `publish` already released it — see
-    /// the `lease` field's doc) has nothing left to check and passes;
-    /// everything else defers to `Lease::check_still_held`'s own
-    /// symmetric fence.
+    /// lease means `Backend::close` already ran (see the `lease`
+    /// field's doc) — the engine itself never calls `write`/`publish`
+    /// again after `close` (the SDK choreography's own call order makes
+    /// that a host defect, not a reachable engine path), so this arm
+    /// exists for an EMBEDDER driving the `Backend`/`LoadSession` API
+    /// directly and calling a write after its own `close` — refused
+    /// typed rather than silently passed (037 US2 fix round 2, M6: the
+    /// prior wording here quietly returned `Ok`, which would have let
+    /// exactly that misuse through). Frozen spelling, pinned by
+    /// `a_write_after_close_is_refused_not_silently_allowed`.
     fn check_lease_still_held(&self) -> Result<(), DestinationError> {
         match &self.lease {
             Some(lease) => lease.check_still_held(),
-            None => Ok(()),
+            None => Err(DestinationError::fatal(
+                "the destination session is closed; writes after close are a host defect",
+            )),
         }
     }
 }

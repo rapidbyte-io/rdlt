@@ -146,8 +146,11 @@ pub trait Backend: Send {
     ) -> Result<Option<StateDoc>, DestinationError>;
 
     /// The session's orderly end — the SPI's `close` contract verbatim
-    /// (called exactly once, only after the run's last commit
-    /// succeeded). Default: nothing to do.
+    /// (called exactly once whenever the session ends; strict — error
+    /// propagates — after the run's last successful commit, best-effort
+    /// — error ignored — on a failure/cancellation path; must tolerate
+    /// being closed after arbitrary partial work). Default: nothing to
+    /// do.
     async fn close(&mut self) -> Result<(), DestinationError> {
         Ok(())
     }

@@ -124,36 +124,63 @@ async fn replay_span(
         ))
         .await
         .map_err(|e| classify_dest_error(&e))?;
-    let mut state = read_state_checked(&mut *session, config)
-        .await?
-        .unwrap_or_else(|| StateDoc::new(config.pipeline.clone(), env!("CARGO_PKG_VERSION")));
+    // 037 US2 fix round 2, I1: from here on, `session` exists and every
+    // failure path below is an ABANDONMENT of it (this attempt's replay
+    // fails and falls back to cursor re-extraction) — best-effort close
+    // before propagating, same reasoning as `drain_loader`'s abandonment
+    // paths: the lease protects concurrent sessions, not a dead attempt.
+    let mut state = match read_state_checked(&mut *session, config).await {
+        Ok(recovered) => recovered
+            .unwrap_or_else(|| StateDoc::new(config.pipeline.clone(), env!("CARGO_PKG_VERSION"))),
+        Err(e) => {
+            session.close().await.ok();
+            return Err(e);
+        }
+    };
 
     let replayed =
-        crate::wal::resume::replay(wal_dir, span, &mut *session, &mut state, capabilities).await?;
+        match crate::wal::resume::replay(wal_dir, span, &mut *session, &mut state, capabilities)
+            .await
+        {
+            Ok(replayed) => replayed,
+            Err(e) => {
+                session.close().await.ok();
+                return Err(e);
+            }
+        };
     match replayed {
         Some(replayed_batches) => {
             tracing::info!(replayed_batches, "recovered WAL span into destination");
             // The replay's own commit just landed — this session's last
-            // (and only) commit succeeded, so its orderly close belongs
-            // here (037 US2 T7 fix round 1), symmetric with the run's
-            // own session in `drain_loader`. The run's own session
-            // opens next, under the SAME `destination` reference (one
-            // connector instance for this whole attempt) — its
+            // (and only) commit succeeded, so its orderly STRICT close
+            // belongs here (037 US2 T7 fix round 1), symmetric with the
+            // run's own session in `drain_loader`. Non-retryable and
+            // prefixed like `Loader::close` (fix round 2, M4): the
+            // commit is already durable, so a close failure here can
+            // never mean lost data, and retrying the whole run would
+            // re-execute a commit that already landed. The run's own
+            // session opens next, under the SAME `destination` reference
+            // (one connector instance for this whole attempt) — its
             // `Lease::acquire` hits the same-owner reacquire branch
             // regardless of whether this close ran, so this is prompt
             // cleanup, not a correctness requirement for what follows.
-            session.close().await.map_err(|e| classify_dest_error(&e))?;
+            session.close().await.map_err(|e| {
+                RdltError::destination(format!(
+                    "session close failed AFTER all commits were durable (the data is \
+                     committed): {e}"
+                ))
+            })?;
             Ok(Some(ResumedFrom::Wal { replayed_batches }))
         }
         None => {
             // No commit ever reached this session (degraded before or
             // during pass 2) — nothing for `close` to make durable, and
-            // the SPI contract reserves it for a session whose last
-            // commit succeeded. Dropped uncalled, exactly like any
-            // other failed/abandoned session; its resources are
-            // reclaimed by their own safety nets (the file lease's TTL,
-            // in particular — see the `Some` arm's comment for why that
-            // does not block the run's own session either way).
+            // the SPI contract reserves the STRICT close for a session
+            // whose last commit succeeded. Best-effort closed instead,
+            // exactly like the two error arms above (037 US2 fix round
+            // 2, I1) — this is still an abandonment, not a success; only
+            // its own log line is `warn` rather than an error return.
+            session.close().await.ok();
             tracing::warn!("WAL segments unreadable; falling back to cursor re-extraction");
             Ok(None)
         }

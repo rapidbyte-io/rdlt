@@ -160,6 +160,11 @@ pub async fn verify_destination<D: Destination>(
         )),
         Err(e) => failures.push(fail("D6", format!("read_state failed: {e}"))),
     }
+    // Best-effort, unclaused — same reasoning as `session2`'s close at
+    // the very end of this function (037 US2 fix round 2, M3): the kit
+    // is a HOST, and a well-behaved host closes every session it opens,
+    // not only its last one.
+    let _ = session.close().await;
 
     // ---- D1: staged writes are invisible before commit ----
     let mut session1 = try_step!(
