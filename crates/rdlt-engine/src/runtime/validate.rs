@@ -124,6 +124,14 @@ pub(super) fn validate_streams(
                 destination.spec().name
             )));
         }
+        if capabilities.requires_durable_identity && config.workdir.is_none() {
+            return Err(RdltError::config(format!(
+                "destination `{}` publishes non-atomically and requires a workdir for \
+                 exactly-once crash recovery; set one with `workdir:` (the CLI defaults \
+                 to `.rdlt`) — without it a mid-publish failure re-appends committed rows",
+                destination.spec().name
+            )));
+        }
         // A hint pins a column's type outright, bypassing the lattice that
         // guarantees every inferred decimal is representable. An unrepresentable
         // hint must therefore be refused HERE — the batch builder cannot, and
@@ -205,6 +213,32 @@ mod hint_validation_tests {
             std::slice::from_ref(&spec),
             dest.capabilities(),
             &dest,
+        )
+    }
+
+    fn no_workdir_config() -> EngineConfig {
+        EngineConfig::new("test")
+    }
+
+    fn workdir_config() -> EngineConfig {
+        EngineConfig::new("test").with_workdir("/tmp/rdlt-test")
+    }
+
+    fn durable_identity_dest() -> MemoryDestination {
+        MemoryDestination::new().with_capabilities(
+            DestinationCapabilities::default()
+                .with_merge(true)
+                .with_requires_durable_identity(true),
+        )
+    }
+
+    fn check_with(config: EngineConfig, destination: MemoryDestination) -> Result<(), RdltError> {
+        let spec = StreamSpec::new("s");
+        validate_streams(
+            &config,
+            std::slice::from_ref(&spec),
+            destination.capabilities(),
+            &destination,
         )
     }
 
@@ -311,5 +345,19 @@ mod hint_validation_tests {
         // "ends with `_`", legal alone for the same reason as the other
         // lone-root pins: nothing exists to collide with.
         assert!(check_streams(&["?"]).is_ok());
+    }
+
+    #[test]
+    fn a_durable_identity_destination_without_a_workdir_is_refused() {
+        let error = check_with(no_workdir_config(), durable_identity_dest())
+            .expect_err("N2: no workdir means duplication on mid-publish retry");
+        let text = error.to_string();
+        assert!(text.contains("requires a workdir"), "{text}");
+        assert!(text.contains("workdir"), "names the fix: {text}");
+    }
+
+    #[test]
+    fn the_same_destination_with_a_workdir_passes() {
+        assert!(check_with(workdir_config(), durable_identity_dest()).is_ok());
     }
 }
