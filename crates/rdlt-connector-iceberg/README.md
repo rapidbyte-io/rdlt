@@ -48,6 +48,15 @@ redaction discipline; prefer the typed auth fields.
   redelivery window.
 - Engine types map onto a CLOSED Iceberg table; `json` columns land as
   strings (Iceberg v2 has no JSON type).
+- **A `workdir:` is required.** `publish` commits one table at a time
+  (029 N2) — a mid-publish transient restart with no durable load id
+  would mint a fresh one and re-append rows the first attempt already
+  committed to the tables it reached. The destination declares
+  `requires_durable_identity`, and the engine refuses to start a run
+  against it without a workdir. With the workdir guaranteed, WAL
+  replay under the ORIGINAL load id already converges (redelivery
+  detection reads the snapshot history keyed on that identity), so no
+  publish-internal retry was added on top of the refusal.
 
 ## Testing
 

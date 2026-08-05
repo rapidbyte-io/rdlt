@@ -9,7 +9,7 @@ use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{MemoryBatch, MemorySource, MemoryStream};
 use serde_json::json;
 
-use super::common::CatalogFixture;
+use super::common::{CatalogFixture, minimal_doc};
 
 fn one_batch(rows: Vec<serde_json::Value>) -> MemorySource {
     MemorySource::new(vec![MemoryStream::new(
@@ -208,4 +208,25 @@ async fn replace_is_refused_against_the_live_catalog() {
             && text.contains("use Append, or a SQL destination for replace semantics"),
         "{text}"
     );
+}
+
+/// OFFLINE (no fixture, no catalog reachable): the engine refuses a
+/// no-workdir run against this destination before it ever connects.
+/// `capabilities()` is a synchronous, pre-connect call on the
+/// connector (029 N2 / 037 US3); `validate_streams` reads it and
+/// returns before `Destination::open` — so this pin exercises the real
+/// `Iceberg` connector's declared `requires_durable_identity` and the
+/// engine's refusal with no live catalog at all.
+#[tokio::test]
+async fn a_no_workdir_run_is_refused_before_any_catalog_connection() {
+    let err = Engine::new(
+        EngineConfig::new("ice-no-workdir"),
+        one_batch(vec![json!({"id": 1})]),
+        Shell::from_value(minimal_doc()).expect("valid"),
+    )
+    .run()
+    .await
+    .expect_err("N2: no workdir means duplication on mid-publish retry");
+    let text = format!("{err}");
+    assert!(text.contains("requires a workdir"), "{text}");
 }

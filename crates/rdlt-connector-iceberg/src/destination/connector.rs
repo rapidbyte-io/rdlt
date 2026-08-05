@@ -52,6 +52,10 @@ impl DestinationConnector for Iceberg {
             .with_scalar_lists(true)
             .with_json_type(false)
             .with_decimal(true)
+            // Non-atomic multi-table publish (029 N2): a mid-publish
+            // transient restart without a workdir mints a fresh load id
+            // and re-appends rows the first attempt already committed.
+            .with_requires_durable_identity(true)
             .with_ident_rules(IdentRules::default())
     }
 
@@ -141,6 +145,7 @@ mod tests {
         assert!(caps.structs && caps.scalar_lists);
         assert!(!caps.json_type);
         assert!(caps.decimal);
+        assert!(caps.requires_durable_identity);
     }
 
     /// The registry is the three frozen ids, macro-armed in their
