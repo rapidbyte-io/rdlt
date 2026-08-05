@@ -71,3 +71,40 @@ async fn a_failed_run_keeps_its_wal_for_replay() {
         "the manifest is what recovery scans"
     );
 }
+
+/// 037 final-review wave, item 1: a `Wal::open` failure strictly AFTER
+/// `recover_wal` has already opened a destination session must not
+/// abandon that session without closing it — the recorded sibling gap
+/// this test pins closes. Forced cheaply: `Wal::open` calls
+/// `std::fs::create_dir_all(workdir/wal)`, so planting a plain FILE at
+/// that path makes it fail deterministically (`ErrorKind::AlreadyExists`
+/// against a non-directory) without needing any fault-injection
+/// machinery. `recover_wal` itself is unaffected — its own manifest scan
+/// tolerates the same path being unreadable and simply finds nothing to
+/// replay — so the session opens successfully and only the later
+/// `Wal::open` call fails, isolating the fix's call site exactly.
+#[tokio::test]
+async fn a_wal_open_failure_after_session_recovery_still_closes_the_session() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let workdir = dir.path().join("work");
+    std::fs::create_dir_all(&workdir).expect("workdir");
+    // Occupy the WAL directory's path with a file, not a directory.
+    std::fs::write(workdir.join("wal"), b"not a directory").expect("plant a blocking file");
+
+    let dest = MemoryDestination::new();
+    let error = Engine::new(config(&workdir), source(), dest.clone())
+        .run()
+        .await
+        .expect_err("Wal::open must fail against a blocking file");
+    assert!(
+        matches!(error, rdlt_core::RdltError::Wal { .. }),
+        "the failure is Wal::open's own, not something else: {error}"
+    );
+    assert_eq!(
+        dest.closes(),
+        1,
+        "the session recover_wal opened must be closed best-effort, not \
+         abandoned — otherwise a competitor TTL-waits for a holder that \
+         already gave up"
+    );
+}

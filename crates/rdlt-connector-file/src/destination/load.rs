@@ -602,16 +602,25 @@ impl Backend for Load {
     /// successful publish, which left every later commit of a
     /// multi-commit session unprotected (the hole this fix closes; see
     /// the `lease` field's doc for the shape of the bug). The sdk
-    /// choreography calls this exactly once, only after the engine's
-    /// last commit succeeded, never on a failure path — so `self.lease`
-    /// is always `Some` here in practice; the `None` arm exists only
-    /// because `Option::take` is the shape `check_lease_still_held`
-    /// also needs, not because a second `close` is expected.
-    /// `Lease::release` is internally best-effort (its own T6 contract:
-    /// absence is success, a failed delete is swallowed, an unreleased
-    /// lease still expires by `TTL_SECS`) — nothing here can turn a
-    /// release failure into a run failure, which is why this method
-    /// itself always returns `Ok`.
+    /// choreography calls this exactly once whenever the session ends —
+    /// TWO modes, not one (037 final-review wave, item 3): on the
+    /// success path, after the engine's last commit, where a close
+    /// error would propagate as a genuine failure; and on every
+    /// ABANDONMENT path (a failed or cancelled run), where the engine
+    /// invokes it best-effort and discards whatever it returns (see
+    /// `LoadSession::close`'s trait doc). `self.lease` is `Some` on
+    /// both paths in practice; the `None` arm exists only because
+    /// `Option::take` is the shape `check_lease_still_held` also
+    /// needs, not because a second `close` is expected.
+    /// `Lease::release` is internally best-effort regardless of which
+    /// mode got us here (its own T6 contract: absence is success, a
+    /// failed delete is swallowed, an unreleased lease still expires
+    /// by `TTL_SECS` — and, since the final-review wave, a release
+    /// that finds the document no longer names US as the owner skips
+    /// the delete entirely rather than vandalizing whoever took it
+    /// over unobserved; see `Lease::release`'s own doc) — nothing here
+    /// can turn a release failure into a run failure, which is why
+    /// this method itself always returns `Ok`.
     async fn close(&mut self) -> Result<(), DestinationError> {
         if let Some(lease) = self.lease.take() {
             lease.release().await;

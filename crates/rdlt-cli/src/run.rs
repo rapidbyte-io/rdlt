@@ -209,9 +209,12 @@ async fn drive(
     // scrolled out of view or overdrawn by a repeated "done" line. Returning
     // early skipped this rendezvous entirely, so a failed run could read as
     // a silent success. Awaiting first makes the sequence deterministic: the
-    // display settles (finished per-stream bars stay as permanent scrollback
-    // lines, exactly like a successful run's, with the ephemeral header/
-    // totals cleared away) and ONLY THEN does the error — or the report —
+    // display settles and `clear()` tears the WHOLE thing down — header,
+    // every per-stream row, totals, finished or not (a done row is kept
+    // deliberately live-but-still, `set_message`d rather than
+    // `finish_with_message`d, precisely so `clear()` can still remove it;
+    // see `ui::pretty::Pretty::clear`'s own doc) — leaving no scrollback
+    // residue behind, and ONLY THEN does the error — or the report —
     // become the next thing written. A failed renderer itself is reported
     // but never fails the run: by this point either the load succeeded
     // (report in hand) or `run_result` already carries the real error, so a

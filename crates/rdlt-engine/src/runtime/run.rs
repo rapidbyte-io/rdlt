@@ -186,7 +186,7 @@ async fn run_once(
     // is exact regardless of broadcast lag.
     let output_totals: Arc<std::sync::Mutex<std::collections::BTreeMap<String, u64>>> =
         Arc::default();
-    let (session, base_state, resumed_from) = recover_wal(
+    let (mut session, base_state, resumed_from) = recover_wal(
         destination.as_ref(),
         config,
         &load_id,
@@ -197,10 +197,27 @@ async fn run_once(
     )
     .await?;
 
-    let wal = wal_dir
+    let wal = match wal_dir
         .as_ref()
         .map(|dir| crate::wal::Wal::open(dir.clone(), &config.pipeline, &load_id))
-        .transpose()?;
+        .transpose()
+    {
+        Ok(wal) => wal,
+        Err(e) => {
+            // `session` was just opened by `recover_wal` and has not yet
+            // been handed to a `Loader` (that happens further down, once
+            // this WAL is in hand) — a `Wal::open` failure here abandons
+            // it before a single commit, the same reasoning `replay_span`
+            // applies to ITS abandonment paths: a dead session protects
+            // nothing, and leaving its lease held only costs the next
+            // session (this same pipeline, possibly this same process on
+            // retry) a `TTL_SECS`-long wait for a holder that is already
+            // gone. Best-effort — a close failure must not shadow the
+            // real `Wal::open` error being propagated.
+            session.close().await.ok();
+            return Err(e);
+        }
+    };
 
     let mut report = RunReport::new(config.pipeline.clone(), load_id.clone());
     report.resumed_from = resumed_from.clone();

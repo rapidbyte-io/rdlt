@@ -239,3 +239,99 @@ fn events_ndjson_sink_holds_its_contract() {
         "the refusal names the fix"
     );
 }
+
+/// 037 final-review wave, item 5: a run that fails MID-RUN at the
+/// destination — after `run_started` has already gone out over the
+/// event feed, not at up-front validation — must still leave the
+/// `--events` NDJSON sink holding everything written so far, flushed
+/// and parseable line-by-line. This pins the half of 22b's flush-on-
+/// error guarantee that was previously inspection-only.
+///
+/// The failure is forced with the file destination's own layout-v2
+/// version gate (`destination/layout.rs`'s `version_gate`): a first
+/// clean run writes a real v2 `_rdlt_commits.{scope}.json`; planting a
+/// v1-format commit log over it makes the SECOND run's first commit
+/// refuse with a "predates" error — a genuine destination-side failure
+/// reached only after streaming has begun, not a config-time refusal.
+#[test]
+fn a_mid_run_destination_failure_flushes_the_events_sink_before_exiting() {
+    let (dir, spec) = fresh_pipeline();
+
+    // First run: clean, writes a real v2 commit log under `out/`.
+    let out = rdlt().arg("run").arg(&spec).output().expect("spawn");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "first run must succeed: {out:?}"
+    );
+
+    // Plant a v1-format commit log over the real one — captured from the
+    // first run's own output listing rather than re-deriving the scope
+    // hash, so this test does not need to depend on the naming crate.
+    let out_dir = dir.path().join("out");
+    let commits_file = std::fs::read_dir(&out_dir)
+        .expect("read output dir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("_rdlt_commits.") && n.ends_with(".json"))
+        })
+        .expect("the first run wrote a commit log");
+    std::fs::write(&commits_file, br#"{"format_version":1,"receipts":[]}"#)
+        .expect("plant a v1 commit log");
+
+    // The source cursor already consumed `rows.jsonl` to EOF, so the
+    // second run needs fresh rows to extract anything at all — appended,
+    // never rewritten, so the tail-hash resume check still recognizes it
+    // as the same file continuing rather than refusing it as rewritten.
+    {
+        use std::io::Write as _;
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(dir.path().join("rows.jsonl"))
+            .expect("open rows.jsonl");
+        writeln!(f, "{{\"id\": 4}}").expect("append");
+        writeln!(f, "{{\"id\": 5}}").expect("append");
+    }
+
+    let events_path = dir.path().join("events.ndjson");
+    let out = rdlt()
+        .arg("run")
+        .arg(&spec)
+        .arg("--events")
+        .arg(&events_path)
+        .output()
+        .expect("spawn");
+    assert_ne!(
+        out.status.code(),
+        Some(0),
+        "the stale commit log must fail the second run: {out:?}"
+    );
+
+    let stderr = String::from_utf8(out.stderr).expect("utf8");
+    assert!(
+        stderr.contains("predates"),
+        "stderr carries the version-gate refusal: {stderr}"
+    );
+
+    let ndjson = std::fs::read_to_string(&events_path)
+        .expect("the events file exists even though the run failed");
+    assert!(
+        !ndjson.is_empty(),
+        "the sink flushed what it had before exiting, not left empty"
+    );
+    let events: Vec<serde_json::Value> = ndjson
+        .lines()
+        .map(|l| {
+            serde_json::from_str(l)
+                .unwrap_or_else(|e| panic!("every line parses, none left truncated: {e}: {l}"))
+        })
+        .collect();
+    assert_eq!(
+        events.first().and_then(|e| e["event"].as_str()),
+        Some("run_started"),
+        "the feed identifies the run first, even on a run that goes on to fail"
+    );
+}

@@ -727,19 +727,39 @@ impl Lease {
     /// `lost` has nothing of OURS left on the document — it now
     /// belongs to whoever took it over, and deleting it would destroy
     /// THEIR lease, not release ours — so the delete is skipped
-    /// entirely in that case. Otherwise the delete stays best-effort:
-    /// absence is success (`Location::delete_doc`'s own contract) —
-    /// this session's own release racing a takeover's write, or a
-    /// prior crashed release, both look identical to "already gone" —
-    /// and a failed delete is likewise swallowed, since an unreleased
-    /// lease still expires by `TTL_SECS` regardless (see the struct
-    /// doc).
+    /// entirely in that case.
+    ///
+    /// `lost` alone is not enough (037 final-review wave, item 4): it
+    /// only flips when a beat actually RAN and observed the foreign
+    /// write. A takeover that lands strictly after this session's last
+    /// successful beat, with no further beat before `release` runs,
+    /// leaves `lost` false even though the document on disk now names
+    /// a different owner — an UNOBSERVED takeover. So immediately
+    /// before deleting, this re-reads the document and checks it is
+    /// still ours by `owner`; foreign, absent, unparseable, or a newer
+    /// format this build cannot decode all skip the delete rather than
+    /// risk vandalizing whatever the new holder just wrote — release
+    /// removes only OUR lease, never anyone else's.
+    ///
+    /// Otherwise the delete stays best-effort: absence is success
+    /// (`Location::delete_doc`'s own contract) — this session's own
+    /// release racing a takeover's write, or a prior crashed release,
+    /// both look identical to "already gone" — and a failed delete is
+    /// likewise swallowed, since an unreleased lease still expires by
+    /// `TTL_SECS` regardless (see the struct doc).
     pub(super) async fn release(mut self) {
         if let Some(handle) = self.heartbeat.take() {
             handle.abort();
             let _ = handle.await;
         }
         if self.lost.load(Ordering::SeqCst) {
+            return;
+        }
+        let still_ours = matches!(
+            self.location.read_doc_versioned(&self.doc_name).await,
+            Ok(Some((bytes, _))) if matches!(decode(&bytes), Ok(doc) if doc.owner == self.owner)
+        );
+        if !still_ours {
             return;
         }
         crash_point!("file.lease.release", ());
@@ -985,6 +1005,40 @@ mod tests {
         // owner, the same strengthening the two-racer test below
         // pins for the concurrent case.
         assert_eq!(read_lease(&location, &scope).await.owner, "owner-b");
+    }
+
+    /// 037 final-review wave, item 4: `release` must never delete a
+    /// lease document it no longer owns. `lost` only flips when a
+    /// heartbeat actually ran and observed the foreign write — this
+    /// plants a takeover the way one would land if it happened strictly
+    /// after this session's last successful beat, with no further beat
+    /// before `release` runs (so `lost` stays false, exactly as it
+    /// would live). Before the owner check, this deleted the new
+    /// holder's document out from under it; after, the foreign doc must
+    /// survive `release` untouched.
+    #[tokio::test]
+    async fn release_skips_the_delete_when_an_unobserved_takeover_replaced_the_document() {
+        let (location, scope) = test_location();
+        let lease = Lease::acquire(location.clone(), &scope, "p", "owner-a")
+            .await
+            .expect("acquire");
+        assert!(
+            !lease.lost.load(Ordering::SeqCst),
+            "no beat has run yet, so `lost` is still false"
+        );
+
+        // A takeover this session's heartbeat never observed: the
+        // document on disk now names a different owner entirely.
+        plant_lease(&location, &scope, "owner-b", now_ms()).await;
+
+        lease.release().await;
+
+        let survivor = read_lease(&location, &scope).await;
+        assert_eq!(
+            survivor.owner, "owner-b",
+            "release must skip the delete once the document is no longer ours — \
+             deleting it would vandalize the new holder's lease, not release ours"
+        );
     }
 
     /// C2: two DIFFERENT sessions racing to take over the SAME stale
