@@ -4606,6 +4606,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "rdlt-connector-client"
+version = "0.3.0"
+dependencies = [
+ "async-trait",
+ "hyper-util",
+ "rdlt-connector",
+ "rdlt-connector-protocol",
+ "rdlt-connector-sdk",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tonic",
+ "tower",
+]
+
+[[package]]
 name = "rdlt-connector-duckdb"
 version = "0.3.0"
 dependencies = [

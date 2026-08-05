@@ -1,0 +1,34 @@
+[package]
+name = "rdlt-connector-client"
+description = "rdlt out-of-process connector client: dial a served connector over UDS, run the handshake, map wire error frames back to SPI classifications"
+# EXPERIMENTAL, like the protocol crate it speaks (ADR 0001 D8):
+# unpublished until the wire freezes.
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rdlt-connector = { workspace = true }
+rdlt-connector-protocol = { workspace = true }
+tonic = { workspace = true }
+tower = { workspace = true }
+hyper-util = { workspace = true }
+tokio = { workspace = true, features = ["net"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# The served counterpart the tests dial: this crate's own echo pair
+# served in-process through the sdk's `serve_on` seam.
+rdlt-connector-sdk = { workspace = true, features = ["serve"] }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true }
+
+[lints]
+workspace = true

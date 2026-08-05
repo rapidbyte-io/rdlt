@@ -18,6 +18,7 @@ members = [
     "crates/rdlt-connector-sqlcore",
     "crates/rdlt-connector-snowflake",
     "crates/rdlt-connector-protocol",
+    "crates/rdlt-connector-client",
 ]
 
 [workspace.package]
@@ -52,6 +53,7 @@ rdlt-connector-oracle = { path = "crates/rdlt-connector-oracle", version = "0.3.
 rdlt-connector-postgres = { path = "crates/rdlt-connector-postgres", version = "0.3.0", default-features = false }
 rdlt-connector-sqlcore = { path = "crates/rdlt-connector-sqlcore", version = "0.3.0" }
 rdlt-connector-protocol = { path = "crates/rdlt-connector-protocol", version = "0.3.0" }
+rdlt-connector-client = { path = "crates/rdlt-connector-client", version = "0.3.0" }
 
 # arrow-rs: single workspace-wide major (research.md R10). Pinned to the major that
 # duckdb-rs links — connectors receive `RecordBatch` through the rdlt-connector
@@ -145,10 +147,12 @@ testcontainers-modules = { version = "0.11", features = ["postgres"] }
 tempfile = "3"
 rcgen = "0.13"
 toml = "0.8"
-# The raw tonic-client-over-UDS idiom (038's serve() tests dial the
-# listener the same way a real out-of-process host would): `tower::service_fn`
-# supplies `connect_with_connector`'s connector, `hyper_util::rt::TokioIo`
-# adapts `tokio::net::UnixStream` to hyper's IO traits.
+# The tonic-client-over-UDS idiom: `tower::service_fn` supplies
+# `connect_with_connector`'s connector, `hyper_util::rt::TokioIo` adapts
+# `tokio::net::UnixStream` to hyper's IO traits. Born as the sdk serve()
+# tests' dev-dependency idiom (038); promoted to proper runtime
+# dependencies when rdlt-connector-client made that exact dial shape its
+# production `dial()` (039).
 tower = "0.5"
 hyper-util = { version = "0.1", features = ["tokio"] }
 # The CLI's argument surface (and rdlt-bench's).
