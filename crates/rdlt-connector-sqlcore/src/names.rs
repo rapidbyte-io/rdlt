@@ -116,6 +116,24 @@ pub fn create_index_sql(
     )
 }
 
+/// The mirror of [`create_index_sql`]: `DROP INDEX IF EXISTS` for the SAME
+/// deterministic name formula. A caller that needs to clear an index out of
+/// an ALTER's way — or retire a legacy naming spelling — reaches for this
+/// instead of hand-writing the DROP text a second time, for the identical
+/// reason `create_index_sql` exists: two copies of one statement is how the
+/// emitted SQL drifts.
+pub fn drop_index_sql(
+    unique: bool,
+    table: &str,
+    columns: &[String],
+    quote: impl Fn(&str) -> String,
+) -> String {
+    format!(
+        "DROP INDEX IF EXISTS {}",
+        quote(&index_name(unique, table, columns))
+    )
+}
+
 /// The diagnosis for a unique index that cannot be created because the target
 /// already holds duplicate keys.
 ///

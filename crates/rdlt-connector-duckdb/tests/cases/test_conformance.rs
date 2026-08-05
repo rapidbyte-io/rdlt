@@ -329,3 +329,103 @@ async fn a_cross_run_widen_on_the_merge_key_survives_its_unique_index() {
         "the redelivered key upserted in place"
     );
 }
+
+/// Fix round 1 (F1, CRITICAL — 2026-08 review): the raw image feeds a
+/// types-DIFFER planner with no notion of DIRECTION. Run 1 mixes a
+/// zip-code-shaped string with a plain int in ONE batch, so the
+/// engine's own intra-run widening lands `n` as text; run 2 sees only
+/// integers, and BEFORE the F1 fix the image (text) vs def (int)
+/// mismatch planned `ALTER … SET DATA TYPE BIGINT` — DuckDB's cast
+/// accepts `'01234'` (silently dropping the leading zero, becoming
+/// `1234`) and `'55555'`, so the ALTER SUCCEEDS and the run REPORTS
+/// SUCCESS while irreversibly rewriting already-committed data. After
+/// the fix, an incoming type going text → int is never a WIDEN (the
+/// engine's own evolution contract only ever widens; a destination
+/// catalog going text → int across runs is drift, not growth), so the
+/// column is left untouched and the narrower int values simply cast UP
+/// to text at publish — the pre-037 behavior.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_narrowing_type_change_since_the_last_run_never_alters_committed_data() {
+    let dir = tempfile::tempdir().expect("dir");
+    let file = dir.path().join("narrow.duckdb");
+
+    // Run 1: `n` mixes a zip-shaped string and a plain int in ONE
+    // batch — intra-run widening lands the column as text.
+    let dest = Shell::new(Config::new(&file)).expect("valid");
+    let source = MemorySource::single_stream(
+        StreamSpec::new("t"),
+        vec![json!({"n": "01234"}), json!({"n": 55555})],
+    );
+    Engine::new(EngineConfig::new("narrow"), source, dest)
+        .run()
+        .await
+        .expect("run 1");
+    assert_eq!(
+        scalar(
+            &file,
+            "SELECT data_type FROM information_schema.columns \
+             WHERE table_name = 't' AND column_name = 'n'"
+        ),
+        "VARCHAR",
+        "intra-run widening lands text, same as before this feature"
+    );
+
+    // Run 2: a FRESH session — `n` carries only integers now.
+    let dest = Shell::new(Config::new(&file)).expect("valid");
+    let source = MemorySource::single_stream(StreamSpec::new("t"), vec![json!({"n": 42})]);
+    Engine::new(EngineConfig::new("narrow"), source, dest)
+        .run()
+        .await
+        .expect("run 2 must still succeed — this used to succeed before the image existed");
+
+    assert_eq!(
+        scalar(
+            &file,
+            "SELECT data_type FROM information_schema.columns \
+             WHERE table_name = 't' AND column_name = 'n'"
+        ),
+        "VARCHAR",
+        "the column is NEVER narrowed — an int def never widens a text image"
+    );
+    assert_eq!(
+        scalar(&file, "SELECT n FROM t WHERE n = '01234'"),
+        "01234",
+        "run 1's committed value survives BYTE-IDENTICAL — no silent rewrite"
+    );
+    assert_eq!(rows_in(&file, "t"), 3, "all three rows landed");
+}
+
+/// F1's other face: a run whose data is UNCASTABLE against the image's
+/// type used to FAIL where it once succeeded. Run 1 commits `n` as
+/// text with a non-numeric value; run 2 sees only integers. BEFORE the
+/// fix, the image (text) vs def (int) mismatch planned `ALTER … SET
+/// DATA TYPE BIGINT`, and `'two'` cannot cast to BIGINT — DuckDB
+/// refuses, and a run that published fine before this feature existed
+/// now errors. After the fix, text → int is never a widen, so no ALTER
+/// is even attempted; run 2 succeeds.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_uncastable_type_change_since_the_last_run_still_succeeds() {
+    let dir = tempfile::tempdir().expect("dir");
+    let file = dir.path().join("uncastable.duckdb");
+
+    let dest = Shell::new(Config::new(&file)).expect("valid");
+    let source = MemorySource::single_stream(StreamSpec::new("t"), vec![json!({"n": "two"})]);
+    Engine::new(EngineConfig::new("uncastable"), source, dest)
+        .run()
+        .await
+        .expect("run 1");
+
+    let dest = Shell::new(Config::new(&file)).expect("valid");
+    let source = MemorySource::single_stream(StreamSpec::new("t"), vec![json!({"n": 1})]);
+    Engine::new(EngineConfig::new("uncastable"), source, dest)
+        .run()
+        .await
+        .expect("run 2 must succeed — this used to succeed before the image existed");
+
+    assert_eq!(rows_in(&file, "t"), 2, "both runs' rows landed");
+    assert_eq!(
+        scalar(&file, "SELECT n FROM t WHERE n = '1'"),
+        "1",
+        "the int value cast UP to the image's text column, never the reverse"
+    );
+}

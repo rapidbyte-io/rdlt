@@ -213,6 +213,35 @@ pub(crate) fn is_constraint_violation(e: &duckdb::Error) -> bool {
         if message.starts_with("Constraint Error"))
 }
 
+/// The index-dependency refusal key (Task 15 probe, pinned live):
+/// `ALTER … SET DATA TYPE` refuses outright — a CONTAINS check, not a
+/// prefix, because the library's own wording leads with "Catalog
+/// Error" — whenever ANY index, unique or plain, still depends on the
+/// column being widened. The pre-ALTER drop (`load.rs`) clears the
+/// UNIQUE arbiter out of the way before this can fire; a PLAIN index
+/// (identity, `delete_insert`/`scd2` key columns, `merge_scope`) is
+/// NOT pre-dropped (037 US5 fix round 2, F4 — a narrower, deliberate
+/// scope), so this classifier is what turns that raw catalog error
+/// into named advice instead.
+pub(crate) fn is_index_dependency_error(e: &duckdb::Error) -> bool {
+    matches!(e, duckdb::Error::DuckDBFailure(_, Some(message))
+        if message.contains("an index depends on it!"))
+}
+
+/// The diagnosis for [`is_index_dependency_error`]: names the failing
+/// statement (which already carries the table and column — no separate
+/// parse needed) and the remedy, with the service's own wording kept
+/// inside rather than discarded.
+pub(crate) fn index_dependency_diagnosis(statement: &str, cause: &str) -> String {
+    format!(
+        "a cross-run widen is blocked by an index: `{statement}` — an index still \
+         depends on this column (a plain identity/merge-key/scope index, not the \
+         upsert arbiter, which this destination already clears itself); drop the \
+         index manually and re-run so ensure recreates it after the widen, or leave \
+         the column's type as it was if the index is load-bearing: {cause}"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,6 +306,39 @@ mod tests {
             ),
             "everything else stays fatal"
         );
+    }
+
+    /// The index-dependency classifier, pinned against the EXACT
+    /// library error shape probed live (Task 15): a `Catalog Error`
+    /// wording, not a prefix match, so `is_index_dependency_error`
+    /// must check CONTAINS. The diagnosis names the statement (which
+    /// already carries table + column) and keeps the service's cause.
+    #[test]
+    fn index_dependency_errors_are_classified_and_diagnosed() {
+        let e = duckdb::Error::DuckDBFailure(
+            duckdb::ffi::Error::new(1),
+            Some(
+                "Catalog Error: Cannot change the type of this column: an index \
+                 depends on it!"
+                    .to_owned(),
+            ),
+        );
+        assert!(is_index_dependency_error(&e));
+        assert!(!is_index_dependency_error(&duckdb::Error::DuckDBFailure(
+            duckdb::ffi::Error::new(1),
+            Some("Binder Error: no such column".to_owned())
+        )));
+
+        let diagnosis = index_dependency_diagnosis(
+            "ALTER TABLE \"t\" ALTER COLUMN \"id\" SET DATA TYPE VARCHAR",
+            &e.to_string(),
+        );
+        assert!(
+            diagnosis.contains("ALTER TABLE \"t\" ALTER COLUMN \"id\""),
+            "{diagnosis}"
+        );
+        assert!(diagnosis.contains("drop the index manually"), "{diagnosis}");
+        assert!(diagnosis.contains("an index depends on it!"), "{diagnosis}");
     }
 
     /// The in-process double-open guard at the `Db` seam: a second

@@ -27,7 +27,9 @@ use rdlt_connector_sqlcore::protocol::{
 use rdlt_connector_sqlcore::{DestinationOptions, MergeDialect as _, column_list, names, root_of};
 
 use super::catalog;
-use super::client::{Db, classify, is_constraint_violation};
+use super::client::{
+    Db, classify, index_dependency_diagnosis, is_constraint_violation, is_index_dependency_error,
+};
 use super::dialect::DuckDialect;
 use super::schema::{merge_ddl, quote, stage_name, table_ddl};
 
@@ -340,11 +342,15 @@ impl Backend for Load {
         // no-op DDL and the appender then rejects the mismatched batch.
         // The image feeds the WIDEN PLANNER ONLY — the drop/reorder
         // guard above already ran against `self.previous` alone, so
-        // cross-run drift-by-name stays legal.
+        // cross-run drift-by-name stays legal. `prefilter` (2026-08
+        // review round 1, F1/F2) rewrites the image FIRST so the raw
+        // types-differ comparison below only ever sees a genuine widen —
+        // never a same-physical-type rendering (Uuid/Utf8) and never a
+        // cross-run narrowing/incompatible drift.
         let image = if self.previous.contains_key(&schema.table) {
             None
         } else {
-            catalog::live_schema(&self.conn, schema)?
+            catalog::live_schema(&self.conn, schema)?.map(|image| catalog::prefilter(image, schema))
         };
         let planning_previous = self.previous.get(&schema.table).or(image.as_ref());
 
@@ -358,33 +364,27 @@ impl Backend for Load {
         // this early call only ever reads its `Ok` arm.
         let merge_statements = merge_ddl(&self.options, schema, mode);
         if let Ok(statements) = &merge_statements {
-            let widened_target: Vec<&str> = planning_previous
-                .into_iter()
-                .flat_map(|prev| {
-                    schema.columns.iter().filter(move |def| {
-                        prev.column(&def.name)
-                            .is_some_and(|old| old.column_type != def.column_type)
-                    })
-                })
-                .map(|def| def.name.as_str())
-                .collect();
-            if !widened_target.is_empty() {
-                for (_, unique_index) in statements {
-                    if let Some(cols) = unique_index
-                        && cols.iter().any(|c| widened_target.contains(&c.as_str()))
-                    {
-                        let drop_sql = format!(
-                            "DROP INDEX IF EXISTS {}",
-                            quote(&names::index_name(true, schema.table.as_str(), cols))
-                        );
-                        self.conn.execute_batch(&drop_sql).map_err(classify)?;
-                    }
-                }
+            for drop_sql in catalog::pre_alter_index_drops(planning_previous, schema, statements) {
+                self.conn.execute_batch(&drop_sql).map_err(classify)?;
             }
         }
 
         for sql in table_ddl(schema, planning_previous) {
-            self.conn.execute_batch(&sql).map_err(classify)?;
+            if let Err(e) = self.conn.execute_batch(&sql) {
+                // A PLAIN index (identity, delete_insert/scd2 key
+                // columns, merge_scope) is not pre-dropped — only the
+                // upsert arbiter is (above) — so a widen landing on one
+                // still hits DuckDB's raw refusal. Name it instead of
+                // surfacing the bare catalog error (2026-08 review
+                // round 1, F4).
+                if is_index_dependency_error(&e) {
+                    return Err(DestinationError::fatal(index_dependency_diagnosis(
+                        &sql,
+                        &e.to_string(),
+                    )));
+                }
+                return Err(classify(e));
+            }
         }
         // The recreate is the SAME renderer merge_ddl already runs on
         // every ensure (`CREATE UNIQUE INDEX IF NOT EXISTS` in
