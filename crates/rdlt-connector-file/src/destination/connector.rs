@@ -90,7 +90,11 @@ pub struct File {
 
 #[async_trait]
 impl DestinationConnector for File {
-    const NAME: &'static str = "file";
+    // Reverse-DNS, not bare `file` — the same id the source half
+    // reports, for the same reason: NAME is what the wire handshake
+    // reports and the client strictly verifies, and D-039-1 derives the
+    // binary name from its last segment (see `source::connector`).
+    const NAME: &'static str = "io.rapidbyte.file";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
     type Config = Config;

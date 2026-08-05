@@ -1,0 +1,277 @@
+//! The T6 smoke: the REAL connector binaries — `rdlt-connector-file`
+//! (both roles) and `rdlt-connector-snowflake` (destination-only) —
+//! spawned and driven through the provider, plus the bins' pinned arg
+//! behavior (exit codes and the version string; clap's usage TEXT is
+//! deliberately unasserted — clap owns it).
+//!
+//! These are also the pins for THE IDENTITY RULE (039 T6): a
+//! connector's `NAME` const IS its connector id, spelled reverse-DNS
+//! (`io.rapidbyte.file`), so the strict-equality handshake verification
+//! (D-039-2) and D-039-1's last-segment binary discovery both derive
+//! from one const. The handshakes below succeeding against the real
+//! bins with reverse-DNS requirement ids is that rule holding
+//! end-to-end.
+//!
+//! Bin location follows the rdlt-bench precedent (`CARGO_TARGET_DIR`
+//! honored, else the repo's own `target/`); the build itself is guarded
+//! by `RDLT_BUILD_CONNECTOR_BINS` — the Makefile line sets it, and a
+//! bare `cargo nextest run --features spawn-bins` without it still
+//! fails LOUDLY when the bins are missing rather than building behind
+//! the runner's back.
+
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::sync::OnceLock;
+use std::time::Duration;
+
+use rdlt_connector_client::{connector_client, dial};
+use rdlt_connector_protocol::MAX_FRAME_BYTES;
+use rdlt_connector_protocol::handshake::Line;
+use rdlt_connector_protocol::proto::SpecRequest;
+use rdlt_runtime::{ConnectorProvider, ConnectorRequirement, LocalBinaryConnectorProvider};
+use tokio::io::{AsyncBufReadExt, BufReader};
+
+/// The workspace root: two levels above this crate's own manifest.
+fn workspace_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("crates/rdlt-runtime sits two levels below the workspace root")
+        .to_path_buf()
+}
+
+/// Where debug binaries land — `CARGO_TARGET_DIR` honored the way
+/// rdlt-bench honors it for the CLI (absolute used as-is, relative
+/// resolved against the repo root, exactly as cargo treats it).
+fn target_debug_dir() -> PathBuf {
+    match std::env::var_os("CARGO_TARGET_DIR") {
+        Some(target) => {
+            let target = PathBuf::from(target);
+            if target.is_absolute() {
+                target.join("debug")
+            } else {
+                workspace_root().join(target).join("debug")
+            }
+        }
+        None => workspace_root().join("target/debug"),
+    }
+}
+
+/// The path to a built connector bin, building BOTH bins first (once
+/// per test process) when `RDLT_BUILD_CONNECTOR_BINS` is set — the
+/// Makefile line sets it. Without the env var a missing bin fails with
+/// instructions, never silently: a smoke suite that quietly built or
+/// quietly skipped would be the 024 class wearing a new hat.
+fn built_bin(name: &str) -> PathBuf {
+    static BUILT: OnceLock<()> = OnceLock::new();
+    BUILT.get_or_init(|| {
+        if std::env::var_os("RDLT_BUILD_CONNECTOR_BINS").is_none() {
+            return;
+        }
+        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+        for package in ["rdlt-connector-file", "rdlt-connector-snowflake"] {
+            let status = std::process::Command::new(&cargo)
+                .current_dir(workspace_root())
+                .args([
+                    "build",
+                    "-p",
+                    package,
+                    "--features",
+                    "bin-serve",
+                    "--bin",
+                    package,
+                ])
+                .status()
+                .unwrap_or_else(|error| panic!("cargo build -p {package} did not spawn: {error}"));
+            assert!(
+                status.success(),
+                "cargo build -p {package} --features bin-serve failed"
+            );
+        }
+    });
+    let path = target_debug_dir().join(name);
+    assert!(
+        path.is_file(),
+        "connector binary `{}` is not built — run the Makefile's spawn-bins \
+         line (it sets RDLT_BUILD_CONNECTOR_BINS=1) or `cargo build -p {name} \
+         --features bin-serve` first",
+        path.display()
+    );
+    path
+}
+
+/// The file bin serves its SOURCE half: spawn through the provider with
+/// a path override and a real config, complete the wire handshake
+/// (strict identity: the requirement id `io.rapidbyte.file` must equal
+/// the reported `NAME` byte-for-byte), and get `streams()` answered
+/// over the wire.
+#[tokio::test]
+async fn the_file_bin_serves_a_source_handshake_and_streams() {
+    let bin = built_bin("rdlt-connector-file");
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("rows.jsonl"), "{\"id\":1}\n{\"id\":2}\n")
+        .expect("the fixture file writes");
+    let config = serde_json::json!({
+        "streams": [{
+            "name": "events",
+            "format": "jsonl",
+            "path": format!("{}/*.jsonl", dir.path().display()),
+        }]
+    });
+
+    let provider = LocalBinaryConnectorProvider::new();
+    let managed = provider
+        .source(
+            &ConnectorRequirement::new("io.rapidbyte.file").with_path(&bin),
+            &config,
+        )
+        .await
+        .expect("spawn + handshake against the real source bin succeeds");
+
+    assert_eq!(managed.identity(), "io.rapidbyte.file");
+    // One workspace version everywhere, so this crate's own version IS
+    // the file connector's.
+    assert_eq!(managed.resolved_version(), env!("CARGO_PKG_VERSION"));
+
+    let streams = rdlt_connector::Source::streams(&managed)
+        .await
+        .expect("streams() answers over the wire");
+    assert_eq!(streams.len(), 1);
+    assert_eq!(streams[0].name.as_str(), "events");
+}
+
+/// The file bin serves its DESTINATION half — same shape, plus the
+/// exact-version pin (D-039-2) exercised against the real binary.
+#[tokio::test]
+async fn the_file_bin_serves_a_destination_handshake() {
+    let bin = built_bin("rdlt-connector-file");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = serde_json::json!({ "path": dir.path().to_string_lossy() });
+
+    let provider = LocalBinaryConnectorProvider::new();
+    let managed = provider
+        .destination(
+            &ConnectorRequirement::new("io.rapidbyte.file")
+                .with_path(&bin)
+                .with_version(env!("CARGO_PKG_VERSION")),
+            &config,
+        )
+        .await
+        .expect("spawn + handshake against the real destination bin succeeds");
+
+    assert_eq!(managed.identity(), "io.rapidbyte.file");
+    assert_eq!(managed.resolved_version(), env!("CARGO_PKG_VERSION"));
+}
+
+/// The snowflake bin spawns and answers the config-free `Spec` RPC —
+/// its static identity, BEFORE any handshake, so no credentials and no
+/// account are involved (its conformance is 040). The reported name is
+/// the reverse-DNS id, same rule as file.
+#[tokio::test]
+async fn the_snowflake_bin_answers_the_spec_rpc_without_credentials() {
+    let bin = built_bin("rdlt-connector-snowflake");
+    let mut child = tokio::process::Command::new(&bin)
+        .arg("--role=destination")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .stdin(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("the snowflake bin spawns");
+
+    let stdout = child
+        .stdout
+        .take()
+        .expect("stdout was piped at spawn, so the child carries it");
+    let mut reader = BufReader::new(stdout);
+    let mut line = String::new();
+    tokio::time::timeout(Duration::from_secs(10), reader.read_line(&mut line))
+        .await
+        .expect("the handshake line arrives within its budget")
+        .expect("the handshake line reads");
+    let parsed = Line::parse(line.trim_end_matches(['\n', '\r']))
+        .expect("the bin's first stdout line is a valid handshake line");
+
+    let channel = dial(&parsed.socket_path, MAX_FRAME_BYTES as u64)
+        .await
+        .expect("the advertised socket dials");
+    let reply = connector_client(channel)
+        .spec(SpecRequest {})
+        .await
+        .expect("Spec answers before any handshake")
+        .into_inner();
+    let spec: serde_json::Value =
+        serde_json::from_slice(&reply.spec_json).expect("spec_json decodes");
+    assert_eq!(spec["name"], "io.rapidbyte.snowflake");
+    assert_eq!(spec["version"], env!("CARGO_PKG_VERSION"));
+}
+
+/// The pinned arg contract, both bins: no args → exit 2, an
+/// unrecognized role → exit 2 — and snowflake, destination-only by
+/// design, refuses `--role=source` at the SAME arg gate.
+#[test]
+fn bad_args_exit_2() {
+    for bin in [
+        built_bin("rdlt-connector-file"),
+        built_bin("rdlt-connector-snowflake"),
+    ] {
+        let no_args = std::process::Command::new(&bin)
+            .stderr(Stdio::null())
+            .output()
+            .expect("the bin runs");
+        assert_eq!(no_args.status.code(), Some(2), "{}: no args", bin.display());
+
+        let bad_role = std::process::Command::new(&bin)
+            .arg("--role=nonsense")
+            .stderr(Stdio::null())
+            .output()
+            .expect("the bin runs");
+        assert_eq!(
+            bad_role.status.code(),
+            Some(2),
+            "{}: --role=nonsense",
+            bin.display()
+        );
+    }
+
+    let source_role = std::process::Command::new(built_bin("rdlt-connector-snowflake"))
+        .arg("--role=source")
+        .stderr(Stdio::null())
+        .output()
+        .expect("the bin runs");
+    assert_eq!(
+        source_role.status.code(),
+        Some(2),
+        "snowflake carries no source half — the role enum refuses it as any other non-value"
+    );
+}
+
+/// `--version` succeeds and its output contains the crate version (one
+/// workspace version, so this crate's own is both bins'); `--help`
+/// exits 0. The TEXT around the version is clap's, unasserted.
+#[test]
+fn version_and_help_behave() {
+    for bin in [
+        built_bin("rdlt-connector-file"),
+        built_bin("rdlt-connector-snowflake"),
+    ] {
+        let version = std::process::Command::new(&bin)
+            .arg("--version")
+            .output()
+            .expect("the bin runs");
+        assert_eq!(version.status.code(), Some(0), "{}", bin.display());
+        let stdout = String::from_utf8(version.stdout).expect("version output is UTF-8");
+        assert!(
+            stdout.contains(env!("CARGO_PKG_VERSION")),
+            "{}: `--version` output {stdout:?} must contain the crate version",
+            bin.display()
+        );
+
+        let help = std::process::Command::new(&bin)
+            .arg("--help")
+            .stdout(Stdio::null())
+            .output()
+            .expect("the bin runs");
+        assert_eq!(help.status.code(), Some(0), "{}: --help", bin.display());
+    }
+}

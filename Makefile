@@ -128,6 +128,18 @@ ifeq ($(TARGET),)
 	cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(serve::destination)'
 	cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(test_serve_source)'
 	cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(test_serve_destination)'
+	# Same class once more, the connector BINARIES (039 T6): behind
+	# `bin-serve` + `required-features`, so NO workspace command ever
+	# compiles them — built here explicitly so a bin that stops
+	# compiling fails the gate rather than rotting unseen (the
+	# snowflake-crash-sweep lesson). Then rdlt-runtime's spawn-bins
+	# smoke suite drives the BUILT bins through the provider; the env
+	# var tells its helper to (re)build them itself, so the suite stays
+	# honest run alone, and `-E 'test(test_spawned_bins)'` makes a
+	# renamed module fail its own line rather than pass empty.
+	cargo build -p rdlt-connector-file --features bin-serve --bin rdlt-connector-file
+	cargo build -p rdlt-connector-snowflake --features bin-serve --bin rdlt-connector-snowflake
+	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-runtime --features spawn-bins -E 'test(test_spawned_bins)'
 	cargo test --doc --workspace
 else ifeq ($(TARGET),unit)
 	cargo nextest run --workspace
@@ -136,6 +148,9 @@ else ifeq ($(TARGET),unit)
 	cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(serve::destination)'
 	cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(test_serve_source)'
 	cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(test_serve_destination)'
+	cargo build -p rdlt-connector-file --features bin-serve --bin rdlt-connector-file
+	cargo build -p rdlt-connector-snowflake --features bin-serve --bin rdlt-connector-snowflake
+	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-runtime --features spawn-bins -E 'test(test_spawned_bins)'
 else ifeq ($(TARGET),e2e)
 	cargo nextest run --workspace -E 'binary(/e2e/)'
 else ifeq ($(TARGET),sweep)

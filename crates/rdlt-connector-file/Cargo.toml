@@ -12,12 +12,30 @@ repository.workspace = true
 
 [features]
 failpoints = ["rdlt-connector-sdk/failpoints"]
+# The out-of-process server binary (039 T6). OFF by default, with
+# `required-features` on the [[bin]], so LIBRARY consumers of this crate
+# never pull tonic or clap into their dependency tree — `cargo tree -p
+# rdlt-connector-file -i tonic` (and `-i clap`) at default features
+# stays empty.
+bin-serve = ["rdlt-connector-sdk/serve", "dep:clap"]
+
+# Behind `bin-serve` only — `cargo build` at default features never even
+# discovers this target, so no workspace command pays for tonic. The
+# gate compiles it explicitly (Makefile `test:`, the 024 never-compiled
+# class).
+[[bin]]
+name = "rdlt-connector-file"
+path = "src/bin/rdlt-connector-file.rs"
+required-features = ["bin-serve"]
 
 [dependencies]
 # The ONE rdlt dependency (the one-dependency rule): the SPI is reached
 # through the sdk's `spi` re-export; the object-store recoverability
 # vocabulary arrives through the sdk's forward.
 rdlt-connector-sdk = { workspace = true, features = ["schema", "object-store"] }
+# The server binary's argument surface alone (`--role`, the free
+# `--version`); optional so the library surface never carries it.
+clap = { workspace = true, optional = true }
 arrow = { workspace = true }
 async-trait = { workspace = true }
 blake3 = { workspace = true }
