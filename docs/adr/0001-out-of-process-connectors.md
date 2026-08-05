@@ -133,26 +133,33 @@ spec'd/planned/gated/reviewed on its own (the 025-031 program shape;
 no up-front multi-feature specs — later features learn from earlier
 ones). Intent, not spec:
 
-- 038: SPI protocol-representability (dyn-safety, `part_events`
-  callback → representable event stream, wire forms for the error
-  taxonomy and OpenContext), facade feature-gates per connector, and
-  the WALKING-SKELETON SPIKE: a throwaway echo connector over
-  tonic/UDS measuring (a) suspension-based backpressure against the
-  byte budget, (b) spawn→UDS→handshake latency, (c) a Python stub
-  driving the same proto. The spike referees D6 and cold-start
-  posture; it is not shipped code.
-- 039: `rdlt-connector-protocol` (the proto + handshake) + sdk
-  `serve()`.
-- 040: remote adapters (`RemoteSource`/`RemoteDestination`/
+*(AMENDED 2026-08-05: the originally-separate "SPI
+protocol-representability" feature collapsed into 038 — exploration
+showed the SPI is already dyn-safe (compile-time pinned since 027),
+the engine already holds only trait objects, and the facade already
+feature-gates connectors with `default = []`; the remaining SPI
+polish rides 038, and the spike belongs inside the feature whose
+design it referees, per the 023 probe-before-design-freeze pattern.)*
+
+- 038: `rdlt-connector-protocol` (the proto + handshake) + sdk
+  `serve()`, with the WALKING-SKELETON SPIKE as its research phase —
+  a throwaway echo connector over tonic/UDS measuring (a)
+  suspension-based backpressure against the byte budget (the D6
+  referee), (b) spawn→UDS→handshake latency, (c) a Python stub
+  driving the same proto — plus the small SPI polish (Serialize on
+  the part-event payloads, `#[non_exhaustive]` hedges on
+  OpenContext/ReadRequest, documented Send-only LoadSession and
+  plaintext-secrets-over-UDS trust model).
+- 039: remote adapters (`RemoteSource`/`RemoteDestination`/
   `RemoteLoadSession`) + `LocalBinaryConnectorProvider` +
   CLI integration (`connector:` requirement in pipeline YAML;
   `schema`/`validate` ask a spawned connector). Reference port: the
   FILE connector (both halves, no external service, richest crash
   surface); snowflake second (dissolves the fork-dependency publish
   blocker).
-- 041: the remote conformance kit + process-kill matrix + the Python
+- 040: the remote conformance kit + process-kill matrix + the Python
   proof connector.
-- 042: benchmarks in remote mode published honestly beside
+- 041: benchmarks in remote mode published honestly beside
   in-process, remaining ports, repo-split decision, protocol v1
   freeze.
 
