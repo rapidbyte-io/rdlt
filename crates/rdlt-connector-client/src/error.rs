@@ -111,7 +111,6 @@ fn normalized_classification(raw: i32) -> Classification {
 }
 
 /// The frame's wait hint as the SPI's `retry_after` shape.
-#[allow(dead_code)] // Task 3/4's adapters call the mappers below; until then their unit tests are the only callers, which dead_code does not count.
 fn retry_after(frame: &proto::ErrorFrame) -> Option<Duration> {
     frame.retry_after_ms.map(Duration::from_millis)
 }
@@ -121,7 +120,6 @@ fn retry_after(frame: &proto::ErrorFrame) -> Option<Duration> {
 /// (wait hint forwarded), `FATAL`→`fatal` — and `Unspecified`/unknown
 /// values →`fatal` too (see [`normalized_classification`]'s safe-loud
 /// rationale). The frame's message becomes the cause verbatim.
-#[allow(dead_code)] // Task 3's RemoteSource is the caller; until it lands only the unit tests below call this.
 pub(crate) fn source_error_from_frame(frame: &proto::ErrorFrame) -> SourceError {
     let message = frame.message.clone();
     match normalized_classification(frame.classification) {

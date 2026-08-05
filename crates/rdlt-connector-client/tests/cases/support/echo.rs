@@ -5,6 +5,11 @@
 //! [`EchoDestination`]'s `Backend` logs every call so a wire test can
 //! pin what the client actually drove.
 //!
+//! The source's failure knobs exist for the client's read-seam tests
+//! (Task 3 consumes them over the wire): `fail_read` induces a fatal
+//! read failure, `fail_check` a transient check failure — each carrying
+//! a pinned `echo:`-prefixed cause.
+//!
 //! The destination's two config knobs exist for the client's session
 //! tests (Task 4 consumes them over the wire):
 //!
@@ -45,6 +50,10 @@ pub struct EchoSourceConfig {
     pub rows: u64,
     #[serde(default)]
     pub fail_read: bool,
+    /// Induces a transient `check` failure — the knob the client's
+    /// failing-check round-trip drives (Task 3).
+    #[serde(default)]
+    pub fail_check: bool,
 }
 
 impl Document for EchoSourceConfig {
@@ -63,6 +72,7 @@ impl Document for EchoSourceConfig {
 pub struct EchoSource {
     rows: u64,
     fail_read: bool,
+    fail_check: bool,
 }
 
 #[async_trait]
@@ -75,7 +85,15 @@ impl SourceConnector for EchoSource {
         Ok(Self {
             rows: config.rows,
             fail_read: config.fail_read,
+            fail_check: config.fail_check,
         })
+    }
+
+    async fn check(&self) -> Result<(), SourceError> {
+        if self.fail_check {
+            return Err(SourceError::transient("echo: induced check failure"));
+        }
+        Ok(())
     }
 
     async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {

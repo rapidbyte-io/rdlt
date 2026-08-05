@@ -7,8 +7,9 @@
 //! provider resolved (D-039-2) and decodes its self-description, and
 //! the error module maps wire [`proto::ErrorFrame`]s back to the SPI's
 //! own classifications so the engine's retry machinery never learns the
-//! wire exists. Tasks 3/4's `RemoteSource`/`RemoteBackend` adapters
-//! build on exactly these seams; `rdlt-runtime` re-exports
+//! wire exists. [`RemoteSource`] is those seams composed into the SPI's
+//! read half — a `Source` whose every method is an RPC; Task 4's
+//! `RemoteBackend` is its write-side twin; `rdlt-runtime` re-exports
 //! [`ConnectorRequirement`] (the client verifies, the runtime resolves).
 //!
 //! **EXPERIMENTAL**, exactly as far as the protocol crate is (ADR 0001
@@ -23,11 +24,13 @@
 mod dial;
 mod error;
 mod handshake;
+mod source;
 
 pub use dial::{connector_client, destination_client, dial, source_client};
 pub use error::{Classification, ClientError};
 pub use handshake::{ConnectorRequirement, HandshakeOutcome, Role, handshake};
+pub use source::RemoteSource;
 
 // `error::source_error_from_frame`/`error::dest_error_from_frame` stay
-// crate-internal at their defining paths — Tasks 3/4's adapters reach
-// them as `crate::error::…`.
+// crate-internal at their defining paths — the adapters reach them as
+// `crate::error::…`.

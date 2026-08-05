@@ -4609,7 +4609,9 @@ dependencies = [
 name = "rdlt-connector-client"
 version = "0.3.0"
 dependencies = [
+ "arrow",
  "async-trait",
+ "bytes",
  "hyper-util",
  "rdlt-connector",
  "rdlt-connector-protocol",
@@ -4620,6 +4622,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-stream",
  "tonic",
  "tower",
 ]

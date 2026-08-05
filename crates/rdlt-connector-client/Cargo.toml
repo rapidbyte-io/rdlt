@@ -19,16 +19,24 @@ hyper-util = { workspace = true }
 tokio = { workspace = true, features = ["net"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+async-trait = { workspace = true }
+# `arrow` (not the SPI's arrow-array re-export) for the IPC stream
+# reader: RemoteSource decodes each `arrow_ipc` read frame's
+# exactly-one batch — the client seat of the proto's one-batch rule.
+arrow = { workspace = true }
+bytes = { workspace = true }
 
 [dev-dependencies]
 # The served counterpart the tests dial: this crate's own echo pair
 # served in-process through the sdk's `serve_on` seam.
 rdlt-connector-sdk = { workspace = true, features = ["serve"] }
-async-trait = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }
+# The rogue server fixture binds its own UDS listener (UnixListenerStream)
+# to serve hand-crafted frames the sdk's encoder can never emit.
+tokio-stream = { workspace = true }
 
 [lints]
 workspace = true
