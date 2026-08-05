@@ -16,11 +16,11 @@ fn the_source_schema_and_parser_agree() {
     let schema = compiled(source::config_schema());
     let good = serde_json::json!({
         "streams": [
-            {"name": "a", "format": "jsonl", "path": "data/*.jsonl"},
+            {"name": "a", "format": "jsonl", "path": "data/*.jsonl", "validate": false},
             {"name": "b", "format": "csv", "path": "data/b.csv",
-             "csv": {"delimiter": ";", "header": false}},
-            {"name": "c", "format": "parquet", "path": "data/c.parquet",
-             "type_hints": {"ts": "timestamp_tz"}, "validate": false},
+             "csv": {"delimiter": ";", "header": false},
+             "type_hints": {"ts": "timestamp_tz"}},
+            {"name": "c", "format": "parquet", "path": "data/c.parquet"},
         ]
     });
     assert!(schema.is_valid(&good));

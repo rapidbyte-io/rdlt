@@ -202,5 +202,5 @@ streams:
     )
     .expect("pre-015 document parses");
     assert_eq!(config.streams.len(), 2);
-    assert!(!config.streams[0].validate);
+    assert_eq!(config.streams[0].validate, Some(false));
 }
