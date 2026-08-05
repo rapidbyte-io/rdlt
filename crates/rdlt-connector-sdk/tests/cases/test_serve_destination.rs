@@ -113,6 +113,17 @@ fn echo_destination_config_fail_connect() -> Vec<u8> {
         .expect("echo destination config serializes")
 }
 
+/// Same reasoning as `echo_destination_config_fail_connect` above:
+/// `invalid` induces a `Document::validate` failure (see
+/// `EchoDestinationConfig::invalid`'s own doc) — Task 6's handshake
+/// refusal matrix needed a "config failing validate" row for the
+/// destination role, and none of the existing knobs describe anything
+/// but post-handshake `Backend` behavior.
+fn echo_destination_config_invalid() -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({"invalid": true}))
+        .expect("echo destination config serializes")
+}
+
 fn encode_arrow_ipc(batch: &rdlt_connector::RecordBatch) -> Vec<u8> {
     let mut writer = arrow::ipc::writer::StreamWriter::try_new(Vec::new(), batch.schema_ref())
         .expect("open an arrow ipc stream writer");
@@ -1123,6 +1134,29 @@ async fn an_abandoned_session_still_closes_the_backend() {
     );
 }
 
+/// The destination-side twin of `test_serve_source`'s
+/// `streams_before_a_handshake_refuses_as_a_status`/
+/// `read_before_a_handshake_refuses_as_a_status` (038 T6): `OpenSession`
+/// arriving before `Handshake` has completed is a protocol-state
+/// violation, not a connector outcome, so it answers as a raw `Status`
+/// (`FailedPrecondition`, `handshake has not completed` — the SAME
+/// message `DestinationServer::shell` raises for `Check` too), never a
+/// `SessionReply`. See `serve::mod`'s module doc for the full
+/// Status-vs-ErrorFrame rule this pins one more instance of.
+#[tokio::test]
+async fn open_session_before_a_handshake_refuses_as_a_status() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = serve_on::<EchoDestination>(&path).await.expect("bind");
+    let mut destination = DestinationServiceClient::new(dial(&path).await);
+
+    let error = destination
+        .open_session(ReceiverStream::new(tokio::sync::mpsc::channel(1).1))
+        .await
+        .expect_err("open_session before a handshake must refuse");
+    assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+    assert_eq!(error.message(), "handshake has not completed");
+}
+
 /// F5 fix pin (038 T5 review round 1): v0 allows exactly one live
 /// session per connector process — a second concurrent `OpenSession`
 /// while the first is still active refuses outright, at the RPC level
@@ -1319,4 +1353,203 @@ async fn a_severed_transport_mid_session_surfaces_as_a_client_error() {
         "a severed transport is an abandoned-session exit too — the backend must still be \
          closed (F2), within the timeout"
     );
+}
+
+/// One row of [`handshake_refusal_matrix_pins_every_remaining_arm`]: the
+/// handshake request fields to send against an otherwise-healthy,
+/// freshly-bound destination listener, and how to check the refusal it
+/// must produce.
+struct Row {
+    /// Identifies the row in a panic message — not asserted itself.
+    label: &'static str,
+    /// `true` only for the "second handshake" row: send this exact
+    /// request once first (asserting it succeeds), THEN send it again
+    /// and check `expect` against the SECOND reply. Every other row
+    /// sends the request exactly once, against a shell that has never
+    /// handshaken.
+    prime: bool,
+    protocol_version: u32,
+    expected_role: &'static str,
+    config_json: Vec<u8>,
+    expect: Expect,
+}
+
+/// How a row's refusal message is checked: [`Expect::Exact`] for a
+/// spelling `serve::common::handshake` owns outright — pinned byte-exact
+/// already, on the source side, by the dedicated tests in
+/// `test_serve_source.rs`, so a row here proves the SAME hoisted path
+/// produces the SAME spelling for the destination role too — and
+/// [`Expect::Contains`] for a row whose message carries text this crate
+/// did NOT write in full: a `serde_json` decode error, or the
+/// `Document`'s own validate wording (the connector's, not the sdk's).
+enum Expect {
+    Exact(&'static str),
+    Contains(&'static str),
+}
+
+/// Run one [`Row`] against an already-connected client: prime it if the
+/// row asks for that, then send the row's request and assert the
+/// refusal's classification and message.
+async fn run_row(connector: &mut ConnectorClient<Channel>, row: &Row) {
+    let request = || HandshakeRequest {
+        protocol_version: row.protocol_version,
+        expected_role: row.expected_role.to_string(),
+        config_json: row.config_json.clone(),
+    };
+
+    if row.prime {
+        let first = connector
+            .handshake(request())
+            .await
+            .unwrap_or_else(|error| panic!("row {}: priming handshake rpc: {error}", row.label))
+            .into_inner();
+        assert!(
+            matches!(first.outcome, Some(handshake_reply::Outcome::Ok(_))),
+            "row {}: the priming handshake must succeed, got {:?}",
+            row.label,
+            first.outcome
+        );
+    }
+
+    let reply = connector
+        .handshake(request())
+        .await
+        .unwrap_or_else(|error| panic!("row {}: handshake rpc: {error}", row.label))
+        .into_inner();
+    match reply.outcome {
+        Some(handshake_reply::Outcome::Error(error)) => {
+            assert_eq!(
+                error.classification,
+                Classification::Fatal as i32,
+                "row {}",
+                row.label
+            );
+            match row.expect {
+                Expect::Exact(text) => {
+                    assert_eq!(error.message, text, "row {}", row.label);
+                }
+                Expect::Contains(fragment) => {
+                    assert!(
+                        error.message.contains(fragment),
+                        "row {}: expected the fragment {fragment:?} inside {:?}",
+                        row.label,
+                        error.message
+                    );
+                }
+            }
+        }
+        other => panic!("row {}: expected a refusal, got {other:?}", row.label),
+    }
+}
+
+/// The destination half of Task 6's handshake refusal matrix: every row
+/// not already pinned on the source side by `test_serve_source.rs`, run
+/// against the destination role through the SAME hoisted
+/// `serve::common::handshake` path — this is the destination role's
+/// FIRST handshake-refusal coverage of any kind; every OTHER test in
+/// this file starts from a handshake that already succeeds.
+///
+/// Two rows the brief names that this table deliberately does NOT
+/// carry, and why:
+/// - **version-below-min** has no legal input to construct it with:
+///   `PROTOCOL_VERSION` is `u32`'s minimum, so `serve::common::handshake`
+///   collapses its range check to `!=` rather than `< min || > max` (see
+///   that function's own comment, and `test_serve_source.rs`'s
+///   `an_out_of_range_protocol_version_refuses_fatal` for the same note
+///   on the source side) — there is no `u32` value smaller than zero to
+///   send.
+/// - **role mismatch, source-asked-for-destination**, and
+///   **unrecognized role**, and **config failing validate**, and
+///   **protocol version above max**, and **second handshake** ARE all
+///   pinned already — but only for the SOURCE role, by
+///   `test_serve_source.rs`'s dedicated tests. This table is what closes
+///   that gap for the destination role, which had none of them before
+///   this test (`EchoDestinationConfig::invalid` was added alongside
+///   this test for exactly the "config failing validate" row — every
+///   OTHER existing knob on that config describes post-handshake
+///   `Backend` behavior, none of them fail `validate`).
+///
+/// STATUS VS ERRORFRAME, recorded as a deliberate rule rather than an
+/// inconsistency (038 T6; originated as 038 T4's review finding — see
+/// `test_serve_source.rs`'s `streams_before_a_handshake_refuses_as_a_status`
+/// and `serve::mod`'s module doc, `rdlt-connector-sdk::serve`, for the
+/// full rule): a refusal reached BEFORE a handshake has completed
+/// answers as a raw tonic `Status` (`failed_precondition`) — never
+/// exercised by this table, which only drives the `Handshake` RPC
+/// itself, but pinned on the destination side by
+/// `open_session_before_a_handshake_refuses_as_a_status` above — while
+/// every refusal this table DOES drive, produced BY the handshake/config
+/// path, answers as a `HandshakeReply` carrying a `proto::ErrorFrame`
+/// instead (the same convention this file's OWN session-frame refusals
+/// use, e.g. `a_write_before_open_refuses_with_the_frozen_spelling`
+/// above). Two different error shapes for two different refusal
+/// classes, on purpose for v0: a pre-handshake RPC refusal is a
+/// protocol-level violation the RPC layer itself rejects; a
+/// handshake/config refusal is DATA a caller is meant to inspect
+/// uniformly.
+#[tokio::test]
+async fn handshake_refusal_matrix_pins_every_remaining_arm() {
+    let rows = [
+        Row {
+            label: "role mismatch: destination asked for source",
+            prime: false,
+            protocol_version: 0,
+            expected_role: "source",
+            config_json: echo_destination_config(false, false),
+            expect: Expect::Exact(
+                "this connector is a destination; the handshake asked for a source",
+            ),
+        },
+        Row {
+            label: "unrecognized role",
+            prime: false,
+            protocol_version: 0,
+            expected_role: "orchestrator",
+            config_json: echo_destination_config(false, false),
+            expect: Expect::Exact(
+                "the handshake asked for role `orchestrator`, which this connector does not recognize",
+            ),
+        },
+        Row {
+            label: "protocol version above max",
+            prime: false,
+            protocol_version: 99,
+            expected_role: "destination",
+            config_json: echo_destination_config(false, false),
+            expect: Expect::Exact(
+                "protocol version 99 is outside this connector's supported range [0, 0]",
+            ),
+        },
+        Row {
+            label: "config is not decodable JSON",
+            prime: false,
+            protocol_version: 0,
+            expected_role: "destination",
+            config_json: b"{ this is not json".to_vec(),
+            expect: Expect::Contains("invalid config_json: "),
+        },
+        Row {
+            label: "config fails validate",
+            prime: false,
+            protocol_version: 0,
+            expected_role: "destination",
+            config_json: echo_destination_config_invalid(),
+            expect: Expect::Contains("destination config marked invalid"),
+        },
+        Row {
+            label: "second handshake",
+            prime: true,
+            protocol_version: 0,
+            expected_role: "destination",
+            config_json: echo_destination_config(false, false),
+            expect: Expect::Exact("handshake already completed"),
+        },
+    ];
+
+    for row in &rows {
+        let (_dir, path) = socket_path();
+        let (_line, _handle) = serve_on::<EchoDestination>(&path).await.expect("bind");
+        let mut connector = ConnectorClient::new(dial(&path).await);
+        run_row(&mut connector, row).await;
+    }
 }

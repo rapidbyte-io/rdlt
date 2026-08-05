@@ -122,6 +122,25 @@ message ExistingReceipt { string load_id = 1; uint64 commit_seq = 2; }
 message Replay { bytes commit_meta_json = 1; bytes receipt_json = 2; }
 message Publish { bytes commit_meta_json = 1; }
 message ReadState { string pipeline = 1; }
+// Ends the session: Backend::close() runs, the reply stream sends
+// `closed`, then the stream ends — DEFINED behavior, not an oversight,
+// for what happens on both sides of that end:
+//
+// - Any request frame a client sends AFTER `Close` is silently
+//   discarded: the server's receiving half is already gone (dropped
+//   along with the rest of this session's state) by the time such a
+//   frame would arrive, so nothing observes it, successfully or
+//   otherwise. The reply stream has already ended.
+// - A `Close` request that itself fails answers `error` (an ErrorFrame)
+//   INSTEAD of `closed` — but the reply stream still ends either way. A
+//   client cannot distinguish "the backend closed cleanly" from "the
+//   backend's close failed, and the session is now unrecoverably over"
+//   from the RPC outcome alone. This is a deliberate v0 simplification:
+//   a Close error is terminal for the session either way, and it is the
+//   destination's OWN durability guards (the same ones ExistingReceipt's
+//   comment above cites for the D3 choreography) that make a fresh
+//   re-run of the WHOLE session safe — not a retry of Close itself,
+//   which this protocol does not offer.
 message Close {}
 message SessionReply {
   oneof reply {

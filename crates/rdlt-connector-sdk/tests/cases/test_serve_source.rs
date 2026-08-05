@@ -160,8 +160,10 @@ async fn handshake_streams_and_read_round_trip() {
 }
 
 /// A handshake asking for the wrong role refuses with the frozen
-/// spelling — the mirrored spelling lives on the (future) destination
-/// side.
+/// spelling — the mirrored spelling is pinned on the destination side by
+/// `test_serve_destination::handshake_refusal_matrix_pins_every_remaining_arm`
+/// (038 T6; this comment used to say "future destination side" before
+/// that test existed).
 #[tokio::test]
 async fn wrong_role_handshake_refuses_with_the_frozen_spelling() {
     let (_dir, path) = socket_path();
@@ -248,7 +250,10 @@ async fn an_invalid_config_refuses_fatal_with_the_documents_own_wording() {
 }
 
 /// A protocol version outside `[proto_min, proto_max]` refuses FATAL —
-/// the message pinned byte-exact, like its three siblings above.
+/// the message pinned byte-exact, like its three siblings above. (No
+/// "below min" sibling exists — see
+/// `test_serve_destination::handshake_refusal_matrix_pins_every_remaining_arm`'s
+/// own doc comment for why v0 has no legal input to construct one.)
 #[tokio::test]
 async fn an_out_of_range_protocol_version_refuses_fatal() {
     let (_dir, path) = socket_path();
@@ -320,11 +325,11 @@ async fn a_second_handshake_refuses() {
 /// `ErrorFrame` — unlike a classified refusal (wrong role, bad config,
 /// a failing check/read), which the wire carries as reply-payload state
 /// so a caller can inspect it uniformly, "you never handshook" is a
-/// client-protocol violation the RPC layer rejects directly. This
-/// Status-vs-ErrorFrame split in the surface is a real inconsistency,
-/// not a design choice defended here — recorded for Task 6's
-/// error-shape matrix to reconcile, not silently normalized away by
-/// this fix round.
+/// client-protocol violation the RPC layer rejects directly. 038 T6
+/// recorded this Status-vs-ErrorFrame split as a DELIBERATE rule rather
+/// than an inconsistency to unify away — see `serve::mod`'s module doc
+/// (`rdlt-connector-sdk::serve`) for the full rule this test pins one
+/// instance of.
 #[tokio::test]
 async fn streams_before_a_handshake_refuses_as_a_status() {
     let (_dir, path) = socket_path();

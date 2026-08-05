@@ -167,11 +167,25 @@ pub struct EchoDestinationConfig {
     /// succeeds — proving a failed connect does not poison the guard.
     #[serde(default)]
     pub fail_connect: bool,
+    /// Makes `validate()` fail — the destination-role twin of
+    /// `EchoConfig::rows == 0` on the source side. Task 6's handshake
+    /// refusal matrix needed a "config failing validate" row for the
+    /// destination role and none of the existing knobs above fail
+    /// validation (they only change post-handshake `Backend` behavior),
+    /// so this field exists solely to give that row something to fail
+    /// on.
+    #[serde(default)]
+    pub invalid: bool,
 }
 
 impl Document for EchoDestinationConfig {
     type Error = EchoError;
     fn validate(&self) -> Result<(), Self::Error> {
+        if self.invalid {
+            return Err(EchoError::Invalid(
+                "destination config marked invalid".to_string(),
+            ));
+        }
         Ok(())
     }
 }

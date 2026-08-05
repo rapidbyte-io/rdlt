@@ -1,6 +1,7 @@
 [package]
 name = "rdlt-connector-protocol"
 description = "rdlt out-of-process connector wire protocol v0: the gRPC/protobuf contract and the stdout handshake line"
+readme = "README.md"
 # EXPERIMENTAL (ADR 0001 D8): unpublished until the conformance kit and one
 # non-Rust implementation have exercised the proto.
 publish = false
