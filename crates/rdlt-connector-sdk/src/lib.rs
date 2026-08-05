@@ -30,6 +30,13 @@
 //! operator-facing text of its own beyond the one refusal it owns
 //! (write-before-ensure); even the unknown-stream refusal is the
 //! connector's, worded where the config's shape is known.
+//!
+//! A fourth, optional seam: behind the `serve` feature (OFF by
+//! default), `serve` turns a framework connector into an out-of-process
+//! protocol server (038) — the same `SourceConnector`/
+//! `DestinationConnector` impl, dialed over gRPC instead of called
+//! in-process. A connector that never runs out-of-process pays nothing
+//! for it, not even tonic in its dependency tree.
 
 // Warn, not deny: an undocumented public item is a gap to fill, not a
 // reason to fail a contributor's build. `make docs` is where the
@@ -38,6 +45,8 @@
 
 pub mod config;
 pub mod destination;
+#[cfg(feature = "serve")]
+pub mod serve;
 pub mod source;
 
 /// The connector SPI, re-exported: one dependency authors a connector.

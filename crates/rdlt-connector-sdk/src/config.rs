@@ -75,8 +75,12 @@ use serde::de::DeserializeOwned;
 pub trait Document: DeserializeOwned + Sized {
     /// The connector's own configuration error. It absorbs the two
     /// parser errors (keeping the connector's frozen wording via its own
-    /// `From` impls) and carries the connector's refusals.
-    type Error: From<serde_yaml::Error> + From<serde_json::Error>;
+    /// `From` impls) and carries the connector's refusals. `Display` is
+    /// required (not just an incidental property of every existing
+    /// impl's `thiserror::Error` derive): `serve()` (038) renders a
+    /// handshake's config refusal from a `Shell<C>` generic over `C`
+    /// alone, with no connector-specific error type to match on.
+    type Error: std::fmt::Display + From<serde_yaml::Error> + From<serde_json::Error>;
 
     /// The ONE validation gate. Every invariant the connector's runtime
     /// relies on is checked here, once — the provided entry points all

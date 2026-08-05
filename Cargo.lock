@@ -4796,16 +4796,23 @@ dependencies = [
 name = "rdlt-connector-sdk"
 version = "0.3.0"
 dependencies = [
+ "arrow",
  "async-trait",
  "bytes",
+ "hyper-util",
  "rdlt-connector",
+ "rdlt-connector-protocol",
  "rdlt-testkit",
  "schemars 1.2.1",
  "serde",
  "serde_json",
  "serde_yaml",
+ "tempfile",
  "thiserror",
  "tokio",
+ "tokio-stream",
+ "tonic",
+ "tower",
 ]
 
 [[package]]

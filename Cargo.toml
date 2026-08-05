@@ -84,16 +84,23 @@ fs4 = "0.13"
 libc = "0.2"
 
 # Out-of-process connector protocol (038): rdlt-connector-protocol is a LEAF
-# crate — tonic must never enter any other crate's dependency tree
-# (`cargo tree -i tonic` proves it). tonic-prost is a RUNTIME dependency, not
-# just a build-dep alongside tonic-prost-build: the code tonic-prost-build
-# generates calls `tonic_prost::ProstCodec` directly, so the companion has to
-# be linked into the crate that includes that generated code.
+# crate. rdlt-connector-sdk also reaches tonic, but ONLY behind its `serve`
+# feature (OFF by default) — tonic must never enter a CONNECTOR's dependency
+# tree at its default features (`cargo tree -i tonic` against a connector
+# crate with no extra features proves it; connectors depend on the sdk
+# alone). tonic-prost is a RUNTIME dependency, not just a build-dep alongside
+# tonic-prost-build: the code tonic-prost-build generates calls
+# `tonic_prost::ProstCodec` directly, so the companion has to be linked into
+# the crate that includes that generated code.
 tonic = "0.14"
 tonic-prost = "0.14"
 prost = "0.14"
 tonic-prost-build = "0.14"
 protoc-bin-vendored = "3"
+# The server-side counterpart to tokio's own stream/channel primitives:
+# wraps a `UnixListener` (accept loop) and a `mpsc::Receiver` (one `Read`
+# call's response frames) as `Stream`s for tonic's server builder.
+tokio-stream = "0.1"
 
 # Connectors
 object_store = { version = "0.12", features = ["aws"] }
@@ -138,6 +145,12 @@ testcontainers-modules = { version = "0.11", features = ["postgres"] }
 tempfile = "3"
 rcgen = "0.13"
 toml = "0.8"
+# The raw tonic-client-over-UDS idiom (038's serve() tests dial the
+# listener the same way a real out-of-process host would): `tower::service_fn`
+# supplies `connect_with_connector`'s connector, `hyper_util::rt::TokioIo`
+# adapts `tokio::net::UnixStream` to hyper's IO traits.
+tower = "0.5"
+hyper-util = { version = "0.1", features = ["tokio"] }
 # The CLI's argument surface (and rdlt-bench's).
 clap = { version = "4", features = ["derive"] }
 console = "0.16"

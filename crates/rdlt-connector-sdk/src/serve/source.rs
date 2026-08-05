@@ -1,0 +1,348 @@
+//! The source half of `serve()`: [`SourceServer`] answers both halves of
+//! the wire protocol a source connector implements — `Connector`
+//! (handshake, check) and `SourceService` (streams, read) — over one
+//! [`SourceConnector`] shell.
+//!
+//! One handshake populates the shell (config document validated the
+//! same way an in-process embedder would validate it, through
+//! [`Shell::from_value`]); every RPC before that handshake, and every
+//! handshake attempt after it, is refused. [`source`] is what a spawned
+//! connector process actually runs; [`serve_on`] is the seam under it —
+//! bind at an explicit path without printing anything, so a test can
+//! drive the very listener `source` would have started, without stdout
+//! capture.
+
+use std::path::Path;
+use std::sync::{Arc, OnceLock};
+
+use rdlt_connector::{PushPayload, Source as _, SourceError, records_channel};
+use rdlt_connector_protocol::PROTOCOL_VERSION;
+use rdlt_connector_protocol::handshake::Line;
+use rdlt_connector_protocol::proto::connector_server::{Connector, ConnectorServer};
+use rdlt_connector_protocol::proto::source_service_server::{SourceService, SourceServiceServer};
+use rdlt_connector_protocol::proto::{
+    self, CheckReply, CheckRequest, Classification, ErrorFrame, HandshakeOk, HandshakeReply,
+    HandshakeRequest, StreamList, StreamsReply, StreamsRequest, check_reply, handshake_reply,
+    read_frame, streams_reply,
+};
+use tokio::task::JoinHandle;
+use tokio_stream::wrappers::{ReceiverStream, UnixListenerStream};
+use tonic::{Request, Response, Status};
+
+use super::common::{self, ServeError};
+use crate::source::{Shell, SourceConnector};
+
+/// Serve-side channel budget for one `Read` call — bounds how far the
+/// connector's producer can get ahead of this process's own forwarding
+/// loop before it parks, exactly like an in-process `Source::read`
+/// caller. It is IN-CONNECTOR-BUFFER ONLY: unrelated to gRPC/h2 flow
+/// control between this process and whatever dials it (see
+/// `serve/common.rs`), and unrelated to the engine's own read budget,
+/// which governs the far side of that wire starting at 039's adapter.
+const READ_CHANNEL_BUDGET: usize = 8 * 1024 * 1024;
+
+/// The role a source's handshake must be asked for — the mirrored
+/// spelling lives on the (future) destination side.
+const EXPECTED_ROLE: &str = "source";
+
+/// The gRPC surface over one [`SourceConnector`]. `shell` is empty until
+/// a handshake succeeds; `Arc` (not a bare `Shell<C>`) because the `Read`
+/// RPC hands a clone to a spawned task that outlives the request.
+struct SourceServer<C: SourceConnector> {
+    shell: OnceLock<Arc<Shell<C>>>,
+}
+
+impl<C: SourceConnector> SourceServer<C> {
+    fn new() -> Self {
+        Self {
+            shell: OnceLock::new(),
+        }
+    }
+
+    /// The shell, once handshake has populated it — every RPC but
+    /// `Handshake` itself needs this.
+    fn shell(&self) -> Result<&Arc<Shell<C>>, Status> {
+        self.shell
+            .get()
+            .ok_or_else(|| Status::failed_precondition("handshake has not completed"))
+    }
+}
+
+fn refuse_handshake(message: impl Into<String>) -> Response<HandshakeReply> {
+    Response::new(HandshakeReply {
+        outcome: Some(handshake_reply::Outcome::Error(common::error_frame(
+            Classification::Fatal,
+            message,
+            None,
+        ))),
+    })
+}
+
+/// Flatten a classified [`SourceError`] into the wire's [`ErrorFrame`]:
+/// classification, the error's own rendered text (the classification
+/// frame included — `SourceError`'s `Display` already carries it, so a
+/// receiver on the other end of the wire sees exactly what an in-process
+/// caller's `.to_string()` would have shown), and the rate-limit hint
+/// when there is one.
+///
+/// The wildcard arm is required: `SourceError` is `#[non_exhaustive]`
+/// from OUTSIDE its defining crate, which this crate is. A future
+/// classification this match has not been taught about lands FATAL
+/// rather than failing to compile a shipped server.
+fn source_error_frame(error: &SourceError) -> ErrorFrame {
+    let (classification, retry_after) = match error {
+        SourceError::Transient(_) => (Classification::Transient, None),
+        SourceError::RateLimited { retry_after, .. } => (Classification::RateLimited, *retry_after),
+        SourceError::Fatal(_) => (Classification::Fatal, None),
+        _ => (Classification::Fatal, None),
+    };
+    common::error_frame(classification, error.to_string(), retry_after)
+}
+
+#[tonic::async_trait]
+impl<C: SourceConnector> Connector for SourceServer<C> {
+    async fn handshake(
+        &self,
+        request: Request<HandshakeRequest>,
+    ) -> Result<Response<HandshakeReply>, Status> {
+        let request = request.into_inner();
+
+        if self.shell.get().is_some() {
+            return Ok(refuse_handshake("handshake already completed"));
+        }
+
+        if request.expected_role != EXPECTED_ROLE {
+            return Ok(refuse_handshake(
+                "this connector is a source; the handshake asked for a destination",
+            ));
+        }
+
+        // A range check in spirit — this connector supports exactly
+        // `PROTOCOL_VERSION` today, so `proto_min == proto_max ==
+        // PROTOCOL_VERSION` and the range collapses to one value. Written
+        // as `!=` (not `< min || > max`) because `PROTOCOL_VERSION` is
+        // `u32`'s minimum, and clippy correctly flags the lower bound as
+        // vacuous; widen this back into an explicit range comparison the
+        // day a second supported version exists.
+        if request.protocol_version != PROTOCOL_VERSION {
+            return Ok(refuse_handshake(format!(
+                "protocol version {} is outside this connector's supported range [{PROTOCOL_VERSION}, {PROTOCOL_VERSION}]",
+                request.protocol_version
+            )));
+        }
+
+        let config: serde_json::Value = match serde_json::from_slice(&request.config_json) {
+            Ok(config) => config,
+            Err(error) => return Ok(refuse_handshake(format!("invalid config_json: {error}"))),
+        };
+
+        let shell = match Shell::<C>::from_value(config) {
+            Ok(shell) => shell,
+            Err(error) => return Ok(refuse_handshake(error.to_string())),
+        };
+
+        let spec = shell.spec();
+        let spec_json =
+            serde_json::to_vec(&spec).expect("a ConnectorSpec serializes to JSON infallibly");
+
+        if self.shell.set(Arc::new(shell)).is_err() {
+            // Lost a race against a concurrent handshake on the same
+            // session — the same refusal either way.
+            return Ok(refuse_handshake("handshake already completed"));
+        }
+
+        Ok(Response::new(HandshakeReply {
+            outcome: Some(handshake_reply::Outcome::Ok(HandshakeOk {
+                connector_id: C::NAME.to_string(),
+                connector_version: C::VERSION.to_string(),
+                spec_json,
+                capabilities_json: Vec::new(),
+                state_format_versions: Default::default(),
+            })),
+        }))
+    }
+
+    async fn check(&self, _request: Request<CheckRequest>) -> Result<Response<CheckReply>, Status> {
+        let shell = self.shell()?;
+        let outcome = match shell.check().await {
+            Ok(()) => check_reply::Outcome::Ok(proto::Empty {}),
+            Err(error) => check_reply::Outcome::Error(source_error_frame(&error)),
+        };
+        Ok(Response::new(CheckReply {
+            outcome: Some(outcome),
+        }))
+    }
+}
+
+#[tonic::async_trait]
+impl<C: SourceConnector> SourceService for SourceServer<C> {
+    async fn streams(
+        &self,
+        _request: Request<StreamsRequest>,
+    ) -> Result<Response<StreamsReply>, Status> {
+        let shell = self.shell()?;
+        let outcome = match shell.streams().await {
+            Ok(streams) => {
+                let stream_spec_json = streams
+                    .iter()
+                    .map(|stream| {
+                        serde_json::to_vec(stream)
+                            .expect("a StreamSpec serializes to JSON infallibly")
+                    })
+                    .collect();
+                streams_reply::Outcome::Ok(StreamList { stream_spec_json })
+            }
+            Err(error) => streams_reply::Outcome::Error(source_error_frame(&error)),
+        };
+        Ok(Response::new(StreamsReply {
+            outcome: Some(outcome),
+        }))
+    }
+
+    type ReadStream = ReceiverStream<Result<proto::ReadFrame, Status>>;
+
+    async fn read(
+        &self,
+        request: Request<proto::ReadRequest>,
+    ) -> Result<Response<Self::ReadStream>, Status> {
+        let shell = Arc::clone(self.shell()?);
+        let request = request.into_inner();
+
+        let stream_spec = serde_json::from_slice(&request.stream_spec_json).map_err(|error| {
+            Status::invalid_argument(format!("invalid stream_spec_json: {error}"))
+        })?;
+        let since = request
+            .since_cursor_json
+            .map(|bytes| {
+                serde_json::from_slice::<serde_json::Value>(&bytes)
+                    .map(rdlt_connector::Cursor::new)
+                    .map_err(|error| {
+                        Status::invalid_argument(format!("invalid since_cursor_json: {error}"))
+                    })
+            })
+            .transpose()?;
+
+        let (out, mut records_in) = records_channel(READ_CHANNEL_BUDGET);
+        let read_request = rdlt_connector::ReadRequest::new(stream_spec, since, out);
+
+        let read_task: JoinHandle<Result<(), SourceError>> =
+            tokio::spawn(async move { shell.read(read_request).await });
+
+        let (frame_tx, frame_rx) = tokio::sync::mpsc::channel(16);
+
+        tokio::spawn(async move {
+            loop {
+                let Some(push) = records_in.recv().await else {
+                    break;
+                };
+                let frame = read_frame_of(push.payload);
+                if frame_tx.send(Ok(frame)).await.is_err() {
+                    // The client hung up (or the stream errored out from
+                    // under us): closing BOTH halves of the SPI channel
+                    // — the message queue and the byte-budget semaphore
+                    // a producer may be parked on — turns that into the
+                    // Break the connector's next push observes, per the
+                    // SPI's closed-channel-is-cancellation contract.
+                    records_in.close();
+                    break;
+                }
+            }
+
+            match read_task.await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    let frame = proto::ReadFrame {
+                        frame: Some(read_frame::Frame::Error(source_error_frame(&error))),
+                    };
+                    let _ = frame_tx.send(Ok(frame)).await;
+                }
+                Err(join_error) => {
+                    let _ = frame_tx
+                        .send(Err(Status::internal(format!(
+                            "connector read task did not complete: {join_error}"
+                        ))))
+                        .await;
+                }
+            }
+        });
+
+        Ok(Response::new(ReceiverStream::new(frame_rx)))
+    }
+}
+
+/// One SPI push, translated to its wire shape — the payload picks the
+/// oneof arm; nothing here inspects the connector or the request.
+fn read_frame_of(payload: PushPayload) -> proto::ReadFrame {
+    let frame = match payload {
+        PushPayload::RawJson(bytes) => read_frame::Frame::RawJson(bytes.to_vec()),
+        PushPayload::Arrow(batch) => read_frame::Frame::ArrowIpc(encode_arrow_ipc(&batch)),
+        PushPayload::Checkpoint(cursor) => read_frame::Frame::CheckpointCursorJson(
+            serde_json::to_vec(cursor.as_value()).expect("a Cursor's value serializes infallibly"),
+        ),
+    };
+    proto::ReadFrame { frame: Some(frame) }
+}
+
+/// One Arrow batch as an IPC *stream* (not the `File` container — no
+/// footer, a schema message followed by one record-batch message,
+/// exactly what a single-batch push needs): the format
+/// [`rdlt_connector::PushPayload::Arrow`]'s wire counterpart names.
+fn encode_arrow_ipc(batch: &rdlt_connector::RecordBatch) -> Vec<u8> {
+    let mut writer = arrow::ipc::writer::StreamWriter::try_new(Vec::new(), batch.schema_ref())
+        .expect("an in-memory buffer accepts an arrow ipc stream header");
+    writer
+        .write(batch)
+        .expect("an in-memory buffer accepts an arrow ipc record batch");
+    writer
+        .into_inner()
+        .expect("an in-memory buffer accepts an arrow ipc stream footer")
+}
+
+/// Bind at an explicit path and return the [`Line`] a spawning host
+/// would read from stdout, plus a handle for the serving task — WITHOUT
+/// printing anything. [`source`] is this at a self-minted temp path,
+/// with the printing a spawned connector process must do; this is the
+/// seam a test drives directly, against the very listener `source` would
+/// have started.
+///
+/// Both gRPC services ([`Connector`] and [`SourceService`]) are wired to
+/// the SAME [`SourceServer`] instance (`from_arc`, not two independent
+/// `new`s) — they share one handshake-populated shell, so a `Streams` or
+/// `Read` call sees the config a prior `Handshake` validated.
+pub async fn serve_on<C: SourceConnector>(
+    path: impl AsRef<Path>,
+) -> Result<(Line, JoinHandle<Result<(), ServeError>>), ServeError> {
+    let path = path.as_ref();
+    let listener = common::bind_uds(path)?;
+    let incoming = UnixListenerStream::new(listener);
+
+    let server = Arc::new(SourceServer::<C>::new());
+    let serving = tonic::transport::Server::builder()
+        .add_service(ConnectorServer::from_arc(Arc::clone(&server)))
+        .add_service(SourceServiceServer::from_arc(server))
+        .serve_with_incoming(incoming);
+
+    let handle = tokio::spawn(async move { serving.await.map_err(ServeError::Serve) });
+
+    Ok((
+        Line {
+            socket_path: path.to_path_buf(),
+            proto_min: PROTOCOL_VERSION,
+            proto_max: PROTOCOL_VERSION,
+        },
+        handle,
+    ))
+}
+
+/// Turn a [`SourceConnector`] into an out-of-process protocol server:
+/// bind a fresh Unix domain socket in the system temp directory, print
+/// the handshake line on stdout (flushed — the spawning host is reading
+/// a pipe, not a TTY), then serve until the process is killed.
+pub async fn source<C: SourceConnector>() -> Result<(), ServeError> {
+    let (line, handle) = serve_on::<C>(common::temp_socket_path()).await?;
+
+    println!("{}", line.render());
+    std::io::Write::flush(&mut std::io::stdout()).map_err(ServeError::Stdout)?;
+
+    handle.await.map_err(ServeError::Join)?
+}
