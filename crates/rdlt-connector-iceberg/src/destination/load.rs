@@ -29,14 +29,18 @@ use super::commit::{Identity, Plan, append_commit, commit_with_retry};
 use super::config::Config;
 use super::partition;
 use super::schema::{self, compare_field};
-use super::state::{STATE_TABLE, read_state_doc, write_state};
+use super::state::{self, STATE_TABLE, read_state_doc, write_state};
 use super::write::Writer;
 
 /// Width of the pipeline scope hash (128 bits → 32 hex chars). The scope names
 /// the pipeline in snapshot summaries and the state key, so the width a session
 /// opens with MUST equal the width `read_state` re-derives with. Widening from
-/// 12 to 32 (037) orphans pre-037 `rdlt.state.<12hex>` property keys and
-/// pre-037 snapshot replay identities to a clean first-run — recorded in 037 D1.
+/// 12 to 32 (037) means a 32-hex lookup finds nothing for a pipeline whose state
+/// still lives under the pre-037 `rdlt.state.<12hex>` key — `read_state`
+/// (below) probes that legacy key and REFUSES typed rather than silently
+/// fresh-running, matching this feature's two sibling format breaks (postgres
+/// cursor v2, file layout v2). Pre-037 snapshot replay identities stay a clean
+/// first-run regardless — recorded in 037 D1.
 pub(super) const SCOPE_HASH_LEN: usize = 32;
 
 /// Part sizing and its telemetry, grouped: the options that decide
@@ -606,7 +610,10 @@ impl Backend for Load {
     ) -> Result<Option<StateDoc>, DestinationError> {
         let scope = ident_hash(pipeline.as_str(), SCOPE_HASH_LEN);
         let Some(raw) = read_state_doc(&self.catalog, &self.namespace, &scope).await? else {
-            return Ok(None);
+            // No 32-hex property: either a genuine first run, or state
+            // stranded under the pre-037 12-hex key (037 D1) — probe
+            // it before agreeing this pipeline is new.
+            return refuse_legacy_state(&self.catalog, &self.namespace, pipeline).await;
         };
         let state: StateDoc =
             serde_json::from_str(&raw).map_err(|e| fatal(format!("state doc parse: {e}")))?;
@@ -614,6 +621,39 @@ impl Backend for Load {
         // astronomically unlikely collision into a clean first-run.
         Ok(Some(state).filter(|s| &s.pipeline == pipeline))
     }
+}
+
+/// The 037 D1 legacy-key refusal gate: the 32-hex scope lookup found
+/// nothing, so before agreeing this is a fresh pipeline, probe the
+/// pre-037 12-hex key it used to write under. Finding state there —
+/// for THIS pipeline — means the widen orphaned it: silently treating
+/// that as a first run would let Append re-publish every row the
+/// pipeline already committed, so this refuses typed instead, the
+/// same shape the widen's postgres/file siblings take on their own
+/// format breaks. A property under the legacy key that decodes to a
+/// DIFFERENT pipeline is a hash collision on the narrower width, not
+/// this pipeline's state — a clean `None`, the same filter the 32-hex
+/// path applies.
+async fn refuse_legacy_state(
+    catalog: &Arc<dyn Catalog>,
+    namespace: &NamespaceIdent,
+    pipeline: &PipelineId,
+) -> Result<Option<StateDoc>, DestinationError> {
+    let legacy_scope = ident_hash(pipeline.as_str(), state::LEGACY_SCOPE_HASH_LEN);
+    let Some(raw) = read_state_doc(catalog, namespace, &legacy_scope).await? else {
+        return Ok(None);
+    };
+    let state: StateDoc =
+        serde_json::from_str(&raw).map_err(|e| fatal(format!("legacy state doc parse: {e}")))?;
+    if &state.pipeline != pipeline {
+        return Ok(None);
+    }
+    Err(fatal(format!(
+        "state for pipeline `{pipeline}` exists under the pre-037 12-hex scope key \
+         (`rdlt.state.{legacy_scope}`); this build reads 32-hex scope keys — remove the \
+         stale property from the `_rdlt_state` table (or point the pipeline at a fresh \
+         warehouse) rather than silently re-loading from zero"
+    )))
 }
 
 #[cfg(test)]
@@ -1027,5 +1067,82 @@ mod tests {
         let scope = super::super::connector::testhook::scope_of("p");
         assert_eq!(scope.len(), 32, "{scope}");
         assert!(scope.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    /// 037 D1: state stranded under the pre-037 12-hex key for THIS
+    /// pipeline refuses typed, with the frozen spelling naming both
+    /// the pipeline and the legacy property key — never silently
+    /// treated as a fresh pipeline, which would let Append duplicate
+    /// every row the pipeline already committed.
+    #[tokio::test]
+    async fn legacy_scoped_state_for_this_pipeline_refuses_typed() {
+        use super::super::testsupport::{ConflictCatalog, test_table_with_properties};
+
+        let pipeline = PipelineId::from("legacy-pipeline");
+        let legacy_scope = ident_hash(pipeline.as_str(), state::LEGACY_SCOPE_HASH_LEN);
+        let doc = StateDoc::new(pipeline.clone(), "test");
+        let mut properties = std::collections::HashMap::new();
+        properties.insert(
+            format!("rdlt.state.{legacy_scope}"),
+            serde_json::to_string(&doc).expect("state json"),
+        );
+        let table = test_table_with_properties(properties);
+        let catalog = ConflictCatalog::over(table, 0);
+        let arc: Arc<dyn Catalog> = catalog.clone();
+
+        let err = refuse_legacy_state(&arc, &NamespaceIdent::new("ns".into()), &pipeline)
+            .await
+            .expect_err("pre-037 state for this pipeline must refuse");
+        let text = format!("{err}");
+        assert!(
+            text.contains(&format!("state for pipeline `{pipeline}`"))
+                && text.contains("pre-037 12-hex scope key")
+                && text.contains(&format!("rdlt.state.{legacy_scope}"))
+                && text.contains("this build reads 32-hex scope keys")
+                && text.contains("rather than silently re-loading from zero"),
+            "{text}"
+        );
+    }
+
+    /// A legacy-key property belonging to a DIFFERENT pipeline — a
+    /// hash collision on the narrower 12-hex width — is NOT this
+    /// pipeline's state: a clean `None`, the same filter the 32-hex
+    /// path applies, not a refusal.
+    #[tokio::test]
+    async fn a_legacy_scoped_collision_for_another_pipeline_stays_a_clean_none() {
+        use super::super::testsupport::{ConflictCatalog, test_table_with_properties};
+
+        let pipeline = PipelineId::from("this-pipeline");
+        let legacy_scope = ident_hash(pipeline.as_str(), state::LEGACY_SCOPE_HASH_LEN);
+        let other = StateDoc::new(PipelineId::from("some-other-pipeline"), "test");
+        let mut properties = std::collections::HashMap::new();
+        properties.insert(
+            format!("rdlt.state.{legacy_scope}"),
+            serde_json::to_string(&other).expect("state json"),
+        );
+        let table = test_table_with_properties(properties);
+        let catalog = ConflictCatalog::over(table, 0);
+        let arc: Arc<dyn Catalog> = catalog.clone();
+
+        let result = refuse_legacy_state(&arc, &NamespaceIdent::new("ns".into()), &pipeline)
+            .await
+            .expect("a collision on the legacy width is not a refusal");
+        assert!(result.is_none(), "{result:?}");
+    }
+
+    /// No property under either key: a genuine first run, not a
+    /// refusal.
+    #[tokio::test]
+    async fn no_legacy_state_at_all_stays_a_clean_none() {
+        use super::super::testsupport::ConflictCatalog;
+
+        let pipeline = PipelineId::from("brand-new-pipeline");
+        let catalog = ConflictCatalog::failing(0);
+        let arc: Arc<dyn Catalog> = catalog.clone();
+
+        let result = refuse_legacy_state(&arc, &NamespaceIdent::new("ns".into()), &pipeline)
+            .await
+            .expect("no state anywhere is a first run");
+        assert!(result.is_none(), "{result:?}");
     }
 }

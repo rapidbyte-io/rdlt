@@ -71,6 +71,74 @@ async fn a_resumed_pipeline_republishes_nothing() {
     );
 }
 
+/// 037 D1, live: state stranded under the pre-037 12-hex scope key
+/// REFUSES typed rather than being silently treated as a fresh
+/// pipeline. Run 1 writes state at the current 32-hex key the normal
+/// way; the state property is then relocated to the legacy key
+/// (`testhook::move_state_to_legacy_key`, simulating a warehouse never
+/// touched since the widen); run 2 must refuse with the frozen
+/// spelling, and — the defect this guards — must NOT duplicate run
+/// 1's rows by re-appending them under a fresh (empty) resume state.
+///
+/// Red-proved against the unfixed code: with the legacy-key probe
+/// absent, `read_state` sees nothing at the 32-hex key, agrees this is
+/// a first run, and the engine runs fresh — Append republishes run 1's
+/// two rows a second time (4 total, not 2), and no refusal ever
+/// surfaces.
+#[tokio::test]
+async fn state_stranded_under_the_legacy_scope_key_refuses_typed() {
+    let Some(fixture) = CatalogFixture::start().await else {
+        return;
+    };
+    let namespace = "legacy_scope_v2";
+    let doc = fixture.doc(namespace);
+    let pipeline = "ice-legacy-scope";
+    let workdir = tempfile::tempdir().expect("workdir");
+
+    Engine::new(
+        EngineConfig::new(pipeline).with_workdir(workdir.path().join("wal1")),
+        one_batch(vec![json!({"id": 1}), json!({"id": 2})]),
+        Shell::from_value(doc.clone()).expect("valid"),
+    )
+    .run()
+    .await
+    .expect("run 1 settles and writes state at the current 32-hex key");
+
+    use rdlt_connector_iceberg::destination::{Config, testhook};
+    use rdlt_connector_sdk::config::Document;
+    let config = Config::from_value(doc.clone()).expect("valid");
+    testhook::move_state_to_legacy_key(&config, &[namespace.to_owned()], pipeline)
+        .await
+        .expect("state relocated to the legacy 12-hex key");
+
+    let err = Engine::new(
+        EngineConfig::new(pipeline).with_workdir(workdir.path().join("wal2")),
+        one_batch(vec![json!({"id": 3}), json!({"id": 4})]),
+        Shell::from_value(doc).expect("valid"),
+    )
+    .run()
+    .await
+    .expect_err("run 2 must refuse rather than silently re-loading from zero");
+    let text = format!("{err}");
+    assert!(
+        text.contains(&format!("state for pipeline `{pipeline}`"))
+            && text.contains("pre-037 12-hex scope key")
+            && text.contains("this build reads 32-hex scope keys")
+            && text.contains("rather than silently re-loading from zero"),
+        "{text}"
+    );
+
+    let summaries = fixture.snapshot_summaries(namespace, "events").await;
+    let total: u64 = summaries
+        .iter()
+        .filter_map(|s| s.get("added-records").and_then(|v| v.parse::<u64>().ok()))
+        .sum();
+    assert_eq!(
+        total, 2,
+        "run 2 refused before writing anything — run 1's rows stay unduplicated: {summaries:?}"
+    );
+}
+
 /// A REPLAYED commit publishes nothing: the same (load, seq)
 /// redelivered through the SPI — a fresh session staging the same
 /// batch — converges on the snapshot history instead of appending a
