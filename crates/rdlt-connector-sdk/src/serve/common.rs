@@ -75,16 +75,44 @@ pub fn temp_socket_path() -> PathBuf {
 /// still shouldn't be group/world-writable by construction, since
 /// nothing else establishes that.
 ///
-/// A stale file left by a same-PID predecessor that never cleaned up
-/// (an unclean kill; PIDs recycle) is removed first: `UnixListener::bind`
-/// refuses `AddrInUse` against an existing path unconditionally, whether
-/// or not anything is still listening on it.
+/// `UnixListener::bind` refuses `AddrInUse` against an existing path
+/// unconditionally — that errno alone cannot tell a real collision (a
+/// LIVE listener already owns this path) from a stale file a same-PID
+/// predecessor left behind (an unclean kill; PIDs recycle). Unlinking
+/// unconditionally, as an earlier version of this function did, would
+/// silently steal a live listener's path out from under it. So on
+/// `AddrInUse` the path is probed instead: a connect attempt that is
+/// REFUSED means nothing is listening (stale — unlink and retry);
+/// a connect that SUCCEEDS means something is (a real collision,
+/// reported as `ServeError::Bind` rather than clobbered).
 pub fn bind_uds(path: &Path) -> Result<UnixListener, ServeError> {
-    let _ = std::fs::remove_file(path);
-    let listener = UnixListener::bind(path).map_err(|source| ServeError::Bind {
-        path: path.to_path_buf(),
-        source,
-    })?;
+    match UnixListener::bind(path) {
+        Ok(listener) => finish_bind(path, listener),
+        Err(source) if source.kind() == io::ErrorKind::AddrInUse => {
+            if std::os::unix::net::UnixStream::connect(path).is_ok() {
+                return Err(ServeError::Bind {
+                    path: path.to_path_buf(),
+                    source,
+                });
+            }
+            std::fs::remove_file(path).map_err(|source| ServeError::Bind {
+                path: path.to_path_buf(),
+                source,
+            })?;
+            let listener = UnixListener::bind(path).map_err(|source| ServeError::Bind {
+                path: path.to_path_buf(),
+                source,
+            })?;
+            finish_bind(path, listener)
+        }
+        Err(source) => Err(ServeError::Bind {
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
+}
+
+fn finish_bind(path: &Path, listener: UnixListener) -> Result<UnixListener, ServeError> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|source| {
         ServeError::Permissions {
             path: path.to_path_buf(),
@@ -133,5 +161,30 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(mode, 0o600, "the socket is owner-only");
+    }
+
+    /// A path a LIVE listener already owns is a real collision, not a
+    /// stale file — the probe-connect must refuse to unlink it out from
+    /// under the first listener.
+    #[tokio::test]
+    async fn a_live_listener_at_the_same_path_is_a_collision_not_a_steal() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("live.sock");
+
+        let first = bind_uds(&path).expect("first bind");
+
+        let error = bind_uds(&path).expect_err("a second bind must refuse, not steal the path");
+        assert!(
+            matches!(error, ServeError::Bind { .. }),
+            "expected a Bind refusal, got {error:?}"
+        );
+
+        // The first listener is still the one at `path` — proven by
+        // successfully connecting to it, not just by the second bind's
+        // refusal.
+        drop(tokio::net::UnixStream::connect(&path).await.expect(
+            "the first listener is still live and accepting after the second bind refused",
+        ));
+        drop(first);
     }
 }

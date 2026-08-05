@@ -12,6 +12,7 @@
 //! drive the very listener `source` would have started, without stdout
 //! capture.
 
+use std::io::Write as _;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
@@ -44,6 +45,13 @@ const READ_CHANNEL_BUDGET: usize = 8 * 1024 * 1024;
 /// The role a source's handshake must be asked for — the mirrored
 /// spelling lives on the (future) destination side.
 const EXPECTED_ROLE: &str = "source";
+
+/// Every role the protocol currently defines — used only to tell "asked
+/// for the OTHER recognized role" (a real mismatch, worded around what
+/// this connector actually is) apart from "asked for a role that isn't
+/// a role at all" (a typo or a version skew, worded around the request
+/// itself instead).
+const KNOWN_ROLES: [&str; 2] = ["source", "destination"];
 
 /// The gRPC surface over one [`SourceConnector`]. `shell` is empty until
 /// a handshake succeeds; `Arc` (not a bare `Shell<C>`) because the `Read`
@@ -112,6 +120,12 @@ impl<C: SourceConnector> Connector for SourceServer<C> {
         }
 
         if request.expected_role != EXPECTED_ROLE {
+            if !KNOWN_ROLES.contains(&request.expected_role.as_str()) {
+                return Ok(refuse_handshake(format!(
+                    "the handshake asked for role `{}`, which this connector does not recognize",
+                    request.expected_role
+                )));
+            }
             return Ok(refuse_handshake(
                 "this connector is a source; the handshake asked for a destination",
             ));
@@ -156,7 +170,15 @@ impl<C: SourceConnector> Connector for SourceServer<C> {
                 connector_id: C::NAME.to_string(),
                 connector_version: C::VERSION.to_string(),
                 spec_json,
+                // Deliberately empty: the proto's own field doc names
+                // capabilities as a DESTINATION concern (merge/replace/
+                // widen support) — a source has none to advertise.
                 capabilities_json: Vec::new(),
+                // v0 hole, not an oversight: nothing populates this yet
+                // because nothing on either side negotiates a resume
+                // format version to put in it. 039's adapter is where
+                // that negotiation is designed; recorded here so the
+                // gap has an owner rather than looking finished.
                 state_format_versions: Default::default(),
             })),
         }))
@@ -235,7 +257,31 @@ impl<C: SourceConnector> SourceService for SourceServer<C> {
                 let Some(push) = records_in.recv().await else {
                     break;
                 };
-                let frame = read_frame_of(push.payload);
+                let frame = match read_frame_of(push.payload) {
+                    Ok(frame) => frame,
+                    Err(message) => {
+                        // An Arrow batch that failed to encode must not
+                        // just vanish: silently dropping it here would
+                        // make a truncated read look identical to a
+                        // clean end of stream to whatever is on the
+                        // other end. Send ONE terminal error frame
+                        // instead, then close the SPI channel exactly
+                        // like a client hang-up below — the connector's
+                        // read task winds down via Break rather than
+                        // continuing to push into a channel nobody
+                        // drains.
+                        let frame = proto::ReadFrame {
+                            frame: Some(read_frame::Frame::Error(common::error_frame(
+                                Classification::Fatal,
+                                message,
+                                None,
+                            ))),
+                        };
+                        let _ = frame_tx.send(Ok(frame)).await;
+                        records_in.close();
+                        break;
+                    }
+                };
                 if frame_tx.send(Ok(frame)).await.is_err() {
                     // The client hung up (or the stream errored out from
                     // under us): closing BOTH halves of the SPI channel
@@ -272,30 +318,40 @@ impl<C: SourceConnector> SourceService for SourceServer<C> {
 
 /// One SPI push, translated to its wire shape — the payload picks the
 /// oneof arm; nothing here inspects the connector or the request.
-fn read_frame_of(payload: PushPayload) -> proto::ReadFrame {
+///
+/// `Err` only for the Arrow arm: encoding is the one fallible step in
+/// this translation (the caller turns it into a terminal `ErrorFrame`
+/// rather than a panic — see the forwarding loop above).
+fn read_frame_of(payload: PushPayload) -> Result<proto::ReadFrame, String> {
     let frame = match payload {
         PushPayload::RawJson(bytes) => read_frame::Frame::RawJson(bytes.to_vec()),
-        PushPayload::Arrow(batch) => read_frame::Frame::ArrowIpc(encode_arrow_ipc(&batch)),
+        PushPayload::Arrow(batch) => read_frame::Frame::ArrowIpc(encode_arrow_ipc(&batch)?),
         PushPayload::Checkpoint(cursor) => read_frame::Frame::CheckpointCursorJson(
             serde_json::to_vec(cursor.as_value()).expect("a Cursor's value serializes infallibly"),
         ),
     };
-    proto::ReadFrame { frame: Some(frame) }
+    Ok(proto::ReadFrame { frame: Some(frame) })
 }
 
 /// One Arrow batch as an IPC *stream* (not the `File` container — no
 /// footer, a schema message followed by one record-batch message,
 /// exactly what a single-batch push needs): the format
 /// [`rdlt_connector::PushPayload::Arrow`]'s wire counterpart names.
-fn encode_arrow_ipc(batch: &rdlt_connector::RecordBatch) -> Vec<u8> {
+///
+/// Writing into an in-memory `Vec` fails only on a schema/batch mismatch
+/// the connector itself produced — an `expect()` would turn that into a
+/// panicked task indistinguishable, from the client's side, from a
+/// clean end of stream. Rendered as a plain `String`: the caller wraps
+/// it in a terminal `ErrorFrame`, which only needs text.
+fn encode_arrow_ipc(batch: &rdlt_connector::RecordBatch) -> Result<Vec<u8>, String> {
     let mut writer = arrow::ipc::writer::StreamWriter::try_new(Vec::new(), batch.schema_ref())
-        .expect("an in-memory buffer accepts an arrow ipc stream header");
+        .map_err(|error| format!("opening an arrow ipc stream writer: {error}"))?;
     writer
         .write(batch)
-        .expect("an in-memory buffer accepts an arrow ipc record batch");
+        .map_err(|error| format!("writing an arrow ipc record batch: {error}"))?;
     writer
         .into_inner()
-        .expect("an in-memory buffer accepts an arrow ipc stream footer")
+        .map_err(|error| format!("closing an arrow ipc stream writer: {error}"))
 }
 
 /// Bind at an explicit path and return the [`Line`] a spawning host
@@ -341,8 +397,15 @@ pub async fn serve_on<C: SourceConnector>(
 pub async fn source<C: SourceConnector>() -> Result<(), ServeError> {
     let (line, handle) = serve_on::<C>(common::temp_socket_path()).await?;
 
-    println!("{}", line.render());
-    std::io::Write::flush(&mut std::io::stdout()).map_err(ServeError::Stdout)?;
+    // `writeln!`, not `println!`: a spawning host that exits (or never
+    // reads its child's stdout — a misconfigured pipe) leaves this
+    // write facing a broken pipe, and `println!` panics on an IO error
+    // rather than surfacing one. `ServeError::Stdout` already exists
+    // for exactly this write, so both the line and the flush that
+    // follows report through it instead.
+    let mut stdout = std::io::stdout();
+    writeln!(stdout, "{}", line.render()).map_err(ServeError::Stdout)?;
+    stdout.flush().map_err(ServeError::Stdout)?;
 
     handle.await.map_err(ServeError::Join)?
 }

@@ -86,6 +86,12 @@ lint:
 	cargo fmt --all --check
 	tools/check-git-deps.sh
 	cargo clippy --workspace --all-targets -- -D warnings
+	# `serve` (038) is OFF by default, so the workspace clippy line above
+	# never compiles serve/ at all — a connector that never runs
+	# out-of-process must not pay for it, not even a clippy pass. Enabled
+	# here for the one crate that owns it; turning it on workspace-wide
+	# would pull tonic into every OTHER crate's default clippy run too.
+	cargo clippy -p rdlt-connector-sdk --all-targets --features serve -- -D warnings
 	# The snowflake crash sweep is `#![cfg(feature = "failpoints")]` and no gate
 	# command enabled that feature for this crate, so the file was never compiled
 	# by any pipeline — it once broke against deleted APIs with every gate green.
@@ -102,10 +108,19 @@ ifeq ($(TARGET),)
 	# (the 024 zero-second-pass class). `-E 'test(schema_of)'` so an empty
 	# selection — a renamed test — fails rather than passing vacuously.
 	cargo nextest run -p rdlt-connector-sdk --features schema -E 'test(schema_of)'
+	# Same class, `serve` feature (038): OFF by default so a plain
+	# workspace run compiles neither serve/ nor its tests. The filter
+	# selects the module paths those tests actually live under —
+	# `serve::common::tests` (the UDS-bind unit tests) and
+	# `cases::test_serve_source` (the tonic-over-UDS integration
+	# suite) — so a rename of either module, not just a deleted test,
+	# fails this line rather than passing on zero.
+	cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(serve::common) or test(test_serve_source)'
 	cargo test --doc --workspace
 else ifeq ($(TARGET),unit)
 	cargo nextest run --workspace
 	cargo nextest run -p rdlt-connector-sdk --features schema -E 'test(schema_of)'
+	cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(serve::common) or test(test_serve_source)'
 else ifeq ($(TARGET),e2e)
 	cargo nextest run --workspace -E 'binary(/e2e/)'
 else ifeq ($(TARGET),sweep)

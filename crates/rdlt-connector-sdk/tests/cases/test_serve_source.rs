@@ -6,8 +6,9 @@
 //!
 //! `serve_on` (not the print-and-block `source()`) is the seam these
 //! tests use: it returns the [`Line`] instead of printing it, so the
-//! RENDERED line is asserted directly rather than through stdout
-//! capture, which is not reliably interceptable in-process.
+//! rendered line is asserted directly (`Line::render()`, exercised in
+//! the round-trip test below) rather than through stdout capture, which
+//! is not reliably interceptable in-process.
 
 use std::path::PathBuf;
 
@@ -20,13 +21,19 @@ use rdlt_connector_protocol::proto::{
 use rdlt_connector_sdk::serve::source::serve_on;
 use tonic::transport::{Channel, Endpoint};
 
-use super::support::echo::EchoSource;
+use super::support::echo::{self, EchoSource};
 
-/// A per-test-name, per-process socket path — unique enough that
-/// concurrently running tests (nextest isolates by process anyway, but
-/// plain `cargo test` does not) never collide.
-fn socket_path(name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("rdlt-sdk-test-{}-{name}.sock", std::process::id()))
+/// A fresh temp directory plus a short, fixed socket path inside it —
+/// used for every test's UDS listener. `tempfile::tempdir()`, not
+/// `std::env::temp_dir()` plus a hand-rolled unique name: the directory
+/// (and the socket file living in it) is reclaimed on drop, so a run
+/// does not litter the shared system temp directory with abandoned
+/// `.sock` files. The `TempDir` must outlive the listener — callers
+/// bind it to a variable rather than discarding it.
+fn socket_path() -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("connector.sock");
+    (dir, path)
 }
 
 /// Dial `path` the way a spawning host dials the handshake line's
@@ -57,16 +64,22 @@ fn numbers_stream_spec_json() -> Vec<u8> {
     serde_json::to_vec(&rdlt_connector::StreamSpec::new("numbers")).expect("stream spec json")
 }
 
-/// A full pass: handshake ok, `Streams` lists `numbers`, `Read` streams
-/// N `raw_json` frames (one per row, in order) plus exactly one
+/// A full pass: handshake ok (and the `Line` it was reached through
+/// renders the frozen spelling), `Streams` lists `numbers`, `Read`
+/// streams N `raw_json` frames (one per row, in order) plus exactly one
 /// checkpoint frame.
 #[tokio::test]
 async fn handshake_streams_and_read_round_trip() {
-    let path = socket_path("round-trip");
+    let (_dir, path) = socket_path();
     let (line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
     assert_eq!(line.socket_path, path);
     assert_eq!(line.proto_min, 0);
     assert_eq!(line.proto_max, 0);
+    assert_eq!(
+        line.render(),
+        format!("rdlt-connector|1|0|0|{}", path.to_string_lossy()),
+        "the rendered line carries the frozen five-field spelling"
+    );
 
     let channel = dial(&path).await;
     let mut connector = ConnectorClient::new(channel.clone());
@@ -151,7 +164,7 @@ async fn handshake_streams_and_read_round_trip() {
 /// side.
 #[tokio::test]
 async fn wrong_role_handshake_refuses_with_the_frozen_spelling() {
-    let path = socket_path("wrong-role");
+    let (_dir, path) = socket_path();
     let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
     let mut connector = ConnectorClient::new(dial(&path).await);
 
@@ -176,11 +189,43 @@ async fn wrong_role_handshake_refuses_with_the_frozen_spelling() {
     }
 }
 
+/// A handshake asking for a role the protocol doesn't define at all
+/// (a typo, or skew against a future version that added one) gets its
+/// own wording, distinct from the source/destination mismatch above —
+/// worded around the bogus request rather than around what this
+/// connector actually is.
+#[tokio::test]
+async fn unrecognized_role_handshake_refuses_with_its_own_spelling() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
+    let mut connector = ConnectorClient::new(dial(&path).await);
+
+    let reply = connector
+        .handshake(HandshakeRequest {
+            protocol_version: 0,
+            expected_role: "orchestrator".to_string(),
+            config_json: echo_config(3, false),
+        })
+        .await
+        .expect("handshake rpc")
+        .into_inner();
+    match reply.outcome {
+        Some(handshake_reply::Outcome::Error(error)) => {
+            assert_eq!(error.classification, Classification::Fatal as i32);
+            assert_eq!(
+                error.message,
+                "the handshake asked for role `orchestrator`, which this connector does not recognize"
+            );
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
 /// An invalid config document refuses FATAL, carrying the `Document`'s
 /// own validate wording verbatim — nothing the serve layer adds.
 #[tokio::test]
 async fn an_invalid_config_refuses_fatal_with_the_documents_own_wording() {
-    let path = socket_path("bad-config");
+    let (_dir, path) = socket_path();
     let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
     let mut connector = ConnectorClient::new(dial(&path).await);
 
@@ -202,10 +247,11 @@ async fn an_invalid_config_refuses_fatal_with_the_documents_own_wording() {
     }
 }
 
-/// A protocol version outside `[proto_min, proto_max]` refuses FATAL.
+/// A protocol version outside `[proto_min, proto_max]` refuses FATAL —
+/// the message pinned byte-exact, like its three siblings above.
 #[tokio::test]
 async fn an_out_of_range_protocol_version_refuses_fatal() {
-    let path = socket_path("bad-version");
+    let (_dir, path) = socket_path();
     let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
     let mut connector = ConnectorClient::new(dial(&path).await);
 
@@ -221,7 +267,10 @@ async fn an_out_of_range_protocol_version_refuses_fatal() {
     match reply.outcome {
         Some(handshake_reply::Outcome::Error(error)) => {
             assert_eq!(error.classification, Classification::Fatal as i32);
-            assert!(error.message.contains("99"), "{}", error.message);
+            assert_eq!(
+                error.message,
+                "protocol version 99 is outside this connector's supported range [0, 0]"
+            );
         }
         other => panic!("expected a refusal, got {other:?}"),
     }
@@ -231,7 +280,7 @@ async fn an_out_of_range_protocol_version_refuses_fatal() {
 /// whether or not it repeats the same (otherwise valid) request.
 #[tokio::test]
 async fn a_second_handshake_refuses() {
-    let path = socket_path("second-handshake");
+    let (_dir, path) = socket_path();
     let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
     let mut connector = ConnectorClient::new(dial(&path).await);
 
@@ -267,12 +316,54 @@ async fn a_second_handshake_refuses() {
     }
 }
 
+/// `Streams` before a handshake refuses as a raw `Status`, not an
+/// `ErrorFrame` — unlike a classified refusal (wrong role, bad config,
+/// a failing check/read), which the wire carries as reply-payload state
+/// so a caller can inspect it uniformly, "you never handshook" is a
+/// client-protocol violation the RPC layer rejects directly. This
+/// Status-vs-ErrorFrame split in the surface is a real inconsistency,
+/// not a design choice defended here — recorded for Task 6's
+/// error-shape matrix to reconcile, not silently normalized away by
+/// this fix round.
+#[tokio::test]
+async fn streams_before_a_handshake_refuses_as_a_status() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
+    let mut source = SourceServiceClient::new(dial(&path).await);
+
+    let error = source
+        .streams(StreamsRequest {})
+        .await
+        .expect_err("streams before a handshake must refuse");
+    assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+    assert_eq!(error.message(), "handshake has not completed");
+}
+
+/// `Read` before a handshake refuses the same way `Streams` does — see
+/// the comment there for the Status-vs-ErrorFrame note.
+#[tokio::test]
+async fn read_before_a_handshake_refuses_as_a_status() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
+    let mut source = SourceServiceClient::new(dial(&path).await);
+
+    let error = source
+        .read(ReadRequest {
+            stream_spec_json: numbers_stream_spec_json(),
+            since_cursor_json: None,
+        })
+        .await
+        .expect_err("read before a handshake must refuse");
+    assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+    assert_eq!(error.message(), "handshake has not completed");
+}
+
 /// A connector read that fails forwards exactly one terminal `ErrorFrame`
 /// — no rows, no checkpoint, classification/message taken from the
 /// `SourceError` itself, and nothing follows it on the stream.
 #[tokio::test]
 async fn a_failed_read_forwards_one_terminal_error_frame() {
-    let path = socket_path("fail-read");
+    let (_dir, path) = socket_path();
     let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
     let channel = dial(&path).await;
     let mut connector = ConnectorClient::new(channel.clone());
@@ -314,5 +405,65 @@ async fn a_failed_read_forwards_one_terminal_error_frame() {
     assert!(
         frames.message().await.expect("stream ends").is_none(),
         "nothing follows the terminal error"
+    );
+}
+
+/// The cancellation chain, load-bearing for 039's out-of-process
+/// adapter: a client that drops its `Read` response stream mid-flight
+/// must not leave the connector's producer running forever.
+/// `rows: 10_000_000` keeps `EchoSource` producing well past the drop;
+/// pulling a few frames first proves the producer is actually running
+/// ahead of the client (not merely parked before its first push) when
+/// the drop happens. `EchoSource` flips `echo::break_observed()` the
+/// moment its push observes `ControlFlow::Break` — this is what makes
+/// the forwarder's `records_in.close()` on a failed send deletion-red:
+/// remove that close and this test hangs to its timeout instead of
+/// passing.
+#[tokio::test]
+async fn a_dropped_response_stream_cancels_the_connector_within_a_timeout() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
+    let channel = dial(&path).await;
+    let mut connector = ConnectorClient::new(channel.clone());
+    let mut source = SourceServiceClient::new(channel);
+
+    connector
+        .handshake(HandshakeRequest {
+            protocol_version: 0,
+            expected_role: "source".to_string(),
+            config_json: echo_config(10_000_000, false),
+        })
+        .await
+        .expect("handshake rpc");
+
+    let mut frames = source
+        .read(ReadRequest {
+            stream_spec_json: numbers_stream_spec_json(),
+            since_cursor_json: None,
+        })
+        .await
+        .expect("read rpc")
+        .into_inner();
+
+    for _ in 0..3 {
+        frames
+            .message()
+            .await
+            .expect("frame")
+            .expect("a row frame before the drop");
+    }
+
+    drop(frames);
+
+    let observed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !echo::break_observed() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+
+    assert!(
+        observed.is_ok(),
+        "the connector's read task must observe Break within the timeout, not hang"
     );
 }

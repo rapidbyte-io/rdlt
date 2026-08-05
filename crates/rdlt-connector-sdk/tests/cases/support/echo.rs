@@ -3,10 +3,27 @@
 //! (N rows, one checkpoint) and an induced failure (a terminal
 //! `SourceError`) — without pulling in a real system.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use async_trait::async_trait;
 use rdlt_connector::{Cursor, SourceError, StreamSpec};
 use rdlt_connector_sdk::config::Document;
 use rdlt_connector_sdk::source::{Feed, SourceConnector};
+
+/// Flips true the moment a `read_stream` push observes `ControlFlow::Break`
+/// — the signal a dropped response stream (or any other closed SPI
+/// channel) produces. Process-global rather than per-instance: nextest
+/// runs each test as its own OS process, so one test's read can never
+/// share this flag with another's, and there is no `EchoSource` handle
+/// left after `serve_on` moves it into the shell for the cancellation
+/// test to poll instead.
+static BREAK_OBSERVED: AtomicBool = AtomicBool::new(false);
+
+/// Whether the most recent `EchoSource::read_stream` call observed
+/// cancellation — polled by the `serve::source` cancellation-chain test.
+pub fn break_observed() -> bool {
+    BREAK_OBSERVED.load(Ordering::SeqCst)
+}
 
 #[derive(Debug, serde::Deserialize)]
 pub struct EchoConfig {
@@ -75,6 +92,7 @@ impl SourceConnector for EchoSource {
         for n in 0..self.rows {
             last = n;
             if feed.rows([serde_json::json!({"n": n})]).await.is_break() {
+                BREAK_OBSERVED.store(true, Ordering::SeqCst);
                 return Ok(());
             }
         }
