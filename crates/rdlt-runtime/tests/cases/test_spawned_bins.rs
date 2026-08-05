@@ -28,7 +28,10 @@ use rdlt_connector_client::{connector_client, dial};
 use rdlt_connector_protocol::MAX_FRAME_BYTES;
 use rdlt_connector_protocol::handshake::Line;
 use rdlt_connector_protocol::proto::SpecRequest;
-use rdlt_runtime::{ConnectorProvider, ConnectorRequirement, LocalBinaryConnectorProvider};
+use rdlt_runtime::{
+    ClientError, ConnectorProvider, ConnectorRequirement, LocalBinaryConnectorProvider,
+    ProviderError,
+};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 /// The workspace root: two levels above this crate's own manifest.
@@ -204,6 +207,76 @@ async fn the_snowflake_bin_answers_the_spec_rpc_without_credentials() {
         serde_json::from_slice(&reply.spec_json).expect("spec_json decodes");
     assert_eq!(spec["name"], "io.rapidbyte.snowflake");
     assert_eq!(spec["version"], env!("CARGO_PKG_VERSION"));
+}
+
+/// THE ID UX pin (039 T7): the reverse-DNS spelling IS the id. A
+/// dotless `id: file` reaches the same binary — discovery's convention
+/// takes the last `.`-segment, so both spellings resolve to
+/// `rdlt-connector-file` — but the handshake then REFUSES it as an
+/// identity mismatch naming both spellings, actionably and typed.
+/// No magic normalization anywhere: the fix is spelling the real id.
+#[tokio::test]
+async fn a_dotless_id_reaches_the_binary_but_is_refused_as_an_identity_mismatch() {
+    let bin = built_bin("rdlt-connector-file");
+    let provider = LocalBinaryConnectorProvider::new();
+    let error = provider
+        .source(
+            &ConnectorRequirement::new("file").with_path(&bin),
+            &serde_json::json!({
+                "streams": [{"name": "events", "format": "jsonl", "path": "/tmp/*.jsonl"}]
+            }),
+        )
+        .await
+        .expect_err("a dotless id must not pass the strict-identity handshake");
+    match &error {
+        ProviderError::Client(ClientError::IdMismatch { expected, reported }) => {
+            assert_eq!(expected, "file");
+            assert_eq!(reported, "io.rapidbyte.file");
+        }
+        other => panic!("expected the typed IdMismatch, got: {other:?}"),
+    }
+    assert_eq!(
+        error.to_string(),
+        "connector identity mismatch: required `file`, the connector reported \
+         `io.rapidbyte.file`",
+        "the rendered refusal names BOTH spellings — the operator's fix is in the message"
+    );
+}
+
+/// The config-free `Spec` probe behind `rdlt schema <id>`: the
+/// dual-role file bin answers on the FIRST (source) probe with its
+/// source schema; the destination-only snowflake bin refuses the
+/// source role at its arg gate and answers on the destination RETRY —
+/// both without credentials, config or a handshake.
+#[tokio::test]
+async fn the_spec_probe_answers_for_both_bin_shapes() {
+    let provider = LocalBinaryConnectorProvider::new();
+
+    let file_bin = built_bin("rdlt-connector-file");
+    let spec = provider
+        .spec(&ConnectorRequirement::new("io.rapidbyte.file").with_path(&file_bin))
+        .await
+        .expect("the dual-role file bin answers the source probe");
+    assert_eq!(spec.name, "io.rapidbyte.file");
+    assert_eq!(spec.version, env!("CARGO_PKG_VERSION"));
+    let schema = spec
+        .config_schema
+        .expect("the file source publishes a config schema");
+    assert!(
+        schema.is_object() && schema.get("properties").is_some(),
+        "the schema is a JSON Schema document: {schema}"
+    );
+
+    let snowflake_bin = built_bin("rdlt-connector-snowflake");
+    let spec = provider
+        .spec(&ConnectorRequirement::new("io.rapidbyte.snowflake").with_path(&snowflake_bin))
+        .await
+        .expect("the destination-only snowflake bin answers on the destination retry");
+    assert_eq!(spec.name, "io.rapidbyte.snowflake");
+    assert!(
+        spec.config_schema.is_some(),
+        "the snowflake destination publishes a config schema"
+    );
 }
 
 /// The pinned arg contract, both bins: no args → exit 2, an

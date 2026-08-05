@@ -66,6 +66,7 @@ async fn every_parity_document_builds_a_pipeline() {
         let rewritten = materialize(raw_doc, &doc_dir);
         let spec: Spec = serde_yaml::from_str(&rewritten).expect("rewritten doc parses");
         let pipeline = build_pipeline(&spec)
+            .await
             .unwrap_or_else(|e| panic!("document #{index} failed to build: {e}"));
         drop(pipeline);
         count += 1;
@@ -79,7 +80,7 @@ async fn every_parity_document_builds_a_pipeline() {
 async fn missing_config_file_is_a_resolve_error() {
     let yaml = "pipeline: p\nsource:\n  rest:\n    config: /no/such/file.yaml\ndestination:\n  parquet:\n    path: ./out\n";
     let spec: Spec = serde_yaml::from_str(yaml).expect("parses");
-    match build_pipeline(&spec) {
+    match build_pipeline(&spec).await {
         Err(SpecError::Resolve(message)) => {
             assert!(message.contains("/no/such/file.yaml"), "{message}");
         }

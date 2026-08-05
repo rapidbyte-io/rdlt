@@ -66,8 +66,8 @@ fn build_rejects_empty_merge_key() {
 /// still needed two files. The asymmetry was the defect: a reader had
 /// to remember which connector spelled it which way.
 #[cfg(all(feature = "rest", feature = "file"))]
-#[test]
-fn a_source_config_is_accepted_inline_and_by_path() {
+#[tokio::test]
+async fn a_source_config_is_accepted_inline_and_by_path() {
     use rdlt::pipeline_spec::Spec;
 
     let inline = r#"
@@ -86,7 +86,9 @@ destination:
     format: jsonl
 "#;
     let spec: Spec = serde_yaml::from_str(inline).expect("inline source parses");
-    rdlt::pipeline_spec::build_pipeline(&spec).expect("inline source builds");
+    rdlt::pipeline_spec::build_pipeline(&spec)
+        .await
+        .expect("inline source builds");
 
     // The SAME document behind `config:` — written to a real file so
     // the path arm is exercised, not just parsed.
@@ -103,7 +105,9 @@ destination:
         doc.display()
     );
     let spec: Spec = serde_yaml::from_str(&by_path).expect("path source parses");
-    rdlt::pipeline_spec::build_pipeline(&spec).expect("path source builds");
+    rdlt::pipeline_spec::build_pipeline(&spec)
+        .await
+        .expect("path source builds");
 }
 
 /// An INLINE document is VALIDATED, not merely deserialized.
@@ -114,8 +118,8 @@ destination:
 /// config reaching the runtime — and the message is the connector's
 /// own, not a facade paraphrase.
 #[cfg(feature = "rest")]
-#[test]
-fn an_inline_config_still_faces_the_connectors_own_validator() {
+#[tokio::test]
+async fn an_inline_config_still_faces_the_connectors_own_validator() {
     use rdlt::pipeline_spec::Spec;
 
     // Structurally fine, semantically refused: REST requires at least
@@ -139,6 +143,7 @@ destination:
 "#;
     let spec: Spec = serde_yaml::from_str(text).expect("parses");
     let err = rdlt::pipeline_spec::build_pipeline(&spec)
+        .await
         .expect_err("an invalid inline document must not build")
         .to_string();
     assert!(
@@ -190,8 +195,8 @@ destination:
 /// was to change how the SOURCE pages — conflating two decisions that
 /// are not the same one.
 #[cfg(all(feature = "rest", feature = "file"))]
-#[test]
-fn commit_policy_is_read_from_the_document_and_checked() {
+#[tokio::test]
+async fn commit_policy_is_read_from_the_document_and_checked() {
     use rdlt::pipeline_spec::Spec;
 
     let with_policy = r#"
@@ -219,7 +224,9 @@ destination:
     // 100 MB OR 15 minutes — whichever first.
     assert!(policy.triggers(0, 104_857_600, 0));
     assert!(policy.triggers(0, 0, 900));
-    rdlt::pipeline_spec::build_pipeline(&spec).expect("builds");
+    rdlt::pipeline_spec::build_pipeline(&spec)
+        .await
+        .expect("builds");
 
     // A policy naming no threshold would never commit until the run
     // ended, so it is refused rather than honoured.
@@ -229,6 +236,7 @@ destination:
     );
     let spec: Spec = serde_yaml::from_str(&empty).expect("parses");
     let err = rdlt::pipeline_spec::build_pipeline(&spec)
+        .await
         .expect_err("a policy with no threshold must not build")
         .to_string();
     assert!(err.contains("no threshold"), "{err}");
@@ -240,5 +248,7 @@ destination:
     );
     let spec: Spec = serde_yaml::from_str(&none).expect("parses");
     assert!(spec.commit_policy.is_none());
-    rdlt::pipeline_spec::build_pipeline(&spec).expect("builds with the default");
+    rdlt::pipeline_spec::build_pipeline(&spec)
+        .await
+        .expect("builds with the default");
 }

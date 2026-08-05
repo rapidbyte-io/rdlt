@@ -195,6 +195,76 @@ fn schema_prints_json_for_every_connector() {
     }
 }
 
+/// The compiled tier of `schema` is BYTE-IDENTICAL to the ValueEnum
+/// era: exactly the library's own schema export, pretty-printed, one
+/// trailing newline — verified against a pre-change golden capture in
+/// the 039 T7 record. The arg is a free string now (unknown spellings
+/// spawn a connector binary), and this pin is what holds the nine
+/// compiled spellings still.
+#[test]
+fn schema_file_source_stays_byte_identical() {
+    let out = rdlt()
+        .args(["schema", "file-source"])
+        .output()
+        .expect("spawn");
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let expected = serde_json::to_string_pretty(&rdlt::connector::file::source::config_schema())
+        .expect("the library schema encodes")
+        + "\n";
+    assert_eq!(
+        String::from_utf8(out.stdout).expect("utf8"),
+        expected,
+        "the compiled spelling's bytes are the library schema's, unchanged"
+    );
+}
+
+/// An unrecognized `schema` value that names no existing file is
+/// treated as a connector id; with no such binary on PATH it exits 2
+/// carrying the provider's frozen NotFound spelling, stdout clean.
+#[test]
+fn schema_for_an_absent_connector_exits_2_with_the_notfound_spelling() {
+    let out = rdlt()
+        .args(["schema", "./nonexistent-connector-binary"])
+        .output()
+        .expect("spawn");
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(out.stdout.is_empty(), "no machine output on refusal");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("connector `./nonexistent-connector-binary`")
+            && stderr.contains("no binary")
+            && stderr.contains("on PATH and no explicit path was given"),
+        "the frozen NotFound spelling surfaces verbatim: {stderr}"
+    );
+}
+
+/// A `connector:` pipeline whose binary exists nowhere refuses at the
+/// same gate from BOTH `run` and `validate`: exit 2, the frozen
+/// NotFound spelling on stderr, nothing on stdout — the resolve-class
+/// contract extended to spawned connectors.
+#[test]
+fn a_connector_spec_with_a_missing_binary_exits_2_on_run_and_validate() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let spec = dir.path().join("pipeline.yaml");
+    std::fs::write(
+        &spec,
+        "pipeline: p\nsource:\n  connector:\n    id: io.rdlt.test.absent\n    config: {}\n\
+         destination:\n  connector:\n    id: io.rdlt.test.absent\n    config: {}\n",
+    )
+    .expect("write");
+    for command in ["run", "validate"] {
+        let out = rdlt().arg(command).arg(&spec).output().expect("spawn");
+        assert_eq!(out.status.code(), Some(2), "{command}: {out:?}");
+        assert!(out.stdout.is_empty(), "{command}: stdout stays clean");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("connector `io.rdlt.test.absent`")
+                && stderr.contains("no binary `rdlt-connector-absent`"),
+            "{command}: the frozen NotFound spelling surfaces: {stderr}"
+        );
+    }
+}
+
 /// `--events` writes the feed as NDJSON: one JSON object per line,
 /// run_started first, committed present. `--events -` without
 /// `--report` is refused before anything runs — stdout belongs to one

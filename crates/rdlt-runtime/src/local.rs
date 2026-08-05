@@ -8,9 +8,11 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use rdlt_connector_client::{RemoteDestination, RemoteSource};
+use rdlt_connector::ConnectorSpec;
+use rdlt_connector_client::{ClientError, RemoteDestination, RemoteSource, connector_client, dial};
 use rdlt_connector_protocol::MAX_FRAME_BYTES;
 use rdlt_connector_protocol::handshake::Line;
+use rdlt_connector_protocol::proto::SpecRequest;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 
@@ -138,11 +140,17 @@ impl LocalBinaryConnectorProvider {
     /// drop, and the spawn sets `kill_on_drop` — so a binary that
     /// times out or writes garbage is killed here, before any guard
     /// exists to do it.
+    ///
+    /// `quiet_stderr` nulls the child's stderr instead of inheriting
+    /// it — for [`Self::spec`]'s role probing, where a wrong-role
+    /// attempt against a single-role connector would otherwise print
+    /// that bin's usage refusal into the caller's terminal.
     async fn spawn_and_read_line(
         &self,
         path: &Path,
         binary: &str,
         role: &str,
+        quiet_stderr: bool,
     ) -> Result<(Child, Line), ProviderError> {
         let spawn_error = |source| ProviderError::Spawn {
             binary: binary.to_string(),
@@ -153,9 +161,14 @@ impl LocalBinaryConnectorProvider {
             .arg(format!("--role={role}"))
             // stdout is the machine channel (the one handshake line);
             // stderr stays the connector's human log channel (ADR 0001
-            // D3); stdin is nothing's channel.
+            // D3) unless the caller asked for quiet; stdin is nothing's
+            // channel.
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
+            .stderr(if quiet_stderr {
+                Stdio::null()
+            } else {
+                Stdio::inherit()
+            })
             .stdin(Stdio::null())
             // Belt beside the guard's own start_kill: a child dropped
             // before a guard exists dies with its `Child`.
@@ -189,6 +202,52 @@ impl LocalBinaryConnectorProvider {
             }
         }
     }
+
+    /// The connector's static self-description — name, version,
+    /// `config_schema` — via the config-free `Spec` RPC: resolve, spawn,
+    /// dial, ask, kill. No handshake and no config, so it works with
+    /// nothing but the binary (the CLI's `schema <id>` path).
+    ///
+    /// A served bin only answers under a role it carries, so the probe
+    /// tries `--role=source` first and falls back to `--role=destination`
+    /// when the first spawn produces no handshake line — a dual-role
+    /// connector therefore answers with its SOURCE schema, and a
+    /// destination-only one (whose arg gate refuses `source`) still
+    /// answers on the second attempt. Both probes null the child's
+    /// stderr: a wrong-role usage refusal is this method's mechanism,
+    /// not something to print at the operator.
+    pub async fn spec(
+        &self,
+        requirement: &ConnectorRequirement,
+    ) -> Result<ConnectorSpec, ProviderError> {
+        let (path, binary) = self.resolve(requirement)?;
+        let mut refusal = None;
+        for role in ["source", "destination"] {
+            match self.spawn_and_read_line(&path, &binary, role, true).await {
+                Ok((child, line)) => {
+                    // The guard exists from the moment a socket path is
+                    // known — the child and its socket die with this
+                    // scope whether the RPC below answers or refuses.
+                    let _guard = LifecycleGuard::new(child, line.socket_path.clone());
+                    let channel = dial(&line.socket_path, self.engine_budget_bytes).await?;
+                    let reply = connector_client(channel)
+                        .spec(SpecRequest {})
+                        .await
+                        .map_err(|status| ProviderError::Client(ClientError::Transport(status)))?
+                        .into_inner();
+                    let spec: ConnectorSpec =
+                        serde_json::from_slice(&reply.spec_json).map_err(|error| {
+                            ProviderError::Client(ClientError::Protocol(format!(
+                                "undecodable spec_json in the Spec reply: {error}"
+                            )))
+                        })?;
+                    return Ok(spec);
+                }
+                Err(error) => refusal = Some(error),
+            }
+        }
+        Err(refusal.expect("both role probes ran, so the last error is recorded"))
+    }
 }
 
 /// D-039-1's convention: the id's LAST `.`-segment, prefixed
@@ -215,7 +274,9 @@ impl ConnectorProvider for LocalBinaryConnectorProvider {
         config: &serde_json::Value,
     ) -> Result<ManagedSource, ProviderError> {
         let (path, binary) = self.resolve(requirement)?;
-        let (child, line) = self.spawn_and_read_line(&path, &binary, "source").await?;
+        let (child, line) = self
+            .spawn_and_read_line(&path, &binary, "source", false)
+            .await?;
         // The guard exists from the moment a socket path is known: any
         // failure below drops it, which kills the child AND unlinks
         // whatever the connector may already have bound.
@@ -242,7 +303,7 @@ impl ConnectorProvider for LocalBinaryConnectorProvider {
     ) -> Result<ManagedDestination, ProviderError> {
         let (path, binary) = self.resolve(requirement)?;
         let (child, line) = self
-            .spawn_and_read_line(&path, &binary, "destination")
+            .spawn_and_read_line(&path, &binary, "destination", false)
             .await?;
         let guard = LifecycleGuard::new(child, line.socket_path.clone());
         let (adapter, outcome) = RemoteDestination::connect(

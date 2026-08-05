@@ -4547,6 +4547,7 @@ dependencies = [
  "rdlt-connector-snowflake",
  "rdlt-core",
  "rdlt-engine",
+ "rdlt-runtime",
  "rdlt-testkit",
  "serde",
  "serde_json",

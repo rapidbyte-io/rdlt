@@ -41,6 +41,11 @@ pub use rdlt_core::{
     PolicyAction, RdltError, ResumedFrom, RunReport, SchemaPolicy, StreamName, TableName,
     TableReport, WriteMode,
 };
+/// The out-of-process connector runtime, re-exported for embedders that
+/// supply their own [`runtime::ConnectorProvider`] to
+/// [`pipeline_spec::build_pipeline_with`] — or configure the default
+/// [`runtime::LocalBinaryConnectorProvider`] the no-provider form uses.
+pub use rdlt_runtime as runtime;
 
 /// The bundled connectors, one module per system — the same pattern as the
 /// crates themselves (`rdlt-connector-<system>`). A system module exposes

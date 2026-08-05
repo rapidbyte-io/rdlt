@@ -10,13 +10,17 @@
 //! shared fixture `benches/parity_specs.yaml` pins the model from both
 //! consumers.
 //!
-//! Each variant that names a connector type is feature-gated to that
-//! connector, so the facade still builds with any subset of connectors (down
-//! to none): a spec that names a connector this build did not compile in fails
-//! to parse (the variant does not exist), never silently.
+//! Each variant that names a COMPILED-IN connector type is feature-gated to
+//! that connector, so the facade still builds with any subset of connectors
+//! (down to none): a spec that names a connector this build did not compile
+//! in fails to parse (the variant does not exist), never silently. The
+//! `connector:` variant is the exception BY DESIGN — it names an
+//! out-of-process connector resolved through a [`rdlt_runtime::ConnectorProvider`]
+//! at build time, so it is always present regardless of features.
 
 use std::path::PathBuf;
 
+use rdlt_runtime::{ConnectorProvider, ConnectorRequirement, LocalBinaryConnectorProvider};
 use serde::Deserialize;
 
 use crate::builder::{Missing, PipelineBuilder};
@@ -111,6 +115,10 @@ pub enum SourceSpec {
     /// The postgres source.
     #[cfg(feature = "postgres-source")]
     Postgres(ConfigSpec<PostgresConfig>),
+    /// An out-of-process connector, spawned and handshaken at build:
+    /// `connector: {id: io.rapidbyte.file, config: {…}}`. Always present
+    /// — this is the variant that needs NO compiled-in feature.
+    Connector(ConnectorRef),
 }
 
 /// The path form of a postgres source: `postgres: {config: source.yaml}`.
@@ -199,6 +207,60 @@ pub enum DestSpec {
     /// and invisible from YAML with no error anywhere.
     #[cfg(feature = "snowflake")]
     Snowflake(Box<crate::connector::snowflake::destination::Config>),
+    /// An out-of-process connector, spawned and handshaken at build —
+    /// the destination twin of [`SourceSpec::Connector`], same shape,
+    /// same always-present rule.
+    Connector(ConnectorRef),
+}
+
+/// An out-of-process connector requirement, the `connector:` document:
+///
+/// ```yaml
+/// source:
+///   connector:
+///     id: io.rapidbyte.file
+///     version: "0.3.0"      # optional, exact-match
+///     path: /explicit/bin   # optional override
+///     config: { ... }       # the connector's own document, opaque here
+/// ```
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConnectorRef {
+    /// The connector id, spelled reverse-DNS: `io.rapidbyte.file`. Two
+    /// things hang off it: the id's LAST `.`-segment names the binary
+    /// discovery looks for (`rdlt-connector-file` on PATH), and the
+    /// spawned connector must report EXACTLY this id in its handshake.
+    /// A shorthand like `id: file` would therefore discover the same
+    /// binary and then be REFUSED as an identity mismatch — the full
+    /// reverse-DNS spelling is the id, not a long form of it.
+    pub id: String,
+    /// Pin the connector's version, exact-match against what its
+    /// handshake reports. Absent accepts any.
+    #[serde(default)]
+    pub version: Option<String>,
+    /// Explicit binary path, bypassing PATH discovery entirely.
+    #[serde(default)]
+    pub path: Option<PathBuf>,
+    /// The connector's OWN config document, OPAQUE here: it crosses the
+    /// wire in the handshake and the CONNECTOR's config gate validates
+    /// it — the facade and CLI never learn remote vocabularies, so a
+    /// refusal arrives in the connector's own wording.
+    pub config: serde_json::Value,
+}
+
+impl ConnectorRef {
+    /// The provider-facing half of the document — everything except the
+    /// config, which travels beside it.
+    fn requirement(&self) -> ConnectorRequirement {
+        let mut requirement = ConnectorRequirement::new(&self.id);
+        if let Some(version) = &self.version {
+            requirement = requirement.with_version(version);
+        }
+        if let Some(path) = &self.path {
+            requirement = requirement.with_path(path);
+        }
+        requirement
+    }
 }
 
 /// A spec that could not be turned into a pipeline. Two shapes so consumers
@@ -373,23 +435,47 @@ impl Spec {
     pub fn pg_source_config(&self) -> Option<Result<PostgresConfig, SpecError>> {
         match &self.source {
             SourceSpec::Postgres(spec) => Some(spec.document()),
-            #[allow(unreachable_patterns)]
+            // Reachable in every build: the `Connector` variant is
+            // always present beside any compiled-in sources.
             _ => None,
         }
     }
 }
 
-/// Turn a parsed [`Spec`] into a runnable [`Pipeline`]. Pure construction: no
-/// network or destination I/O beyond reading the referenced source-config
-/// files; the typestate builder's `build` re-checks against destination
-/// capabilities before any pipeline runs.
-// With no source connector compiled in every real arm vanishes, leaving
-// `builder` used only by the fallback error arm — inert, not a defect.
-#[cfg_attr(
-    not(any(feature = "rest", feature = "file", feature = "postgres-source")),
-    allow(unused_variables)
-)]
-pub fn build_pipeline(spec: &Spec) -> Result<Pipeline, SpecError> {
+/// The engine byte budget a `connector:` spawn's dial derives its flow-control
+/// windows from: the document's own batch-policy byte threshold when it names
+/// one, else the engine's channel default — the SAME constant the engine's
+/// byte channel uses, so the wire can never hold more in flight than the
+/// engine itself would buffer.
+fn engine_budget_bytes(spec: &Spec) -> u64 {
+    spec.batch_policy
+        .and_then(|policy| policy.every_bytes)
+        .unwrap_or(rdlt_engine::DEFAULT_BYTE_BUDGET as u64)
+}
+
+/// Turn a parsed [`Spec`] into a runnable [`Pipeline`]. Construction only: no
+/// destination I/O beyond reading the referenced source-config files and
+/// opening compiled-in destinations — EXCEPT for `connector:` requirements,
+/// which are resolved through the default
+/// [`LocalBinaryConnectorProvider`]: spawn, dial, handshake (where the
+/// CONNECTOR validates its own config), wrap. The typestate builder's `build`
+/// re-checks against destination capabilities before any pipeline runs.
+///
+/// Async because of that spawn seam; embedders with their own provider (a
+/// pool, a remote scheduler) use [`build_pipeline_with`].
+pub async fn build_pipeline(spec: &Spec) -> Result<Pipeline, SpecError> {
+    let provider =
+        LocalBinaryConnectorProvider::default().with_engine_budget_bytes(engine_budget_bytes(spec));
+    build_pipeline_with(spec, &provider).await
+}
+
+/// [`build_pipeline`] with the caller's own [`ConnectorProvider`] deciding how
+/// `connector:` requirements become processes (or pool members, or anything
+/// else) — the engine never learns which.
+pub async fn build_pipeline_with(
+    spec: &Spec,
+    provider: &dyn ConnectorProvider,
+) -> Result<Pipeline, SpecError> {
     let builder = Pipeline::builder(spec.pipeline.as_str());
     let builder = match &spec.write_mode {
         None | Some(WriteModeSpec::Append) => builder.write_mode(WriteMode::Append),
@@ -422,53 +508,45 @@ pub fn build_pipeline(spec: &Spec) -> Result<Pipeline, SpecError> {
         SourceSpec::Rest(spec_config) => {
             let source = crate::connector::rest::source::Shell::new(spec_config.document()?)
                 .map_err(|e| SpecError::resolve(e.to_string()))?;
-            build_with(builder.source(source), &spec.destination)
+            build_with(builder.source(source), &spec.destination, provider).await
         }
         #[cfg(feature = "oracle")]
         SourceSpec::Oracle(spec_config) => {
             let source = crate::connector::oracle::source::Shell::new(spec_config.document()?)
                 .map_err(|e| SpecError::resolve(e.to_string()))?;
-            build_with(builder.source(source), &spec.destination)
+            build_with(builder.source(source), &spec.destination, provider).await
         }
         #[cfg(feature = "file")]
         SourceSpec::File(spec_config) => {
             let source = crate::connector::file::source::Shell::new(spec_config.document()?)
                 .map_err(|e| SpecError::resolve(e.to_string()))?;
-            build_with(builder.source(source), &spec.destination)
+            build_with(builder.source(source), &spec.destination, provider).await
         }
         #[cfg(feature = "postgres-source")]
         SourceSpec::Postgres(spec_config) => {
             let source = crate::connector::postgres::source::Shell::new(spec_config.document()?)
                 .map_err(|e| SpecError::resolve(e.to_string()))?;
-            build_with(builder.source(source), &spec.destination)
+            build_with(builder.source(source), &spec.destination, provider).await
         }
-        #[allow(unreachable_patterns)]
-        _ => Err(SpecError::resolve(
-            "source connector not compiled into this build",
-        )),
+        SourceSpec::Connector(reference) => {
+            // The provider's typed errors render verbatim — the frozen
+            // NotFound spelling, the handshake's identity/config
+            // refusals — never a facade paraphrase on top.
+            let source = provider
+                .source(&reference.requirement(), &reference.config)
+                .await
+                .map_err(|e| SpecError::resolve(e.to_string()))?;
+            build_with(builder.source(source), &spec.destination, provider).await
+        }
     }
 }
 
 /// Fix the source generic, then dispatch the destination and build. Generic
 /// over the source so the typestate builder keeps its type through `build`.
-// Dead when no source connector calls it; `builder` is untouched when no
-// destination connector is compiled in — both are inert degenerate builds.
-#[cfg_attr(
-    not(any(feature = "rest", feature = "file", feature = "postgres-source")),
-    allow(dead_code)
-)]
-#[cfg_attr(
-    not(any(
-        feature = "duckdb",
-        feature = "postgres-dest",
-        feature = "file",
-        feature = "iceberg"
-    )),
-    allow(unused_variables)
-)]
-fn build_with<S: rdlt_connector::Source>(
+async fn build_with<S: rdlt_connector::Source>(
     builder: PipelineBuilder<S, Missing>,
     dest: &DestSpec,
+    provider: &dyn ConnectorProvider,
 ) -> Result<Pipeline, SpecError> {
     match dest {
         #[cfg(feature = "duckdb")]
@@ -550,9 +628,14 @@ fn build_with<S: rdlt_connector::Source>(
                 .map_err(|e| SpecError::resolve(format!("snowflake destination: {e}")))?;
             Ok(builder.destination(dest).build()?)
         }
-        #[allow(unreachable_patterns)]
-        _ => Err(SpecError::resolve(
-            "destination connector not compiled into this build",
-        )),
+        DestSpec::Connector(reference) => {
+            // Same verbatim rule as the source arm: the provider's and
+            // handshake's typed refusals ARE the message.
+            let dest = provider
+                .destination(&reference.requirement(), &reference.config)
+                .await
+                .map_err(|e| SpecError::resolve(e.to_string()))?;
+            Ok(builder.destination(dest).build()?)
+        }
     }
 }

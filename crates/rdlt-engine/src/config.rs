@@ -5,7 +5,12 @@ use rdlt_core::{CommitPolicy, PipelineId, SchemaPolicy, StreamName, WriteMode};
 /// Default bound on in-flight bytes per stage channel: 64 MiB. This is the engine's
 /// resident-memory cap; a producer that would exceed it parks until the consumer
 /// drains.
-const DEFAULT_BYTE_BUDGET: usize = 64 << 20;
+///
+/// Public because it is THE engine default other layers must agree with:
+/// the facade threads it into the connector provider's dial windows when a
+/// pipeline document sets no byte budget of its own — one constant, never a
+/// second literal that could drift.
+pub const DEFAULT_BYTE_BUDGET: usize = 64 << 20;
 
 /// Configuration for an [`Engine`](crate::Engine).
 ///

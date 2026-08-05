@@ -71,8 +71,8 @@ fn examples_dir() -> PathBuf {
 /// connector shells, which run each document's validation gate — so a
 /// typo in an ACTIVE line of any example fails here, not in a user's
 /// first run.
-#[test]
-fn every_example_pipeline_parses_and_builds() {
+#[tokio::test]
+async fn every_example_pipeline_parses_and_builds() {
     // Building constructs the real shells, and the duckdb shell OPENS
     // its database file — an IO side effect that must land in a
     // throwaway working directory, not in `examples/`. Safe to chdir
@@ -88,6 +88,7 @@ fn every_example_pipeline_parses_and_builds() {
         let spec: rdlt::pipeline_spec::Spec = serde_yaml::from_str(&text)
             .unwrap_or_else(|e| panic!("{name}/pipeline.yaml must parse: {e}"));
         rdlt::pipeline_spec::build_pipeline(&spec)
+            .await
             .unwrap_or_else(|e| panic!("{name}/pipeline.yaml must build: {e}"));
         seen += 1;
     }

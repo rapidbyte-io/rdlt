@@ -65,25 +65,16 @@ pub enum Command {
     },
     /// Print a connector's configuration JSON Schema to stdout.
     Schema {
-        /// Which connector's document to describe.
-        #[arg(value_enum)]
-        connector: SchemaFor,
+        /// Which connector's document to describe: a compiled-in
+        /// spelling (rest-source, postgres-source, oracle-source,
+        /// file-source, file-dest, postgres-dest, duckdb-dest,
+        /// snowflake-dest, iceberg-dest), or an out-of-process
+        /// connector — its reverse-DNS id (io.rapidbyte.file, found as
+        /// rdlt-connector-file on PATH) or an explicit binary path —
+        /// spawned and asked for its schema.
+        #[arg(value_name = "connector")]
+        connector: String,
     },
-}
-
-/// Every connector document the CLI can describe, spelled
-/// `<system>-<side>`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-pub enum SchemaFor {
-    RestSource,
-    PostgresSource,
-    OracleSource,
-    FileSource,
-    FileDest,
-    PostgresDest,
-    DuckdbDest,
-    SnowflakeDest,
-    IcebergDest,
 }
 
 /// The color ladder. `console` already honours NO_COLOR under

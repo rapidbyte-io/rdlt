@@ -92,6 +92,19 @@ pub fn cdc_composition_warnings(spec: &Spec, config: &PostgresConfig) -> Vec<Str
                 cdc.flag_column
             ));
         }
+        // An out-of-process connector's config is OPAQUE here by design
+        // (only the connector knows its vocabulary), so the composition
+        // cannot be inspected — say so rather than staying silent or
+        // guessing.
+        DestSpec::Connector(reference) => {
+            warnings.push(format!(
+                "cdc: destination `{}` is an out-of-process connector — its \
+                 options are opaque here, so the CDC composition cannot be \
+                 checked; ensure it merges with the deletion flag `{}` wired \
+                 as a hard delete, or deletes land as flagged rows",
+                reference.id, cdc.flag_column
+            ));
+        }
     }
     warnings
 }

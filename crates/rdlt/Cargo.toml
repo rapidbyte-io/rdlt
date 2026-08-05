@@ -33,6 +33,11 @@ rdlt-connector-sdk = { workspace = true }
 rdlt-core = { workspace = true }
 rdlt-connector = { workspace = true }
 rdlt-engine = { workspace = true }
+# The out-of-process connector seam (039): `connector:` in a pipeline
+# document resolves through a ConnectorProvider; the facade holds the
+# default local-binary one. EXPERIMENTAL and unpublished like the wire
+# crates it composes — rdlt itself cannot publish until they do.
+rdlt-runtime = { workspace = true }
 rdlt-connector-rest = { workspace = true, optional = true }
 rdlt-connector-duckdb = { workspace = true, optional = true }
 rdlt-connector-file = { workspace = true, optional = true }

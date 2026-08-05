@@ -43,7 +43,7 @@ mod schema;
 mod shred;
 mod wal;
 
-pub use config::EngineConfig;
+pub use config::{DEFAULT_BYTE_BUDGET, EngineConfig};
 pub use engine::{Engine, EventStream};
 pub use rdlt_core::{Metrics, MetricsSnapshot, PartClose, PipelineEvent, RdltError, RunReport};
 

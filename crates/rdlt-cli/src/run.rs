@@ -46,7 +46,7 @@ pub(crate) async fn run(
     }
 
     let (spec, pipeline_name) = load_spec(&spec_path)?;
-    let pipeline = pipeline_spec::build_pipeline(&spec)?;
+    let pipeline = pipeline_spec::build_pipeline(&spec).await?;
     let events_sink = match events_path {
         None => None,
         Some(_) if events_to_stdout => Some(EventSink::Stdout),
@@ -89,10 +89,14 @@ fn load_spec(spec_path: &std::path::Path) -> Result<(Spec, String), CliError> {
 }
 
 /// `rdlt validate` — the same gates a run passes on its way to the
-/// first byte, and nothing after them.
+/// first byte, and nothing after them. For a `connector:` requirement
+/// those gates are the REAL spawn and handshake — the connector's own
+/// config validation runs and refuses here, typed, exit 2 — and the
+/// built pipeline is then discarded, which kills the spawned processes
+/// with it.
 pub(crate) async fn validate(spec_path: PathBuf, verbosity: Verbosity) -> Result<(), CliError> {
     let (spec, pipeline_name) = load_spec(&spec_path)?;
-    let _pipeline = pipeline_spec::build_pipeline(&spec)?;
+    let _pipeline = pipeline_spec::build_pipeline(&spec).await?;
     if verbosity != Verbosity::Quiet {
         crate::ui::stderr_line(&format!("ok: pipeline {pipeline_name} is valid"));
     }

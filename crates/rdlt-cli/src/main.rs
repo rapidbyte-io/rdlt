@@ -123,7 +123,9 @@ fn main() -> ExitCode {
             renderer,
         )),
         args::Command::Validate { spec } => runtime.block_on(run::validate(spec, verbosity)),
-        args::Command::Schema { connector } => schema::print(connector),
+        // Async since 039: an unrecognized spelling spawns the named
+        // connector binary and asks its config-free Spec RPC.
+        args::Command::Schema { connector } => runtime.block_on(schema::print(&connector)),
     };
     match outcome {
         Ok(()) => ExitCode::SUCCESS,
