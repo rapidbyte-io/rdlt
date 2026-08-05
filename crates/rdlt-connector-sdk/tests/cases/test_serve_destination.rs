@@ -631,10 +631,7 @@ async fn a_failed_publish_classifies_transient_and_the_session_stays_usable() {
     {
         Some(session_reply::Reply::Error(error)) => {
             assert_eq!(error.classification, Classification::Transient as i32);
-            assert_eq!(
-                error.message,
-                "transient destination error: echo: induced publish failure"
-            );
+            assert_eq!(error.message, "echo: induced publish failure");
         }
         other => panic!("expected a transient error frame, got {other:?}"),
     }
@@ -779,7 +776,7 @@ async fn a_second_open_and_an_empty_frame_refuse_with_pinned_spellings() {
             assert_eq!(error.classification, Classification::Fatal as i32);
             assert_eq!(
                 error.message,
-                "fatal destination error: a session accepts at most one Open frame, and it must be first"
+                "a session accepts at most one Open frame, and it must be first"
             );
         }
         other => panic!("expected the already-open refusal, got {other:?}"),
@@ -1129,10 +1126,7 @@ async fn a_failed_open_does_not_poison_the_stream_for_a_retry() {
     {
         Some(session_reply::Reply::Error(error)) => {
             assert_eq!(error.classification, Classification::Transient as i32);
-            assert_eq!(
-                error.message,
-                "transient destination error: echo: induced connect failure"
-            );
+            assert_eq!(error.message, "echo: induced connect failure");
         }
         other => panic!("expected a transient connect refusal, got {other:?}"),
     }

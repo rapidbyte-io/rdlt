@@ -212,19 +212,29 @@ impl<C: DestinationConnector> common::HandshakeShell for Shell<C> {
 }
 
 /// Flatten a classified [`DestinationError`] into the wire's
-/// [`ErrorFrame`] — see the source side's `source_error_frame` twin for
-/// why the wildcard arm is required (`DestinationError` is
+/// [`ErrorFrame`]: the classification as the enum, the INNER cause's
+/// text as the message, the rate-limit hint when there is one — see
+/// the source side's `source_error_frame` twin for the full contract
+/// (`ErrorFrame.message` is the CAUSE text; classification travels
+/// only as the enum; the receiving client renders the classification
+/// frame exactly once on reconstruction) and for why the wildcard arm
+/// is required and keeps the full `Display` (`DestinationError` is
 /// `#[non_exhaustive]` from outside its defining crate).
 fn destination_error_frame(error: &DestinationError) -> ErrorFrame {
-    let (classification, retry_after) = match error {
-        DestinationError::Transient(_) => (Classification::Transient, None),
-        DestinationError::RateLimited { retry_after, .. } => {
-            (Classification::RateLimited, *retry_after)
-        }
-        DestinationError::Fatal(_) => (Classification::Fatal, None),
-        _ => (Classification::Fatal, None),
+    let (classification, message, retry_after) = match error {
+        DestinationError::Transient(cause) => (Classification::Transient, cause.to_string(), None),
+        DestinationError::RateLimited {
+            retry_after,
+            source,
+        } => (
+            Classification::RateLimited,
+            source.to_string(),
+            *retry_after,
+        ),
+        DestinationError::Fatal(cause) => (Classification::Fatal, cause.to_string(), None),
+        _ => (Classification::Fatal, error.to_string(), None),
     };
-    common::error_frame(classification, error.to_string(), retry_after)
+    common::error_frame(classification, message, retry_after)
 }
 
 /// A malformed `*_json` payload on an otherwise well-formed request
@@ -469,13 +479,15 @@ async fn handle_frame<C: DestinationConnector>(
         // failed `Open` is legal to retry on the same stream — the
         // guard never learns anything happened until it actually did.
         let reply = if state.guard.is_open() {
-            // Frozen-as-shipped shape difference: this refusal renders
-            // through `DestinationError`'s `Display` — the client sees
-            // the "fatal destination error: " prefix — while its
-            // sibling refusals (`refuse_before_open`, the decode
-            // refusals) are bare `common::error_frame` messages with no
-            // prefix. Both spellings are pinned by the serve suite; do
-            // not "harmonize" them.
+            // Routed through `destination_error_frame` like a
+            // connector's own failure, but since the flattener ships
+            // the INNER cause (039: the message is the cause text,
+            // never the SPI `Display` frame), the wire shows the bare
+            // spelling below — consistent with its sibling refusals
+            // (`refuse_before_open`, the decode refusals), which were
+            // always bare `common::error_frame` messages. An earlier
+            // comment here recorded the prefix mismatch as
+            // frozen-as-shipped; the cause-text rule dissolved it.
             session_reply::Reply::Error(destination_error_frame(&DestinationError::fatal(
                 "a session accepts at most one Open frame, and it must be first",
             )))

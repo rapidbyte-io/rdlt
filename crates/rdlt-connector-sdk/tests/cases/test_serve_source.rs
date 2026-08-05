@@ -540,8 +540,11 @@ async fn an_undecodable_since_cursor_answers_a_terminal_error_frame_not_a_status
 }
 
 /// A connector read that fails forwards exactly one terminal `ErrorFrame`
-/// — no rows, no checkpoint, classification/message taken from the
-/// `SourceError` itself, and nothing follows it on the stream.
+/// — no rows, no checkpoint, the classification from the `SourceError`
+/// and the message its BARE inner cause (039: the frame carries the
+/// cause text, never the SPI `Display` frame — the receiving client
+/// renders the classification frame exactly once on reconstruction),
+/// and nothing follows it on the stream.
 #[tokio::test]
 async fn a_failed_read_forwards_one_terminal_error_frame() {
     let (_dir, path) = socket_path();
@@ -576,10 +579,7 @@ async fn a_failed_read_forwards_one_terminal_error_frame() {
     match frame.frame {
         Some(read_frame::Frame::Error(error)) => {
             assert_eq!(error.classification, Classification::Fatal as i32);
-            assert_eq!(
-                error.message,
-                "fatal source error: echo: induced read failure"
-            );
+            assert_eq!(error.message, "echo: induced read failure");
         }
         other => panic!("expected a terminal error frame, got {other:?}"),
     }

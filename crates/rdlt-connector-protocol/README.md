@@ -254,6 +254,14 @@ terminal `error` — never a `Status`. This is DATA a caller is meant to
 inspect uniformly, not a protocol bug — the RPC layer has no reason to
 reject the call that reported it.
 
+`ErrorFrame.message` is the CAUSE text; classification travels only as
+the enum; the receiving client renders the classification frame exactly
+once on reconstruction. A server never puts a rendered classification
+frame (rdlt's SPI `Display` spellings, or any equivalent of its own)
+into `message` — a third-party server authors its own cause text and
+cannot know the receiving side's spellings, so the wire carries causes,
+never frames.
+
 ## Gotchas, named so they're searchable
 
 **grpc-python over a Unix domain socket needs an explicit authority.**

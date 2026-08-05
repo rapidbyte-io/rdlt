@@ -25,8 +25,8 @@ const MIN_WINDOW_BYTES: u64 = 64 * 1024;
 /// rides h2 flow control, no explicit credit message): both h2 windows
 /// are set from `engine_budget_bytes`, so a server can never hold more
 /// bytes in flight than the engine's own channel budget — the clamp
-/// floors tiny budgets at h2's workable minimum ([`MIN_WINDOW_BYTES`])
-/// and caps at [`MAX_FRAME_BYTES`], the wire's hard per-message
+/// floors tiny budgets at h2's workable minimum (`MIN_WINDOW_BYTES`,
+/// 64 KiB) and caps at [`MAX_FRAME_BYTES`], the wire's hard per-message
 /// ceiling. Left unset, tonic's ~2 MiB default window would pace the
 /// wire instead of the budget (the research spike measured exactly
 /// that skew).

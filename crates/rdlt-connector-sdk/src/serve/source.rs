@@ -112,24 +112,44 @@ impl<C: SourceConnector> common::HandshakeShell for Shell<C> {
 }
 
 /// Flatten a classified [`SourceError`] into the wire's [`ErrorFrame`]:
-/// classification, the error's own rendered text (the classification
-/// frame included — `SourceError`'s `Display` already carries it, so a
-/// receiver on the other end of the wire sees exactly what an in-process
-/// caller's `.to_string()` would have shown), and the rate-limit hint
-/// when there is one.
+/// the classification as the enum, the INNER cause's text as the
+/// message, and the rate-limit hint when there is one.
+///
+/// THE CONTRACT (039 fix round 1): `ErrorFrame.message` is the CAUSE
+/// text; classification travels only as the enum; the receiving client
+/// renders the classification frame exactly once on reconstruction.
+/// Shipping `error.to_string()` here — as this function first did —
+/// put the SPI `Display` frame ON the wire, and a client mapping the
+/// frame back to a `SourceError` then framed it again ("fatal source
+/// error: fatal source error: …" — the 026 double-frame class, end to
+/// end). The third-party argument decides which side owns the frame: a
+/// foreign server authors its own cause text and cannot know rdlt's
+/// SPI `Display` spellings, so the wire carries causes, never frames.
+/// Nothing is lost — `SourceError::context` already folds context into
+/// the inner cause string.
 ///
 /// The wildcard arm is required: `SourceError` is `#[non_exhaustive]`
 /// from OUTSIDE its defining crate, which this crate is. A future
 /// classification this match has not been taught about lands FATAL
-/// rather than failing to compile a shipped server.
+/// rather than failing to compile a shipped server — and, with no way
+/// to reach an unknown variant's inner cause, it keeps the full
+/// rendered `Display` as its message: a safe fallback that may
+/// double-frame on reconstruction, preferred over dropping text.
 fn source_error_frame(error: &SourceError) -> ErrorFrame {
-    let (classification, retry_after) = match error {
-        SourceError::Transient(_) => (Classification::Transient, None),
-        SourceError::RateLimited { retry_after, .. } => (Classification::RateLimited, *retry_after),
-        SourceError::Fatal(_) => (Classification::Fatal, None),
-        _ => (Classification::Fatal, None),
+    let (classification, message, retry_after) = match error {
+        SourceError::Transient(cause) => (Classification::Transient, cause.to_string(), None),
+        SourceError::RateLimited {
+            retry_after,
+            source,
+        } => (
+            Classification::RateLimited,
+            source.to_string(),
+            *retry_after,
+        ),
+        SourceError::Fatal(cause) => (Classification::Fatal, cause.to_string(), None),
+        _ => (Classification::Fatal, error.to_string(), None),
     };
-    common::error_frame(classification, error.to_string(), retry_after)
+    common::error_frame(classification, message, retry_after)
 }
 
 #[tonic::async_trait]
