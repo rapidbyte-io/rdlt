@@ -50,6 +50,17 @@ pub(super) fn validate_streams(
     capabilities: DestinationCapabilities,
     destination: &dyn Destination,
 ) -> Result<(), RdltError> {
+    // Durable-identity destinations declare per-run, not per-stream; refuse
+    // early so even a no-op run against such a destination fails cleanly.
+    if capabilities.requires_durable_identity && config.workdir.is_none() {
+        return Err(RdltError::config(format!(
+            "destination `{}` publishes non-atomically and requires a workdir for \
+             exactly-once crash recovery; set one with `workdir:` (the CLI defaults \
+             to `.rdlt`) — without it a mid-publish failure re-appends committed rows",
+            destination.spec().name
+        )));
+    }
+
     let mut root_tables: BTreeMap<TableName, StreamName> = BTreeMap::new();
     for spec in streams {
         let table = root_table(&spec.name, capabilities.ident_rules);
@@ -121,14 +132,6 @@ pub(super) fn validate_streams(
             return Err(RdltError::config(format!(
                 "stream `{}` requests Merge but destination `{}` does not support it",
                 spec.name,
-                destination.spec().name
-            )));
-        }
-        if capabilities.requires_durable_identity && config.workdir.is_none() {
-            return Err(RdltError::config(format!(
-                "destination `{}` publishes non-atomically and requires a workdir for \
-                 exactly-once crash recovery; set one with `workdir:` (the CLI defaults \
-                 to `.rdlt`) — without it a mid-publish failure re-appends committed rows",
                 destination.spec().name
             )));
         }
@@ -213,32 +216,6 @@ mod hint_validation_tests {
             std::slice::from_ref(&spec),
             dest.capabilities(),
             &dest,
-        )
-    }
-
-    fn no_workdir_config() -> EngineConfig {
-        EngineConfig::new("test")
-    }
-
-    fn workdir_config() -> EngineConfig {
-        EngineConfig::new("test").with_workdir("/tmp/rdlt-test")
-    }
-
-    fn durable_identity_dest() -> MemoryDestination {
-        MemoryDestination::new().with_capabilities(
-            DestinationCapabilities::default()
-                .with_merge(true)
-                .with_requires_durable_identity(true),
-        )
-    }
-
-    fn check_with(config: EngineConfig, destination: MemoryDestination) -> Result<(), RdltError> {
-        let spec = StreamSpec::new("s");
-        validate_streams(
-            &config,
-            std::slice::from_ref(&spec),
-            destination.capabilities(),
-            &destination,
         )
     }
 
@@ -347,6 +324,30 @@ mod hint_validation_tests {
         assert!(check_streams(&["?"]).is_ok());
     }
 
+    fn no_workdir_config() -> EngineConfig {
+        EngineConfig::new("test")
+    }
+
+    fn workdir_config() -> EngineConfig {
+        EngineConfig::new("test").with_workdir("/tmp/rdlt-test")
+    }
+
+    fn durable_identity_dest() -> MemoryDestination {
+        MemoryDestination::new().with_capabilities(
+            DestinationCapabilities::default().with_requires_durable_identity(true),
+        )
+    }
+
+    fn check_with(config: EngineConfig, destination: MemoryDestination) -> Result<(), RdltError> {
+        let spec = StreamSpec::new("s");
+        validate_streams(
+            &config,
+            std::slice::from_ref(&spec),
+            destination.capabilities(),
+            &destination,
+        )
+    }
+
     #[test]
     fn a_durable_identity_destination_without_a_workdir_is_refused() {
         let error = check_with(no_workdir_config(), durable_identity_dest())
@@ -359,5 +360,14 @@ mod hint_validation_tests {
     #[test]
     fn the_same_destination_with_a_workdir_passes() {
         assert!(check_with(workdir_config(), durable_identity_dest()).is_ok());
+    }
+
+    #[test]
+    fn empty_stream_list_with_durable_identity_destination_without_workdir_is_refused() {
+        let dest = durable_identity_dest();
+        let error = validate_streams(&no_workdir_config(), &[], dest.capabilities(), &dest)
+            .expect_err("per-run check fires even with empty streams");
+        let text = error.to_string();
+        assert!(text.contains("requires a workdir"), "{text}");
     }
 }
