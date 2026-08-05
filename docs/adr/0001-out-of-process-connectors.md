@@ -32,11 +32,21 @@ in-process, made legible to any connector in any language.
 
 **D1 — Decoupled-first; the protocol is the product contract.**
 Connectors run as separate long-lived processes speaking a versioned
-protocol. The in-process trait API (`Source`/`Destination`/
-`LoadSession` and the sdk) remains a supported, first-class embedding
-surface — it is free to keep, and the remote machinery is built ON
-it — but the default story (CLI, docs, third parties) becomes
-protocol-backed over the course of the program.
+protocol. *(AMENDED 2026-08-05, owner decision:)* the in-process
+connector wiring is TRANSITIONAL, not permanent — once the
+out-of-process path is ESTABLISHED, the facade's in-process
+connector compilation (its per-connector features and dependencies)
+is REMOVED, per the house coexist→certify→delete swap discipline
+(the 025-031 second-generation precedent). "Established" means: the
+reference ports done, the conformance kit certifying them, AND the
+remote-mode benchmarks still meeting the recorded bars — the removal
+go/no-go sits at that stage, because deleting in-process makes the
+remote numbers the benchmark identity. What survives removal: the
+SPI traits (`Source`/`Destination`/`LoadSession` — the engine's
+consumption surface, which the remote adapters implement) and the
+sdk (the connector-authoring framework, used inside connector
+binaries). What dies: connectors as library dependencies of the
+facade/CLI.
 
 **D2 — The engine's ignorance is preserved.** The engine continues to
 accept already-constructed `Source`/`Destination` objects (true
