@@ -19,6 +19,7 @@ members = [
     "crates/rdlt-connector-snowflake",
     "crates/rdlt-connector-protocol",
     "crates/rdlt-connector-client",
+    "crates/rdlt-runtime",
 ]
 
 [workspace.package]
@@ -54,6 +55,7 @@ rdlt-connector-postgres = { path = "crates/rdlt-connector-postgres", version = "
 rdlt-connector-sqlcore = { path = "crates/rdlt-connector-sqlcore", version = "0.3.0" }
 rdlt-connector-protocol = { path = "crates/rdlt-connector-protocol", version = "0.3.0" }
 rdlt-connector-client = { path = "crates/rdlt-connector-client", version = "0.3.0" }
+rdlt-runtime = { path = "crates/rdlt-runtime", version = "0.3.0" }
 
 # arrow-rs: single workspace-wide major (research.md R10). Pinned to the major that
 # duckdb-rs links — connectors receive `RecordBatch` through the rdlt-connector
@@ -66,7 +68,9 @@ arrow-select = "58.3"
 arrow-cast = "58.3"
 parquet = "58.3"
 
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "fs", "macros"] }
+# `process` (039): rdlt-runtime spawns connector binaries and supervises
+# them through its lifecycle guard.
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "fs", "macros", "process"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 async-trait = "0.1"

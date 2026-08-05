@@ -1,0 +1,32 @@
+[package]
+name = "rdlt-runtime"
+description = "rdlt connector runtime: providers that resolve, spawn and supervise out-of-process connectors behind managed SPI adapters"
+# EXPERIMENTAL, like the protocol and client crates it composes (ADR
+# 0001 D8): unpublished until the wire freezes.
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rdlt-connector = { workspace = true }
+rdlt-connector-client = { workspace = true }
+# For the stdout handshake line only (`handshake::Line`) — the one
+# pre-gRPC artifact a spawned connector writes; everything after the
+# line goes through the client crate.
+rdlt-connector-protocol = { workspace = true }
+# `process` rides the workspace feature list; `io-util` is this crate's
+# own need (BufReader/read_line over the child's piped stdout).
+tokio = { workspace = true, features = ["io-util"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true }
+
+[lints]
+workspace = true
