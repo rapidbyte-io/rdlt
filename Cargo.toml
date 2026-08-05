@@ -17,6 +17,7 @@ members = [
     "crates/rdlt-bench",
     "crates/rdlt-connector-sqlcore",
     "crates/rdlt-connector-snowflake",
+    "crates/rdlt-connector-protocol",
 ]
 
 [workspace.package]
@@ -50,6 +51,7 @@ rdlt-connector-iceberg = { path = "crates/rdlt-connector-iceberg", version = "0.
 rdlt-connector-oracle = { path = "crates/rdlt-connector-oracle", version = "0.3.0" }
 rdlt-connector-postgres = { path = "crates/rdlt-connector-postgres", version = "0.3.0", default-features = false }
 rdlt-connector-sqlcore = { path = "crates/rdlt-connector-sqlcore", version = "0.3.0" }
+rdlt-connector-protocol = { path = "crates/rdlt-connector-protocol", version = "0.3.0" }
 
 # arrow-rs: single workspace-wide major (research.md R10). Pinned to the major that
 # duckdb-rs links — connectors receive `RecordBatch` through the rdlt-connector
@@ -80,6 +82,18 @@ tokio-util = "0.7"
 fs4 = "0.13"
 # CLI-only: the mallopt FFI (rdlt-cli) — the sole sanctioned unsafe in the tree.
 libc = "0.2"
+
+# Out-of-process connector protocol (038): rdlt-connector-protocol is a LEAF
+# crate — tonic must never enter any other crate's dependency tree
+# (`cargo tree -i tonic` proves it). tonic-prost is a RUNTIME dependency, not
+# just a build-dep alongside tonic-prost-build: the code tonic-prost-build
+# generates calls `tonic_prost::ProstCodec` directly, so the companion has to
+# be linked into the crate that includes that generated code.
+tonic = "0.14"
+tonic-prost = "0.14"
+prost = "0.14"
+tonic-prost-build = "0.14"
+protoc-bin-vendored = "3"
 
 # Connectors
 object_store = { version = "0.12", features = ["aws"] }

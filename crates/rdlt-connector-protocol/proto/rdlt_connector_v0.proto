@@ -1,0 +1,123 @@
+// rdlt connector protocol v0 — EXPERIMENTAL (ADR 0001 D8): versioned
+// but unfrozen until the conformance kit and one non-Rust
+// implementation have exercised it. Field numbers are frozen from
+// day one; evolution is additive.
+//
+// Trust model (owner decision D-038-1): config documents cross this
+// LOCAL socket in the clear; a spawned connector inherits the
+// operator's trust like any child process. Secret references are
+// the recorded future for network transports.
+//
+// Payload discipline (ADR 0001 D4): *_json fields carry serde
+// documents (their own format_version gates are the source of
+// truth); arrow_ipc fields carry Arrow IPC stream bytes.
+//
+// credits: recorded fallback, not in v0 — spike 2026-08-05 bounded
+// peak in-flight to window + <=2 chunks. `Read` stays server-streaming
+// with no client credit arm (Task 1's D6 = RIDES H2); a `ReadCredit`
+// message is the documented escape hatch if a future measurement finds
+// the bound insufficient, not a message this file declares today.
+syntax = "proto3";
+package rdlt.connector.v0;
+
+enum Classification {
+  CLASSIFICATION_UNSPECIFIED = 0;
+  TRANSIENT = 1;
+  RATE_LIMITED = 2;
+  FATAL = 3;
+}
+message ErrorFrame {
+  Classification classification = 1;
+  string message = 2;
+  optional uint64 retry_after_ms = 3;
+}
+
+message HandshakeRequest {
+  uint32 protocol_version = 1;   // client's pick within the stdout line's range
+  string expected_role = 2;      // "source" | "destination"
+  bytes config_json = 3;         // the connector config document
+}
+message HandshakeReply {
+  oneof outcome {
+    HandshakeOk ok = 1;
+    ErrorFrame error = 2;        // typed refusal: bad role/version/config
+  }
+}
+message HandshakeOk {
+  string connector_id = 1;       // provider compares vs its resolution
+  string connector_version = 2;
+  bytes spec_json = 3;           // ConnectorSpec (name, version, config_schema)
+  bytes capabilities_json = 4;   // DestinationCapabilities; empty for sources
+  map<string, uint32> state_format_versions = 5; // e.g. "cursor" -> 2
+}
+service Connector {
+  rpc Handshake(HandshakeRequest) returns (HandshakeReply);
+  rpc Check(CheckRequest) returns (CheckReply);
+}
+message CheckRequest {}
+message CheckReply { oneof outcome { Empty ok = 1; ErrorFrame error = 2; } }
+message Empty {}
+
+service SourceService {
+  rpc Streams(StreamsRequest) returns (StreamsReply);
+  rpc Read(ReadRequest) returns (stream ReadFrame);
+}
+message StreamsRequest {}
+message StreamsReply {
+  oneof outcome { StreamList ok = 1; ErrorFrame error = 2; }
+}
+message StreamList { repeated bytes stream_spec_json = 1; }
+message ReadRequest {
+  bytes stream_spec_json = 1;
+  optional bytes since_cursor_json = 2;
+}
+message ReadFrame {
+  oneof frame {
+    bytes raw_json = 1;              // PushPayload::RawJson
+    bytes arrow_ipc = 2;             // PushPayload::Arrow, IPC stream bytes
+    bytes checkpoint_cursor_json = 3;
+    ErrorFrame error = 4;            // terminal: read() returned Err
+  }
+}
+
+service DestinationService {
+  rpc OpenSession(stream SessionRequest) returns (stream SessionReply);
+}
+message SessionRequest {
+  oneof request {
+    Open open = 1;                   // MUST be first
+    Ensure ensure = 2;
+    Write write = 3;
+    ExistingReceipt existing_receipt = 4;
+    Replay replay = 5;
+    Publish publish = 6;
+    ReadState read_state = 7;
+    Close close = 8;
+  }
+}
+message Open { string pipeline = 1; string load_id = 2; }
+message Ensure { bytes table_schema_json = 1; bytes write_mode_json = 2; }
+message Write { string table = 1; bytes arrow_ipc = 2; }
+message ExistingReceipt { string load_id = 1; uint64 commit_seq = 2; }
+message Replay { bytes commit_meta_json = 1; bytes receipt_json = 2; }
+message Publish { bytes commit_meta_json = 1; }
+message ReadState { string pipeline = 1; }
+message Close {}
+message SessionReply {
+  oneof reply {
+    Empty opened = 1;
+    Empty ensured = 2;
+    Empty written = 3;
+    ReceiptReply receipt = 4;        // ExistingReceipt answer
+    Empty replayed = 5;
+    Published published = 6;
+    StateReply state = 7;
+    Empty closed = 8;
+    ErrorFrame error = 9;
+    PartClosedEvent part_closed = 10; // interleaved notification
+  }
+}
+message ReceiptReply { optional bytes receipt_json = 1; }
+message Published { bytes receipt_json = 1; }
+message StateReply { optional bytes state_doc_json = 1; }
+message PartClosedEvent { string table = 1; uint64 encoded_bytes = 2; string reason = 3; }
