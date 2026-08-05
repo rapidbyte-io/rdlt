@@ -281,3 +281,56 @@ fn an_unknown_setting_errors_at_assemble_naming_its_key() {
         "the failing key is named: {err}"
     );
 }
+
+/// ALTER SET DATA TYPE on a column with existing rows: does it cast
+/// existing values in place, or refuse? This determines whether the
+/// widen arm can use in-place ALTER on populated target tables during
+/// merge upserts.
+#[test]
+fn probe_alter_set_data_type_casts_existing_rows() {
+    let conn = memdb();
+    conn.execute_batch(
+        "CREATE TABLE t (id INTEGER); INSERT INTO t VALUES (7);
+         ALTER TABLE t ALTER COLUMN id SET DATA TYPE VARCHAR;",
+    )
+    .expect("in-place widen");
+    let v: String = conn
+        .query_row("SELECT id FROM t", [], |r| r.get(0))
+        .expect("read");
+    assert_eq!(v, "7", "existing rows are cast, not lost");
+}
+
+/// ALTER on a TEMP table holding unpublished rows: does it succeed
+/// in place, or refuse? This pin governs whether temp-leg rows can be
+/// widened directly during target-schema evolution.
+#[test]
+fn probe_alter_on_a_temp_table_with_rows() {
+    let conn = memdb();
+    conn.execute_batch(
+        "CREATE TEMP TABLE s (id INTEGER); INSERT INTO s VALUES (7);
+         ALTER TABLE s ALTER COLUMN id SET DATA TYPE VARCHAR;",
+    )
+    .expect("temp-leg widen with unpublished rows");
+}
+
+/// ALTER on a column indexed by a unique ART index (rdlt_ux_ naming
+/// per the crate's merge_ddl): does it widen in place, or refuse with
+/// a constraint error? If it refuses, Task 16's upsert-table widen
+/// must drop-and-recreate the index around the ALTER.
+#[test]
+fn probe_alter_on_an_art_indexed_column() {
+    let conn = memdb();
+    conn.execute_batch("CREATE TABLE t (id INTEGER); CREATE UNIQUE INDEX rdlt_ux_t ON t (id);")
+        .expect("indexed");
+    let result = conn.execute_batch("ALTER TABLE t ALTER COLUMN id SET DATA TYPE BIGINT");
+    // PROBE FINDING: ALTER REFUSES when an index exists on the column.
+    // Task 16's upsert-table widen must drop-and-recreate the rdlt_ux_
+    // index around the ALTER.
+    let err_msg = result
+        .expect_err("ALTER fails on indexed columns")
+        .to_string();
+    assert!(
+        err_msg.contains("Cannot change the type of this column: an index depends on it"),
+        "exact error message for Task 16 design: {err_msg}"
+    );
+}
