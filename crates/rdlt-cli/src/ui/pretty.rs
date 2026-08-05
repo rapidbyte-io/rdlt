@@ -123,9 +123,19 @@ impl Pretty {
                 line.push_str(&format!(" out {:<9}", format::bytes(written.output_bytes)));
             }
             if done {
+                // live-but-still, NOT finished: `finish_with_message` commits
+                // the row to scrollback beyond `clear()`'s reach (indicatif
+                // treats a finished bar as permanent output, not a
+                // redrawable line), which is exactly the one-✔-row-per-
+                // stream residue `clear()` is supposed to remove. Style
+                // first so the ✔ template is in effect when the message
+                // renders, disable the steady tick so a done bar stops
+                // ticking (nothing left to animate), then set — never
+                // finish — the message.
                 bar.set_style(ProgressStyle::with_template("  ✔ {msg}").expect("static template"));
+                bar.disable_steady_tick();
                 line.push_str(" done");
-                bar.finish_with_message(line);
+                bar.set_message(line);
             } else {
                 bar.set_message(line);
             }
@@ -147,9 +157,17 @@ impl Pretty {
         self.totals.set_message(totals);
     }
 
-    /// Tear the live rows down (the summary replaces them). Clearing —
-    /// not finishing — so scrollback keeps the run's real history: the
-    /// summary that follows carries the durable numbers.
+    /// Tear the ENTIRE live display down — header, every stream row, totals —
+    /// leaving nothing behind. The summary (on success) or the error text
+    /// (on failure) is the durable record; the live rows exist only to
+    /// animate a run in progress and are ephemeral by design, so every row
+    /// must stay CLEARABLE for as long as this display lives. That is why
+    /// `redraw`'s done branch never calls `finish_with_message`: indicatif
+    /// treats a finished bar as committed output beyond a `MultiProgress`
+    /// clear's reach (it survives on screen forever, one line per stream,
+    /// duplicating what the summary's per-table rows already say) — a
+    /// done row must stay merely `set_message`d, live-but-still, so this
+    /// `clear()` actually removes it.
     pub fn clear(self) {
         let _ = self.multi.clear();
     }
