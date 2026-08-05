@@ -24,21 +24,12 @@ use rdlt_connector_protocol::proto;
 use thiserror::Error;
 use tokio::net::UnixListener;
 
-/// The per-message receive ceiling BOTH served services install
-/// (`.max_decoding_message_size` on every service wrapper in
-/// `serve::source::serve_on` and `serve::destination::serve_on`),
-/// replacing tonic's 4 MiB default decode cap. The SPI's byte-budget
-/// channels run 8-64 MiB, so ONE Arrow batch in a `Write` frame may
-/// legitimately exceed 4 MiB — under tonic's default, such a batch
-/// kills the session with an opaque transport `Status`, and the frozen
-/// one-batch-per-frame rule means there is NO conforming way to
-/// deliver it smaller. h2 flow-control windows remain the PACING
-/// mechanism (see the module doc's window note); this cap is the hard
-/// refusal ceiling, deliberately above any in-tree budget. 039's
-/// client must mirror it (CARRIED) — a dialing side left at the 4 MiB
-/// default dies the same way on the first over-4 MiB `ReadFrame` a
-/// server legally sends.
-pub(super) const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
+/// Promoted to the wire crate in 039 (its doc rides with it — both
+/// sides of the wire import the ONE constant now, so the ceiling can
+/// never skew between a server and the client that dials it);
+/// re-imported here so serve call sites keep reading
+/// `common::MAX_FRAME_BYTES` unchanged.
+pub(super) use rdlt_connector_protocol::MAX_FRAME_BYTES;
 
 /// Failures standing up or running a `serve()` listener itself — never a
 /// connector's own classified failure, which rides [`proto::ErrorFrame`]
@@ -170,12 +161,14 @@ pub(crate) fn error_frame(
     }
 }
 
-/// The frozen pre-handshake refusal: every RPC but `Handshake` itself,
-/// on EITHER service, answers this as a raw
-/// `Status::failed_precondition` until a handshake populates the
-/// shell. Quoted verbatim in the protocol crate's README — hoisted
-/// here so the spelling lives once, used by both servers' `shell()`
-/// accessors.
+/// The frozen pre-handshake refusal: every RPC but `Handshake` itself
+/// and the config-free `Spec` RPC (which answers before the handshake —
+/// it carries no session state, so it never reaches a `shell()`
+/// accessor for this refusal to fire from), on EITHER service, answers
+/// this as a raw `Status::failed_precondition` until a handshake
+/// populates the shell. Quoted verbatim in the protocol crate's README
+/// — hoisted here so the spelling lives once, used by both servers'
+/// `shell()` accessors.
 pub(super) const HANDSHAKE_NOT_COMPLETED: &str = "handshake has not completed";
 
 /// Every role the protocol currently defines — used only to tell "asked
@@ -184,6 +177,27 @@ pub(super) const HANDSHAKE_NOT_COMPLETED: &str = "handshake has not completed";
 /// a role at all" (a typo or a version skew, worded around the request
 /// itself instead).
 pub(crate) const KNOWN_ROLES: [&str; 2] = ["source", "destination"];
+
+/// Answer the config-free `Spec` RPC: the connector's static identity
+/// (`C::NAME`/`C::VERSION`/`C::config_schema()`) serialized as
+/// `ConnectorSpec` JSON — both servers' `spec` handlers converge here.
+/// Answerable BEFORE any handshake by construction: it reads statics
+/// alone and never touches a handshake-populated shell, so there is no
+/// session state for the pre-handshake refusal to guard (039: a
+/// provider asks a spawned connector what it IS — the schema command's
+/// path — before deciding what config to hand it).
+pub(crate) fn spec_reply(
+    name: &'static str,
+    version: &'static str,
+    config_schema: Option<serde_json::Value>,
+) -> tonic::Response<proto::SpecReply> {
+    let mut spec = rdlt_connector::ConnectorSpec::new(name, version);
+    spec.config_schema = config_schema;
+    tonic::Response::new(proto::SpecReply {
+        spec_json: serde_json::to_vec(&spec)
+            .expect("a ConnectorSpec serializes to JSON infallibly"),
+    })
+}
 
 /// Refuse a handshake with a FATAL [`proto::ErrorFrame`] carrying
 /// `message` — every handshake refusal, from either service, converges

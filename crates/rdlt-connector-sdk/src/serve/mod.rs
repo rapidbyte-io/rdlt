@@ -22,9 +22,12 @@
 //!
 //! A protocol-state violation — any [`crate::source::SourceConnector`]/
 //! [`crate::destination::DestinationConnector`] RPC other than
-//! `Handshake` arriving before a handshake has completed, or a second
-//! concurrent `OpenSession` while one is already active on the same
-//! served process — answers as a raw gRPC `Status`
+//! `Handshake` arriving before a handshake has completed (the
+//! config-free `Spec` RPC is the one other exemption: it answers
+//! before the handshake — it carries no session state, only the
+//! connector's static identity, so arriving early is not a violation
+//! at all), or a second concurrent `OpenSession` while one is already
+//! active on the same served process — answers as a raw gRPC `Status`
 //! (`Code::FailedPrecondition`), ending the RPC outright: there was no
 //! valid session for a payload-shaped outcome to be reported INTO, so
 //! there is nothing to carry one. Pinned on the source side by

@@ -75,6 +75,23 @@ pub mod proto {
     include!("generated.rs");
 }
 
+/// The per-message receive ceiling BOTH sides of the wire install
+/// (`.max_decoding_message_size` on every served service wrapper in the
+/// sdk's `serve::source::serve_on`/`serve::destination::serve_on`, and
+/// the matching decode cap on any client that dials one), replacing
+/// tonic's 4 MiB default decode cap. The SPI's byte-budget channels run
+/// 8-64 MiB, so ONE Arrow batch in a `Write` frame may legitimately
+/// exceed 4 MiB — under tonic's default, such a batch kills the session
+/// with an opaque transport `Status`, and the frozen
+/// one-batch-per-frame rule means there is NO conforming way to
+/// deliver it smaller. h2 flow-control windows remain the PACING
+/// mechanism (see the README's flow-control note); this cap is the hard
+/// refusal ceiling, deliberately above any in-tree budget. Both sides
+/// import THIS constant — a dialing side left at the 4 MiB default dies
+/// the same way on the first over-4 MiB `ReadFrame` a server legally
+/// sends.
+pub const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
+
 /// The protocol version this crate's generated code implements — the value
 /// a connector advertises and a provider negotiates over
 /// [`proto::HandshakeRequest::protocol_version`]. Distinct from the

@@ -22,8 +22,8 @@ use rdlt_connector::core::{CommitReceipt, LoadId, PipelineId, WriteMode};
 use rdlt_connector_protocol::proto::connector_client::ConnectorClient;
 use rdlt_connector_protocol::proto::destination_service_client::DestinationServiceClient;
 use rdlt_connector_protocol::proto::{
-    self, Classification, HandshakeRequest, SessionReply, SessionRequest, handshake_reply,
-    session_reply, session_request,
+    self, Classification, HandshakeRequest, SessionReply, SessionRequest, SpecRequest,
+    handshake_reply, session_reply, session_request,
 };
 use rdlt_connector_sdk::serve::destination::serve_on;
 use rdlt_testkit::{batch_of, commit_meta_for, schema_for};
@@ -1242,6 +1242,35 @@ async fn open_session_before_a_handshake_refuses_as_a_status() {
         .expect_err("open_session before a handshake must refuse");
     assert_eq!(error.code(), tonic::Code::FailedPrecondition);
     assert_eq!(error.message(), "handshake has not completed");
+}
+
+/// The destination-side twin of `test_serve_source`'s
+/// `spec_answers_before_any_handshake`: the config-free `Spec` RPC is
+/// the one deliberate exemption from the pre-handshake refusal the test
+/// just above pins. It serves the connector's static identity
+/// (`C::NAME`/`C::VERSION`/`C::config_schema()`) without ever touching
+/// the handshake-populated shell, so a provider can ask a spawned
+/// connector what it IS before deciding what config to hand it (039:
+/// the schema command's path).
+#[tokio::test]
+async fn spec_answers_before_any_handshake() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = serve_on::<EchoDestination>(&path).await.expect("bind");
+    let mut connector = ConnectorClient::new(dial(&path).await);
+
+    let reply = connector
+        .spec(SpecRequest {})
+        .await
+        .expect("pre-handshake Spec")
+        .into_inner();
+    let spec: rdlt_connector::ConnectorSpec =
+        serde_json::from_slice(&reply.spec_json).expect("ConnectorSpec JSON");
+    assert_eq!(spec.name, "echo-destination");
+    assert_eq!(spec.version, "0.0.0");
+    assert!(
+        spec.config_schema.is_none(),
+        "echo declares no config schema — the trait default"
+    );
 }
 
 /// F5 fix pin (038 T5 review round 1): v0 allows exactly one live

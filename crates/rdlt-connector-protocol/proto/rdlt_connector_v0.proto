@@ -55,10 +55,17 @@ message HandshakeOk {
 service Connector {
   rpc Handshake(HandshakeRequest) returns (HandshakeReply);
   rpc Check(CheckRequest) returns (CheckReply);
+  // Config-free static identity (039): answers BEFORE any handshake —
+  // it carries no session state, so the pre-handshake refusal does not
+  // apply to it. spec_json is ConnectorSpec (name, version,
+  // config_schema), served from the connector's statics alone.
+  rpc Spec(SpecRequest) returns (SpecReply);
 }
 message CheckRequest {}
 message CheckReply { oneof outcome { Empty ok = 1; ErrorFrame error = 2; } }
 message Empty {}
+message SpecRequest {}
+message SpecReply { bytes spec_json = 1; }
 
 service SourceService {
   rpc Streams(StreamsRequest) returns (StreamsReply);

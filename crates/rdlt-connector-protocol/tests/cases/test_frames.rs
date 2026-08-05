@@ -9,8 +9,8 @@
 use prost::Message;
 use rdlt_connector_protocol::PROTOCOL_VERSION;
 use rdlt_connector_protocol::proto::{
-    HandshakeRequest, PartClosedEvent, ReadFrame, SessionReply, SessionRequest, Write, read_frame,
-    session_reply, session_request,
+    HandshakeRequest, PartClosedEvent, ReadFrame, SessionReply, SessionRequest, SpecReply, Write,
+    read_frame, session_reply, session_request,
 };
 
 #[test]
@@ -126,9 +126,29 @@ fn read_frame_arrow_ipc_golden_frame() {
     assert_eq!(decoded, frame);
 }
 
+#[test]
+fn spec_reply_golden_frame() {
+    let reply = SpecReply {
+        spec_json: b"{}".to_vec(),
+    };
+
+    let mut encoded = Vec::new();
+    reply.encode(&mut encoded).expect("encode");
+
+    // field 1 (spec_json, LEN) tag 0x0a, len 2, "{}"
+    let golden = hex_literal("0a 02 7b 7d");
+    assert_eq!(
+        encoded, golden,
+        "field numbers are FROZEN; this pin breaks if a number moves — that is the point"
+    );
+
+    let decoded = SpecReply::decode(encoded.as_slice()).expect("decode");
+    assert_eq!(decoded, reply);
+}
+
 /// Turns a whitespace-separated hex literal (as laid out above, one byte
 /// per pair, free to wrap across lines) into bytes — a small, local, no-dep
-/// helper rather than pulling in a hex crate for four test fixtures.
+/// helper rather than pulling in a hex crate for a handful of test fixtures.
 fn hex_literal(spelled: &str) -> Vec<u8> {
     spelled
         .split_whitespace()

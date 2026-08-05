@@ -172,7 +172,7 @@ impl<C: DestinationConnector> DestinationServer<C> {
     }
 
     /// The shell, once handshake has populated it — every RPC but
-    /// `Handshake` itself needs this.
+    /// `Handshake` itself and the config-free `Spec` needs this.
     fn shell(&self) -> Result<&Arc<Shell<C>>, Status> {
         self.shell
             .get()
@@ -337,6 +337,17 @@ impl<C: DestinationConnector> Connector for DestinationServer<C> {
         Ok(Response::new(CheckReply {
             outcome: Some(outcome),
         }))
+    }
+
+    async fn spec(
+        &self,
+        _request: Request<proto::SpecRequest>,
+    ) -> Result<Response<proto::SpecReply>, Status> {
+        // Config-free static identity — the schema command's path (039):
+        // answered from `C::NAME`/`C::VERSION`/`C::config_schema()`
+        // alone, exempted from the pre-handshake refusal BY
+        // CONSTRUCTION since it never calls `shell()`.
+        Ok(common::spec_reply(C::NAME, C::VERSION, C::config_schema()))
     }
 }
 

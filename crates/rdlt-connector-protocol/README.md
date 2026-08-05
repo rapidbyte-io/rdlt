@@ -94,6 +94,7 @@ v0); it is distinct from the line format's `1`.
 service Connector {
   rpc Handshake(HandshakeRequest) returns (HandshakeReply);
   rpc Check(CheckRequest) returns (CheckReply);
+  rpc Spec(SpecRequest) returns (SpecReply);
 }
 service SourceService {
   rpc Streams(StreamsRequest) returns (StreamsReply);
@@ -112,7 +113,12 @@ and (for a destination) `DestinationCapabilities`, both pre-serialized
 JSON. A refused handshake — wrong role, an out-of-range protocol
 version, undecodable or invalid config, or a second `Handshake` on an
 already-populated session — answers `HandshakeReply.error`, an
-`ErrorFrame`, always classified `FATAL`. `state_format_versions` on
+`ErrorFrame`, always classified `FATAL`. The config-free `Spec` RPC
+answers before the handshake — it carries no session state, only the
+connector's static identity: `SpecReply.spec_json` is `ConnectorSpec`
+JSON (name, version, config_schema), served from the connector's
+statics alone, so a provider can ask a spawned connector what it IS
+before deciding what config to hand it. `state_format_versions` on
 `HandshakeOk` is a **v0 HOLE, not an oversight**: nothing on either
 side negotiates a resume-format version to put there yet, because
 nothing dials this protocol end-to-end today. Feature 039's adapter is
@@ -200,17 +206,20 @@ ordering across the whole session.
 ## Frame size ceiling
 
 Served connectors raise tonic's default 4 MiB per-message receive cap
-to a hard ceiling of **64 MiB** (the sdk's `serve::common::
-MAX_FRAME_BYTES`), on every service. The SPI's byte-budget channels run
+to a hard ceiling of **64 MiB** — THIS crate's [`MAX_FRAME_BYTES`],
+which both sides of the wire import (the sdk's `serve` module installs
+it on every served service; a dialing client sets its decode cap from
+the same constant, so the ceiling can never skew between the two). The
+SPI's byte-budget channels run
 8-64 MiB, so a single legitimate Arrow batch in a `Write` frame (or a
 `ReadFrame`) may exceed 4 MiB — and the one-batch-per-frame rule means
 such a batch has no conforming way to be delivered smaller. HTTP/2
 flow-control windows remain the PACING mechanism within the ceiling;
 the cap is the hard refusal line, deliberately above any in-tree
-budget. Clients (039's adapter, any foreign integrator) MUST set their
-own decode cap to match: a dialing side left at tonic's 4 MiB default
-kills the stream with an opaque transport error on the first
-over-4 MiB frame a server legally sends.
+budget. A foreign integrator (any client not importing this crate)
+MUST set its own decode cap to match: a dialing side left at tonic's
+4 MiB default kills the stream with an opaque transport error on the
+first over-4 MiB frame a server legally sends.
 
 ## `Status` vs `ErrorFrame`: two refusal shapes, on purpose
 
@@ -220,7 +229,10 @@ the sdk's `serve` module doc (`rdlt-connector-sdk::serve`), never a
 third time.
 
 A **protocol-state violation** — any RPC other than `Handshake` arriving
-before a handshake has completed, or a second concurrent `OpenSession`
+before a handshake has completed (the config-free `Spec` RPC is the one
+other exemption: it answers before the handshake — it carries no
+session state, only the connector's static identity, so arriving early
+is not a violation at all), or a second concurrent `OpenSession`
 while one is already active on the same served connector process —
 answers as a raw gRPC `Status` (`Code::FailedPrecondition`,
 `"handshake has not completed"` / `"one session per connector
