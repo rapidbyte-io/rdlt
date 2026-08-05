@@ -4918,10 +4918,12 @@ name = "rdlt-runtime"
 version = "0.3.0"
 dependencies = [
  "async-trait",
+ "rdlt",
  "rdlt-connector",
  "rdlt-connector-client",
  "rdlt-connector-protocol",
  "serde_json",
+ "serde_yaml",
  "tempfile",
  "thiserror",
  "tokio",

@@ -65,7 +65,10 @@ fn target_debug_dir() -> PathBuf {
 /// Makefile line sets it. Without the env var a missing bin fails with
 /// instructions, never silently: a smoke suite that quietly built or
 /// quietly skipped would be the 024 class wearing a new hat.
-fn built_bin(name: &str) -> PathBuf {
+///
+/// `pub(crate)` because the T8 headline e2e (`test_e2e_file`) locates
+/// the same bins the same way — one helper, one location rule.
+pub(crate) fn built_bin(name: &str) -> PathBuf {
     static BUILT: OnceLock<()> = OnceLock::new();
     BUILT.get_or_init(|| {
         if std::env::var_os("RDLT_BUILD_CONNECTOR_BINS").is_none() {

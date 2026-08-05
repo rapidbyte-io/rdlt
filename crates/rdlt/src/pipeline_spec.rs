@@ -223,7 +223,7 @@ pub enum DestSpec {
 ///     path: /explicit/bin   # optional override
 ///     config: { ... }       # the connector's own document, opaque here
 /// ```
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConnectorRef {
     /// The connector id, spelled reverse-DNS: `io.rapidbyte.file`. Two
@@ -246,6 +246,22 @@ pub struct ConnectorRef {
     /// it — the facade and CLI never learn remote vocabularies, so a
     /// refusal arrives in the connector's own wording.
     pub config: serde_json::Value,
+}
+
+/// Manual on purpose (the workspace lint demands SOME Debug): the
+/// `config` document is the connector's own vocabulary and routinely
+/// carries credentials — a derived Debug would print them into any
+/// `{:?}` of a `Spec`, a log line, or a test failure message. The
+/// other fields render normally; the config renders as `<elided>`.
+impl std::fmt::Debug for ConnectorRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConnectorRef")
+            .field("id", &self.id)
+            .field("version", &self.version)
+            .field("path", &self.path)
+            .field("config", &"<elided>")
+            .finish()
+    }
 }
 
 impl ConnectorRef {

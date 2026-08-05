@@ -7,7 +7,7 @@
 //! deliberately always present (it names an out-of-process connector,
 //! not a compiled-in one).
 
-use rdlt::pipeline_spec::{DestSpec, SourceSpec, Spec, SpecError, build_pipeline};
+use rdlt::pipeline_spec::{ConnectorRef, DestSpec, SourceSpec, Spec, SpecError, build_pipeline};
 
 /// The full vocabulary round-trips on both sides: id, the optional
 /// version pin and path override, and the opaque config document.
@@ -94,6 +94,29 @@ destination:
 "#;
     let parsed: Result<Spec, _> = serde_yaml::from_str(text);
     assert!(parsed.is_err(), "a missing config block must refuse");
+}
+
+/// The ref's Debug ELIDES the config: that document is the connector's
+/// own vocabulary and routinely carries credentials, so a derived Debug
+/// would print them into any `{:?}` of a `Spec` or a test failure
+/// message. The marker below must never surface through Debug.
+#[test]
+fn a_debug_render_of_a_connector_ref_elides_the_config() {
+    let reference = ConnectorRef {
+        id: "io.rapidbyte.file".to_owned(),
+        version: None,
+        path: None,
+        config: serde_json::json!({ "password": "SECRET-MARKER-7f3a" }),
+    };
+    let rendered = format!("{reference:?}");
+    assert!(
+        !rendered.contains("SECRET-MARKER-7f3a"),
+        "the config document must not reach a Debug render: {rendered}"
+    );
+    assert!(
+        rendered.contains("io.rapidbyte.file") && rendered.contains("<elided>"),
+        "the other fields still render, and the config says it was elided: {rendered}"
+    );
 }
 
 /// A requirement whose binary exists nowhere refuses through

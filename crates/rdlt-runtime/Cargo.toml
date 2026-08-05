@@ -35,6 +35,13 @@ thiserror = { workspace = true }
 async-trait = { workspace = true }
 
 [dev-dependencies]
+# The T8 headline e2e drives the FACADE's build_pipeline over this
+# crate's own provider — a dev-dep cycle (rdlt depends on rdlt-runtime),
+# which cargo permits and which keeps the e2e where the spawn machinery
+# lives. No connector features: the `connector:` variant is always
+# present, and the bins are spawned, not compiled in.
+rdlt = { workspace = true }
+serde_yaml = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }
 
