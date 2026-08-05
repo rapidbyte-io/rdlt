@@ -633,7 +633,8 @@ async fn read_commit_and_heartbeat_events_hold_their_order() {
     }
     assert!(!started.is_empty(), "commits announce their start");
 
-    // Liveness: the ticker's first beat is immediate, so even a
+    // Liveness: the first beat is emitted synchronously at wiring
+    // time (not left to the spawned ticker's first poll), so even a
     // fast run carries at least one.
     assert!(
         seen.iter()

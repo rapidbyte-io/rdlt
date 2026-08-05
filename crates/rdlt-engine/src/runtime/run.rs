@@ -269,11 +269,26 @@ async fn run_once(
     // Advisory like every event; aborted when the run ends. One
     // second is coarse enough to cost nothing and fine enough that a
     // consumer can call a silent MINUTE a stall with confidence.
+    //
+    // The first beat is emitted SYNCHRONOUSLY, right here, rather than
+    // left to the spawned ticker's first tick: a spawned task only runs
+    // once the scheduler polls it, and a fast run can finish and abort
+    // the ticker before that ever happens (observed as a flake — the
+    // run beat the task's first poll). Emitting inline makes "every run
+    // carries >=1 heartbeat" structural instead of a race.
+    let _ = events.send(rdlt_core::PipelineEvent::Heartbeat {
+        elapsed_ms: started.elapsed().as_millis() as u64,
+    });
     let heartbeat = {
         let events = events.clone();
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            // `interval`'s first tick fires immediately (its next-deadline
+            // starts at creation time); consume it here so the loop's own
+            // sends begin at ~1s, not immediately again on top of the
+            // synchronous beat above.
+            tick.tick().await;
             loop {
                 tick.tick().await;
                 let _ = events.send(rdlt_core::PipelineEvent::Heartbeat {
