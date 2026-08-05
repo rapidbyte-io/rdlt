@@ -1,4 +1,4 @@
-//! The source half of `serve()`: [`SourceServer`] answers both halves of
+//! The source half of `serve()`: `SourceServer` answers both halves of
 //! the wire protocol a source connector implements — `Connector`
 //! (handshake, check) and `SourceService` (streams, read) — over one
 //! [`SourceConnector`] shell.
@@ -312,7 +312,7 @@ fn encode_arrow_ipc(batch: &rdlt_connector::RecordBatch) -> Result<Vec<u8>, Stri
 /// have started.
 ///
 /// Both gRPC services ([`Connector`] and [`SourceService`]) are wired to
-/// the SAME [`SourceServer`] instance (`from_arc`, not two independent
+/// the SAME `SourceServer` instance (`from_arc`, not two independent
 /// `new`s) — they share one handshake-populated shell, so a `Streams` or
 /// `Read` call sees the config a prior `Handshake` validated.
 pub async fn serve_on<C: SourceConnector>(

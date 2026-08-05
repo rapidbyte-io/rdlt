@@ -159,6 +159,14 @@ pub struct EchoDestinationConfig {
     /// and assert `replay` shows in the call log WITHOUT `publish`.
     #[serde(default)]
     pub receipt_exists: bool,
+    /// Makes the FIRST `connect` call fail transient — every call after
+    /// that (on the SAME `EchoDestination` instance, i.e. the same
+    /// served process) succeeds normally. The 038 T5 review round 2,
+    /// item 2 knob: a wire test drives Open (→ ErrorFrame TRANSIENT),
+    /// then Open again on the SAME stream, and asserts the retry
+    /// succeeds — proving a failed connect does not poison the guard.
+    #[serde(default)]
+    pub fail_connect: bool,
 }
 
 impl Document for EchoDestinationConfig {
@@ -177,6 +185,13 @@ impl Document for EchoDestinationConfig {
 pub struct EchoDestination {
     fail_publish: bool,
     receipt_exists: bool,
+    /// `Some(true)` induces ONE transient `connect` failure, consumed
+    /// (flipped to `Some(false)`) the first time `connect` runs — see
+    /// [`EchoDestinationConfig::fail_connect`]. Interior mutability
+    /// because `connect` takes `&self`, not `&mut self` (the SPI's own
+    /// shape — a connector is shared across however many sessions a
+    /// process serves).
+    fail_connect_once: AtomicBool,
 }
 
 #[async_trait]
@@ -190,6 +205,7 @@ impl DestinationConnector for EchoDestination {
         Ok(Self {
             fail_publish: config.fail_publish,
             receipt_exists: config.receipt_exists,
+            fail_connect_once: AtomicBool::new(config.fail_connect),
         })
     }
 
@@ -203,6 +219,12 @@ impl DestinationConnector for EchoDestination {
     }
 
     async fn connect(&self, context: &OpenContext) -> Result<EchoBackend, DestinationError> {
+        // `swap(false, ..)` both reads whether a failure was still owed
+        // AND consumes it in one atomic step — a retried `connect` after
+        // firing this once always succeeds.
+        if self.fail_connect_once.swap(false, Ordering::SeqCst) {
+            return Err(DestinationError::transient("echo: induced connect failure"));
+        }
         Ok(EchoBackend {
             log: call_log(),
             fail_publish: self.fail_publish,

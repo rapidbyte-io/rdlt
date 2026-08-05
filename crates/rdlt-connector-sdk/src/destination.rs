@@ -250,10 +250,7 @@ impl<C: DestinationConnector> Destination for Shell<C> {
 
     async fn open(&self, context: OpenContext) -> Result<Box<dyn LoadSession>, DestinationError> {
         let backend = self.connector.connect(&context).await?;
-        Ok(Box::new(Session {
-            backend,
-            guard: WriteGuard::new(),
-        }))
+        Ok(Box::new(Session::new(backend)))
     }
 }
 
@@ -278,21 +275,30 @@ impl WriteGuard {
         Self::default()
     }
 
-    /// Mark the session open. `Err` on a SECOND call — the frozen wire
-    /// refusal for a bidi stream that sends more than one `Open` frame:
-    /// `serve::destination` calls this directly against wire ordering it
-    /// does not trust. An in-process embedder never re-opens the same
-    /// [`Session`] (one per [`Destination::open`] call), so this is not
-    /// exercised meaningfully there — the method exists on the SAME
-    /// reusable type regardless, per the module doc's split.
-    pub fn open(&mut self) -> Result<(), DestinationError> {
-        if self.opened {
-            return Err(DestinationError::fatal(
-                "a session accepts at most one Open frame, and it must be first",
-            ));
-        }
+    /// Whether the session has ALREADY completed a successful `Open` —
+    /// `serve::destination` checks this BEFORE spending a `Backend::connect`
+    /// attempt on a session it would refuse anyway (038 T5 review round 2,
+    /// item 2). Split from marking open on purpose: see [`WriteGuard::mark_open`].
+    pub fn is_open(&self) -> bool {
+        self.opened
+    }
+
+    /// Mark the session open. Call this ONLY after a `Backend::connect`
+    /// (or equivalent) attempt has SUCCEEDED — never eagerly before
+    /// attempting it. `serve::destination`'s earlier shape called the
+    /// combined check-and-set before `connect`, so a Transient connect
+    /// failure still consumed the guard's one Open: the stream was left
+    /// with `opened == true` and no backend, and a retrying `Open` frame
+    /// got the misleading "at most one Open frame" refusal instead of a
+    /// real second attempt — downgrading a retryable failure to one that
+    /// is not, with no documented recovery beyond redialing the whole
+    /// connector process. `debug_assert!`s rather than returning
+    /// `Result`: by the time a caller reaches this, [`WriteGuard::is_open`]
+    /// must already have gated the call, so finding `opened` already
+    /// true here is a caller bug, not a wire input to report on.
+    pub fn mark_open(&mut self) {
+        debug_assert!(!self.opened, "mark_open called on an already-open guard");
         self.opened = true;
-        Ok(())
     }
 
     /// Record `table` as ensured at the CURRENT schema version.
@@ -322,9 +328,34 @@ impl WriteGuard {
 /// runs on whichever side of the wire is doing the calling (in-process
 /// today; 039's remote-backend adapter tomorrow), not the half a server
 /// enforces against wire ordering it does not trust.
-struct Session<B> {
+///
+/// PUBLIC (038 T5 review round 2, F-2): 039's remote-backend adapter
+/// needs to name this type — it composes the SAME `Session<B>`
+/// client-side, over a `Backend` that dials this connector out of
+/// process, rather than reimplementing the D3 choreography against the
+/// wire (see the module doc's trust-boundary split and
+/// [`Shell::connect`]'s doc). Constructed only through [`Session::new`];
+/// `backend`/`guard` stay private, so nothing outside this module can
+/// reach in and bypass the choreography [`LoadSession::commit`] below
+/// runs.
+#[derive(Debug)]
+pub struct Session<B> {
     backend: B,
     guard: WriteGuard,
+}
+
+impl<B> Session<B> {
+    /// Wrap an already-open `backend` in a fresh session — a new,
+    /// unopened [`WriteGuard`] alongside it. The in-process path
+    /// ([`Destination::open`] above) calls this immediately after its
+    /// own `connect` succeeds; 039's remote-backend adapter is the
+    /// second, out-of-process caller this constructor exists for.
+    pub fn new(backend: B) -> Self {
+        Self {
+            backend,
+            guard: WriteGuard::new(),
+        }
+    }
 }
 
 #[async_trait]

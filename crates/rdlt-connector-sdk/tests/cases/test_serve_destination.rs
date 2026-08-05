@@ -103,6 +103,16 @@ fn echo_destination_config(fail_publish: bool, receipt_exists: bool) -> Vec<u8> 
     .expect("echo destination config serializes")
 }
 
+/// A separate constructor, not a third positional bool on
+/// `echo_destination_config` (every existing call site would need
+/// touching for a knob only one test needs): `fail_connect` induces ONE
+/// transient `connect` failure, consumed on first use — see
+/// `EchoDestinationConfig::fail_connect`'s own doc.
+fn echo_destination_config_fail_connect() -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({"fail_connect": true}))
+        .expect("echo destination config serializes")
+}
+
 fn encode_arrow_ipc(batch: &rdlt_connector::RecordBatch) -> Vec<u8> {
     let mut writer = arrow::ipc::writer::StreamWriter::try_new(Vec::new(), batch.schema_ref())
         .expect("open an arrow ipc stream writer");
@@ -173,6 +183,36 @@ fn write_frame_malformed(table: &str) -> SessionRequest {
         request: Some(session_request::Request::Write(proto::Write {
             table: table.to_string(),
             arrow_ipc: vec![0, 1, 2, 3],
+        })),
+    }
+}
+
+/// A valid first batch followed by a SECOND message that is present
+/// (not simply absent — `decode_arrow_ipc` must not treat this as "one
+/// clean batch") but truncated, so decoding it fails rather than
+/// succeeding — `decode_arrow_ipc`'s `Some(Err(_))` leg (038 T5 review
+/// round 2, item 4), distinct from both "no second message" (`None`)
+/// and "a second, DECODABLE batch" (`Some(Ok(_))`, the multi-batch
+/// refusal `write_frame_multi` pins).
+fn write_frame_corrupt_second_batch(table: &str, ids: &[i64]) -> SessionRequest {
+    let batch = batch_of(ids);
+    // A clean one-batch stream (schema + batch1 + the 4-byte all-zero
+    // EOS marker `into_inner` appends), then drop that EOS marker and
+    // replace it with 4 NON-zero bytes. Arrow's stream framing reads
+    // each message's leading 4 bytes as either the continuation marker
+    // (`0xFFFFFFFF`, "another message follows") or the EOS marker
+    // (`0x00000000`, "clean end") — `0xDEADBEEF` is neither, so the
+    // reader must fail decoding this "message" rather than either
+    // parsing it (there IS no valid second batch here) or treating it
+    // as a clean end of stream (it is not all-zero).
+    let mut arrow_ipc = encode_arrow_ipc(&batch);
+    let eos_start = arrow_ipc.len() - 4;
+    arrow_ipc.truncate(eos_start);
+    arrow_ipc.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
+    SessionRequest {
+        request: Some(session_request::Request::Write(proto::Write {
+            table: table.to_string(),
+            arrow_ipc,
         })),
     }
 }
@@ -889,6 +929,147 @@ async fn an_undecodable_write_frame_carries_the_arrow_cause() {
     }
 }
 
+/// Item 4 fix pin (038 T5 review round 2): a SECOND message that IS
+/// present but fails to decode gets the undecodable-write refusal PLUS
+/// its own arrow cause — not the multi-batch spelling (which only
+/// applies when the second message decodes CLEANLY) and not a silently
+/// dropped cause (an earlier version of `decode_arrow_ipc` folded
+/// `Some(Err(_))` into the multi-batch arm, discarding exactly this
+/// detail).
+#[tokio::test]
+async fn a_corrupt_second_batch_carries_the_undecodable_refusal_and_its_cause() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = serve_on::<EchoDestination>(&path).await.expect("bind");
+    let channel = dial(&path).await;
+    let mut connector = ConnectorClient::new(channel.clone());
+    let mut destination = DestinationServiceClient::new(channel);
+
+    handshake(&mut connector, false, false).await;
+
+    let (req_tx, mut replies) = open_session(&mut destination).await;
+    req_tx.send(open_frame("p", "l")).await.expect("send open");
+    next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("opened");
+
+    req_tx
+        .send(ensure_frame(ECHOED_TABLE))
+        .await
+        .expect("send ensure");
+    next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("ensured");
+
+    req_tx
+        .send(write_frame_corrupt_second_batch(ECHOED_TABLE, &[1, 2, 3]))
+        .await
+        .expect("send write with a corrupt second batch");
+    match next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("frame")
+        .reply
+    {
+        Some(session_reply::Reply::Error(error)) => {
+            assert_eq!(error.classification, Classification::Fatal as i32);
+            const PREFIX: &str = "write carried no decodable record batch: ";
+            assert!(
+                error.message.starts_with(PREFIX),
+                "expected the undecodable-write refusal (NOT the multi-batch one), got: {}",
+                error.message
+            );
+            assert!(
+                error.message.len() > PREFIX.len(),
+                "expected the arrow cause appended after the prefix, got: {}",
+                error.message
+            );
+        }
+        other => panic!("expected the undecodable-write refusal, got {other:?}"),
+    }
+}
+
+/// Item 2 fix pin (038 T5 review round 2): a Transient `connect` failure
+/// on `Open` does NOT poison the stream — the guard is only marked open
+/// on a SUCCESSFUL connect (`WriteGuard::mark_open`, called after
+/// `shell.connect` returns `Ok`), so a second `Open` frame on the SAME
+/// stream, after the first failed, is a legal retry rather than a
+/// misleading "at most one Open frame" refusal. Before this fix, the
+/// guard was marked open EAGERLY (before attempting `connect`), so this
+/// retry would have hit that refusal instead of a real second attempt —
+/// downgrading a retryable Transient failure into one with no documented
+/// recovery short of redialing the whole connector process.
+#[tokio::test]
+async fn a_failed_open_does_not_poison_the_stream_for_a_retry() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = serve_on::<EchoDestination>(&path).await.expect("bind");
+    let channel = dial(&path).await;
+    let mut connector = ConnectorClient::new(channel.clone());
+    let mut destination = DestinationServiceClient::new(channel);
+
+    connector
+        .handshake(HandshakeRequest {
+            protocol_version: 0,
+            expected_role: "destination".to_string(),
+            config_json: echo_destination_config_fail_connect(),
+        })
+        .await
+        .expect("handshake rpc");
+
+    let (req_tx, mut replies) = open_session(&mut destination).await;
+
+    req_tx
+        .send(open_frame("p", "l"))
+        .await
+        .expect("send first open");
+    match next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("frame")
+        .reply
+    {
+        Some(session_reply::Reply::Error(error)) => {
+            assert_eq!(error.classification, Classification::Transient as i32);
+            assert_eq!(
+                error.message,
+                "transient destination error: echo: induced connect failure"
+            );
+        }
+        other => panic!("expected a transient connect refusal, got {other:?}"),
+    }
+
+    req_tx
+        .send(open_frame("p", "l"))
+        .await
+        .expect("send retry open");
+    assert!(
+        matches!(
+            next_reply(&mut replies)
+                .await
+                .expect("reply")
+                .expect("frame")
+                .reply,
+            Some(session_reply::Reply::Opened(_))
+        ),
+        "a retried Open, after the first failed transiently, must succeed \
+         rather than hit the second-Open refusal"
+    );
+
+    req_tx.send(close_frame()).await.expect("send close");
+    assert!(
+        matches!(
+            next_reply(&mut replies)
+                .await
+                .expect("reply")
+                .expect("frame")
+                .reply,
+            Some(session_reply::Reply::Closed(_))
+        ),
+        "the recovered session is fully usable"
+    );
+}
+
 /// I1 fix pin (038 T5 review round 1, the 037 US2 T7 leak class
 /// reopened for the wire): a session ABANDONED without ever sending
 /// `Close` — both client halves simply dropped, the shape a crashed or
@@ -967,6 +1148,69 @@ async fn a_second_concurrent_open_session_refuses_while_the_first_is_active() {
     assert_eq!(error.message(), "one session per connector process");
 }
 
+/// F5 fix pin, the RELEASE half (038 T5 review round 2, item 1): the
+/// previous pin proves the slot is HELD while a session is active but
+/// never proves it is RELEASED when one ends — a `SessionSlot::drop`
+/// that silently did nothing would leave every OTHER assertion in this
+/// file green while the ceiling stuck at "one session, ever" for the
+/// rest of the process's life. Drives one session to a clean `Close`,
+/// observes the reply stream end, THEN opens a second session on the
+/// SAME server and asserts it succeeds — the only way to observe the
+/// slot came back. Red-proved by hand: emptying `SessionSlot::drop`'s
+/// body left `a_second_concurrent_open_session_refuses_while_the_first_is_active`
+/// (and the whole rest of the 46-test suite) green while THIS test
+/// failed, because it is the only one that ever asks for a session
+/// AFTER a prior one closed.
+#[tokio::test]
+async fn the_session_slot_releases_after_close_so_a_later_open_session_succeeds() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = serve_on::<EchoDestination>(&path).await.expect("bind");
+    let channel = dial(&path).await;
+    let mut connector = ConnectorClient::new(channel.clone());
+    let mut destination = DestinationServiceClient::new(channel);
+
+    handshake(&mut connector, false, false).await;
+
+    let (req_tx, mut replies) = open_session(&mut destination).await;
+    req_tx.send(open_frame("p", "l")).await.expect("send open");
+    next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("opened");
+
+    req_tx.send(close_frame()).await.expect("send close");
+    next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("closed");
+    assert!(
+        next_reply(&mut replies).await.expect("reply").is_none(),
+        "the first session's stream ends cleanly after Close"
+    );
+
+    // `open_session`'s own `.expect("open_session rpc")` already proves
+    // the RPC was accepted (a stuck slot would refuse it, `Err`, and
+    // panic here) — driving one real frame through it proves the
+    // resulting session is genuinely live end to end, not merely that
+    // the RPC handshake alone succeeded.
+    let (second_tx, mut second_replies) = open_session(&mut destination).await;
+    second_tx
+        .send(open_frame("p", "l2"))
+        .await
+        .expect("send open on the second session");
+    assert!(
+        matches!(
+            next_reply(&mut second_replies)
+                .await
+                .expect("reply")
+                .expect("frame")
+                .reply,
+            Some(session_reply::Reply::Opened(_))
+        ),
+        "the second session, opened after the first released the slot, is fully usable"
+    );
+}
+
 /// First wire-level crash test (038): with a session established and a
 /// successful `Write` behind it, the underlying transport is severed
 /// abruptly (no `Close`, no GOAWAY) — the client's next `recv` must
@@ -997,8 +1241,20 @@ async fn a_second_concurrent_open_session_refuses_while_the_first_is_active() {
 /// connector mid-session — is feature 040's conformance kit to build
 /// (ADR 0001 D8); this is the wire-level approximation available
 /// in-process today.
+///
+/// F-7 fix pin (038 T5 review round 2): the severed transport is ALSO an
+/// abandoned-session exit path (I1/F2's `close`-on-every-non-`Close`-exit
+/// guarantee, from round 1) — a client-side socket `shutdown` makes the
+/// SERVER's own `incoming.message()` read error out too (the connection
+/// is gone from both ends at once), so `drive_session`'s loop `break`s
+/// via the transport-error arm, not the graceful `Close` arm, and F2's
+/// best-effort cleanup runs. Polled with a timeout, same idiom as
+/// `an_abandoned_session_still_closes_the_backend`: the cleanup runs
+/// after the server task notices the severed read, not synchronously
+/// with the client's own `shutdown` call.
 #[tokio::test]
 async fn a_severed_transport_mid_session_surfaces_as_a_client_error() {
+    echo::clear_call_log();
     let (_dir, path) = socket_path();
     let (_line, handle) = serve_on::<EchoDestination>(&path).await.expect("bind");
     let (channel, severable) = dial_severable(&path).await;
@@ -1046,4 +1302,16 @@ async fn a_severed_transport_mid_session_surfaces_as_a_client_error() {
         ),
         Err(_) => panic!("the client's next recv hung instead of observing the severed transport"),
     }
+
+    let observed = tokio::time::timeout(Duration::from_secs(5), async {
+        while !echo::call_log_snapshot().contains(&"close".to_string()) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(
+        observed.is_ok(),
+        "a severed transport is an abandoned-session exit too — the backend must still be \
+         closed (F2), within the timeout"
+    );
 }

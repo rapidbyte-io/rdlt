@@ -76,7 +76,14 @@ pub use rdlt_connector as spi;
 /// ```
 pub mod prelude {
     pub use crate::config::Document;
-    pub use crate::destination::{Backend, DestinationConnector};
+    // `Session` sits beside `Backend` deliberately (038 T5 review round
+    // 2, F-2): it is not authoring vocabulary (an author never
+    // constructs one — `Destination::open` does, in-process), but 039's
+    // remote-backend adapter is a SECOND caller that composes it
+    // directly over a `Backend` reached out of process, and needs it
+    // nameable from the same one-import surface everything else here
+    // comes from.
+    pub use crate::destination::{Backend, DestinationConnector, Session};
     pub use crate::source::{Feed, SourceConnector};
     pub use rdlt_connector::{
         Cursor, DestinationCapabilities, DestinationError, OpenContext, RecordBatch, SourceError,

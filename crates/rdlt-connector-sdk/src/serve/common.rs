@@ -1,5 +1,5 @@
 //! Plumbing shared by every `serve()` service: standing up the Unix
-//! domain socket the handshake line advertises, and the [`ErrorFrame`]
+//! domain socket the handshake line advertises, and the [`proto::ErrorFrame`]
 //! encoding every RPC error path converges on.
 //!
 //! NOT HERE: gRPC client flow-control window sizing. The research spike

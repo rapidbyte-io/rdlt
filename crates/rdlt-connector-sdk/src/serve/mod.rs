@@ -5,7 +5,7 @@
 //! against a connector crate at default features stays clean).
 //!
 //! [`common`] is the plumbing every service shares (the UDS bind, the
-//! [`common::ServeError`] taxonomy, the [`common::error_frame`]
+//! [`common::ServeError`] taxonomy, the `common::error_frame`
 //! builder). [`source`] is the [`crate::source::SourceConnector`] half —
 //! [`source::source`] is the entry a spawned connector process actually
 //! runs. [`destination`] is the [`crate::destination::DestinationConnector`]

@@ -1,8 +1,8 @@
-//! The destination half of `serve()`: [`DestinationServer`] answers both
+//! The destination half of `serve()`: `DestinationServer` answers both
 //! halves of the wire protocol a destination connector implements —
 //! `Connector` (handshake, check) and `DestinationService` (the
 //! `OpenSession` bidi stream) — driving the connector's raw [`Backend`]
-//! directly, NOT a [`crate::destination::LoadSession`] wrapper (038 T5
+//! directly, NOT a [`rdlt_connector::LoadSession`] wrapper (038 T5
 //! review, ADR D5: an earlier version of this module wrapped
 //! `Shell::open`'s `Box<dyn LoadSession>`, which made the wire's
 //! `ExistingReceipt`/`Replay` frames inert stubs rather than real
@@ -39,6 +39,25 @@
 //! was supposed to run ("the protocol fast path, not a substitute for a
 //! transactional one").
 //!
+//! LOUD, because it is easy to read past: v0's wire literally does not
+//! sequence commit frames. A foreign client CAN send `Publish` twice for
+//! the same `(load_id, commit_seq)` without ever asking `ExistingReceipt`
+//! first, and nothing in THIS SERVER stops it — see the paragraph just
+//! above, this server does not referee frame order. The ONLY thing that
+//! saves exactly-once here is the destination's OWN durable receipt
+//! guard inside `Backend::publish`; a shipped `Backend` that does not
+//! keep one is wire-reachably double-publishable. This is a RECORDED
+//! gap, not a silently accepted one (038 T5 review round 2, F-4): the
+//! sdk's own black-box conformance kit never drives `Backend` directly
+//! today — it only exercises the in-process `Session<B>` path, where the
+//! choreography above IS enforced by the caller — so nothing in this
+//! codebase currently proves a shipped `Backend` actually keeps that
+//! guard when reached this way. Feature 040's conformance kit needs a
+//! Backend-direct D3-companion clause: drive `Publish` twice over the
+//! WIRE with no `ExistingReceipt`/`Replay` in between and assert the
+//! second either replays the first receipt or is refused — never
+//! silently re-applies.
+//!
 //! `OpenContext::part_events` is the other place this server departs
 //! from a plain request/reply shape: the listener is a SYNC callback,
 //! so any part it reports while a `Backend` call is in flight is
@@ -50,21 +69,36 @@
 //! emitted part — one a buffering backend fires from a task this server
 //! never directly awaited — carries no such promise; it simply arrives
 //! as its own `PartClosedEvent` reply as soon as the request loop next
-//! turns (the `biased` `select!` in [`drive_session`]), which may land
+//! turns (the `biased` `select!` in `drive_session`), which may land
 //! before, after, or interleaved with any particular request's reply.
 //!
-//! v0 allows exactly ONE live session per connector process
-//! (`DestinationServer::session_active`) — a second concurrent
-//! `OpenSession` is refused outright, `Status::failed_precondition`,
-//! frozen wording `one session per connector process`. This is a
-//! deliberate ceiling, not a discovered limitation: loosening it later
-//! (one process serving several concurrent sessions) is additive;
-//! shipping against the current single-session assumption and
-//! tightening it later would not be. A real backend's own per-session
-//! staging guard (the file connector's S6 lease is the precedent) is
-//! the defense-in-depth BEHIND this ceiling, not a replacement for it —
-//! refusing the RPC up front means no backend ever has to detect a
-//! second concurrent session on its own.
+//! v0 allows exactly ONE live session per served listener
+//! (`DestinationServer::session_active` — one `DestinationServer` per
+//! call to [`serve_on`]) — a second concurrent `OpenSession` is refused
+//! outright, `Status::failed_precondition`, frozen wording `one session
+//! per connector process`. The wording says "process" rather than
+//! "listener" because [`destination`], the only entry a spawned
+//! connector process actually runs, opens exactly one listener per
+//! process — so "per served listener" and "per connector process" name
+//! the SAME ceiling as shipped; a caller embedding [`serve_on`] directly
+//! (as every test in this crate does) could in principle stand up more
+//! than one listener in one process, and the frozen text does not
+//! promise anything about that case. This is a deliberate ceiling, not
+//! a discovered limitation: loosening it later (one listener serving
+//! several concurrent sessions) is additive; shipping against the
+//! current single-session assumption and tightening it later would not
+//! be. A real backend's own per-session staging guard (the file
+//! connector's S6 lease is the precedent) is the defense-in-depth
+//! BEHIND this ceiling, not a replacement for it — refusing the RPC up
+//! front means no backend ever has to detect a second concurrent
+//! session on its own.
+//!
+//! v0 has no idle timeout (038 T5 review round 2, F-8): `OpenSession`
+//! spawns one task per pipeline session, and a stalled or hung client
+//! holds the one-session slot above indefinitely — nothing in this
+//! layer evicts it. 039's provider (whatever supervises the connector
+//! process) owns liveness — heartbeats, process-level timeouts,
+//! restart-on-hang — not this layer.
 //!
 //! [`destination`] is what a spawned connector process actually runs;
 //! [`serve_on`] is the seam under it, mirroring
@@ -241,16 +275,22 @@ fn part_close_reason_str(reason: PartCloseReason) -> String {
 /// One Arrow IPC *stream*'s exactly-one record batch — the `Write`
 /// frame's wire counterpart to the source side's `encode_arrow_ipc`; the
 /// proto's own comment on `Write` states the one-batch rule. Bytes that
-/// are not a valid IPC stream, or a stream with no batch message,
-/// collapse to the ONE frozen prefix (`write carried no decodable record
-/// batch`, 038 T5 review's own quoted spelling) with the underlying
-/// arrow cause appended — the same frozen-prefix-plus-cause discipline
-/// [`decode_error_reply`] uses for the `*_json` fields, so this path
-/// is not the one place that silently drops the diagnostic detail. A
-/// stream carrying a SECOND batch message gets its own, distinct
-/// refusal (038 T5 review, F3: silently taking only the first batch
-/// would drop every row after it — measured as the defect this refusal
-/// exists to prevent, not a hypothetical).
+/// are not a valid IPC stream, a stream with no batch message, or a
+/// stream whose SECOND message fails to decode all collapse to the ONE
+/// frozen prefix (`write carried no decodable record batch`, 038 T5
+/// review's own quoted spelling) with the underlying arrow cause
+/// appended — the same frozen-prefix-plus-cause discipline
+/// [`decode_error_reply`] uses for the `*_json` fields, so none of these
+/// three legs is the one place that silently drops the diagnostic
+/// detail (038 T5 review round 2, item 4: an earlier version folded the
+/// "second message present but corrupt" case into the multi-batch
+/// refusal below, discarding its cause — a genuinely different failure
+/// than "there IS a decodable second batch", which alone gets the
+/// multi-batch spelling). A stream carrying a SECOND, DECODABLE batch
+/// message gets its own, distinct refusal (038 T5 review, F3: silently
+/// taking only the first batch would drop every row after it —
+/// measured as the defect this refusal exists to prevent, not a
+/// hypothetical).
 fn decode_arrow_ipc(bytes: &[u8]) -> Result<rdlt_connector::RecordBatch, String> {
     const REFUSAL: &str = "write carried no decodable record batch";
 
@@ -261,13 +301,14 @@ fn decode_arrow_ipc(bytes: &[u8]) -> Result<rdlt_connector::RecordBatch, String>
         Some(Err(error)) => return Err(format!("{REFUSAL}: {error}")),
         None => return Err(REFUSAL.to_string()),
     };
-    if reader.next().is_some() {
-        return Err(
+    match reader.next() {
+        Some(Ok(_)) => Err(
             "write carried more than one record batch; a Write frame is exactly one batch"
                 .to_string(),
-        );
+        ),
+        Some(Err(error)) => Err(format!("{REFUSAL}: {error}")),
+        None => Ok(first),
     }
-    Ok(first)
 }
 
 #[tonic::async_trait]
@@ -402,28 +443,40 @@ async fn handle_frame<C: DestinationConnector>(
     frame: SessionRequest,
 ) -> Step {
     if let Some(session_request::Request::Open(open)) = frame.request {
-        let reply = match state.guard.open() {
-            Err(error) => session_reply::Reply::Error(destination_error_frame(&error)),
-            Ok(()) => {
-                let tx = part_tx.clone();
-                let context =
-                    OpenContext::new(PipelineId::new(open.pipeline), LoadId::new(open.load_id))
-                        .with_part_events(Arc::new(move |part| {
-                            // The listener is a plain sync callback
-                            // (`OpenContext`'s own contract: "must never
-                            // fail and never block") — an unbounded
-                            // channel is the correct shape for it:
-                            // advisory-volume telemetry, never awaited
-                            // from inside the callback itself.
-                            let _ = tx.send(part);
-                        }));
-                match shell.connect(&context).await {
-                    Ok(opened) => {
-                        state.backend = Some(opened);
-                        session_reply::Reply::Opened(proto::Empty {})
-                    }
-                    Err(error) => session_reply::Reply::Error(destination_error_frame(&error)),
+        // 038 T5 review round 2, item 2: the guard is checked BEFORE
+        // attempting `connect`, and marked open ONLY after `connect`
+        // SUCCEEDS — never eagerly. An eager mark would consume the
+        // guard's one Open on a merely Transient connect failure,
+        // leaving `opened == true` with no backend and no way to retry
+        // on the same stream: every later frame (including a retrying
+        // `Open`) would then refuse, downgrading a retryable failure to
+        // one that is not. With the check-then-mark-on-success split, a
+        // failed `Open` is legal to retry on the same stream — the
+        // guard never learns anything happened until it actually did.
+        let reply = if state.guard.is_open() {
+            session_reply::Reply::Error(destination_error_frame(&DestinationError::fatal(
+                "a session accepts at most one Open frame, and it must be first",
+            )))
+        } else {
+            let tx = part_tx.clone();
+            let context =
+                OpenContext::new(PipelineId::new(open.pipeline), LoadId::new(open.load_id))
+                    .with_part_events(Arc::new(move |part| {
+                        // The listener is a plain sync callback
+                        // (`OpenContext`'s own contract: "must never
+                        // fail and never block") — an unbounded
+                        // channel is the correct shape for it:
+                        // advisory-volume telemetry, never awaited
+                        // from inside the callback itself.
+                        let _ = tx.send(part);
+                    }));
+            match shell.connect(&context).await {
+                Ok(opened) => {
+                    state.backend = Some(opened);
+                    state.guard.mark_open();
+                    session_reply::Reply::Opened(proto::Empty {})
                 }
+                Err(error) => session_reply::Reply::Error(destination_error_frame(&error)),
             }
         };
         return finish(part_rx, reply_tx, reply).await;
@@ -570,17 +623,31 @@ impl Drop for SessionSlot {
 
 /// Run one session's request loop, from its `Open` to whatever ends it —
 /// a clean `Close`, the client hanging up, or a transport error — then
-/// (F2, 038 T5 review) best-effort close the backend on every path that
-/// is NOT the explicit `Close` frame. `LoadSession::close`'s contract
-/// (unchanged for a raw `Backend`): "called exactly once whenever the
-/// session ends ... best-effort — error ignored — on a failure/
-/// cancellation path." Before this fix, an abandoned session (a client
-/// that vanishes mid-`Write`) leaked whatever the backend opened,
+/// (F2, 038 T5 review) best-effort close the backend on EVERY LOOP EXIT
+/// that is NOT the explicit `Close` frame. `LoadSession::close`'s
+/// contract (unchanged for a raw `Backend`): "called exactly once
+/// whenever the session ends ... best-effort — error ignored — on a
+/// failure/cancellation path." Before this fix, an abandoned session (a
+/// client that vanishes mid-`Write`) leaked whatever the backend opened,
 /// because nothing but the explicit `Close` arm ever called it — the
-/// 037 US2 T7 leak class, reopened for the wire. `_slot` is held only
-/// for its `Drop` — dropped at the end of this function regardless of
-/// which `break` got there, releasing F5's ceiling on every exit path
-/// uniformly, same as the close-on-abandon guarantee below.
+/// 037 US2 T7 leak class, reopened for the wire.
+///
+/// "Every loop exit" is deliberately narrower than "every way this
+/// function can stop running" (038 T5 review round 2, item 3): this
+/// cleanup is a plain `if` after the `loop`, not `Drop`-based like
+/// `SessionSlot` below, because `Backend::close` is `async` and Rust has
+/// no async `Drop` — there is no safe way to run it from a destructor.
+/// So it runs on every path THIS function's own `loop` takes to a
+/// `break` (client hangup, transport error, a reply the client can no
+/// longer receive), but NOT if something outside this function ever
+/// aborts the task `drive_session` runs in (`JoinHandle::abort`) while
+/// it is parked mid-`select!` — that would skip straight to the
+/// destructor phase, and only synchronous state (like `SessionSlot`'s
+/// atomic release just below) survives that. Nothing in this crate
+/// currently holds such an abort handle (`open_session` spawns and
+/// discards it), so the gap is real but currently unreachable from
+/// inside this codebase — recorded rather than silently covered by
+/// wording that would overclaim what a non-async destructor can do.
 async fn drive_session<C: DestinationConnector>(
     shell: Arc<Shell<C>>,
     mut incoming: Streaming<SessionRequest>,
@@ -685,7 +752,7 @@ impl<C: DestinationConnector> DestinationService for DestinationServer<C> {
 /// itself.
 ///
 /// Both gRPC services ([`Connector`] and [`DestinationService`]) are
-/// wired to the SAME [`DestinationServer`] instance — they share one
+/// wired to the SAME `DestinationServer` instance — they share one
 /// handshake-populated shell, so `OpenSession` sees the config a prior
 /// `Handshake` validated.
 pub async fn serve_on<C: DestinationConnector>(
