@@ -32,10 +32,12 @@ use super::schema::{self, compare_field};
 use super::state::{STATE_TABLE, read_state_doc, write_state};
 use super::write::Writer;
 
-/// Width of the pipeline scope hash. The scope names the pipeline in
-/// snapshot summaries and the state key, so the width a session opens
-/// with MUST equal the width `read_state` re-derives with.
-pub(super) const SCOPE_HASH_LEN: usize = 12;
+/// Width of the pipeline scope hash (128 bits → 32 hex chars). The scope names
+/// the pipeline in snapshot summaries and the state key, so the width a session
+/// opens with MUST equal the width `read_state` re-derives with. Widening from
+/// 12 to 32 (037) orphans pre-037 `rdlt.state.<12hex>` property keys and
+/// pre-037 snapshot replay identities to a clean first-run — recorded in 037 D1.
+pub(super) const SCOPE_HASH_LEN: usize = 32;
 
 /// Part sizing and its telemetry, grouped: the options that decide
 /// when files roll travel with the listener told when they close.
@@ -1015,5 +1017,15 @@ mod tests {
             "the new writer got its own window prefix — reusing one \
              would overwrite the retired writer's files"
         );
+    }
+
+    /// 037 US4: the scope is 32 hex chars: write-side and read-side
+    /// widths MUST agree (the constant is shared, but nothing pinned
+    /// the width itself until 037).
+    #[test]
+    fn the_scope_is_thirty_two_hex_chars_on_both_sides() {
+        let scope = super::super::connector::testhook::scope_of("p");
+        assert_eq!(scope.len(), 32, "{scope}");
+        assert!(scope.chars().all(|c| c.is_ascii_hexdigit()));
     }
 }
