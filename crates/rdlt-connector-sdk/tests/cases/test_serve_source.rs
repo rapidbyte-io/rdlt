@@ -249,6 +249,45 @@ async fn an_invalid_config_refuses_fatal_with_the_documents_own_wording() {
     }
 }
 
+/// `config_json` that is not even valid JSON (never mind failing
+/// `Document::validate`) refuses FATAL too — the arm
+/// `serde_json::from_slice` itself trips inside `common::handshake`,
+/// before a `Document` is ever constructed. Only the frozen
+/// `invalid config_json: ` prefix is ours; the rest is `serde_json`'s
+/// own error text, so this asserts a fragment rather than full-string —
+/// the same discipline the destination-role twin of this row uses in
+/// `test_serve_destination::handshake_refusal_matrix_pins_every_remaining_arm`
+/// (038 T6 fix round 1: an earlier report of this task falsely claimed
+/// this test already existed here; it did not — this is the first real
+/// source-side pin of this row).
+#[tokio::test]
+async fn an_undecodable_config_json_refuses_fatal_with_the_frozen_prefix() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
+    let mut connector = ConnectorClient::new(dial(&path).await);
+
+    let reply = connector
+        .handshake(HandshakeRequest {
+            protocol_version: 0,
+            expected_role: "source".to_string(),
+            config_json: b"{ this is not json".to_vec(),
+        })
+        .await
+        .expect("handshake rpc")
+        .into_inner();
+    match reply.outcome {
+        Some(handshake_reply::Outcome::Error(error)) => {
+            assert_eq!(error.classification, Classification::Fatal as i32);
+            assert!(
+                error.message.starts_with("invalid config_json: "),
+                "expected the frozen prefix, got: {}",
+                error.message
+            );
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
 /// A protocol version outside `[proto_min, proto_max]` refuses FATAL —
 /// the message pinned byte-exact, like its three siblings above. (No
 /// "below min" sibling exists — see
