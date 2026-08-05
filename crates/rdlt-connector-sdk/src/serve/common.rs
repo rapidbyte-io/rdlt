@@ -105,6 +105,11 @@ pub fn bind_uds(path: &Path) -> Result<UnixListener, ServeError> {
                     source,
                 });
             }
+            // TOCTOU: between the refused probe-connect above and this
+            // unlink, another process *could* bind this same path and have
+            // its live socket removed — safe in practice because
+            // production paths are PID-derived (so single-spawner-per-path),
+            // and the provider owns the spawn lifecycle.
             std::fs::remove_file(path).map_err(|source| ServeError::Bind {
                 path: path.to_path_buf(),
                 source,
