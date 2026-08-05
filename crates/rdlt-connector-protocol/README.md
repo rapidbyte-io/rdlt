@@ -133,6 +133,15 @@ from the design's original shape (038 Task 5 review, ADR D5): an
 earlier version wrapped the sdk's own `LoadSession`, which made
 `ExistingReceipt`/`Replay` inert stubs instead of real answers.
 
+**The one-batch `Write` rule.** `Write.arrow_ipc` carries EXACTLY ONE
+record batch as an Arrow IPC *stream* (one schema message, one
+record-batch message). A second batch message in the same `Write` frame
+refuses FATAL rather than being silently accepted with only the first
+batch written — that was measured as silent row loss during 038 Task 5's
+review, not a hypothetical. A multi-batch write is several `Write`
+frames, one batch each; the proto's own comment on `Write` states this
+rule verbatim.
+
 The amendment has a consequence a wire client MUST understand: **this
 service does not sequence commit frames for you.** Driving
 `ExistingReceipt` → `Replay-or-Publish` in the right order, and never
