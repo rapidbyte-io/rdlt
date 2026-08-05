@@ -48,8 +48,9 @@ const READ_CHANNEL_BUDGET: usize = 8 * 1024 * 1024;
 /// connector's producer parks behind it, against
 /// [`READ_CHANNEL_BUDGET`]'s byte budget). Not a throughput budget:
 /// headroom. 16 — the destination side's `REPLY_CHANNEL_BUDGET`
-/// (`serve::destination`) cross-cites this channel as its sizing
-/// precedent, so the two figures move together or not at all.
+/// (`serve::destination`) cites this channel as the same order of
+/// magnitude for the same reason; the two figures are kin, not
+/// coupled.
 const FRAME_CHANNEL_BUDGET: usize = 16;
 
 /// The role a source's handshake must be asked for — the mirrored
