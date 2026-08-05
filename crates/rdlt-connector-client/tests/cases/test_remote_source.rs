@@ -325,6 +325,52 @@ async fn a_two_batch_frame_is_refused_at_the_client_seat() {
     );
 }
 
+/// The checkpoint decode seat, wire-level: a read frame whose
+/// `checkpoint_cursor_json` does not parse is refused FATAL as the
+/// protocol violation it is — the read fails typed rather than
+/// forwarding a cursor that could never round-trip. Only a rogue can
+/// script this frame: the sdk's serve half encodes checkpoints from a
+/// live `Cursor`, so its JSON is well-formed by construction.
+#[tokio::test]
+async fn a_malformed_checkpoint_is_refused_typed() {
+    let (_dir, path) = socket_path();
+    let _serving = rogue::serve(
+        &path,
+        ReadScript::Frames(vec![proto::ReadFrame {
+            frame: Some(read_frame::Frame::CheckpointCursorJson(
+                b"{not json".to_vec(),
+            )),
+        }]),
+    );
+    let (remote, _) = RemoteSource::connect(
+        &path,
+        ENGINE_BUDGET_BYTES,
+        &serde_json::json!({}),
+        &ConnectorRequirement::new("rogue"),
+    )
+    .await
+    .expect("connect");
+
+    let (out, _input) = records_channel(1 << 20);
+    let error = tokio::time::timeout(
+        BOUND,
+        remote.read(ReadRequest::new(StreamSpec::new("scripted"), None, out)),
+    )
+    .await
+    .expect("the refusal is prompt")
+    .expect_err("an undecodable checkpoint must refuse");
+
+    assert!(matches!(error, SourceError::Fatal(_)), "{error:?}");
+    let rendered = error.to_string();
+    assert!(
+        rendered.starts_with(
+            "fatal source error: connector protocol violation: \
+             undecodable checkpoint_cursor_json in a read frame: "
+        ),
+        "the refusal names the field, single-framed: {rendered}"
+    );
+}
+
 /// The pacing observation the dial-time window clamp exists for: a
 /// producer with NO in-connector byte budget (the rogue's blast) against
 /// a client dialed at the tiniest budget and a host that never drains.

@@ -4,7 +4,8 @@
 //! in-process path composes, over a `Backend` whose every method is a
 //! frame on the bidi stream. The echo's process-global call log is the
 //! server-side witness: the tests assert the exact `Backend` sequence
-//! the wire delivered, in order.
+//! the wire delivered, in order. The rogue destination serves the one
+//! shape the sdk never emits — `Err(Status)` INSIDE the reply stream.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -23,6 +24,7 @@ use rdlt_connector_sdk::destination::Backend as _;
 use rdlt_connector_sdk::serve;
 
 use super::support::echo::{self, EchoDestination};
+use super::support::rogue::{self, SessionScript};
 
 /// A fresh temp directory plus a fixed socket name inside it — the
 /// directory (and the socket file in it) is reclaimed on drop, so runs
@@ -391,6 +393,56 @@ async fn a_second_session_maps_the_status_refusal_fatal() {
     assert!(
         rendered.contains("one session per connector process"),
         "the serve side's frozen wording survives: {rendered}"
+    );
+}
+
+/// The reply loop's OTHER Status leg — `Err(status)` arriving INSIDE
+/// the bidi reply stream, mid-session, while a Backend call is in
+/// flight (a handler-level Err surfaces trailers-only at the open
+/// seat, so only a rogue yielding the error as a STREAM ITEM reaches
+/// this arm): the in-flight call fails typed transport-fatal with the
+/// rogue's own wording carried, exactly like the open-seat leg above.
+#[tokio::test]
+async fn a_mid_stream_status_fails_the_in_flight_call_transport_fatal() {
+    let (_dir, path) = socket_path();
+    let _serving = rogue::serve_destination(
+        &path,
+        SessionScript::OpenedThenStatus {
+            code: tonic::Code::Unavailable,
+            message: "rogue: induced mid-session failure".to_string(),
+        },
+    );
+    let remote = RemoteDestination::connect(
+        &path,
+        ENGINE_BUDGET_BYTES,
+        &serde_json::json!({}),
+        &ConnectorRequirement::new("rogue"),
+    )
+    .await
+    .expect("connect")
+    .0;
+
+    let mut backend = remote
+        .open_backend(&context())
+        .await
+        .expect("the rogue accepts the Open frame — the failure is mid-session");
+    let error = tokio::time::timeout(
+        BOUND,
+        backend.ensure_table(&schema_for("numbers"), &WriteMode::Append),
+    )
+    .await
+    .expect("the mid-stream Status answers promptly")
+    .expect_err("the scripted mid-stream Err(Status)");
+
+    assert!(matches!(error, DestinationError::Fatal(_)), "{error:?}");
+    let rendered = error.to_string();
+    assert!(
+        rendered.starts_with("fatal destination error: connector transport: "),
+        "a mid-stream Status names the transport: {rendered}"
+    );
+    assert!(
+        rendered.contains("rogue: induced mid-session failure"),
+        "the rogue's own wording survives the mapping: {rendered}"
     );
 }
 

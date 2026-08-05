@@ -13,7 +13,7 @@ use rdlt_connector_client::{ClientError, RemoteDestination, RemoteSource, connec
 use rdlt_connector_protocol::MAX_FRAME_BYTES;
 use rdlt_connector_protocol::handshake::Line;
 use rdlt_connector_protocol::proto::SpecRequest;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::{Child, Command};
 
 use crate::managed::{LifecycleGuard, ManagedDestination, ManagedSource};
@@ -26,6 +26,13 @@ use crate::requirement::ConnectorRequirement;
 /// ten seconds is not a performance budget but a "this is not a
 /// connector" detector.
 const DEFAULT_LINE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The most bytes the one handshake line may occupy, terminator
+/// included. A conforming line is tens of bytes (four fixed fields
+/// plus a socket path), so 64 KiB is not a budget but a flood
+/// detector: without a cap, a binary spewing newline-less stdout
+/// would grow the line buffer unboundedly until the timeout.
+const MAX_LINE_BYTES: u64 = 64 * 1024;
 
 /// Spawns connector binaries and manages their lifecycle (D-039-1).
 ///
@@ -180,7 +187,11 @@ impl LocalBinaryConnectorProvider {
             .stdout
             .take()
             .expect("stdout was piped at spawn, so the child carries it");
-        let mut reader = BufReader::new(stdout);
+        // `take` caps the read at [`MAX_LINE_BYTES`]: a binary flooding
+        // stdout without a newline hits EOF at the cap instead of
+        // growing the buffer until the timeout — detected below as a
+        // full buffer with no line terminator.
+        let mut reader = BufReader::new(stdout.take(MAX_LINE_BYTES));
         let mut line = String::new();
         match tokio::time::timeout(self.line_timeout, reader.read_line(&mut line)).await {
             Err(_elapsed) => Err(ProviderError::Timeout {
@@ -191,6 +202,12 @@ impl LocalBinaryConnectorProvider {
             // Line::parse as an empty string and refuses typed there —
             // no separate arm to maintain.
             Ok(Ok(_bytes)) => {
+                if !line.ends_with('\n') && line.len() as u64 >= MAX_LINE_BYTES {
+                    return Err(ProviderError::HandshakeLineOverflow {
+                        binary: binary.to_string(),
+                        limit: MAX_LINE_BYTES,
+                    });
+                }
                 let parsed =
                     Line::parse(line.trim_end_matches(['\n', '\r'])).map_err(|source| {
                         ProviderError::HandshakeLine {

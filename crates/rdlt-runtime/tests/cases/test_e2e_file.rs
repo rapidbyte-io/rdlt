@@ -404,8 +404,8 @@ async fn sigkilling_the_destination_mid_run_fails_typed_and_a_fresh_run_converge
     let pipeline = build_pipeline_with(&spec, &provider)
         .await
         .expect("both connector requirements spawn and handshake");
-    let (dest_pid, _) = provider.recorded("destination")[0].clone();
-    let (source_pid, _) = provider.recorded("source")[0].clone();
+    let (dest_pid, dest_socket) = provider.recorded("destination")[0].clone();
+    let (source_pid, source_socket) = provider.recorded("source")[0].clone();
 
     // Kill the destination child the moment the first batch has
     // demonstrably reached it over the wire.
@@ -453,12 +453,16 @@ async fn sigkilling_the_destination_mid_run_fails_typed_and_a_fresh_run_converge
     }
 
     // No partial publish: whatever is visible parses cleanly (the
-    // reader in published_ids refuses torn lines) and is a
-    // duplicate-free prefix of the fixture — committed loads only.
+    // reader in published_ids refuses torn lines) and is duplicate-free,
+    // within the fixture range — committed loads only.
     let after_crash = published_ids(&out_dir);
     assert!(
         after_crash.len() as u64 <= ROWS,
         "never more rows than the fixture holds"
+    );
+    assert!(
+        after_crash.iter().all(|id| *id < ROWS),
+        "every visible id is a fixture id — nothing invented"
     );
     let mut deduped = after_crash.clone();
     deduped.dedup();
@@ -474,9 +478,13 @@ async fn sigkilling_the_destination_mid_run_fails_typed_and_a_fresh_run_converge
     );
 
     // The source child is also gone: its guard dropped with the failed
-    // run, so ONE crash cannot leak the healthy half.
+    // run, so ONE crash cannot leak the healthy half. And the failure
+    // path unlinks BOTH sockets — the SIGKILLed child cannot clean up
+    // after itself, so its socket file is the guard's to reclaim.
     assert_process_dead(dest_pid, "destination").await;
     assert_process_dead(source_pid, "source").await;
+    assert_socket_unlinked(&dest_socket, "destination").await;
+    assert_socket_unlinked(&source_socket, "source").await;
 
     // A fresh session (new pid, new lease owner) faces the crashed
     // session's unreleased lease; age it past its TTL rather than

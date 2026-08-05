@@ -1,24 +1,29 @@
-//! A hand-driven `SourceService` that serves EXACTLY the frames a test
-//! scripts — including shapes the sdk's serve half can never emit (its
-//! arrow encoder writes exactly one batch per frame by construction),
-//! which is the whole point: the client's one-batch refusal seat needs
-//! a server willing to violate the rule, and the pacing observation
-//! needs a producer with no in-connector byte budget between it and
-//! the wire. The `Connector` half answers the minimal truthful
-//! handshake (`rogue`/`0.0.0`) so `RemoteSource::connect` reaches
-//! `Read` at all; everything else is deliberately unimplemented.
+//! Hand-driven servers that serve EXACTLY the frames a test scripts —
+//! including shapes the sdk's serve half can never emit (its arrow
+//! encoder writes exactly one batch per frame by construction; its
+//! session refusals are `ErrorFrame` replies, never a raw `Status`
+//! inside the stream), which is the whole point: the client's refusal
+//! seats need a server willing to violate the rules, and the pacing
+//! observation needs a producer with no in-connector byte budget
+//! between it and the wire. Each `Connector` half answers the minimal
+//! truthful handshake (`rogue`/`0.0.0`) so the client's `connect`
+//! reaches the scripted RPC at all; everything else is deliberately
+//! unimplemented.
 
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use rdlt_connector::ConnectorSpec;
+use rdlt_connector::{ConnectorSpec, DestinationCapabilities};
 use rdlt_connector_protocol::proto::connector_server::{Connector, ConnectorServer};
+use rdlt_connector_protocol::proto::destination_service_server::{
+    DestinationService, DestinationServiceServer,
+};
 use rdlt_connector_protocol::proto::source_service_server::{SourceService, SourceServiceServer};
-use rdlt_connector_protocol::proto::{self, handshake_reply, read_frame};
+use rdlt_connector_protocol::proto::{self, handshake_reply, read_frame, session_reply};
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::{ReceiverStream, UnixListenerStream};
-use tonic::{Request, Response, Status};
+use tonic::{Request, Response, Status, Streaming};
 
 /// What the rogue's `Read` RPC does.
 #[derive(Debug, Clone)]
@@ -148,6 +153,109 @@ pub fn serve(path: &Path, script: ReadScript) -> JoinHandle<()> {
     let serving = tonic::transport::Server::builder()
         .add_service(ConnectorServer::from_arc(Arc::clone(&rogue)))
         .add_service(SourceServiceServer::from_arc(rogue))
+        .serve_with_incoming(incoming);
+    tokio::spawn(async move {
+        let _ = serving.await;
+    })
+}
+
+/// What the rogue destination's `OpenSession` does.
+#[derive(Debug, Clone)]
+pub enum SessionScript {
+    /// Answer the `Open` frame with `Opened` (so the client's
+    /// `open_backend` succeeds), then answer the NEXT request frame
+    /// with `Err(Status)` INSIDE the reply stream — the mid-session
+    /// transport failure the sdk's serve half never emits (its
+    /// refusals are `ErrorFrame` replies and its endings are clean),
+    /// which is exactly why the client reply loop's `Err` arm needs a
+    /// rogue to reach it.
+    OpenedThenStatus { code: tonic::Code, message: String },
+}
+
+/// The scripted destination server: a truthful handshake carrying a
+/// capabilities sheet (the client refuses a destination handshake
+/// without one), then the scripted session.
+#[derive(Debug)]
+pub struct RogueDestination {
+    script: SessionScript,
+}
+
+#[tonic::async_trait]
+impl Connector for RogueDestination {
+    async fn handshake(
+        &self,
+        _request: Request<proto::HandshakeRequest>,
+    ) -> Result<Response<proto::HandshakeReply>, Status> {
+        let spec = ConnectorSpec::new("rogue", "0.0.0");
+        Ok(Response::new(proto::HandshakeReply {
+            outcome: Some(handshake_reply::Outcome::Ok(proto::HandshakeOk {
+                connector_id: "rogue".to_string(),
+                connector_version: "0.0.0".to_string(),
+                spec_json: serde_json::to_vec(&spec)
+                    .expect("a ConnectorSpec serializes to JSON infallibly"),
+                capabilities_json: serde_json::to_vec(&DestinationCapabilities::default())
+                    .expect("a capabilities sheet serializes to JSON infallibly"),
+                state_format_versions: Default::default(),
+            })),
+        }))
+    }
+
+    async fn check(
+        &self,
+        _request: Request<proto::CheckRequest>,
+    ) -> Result<Response<proto::CheckReply>, Status> {
+        Err(Status::unimplemented("the rogue serves OpenSession alone"))
+    }
+
+    async fn spec(
+        &self,
+        _request: Request<proto::SpecRequest>,
+    ) -> Result<Response<proto::SpecReply>, Status> {
+        Err(Status::unimplemented("the rogue serves OpenSession alone"))
+    }
+}
+
+#[tonic::async_trait]
+impl DestinationService for RogueDestination {
+    type OpenSessionStream = ReceiverStream<Result<proto::SessionReply, Status>>;
+
+    async fn open_session(
+        &self,
+        request: Request<Streaming<proto::SessionRequest>>,
+    ) -> Result<Response<Self::OpenSessionStream>, Status> {
+        let SessionScript::OpenedThenStatus { code, message } = self.script.clone();
+        let mut requests = request.into_inner();
+        // Capacity 1 matches the client's request/reply pacing: each
+        // send below completes only once tonic pulled the previous
+        // reply toward the wire.
+        let (reply_tx, reply_rx) = tokio::sync::mpsc::channel(1);
+        tokio::spawn(async move {
+            // Consume the Open frame and accept it, so the failure
+            // lands MID-SESSION — inside an in-flight Backend call,
+            // not at the open seat (a handler-level Err(Status)
+            // surfaces trailers-only there; T4's record).
+            let _ = requests.message().await;
+            let _ = reply_tx
+                .send(Ok(proto::SessionReply {
+                    reply: Some(session_reply::Reply::Opened(proto::Empty {})),
+                }))
+                .await;
+            let _ = requests.message().await;
+            let _ = reply_tx.send(Err(Status::new(code, message))).await;
+        });
+        Ok(Response::new(ReceiverStream::new(reply_rx)))
+    }
+}
+
+/// Bind the rogue destination at `path` and serve until the returned
+/// task is dropped — [`serve`]'s destination twin.
+pub fn serve_destination(path: &Path, script: SessionScript) -> JoinHandle<()> {
+    let listener = tokio::net::UnixListener::bind(path).expect("bind the rogue's socket");
+    let incoming = UnixListenerStream::new(listener);
+    let rogue = Arc::new(RogueDestination { script });
+    let serving = tonic::transport::Server::builder()
+        .add_service(ConnectorServer::from_arc(Arc::clone(&rogue)))
+        .add_service(DestinationServiceServer::from_arc(rogue))
         .serve_with_incoming(incoming);
     tokio::spawn(async move {
         let _ = serving.await;

@@ -184,6 +184,44 @@ async fn a_silent_binary_times_out() {
     }
 }
 
+/// A binary that floods stdout WITHOUT a newline refuses typed as
+/// `HandshakeLineOverflow` the moment the cap fills — before the
+/// provider's line timeout, and without buffering the flood (the fake
+/// writes 256 KiB against the 64 KiB cap; an uncapped read would have
+/// held it all until the 10 s default timeout).
+#[tokio::test]
+async fn a_newline_less_flood_refuses_at_the_cap() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_script(
+        dir.path(),
+        "rdlt-connector-fake",
+        // 256 KiB of 'x', no newline, then stay alive so the kill has
+        // something real to do (see line_fake_body's exec note).
+        "#!/bin/sh\nhead -c 262144 /dev/zero | tr '\\0' 'x'\nexec sleep 30\n",
+    );
+
+    let provider = LocalBinaryConnectorProvider::new().with_search_path(dir.path());
+    let error = provider
+        .source(
+            &ConnectorRequirement::new("io.rapidbyte.fake"),
+            &serde_json::json!({}),
+        )
+        .await
+        .expect_err("a newline-less flood must refuse");
+    match &error {
+        ProviderError::HandshakeLineOverflow { binary, limit } => {
+            assert_eq!(binary, "rdlt-connector-fake");
+            assert_eq!(*limit, 64 * 1024);
+        }
+        other => panic!("expected HandshakeLineOverflow, got {other:?}"),
+    }
+    assert_eq!(
+        error.to_string(),
+        "connector `rdlt-connector-fake` wrote 65536 bytes of stdout \
+         without completing a handshake line"
+    );
+}
+
 /// A first line that is not a handshake line refuses typed as
 /// `HandshakeLine`, carrying the parse refusal as its cause.
 #[tokio::test]

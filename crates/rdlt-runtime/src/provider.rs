@@ -66,6 +66,18 @@ pub enum ProviderError {
         #[source]
         source: LineError,
     },
+    /// The spawned process flooded stdout past the handshake-line cap
+    /// without a line terminator — not a connector, refused as soon as
+    /// the cap fills rather than buffering the flood until the timeout.
+    #[error(
+        "connector `{binary}` wrote {limit} bytes of stdout without completing a handshake line"
+    )]
+    HandshakeLineOverflow {
+        /// The binary that flooded.
+        binary: String,
+        /// The byte cap the flood filled.
+        limit: u64,
+    },
     /// The spawned process wrote no handshake line before the
     /// provider's line timeout — a binary that is not a connector at
     /// all, or one wedged before serving.
