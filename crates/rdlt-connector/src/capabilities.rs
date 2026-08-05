@@ -44,6 +44,14 @@ pub struct DestinationCapabilities {
     pub json_type: bool,
     /// Native fixed-point decimal; if false decimals lower to text.
     pub decimal: bool,
+    /// The destination's publish is NOT atomic across tables, and its
+    /// crash convergence recognises prior work only under the SAME
+    /// run identity. The engine must refuse to run it without a WAL
+    /// workdir: a mid-publish failure would otherwise restart under a
+    /// fresh load id and re-append rows the first attempt already
+    /// committed (iceberg N2, 029).
+    #[serde(default)]
+    pub requires_durable_identity: bool,
     /// Identifier limits and case-folding, used to normalize table and
     /// column names before any DDL is generated. Wrong rules produce
     /// names the destination silently truncates or folds into
@@ -88,6 +96,14 @@ impl DestinationCapabilities {
         self
     }
 
+    /// Declare that the destination requires durable identity
+    /// (non-atomic-publish destinations that demand a WAL workdir).
+    #[must_use]
+    pub fn with_requires_durable_identity(mut self, requires_durable_identity: bool) -> Self {
+        self.requires_durable_identity = requires_durable_identity;
+        self
+    }
+
     /// Declare the destination's identifier limits and case-folding.
     #[must_use]
     pub fn with_ident_rules(mut self, ident_rules: IdentRules) -> Self {
@@ -110,19 +126,22 @@ mod tests {
         assert!(!conservative.scalar_lists);
         assert!(!conservative.json_type);
         assert!(!conservative.decimal);
+        assert!(!conservative.requires_durable_identity);
 
         let declared = DestinationCapabilities::default()
             .with_merge(true)
             .with_structs(true)
             .with_scalar_lists(true)
             .with_json_type(true)
-            .with_decimal(true);
+            .with_decimal(true)
+            .with_requires_durable_identity(true);
         assert!(
             declared.merge
                 && declared.structs
                 && declared.scalar_lists
                 && declared.json_type
                 && declared.decimal
+                && declared.requires_durable_identity
         );
         assert_eq!(declared.ident_rules, IdentRules::default());
     }
@@ -132,10 +151,12 @@ mod tests {
     fn the_declaration_round_trips_through_serde() {
         let declared = DestinationCapabilities::default()
             .with_merge(true)
-            .with_decimal(true);
+            .with_decimal(true)
+            .with_requires_durable_identity(true);
         let wire = serde_json::to_value(declared).expect("serializes");
         assert_eq!(wire["merge"], true);
         assert_eq!(wire["structs"], false);
+        assert_eq!(wire["requires_durable_identity"], true);
         let back: DestinationCapabilities = serde_json::from_value(wire).expect("round-trips");
         assert_eq!(back, declared);
     }
