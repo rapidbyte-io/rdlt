@@ -196,13 +196,30 @@ async fn drive(
         }
     });
 
-    let report = pipeline.run().await?;
-    // A failed renderer is reported but never fails the run: by this point the
-    // load has succeeded and the report is in hand, so exiting non-zero would
-    // misreport the outcome.
+    let run_result = pipeline.run().await;
+    // Await the feed BEFORE looking at the run's outcome, on both the Ok and
+    // Err paths. Under Pretty, indicatif's MultiProgress is the exclusive
+    // owner of stderr's draw state until `display.clear()` runs at the loop's
+    // `None => break` (the event channel closing behind the finished/failed
+    // pipeline); a raw write to stderr from outside that ownership — like the
+    // old code's immediate `?` propagating straight to main's error line —
+    // races the display's own still-in-flight redraws (each ~100ms while a
+    // slow commit is in flight) and loses: the next redraw's cursor-up/clear
+    // targets rows the foreign write shifted, so the error is either
+    // scrolled out of view or overdrawn by a repeated "done" line. Returning
+    // early skipped this rendezvous entirely, so a failed run could read as
+    // a silent success. Awaiting first makes the sequence deterministic: the
+    // display settles (finished per-stream bars stay as permanent scrollback
+    // lines, exactly like a successful run's, with the ephemeral header/
+    // totals cleared away) and ONLY THEN does the error — or the report —
+    // become the next thing written. A failed renderer itself is reported
+    // but never fails the run: by this point either the load succeeded
+    // (report in hand) or `run_result` already carries the real error, so a
+    // feed hiccup exiting non-zero would misreport the outcome either way.
     if let Err(e) = feed.await {
         ui::stderr_line(&format!("warning: event feed stopped: {e}"));
     }
+    let report = run_result?;
     // The FINAL numbers, from the exactly-once report — never the live
     // fold. Quiet suppresses it; both other renderers end with it.
     // Best-effort BY HAND: `eprint!` panics on a closed stderr, which
