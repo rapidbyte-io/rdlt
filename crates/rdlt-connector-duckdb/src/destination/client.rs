@@ -186,9 +186,28 @@ impl Db {
 
 /// The classification rulebook. DuckDB's C API reports NO structured
 /// error category (the crate's probe pins `ErrorCode::Unknown`), so
-/// the ONE transient key is a stable message prefix: `"IO Error"`
-/// covers file locks (another process holding the database) and disk
-/// pressure — both heal on retry. Everything else is fatal.
+/// the transient key is a stable message prefix: `"IO Error"` covers
+/// file locks (another process holding the database) and disk
+/// pressure — both heal on retry, because the message text names the
+/// operating condition, not the operation. Everything else is fatal.
+///
+/// A CARVE-OUT under that prefix (037 US6 / Task 19, S5) catches the
+/// sub-cases that are deterministic instead: a missing parent
+/// directory or a permission-denied path never heals on retry either —
+/// no amount of retry budget opens a path that structurally cannot
+/// open — so a run that treated them as transient would retry forever
+/// and report a false "still trying" instead of failing loud. The two
+/// fragments are PROBE-PINNED (`test_probes.rs`,
+/// `probe_deterministic_io_message_spellings` +
+/// `..._permission_denied`) against duckdb 1.5.x's own C++ source
+/// (`local_file_system.cpp`), not guessed: both open failures render
+/// through the SAME `"Cannot open file \"%s\": %s"` template, with
+/// `strerror(errno)` supplying the deterministic suffix (`No such file
+/// or directory` / `Permission denied`) — so the shared `"Cannot open
+/// file"` fragment alone is the carve-out key, never mistaken for the
+/// lock message (`"Could not set lock on file \"%s\": %s"`, a
+/// DIFFERENT template with neither substring) or disk-pressure
+/// messages (a `write()` failure, also a different template).
 ///
 /// Classification is UNIFORM across the whole load path (031 review
 /// S2/A3): the receipt probe, the load-committed probe, and
@@ -200,6 +219,13 @@ pub(crate) fn classify(e: duckdb::Error) -> DestinationError {
     if let duckdb::Error::DuckDBFailure(_, Some(message)) = &e
         && message.starts_with("IO Error")
     {
+        // Deterministic sub-cases never heal on retry; the fragment is
+        // probe-pinned (test_probes), not guessed. Locks and disk
+        // pressure stay transient — the rulebook's whole point.
+        const DETERMINISTIC: &[&str] = &["Cannot open file"];
+        if DETERMINISTIC.iter().any(|f| message.contains(f)) {
+            return DestinationError::fatal(e.to_string());
+        }
         return DestinationError::transient(e.to_string());
     }
     DestinationError::fatal(e.to_string())
@@ -285,8 +311,10 @@ mod tests {
 
     /// The classifier wiring, pinned directly on constructed library
     /// errors: an `IO Error`-prefixed failure is TRANSIENT, anything
-    /// else is FATAL. The commit path (receipt probe, load-committed
-    /// probe, `read_state`'s read arm) relies on exactly this split.
+    /// else is FATAL — EXCEPT the deterministic carve-out (037 US6 /
+    /// Task 19, S5), which routes fatal even under the `IO Error`
+    /// prefix. The commit path (receipt probe, load-committed probe,
+    /// `read_state`'s read arm) relies on exactly this split.
     #[test]
     fn classify_splits_io_errors_transient_everything_else_fatal() {
         let failure = |message: &str| {
@@ -294,10 +322,13 @@ mod tests {
         };
         assert!(
             matches!(
-                classify(failure("IO Error: could not set lock on file")),
+                classify(failure(
+                    "IO Error: Could not set lock on file \"x.duckdb\": \
+                                   Resource temporarily unavailable"
+                )),
                 DestinationError::Transient(_)
             ),
-            "an IO Error rides the retry budget"
+            "a lock conflict rides the retry budget — the rulebook's whole point"
         );
         assert!(
             matches!(
@@ -305,6 +336,29 @@ mod tests {
                 DestinationError::Fatal(_)
             ),
             "everything else stays fatal"
+        );
+        // The deterministic carve-out — one case per fragment
+        // probe-pinned in test_probes.rs, plus the lock case above
+        // proving the carve-out does NOT swallow the rulebook's
+        // reason for the "IO Error" prefix existing at all.
+        assert!(
+            matches!(
+                classify(failure(
+                    "IO Error: Cannot open file \"/no/such/dir/x.duckdb\": \
+                     No such file or directory"
+                )),
+                DestinationError::Fatal(_)
+            ),
+            "a missing parent directory never heals on retry"
+        );
+        assert!(
+            matches!(
+                classify(failure(
+                    "IO Error: Cannot open file \"/no/perm/x.duckdb\": Permission denied"
+                )),
+                DestinationError::Fatal(_)
+            ),
+            "a permission-denied path never heals on retry"
         );
     }
 

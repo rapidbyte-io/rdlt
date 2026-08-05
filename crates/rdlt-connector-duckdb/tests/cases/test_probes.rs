@@ -5,6 +5,8 @@
 //! approximation. The last three cells drive the settings/extension
 //! passthrough through the V2 surface (Config → Shell → testhook).
 
+use std::os::unix::fs::PermissionsExt;
+
 use duckdb::Connection;
 use rdlt_connector_duckdb::destination::{self, Config, Shell};
 use rdlt_connector_sdk::config::Document;
@@ -334,3 +336,83 @@ fn probe_alter_on_an_art_indexed_column() {
         "exact error message for Task 16 design: {err_msg}"
     );
 }
+
+/// The deterministic-IO carve-out (037 US6 / Task 19) keys on these
+/// EXACT message spellings — pinned here first so `classify`'s
+/// carve-out is built on measured reality, not a guess. Both failures
+/// are ones that never heal on retry: a missing parent directory and a
+/// permission-denied path stay broken until an operator intervenes,
+/// unlike a file lock or disk pressure (the existing "IO Error" rule's
+/// whole point, which stays transient).
+///
+/// MEASURED verbatim (duckdb 1.5.x bundled): `IO Error: Cannot open
+/// file "/nonexistent-rdlt-probe-dir/x.duckdb": No such file or
+/// directory` — the carve-out keys on the shared `Cannot open file`
+/// prefix plus this cell's own `No such file or directory` suffix
+/// where a directory-based check is not simpler; here the shared
+/// `Cannot open file` fragment alone suffices since it never appears
+/// in a lock or disk-pressure message.
+#[test]
+fn probe_deterministic_io_message_spellings() {
+    // Missing parent directory: DuckDB's own file-open failure.
+    let missing = duckdb::Connection::open("/nonexistent-rdlt-probe-dir/x.duckdb")
+        .expect_err("no parent dir");
+    let text = missing.to_string();
+    assert!(text.starts_with("IO Error"), "{text}");
+    assert!(
+        text.contains("Cannot open file"),
+        "PIN the fragment: {text}"
+    );
+}
+
+/// The permission-denied sibling: a directory this process cannot
+/// write into. Detects root (or any other permission-bypassing
+/// environment) BEHAVIORALLY rather than via a `geteuid` FFI call —
+/// the workspace denies `unsafe_code` outright — by noticing the open
+/// SUCCEEDED despite chmod 000 and skipping rather than asserting on
+/// a failure that never comes.
+///
+/// MEASURED verbatim (duckdb 1.5.x bundled): `IO Error: Cannot open
+/// file "<path>/x.duckdb": Permission denied` — same `Cannot open
+/// file` prefix as the missing-parent cell, distinguished by the
+/// `Permission denied` suffix.
+#[test]
+fn probe_deterministic_io_message_spelling_permission_denied() {
+    let dir = tempfile::tempdir().expect("dir");
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o000))
+        .expect("chmod 000");
+    let path = dir.path().join("x.duckdb");
+    let result = duckdb::Connection::open(&path);
+    // Restore permissions unconditionally so the tempdir guard can
+    // clean up on drop, whichever branch below runs.
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
+        .expect("restore for cleanup");
+    let text = match result {
+        Ok(_) => {
+            eprintln!(
+                "SKIP: permission bits not enforced (root or a permissive filesystem) \
+                 — cannot induce permission-denied"
+            );
+            return;
+        }
+        Err(e) => e.to_string(),
+    };
+    assert!(text.starts_with("IO Error"), "{text}");
+    assert!(
+        text.contains("Permission denied"),
+        "PIN the fragment: {text}"
+    );
+}
+
+// A THIRD probe — a real cross-instance file-lock conflict — was
+// attempted and dropped: two `duckdb::Connection::open` calls on the
+// same path from ONE process never conflict (measured; the advisory
+// lock is process-scoped, so a second open in the same process
+// re-acquires it rather than blocking), and this crate's own
+// double-open registry (client.rs) refuses a second in-process
+// read-write open before the library ever runs, for the WAL-truncation
+// hazard, not for lock testing. A genuine lock conflict needs a
+// SEPARATE process; the existing unit pin in client.rs
+// (`classify_splits_io_errors_transient_everything_else_fatal`) is
+// kept as the lock fragment's sole coverage rather than manufacturing
+// subprocess plumbing to reproduce it here.
