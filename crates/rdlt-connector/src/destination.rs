@@ -45,12 +45,11 @@ pub trait Destination: Send + Sync + 'static {
 
 /// What a load session opens under.
 ///
-/// Deliberately an exhaustive pub-field struct (a DX choice, semver
-/// gated); [`OpenContext::new`] is the compatibility hedge, and every
-/// consumer in the tree constructs through it.
-///
-/// constructed via `new` — wire-era fields arrive without breaking
-/// out-of-crate construction (038)
+/// `#[non_exhaustive]` since 038: out-of-crate struct-literal
+/// construction is closed, so wire-era fields can arrive without a
+/// breaking change. [`OpenContext::new`] is the constructor — every
+/// consumer in the tree builds through it — and the fields stay `pub`
+/// for read access.
 #[derive(Clone)]
 #[non_exhaustive]
 pub struct OpenContext {

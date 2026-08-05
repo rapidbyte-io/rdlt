@@ -1001,6 +1001,93 @@ async fn a_corrupt_second_batch_carries_the_undecodable_refusal_and_its_cause() 
     }
 }
 
+/// B1 fix pin (038 review round 1): a `Write` frame carrying ONE Arrow
+/// batch bigger than tonic's 4 MiB DEFAULT receive cap
+/// (`DEFAULT_MAX_RECV_MESSAGE_SIZE`, tonic 0.14.6) round-trips to
+/// `Written` under the raised 64 MiB ceiling
+/// (`serve::common::MAX_FRAME_BYTES`, installed by both `serve_on`s).
+/// Before the fix nothing configured the served services' receive cap,
+/// so this exact frame — legal under the SPI's 8-64 MiB byte-budget
+/// channels, and unsplittable under the frozen one-batch-per-frame
+/// rule — killed the session instead of producing ANY reply. Verified
+/// red by running this test with the `max_decoding_message_size` calls
+/// removed: the server's own request-decode refusal surfaces in
+/// `drive_session`'s `incoming.message()` as a transport-arm `Err`, the
+/// loop breaks, and the client observes its reply stream END with the
+/// `Written` reply never arriving — wire-undeliverable, with nothing
+/// naming why.
+#[tokio::test]
+async fn a_write_frame_beyond_tonics_default_cap_round_trips_to_written() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = serve_on::<EchoDestination>(&path).await.expect("bind");
+    let channel = dial(&path).await;
+    let mut connector = ConnectorClient::new(channel.clone());
+    let mut destination = DestinationServiceClient::new(channel);
+
+    handshake(&mut connector, false, false).await;
+
+    let (req_tx, mut replies) = open_session(&mut destination).await;
+    req_tx.send(open_frame("p", "l")).await.expect("send open");
+    next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("opened");
+
+    req_tx
+        .send(ensure_frame(ECHOED_TABLE))
+        .await
+        .expect("send ensure");
+    next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("ensured");
+
+    // ~5 MiB in ONE batch — comfortably past the 4 MiB default cap,
+    // comfortably inside the 64 MiB ceiling: a single Utf8 column of
+    // five 1 MiB strings.
+    let column: arrow::array::ArrayRef = Arc::new(arrow::array::StringArray::from_iter_values(
+        std::iter::repeat_n("x".repeat(1024 * 1024), 5),
+    ));
+    let schema = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("payload", arrow::datatypes::DataType::Utf8, false),
+    ]));
+    let big_batch =
+        rdlt_connector::RecordBatch::try_new(schema, vec![column]).expect("a 5 MiB batch builds");
+    let arrow_ipc = encode_arrow_ipc(&big_batch);
+    assert!(
+        arrow_ipc.len() > 4 * 1024 * 1024,
+        "the fixture must actually exceed tonic's 4 MiB default cap, got {} bytes",
+        arrow_ipc.len()
+    );
+
+    req_tx
+        .send(SessionRequest {
+            request: Some(session_request::Request::Write(proto::Write {
+                table: ECHOED_TABLE.to_string(),
+                arrow_ipc,
+            })),
+        })
+        .await
+        .expect("send the over-4 MiB write");
+    assert!(
+        matches!(
+            next_reply(&mut replies)
+                .await
+                .expect("a reply, not a transport error — the raised cap admits the frame")
+                .expect("frame")
+                .reply,
+            Some(session_reply::Reply::Written(_))
+        ),
+        "an over-4 MiB single-batch Write must round-trip to Written"
+    );
+
+    req_tx.send(close_frame()).await.expect("send close");
+    next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("closed");
+}
+
 /// Item 2 fix pin (038 T5 review round 2): a Transient `connect` failure
 /// on `Open` does NOT poison the stream — the guard is only marked open
 /// on a SUCCESSFUL connect (`WriteGuard::mark_open`, called after

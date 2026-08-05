@@ -128,7 +128,7 @@ fn read_frame_arrow_ipc_golden_frame() {
 
 /// Turns a whitespace-separated hex literal (as laid out above, one byte
 /// per pair, free to wrap across lines) into bytes — a small, local, no-dep
-/// helper rather than pulling in a hex crate for two test fixtures.
+/// helper rather than pulling in a hex crate for four test fixtures.
 fn hex_literal(spelled: &str) -> Vec<u8> {
     spelled
         .split_whitespace()

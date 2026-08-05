@@ -24,6 +24,22 @@ use rdlt_connector_protocol::proto;
 use thiserror::Error;
 use tokio::net::UnixListener;
 
+/// The per-message receive ceiling BOTH served services install
+/// (`.max_decoding_message_size` on every service wrapper in
+/// `serve::source::serve_on` and `serve::destination::serve_on`),
+/// replacing tonic's 4 MiB default decode cap. The SPI's byte-budget
+/// channels run 8-64 MiB, so ONE Arrow batch in a `Write` frame may
+/// legitimately exceed 4 MiB — under tonic's default, such a batch
+/// kills the session with an opaque transport `Status`, and the frozen
+/// one-batch-per-frame rule means there is NO conforming way to
+/// deliver it smaller. h2 flow-control windows remain the PACING
+/// mechanism (see the module doc's window note); this cap is the hard
+/// refusal ceiling, deliberately above any in-tree budget. 039's
+/// client must mirror it (CARRIED) — a dialing side left at the 4 MiB
+/// default dies the same way on the first over-4 MiB `ReadFrame` a
+/// server legally sends.
+pub(super) const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
+
 /// Failures standing up or running a `serve()` listener itself — never a
 /// connector's own classified failure, which rides [`proto::ErrorFrame`]
 /// over the wire instead of ending the process.
@@ -63,8 +79,9 @@ pub enum ServeError {
 }
 
 /// A fresh, process-unique socket path in the system temp directory —
-/// what [`crate::serve::source::source`] binds to when the caller (a
-/// spawned connector process) has no path of its own to offer.
+/// what [`crate::serve::source::source`] and
+/// [`crate::serve::destination::destination`] bind to when the caller
+/// (a spawned connector process) has no path of its own to offer.
 pub fn temp_socket_path() -> PathBuf {
     std::env::temp_dir().join(format!("rdlt-{}.sock", std::process::id()))
 }
@@ -83,13 +100,14 @@ pub fn temp_socket_path() -> PathBuf {
 /// predecessor left behind (an unclean kill; PIDs recycle). Unlinking
 /// unconditionally, as an earlier version of this function did, would
 /// silently steal a live listener's path out from under it. So on
-/// `AddrInUse` the path is probed instead: a connect attempt that is
-/// REFUSED means nothing is listening (stale — unlink and retry);
-/// a connect that SUCCEEDS means something is (a real collision,
-/// reported as `ServeError::Bind` rather than clobbered).
+/// `AddrInUse` the path is probed instead: a connect attempt that
+/// FAILS — refused, or any other connect error — means nothing usable
+/// is listening (stale — unlink and retry); a connect that SUCCEEDS
+/// means something is (a real collision, reported as
+/// `ServeError::Bind` rather than clobbered).
 ///
 /// The stale-probe → unlink → rebind sequence has a TOCTOU window:
-/// between the refused probe-connect and the unlink, another process
+/// between the failed probe-connect and the unlink, another process
 /// could bind this same path — and the unlink would then steal its
 /// live socket. Safe in practice, not by the syscalls: production
 /// paths are minted PID-unique ([`temp_socket_path`]) and the process
@@ -105,7 +123,7 @@ pub fn bind_uds(path: &Path) -> Result<UnixListener, ServeError> {
                     source,
                 });
             }
-            // TOCTOU: between the refused probe-connect above and this
+            // TOCTOU: between the failed probe-connect above and this
             // unlink, another process *could* bind this same path and have
             // its live socket removed — safe in practice because
             // production paths are PID-derived (so single-spawner-per-path),

@@ -172,7 +172,7 @@ notifications with request replies; a client that defers reading until
 every request is sent can wedge itself against a full HTTP/2
 flow-control window once enough unread replies queue up server-side.
 The proto's own comment on `DestinationService` carries this same
-warning verbatim.
+warning in substance.
 
 **The `PartClosedEvent` ordering promise — narrowed, on purpose (038 T5
 review).** Copied verbatim from the sdk's `serve::destination` module
@@ -197,6 +197,21 @@ In short: `part_closed` before the reply of the call that (synchronously)
 caused it — a promise about ONE call's own emissions, not a global
 ordering across the whole session.
 
+## Frame size ceiling
+
+Served connectors raise tonic's default 4 MiB per-message receive cap
+to a hard ceiling of **64 MiB** (the sdk's `serve::common::
+MAX_FRAME_BYTES`), on every service. The SPI's byte-budget channels run
+8-64 MiB, so a single legitimate Arrow batch in a `Write` frame (or a
+`ReadFrame`) may exceed 4 MiB — and the one-batch-per-frame rule means
+such a batch has no conforming way to be delivered smaller. HTTP/2
+flow-control windows remain the PACING mechanism within the ceiling;
+the cap is the hard refusal line, deliberately above any in-tree
+budget. Clients (039's adapter, any foreign integrator) MUST set their
+own decode cap to match: a dialing side left at tonic's 4 MiB default
+kills the stream with an opaque transport error on the first
+over-4 MiB frame a server legally sends.
+
 ## `Status` vs `ErrorFrame`: two refusal shapes, on purpose
 
 A caller has to know both exist and check the right one for a given
@@ -220,7 +235,10 @@ is open (write-before-`Open`, write-before-`Ensure`, a second `Open`
 frame, an empty request frame, a connector's own classified failure) —
 answers as an `ErrorFrame` carried as reply-payload state
 (`Classification::{Transient,RateLimited,Fatal}`), inside an RPC/stream
-that itself completes normally. This is DATA a caller is meant to
+that itself completes normally. A `Read` request whose
+`stream_spec_json`/`since_cursor_json` fails to decode rides this shape
+too: the refusal is the response stream's first and only frame, a
+terminal `error` — never a `Status`. This is DATA a caller is meant to
 inspect uniformly, not a protocol bug — the RPC layer has no reason to
 reject the call that reported it.
 

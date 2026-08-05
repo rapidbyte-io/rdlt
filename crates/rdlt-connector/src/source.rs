@@ -49,12 +49,11 @@ pub trait Source: Send + Sync + 'static {
 
 /// Everything a source needs to read one stream.
 ///
-/// Deliberately an exhaustive pub-field struct (a DX choice, semver
-/// gated); [`ReadRequest::new`] is the compatibility hedge, and every
-/// consumer in the tree constructs through it.
-///
-/// constructed via `new` — wire-era fields arrive without breaking
-/// out-of-crate construction (038)
+/// `#[non_exhaustive]` since 038: out-of-crate struct-literal
+/// construction is closed, so wire-era fields can arrive without a
+/// breaking change. [`ReadRequest::new`] is the constructor — every
+/// consumer in the tree builds through it — and the fields stay `pub`
+/// for read access.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct ReadRequest {

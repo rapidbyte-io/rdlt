@@ -42,6 +42,16 @@ use crate::source::{Shell, SourceConnector};
 /// which governs the far side of that wire starting at 039's adapter.
 const READ_CHANNEL_BUDGET: usize = 8 * 1024 * 1024;
 
+/// Bound on the frame channel one `Read` call forwards into — caps how
+/// many already-encoded `ReadFrame`s can sit unread while the CLIENT
+/// stalls reading its stream before the forwarding loop parks (and the
+/// connector's producer parks behind it, against
+/// [`READ_CHANNEL_BUDGET`]'s byte budget). Not a throughput budget:
+/// headroom. 16 — the destination side's `REPLY_CHANNEL_BUDGET`
+/// (`serve::destination`) cross-cites this channel as its sizing
+/// precedent, so the two figures move together or not at all.
+const FRAME_CHANNEL_BUDGET: usize = 16;
+
 /// The role a source's handshake must be asked for — the mirrored
 /// spelling lives on the destination side (`serve::destination`'s own
 /// `EXPECTED_ROLE`).
@@ -180,19 +190,29 @@ impl<C: SourceConnector> SourceService for SourceServer<C> {
         let shell = Arc::clone(self.shell()?);
         let request = request.into_inner();
 
-        let stream_spec = serde_json::from_slice(&request.stream_spec_json).map_err(|error| {
-            Status::invalid_argument(format!("invalid stream_spec_json: {error}"))
-        })?;
-        let since = request
-            .since_cursor_json
-            .map(|bytes| {
-                serde_json::from_slice::<serde_json::Value>(&bytes)
-                    .map(rdlt_connector::Cursor::new)
-                    .map_err(|error| {
-                        Status::invalid_argument(format!("invalid since_cursor_json: {error}"))
-                    })
-            })
-            .transpose()?;
+        // A request payload that fails to decode answers INSIDE the
+        // response stream — first and only frame a terminal FATAL
+        // `ErrorFrame` — never as a `Status` (038 review round 1, B2):
+        // the twice-recorded Status-vs-ErrorFrame rule (serve/mod.rs;
+        // the protocol crate's README) allows exactly two refusal
+        // shapes, and an undecodable payload is a connector-outcome
+        // refusal like the destination side's `*_json` decode
+        // refusals, not a protocol-state violation.
+        let stream_spec = match serde_json::from_slice(&request.stream_spec_json) {
+            Ok(spec) => spec,
+            Err(error) => {
+                return Ok(error_stream(format!("invalid stream_spec_json: {error}")));
+            }
+        };
+        let since = match &request.since_cursor_json {
+            None => None,
+            Some(bytes) => match serde_json::from_slice::<serde_json::Value>(bytes) {
+                Ok(value) => Some(rdlt_connector::Cursor::new(value)),
+                Err(error) => {
+                    return Ok(error_stream(format!("invalid since_cursor_json: {error}")));
+                }
+            },
+        };
 
         let (out, mut records_in) = records_channel(READ_CHANNEL_BUDGET);
         let read_request = rdlt_connector::ReadRequest::new(stream_spec, since, out);
@@ -200,9 +220,17 @@ impl<C: SourceConnector> SourceService for SourceServer<C> {
         let read_task: JoinHandle<Result<(), SourceError>> =
             tokio::spawn(async move { shell.read(read_request).await });
 
-        let (frame_tx, frame_rx) = tokio::sync::mpsc::channel(16);
+        let (frame_tx, frame_rx) = tokio::sync::mpsc::channel(FRAME_CHANNEL_BUDGET);
 
         tokio::spawn(async move {
+            // Whether the encode-failure arm below has already emitted
+            // its ErrorFrame. The proto calls the Error frame TERMINAL,
+            // so once one is on the stream nothing may follow it — in
+            // particular the read task's own eventual `Err` (its push
+            // observed the closed channel and the connector may return
+            // an error rather than `Ok`) must not append a second
+            // "terminal" frame behind the first.
+            let mut terminal_sent = false;
             loop {
                 let Some(push) = records_in.recv().await else {
                     break;
@@ -228,6 +256,7 @@ impl<C: SourceConnector> SourceService for SourceServer<C> {
                             ))),
                         };
                         let _ = frame_tx.send(Ok(frame)).await;
+                        terminal_sent = true;
                         records_in.close();
                         break;
                     }
@@ -246,12 +275,16 @@ impl<C: SourceConnector> SourceService for SourceServer<C> {
 
             match read_task.await {
                 Ok(Ok(())) => {}
-                Ok(Err(error)) => {
+                Ok(Err(error)) if !terminal_sent => {
                     let frame = proto::ReadFrame {
                         frame: Some(read_frame::Frame::Error(source_error_frame(&error))),
                     };
                     let _ = frame_tx.send(Ok(frame)).await;
                 }
+                // A terminal ErrorFrame is already on the stream — the
+                // encode failure it reported is the diagnosis; the read
+                // task's follow-on error is downstream noise.
+                Ok(Err(_)) => {}
                 Err(join_error) => {
                     let _ = frame_tx
                         .send(Err(Status::internal(format!(
@@ -264,6 +297,25 @@ impl<C: SourceConnector> SourceService for SourceServer<C> {
 
         Ok(Response::new(ReceiverStream::new(frame_rx)))
     }
+}
+
+/// An already-terminated `Read` response stream whose first and only
+/// frame is a terminal FATAL [`ErrorFrame`] carrying `message` — what a
+/// request-decode failure answers with (see the comment inside
+/// `SourceServer::read` for why this is a frame, not a `Status`).
+fn error_stream(message: String) -> Response<ReceiverStream<Result<proto::ReadFrame, Status>>> {
+    let (frame_tx, frame_rx) = tokio::sync::mpsc::channel(1);
+    let frame = proto::ReadFrame {
+        frame: Some(read_frame::Frame::Error(common::error_frame(
+            Classification::Fatal,
+            message,
+            None,
+        ))),
+    };
+    frame_tx
+        .try_send(Ok(frame))
+        .expect("a fresh channel with capacity 1 accepts its one frame");
+    Response::new(ReceiverStream::new(frame_rx))
 }
 
 /// One SPI push, translated to its wire shape — the payload picks the
@@ -323,9 +375,18 @@ pub async fn serve_on<C: SourceConnector>(
     let incoming = UnixListenerStream::new(listener);
 
     let server = Arc::new(SourceServer::<C>::new());
+    // `max_decoding_message_size` on BOTH services: tonic's 4 MiB
+    // default receive cap is below what one legitimate frame may carry
+    // — see `common::MAX_FRAME_BYTES`'s own doc.
     let serving = tonic::transport::Server::builder()
-        .add_service(ConnectorServer::from_arc(Arc::clone(&server)))
-        .add_service(SourceServiceServer::from_arc(server))
+        .add_service(
+            ConnectorServer::from_arc(Arc::clone(&server))
+                .max_decoding_message_size(common::MAX_FRAME_BYTES),
+        )
+        .add_service(
+            SourceServiceServer::from_arc(server)
+                .max_decoding_message_size(common::MAX_FRAME_BYTES),
+        )
         .serve_with_incoming(incoming);
 
     let handle = tokio::spawn(async move { serving.await.map_err(ServeError::Serve) });

@@ -402,6 +402,115 @@ async fn read_before_a_handshake_refuses_as_a_status() {
     assert_eq!(error.message(), "handshake has not completed");
 }
 
+/// B2 fix pin (038 review round 1): an undecodable `stream_spec_json`
+/// answers INSIDE the response stream — the `Read` RPC itself completes
+/// normally, and the stream's first and only frame is a terminal FATAL
+/// `ErrorFrame` with the frozen `invalid stream_spec_json: ` prefix
+/// (the rest is serde's own text, so a fragment is asserted, same
+/// discipline as the config-decode rows). Pre-fix this answered
+/// `Status::invalid_argument` — a THIRD refusal shape the
+/// Status-vs-ErrorFrame rule (serve/mod.rs; the protocol README)
+/// forbids, while the destination side's `*_json` decode failures
+/// already rode `ErrorFrame`.
+#[tokio::test]
+async fn an_undecodable_stream_spec_answers_a_terminal_error_frame_not_a_status() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
+    let channel = dial(&path).await;
+    let mut connector = ConnectorClient::new(channel.clone());
+    let mut source = SourceServiceClient::new(channel);
+
+    connector
+        .handshake(HandshakeRequest {
+            protocol_version: 0,
+            expected_role: "source".to_string(),
+            config_json: echo_config(3, false),
+        })
+        .await
+        .expect("handshake rpc");
+
+    let mut frames = source
+        .read(ReadRequest {
+            stream_spec_json: b"{ this is not json".to_vec(),
+            since_cursor_json: None,
+        })
+        .await
+        .expect("the Read RPC completes normally — the refusal is IN the stream")
+        .into_inner();
+
+    let frame = frames
+        .message()
+        .await
+        .expect("frame")
+        .expect("one terminal frame");
+    match frame.frame {
+        Some(read_frame::Frame::Error(error)) => {
+            assert_eq!(error.classification, Classification::Fatal as i32);
+            assert!(
+                error.message.starts_with("invalid stream_spec_json: "),
+                "expected the frozen prefix, got: {}",
+                error.message
+            );
+        }
+        other => panic!("expected a terminal error frame, got {other:?}"),
+    }
+    assert!(
+        frames.message().await.expect("stream ends").is_none(),
+        "nothing follows the terminal error"
+    );
+}
+
+/// The `since_cursor_json` twin of the test above — same rule, same
+/// shape, its own frozen prefix. The stream spec is VALID here, so the
+/// cursor decode is provably the arm that refused.
+#[tokio::test]
+async fn an_undecodable_since_cursor_answers_a_terminal_error_frame_not_a_status() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
+    let channel = dial(&path).await;
+    let mut connector = ConnectorClient::new(channel.clone());
+    let mut source = SourceServiceClient::new(channel);
+
+    connector
+        .handshake(HandshakeRequest {
+            protocol_version: 0,
+            expected_role: "source".to_string(),
+            config_json: echo_config(3, false),
+        })
+        .await
+        .expect("handshake rpc");
+
+    let mut frames = source
+        .read(ReadRequest {
+            stream_spec_json: numbers_stream_spec_json(),
+            since_cursor_json: Some(b"{ this is not json".to_vec()),
+        })
+        .await
+        .expect("the Read RPC completes normally — the refusal is IN the stream")
+        .into_inner();
+
+    let frame = frames
+        .message()
+        .await
+        .expect("frame")
+        .expect("one terminal frame");
+    match frame.frame {
+        Some(read_frame::Frame::Error(error)) => {
+            assert_eq!(error.classification, Classification::Fatal as i32);
+            assert!(
+                error.message.starts_with("invalid since_cursor_json: "),
+                "expected the frozen prefix, got: {}",
+                error.message
+            );
+        }
+        other => panic!("expected a terminal error frame, got {other:?}"),
+    }
+    assert!(
+        frames.message().await.expect("stream ends").is_none(),
+        "nothing follows the terminal error"
+    );
+}
+
 /// A connector read that fails forwards exactly one terminal `ErrorFrame`
 /// — no rows, no checkpoint, classification/message taken from the
 /// `SourceError` itself, and nothing follows it on the stream.

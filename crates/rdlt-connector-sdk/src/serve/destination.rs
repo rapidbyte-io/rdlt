@@ -36,8 +36,9 @@
 //! problem to referee: see [`crate::destination::Backend::existing_receipt`]'s
 //! own doc for why a transactional backend keeps its own durable guard
 //! as defense in depth, independent of whatever choreography a caller
-//! was supposed to run ("the protocol fast path, not a substitute for a
-//! transactional one").
+//! was supposed to run ("Backends whose receipts live in the same
+//! transaction as their publish keep their internal guard too; this is
+//! the protocol fast path").
 //!
 //! LOUD, because it is easy to read past: v0's wire literally does not
 //! sequence commit frames. A foreign client CAN send `Publish` twice for
@@ -542,8 +543,10 @@ async fn handle_frame<C: DestinationConnector>(
             // publishing one `(load_id, commit_seq)` — is caught by the
             // destination's own DURABLE receipt guard, not by this
             // server refereeing wire order: see
-            // `Backend::existing_receipt`'s own doc, "the protocol fast
-            // path, not a substitute for a transactional one."
+            // `Backend::existing_receipt`'s own doc — "Backends whose
+            // receipts live in the same transaction as their publish
+            // keep their internal guard too; this is the protocol fast
+            // path."
             let load_id = LoadId::new(existing.load_id);
             match backend
                 .existing_receipt(&load_id, existing.commit_seq)
@@ -635,9 +638,11 @@ impl Drop for SessionSlot {
 /// a clean `Close`, the client hanging up, or a transport error — then
 /// (F2, 038 T5 review) best-effort close the backend on EVERY LOOP EXIT
 /// that is NOT the explicit `Close` frame. `LoadSession::close`'s
-/// contract (unchanged for a raw `Backend`): "called exactly once
-/// whenever the session ends ... best-effort — error ignored — on a
-/// failure/cancellation path." Before this fix, an abandoned session (a
+/// contract (unchanged for a raw `Backend`): "Called exactly once
+/// whenever the session ends", and on a failure/cancellation path the
+/// caller invokes it best-effort, ignoring its error — the second
+/// half deliberately unquoted, since it condenses the contract's own
+/// longer sentence. Before this fix, an abandoned session (a
 /// client that vanishes mid-`Write`) leaked whatever the backend opened,
 /// because nothing but the explicit `Close` arm ever called it — the
 /// 037 US2 T7 leak class, reopened for the wire.
@@ -773,9 +778,18 @@ pub async fn serve_on<C: DestinationConnector>(
     let incoming = UnixListenerStream::new(listener);
 
     let server = Arc::new(DestinationServer::<C>::new());
+    // `max_decoding_message_size` on BOTH services: tonic's 4 MiB
+    // default receive cap is below what one legitimate `Write` frame
+    // may carry — see `common::MAX_FRAME_BYTES`'s own doc.
     let serving = tonic::transport::Server::builder()
-        .add_service(ConnectorServer::from_arc(Arc::clone(&server)))
-        .add_service(DestinationServiceServer::from_arc(server))
+        .add_service(
+            ConnectorServer::from_arc(Arc::clone(&server))
+                .max_decoding_message_size(common::MAX_FRAME_BYTES),
+        )
+        .add_service(
+            DestinationServiceServer::from_arc(server)
+                .max_decoding_message_size(common::MAX_FRAME_BYTES),
+        )
         .serve_with_incoming(incoming);
 
     let handle = tokio::spawn(async move { serving.await.map_err(ServeError::Serve) });

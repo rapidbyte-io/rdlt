@@ -40,7 +40,10 @@
 //! empty request frame, a connector's own classified failure) — answers
 //! as a [`rdlt_connector_protocol::proto::ErrorFrame`] carried as
 //! reply-payload state (`Classification::{Transient,RateLimited,Fatal}`),
-//! inside a stream/RPC that itself completes normally. This is
+//! inside a stream/RPC that itself completes normally. A `Read` request
+//! whose `stream_spec_json`/`since_cursor_json` fails to decode rides
+//! this shape too: the refusal is the response stream's first and only
+//! frame, a terminal `Error` — never a `Status`. This is
 //! deliberate, not an inconsistency to unify away: a `Handshake` refusal
 //! and every in-session refusal are DATA a caller is meant to inspect
 //! uniformly (a bad config is not a protocol bug, and neither is a
