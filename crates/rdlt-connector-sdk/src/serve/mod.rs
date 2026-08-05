@@ -8,7 +8,10 @@
 //! [`common::ServeError`] taxonomy, the [`common::error_frame`]
 //! builder). [`source`] is the [`crate::source::SourceConnector`] half —
 //! [`source::source`] is the entry a spawned connector process actually
-//! runs; a destination half is recorded future work, not built here.
+//! runs. [`destination`] is the [`crate::destination::DestinationConnector`]
+//! half — one bidi stream IS the session; [`destination::destination`]
+//! is its entry point.
 
 pub mod common;
+pub mod destination;
 pub mod source;

@@ -111,16 +111,17 @@ ifeq ($(TARGET),)
 	# Same class, `serve` feature (038): OFF by default so a plain
 	# workspace run compiles neither serve/ nor its tests. The filter
 	# selects the module paths those tests actually live under —
-	# `serve::common::tests` (the UDS-bind unit tests) and
-	# `cases::test_serve_source` (the tonic-over-UDS integration
-	# suite) — so a rename of either module, not just a deleted test,
-	# fails this line rather than passing on zero.
-	cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(serve::common) or test(test_serve_source)'
+	# `serve::common::tests` (the UDS-bind unit tests), `cases::
+	# test_serve_source` and `cases::test_serve_destination` (the
+	# tonic-over-UDS integration suites for each half) — so a rename
+	# of any of the three modules, not just a deleted test, fails this
+	# line rather than passing on zero.
+	cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(serve::common) or test(test_serve_source) or test(test_serve_destination)'
 	cargo test --doc --workspace
 else ifeq ($(TARGET),unit)
 	cargo nextest run --workspace
 	cargo nextest run -p rdlt-connector-sdk --features schema -E 'test(schema_of)'
-	cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(serve::common) or test(test_serve_source)'
+	cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(serve::common) or test(test_serve_source) or test(test_serve_destination)'
 else ifeq ($(TARGET),e2e)
 	cargo nextest run --workspace -E 'binary(/e2e/)'
 else ifeq ($(TARGET),sweep)
