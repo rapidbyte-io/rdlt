@@ -341,17 +341,20 @@ fn probe_alter_on_an_art_indexed_column() {
 /// EXACT message spellings — pinned here first so `classify`'s
 /// carve-out is built on measured reality, not a guess. Both failures
 /// are ones that never heal on retry: a missing parent directory and a
-/// permission-denied path stay broken until an operator intervenes,
-/// unlike a file lock or disk pressure (the existing "IO Error" rule's
-/// whole point, which stays transient).
+/// permission-denied path stay broken until an operator intervenes —
+/// UNLIKE every other errno that also renders through this SAME
+/// open-failure template (a file lock held elsewhere, `EMFILE`/
+/// `ENFILE`, create-time `ENOSPC`, ...), which all heal on retry and
+/// deliberately stay under the existing "IO Error" transient rule
+/// (fix round 1: the template alone is NOT the carve-out key — see
+/// `classify`'s doc comment).
 ///
 /// MEASURED verbatim (duckdb 1.5.x bundled): `IO Error: Cannot open
 /// file "/nonexistent-rdlt-probe-dir/x.duckdb": No such file or
-/// directory` — the carve-out keys on the shared `Cannot open file`
-/// prefix plus this cell's own `No such file or directory` suffix
-/// where a directory-based check is not simpler; here the shared
-/// `Cannot open file` fragment alone suffices since it never appears
-/// in a lock or disk-pressure message.
+/// directory` — the carve-out requires BOTH the shared `Cannot open
+/// file` template fragment AND this cell's own `No such file or
+/// directory` suffix; the template fragment alone is deliberately
+/// insufficient (it also carries healable errnos).
 #[test]
 fn probe_deterministic_io_message_spellings() {
     // Missing parent directory: DuckDB's own file-open failure.
@@ -374,8 +377,9 @@ fn probe_deterministic_io_message_spellings() {
 ///
 /// MEASURED verbatim (duckdb 1.5.x bundled): `IO Error: Cannot open
 /// file "<path>/x.duckdb": Permission denied` — same `Cannot open
-/// file` prefix as the missing-parent cell, distinguished by the
-/// `Permission denied` suffix.
+/// file` template as the missing-parent cell, with its OWN suffix
+/// required alongside the template fragment (see that cell's doc for
+/// why the template alone is not the carve-out key).
 #[test]
 fn probe_deterministic_io_message_spelling_permission_denied() {
     let dir = tempfile::tempdir().expect("dir");

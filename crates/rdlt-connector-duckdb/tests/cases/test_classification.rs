@@ -163,10 +163,11 @@ fn a_second_shell_on_one_file_is_refused_until_the_first_drops() {
 /// A missing parent directory is DETERMINISTIC, not environmental
 /// (037 US6 / Task 19, S5): it never heals on retry, so the carve-out
 /// in `classify` (probe-pinned in test_probes.rs against the "Cannot
-/// open file" fragment duckdb 1.5.x renders) routes it fatal, not
-/// transient. Assembly happens inside `Shell::new`, so that fatal
-/// verdict arrives wrapped in the config error's Invalid arm with the
-/// SPI framing intact.
+/// open file" template PLUS its "No such file or directory" suffix —
+/// the template alone also carries healable errnos and is
+/// deliberately not enough) routes it fatal, not transient. Assembly
+/// happens inside `Shell::new`, so that fatal verdict arrives wrapped
+/// in the config error's Invalid arm with the SPI framing intact.
 #[test]
 fn an_unopenable_path_is_fatal_not_retried_forever() {
     let dir = tempfile::tempdir().unwrap();

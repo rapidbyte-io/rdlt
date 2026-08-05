@@ -187,27 +187,45 @@ impl Db {
 /// The classification rulebook. DuckDB's C API reports NO structured
 /// error category (the crate's probe pins `ErrorCode::Unknown`), so
 /// the transient key is a stable message prefix: `"IO Error"` covers
-/// file locks (another process holding the database) and disk
+/// file locks (another process holding the database) and resource
 /// pressure — both heal on retry, because the message text names the
 /// operating condition, not the operation. Everything else is fatal.
 ///
-/// A CARVE-OUT under that prefix (037 US6 / Task 19, S5) catches the
+/// A CARVE-OUT under that prefix (037 US6 / Task 19, S5) catches TWO
 /// sub-cases that are deterministic instead: a missing parent
 /// directory or a permission-denied path never heals on retry either —
 /// no amount of retry budget opens a path that structurally cannot
 /// open — so a run that treated them as transient would retry forever
-/// and report a false "still trying" instead of failing loud. The two
-/// fragments are PROBE-PINNED (`test_probes.rs`,
+/// and report a false "still trying" instead of failing loud.
+///
+/// Both render through the SAME open-failure template in duckdb
+/// 1.5.x's own C++ source (`local_file_system.cpp`):
+/// `"Cannot open file \"%s\": %s"`, with `strerror(errno)` filling the
+/// `%s`. That ONE template also carries every OTHER `open()` errno —
+/// `EMFILE`/`ENFILE` ("Too many open files"), create-time `ENOSPC`
+/// ("No space left on device"), `EINTR`, and more — all of which DO
+/// heal on retry, so the template alone cannot be the key: the carve
+/// requires the template fragment `"Cannot open file"` AND one of the
+/// two SUFFIXES actually probed (`test_probes.rs`,
 /// `probe_deterministic_io_message_spellings` +
-/// `..._permission_denied`) against duckdb 1.5.x's own C++ source
-/// (`local_file_system.cpp`), not guessed: both open failures render
-/// through the SAME `"Cannot open file \"%s\": %s"` template, with
-/// `strerror(errno)` supplying the deterministic suffix (`No such file
-/// or directory` / `Permission denied`) — so the shared `"Cannot open
-/// file"` fragment alone is the carve-out key, never mistaken for the
-/// lock message (`"Could not set lock on file \"%s\": %s"`, a
-/// DIFFERENT template with neither substring) or disk-pressure
-/// messages (a `write()` failure, also a different template).
+/// `..._permission_denied`): `"No such file or directory"` or
+/// `"Permission denied"`. An errno this crate has not measured through
+/// the template — even one that IS genuinely deterministic, like a
+/// second `EEXIST`-shaped race — deliberately STAYS transient: a
+/// retry-forever on an unmeasured deterministic case is the recorded
+/// lesser evil against fatal-ing a healable one on a guess. Extend the
+/// suffix list only from a new probe pin, never from reasoning about
+/// what `strerror` might say.
+///
+/// The lock message is a DIFFERENT template —
+/// `"Could not set lock on file \"%s\": %s"` — and its `%s` is USUALLY
+/// `AdditionalProcessInfo` naming the PID holding the lock, not
+/// `strerror`; the source only falls back to `strerror(errno)` there
+/// if the diagnostic `fcntl(F_GETLK)` call itself fails. Either filling
+/// can in principle contain either suffix string, which is exactly why
+/// the carve does not key on the suffixes ALONE — it requires the
+/// open-template fragment `"Cannot open file"` too, which the lock
+/// template never renders.
 ///
 /// Classification is UNIFORM across the whole load path (031 review
 /// S2/A3): the receipt probe, the load-committed probe, and
@@ -219,11 +237,15 @@ pub(crate) fn classify(e: duckdb::Error) -> DestinationError {
     if let duckdb::Error::DuckDBFailure(_, Some(message)) = &e
         && message.starts_with("IO Error")
     {
-        // Deterministic sub-cases never heal on retry; the fragment is
-        // probe-pinned (test_probes), not guessed. Locks and disk
-        // pressure stay transient — the rulebook's whole point.
-        const DETERMINISTIC: &[&str] = &["Cannot open file"];
-        if DETERMINISTIC.iter().any(|f| message.contains(f)) {
+        // Deterministic sub-cases never heal on retry; both the
+        // template fragment AND the suffix are probe-pinned
+        // (test_probes), not guessed — an unmeasured suffix through
+        // the same template (EMFILE, ENOSPC, EINTR, ...) stays
+        // transient rather than being fatal-ed on a guess.
+        const OPEN_TEMPLATE: &str = "Cannot open file";
+        const MEASURED_SUFFIXES: &[&str] = &["No such file or directory", "Permission denied"];
+        if message.contains(OPEN_TEMPLATE) && MEASURED_SUFFIXES.iter().any(|s| message.contains(s))
+        {
             return DestinationError::fatal(e.to_string());
         }
         return DestinationError::transient(e.to_string());
@@ -359,6 +381,28 @@ mod tests {
                 DestinationError::Fatal(_)
             ),
             "a permission-denied path never heals on retry"
+        );
+        // The template-vs-suffix guard, directly: OTHER errnos through
+        // the SAME "Cannot open file" template are healable and must
+        // stay transient — an unmeasured suffix never gets fatal-ed on
+        // a guess (fix round 1, S5).
+        assert!(
+            matches!(
+                classify(failure(
+                    "IO Error: Cannot open file \"/x.duckdb\": Too many open files"
+                )),
+                DestinationError::Transient(_)
+            ),
+            "EMFILE/ENFILE through the open template heals on retry"
+        );
+        assert!(
+            matches!(
+                classify(failure(
+                    "IO Error: Cannot open file \"/x.duckdb\": No space left on device"
+                )),
+                DestinationError::Transient(_)
+            ),
+            "create-time ENOSPC through the open template heals on retry"
         );
     }
 
