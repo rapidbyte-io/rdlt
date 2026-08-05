@@ -184,6 +184,16 @@ program; repos split (independent connector versioning becomes real)
 only AFTER protocol v1 freezes — versioning independently against a
 moving wire contract is fiction.
 
+Merge policy (owner decision, 2026-08-06): interim program features
+merge to main INDIVIDUALLY as they complete — they are additive and
+inert by construction, per-feature gates stay truthful against real
+main, and single-feature merge commits stay revertable. The ONE
+atomic-branch moment is the D1 SWAP (deleting the facade's
+in-process connector wiring and flipping the default): its own
+branch, landing only after the conformance kit certifies the ports
+and the remote benchmarks hold the recorded bars, tagged beforehand
+for a clean rollback point.
+
 ## Consequences accepted
 
 - A serialization boundary costs performance. The benchmark matrix
