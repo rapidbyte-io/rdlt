@@ -26,6 +26,7 @@ use rdlt_connector_sqlcore::protocol::{
 };
 use rdlt_connector_sqlcore::{DestinationOptions, MergeDialect as _, column_list, names, root_of};
 
+use super::catalog;
 use super::client::{Db, classify, is_constraint_violation};
 use super::dialect::DuckDialect;
 use super::schema::{merge_ddl, quote, stage_name, table_ddl};
@@ -331,11 +332,65 @@ impl Backend for Load {
                 }
             }
         }
-        for sql in table_ddl(schema, self.previous.get(&schema.table)) {
+        // The widen planner's `previous` is session memory FIRST — a
+        // within-run rule — falling back to the catalog image ONLY when
+        // this session has never ensured the table (037 US5, 031's S3
+        // record): a fresh session otherwise sees `previous = None` and
+        // plans no widen at all, so a cross-run type change lands only
+        // no-op DDL and the appender then rejects the mismatched batch.
+        // The image feeds the WIDEN PLANNER ONLY — the drop/reorder
+        // guard above already ran against `self.previous` alone, so
+        // cross-run drift-by-name stays legal.
+        let image = if self.previous.contains_key(&schema.table) {
+            None
+        } else {
+            catalog::live_schema(&self.conn, schema)?
+        };
+        let planning_previous = self.previous.get(&schema.table).or(image.as_ref());
+
+        // Computed up front so a widen that lands on the merge key can
+        // drop its UNIQUE index before the ALTER that would otherwise
+        // be refused (Task 15 probe: DuckDB's `SET DATA TYPE` refuses a
+        // column a UNIQUE ART index depends on — "Cannot change the
+        // type of this column: an index depends on it!"). Any
+        // validation error here surfaces at its ORIGINAL position below
+        // (after `table_ddl` runs), unchanged from before this feature:
+        // this early call only ever reads its `Ok` arm.
+        let merge_statements = merge_ddl(&self.options, schema, mode);
+        if let Ok(statements) = &merge_statements {
+            let widened_target: Vec<&str> = planning_previous
+                .into_iter()
+                .flat_map(|prev| {
+                    schema.columns.iter().filter(move |def| {
+                        prev.column(&def.name)
+                            .is_some_and(|old| old.column_type != def.column_type)
+                    })
+                })
+                .map(|def| def.name.as_str())
+                .collect();
+            if !widened_target.is_empty() {
+                for (_, unique_index) in statements {
+                    if let Some(cols) = unique_index
+                        && cols.iter().any(|c| widened_target.contains(&c.as_str()))
+                    {
+                        let drop_sql = format!(
+                            "DROP INDEX IF EXISTS {}",
+                            quote(&names::index_name(true, schema.table.as_str(), cols))
+                        );
+                        self.conn.execute_batch(&drop_sql).map_err(classify)?;
+                    }
+                }
+            }
+        }
+
+        for sql in table_ddl(schema, planning_previous) {
             self.conn.execute_batch(&sql).map_err(classify)?;
         }
-        let statements = merge_ddl(&self.options, schema, mode)
-            .map_err(|e| DestinationError::fatal(e.to_string()))?;
+        // The recreate is the SAME renderer merge_ddl already runs on
+        // every ensure (`CREATE UNIQUE INDEX IF NOT EXISTS` in
+        // schema.rs) — the drop above just clears the way for it; no
+        // second copy of the index DDL is written here.
+        let statements = merge_statements.map_err(|e| DestinationError::fatal(e.to_string()))?;
         for (sql, unique_index) in statements {
             if let Err(e) = self.conn.execute_batch(&sql) {
                 // The duplicate-key diagnosis: only a genuine

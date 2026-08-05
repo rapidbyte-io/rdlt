@@ -192,3 +192,140 @@ async fn cross_run_column_drift_publishes_by_name() {
         "the pre-drift row backfills NULL, never a shifted value"
     );
 }
+
+/// The S3 record (031, re-derived here as 028's read-before-write
+/// catalog image): run 1 commits `n` as an integer; run 2 is a FRESH
+/// session (a new `Shell`/`Load`, this crate's cross-run unit) whose
+/// batch carries only a text value, so the engine's own schema
+/// evolution widens its tracked schema for `n` to text before ever
+/// calling `ensure_table`. Before 037 the fresh session's `previous`
+/// was empty, so no widen was planned and the target's `n` column
+/// stayed BIGINT while the stage table landed VARCHAR — the mismatch
+/// surfaced at PUBLISH (`INSERT … SELECT` casting `'two'` into
+/// BIGINT), not at the appender (recorded here since the brief's
+/// prediction named the appender as one candidate site — this is the
+/// other). The catalog image now feeds the widen planner even on a
+/// fresh session, so the target's `n` column casts along with it and
+/// both runs' rows publish.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_type_widened_since_the_last_run_plans_a_real_alter() {
+    let dir = tempfile::tempdir().expect("dir");
+    let file = dir.path().join("widen.duckdb");
+
+    // Run 1: `n` is an integer.
+    let dest = Shell::new(Config::new(&file)).expect("valid");
+    let source = MemorySource::single_stream(StreamSpec::new("t"), vec![json!({"n": 1})]);
+    Engine::new(EngineConfig::new("widen"), source, dest)
+        .run()
+        .await
+        .expect("run 1");
+
+    // Run 2: a FRESH session over the SAME file — `n` carries text now.
+    let dest = Shell::new(Config::new(&file)).expect("valid");
+    let source = MemorySource::single_stream(StreamSpec::new("t"), vec![json!({"n": "two"})]);
+    Engine::new(EngineConfig::new("widen"), source, dest)
+        .run()
+        .await
+        .expect("run 2");
+
+    assert_eq!(rows_in(&file, "t"), 2, "both runs' rows are present, cast");
+    assert_eq!(
+        scalar(&file, "SELECT n FROM t WHERE n = '1'"),
+        "1",
+        "run 1's row survived the widen, cast to text"
+    );
+    assert_eq!(
+        scalar(&file, "SELECT n FROM t WHERE n = 'two'"),
+        "two",
+        "run 2's row landed in the widened column"
+    );
+}
+
+/// The probe-fact consequence (Task 15, not in the brief): a MERGE-mode
+/// table's upsert arbiter is a UNIQUE ART index on the merge key, and
+/// DuckDB refuses `SET DATA TYPE` on a column that index depends on.
+/// Run 1 creates the table (and its unique index on `id`) under
+/// `upsert`; run 2 is a fresh session whose merge key `id` carries text
+/// — the widen must drop the `rdlt_ux_` index, ALTER, and recreate it
+/// (schema.rs's OWN `CREATE UNIQUE INDEX IF NOT EXISTS` renderer, never
+/// a second copy of that SQL). The index must still ENFORCE afterward:
+/// a duplicate key inserted post-widen gets the duplicate-key diagnosis,
+/// not a silently duplicated row.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cross_run_widen_on_the_merge_key_survives_its_unique_index() {
+    use super::common::{dest_with, drive, ints, keyed, merge_on, texts, unit};
+
+    let dir = tempfile::tempdir().expect("dir");
+    let file = dir.path().join("widen_merge.duckdb");
+    // upsert requires a KEYED STRUCTURED stream (no shredder identity
+    // column) — `keyed()` builds exactly that, Arrow-typed so the merge
+    // key's TYPE can differ run to run. Each run gets its OWN Shell (not
+    // a clone) so its instance is fully closed before the next run opens
+    // — and before the read-only probes below reopen the file
+    // (`rows_in`/`scalar` are sequential-only: they replay the WAL,
+    // which needs the writer closed first).
+
+    // Run 1: `id` is an integer, upsert strategy — the arbiter unique
+    // index lands on `id` (the declared key, no shredder identity).
+    drive(
+        merge_on("widen-merge", &["id"]),
+        keyed(
+            "items",
+            &["id"],
+            unit(&[("id", ints(&[Some(1)])), ("v", texts(&[Some("a")]))]),
+        ),
+        dest_with(&file, json!({"merge_strategy": "upsert"})),
+    )
+    .await
+    .expect("run 1");
+
+    // Run 2: a FRESH session — `id` carries text now.
+    drive(
+        merge_on("widen-merge", &["id"]),
+        keyed(
+            "items",
+            &["id"],
+            unit(&[("id", texts(&[Some("two")])), ("v", texts(&[Some("b")]))]),
+        )
+        .resuming_after(1),
+        dest_with(&file, json!({"merge_strategy": "upsert"})),
+    )
+    .await
+    .expect("run 2 — the index must not block the widen");
+
+    assert_eq!(rows_in(&file, "items"), 2, "both keys survived, unmerged");
+    assert_eq!(
+        scalar(&file, "SELECT v FROM items WHERE id = 'two'"),
+        "b",
+        "run 2's row landed with its widened key"
+    );
+
+    // The index still enforces: a THIRD run redelivering `id = "two"`
+    // must upsert in place, not duplicate the row.
+    drive(
+        merge_on("widen-merge", &["id"]),
+        keyed(
+            "items",
+            &["id"],
+            unit(&[
+                ("id", texts(&[Some("two")])),
+                ("v", texts(&[Some("b-edited")])),
+            ]),
+        )
+        .resuming_after(2),
+        dest_with(&file, json!({"merge_strategy": "upsert"})),
+    )
+    .await
+    .expect("run 3");
+
+    assert_eq!(
+        rows_in(&file, "items"),
+        2,
+        "the recreated index still enforces the merge key — no duplicate"
+    );
+    assert_eq!(
+        scalar(&file, "SELECT v FROM items WHERE id = 'two'"),
+        "b-edited",
+        "the redelivered key upserted in place"
+    );
+}
