@@ -229,9 +229,14 @@ async fn a_run_that_fails_mid_way_still_releases_the_lease() {
         .fatal_after(1),
     ]);
     let pipeline = "run-fails-mid-way";
-    let result = Engine::new(EngineConfig::new(pipeline), source, dest)
-        .run()
-        .await;
+    let workdir = tempfile::tempdir().expect("workdir");
+    let result = Engine::new(
+        EngineConfig::new(pipeline).with_workdir(workdir.path().join("wal")),
+        source,
+        dest,
+    )
+    .run()
+    .await;
     assert!(
         result.is_err(),
         "the injected fatal source error must fail the run"

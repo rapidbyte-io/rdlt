@@ -157,8 +157,11 @@ pub(super) struct CommitLog {
 /// sweep. Without a workdir, or when a damaged WAL degrades to
 /// re-extraction, the next attempt runs under a NEW load id, the old
 /// manifest never matches, and its files are beyond this mechanism —
-/// the file connector's cousin of iceberg's recorded N2, carried as a
-/// standing record rather than pretended away.
+/// the file connector's cousin of iceberg's recorded N2. FIXED-BY-
+/// REFUSAL (037 US3, same shape as iceberg's): the destination
+/// declares `requires_durable_identity`, so the engine refuses to
+/// start a run against it without a workdir — the no-WAL path this
+/// comment describes cannot be reached from `rdlt run` at all.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(super) struct Manifest {
     /// Absent in none — the manifest is new at layout v1.

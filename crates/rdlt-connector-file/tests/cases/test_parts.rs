@@ -617,8 +617,9 @@ async fn closed_parts_report_their_size_and_reason_through_the_event_feed() {
         ],
     )]);
 
+    let workdir = tempfile::tempdir().expect("workdir");
     let engine = Engine::new(
-        EngineConfig::new("parts-events"),
+        EngineConfig::new("parts-events").with_workdir(workdir.path().join("wal")),
         source,
         destination::Shell::new(config).expect("valid"),
     );

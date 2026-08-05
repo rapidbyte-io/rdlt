@@ -117,6 +117,13 @@ impl DestinationConnector for File {
             .with_scalar_lists(true)
             .with_json_type(false)
             .with_decimal(true)
+            // The publish manifest sweep converges under the ORIGINAL
+            // load id (layout.rs's N2-cousin of iceberg's 029 N2): a
+            // no-workdir mid-publish transient restart mints a fresh
+            // load id, the receipt log's (load_id, seq) dedup misses,
+            // and the retry re-publishes rows the crashed attempt
+            // already committed (037 US3).
+            .with_requires_durable_identity(true)
             .with_ident_rules(IdentRules::default())
     }
 
@@ -235,6 +242,7 @@ mod tests {
         assert!(caps.scalar_lists);
         assert!(!caps.json_type);
         assert!(caps.decimal);
+        assert!(caps.requires_durable_identity);
     }
 
     /// 037 US2 T7's mandatory ledger rule, pinned directly: two `File`
