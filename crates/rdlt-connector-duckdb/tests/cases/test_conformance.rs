@@ -429,3 +429,67 @@ async fn an_uncastable_type_change_since_the_last_run_still_succeeds() {
         "the int value cast UP to the image's text column, never the reverse"
     );
 }
+
+/// Fix round 2 (N1, CRITICAL — 2026-08 review round 2): `Int64 ->
+/// Float64` is NOT a safe cross-run widen. rdlt-core's own lattice
+/// only takes this edge after a per-VALUE check (`int64_fits_in_f64`,
+/// exact only within ±2^53) that a destination widening already-
+/// committed rows cannot perform. Run 1 commits `9007199254740993`
+/// (2^53 + 1, exactly one past the exact-float boundary) as `BIGINT`;
+/// run 2's own batch carries only a float, so its fresh inference types
+/// `n` as `Float64`. Before the N1 fix, `is_widening(Int64, Float64)`
+/// was `true`, so the image kept its OLD (Int64) type, `schema_steps`
+/// saw the mismatch, and `ALTER … SET DATA TYPE DOUBLE` cast the
+/// committed row — silently and irreversibly turning
+/// `9007199254740993` into `9007199254740992` while the run still
+/// reported success. After the fix, the edge is gone: the column
+/// stays `BIGINT` and run 1's value survives byte-identical.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_int64_beyond_the_exact_float_boundary_is_never_widened_to_float() {
+    let dir = tempfile::tempdir().expect("dir");
+    let file = dir.path().join("int64_boundary.duckdb");
+
+    // Run 1: `n` is an integer beyond ±2^53 (9007199254740992) — the
+    // largest value a f64 can no longer represent exactly.
+    let dest = Shell::new(Config::new(&file)).expect("valid");
+    let source = MemorySource::single_stream(
+        StreamSpec::new("t"),
+        vec![json!({"n": 9_007_199_254_740_993_i64})],
+    );
+    Engine::new(EngineConfig::new("int64-boundary"), source, dest)
+        .run()
+        .await
+        .expect("run 1");
+    assert_eq!(
+        scalar(
+            &file,
+            "SELECT data_type FROM information_schema.columns \
+             WHERE table_name = 't' AND column_name = 'n'"
+        ),
+        "BIGINT"
+    );
+
+    // Run 2: a FRESH session — this run's own batch carries only a
+    // float, so ITS fresh inference types `n` as Float64.
+    let dest = Shell::new(Config::new(&file)).expect("valid");
+    let source = MemorySource::single_stream(StreamSpec::new("t"), vec![json!({"n": 1.5})]);
+    Engine::new(EngineConfig::new("int64-boundary"), source, dest)
+        .run()
+        .await
+        .expect("run 2");
+
+    assert_eq!(
+        scalar(
+            &file,
+            "SELECT data_type FROM information_schema.columns \
+             WHERE table_name = 't' AND column_name = 'n'"
+        ),
+        "BIGINT",
+        "never widened to DOUBLE — the value-checked edge is absent here"
+    );
+    assert_eq!(
+        scalar(&file, "SELECT n::VARCHAR FROM t WHERE n = 9007199254740993"),
+        "9007199254740993",
+        "run 1's value survives EXACTLY — no silent cast to ...992"
+    );
+}

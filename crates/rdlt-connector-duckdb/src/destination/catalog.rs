@@ -152,26 +152,59 @@ pub(super) fn prefilter(mut image: TableSchema, def: &TableSchema) -> TableSchem
 /// incoming type, and getting it wrong either corrupts committed data
 /// or fails a run that used to succeed (see [`prefilter`]), so this
 /// stays small and explicit rather than reusing a lattice designed for
-/// a different question (inference's own type-of-a-value join).
+/// a different question (inference's own type-of-a-value join) — and,
+/// per review round 2, narrower than that lattice on THREE edges where
+/// the engine's own version is either value-conditional or measures a
+/// different quantity than a physical ALTER can honor.
 ///
-/// - anything → `Utf8`: text is always a safe destination for any
-///   value this connector can already render (same simplification
-///   `sql_type` already makes for `Uuid`).
-/// - anything → `Json`: the top of the engine's own lattice.
-/// - `Int64` → `Float64`.
-/// - `Int64` → `Decimal { .. }`.
-/// - `Decimal { p1, s1 }` → `Decimal { p2, s2 }` iff BOTH `p2` is at
-///   least `p1` AND `s2` is at least `s1` — grow-only in both
-///   dimensions. Deliberately narrower than the engine's own decimal
-///   join (which can grow one dimension while holding the other): a
-///   destination ALTER is a physical migration, not a value-level
-///   join, so this stays conservative.
+/// - anything (except `Binary` — see N3 below) → `Utf8`: text is always
+///   a safe destination for any value this connector can already
+///   render (same simplification `sql_type` already makes for `Uuid`).
+/// - anything (except `Binary`) → `Json`: the top of the engine's own
+///   lattice.
+/// - `Binary` → NOTHING, not even `Utf8`/`Json` (N3, MINOR, review
+///   round 2): the engine's own rule is "Binary is textable only via
+///   encodings we refuse to invent silently" (`rdlt_core::types`, the
+///   `(Binary, _) => Json` join arm) — its escalation to `Json` goes
+///   through the library's OWN chosen encoding at shred time. An
+///   ALTER's `CAST` is a different, unchosen encoding, so `Binary` is
+///   excluded as a FROM type entirely; a cross-run `Binary` mismatch
+///   SKIPS (see [`prefilter`]) rather than casting through some
+///   encoding this function never decided on.
+/// - `Int64` → `Float64` is DELETED (N1, CRITICAL, review round 2).
+///   rdlt-core's own lattice only takes this edge after a per-VALUE
+///   check (`int64_fits_in_f64`, exact only within ±2^53) — the engine
+///   value-checks this edge at shred time; a destination widening
+///   committed rows cannot, so the edge is absent here — the diff
+///   skips and publish-time casting keeps yesterday's behavior. Proven
+///   live: `9007199254740993` (2^53 + 1) committed as `BIGINT`,
+///   `ALTER … SET DATA TYPE DOUBLE` casts it to `…992` and the run
+///   still reports success — silent, irreversible corruption.
+/// - `Int64` → `Decimal { precision, scale }` (N2, IMPORTANT, review
+///   round 2) iff its INTEGER CAPACITY (`precision` minus `scale`) is
+///   at least 19: an `i64` needs 19 INTEGER digits (up to
+///   `9223372036854775807`), so a decimal with plenty of total
+///   precision but too little of it left of the point does not
+///   actually hold every `i64` value.
+/// - `Decimal { p1, s1 }` → `Decimal { p2, s2 }` (N2) iff `s2` is at
+///   least `s1` AND the target's integer capacity (`p2` minus `s2`) is
+///   at least the source's (`p1` minus `s1`) — INTEGER CAPACITY, not
+///   raw precision. This is `rdlt-core`'s own `join_decimals`
+///   semantics (max integer digits, max scale, never shrinking
+///   either): a decimal with MORE total digits but FEWER integer
+///   digits is not actually wider. Violating either N2 rule is LOUD (a
+///   probed Conversion Error, data survives) but turns a working
+///   pipeline into a deterministic hard failure — the skip arm is the
+///   behavior-preserving one.
 ///
 /// Everything else is `false` — including the reverse of every rule
 /// above, and anything not named here at all.
 fn is_widening(from: &ColumnType, to: &ColumnType) -> bool {
-    use LogicalType::{Decimal, Float64, Int64, Json, Utf8};
+    use LogicalType::{Binary, Decimal, Json, Utf8};
 
+    if matches!(from, ColumnType::Scalar { scalar: Binary }) {
+        return false;
+    }
     if matches!(
         to,
         ColumnType::Scalar {
@@ -182,11 +215,13 @@ fn is_widening(from: &ColumnType, to: &ColumnType) -> bool {
     }
     match (from, to) {
         (
-            ColumnType::Scalar { scalar: Int64 },
             ColumnType::Scalar {
-                scalar: Float64 | Decimal { .. },
+                scalar: LogicalType::Int64,
             },
-        ) => true,
+            ColumnType::Scalar {
+                scalar: Decimal { precision, scale },
+            },
+        ) => precision.saturating_sub(*scale) >= 19,
         (
             ColumnType::Scalar {
                 scalar:
@@ -202,7 +237,7 @@ fn is_widening(from: &ColumnType, to: &ColumnType) -> bool {
                         scale: to_s,
                     },
             },
-        ) => to_p >= from_p && to_s >= from_s,
+        ) => to_s >= from_s && to_p.saturating_sub(*to_s) >= from_p.saturating_sub(*from_s),
         _ => false,
     }
 }
@@ -549,12 +584,12 @@ mod tests {
         ColumnType::scalar(LogicalType::Decimal { precision, scale })
     }
 
-    /// THE widening policy, pinned rule by rule (2026-08 review round 1,
-    /// F1/F2): every named rule is `true`, its reverse and everything
-    /// unnamed is `false`.
+    /// THE widening policy, pinned rule by rule (2026-08 review rounds
+    /// 1 and 2 — F1/F2/N1/N2/N3): every named rule is `true`, its
+    /// reverse and everything unnamed is `false`.
     #[test]
     fn is_widening_matches_its_documented_lattice() {
-        // anything -> Utf8 / Json.
+        // anything (except Binary) -> Utf8 / Json.
         assert!(is_widening(
             &scalar(LogicalType::Bool),
             &scalar(LogicalType::Utf8)
@@ -569,26 +604,63 @@ mod tests {
             },
             &scalar(LogicalType::Json)
         ));
-        // Int64 -> Float64 / Decimal.
-        assert!(is_widening(
-            &scalar(LogicalType::Int64),
-            &scalar(LogicalType::Float64)
-        ));
-        assert!(is_widening(&scalar(LogicalType::Int64), &decimal(19, 0)));
-        // Decimal -> Decimal, grow-only BOTH dimensions.
-        assert!(is_widening(&decimal(10, 2), &decimal(12, 3)));
+
+        // N1 (CRITICAL, review round 2): Int64 -> Float64 is DELETED —
+        // the engine only takes this edge after a per-value check this
+        // destination cannot perform on committed rows.
+        assert!(
+            !is_widening(&scalar(LogicalType::Int64), &scalar(LogicalType::Float64)),
+            "Int64 -> Float64 is never a widen here — value-checked at shred time, not here"
+        );
+
+        // N2 (IMPORTANT, review round 2): Int64 -> Decimal iff the
+        // decimal's INTEGER CAPACITY (precision - scale) covers i64's
+        // 19 integer digits.
+        assert!(
+            is_widening(&scalar(LogicalType::Int64), &decimal(21, 2)),
+            "21 - 2 = 19 integer digits: exactly covers i64"
+        );
+        assert!(
+            !is_widening(&scalar(LogicalType::Int64), &decimal(20, 2)),
+            "20 - 2 = 18 < 19: does NOT cover every i64 value"
+        );
+
+        // N2: Decimal -> Decimal compares INTEGER CAPACITY, not raw
+        // precision (rdlt-core's own join_decimals semantics).
+        assert!(
+            is_widening(&decimal(10, 2), &decimal(12, 4)),
+            "10-2=8 -> 12-4=8 integer digits (unchanged) AND scale grew 2 -> 4"
+        );
         assert!(
             is_widening(&decimal(10, 2), &decimal(10, 2)),
             "equal counts as widening"
         );
         assert!(
+            !is_widening(&decimal(10, 2), &decimal(10, 4)),
+            "10-2=8 -> 10-4=6 integer digits SHRANK even though scale grew and \
+             raw precision held — capacity, not raw precision, is what matters"
+        );
+        assert!(
             !is_widening(&decimal(10, 4), &decimal(12, 2)),
-            "precision grew but scale SHRANK — not grow-only in both dims"
+            "scale shrank (4 -> 2)"
         );
         assert!(
             !is_widening(&decimal(12, 2), &decimal(10, 4)),
-            "scale grew but precision SHRANK"
+            "10-4=6 integer digits < 12-2=10 — capacity shrank"
         );
+
+        // N3 (MINOR, review round 2): Binary is excluded as a FROM type
+        // entirely — not even Binary -> Utf8/Json count as a widen.
+        assert!(
+            !is_widening(&scalar(LogicalType::Binary), &scalar(LogicalType::Utf8)),
+            "Binary -> Utf8 is never a widen — the engine's own escalation \
+             goes through an encoding chosen at shred time, not an ALTER cast"
+        );
+        assert!(
+            !is_widening(&scalar(LogicalType::Binary), &scalar(LogicalType::Json)),
+            "Binary -> Json is never a widen either"
+        );
+
         // Reverses and unnamed pairs are false.
         assert!(!is_widening(
             &scalar(LogicalType::Utf8),
