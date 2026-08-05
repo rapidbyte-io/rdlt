@@ -31,6 +31,10 @@ destination:
 "#;
     let spec: Spec = serde_yaml::from_str(text).expect("the connector vocabulary parses");
 
+    // Under default features (no compiled-in connectors) `Connector` is
+    // the enum's ONLY variant, so this pattern is irrefutable; the
+    // unified workspace build compiles the same pattern refutably.
+    #[allow(irrefutable_let_patterns)]
     let SourceSpec::Connector(source) = &spec.source else {
         panic!("source parses as the connector variant");
     };
@@ -44,6 +48,9 @@ destination:
     // whatever YAML was written arrives as the equivalent JSON.
     assert_eq!(source.config["streams"][0]["name"], "events");
 
+    // Same constraint as the source side: irrefutable under default
+    // features, refutable in the unified workspace build.
+    #[allow(irrefutable_let_patterns)]
     let DestSpec::Connector(dest) = &spec.destination else {
         panic!("destination parses as the connector variant");
     };
