@@ -575,7 +575,48 @@ async fn a_future_manifest_version_refuses_upgrade_not_reset() {
     assert!(
         err.contains(&format!(
             "manifest `{file}` format v99 is newer than this build supports \
-             (v1); upgrade rdlt instead of resetting"
+             (v2); upgrade rdlt instead of resetting"
+        )),
+        "{err}"
+    );
+}
+
+/// A v1 MANIFEST — the retired partition-directory encoding — refuses
+/// as PREDATING v2, never a silent reinterpretation (037 US4 D1:
+/// greenfield format break, no migration). Planted beside the v99
+/// (newer) and commit-log siblings so all four gates are pinned
+/// together.
+#[tokio::test]
+async fn a_v1_manifest_version_refuses_as_predating_v2() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = local_dest(dir.path());
+    let pipeline = PipelineId::new("stale-manifest");
+    let scope = rdlt_connector_sdk::spi::core::naming::ident_hash(pipeline.as_str(), 12);
+    let file = format!("_rdlt_manifest.{scope}.json");
+    std::fs::write(
+        dir.path().join(&file),
+        r#"{"format_version": 1, "load_id": "x", "commit_seq": 1, "names": []}"#,
+    )
+    .expect("plant");
+
+    let dest = destination::Shell::new(config).expect("valid");
+    let load = LoadId::new("load-1");
+    let mut s = dest
+        .open(OpenContext::new(pipeline.clone(), load.clone()))
+        .await
+        .expect("open");
+    s.ensure_table(&schema_for("events"), &WriteMode::Append)
+        .await
+        .expect("ensure");
+    let err = s
+        .commit(commit_meta_for(&pipeline, &load, 1))
+        .await
+        .expect_err("refused")
+        .to_string();
+    assert!(
+        err.contains(&format!(
+            "manifest `{file}` format v1 predates this build (v2): the partition-directory \
+             encoding changed; point the destination at a fresh path or delete the old output"
         )),
         "{err}"
     );
@@ -613,7 +654,47 @@ async fn a_future_commit_log_version_refuses_upgrade_not_reset() {
     assert!(
         err.contains(&format!(
             "commit log `{file}` format v99 is newer than this build supports \
-             (v1); upgrade rdlt instead of resetting"
+             (v2); upgrade rdlt instead of resetting"
+        )),
+        "{err}"
+    );
+}
+
+/// A v1 commit log — the retired partition-directory encoding —
+/// refuses as PREDATING v2, never a silent reinterpretation (037 US4
+/// D1: greenfield format break, no migration; absent format_version
+/// = v0 = also predates, per `layout::version_gate`'s own unit pin).
+#[tokio::test]
+async fn a_v1_commit_log_version_refuses_as_predating_v2() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = local_dest(dir.path());
+    let pipeline = PipelineId::new("stale-log");
+    let scope = rdlt_connector_sdk::spi::core::naming::ident_hash(pipeline.as_str(), 12);
+    let file = format!("_rdlt_commits.{scope}.json");
+    std::fs::write(
+        dir.path().join(&file),
+        r#"{"format_version": 1, "receipts": []}"#,
+    )
+    .expect("plant");
+
+    let dest = destination::Shell::new(config).expect("valid");
+    let load = LoadId::new("load-1");
+    let mut s = dest
+        .open(OpenContext::new(pipeline.clone(), load.clone()))
+        .await
+        .expect("open");
+    s.ensure_table(&schema_for("events"), &WriteMode::Append)
+        .await
+        .expect("ensure");
+    let err = s
+        .commit(commit_meta_for(&pipeline, &load, 1))
+        .await
+        .expect_err("refused")
+        .to_string();
+    assert!(
+        err.contains(&format!(
+            "commit log `{file}` format v1 predates this build (v2): the partition-directory \
+             encoding changed; point the destination at a fresh path or delete the old output"
         )),
         "{err}"
     );

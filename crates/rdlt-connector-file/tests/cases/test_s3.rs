@@ -203,7 +203,7 @@ async fn s3_publish_sweeps_a_predecessors_same_commit_finals() {
         .put(
             &format!("lake/_rdlt_manifest.{scope}.json"),
             serde_json::json!({
-                "format_version": 1,
+                "format_version": 2,
                 "load_id": "load-a",
                 "commit_seq": 1,
                 "names": [

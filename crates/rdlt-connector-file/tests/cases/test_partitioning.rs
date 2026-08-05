@@ -1,5 +1,6 @@
-//! Partitioned output: bare-value directories, `__null__`, sanitized
-//! slugs, and final names independent of cross-table arrival order.
+//! Partitioned output: bare-value directories, `__null__`, injectively
+//! encoded slugs, and final names independent of cross-table arrival
+//! order.
 
 use std::sync::Arc;
 
@@ -48,8 +49,8 @@ fn regional_batch(values: &[Option<&str>]) -> RecordBatch {
     .expect("batch")
 }
 
-/// Bare-value partition directories with `__null__` and sanitized
-/// slugs — never Hive `col=value`.
+/// Bare-value partition directories with `__null__` and injectively
+/// encoded slugs — never Hive `col=value`.
 #[tokio::test]
 async fn partition_directories_are_bare_sanitized_values() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -77,7 +78,7 @@ async fn partition_directories_are_bare_sanitized_values() {
     for part in [
         "events/eu/part-load-a-1-0.parquet",
         "events/__null__/part-load-a-1-0.parquet",
-        "events/us_east/part-load-a-1-0.parquet",
+        "events/us%2Feast/part-load-a-1-0.parquet",
     ] {
         assert!(dir.path().join(part).is_file(), "{part} must exist");
     }
@@ -219,8 +220,11 @@ async fn dashed_tables_and_partitions_never_share_a_staged_file() {
 }
 
 /// A partition VALUE of `..` (or `.`) must never be interpreted by
-/// path resolution: the part lands INSIDE the table directory under a
-/// sentinel, where counting and Replace can reach it (030 review).
+/// path resolution: layout v2's encoding escapes a leading `.` to
+/// `%2E`, so the part lands INSIDE the table directory under the
+/// escaped name, where counting and Replace can reach it (030 review;
+/// the retired `__dot__`/`__dotdot__` sentinels handled this by name
+/// before the encoding itself made it structurally impossible).
 #[tokio::test]
 async fn dot_partition_values_cannot_escape_the_table_directory() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -245,16 +249,8 @@ async fn dot_partition_values_cannot_escape_the_table_directory() {
         .await
         .expect("commit");
 
-    assert!(
-        dir.path()
-            .join("events/__dotdot__/part-l-1-0.parquet")
-            .is_file()
-    );
-    assert!(
-        dir.path()
-            .join("events/__dot__/part-l-1-0.parquet")
-            .is_file()
-    );
+    assert!(dir.path().join("events/%2E./part-l-1-0.parquet").is_file());
+    assert!(dir.path().join("events/%2E/part-l-1-0.parquet").is_file());
     assert!(
         !dir.path().join("part-l-1-0.parquet").exists(),
         "nothing escaped to the destination root"

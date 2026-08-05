@@ -40,6 +40,7 @@ zstd = { workspace = true }
 
 [dev-dependencies]
 jsonschema = { workspace = true }
+proptest = { workspace = true }
 rdlt-connector-duckdb = { workspace = true }
 rdlt-engine = { workspace = true }
 rdlt-testkit = { workspace = true }
