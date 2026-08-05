@@ -1127,7 +1127,12 @@ async fn an_abandoned_session_still_closes_the_backend() {
 /// session per connector process — a second concurrent `OpenSession`
 /// while the first is still active refuses outright, at the RPC level
 /// (`Status::failed_precondition`, not a `SessionReply`), with the
-/// frozen wording.
+/// frozen wording. This proves the slot is HELD; it does NOT prove the
+/// slot is ever RELEASED — see
+/// `the_session_slot_releases_after_close_so_a_later_open_session_succeeds`
+/// below for the other half (038 T5 review round 2, item 1), which a
+/// by-hand mutation of `SessionSlot::drop` proved THIS test alone could
+/// not catch.
 #[tokio::test]
 async fn a_second_concurrent_open_session_refuses_while_the_first_is_active() {
     let (_dir, path) = socket_path();
