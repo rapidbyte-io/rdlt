@@ -64,7 +64,9 @@ impl RemoteSource {
 /// retrying an unclassified failure risks looping a run forever on
 /// something permanent, while aborting a retryable one costs a re-run.
 /// The [`ClientError`] rides inside as the cause, so the rendering
-/// names the transport.
+/// names the transport. Restarting a connector whose process died is
+/// the provider layer's job (`rdlt-runtime`, which supervises the
+/// process) — never a reclassification here.
 fn transport_fatal(status: tonic::Status) -> SourceError {
     SourceError::fatal(ClientError::Transport(status))
 }

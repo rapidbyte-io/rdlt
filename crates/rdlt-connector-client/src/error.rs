@@ -131,7 +131,6 @@ pub(crate) fn source_error_from_frame(frame: &proto::ErrorFrame) -> SourceError 
 
 /// [`source_error_from_frame`]'s destination twin — same mapping, same
 /// safe-loud rule, the SPI's [`DestinationError`] constructors.
-#[allow(dead_code)] // Task 4's RemoteBackend is the caller; until it lands only the unit tests below call this.
 pub(crate) fn dest_error_from_frame(frame: &proto::ErrorFrame) -> DestinationError {
     let message = frame.message.clone();
     match normalized_classification(frame.classification) {

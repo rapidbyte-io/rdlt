@@ -12,6 +12,11 @@ repository.workspace = true
 
 [dependencies]
 rdlt-connector = { workspace = true }
+# The sdk WITHOUT its `serve` feature: RemoteBackend implements the
+# sdk's destination `Backend`, and `open` boxes the SAME `Session<B>`
+# generic the in-process path composes — the D3 choreography is reused
+# by identical type, never reimplemented against the wire.
+rdlt-connector-sdk = { workspace = true }
 rdlt-connector-protocol = { workspace = true }
 tonic = { workspace = true }
 tower = { workspace = true }
@@ -25,6 +30,8 @@ async-trait = { workspace = true }
 # exactly-one batch — the client seat of the proto's one-batch rule.
 arrow = { workspace = true }
 bytes = { workspace = true }
+# ReceiverStream feeds the destination session's bidi request stream.
+tokio-stream = { workspace = true }
 
 [dev-dependencies]
 # The served counterpart the tests dial: this crate's own echo pair

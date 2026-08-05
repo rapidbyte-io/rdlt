@@ -8,9 +8,12 @@
 //! the error module maps wire [`proto::ErrorFrame`]s back to the SPI's
 //! own classifications so the engine's retry machinery never learns the
 //! wire exists. [`RemoteSource`] is those seams composed into the SPI's
-//! read half — a `Source` whose every method is an RPC; Task 4's
-//! `RemoteBackend` is its write-side twin; `rdlt-runtime` re-exports
-//! [`ConnectorRequirement`] (the client verifies, the runtime resolves).
+//! read half — a `Source` whose every method is an RPC;
+//! [`RemoteDestination`] is its write-side twin, boxing the sdk's own
+//! `Session` over a [`RemoteBackend`] so the D3 exactly-once
+//! choreography runs client-side by identical type; `rdlt-runtime`
+//! re-exports [`ConnectorRequirement`] (the client verifies, the
+//! runtime resolves).
 //!
 //! **EXPERIMENTAL**, exactly as far as the protocol crate is (ADR 0001
 //! D8): the wire is versioned but unfrozen, so this crate stays
@@ -21,11 +24,13 @@
 //!
 //! [`proto::ErrorFrame`]: rdlt_connector_protocol::proto::ErrorFrame
 
+mod destination;
 mod dial;
 mod error;
 mod handshake;
 mod source;
 
+pub use destination::{RemoteBackend, RemoteDestination};
 pub use dial::{connector_client, destination_client, dial, source_client};
 pub use error::{Classification, ClientError};
 pub use handshake::{ConnectorRequirement, HandshakeOutcome, Role, handshake};

@@ -10,13 +10,18 @@
 //! read failure, `fail_check` a transient check failure — each carrying
 //! a pinned `echo:`-prefixed cause.
 //!
-//! The destination's two config knobs exist for the client's session
+//! The destination's config knobs exist for the client's session
 //! tests (Task 4 consumes them over the wire):
 //!
 //! - `fail_publish` induces a transient `publish` failure;
 //! - `replay_seq: Some(n)` makes `existing_receipt` answer a receipt at
 //!   commit_seq `n` (instead of `None`), so a test can drive the D3
-//!   `ExistingReceipt` → `Some` → `Replay` leg.
+//!   `ExistingReceipt` → `Some` → `Replay` leg;
+//! - `fail_connect` induces a transient `connect` failure, so a test
+//!   can drive the Open frame's `ErrorFrame` reply;
+//! - `emit_parts: n` makes `publish` report `n` closed parts through
+//!   the session's `OpenContext::part_events` listener BEFORE
+//!   returning — the knob the part-event interleaving test drives.
 
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -25,8 +30,8 @@ use rdlt_connector::core::{
     CommitMeta, CommitReceipt, LoadId, PipelineId, StateDoc, TableName, TableSchema, WriteMode,
 };
 use rdlt_connector::{
-    Cursor, DestinationCapabilities, DestinationError, OpenContext, RecordBatch, SourceError,
-    StreamSpec,
+    Cursor, DestinationCapabilities, DestinationError, OpenContext, PartCloseReason, PartClosed,
+    PartEventFn, RecordBatch, SourceError, StreamSpec,
 };
 use rdlt_connector_sdk::config::Document;
 use rdlt_connector_sdk::destination::{Backend, DestinationConnector};
@@ -135,13 +140,11 @@ fn calls() -> Arc<Mutex<Vec<String>>> {
 }
 
 /// The calls logged so far, in arrival order.
-#[allow(dead_code)] // Task 4's session tests read this; Task 2's handshake tests do not.
 pub fn calls_snapshot() -> Vec<String> {
     calls().lock().expect("call log lock").clone()
 }
 
 /// Empty the log — a test that reads [`calls_snapshot`] clears first.
-#[allow(dead_code)] // Task 4's session tests use this; Task 2's handshake tests do not.
 pub fn clear_calls() {
     calls().lock().expect("call log lock").clear();
 }
@@ -156,6 +159,14 @@ pub struct EchoDestinationConfig {
     /// D3-over-the-wire test drives the Replay leg with.
     #[serde(default)]
     pub replay_seq: Option<u64>,
+    /// Induces a transient `connect` failure — the Open frame's
+    /// `ErrorFrame` reply, seen from the client as a failed `open`.
+    #[serde(default)]
+    pub fail_connect: bool,
+    /// How many closed parts `publish` reports through the session's
+    /// part-event listener before returning its receipt.
+    #[serde(default)]
+    pub emit_parts: u64,
 }
 
 impl Document for EchoDestinationConfig {
@@ -171,6 +182,8 @@ impl Document for EchoDestinationConfig {
 pub struct EchoDestination {
     fail_publish: bool,
     replay_seq: Option<u64>,
+    fail_connect: bool,
+    emit_parts: u64,
 }
 
 #[async_trait]
@@ -184,6 +197,8 @@ impl DestinationConnector for EchoDestination {
         Ok(Self {
             fail_publish: config.fail_publish,
             replay_seq: config.replay_seq,
+            fail_connect: config.fail_connect,
+            emit_parts: config.emit_parts,
         })
     }
 
@@ -196,11 +211,19 @@ impl DestinationConnector for EchoDestination {
             .with_structs(true)
     }
 
-    async fn connect(&self, _context: &OpenContext) -> Result<EchoBackend, DestinationError> {
+    async fn connect(&self, context: &OpenContext) -> Result<EchoBackend, DestinationError> {
+        if self.fail_connect {
+            return Err(DestinationError::transient("echo: induced connect failure"));
+        }
         Ok(EchoBackend {
             log: calls(),
             fail_publish: self.fail_publish,
             replay_seq: self.replay_seq,
+            emit_parts: self.emit_parts,
+            // The listener the serving layer wired into the context —
+            // held so `publish` can report parts the way a real
+            // file-writing backend would.
+            part_events: context.part_events.clone(),
         })
     }
 }
@@ -209,6 +232,8 @@ pub struct EchoBackend {
     log: Arc<Mutex<Vec<String>>>,
     fail_publish: bool,
     replay_seq: Option<u64>,
+    emit_parts: u64,
+    part_events: Option<PartEventFn>,
 }
 
 impl EchoBackend {
@@ -265,6 +290,19 @@ impl Backend for EchoBackend {
         self.log("publish");
         if self.fail_publish {
             return Err(DestinationError::transient("echo: induced publish failure"));
+        }
+        // Report the configured parts SYNCHRONOUSLY, inside the publish
+        // call — the serving layer's ordering promise (every part queued
+        // when a Backend call returns precedes that call's own reply) is
+        // exactly what the client-side interleaving test pins.
+        if let Some(listener) = &self.part_events {
+            for index in 0..self.emit_parts {
+                listener(PartClosed::new(
+                    TableName::new("numbers"),
+                    512 + index,
+                    PartCloseReason::Commit,
+                ));
+            }
         }
         Ok(CommitReceipt {
             load_id: meta.load_id,
