@@ -22,15 +22,15 @@ use rdlt_connector_protocol::handshake::Line;
 use rdlt_connector_protocol::proto::connector_server::{Connector, ConnectorServer};
 use rdlt_connector_protocol::proto::source_service_server::{SourceService, SourceServiceServer};
 use rdlt_connector_protocol::proto::{
-    self, CheckReply, CheckRequest, Classification, ErrorFrame, HandshakeOk, HandshakeReply,
-    HandshakeRequest, StreamList, StreamsReply, StreamsRequest, check_reply, handshake_reply,
-    read_frame, streams_reply,
+    self, CheckReply, CheckRequest, Classification, ErrorFrame, HandshakeReply, HandshakeRequest,
+    StreamList, StreamsReply, StreamsRequest, check_reply, read_frame, streams_reply,
 };
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::{ReceiverStream, UnixListenerStream};
 use tonic::{Request, Response, Status};
 
 use super::common::{self, ServeError};
+use crate::config::Document;
 use crate::source::{Shell, SourceConnector};
 
 /// Serve-side channel budget for one `Read` call — bounds how far the
@@ -43,15 +43,9 @@ use crate::source::{Shell, SourceConnector};
 const READ_CHANNEL_BUDGET: usize = 8 * 1024 * 1024;
 
 /// The role a source's handshake must be asked for — the mirrored
-/// spelling lives on the (future) destination side.
+/// spelling lives on the destination side (`serve::destination`'s own
+/// `EXPECTED_ROLE`).
 const EXPECTED_ROLE: &str = "source";
-
-/// Every role the protocol currently defines — used only to tell "asked
-/// for the OTHER recognized role" (a real mismatch, worded around what
-/// this connector actually is) apart from "asked for a role that isn't
-/// a role at all" (a typo or a version skew, worded around the request
-/// itself instead).
-const KNOWN_ROLES: [&str; 2] = ["source", "destination"];
 
 /// The gRPC surface over one [`SourceConnector`]. `shell` is empty until
 /// a handshake succeeds; `Arc` (not a bare `Shell<C>`) because the `Read`
@@ -76,14 +70,34 @@ impl<C: SourceConnector> SourceServer<C> {
     }
 }
 
-fn refuse_handshake(message: impl Into<String>) -> Response<HandshakeReply> {
-    Response::new(HandshakeReply {
-        outcome: Some(handshake_reply::Outcome::Error(common::error_frame(
-            Classification::Fatal,
-            message,
-            None,
-        ))),
-    })
+/// What [`common::handshake`] needs from this shell — see
+/// [`common::HandshakeShell`] for why this lives per-module rather than
+/// on `Shell<C>` itself.
+impl<C: SourceConnector> common::HandshakeShell for Shell<C> {
+    type Error = <C::Config as Document>::Error;
+
+    fn from_config(value: serde_json::Value) -> Result<Self, Self::Error> {
+        Shell::<C>::from_value(value)
+    }
+
+    fn connector_id(&self) -> &'static str {
+        C::NAME
+    }
+
+    fn connector_version(&self) -> &'static str {
+        C::VERSION
+    }
+
+    fn spec_json(&self) -> Vec<u8> {
+        serde_json::to_vec(&self.spec()).expect("a ConnectorSpec serializes to JSON infallibly")
+    }
+
+    fn capabilities_json(&self) -> Vec<u8> {
+        // Deliberately empty: the proto's own field doc names
+        // capabilities as a DESTINATION concern (merge/replace/widen
+        // support) — a source has none to advertise.
+        Vec::new()
+    }
 }
 
 /// Flatten a classified [`SourceError`] into the wire's [`ErrorFrame`]:
@@ -113,75 +127,11 @@ impl<C: SourceConnector> Connector for SourceServer<C> {
         &self,
         request: Request<HandshakeRequest>,
     ) -> Result<Response<HandshakeReply>, Status> {
-        let request = request.into_inner();
-
-        if self.shell.get().is_some() {
-            return Ok(refuse_handshake("handshake already completed"));
-        }
-
-        if request.expected_role != EXPECTED_ROLE {
-            if !KNOWN_ROLES.contains(&request.expected_role.as_str()) {
-                return Ok(refuse_handshake(format!(
-                    "the handshake asked for role `{}`, which this connector does not recognize",
-                    request.expected_role
-                )));
-            }
-            return Ok(refuse_handshake(
-                "this connector is a source; the handshake asked for a destination",
-            ));
-        }
-
-        // A range check in spirit — this connector supports exactly
-        // `PROTOCOL_VERSION` today, so `proto_min == proto_max ==
-        // PROTOCOL_VERSION` and the range collapses to one value. Written
-        // as `!=` (not `< min || > max`) because `PROTOCOL_VERSION` is
-        // `u32`'s minimum, and clippy correctly flags the lower bound as
-        // vacuous; widen this back into an explicit range comparison the
-        // day a second supported version exists.
-        if request.protocol_version != PROTOCOL_VERSION {
-            return Ok(refuse_handshake(format!(
-                "protocol version {} is outside this connector's supported range [{PROTOCOL_VERSION}, {PROTOCOL_VERSION}]",
-                request.protocol_version
-            )));
-        }
-
-        let config: serde_json::Value = match serde_json::from_slice(&request.config_json) {
-            Ok(config) => config,
-            Err(error) => return Ok(refuse_handshake(format!("invalid config_json: {error}"))),
-        };
-
-        let shell = match Shell::<C>::from_value(config) {
-            Ok(shell) => shell,
-            Err(error) => return Ok(refuse_handshake(error.to_string())),
-        };
-
-        let spec = shell.spec();
-        let spec_json =
-            serde_json::to_vec(&spec).expect("a ConnectorSpec serializes to JSON infallibly");
-
-        if self.shell.set(Arc::new(shell)).is_err() {
-            // Lost a race against a concurrent handshake on the same
-            // session — the same refusal either way.
-            return Ok(refuse_handshake("handshake already completed"));
-        }
-
-        Ok(Response::new(HandshakeReply {
-            outcome: Some(handshake_reply::Outcome::Ok(HandshakeOk {
-                connector_id: C::NAME.to_string(),
-                connector_version: C::VERSION.to_string(),
-                spec_json,
-                // Deliberately empty: the proto's own field doc names
-                // capabilities as a DESTINATION concern (merge/replace/
-                // widen support) — a source has none to advertise.
-                capabilities_json: Vec::new(),
-                // v0 hole, not an oversight: nothing populates this yet
-                // because nothing on either side negotiates a resume
-                // format version to put in it. 039's adapter is where
-                // that negotiation is designed; recorded here so the
-                // gap has an owner rather than looking finished.
-                state_format_versions: Default::default(),
-            })),
-        }))
+        Ok(common::handshake(
+            &self.shell,
+            EXPECTED_ROLE,
+            request.into_inner(),
+        ))
     }
 
     async fn check(&self, _request: Request<CheckRequest>) -> Result<Response<CheckReply>, Status> {

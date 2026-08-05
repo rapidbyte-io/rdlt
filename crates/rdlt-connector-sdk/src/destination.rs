@@ -25,6 +25,22 @@
 //! backend, so the choreography's call ordering is pinned by its own
 //! spy-backend suite (`tests/cases/test_session_choreography.rs`), not
 //! by the kit alone.
+//!
+//! [`WriteGuard`] carries the choreography's TRUST-BOUNDARY-INDEPENDENT
+//! half — write-before-ensure and open-once — split out from [`Session`]
+//! at 038 T5 review (ADR D5) so it can be enforced by TWO different
+//! callers against the SAME rules: [`Session`] composes it for an
+//! in-process embedder, and `serve::destination` (038, behind the
+//! `serve` feature) enforces it directly against raw wire frames, because
+//! a bidi stream carrying client-supplied frame ORDER never trusts that
+//! order — the guard is what stops a malformed or malicious wire client
+//! from doing what an in-process caller structurally cannot. The D3
+//! commit choreography (`existing_receipt` → `replay` → `publish`)
+//! stays composed inside [`Session`] alone: `serve::destination` maps
+//! each of those three wire frames straight onto its own [`Backend`]
+//! method, and the CALLER (039's remote-backend adapter, built on this
+//! same [`Session`] type) is what reassembles the choreography — see
+//! [`Shell::connect`].
 
 use async_trait::async_trait;
 use rdlt_connector::core::{
@@ -196,6 +212,24 @@ impl<C: DestinationConnector> Shell<C> {
     pub fn from_value(value: serde_json::Value) -> Result<Self, <C::Config as Document>::Error> {
         Ok(shell(C::assemble(C::Config::from_value(value)?)?))
     }
+
+    /// Open the connector's raw system IO directly — the private
+    /// `self.connector.connect` accessor, promoted to a proper public
+    /// entry (038 T5 review, ADR D5): `serve::destination` drives the
+    /// returned [`Backend`] frame-by-frame instead of going through
+    /// [`Destination::open`]'s [`Session`] wrapper, so every wire frame
+    /// (`Ensure`/`Write`/`ExistingReceipt`/`Replay`/`Publish`/
+    /// `ReadState`/`Close`) reaches a REAL [`Backend`] method rather
+    /// than a stub. This is the LOWER layer [`Destination::open`] is
+    /// built on, not a replacement for it: nothing here enforces
+    /// write-before-ensure or the D3 replay choreography — those stay
+    /// in [`WriteGuard`]/[`Session`], which a caller composes on top
+    /// (as [`Destination::open`] does, and as 039's remote-backend
+    /// adapter will, over a `Backend` that dials this same connector out
+    /// of process).
+    pub async fn connect(&self, context: &OpenContext) -> Result<C::Backend, DestinationError> {
+        self.connector.connect(context).await
+    }
 }
 
 #[async_trait]
@@ -218,18 +252,79 @@ impl<C: DestinationConnector> Destination for Shell<C> {
         let backend = self.connector.connect(&context).await?;
         Ok(Box::new(Session {
             backend,
-            ensured: std::collections::BTreeSet::new(),
+            guard: WriteGuard::new(),
         }))
     }
 }
 
-/// The framework-owned session: choreography over a [`Backend`].
-struct Session<B> {
-    backend: B,
+/// The write-before-ensure/open-once enforcement common to EVERY caller
+/// of a [`Backend`], regardless of which side of a trust boundary it
+/// runs on — see the module doc for the full split rationale. Carries no
+/// `Backend` of its own: a caller composes it alongside one (as
+/// [`Session`] does) or drives it directly against raw frames (as
+/// `serve::destination` does).
+#[derive(Debug, Default)]
+pub struct WriteGuard {
+    opened: bool,
     /// Tables ensured BY THIS SESSION — the host's contract says every
     /// write is preceded by an ensure at the current schema version, and
-    /// the session refuses violations instead of trusting them.
+    /// the guard refuses violations instead of trusting them.
     ensured: std::collections::BTreeSet<TableName>,
+}
+
+impl WriteGuard {
+    /// A fresh, unopened guard.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Mark the session open. `Err` on a SECOND call — the frozen wire
+    /// refusal for a bidi stream that sends more than one `Open` frame:
+    /// `serve::destination` calls this directly against wire ordering it
+    /// does not trust. An in-process embedder never re-opens the same
+    /// [`Session`] (one per [`Destination::open`] call), so this is not
+    /// exercised meaningfully there — the method exists on the SAME
+    /// reusable type regardless, per the module doc's split.
+    pub fn open(&mut self) -> Result<(), DestinationError> {
+        if self.opened {
+            return Err(DestinationError::fatal(
+                "a session accepts at most one Open frame, and it must be first",
+            ));
+        }
+        self.opened = true;
+        Ok(())
+    }
+
+    /// Record `table` as ensured at the CURRENT schema version.
+    pub fn ensure(&mut self, table: TableName) {
+        self.ensured.insert(table);
+    }
+
+    /// Refuse a write to a table this guard never saw [`WriteGuard::ensure`]d
+    /// — the host contract guarantees an ensure precedes the first write,
+    /// so a violation is a harness or host defect, not data.
+    pub fn check_write(&self, table: &TableName) -> Result<(), DestinationError> {
+        if !self.ensured.contains(table) {
+            return Err(DestinationError::fatal(format!(
+                "write before ensure_table for `{table}` on this session — \
+                 the host contract guarantees an ensure precedes the first \
+                 write, so this is a harness or host defect, not data"
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// The framework-owned session: [`WriteGuard`] plus the D3 commit
+/// choreography (`existing_receipt` → `replay` → `publish`), composed
+/// over a [`Backend`]. The commit choreography stays HERE rather than
+/// moving into [`WriteGuard`] — see the module doc: it is the half that
+/// runs on whichever side of the wire is doing the calling (in-process
+/// today; 039's remote-backend adapter tomorrow), not the half a server
+/// enforces against wire ordering it does not trust.
+struct Session<B> {
+    backend: B,
+    guard: WriteGuard,
 }
 
 #[async_trait]
@@ -240,7 +335,7 @@ impl<B: Backend> LoadSession for Session<B> {
         mode: &WriteMode,
     ) -> Result<(), DestinationError> {
         self.backend.ensure_table(schema, mode).await?;
-        self.ensured.insert(schema.table.clone());
+        self.guard.ensure(schema.table.clone());
         Ok(())
     }
 
@@ -249,13 +344,7 @@ impl<B: Backend> LoadSession for Session<B> {
         table: &TableName,
         batch: RecordBatch,
     ) -> Result<(), DestinationError> {
-        if !self.ensured.contains(table) {
-            return Err(DestinationError::fatal(format!(
-                "write before ensure_table for `{table}` on this session — \
-                 the host contract guarantees an ensure precedes the first \
-                 write, so this is a harness or host defect, not data"
-            )));
-        }
+        self.guard.check_write(table)?;
         self.backend.write(table, batch).await
     }
 

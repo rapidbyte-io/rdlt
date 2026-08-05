@@ -1,48 +1,86 @@
 //! The destination half of `serve()`: [`DestinationServer`] answers both
 //! halves of the wire protocol a destination connector implements —
-//! `Connector` (handshake, check) and `DestinationService` (one bidi
-//! stream) — over one [`Shell`], the same sdk shell an in-process
-//! embedder uses.
+//! `Connector` (handshake, check) and `DestinationService` (the
+//! `OpenSession` bidi stream) — driving the connector's raw [`Backend`]
+//! directly, NOT a [`crate::destination::LoadSession`] wrapper (038 T5
+//! review, ADR D5: an earlier version of this module wrapped
+//! `Shell::open`'s `Box<dyn LoadSession>`, which made the wire's
+//! `ExistingReceipt`/`Replay` frames inert stubs rather than real
+//! answers — the design doc's amendment records the reversal).
 //!
-//! Unlike the source side's per-RPC calls, `DestinationService` has
-//! exactly one RPC — `OpenSession` — and it IS the session: a bidi
-//! stream where every [`proto::SessionRequest`] frame maps to one call
-//! on the [`Shell`]'s `Box<dyn LoadSession>`, in order, for as long as
-//! the stream stays open. Going through `Shell::open` (never
-//! reimplementing the choreography here) is what carries the sdk's
-//! `Session<B>` enforcement onto the wire for free: write-before-ensure
-//! refusal, and the clause-D3 replay check that runs inside `commit`
-//! before anything republishes.
+//! ONE long-lived bidirectional stream IS the session: it mirrors a
+//! [`Backend`]'s own lifetime (a stream reset is the session's crash
+//! class; a client half-close is its orderly end). Every wire frame
+//! (`Ensure`/`Write`/`ExistingReceipt`/`Replay`/`Publish`/`ReadState`/
+//! `Close`) maps 1:1 onto its own [`Backend`] method — the wire speaks
+//! the REAL exactly-once grammar, not a collapsed `commit`.
 //!
-//! That also explains why the wire's `ExistingReceipt` and `Replay`
-//! frames — mirroring [`crate::destination::Backend`]'s finer-grained
-//! primitives, not `LoadSession`'s — get trivial answers here: this
-//! server only ever holds a `Box<dyn LoadSession>`, which does not
-//! expose a standalone receipt lookup or replay hook, so a wire client
-//! asking for either gets the honest "not tracked at this layer" answer
-//! (`ExistingReceipt` always replies `None`; `Replay` is a no-op reply)
-//! rather than a second, parallel implementation of what `commit`
-//! already does correctly. A client wanting the real answer sends
-//! `Publish`, which IS `LoadSession::commit`, replay and all.
+//! The choreography splits along the trust boundary this server sits
+//! on. [`crate::destination::WriteGuard`] (write-before-ensure,
+//! open-once) is enforced HERE, directly against the frames as they
+//! arrive, because a bidi stream carrying client-supplied ORDER never
+//! trusts that order — the same rule an in-process caller gets for free
+//! by construction (one [`crate::destination::Session`] per
+//! `Destination::open` call) has to be policed by hand against a wire
+//! client that might get it wrong. The D3 commit choreography
+//! (`existing_receipt` → `replay` → `publish`) is NOT enforced here at
+//! all: each of those three frames reaches its own `Backend` method
+//! independently, and the CALLER decides which to send next — an
+//! in-process embedder never sees this layer (it gets the choreography
+//! for free from `Session::commit`), and 039's remote-backend adapter
+//! will reconstruct it client-side over the SAME `Session<B>` generic,
+//! reusing it by identical type rather than reimplementing it against
+//! the wire. A foreign client that gets the choreography wrong — for
+//! instance, sending `Publish` twice for one `(load_id, commit_seq)`
+//! without ever asking `ExistingReceipt` first — is not this server's
+//! problem to referee: see [`crate::destination::Backend::existing_receipt`]'s
+//! own doc for why a transactional backend keeps its own durable guard
+//! as defense in depth, independent of whatever choreography a caller
+//! was supposed to run ("the protocol fast path, not a substitute for a
+//! transactional one").
 //!
 //! `OpenContext::part_events` is the other place this server departs
 //! from a plain request/reply shape: the listener is a SYNC callback,
-//! so any part it reports while a session method is in flight is
-//! already sitting in the unbounded channel by the time that `await`
-//! returns. Draining that channel — forwarding every queued part as its
-//! own `PartClosedEvent` reply — immediately BEFORE sending the reply
-//! for the request that (may have) produced them is what makes the
-//! interleave order deterministic: a `part_closed` notification always
-//! precedes the reply of the call that emitted it, never races it.
+//! so any part it reports while a `Backend` call is in flight is
+//! already sitting in the unbounded channel by the time that call's
+//! `await` returns. Draining that channel immediately BEFORE sending
+//! the reply for the call that (may have) produced it is what the
+//! ordering promise actually covers: every part already queued when a
+//! call returns precedes that call's own reply. An asynchronously
+//! emitted part — one a buffering backend fires from a task this server
+//! never directly awaited — carries no such promise; it simply arrives
+//! as its own `PartClosedEvent` reply as soon as the request loop next
+//! turns (the `biased` `select!` in [`drive_session`]), which may land
+//! before, after, or interleaved with any particular request's reply.
+//!
+//! v0 allows exactly ONE live session per connector process
+//! (`DestinationServer::session_active`) — a second concurrent
+//! `OpenSession` is refused outright, `Status::failed_precondition`,
+//! frozen wording `one session per connector process`. This is a
+//! deliberate ceiling, not a discovered limitation: loosening it later
+//! (one process serving several concurrent sessions) is additive;
+//! shipping against the current single-session assumption and
+//! tightening it later would not be. A real backend's own per-session
+//! staging guard (the file connector's S6 lease is the precedent) is
+//! the defense-in-depth BEHIND this ceiling, not a replacement for it —
+//! refusing the RPC up front means no backend ever has to detect a
+//! second concurrent session on its own.
+//!
+//! [`destination`] is what a spawned connector process actually runs;
+//! [`serve_on`] is the seam under it, mirroring
+//! [`super::source::serve_on`] — bind at an explicit path without
+//! printing anything, so a test can drive the very listener
+//! [`destination`] would have started.
 
 use std::io::Write as _;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
-use rdlt_connector::core::{CommitMeta, LoadId, PipelineId, TableName, TableSchema, WriteMode};
-use rdlt_connector::{
-    Destination, DestinationError, LoadSession, OpenContext, PartCloseReason, PartClosed,
+use rdlt_connector::core::{
+    CommitMeta, CommitReceipt, LoadId, PipelineId, TableName, TableSchema, WriteMode,
 };
+use rdlt_connector::{Destination, DestinationError, OpenContext, PartCloseReason, PartClosed};
 use rdlt_connector_protocol::PROTOCOL_VERSION;
 use rdlt_connector_protocol::handshake::Line;
 use rdlt_connector_protocol::proto::connector_server::{Connector, ConnectorServer};
@@ -50,9 +88,9 @@ use rdlt_connector_protocol::proto::destination_service_server::{
     DestinationService, DestinationServiceServer,
 };
 use rdlt_connector_protocol::proto::{
-    self, CheckReply, CheckRequest, Classification, ErrorFrame, HandshakeOk, HandshakeReply,
-    HandshakeRequest, PartClosedEvent, Published, ReceiptReply, SessionReply, SessionRequest,
-    StateReply, check_reply, handshake_reply, session_reply, session_request,
+    self, CheckReply, CheckRequest, Classification, ErrorFrame, HandshakeReply, HandshakeRequest,
+    PartClosedEvent, Published, ReceiptReply, SessionReply, SessionRequest, StateReply,
+    check_reply, session_reply, session_request,
 };
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -60,34 +98,38 @@ use tokio_stream::wrappers::{ReceiverStream, UnixListenerStream};
 use tonic::{Request, Response, Status, Streaming};
 
 use super::common::{self, ServeError};
-use crate::destination::{DestinationConnector, Shell};
+use crate::config::Document;
+use crate::destination::{Backend, DestinationConnector, Shell, WriteGuard};
 
-/// Bound on the reply channel one session forwards into — the same
-/// order of magnitude as the source side's read-frame channel (16),
-/// chosen for the same reason: a bidi session is request/reply-paced by
-/// its own client, so this is headroom for the part-event interleave,
-/// not a throughput budget.
+/// Bound on the reply channel one session forwards into. Every reply on
+/// it is triggered by ONE client frame (request/reply-paced, not a
+/// throughput stream) except `PartClosedEvent`s, which ride the
+/// UNBOUNDED `part_tx`/`part_rx` pair instead — so this bound only caps
+/// how many already-produced replies can queue while the CLIENT stalls
+/// reading its own stream (i.e. it grows with stall DURATION, not with
+/// advisory-telemetry volume), not a throughput budget. 16, the same
+/// order of magnitude as the source side's read-frame channel, for the
+/// same reason: headroom.
 const REPLY_CHANNEL_BUDGET: usize = 16;
 
 /// The role a destination's handshake must be asked for — mirrors
 /// `EXPECTED_ROLE` on the source side.
 const EXPECTED_ROLE: &str = "destination";
 
-/// Every role the protocol currently defines — see the source side's
-/// identical constant for why this is separate from `EXPECTED_ROLE`.
-const KNOWN_ROLES: [&str; 2] = ["source", "destination"];
-
 /// The gRPC surface over one [`DestinationConnector`]. `shell` is empty
 /// until a handshake succeeds; `Arc` because `OpenSession` hands a clone
-/// to a spawned task that outlives the request.
+/// to a spawned task that outlives the request. `session_active` is F5's
+/// one-session-per-process ceiling — see the module doc.
 struct DestinationServer<C: DestinationConnector> {
     shell: OnceLock<Arc<Shell<C>>>,
+    session_active: Arc<AtomicBool>,
 }
 
 impl<C: DestinationConnector> DestinationServer<C> {
     fn new() -> Self {
         Self {
             shell: OnceLock::new(),
+            session_active: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -100,14 +142,35 @@ impl<C: DestinationConnector> DestinationServer<C> {
     }
 }
 
-fn refuse_handshake(message: impl Into<String>) -> Response<HandshakeReply> {
-    Response::new(HandshakeReply {
-        outcome: Some(handshake_reply::Outcome::Error(common::error_frame(
-            Classification::Fatal,
-            message,
-            None,
-        ))),
-    })
+/// What [`common::handshake`] needs from this shell — see
+/// [`common::HandshakeShell`] for why this lives per-module rather than
+/// on `Shell<C>` itself.
+impl<C: DestinationConnector> common::HandshakeShell for Shell<C> {
+    type Error = <C::Config as Document>::Error;
+
+    fn from_config(value: serde_json::Value) -> Result<Self, Self::Error> {
+        Shell::<C>::from_value(value)
+    }
+
+    fn connector_id(&self) -> &'static str {
+        C::NAME
+    }
+
+    fn connector_version(&self) -> &'static str {
+        C::VERSION
+    }
+
+    fn spec_json(&self) -> Vec<u8> {
+        serde_json::to_vec(&self.spec()).expect("a ConnectorSpec serializes to JSON infallibly")
+    }
+
+    fn capabilities_json(&self) -> Vec<u8> {
+        // Unlike a source's empty capabilities, a destination's ARE the
+        // host's planning input (merge/replace/widen support) — the
+        // proto field doc names this explicitly.
+        serde_json::to_vec(&self.capabilities())
+            .expect("DestinationCapabilities serializes to JSON infallibly")
+    }
 }
 
 /// Flatten a classified [`DestinationError`] into the wire's
@@ -154,41 +217,57 @@ fn part_closed_event(part: PartClosed) -> PartClosedEvent {
     PartClosedEvent {
         table: part.table.as_str().to_string(),
         encoded_bytes: part.encoded_bytes,
-        reason: part_close_reason_str(part.reason).to_string(),
+        reason: part_close_reason_str(part.reason),
     }
 }
 
-/// [`PartCloseReason`]'s wire spelling — the same snake_case rendering
-/// its `Serialize` impl produces
-/// (`rdlt_connector::destination::tests::part_events_serialize_with_the_core_twin_spelling`),
-/// reproduced by hand here because the wire field is a plain `string`,
-/// not a JSON document. The wildcard arm is required: the enum is
-/// `#[non_exhaustive]` from outside its defining crate.
-fn part_close_reason_str(reason: PartCloseReason) -> &'static str {
-    match reason {
-        PartCloseReason::Target => "target",
-        PartCloseReason::Time => "time",
-        PartCloseReason::Budget => "budget",
-        PartCloseReason::Commit => "commit",
-        PartCloseReason::Schema => "schema",
-        _ => "unknown",
+/// [`PartCloseReason`]'s wire spelling, taken DIRECTLY from its own
+/// `Serialize` impl rather than reproduced by hand (038 T5 review, F7):
+/// a hand-maintained match table drifted from the SPI's own spelling
+/// silently, with a wildcard arm swallowing the mismatch as "unknown" —
+/// indistinguishable from a genuinely new variant. A unit-variant enum
+/// with `#[serde(rename_all = "snake_case")]` always serializes to a
+/// plain JSON string; the `Debug`-formatted fallback only fires if a
+/// FUTURE variant somehow serializes to something else (e.g. a struct
+/// variant would serialize as a JSON object), and its PascalCase
+/// spelling can never collide with a real snake_case reason.
+fn part_close_reason_str(reason: PartCloseReason) -> String {
+    match serde_json::to_value(reason) {
+        Ok(serde_json::Value::String(spelling)) => spelling,
+        _ => format!("{reason:?}"),
     }
 }
 
-/// One Arrow IPC *stream*'s first (and only expected) record batch —
-/// the `Write` frame's wire counterpart to the source side's
-/// `encode_arrow_ipc`. Every failure mode (bytes that are not a valid
-/// IPC stream at all, a stream with no batch, a batch that fails to
-/// decode) collapses to the ONE frozen refusal: from the wire's
-/// perspective these are indistinguishable "the client sent something
-/// that isn't a decodable record batch" cases, not three separate
-/// diagnoses worth telling apart.
+/// One Arrow IPC *stream*'s exactly-one record batch — the `Write`
+/// frame's wire counterpart to the source side's `encode_arrow_ipc`; the
+/// proto's own comment on `Write` states the one-batch rule. Bytes that
+/// are not a valid IPC stream, or a stream with no batch message,
+/// collapse to the ONE frozen prefix (`write carried no decodable record
+/// batch`, 038 T5 review's own quoted spelling) with the underlying
+/// arrow cause appended — the same frozen-prefix-plus-cause discipline
+/// [`decode_error_reply`] uses for the `*_json` fields, so this path
+/// is not the one place that silently drops the diagnostic detail. A
+/// stream carrying a SECOND batch message gets its own, distinct
+/// refusal (038 T5 review, F3: silently taking only the first batch
+/// would drop every row after it — measured as the defect this refusal
+/// exists to prevent, not a hypothetical).
 fn decode_arrow_ipc(bytes: &[u8]) -> Result<rdlt_connector::RecordBatch, String> {
-    arrow::ipc::reader::StreamReader::try_new(std::io::Cursor::new(bytes), None)
-        .ok()
-        .and_then(|mut reader| reader.next())
-        .and_then(Result::ok)
-        .ok_or_else(|| "write carried no decodable record batch".to_string())
+    const REFUSAL: &str = "write carried no decodable record batch";
+
+    let mut reader = arrow::ipc::reader::StreamReader::try_new(std::io::Cursor::new(bytes), None)
+        .map_err(|error| format!("{REFUSAL}: {error}"))?;
+    let first = match reader.next() {
+        Some(Ok(batch)) => batch,
+        Some(Err(error)) => return Err(format!("{REFUSAL}: {error}")),
+        None => return Err(REFUSAL.to_string()),
+    };
+    if reader.next().is_some() {
+        return Err(
+            "write carried more than one record batch; a Write frame is exactly one batch"
+                .to_string(),
+        );
+    }
+    Ok(first)
 }
 
 #[tonic::async_trait]
@@ -197,66 +276,11 @@ impl<C: DestinationConnector> Connector for DestinationServer<C> {
         &self,
         request: Request<HandshakeRequest>,
     ) -> Result<Response<HandshakeReply>, Status> {
-        let request = request.into_inner();
-
-        if self.shell.get().is_some() {
-            return Ok(refuse_handshake("handshake already completed"));
-        }
-
-        if request.expected_role != EXPECTED_ROLE {
-            if !KNOWN_ROLES.contains(&request.expected_role.as_str()) {
-                return Ok(refuse_handshake(format!(
-                    "the handshake asked for role `{}`, which this connector does not recognize",
-                    request.expected_role
-                )));
-            }
-            return Ok(refuse_handshake(
-                "this connector is a destination; the handshake asked for a source",
-            ));
-        }
-
-        // See the source side's identical check for why this is `!=`
-        // rather than an explicit range comparison.
-        if request.protocol_version != PROTOCOL_VERSION {
-            return Ok(refuse_handshake(format!(
-                "protocol version {} is outside this connector's supported range [{PROTOCOL_VERSION}, {PROTOCOL_VERSION}]",
-                request.protocol_version
-            )));
-        }
-
-        let config: serde_json::Value = match serde_json::from_slice(&request.config_json) {
-            Ok(config) => config,
-            Err(error) => return Ok(refuse_handshake(format!("invalid config_json: {error}"))),
-        };
-
-        let shell = match Shell::<C>::from_value(config) {
-            Ok(shell) => shell,
-            Err(error) => return Ok(refuse_handshake(error.to_string())),
-        };
-
-        let spec = shell.spec();
-        let spec_json =
-            serde_json::to_vec(&spec).expect("a ConnectorSpec serializes to JSON infallibly");
-        let capabilities_json = serde_json::to_vec(&shell.capabilities())
-            .expect("DestinationCapabilities serializes to JSON infallibly");
-
-        if self.shell.set(Arc::new(shell)).is_err() {
-            // Lost a race against a concurrent handshake on the same
-            // session — the same refusal either way.
-            return Ok(refuse_handshake("handshake already completed"));
-        }
-
-        Ok(Response::new(HandshakeReply {
-            outcome: Some(handshake_reply::Outcome::Ok(HandshakeOk {
-                connector_id: C::NAME.to_string(),
-                connector_version: C::VERSION.to_string(),
-                spec_json,
-                capabilities_json,
-                // v0 hole, not an oversight — see the source side's
-                // identical field for the reasoning.
-                state_format_versions: Default::default(),
-            })),
-        }))
+        Ok(common::handshake(
+            &self.shell,
+            EXPECTED_ROLE,
+            request.into_inner(),
+        ))
     }
 
     async fn check(&self, _request: Request<CheckRequest>) -> Result<Response<CheckReply>, Status> {
@@ -296,7 +320,7 @@ async fn send(
 
 /// Drain every part event already sitting in the channel — non-blocking
 /// by construction (`try_recv`): the callback that filled it is
-/// synchronous, so nothing more will arrive without another session
+/// synchronous, so nothing more will arrive without another `Backend`
 /// call running, and this must not itself become a point where the
 /// session blocks. Forwards each as its own `PartClosedEvent` reply, in
 /// the order the backend reported them. `false` means the client hung
@@ -318,9 +342,9 @@ async fn drain_parts(
     true
 }
 
-/// Drain any part events a just-finished session call queued, THEN send
-/// that call's own reply — the ordering the module doc promises. Folds
-/// both steps' possible "client hung up" outcomes into [`Step`].
+/// Drain any part events a just-finished `Backend` call queued, THEN
+/// send that call's own reply — the ordering the module doc promises.
+/// Folds both steps' possible "client hung up" outcomes into [`Step`].
 async fn finish(
     part_rx: &mut mpsc::UnboundedReceiver<PartClosed>,
     reply_tx: &mpsc::Sender<Result<SessionReply, Status>>,
@@ -336,47 +360,77 @@ async fn finish(
     }
 }
 
-/// Handle one incoming frame against the session state machine —
-/// `session` is `None` until an `Open` frame succeeds, then `Some` for
-/// the rest of the stream's life.
+/// The per-session mutable state [`handle_frame`] threads through —
+/// bundled into one struct (rather than three separate `&mut` params)
+/// to keep that function's arity under clippy's `too_many_arguments`
+/// bar; grouping them is also the honest shape, since `guard`/`backend`/
+/// `closed` all describe facets of the SAME one session, not
+/// independent pieces of plumbing.
+struct SessionState<C: DestinationConnector> {
+    guard: WriteGuard,
+    /// `None` until an `Open` frame succeeds, then `Some` for the rest
+    /// of the stream's life.
+    backend: Option<C::Backend>,
+    /// Set by the explicit `Close` arm so [`drive_session`]'s F2
+    /// best-effort cleanup does not run `Backend::close` a second time.
+    closed: bool,
+}
+
+impl<C: DestinationConnector> SessionState<C> {
+    fn new() -> Self {
+        Self {
+            guard: WriteGuard::new(),
+            backend: None,
+            closed: false,
+        }
+    }
+}
+
+/// Handle one incoming frame against the raw [`Backend`] and its
+/// [`WriteGuard`] (bundled in `state`). Every frame maps to its OWN
+/// `Backend` method call (ADR D5): `ExistingReceipt`/`Replay`/`Publish`
+/// each reach `Backend::existing_receipt`/`replay`/`publish` directly
+/// rather than a collapsed `commit` — see the module doc for why this
+/// server does not referee the D3 choreography those three imply, only
+/// the write-before-ensure/open-once guard.
 async fn handle_frame<C: DestinationConnector>(
     shell: &Shell<C>,
-    session: &mut Option<Box<dyn LoadSession>>,
+    state: &mut SessionState<C>,
     part_tx: &mpsc::UnboundedSender<PartClosed>,
     part_rx: &mut mpsc::UnboundedReceiver<PartClosed>,
     reply_tx: &mpsc::Sender<Result<SessionReply, Status>>,
     frame: SessionRequest,
 ) -> Step {
     if let Some(session_request::Request::Open(open)) = frame.request {
-        if session.is_some() {
-            let reply = session_reply::Reply::Error(common::error_frame(
-                Classification::Fatal,
-                "the session is already open",
-                None,
-            ));
-            return finish(part_rx, reply_tx, reply).await;
-        }
-        let tx = part_tx.clone();
-        let context = OpenContext::new(PipelineId::new(open.pipeline), LoadId::new(open.load_id))
-            .with_part_events(Arc::new(move |part| {
-                // The listener is a plain sync callback (`OpenContext`'s
-                // own contract: "must never fail and never block") —
-                // an unbounded channel is the correct shape for it:
-                // advisory-volume telemetry, never awaited from inside
-                // the callback itself.
-                let _ = tx.send(part);
-            }));
-        let reply = match shell.open(context).await {
-            Ok(opened) => {
-                *session = Some(opened);
-                session_reply::Reply::Opened(proto::Empty {})
-            }
+        let reply = match state.guard.open() {
             Err(error) => session_reply::Reply::Error(destination_error_frame(&error)),
+            Ok(()) => {
+                let tx = part_tx.clone();
+                let context =
+                    OpenContext::new(PipelineId::new(open.pipeline), LoadId::new(open.load_id))
+                        .with_part_events(Arc::new(move |part| {
+                            // The listener is a plain sync callback
+                            // (`OpenContext`'s own contract: "must never
+                            // fail and never block") — an unbounded
+                            // channel is the correct shape for it:
+                            // advisory-volume telemetry, never awaited
+                            // from inside the callback itself.
+                            let _ = tx.send(part);
+                        }));
+                match shell.connect(&context).await {
+                    Ok(opened) => {
+                        state.backend = Some(opened);
+                        session_reply::Reply::Opened(proto::Empty {})
+                    }
+                    Err(error) => session_reply::Reply::Error(destination_error_frame(&error)),
+                }
+            }
         };
         return finish(part_rx, reply_tx, reply).await;
     }
 
-    let Some(session) = session.as_mut() else {
+    let guard = &mut state.guard;
+    let Some(backend) = state.backend.as_mut() else {
         return finish(part_rx, reply_tx, refuse_before_open()).await;
     };
 
@@ -386,41 +440,76 @@ async fn handle_frame<C: DestinationConnector>(
             let schema = serde_json::from_slice::<TableSchema>(&ensure.table_schema_json);
             let mode = serde_json::from_slice::<WriteMode>(&ensure.write_mode_json);
             match (schema, mode) {
-                (Ok(schema), Ok(mode)) => match session.ensure_table(&schema, &mode).await {
-                    Ok(()) => session_reply::Reply::Ensured(proto::Empty {}),
+                (Ok(schema), Ok(mode)) => match backend.ensure_table(&schema, &mode).await {
+                    Ok(()) => {
+                        guard.ensure(schema.table.clone());
+                        session_reply::Reply::Ensured(proto::Empty {})
+                    }
                     Err(error) => session_reply::Reply::Error(destination_error_frame(&error)),
                 },
                 (Err(error), _) => decode_error_reply("table_schema_json", error),
                 (_, Err(error)) => decode_error_reply("write_mode_json", error),
             }
         }
-        Some(session_request::Request::Write(write)) => match decode_arrow_ipc(&write.arrow_ipc) {
-            Ok(batch) => match session.write(&TableName::new(write.table), batch).await {
-                Ok(()) => session_reply::Reply::Written(proto::Empty {}),
+        Some(session_request::Request::Write(write)) => {
+            let table = TableName::new(write.table);
+            match guard.check_write(&table) {
                 Err(error) => session_reply::Reply::Error(destination_error_frame(&error)),
-            },
-            Err(message) => session_reply::Reply::Error(common::error_frame(
-                Classification::Fatal,
-                message,
-                None,
-            )),
-        },
-        Some(session_request::Request::ExistingReceipt(_)) => {
-            // See the module doc: `LoadSession` exposes no standalone
-            // receipt lookup, so `None` is the honest answer this layer
-            // can give without a second, parallel implementation of the
-            // check `commit` already performs.
-            session_reply::Reply::Receipt(ReceiptReply { receipt_json: None })
+                Ok(()) => match decode_arrow_ipc(&write.arrow_ipc) {
+                    Ok(batch) => match backend.write(&table, batch).await {
+                        Ok(()) => session_reply::Reply::Written(proto::Empty {}),
+                        Err(error) => session_reply::Reply::Error(destination_error_frame(&error)),
+                    },
+                    Err(message) => session_reply::Reply::Error(common::error_frame(
+                        Classification::Fatal,
+                        message,
+                        None,
+                    )),
+                },
+            }
         }
-        Some(session_request::Request::Replay(_)) => {
-            // Same reasoning as `ExistingReceipt`: replay housekeeping
-            // runs inside `commit`/`Publish`; a standalone `Replay`
-            // frame is accepted but is a no-op at this layer.
-            session_reply::Reply::Replayed(proto::Empty {})
+        Some(session_request::Request::ExistingReceipt(existing)) => {
+            // ADR D5: this touches `Backend::existing_receipt` directly
+            // — a REAL lookup, not a stub. The D3 choreography deciding
+            // whether to follow this with `Replay` or `Publish` is NOT
+            // this server's job: it lives in the CALLER's `Session<B>`
+            // (the client-side `Session<RemoteBackend>` 039 builds), the
+            // SAME generic type the in-process path composes. A foreign
+            // client that gets the choreography wrong — e.g. double-
+            // publishing one `(load_id, commit_seq)` — is caught by the
+            // destination's own DURABLE receipt guard, not by this
+            // server refereeing wire order: see
+            // `Backend::existing_receipt`'s own doc, "the protocol fast
+            // path, not a substitute for a transactional one."
+            let load_id = LoadId::new(existing.load_id);
+            match backend
+                .existing_receipt(&load_id, existing.commit_seq)
+                .await
+            {
+                Ok(receipt) => session_reply::Reply::Receipt(ReceiptReply {
+                    receipt_json: receipt.map(|receipt| {
+                        serde_json::to_vec(&receipt)
+                            .expect("a CommitReceipt serializes to JSON infallibly")
+                    }),
+                }),
+                Err(error) => session_reply::Reply::Error(destination_error_frame(&error)),
+            }
+        }
+        Some(session_request::Request::Replay(replay)) => {
+            let meta = serde_json::from_slice::<CommitMeta>(&replay.commit_meta_json);
+            let receipt = serde_json::from_slice::<CommitReceipt>(&replay.receipt_json);
+            match (meta, receipt) {
+                (Ok(meta), Ok(receipt)) => match backend.replay(&meta, &receipt).await {
+                    Ok(()) => session_reply::Reply::Replayed(proto::Empty {}),
+                    Err(error) => session_reply::Reply::Error(destination_error_frame(&error)),
+                },
+                (Err(error), _) => decode_error_reply("commit_meta_json", error),
+                (_, Err(error)) => decode_error_reply("receipt_json", error),
+            }
         }
         Some(session_request::Request::Publish(publish)) => {
             match serde_json::from_slice::<CommitMeta>(&publish.commit_meta_json) {
-                Ok(meta) => match session.commit(meta).await {
+                Ok(meta) => match backend.publish(meta).await {
                     Ok(receipt) => session_reply::Reply::Published(Published {
                         receipt_json: serde_json::to_vec(&receipt)
                             .expect("a CommitReceipt serializes to JSON infallibly"),
@@ -431,7 +520,7 @@ async fn handle_frame<C: DestinationConnector>(
             }
         }
         Some(session_request::Request::ReadState(read_state)) => {
-            match session
+            match backend
                 .read_state(&PipelineId::new(read_state.pipeline))
                 .await
             {
@@ -445,12 +534,13 @@ async fn handle_frame<C: DestinationConnector>(
             }
         }
         Some(session_request::Request::Close(_)) => {
-            let reply = match session.close().await {
+            let reply = match backend.close().await {
                 Ok(()) => session_reply::Reply::Closed(proto::Empty {}),
                 Err(error) => session_reply::Reply::Error(destination_error_frame(&error)),
             };
-            // `Close` ends the stream regardless of whether the reply
-            // itself made it out — the session is over either way.
+            // The explicit close ran — `drive_session`'s best-effort
+            // abandoned-session cleanup (F2) must not run it AGAIN.
+            state.closed = true;
             let _ = finish(part_rx, reply_tx, reply).await;
             return Step::End;
         }
@@ -463,15 +553,39 @@ async fn handle_frame<C: DestinationConnector>(
     finish(part_rx, reply_tx, reply).await
 }
 
+/// Releases [`DestinationServer::session_active`] on drop — covers
+/// EVERY [`drive_session`] exit path (a clean `Close`, a client hangup,
+/// a transport error, a reply the client can no longer receive)
+/// uniformly, so F5's one-session ceiling can never leak stuck-active
+/// from a codepath that forgot to release it by hand. `open_session`
+/// acquires the slot BEFORE spawning `drive_session`, which then owns
+/// it for the rest of the session's life.
+struct SessionSlot(Arc<AtomicBool>);
+
+impl Drop for SessionSlot {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
 /// Run one session's request loop, from its `Open` to whatever ends it —
-/// a clean `Close`, the client hanging up, or a transport error. Not a
-/// method on [`DestinationServer`]: it outlives the single
-/// `open_session` call that spawns it, so it owns its arguments outright
-/// rather than borrowing `&self`.
+/// a clean `Close`, the client hanging up, or a transport error — then
+/// (F2, 038 T5 review) best-effort close the backend on every path that
+/// is NOT the explicit `Close` frame. `LoadSession::close`'s contract
+/// (unchanged for a raw `Backend`): "called exactly once whenever the
+/// session ends ... best-effort — error ignored — on a failure/
+/// cancellation path." Before this fix, an abandoned session (a client
+/// that vanishes mid-`Write`) leaked whatever the backend opened,
+/// because nothing but the explicit `Close` arm ever called it — the
+/// 037 US2 T7 leak class, reopened for the wire. `_slot` is held only
+/// for its `Drop` — dropped at the end of this function regardless of
+/// which `break` got there, releasing F5's ceiling on every exit path
+/// uniformly, same as the close-on-abandon guarantee below.
 async fn drive_session<C: DestinationConnector>(
     shell: Arc<Shell<C>>,
     mut incoming: Streaming<SessionRequest>,
     reply_tx: mpsc::Sender<Result<SessionReply, Status>>,
+    _slot: SessionSlot,
 ) {
     // Sync callback, advisory-volume telemetry (`OpenContext`'s own
     // doc): unbounded is correct here specifically because the sender
@@ -479,23 +593,32 @@ async fn drive_session<C: DestinationConnector>(
     // general escape hatch from the byte-budget discipline the read
     // side observes.
     let (part_tx, mut part_rx) = mpsc::unbounded_channel::<PartClosed>();
-    let mut session: Option<Box<dyn LoadSession>> = None;
+    let mut state = SessionState::<C>::new();
 
     loop {
         // `biased`: a part event queued from a PREVIOUS iteration's
-        // session call is forwarded before this iteration reads its
+        // `Backend` call is forwarded before this iteration reads its
         // next request frame — the between-requests half of the
         // ordering guarantee. The within-one-request half (a part event
         // fired synchronously by the call THIS iteration is about to
         // run) is handled by `finish`'s explicit drain immediately
-        // before that request's own reply; relying on this `select!`
-        // alone for that half would race the next loop turn instead of
-        // guaranteeing the order.
+        // before that request's own reply.
+        //
+        // Racing `part_rx.recv()` against `incoming.message()` here
+        // relies on tonic 0.14.6's `Streaming::message` being
+        // cancel-safe: it decodes into a buffer owned by `&mut self`
+        // (the `Streaming` value), not by the returned future, so
+        // dropping the LOSING branch's future on any given `select!`
+        // iteration (as happens to whichever branch does not win) never
+        // discards a partially-decoded frame — the next `.message()`
+        // call resumes cleanly. This reliance is deliberate, not
+        // incidental: a non-cancel-safe read here would need its own
+        // buffering to race safely against `part_rx`.
         tokio::select! {
             biased;
             Some(part) = part_rx.recv() => {
                 if !send(&reply_tx, session_reply::Reply::PartClosed(part_closed_event(part))).await {
-                    return;
+                    break;
                 }
             }
             frame = incoming.message() => {
@@ -504,14 +627,22 @@ async fn drive_session<C: DestinationConnector>(
                     // The client closed the request half, or the
                     // transport errored reading it — either way there is
                     // no peer left to reply to.
-                    Ok(None) | Err(_) => return,
+                    Ok(None) | Err(_) => break,
                 };
-                match handle_frame(&shell, &mut session, &part_tx, &mut part_rx, &reply_tx, frame).await {
+                match handle_frame(&shell, &mut state, &part_tx, &mut part_rx, &reply_tx, frame).await {
                     Step::Continue => {}
-                    Step::End => return,
+                    Step::End => break,
                 }
             }
         }
+    }
+
+    // F2: best-effort close on EVERY exit path above except the
+    // explicit `Close` frame (which already ran it and set `closed`).
+    if !state.closed
+        && let Some(backend) = state.backend.as_mut()
+    {
+        let _ = backend.close().await;
     }
 }
 
@@ -524,10 +655,24 @@ impl<C: DestinationConnector> DestinationService for DestinationServer<C> {
         request: Request<Streaming<SessionRequest>>,
     ) -> Result<Response<Self::OpenSessionStream>, Status> {
         let shell = Arc::clone(self.shell()?);
+
+        // F5: v0's one-session-per-process ceiling — refuse a second
+        // concurrent `OpenSession` outright, before spawning anything.
+        if self
+            .session_active
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(Status::failed_precondition(
+                "one session per connector process",
+            ));
+        }
+        let slot = SessionSlot(Arc::clone(&self.session_active));
+
         let incoming = request.into_inner();
         let (reply_tx, reply_rx) = mpsc::channel(REPLY_CHANNEL_BUDGET);
 
-        tokio::spawn(drive_session(shell, incoming, reply_tx));
+        tokio::spawn(drive_session(shell, incoming, reply_tx, slot));
 
         Ok(Response::new(ReceiverStream::new(reply_rx)))
     }
@@ -581,4 +726,35 @@ pub async fn destination<C: DestinationConnector>() -> Result<(), ServeError> {
     stdout.flush().map_err(ServeError::Stdout)?;
 
     handle.await.map_err(ServeError::Join)?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// [`part_close_reason_str`]'s whole point: it must never drift from
+    /// [`PartCloseReason`]'s own `Serialize` — the 030 paraphrase class
+    /// (a hand-copied spelling silently diverging from the type it
+    /// mirrors). All FIVE variants, not a sample.
+    #[test]
+    fn part_close_reason_str_matches_the_types_own_serde_spelling() {
+        for reason in [
+            PartCloseReason::Target,
+            PartCloseReason::Time,
+            PartCloseReason::Budget,
+            PartCloseReason::Commit,
+            PartCloseReason::Schema,
+        ] {
+            let serde_spelling = serde_json::to_value(reason)
+                .expect("PartCloseReason serializes")
+                .as_str()
+                .expect("a string variant")
+                .to_string();
+            assert_eq!(
+                part_close_reason_str(reason),
+                serde_spelling,
+                "part_close_reason_str diverged from PartCloseReason's own Serialize for {reason:?}"
+            );
+        }
+    }
 }

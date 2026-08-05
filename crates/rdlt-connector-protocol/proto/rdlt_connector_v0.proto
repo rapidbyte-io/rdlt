@@ -81,6 +81,13 @@ message ReadFrame {
 }
 
 service DestinationService {
+  // The client MUST read replies concurrently with sending requests,
+  // not write-everything-then-read: this server's reply channel is
+  // BOUNDED (the sdk's REPLY_CHANNEL_BUDGET) and interleaves
+  // PartClosedEvent notifications with request replies, so a client
+  // that defers reading until every request is sent can wedge itself
+  // against a full h2 flow-control window once enough replies queue up
+  // unread on the server side.
   rpc OpenSession(stream SessionRequest) returns (stream SessionReply);
 }
 message SessionRequest {
@@ -97,8 +104,18 @@ message SessionRequest {
 }
 message Open { string pipeline = 1; string load_id = 2; }
 message Ensure { bytes table_schema_json = 1; bytes write_mode_json = 2; }
+// arrow_ipc carries EXACTLY ONE record batch as an Arrow IPC stream. A
+// second batch message in the same stream is refused FATAL, not
+// silently accepted with only the first written (038 T5 review, F3:
+// that was measured as silent row loss, not a hypothetical) — a
+// multi-batch write is several Write frames, one batch each.
 message Write { string table = 1; bytes arrow_ipc = 2; }
+// Answered from the destination's OWN Backend::existing_receipt — a
+// real, durable lookup, not a stub. The server does not run the D3
+// choreography (deciding Replay vs Publish next) on the client's
+// behalf; see DestinationService's own comment on the trust split.
 message ExistingReceipt { string load_id = 1; uint64 commit_seq = 2; }
+// Answered from Backend::replay — see ExistingReceipt's comment.
 message Replay { bytes commit_meta_json = 1; bytes receipt_json = 2; }
 message Publish { bytes commit_meta_json = 1; }
 message ReadState { string pipeline = 1; }
@@ -114,7 +131,14 @@ message SessionReply {
     StateReply state = 7;
     Empty closed = 8;
     ErrorFrame error = 9;
-    PartClosedEvent part_closed = 10; // interleaved notification
+    // Interleaved notification: every part already queued when a
+    // Backend call RETURNS precedes that call's own reply above. A
+    // part emitted asynchronously (outside any call this server
+    // awaited directly) carries no such promise — it arrives as its
+    // own part_closed reply as soon as the request loop next turns,
+    // which may land before, after, or interleaved with any
+    // particular request's reply.
+    PartClosedEvent part_closed = 10;
   }
 }
 message ReceiptReply { optional bytes receipt_json = 1; }

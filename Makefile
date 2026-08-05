@@ -109,19 +109,33 @@ ifeq ($(TARGET),)
 	# selection — a renamed test — fails rather than passing vacuously.
 	cargo nextest run -p rdlt-connector-sdk --features schema -E 'test(schema_of)'
 	# Same class, `serve` feature (038): OFF by default so a plain
-	# workspace run compiles neither serve/ nor its tests. The filter
-	# selects the module paths those tests actually live under —
-	# `serve::common::tests` (the UDS-bind unit tests), `cases::
+	# workspace run compiles neither serve/ nor its tests. FOUR
+	# SEPARATE `-E` invocations, not one combined `or` expression (038
+	# T5 review, F6): measured that a combined `test(a) or test(b) or
+	# ...` fails CLOSED only when EVERY clause goes empty at once —
+	# renaming just one of the four modules still selects the other
+	# three and exits 0, silently dropping coverage exactly like the
+	# 024 zero-second-pass class. One invocation per module means a
+	# rename of ANY of them fails ITS OWN line: `serve::common::tests`
+	# and `serve::destination::tests` (each side's own unit tests — the
+	# destination one added at 038 T5 review round 1, the
+	# `part_close_reason_str` serde-parity pin), then `cases::
 	# test_serve_source` and `cases::test_serve_destination` (the
-	# tonic-over-UDS integration suites for each half) — so a rename
-	# of any of the three modules, not just a deleted test, fails this
-	# line rather than passing on zero.
-	cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(serve::common) or test(test_serve_source) or test(test_serve_destination)'
+	# tonic-over-UDS integration suites for each half). Same binary
+	# each time (already built after the first), so this costs nothing
+	# beyond the four short nextest startups.
+	cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(serve::common)'
+	cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(serve::destination)'
+	cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(test_serve_source)'
+	cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(test_serve_destination)'
 	cargo test --doc --workspace
 else ifeq ($(TARGET),unit)
 	cargo nextest run --workspace
 	cargo nextest run -p rdlt-connector-sdk --features schema -E 'test(schema_of)'
-	cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(serve::common) or test(test_serve_source) or test(test_serve_destination)'
+	cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(serve::common)'
+	cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(serve::destination)'
+	cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(test_serve_source)'
+	cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(test_serve_destination)'
 else ifeq ($(TARGET),e2e)
 	cargo nextest run --workspace -E 'binary(/e2e/)'
 else ifeq ($(TARGET),sweep)

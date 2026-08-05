@@ -16,8 +16,10 @@
 use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use rdlt_connector_protocol::PROTOCOL_VERSION;
 use rdlt_connector_protocol::proto;
 use thiserror::Error;
 use tokio::net::UnixListener;
@@ -135,6 +137,136 @@ pub(crate) fn error_frame(
         message: message.into(),
         retry_after_ms: retry_after.map(|duration| duration.as_millis() as u64),
     }
+}
+
+/// Every role the protocol currently defines — used only to tell "asked
+/// for the OTHER recognized role" (a real mismatch, worded around what
+/// this connector actually is) apart from "asked for a role that isn't
+/// a role at all" (a typo or a version skew, worded around the request
+/// itself instead).
+pub(crate) const KNOWN_ROLES: [&str; 2] = ["source", "destination"];
+
+/// Refuse a handshake with a FATAL [`proto::ErrorFrame`] carrying
+/// `message` — every handshake refusal, from either service, converges
+/// here.
+pub(crate) fn refuse_handshake(
+    message: impl Into<String>,
+) -> tonic::Response<proto::HandshakeReply> {
+    tonic::Response::new(proto::HandshakeReply {
+        outcome: Some(proto::handshake_reply::Outcome::Error(error_frame(
+            proto::Classification::Fatal,
+            message,
+            None,
+        ))),
+    })
+}
+
+/// What [`handshake`] needs from a `serve()` shell to run the
+/// choreography once for either role — implemented for
+/// `crate::source::Shell<C>` and `crate::destination::Shell<C>` in
+/// their own modules (this trait lives here, not in either, so the ONE
+/// function below can drive both without either shell type depending on
+/// the other's module).
+pub(crate) trait HandshakeShell: Sized {
+    /// The document gate's own error type — its `Display` is what a
+    /// refused handshake carries verbatim (the connector's own wording,
+    /// never text this crate invents).
+    type Error: std::fmt::Display;
+
+    /// Validate-then-build from an already-parsed config document — the
+    /// handshake-config entry point every shell's `from_value` already
+    /// is.
+    fn from_config(value: serde_json::Value) -> Result<Self, Self::Error>;
+    /// `C::NAME` — the connector's stable identifier.
+    fn connector_id(&self) -> &'static str;
+    /// `C::VERSION`.
+    fn connector_version(&self) -> &'static str;
+    /// The shell's `ConnectorSpec`, pre-serialized.
+    fn spec_json(&self) -> Vec<u8>;
+    /// Destination capabilities, pre-serialized — empty for a source
+    /// (the proto field's own doc: "DestinationCapabilities; empty for
+    /// sources").
+    fn capabilities_json(&self) -> Vec<u8>;
+}
+
+/// The handshake choreography shared by `serve::source` and
+/// `serve::destination`: role check, protocol-version check, config
+/// parse, shell construction, spec/capabilities serialization, and the
+/// `OnceLock` race — this used to be ~60 near-identical lines written
+/// out in each service; the ONE thing that genuinely differs between
+/// them (the refusal's OTHER-role name) is derived from `this_role` +
+/// [`KNOWN_ROLES`] rather than spelled out per call site, so the frozen
+/// refusal spellings now live exactly once.
+pub(crate) fn handshake<S: HandshakeShell>(
+    slot: &OnceLock<Arc<S>>,
+    this_role: &'static str,
+    request: proto::HandshakeRequest,
+) -> tonic::Response<proto::HandshakeReply> {
+    if slot.get().is_some() {
+        return refuse_handshake("handshake already completed");
+    }
+
+    if request.expected_role != this_role {
+        if !KNOWN_ROLES.contains(&request.expected_role.as_str()) {
+            return refuse_handshake(format!(
+                "the handshake asked for role `{}`, which this connector does not recognize",
+                request.expected_role
+            ));
+        }
+        let other_role = KNOWN_ROLES
+            .iter()
+            .find(|&&role| role != this_role)
+            .expect("KNOWN_ROLES names exactly two roles");
+        return refuse_handshake(format!(
+            "this connector is a {this_role}; the handshake asked for a {other_role}"
+        ));
+    }
+
+    // A range check in spirit — v0 supports exactly `PROTOCOL_VERSION`,
+    // so `proto_min == proto_max == PROTOCOL_VERSION` and the range
+    // collapses to one value. Written as `!=` (not `< min || > max`)
+    // because `PROTOCOL_VERSION` is `u32`'s minimum and clippy correctly
+    // flags the lower bound as vacuous; widen this back into an explicit
+    // range comparison the day a second supported version exists.
+    if request.protocol_version != PROTOCOL_VERSION {
+        return refuse_handshake(format!(
+            "protocol version {} is outside this connector's supported range [{PROTOCOL_VERSION}, {PROTOCOL_VERSION}]",
+            request.protocol_version
+        ));
+    }
+
+    let config: serde_json::Value = match serde_json::from_slice(&request.config_json) {
+        Ok(config) => config,
+        Err(error) => return refuse_handshake(format!("invalid config_json: {error}")),
+    };
+
+    let shell = match S::from_config(config) {
+        Ok(shell) => shell,
+        Err(error) => return refuse_handshake(error.to_string()),
+    };
+
+    let ok = proto::HandshakeOk {
+        connector_id: shell.connector_id().to_string(),
+        connector_version: shell.connector_version().to_string(),
+        spec_json: shell.spec_json(),
+        capabilities_json: shell.capabilities_json(),
+        // v0 hole, not an oversight: nothing populates this yet because
+        // nothing on either side negotiates a resume format version to
+        // put in it. 039's adapter is where that negotiation is
+        // designed; recorded here so the gap has an owner rather than
+        // looking finished.
+        state_format_versions: Default::default(),
+    };
+
+    if slot.set(Arc::new(shell)).is_err() {
+        // Lost a race against a concurrent handshake on the same
+        // session — the same refusal either way.
+        return refuse_handshake("handshake already completed");
+    }
+
+    tonic::Response::new(proto::HandshakeReply {
+        outcome: Some(proto::handshake_reply::Outcome::Ok(ok)),
+    })
 }
 
 #[cfg(test)]

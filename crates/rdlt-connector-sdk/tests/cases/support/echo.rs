@@ -152,6 +152,13 @@ pub struct EchoDestinationConfig {
     /// `serve::destination` failure-path test's trigger.
     #[serde(default)]
     pub fail_publish: bool,
+    /// Makes `existing_receipt` answer `Some` (a fixed receipt) instead
+    /// of `None` — the 038 T5 review F1 knob: a wire test can drive the
+    /// `ExistingReceipt` → `Some` → `Replay` leg (never reached by the
+    /// `None` → `Publish` leg the default choreography test exercises)
+    /// and assert `replay` shows in the call log WITHOUT `publish`.
+    #[serde(default)]
+    pub receipt_exists: bool,
 }
 
 impl Document for EchoDestinationConfig {
@@ -169,6 +176,7 @@ impl Document for EchoDestinationConfig {
 /// `fail_publish` induces a transient publish failure instead.
 pub struct EchoDestination {
     fail_publish: bool,
+    receipt_exists: bool,
 }
 
 #[async_trait]
@@ -181,6 +189,7 @@ impl DestinationConnector for EchoDestination {
     fn assemble(config: EchoDestinationConfig) -> Result<Self, EchoError> {
         Ok(Self {
             fail_publish: config.fail_publish,
+            receipt_exists: config.receipt_exists,
         })
     }
 
@@ -197,6 +206,7 @@ impl DestinationConnector for EchoDestination {
         Ok(EchoBackend {
             log: call_log(),
             fail_publish: self.fail_publish,
+            receipt_exists: self.receipt_exists,
             part_events: context.part_events.clone(),
         })
     }
@@ -205,6 +215,7 @@ impl DestinationConnector for EchoDestination {
 pub struct EchoBackend {
     log: Arc<Mutex<Vec<String>>>,
     fail_publish: bool,
+    receipt_exists: bool,
     part_events: Option<rdlt_connector::PartEventFn>,
 }
 
@@ -239,11 +250,23 @@ impl Backend for EchoBackend {
 
     async fn existing_receipt(
         &mut self,
-        _load_id: &LoadId,
-        _commit_seq: u64,
+        load_id: &LoadId,
+        commit_seq: u64,
     ) -> Result<Option<CommitReceipt>, DestinationError> {
         self.log("existing_receipt");
-        Ok(None)
+        Ok(self.receipt_exists.then(|| CommitReceipt {
+            load_id: load_id.clone(),
+            commit_seq,
+        }))
+    }
+
+    async fn replay(
+        &mut self,
+        _meta: &CommitMeta,
+        _receipt: &CommitReceipt,
+    ) -> Result<(), DestinationError> {
+        self.log("replay");
+        Ok(())
     }
 
     async fn publish(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestinationError> {
