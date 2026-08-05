@@ -113,7 +113,10 @@ message Write { string table = 1; bytes arrow_ipc = 2; }
 // Answered from the destination's OWN Backend::existing_receipt — a
 // real, durable lookup, not a stub. The server does not run the D3
 // choreography (deciding Replay vs Publish next) on the client's
-// behalf; see DestinationService's own comment on the trust split.
+// behalf: each of Ensure/Write/ExistingReceipt/Replay/Publish/
+// ReadState/Close reaches its own Backend method independently, and
+// the CALLER decides which to send next (the sdk's serve::destination
+// module doc carries the full trust-split rationale).
 message ExistingReceipt { string load_id = 1; uint64 commit_seq = 2; }
 // Answered from Backend::replay — see ExistingReceipt's comment.
 message Replay { bytes commit_meta_json = 1; bytes receipt_json = 2; }
