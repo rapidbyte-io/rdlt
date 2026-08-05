@@ -141,7 +141,12 @@ pub mod testhook {
         );
         let raw = state::read_state_doc(&catalog, &namespace, &scope)
             .await?
-            .expect("state present at the current scope key before it can move");
+            .ok_or_else(|| {
+                DestinationError::fatal(format!(
+                    "no state at the current scope key for pipeline `{pipeline}` — nothing to \
+                     relocate to the legacy key"
+                ))
+            })?;
         state::write_state(&catalog, &namespace, &legacy_scope, raw).await?;
         state::remove_state(&catalog, &namespace, &scope).await
     }

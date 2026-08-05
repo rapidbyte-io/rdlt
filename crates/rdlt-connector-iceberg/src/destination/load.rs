@@ -630,10 +630,25 @@ impl Backend for Load {
 /// that as a first run would let Append re-publish every row the
 /// pipeline already committed, so this refuses typed instead, the
 /// same shape the widen's postgres/file siblings take on their own
-/// format breaks. A property under the legacy key that decodes to a
-/// DIFFERENT pipeline is a hash collision on the narrower width, not
-/// this pipeline's state — a clean `None`, the same filter the 32-hex
-/// path applies.
+/// format breaks.
+///
+/// GATE BEFORE PARSE: only the `pipeline` field is read, through
+/// untyped JSON, never a full `StateDoc` decode — the refusal path
+/// never constructs one, so decoding further would only manufacture
+/// ways to fail before reaching the one comparison that matters. A
+/// legacy property that decodes with a DIFFERENT `pipeline` is a hash
+/// collision on the narrower 12-hex width, not this pipeline's state —
+/// a clean `None`, the same filter the 32-hex path applies. Every
+/// other shape under the legacy key — a match, a `pipeline` field
+/// that is absent, or JSON this build cannot even parse — REFUSES.
+/// The absent-field and undecodable arms are deliberately
+/// conservative-loud rather than a clean `None`: a document living
+/// under a key hashed from THIS pipeline's own name that is
+/// simultaneously unrecognizable is overwhelmingly more likely to be
+/// genuine pre-037 state (perhaps predating a field this build added,
+/// or truncated) than an unrelated foreign collision that ALSO
+/// happens to be corrupt — and silently agreeing to a fresh run is the
+/// one outcome this gate exists to prevent.
 async fn refuse_legacy_state(
     catalog: &Arc<dyn Catalog>,
     namespace: &NamespaceIdent,
@@ -643,16 +658,26 @@ async fn refuse_legacy_state(
     let Some(raw) = read_state_doc(catalog, namespace, &legacy_scope).await? else {
         return Ok(None);
     };
-    let state: StateDoc =
-        serde_json::from_str(&raw).map_err(|e| fatal(format!("legacy state doc parse: {e}")))?;
-    if &state.pipeline != pipeline {
+    let refuses = match serde_json::from_str::<serde_json::Value>(&raw) {
+        Ok(value) => match value.get("pipeline").and_then(|v| v.as_str()) {
+            Some(found) if found != pipeline.as_str() => false,
+            // A match, or the field is absent: refuse (see the doc
+            // comment's conservative-loud rationale for the latter).
+            _ => true,
+        },
+        // Undecodable JSON under OUR legacy key: refuse (same
+        // rationale).
+        Err(_) => true,
+    };
+    if !refuses {
         return Ok(None);
     }
     Err(fatal(format!(
-        "state for pipeline `{pipeline}` exists under the pre-037 12-hex scope key \
-         (`rdlt.state.{legacy_scope}`); this build reads 32-hex scope keys — remove the \
-         stale property from the `_rdlt_state` table (or point the pipeline at a fresh \
-         warehouse) rather than silently re-loading from zero"
+        "state for pipeline `{pipeline}` predates this build: the pipeline scope key widened \
+         (12-hex to 32-hex); point the pipeline at a fresh warehouse or namespace, or — \
+         accepting that the table already holds every previously-loaded row and Append would \
+         re-add them — remove the stale `rdlt.state.{legacy_scope}` property from the \
+         `_rdlt_state` table and re-run"
     )))
 }
 
@@ -1069,6 +1094,23 @@ mod tests {
         assert!(scope.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
+    /// The exact frozen refusal text (037 review r2 F2/F3), pinned as
+    /// ONE contiguous string here — the safe remedy leads, the widen
+    /// is named plainly — so a wording change anywhere in it must
+    /// touch this literal, not just a keyword fragment. Shared by
+    /// every offline test that reaches the refusal, including the
+    /// enforcement-site test below that goes through the real
+    /// `Backend::read_state`.
+    fn frozen_legacy_refusal(pipeline: &PipelineId, legacy_scope: &str) -> String {
+        format!(
+            "state for pipeline `{pipeline}` predates this build: the pipeline scope key \
+             widened (12-hex to 32-hex); point the pipeline at a fresh warehouse or namespace, \
+             or — accepting that the table already holds every previously-loaded row and \
+             Append would re-add them — remove the stale `rdlt.state.{legacy_scope}` property \
+             from the `_rdlt_state` table and re-run"
+        )
+    }
+
     /// 037 D1: state stranded under the pre-037 12-hex key for THIS
     /// pipeline refuses typed, with the frozen spelling naming both
     /// the pipeline and the legacy property key — never silently
@@ -1095,11 +1137,69 @@ mod tests {
             .expect_err("pre-037 state for this pipeline must refuse");
         let text = format!("{err}");
         assert!(
-            text.contains(&format!("state for pipeline `{pipeline}`"))
-                && text.contains("pre-037 12-hex scope key")
-                && text.contains(&format!("rdlt.state.{legacy_scope}"))
-                && text.contains("this build reads 32-hex scope keys")
-                && text.contains("rather than silently re-loading from zero"),
+            text.contains(&frozen_legacy_refusal(&pipeline, &legacy_scope)),
+            "{text}"
+        );
+    }
+
+    /// 037 review r2 F1: the enforcement site is `Backend::read_state`
+    /// itself, not just the private `refuse_legacy_state` helper — a
+    /// mutation collapsing `read_state`'s `None` arm back to `Ok(None)`
+    /// (the exact pre-fix defect) left every helper-direct test above
+    /// green while the real bug — silent fresh-run duplication — stayed
+    /// alive, because none of them ever call through the trait method.
+    /// This drives a full `Load` through `Backend::read_state`, the
+    /// same construction idiom the schema-retirement tests use.
+    /// Red-proved: reverting `read_state`'s legacy-probe arm to
+    /// `Ok(None)` turns this green-suite entry red while the three
+    /// helper-direct tests above stayed green.
+    #[tokio::test]
+    async fn read_state_through_the_backend_trait_refuses_legacy_state() {
+        use rdlt_connector_sdk::config::Document;
+
+        use super::super::testsupport::{ConflictCatalog, test_table_with_properties};
+        use super::super::write::writer_properties;
+
+        let pipeline = PipelineId::from("legacy-pipeline-e2e");
+        let legacy_scope = ident_hash(pipeline.as_str(), state::LEGACY_SCOPE_HASH_LEN);
+        let doc = StateDoc::new(pipeline.clone(), "test");
+        let mut properties = std::collections::HashMap::new();
+        properties.insert(
+            format!("rdlt.state.{legacy_scope}"),
+            serde_json::to_string(&doc).expect("state json"),
+        );
+        let table = test_table_with_properties(properties);
+        let catalog = ConflictCatalog::over(table, 0);
+        let arc: Arc<dyn Catalog> = catalog.clone();
+        let config = Config::from_value(serde_json::json!({
+            "catalog": {
+                "uri": "http://localhost:1/api/catalog",
+                "warehouse": "wh",
+                "auth": {"bearer": {"token": "t"}},
+            },
+            "namespace": "ns",
+        }))
+        .expect("valid");
+        let mut load = Load::new(
+            config,
+            arc,
+            NamespaceIdent::new("ns".into()),
+            &pipeline,
+            LoadId::from("l"),
+            writer_properties(&Default::default()).expect("props"),
+            PartsWiring {
+                options: rdlt_connector_sdk::spi::PartOptions::default(),
+                events: None,
+            },
+        );
+
+        let err = load
+            .read_state(&pipeline)
+            .await
+            .expect_err("Backend::read_state must refuse, not silently agree to a fresh run");
+        let text = format!("{err}");
+        assert!(
+            text.contains(&frozen_legacy_refusal(&pipeline, &legacy_scope)),
             "{text}"
         );
     }
@@ -1128,6 +1228,66 @@ mod tests {
             .await
             .expect("a collision on the legacy width is not a refusal");
         assert!(result.is_none(), "{result:?}");
+    }
+
+    /// 037 review r2 F4: valid JSON under the legacy key with no
+    /// `pipeline` field at all still refuses — conservative-loud, the
+    /// same as an undecodable document (see the next test) — never a
+    /// clean `None` that would silently agree to a fresh run.
+    #[tokio::test]
+    async fn legacy_json_missing_the_pipeline_field_refuses_typed() {
+        use super::super::testsupport::{ConflictCatalog, test_table_with_properties};
+
+        let pipeline = PipelineId::from("fieldless-pipeline");
+        let legacy_scope = ident_hash(pipeline.as_str(), state::LEGACY_SCOPE_HASH_LEN);
+        let mut properties = std::collections::HashMap::new();
+        properties.insert(
+            format!("rdlt.state.{legacy_scope}"),
+            serde_json::json!({"cursor": 9}).to_string(),
+        );
+        let table = test_table_with_properties(properties);
+        let catalog = ConflictCatalog::over(table, 0);
+        let arc: Arc<dyn Catalog> = catalog.clone();
+
+        let err = refuse_legacy_state(&arc, &NamespaceIdent::new("ns".into()), &pipeline)
+            .await
+            .expect_err("JSON missing `pipeline` under our own legacy key must refuse");
+        let text = format!("{err}");
+        assert!(
+            text.contains(&frozen_legacy_refusal(&pipeline, &legacy_scope)),
+            "{text}"
+        );
+    }
+
+    /// 037 review r2 F4: JSON under the legacy key that this build
+    /// cannot even parse refuses — the gate reads the raw property
+    /// before any typed decode, and an unrecognizable document sitting
+    /// under a key hashed from THIS pipeline's own name is treated as
+    /// genuine pre-037 state, not silently waved through as a first
+    /// run.
+    #[tokio::test]
+    async fn undecodable_json_under_the_legacy_key_refuses_typed() {
+        use super::super::testsupport::{ConflictCatalog, test_table_with_properties};
+
+        let pipeline = PipelineId::from("undecodable-pipeline");
+        let legacy_scope = ident_hash(pipeline.as_str(), state::LEGACY_SCOPE_HASH_LEN);
+        let mut properties = std::collections::HashMap::new();
+        properties.insert(
+            format!("rdlt.state.{legacy_scope}"),
+            "this is not json".to_owned(),
+        );
+        let table = test_table_with_properties(properties);
+        let catalog = ConflictCatalog::over(table, 0);
+        let arc: Arc<dyn Catalog> = catalog.clone();
+
+        let err = refuse_legacy_state(&arc, &NamespaceIdent::new("ns".into()), &pipeline)
+            .await
+            .expect_err("undecodable JSON under our own legacy key must refuse");
+        let text = format!("{err}");
+        assert!(
+            text.contains(&frozen_legacy_refusal(&pipeline, &legacy_scope)),
+            "{text}"
+        );
     }
 
     /// No property under either key: a genuine first run, not a

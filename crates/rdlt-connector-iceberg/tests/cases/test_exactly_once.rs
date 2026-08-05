@@ -76,14 +76,16 @@ async fn a_resumed_pipeline_republishes_nothing() {
 /// pipeline. Run 1 writes state at the current 32-hex key the normal
 /// way; the state property is then relocated to the legacy key
 /// (`testhook::move_state_to_legacy_key`, simulating a warehouse never
-/// touched since the widen); run 2 must refuse with the frozen
-/// spelling, and — the defect this guards — must NOT duplicate run
-/// 1's rows by re-appending them under a fresh (empty) resume state.
+/// touched since the widen); run 2 loads two DIFFERENT rows (3, 4) —
+/// it must refuse with the frozen spelling before writing anything,
+/// and the snapshot oracle below proves run 2 published NOTHING: the
+/// total stays at run 1's 2 rows, not 4.
 ///
 /// Red-proved against the unfixed code: with the legacy-key probe
 /// absent, `read_state` sees nothing at the 32-hex key, agrees this is
-/// a first run, and the engine runs fresh — Append republishes run 1's
-/// two rows a second time (4 total, not 2), and no refusal ever
+/// a first run, and the engine runs run 2 to completion as an ordinary
+/// Append — its two rows (3, 4) land on top of run 1's already-
+/// committed two (4 total across two snapshots), and no refusal ever
 /// surfaces.
 #[tokio::test]
 async fn state_stranded_under_the_legacy_scope_key_refuses_typed() {
@@ -120,11 +122,14 @@ async fn state_stranded_under_the_legacy_scope_key_refuses_typed() {
     .await
     .expect_err("run 2 must refuse rather than silently re-loading from zero");
     let text = format!("{err}");
+    // A distinctive substring, not the full frozen string — the offline
+    // suite (load.rs's `frozen_legacy_refusal`) pins the exact wording;
+    // this live cell only needs to prove the RIGHT refusal fired.
     assert!(
-        text.contains(&format!("state for pipeline `{pipeline}`"))
-            && text.contains("pre-037 12-hex scope key")
-            && text.contains("this build reads 32-hex scope keys")
-            && text.contains("rather than silently re-loading from zero"),
+        text.contains(&format!(
+            "state for pipeline `{pipeline}` predates this build"
+        )) && text.contains("the pipeline scope key widened (12-hex to 32-hex)")
+            && text.contains("remove the stale `rdlt.state."),
         "{text}"
     );
 
@@ -135,7 +140,7 @@ async fn state_stranded_under_the_legacy_scope_key_refuses_typed() {
         .sum();
     assert_eq!(
         total, 2,
-        "run 2 refused before writing anything — run 1's rows stay unduplicated: {summaries:?}"
+        "run 2 refused before writing anything — no snapshot from run 2 exists: {summaries:?}"
     );
 }
 

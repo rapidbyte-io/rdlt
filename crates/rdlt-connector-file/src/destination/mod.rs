@@ -10,9 +10,11 @@ mod inspect;
 mod layout;
 // 037 US2 T7: `Lease` is wired into `Load` (acquire on open, before
 // `prepare_staging`; `check_still_held` at the top of `write` and
-// `publish`; `release` at session `close` — strict on the success
-// path, best-effort on abandonment, per `close`'s two-mode contract,
-// see the final-review wave's item 3) — see `load.rs`.
+// `publish`; `release` at session `close`) — see `load.rs`. `close`
+// itself runs in two modes (the engine propagates its result on a
+// successful run, discards it best-effort on abandonment, per the
+// final-review wave's item 3); `release` is internally best-effort on
+// EITHER mode — it is never the source of a close failure.
 mod lease;
 mod load;
 mod stage;
