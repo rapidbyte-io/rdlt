@@ -31,9 +31,11 @@ running destination. Auth is exactly one of `oauth2_client_credentials`
 or `bearer`. Without a `storage` block the catalog VENDS scoped object-
 store credentials per table (the default and recommended path); an
 explicit `storage.s3` block overrides it. `catalog.props` passes
-properties through verbatim and WINS over generated ones — including
-credential keys, so anything secret placed there bypasses the Secret
-redaction discipline; prefer the typed auth fields.
+properties through verbatim and wins over generated ones — the
+escape hatch for non-secret keys (e.g. `uri`). The four
+credential-bearing keys (`credential`, `token`, `s3.access-key-id`,
+`s3.secret-access-key`) are refused at validate: `catalog.props` may
+not be used to smuggle a secret past the typed auth fields.
 
 ## Semantics worth knowing
 
