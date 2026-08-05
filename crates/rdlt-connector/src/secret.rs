@@ -22,6 +22,12 @@ use serde::{Deserialize, Serialize};
 ///
 /// `#[serde(transparent)]`: wrapping a config field in `Secret` changes
 /// nothing about the document.
+///
+/// D-038-1: serde-transparent: a config document crossing the local
+/// connector socket carries secrets in the clear — the spawned connector
+/// inherits the operator's trust like any child process; secret
+/// references are the recorded future for network transports (ADR 0001,
+/// 038).
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Secret(String);

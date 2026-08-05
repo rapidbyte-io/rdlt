@@ -25,11 +25,7 @@ async fn attempt(shell: Shell, since: Option<rdlt_connector_sdk::spi::core::Curs
     let (out, mut incoming) = rdlt_connector_sdk::spi::records_channel(32 << 20);
     let reader = tokio::spawn(async move {
         shell
-            .read(ReadRequest {
-                stream: StreamSpec::new("sweep"),
-                since,
-                out,
-            })
+            .read(ReadRequest::new(StreamSpec::new("sweep"), since, out))
             .await
             .map_err(|e| e.to_string())
     });

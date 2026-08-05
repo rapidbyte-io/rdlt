@@ -52,7 +52,11 @@ pub trait Source: Send + Sync + 'static {
 /// Deliberately an exhaustive pub-field struct (a DX choice, semver
 /// gated); [`ReadRequest::new`] is the compatibility hedge, and every
 /// consumer in the tree constructs through it.
+///
+/// constructed via `new` — wire-era fields arrive without breaking
+/// out-of-crate construction (038)
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct ReadRequest {
     /// The one stream this call must read.
     pub stream: StreamSpec,

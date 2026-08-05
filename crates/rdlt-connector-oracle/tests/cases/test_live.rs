@@ -17,11 +17,11 @@ async fn read_batch(
     use rdlt_connector_sdk::spi::PushPayload;
 
     let (out, mut incoming) = rdlt_connector_sdk::spi::records_channel(64 << 20);
-    let reader = shell.read(rdlt_connector_sdk::spi::ReadRequest {
-        stream: StreamSpec::new(name),
-        since: None,
+    let reader = shell.read(rdlt_connector_sdk::spi::ReadRequest::new(
+        StreamSpec::new(name),
+        None,
         out,
-    });
+    ));
     let collect = async {
         let mut first = None;
         while let Some(push) = incoming.recv().await {
@@ -46,11 +46,11 @@ async fn read_schema(
     use rdlt_connector_sdk::spi::PushPayload;
 
     let (out, mut incoming) = rdlt_connector_sdk::spi::records_channel(64 << 20);
-    let reader = shell.read(rdlt_connector_sdk::spi::ReadRequest {
-        stream: StreamSpec::new(name),
-        since: None,
+    let reader = shell.read(rdlt_connector_sdk::spi::ReadRequest::new(
+        StreamSpec::new(name),
+        None,
         out,
-    });
+    ));
     let collect = async {
         let mut schema = None;
         while let Some(push) = incoming.recv().await {
@@ -79,11 +79,7 @@ async fn read_all(
 
     let (out, mut incoming) = rdlt_connector_sdk::spi::records_channel(64 << 20);
     let spec = StreamSpec::new(name);
-    let reader = shell.read(rdlt_connector_sdk::spi::ReadRequest {
-        stream: spec,
-        since,
-        out,
-    });
+    let reader = shell.read(rdlt_connector_sdk::spi::ReadRequest::new(spec, since, out));
     let collect = async {
         let mut rows = Vec::new();
         let mut cursor = None;
@@ -275,11 +271,11 @@ async fn a_missing_cursor_column_is_refused() {
     let shell = fixture.shell(&[incremental("ghost", "GHOST_T", "CREATED_ON")]);
     let (out, _keep) = rdlt_connector_sdk::spi::records_channel(1 << 20);
     let err = shell
-        .read(rdlt_connector_sdk::spi::ReadRequest {
-            stream: StreamSpec::new("ghost"),
-            since: None,
+        .read(rdlt_connector_sdk::spi::ReadRequest::new(
+            StreamSpec::new("ghost"),
+            None,
             out,
-        })
+        ))
         .await
         .expect_err("refused")
         .to_string();
@@ -332,11 +328,11 @@ async fn a_null_cursor_value_is_refused() {
     let shell = fixture.shell(&[incremental("nullc", "NULLC_T", "TS")]);
     let (out, _keep) = rdlt_connector_sdk::spi::records_channel(1 << 20);
     let err = shell
-        .read(rdlt_connector_sdk::spi::ReadRequest {
-            stream: StreamSpec::new("nullc"),
-            since: None,
+        .read(rdlt_connector_sdk::spi::ReadRequest::new(
+            StreamSpec::new("nullc"),
+            None,
             out,
-        })
+        ))
         .await
         .expect_err("refused")
         .to_string();
@@ -352,11 +348,11 @@ async fn a_null_cursor_value_is_refused() {
     let shell = fixture.shell(&[incremental("e", "NULLC_EMPTY", "TS")]);
     let (out, _keep) = rdlt_connector_sdk::spi::records_channel(1 << 20);
     let err = shell
-        .read(rdlt_connector_sdk::spi::ReadRequest {
-            stream: StreamSpec::new("e"),
-            since: None,
+        .read(rdlt_connector_sdk::spi::ReadRequest::new(
+            StreamSpec::new("e"),
+            None,
             out,
-        })
+        ))
         .await
         .expect_err("refused before a single row")
         .to_string();
@@ -590,11 +586,11 @@ async fn columns_differing_only_in_case_are_refused() {
     let shell = fixture.shell(&[stream("d", "DUPC_T")]);
     let (out, _keep) = rdlt_connector_sdk::spi::records_channel(1 << 20);
     let err = shell
-        .read(rdlt_connector_sdk::spi::ReadRequest {
-            stream: StreamSpec::new("d"),
-            since: None,
+        .read(rdlt_connector_sdk::spi::ReadRequest::new(
+            StreamSpec::new("d"),
+            None,
             out,
-        })
+        ))
         .await
         .expect_err("refused")
         .to_string();

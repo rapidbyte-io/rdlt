@@ -2,6 +2,7 @@
 //! [`LoadSession`], and the context a session opens under.
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 
 use crate::RecordBatch;
 use crate::capabilities::DestinationCapabilities;
@@ -47,7 +48,11 @@ pub trait Destination: Send + Sync + 'static {
 /// Deliberately an exhaustive pub-field struct (a DX choice, semver
 /// gated); [`OpenContext::new`] is the compatibility hedge, and every
 /// consumer in the tree constructs through it.
+///
+/// constructed via `new` — wire-era fields arrive without breaking
+/// out-of-crate construction (038)
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct OpenContext {
     /// The pipeline whose state this session reads and republishes — the
     /// key `StateDoc` persists under.
@@ -105,7 +110,7 @@ impl std::fmt::Debug for OpenContext {
 }
 
 /// A closed-part report: the file-writing destinations' telemetry.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct PartClosed {
     /// The table the part belongs to.
@@ -129,7 +134,8 @@ impl PartClosed {
 }
 
 /// Why a part closed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum PartCloseReason {
     /// It reached its size target.
@@ -152,6 +158,9 @@ pub type PartEventFn = std::sync::Arc<dyn Fn(PartClosed) + Send + Sync>;
 /// One destination load session. Writes are staged and invisible until
 /// `commit`; publication is atomic with pipeline state and idempotent per
 /// `(load_id, commit_seq)`.
+///
+/// D-038-2: Send-only deliberately: a remote client owns each session in
+/// one task; no speculative Sync (038).
 #[async_trait]
 pub trait LoadSession: Send {
     /// Create or migrate the physical table for this schema version, and
@@ -241,5 +250,17 @@ mod tests {
     #[tokio::test]
     async fn the_default_close_reports_success_without_doing_anything() {
         assert!(Closeless.close().await.is_ok());
+    }
+
+    #[test]
+    fn part_events_serialize_with_the_core_twin_spelling() {
+        let event = PartClosed::new(TableName::new("t"), 512, PartCloseReason::Budget);
+        let wire = serde_json::to_value(&event).expect("serializes");
+        assert_eq!(
+            wire["reason"], "budget",
+            "snake_case, matching rdlt_core::PartClose"
+        );
+        let back: PartClosed = serde_json::from_value(wire).expect("round-trips");
+        assert_eq!(back, event);
     }
 }
