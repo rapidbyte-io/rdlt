@@ -106,6 +106,78 @@ async fn the_destination_publishes_and_clears_its_staging() {
     );
 }
 
+/// 037 US2 T8: the headliner shape
+/// (`a_second_session_of_the_same_pipeline_is_refused_not_destroyed` in
+/// `test_exactly_once.rs`) proved live against the REAL object-store
+/// arm — the S3 arm's CAS-replace is a genuinely different code path
+/// from the local arm's exclusive-unlink dance (lease.rs's module doc,
+/// step 4), so the refusal needs its own live proof, not just a
+/// same-shape assumption from the local cell. Two connector instances
+/// (two distinct owner tokens) open against the same pipeline over the
+/// same prefix; the second is refused while the first still holds. The
+/// refused open must not have damaged the holder's staging either: the
+/// first session goes on to commit and publish exactly as if the
+/// second attempt had never happened.
+#[tokio::test]
+async fn a_second_session_is_refused_live_against_s3_and_the_first_still_publishes() {
+    use rdlt_connector_sdk::spi::core::{LoadId, PipelineId, TableName, WriteMode};
+    use rdlt_connector_sdk::spi::{Destination, OpenContext};
+    use rdlt_testkit::{batch_of, commit_meta_for, schema_for};
+
+    let Some(fixture) = S3Fixture::start().await else {
+        return;
+    };
+
+    let dest_config = s3_dest(&fixture, "lease-lake");
+    let pipeline = PipelineId::new("s3-lease-refusal");
+    let first_load = LoadId::new("load-a");
+
+    let first_dest = destination::Shell::new(dest_config.clone()).expect("valid");
+    let mut first = first_dest
+        .open(OpenContext::new(pipeline.clone(), first_load.clone()))
+        .await
+        .expect("first session acquires the lease");
+    first
+        .ensure_table(&schema_for("events"), &WriteMode::Append)
+        .await
+        .expect("ensure");
+    first
+        .write(&TableName::new("events"), batch_of(&[1, 2]))
+        .await
+        .expect("write");
+
+    // A SECOND connector instance (a distinct owner) — the shape a
+    // second `rdlt run` of the same pipeline takes — must be refused
+    // while the first session is still live.
+    let second_dest = destination::Shell::new(dest_config.clone()).expect("valid");
+    let second = second_dest
+        .open(OpenContext::new(pipeline.clone(), LoadId::new("load-b")))
+        .await;
+    let err = match second {
+        Ok(_) => panic!("a live lease on S3 refuses a concurrent same-pipeline session"),
+        Err(e) => e,
+    };
+    assert!(
+        err.to_string().contains("holds the destination lease"),
+        "{err}"
+    );
+
+    // The refused open must not have damaged the holder's staging: the
+    // first session commits and publishes exactly as if it had never
+    // happened.
+    first
+        .commit(commit_meta_for(&pipeline, &first_load, 1))
+        .await
+        .expect("the refused competitor left the first session's staging untouched");
+    assert_eq!(
+        destination::testhook::count_rows_async(&dest_config, "events")
+            .await
+            .expect("count"),
+        2,
+        "the first session's rows publish exactly once, undamaged by the refused competitor"
+    );
+}
+
 /// Replace over a real bucket clears ONLY owned shapes: a user object
 /// under the table prefix survives.
 /// The crash-replay convergence sweep on the OBJECT-STORE path, whose

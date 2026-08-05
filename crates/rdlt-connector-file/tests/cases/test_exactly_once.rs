@@ -3,6 +3,7 @@
 //! with the receipt LAST.
 
 use rdlt_connector_file::destination::{self, DestFormat};
+use rdlt_connector_file::source;
 use rdlt_connector_sdk::spi::core::{LoadId, PipelineId, TableName, WriteMode};
 use rdlt_connector_sdk::spi::{Destination, OpenContext};
 use rdlt_engine::{Engine, EngineConfig};
@@ -10,7 +11,48 @@ use rdlt_testkit::{
     MemoryBatch, MemorySource, MemoryStream, batch_of, commit_meta_for, schema_for,
 };
 
-use super::common::local_dest;
+use super::common::{jsonl_source, local_dest, plant};
+
+/// The lease's TTL (`lease.rs`'s `TTL_SECS`, `pub(super)` and so
+/// unreachable from this external test). 300s, mirrored here rather
+/// than imported — a drift between the two would only ever make this
+/// test too lenient (a "stale" plant that is not actually past the
+/// real TTL), never silently wrong the other way, since a full engine
+/// run either takes the lease over or it does not.
+const LEASE_TTL_SECS: u64 = 300;
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_millis() as u64
+}
+
+/// Plant a lease document directly on disk — the shape a dead or a
+/// merely-crashed session's lease would have, bypassing
+/// `Lease::acquire` entirely (mirrors `lease.rs`'s own `plant_lease`
+/// test helper, which is `pub(super)` and so not reachable from here).
+fn plant_lease_doc(dir: &std::path::Path, pipeline: &str, owner: &str, renewed_at_ms: u64) {
+    let scope = rdlt_connector_sdk::spi::core::naming::ident_hash(pipeline, 12);
+    plant(
+        dir,
+        &format!("_rdlt_lease.{scope}.json"),
+        serde_json::json!({
+            "format_version": 1,
+            "pipeline": pipeline,
+            "owner": owner,
+            "acquired_at_ms": renewed_at_ms,
+            "renewed_at_ms": renewed_at_ms,
+        })
+        .to_string()
+        .as_bytes(),
+    );
+}
+
+fn lease_doc_path(dir: &std::path::Path, pipeline: &str) -> std::path::PathBuf {
+    let scope = rdlt_connector_sdk::spi::core::naming::ident_hash(pipeline, 12);
+    dir.join(format!("_rdlt_lease.{scope}.json"))
+}
 
 /// Open one session against a FRESH `File` connector — a distinct
 /// instance every call, so this mints a distinct owner token each time
@@ -234,6 +276,105 @@ async fn consecutive_runs_are_never_ttl_locked_out_after_a_clean_close() {
     .await
     .expect("must not need to wait out any part of the 300s TTL");
     opened_immediately.expect("a clean close leaves nothing for the next run to wait on");
+}
+
+/// 037 US2 T8: a stale lease composes with the WHOLE engine path, not
+/// just `Lease::acquire` in isolation — `lease.rs`'s own unit tests
+/// already cover the primitive. Plant a dead owner's lease doc
+/// directly (older than the TTL), then drive a COMPLETE engine
+/// pipeline through the file destination: it must take the lease
+/// over, load every row exactly once (the row-count oracle), and
+/// leave the lease doc RELEASED — absent, exactly as a clean run that
+/// never needed a takeover leaves it — because `close` runs at the end
+/// of this session same as any other.
+#[tokio::test]
+async fn a_full_engine_run_takes_over_a_stale_lease_and_publishes_exactly_once() {
+    let out = tempfile::tempdir().expect("out");
+    let input = tempfile::tempdir().expect("input");
+    let workdir = tempfile::tempdir().expect("workdir");
+    let pipeline = "takeover-full-pipeline";
+
+    plant_lease_doc(
+        out.path(),
+        pipeline,
+        "dead-owner-from-a-crashed-process",
+        now_ms() - (LEASE_TTL_SECS + 1) * 1000,
+    );
+    plant(
+        input.path(),
+        "data/events.jsonl",
+        b"{\"id\": 1}\n{\"id\": 2}\n{\"id\": 3}\n",
+    );
+
+    let src = source::Shell::new(jsonl_source(input.path(), "data/*.jsonl")).expect("valid");
+    let dest_config = local_dest(out.path());
+    let dest = destination::Shell::new(dest_config.clone()).expect("valid");
+
+    Engine::new(
+        EngineConfig::new(pipeline).with_workdir(workdir.path().join("wal")),
+        src,
+        dest,
+    )
+    .run()
+    .await
+    .expect("the run takes the stale lease over and completes");
+
+    assert_eq!(
+        destination::testhook::count_rows(&dest_config, "events").expect("count"),
+        3,
+        "the takeover run published every row exactly once"
+    );
+    assert!(
+        !lease_doc_path(out.path(), pipeline).exists(),
+        "close releases the taken-over lease; nothing is left holding the scope behind it"
+    );
+}
+
+/// 037 US2 review-mandated pin: the documented hard-crash residual
+/// (lease.rs's module doc, "037 LEASE-ABANDON RESIDUAL"). A FRESH
+/// lease — stamped `now`, so indistinguishable from a live session by
+/// age alone — is what a process leaves behind on a SIGKILL or a panic
+/// that unwinds past even `Drop`: nothing released it, and nothing
+/// proves the holder is dead rather than merely slow. A full engine
+/// run against that scope must refuse, typed, naming the holder — not
+/// silently proceed and corrupt the crashed process's staging, and not
+/// panic either. This is the composed, whole-pipeline half of what
+/// `the_fresh_foreign_refusal_message_is_pinned_exactly` already pins
+/// at the `Lease::acquire` level.
+#[tokio::test]
+async fn a_fresh_abandoned_lease_refuses_a_full_engine_run() {
+    let out = tempfile::tempdir().expect("out");
+    let input = tempfile::tempdir().expect("input");
+    let workdir = tempfile::tempdir().expect("workdir");
+    let pipeline = "abandoned-fresh-lease";
+
+    plant_lease_doc(out.path(), pipeline, "crashed-just-now", now_ms());
+    plant(input.path(), "data/events.jsonl", b"{\"id\": 1}\n");
+
+    let src = source::Shell::new(jsonl_source(input.path(), "data/*.jsonl")).expect("valid");
+    let dest = destination::Shell::new(local_dest(out.path())).expect("valid");
+
+    let err = Engine::new(
+        EngineConfig::new(pipeline).with_workdir(workdir.path().join("wal")),
+        src,
+        dest,
+    )
+    .run()
+    .await
+    .expect_err("a fresh foreign lease refuses the whole run rather than proceeding");
+    let text = err.to_string();
+    assert!(
+        text.contains("destination error"),
+        "the failure surfaces as the destination error, not some other classification: {text}"
+    );
+    assert!(
+        text.contains("holds the destination lease"),
+        "the frozen lease refusal must reach the caller through the whole engine path: {text}"
+    );
+    assert!(
+        text.contains("crashed-just-now"),
+        "the refusal names the holder: {text}"
+    );
 }
 
 async fn run_load(
