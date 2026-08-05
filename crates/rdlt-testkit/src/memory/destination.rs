@@ -62,6 +62,11 @@ struct Inner {
     truncated_load: Option<LoadId>,
     /// Diagnostics for conformance tests.
     opens: u64,
+    /// How many sessions were closed via [`LoadSession::close`] (037
+    /// US2 T7 fix round 1) — the engine's success-path-only signal,
+    /// distinct from `opens` (which fires on every open, success or
+    /// not).
+    closes: u64,
 }
 
 /// Cloneable handle; every clone shares the same "warehouse".
@@ -128,6 +133,12 @@ impl MemoryDestination {
 
     pub fn opens(&self) -> u64 {
         self.lock().opens
+    }
+
+    /// How many sessions reached an orderly `close` — proof the engine
+    /// calls it on the success path (037 US2 T7 fix round 1).
+    pub fn closes(&self) -> u64 {
+        self.lock().closes
     }
 
     /// Full content snapshot for byte-identical comparisons in crash
@@ -311,6 +322,11 @@ impl LoadSession for MemorySession {
     ) -> Result<Option<StateDoc>, DestinationError> {
         let inner = self.lock();
         Ok(inner.state.clone().filter(|s| &s.pipeline == pipeline))
+    }
+
+    async fn close(&mut self) -> Result<(), DestinationError> {
+        self.lock().closes += 1;
+        Ok(())
     }
 }
 

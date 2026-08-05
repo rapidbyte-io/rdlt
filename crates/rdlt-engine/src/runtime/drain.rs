@@ -77,6 +77,12 @@ pub(super) async fn drain_loader(
 
     // ---- Final commit: trailing work; state travels with the data ----
     loader.finish().await?;
+    // 037 US2 T7 fix round 1: the session's orderly end, ONLY here —
+    // the run's last commit just succeeded, and every path above this
+    // point that could still fail (channel drain, stream join, the
+    // final commit itself) has already returned early. A close error
+    // is a destination error of THIS run, not swallowed.
+    loader.close().await?;
     Ok(loader.report)
 }
 

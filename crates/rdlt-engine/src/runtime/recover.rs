@@ -133,9 +133,27 @@ async fn replay_span(
     match replayed {
         Some(replayed_batches) => {
             tracing::info!(replayed_batches, "recovered WAL span into destination");
+            // The replay's own commit just landed — this session's last
+            // (and only) commit succeeded, so its orderly close belongs
+            // here (037 US2 T7 fix round 1), symmetric with the run's
+            // own session in `drain_loader`. The run's own session
+            // opens next, under the SAME `destination` reference (one
+            // connector instance for this whole attempt) — its
+            // `Lease::acquire` hits the same-owner reacquire branch
+            // regardless of whether this close ran, so this is prompt
+            // cleanup, not a correctness requirement for what follows.
+            session.close().await.map_err(|e| classify_dest_error(&e))?;
             Ok(Some(ResumedFrom::Wal { replayed_batches }))
         }
         None => {
+            // No commit ever reached this session (degraded before or
+            // during pass 2) — nothing for `close` to make durable, and
+            // the SPI contract reserves it for a session whose last
+            // commit succeeded. Dropped uncalled, exactly like any
+            // other failed/abandoned session; its resources are
+            // reclaimed by their own safety nets (the file lease's TTL,
+            // in particular — see the `Some` arm's comment for why that
+            // does not block the run's own session either way).
             tracing::warn!("WAL segments unreadable; falling back to cursor re-extraction");
             Ok(None)
         }

@@ -91,15 +91,21 @@ pub struct Load {
     /// Where closed parts are reported. Advisory: absent changes
     /// nothing about what is written.
     part_events: Option<rdlt_connector_sdk::spi::PartEventFn>,
-    /// This session's hold on the destination scope (037 US2 T7).
-    /// `Some` from a successful `open` until a successful `publish`
-    /// releases it (see `Backend::publish`'s doc for the residual this
-    /// leaves for any LATER commit on this same session); `None`
-    /// afterward, at which point `check_still_held` has nothing left to
-    /// check and treats the session as still entitled to write — the
-    /// destination was durably consistent at the moment of that
-    /// release, and no later hazard this fence would have caught is
-    /// covered once it is gone.
+    /// This session's hold on the destination scope (037 US2 T7; fix
+    /// round 1 moved the release point). `Some` from a successful
+    /// `open` until `Backend::close` releases it — the sdk's success-
+    /// path-only session-end hook, called exactly once after the
+    /// engine's LAST commit, never between commits of a multi-commit
+    /// session. Fix round 1's own history is worth keeping: the FIRST
+    /// wiring released at the end of the FIRST successful `publish`,
+    /// which left every later commit of a multi-commit session
+    /// unprotected (a second session's `open` could race in between
+    /// commit 1 and commit 2 and destroy this session's still-pending
+    /// staging via `prepare_staging`'s scope-wide wipe) — exactly the
+    /// hazard this whole lease exists to close, reopened by releasing
+    /// too early. `None` only after `close` has run; `check_still_held`
+    /// then has nothing left to check, which is correct because there
+    /// is no more session activity left for it to guard.
     lease: Option<Lease>,
 }
 
@@ -562,25 +568,6 @@ impl Backend for Load {
             .write_doc(&commits_file(&self.scope), &log)
             .await?;
 
-        // 037 US2 T7: release the session lease at the successful end
-        // of publish — after the receipt write, the last durable step
-        // above. Deliberately per-publish rather than deferred to
-        // session end (the `Backend` contract has no separate close
-        // hook to defer to): a session that never commits again ends
-        // here promptly instead of leaving a phantom hold for another
-        // `TTL_SECS` after it is really done. The residual this leaves
-        // — a LATER commit on this same session (crash sweep and the
-        // conformance kit exercise this) runs with `check_lease_still_held`
-        // now a no-op, since `self.lease` is `None` — is recorded, not
-        // hidden: it narrows this story's guarantee to "no second
-        // session's `open` interleaves with this session's FIRST
-        // commit", the crash-recovery case this feature's crash sweep
-        // exists to prove, rather than every commit of a multi-commit
-        // session.
-        if let Some(lease) = self.lease.take() {
-            lease.release().await;
-        }
-
         Ok(CommitReceipt {
             load_id: meta.load_id,
             commit_seq: meta.commit_seq,
@@ -600,5 +587,27 @@ impl Backend for Load {
         // The scope is a 12-hex hash: on the astronomically unlikely
         // collision, the embedded pipeline id is the truth.
         Ok(Some(state).filter(|s| &s.pipeline == pipeline))
+    }
+
+    /// The session's orderly end (037 US2 T7 fix round 1): release the
+    /// lease HERE, at true session close — not at the end of the FIRST
+    /// successful publish, which left every later commit of a
+    /// multi-commit session unprotected (the hole this fix closes; see
+    /// the `lease` field's doc for the shape of the bug). The sdk
+    /// choreography calls this exactly once, only after the engine's
+    /// last commit succeeded, never on a failure path — so `self.lease`
+    /// is always `Some` here in practice; the `None` arm exists only
+    /// because `Option::take` is the shape `check_lease_still_held`
+    /// also needs, not because a second `close` is expected.
+    /// `Lease::release` is internally best-effort (its own T6 contract:
+    /// absence is success, a failed delete is swallowed, an unreleased
+    /// lease still expires by `TTL_SECS`) — nothing here can turn a
+    /// release failure into a run failure, which is why this method
+    /// itself always returns `Ok`.
+    async fn close(&mut self) -> Result<(), DestinationError> {
+        if let Some(lease) = self.lease.take() {
+            lease.release().await;
+        }
+        Ok(())
     }
 }

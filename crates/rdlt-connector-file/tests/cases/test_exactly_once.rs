@@ -52,6 +52,101 @@ async fn a_second_session_of_the_same_pipeline_is_refused_not_destroyed() {
     drop(first);
 }
 
+/// 037 US2 T7 fix round 1: the hole the coordinator's own instruction
+/// created and this fix closes. A session that publishes TWO commits
+/// must hold the lease BETWEEN them, not just up to the first — a
+/// second connector's open is refused after commit 1 and before commit
+/// 2. Red-proved against the code this fix replaces (release at the end
+/// of `publish`): there, the assertion below fails because the second
+/// open SUCCEEDS — `first`'s lease was already released after its
+/// first commit, so `second` reacquires as a fresh session and would
+/// have gone on to destroy `first`'s in-flight staging for commit 2 via
+/// `prepare_staging`'s scope-wide wipe.
+#[tokio::test]
+async fn a_second_session_is_refused_between_two_commits_of_one_session() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let pipeline = PipelineId::new("multi-commit-lease");
+
+    let config = local_dest(dir.path());
+    let dest = destination::Shell::new(config).expect("valid");
+    let load = LoadId::new("load-a");
+    let mut first = dest
+        .open(OpenContext::new(pipeline.clone(), load.clone()))
+        .await
+        .expect("first opens");
+    first
+        .ensure_table(&schema_for("events"), &WriteMode::Append)
+        .await
+        .expect("ensure");
+    first
+        .write(&TableName::new("events"), batch_of(&[1]))
+        .await
+        .expect("write");
+    first
+        .commit(commit_meta_for(&pipeline, &load, 1))
+        .await
+        .expect("first commit");
+
+    // BETWEEN commit 1 and commit 2: a second connector's open must
+    // still be refused — the lease is not released until `close`.
+    let second = open_session(dir.path(), "multi-commit-lease", "load-b").await;
+    let err = match second {
+        Ok(_) => panic!(
+            "a second session must be refused BETWEEN this session's commits, not just \
+             before its first"
+        ),
+        Err(e) => e,
+    };
+    assert!(
+        err.to_string().contains("holds the destination lease"),
+        "{err}"
+    );
+
+    first
+        .write(&TableName::new("events"), batch_of(&[2]))
+        .await
+        .expect("write");
+    first
+        .commit(commit_meta_for(&pipeline, &load, 2))
+        .await
+        .expect("second commit");
+    first.close().await.expect("close");
+
+    // AFTER close: a new session is welcome.
+    open_session(dir.path(), "multi-commit-lease", "load-c")
+        .await
+        .expect("a session opens freely once the prior one has closed");
+}
+
+/// 037 US2 T7 fix round 1: the UX half of the same fix. A clean run
+/// (open, write, commit, close) must not lock a NEW process's
+/// immediate next run out for any part of the lease's TTL — `close`
+/// releases promptly, so a fresh connector instance (a new owner) opens
+/// right away.
+#[tokio::test]
+async fn consecutive_runs_are_never_ttl_locked_out_after_a_clean_close() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    run_load(
+        &local_dest(dir.path()),
+        &PipelineId::new("consecutive-runs"),
+        "load-a",
+        1,
+        &WriteMode::Append,
+        &[1],
+    )
+    .await;
+
+    // A brand-new connector instance (a new owner — the shape a new
+    // `rdlt run` process takes) opens IMMEDIATELY, no TTL wait.
+    let opened_immediately = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        open_session(dir.path(), "consecutive-runs", "load-b"),
+    )
+    .await
+    .expect("must not need to wait out any part of the 300s TTL");
+    opened_immediately.expect("a clean close leaves nothing for the next run to wait on");
+}
+
 async fn run_load(
     config: &destination::Config,
     pipeline: &PipelineId,
@@ -75,6 +170,12 @@ async fn run_load(
     s.commit(commit_meta_for(pipeline, &load_id, seq))
         .await
         .expect("commit");
+    // 037 US2 T7 fix round 1: production usage (the engine) always
+    // closes a session that completed its last commit — a NEW `dest`
+    // per call here mints a NEW owner, so a helper that skipped this
+    // would deadlock every subsequent call against this same pipeline
+    // for the lease's full TTL.
+    s.close().await.expect("close");
 }
 
 /// A redelivered (load, seq) is recognised even after LATER loads have

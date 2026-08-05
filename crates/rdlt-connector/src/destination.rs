@@ -187,4 +187,57 @@ pub trait LoadSession: Send {
         &mut self,
         pipeline: &PipelineId,
     ) -> Result<Option<StateDoc>, DestinationError>;
+
+    /// The session's orderly end, called by the engine exactly once
+    /// after the run's LAST commit succeeded (never on failure paths —
+    /// a failed session is dropped and its resources reclaimed by
+    /// their own safety nets). Default: nothing to do.
+    async fn close(&mut self) -> Result<(), DestinationError> {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Closeless;
+
+    #[async_trait]
+    impl LoadSession for Closeless {
+        async fn ensure_table(
+            &mut self,
+            _schema: &TableSchema,
+            _mode: &WriteMode,
+        ) -> Result<(), DestinationError> {
+            Ok(())
+        }
+        async fn write(
+            &mut self,
+            _table: &TableName,
+            _batch: RecordBatch,
+        ) -> Result<(), DestinationError> {
+            Ok(())
+        }
+        async fn commit(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestinationError> {
+            Ok(CommitReceipt {
+                load_id: meta.load_id,
+                commit_seq: meta.commit_seq,
+            })
+        }
+        async fn read_state(
+            &mut self,
+            _pipeline: &PipelineId,
+        ) -> Result<Option<StateDoc>, DestinationError> {
+            Ok(None)
+        }
+    }
+
+    /// The default `close` is a trivial success BY CONTRACT (037 US2
+    /// T7 fix round 1): a session with nothing to release on close need
+    /// not implement it at all.
+    #[tokio::test]
+    async fn the_default_close_reports_success_without_doing_anything() {
+        assert!(Closeless.close().await.is_ok());
+    }
 }

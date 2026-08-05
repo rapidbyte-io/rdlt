@@ -96,6 +96,29 @@ async fn retry_budget_exhaustion_is_a_classified_error() {
     assert!(matches!(err, rdlt_core::RdltError::Source { .. }));
 }
 
+/// 037 US2 T7 fix round 1, the mirror of the success-path proof in
+/// `test_run_report.rs`: `close`'s SPI contract is success-path-only —
+/// a run that never reaches a last successful commit must not close
+/// its session, so a naive unconditional call at the end of
+/// `run_once` (rather than gated behind `drain_loader`'s success
+/// return) would violate it silently.
+#[tokio::test]
+async fn a_failed_run_never_closes_its_session() {
+    let dest = MemoryDestination::new();
+    let source = MemorySource::new(vec![
+        MemoryStream::new(StreamSpec::new("s"), evolving_batches()).transient_start_failures(100),
+    ]);
+    Engine::new(
+        EngineConfig::new("retry-exhaust-never-closes"),
+        source,
+        dest.clone(),
+    )
+    .run()
+    .await
+    .expect_err("must eventually fail");
+    assert_eq!(dest.closes(), 0, "a failed run must not close its session");
+}
+
 /// Review finding #5 regression: a transient failure AFTER rows were staged past the
 /// last checkpoint must not publish those rows twice. Run-level retry restarts
 /// through the crash path (session re-open tears down staging), so re-extraction is

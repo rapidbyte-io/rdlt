@@ -117,6 +117,29 @@ async fn report_counters_are_exact_and_clean_runs_emit_no_discards() {
     }
 }
 
+/// 037 US2 T7 fix round 1: the engine calls `LoadSession::close`
+/// exactly once, on the SUCCESS path — after the run's last commit,
+/// never per-open and never on failure (`MemoryDestination`'s default
+/// close is a no-op, but the counter proves the CALL happened, not
+/// just that nothing broke). `dest.opens()` alongside it is the
+/// existing instrumentation this pairs with — one session, one close.
+#[tokio::test]
+async fn a_successful_run_closes_its_session_exactly_once() {
+    let dest = MemoryDestination::new();
+    let engine = Engine::new(
+        EngineConfig::new("closes"),
+        three_batch_source(),
+        dest.clone(),
+    );
+    engine.run().await.expect("run");
+    assert_eq!(dest.opens(), 1, "one session opened");
+    assert_eq!(
+        dest.closes(),
+        1,
+        "the session closes exactly once, on the success path"
+    );
+}
+
 /// A destination that records the `CommitCounters` it is handed.
 ///
 /// `CommitMeta.counters` is the per-commit-unit accounting the engine publishes

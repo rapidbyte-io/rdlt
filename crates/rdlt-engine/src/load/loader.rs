@@ -338,6 +338,21 @@ impl Loader {
         Ok(())
     }
 
+    /// The session's orderly end (037 US2 T7 fix round 1) — called by
+    /// `drain_loader` exactly once, after [`Loader::finish`]'s last
+    /// commit has already succeeded, never on a failure path. A
+    /// destination that fails to close may have failed to make
+    /// something durable, so the error propagates as the run's own
+    /// (the file backend's own close is internally best-effort where
+    /// that is safe — see its `Lease::release` doc).
+    pub(crate) async fn close(&mut self) -> Result<(), RdltError> {
+        self.sink
+            .session
+            .close()
+            .await
+            .map_err(|e| crate::runtime::classify_dest_error(&e))
+    }
+
     async fn commit(&mut self) -> Result<(), RdltError> {
         // A BATCH NEVER SPANS A COMMIT. Whatever is still accumulating
         // is written first, so the commit unit is made of whole
