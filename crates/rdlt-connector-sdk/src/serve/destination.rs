@@ -137,13 +137,16 @@ use crate::destination::{Backend, DestinationConnector, Shell, WriteGuard};
 
 /// Bound on the reply channel one session forwards into. Every reply on
 /// it is triggered by ONE client frame (request/reply-paced, not a
-/// throughput stream) except `PartClosedEvent`s, which ride the
-/// UNBOUNDED `part_tx`/`part_rx` pair instead — so this bound only caps
-/// how many already-produced replies can queue while the CLIENT stalls
-/// reading its own stream (i.e. it grows with stall DURATION, not with
-/// advisory-telemetry volume), not a throughput budget. 16, the same
-/// order of magnitude as the source side's read-frame channel, for the
-/// same reason: headroom.
+/// throughput stream) except `PartClosedEvent`s: those QUEUE in the
+/// unbounded `part_tx`/`part_rx` pair, but each still traverses this
+/// SAME bounded channel as its own reply when forwarded. So the bound
+/// caps how many already-produced replies — request replies and
+/// forwarded part events alike — can sit unread while the CLIENT stalls
+/// reading its own stream; a telemetry burst beyond it parks in the
+/// unbounded pair (the forwarding loop parking with it) rather than
+/// growing this channel, so this is not a throughput budget. 16, the
+/// same order of magnitude as the source side's read-frame channel, for
+/// the same reason: headroom.
 const REPLY_CHANNEL_BUDGET: usize = 16;
 
 /// The role a destination's handshake must be asked for — mirrors
@@ -172,7 +175,7 @@ impl<C: DestinationConnector> DestinationServer<C> {
     fn shell(&self) -> Result<&Arc<Shell<C>>, Status> {
         self.shell
             .get()
-            .ok_or_else(|| Status::failed_precondition("handshake has not completed"))
+            .ok_or_else(|| Status::failed_precondition(common::HANDSHAKE_NOT_COMPLETED))
     }
 }
 
@@ -454,6 +457,13 @@ async fn handle_frame<C: DestinationConnector>(
         // failed `Open` is legal to retry on the same stream — the
         // guard never learns anything happened until it actually did.
         let reply = if state.guard.is_open() {
+            // Frozen-as-shipped shape difference: this refusal renders
+            // through `DestinationError`'s `Display` — the client sees
+            // the "fatal destination error: " prefix — while its
+            // sibling refusals (`refuse_before_open`, the decode
+            // refusals) are bare `common::error_frame` messages with no
+            // prefix. Both spellings are pinned by the serve suite; do
+            // not "harmonize" them.
             session_reply::Reply::Error(destination_error_frame(&DestinationError::fatal(
                 "a session accepts at most one Open frame, and it must be first",
             )))

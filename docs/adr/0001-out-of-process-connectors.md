@@ -108,7 +108,11 @@ range, and SUPPORTED STATE/CURSOR FORMAT VERSIONS (a connector must
 refuse state it cannot resume BEFORE extraction begins — the 037
 version-gate discipline, negotiated up front). Connector identity is
 persisted in run metadata, reports, WAL metadata, and committed
-state, so rollback is an artifact swap, never a rebuild.
+state, so rollback is an artifact swap, never a rebuild. Scoping, as
+shipped by 038: v0 defines the read-stream vocabulary as
+batch/checkpoint frames only — the discards, progress, and
+source-side part-closed telemetry named here are forward intent,
+arriving with the features that need them.
 
 **D6 — Backpressure stays byte-bounded, engine-owned.** The engine's
 one byte-budget channel (020 D17) remains the authority. First

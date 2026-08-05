@@ -87,6 +87,14 @@ pub fn temp_socket_path() -> PathBuf {
 /// REFUSED means nothing is listening (stale — unlink and retry);
 /// a connect that SUCCEEDS means something is (a real collision,
 /// reported as `ServeError::Bind` rather than clobbered).
+///
+/// The stale-probe → unlink → rebind sequence has a TOCTOU window:
+/// between the refused probe-connect and the unlink, another process
+/// could bind this same path — and the unlink would then steal its
+/// live socket. Safe in practice, not by the syscalls: production
+/// paths are minted PID-unique ([`temp_socket_path`]) and the process
+/// model is single-spawn-per-connector, so no second binder ever
+/// targets the same path inside that window.
 pub fn bind_uds(path: &Path) -> Result<UnixListener, ServeError> {
     match UnixListener::bind(path) {
         Ok(listener) => finish_bind(path, listener),
@@ -138,6 +146,14 @@ pub(crate) fn error_frame(
         retry_after_ms: retry_after.map(|duration| duration.as_millis() as u64),
     }
 }
+
+/// The frozen pre-handshake refusal: every RPC but `Handshake` itself,
+/// on EITHER service, answers this as a raw
+/// `Status::failed_precondition` until a handshake populates the
+/// shell. Quoted verbatim in the protocol crate's README — hoisted
+/// here so the spelling lives once, used by both servers' `shell()`
+/// accessors.
+pub(super) const HANDSHAKE_NOT_COMPLETED: &str = "handshake has not completed";
 
 /// Every role the protocol currently defines — used only to tell "asked
 /// for the OTHER recognized role" (a real mismatch, worded around what

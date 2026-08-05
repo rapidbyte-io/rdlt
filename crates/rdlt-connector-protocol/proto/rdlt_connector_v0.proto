@@ -74,7 +74,14 @@ message ReadRequest {
 message ReadFrame {
   oneof frame {
     bytes raw_json = 1;              // PushPayload::RawJson
-    bytes arrow_ipc = 2;             // PushPayload::Arrow, IPC stream bytes
+    // PushPayload::Arrow: Arrow IPC stream bytes carrying EXACTLY ONE
+    // record batch per frame (one schema message, one record-batch
+    // message) — the read-direction mirror of Write's one-batch rule.
+    // This direction is server-streamed, so the refusal seat is the
+    // CLIENT's: a conforming client refuses a frame carrying a second
+    // batch message rather than silently taking the first. That
+    // client-side posture is 039's decode contract.
+    bytes arrow_ipc = 2;
     bytes checkpoint_cursor_json = 3;
     ErrorFrame error = 4;            // terminal: read() returned Err
   }

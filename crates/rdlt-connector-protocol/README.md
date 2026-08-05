@@ -140,7 +140,13 @@ refuses FATAL rather than being silently accepted with only the first
 batch written — that was measured as silent row loss during 038 Task 5's
 review, not a hypothetical. A multi-batch write is several `Write`
 frames, one batch each; the proto's own comment on `Write` states this
-rule verbatim.
+rule verbatim. The same one-batch rule governs the read direction:
+`ReadFrame.arrow_ipc` carries exactly one batch per frame, but that
+direction is server-streamed, so enforcement sits with conforming
+CLIENTS — a frame carrying a second batch message is refused, not
+silently truncated to its first batch (the client-side posture is
+feature 039's decode contract; the proto's comment on
+`ReadFrame.arrow_ipc` states the rule).
 
 The amendment has a consequence a wire client MUST understand: **this
 service does not sequence commit frames for you.** Driving

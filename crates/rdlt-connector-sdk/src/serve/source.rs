@@ -66,7 +66,7 @@ impl<C: SourceConnector> SourceServer<C> {
     fn shell(&self) -> Result<&Arc<Shell<C>>, Status> {
         self.shell
             .get()
-            .ok_or_else(|| Status::failed_precondition("handshake has not completed"))
+            .ok_or_else(|| Status::failed_precondition(common::HANDSHAKE_NOT_COMPLETED))
     }
 }
 

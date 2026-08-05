@@ -1,13 +1,17 @@
-//! Golden-frame pin: two representative messages, encoded with fixed field
-//! values and checked against hardcoded hex. Field numbers are FROZEN; this
-//! pin breaks if a number moves — that is the point. A protobuf field
-//! renumber is silent at the type level (the struct still compiles, the
-//! wire bytes just mean something else), so this is the one net that would
-//! actually catch it.
+//! Golden-frame pins: representative messages from BOTH directions —
+//! request-side (client → connector) and reply-side (connector → client) —
+//! encoded with fixed field values and checked against hardcoded hex.
+//! Field numbers are FROZEN; a pin breaks if a number moves — that is the
+//! point. A protobuf field renumber is silent at the type level (the
+//! struct still compiles, the wire bytes just mean something else), so
+//! this is the one net that would actually catch it.
 
 use prost::Message;
 use rdlt_connector_protocol::PROTOCOL_VERSION;
-use rdlt_connector_protocol::proto::{HandshakeRequest, SessionRequest, Write, session_request};
+use rdlt_connector_protocol::proto::{
+    HandshakeRequest, PartClosedEvent, ReadFrame, SessionReply, SessionRequest, Write, read_frame,
+    session_reply, session_request,
+};
 
 #[test]
 fn protocol_version_is_pinned_at_zero() {
@@ -68,6 +72,58 @@ fn session_request_write_golden_frame() {
 
     let decoded = SessionRequest::decode(encoded.as_slice()).expect("decode");
     assert_eq!(decoded, request);
+}
+
+#[test]
+fn session_reply_part_closed_golden_frame() {
+    let reply = SessionReply {
+        reply: Some(session_reply::Reply::PartClosed(PartClosedEvent {
+            table: "events".to_string(),
+            encoded_bytes: 4096,
+            reason: "target".to_string(),
+        })),
+    };
+
+    let mut encoded = Vec::new();
+    reply.encode(&mut encoded).expect("encode");
+
+    // oneof field 10 (PartClosedEvent, LEN) tag 0x52, len 19, containing:
+    //   PartClosedEvent.table (field 1, LEN) tag 0x0a, len 6, "events"
+    //   PartClosedEvent.encoded_bytes (field 2, varint) tag 0x10, 4096 as 80 20
+    //   PartClosedEvent.reason (field 3, LEN) tag 0x1a, len 6, "target"
+    let golden = hex_literal(
+        "52 13 \
+         0a 06 65 76 65 6e 74 73 \
+         10 80 20 \
+         1a 06 74 61 72 67 65 74",
+    );
+    assert_eq!(
+        encoded, golden,
+        "field numbers are FROZEN; this pin breaks if a number moves — that is the point"
+    );
+
+    let decoded = SessionReply::decode(encoded.as_slice()).expect("decode");
+    assert_eq!(decoded, reply);
+}
+
+#[test]
+fn read_frame_arrow_ipc_golden_frame() {
+    let frame = ReadFrame {
+        frame: Some(read_frame::Frame::ArrowIpc(vec![0xde, 0xad, 0xbe, 0xef])),
+    };
+
+    let mut encoded = Vec::new();
+    frame.encode(&mut encoded).expect("encode");
+
+    // oneof field 2 (arrow_ipc, LEN) tag 0x12, len 4, de ad be ef
+    let golden = hex_literal("12 04 de ad be ef");
+    assert_eq!(
+        encoded, golden,
+        "field numbers are FROZEN; this pin breaks if a number moves — that is the point"
+    );
+
+    let decoded = ReadFrame::decode(encoded.as_slice()).expect("decode");
+    assert_eq!(decoded, frame);
 }
 
 /// Turns a whitespace-separated hex literal (as laid out above, one byte
