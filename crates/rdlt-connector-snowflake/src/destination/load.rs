@@ -575,8 +575,25 @@ impl Backend for Load {
             self.reclear_owed
                 .extend(std::mem::take(&mut self.cleared_in_unit));
         }
-        for sql in statements {
-            self.executor.execute(&self.qualify_ddl(&sql)).await?;
+        for (sql, kind) in statements {
+            let result = self.executor.execute(&self.qualify_ddl(&sql)).await;
+            // A widen is the one phase-1 statement the service can
+            // refuse for a TYPE reason (cross-type; in-place
+            // VARCHAR-length/NUMBER-precision widens succeed) — and
+            // unlike `explain_merge_failure`, which REPLACES its error
+            // with a structured-code diagnosis because the discarded
+            // wording is the service's to change, this ENRICHES: the
+            // widen failure's own wording is load-bearing (it names the
+            // column and the attempted type), so it stays, with the
+            // manual-migration path appended.
+            if let (Err(e), ddl::StmtKind::Widen) = (&result, kind) {
+                return Err(DestinationError::fatal(format!(
+                    "{e}: the service widens in place only VARCHAR length and NUMBER \
+                     precision; a cross-type change needs a manual migration — \
+                     add a new column, cast-copy, then swap"
+                )));
+            }
+            result?;
         }
         // Fold the applied work into the image so a re-ensure at the
         // same schema version emits nothing.
@@ -1084,6 +1101,140 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    // ---- the widen-advice wrap: 037 US5 ------------------------------
+
+    /// A recorder that also fails any statement containing a chosen
+    /// marker — arms `ensure_table`'s phase-1 loop with a scripted
+    /// refusal instead of a live cross-type failure from the service.
+    struct FailingOn {
+        marker: &'static str,
+        log: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl Executor for FailingOn {
+        async fn execute(&self, sql: &str) -> Result<(), DestinationError> {
+            self.log_sql(sql);
+            if sql.contains(self.marker) {
+                return Err(DestinationError::fatal(
+                    "SQL compilation error: invalid type conversion",
+                ));
+            }
+            Ok(())
+        }
+        async fn scalar_u64(&self, sql: &str, _: &[&str]) -> Result<u64, DestinationError> {
+            self.log_sql(sql);
+            Ok(0)
+        }
+        async fn sum_column(&self, sql: &str, _: &str) -> Result<u64, DestinationError> {
+            self.log_sql(sql);
+            Ok(0)
+        }
+        async fn rows(
+            &self,
+            sql: &str,
+            _: &[&str],
+            _: &[&str],
+        ) -> Result<Vec<Vec<String>>, DestinationError> {
+            self.log_sql(sql);
+            Ok(Vec::new())
+        }
+    }
+
+    impl FailingOn {
+        fn log_sql(&self, sql: &str) {
+            self.log.lock().expect("lock").push(sql.to_owned());
+        }
+    }
+
+    /// A load wired to [`FailingOn`] in place of the recorder — every
+    /// statement is logged, and any containing `marker` is refused.
+    fn scripted_load_failing_on(marker: &'static str) -> (Load, Arc<Mutex<Vec<String>>>) {
+        let (mut load, _unused) = recorded_load(serde_json::json!({}));
+        let log = Arc::new(Mutex::new(Vec::new()));
+        load.executor = Box::new(FailingOn {
+            marker,
+            log: Arc::clone(&log),
+        });
+        (load, log)
+    }
+
+    /// Drive an ensure whose ONLY owed DDL is a cross-type widen: the
+    /// catalog already knows `events."ID"`, `previous` narrows it to
+    /// Int64, and the new schema widens it to Utf8 — exactly the shape
+    /// `ddl::a_widened_column_sets_its_data_type` pins at the renderer;
+    /// this drives the SAME rendering through the real async path, so
+    /// the phase-1 loop's wrapping is under test, not just the SQL.
+    async fn drive_widen_ensure(load: &mut Load) -> Result<(), DestinationError> {
+        load.catalog
+            .observe("events", ["ID".to_owned()].into_iter().collect());
+        load.tables.insert(
+            TableName::from("events"),
+            (table_schema("events", &["id"]), WriteMode::Append),
+        );
+        let wide = TableSchema {
+            table: TableName::from("events"),
+            parent: None,
+            columns: vec![ColumnDef {
+                name: "id".to_owned(),
+                column_type: ColumnType::scalar(LogicalType::Utf8),
+                nullable: true,
+                provenance: Provenance::Inferred,
+            }],
+        };
+        load.ensure_table(&wide, &WriteMode::Append).await
+    }
+
+    /// Drive an ensure whose only owed DDL is a plain CREATE (an
+    /// unknown table) — the non-widen counterpart, proving the wrap is
+    /// gated on `StmtKind::Widen`, not on "phase 1 failed".
+    async fn drive_plain_ensure(load: &mut Load) -> Result<(), DestinationError> {
+        load.ensure_table(&table_schema("plain", &["id"]), &WriteMode::Append)
+            .await
+    }
+
+    /// A failing widen carries the manual-migration advice, byte-pinned
+    /// and appended after the service's own (verbatim) wording.
+    #[tokio::test]
+    async fn a_failing_widen_carries_the_manual_path_advice() {
+        let (mut load, _log) = scripted_load_failing_on("SET DATA TYPE");
+        let err = drive_widen_ensure(&mut load)
+            .await
+            .expect_err("the scripted executor refuses the cross-type ALTER");
+        let text = err.to_string();
+        assert!(
+            text.contains("widens in place only VARCHAR length and NUMBER precision"),
+            "{text}"
+        );
+        assert!(
+            text.contains("add a new column, cast-copy, then swap"),
+            "{text}"
+        );
+        assert!(
+            text.contains("SQL compilation error: invalid type conversion"),
+            "the service's own wording stays, verbatim: {text}"
+        );
+    }
+
+    /// A failing non-widen statement stays bare: no advice text, the
+    /// service's error passes through untouched.
+    #[tokio::test]
+    async fn a_failing_plain_statement_stays_bare() {
+        let (mut load, _log) = scripted_load_failing_on("CREATE TABLE");
+        let err = drive_plain_ensure(&mut load)
+            .await
+            .expect_err("the scripted executor refuses the CREATE");
+        let text = err.to_string();
+        assert!(
+            !text.contains("manual migration"),
+            "a non-widen failure carries no advice: {text}"
+        );
+        assert!(
+            text.contains("SQL compilation error: invalid type conversion"),
+            "{text}"
+        );
     }
 
     /// A mid-unit ensure whose ONLY owed DDL is phase 2 — the scd2
