@@ -146,6 +146,26 @@ pub(super) fn prefilter(mut image: TableSchema, def: &TableSchema) -> TableSchem
     image
 }
 
+/// Does `Binary` appear ANYWHERE in `t` — as the scalar itself, as a
+/// `ScalarList` item, or inside any field of a `Struct`, at any depth?
+/// (N3, review round 3: a scalar-only check let `ScalarList { item:
+/// Binary }` — a real `BLOB[]` column `column_type_of` genuinely
+/// produces — fall through [`is_widening`]'s `anything → Utf8/Json`
+/// absorption rule, reopening N3's class one type-shape down.)
+///
+/// STRUCTURAL, not enumerated: the match is exhaustive over every
+/// [`ColumnType`] variant (no wildcard arm), so a future variant this
+/// enum gains forces a compile error here rather than silently
+/// defaulting to "no Binary inside" and reopening the same class a
+/// third time.
+fn has_binary(t: &ColumnType) -> bool {
+    match t {
+        ColumnType::Scalar { scalar } => matches!(scalar, LogicalType::Binary),
+        ColumnType::ScalarList { item } => matches!(item, LogicalType::Binary),
+        ColumnType::Struct { fields } => fields.iter().any(|f| has_binary(&f.column_type)),
+    }
+}
+
 /// THE widening policy this destination honors across a run boundary —
 /// a minimal, DELIBERATE lattice, not the engine's general one
 /// (`rdlt_core::types::widen`): the direction here is catalog type →
@@ -157,20 +177,25 @@ pub(super) fn prefilter(mut image: TableSchema, def: &TableSchema) -> TableSchem
 /// the engine's own version is either value-conditional or measures a
 /// different quantity than a physical ALTER can honor.
 ///
-/// - anything (except `Binary` — see N3 below) → `Utf8`: text is always
-///   a safe destination for any value this connector can already
-///   render (same simplification `sql_type` already makes for `Uuid`).
-/// - anything (except `Binary`) → `Json`: the top of the engine's own
-///   lattice.
-/// - `Binary` → NOTHING, not even `Utf8`/`Json` (N3, MINOR, review
-///   round 2): the engine's own rule is "Binary is textable only via
-///   encodings we refuse to invent silently" (`rdlt_core::types`, the
-///   `(Binary, _) => Json` join arm) — its escalation to `Json` goes
-///   through the library's OWN chosen encoding at shred time. An
-///   ALTER's `CAST` is a different, unchosen encoding, so `Binary` is
-///   excluded as a FROM type entirely; a cross-run `Binary` mismatch
+/// - `Binary` ANYWHERE in the source type ([`has_binary`]) → NOTHING,
+///   not even `Utf8`/`Json` (N3, MINOR, review round 2; widened to
+///   STRUCTURAL in review round 3 after `ScalarList { item: Binary }`
+///   — a real `BLOB[]` column `column_type_of` genuinely produces —
+///   was proven live to fall through the original scalar-only guard
+///   and absorb into `Utf8`/`Json` anyway). The engine's own rule is
+///   "Binary is textable only via encodings we refuse to invent
+///   silently" (`rdlt_core::types`, the `(Binary, _) => Json` join
+///   arm) — its escalation to `Json` goes through the library's OWN
+///   chosen encoding at shred time. An ALTER's `CAST` is a different,
+///   unchosen encoding, so ANY source type carrying `Binary` —
+///   scalar, inside a `ScalarList`, or nested inside a `Struct` field,
+///   at any depth — is excluded; a cross-run mismatch involving it
 ///   SKIPS (see [`prefilter`]) rather than casting through some
 ///   encoding this function never decided on.
+/// - anything ELSE → `Utf8`: text is always a safe destination for any
+///   value this connector can already render (same simplification
+///   `sql_type` already makes for `Uuid`).
+/// - anything else → `Json`: the top of the engine's own lattice.
 /// - `Int64` → `Float64` is DELETED (N1, CRITICAL, review round 2).
 ///   rdlt-core's own lattice only takes this edge after a per-VALUE
 ///   check (`int64_fits_in_f64`, exact only within ±2^53) — the engine
@@ -200,9 +225,9 @@ pub(super) fn prefilter(mut image: TableSchema, def: &TableSchema) -> TableSchem
 /// Everything else is `false` — including the reverse of every rule
 /// above, and anything not named here at all.
 fn is_widening(from: &ColumnType, to: &ColumnType) -> bool {
-    use LogicalType::{Binary, Decimal, Json, Utf8};
+    use LogicalType::{Decimal, Json, Utf8};
 
-    if matches!(from, ColumnType::Scalar { scalar: Binary }) {
+    if has_binary(from) {
         return false;
     }
     if matches!(
@@ -661,6 +686,39 @@ mod tests {
             "Binary -> Json is never a widen either"
         );
 
+        // N3 widened STRUCTURALLY (review round 3): a scalar-only guard
+        // let `ScalarList { item: Binary }` — a real `BLOB[]` column —
+        // fall through to the anything->Utf8/Json absorption rule.
+        // Binary anywhere in the source type is excluded, not just the
+        // bare scalar.
+        assert!(
+            !is_widening(
+                &ColumnType::ScalarList {
+                    item: LogicalType::Binary
+                },
+                &scalar(LogicalType::Utf8)
+            ),
+            "ScalarList{{Binary}} -> Utf8 is never a widen — BLOB[] carries Binary too"
+        );
+        assert!(
+            !is_widening(
+                &ColumnType::ScalarList {
+                    item: LogicalType::Binary
+                },
+                &scalar(LogicalType::Json)
+            ),
+            "ScalarList{{Binary}} -> Json is never a widen either"
+        );
+        assert!(
+            !is_widening(
+                &ColumnType::Struct {
+                    fields: vec![col("payload", scalar(LogicalType::Binary))]
+                },
+                &scalar(LogicalType::Utf8)
+            ),
+            "a Struct carrying a Binary field ANYWHERE inside is excluded too"
+        );
+
         // Reverses and unnamed pairs are false.
         assert!(!is_widening(
             &scalar(LogicalType::Utf8),
@@ -674,6 +732,43 @@ mod tests {
             &scalar(LogicalType::Bool),
             &scalar(LogicalType::Int64)
         ));
+    }
+
+    /// `has_binary` directly, at every depth the exhaustive match
+    /// covers (review round 3): the bare scalar, a `ScalarList` item,
+    /// a `Struct` field, and a `Struct` field nested inside ANOTHER
+    /// `Struct` — plus the negative cases proving it doesn't over-fire.
+    #[test]
+    fn has_binary_finds_binary_at_any_depth() {
+        assert!(has_binary(&scalar(LogicalType::Binary)));
+        assert!(!has_binary(&scalar(LogicalType::Utf8)));
+
+        assert!(has_binary(&ColumnType::ScalarList {
+            item: LogicalType::Binary
+        }));
+        assert!(!has_binary(&ColumnType::ScalarList {
+            item: LogicalType::Int64
+        }));
+
+        assert!(has_binary(&ColumnType::Struct {
+            fields: vec![
+                col("a", scalar(LogicalType::Utf8)),
+                col("b", scalar(LogicalType::Binary)),
+            ]
+        }));
+        assert!(!has_binary(&ColumnType::Struct {
+            fields: vec![col("a", scalar(LogicalType::Utf8))]
+        }));
+
+        // Nested two levels deep.
+        assert!(has_binary(&ColumnType::Struct {
+            fields: vec![col(
+                "outer",
+                ColumnType::Struct {
+                    fields: vec![col("inner", scalar(LogicalType::Binary))]
+                }
+            )]
+        }));
     }
 
     /// F1 (CRITICAL): a narrowing cross-run drift (text image, int
