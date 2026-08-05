@@ -1,5 +1,6 @@
 //! Incremental cursor machinery, one noun per file: `state` is the persisted
-//! resume state (FROZEN JSON) and its Arrow extraction; `tracker` dedups
+//! resume state (versioned wire shape, `format_version`-gated — see its
+//! module docs, 037 US4) and its Arrow extraction; `tracker` dedups
 //! re-fetched boundary rows and emits resume checkpoints; `prepare` turns
 //! validated stream facts + stored state into the ready-to-read plan.
 

@@ -31,9 +31,11 @@ running destination. Auth is exactly one of `oauth2_client_credentials`
 or `bearer`. Without a `storage` block the catalog VENDS scoped object-
 store credentials per table (the default and recommended path); an
 explicit `storage.s3` block overrides it. `catalog.props` passes
-properties through verbatim and WINS over generated ones — including
-credential keys, so anything secret placed there bypasses the Secret
-redaction discipline; prefer the typed auth fields.
+properties through verbatim and wins over generated ones — the
+escape hatch for non-secret keys (e.g. `uri`). The four
+credential-bearing keys (`credential`, `token`, `s3.access-key-id`,
+`s3.secret-access-key`) are refused at validate: `catalog.props` may
+not be used to smuggle a secret past the typed auth fields.
 
 ## Semantics worth knowing
 
@@ -48,6 +50,15 @@ redaction discipline; prefer the typed auth fields.
   redelivery window.
 - Engine types map onto a CLOSED Iceberg table; `json` columns land as
   strings (Iceberg v2 has no JSON type).
+- **A `workdir:` is required.** `publish` commits one table at a time
+  (029 N2) — a mid-publish transient restart with no durable load id
+  would mint a fresh one and re-append rows the first attempt already
+  committed to the tables it reached. The destination declares
+  `requires_durable_identity`, and the engine refuses to start a run
+  against it without a workdir. With the workdir guaranteed, WAL
+  replay under the ORIGINAL load id already converges (redelivery
+  detection reads the snapshot history keyed on that identity), so no
+  publish-internal retry was added on top of the refusal.
 
 ## Testing
 

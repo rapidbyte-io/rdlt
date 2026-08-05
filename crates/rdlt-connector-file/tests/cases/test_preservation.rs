@@ -91,7 +91,7 @@ fn pre_015_cursor_document_parses_and_plans_identically() {
 }
 
 /// The on-disk artifact NAMES and shapes are the persisted-format
-/// contract (LAYOUT_FORMAT_VERSION 1): part-file pattern, state and
+/// contract (LAYOUT_FORMAT_VERSION 2): part-file pattern, state and
 /// commit-log file names keyed by the pipeline scope hash, commit-log
 /// JSON shape.
 #[tokio::test]
@@ -136,16 +136,22 @@ async fn pre_015_artifact_names_and_commit_log_shape_are_frozen() {
     );
 }
 
-/// A commit log written by pre-015 runs keeps driving D3 receipt
-/// dedup: a replayed (load, seq) discards its staged data and
-/// republishes NOTHING.
+/// AMENDED by 037 US4 D1: pre-015 (gen-1) commit logs used to keep
+/// driving D3 receipt dedup transparently — a replayed (load, seq)
+/// would discard its staged data and republish nothing, no matter how
+/// old the log. Layout v2's partition-directory encoding is a
+/// greenfield format break with deliberately NO migration path, so
+/// this SAME pre-015 fixture (format_version 1) is now refused typed
+/// at commit instead: the old cross-version dedup guarantee this test
+/// used to pin is retired by design, not a regression.
 #[tokio::test]
-async fn pre_015_commit_log_fixture_drives_receipt_dedup() {
+async fn pre_015_commit_log_fixture_now_refuses_as_predating_v2() {
     let dir = tempfile::tempdir().expect("tempdir");
     let pipeline = PipelineId::new("pin-pipeline");
     let scope = ident_hash(pipeline.as_str(), 12);
+    let file = format!("_rdlt_commits.{scope}.json");
     std::fs::write(
-        dir.path().join(format!("_rdlt_commits.{scope}.json")),
+        dir.path().join(&file),
         r#"{"format_version": 1, "receipts": [["load-x", 1]]}"#,
     )
     .expect("plant fixture");
@@ -163,15 +169,17 @@ async fn pre_015_commit_log_fixture_drives_receipt_dedup() {
     s.write(&TableName::new("events"), batch_of(&[1, 2, 3]))
         .await
         .expect("write");
-    let receipt = s
+    let err = s
         .commit(commit_meta_for(&pipeline, &load, 1))
         .await
-        .expect("replayed commit returns the prior receipt");
-    assert_eq!(receipt.commit_seq, 1);
-    assert_eq!(
-        destination::testhook::count_rows(&config, "events").expect("count"),
-        0,
-        "a replayed (load, seq) publishes nothing — the pre-015 log governs"
+        .expect_err("a pre-v2 commit log is refused, never silently migrated")
+        .to_string();
+    assert!(
+        err.contains(&format!(
+            "commit log `{file}` format v1 predates this build (v2): the partition-directory \
+             encoding changed; point the destination at a fresh path or delete the old output"
+        )),
+        "{err}"
     );
 }
 
@@ -194,5 +202,5 @@ streams:
     )
     .expect("pre-015 document parses");
     assert_eq!(config.streams.len(), 2);
-    assert!(!config.streams[0].validate);
+    assert_eq!(config.streams[0].validate, Some(false));
 }

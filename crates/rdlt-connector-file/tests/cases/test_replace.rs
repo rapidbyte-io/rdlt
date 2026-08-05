@@ -25,6 +25,11 @@ async fn replace_load(config: &destination::Config, pipeline: &str, load: &str, 
     s.commit(commit_meta_for(&pipeline, &load_id, 1))
         .await
         .expect("commit");
+    // 037 US2 T7 fix round 1: a NEW `dest` per call mints a NEW owner —
+    // without closing, `replace_clears_a_predecessor_of_another_format`'s
+    // second call against the SAME pipeline would be refused by this
+    // call's still-held lease.
+    s.close().await.expect("close");
 }
 
 /// A foreign dataset under the table root — pyarrow and Spark default

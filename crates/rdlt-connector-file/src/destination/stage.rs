@@ -15,7 +15,7 @@ use rdlt_connector_sdk::spi::core::TableName;
 use rdlt_connector_sdk::spi::{DestinationError, ParquetCompression, ParquetOptions, RecordBatch};
 
 use super::DestFormat;
-use crate::destination::layout::{NULL_PARTITION, path_safe};
+use crate::destination::layout::{NULL_PARTITION, encode_partition_value};
 
 /// Build the `WriterProperties` a session writes every part with.
 ///
@@ -118,10 +118,11 @@ fn out_of_range(
 
 /// Split one batch by the partition column, or hand it back whole.
 ///
-/// The slug in each group is the PATH-SAFE rendered value (stored
-/// sanitized; NULL → `__null__`) — one `ArrayFormatter` for the whole
-/// column, hoisted out of the row loop. Group order is deterministic
-/// (BTreeMap) so staged names cannot depend on hash order.
+/// The slug in each group is the INJECTIVELY ENCODED rendered value
+/// (`encode_partition_value`; NULL → `__null__`) — one `ArrayFormatter`
+/// for the whole column, hoisted out of the row loop. Group order is
+/// deterministic (BTreeMap) so staged names cannot depend on hash
+/// order.
 pub(crate) fn split_partitions(
     table: &TableName,
     batch: &RecordBatch,
@@ -150,7 +151,7 @@ pub(crate) fn split_partitions(
             let rendered = formatter.value(row).try_to_string().map_err(|e| {
                 DestinationError::fatal(format!("partition value at row {row}: {e}"))
             })?;
-            path_safe(&rendered)
+            encode_partition_value(&rendered)
         };
         groups.entry(slug).or_default().push(
             u32::try_from(row).map_err(|e| {
@@ -387,7 +388,7 @@ mod tests {
     }
 
     /// No partitioning = one whole group; partitioning groups rows by
-    /// the sanitized value, NULL under `__null__`, deterministic order.
+    /// the encoded value, NULL under `__null__`, deterministic order.
     #[test]
     fn the_split_groups_by_sanitized_value_with_null_partition() {
         let table = TableName::new("events");
@@ -399,7 +400,7 @@ mod tests {
 
         let split = split_partitions(&table, &b, Some("region")).expect("split");
         let names: Vec<&str> = split.iter().map(|(s, _)| s.as_deref().unwrap()).collect();
-        assert_eq!(names, vec!["__null__", "eu", "us_east"]);
+        assert_eq!(names, vec!["__null__", "eu", "us%2Feast"]);
         let rows: Vec<usize> = split.iter().map(|(_, b)| b.num_rows()).collect();
         assert_eq!(rows, vec![1, 2, 1]);
     }

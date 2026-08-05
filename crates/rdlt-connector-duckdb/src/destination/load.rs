@@ -26,7 +26,10 @@ use rdlt_connector_sqlcore::protocol::{
 };
 use rdlt_connector_sqlcore::{DestinationOptions, MergeDialect as _, column_list, names, root_of};
 
-use super::client::{Db, classify, is_constraint_violation};
+use super::catalog;
+use super::client::{
+    Db, classify, index_dependency_diagnosis, is_constraint_violation, is_index_dependency_error,
+};
 use super::dialect::DuckDialect;
 use super::schema::{merge_ddl, quote, stage_name, table_ddl};
 
@@ -331,11 +334,63 @@ impl Backend for Load {
                 }
             }
         }
-        for sql in table_ddl(schema, self.previous.get(&schema.table)) {
-            self.conn.execute_batch(&sql).map_err(classify)?;
+        // The widen planner's `previous` is session memory FIRST — a
+        // within-run rule — falling back to the catalog image ONLY when
+        // this session has never ensured the table (037 US5, 031's S3
+        // record): a fresh session otherwise sees `previous = None` and
+        // plans no widen at all, so a cross-run type change lands only
+        // no-op DDL and the appender then rejects the mismatched batch.
+        // The image feeds the WIDEN PLANNER ONLY — the drop/reorder
+        // guard above already ran against `self.previous` alone, so
+        // cross-run drift-by-name stays legal. `prefilter` (2026-08
+        // review round 1, F1/F2) rewrites the image FIRST so the raw
+        // types-differ comparison below only ever sees a genuine widen —
+        // never a same-physical-type rendering (Uuid/Utf8) and never a
+        // cross-run narrowing/incompatible drift.
+        let image = if self.previous.contains_key(&schema.table) {
+            None
+        } else {
+            catalog::live_schema(&self.conn, schema)?.map(|image| catalog::prefilter(image, schema))
+        };
+        let planning_previous = self.previous.get(&schema.table).or(image.as_ref());
+
+        // Computed up front so a widen that lands on the merge key can
+        // drop its UNIQUE index before the ALTER that would otherwise
+        // be refused (Task 15 probe: DuckDB's `SET DATA TYPE` refuses a
+        // column a UNIQUE ART index depends on — "Cannot change the
+        // type of this column: an index depends on it!"). Any
+        // validation error here surfaces at its ORIGINAL position below
+        // (after `table_ddl` runs), unchanged from before this feature:
+        // this early call only ever reads its `Ok` arm.
+        let merge_statements = merge_ddl(&self.options, schema, mode);
+        if let Ok(statements) = &merge_statements {
+            for drop_sql in catalog::pre_alter_index_drops(planning_previous, schema, statements) {
+                self.conn.execute_batch(&drop_sql).map_err(classify)?;
+            }
         }
-        let statements = merge_ddl(&self.options, schema, mode)
-            .map_err(|e| DestinationError::fatal(e.to_string()))?;
+
+        for sql in table_ddl(schema, planning_previous) {
+            if let Err(e) = self.conn.execute_batch(&sql) {
+                // A PLAIN index (identity, delete_insert/scd2 key
+                // columns, merge_scope) is not pre-dropped — only the
+                // upsert arbiter is (above) — so a widen landing on one
+                // still hits DuckDB's raw refusal. Name it instead of
+                // surfacing the bare catalog error (2026-08 review
+                // round 1, F4).
+                if is_index_dependency_error(&e) {
+                    return Err(DestinationError::fatal(index_dependency_diagnosis(
+                        &sql,
+                        &e.to_string(),
+                    )));
+                }
+                return Err(classify(e));
+            }
+        }
+        // The recreate is the SAME renderer merge_ddl already runs on
+        // every ensure (`CREATE UNIQUE INDEX IF NOT EXISTS` in
+        // schema.rs) — the drop above just clears the way for it; no
+        // second copy of the index DDL is written here.
+        let statements = merge_statements.map_err(|e| DestinationError::fatal(e.to_string()))?;
         for (sql, unique_index) in statements {
             if let Err(e) = self.conn.execute_batch(&sql) {
                 // The duplicate-key diagnosis: only a genuine

@@ -179,12 +179,13 @@ pub(crate) fn merge_ddl(
                     // unique indexes with the PLAIN formula; drop that
                     // name first so an upgraded database doesn't carry
                     // two identical unique ART indexes forever. A
-                    // persisted-format migration — keep it.
+                    // persisted-format migration — keep it. Text
+                    // byte-identical to before; only the renderer moved
+                    // to `names::drop_index_sql` so `load.rs`'s
+                    // pre-ALTER legacy-name drop (037 US5 fix round 2,
+                    // F5) reuses it instead of a third hand-written copy.
                     out.push((
-                        format!(
-                            "DROP INDEX IF EXISTS {}",
-                            quote(&names::index_name(false, table, &spec.columns))
-                        ),
+                        names::drop_index_sql(false, table, &spec.columns, quote),
                         None,
                     ));
                 }

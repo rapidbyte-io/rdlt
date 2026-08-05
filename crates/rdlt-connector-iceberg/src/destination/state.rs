@@ -24,6 +24,15 @@ pub(super) const PROP_STATE_PREFIX: &str = "rdlt.state.";
 /// The marker table every pipeline's state rides on.
 pub(super) const STATE_TABLE: &str = "_rdlt_state";
 
+/// The pipeline scope hash width EVERY build before 037 wrote state
+/// under. Exists ONLY to detect-and-refuse pre-widen state (037 D1) —
+/// this is a refusal gate, not a migration: a pipeline whose state
+/// still lives under this narrower key is never silently adopted or
+/// rewritten to the current width, only recognized and reported so
+/// the operator can decide (see `load.rs`'s `SCOPE_HASH_LEN` doc for
+/// the widen this guards).
+pub(super) const LEGACY_SCOPE_HASH_LEN: usize = 12;
+
 /// The one key composition both sides call — drift here would
 /// silently strand state across a resume.
 fn state_key(scope: &str) -> String {
@@ -121,6 +130,42 @@ pub(super) async fn read_state_doc(
     }
 }
 
+/// Remove a scope's state property. TEST-ONLY: production never
+/// deletes a state property (a load only ever `write_state`s), this
+/// exists so a live cell can relocate a pipeline's state to the
+/// legacy key (`testhook::move_state_to_legacy_key`) without leaving
+/// BOTH the current and legacy properties behind — which would mask
+/// the very refusal gate under test.
+pub(super) async fn remove_state(
+    catalog: &Arc<dyn Catalog>,
+    namespace: &NamespaceIdent,
+    scope: &str,
+) -> Result<(), DestinationError> {
+    let ident = TableIdent::new(namespace.clone(), STATE_TABLE.to_owned());
+    let context = format!("state table `{ident}`");
+    let table = catalog
+        .load_table(&ident)
+        .await
+        .map_err(|e| classify(&context, e))?;
+    let key = state_key(scope);
+    commit_with_retry(
+        catalog,
+        &ident,
+        &context,
+        "property commit",
+        scope,
+        table,
+        |current| {
+            let tx = Transaction::new(current);
+            let action = tx.update_table_properties().remove(key.clone());
+            let tx = action.apply(tx).map_err(|e| classify(&context, e))?;
+            Ok(Plan::Commit(Box::new(tx)))
+        },
+    )
+    .await
+    .map(|_| ())
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -145,6 +190,27 @@ mod tests {
         );
         assert_ne!(state_key("scope-a"), state_key("scope-b"));
         assert!(state_key("scope-a").starts_with(PROP_STATE_PREFIX));
+    }
+
+    /// The legacy scope width is frozen at 12 — the pre-037 width — and
+    /// composes through the SAME `state_key`, landing on a DIFFERENT
+    /// property than the current 32-hex scope for the same pipeline
+    /// name; a regression collapsing the two widths would make the
+    /// legacy-key refusal gate (037 D1) probe the very key it is
+    /// meant to detect stale state under.
+    #[test]
+    fn the_legacy_scope_width_is_frozen_and_composes_a_distinct_key() {
+        use rdlt_connector_sdk::spi::core::naming::ident_hash;
+
+        use super::super::load::SCOPE_HASH_LEN;
+
+        assert_eq!(LEGACY_SCOPE_HASH_LEN, 12);
+        let pipeline = "some-pipeline";
+        let legacy = ident_hash(pipeline, LEGACY_SCOPE_HASH_LEN);
+        let current = ident_hash(pipeline, SCOPE_HASH_LEN);
+        assert_eq!(legacy.len(), 12, "{legacy}");
+        assert_eq!(current.len(), 32, "{current}");
+        assert_ne!(state_key(&legacy), state_key(&current));
     }
 
     /// The property-commit exhaustion is reachable, typed, and names

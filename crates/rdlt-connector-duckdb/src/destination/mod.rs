@@ -1,5 +1,6 @@
 //! The DuckDB destination: one shared database instance, sdk-shelled.
 
+mod catalog;
 mod client;
 mod config;
 mod connector;

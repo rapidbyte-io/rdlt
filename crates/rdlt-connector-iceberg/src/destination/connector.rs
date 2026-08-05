@@ -52,6 +52,10 @@ impl DestinationConnector for Iceberg {
             .with_scalar_lists(true)
             .with_json_type(false)
             .with_decimal(true)
+            // Non-atomic multi-table publish (029 N2): a mid-publish
+            // transient restart without a workdir mints a fresh load id
+            // and re-appends rows the first attempt already committed.
+            .with_requires_durable_identity(true)
             .with_ident_rules(IdentRules::default())
     }
 
@@ -115,6 +119,37 @@ pub mod testhook {
             super::super::load::SCOPE_HASH_LEN,
         )
     }
+
+    /// TEST-ONLY: relocate a pipeline's state property from the
+    /// current 32-hex scope key to the pre-037 12-hex legacy key, and
+    /// remove it from the current key — simulating a warehouse whose
+    /// only state predates the 037 scope-hash widen, so the
+    /// legacy-key refusal gate (037 D1) has something real to refuse
+    /// against.
+    pub async fn move_state_to_legacy_key(
+        config: &Config,
+        namespace: &[String],
+        pipeline: &str,
+    ) -> Result<(), DestinationError> {
+        let catalog = client::connect(config).await?;
+        let namespace = NamespaceIdent::from_vec(namespace.to_vec())
+            .map_err(|e| DestinationError::fatal(format!("namespace: {e}")))?;
+        let scope = scope_of(pipeline);
+        let legacy_scope = rdlt_connector_sdk::spi::core::naming::ident_hash(
+            pipeline,
+            super::super::state::LEGACY_SCOPE_HASH_LEN,
+        );
+        let raw = state::read_state_doc(&catalog, &namespace, &scope)
+            .await?
+            .ok_or_else(|| {
+                DestinationError::fatal(format!(
+                    "no state at the current scope key for pipeline `{pipeline}` — nothing to \
+                     relocate to the legacy key"
+                ))
+            })?;
+        state::write_state(&catalog, &namespace, &legacy_scope, raw).await?;
+        state::remove_state(&catalog, &namespace, &scope).await
+    }
 }
 
 #[cfg(test)]
@@ -141,6 +176,7 @@ mod tests {
         assert!(caps.structs && caps.scalar_lists);
         assert!(!caps.json_type);
         assert!(caps.decimal);
+        assert!(caps.requires_durable_identity);
     }
 
     /// The registry is the three frozen ids, macro-armed in their

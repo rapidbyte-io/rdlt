@@ -7,8 +7,10 @@
 use futures::StreamExt as _;
 use object_store::ObjectStore as _;
 use object_store::path::Path as Key;
+use object_store::{PutMode, PutOptions, UpdateVersion};
 use rdlt_connector_sdk::spi::{DestinationError, SourceError};
 
+use super::kind::{CreateDoc, DocVersion, StaleDocVersion};
 use super::options::S3Options;
 use crate::source::cursor::FileMeta;
 
@@ -323,6 +325,100 @@ impl S3Location {
             Err(object_store::Error::NotFound { .. }) => Ok(None),
             Err(e) => Err(dest_failure(e)),
             Ok(body) => Ok(Some(body.bytes().await.map_err(dest_failure)?.to_vec())),
+        }
+    }
+
+    /// Exclusive create: `PutMode::Create`. `Error::AlreadyExists` here
+    /// is the DETERMINED outcome of a conditional put this call
+    /// deliberately issues — not the ambiguous "conflicting operation
+    /// in progress, try again" case `dest_failure`'s shared
+    /// recoverability rule exists to retry (rulebook in `store.rs`,
+    /// which never sees a conditional request from anywhere else in
+    /// this crate). So it is matched BEFORE that shared classifier and
+    /// handed back as data, never as an error.
+    pub(crate) async fn create_doc_exclusive(
+        &self,
+        name: &str,
+        bytes: Vec<u8>,
+    ) -> Result<CreateDoc, DestinationError> {
+        match self
+            .store
+            .put_opts(
+                &self.object_key(name),
+                bytes::Bytes::from(bytes).into(),
+                PutOptions::from(PutMode::Create),
+            )
+            .await
+        {
+            Ok(put) => Ok(CreateDoc::Created(DocVersion::S3(UpdateVersion::from(put)))),
+            Err(object_store::Error::AlreadyExists { .. }) => Ok(CreateDoc::AlreadyExists),
+            Err(e) => Err(dest_failure(e)),
+        }
+    }
+
+    /// One document's bytes plus the CAS handle a later
+    /// `replace_doc_if` needs; absence is `None`.
+    pub(crate) async fn read_doc_versioned(
+        &self,
+        name: &str,
+    ) -> Result<Option<(Vec<u8>, DocVersion)>, DestinationError> {
+        match self.store.get(&self.object_key(name)).await {
+            Err(object_store::Error::NotFound { .. }) => Ok(None),
+            Err(e) => Err(dest_failure(e)),
+            Ok(result) => {
+                let version = UpdateVersion {
+                    e_tag: result.meta.e_tag.clone(),
+                    version: result.meta.version.clone(),
+                };
+                let bytes = result.bytes().await.map_err(dest_failure)?;
+                Ok(Some((bytes.to_vec(), DocVersion::S3(version))))
+            }
+        }
+    }
+
+    /// CAS replace: `PutMode::Update`. `Error::Precondition` here is
+    /// the same kind of determined outcome as `AlreadyExists` above —
+    /// this call's own conditional request lost the race, which is
+    /// exactly what a lease's stale heartbeat needs to learn — so
+    /// instead of riding the shared recoverability rule (which would
+    /// call it worth retrying, the right answer for an UNconditional
+    /// put but not this one), it carries [`StaleDocVersion`] as the
+    /// `DestinationError`'s SOURCE. That is what makes it a genuinely
+    /// TYPED outcome the caller can [`super::kind::is_stale_version`]-
+    /// check, rather than a fatal error indistinguishable from any
+    /// other one except by reading its rendered text.
+    pub(crate) async fn replace_doc_if(
+        &self,
+        name: &str,
+        bytes: Vec<u8>,
+        version: UpdateVersion,
+    ) -> Result<DocVersion, DestinationError> {
+        match self
+            .store
+            .put_opts(
+                &self.object_key(name),
+                bytes::Bytes::from(bytes).into(),
+                PutOptions::from(PutMode::Update(version)),
+            )
+            .await
+        {
+            Ok(put) => Ok(DocVersion::S3(UpdateVersion::from(put))),
+            Err(object_store::Error::Precondition { .. }) => {
+                Err(DestinationError::fatal(StaleDocVersion {
+                    name: name.to_owned(),
+                }))
+            }
+            Err(e) => Err(dest_failure(e)),
+        }
+    }
+
+    /// Delete where absence already counts as done — the lease's
+    /// best-effort release must not fail just because a takeover
+    /// already removed the document.
+    pub(crate) async fn delete_doc(&self, name: &str) -> Result<(), DestinationError> {
+        match self.store.delete(&self.object_key(name)).await {
+            Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
+            Err(e) => Err(dest_failure(e)),
         }
     }
 }

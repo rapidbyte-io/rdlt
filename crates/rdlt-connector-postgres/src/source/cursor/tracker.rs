@@ -36,8 +36,10 @@ pub(crate) struct Tracker {
     /// True until a row strictly beyond the stored watermark is seen.
     in_boundary: bool,
     last_value: Option<Scalar>,
-    /// Keys of rows sharing `last_value` (the current boundary run).
-    run_keys: Vec<String>,
+    /// Keys of rows sharing `last_value` (the current boundary run). Each
+    /// key is a component list, not a joined string (cursor format v2, 037
+    /// US4).
+    run_keys: Vec<Vec<Option<String>>>,
     /// (watermark, key count) at the last emitted checkpoint — dedup of
     /// identical consecutive checkpoints.
     emitted: Option<(Scalar, usize)>,
@@ -64,14 +66,24 @@ impl Tracker {
         }
     }
 
-    /// KNOWN SHARED LIMIT (generation 1 identical): neither the `|` join
-    /// separator nor the `∅` NULL sentinel is escaped, so a composite key
-    /// whose rendered values contain those characters can collide two
-    /// distinct rows AT THE SAME WATERMARK and drop one as a duplicate on
-    /// resume. The encoding is PERSISTED in cursor state, so fixing it is a
-    /// state-format change, not a local edit — recorded in the plan's
-    /// review log for the owner, not silently altered here.
-    fn row_key(&self, batch: &arrow_array::RecordBatch, row: usize) -> Result<String, SourceError> {
+    /// Render this row's key as an ordered COMPONENT LIST — one entry per
+    /// key column, `None` for SQL NULL — rather than a joined string (cursor
+    /// format v2, 037 US4). Generation 1 joined parts with `|` and a `∅`
+    /// NULL sentinel, neither escaped: a composite key whose rendered values
+    /// themselves contained those characters could collide two distinct
+    /// rows AT THE SAME WATERMARK and drop one as a duplicate on resume
+    /// (`separator_shaped_values_no_longer_collide` below is the red-proof).
+    /// A component list has no such collapsing step, so it cannot alias.
+    ///
+    /// The PK-less arm renders a single-element list `[Some(<blake3 hex>)]`
+    /// instead of a component list: unambiguous against the PK arm because
+    /// a table's `key_columns` is either `Some` or `None` for its entire
+    /// cursor — the two arms never coexist on one persisted state.
+    fn row_key(
+        &self,
+        batch: &arrow_array::RecordBatch,
+        row: usize,
+    ) -> Result<Vec<Option<String>>, SourceError> {
         use arrow_array::Array;
         match &self.spec.key_columns {
             Some(indices) => {
@@ -79,12 +91,12 @@ impl Tracker {
                 for &index in indices {
                     let column = batch.column(index);
                     if column.is_null(row) {
-                        parts.push("\u{2205}".to_owned());
+                        parts.push(None);
                     } else {
-                        parts.push(self.render_cell(column, row)?);
+                        parts.push(Some(self.render_cell(column, row)?));
                     }
                 }
-                Ok(parts.join("|"))
+                Ok(parts)
             }
             None => {
                 // Key-less table: hash the whole row's canonical rendering.
@@ -97,7 +109,7 @@ impl Tracker {
                         hasher.update(b"\x00");
                     }
                 }
-                Ok(hasher.finalize().to_hex().to_string())
+                Ok(vec![Some(hasher.finalize().to_hex().to_string())])
             }
         }
     }
@@ -340,11 +352,40 @@ mod tests {
         }
     }
 
+    /// Render a single row's key over an all-text, all-key-column batch —
+    /// the seam `separator_shaped_values_no_longer_collide` uses to compare
+    /// how two different column splits of the same characters render.
+    fn render_key(values: &[&str]) -> Vec<Option<String>> {
+        let fields: Vec<Field> = (0..values.len())
+            .map(|i| Field::new(format!("c{i}"), DataType::Utf8, false))
+            .collect();
+        let columns: Vec<arrow_array::ArrayRef> = values
+            .iter()
+            .map(|v| Arc::new(StringArray::from(vec![*v])) as arrow_array::ArrayRef)
+            .collect();
+        let batch =
+            RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).expect("batch builds");
+        let mut key_spec = spec(None);
+        key_spec.key_columns = Some((0..values.len()).collect());
+        let tracker = Tracker::new(key_spec);
+        tracker.row_key(&batch, 0).expect("row key renders")
+    }
+
+    #[test]
+    fn separator_shaped_values_no_longer_collide() {
+        // v1 joined ("a|b", "c") and ("a", "b|c") to the SAME "a|b|c" and
+        // dropped one as a duplicate on resume. v2 keys are component
+        // lists, so the two renderings differ.
+        let k1 = render_key(&["a|b", "c"]);
+        let k2 = render_key(&["a", "b|c"]);
+        assert_ne!(k1, k2, "components are no longer flattened into one string");
+    }
+
     #[test]
     fn boundary_rows_dedup_and_watermark_advances() {
         let stored = State {
             watermark: Scalar::Int(5),
-            boundary_keys: vec!["5".into()],
+            boundary_keys: vec![vec![Some("5".into())]],
         };
         let mut tracker = Tracker::new(spec(Some(stored)));
         // Row 5 was delivered last run (its key is stored) — dropped; 6 and
@@ -356,11 +397,11 @@ mod tests {
         assert_eq!(tracker.deduped_rows, 1);
         let checkpoint = checkpoint.expect("checkpoint");
         assert_eq!(checkpoint.watermark, Scalar::Int(7));
-        assert_eq!(checkpoint.boundary_keys, ["7"]);
+        assert_eq!(checkpoint.boundary_keys, [vec![Some("7".to_string())]]);
         // Final state under a closed boundary keeps the keys.
         assert_eq!(
             tracker.final_state(true).expect("state").boundary_keys,
-            ["7"]
+            [vec![Some("7".to_string())]]
         );
         // …and under an open boundary strips them.
         assert!(

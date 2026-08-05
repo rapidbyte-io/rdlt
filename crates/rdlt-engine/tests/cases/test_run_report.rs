@@ -117,6 +117,134 @@ async fn report_counters_are_exact_and_clean_runs_emit_no_discards() {
     }
 }
 
+/// 037 US2 T7 fix round 1: the engine calls `LoadSession::close`
+/// exactly once, on the SUCCESS path — after the run's last commit,
+/// never per-open and never on failure (`MemoryDestination`'s default
+/// close is a no-op, but the counter proves the CALL happened, not
+/// just that nothing broke). `dest.opens()` alongside it is the
+/// existing instrumentation this pairs with — one session, one close.
+#[tokio::test]
+async fn a_successful_run_closes_its_session_exactly_once() {
+    let dest = MemoryDestination::new();
+    let engine = Engine::new(
+        EngineConfig::new("closes"),
+        three_batch_source(),
+        dest.clone(),
+    );
+    engine.run().await.expect("run");
+    assert_eq!(dest.opens(), 1, "one session opened");
+    assert_eq!(
+        dest.closes(),
+        1,
+        "the session closes exactly once, on the success path"
+    );
+}
+
+/// A destination wrapping `MemoryDestination` whose session `close`
+/// ALWAYS fails, classified TRANSIENT by the destination itself — the
+/// exact shape M4 exists to defeat: a destination has no way to know
+/// its own close failure can never be helped by re-running a load that
+/// already committed everything, so a naive
+/// `classify_dest_error`-style forward (which trusts that
+/// classification) would make the run driver retry a fully-committed
+/// load.
+#[derive(Clone)]
+struct CloseFailsDest {
+    inner: MemoryDestination,
+}
+
+#[async_trait::async_trait]
+impl rdlt_connector::Destination for CloseFailsDest {
+    fn spec(&self) -> rdlt_connector::ConnectorSpec {
+        self.inner.spec()
+    }
+    fn capabilities(&self) -> rdlt_connector::DestinationCapabilities {
+        self.inner.capabilities()
+    }
+    async fn open(
+        &self,
+        ctx: rdlt_connector::OpenContext,
+    ) -> Result<Box<dyn rdlt_connector::LoadSession>, rdlt_connector::DestinationError> {
+        Ok(Box::new(CloseFailsSession {
+            inner: self.inner.open(ctx).await?,
+        }))
+    }
+}
+
+struct CloseFailsSession {
+    inner: Box<dyn rdlt_connector::LoadSession>,
+}
+
+#[async_trait::async_trait]
+impl rdlt_connector::LoadSession for CloseFailsSession {
+    async fn ensure_table(
+        &mut self,
+        schema: &rdlt_core::TableSchema,
+        mode: &rdlt_core::WriteMode,
+    ) -> Result<(), rdlt_connector::DestinationError> {
+        self.inner.ensure_table(schema, mode).await
+    }
+    async fn write(
+        &mut self,
+        table: &rdlt_core::TableName,
+        batch: rdlt_connector::RecordBatch,
+    ) -> Result<(), rdlt_connector::DestinationError> {
+        self.inner.write(table, batch).await
+    }
+    async fn commit(
+        &mut self,
+        meta: rdlt_connector::CommitMeta,
+    ) -> Result<rdlt_connector::CommitReceipt, rdlt_connector::DestinationError> {
+        self.inner.commit(meta).await
+    }
+    async fn read_state(
+        &mut self,
+        pipeline: &rdlt_core::PipelineId,
+    ) -> Result<Option<rdlt_core::StateDoc>, rdlt_connector::DestinationError> {
+        self.inner.read_state(pipeline).await
+    }
+    async fn close(&mut self) -> Result<(), rdlt_connector::DestinationError> {
+        self.inner.close().await?;
+        Err(rdlt_connector::DestinationError::transient(
+            "injected close failure",
+        ))
+    }
+}
+
+/// 037 US2 fix round 2, M4: a close failure on the SUCCESS path is
+/// ALWAYS non-retryable, regardless of how the destination itself
+/// classified it (here, TRANSIENT — the shape most likely to fool a
+/// naive forward), and its message tells the operator the data is
+/// safe.
+#[tokio::test]
+async fn a_close_failure_after_success_is_never_retried_and_says_data_is_durable() {
+    let dest = CloseFailsDest {
+        inner: MemoryDestination::new(),
+    };
+    let err = Engine::new(EngineConfig::new("close-fails"), three_batch_source(), dest)
+        .run()
+        .await
+        .expect_err("the close failure must surface as the run's error");
+    assert!(
+        matches!(
+            err,
+            rdlt_core::RdltError::Destination {
+                retryable: false,
+                ..
+            }
+        ),
+        "a close failure must be non-retryable even though the destination classified it \
+         transient: {err:?}"
+    );
+    assert!(
+        err.to_string().contains(
+            "session close failed AFTER all commits were durable (the data is committed): "
+        ),
+        "{err}"
+    );
+    assert!(err.to_string().contains("injected close failure"), "{err}");
+}
+
 /// A destination that records the `CommitCounters` it is handed.
 ///
 /// `CommitMeta.counters` is the per-commit-unit accounting the engine publishes
@@ -505,7 +633,8 @@ async fn read_commit_and_heartbeat_events_hold_their_order() {
     }
     assert!(!started.is_empty(), "commits announce their start");
 
-    // Liveness: the ticker's first beat is immediate, so even a
+    // Liveness: the first beat is emitted synchronously at wiring
+    // time (not left to the spawned ticker's first poll), so even a
     // fast run carries at least one.
     assert!(
         seen.iter()

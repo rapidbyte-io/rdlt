@@ -9,7 +9,7 @@ use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{MemoryBatch, MemorySource, MemoryStream};
 use serde_json::json;
 
-use super::common::CatalogFixture;
+use super::common::{CatalogFixture, minimal_doc};
 
 fn one_batch(rows: Vec<serde_json::Value>) -> MemorySource {
     MemorySource::new(vec![MemoryStream::new(
@@ -68,6 +68,79 @@ async fn a_resumed_pipeline_republishes_nothing() {
     assert!(
         raw.contains("ice-resume-v2"),
         "the doc names its pipeline: {raw}"
+    );
+}
+
+/// 037 D1, live: state stranded under the pre-037 12-hex scope key
+/// REFUSES typed rather than being silently treated as a fresh
+/// pipeline. Run 1 writes state at the current 32-hex key the normal
+/// way; the state property is then relocated to the legacy key
+/// (`testhook::move_state_to_legacy_key`, simulating a warehouse never
+/// touched since the widen); run 2 loads two DIFFERENT rows (3, 4) —
+/// it must refuse with the frozen spelling before writing anything,
+/// and the snapshot oracle below proves run 2 published NOTHING: the
+/// total stays at run 1's 2 rows, not 4.
+///
+/// Red-proved against the unfixed code: with the legacy-key probe
+/// absent, `read_state` sees nothing at the 32-hex key, agrees this is
+/// a first run, and the engine runs run 2 to completion as an ordinary
+/// Append — its two rows (3, 4) land on top of run 1's already-
+/// committed two (4 total across two snapshots), and no refusal ever
+/// surfaces.
+#[tokio::test]
+async fn state_stranded_under_the_legacy_scope_key_refuses_typed() {
+    let Some(fixture) = CatalogFixture::start().await else {
+        return;
+    };
+    let namespace = "legacy_scope_v2";
+    let doc = fixture.doc(namespace);
+    let pipeline = "ice-legacy-scope";
+    let workdir = tempfile::tempdir().expect("workdir");
+
+    Engine::new(
+        EngineConfig::new(pipeline).with_workdir(workdir.path().join("wal1")),
+        one_batch(vec![json!({"id": 1}), json!({"id": 2})]),
+        Shell::from_value(doc.clone()).expect("valid"),
+    )
+    .run()
+    .await
+    .expect("run 1 settles and writes state at the current 32-hex key");
+
+    use rdlt_connector_iceberg::destination::{Config, testhook};
+    use rdlt_connector_sdk::config::Document;
+    let config = Config::from_value(doc.clone()).expect("valid");
+    testhook::move_state_to_legacy_key(&config, &[namespace.to_owned()], pipeline)
+        .await
+        .expect("state relocated to the legacy 12-hex key");
+
+    let err = Engine::new(
+        EngineConfig::new(pipeline).with_workdir(workdir.path().join("wal2")),
+        one_batch(vec![json!({"id": 3}), json!({"id": 4})]),
+        Shell::from_value(doc).expect("valid"),
+    )
+    .run()
+    .await
+    .expect_err("run 2 must refuse rather than silently re-loading from zero");
+    let text = format!("{err}");
+    // A distinctive substring, not the full frozen string — the offline
+    // suite (load.rs's `frozen_legacy_refusal`) pins the exact wording;
+    // this live cell only needs to prove the RIGHT refusal fired.
+    assert!(
+        text.contains(&format!(
+            "state for pipeline `{pipeline}` predates this build"
+        )) && text.contains("the pipeline scope key widened (12-hex to 32-hex)")
+            && text.contains("remove the stale `rdlt.state."),
+        "{text}"
+    );
+
+    let summaries = fixture.snapshot_summaries(namespace, "events").await;
+    let total: u64 = summaries
+        .iter()
+        .filter_map(|s| s.get("added-records").and_then(|v| v.parse::<u64>().ok()))
+        .sum();
+    assert_eq!(
+        total, 2,
+        "run 2 refused before writing anything — no snapshot from run 2 exists: {summaries:?}"
     );
 }
 
@@ -208,4 +281,25 @@ async fn replace_is_refused_against_the_live_catalog() {
             && text.contains("use Append, or a SQL destination for replace semantics"),
         "{text}"
     );
+}
+
+/// OFFLINE (no fixture, no catalog reachable): the engine refuses a
+/// no-workdir run against this destination before it ever connects.
+/// `capabilities()` is a synchronous, pre-connect call on the
+/// connector (029 N2 / 037 US3); `validate_streams` reads it and
+/// returns before `Destination::open` — so this pin exercises the real
+/// `Iceberg` connector's declared `requires_durable_identity` and the
+/// engine's refusal with no live catalog at all.
+#[tokio::test]
+async fn a_no_workdir_run_is_refused_before_any_catalog_connection() {
+    let err = Engine::new(
+        EngineConfig::new("ice-no-workdir"),
+        one_batch(vec![json!({"id": 1})]),
+        Shell::from_value(minimal_doc()).expect("valid"),
+    )
+    .run()
+    .await
+    .expect_err("N2: no workdir means duplication on mid-publish retry");
+    let text = format!("{err}");
+    assert!(text.contains("requires a workdir"), "{text}");
 }

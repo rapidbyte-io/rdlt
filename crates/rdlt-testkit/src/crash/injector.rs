@@ -148,4 +148,44 @@ impl LoadSession for CrashSession {
     ) -> Result<Option<StateDoc>, DestinationError> {
         self.inner.read_state(pipeline).await
     }
+
+    /// Forward to the wrapped session (037 US2 fix round 2, I2). A
+    /// decorator that silently accepted the trait's default `Ok(())`
+    /// here instead would be a real bug for any inner destination whose
+    /// `close` DOES something (the file destination's lease release,
+    /// in particular): every crash-sweep run wrapping such a
+    /// destination would leak it, since the wrapper — not the inner
+    /// session — is what the engine actually holds and calls `close`
+    /// on.
+    async fn close(&mut self) -> Result<(), DestinationError> {
+        self.inner.close().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rdlt_connector::core::LoadId;
+
+    /// 037 US2 fix round 2, I2: `close` must forward to the wrapped
+    /// session, not silently resolve to the trait's own default. Wraps
+    /// `MemoryDestination`, whose `closes()` counter (037 US2 T7 fix
+    /// round 1) is exactly the cheap, already-in-crate observation this
+    /// needs — no fault ever fires (`BeforeWrite` at an unreachable
+    /// count), so this isolates the forwarding alone.
+    #[tokio::test]
+    async fn close_forwards_to_the_wrapped_session() {
+        let memory = crate::MemoryDestination::new();
+        let crash = CrashDestination::new(memory.clone(), FaultPoint::BeforeWrite(u64::MAX));
+        let mut session = crash
+            .open(OpenContext::new(PipelineId::new("p"), LoadId::new("l")))
+            .await
+            .expect("open");
+        session.close().await.expect("close");
+        assert_eq!(
+            memory.closes(),
+            1,
+            "the wrapped session's close must have actually run"
+        );
+    }
 }

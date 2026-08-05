@@ -7,6 +7,7 @@ use rdlt_connector_sdk::config::Document;
 use rdlt_engine::{Engine, EngineConfig};
 
 use super::common::local_dest;
+use super::s3;
 use super::s3::S3Fixture;
 
 fn s3_source(fixture: &S3Fixture, pattern: &str) -> source::Config {
@@ -105,6 +106,78 @@ async fn the_destination_publishes_and_clears_its_staging() {
     );
 }
 
+/// 037 US2 T8: the headliner shape
+/// (`a_second_session_of_the_same_pipeline_is_refused_not_destroyed` in
+/// `test_exactly_once.rs`) proved live against the REAL object-store
+/// arm — the S3 arm's CAS-replace is a genuinely different code path
+/// from the local arm's exclusive-unlink dance (lease.rs's module doc,
+/// step 4), so the refusal needs its own live proof, not just a
+/// same-shape assumption from the local cell. Two connector instances
+/// (two distinct owner tokens) open against the same pipeline over the
+/// same prefix; the second is refused while the first still holds. The
+/// refused open must not have damaged the holder's staging either: the
+/// first session goes on to commit and publish exactly as if the
+/// second attempt had never happened.
+#[tokio::test]
+async fn a_second_session_is_refused_live_against_s3_and_the_first_still_publishes() {
+    use rdlt_connector_sdk::spi::core::{LoadId, PipelineId, TableName, WriteMode};
+    use rdlt_connector_sdk::spi::{Destination, OpenContext};
+    use rdlt_testkit::{batch_of, commit_meta_for, schema_for};
+
+    let Some(fixture) = S3Fixture::start().await else {
+        return;
+    };
+
+    let dest_config = s3_dest(&fixture, "lease-lake");
+    let pipeline = PipelineId::new("s3-lease-refusal");
+    let first_load = LoadId::new("load-a");
+
+    let first_dest = destination::Shell::new(dest_config.clone()).expect("valid");
+    let mut first = first_dest
+        .open(OpenContext::new(pipeline.clone(), first_load.clone()))
+        .await
+        .expect("first session acquires the lease");
+    first
+        .ensure_table(&schema_for("events"), &WriteMode::Append)
+        .await
+        .expect("ensure");
+    first
+        .write(&TableName::new("events"), batch_of(&[1, 2]))
+        .await
+        .expect("write");
+
+    // A SECOND connector instance (a distinct owner) — the shape a
+    // second `rdlt run` of the same pipeline takes — must be refused
+    // while the first session is still live.
+    let second_dest = destination::Shell::new(dest_config.clone()).expect("valid");
+    let second = second_dest
+        .open(OpenContext::new(pipeline.clone(), LoadId::new("load-b")))
+        .await;
+    let err = match second {
+        Ok(_) => panic!("a live lease on S3 refuses a concurrent same-pipeline session"),
+        Err(e) => e,
+    };
+    assert!(
+        err.to_string().contains("holds the destination lease"),
+        "{err}"
+    );
+
+    // The refused open must not have damaged the holder's staging: the
+    // first session commits and publishes exactly as if it had never
+    // happened.
+    first
+        .commit(commit_meta_for(&pipeline, &first_load, 1))
+        .await
+        .expect("the refused competitor left the first session's staging untouched");
+    assert_eq!(
+        destination::testhook::count_rows_async(&dest_config, "events")
+            .await
+            .expect("count"),
+        2,
+        "the first session's rows publish exactly once, undamaged by the refused competitor"
+    );
+}
+
 /// Replace over a real bucket clears ONLY owned shapes: a user object
 /// under the table prefix survives.
 /// The crash-replay convergence sweep on the OBJECT-STORE path, whose
@@ -130,7 +203,7 @@ async fn s3_publish_sweeps_a_predecessors_same_commit_finals() {
         .put(
             &format!("lake/_rdlt_manifest.{scope}.json"),
             serde_json::json!({
-                "format_version": 1,
+                "format_version": 2,
                 "load_id": "load-a",
                 "commit_seq": 1,
                 "names": [
@@ -403,4 +476,87 @@ async fn s3_wildcards_never_match_dot_prefixed_keys() {
         1,
         "the staged key's row must not load"
     );
+}
+
+/// PROBE (037 US2): the lease design rides object_store conditional
+/// writes — `PutMode::Create` must refuse an existing key, and
+/// `PutMode::Update` must CAS on the version a read returned. If
+/// RUSTFS stops honoring either, this cell fails and the lease's S3
+/// arm must be re-designed BEFORE trusting it.
+#[tokio::test]
+async fn rustfs_honors_conditional_create_and_cas_update() {
+    use object_store::aws::AmazonS3Builder;
+    use object_store::{ObjectStore, PutMode, PutOptions, UpdateVersion, path::Path};
+
+    let Some(fixture) = S3Fixture::start().await else {
+        return;
+    };
+    // `S3Fixture::client()` is private to its module; built the same
+    // way here, straight from the fixture's public endpoint and the
+    // module's credential constants.
+    let store = AmazonS3Builder::new()
+        .with_endpoint(&fixture.endpoint)
+        .with_bucket_name(s3::BUCKET)
+        .with_region("us-east-1")
+        .with_access_key_id(s3::ACCESS_KEY)
+        .with_secret_access_key(s3::SECRET_KEY)
+        .with_allow_http(true)
+        .build()
+        .expect("probe client");
+
+    let key = Path::from("probe/lease.json");
+    let create = PutOptions::from(PutMode::Create);
+    let first = store
+        .put_opts(&key, "one".into(), create.clone())
+        .await
+        .expect("first exclusive create succeeds");
+    let second = store.put_opts(&key, "two".into(), create).await;
+    assert!(
+        matches!(second, Err(object_store::Error::AlreadyExists { .. })),
+        "second exclusive create must refuse: {second:?}"
+    );
+
+    let good = UpdateVersion {
+        e_tag: first.e_tag.clone(),
+        version: first.version.clone(),
+    };
+    store
+        .put_opts(
+            &key,
+            "three".into(),
+            PutOptions::from(PutMode::Update(good)),
+        )
+        .await
+        .expect("CAS on the current version succeeds");
+
+    let stale = UpdateVersion {
+        e_tag: first.e_tag,
+        version: first.version,
+    };
+    let lost = store
+        .put_opts(
+            &key,
+            "four".into(),
+            PutOptions::from(PutMode::Update(stale)),
+        )
+        .await;
+    // Measured live against RUSTFS 1.0.0-beta.11: HTTP 412
+    // PreconditionFailed, decoded to `Error::Precondition` — matching
+    // object_store 0.12.5's documented CAS-failure contract exactly
+    // (no divergence to pin).
+    assert!(
+        matches!(lost, Err(object_store::Error::Precondition { .. })),
+        "CAS on a superseded version must refuse with Precondition: {lost:?}"
+    );
+
+    // The raw client above pinned that RUSTFS honors the two
+    // primitives. This second half pins that `Location`'s own
+    // conditional-doc verbs (037 US2 T5) ride those same primitives
+    // correctly end to end — create exclusive, versioned read, CAS
+    // replace, stale-CAS refusal, delete — against the real store, not
+    // just against each other in a local-only test.
+    let config = s3_dest(&fixture, "probe-loc");
+    destination::testhook::probe_conditional_docs(&config, "lease.json")
+        .await
+        .expect("the conditional-doc verbs round-trip against RUSTFS");
 }

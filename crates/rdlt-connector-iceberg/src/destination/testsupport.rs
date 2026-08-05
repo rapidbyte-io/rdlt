@@ -39,13 +39,40 @@ pub(super) fn test_table() -> Table {
     )
 }
 
+/// [`test_table`]'s schema, carrying `properties` — the state-refusal
+/// tests need a mock marker table whose properties hold a planted
+/// legacy-scope key.
+pub(super) fn test_table_with_properties(properties: HashMap<String, String>) -> Table {
+    table_with_schema_and_properties(
+        Schema::builder()
+            .with_fields(vec![Arc::new(NestedField::required(
+                1,
+                "id",
+                Type::Primitive(PrimitiveType::Long),
+            ))])
+            .build()
+            .expect("schema"),
+        properties,
+    )
+}
+
 /// A table carrying `schema`, built the way a catalog builds one —
 /// field ids re-assigned, metadata in memory.
 pub(super) fn table_with_schema(schema: Schema) -> Table {
+    table_with_schema_and_properties(schema, HashMap::new())
+}
+
+/// A table carrying `schema` and `properties`, built the way a
+/// catalog builds one — field ids re-assigned, metadata in memory.
+pub(super) fn table_with_schema_and_properties(
+    schema: Schema,
+    properties: HashMap<String, String>,
+) -> Table {
     let creation = TableCreation::builder()
         .name("events".to_owned())
         .location("memory://wh/ns/events".to_owned())
         .schema(schema)
+        .properties(properties)
         .build();
     let metadata: TableMetadata =
         iceberg::spec::TableMetadataBuilder::from_table_creation(creation)
@@ -90,8 +117,15 @@ pub(super) struct ConflictCatalog {
 
 impl ConflictCatalog {
     pub(super) fn failing(conflicts: u32) -> Arc<Self> {
+        Self::over(test_table(), conflicts)
+    }
+
+    /// Like [`Self::failing`], but over a caller-supplied table — the
+    /// state-refusal tests need `load_table` to answer a marker table
+    /// carrying a planted property, not the generic `id: long` shape.
+    pub(super) fn over(table: Table, conflicts: u32) -> Arc<Self> {
         Arc::new(Self {
-            table: Mutex::new(test_table()),
+            table: Mutex::new(table),
             conflicts_remaining: AtomicU32::new(conflicts),
             commits: AtomicU32::new(0),
         })

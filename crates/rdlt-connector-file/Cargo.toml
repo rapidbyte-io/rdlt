@@ -40,11 +40,18 @@ zstd = { workspace = true }
 
 [dev-dependencies]
 jsonschema = { workspace = true }
+proptest = { workspace = true }
 rdlt-connector-duckdb = { workspace = true }
 rdlt-engine = { workspace = true }
 rdlt-testkit = { workspace = true }
 tempfile = { workspace = true }
 testcontainers = { workspace = true }
+# `test-util` only (037 US2 review round 1, I7): Cargo unifies this
+# with the plain dependency's features for TEST builds alone, so
+# `tokio::time::pause`/`advance` are reachable from the lease's
+# in-file tests without adding a paused-clock mocking capability to
+# the production binary.
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

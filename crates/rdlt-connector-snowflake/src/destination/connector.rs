@@ -291,6 +291,9 @@ pub mod testhook {
     /// The phase-1 ensure statements for a schema against a catalog
     /// image — the pin seam: rendered DDL compares as data, because
     /// executing it needs an account and comparing it needs nothing.
+    /// The structural widen flag is an execution-time concern (the
+    /// phase-1 loop's own advice-wrapping); pins here compare text
+    /// only, so it is dropped at this boundary.
     pub fn ensure_table_sql(
         pipeline: &str,
         schema: &TableSchema,
@@ -300,6 +303,9 @@ pub mod testhook {
         catalog: &Catalog,
     ) -> Vec<String> {
         ddl::table_ddl_stmts(pipeline, schema, mode, table_type, previous, catalog)
+            .into_iter()
+            .map(|(sql, _kind)| sql)
+            .collect()
     }
 
     /// The phase-2 ensure statements (scd2 validity; never an index).

@@ -348,7 +348,7 @@ async fn a_replayed_commit_sweeps_a_predecessors_differently_split_finals() {
     std::fs::write(
         dir.path().join(format!("_rdlt_manifest.{scope}.json")),
         serde_json::json!({
-            "format_version": 1,
+            "format_version": 2,
             "load_id": "load-a",
             "commit_seq": 1,
             "names": [
@@ -475,7 +475,7 @@ async fn the_sweep_reaches_partition_directories() {
     std::fs::write(
         dir.path().join(format!("_rdlt_manifest.{scope}.json")),
         serde_json::json!({
-            "format_version": 1,
+            "format_version": 2,
             "load_id": "load-a",
             "commit_seq": 1,
             "names": [
@@ -617,8 +617,9 @@ async fn closed_parts_report_their_size_and_reason_through_the_event_feed() {
         ],
     )]);
 
+    let workdir = tempfile::tempdir().expect("workdir");
     let engine = Engine::new(
-        EngineConfig::new("parts-events"),
+        EngineConfig::new("parts-events").with_workdir(workdir.path().join("wal")),
         source,
         destination::Shell::new(config).expect("valid"),
     );

@@ -30,7 +30,7 @@ way.
 | `part_closed` | table, encoded_bytes, reason | A destination closed one output file. `encoded_bytes` is the EXACT on-the-wire size — the only honest basis for output throughput (in-memory bytes differ from encoded by multiples). Reasons: `target`, `time`, `budget`, `commit`, `schema`. Emitted by the file-materialising destinations (file, iceberg, snowflake's staged uploads); postgres and duckdb never emit it. |
 | `retried` | stream?, attempt | An engine retry of a transient failure. Announces the UPCOMING attempt, so it precedes that attempt's `run_started`. |
 | `discarded` | table, rows, values, reason | Data dropped under a Discard* policy — counted, never silent. |
-| `heartbeat` | elapsed_ms | A liveness tick (1 s) once the streams are wired (discovery, session open and WAL recovery precede the ticker): events may legitimately go quiet, heartbeats may not. |
+| `heartbeat` | elapsed_ms | A liveness tick (1 s) once the streams are wired (discovery, session open and WAL recovery precede the ticker). The first beat fires synchronously at wiring itself, before the 1 s ticker is even spawned, so every identified run carries at least one: events may legitimately go quiet, heartbeats may not. |
 
 Causal-order guarantees: `run_started` first (within an attempt — a
 `retried` announcing the next attempt precedes ITS `run_started`, and

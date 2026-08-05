@@ -4401,6 +4401,7 @@ dependencies = [
  "memchr",
  "object_store",
  "parquet",
+ "proptest",
  "rdlt-connector-duckdb",
  "rdlt-connector-sdk",
  "rdlt-engine",

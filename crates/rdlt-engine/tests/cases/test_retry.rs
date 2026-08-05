@@ -96,6 +96,61 @@ async fn retry_budget_exhaustion_is_a_classified_error() {
     assert!(matches!(err, rdlt_core::RdltError::Source { .. }));
 }
 
+/// 037 US2 fix round 2 (I1's decision + M5's vacuity guard),
+/// superseding fix round 1's `a_failed_run_never_closes_its_session`:
+/// the lease (or whatever a destination's close releases) protects
+/// CONCURRENT sessions, not dead ones, so a failed run now DOES close
+/// its session — best-effort, from `drain_loader`'s abandonment path —
+/// rather than leaving it for a foreign process's TTL wait.
+///
+/// NOT `closes() == 1`: `transient_start_failures(100)` fails the
+/// source on EVERY read, so the run-level retry driver exhausts its
+/// full `MAX_RUN_ATTEMPTS` budget (5, measured) before giving up, and
+/// EACH attempt opens a fresh session that fails and gets best-effort
+/// closed in turn — verified empirically before pinning this shape
+/// rather than assumed. The invariant this test actually pins is
+/// `opens() == closes()`: every session this run ever opened was also
+/// closed, which holds regardless of how many attempts the retry
+/// budget allows and so survives a future change to
+/// `MAX_RUN_ATTEMPTS` without a hardcoded count.
+#[tokio::test]
+async fn a_failed_run_closes_best_effort() {
+    let dest = MemoryDestination::new();
+    let source = MemorySource::new(vec![
+        MemoryStream::new(StreamSpec::new("s"), evolving_batches()).transient_start_failures(100),
+    ]);
+    let err = Engine::new(
+        EngineConfig::new("retry-exhaust-closes-best-effort"),
+        source,
+        dest.clone(),
+    )
+    .run()
+    .await
+    .expect_err("must eventually fail");
+    // The run's own error is still the ORIGINAL failure — a close
+    // artifact (impossible for `MemoryDestination`, whose close cannot
+    // fail, but the shape is pinned regardless) must never leak into
+    // or replace it.
+    assert!(
+        matches!(err, rdlt_core::RdltError::Source { .. }),
+        "the propagated error must be the source failure, not a close artifact: {err:?}"
+    );
+    // M5 vacuity guard: without this, a mutant that skipped opening a
+    // session entirely would still pass a bare `closes() == 0`-shaped
+    // assertion (nothing opened, nothing closed, `0 == 0`) — pairing it
+    // with a genuine open count proves a session was actually opened
+    // AND actually closed, not just that the counts happen to agree.
+    assert!(
+        dest.opens() > 0,
+        "a session must have genuinely opened for this test to mean anything"
+    );
+    assert_eq!(
+        dest.opens(),
+        dest.closes(),
+        "every session this failed run opened, across every retry attempt, was also closed"
+    );
+}
+
 /// Review finding #5 regression: a transient failure AFTER rows were staged past the
 /// last checkpoint must not publish those rows twice. Run-level retry restarts
 /// through the crash path (session re-open tears down staging), so re-extraction is

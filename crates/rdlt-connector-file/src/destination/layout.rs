@@ -6,7 +6,15 @@
 use rdlt_connector_sdk::spi::DestinationError;
 
 /// The persisted layout/commit-log version this build writes.
-pub(super) const LAYOUT_FORMAT_VERSION: u32 = 1;
+///
+/// v2 (037 US4): the partition-directory encoding became injective
+/// (`encode_partition_value`, replacing `path_safe`). This is a
+/// greenfield format break, deliberately version-gated with NO
+/// migration — a v1 (or absent-version, v0) manifest or commit log is
+/// now REFUSED, not silently reinterpreted under the new encoding,
+/// because the directory names it names may no longer exist or may
+/// mean something else.
+pub(super) const LAYOUT_FORMAT_VERSION: u32 = 2;
 
 /// The hidden staging prefix.
 pub(crate) const STAGING_DIR: &str = ".rdlt-staging";
@@ -29,6 +37,11 @@ pub(super) fn commits_file(scope: &str) -> String {
 /// The publish manifest's file name for one scope.
 pub(super) fn manifest_file(scope: &str) -> String {
     format!("_rdlt_manifest.{scope}.json")
+}
+
+/// The session lease's file name for one scope (037 US2).
+pub(super) fn lease_file(scope: &str) -> String {
+    format!("_rdlt_lease.{scope}.json")
 }
 
 /// A staged part's tail under the staging prefix.
@@ -82,38 +95,72 @@ pub(crate) fn final_tail(
     }
 }
 
-/// Make a partition VALUE path-safe: ascii-alphanumeric plus `-_.`
-/// survive, everything else becomes `_`; an empty result is
-/// `__empty__`. NULL is rendered `__null__` by the splitter before it
-/// gets here. Partition directories are BARE values, not Hive
-/// `col=value`.
+/// Injective partition-value encoding (037 US4, layout v2). Survivors:
+/// ASCII alphanumerics and `-` anywhere; `_` and `.` except at byte
+/// position 0. Everything else — including `%` itself, `/`, control
+/// bytes, every non-ASCII byte — becomes `%XX` (per UTF-8 byte,
+/// uppercase hex). An empty value is `__empty__`.
 ///
-/// `.` and `..` are the two names path resolution INTERPRETS instead
-/// of storing: a partition value of `..` used to walk the part OUT of
-/// its table directory entirely — published where no ownership rule
-/// could count or reclaim it (030 review). They map to sentinel
-/// directories in the `__empty__` family instead.
-pub(super) fn path_safe(value: &str) -> String {
-    match value {
-        "." => return "__dot__".to_owned(),
-        ".." => return "__dotdot__".to_owned(),
-        _ => {}
+/// Consequences the sentinels rely on: no encoded value ever begins
+/// with `_` or `.`, so `__null__` / `__empty__` cannot collide with
+/// any real encoded value; `/` never appears in the output
+/// (`truncate::owns`'s depth rule depends on a partition slug never
+/// itself containing a path separator); and dot-segments are
+/// impossible — a partition value of `.` or `..` used to walk the
+/// part OUT of its table directory via path resolution (030 review;
+/// the retired `__dot__`/`__dotdot__` sentinels worked around it by
+/// name). Here `.` at position 0 is never a survivor, so both encode
+/// to a leading `%2E` and can never resolve as a directory-traversal
+/// segment again.
+///
+/// Windows-reserved basenames (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`9`,
+/// `LPT1`-`9`, case-insensitive, matched against the portion before
+/// the first literal `.`) get their first byte escaped too, so the
+/// written name is never one of those regardless of host OS. Because
+/// every reserved prefix is pure ASCII letters — always survivors in
+/// the ordinary path — this escaping can never coincide with a byte
+/// this function would otherwise emit, so it does not disturb
+/// injectivity.
+pub(super) fn encode_partition_value(value: &str) -> String {
+    if value.is_empty() {
+        return "__empty__".to_owned();
     }
-    let safe: String = value
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if safe.is_empty() {
-        "__empty__".to_owned()
-    } else {
-        safe
+    let mut encoded = String::with_capacity(value.len());
+    for (position, byte) in value.bytes().enumerate() {
+        let survivor = byte.is_ascii_alphanumeric()
+            || byte == b'-'
+            || (position != 0 && (byte == b'_' || byte == b'.'));
+        if survivor {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
     }
+    escape_if_windows_reserved(encoded)
+}
+
+/// Basenames DOS/Windows treats as device names regardless of
+/// extension, checked case-insensitively.
+const WINDOWS_RESERVED_BASENAMES: &[&str] = &[
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
+/// If `encoded`'s portion before the first literal `.` matches a
+/// Windows-reserved basename, escape its first byte so the written
+/// name is never reserved.
+fn escape_if_windows_reserved(encoded: String) -> String {
+    let basename = encoded.split('.').next().unwrap_or(&encoded);
+    let is_reserved = WINDOWS_RESERVED_BASENAMES
+        .iter()
+        .any(|reserved| basename.eq_ignore_ascii_case(reserved));
+    if !is_reserved {
+        return encoded;
+    }
+    let bytes = encoded.as_bytes();
+    let mut escaped = format!("%{:02X}", bytes[0]);
+    escaped.push_str(&encoded[1..]);
+    escaped
 }
 
 /// The NULL partition's directory.
@@ -125,7 +172,9 @@ pub(super) const NULL_PARTITION: &str = "__null__";
 /// Replace targets on a redelivered trimmed load.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(super) struct CommitLog {
-    /// Absent in pre-versioning logs — v0, accepted.
+    /// Absent in pre-versioning logs — decodes as v0, refused by
+    /// [`version_gate`] since layout v2 (037 US4 D1: it also predates
+    /// the current partition-directory encoding).
     #[serde(default)]
     pub format_version: u32,
     #[serde(default)]
@@ -152,8 +201,11 @@ pub(super) struct CommitLog {
 /// sweep. Without a workdir, or when a damaged WAL degrades to
 /// re-extraction, the next attempt runs under a NEW load id, the old
 /// manifest never matches, and its files are beyond this mechanism —
-/// the file connector's cousin of iceberg's recorded N2, carried as a
-/// standing record rather than pretended away.
+/// the file connector's cousin of iceberg's recorded N2. FIXED-BY-
+/// REFUSAL (037 US3, same shape as iceberg's): the destination
+/// declares `requires_durable_identity`, so the engine refuses to
+/// start a run against it without a workdir — the no-WAL path this
+/// comment describes cannot be reached from `rdlt run` at all.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(super) struct Manifest {
     /// Absent in none — the manifest is new at layout v1.
@@ -168,6 +220,31 @@ pub(super) struct Manifest {
     pub names: Vec<String>,
 }
 
+/// The shared version gate for both persisted layout artifacts
+/// (manifest, commit log). A STRICTLY newer version refuses as an
+/// upgrade prompt, never a reset — resetting forgets receipts and
+/// republishes. A STRICTLY older version — including absent, which
+/// decodes as `0` (pre-versioning) — now ALSO refuses (037 US4 D1):
+/// v2's partition-directory encoding is a greenfield format break
+/// with no migration path, so an older document's file names can no
+/// longer be trusted to mean what they say.
+fn version_gate(doc: &str, file: &str, found: u32) -> Result<(), DestinationError> {
+    if found > LAYOUT_FORMAT_VERSION {
+        return Err(DestinationError::fatal(format!(
+            "{doc} `{file}` format v{found} is newer than this build supports \
+             (v{LAYOUT_FORMAT_VERSION}); upgrade rdlt instead of resetting"
+        )));
+    }
+    if found < LAYOUT_FORMAT_VERSION {
+        return Err(DestinationError::fatal(format!(
+            "{doc} `{file}` format v{found} predates this build (v{LAYOUT_FORMAT_VERSION}): the \
+             partition-directory encoding changed; point the destination at a fresh path or \
+             delete the old output"
+        )));
+    }
+    Ok(())
+}
+
 impl Manifest {
     /// Decode verbatim bytes; absent means "no prior attempt".
     pub(super) fn decode(
@@ -179,13 +256,7 @@ impl Manifest {
         };
         let manifest: Self = serde_json::from_slice(bytes)
             .map_err(|e| DestinationError::fatal(format!("unreadable manifest `{file}`: {e}")))?;
-        if manifest.format_version > LAYOUT_FORMAT_VERSION {
-            return Err(DestinationError::fatal(format!(
-                "manifest `{file}` format v{} is newer than this build supports \
-                 (v{LAYOUT_FORMAT_VERSION}); upgrade rdlt instead of resetting",
-                manifest.format_version
-            )));
-        }
+        version_gate("manifest", file, manifest.format_version)?;
         Ok(Some(manifest))
     }
 }
@@ -202,22 +273,18 @@ impl CommitLog {
         Ok(log)
     }
 
-    /// A STRICTLY newer version refuses as an upgrade prompt, never a
-    /// reset — resetting forgets receipts and republishes.
+    /// See [`version_gate`]: newer refuses as an upgrade prompt, older
+    /// (including absent/v0) now also refuses as predating v2's
+    /// encoding break.
     pub(super) fn check_readable(&self, file: &str) -> Result<(), DestinationError> {
-        if self.format_version > LAYOUT_FORMAT_VERSION {
-            return Err(DestinationError::fatal(format!(
-                "commit log `{file}` format v{} is newer than this build supports \
-                 (v{LAYOUT_FORMAT_VERSION}); upgrade rdlt instead of resetting",
-                self.format_version
-            )));
-        }
-        Ok(())
+        version_gate("commit log", file, self.format_version)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
     /// The frozen name shapes, literally.
@@ -225,6 +292,7 @@ mod tests {
     fn every_name_shape_is_the_frozen_one() {
         assert_eq!(state_file("abc123def456"), "_rdlt_state.abc123def456.json");
         assert_eq!(commits_file("abc"), "_rdlt_commits.abc.json");
+        assert_eq!(lease_file("abc"), "_rdlt_lease.abc.json");
         assert_eq!(
             staging_tail("abc", "load-1", "t/all-0.parquet"),
             ".rdlt-staging/abc/load-1/t/all-0.parquet"
@@ -248,28 +316,64 @@ mod tests {
         assert_eq!(scope_of("p").len(), 12, "12-hex scope");
     }
 
-    /// The path-safety rule: survivors, replacement, and the empty
-    /// sentinel.
+    /// The v2 encoding: exact-value pins for the survivors, the
+    /// escape, the empty sentinel, and the sentinel-collision proof
+    /// (`__null__` is never a possible ENCODED output, because a
+    /// leading `_` always escapes).
     #[test]
-    fn partition_values_become_path_safe() {
-        assert_eq!(path_safe("us-east.1_x"), "us-east.1_x");
-        assert_eq!(path_safe("a b/c"), "a_b_c");
-        assert_eq!(path_safe("日本"), "__", "non-ascii replaced per char");
-        assert_eq!(path_safe(""), "__empty__");
-        // Path resolution must never INTERPRET a partition directory:
-        // `..` used to walk the part out of its table dir (030 review).
-        assert_eq!(path_safe("."), "__dot__");
-        assert_eq!(path_safe(".."), "__dotdot__");
-        assert_eq!(path_safe("..."), "...", "only the two special names map");
+    fn partition_encoding_is_injective_and_sentinel_safe() {
+        assert_eq!(encode_partition_value("us-east"), "us-east");
+        assert_eq!(encode_partition_value("a b/c"), "a%20b%2Fc");
+        assert_eq!(encode_partition_value("a_b"), "a_b");
+        assert_ne!(encode_partition_value("a/b"), encode_partition_value("a_b"));
+        assert_eq!(encode_partition_value(""), "__empty__");
+        assert_eq!(encode_partition_value("__null__"), "%5F_null__");
+        assert!(encode_partition_value(".").starts_with('%'));
+        assert!(encode_partition_value("..").starts_with('%'));
+        assert!(encode_partition_value("CON").starts_with('%'));
     }
 
-    /// The commit log: v0 accepted, the current version round-trips,
-    /// and a strictly newer version refuses with the upgrade prompt.
+    proptest! {
+        /// Injectivity, no path separator, and the sentinel-safety
+        /// invariant, over arbitrary strings.
+        #[test]
+        fn encoding_is_injective_slashfree_and_never_leads_underscore(
+            a in ".{0,40}", b in ".{0,40}"
+        ) {
+            let ea = encode_partition_value(&a);
+            prop_assert!(!ea.contains('/'));
+            prop_assert!(!ea.starts_with('_') || a.is_empty());
+            prop_assert!(!ea.starts_with('.'));
+            if a != b { prop_assert_ne!(ea, encode_partition_value(&b)); }
+        }
+    }
+
+    /// The commit log: v0 (absent) and v1 (the retired encoding) both
+    /// refuse as predating v2, the current version round-trips, and a
+    /// strictly newer version refuses with the upgrade prompt.
     #[test]
     fn the_commit_log_versioning_is_upgrade_not_reset() {
-        let v0 = CommitLog::decode(Some(br#"{"receipts": [["load-x", 1]]}"#), "f").expect("v0");
-        assert_eq!(v0.format_version, 0);
-        assert_eq!(v0.receipts, vec![("load-x".to_owned(), 1)]);
+        let err = CommitLog::decode(Some(br#"{"receipts": [["load-x", 1]]}"#), "log.json")
+            .expect_err("absent format_version = v0 = also predates");
+        assert!(
+            format!("{err}").contains(
+                "commit log `log.json` format v0 predates this build (v2): the \
+                 partition-directory encoding changed; point the destination at a fresh path \
+                 or delete the old output"
+            ),
+            "{err}"
+        );
+
+        let v1 = br#"{"format_version": 1, "receipts": [["load-x", 1]]}"#;
+        let err = CommitLog::decode(Some(v1), "log.json").expect_err("v1 predates v2 too");
+        assert!(
+            format!("{err}").contains(
+                "commit log `log.json` format v1 predates this build (v2): the \
+                 partition-directory encoding changed; point the destination at a fresh path \
+                 or delete the old output"
+            ),
+            "{err}"
+        );
 
         let current = CommitLog {
             format_version: LAYOUT_FORMAT_VERSION,
@@ -281,11 +385,11 @@ mod tests {
             current
         );
 
-        let future = br#"{"format_version": 2, "receipts": []}"#;
+        let future = br#"{"format_version": 99, "receipts": []}"#;
         let err = CommitLog::decode(Some(future), "log.json").expect_err("refuses");
         assert!(
             format!("{err}").contains(
-                "commit log `log.json` format v2 is newer than this build supports (v1); \
+                "commit log `log.json` format v99 is newer than this build supports (v2); \
                  upgrade rdlt instead of resetting"
             ),
             "{err}"

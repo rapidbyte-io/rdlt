@@ -66,17 +66,42 @@ pub(super) async fn drain_loader(
         }
     }
 
+    // ---- Abandonment paths (037 US2 fix round 2, I1): a stream error, a
+    // loader error, or an induced cancellation all mean this session writes
+    // no more — best-effort close it (releases whatever `close` releases,
+    // e.g. the file destination's lease) rather than leaving that held for
+    // a DIFFERENT process's TTL wait. Never lets a close failure mask the
+    // run's real error, which is what every one of these returns instead.
     if let Some(error) = first_error {
+        loader.close_best_effort().await;
         return Err(error);
     }
     match loader_result {
-        Err(e) => return Err(e),
-        Ok(()) if saw_cancelled => return Err(RdltError::Cancelled),
+        Err(e) => {
+            loader.close_best_effort().await;
+            return Err(e);
+        }
+        Ok(()) if saw_cancelled => {
+            loader.close_best_effort().await;
+            return Err(RdltError::Cancelled);
+        }
         Ok(()) => {}
     }
 
     // ---- Final commit: trailing work; state travels with the data ----
-    loader.finish().await?;
+    if let Err(e) = loader.finish().await {
+        // The final commit itself failed — still an abandonment path
+        // (nothing durable changed as a RESULT of this attempt reaching
+        // here, whatever landed in EARLIER commits notwithstanding), so
+        // the same best-effort release applies before propagating.
+        loader.close_best_effort().await;
+        return Err(e);
+    }
+    // The strict, success-only close: the run's last commit just
+    // succeeded, and every path above this point that could still fail
+    // has already returned early. `Loader::close` classifies its own
+    // error non-retryable and prefixes it — see that method's doc.
+    loader.close().await?;
     Ok(loader.report)
 }
 

@@ -97,12 +97,26 @@ fn status_from_context(error: &iceberg::Error) -> Option<u16> {
         .ok()
 }
 
+/// The catalog property keys that carry a credential.
+///
+/// Shared with `config::Config::validate`, which refuses any of these
+/// arriving through `catalog.props` — the single source of truth for
+/// both the gate and this function's guarantee below.
+pub(super) const CREDENTIAL_PROP_KEYS: &[&str] = &[
+    "credential",
+    "token",
+    "s3.access-key-id",
+    "s3.secret-access-key",
+];
+
 /// The catalog load-property vocabulary, from the validated config.
 ///
 /// EVERY `Secret::reveal` in the crate happens here and nowhere else.
 /// User `catalog.props` are inserted LAST, so they win over generated
-/// ones — including credential keys; that override is the documented
-/// escape hatch, not an accident.
+/// ones — the documented escape hatch for non-secret keys (e.g.
+/// `uri`). The validate gate guarantees none of `CREDENTIAL_PROP_KEYS`
+/// reaches this function, so the override can never touch a
+/// credential.
 pub(super) fn catalog_props(config: &Config) -> HashMap<String, String> {
     let mut props = HashMap::new();
     props.insert("uri".to_owned(), config.catalog.uri.clone());

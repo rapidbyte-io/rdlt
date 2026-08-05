@@ -9,6 +9,27 @@ use rdlt_core::{
 
 use crate::EngineConfig;
 
+/// Rule 1: `a`'s table plus a trailing `_` equals `b`'s table — a
+/// `_`-leading source field mints the same child table under either root.
+/// `a` is always the stream owning the shorter (prefix) table.
+fn trailing_underscore_collision(a: &StreamName, ta: &str, b: &StreamName, tb: &str) -> RdltError {
+    RdltError::config(format!(
+        "streams `{a}` and `{b}` normalize to tables `{ta}` and `{tb}`, which differ only by \
+         a trailing `_` — a `_`-leading source field would mint the same child table for both; \
+         rename one stream"
+    ))
+}
+
+/// Rule 2: `b`'s table sits inside `a`'s child namespace (`b` starts with
+/// `a` + `__`). `a` is always the stream owning the shorter (prefix) table.
+fn child_namespace_collision(a: &StreamName, ta: &str, b: &StreamName, tb: &str) -> RdltError {
+    RdltError::config(format!(
+        "streams `{a}` and `{b}` normalize to tables `{ta}` and `{tb}`, and `{tb}` sits inside \
+         `{ta}`'s child-table namespace (`__` separates parent from child); rename one stream \
+         so neither table extends the other"
+    ))
+}
+
 /// The destination table a stream owns, by name normalization.
 ///
 /// One decision with two consumers that must agree by construction: validation
@@ -29,9 +50,75 @@ pub(super) fn validate_streams(
     capabilities: DestinationCapabilities,
     destination: &dyn Destination,
 ) -> Result<(), RdltError> {
+    // Durable-identity destinations declare per-run, not per-stream; refuse
+    // early so even a no-op run against such a destination fails cleanly.
+    if capabilities.requires_durable_identity && config.workdir.is_none() {
+        return Err(RdltError::config(format!(
+            "destination `{}` publishes non-atomically and requires a workdir for \
+             exactly-once crash recovery; set one with `workdir:` (the CLI defaults \
+             to `.rdlt`) — without it a mid-publish failure re-appends committed rows",
+            destination.spec().name
+        )));
+    }
+
     let mut root_tables: BTreeMap<TableName, StreamName> = BTreeMap::new();
     for spec in streams {
         let table = root_table(&spec.name, capabilities.ident_rules);
+        // Child tables are minted at shred time as `{root}__{field}`. A
+        // collision between two DISTINCT streams' table spaces needs their
+        // roots A (shorter) and B (longer) to satisfy `B = A + "_" + s` for
+        // some suffix `s`: if `s` is empty, B is just A's own table with a
+        // trailing `_` and a `_`-leading source field mints the identical
+        // child table under either (rule 1, `orders_`/`orders`); if `s`
+        // starts with `_`, B already sits inside A's child namespace (rule
+        // 2, `__` is A's separator plus that leading `_`); any other `s`
+        // mismatches at the boundary character right after A and cannot
+        // collide. So checking every pair for rules 1 and 2 (both
+        // directions — the shorter root is not known in advance) makes
+        // every pair of distinct roots' table spaces disjoint, without
+        // refusing a table that merely LOOKS dangerous in isolation: a lone
+        // root containing `__` or ending in `_` cannot collide with
+        // itself, and postgres discovery mints exactly such roots from
+        // hostile identifiers (`Order "Items"` -> `order__items_`) that the
+        // operator does not own and cannot rename — refusing it outright
+        // broke a pinned product capability (rdlt-connector-postgres's
+        // `hostile_identifiers_and_column_selection` conformance cell).
+        for (existing_table, existing_stream) in &root_tables {
+            let et = existing_table.as_str();
+            let nt = table.as_str();
+            if nt == format!("{et}_") {
+                return Err(trailing_underscore_collision(
+                    existing_stream,
+                    et,
+                    &spec.name,
+                    nt,
+                ));
+            }
+            if et == format!("{nt}_") {
+                return Err(trailing_underscore_collision(
+                    &spec.name,
+                    nt,
+                    existing_stream,
+                    et,
+                ));
+            }
+            if nt.starts_with(&format!("{et}__")) {
+                return Err(child_namespace_collision(
+                    existing_stream,
+                    et,
+                    &spec.name,
+                    nt,
+                ));
+            }
+            if et.starts_with(&format!("{nt}__")) {
+                return Err(child_namespace_collision(
+                    &spec.name,
+                    nt,
+                    existing_stream,
+                    et,
+                ));
+            }
+        }
         if let Some(owner) = root_tables.insert(table.clone(), spec.name.clone()) {
             // Clause E2: exactly one stream owns a table.
             return Err(RdltError::config(format!(
@@ -147,5 +234,140 @@ mod hint_validation_tests {
         assert!(check(0, 0).is_err(), "precision 0 has no digits");
         assert!(check(max + 1, 0).is_err(), "beyond 128-bit precision");
         assert!(check(5, 6).is_err(), "scale exceeding precision");
+    }
+
+    fn check_streams(names: &[&str]) -> Result<(), RdltError> {
+        let specs: Vec<_> = names.iter().map(|&name| StreamSpec::new(name)).collect();
+        let dest = MemoryDestination::new();
+        validate_streams(
+            &EngineConfig::new("streams"),
+            &specs,
+            dest.capabilities(),
+            &dest,
+        )
+    }
+
+    #[test]
+    fn two_streams_normalizing_to_one_root_table_are_refused() {
+        // `Users` and `users` both normalize to root table `users`.
+        let error = check_streams(&["Users", "users"]).expect_err("E2: one stream owns a table");
+        assert!(
+            matches!(error, RdltError::Config { .. }),
+            "a root-table collision is a config refusal: {error:?}"
+        );
+        let text = error.to_string();
+        assert!(text.contains("both map to table"), "{text}");
+    }
+
+    #[test]
+    fn a_root_table_inside_another_streams_child_namespace_is_refused() {
+        // `users..emails` normalizes to `users__emails` (each `.` maps to a
+        // single `_`) — the exact name the `users` stream's `emails`
+        // list-of-objects child would get. Refused because it is PAIRED
+        // with the actual `users` stream; see the lone-stream capability
+        // pin below for the same table name with nothing to collide
+        // against.
+        let error = check_streams(&["users..emails", "users"])
+            .expect_err("a root inside another stream's child namespace");
+        let text = error.to_string();
+        assert!(
+            text.contains("sits inside") && text.contains("child-table namespace"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_lone_root_containing_the_child_separator_is_accepted() {
+        // The bare `__`-substring is not dangerous in isolation — a lone
+        // root cannot collide with itself, and postgres table discovery
+        // mints exactly this shape from hostile identifiers the operator
+        // does not own and cannot rename (`rdlt-connector-postgres`'s
+        // `hostile_identifiers_and_column_selection` conformance cell:
+        // `Order "Items"` normalizes to `order__items_`). An earlier
+        // version of this gate refused any `__`-containing root outright
+        // and broke that pinned capability; only PAIRWISE ambiguity
+        // between distinct streams is refused now.
+        assert!(check_streams(&["users..emails"]).is_ok());
+    }
+
+    #[test]
+    fn two_roots_differing_only_by_a_trailing_separator_are_refused() {
+        // Both roots are legal in isolation — neither `orders_` nor
+        // `orders` contains `__`. But together, a `_`-leading raw source
+        // key (Mongo's `_id`) mints an identical child table from either:
+        // `child_table_name("orders_", "id")` and
+        // `child_table_name("orders", "_id")` both produce `orders___id`.
+        let error = check_streams(&["orders_", "orders"])
+            .expect_err("roots differing only by a trailing `_` collide via a `_`-leading field");
+        let text = error.to_string();
+        assert!(
+            text.contains("differ only by") && text.contains("trailing `_`"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_lone_root_ending_in_the_separator_is_accepted() {
+        // Same reasoning as the lone `__`-containing case above: `orders_`
+        // cannot collide with itself when it is the only stream, and a
+        // hostile source identifier can normalize to exactly this shape
+        // too.
+        assert!(check_streams(&["orders_"]).is_ok());
+    }
+
+    #[test]
+    fn a_lone_root_normalizing_to_a_bare_separator_is_accepted() {
+        // `?` (one character with no letter/digit/underscore mapping)
+        // normalizes to the single character `_` — the degenerate case of
+        // "ends with `_`", legal alone for the same reason as the other
+        // lone-root pins: nothing exists to collide with.
+        assert!(check_streams(&["?"]).is_ok());
+    }
+
+    fn no_workdir_config() -> EngineConfig {
+        EngineConfig::new("test")
+    }
+
+    fn workdir_config() -> EngineConfig {
+        EngineConfig::new("test").with_workdir("/tmp/rdlt-test")
+    }
+
+    fn durable_identity_dest() -> MemoryDestination {
+        MemoryDestination::new().with_capabilities(
+            DestinationCapabilities::default().with_requires_durable_identity(true),
+        )
+    }
+
+    fn check_with(config: EngineConfig, destination: MemoryDestination) -> Result<(), RdltError> {
+        let spec = StreamSpec::new("s");
+        validate_streams(
+            &config,
+            std::slice::from_ref(&spec),
+            destination.capabilities(),
+            &destination,
+        )
+    }
+
+    #[test]
+    fn a_durable_identity_destination_without_a_workdir_is_refused() {
+        let error = check_with(no_workdir_config(), durable_identity_dest())
+            .expect_err("N2: no workdir means duplication on mid-publish retry");
+        let text = error.to_string();
+        assert!(text.contains("requires a workdir"), "{text}");
+        assert!(text.contains("workdir"), "names the fix: {text}");
+    }
+
+    #[test]
+    fn the_same_destination_with_a_workdir_passes() {
+        assert!(check_with(workdir_config(), durable_identity_dest()).is_ok());
+    }
+
+    #[test]
+    fn empty_stream_list_with_durable_identity_destination_without_workdir_is_refused() {
+        let dest = durable_identity_dest();
+        let error = validate_streams(&no_workdir_config(), &[], dest.capabilities(), &dest)
+            .expect_err("per-run check fires even with empty streams");
+        let text = error.to_string();
+        assert!(text.contains("requires a workdir"), "{text}");
     }
 }

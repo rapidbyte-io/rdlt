@@ -5,6 +5,8 @@
 //! approximation. The last three cells drive the settings/extension
 //! passthrough through the V2 surface (Config → Shell → testhook).
 
+use std::os::unix::fs::PermissionsExt;
+
 use duckdb::Connection;
 use rdlt_connector_duckdb::destination::{self, Config, Shell};
 use rdlt_connector_sdk::config::Document;
@@ -281,3 +283,140 @@ fn an_unknown_setting_errors_at_assemble_naming_its_key() {
         "the failing key is named: {err}"
     );
 }
+
+/// ALTER SET DATA TYPE on a column with existing rows: does it cast
+/// existing values in place, or refuse? This determines whether the
+/// widen arm can use in-place ALTER on populated target tables during
+/// merge upserts.
+#[test]
+fn probe_alter_set_data_type_casts_existing_rows() {
+    let conn = memdb();
+    conn.execute_batch(
+        "CREATE TABLE t (id INTEGER); INSERT INTO t VALUES (7);
+         ALTER TABLE t ALTER COLUMN id SET DATA TYPE VARCHAR;",
+    )
+    .expect("in-place widen");
+    let v: String = conn
+        .query_row("SELECT id FROM t", [], |r| r.get(0))
+        .expect("read");
+    assert_eq!(v, "7", "existing rows are cast, not lost");
+}
+
+/// ALTER on a TEMP table holding unpublished rows: does it succeed
+/// in place, or refuse? This pin governs whether temp-leg rows can be
+/// widened directly during target-schema evolution.
+#[test]
+fn probe_alter_on_a_temp_table_with_rows() {
+    let conn = memdb();
+    conn.execute_batch(
+        "CREATE TEMP TABLE s (id INTEGER); INSERT INTO s VALUES (7);
+         ALTER TABLE s ALTER COLUMN id SET DATA TYPE VARCHAR;",
+    )
+    .expect("temp-leg widen with unpublished rows");
+}
+
+/// ALTER on a column indexed by a unique ART index (rdlt_ux_ naming
+/// per the crate's merge_ddl): does it widen in place, or refuse with
+/// a constraint error? If it refuses, Task 16's upsert-table widen
+/// must drop-and-recreate the index around the ALTER.
+#[test]
+fn probe_alter_on_an_art_indexed_column() {
+    let conn = memdb();
+    conn.execute_batch("CREATE TABLE t (id INTEGER); CREATE UNIQUE INDEX rdlt_ux_t ON t (id);")
+        .expect("indexed");
+    let result = conn.execute_batch("ALTER TABLE t ALTER COLUMN id SET DATA TYPE BIGINT");
+    // PROBE FINDING: ALTER REFUSES when an index exists on the column.
+    // Task 16's upsert-table widen must drop-and-recreate the rdlt_ux_
+    // index around the ALTER.
+    let err_msg = result
+        .expect_err("ALTER fails on indexed columns")
+        .to_string();
+    assert!(
+        err_msg.contains("Cannot change the type of this column: an index depends on it"),
+        "exact error message for Task 16 design: {err_msg}"
+    );
+}
+
+/// The deterministic-IO carve-out (037 US6 / Task 19) keys on these
+/// EXACT message spellings — pinned here first so `classify`'s
+/// carve-out is built on measured reality, not a guess. Both failures
+/// are ones that never heal on retry: a missing parent directory and a
+/// permission-denied path stay broken until an operator intervenes —
+/// UNLIKE every other errno that also renders through this SAME
+/// open-failure template (a file lock held elsewhere, `EMFILE`/
+/// `ENFILE`, create-time `ENOSPC`, ...), which all heal on retry and
+/// deliberately stay under the existing "IO Error" transient rule
+/// (fix round 1: the template alone is NOT the carve-out key — see
+/// `classify`'s doc comment).
+///
+/// MEASURED verbatim (duckdb 1.5.x bundled): `IO Error: Cannot open
+/// file "/nonexistent-rdlt-probe-dir/x.duckdb": No such file or
+/// directory` — the carve-out requires BOTH the shared `Cannot open
+/// file` template fragment AND this cell's own `No such file or
+/// directory` suffix; the template fragment alone is deliberately
+/// insufficient (it also carries healable errnos).
+#[test]
+fn probe_deterministic_io_message_spellings() {
+    // Missing parent directory: DuckDB's own file-open failure.
+    let missing = duckdb::Connection::open("/nonexistent-rdlt-probe-dir/x.duckdb")
+        .expect_err("no parent dir");
+    let text = missing.to_string();
+    assert!(text.starts_with("IO Error"), "{text}");
+    assert!(
+        text.contains("Cannot open file"),
+        "PIN the fragment: {text}"
+    );
+}
+
+/// The permission-denied sibling: a directory this process cannot
+/// write into. Detects root (or any other permission-bypassing
+/// environment) BEHAVIORALLY rather than via a `geteuid` FFI call —
+/// the workspace denies `unsafe_code` outright — by noticing the open
+/// SUCCEEDED despite chmod 000 and skipping rather than asserting on
+/// a failure that never comes.
+///
+/// MEASURED verbatim (duckdb 1.5.x bundled): `IO Error: Cannot open
+/// file "<path>/x.duckdb": Permission denied` — same `Cannot open
+/// file` template as the missing-parent cell, with its OWN suffix
+/// required alongside the template fragment (see that cell's doc for
+/// why the template alone is not the carve-out key).
+#[test]
+fn probe_deterministic_io_message_spelling_permission_denied() {
+    let dir = tempfile::tempdir().expect("dir");
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o000))
+        .expect("chmod 000");
+    let path = dir.path().join("x.duckdb");
+    let result = duckdb::Connection::open(&path);
+    // Restore permissions unconditionally so the tempdir guard can
+    // clean up on drop, whichever branch below runs.
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
+        .expect("restore for cleanup");
+    let text = match result {
+        Ok(_) => {
+            eprintln!(
+                "SKIP: permission bits not enforced (root or a permissive filesystem) \
+                 — cannot induce permission-denied"
+            );
+            return;
+        }
+        Err(e) => e.to_string(),
+    };
+    assert!(text.starts_with("IO Error"), "{text}");
+    assert!(
+        text.contains("Permission denied"),
+        "PIN the fragment: {text}"
+    );
+}
+
+// A THIRD probe — a real cross-instance file-lock conflict — was
+// attempted and dropped: two `duckdb::Connection::open` calls on the
+// same path from ONE process never conflict (measured; the advisory
+// lock is process-scoped, so a second open in the same process
+// re-acquires it rather than blocking), and this crate's own
+// double-open registry (client.rs) refuses a second in-process
+// read-write open before the library ever runs, for the WAL-truncation
+// hazard, not for lock testing. A genuine lock conflict needs a
+// SEPARATE process; the existing unit pin in client.rs
+// (`classify_splits_io_errors_transient_everything_else_fatal`) is
+// kept as the lock fragment's sole coverage rather than manufacturing
+// subprocess plumbing to reproduce it here.

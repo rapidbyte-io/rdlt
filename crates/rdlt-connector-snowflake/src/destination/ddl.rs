@@ -67,6 +67,22 @@ pub(super) fn stage_name(pipeline: &str, table: &TableName) -> String {
     rdlt_connector_sqlcore::names::stage_table(pipeline, table.as_str())
 }
 
+/// A structural flag on a rendered phase-1 statement — never derived
+/// from the statement's TEXT (message-sniffing), always from the
+/// [`EnsureStep`] that produced it. `Widen` is the one shape the
+/// service can refuse at execution (cross-type, not the in-place
+/// VARCHAR-length/NUMBER-precision case): the phase-1 loop uses this
+/// to enrich exactly that failure with the manual-migration advice
+/// and leave every other statement's error untouched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum StmtKind {
+    /// A CREATE or ADD COLUMN — never refused for a type reason.
+    Plain,
+    /// An ALTER COLUMN SET DATA TYPE — the one statement the service
+    /// can refuse when the change crosses a type family.
+    Widen,
+}
+
 /// Phase 1: bring the target (and, for merge, its stage twin) into line
 /// with the schema — emitting only what the catalog image lacks.
 pub(super) fn table_ddl_stmts(
@@ -76,7 +92,7 @@ pub(super) fn table_ddl_stmts(
     table_type: TableType,
     previous: Option<&TableSchema>,
     catalog: &Catalog,
-) -> Vec<String> {
+) -> Vec<(String, StmtKind)> {
     // Merge is the only staged mode on this direct-publish path, so it
     // alone gets a stage leg.
     let plan = ensure::schema_steps(schema, mode, FullLoadPublish::DirectToTarget, previous);
@@ -126,10 +142,13 @@ pub(super) fn table_ddl_stmts(
                         quote(rdlt_connector_sqlcore::names::ARRIVAL_COL)
                     ));
                 }
-                out.push(format!(
-                    "CREATE {transient}TABLE IF NOT EXISTS {} ({})",
-                    quote(&name),
-                    columns.join(", ")
+                out.push((
+                    format!(
+                        "CREATE {transient}TABLE IF NOT EXISTS {} ({})",
+                        quote(&name),
+                        columns.join(", ")
+                    ),
+                    StmtKind::Plain,
                 ));
             }
             EnsureStep::Column { leg, column } => {
@@ -141,11 +160,14 @@ pub(super) fn table_ddl_stmts(
                 if catalog.has_column(&name, &def.name) || !catalog.exists(&name) {
                     continue;
                 }
-                out.push(format!(
-                    "ALTER TABLE {} ADD COLUMN IF NOT EXISTS {} {}",
-                    quote(&name),
-                    quote(&def.name),
-                    sql_type(&def.column_type)
+                out.push((
+                    format!(
+                        "ALTER TABLE {} ADD COLUMN IF NOT EXISTS {} {}",
+                        quote(&name),
+                        quote(&def.name),
+                        sql_type(&def.column_type)
+                    ),
+                    StmtKind::Plain,
                 ));
             }
             EnsureStep::Widen { leg, column } => {
@@ -155,11 +177,14 @@ pub(super) fn table_ddl_stmts(
                 // compilation error — loud, and a recorded limitation
                 // (generation-1 parity), never a silent misload.
                 let def = &schema.columns[column];
-                out.push(format!(
-                    "ALTER TABLE {} ALTER COLUMN {} SET DATA TYPE {}",
-                    quote(&leg_name(leg)),
-                    quote(&def.name),
-                    sql_type(&def.column_type)
+                out.push((
+                    format!(
+                        "ALTER TABLE {} ALTER COLUMN {} SET DATA TYPE {}",
+                        quote(&leg_name(leg)),
+                        quote(&def.name),
+                        sql_type(&def.column_type)
+                    ),
+                    StmtKind::Widen,
                 ));
             }
             _ => unreachable!("phase 1 plans relations and columns only"),
@@ -301,10 +326,12 @@ mod tests {
         );
         assert_eq!(
             sql,
-            vec![
+            vec![(
                 "CREATE TABLE IF NOT EXISTS \"EVENTS\" \
                  (\"ID\" NUMBER(19,0) NOT NULL, \"NOTE\" VARCHAR)"
-            ]
+                    .to_owned(),
+                StmtKind::Plain
+            )]
         );
     }
 
@@ -342,7 +369,10 @@ mod tests {
         );
         assert_eq!(
             sql,
-            vec!["ALTER TABLE \"EVENTS\" ADD COLUMN IF NOT EXISTS \"NOTE\" VARCHAR"]
+            vec![(
+                "ALTER TABLE \"EVENTS\" ADD COLUMN IF NOT EXISTS \"NOTE\" VARCHAR".to_owned(),
+                StmtKind::Plain
+            )]
         );
     }
 
@@ -358,7 +388,7 @@ mod tests {
             &Catalog::default(),
         );
         assert_eq!(sql.len(), 2, "target and stage: {sql:?}");
-        let stage = &sql[1];
+        let stage = &sql[1].0;
         assert!(
             stage.contains("__RDLT_ARRIVAL\" NUMBER AUTOINCREMENT"),
             "{stage}"
@@ -380,7 +410,10 @@ mod tests {
             None,
             &Catalog::default(),
         );
-        assert!(!sql.iter().any(|s| s.contains("__RDLT_ARRIVAL")), "{sql:?}");
+        assert!(
+            !sql.iter().any(|(s, _)| s.contains("__RDLT_ARRIVAL")),
+            "{sql:?}"
+        );
     }
 
     /// One table_type choice governs every created table.
@@ -395,7 +428,8 @@ mod tests {
             &Catalog::default(),
         );
         assert!(
-            sql.iter().all(|s| s.contains("CREATE TRANSIENT TABLE")),
+            sql.iter()
+                .all(|(s, _)| s.contains("CREATE TRANSIENT TABLE")),
             "both legs: {sql:?}"
         );
     }
@@ -425,7 +459,11 @@ mod tests {
         );
         assert_eq!(
             sql,
-            vec!["ALTER TABLE \"EVENTS\" ALTER COLUMN \"ID\" SET DATA TYPE VARCHAR"]
+            vec![(
+                "ALTER TABLE \"EVENTS\" ALTER COLUMN \"ID\" SET DATA TYPE VARCHAR".to_owned(),
+                StmtKind::Widen
+            )],
+            "flagged structurally, from the EnsureStep — not sniffed from the text"
         );
     }
 

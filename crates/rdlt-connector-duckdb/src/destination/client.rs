@@ -186,9 +186,46 @@ impl Db {
 
 /// The classification rulebook. DuckDB's C API reports NO structured
 /// error category (the crate's probe pins `ErrorCode::Unknown`), so
-/// the ONE transient key is a stable message prefix: `"IO Error"`
-/// covers file locks (another process holding the database) and disk
-/// pressure — both heal on retry. Everything else is fatal.
+/// the transient key is a stable message prefix: `"IO Error"` covers
+/// file locks (another process holding the database) and resource
+/// pressure — both heal on retry, because the message text names the
+/// operating condition, not the operation. Everything else is fatal.
+///
+/// A CARVE-OUT under that prefix (037 US6 / Task 19, S5) catches TWO
+/// sub-cases that are deterministic instead: a missing parent
+/// directory or a permission-denied path never heals on retry either —
+/// no amount of retry budget opens a path that structurally cannot
+/// open — so a run that treated them as transient would retry forever
+/// and report a false "still trying" instead of failing loud.
+///
+/// Both render through the SAME open-failure template in duckdb
+/// 1.5.x's own C++ source (`local_file_system.cpp`):
+/// `"Cannot open file \"%s\": %s"`, with `strerror(errno)` filling the
+/// `%s`. That ONE template also carries every OTHER `open()` errno —
+/// `EMFILE`/`ENFILE` ("Too many open files"), create-time `ENOSPC`
+/// ("No space left on device"), `EINTR`, and more — all of which DO
+/// heal on retry, so the template alone cannot be the key: the carve
+/// requires the template fragment `"Cannot open file"` AND one of the
+/// two SUFFIXES actually probed (`test_probes.rs`,
+/// `probe_deterministic_io_message_spellings` +
+/// `..._permission_denied`): `"No such file or directory"` or
+/// `"Permission denied"`. An errno this crate has not measured through
+/// the template — even one that IS genuinely deterministic, like a
+/// second `EEXIST`-shaped race — deliberately STAYS transient: a
+/// retry-forever on an unmeasured deterministic case is the recorded
+/// lesser evil against fatal-ing a healable one on a guess. Extend the
+/// suffix list only from a new probe pin, never from reasoning about
+/// what `strerror` might say.
+///
+/// The lock message is a DIFFERENT template —
+/// `"Could not set lock on file \"%s\": %s"` — and its `%s` is USUALLY
+/// `AdditionalProcessInfo` naming the PID holding the lock, not
+/// `strerror`; the source only falls back to `strerror(errno)` there
+/// if the diagnostic `fcntl(F_GETLK)` call itself fails. Either filling
+/// can in principle contain either suffix string, which is exactly why
+/// the carve does not key on the suffixes ALONE — it requires the
+/// open-template fragment `"Cannot open file"` too, which the lock
+/// template never renders.
 ///
 /// Classification is UNIFORM across the whole load path (031 review
 /// S2/A3): the receipt probe, the load-committed probe, and
@@ -200,6 +237,17 @@ pub(crate) fn classify(e: duckdb::Error) -> DestinationError {
     if let duckdb::Error::DuckDBFailure(_, Some(message)) = &e
         && message.starts_with("IO Error")
     {
+        // Deterministic sub-cases never heal on retry; both the
+        // template fragment AND the suffix are probe-pinned
+        // (test_probes), not guessed — an unmeasured suffix through
+        // the same template (EMFILE, ENOSPC, EINTR, ...) stays
+        // transient rather than being fatal-ed on a guess.
+        const OPEN_TEMPLATE: &str = "Cannot open file";
+        const MEASURED_SUFFIXES: &[&str] = &["No such file or directory", "Permission denied"];
+        if message.contains(OPEN_TEMPLATE) && MEASURED_SUFFIXES.iter().any(|s| message.contains(s))
+        {
+            return DestinationError::fatal(e.to_string());
+        }
         return DestinationError::transient(e.to_string());
     }
     DestinationError::fatal(e.to_string())
@@ -211,6 +259,35 @@ pub(crate) fn classify(e: duckdb::Error) -> DestinationError {
 pub(crate) fn is_constraint_violation(e: &duckdb::Error) -> bool {
     matches!(e, duckdb::Error::DuckDBFailure(_, Some(message))
         if message.starts_with("Constraint Error"))
+}
+
+/// The index-dependency refusal key (Task 15 probe, pinned live):
+/// `ALTER … SET DATA TYPE` refuses outright — a CONTAINS check, not a
+/// prefix, because the library's own wording leads with "Catalog
+/// Error" — whenever ANY index, unique or plain, still depends on the
+/// column being widened. The pre-ALTER drop (`load.rs`) clears the
+/// UNIQUE arbiter out of the way before this can fire; a PLAIN index
+/// (identity, `delete_insert`/`scd2` key columns, `merge_scope`) is
+/// NOT pre-dropped (037 US5 fix round 2, F4 — a narrower, deliberate
+/// scope), so this classifier is what turns that raw catalog error
+/// into named advice instead.
+pub(crate) fn is_index_dependency_error(e: &duckdb::Error) -> bool {
+    matches!(e, duckdb::Error::DuckDBFailure(_, Some(message))
+        if message.contains("an index depends on it!"))
+}
+
+/// The diagnosis for [`is_index_dependency_error`]: names the failing
+/// statement (which already carries the table and column — no separate
+/// parse needed) and the remedy, with the service's own wording kept
+/// inside rather than discarded.
+pub(crate) fn index_dependency_diagnosis(statement: &str, cause: &str) -> String {
+    format!(
+        "a cross-run widen is blocked by an index: `{statement}` — an index still \
+         depends on this column (a plain identity/merge-key/scope index, not the \
+         upsert arbiter, which this destination already clears itself); drop the \
+         index manually and re-run so ensure recreates it after the widen, or leave \
+         the column's type as it was if the index is load-bearing: {cause}"
+    )
 }
 
 #[cfg(test)]
@@ -256,8 +333,10 @@ mod tests {
 
     /// The classifier wiring, pinned directly on constructed library
     /// errors: an `IO Error`-prefixed failure is TRANSIENT, anything
-    /// else is FATAL. The commit path (receipt probe, load-committed
-    /// probe, `read_state`'s read arm) relies on exactly this split.
+    /// else is FATAL — EXCEPT the deterministic carve-out (037 US6 /
+    /// Task 19, S5), which routes fatal even under the `IO Error`
+    /// prefix. The commit path (receipt probe, load-committed probe,
+    /// `read_state`'s read arm) relies on exactly this split.
     #[test]
     fn classify_splits_io_errors_transient_everything_else_fatal() {
         let failure = |message: &str| {
@@ -265,10 +344,13 @@ mod tests {
         };
         assert!(
             matches!(
-                classify(failure("IO Error: could not set lock on file")),
+                classify(failure(
+                    "IO Error: Could not set lock on file \"x.duckdb\": \
+                                   Resource temporarily unavailable"
+                )),
                 DestinationError::Transient(_)
             ),
-            "an IO Error rides the retry budget"
+            "a lock conflict rides the retry budget — the rulebook's whole point"
         );
         assert!(
             matches!(
@@ -277,6 +359,84 @@ mod tests {
             ),
             "everything else stays fatal"
         );
+        // The deterministic carve-out — one case per fragment
+        // probe-pinned in test_probes.rs, plus the lock case above
+        // proving the carve-out does NOT swallow the rulebook's
+        // reason for the "IO Error" prefix existing at all.
+        assert!(
+            matches!(
+                classify(failure(
+                    "IO Error: Cannot open file \"/no/such/dir/x.duckdb\": \
+                     No such file or directory"
+                )),
+                DestinationError::Fatal(_)
+            ),
+            "a missing parent directory never heals on retry"
+        );
+        assert!(
+            matches!(
+                classify(failure(
+                    "IO Error: Cannot open file \"/no/perm/x.duckdb\": Permission denied"
+                )),
+                DestinationError::Fatal(_)
+            ),
+            "a permission-denied path never heals on retry"
+        );
+        // The template-vs-suffix guard, directly: OTHER errnos through
+        // the SAME "Cannot open file" template are healable and must
+        // stay transient — an unmeasured suffix never gets fatal-ed on
+        // a guess (fix round 1, S5).
+        assert!(
+            matches!(
+                classify(failure(
+                    "IO Error: Cannot open file \"/x.duckdb\": Too many open files"
+                )),
+                DestinationError::Transient(_)
+            ),
+            "EMFILE/ENFILE through the open template heals on retry"
+        );
+        assert!(
+            matches!(
+                classify(failure(
+                    "IO Error: Cannot open file \"/x.duckdb\": No space left on device"
+                )),
+                DestinationError::Transient(_)
+            ),
+            "create-time ENOSPC through the open template heals on retry"
+        );
+    }
+
+    /// The index-dependency classifier, pinned against the EXACT
+    /// library error shape probed live (Task 15): a `Catalog Error`
+    /// wording, not a prefix match, so `is_index_dependency_error`
+    /// must check CONTAINS. The diagnosis names the statement (which
+    /// already carries table + column) and keeps the service's cause.
+    #[test]
+    fn index_dependency_errors_are_classified_and_diagnosed() {
+        let e = duckdb::Error::DuckDBFailure(
+            duckdb::ffi::Error::new(1),
+            Some(
+                "Catalog Error: Cannot change the type of this column: an index \
+                 depends on it!"
+                    .to_owned(),
+            ),
+        );
+        assert!(is_index_dependency_error(&e));
+        assert!(!is_index_dependency_error(&duckdb::Error::DuckDBFailure(
+            duckdb::ffi::Error::new(1),
+            Some("Binder Error: no such column".to_owned())
+        )));
+
+        let diagnosis = index_dependency_diagnosis(
+            "ALTER TABLE \"t\" ALTER COLUMN \"id\" SET DATA TYPE VARCHAR",
+            &e.to_string(),
+        );
+        assert!(
+            diagnosis.contains("ALTER TABLE \"t\" ALTER COLUMN \"id\""),
+            "{diagnosis}"
+        );
+        assert!(diagnosis.contains("drop the index manually"), "{diagnosis}");
+        assert!(diagnosis.contains("an index depends on it!"), "{diagnosis}");
     }
 
     /// The in-process double-open guard at the `Db` seam: a second

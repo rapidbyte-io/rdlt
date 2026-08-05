@@ -144,6 +144,16 @@ pub trait Backend: Send {
         &mut self,
         pipeline: &PipelineId,
     ) -> Result<Option<StateDoc>, DestinationError>;
+
+    /// The session's orderly end — the SPI's `close` contract verbatim
+    /// (called exactly once whenever the session ends; strict — error
+    /// propagates — after the run's last successful commit, best-effort
+    /// — error ignored — on a failure/cancellation path; must tolerate
+    /// being closed after arbitrary partial work). Default: nothing to
+    /// do.
+    async fn close(&mut self) -> Result<(), DestinationError> {
+        Ok(())
+    }
 }
 
 /// The SPI shell around a [`DestinationConnector`] — what [`shell`]
@@ -271,6 +281,10 @@ impl<B: Backend> LoadSession for Session<B> {
         pipeline: &PipelineId,
     ) -> Result<Option<StateDoc>, DestinationError> {
         self.backend.read_state(pipeline).await
+    }
+
+    async fn close(&mut self) -> Result<(), DestinationError> {
+        self.backend.close().await
     }
 }
 
@@ -401,5 +415,20 @@ mod tests {
             .await
             .expect_err("the override propagates");
         assert!(refused.to_string().contains("probe refuses"));
+    }
+
+    /// 037 US2 T7 fix round 1: `ProbeBackend` implements neither
+    /// `Backend::close` (default `Ok(())`) — this pins BOTH halves at
+    /// once: the default itself is a trivial success, AND the shell's
+    /// `LoadSession::close` genuinely forwards to it rather than being
+    /// a no-op of its own that never reaches the backend.
+    #[tokio::test]
+    async fn the_shells_close_forwards_to_the_backends_default() {
+        let destination = shell(Probe);
+        let mut session = destination
+            .open(OpenContext::new(PipelineId::new("p"), LoadId::new("l")))
+            .await
+            .expect("probe connect always succeeds");
+        assert!(session.close().await.is_ok());
     }
 }

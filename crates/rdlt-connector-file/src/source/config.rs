@@ -46,18 +46,16 @@ pub struct Stream {
     #[serde(default)]
     pub primary_key: Option<Vec<String>>,
     /// Per-column type hints. CSV reads them directly, jsonl forwards
-    /// them to the shredder; parquet ACCEPTS AND IGNORES them (the
-    /// file already carries types).
+    /// them to the shredder; REFUSED on parquet (the file already
+    /// carries its own types — see `Config::validate`).
     #[serde(default)]
     pub type_hints: BTreeMap<String, HintType>,
-    /// Per-line JSON skim-validation (jsonl only; accepted and ignored
-    /// elsewhere).
-    #[serde(default = "default_validate")]
-    pub validate: bool,
-}
-
-fn default_validate() -> bool {
-    true
+    /// Per-line JSON skim-validation; jsonl only. Absent resolves to
+    /// the jsonl default of `true` at the connector boundary
+    /// (`unwrap_or(true)`); an EXPLICIT value on a non-jsonl format is
+    /// refused rather than silently ignored — see `Config::validate`.
+    #[serde(default)]
+    pub validate: Option<bool>,
 }
 
 /// CSV shape options.
@@ -218,6 +216,19 @@ impl Config {
                         stream.name
                     ));
                 }
+                if !stream.type_hints.is_empty() {
+                    return invalid(format!(
+                        "stream `{}`: type_hints are not honored for format parquet (the \
+                         file carries its own types)",
+                        stream.name
+                    ));
+                }
+            }
+            if stream.format != Format::Jsonl && stream.validate.is_some() {
+                return invalid(format!(
+                    "stream `{}`: validate applies only to format jsonl",
+                    stream.name
+                ));
             }
         }
         Ok(())
@@ -240,6 +251,18 @@ mod tests {
         })
     }
 
+    /// Wraps one stream body (already-valid YAML mapping contents,
+    /// indentation-relative) as the sole entry of a `streams:` document.
+    fn parse_stream_yaml(stream: &str) -> Result<Config, ConfigError> {
+        let mut yaml = String::from("streams:\n");
+        for (i, line) in stream.lines().enumerate() {
+            yaml.push_str(if i == 0 { "  - " } else { "    " });
+            yaml.push_str(line);
+            yaml.push('\n');
+        }
+        Config::from_yaml(&yaml)
+    }
+
     /// The smallest valid document, and what defaults fill in.
     #[test]
     fn a_minimal_document_parses_and_defaults_the_rest() {
@@ -247,7 +270,39 @@ mod tests {
         let stream = &config.streams[0];
         assert!(stream.location.is_none() && stream.csv.is_none());
         assert!(stream.primary_key.is_none() && stream.type_hints.is_empty());
-        assert!(stream.validate, "jsonl skim-validation defaults ON");
+        assert!(
+            stream.validate.is_none(),
+            "absent stays unresolved; the connector boundary resolves jsonl to true"
+        );
+    }
+
+    /// type_hints on parquet is refused, not silently ignored.
+    #[test]
+    fn type_hints_on_parquet_are_refused_not_ignored() {
+        let err = parse_stream_yaml("name: t\nformat: parquet\npath: p\ntype_hints:\n  a: int64\n")
+            .expect_err("parquet carries its own types");
+        assert!(
+            err.to_string().contains(
+                "stream `t`: type_hints are not honored for format parquet (the file \
+                 carries its own types)"
+            ),
+            "{err}"
+        );
+    }
+
+    /// An explicit `validate` off jsonl is refused; the default (absent
+    /// key) stays silently fine on csv/parquet.
+    #[test]
+    fn explicit_validate_off_jsonl_is_refused_and_the_default_is_not() {
+        let err = parse_stream_yaml("name: t\nformat: csv\npath: p\nvalidate: true\n")
+            .expect_err("validate is jsonl-only");
+        assert!(
+            err.to_string()
+                .contains("stream `t`: validate applies only to format jsonl"),
+            "{err}"
+        );
+        // The DEFAULT stays silent: an absent key on csv/parquet is fine.
+        assert!(parse_stream_yaml("name: t\nformat: csv\npath: p\n").is_ok());
     }
 
     /// Every refusal with its frozen spelling.

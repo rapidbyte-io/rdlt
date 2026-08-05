@@ -73,7 +73,11 @@ pub struct CatalogOptions {
     /// Exactly one auth scheme.
     pub auth: Auth,
     /// Verbatim passthrough properties. Inserted LAST, so they win
-    /// over generated ones — the documented escape hatch.
+    /// over generated ones — the documented escape hatch for
+    /// non-secret keys (e.g. `uri`). The four credential-bearing keys
+    /// (`credential`, `token`, `s3.access-key-id`,
+    /// `s3.secret-access-key`) are refused at validate; use the typed
+    /// auth fields instead.
     #[serde(default)]
     pub props: BTreeMap<String, String>,
 }
@@ -325,6 +329,14 @@ impl Config {
                 "catalog.auth.oauth2_client_credentials.token_url `{url}` must be an http(s) URL"
             ));
         }
+        for key in super::client::CREDENTIAL_PROP_KEYS {
+            if self.catalog.props.contains_key(*key) {
+                return invalid(format!(
+                    "catalog.props may not override the credential key `{key}`; use the typed \
+                     auth fields"
+                ));
+            }
+        }
         if self.namespace.is_empty() || self.namespace.split('.').any(str::is_empty) {
             return invalid(format!(
                 "namespace `{}` must be non-empty dot-separated levels",
@@ -566,12 +578,71 @@ mod tests {
                 },
                 "tables.events.partition_by.id: truncate width must be >= 1",
             ),
+            (
+                {
+                    let mut doc = minimal();
+                    doc["catalog"]["props"] = serde_json::json!({"credential": "sneaky"});
+                    doc
+                },
+                "catalog.props may not override the credential key `credential`; use the typed \
+                 auth fields",
+            ),
+            (
+                {
+                    let mut doc = minimal();
+                    doc["catalog"]["props"] = serde_json::json!({"token": "sneaky"});
+                    doc
+                },
+                "catalog.props may not override the credential key `token`; use the typed auth \
+                 fields",
+            ),
+            (
+                {
+                    let mut doc = minimal();
+                    doc["catalog"]["props"] = serde_json::json!({"s3.access-key-id": "sneaky"});
+                    doc
+                },
+                "catalog.props may not override the credential key `s3.access-key-id`; use the \
+                 typed auth fields",
+            ),
+            (
+                {
+                    let mut doc = minimal();
+                    doc["catalog"]["props"] = serde_json::json!({"s3.secret-access-key": "sneaky"});
+                    doc
+                },
+                "catalog.props may not override the credential key `s3.secret-access-key`; use \
+                 the typed auth fields",
+            ),
         ];
         for (doc, want) in cases {
             let err = Config::from_value(doc).expect_err("refused");
             assert_eq!(
                 format!("{err}"),
                 format!("invalid iceberg destination config: {want}"),
+            );
+        }
+    }
+
+    /// The Secret bypass, closed: none of the four credential-bearing
+    /// prop keys may arrive through `catalog.props`, individually.
+    #[test]
+    fn credential_keys_in_catalog_props_are_refused() {
+        for key in [
+            "credential",
+            "token",
+            "s3.access-key-id",
+            "s3.secret-access-key",
+        ] {
+            let mut doc = minimal();
+            doc["catalog"]["props"] = serde_json::json!({ key: "sneaky" });
+            let err = Config::from_value(doc).expect_err(key);
+            assert!(
+                err.to_string().contains(&format!(
+                    "catalog.props may not override the credential key `{key}`; use the typed \
+                     auth fields"
+                )),
+                "{err}"
             );
         }
     }

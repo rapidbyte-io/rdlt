@@ -131,11 +131,23 @@ impl SourceConnector for File {
                 }
                 Format::Parquet => read::parquet::read_task(task, &mut cursor, feed).await?,
                 Format::Jsonl if codec_of(&task.path).is_plain() => {
-                    read::jsonl::read_task(&location, task, declared.validate, &mut cursor, feed)
-                        .await?
+                    read::jsonl::read_task(
+                        &location,
+                        task,
+                        declared.validate.unwrap_or(true),
+                        &mut cursor,
+                        feed,
+                    )
+                    .await?
                 }
                 Format::Jsonl => {
-                    read::jsonl::read_task_whole(task, declared.validate, &mut cursor, feed).await?
+                    read::jsonl::read_task_whole(
+                        task,
+                        declared.validate.unwrap_or(true),
+                        &mut cursor,
+                        feed,
+                    )
+                    .await?
                 }
             };
             if !keep_going {
