@@ -104,12 +104,6 @@ impl Report {
     }
 
     /// Record that `clause` was not exercised, and why.
-    #[expect(
-        dead_code,
-        reason = "source certification has no skippable clause yet; the first Skip \
-                  emitters arrive with destination certification, and this expect \
-                  falls out with them"
-    )]
     pub(crate) fn skip(&mut self, clause: &'static str, why: String) {
         self.entries.push(Entry {
             clause,

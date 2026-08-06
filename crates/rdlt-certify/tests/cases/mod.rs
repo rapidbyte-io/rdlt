@@ -3,5 +3,7 @@
 #[cfg(feature = "spawn-bins")]
 mod support;
 #[cfg(feature = "spawn-bins")]
+mod test_certify_file_destination;
+#[cfg(feature = "spawn-bins")]
 mod test_certify_file_source;
 mod test_report;

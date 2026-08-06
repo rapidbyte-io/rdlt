@@ -15,10 +15,12 @@
 //! The modules are private and the surface below is the one canonical
 //! path to every name.
 
+mod destination;
 mod report;
 mod source;
 mod target;
 
+pub use destination::certify_destination;
 pub use report::{Entry, Report, Verdict};
 pub use source::certify_source;
 pub use target::Target;

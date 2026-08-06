@@ -4577,7 +4577,9 @@ dependencies = [
 name = "rdlt-certify"
 version = "0.3.0"
 dependencies = [
+ "async-trait",
  "rdlt-connector",
+ "rdlt-connector-client",
  "rdlt-connector-protocol",
  "rdlt-runtime",
  "rdlt-testkit",
@@ -4585,6 +4587,8 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-stream",
+ "tonic",
 ]
 
 [[package]]

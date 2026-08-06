@@ -23,6 +23,17 @@ spawn-bins = []
 
 [dependencies]
 rdlt-runtime = { workspace = true }
+# P8/P9 drive the LIVE socket directly — a second dial and a raw
+# `OpenSession` are wire moves the managed adapter deliberately never
+# makes, so the certifier reaches under it to the client crate.
+rdlt-connector-client = { workspace = true }
+# For implementing the SPI `Destination` adapter the D-reuse suite runs
+# against (the settling `open`).
+async-trait = { workspace = true }
+# For judging the P8 refusal by its typed Status code, and the raw
+# second `OpenSession` P8 sends.
+tonic = { workspace = true }
+tokio-stream = { workspace = true }
 # For naming `ConnectorSpec` — the shape the provider's Spec reply
 # carries, which P4 judges and path-only identity resolution reads.
 rdlt-connector = { workspace = true }
@@ -42,6 +53,8 @@ tokio = { workspace = true, features = ["io-util"] }
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true }
+# The test probe implements the testkit's async `TableProbe` trait.
+async-trait = { workspace = true }
 
 [lints]
 workspace = true
