@@ -309,7 +309,156 @@ fn is_executable_file(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    //! The P2/P4 rogue suite (the T10b carry — both clauses' fail arms
+    //! were code-present but unproven against a designated rogue): P2
+    //! and P4 probe through the PROVIDER's spawn path, so each rogue
+    //! here is two halves — an in-process tonic server bound to a UDS
+    //! (the crate's rogue substrate) plus a spawnable script fake that
+    //! prints one valid handshake line naming that socket (the 039
+    //! runtime T5 idiom). No built bin is needed, so these ride the
+    //! bare (ungated) suite, driving the pub(crate) probe seams
+    //! directly with the exact strings `certify_source` folds into the
+    //! report's Fail entries.
+
+    use rdlt_connector::ConnectorSpec;
+    use rdlt_runtime::ConnectorProvider;
+
     use super::*;
+    use crate::report::Verdict;
+    use crate::rogue::{self, HandshakeScript, RogueSource};
+
+    /// Write an executable script fake into `dir`: it prints one valid
+    /// handshake line naming `socket` (where an in-process rogue is
+    /// already listening) and then stays alive holding the pipes —
+    /// `exec` so the pid the provider's guard kills is the process
+    /// actually holding them.
+    fn write_connector_fake(dir: &Path, name: &str, socket: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\necho 'rdlt-connector|1|0|0|{}'\nexec sleep 30\n",
+                socket.display()
+            ),
+        )
+        .expect("the fake script writes");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("the fake script becomes executable");
+        path
+    }
+
+    #[track_caller]
+    fn assert_fail(report: &Report, clause: &str, evidence: &str) {
+        let verdict = &report
+            .entries
+            .iter()
+            .find(|entry| entry.clause == clause)
+            .unwrap_or_else(|| panic!("no {clause} entry:\n{}", report.render_text()))
+            .verdict;
+        match verdict {
+            Verdict::Fail(why) => assert_eq!(why, evidence, "clause {clause}"),
+            other => panic!(
+                "{clause} must Fail, got {other:?}:\n{}",
+                report.render_text()
+            ),
+        }
+    }
+
+    /// P2's designated rogue: a connector whose config gate accepts
+    /// ANYTHING — the truthful-identity rogue source never reads
+    /// `config_json`, so the bogus one-unknown-field document sails
+    /// through its handshake — must fail P2 with the pinned evidence.
+    /// The spawn is the certifier's own: the provider spawns the script
+    /// fake, follows its handshake line to the rogue's socket, and the
+    /// handshake ACCEPTS, which is exactly the outcome shape
+    /// `report_p2` must convict.
+    #[tokio::test]
+    async fn a_connector_accepting_the_bogus_config_fails_p2() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = dir.path().join("rogue.sock");
+        let _serving = rogue::serve_source(
+            &socket,
+            RogueSource {
+                handshake: HandshakeScript::truthful(),
+                streams: vec![],
+                read_declared: vec![],
+                read_undeclared: vec![],
+            },
+        );
+        let script = write_connector_fake(dir.path(), "accepts-any-config", &socket);
+
+        // The requirement a path-resolved certification runs under: the
+        // id learned from the connector's own claim (the truthful
+        // script reports `rogue`), the binary as the operator named it.
+        let requirement = ConnectorRequirement::new("rogue").with_path(&script);
+        let provider = LocalBinaryConnectorProvider::new();
+        // The certifier's own probe document — `certify_source`'s exact
+        // spelling.
+        let bogus = serde_json::json!({ "__rdlt_certify_bogus__": true });
+
+        let mut report = Report::default();
+        report_p2(
+            &mut report,
+            tokio::time::timeout(CLAUSE_TIMEOUT, provider.source(&requirement, &bogus)).await,
+        );
+        assert_fail(
+            &report,
+            "P2",
+            "the connector accepted a config document consisting of one unknown field — \
+             the config gate must refuse unknown fields with a typed handshake refusal",
+        );
+    }
+
+    /// Serve `spec` from the blank-spec rogue behind a script fake and
+    /// run the certifier's own Spec fetch + P4 judgment against it —
+    /// the requirement is path-only with an EMPTY id, exactly
+    /// [`Target::resolve_path`]'s shape, so the provider's identity
+    /// check is bypassed and the incomplete document reaches the
+    /// judgment rather than dying earlier as an id mismatch.
+    async fn p4_report_for(spec: ConnectorSpec) -> Report {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = dir.path().join("rogue.sock");
+        let _serving = rogue::serve_spec(&socket, spec);
+        let script = write_connector_fake(dir.path(), "blank-spec", &socket);
+
+        let requirement = ConnectorRequirement::new("").with_path(&script);
+        let provider = LocalBinaryConnectorProvider::new();
+        let spec = fetch_spec(&provider, &requirement).await;
+        let mut report = Report::default();
+        report_p4(&mut report, &spec);
+        report
+    }
+
+    /// P4's designated rogue, primary variant: a Spec reply whose
+    /// `name` is blank fails P4 with the incompleteness evidence naming
+    /// exactly that field — version and schema are well-formed, so the
+    /// blank name is the ONE problem the pin convicts.
+    #[tokio::test]
+    async fn a_blank_name_spec_reply_fails_p4() {
+        let mut spec = ConnectorSpec::new("", "0.0.0");
+        spec.config_schema = Some(serde_json::json!({ "type": "object" }));
+        let report = p4_report_for(spec).await;
+        assert_fail(
+            &report,
+            "P4",
+            "the Spec reply is incomplete: `name` is empty",
+        );
+    }
+
+    /// P4's schema variant: a `config_schema` that parses but is not a
+    /// JSON object (an array here) fails P4 on the schema arm alone.
+    #[tokio::test]
+    async fn a_non_object_config_schema_fails_p4() {
+        let mut spec = ConnectorSpec::new("rogue", "0.0.0");
+        spec.config_schema = Some(serde_json::json!(["not", "an", "object"]));
+        let report = p4_report_for(spec).await;
+        assert_fail(
+            &report,
+            "P4",
+            "the Spec reply is incomplete: `config_schema` is not a JSON object",
+        );
+    }
 
     /// The negative pin for the manual `Debug`: a marker planted inside
     /// the config document never reaches the rendered output — the

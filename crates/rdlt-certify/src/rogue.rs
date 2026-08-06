@@ -1,7 +1,8 @@
 //! Hand-driven rogue servers for the clause suites — each serves a
 //! shape the sdk's serve half can never produce (a skewed identity, a
 //! two-batch arrow frame, a client rendering inside a frame message, a
-//! second session accepted, a slot never reclaimed), which is the
+//! second session accepted, a slot never reclaimed, an incomplete
+//! pre-handshake Spec reply), which is the
 //! whole point: certification demands every clause be PROVEN able to
 //! fail, and only a server willing to violate the rules can prove it.
 //! The 039 idiom (rdlt-connector-client's rogue fixture) promoted into
@@ -228,6 +229,59 @@ pub(crate) fn serve_source(path: &Path, rogue: RogueSource) -> JoinHandle<()> {
     let serving = tonic::transport::Server::builder()
         .add_service(ConnectorServer::from_arc(Arc::clone(&rogue)))
         .add_service(SourceServiceServer::from_arc(rogue))
+        .serve_with_incoming(incoming);
+    tokio::spawn(async move {
+        let _ = serving.await;
+    })
+}
+
+/// A rogue answering the config-free pre-handshake `Spec` RPC with
+/// whatever document it is scripted with — P4's designated rogue
+/// serves an INCOMPLETE one (a blank name, a non-object
+/// `config_schema`), shapes the sdk's serve half can never produce
+/// because a served connector's spec is built from its own crate
+/// constants. Handshake and Check refuse: the P4 probe is the Spec
+/// fetch alone, and nothing else may reach this rogue.
+pub(crate) struct RogueBlankSpec {
+    /// The spec document the `Spec` RPC answers, as scripted.
+    pub(crate) spec: ConnectorSpec,
+}
+
+#[tonic::async_trait]
+impl Connector for RogueBlankSpec {
+    async fn handshake(
+        &self,
+        _request: Request<proto::HandshakeRequest>,
+    ) -> Result<Response<proto::HandshakeReply>, Status> {
+        Err(Status::unimplemented("the rogue serves Spec alone"))
+    }
+
+    async fn check(
+        &self,
+        _request: Request<proto::CheckRequest>,
+    ) -> Result<Response<proto::CheckReply>, Status> {
+        Err(Status::unimplemented("the rogue serves Spec alone"))
+    }
+
+    async fn spec(
+        &self,
+        _request: Request<proto::SpecRequest>,
+    ) -> Result<Response<proto::SpecReply>, Status> {
+        Ok(Response::new(proto::SpecReply {
+            spec_json: serde_json::to_vec(&self.spec)
+                .expect("a ConnectorSpec serializes to JSON infallibly"),
+        }))
+    }
+}
+
+/// Bind the blank-spec rogue at `path` (synchronously) and serve until
+/// the returned task is dropped — [`serve_source`]'s pre-handshake twin
+/// for the P4 probe.
+pub(crate) fn serve_spec(path: &Path, spec: ConnectorSpec) -> JoinHandle<()> {
+    let listener = tokio::net::UnixListener::bind(path).expect("bind the rogue's socket");
+    let incoming = UnixListenerStream::new(listener);
+    let serving = tonic::transport::Server::builder()
+        .add_service(ConnectorServer::new(RogueBlankSpec { spec }))
         .serve_with_incoming(incoming);
     tokio::spawn(async move {
         let _ = serving.await;
