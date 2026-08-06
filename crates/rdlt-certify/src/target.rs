@@ -384,6 +384,7 @@ mod tests {
                 streams: vec![],
                 read_declared: vec![],
                 read_undeclared: vec![],
+                read_hold_open: false,
             },
         );
         let script = write_connector_fake(dir.path(), "accepts-any-config", &socket);

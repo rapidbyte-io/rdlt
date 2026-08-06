@@ -1090,6 +1090,7 @@ mod tests {
                 streams: vec![],
                 read_declared: vec![],
                 read_undeclared: shaped_refusal(),
+                read_hold_open: false,
             },
             "rogue",
         )
@@ -1122,6 +1123,7 @@ mod tests {
                 streams: vec![],
                 read_declared: vec![],
                 read_undeclared: shaped_refusal(),
+                read_hold_open: false,
             },
             "rogue",
         )
@@ -1144,6 +1146,7 @@ mod tests {
                 streams: vec![],
                 read_declared: vec![],
                 read_undeclared: shaped_refusal(),
+                read_hold_open: false,
             },
             "somebody-else",
         )
@@ -1166,6 +1169,7 @@ mod tests {
                 streams: vec![StreamSpec::new("rogue_stream")],
                 read_declared: vec![rogue::arrow_read_frame(2)],
                 read_undeclared: shaped_refusal(),
+                read_hold_open: false,
             },
             "rogue",
         )
@@ -1197,6 +1201,7 @@ mod tests {
                     Classification::Fatal,
                     "fatal source error: boom",
                 ))],
+                read_hold_open: false,
             },
             "rogue",
         )
@@ -1223,6 +1228,7 @@ mod tests {
                 streams: vec![],
                 read_declared: vec![],
                 read_undeclared: vec![],
+                read_hold_open: false,
             },
             "rogue",
         )
@@ -1249,6 +1255,7 @@ mod tests {
                     message: "boom".to_string(),
                     retry_after_ms: None,
                 })],
+                read_hold_open: false,
             },
             "rogue",
         )
@@ -1274,6 +1281,7 @@ mod tests {
                 streams: vec![],
                 read_declared: vec![],
                 read_undeclared: vec![],
+                read_hold_open: false,
             },
             "rogue",
         )

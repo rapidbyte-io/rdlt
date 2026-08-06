@@ -544,3 +544,112 @@ fn render_open_error(error: crate::wire::WireOpenError) -> String {
         crate::wire::WireOpenError::Other(why) => why,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! The K-S designated rogue (the certification bar's last gap —
+    //! the fail arms were code-present but never PROVEN to fire): a
+    //! script fake prints one valid handshake line naming an
+    //! IN-PROCESS rogue server's socket, so the matrix SIGKILLs the
+    //! SCRIPT while the tonic server SURVIVES on its socket. The
+    //! post-kill wire then keeps answering (K-S1's still-answered
+    //! arm) or holds a read stream open in silence (K-S2/K-S3's
+    //! window exhaustion). No built bin, so this rides the bare
+    //! (ungated) suite — the target.rs P2/P4 precedent, one seam
+    //! down.
+    //!
+    //! THE RELINK TRICK, load-bearing: every arm's probe drop unlinks
+    //! the socket path its handshake line advertised, which would
+    //! sever the NEXT arm from the one surviving rogue. The script
+    //! therefore advertises a SYMLINK it re-creates on every spawn
+    //! (`ln -sf`), so each arm's unlink removes only its own link and
+    //! the rogue's real socket outlives all three arms.
+
+    use std::path::{Path, PathBuf};
+
+    use rdlt_connector::StreamSpec;
+
+    use super::*;
+    use crate::report::Verdict;
+    use crate::rogue::{self, HandshakeScript, RogueSource};
+
+    /// Write the relinking script fake into `dir`: re-create `link`
+    /// pointing at `real` (where the in-process rogue listens), print
+    /// one valid handshake line naming `link`, then stay alive
+    /// holding the pipes — `exec` so the pid the matrix SIGKILLs is
+    /// the process actually holding them.
+    fn write_relinking_fake(dir: &Path, name: &str, real: &Path, link: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\nln -sf '{}' '{}'\necho 'rdlt-connector|1|0|0|{}'\nexec sleep 30\n",
+                real.display(),
+                link.display(),
+                link.display()
+            ),
+        )
+        .expect("the fake script writes");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("the fake script becomes executable");
+        path
+    }
+
+    #[track_caller]
+    fn assert_fail(entries: &[Entry], clause: &str, evidence: &str) {
+        let verdict = &entries
+            .iter()
+            .find(|entry| entry.clause == clause)
+            .unwrap_or_else(|| panic!("no {clause} entry"))
+            .verdict;
+        match verdict {
+            Verdict::Fail(why) => assert_eq!(why, evidence, "clause {clause}"),
+            other => panic!("{clause} must Fail, got {other:?}"),
+        }
+    }
+
+    /// ONE rogue fires every K-S clause's post-kill fail arm: the
+    /// hold-open rogue serves a json frame (K-S2's boundary) and a
+    /// checkpoint frame (K-S3's), then silence forever. K-S1's kill
+    /// leaves the Streams RPC answering — the still-answered arm,
+    /// pinned full-string. K-S2 and K-S3 share the other distinct
+    /// spelling, `no_error()` on window exhaustion — the killed
+    /// script is gone but the surviving stream neither errors nor
+    /// ends, so each arm waits out the full 10 s window (this test's
+    /// deliberate ~20 s cost). K-S1's own `no_error()` seat (a
+    /// Streams RPC that never answers) shares that exact spelling
+    /// and needs no third rogue.
+    #[tokio::test]
+    async fn a_rogue_surviving_the_kill_fails_every_source_arm() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let real = dir.path().join("rogue.sock");
+        let link = dir.path().join("live.sock");
+        let _serving = rogue::serve_source(
+            &real,
+            RogueSource {
+                handshake: HandshakeScript::truthful(),
+                streams: vec![StreamSpec::new("rogue_stream")],
+                read_declared: vec![rogue::json_read_frame(), rogue::checkpoint_read_frame()],
+                read_undeclared: vec![],
+                read_hold_open: true,
+            },
+        );
+        let script = write_relinking_fake(dir.path(), "survives-the-kill", &real, &link);
+        let target = Target::resolve_path(script, serde_json::json!({}));
+
+        let entries = kill_matrix_source(&target).await;
+
+        let clauses: Vec<&str> = entries.iter().map(|entry| entry.clause).collect();
+        assert_eq!(clauses, SOURCE_KILL_CLAUSES, "the K-vocabulary, in order");
+        assert_fail(
+            &entries,
+            "K-S1",
+            "the Streams RPC still answered after the connector process was SIGKILLed",
+        );
+        let exhausted = "no typed error surfaced within 10s of SIGKILL — a dead connector must fail the \
+             wire, never hang it";
+        assert_fail(&entries, "K-S2", exhausted);
+        assert_fail(&entries, "K-S3", exhausted);
+    }
+}

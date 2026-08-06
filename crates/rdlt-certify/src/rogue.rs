@@ -2,7 +2,8 @@
 //! shape the sdk's serve half can never produce (a skewed identity, a
 //! two-batch arrow frame, a client rendering inside a frame message, a
 //! second session accepted, a slot never reclaimed, an incomplete
-//! pre-handshake Spec reply), which is the
+//! pre-handshake Spec reply, a read stream held open forever past its
+//! scripted frames), which is the
 //! whole point: certification demands every clause be PROVEN able to
 //! fail, and only a server willing to violate the rules can prove it.
 //! The 039 idiom (rdlt-connector-client's rogue fixture) promoted into
@@ -77,6 +78,21 @@ pub(crate) fn arrow_read_frame(batches: usize) -> proto::ReadFrame {
     }
 }
 
+/// One `raw_json` read frame — a boundary frame for the kill-matrix
+/// rogue (K-S2 breaks on the first non-checkpoint frame).
+pub(crate) fn json_read_frame() -> proto::ReadFrame {
+    proto::ReadFrame {
+        frame: Some(read_frame::Frame::RawJson(br#"{"id":1}"#.to_vec())),
+    }
+}
+
+/// One `checkpoint_cursor_json` read frame — K-S3's boundary frame.
+pub(crate) fn checkpoint_read_frame() -> proto::ReadFrame {
+    proto::ReadFrame {
+        frame: Some(read_frame::Frame::CheckpointCursorJson(b"{}".to_vec())),
+    }
+}
+
 /// What the rogue's `Handshake` RPC answers.
 pub(crate) enum HandshakeScript {
     /// Answer `HandshakeOk` with exactly these values — the skew
@@ -119,6 +135,12 @@ pub(crate) struct RogueSource {
     pub(crate) read_declared: Vec<proto::ReadFrame>,
     /// Frames served when `Read` names anything else.
     pub(crate) read_undeclared: Vec<proto::ReadFrame>,
+    /// When set, a read stream NEVER ends after its scripted frames —
+    /// the sender is parked forever, so a client that outlives its
+    /// connector observes silence, not a clean end. The kill matrix's
+    /// window-exhaustion rogue (the sdk's serve half always terminates
+    /// its streams).
+    pub(crate) read_hold_open: bool,
 }
 
 #[tonic::async_trait]
@@ -208,12 +230,20 @@ impl SourceService for RogueSource {
             self.read_undeclared.clone()
         };
         // Preload and drop the sender: the stream serves the scripted
-        // frames and then ends — a clean end of stream.
+        // frames and then ends — a clean end of stream. The hold-open
+        // script instead parks the sender forever: frames, then
+        // silence, never an end.
         let (frame_tx, frame_rx) = tokio::sync::mpsc::channel(frames.len().max(1));
         for frame in frames {
             frame_tx
                 .try_send(Ok(frame))
                 .expect("a preloaded channel sized to its frames has capacity");
+        }
+        if self.read_hold_open {
+            tokio::spawn(async move {
+                let _held_forever = frame_tx;
+                std::future::pending::<()>().await;
+            });
         }
         Ok(Response::new(ReceiverStream::new(frame_rx)))
     }
