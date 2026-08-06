@@ -100,7 +100,7 @@ impl ManagedSource {
         Self {
             adapter,
             identity: identity.into(),
-            resolved_version: outcome.spec.version.clone(),
+            resolved_version: outcome.connector_version.clone(),
             negotiated_protocol: outcome.negotiated_protocol,
             state_format_versions: outcome.state_format_versions.clone(),
             guard,
@@ -112,7 +112,9 @@ impl ManagedSource {
         &self.identity
     }
 
-    /// The version the connector reported in its handshake.
+    /// The VERIFIED version the connector reported in its handshake
+    /// (D-039-2) — a foreign server can no longer pass a pin while
+    /// `spec.version` disagrees.
     pub fn resolved_version(&self) -> &str {
         &self.resolved_version
     }
@@ -180,7 +182,7 @@ impl ManagedDestination {
         Self {
             adapter,
             identity: identity.into(),
-            resolved_version: outcome.spec.version.clone(),
+            resolved_version: outcome.connector_version.clone(),
             negotiated_protocol: outcome.negotiated_protocol,
             state_format_versions: outcome.state_format_versions.clone(),
             guard,
@@ -193,7 +195,9 @@ impl ManagedDestination {
         &self.identity
     }
 
-    /// The version the connector reported in its handshake.
+    /// The VERIFIED version the connector reported in its handshake
+    /// (D-039-2) — a foreign server can no longer pass a pin while
+    /// `spec.version` disagrees.
     pub fn resolved_version(&self) -> &str {
         &self.resolved_version
     }

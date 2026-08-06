@@ -84,6 +84,16 @@ impl ConnectorRequirement {
 /// Everything a verified handshake established.
 #[derive(Debug, Clone)]
 pub struct HandshakeOutcome {
+    /// VERIFIED at handshake (D-039-2) — the identity the wire
+    /// actually reported, as distinct from the unverified `spec`
+    /// decode; the 039 final-review skew record, closed by carrying
+    /// the verified fields.
+    pub connector_id: String,
+    /// VERIFIED at handshake (D-039-2) — the identity the wire
+    /// actually reported, as distinct from the unverified `spec`
+    /// decode; the 039 final-review skew record, closed by carrying
+    /// the verified fields.
+    pub connector_version: String,
     /// The connector's self-description, decoded from `spec_json`.
     pub spec: ConnectorSpec,
     /// The destination's declared capabilities — `None` for a source
@@ -171,6 +181,11 @@ pub async fn handshake(
     };
 
     Ok(HandshakeOutcome {
+        // The values the identity checks above verified — carried so
+        // consumers read what the wire reported, never a re-derivation
+        // from the unverified spec payload.
+        connector_id: ok.connector_id,
+        connector_version: ok.connector_version,
         spec,
         capabilities,
         // prost generates a HashMap; the outcome holds a BTreeMap so an

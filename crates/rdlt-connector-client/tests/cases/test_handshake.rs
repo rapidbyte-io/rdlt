@@ -8,6 +8,7 @@ use rdlt_connector_client::{
     Classification, ClientError, ConnectorRequirement, Role, dial, handshake,
 };
 use rdlt_connector_sdk::serve;
+use rdlt_connector_sdk::source::SourceConnector as _;
 
 use super::support::echo::{EchoDestination, EchoSource};
 
@@ -51,6 +52,11 @@ async fn a_source_handshake_populates_the_outcome() {
 
     assert_eq!(outcome.spec.name, "echo-source");
     assert_eq!(outcome.spec.version, "0.0.0");
+    // The VERIFIED identity (D-039-2) rides in the outcome — the 039
+    // final-review skew record closed: the wire's own reported values,
+    // not a re-read of the unverified `spec` decode.
+    assert_eq!(outcome.connector_id, EchoSource::NAME);
+    assert_eq!(outcome.connector_version, EchoSource::VERSION);
     assert!(
         outcome.spec.config_schema.is_none(),
         "echo declares no config schema — the trait default"
