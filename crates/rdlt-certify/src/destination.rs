@@ -83,8 +83,8 @@ const RECLAIM_POLL: Duration = Duration::from_millis(100);
 /// supplied — certification never silently narrows to a smaller
 /// passing set. Shared with the kill matrix's destination arms
 /// ([`crate::kill`]): their convergence assert is a read-back too.
-pub(crate) const NO_PROBE_SKIP: &str =
-    "no table probe supplied — read-back clauses need one; pass --probe or use the library API";
+pub(crate) const NO_PROBE_SKIP: &str = "no table probe supplied — read-back clauses need one; the library API accepts a \
+     TableProbe (the bin gains --probe when a portable probe format exists)";
 
 /// The skip reason D8 carries for a destination that declares no merge
 /// capability — the suite asserts D8 only for merge-capable
@@ -663,9 +663,17 @@ mod tests {
             .expect_err("the slot was never reclaimed — P9 must fail");
         let pinned = "abandoned session was not reclaimed: a fresh session still refused 10s \
                       after the stream ended without Close: ";
+        let suffix = why.strip_prefix(pinned).unwrap_or_else(|| {
+            panic!("the evidence must carry the pinned prefix `{pinned}`, got: {why}")
+        });
+        // The cause must be `settle_open_wire`'s window-exhaustion
+        // spelling specifically — proof the failure came from the
+        // ceiling refusal outlasting the reclaim window, not from some
+        // other open error folded into the same prefix.
+        let exhaustion = "the one-session refusal never lifted: ";
         assert!(
-            why.starts_with(pinned),
-            "the evidence must carry the pinned prefix `{pinned}`, got: {why}"
+            suffix.starts_with(exhaustion),
+            "the evidence must carry the exhaustion suffix `{exhaustion}`, got: {why}"
         );
     }
 

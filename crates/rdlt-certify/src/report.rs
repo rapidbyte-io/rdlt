@@ -242,8 +242,9 @@ pub const CLAUSES: &[Clause] = &[
     Clause {
         id: "K-D5",
         title: "SIGKILL after publish, then exactly-once on re-run",
-        definition: "The connector is SIGKILLed right after publish is answered. The re-run \
-                     must converge on exactly the fixture rows — a kill that let a committed \
+        definition: "The connector is SIGKILLed right after publish is answered. Same two \
+                     promises as K-D1: a typed error on the dead wire, then a re-run that \
+                     converges on exactly the fixture rows — a kill that let a committed \
                      row land twice breaks the count as surely as one that lost a row.",
     },
     Clause {
