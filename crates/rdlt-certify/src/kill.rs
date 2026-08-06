@@ -69,9 +69,14 @@ const READ_BUDGET_BYTES: u64 = 64 * 1024;
 /// The one `commit_seq` every destination arm drives.
 const KILL_SEQ: u64 = 1;
 
-/// The destination K-clauses in matrix order — also the Skip set when
-/// no probe was supplied.
-const DEST_KILL_CLAUSES: [&str; 6] = ["K-D1", "K-D2", "K-D3", "K-D4", "K-D5", "K-D6"];
+/// The source K-clauses in matrix order — zipped with their boundaries
+/// at the matrix loop.
+pub(crate) const SOURCE_KILL_CLAUSES: [&str; 3] = ["K-S1", "K-S2", "K-S3"];
+
+/// The destination K-clauses in matrix order — zipped with their
+/// boundaries at the matrix loop, and the Skip set when no probe was
+/// supplied.
+pub(crate) const DEST_KILL_CLAUSES: [&str; 6] = ["K-D1", "K-D2", "K-D3", "K-D4", "K-D5", "K-D6"];
 
 /// The one spelling a post-kill hang fails with.
 fn no_error() -> String {
@@ -119,11 +124,11 @@ enum SourceBoundary {
 /// Entries come back in K order, every clause present.
 pub async fn kill_matrix_source(target: &Target) -> Vec<Entry> {
     let mut report = Report::default();
-    for (clause, boundary) in [
-        ("K-S1", SourceBoundary::PostHandshake),
-        ("K-S2", SourceBoundary::AfterFirstFrame),
-        ("K-S3", SourceBoundary::AfterFirstCheckpoint),
-    ] {
+    for (clause, boundary) in SOURCE_KILL_CLAUSES.into_iter().zip([
+        SourceBoundary::PostHandshake,
+        SourceBoundary::AfterFirstFrame,
+        SourceBoundary::AfterFirstCheckpoint,
+    ]) {
         let outcome = tokio::time::timeout(CLAUSE_TIMEOUT, source_arm(target, boundary)).await;
         record(&mut report, clause, outcome);
     }
@@ -275,14 +280,14 @@ pub async fn kill_matrix_destination(
         }
         return report.entries;
     };
-    for (clause, boundary) in [
-        ("K-D1", DestBoundary::PostOpen),
-        ("K-D2", DestBoundary::PostEnsure),
-        ("K-D3", DestBoundary::PostWrite),
-        ("K-D4", DestBoundary::PrePublish),
-        ("K-D5", DestBoundary::PostPublish),
-        ("K-D6", DestBoundary::PostClose),
-    ] {
+    for (clause, boundary) in DEST_KILL_CLAUSES.into_iter().zip([
+        DestBoundary::PostOpen,
+        DestBoundary::PostEnsure,
+        DestBoundary::PostWrite,
+        DestBoundary::PrePublish,
+        DestBoundary::PostPublish,
+        DestBoundary::PostClose,
+    ]) {
         let outcome = tokio::time::timeout(
             CLAUSE_TIMEOUT,
             destination_arm(target, probe, clause, boundary),

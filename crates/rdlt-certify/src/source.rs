@@ -16,13 +16,14 @@ use rdlt_testkit::conformance::source::verify_source;
 
 use crate::report::{CLAUSE_TIMEOUT, Report, timed_out};
 use crate::target::{
-    Target, fetch_spec, probe_handshake_line, report_p2, report_p4, resolved_requirement,
+    GENERIC_CLAUSES, Target, fetch_spec, probe_handshake_line, report_p2, report_p4,
+    resolved_requirement,
 };
 use crate::wire;
 
 /// The S-clauses the reused testkit suite asserts — its module doc's
 /// exact set.
-const SOURCE_CLAUSES: [&str; 3] = ["S1", "S2", "S4"];
+pub(crate) const SOURCE_CLAUSES: [&str; 3] = ["S1", "S2", "S4"];
 
 /// Certify `target` as a SOURCE connector. Never hangs and never
 /// panics on connector misbehavior: every clause's outcome — including
@@ -46,16 +47,21 @@ pub async fn certify_source(target: &Target) -> Report {
     // connector's own report.
     let spec = fetch_spec(&provider, &target.requirement).await;
 
+    // Everything past P1 (whose probe already wrote its entry) runs
+    // over a verified handshake; without one, every remaining clause
+    // fails with the one cause.
+    let downstream = || {
+        GENERIC_CLAUSES
+            .into_iter()
+            .filter(|clause| *clause != "P1")
+            .chain(SOURCE_CLAUSES)
+            .chain(wire::SOURCE_WIRE_CLAUSES)
+    };
+
     let requirement = match resolved_requirement(&target.requirement, &spec) {
         Ok(requirement) => requirement,
         Err(why) => {
-            // No identity means no verified handshake can happen at all:
-            // everything past P1 fails with the one cause.
-            for clause in ["P2", "P4"]
-                .into_iter()
-                .chain(SOURCE_CLAUSES)
-                .chain(wire::SOURCE_WIRE_CLAUSES)
-            {
+            for clause in downstream() {
                 report.fail(clause, why.clone());
             }
             return report;
@@ -73,21 +79,13 @@ pub async fn certify_source(target: &Target) -> Report {
         Ok(Ok(managed)) => managed,
         Ok(Err(error)) => {
             let why = format!("the provider could not spawn the connector as a source: {error}");
-            for clause in ["P2", "P4"]
-                .into_iter()
-                .chain(SOURCE_CLAUSES)
-                .chain(wire::SOURCE_WIRE_CLAUSES)
-            {
+            for clause in downstream() {
                 report.fail(clause, why.clone());
             }
             return report;
         }
         Err(_elapsed) => {
-            for clause in ["P2", "P4"]
-                .into_iter()
-                .chain(SOURCE_CLAUSES)
-                .chain(wire::SOURCE_WIRE_CLAUSES)
-            {
+            for clause in downstream() {
                 report.fail(clause, timed_out());
             }
             return report;

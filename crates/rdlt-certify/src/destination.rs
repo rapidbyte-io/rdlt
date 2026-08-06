@@ -52,7 +52,8 @@ use serde_json::Value;
 
 use crate::report::{CLAUSE_TIMEOUT, Report, timed_out};
 use crate::target::{
-    Target, fetch_spec, probe_handshake_line, report_p2, report_p4, resolved_requirement,
+    GENERIC_CLAUSES, Target, fetch_spec, probe_handshake_line, report_p2, report_p4,
+    resolved_requirement,
 };
 use crate::wire::{
     self, WireOpenError, WireReply, WireSession, ensure_request, expect, meta_json_for, mismatch,
@@ -62,7 +63,12 @@ use crate::wire::{
 
 /// The D-clauses the reused testkit suite covers — its module doc's
 /// exact set (D7 has no check there yet; renumbering is forbidden).
-const DEST_CLAUSES: [&str; 7] = ["D1", "D2", "D3", "D4", "D5", "D6", "D8"];
+pub(crate) const DEST_CLAUSES: [&str; 7] = ["D1", "D2", "D3", "D4", "D5", "D6", "D8"];
+
+/// The clauses that exist only out of process, probed on raw sessions
+/// over the live socket (module doc) — the tail of the destination's
+/// cascade set and reported one by one below.
+pub(crate) const SESSION_CLAUSES: [&str; 3] = ["P8", "P9", "P10"];
 
 /// How long an abandoned session gets to be reclaimed before P9 fails —
 /// and how long the settling adapter's `open` retries the one-session
@@ -119,14 +125,16 @@ pub async fn certify_destination(target: &Target, probe: Option<&dyn TableProbe>
     // connector's own report.
     let spec = fetch_spec(&provider, &target.requirement).await;
 
-    // Everything past P1 runs over a verified handshake; without one,
-    // every remaining clause fails with the one cause.
+    // Everything past P1 (whose probe already wrote its entry) runs
+    // over a verified handshake; without one, every remaining clause
+    // fails with the one cause.
     let downstream = || {
-        ["P2", "P4"]
+        GENERIC_CLAUSES
             .into_iter()
+            .filter(|clause| *clause != "P1")
             .chain(wire::DEST_WIRE_CLAUSES)
             .chain(DEST_CLAUSES)
-            .chain(["P8", "P9", "P10"])
+            .chain(SESSION_CLAUSES)
     };
 
     let requirement = match resolved_requirement(&target.requirement, &spec) {

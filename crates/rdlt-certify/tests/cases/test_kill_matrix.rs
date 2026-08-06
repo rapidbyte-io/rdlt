@@ -7,7 +7,8 @@
 //! The vacuity arms this suite carries itself: a probe rooted at the
 //! WRONG directory must FAIL the convergence assert (the count judgment
 //! is live, not decorative), and a probe-less run must Skip every
-//! destination K-clause with the Task 3 no-probe reason — never
+//! destination K-clause with the `NO_PROBE_SKIP` reason the matrix
+//! shares with `certify_destination` (`src/destination.rs`) — never
 //! silently narrow, never vacuously pass. The kill itself is proven
 //! able to fail by K-D6's no-op arm: a kill that duplicated rows would
 //! break its exact-count assert.
@@ -21,7 +22,9 @@ use super::support::bins::built_bin;
 use super::support::probe::JsonlDirProbe;
 
 /// The skip reason a probe-less run stamps on every destination
-/// K-clause — the Task 3 spelling, byte-identical.
+/// K-clause — `src/destination.rs`'s `NO_PROBE_SKIP` spelling,
+/// byte-identical (that const is `pub(crate)`, so this pin restates it
+/// from outside).
 const NO_PROBE_REASON: &str =
     "no table probe supplied — read-back clauses need one; pass --probe or use the library API";
 
@@ -129,9 +132,9 @@ async fn the_destination_kill_matrix_passes_at_every_boundary() {
     }
 }
 
-/// Without a probe the destination arms Skip with the Task 3 reason —
-/// convergence cannot be judged, and certification never silently
-/// narrows to a smaller passing set.
+/// Without a probe the destination arms Skip with the `NO_PROBE_SKIP`
+/// reason — convergence is a read-back and cannot be judged, and
+/// certification never silently narrows to a smaller passing set.
 #[tokio::test]
 async fn a_probe_less_destination_matrix_skips_with_the_reason() {
     let out = tempfile::tempdir().expect("tempdir");

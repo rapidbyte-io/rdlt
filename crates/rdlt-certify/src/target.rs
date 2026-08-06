@@ -71,6 +71,14 @@ impl Target {
     }
 }
 
+/// The role-generic clauses this module's probes report — P1 at its
+/// probe's call sites, P2 and P4 inside [`report_p2`]/[`report_p4`].
+/// Both certifiers build their dead-handshake cascade sets from this
+/// constant (P1 filtered out — its probe has already written its
+/// entry), and the clause-vocabulary pin folds it into the emittable
+/// id set ([`crate::report`]'s table test).
+pub(crate) const GENERIC_CLAUSES: [&str; 3] = ["P1", "P2", "P4"];
+
 /// How long a probe waits for the one handshake line — the provider's
 /// own figure: not a performance budget but a "this is not a
 /// connector" detector. Shared with the wire probe's attach
