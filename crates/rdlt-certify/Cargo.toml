@@ -1,0 +1,37 @@
+[package]
+name = "rdlt-certify"
+description = "rdlt connector certifier: spawns an out-of-process connector binary and certifies it against the conformance clauses over the wire"
+# EXPERIMENTAL, like the protocol/client/runtime trio it drives (ADR
+# 0001 D8): unpublished until the wire freezes. The workspace dep entry
+# is path-only (no version key) for the same reason.
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rdlt-runtime = { workspace = true }
+# For naming `ConnectorSpec` — the shape the provider's Spec reply
+# carries, which P4 judges and path-only identity resolution reads.
+rdlt-connector = { workspace = true }
+# The S/D conformance suites are REUSED, not re-derived: the certifier
+# feeds a managed (spawned, wire-driven) SPI object to the exact suites
+# in-process connectors certify against.
+rdlt-testkit = { workspace = true }
+# For the stdout handshake line only (`handshake::Line`) — the P1 probe
+# reads the one pre-gRPC artifact a spawned connector writes.
+rdlt-connector-protocol = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# `process`/`time` ride the workspace feature list; `io-util` is this
+# crate's own need (BufReader/read_line over the probe's piped stdout).
+tokio = { workspace = true, features = ["io-util"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true }
+
+[lints]
+workspace = true

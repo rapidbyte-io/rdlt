@@ -20,6 +20,7 @@ members = [
     "crates/rdlt-connector-protocol",
     "crates/rdlt-connector-client",
     "crates/rdlt-runtime",
+    "crates/rdlt-certify",
 ]
 
 [workspace.package]
@@ -56,6 +57,12 @@ rdlt-connector-sqlcore = { path = "crates/rdlt-connector-sqlcore", version = "0.
 rdlt-connector-protocol = { path = "crates/rdlt-connector-protocol", version = "0.3.0" }
 rdlt-connector-client = { path = "crates/rdlt-connector-client", version = "0.3.0" }
 rdlt-runtime = { path = "crates/rdlt-runtime", version = "0.3.0" }
+# PATH-ONLY, deliberately no `version` key: the certifier is EXPERIMENTAL
+# (ADR 0001 D8) and nothing publishable consumes it. Without a version,
+# cargo REFUSES to package any consumer — so a publishable crate growing
+# an edge to the certifier fails loudly at packaging instead of silently
+# resolving a registry crate that does not exist.
+rdlt-certify = { path = "crates/rdlt-certify" }
 
 # arrow-rs: single workspace-wide major (research.md R10). Pinned to the major that
 # duckdb-rs links — connectors receive `RecordBatch` through the rdlt-connector

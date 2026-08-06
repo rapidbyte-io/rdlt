@@ -4574,6 +4574,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "rdlt-certify"
+version = "0.3.0"
+dependencies = [
+ "rdlt-connector",
+ "rdlt-connector-protocol",
+ "rdlt-runtime",
+ "rdlt-testkit",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "rdlt-cli"
 version = "0.3.0"
 dependencies = [
