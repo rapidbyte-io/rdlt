@@ -16,6 +16,7 @@
 //! path to every name.
 
 mod destination;
+mod kill;
 mod report;
 #[cfg(test)]
 mod rogue;
@@ -24,6 +25,7 @@ mod target;
 mod wire;
 
 pub use destination::certify_destination;
+pub use kill::{kill_matrix_destination, kill_matrix_source};
 pub use report::{Entry, Report, Verdict};
 pub use source::certify_source;
 pub use target::Target;

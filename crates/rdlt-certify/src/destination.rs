@@ -37,25 +37,28 @@ use std::path::Path;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use rdlt_connector::core::{LoadId, PipelineId, WriteMode};
+use rdlt_connector::core::{LoadId, PipelineId};
 use rdlt_connector::{
     ConnectorSpec, Destination, DestinationCapabilities, DestinationError, LoadSession, OpenContext,
 };
 use rdlt_connector_client::{destination_client, dial};
 use rdlt_connector_protocol::MAX_FRAME_BYTES;
-use rdlt_connector_protocol::proto::{self, SessionRequest, session_request};
+use rdlt_connector_protocol::proto::SessionRequest;
 use rdlt_runtime::{
     ClientError, ConnectorProvider, LocalBinaryConnectorProvider, ManagedDestination, Role,
 };
 use rdlt_testkit::conformance::destination::{TableProbe, verify_destination};
-use rdlt_testkit::{batch_of, commit_meta_for, schema_for};
 use serde_json::Value;
 
 use crate::report::{CLAUSE_TIMEOUT, Report, timed_out};
 use crate::target::{
     Target, fetch_spec, probe_handshake_line, report_p2, report_p4, resolved_requirement,
 };
-use crate::wire::{self, WireOpenError, WireReply, WireSession, open_wire_session};
+use crate::wire::{
+    self, WireOpenError, WireReply, WireSession, ensure_request, expect, meta_json_for, mismatch,
+    open_wire_session, publish_request, read_state_request, receipt_reply, replay_request,
+    write_request,
+};
 
 /// The D-clauses the reused testkit suite covers — its module doc's
 /// exact set (D7 has no check there yet; renumbering is forbidden).
@@ -70,10 +73,11 @@ const RECLAIM_WINDOW: Duration = Duration::from_secs(10);
 /// The pause between reclaim polls.
 const RECLAIM_POLL: Duration = Duration::from_millis(100);
 
-/// The skip reason every read-back D-clause carries when no probe was
+/// The skip reason every read-back clause carries when no probe was
 /// supplied — certification never silently narrows to a smaller
-/// passing set.
-const NO_PROBE_SKIP: &str =
+/// passing set. Shared with the kill matrix's destination arms
+/// ([`crate::kill`]): their convergence assert is a read-back too.
+pub(crate) const NO_PROBE_SKIP: &str =
     "no table probe supplied — read-back clauses need one; pass --probe or use the library API";
 
 /// The skip reason D8 carries for a destination that declares no merge
@@ -485,12 +489,7 @@ async fn report_p10(report: &mut Report, socket: &Path) {
 ///   before `close`'s answer and NOWHERE after it
 ///   ([`WireSession::close_judged`] holds the boundary).
 async fn probe_order_book(socket: &Path) -> Result<(), String> {
-    let meta_json = serde_json::to_vec(&commit_meta_for(
-        &PipelineId::new(P10_PIPELINE),
-        &LoadId::new(P10_LOAD),
-        P10_SEQ,
-    ))
-    .expect("a CommitMeta serializes to JSON infallibly");
+    let meta_json = meta_json_for(P10_PIPELINE, P10_LOAD, P10_SEQ);
 
     // ——— Pass 1: the out-of-order probe, then the canonical sequence.
     // A violation returns mid-session; the drop is the wire's
@@ -501,7 +500,7 @@ async fn probe_order_book(socket: &Path) -> Result<(), String> {
 
     // The deliberate out-of-order move FIRST: a `write` on a table no
     // `ensure` ever named must be refused with a typed error frame.
-    match session.request(write_request()).await? {
+    match session.request(write_request(P10_TABLE)).await? {
         WireReply::Error(_frame) => {}
         other => {
             let answer = match other {
@@ -515,16 +514,18 @@ async fn probe_order_book(socket: &Path) -> Result<(), String> {
         }
     }
 
-    let ensure = session_request::Request::Ensure(proto::Ensure {
-        table_schema_json: serde_json::to_vec(&schema_for(P10_TABLE))
-            .expect("a TableSchema serializes to JSON infallibly"),
-        write_mode_json: serde_json::to_vec(&WriteMode::Append)
-            .expect("a WriteMode serializes to JSON infallibly"),
-    });
-    expect(session.request(ensure).await?, "ensure", "ensured")?;
-    expect(session.request(write_request()).await?, "write", "written")?;
+    expect(
+        session.request(ensure_request(P10_TABLE)).await?,
+        "ensure",
+        "ensured",
+    )?;
+    expect(
+        session.request(write_request(P10_TABLE)).await?,
+        "write",
+        "written",
+    )?;
 
-    match receipt_reply(&mut session).await? {
+    match receipt_reply(&mut session, P10_LOAD, P10_SEQ).await? {
         // A fresh load: `publish` is the legal continuation.
         None => expect(
             session.request(publish_request(&meta_json)).await?,
@@ -539,10 +540,11 @@ async fn probe_order_book(socket: &Path) -> Result<(), String> {
             "replayed",
         )?,
     }
-    let read_state = session_request::Request::ReadState(proto::ReadState {
-        pipeline: P10_PIPELINE.to_string(),
-    });
-    expect(session.request(read_state).await?, "read_state", "state")?;
+    expect(
+        session.request(read_state_request(P10_PIPELINE)).await?,
+        "read_state",
+        "state",
+    )?;
     session.close_judged().await?;
 
     // ——— Pass 2: the exclusivity pass, a FRESH session on the same
@@ -550,7 +552,7 @@ async fn probe_order_book(socket: &Path) -> Result<(), String> {
     let mut session = settle_open_wire(socket, P10_PIPELINE, P10_LOAD)
         .await
         .map_err(|why| format!("could not open the exclusivity session: {why}"))?;
-    let Some(existing) = receipt_reply(&mut session).await? else {
+    let Some(existing) = receipt_reply(&mut session, P10_LOAD, P10_SEQ).await? else {
         return Err(
             "a fresh session's `existing_receipt` reported no receipt for a load an earlier \
              session committed — the receipt must be durable across sessions"
@@ -587,80 +589,6 @@ async fn probe_order_book(socket: &Path) -> Result<(), String> {
         other => return Err(mismatch("publish", &other, "published")),
     }
     session.close_judged().await
-}
-
-/// The probe's one `write` frame: a single-batch Arrow IPC stream of
-/// the testkit's canonical `id: Int64` fixture rows.
-fn write_request() -> session_request::Request {
-    let batch = batch_of(&[1, 2, 3]);
-    let mut bytes = Vec::new();
-    {
-        let mut writer = arrow::ipc::writer::StreamWriter::try_new(&mut bytes, &batch.schema())
-            .expect("an IPC stream writer opens over a Vec");
-        writer.write(&batch).expect("the fixture batch writes");
-        writer.finish().expect("the IPC stream finishes");
-    }
-    session_request::Request::Write(proto::Write {
-        table: P10_TABLE.to_string(),
-        arrow_ipc: bytes,
-    })
-}
-
-/// The probe's `existing_receipt` frame for the one `(load, seq)` key.
-fn existing_receipt_request() -> session_request::Request {
-    session_request::Request::ExistingReceipt(proto::ExistingReceipt {
-        load_id: P10_LOAD.to_string(),
-        commit_seq: P10_SEQ,
-    })
-}
-
-/// The probe's `publish` frame.
-fn publish_request(meta_json: &[u8]) -> session_request::Request {
-    session_request::Request::Publish(proto::Publish {
-        commit_meta_json: meta_json.to_vec(),
-    })
-}
-
-/// The probe's `replay` frame, carrying `receipt` back verbatim.
-fn replay_request(meta_json: &[u8], receipt: Vec<u8>) -> session_request::Request {
-    session_request::Request::Replay(proto::Replay {
-        commit_meta_json: meta_json.to_vec(),
-        receipt_json: receipt,
-    })
-}
-
-/// Ask `existing_receipt` and demand the `receipt` tag back — the
-/// payload (`Some` bytes or an honest `None`) is the caller's judgment.
-async fn receipt_reply(session: &mut WireSession) -> Result<Option<Vec<u8>>, String> {
-    match session.request(existing_receipt_request()).await? {
-        WireReply::Receipt(receipt) => Ok(receipt),
-        WireReply::Error(frame) => {
-            Err(format!("`existing_receipt` was refused: {}", frame.message))
-        }
-        other => Err(mismatch("existing_receipt", &other, "receipt")),
-    }
-}
-
-/// The reply-per-frame judgment: `reply` must carry `want`'s tag. An
-/// error frame renders as a refusal (its cause text is the evidence);
-/// any other tag is the mismatch.
-fn expect(reply: WireReply, request: &str, want: &str) -> Result<(), String> {
-    if reply.tag() == want {
-        return Ok(());
-    }
-    Err(match reply {
-        WireReply::Error(frame) => format!("`{request}` was refused: {}", frame.message),
-        other => mismatch(request, &other, want),
-    })
-}
-
-/// The tags-match violation spelling.
-fn mismatch(request: &str, got: &WireReply, want: &str) -> String {
-    format!(
-        "`{request}` was answered `{}` — every request's reply must carry its own tag \
-         (`{want}`)",
-        got.tag()
-    )
 }
 
 /// A receipt's JSON value, for the same-receipt judgment — `None` when

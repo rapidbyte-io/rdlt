@@ -20,6 +20,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
+use rdlt_connector::core::{LoadId, PipelineId, WriteMode};
 use rdlt_connector::{ConnectorSpec, StreamSpec};
 use rdlt_connector_client::{connector_client, destination_client, dial, source_client};
 use rdlt_connector_protocol::handshake::Line;
@@ -28,6 +29,7 @@ use rdlt_connector_protocol::proto::{
 };
 use rdlt_connector_protocol::{MAX_FRAME_BYTES, PROTOCOL_VERSION};
 use rdlt_runtime::{ConnectorRequirement, Role};
+use rdlt_testkit::{batch_of, commit_meta_for, schema_for};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::Command;
@@ -135,7 +137,7 @@ impl std::fmt::Display for Census {
 /// handshake line advertised — no `LifecycleGuard` ever owned this
 /// spawn, so the cleanup lives here.
 struct SpawnedConnector {
-    _child: tokio::process::Child,
+    child: tokio::process::Child,
     socket: PathBuf,
 }
 
@@ -155,7 +157,7 @@ pub(crate) struct WireProbe {
     config: Value,
     /// The spawned process — `None` when a test attached the probe to
     /// an in-process rogue server's socket.
-    _spawned: Option<SpawnedConnector>,
+    spawned: Option<SpawnedConnector>,
 }
 
 impl WireProbe {
@@ -164,7 +166,18 @@ impl WireProbe {
     /// socket RAW — no identity verification, no adapter.
     /// [`Self::handshake_raw`] is where certification then looks at
     /// what the line pointed to.
-    pub(crate) async fn attach(bin: &Path, role: Role, config: &Value) -> Result<Self, String> {
+    ///
+    /// `budget_bytes` is the dial's h2 window budget ([`dial`] clamps
+    /// it to the workable range): the wire clauses pass the frame
+    /// ceiling, and the kill matrix passes a deliberately SMALL budget
+    /// so a read stream cannot be fully in flight before a mid-stream
+    /// SIGKILL lands.
+    pub(crate) async fn attach(
+        bin: &Path,
+        role: Role,
+        config: &Value,
+        budget_bytes: u64,
+    ) -> Result<Self, String> {
         let mut child = Command::new(bin)
             .arg(role_arg(role))
             // stderr is nulled: the probe observes the machine channel
@@ -196,18 +209,43 @@ impl WireProbe {
         let parsed = Line::parse(line.trim_end_matches(['\n', '\r']))
             .map_err(|error| format!("the first stdout line is not a handshake line: {error}"))?;
 
-        let channel = dial(&parsed.socket_path, MAX_FRAME_BYTES as u64)
+        let channel = dial(&parsed.socket_path, budget_bytes)
             .await
             .map_err(|error| format!("dialing the advertised socket: {error}"))?;
         Ok(Self {
             channel,
             role,
             config: config.clone(),
-            _spawned: Some(SpawnedConnector {
-                _child: child,
+            spawned: Some(SpawnedConnector {
+                child,
                 socket: parsed.socket_path,
             }),
         })
+    }
+
+    /// The advertised socket of a spawned probe — `None` on a
+    /// test-attached one. The kill matrix re-dials it for raw sessions
+    /// and for the post-kill "a dead socket refuses, never hangs"
+    /// observation.
+    pub(crate) fn socket(&self) -> Option<&Path> {
+        self.spawned
+            .as_ref()
+            .map(|spawned| spawned.socket.as_path())
+    }
+
+    /// SIGKILL the spawned connector and wait until it is reaped — the
+    /// house mechanism (`tokio::process::Child::start_kill`, the same
+    /// signal the runtime's `LifecycleGuard` sends on drop), never a
+    /// shelled-out `kill(1)`. `start_kill` only SENDS the signal, so
+    /// the wait is what makes "the process is dead" true when this
+    /// returns rather than eventually.
+    pub(crate) async fn kill(&mut self) {
+        let spawned = self
+            .spawned
+            .as_mut()
+            .expect("only spawned probes are killed — the kill matrix never test-attaches");
+        let _ = spawned.child.start_kill();
+        let _ = spawned.child.wait().await;
     }
 
     /// Attach to an already-serving socket — the test seam the rogue
@@ -227,7 +265,7 @@ impl WireProbe {
             channel,
             role,
             config: config.clone(),
-            _spawned: None,
+            spawned: None,
         })
     }
 
@@ -263,8 +301,9 @@ impl WireProbe {
 
     /// The `Streams` RPC, raw: each declared stream's `stream_spec_json`
     /// bytes, undecoded — [`Self::read_frames`] feeds them back verbatim
-    /// so P5 reads exactly the streams the connector itself declared.
-    async fn streams_raw(&mut self) -> Result<Vec<Vec<u8>>, String> {
+    /// so P5 reads exactly the streams the connector itself declared,
+    /// and the kill matrix picks its boundary stream from the same list.
+    pub(crate) async fn streams_raw(&mut self) -> Result<Vec<Vec<u8>>, String> {
         let mut client = source_client(self.channel.clone());
         let reply = client
             .streams(proto::StreamsRequest {})
@@ -280,30 +319,34 @@ impl WireProbe {
         }
     }
 
-    /// One `Read` RPC, collecting every frame as the wire carried it
-    /// until the stream ends. A mid-stream transport `Status` is an
-    /// error — the protocol's refusal shape inside a read stream is the
-    /// terminal `ErrorFrame`, never a bare status.
-    async fn read_frames(&mut self, stream_spec_json: Vec<u8>) -> Result<Vec<RawFrame>, String> {
+    /// Open one `Read` RPC and hand back the raw frame stream — the
+    /// incremental seam the kill matrix pulls frame by frame so a
+    /// SIGKILL can land at a chosen mid-stream boundary.
+    pub(crate) async fn open_read(
+        &mut self,
+        stream_spec_json: Vec<u8>,
+    ) -> Result<tonic::Streaming<proto::ReadFrame>, String> {
         let mut client = source_client(self.channel.clone());
-        let mut stream = client
+        client
             .read(proto::ReadRequest {
                 stream_spec_json,
                 since_cursor_json: None,
             })
             .await
-            .map_err(|status| format!("the Read RPC failed to open: {status}"))?
-            .into_inner();
+            .map(tonic::Response::into_inner)
+            .map_err(|status| format!("the Read RPC failed to open: {status}"))
+    }
+
+    /// One `Read` RPC, collecting every frame as the wire carried it
+    /// until the stream ends. A mid-stream transport `Status` is an
+    /// error — the protocol's refusal shape inside a read stream is the
+    /// terminal `ErrorFrame`, never a bare status.
+    async fn read_frames(&mut self, stream_spec_json: Vec<u8>) -> Result<Vec<RawFrame>, String> {
+        let mut stream = self.open_read(stream_spec_json).await?;
         let mut frames = Vec::new();
         loop {
             match stream.message().await {
-                Ok(Some(frame)) => frames.push(match frame.frame {
-                    Some(read_frame::Frame::RawJson(_bytes)) => RawFrame::Json,
-                    Some(read_frame::Frame::ArrowIpc(bytes)) => RawFrame::Arrow(bytes),
-                    Some(read_frame::Frame::CheckpointCursorJson(_bytes)) => RawFrame::Checkpoint,
-                    Some(read_frame::Frame::Error(error)) => RawFrame::Error(error),
-                    None => RawFrame::Empty,
-                }),
+                Ok(Some(frame)) => frames.push(decode_read_frame(frame)),
                 Ok(None) => return Ok(frames),
                 Err(status) => {
                     return Err(format!(
@@ -312,6 +355,17 @@ impl WireProbe {
                 }
             }
         }
+    }
+}
+
+/// Map one wire `ReadFrame` to its [`RawFrame`].
+pub(crate) fn decode_read_frame(frame: proto::ReadFrame) -> RawFrame {
+    match frame.frame {
+        Some(read_frame::Frame::RawJson(_bytes)) => RawFrame::Json,
+        Some(read_frame::Frame::ArrowIpc(bytes)) => RawFrame::Arrow(bytes),
+        Some(read_frame::Frame::CheckpointCursorJson(_bytes)) => RawFrame::Checkpoint,
+        Some(read_frame::Frame::Error(error)) => RawFrame::Error(error),
+        None => RawFrame::Empty,
     }
 }
 
@@ -324,7 +378,7 @@ pub(crate) async fn attach_for(
     config: &Value,
 ) -> Result<WireProbe, String> {
     let bin = resolve_binary(requirement)?;
-    WireProbe::attach(&bin, role, config).await
+    WireProbe::attach(&bin, role, config, MAX_FRAME_BYTES as u64).await
 }
 
 /// The source wire clauses over one attached probe, in
@@ -760,6 +814,120 @@ fn decode_reply(reply: proto::SessionReply, answering: &str) -> Result<WireReply
             "a session reply carried no payload (answering `{answering}`)"
         )),
     }
+}
+
+/// The canonical row ids every certifier-authored `write` frame
+/// carries (the testkit's `id: Int64` fixture) — the count is what the
+/// kill matrix's convergence assert holds the probe to.
+pub(crate) const FIXTURE_IDS: [i64; 3] = [1, 2, 3];
+
+/// An `ensure` frame for `table`: the testkit's canonical schema,
+/// Append mode.
+pub(crate) fn ensure_request(table: &str) -> session_request::Request {
+    session_request::Request::Ensure(proto::Ensure {
+        table_schema_json: serde_json::to_vec(&schema_for(table))
+            .expect("a TableSchema serializes to JSON infallibly"),
+        write_mode_json: serde_json::to_vec(&WriteMode::Append)
+            .expect("a WriteMode serializes to JSON infallibly"),
+    })
+}
+
+/// A `write` frame for `table`: a single-batch Arrow IPC stream of the
+/// [`FIXTURE_IDS`] rows.
+pub(crate) fn write_request(table: &str) -> session_request::Request {
+    let batch = batch_of(&FIXTURE_IDS);
+    let mut bytes = Vec::new();
+    {
+        let mut writer = arrow::ipc::writer::StreamWriter::try_new(&mut bytes, &batch.schema())
+            .expect("an IPC stream writer opens over a Vec");
+        writer.write(&batch).expect("the fixture batch writes");
+        writer.finish().expect("the IPC stream finishes");
+    }
+    session_request::Request::Write(proto::Write {
+        table: table.to_string(),
+        arrow_ipc: bytes,
+    })
+}
+
+/// An `existing_receipt` frame for one `(load, seq)` idempotency key.
+pub(crate) fn existing_receipt_request(load_id: &str, commit_seq: u64) -> session_request::Request {
+    session_request::Request::ExistingReceipt(proto::ExistingReceipt {
+        load_id: load_id.to_string(),
+        commit_seq,
+    })
+}
+
+/// A `publish` frame.
+pub(crate) fn publish_request(meta_json: &[u8]) -> session_request::Request {
+    session_request::Request::Publish(proto::Publish {
+        commit_meta_json: meta_json.to_vec(),
+    })
+}
+
+/// A `replay` frame, carrying `receipt` back verbatim.
+pub(crate) fn replay_request(meta_json: &[u8], receipt: Vec<u8>) -> session_request::Request {
+    session_request::Request::Replay(proto::Replay {
+        commit_meta_json: meta_json.to_vec(),
+        receipt_json: receipt,
+    })
+}
+
+/// A `read_state` frame for `pipeline`.
+pub(crate) fn read_state_request(pipeline: &str) -> session_request::Request {
+    session_request::Request::ReadState(proto::ReadState {
+        pipeline: pipeline.to_string(),
+    })
+}
+
+/// The `CommitMeta` document for `(pipeline, load, seq)`, serialized.
+pub(crate) fn meta_json_for(pipeline: &str, load_id: &str, commit_seq: u64) -> Vec<u8> {
+    serde_json::to_vec(&commit_meta_for(
+        &PipelineId::new(pipeline),
+        &LoadId::new(load_id),
+        commit_seq,
+    ))
+    .expect("a CommitMeta serializes to JSON infallibly")
+}
+
+/// Ask `existing_receipt` and demand the `receipt` tag back — the
+/// payload (`Some` bytes or an honest `None`) is the caller's judgment.
+pub(crate) async fn receipt_reply(
+    session: &mut WireSession,
+    load_id: &str,
+    commit_seq: u64,
+) -> Result<Option<Vec<u8>>, String> {
+    match session
+        .request(existing_receipt_request(load_id, commit_seq))
+        .await?
+    {
+        WireReply::Receipt(receipt) => Ok(receipt),
+        WireReply::Error(frame) => {
+            Err(format!("`existing_receipt` was refused: {}", frame.message))
+        }
+        other => Err(mismatch("existing_receipt", &other, "receipt")),
+    }
+}
+
+/// The reply-per-frame judgment: `reply` must carry `want`'s tag. An
+/// error frame renders as a refusal (its cause text is the evidence);
+/// any other tag is the mismatch.
+pub(crate) fn expect(reply: WireReply, request: &str, want: &str) -> Result<(), String> {
+    if reply.tag() == want {
+        return Ok(());
+    }
+    Err(match reply {
+        WireReply::Error(frame) => format!("`{request}` was refused: {}", frame.message),
+        other => mismatch(request, &other, want),
+    })
+}
+
+/// The tags-match violation spelling.
+pub(crate) fn mismatch(request: &str, got: &WireReply, want: &str) -> String {
+    format!(
+        "`{request}` was answered `{}` — every request's reply must carry its own tag \
+         (`{want}`)",
+        got.tag()
+    )
 }
 
 /// Why a raw session did not open.

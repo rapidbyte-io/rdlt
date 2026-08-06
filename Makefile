@@ -145,6 +145,19 @@ ifeq ($(TARGET),)
 	cargo build -p rdlt-connector-snowflake --features bin-serve --bin rdlt-connector-snowflake
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-runtime --features spawn-bins -E 'test(test_spawned_bins)'
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-runtime --features spawn-bins -E 'test(test_e2e_file)'
+	# Same class, the CERTIFIER's spawn suite (040): rdlt-certify's gated
+	# cases drive the REAL file bin through the certification stack —
+	# source, destination, and the kill matrix (SIGKILL at every K
+	# boundary, convergence by re-run) — behind `spawn-bins` +
+	# RDLT_BUILD_CONNECTOR_BINS=1 exactly like the runtime lines above
+	# (same bin, already built by the build line; the env var keeps the
+	# suite honest run alone). ONE module per invocation, as everywhere
+	# in this block. The crate's UNGATED tests (report pins, the
+	# in-process rogue suites) carry no required-features, so the bare
+	# workspace line at the top already runs them — no line here.
+	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins -E 'test(test_certify_file_source)'
+	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins -E 'test(test_certify_file_destination)'
+	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins -E 'test(test_kill_matrix)'
 	cargo test --doc --workspace
 else ifeq ($(TARGET),unit)
 	cargo nextest run --workspace
@@ -157,6 +170,9 @@ else ifeq ($(TARGET),unit)
 	cargo build -p rdlt-connector-snowflake --features bin-serve --bin rdlt-connector-snowflake
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-runtime --features spawn-bins -E 'test(test_spawned_bins)'
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-runtime --features spawn-bins -E 'test(test_e2e_file)'
+	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins -E 'test(test_certify_file_source)'
+	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins -E 'test(test_certify_file_destination)'
+	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins -E 'test(test_kill_matrix)'
 else ifeq ($(TARGET),e2e)
 	cargo nextest run --workspace -E 'binary(/e2e/)'
 else ifeq ($(TARGET),sweep)
