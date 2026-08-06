@@ -119,10 +119,13 @@ connector's static identity: `SpecReply.spec_json` is `ConnectorSpec`
 JSON (name, version, config_schema), served from the connector's
 statics alone, so a provider can ask a spawned connector what it IS
 before deciding what config to hand it. `state_format_versions` on
-`HandshakeOk` is a **v0 HOLE, not an oversight**: nothing on either
-side negotiates a resume-format version to put there yet, because
-nothing dials this protocol end-to-end today. Feature 039's adapter is
-where that negotiation gets designed; it ships empty until then.
+`HandshakeOk` is a **v0 HOLE, not an oversight**: v0 servers send an
+empty map, and 039's client (`rdlt-connector-client`, surfaced through
+`rdlt-runtime`) threads it through to embedders UNREAD
+(`ManagedSource`/`ManagedDestination::state_format_versions`) — with
+one format version per state kind there is nothing to negotiate yet.
+Negotiation semantics are owned by the feature that adds a second
+format version; the map ships empty until then.
 
 **`SourceService`** is a straightforward discover-then-stream shape:
 `Streams` lists what's available, `Read` streams `ReadFrame`s (one of
@@ -160,7 +163,7 @@ service does not sequence commit frames for you.** Driving
 sending `Publish` twice for one `(load_id, commit_seq)` without asking
 `ExistingReceipt` first, is the CALLER's job — the same job the sdk's
 in-process `Session<B>` type already does for an embedder, and the
-SAME generic 039's remote adapter will reuse rather than reimplement.
+SAME generic 039's remote adapter reuses rather than reimplements.
 A foreign client that gets this wrong is not refereed by this server.
 **The only thing that actually saves exactly-once here is the
 destination's OWN durable receipt guard inside `Backend::publish`** —
@@ -302,5 +305,6 @@ side of the same connection has no `Endpoint` to configure).
 
 **`state_format_versions` is empty in v0, on purpose — see above.** A
 provider reading `HandshakeOk` today gets an empty map, not an omission
-bug; feature 039 is where the resume-format negotiation this field
-exists for actually gets designed and populated.
+bug; 039's client threads it through to embedders unread, and the
+resume-format negotiation this field exists for is owned by the feature
+that adds a second format version.

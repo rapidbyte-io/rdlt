@@ -28,9 +28,9 @@
 //! independently, and the CALLER decides which to send next — an
 //! in-process embedder never sees this layer (it gets the choreography
 //! for free from `Session::commit`), and 039's remote-backend adapter
-//! will reconstruct it client-side over the SAME `Session<B>` generic,
-//! reusing it by identical type rather than reimplementing it against
-//! the wire. A foreign client that gets the choreography wrong — for
+//! reconstructs it client-side over the SAME `Session<B>` generic,
+//! reused by identical type rather than reimplemented against the
+//! wire. A foreign client that gets the choreography wrong — for
 //! instance, sending `Publish` twice for one `(load_id, commit_seq)`
 //! without ever asking `ExistingReceipt` first — is not this server's
 //! problem to referee: see [`crate::destination::Backend::existing_receipt`]'s

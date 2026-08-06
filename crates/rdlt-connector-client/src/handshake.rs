@@ -90,8 +90,9 @@ pub struct HandshakeOutcome {
     /// (the proto pins `capabilities_json` empty for sources).
     pub capabilities: Option<DestinationCapabilities>,
     /// Per-state-kind format versions (e.g. `"cursor" -> 2`). v0
-    /// servers send an empty map; populated when adapters negotiate
-    /// resume.
+    /// servers send an empty map, carried through to embedders unread;
+    /// negotiation is owned by the feature that adds a second format
+    /// version.
     pub state_format_versions: BTreeMap<String, u32>,
     /// The protocol version both sides settled on — the one this client
     /// asked for, since the server accepting the request IS the

@@ -225,8 +225,8 @@ impl<C: DestinationConnector> Shell<C> {
     /// write-before-ensure or the D3 replay choreography — those stay
     /// in [`WriteGuard`]/[`Session`], which a caller composes on top
     /// (as [`Destination::open`] does, and as 039's remote-backend
-    /// adapter will, over a `Backend` that dials this same connector out
-    /// of process).
+    /// adapter does, over a `Backend` that dials this same connector
+    /// out of process).
     pub async fn connect(&self, context: &OpenContext) -> Result<C::Backend, DestinationError> {
         self.connector.connect(context).await
     }
@@ -326,8 +326,8 @@ impl WriteGuard {
 /// over a [`Backend`]. The commit choreography stays HERE rather than
 /// moving into [`WriteGuard`] — see the module doc: it is the half that
 /// runs on whichever side of the wire is doing the calling (in-process
-/// today; 039's remote-backend adapter tomorrow), not the half a server
-/// enforces against wire ordering it does not trust.
+/// embedders and 039's remote-backend adapter alike), not the half a
+/// server enforces against wire ordering it does not trust.
 ///
 /// PUBLIC (038 T5 review round 2, F-2): 039's remote-backend adapter
 /// needs to name this type — it composes the SAME `Session<B>`

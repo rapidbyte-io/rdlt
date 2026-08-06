@@ -304,10 +304,11 @@ pub(crate) fn handshake<S: HandshakeShell>(
         spec_json: shell.spec_json(),
         capabilities_json: shell.capabilities_json(),
         // v0 hole, not an oversight: nothing populates this yet because
-        // nothing on either side negotiates a resume format version to
-        // put in it. 039's adapter is where that negotiation is
-        // designed; recorded here so the gap has an owner rather than
-        // looking finished.
+        // with one format version per state kind there is nothing to
+        // negotiate. 039's client threads the empty map through to
+        // embedders unread; negotiation semantics are owned by the
+        // feature that adds a second format version — recorded so the
+        // gap keeps an owner rather than looking finished.
         state_format_versions: Default::default(),
     };
 

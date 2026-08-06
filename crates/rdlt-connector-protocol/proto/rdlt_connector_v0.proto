@@ -48,8 +48,9 @@ message HandshakeOk {
   string connector_version = 2;
   bytes spec_json = 3;           // ConnectorSpec (name, version, config_schema)
   bytes capabilities_json = 4;   // DestinationCapabilities; empty for sources
-  // e.g. "cursor" -> 2. v0 servers send an empty map — populated when
-  // adapters negotiate resume (039); see the README.
+  // e.g. "cursor" -> 2. v0 servers send an empty map; 039 threads it
+  // through unread — negotiation belongs to the feature that adds a
+  // second format version; see the README.
   map<string, uint32> state_format_versions = 5;
 }
 service Connector {
