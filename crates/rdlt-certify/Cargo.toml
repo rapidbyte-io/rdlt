@@ -11,6 +11,16 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# The certification suite: tests that spawn the REAL file connector bin
+# through the certifier. OFF by default — a plain workspace run must not
+# depend on bins no workspace command builds. The Makefile's own line
+# enables it AND sets RDLT_BUILD_CONNECTOR_BINS=1 so the suite's helper
+# (re)builds the bin via cargo before spawning; without the env var the
+# helper requires the bin to already exist and fails loudly, never
+# silently.
+spawn-bins = []
+
 [dependencies]
 rdlt-runtime = { workspace = true }
 # For naming `ConnectorSpec` — the shape the provider's Spec reply
