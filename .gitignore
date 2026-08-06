@@ -19,6 +19,10 @@ benches/competitors/airbyte/state.json
 benches/competitors/airbyte/.venv/
 benches/competitors/airbyte/__pycache__/
 
+# Python proof connector: interpreter bytecode cache (the certify and
+# stub-check venvs already live under target/, which is ignored wholesale).
+connectors/python/rdlt-connector-pyjsonl/__pycache__/
+
 # Internal development records — the working memory of the project's
 # plan-driven process (feature specs, the session driver document, the
 # speckit machinery). They live on disk for local work and stay out of

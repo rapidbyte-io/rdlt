@@ -166,6 +166,32 @@ ifeq ($(TARGET),)
 	# bin itself (cargo builds it for `CARGO_BIN_EXE_`), pinning the
 	# stdout/stderr/exit-code contract end to end.
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins,bin -E 'test(test_cli)'
+	# The Python proof connector (040): ZERO Rust — the SAME certifier
+	# bin, the SAME clause vocabulary, against a pure-Python jsonl
+	# source over the real wire. One compound block so the skip guard
+	# covers all three steps; skips ONLY when python3 is absent — a
+	# broken venv, stub drift, or a failed clause FAILS. The venv is
+	# cached under target/py-certify-venv and rebuilt when
+	# requirements.txt changes (hash check); the certifier bin was
+	# built by the explicit build line above; prepending the venv's
+	# bin makes the launcher's `python3` resolve to the pinned deps.
+	@if command -v python3 >/dev/null 2>&1; then \
+		set -e; \
+		req=connectors/python/rdlt-connector-pyjsonl/requirements.txt; \
+		venv=target/py-certify-venv; \
+		if ! sha256sum --status -c "$$venv/.requirements.sha256" 2>/dev/null; then \
+			rm -rf "$$venv"; \
+			python3 -m venv "$$venv"; \
+			"$$venv/bin/pip" install --quiet -r "$$req"; \
+			sha256sum "$$req" > "$$venv/.requirements.sha256"; \
+		fi; \
+		tools/check-python-stubs.sh; \
+		PATH="$$(pwd)/$$venv/bin:$$PATH" target/debug/rdlt-certify --role source \
+			--config connectors/python/rdlt-connector-pyjsonl/fixtures/config.json \
+			connectors/python/rdlt-connector-pyjsonl/rdlt-connector-pyjsonl; \
+	else \
+		echo "SKIP: python3 absent — the Python proof-connector certification needs it"; \
+	fi
 	cargo test --doc --workspace
 else ifeq ($(TARGET),unit)
 	cargo nextest run --workspace
@@ -183,6 +209,26 @@ else ifeq ($(TARGET),unit)
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins -E 'test(test_certify_file_destination)'
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins -E 'test(test_kill_matrix)'
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins,bin -E 'test(test_cli)'
+	# The Python proof-connector certification — the same block as the
+	# full gate above (skip ONLY on absent python3; venv cached by
+	# requirements hash; stub drift and failed clauses FAIL).
+	@if command -v python3 >/dev/null 2>&1; then \
+		set -e; \
+		req=connectors/python/rdlt-connector-pyjsonl/requirements.txt; \
+		venv=target/py-certify-venv; \
+		if ! sha256sum --status -c "$$venv/.requirements.sha256" 2>/dev/null; then \
+			rm -rf "$$venv"; \
+			python3 -m venv "$$venv"; \
+			"$$venv/bin/pip" install --quiet -r "$$req"; \
+			sha256sum "$$req" > "$$venv/.requirements.sha256"; \
+		fi; \
+		tools/check-python-stubs.sh; \
+		PATH="$$(pwd)/$$venv/bin:$$PATH" target/debug/rdlt-certify --role source \
+			--config connectors/python/rdlt-connector-pyjsonl/fixtures/config.json \
+			connectors/python/rdlt-connector-pyjsonl/rdlt-connector-pyjsonl; \
+	else \
+		echo "SKIP: python3 absent — the Python proof-connector certification needs it"; \
+	fi
 else ifeq ($(TARGET),e2e)
 	cargo nextest run --workspace -E 'binary(/e2e/)'
 else ifeq ($(TARGET),sweep)

@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# rdlt-connector-pyjsonl — launcher for the Python proof connector, so
+# the provider's discovery convention (connector id io.rapidbyte.pyjsonl
+# → binary `rdlt-connector-pyjsonl` on PATH) resolves to something
+# spawnable. Runs whatever `python3` is first on PATH — the
+# certification gate prepends its pinned venv's bin directory, and an
+# operator installing the pinned requirements elsewhere does the same.
+set -eu
+here="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+exec python3 "$here/rdlt_connector_pyjsonl.py" "$@"
