@@ -828,12 +828,13 @@ pub async fn serve_on<C: DestinationConnector>(
 }
 
 /// Turn a [`DestinationConnector`] into an out-of-process protocol
-/// server: bind a fresh Unix domain socket in the system temp
-/// directory, print the handshake line on stdout (flushed — the
-/// spawning host is reading a pipe, not a TTY), then serve until the
-/// process is killed. Mirrors the source side's `source` entry point.
+/// server: bind a fresh Unix domain socket in a private per-process
+/// directory under the system temp directory, print the handshake line
+/// on stdout (flushed — the spawning host is reading a pipe, not a
+/// TTY), then serve until the process is killed. Mirrors the source
+/// side's `source` entry point.
 pub async fn destination<C: DestinationConnector>() -> Result<(), ServeError> {
-    let (line, handle) = serve_on::<C>(common::temp_socket_path()).await?;
+    let (line, handle) = serve_on::<C>(common::temp_socket_path()?).await?;
 
     let mut stdout = std::io::stdout();
     writeln!(stdout, "{}", line.render()).map_err(ServeError::Stdout)?;

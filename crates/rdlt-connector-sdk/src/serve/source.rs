@@ -434,11 +434,12 @@ pub async fn serve_on<C: SourceConnector>(
 }
 
 /// Turn a [`SourceConnector`] into an out-of-process protocol server:
-/// bind a fresh Unix domain socket in the system temp directory, print
-/// the handshake line on stdout (flushed — the spawning host is reading
-/// a pipe, not a TTY), then serve until the process is killed.
+/// bind a fresh Unix domain socket in a private per-process directory
+/// under the system temp directory, print the handshake line on stdout
+/// (flushed — the spawning host is reading a pipe, not a TTY), then
+/// serve until the process is killed.
 pub async fn source<C: SourceConnector>() -> Result<(), ServeError> {
-    let (line, handle) = serve_on::<C>(common::temp_socket_path()).await?;
+    let (line, handle) = serve_on::<C>(common::temp_socket_path()?).await?;
 
     // `writeln!`, not `println!`: a spawning host that exits (or never
     // reads its child's stdout — a misconfigured pipe) leaves this

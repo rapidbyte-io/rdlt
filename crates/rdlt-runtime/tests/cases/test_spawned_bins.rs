@@ -210,6 +210,15 @@ async fn the_snowflake_bin_answers_the_spec_rpc_without_credentials() {
         serde_json::from_slice(&reply.spec_json).expect("spec_json decodes");
     assert_eq!(spec["name"], "io.rapidbyte.snowflake");
     assert_eq!(spec["version"], env!("CARGO_PKG_VERSION"));
+
+    // The consumer contract every production path honors
+    // (LifecycleGuard, the certifier's guard and probe): whoever read
+    // the handshake line unlinks the socket FILE on cleanup — the
+    // SIGKILLed child (`kill_on_drop`) cannot do it itself, and an
+    // orphaned socket keeps its private serve directory non-empty
+    // forever, defeating the sdk's rmdir-only startup sweep. This test
+    // is the one raw spawn outside the guards, so it cleans up by hand.
+    let _ = std::fs::remove_file(&parsed.socket_path);
 }
 
 /// THE ID UX pin (039 T7): the reverse-DNS spelling IS the id. A

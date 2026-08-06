@@ -37,6 +37,16 @@ pub(super) use rdlt_connector_protocol::MAX_FRAME_BYTES;
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum ServeError {
+    /// Creating the private per-process socket directory failed — before
+    /// any bind was even attempted.
+    #[error("creating the private socket directory at {path}: {source}")]
+    SocketDir {
+        /// The directory whose creation failed.
+        path: PathBuf,
+        /// The underlying IO failure.
+        #[source]
+        source: io::Error,
+    },
     /// Binding the Unix domain socket failed (a path collision with a
     /// live listener, a parent directory that does not exist, a
     /// permissions problem).
@@ -69,12 +79,112 @@ pub enum ServeError {
     Join(#[source] tokio::task::JoinError),
 }
 
-/// A fresh, process-unique socket path in the system temp directory —
-/// what [`crate::serve::source::source`] and
+/// A fresh socket path inside a PRIVATE per-process directory under the
+/// system temp directory — what [`crate::serve::source::source`] and
 /// [`crate::serve::destination::destination`] bind to when the caller
 /// (a spawned connector process) has no path of its own to offer.
-pub fn temp_socket_path() -> PathBuf {
-    std::env::temp_dir().join(format!("rdlt-{}.sock", std::process::id()))
+///
+/// A private directory, not a bare pid-derived name in the shared
+/// world-writable temp dir: a predictable name there could be
+/// pre-created by another local user (the bind fails — DoS) or planted
+/// as a dangling symlink, which `bind(2)` follows during path
+/// resolution, landing the socket at an attacker-chosen location. The
+/// directory is created mode `0700` with an unpredictable name (a
+/// random 64-bit token seeded from OS entropy via
+/// [`std::collections::hash_map::RandomState`]) BEFORE the socket
+/// binds inside it, so both the bind and `bind_uds`'s chmod-to-`0600`
+/// run in space nothing else can reach. Mirrors the pyjsonl
+/// connector's mkdtemp shape (commit 939a1461).
+///
+/// A `serve()` process dies by SIGKILL (the provider's lifecycle), so
+/// nothing here can reclaim its OWN directory on exit — instead each
+/// startup sweeps dead predecessors' directories
+/// ([`sweep_dead_serve_dirs`]) before minting its own.
+pub fn temp_socket_path() -> Result<PathBuf, ServeError> {
+    let base = std::env::temp_dir();
+    sweep_dead_serve_dirs(&base);
+    Ok(create_private_dir(&base)?.join("connector.sock"))
+}
+
+/// Reclaim dead predecessors' socket directories — rmdir-only over the
+/// `rdlt-serve-*` entries of `base`, every failure ignored.
+///
+/// rmdir-only is the WHOLE liveness check, and it is sufficient and
+/// race-free: every consumer of the handshake line (the runtime's
+/// `LifecycleGuard`, the certifier's `SpawnedConnector` and its probe)
+/// unlinks the socket FILE on every cleanup path, so a dead
+/// predecessor's directory is EMPTY and rmdir succeeds exactly then; a
+/// LIVE sibling's directory still holds its socket, so rmdir fails
+/// harmlessly; rmdir never follows symlinks; and other users'
+/// directories fail on permissions. Reclaim is best-effort hygiene,
+/// never a gate — which is why errors (including reading `base` at
+/// all) are ignored wholesale.
+///
+/// Known and accepted (the pyjsonl fix accepted the same): between a
+/// concurrent sibling's mkdir and its bind, its directory is briefly
+/// empty and a sweep here could rmdir it — that sibling's bind then
+/// fails loudly with a `ServeError::Bind` (never silently), and the
+/// window is a few syscalls wide.
+fn sweep_dead_serve_dirs(base: &Path) {
+    let Ok(entries) = std::fs::read_dir(base) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry
+            .file_name()
+            .as_encoded_bytes()
+            .starts_with(b"rdlt-serve-")
+        {
+            let _ = std::fs::remove_dir(entry.path());
+        }
+    }
+}
+
+/// Create `base/rdlt-serve-<random>` mode `0700`, retrying on a name
+/// collision with a fresh token — the std-only shape of `mkdtemp`
+/// (the sdk's runtime tree deliberately carries no tempfile
+/// dependency, and delete-on-drop would be useless anyway: `serve()`
+/// dies by SIGKILL, never by unwinding).
+fn create_private_dir(base: &Path) -> Result<PathBuf, ServeError> {
+    use std::hash::{BuildHasher, Hasher};
+    use std::os::unix::fs::DirBuilderExt;
+
+    let mut last_error: Option<(PathBuf, io::Error)> = None;
+    for _ in 0..16 {
+        // Each `RandomState::new()` is keyed from OS entropy, so the
+        // finished hash of an empty input is a fresh unpredictable
+        // 64-bit token — std's only randomness source, and enough that
+        // another local user cannot pre-guess the name.
+        let token = std::collections::hash_map::RandomState::new()
+            .build_hasher()
+            .finish();
+        let path = base.join(format!("rdlt-serve-{token:016x}"));
+        let mut builder = std::fs::DirBuilder::new();
+        // Mode at mkdir time — atomic, no chmod-after-create window. A
+        // umask can only CLEAR bits from 0o700, never widen them, so
+        // the normalization below fixes an over-strict umask without
+        // any exposure in between.
+        builder.mode(0o700);
+        match builder.create(&path) {
+            Ok(()) => {
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).map_err(
+                    |source| ServeError::SocketDir {
+                        path: path.clone(),
+                        source,
+                    },
+                )?;
+                return Ok(path);
+            }
+            Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {
+                // A 1-in-2^64 token collision (or an attacker squatting
+                // one guessed name) — mint a fresh token and try again.
+                last_error = Some((path, source));
+            }
+            Err(source) => return Err(ServeError::SocketDir { path, source }),
+        }
+    }
+    let (path, source) = last_error.expect("the retry loop ran at least once");
+    Err(ServeError::SocketDir { path, source })
 }
 
 /// Bind a Unix domain socket at `path`, then restrict it to the owner
@@ -101,9 +211,10 @@ pub fn temp_socket_path() -> PathBuf {
 /// between the failed probe-connect and the unlink, another process
 /// could bind this same path — and the unlink would then steal its
 /// live socket. Safe in practice, not by the syscalls: production
-/// paths are minted PID-unique ([`temp_socket_path`]) and the process
-/// model is single-spawn-per-connector, so no second binder ever
-/// targets the same path inside that window.
+/// paths live in a private per-process directory with an unpredictable
+/// name ([`temp_socket_path`]) and the process model is
+/// single-spawn-per-connector, so no second binder ever targets the
+/// same path inside that window.
 pub fn bind_uds(path: &Path) -> Result<UnixListener, ServeError> {
     match UnixListener::bind(path) {
         Ok(listener) => finish_bind(path, listener),
@@ -117,8 +228,9 @@ pub fn bind_uds(path: &Path) -> Result<UnixListener, ServeError> {
             // TOCTOU: between the failed probe-connect above and this
             // unlink, another process *could* bind this same path and have
             // its live socket removed — safe in practice because
-            // production paths are PID-derived (so single-spawner-per-path),
-            // and the provider owns the spawn lifecycle.
+            // production paths sit in a private 0700 per-process directory
+            // (so single-spawner-per-path), and the provider owns the
+            // spawn lifecycle.
             std::fs::remove_file(path).map_err(|source| ServeError::Bind {
                 path: path.to_path_buf(),
                 source,
@@ -326,6 +438,61 @@ pub(crate) fn handshake<S: HandshakeShell>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The private socket directory is owner-only from birth and its
+    /// name is minted fresh per call — the two properties that close
+    /// the predictable-path race (pre-create DoS, dangling-symlink
+    /// redirect) at the source.
+    #[test]
+    fn the_private_socket_dir_is_owner_only_and_unpredictable() {
+        let base = tempfile::tempdir().expect("tempdir");
+
+        let first = create_private_dir(base.path()).expect("first private dir");
+        let second = create_private_dir(base.path()).expect("second private dir");
+
+        assert_ne!(first, second, "each call mints a fresh name");
+        for dir in [&first, &second] {
+            let name = dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .expect("utf8 name");
+            assert!(
+                name.starts_with("rdlt-serve-"),
+                "the sweep's prefix contract: got `{name}`"
+            );
+            let mode = std::fs::metadata(dir)
+                .expect("dir metadata")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o700, "the directory is private to its owner");
+        }
+    }
+
+    /// The startup sweep reclaims exactly the dead: an EMPTY
+    /// `rdlt-serve-*` sibling (its socket unlinked by the consumer's
+    /// cleanup) is removed; a sibling still holding its socket file
+    /// survives, and so does anything outside the prefix.
+    #[test]
+    fn the_sweep_reclaims_empty_serve_dirs_and_nothing_else() {
+        let base = tempfile::tempdir().expect("tempdir");
+        let dead = base.path().join("rdlt-serve-dead");
+        let live = base.path().join("rdlt-serve-live");
+        let foreign = base.path().join("someone-elses-dir");
+        for dir in [&dead, &live, &foreign] {
+            std::fs::create_dir(dir).expect("fixture dir");
+        }
+        std::fs::write(live.join("connector.sock"), b"").expect("live marker");
+
+        sweep_dead_serve_dirs(base.path());
+
+        assert!(!dead.exists(), "the empty (dead) sibling is reclaimed");
+        assert!(live.exists(), "a non-empty (live) sibling survives rmdir");
+        assert!(
+            foreign.exists(),
+            "names outside rdlt-serve-* are never touched"
+        );
+    }
 
     /// A stale socket file at the same path does not block a fresh
     /// bind — the AddrInUse-on-existing-path behavior `bind_uds` exists
