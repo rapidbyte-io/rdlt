@@ -47,7 +47,7 @@ pub(crate) const SOURCE_WIRE_CLAUSES: [&str; 4] = ["P3", "P7", "P5", "P6"];
 
 /// The DESTINATION's wire clauses: the handshake-borne pair alone —
 /// P5/P6 are read-direction clauses, and the write direction's own
-/// wire clauses (P8/P9) are probed in [`crate::destination`].
+/// wire clauses (P8/P9/P10) are probed in [`crate::destination`].
 pub(crate) const DEST_WIRE_CLAUSES: [&str; 2] = ["P3", "P7"];
 
 /// The stream name P6 reads to induce a refusal: reserved by spelling —

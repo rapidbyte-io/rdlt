@@ -89,10 +89,13 @@ pub struct HandshakeOutcome {
     /// decode; the 039 final-review skew record, closed by carrying
     /// the verified fields.
     pub connector_id: String,
-    /// VERIFIED at handshake (D-039-2) — the identity the wire
-    /// actually reported, as distinct from the unverified `spec`
-    /// decode; the 039 final-review skew record, closed by carrying
-    /// the verified fields.
+    /// The connector version the WIRE reported — checked against the
+    /// requirement only when it pins a version (D-039-2); with no pin
+    /// it is carried as reported. Spec-vs-wire skew (`spec.version`
+    /// disagreeing with this value) is not refused here — that is the
+    /// certifier's P3 clause. Either way it is distinct from the
+    /// unverified `spec` decode (the 039 final-review skew record,
+    /// closed by carrying the wire-reported fields).
     pub connector_version: String,
     /// The connector's self-description, decoded from `spec_json`.
     pub spec: ConnectorSpec,

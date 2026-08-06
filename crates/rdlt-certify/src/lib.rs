@@ -9,8 +9,8 @@
 //!
 //! The certification bar: every clause is timeout-bounded — a connector
 //! that stalls FAILS the clause, the certifier never hangs; failures are
-//! actionable ("violates P1: ..."); reports name clauses, never config
-//! bytes.
+//! actionable (`FAIL P1 (<title>): <why>`); reports name clauses, never
+//! config bytes.
 //!
 //! The modules are private and the surface below is the one canonical
 //! path to every name.

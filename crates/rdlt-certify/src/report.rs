@@ -44,11 +44,12 @@ pub struct Clause {
 }
 
 /// Every clause the certifier can emit, in explain order (S, D, P, K).
-/// The ONE place titles and definitions live — [`clause_title`], the
-/// bin's `--explain` and the crate README's clause table all read this
-/// table, so they cannot drift apart. The id set is pinned against the
-/// union of the crate's clause constants by the vocabulary test beside
-/// this table.
+/// The ONE place titles and definitions live — [`clause_title`] and
+/// the bin's `--explain` read this table directly, and the crate
+/// README's hand-written clause table is pinned to it BOTH directions
+/// by the README-table test beside this table — so they cannot drift
+/// apart. The id set is pinned against the union of the crate's
+/// clause constants by the vocabulary test beside this table.
 pub const CLAUSES: &[Clause] = &[
     Clause {
         id: "S1",
@@ -468,6 +469,65 @@ mod tests {
             timed_out(),
             "clause timed out after 30s — a connector that stalls fails the clause"
         );
+    }
+
+    /// Runs of whitespace collapsed to one space — README table cells
+    /// are single lines while [`CLAUSES`] strings ride literal
+    /// continuations, so byte equality is asserted modulo spacing.
+    fn normalized(text: &str) -> String {
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// The README's clause table is a HAND-WRITTEN copy of [`CLAUSES`]
+    /// (nothing generates it), so this pin holds the two together in
+    /// BOTH directions: same row count, and every row's id, title and
+    /// definition equal to its [`CLAUSES`] entry in the same order —
+    /// an edit to either side that the other does not follow fails
+    /// here, which is what lets the table's doc say they cannot drift
+    /// apart.
+    #[test]
+    fn the_readme_clause_table_matches_clauses_exactly() {
+        let readme = include_str!("../README.md");
+        let rows: Vec<(String, String, String)> = readme
+            .lines()
+            .filter_map(|line| {
+                let cells: Vec<&str> = line
+                    .trim()
+                    .strip_prefix('|')?
+                    .strip_suffix('|')?
+                    .split('|')
+                    .map(str::trim)
+                    .collect();
+                match cells.as_slice() {
+                    // The header and its separator are table furniture,
+                    // not rows.
+                    ["Id", ..] => None,
+                    [id, ..] if id.starts_with('-') => None,
+                    [id, title, definition] => {
+                        Some((normalized(id), normalized(title), normalized(definition)))
+                    }
+                    _ => None,
+                }
+            })
+            .collect();
+
+        assert_eq!(
+            rows.len(),
+            CLAUSES.len(),
+            "the README clause table and CLAUSES must carry the same rows"
+        );
+        for (row, clause) in rows.iter().zip(CLAUSES) {
+            assert_eq!(
+                row,
+                &(
+                    normalized(clause.id),
+                    normalized(clause.title),
+                    normalized(clause.definition)
+                ),
+                "the README row and the CLAUSES entry for `{}` must match",
+                clause.id
+            );
+        }
     }
 
     /// The vocabulary covers EXACTLY the ids the certify paths can emit

@@ -112,9 +112,11 @@ impl ManagedSource {
         &self.identity
     }
 
-    /// The VERIFIED version the connector reported in its handshake
-    /// (D-039-2) — a foreign server can no longer pass a pin while
-    /// `spec.version` disagrees.
+    /// The version the connector reported in its handshake — the
+    /// WIRE's value, checked against the requirement only when it
+    /// pins a version (D-039-2); an unpinned requirement carries it
+    /// as reported. Spec-vs-wire version skew is not refused on this
+    /// path — that judgment is the certifier's P3 clause.
     pub fn resolved_version(&self) -> &str {
         &self.resolved_version
     }
@@ -195,9 +197,11 @@ impl ManagedDestination {
         &self.identity
     }
 
-    /// The VERIFIED version the connector reported in its handshake
-    /// (D-039-2) — a foreign server can no longer pass a pin while
-    /// `spec.version` disagrees.
+    /// The version the connector reported in its handshake — the
+    /// WIRE's value, checked against the requirement only when it
+    /// pins a version (D-039-2); an unpinned requirement carries it
+    /// as reported. Spec-vs-wire version skew is not refused on this
+    /// path — that judgment is the certifier's P3 clause.
     pub fn resolved_version(&self) -> &str {
         &self.resolved_version
     }

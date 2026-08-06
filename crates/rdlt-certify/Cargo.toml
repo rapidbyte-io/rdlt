@@ -35,7 +35,7 @@ required-features = ["bin"]
 [dependencies]
 clap = { workspace = true, optional = true }
 rdlt-runtime = { workspace = true }
-# P8/P9 drive the LIVE socket directly — a second dial and a raw
+# P8/P9/P10 drive the LIVE socket directly — a second dial and a raw
 # `OpenSession` are wire moves the managed adapter deliberately never
 # makes, so the certifier reaches under it to the client crate.
 rdlt-connector-client = { workspace = true }
@@ -55,7 +55,7 @@ rdlt-connector = { workspace = true }
 rdlt-testkit = { workspace = true }
 # The stdout handshake line (`handshake::Line`) for the P1 probe, AND
 # the generated proto types the wire probe drives raw: the wire
-# P-clauses (P3/P5/P6/P7) and the P8/P9 session probes watch actual
+# P-clauses (P3/P5/P6/P7) and the P8/P9/P10 session probes watch actual
 # frames BELOW the client adapters, so a misbehaving server cannot
 # hide behind our own client's good manners.
 rdlt-connector-protocol = { workspace = true }
