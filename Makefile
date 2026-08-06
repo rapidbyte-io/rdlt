@@ -137,12 +137,14 @@ ifeq ($(TARGET),)
 	# (test_spawned_bins) plus the T8 headline e2e (test_e2e_file: a
 	# full engine run over spawned connectors on both sides, and its
 	# one crash arm); the env var tells the shared helper to (re)build
-	# the bins itself, so the suite stays honest run alone, and both
-	# module names in the filter make a renamed module fail its own
-	# line rather than pass empty.
+	# the bins itself, so the suite stays honest run alone. ONE module
+	# per invocation: nextest fails only a FULLY empty selection, so an
+	# OR filter with a renamed module beside a live one passes green
+	# (measured) — separate lines make each module fail its own line.
 	cargo build -p rdlt-connector-file --features bin-serve --bin rdlt-connector-file
 	cargo build -p rdlt-connector-snowflake --features bin-serve --bin rdlt-connector-snowflake
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-runtime --features spawn-bins -E 'test(test_spawned_bins) or test(test_e2e_file)'
+	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-runtime --features spawn-bins -E 'test(test_spawned_bins)'
+	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-runtime --features spawn-bins -E 'test(test_e2e_file)'
 	cargo test --doc --workspace
 else ifeq ($(TARGET),unit)
 	cargo nextest run --workspace
@@ -153,7 +155,8 @@ else ifeq ($(TARGET),unit)
 	cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(test_serve_destination)'
 	cargo build -p rdlt-connector-file --features bin-serve --bin rdlt-connector-file
 	cargo build -p rdlt-connector-snowflake --features bin-serve --bin rdlt-connector-snowflake
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-runtime --features spawn-bins -E 'test(test_spawned_bins) or test(test_e2e_file)'
+	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-runtime --features spawn-bins -E 'test(test_spawned_bins)'
+	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-runtime --features spawn-bins -E 'test(test_e2e_file)'
 else ifeq ($(TARGET),e2e)
 	cargo nextest run --workspace -E 'binary(/e2e/)'
 else ifeq ($(TARGET),sweep)
