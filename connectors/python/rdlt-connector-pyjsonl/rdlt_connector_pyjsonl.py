@@ -27,6 +27,7 @@ generated stubs (which need the protobuf runtime). Nothing else.
 """
 
 import argparse
+import glob
 import json
 import os
 import sys
@@ -374,15 +375,30 @@ def main():
     pb_grpc.add_ConnectorServicer_to_server(Connector(session), server)
     pb_grpc.add_SourceServiceServicer_to_server(SourceService(session), server)
 
-    # A pid-derived socket path straight in the system temp directory —
-    # the sdk's own rdlt-{pid}.sock shape, collision-free per live
-    # process. No private directory: the Rust side (probes, guards)
-    # unlinks socket FILES it was advertised, so a bare file is cleaned
-    # up completely where a wrapping directory would be left behind.
-    # The socket is tightened to 0600 before the line advertises it.
-    socket_path = os.path.join(
-        tempfile.gettempdir(), f"rdlt-pyjsonl-{os.getpid()}.sock"
-    )
+    # Reclaim dead predecessors' socket dirs BEFORE minting our own.
+    # rmdir-only is the WHOLE liveness check, and it is sufficient and
+    # race-free: the Rust side (probes, guards) unlinks the socket FILE
+    # on every cleanup path, so a dead sibling's dir is EMPTY and rmdir
+    # succeeds exactly then; a LIVE sibling's dir still holds its
+    # socket, so rmdir fails harmlessly; rmdir never follows symlinks;
+    # and other users' dirs fail on permissions. Failures are ignored
+    # wholesale — reclaim is best-effort hygiene, never a gate.
+    for stale in glob.glob(os.path.join(tempfile.gettempdir(), "rdlt-pyjsonl-*")):
+        try:
+            os.rmdir(stale)
+        except OSError:
+            pass
+
+    # A fresh PRIVATE directory per process (mkdtemp: 0700, name
+    # unpredictable) keeps the socket path collision-free and
+    # attacker-free — a predictable name in the shared world-writable
+    # temp dir could be pre-created (bind fails, DoS) or planted as a
+    # dangling symlink, which bind(2) would follow to an
+    # attacker-chosen location, and a by-path chmod would race the same
+    # way. Inside the private dir both the bind and the chmod-to-0600
+    # below are safe.
+    socket_dir = tempfile.mkdtemp(prefix="rdlt-pyjsonl-")
+    socket_path = os.path.join(socket_dir, "connector.sock")
     server.add_insecure_port(f"unix:{socket_path}")
     os.chmod(socket_path, 0o600)
     server.start()
