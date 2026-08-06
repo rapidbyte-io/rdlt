@@ -1,8 +1,11 @@
 //! The headline: the REAL file connector bin, certified as a source
 //! over the wire — spawned by path (the id learned from its own Spec
-//! reply), the P-clauses probed on live processes, and the testkit's
-//! S-clauses reused against the managed adapter. A conformant connector
-//! comes out all-Pass.
+//! reply), the P-clauses probed on live processes (including the wire
+//! clauses P3/P5/P6/P7, judged on raw frames below the adapters), and
+//! the testkit's S-clauses reused against the managed adapter. A
+//! conformant connector comes out all-Pass — P5 vacuously so here (the
+//! jsonl source serves raw_json frames, never arrow), which is the
+//! clause's recorded posture for JSON-native sources.
 
 use rdlt_certify::{Target, Verdict, certify_source};
 use serde_json::json;
@@ -32,7 +35,7 @@ async fn the_file_source_certifies_all_pass() {
     let report = certify_source(&Target::resolve_path(bin, config)).await;
 
     let clauses: Vec<&str> = report.entries.iter().map(|entry| entry.clause).collect();
-    for clause in ["S1", "S2", "S4", "P1", "P2", "P4"] {
+    for clause in ["S1", "S2", "S4", "P1", "P2", "P3", "P4", "P5", "P6", "P7"] {
         assert!(
             clauses.contains(&clause),
             "clause {clause} has no entry — asserted set was {clauses:?}"

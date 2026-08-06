@@ -4577,6 +4577,7 @@ dependencies = [
 name = "rdlt-certify"
 version = "0.3.0"
 dependencies = [
+ "arrow",
  "async-trait",
  "rdlt-connector",
  "rdlt-connector-client",

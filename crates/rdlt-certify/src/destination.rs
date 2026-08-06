@@ -1,12 +1,19 @@
 //! Destination certification: spawn the target's binary and certify it
 //! over the wire — the role-generic protocol clauses (P1/P2/P4, probes
-//! in [`crate::target`]), the testkit's destination conformance clauses
-//! (D1–D6, D8) reused against the managed adapter, plus the two clauses
-//! that exist ONLY out of process: P8, the one-session ceiling (a
-//! second concurrent `OpenSession` on the LIVE socket must refuse
-//! `FailedPrecondition` — the 038 frozen class), and P9,
-//! close-on-abandonment (a session dropped without `Close` must be
-//! reclaimed: within [`RECLAIM_WINDOW`] a fresh session opens).
+//! in [`crate::target`]), the handshake-borne wire clauses (P3
+//! identity/skew and P7 the v0 state-format map, judged on a raw
+//! handshake below the adapters — [`crate::wire`]), the testkit's
+//! destination conformance clauses (D1–D6, D8) reused against the
+//! managed adapter, plus the two clauses that exist ONLY out of
+//! process: P8, the one-session ceiling (a second concurrent
+//! `OpenSession` on the LIVE socket must refuse `FailedPrecondition` —
+//! the 038 frozen class), and P9, close-on-abandonment (a session
+//! dropped without `Close` must be reclaimed: within
+//! [`RECLAIM_WINDOW`] a fresh session opens). The P8/P9 probes drive
+//! RAW wire sessions ([`crate::wire::open_wire_session`]) on their own
+//! dials of the live socket — wire moves the managed adapter
+//! deliberately never makes, and the seam that lets the rogue suite
+//! prove both clauses can fail.
 //!
 //! The D-reuse rides a settling adapter, not the managed destination
 //! raw: the in-process suite assumes dropping a session releases it
@@ -43,6 +50,7 @@ use crate::report::{CLAUSE_TIMEOUT, Report, timed_out};
 use crate::target::{
     Target, fetch_spec, probe_handshake_line, report_p2, report_p4, resolved_requirement,
 };
+use crate::wire::{self, WireOpenError, WireSession, open_wire_session};
 
 /// The D-clauses the reused testkit suite covers — its module doc's
 /// exact set (D7 has no check there yet; renumbering is forbidden).
@@ -107,6 +115,7 @@ pub async fn certify_destination(target: &Target, probe: Option<&dyn TableProbe>
     let downstream = || {
         ["P2", "P4"]
             .into_iter()
+            .chain(wire::DEST_WIRE_CLAUSES)
             .chain(DEST_CLAUSES)
             .chain(["P8", "P9"])
     };
@@ -161,6 +170,31 @@ pub async fn certify_destination(target: &Target, probe: Option<&dyn TableProbe>
     // -object config schema, answered with no config at all.
     report_p4(&mut report, &spec);
 
+    // The wire clauses — P3/P7 from one raw handshake — ride their OWN
+    // spawn: the kit watches the actual handshake frame BELOW the
+    // adapters, and the managed adapter's process has already spent its
+    // one handshake.
+    match tokio::time::timeout(
+        CLAUSE_TIMEOUT,
+        wire::attach_for(&requirement, Role::Destination, &target.config),
+    )
+    .await
+    {
+        Ok(Ok(mut probe)) => {
+            wire::certify_destination_wire(&mut report, &mut probe, &requirement.id).await;
+        }
+        Ok(Err(why)) => {
+            for clause in wire::DEST_WIRE_CLAUSES {
+                report.fail(clause, why.clone());
+            }
+        }
+        Err(_elapsed) => {
+            for clause in wire::DEST_WIRE_CLAUSES {
+                report.fail(clause, timed_out());
+            }
+        }
+    }
+
     // D-reuse — the testkit's destination conformance suite, verbatim,
     // against the (settling) managed adapter: the wire is certified by
     // the SAME clauses an in-process connector answers to. D8 is
@@ -209,12 +243,7 @@ pub async fn certify_destination(target: &Target, probe: Option<&dyn TableProbe>
             // P8 — the one-session ceiling: with a session held, a
             // second `OpenSession` on a SECOND dial of the same socket
             // must refuse `FailedPrecondition` (the 038 frozen class).
-            match tokio::time::timeout(
-                CLAUSE_TIMEOUT,
-                probe_one_session_ceiling(&managed.inner, &socket),
-            )
-            .await
-            {
+            match tokio::time::timeout(CLAUSE_TIMEOUT, probe_one_session_ceiling(&socket)).await {
                 Ok(Ok(())) => report.pass("P8"),
                 Ok(Err(why)) => report.fail("P8", why),
                 Err(_elapsed) => report.fail("P8", timed_out()),
@@ -222,9 +251,7 @@ pub async fn certify_destination(target: &Target, probe: Option<&dyn TableProbe>
 
             // P9 — close-on-abandonment: a session dropped without
             // `Close` must be reclaimed within the window.
-            match tokio::time::timeout(CLAUSE_TIMEOUT, probe_abandonment_reclaim(&managed.inner))
-                .await
-            {
+            match tokio::time::timeout(CLAUSE_TIMEOUT, probe_abandonment_reclaim(&socket)).await {
                 Ok(Ok(())) => report.pass("P9"),
                 Ok(Err(why)) => report.fail("P9", why),
                 Err(_elapsed) => report.fail("P9", timed_out()),
@@ -307,18 +334,44 @@ impl Destination for SettledDestination {
     }
 }
 
-/// The P8 probe: hold one session through the SPI, dial the LIVE socket
-/// a second time, and ask for a second session with an empty request
-/// stream — the refusal must be the transport-level `FailedPrecondition`
-/// status (the RPC never opens), anything else fails the clause. The
-/// held session is closed orderly afterward whatever P8 concluded.
-async fn probe_one_session_ceiling(
-    managed: &ManagedDestination,
+/// The wire twin of [`settle_open`]: open a RAW session on the live
+/// socket, retrying exactly the transport ceiling refusal within
+/// [`RECLAIM_WINDOW`] — release over the wire is asynchronous, so the
+/// slot the previous session held may free a beat after its stream
+/// ended. Exhausting the window surfaces the refusal itself; any other
+/// failure surfaces immediately.
+async fn settle_open_wire(
     socket: &Path,
-) -> Result<(), String> {
-    let mut session = settle_open(managed, "rdlt-certify-p8", "certify-p8")
+    pipeline: &str,
+    load_id: &str,
+) -> Result<WireSession, String> {
+    let deadline = tokio::time::Instant::now() + RECLAIM_WINDOW;
+    loop {
+        match open_wire_session(socket, pipeline, load_id).await {
+            Ok(session) => return Ok(session),
+            Err(WireOpenError::Ceiling(_)) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(RECLAIM_POLL).await;
+            }
+            Err(WireOpenError::Ceiling(status)) => {
+                return Err(format!("the one-session refusal never lifted: {status}"));
+            }
+            Err(WireOpenError::Other(why)) => return Err(why),
+        }
+    }
+}
+
+/// The P8 probe, all wire moves on the LIVE socket (the managed
+/// adapter deliberately never makes them — and probing raw is what
+/// lets the rogue suite prove the clause can fail): hold one raw
+/// session, dial the socket a second time, and ask for a second
+/// session with an empty request stream — the refusal must be the
+/// transport-level `FailedPrecondition` status (the RPC never opens),
+/// anything else fails the clause. The held session is closed orderly
+/// afterward whatever P8 concluded.
+async fn probe_one_session_ceiling(socket: &Path) -> Result<(), String> {
+    let session = settle_open_wire(socket, "rdlt-certify-p8", "certify-p8")
         .await
-        .map_err(|error| format!("could not open the session that holds the slot: {error}"))?;
+        .map_err(|why| format!("could not open the session that holds the slot: {why}"))?;
 
     let second = async {
         let channel = dial(socket, MAX_FRAME_BYTES as u64)
@@ -350,31 +403,83 @@ async fn probe_one_session_ceiling(
 
     // Orderly close of the slot holder — P8 probes the ceiling, not
     // abandonment (that is P9's clause).
-    let _ = session.close().await;
+    session.close().await;
     verdict
 }
 
-/// The P9 probe: open a session, then DROP it — no `Close` frame, the
-/// stream just ends (the wire's abandonment signal). Within
+/// The P9 probe: open a raw session, then DROP it — no `Close` frame,
+/// the stream just ends (the wire's abandonment signal). Within
 /// [`RECLAIM_WINDOW`] a fresh session on the SAME pipeline must open:
 /// the slot was released and the abandoned session's staging claim
 /// (a lease, for destinations that hold one) reclaimed. The fresh
 /// session is closed orderly.
-async fn probe_abandonment_reclaim(managed: &ManagedDestination) -> Result<(), String> {
-    let abandoned = settle_open(managed, "rdlt-certify-p9", "certify-p9-abandoned")
+async fn probe_abandonment_reclaim(socket: &Path) -> Result<(), String> {
+    let abandoned = settle_open_wire(socket, "rdlt-certify-p9", "certify-p9-abandoned")
         .await
-        .map_err(|error| format!("could not open the session to abandon: {error}"))?;
+        .map_err(|why| format!("could not open the session to abandon: {why}"))?;
     drop(abandoned);
 
-    match settle_open(managed, "rdlt-certify-p9", "certify-p9-fresh").await {
-        Ok(mut fresh) => {
-            let _ = fresh.close().await;
+    match settle_open_wire(socket, "rdlt-certify-p9", "certify-p9-fresh").await {
+        Ok(fresh) => {
+            fresh.close().await;
             Ok(())
         }
-        Err(error) => Err(format!(
+        Err(why) => Err(format!(
             "abandoned session was not reclaimed: a fresh session still refused {}s after the \
-             stream ended without Close: {error}",
+             stream ended without Close: {why}",
             RECLAIM_WINDOW.as_secs()
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! The P8/P9 rogue suite (the T3 carry — both Fail arms were
+    //! code-present but untested): each designated rogue proves its
+    //! clause fails with the pinned evidence. In-process over UDS —
+    //! no spawn, no built bin — so both ride the bare (ungated) suite,
+    //! driving the probe functions directly (the exact strings
+    //! `certify_destination` folds into the report's Fail entries).
+
+    use super::*;
+    use crate::rogue::{self, SessionDiscipline};
+
+    /// P8's designated rogue: a destination that ACCEPTS a second
+    /// concurrent session fails the clause with the pinned evidence.
+    #[tokio::test]
+    async fn a_destination_accepting_a_second_session_fails_p8() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = dir.path().join("rogue.sock");
+        let _serving = rogue::serve_destination(&socket, SessionDiscipline::AcceptEverySession);
+
+        let why = probe_one_session_ceiling(&socket)
+            .await
+            .expect_err("a second session was accepted — P8 must fail");
+        assert_eq!(
+            why,
+            "a second concurrent session was ACCEPTED — v0 allows exactly one session per \
+             connector process; the second OpenSession must be refused with FailedPrecondition"
+        );
+    }
+
+    /// P9's designated rogue: a destination that never releases the
+    /// slot after abandonment fails the clause within its window —
+    /// paused tokio time auto-advances the poll sleeps, so the 10s
+    /// window elapses without wall-clock cost.
+    #[tokio::test(start_paused = true)]
+    async fn a_destination_that_never_reclaims_fails_p9() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = dir.path().join("rogue.sock");
+        let _serving = rogue::serve_destination(&socket, SessionDiscipline::NeverReclaim);
+
+        let why = probe_abandonment_reclaim(&socket)
+            .await
+            .expect_err("the slot was never reclaimed — P9 must fail");
+        let pinned = "abandoned session was not reclaimed: a fresh session still refused 10s \
+                      after the stream ended without Close: ";
+        assert!(
+            why.starts_with(pinned),
+            "the evidence must carry the pinned prefix `{pinned}`, got: {why}"
+        );
     }
 }

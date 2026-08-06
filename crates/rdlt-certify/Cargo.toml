@@ -41,9 +41,16 @@ rdlt-connector = { workspace = true }
 # feeds a managed (spawned, wire-driven) SPI object to the exact suites
 # in-process connectors certify against.
 rdlt-testkit = { workspace = true }
-# For the stdout handshake line only (`handshake::Line`) — the P1 probe
-# reads the one pre-gRPC artifact a spawned connector writes.
+# The stdout handshake line (`handshake::Line`) for the P1 probe, AND
+# the generated proto types the wire probe drives raw: the wire
+# P-clauses (P3/P5/P6/P7) and the P8/P9 session probes watch actual
+# frames BELOW the client adapters, so a misbehaving server cannot
+# hide behind our own client's good manners.
 rdlt-connector-protocol = { workspace = true }
+# P5 decodes each `arrow_ipc` read frame's IPC stream to COUNT its
+# record batches — the one-batch rule judged on the wire bytes, not on
+# what the client adapter let through.
+arrow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # `process`/`time` ride the workspace feature list; `io-util` is this
@@ -52,7 +59,12 @@ tokio = { workspace = true, features = ["io-util"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-tokio = { workspace = true }
+# `net` for the in-process rogue servers: they bind their own UDS
+# listeners (`UnixListener`/`UnixListenerStream`) so the rogue suites
+# spawn nothing and need no built bin; `test-util` for the P9 rogue's
+# paused clock (its 10s reclaim window elapses without wall time).
+tokio = { workspace = true, features = ["net", "test-util"] }
+tokio-stream = { workspace = true, features = ["net"] }
 # The test probe implements the testkit's async `TableProbe` trait.
 async-trait = { workspace = true }
 

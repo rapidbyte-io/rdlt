@@ -17,8 +17,11 @@
 
 mod destination;
 mod report;
+#[cfg(test)]
+mod rogue;
 mod source;
 mod target;
+mod wire;
 
 pub use destination::certify_destination;
 pub use report::{Entry, Report, Verdict};

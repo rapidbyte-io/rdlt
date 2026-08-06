@@ -71,14 +71,15 @@ impl Target {
     }
 }
 
-/// How long the P1 probe waits for the one handshake line — the
-/// provider's own figure: not a performance budget but a "this is not a
-/// connector" detector.
-const LINE_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a probe waits for the one handshake line — the provider's
+/// own figure: not a performance budget but a "this is not a
+/// connector" detector. Shared with the wire probe's attach
+/// ([`crate::wire`]), which reads the same line on its own spawn.
+pub(crate) const LINE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The handshake-line byte cap, terminator included — the provider's own
-/// flood detector, applied to the probe's read too.
-const MAX_LINE_BYTES: u64 = 64 * 1024;
+/// flood detector, applied to every probe's read too.
+pub(crate) const MAX_LINE_BYTES: u64 = 64 * 1024;
 
 /// How long the P1 probe listens for a SECOND stdout line after the
 /// handshake line. Stdout is the machine channel and carries EXACTLY one
@@ -262,11 +263,12 @@ pub(crate) async fn probe_handshake_line(target: &Target, role: Role) -> Result<
     verdict
 }
 
-/// Resolve the requirement to a spawnable path for the direct probe:
-/// the explicit path as given, else the provider's own D-039-1
-/// convention (last `.`-segment, `rdlt-connector-` prefix) walked over
-/// `$PATH`.
-fn resolve_binary(requirement: &ConnectorRequirement) -> Result<PathBuf, String> {
+/// Resolve the requirement to a spawnable path for a direct probe (the
+/// P1 line probe and the wire probe's attach both spawn through this —
+/// ONE resolution helper, not a fourth copy): the explicit path as
+/// given, else the provider's own D-039-1 convention (last
+/// `.`-segment, `rdlt-connector-` prefix) walked over `$PATH`.
+pub(crate) fn resolve_binary(requirement: &ConnectorRequirement) -> Result<PathBuf, String> {
     if let Some(path) = &requirement.path {
         return Ok(path.clone());
     }
