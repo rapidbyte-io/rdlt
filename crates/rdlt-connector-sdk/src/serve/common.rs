@@ -151,10 +151,19 @@ fn create_private_dir(base: &Path) -> Result<PathBuf, ServeError> {
 
     let mut last_error: Option<(PathBuf, io::Error)> = None;
     for _ in 0..16 {
-        // Each `RandomState::new()` is keyed from OS entropy, so the
-        // finished hash of an empty input is a fresh unpredictable
-        // 64-bit token — std's only randomness source, and enough that
-        // another local user cannot pre-guess the name.
+        // std's entropy, stated honestly: the standard library seeds a
+        // THREAD-LOCAL from OS entropy once per thread, and each
+        // `RandomState::new()` derives its keys by incrementing a
+        // counter on that seed — so the token stream is SipHash outputs
+        // under counter-related keys. That is a hashDoS-resistance
+        // guarantee, NOT a CSPRNG one. It suffices here because the
+        // SECURITY BOUNDARY is the atomic mkdir-0700-or-fail below, not
+        // the name: a pre-created dir or a planted symlink at a
+        // predicted name makes `create` fail `AlreadyExists` (mkdir
+        // never follows a symlink at its final component) and this loop
+        // retry — so guessing tokens buys at most a bounded retry-DoS,
+        // never adoption of an attacker's directory and never
+        // symlink-following.
         let token = std::collections::hash_map::RandomState::new()
             .build_hasher()
             .finish();
