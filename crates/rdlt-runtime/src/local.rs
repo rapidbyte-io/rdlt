@@ -233,6 +233,15 @@ impl LocalBinaryConnectorProvider {
     /// answers on the second attempt. Both probes null the child's
     /// stderr: a wrong-role usage refusal is this method's mechanism,
     /// not something to print at the operator.
+    ///
+    /// Identity is verified like the run path's (D-039-2, strict
+    /// equality): a discovered binary whose reported `name` differs
+    /// from the requirement id is refused, never worked around — the
+    /// last-segment convention would otherwise resolve
+    /// `com.example.file` to `rdlt-connector-file` and print the WRONG
+    /// connector's schema as if it were the asked-for one. An explicit
+    /// `path` on the requirement skips the check: the operator named a
+    /// binary, not an id, so whatever it reports IS the answer.
     pub async fn spec(
         &self,
         requirement: &ConnectorRequirement,
@@ -258,6 +267,12 @@ impl LocalBinaryConnectorProvider {
                                 "undecodable spec_json in the Spec reply: {error}"
                             )))
                         })?;
+                    if requirement.path.is_none() && spec.name != requirement.id {
+                        return Err(ProviderError::Client(ClientError::IdMismatch {
+                            expected: requirement.id.clone(),
+                            reported: spec.name,
+                        }));
+                    }
                     return Ok(spec);
                 }
                 Err(error) => refusal = Some(error),

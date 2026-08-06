@@ -282,6 +282,38 @@ async fn the_spec_probe_answers_for_both_bin_shapes() {
     );
 }
 
+/// The `Spec` probe verifies identity like the run path (D-039-2): the
+/// last-segment convention resolves `com.example.file` to the REAL
+/// `rdlt-connector-file`, and without this gate `rdlt schema
+/// com.example.file` would print the wrong connector's schema as if it
+/// were the asked-for one. Refused typed, the rendered message naming
+/// both spellings — the explicit-path probes above stay uncheckable by
+/// design (a path names a binary, not an id) and keep passing.
+#[tokio::test]
+async fn the_spec_probe_refuses_a_discovered_binary_with_the_wrong_identity() {
+    // Discovery, not a path override: the built bins' directory IS the
+    // search path, so `com.example.file` resolves the real file bin.
+    let _ = built_bin("rdlt-connector-file");
+    let provider = LocalBinaryConnectorProvider::new().with_search_path(target_debug_dir());
+    let error = provider
+        .spec(&ConnectorRequirement::new("com.example.file"))
+        .await
+        .expect_err("a foreign id must not pass the Spec probe's identity gate");
+    match &error {
+        ProviderError::Client(ClientError::IdMismatch { expected, reported }) => {
+            assert_eq!(expected, "com.example.file");
+            assert_eq!(reported, "io.rapidbyte.file");
+        }
+        other => panic!("expected the typed IdMismatch, got: {other:?}"),
+    }
+    assert_eq!(
+        error.to_string(),
+        "connector identity mismatch: required `com.example.file`, the connector reported \
+         `io.rapidbyte.file`",
+        "the rendered refusal names BOTH spellings — the operator's fix is in the message"
+    );
+}
+
 /// The pinned arg contract, both bins: no args → exit 2, an
 /// unrecognized role → exit 2 — and snowflake, destination-only by
 /// design, refuses `--role=source` at the SAME arg gate.
