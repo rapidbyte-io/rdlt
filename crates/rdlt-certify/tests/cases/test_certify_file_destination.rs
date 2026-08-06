@@ -1,8 +1,8 @@
 //! The destination headline: the REAL file connector bin, certified as
 //! a destination over the wire — the P-clauses probed on live processes
 //! (including the handshake-borne wire clauses P3/P7, P8's one-session
-//! ceiling and P9's abandonment reclaim),
-//! and the testkit's D-clauses reused against the managed adapter with
+//! ceiling, P9's abandonment reclaim and P10's Backend-direct order
+//! book), and the testkit's D-clauses reused against the managed adapter with
 //! a jsonl read-back probe. The probe-less run proves certification
 //! never silently narrows: the unexercisable D-clauses come out
 //! Skip-with-reason, never Pass and never Fail.
@@ -46,7 +46,7 @@ async fn the_file_destination_certifies_clean_with_a_probe() {
 
     let clauses: Vec<&str> = report.entries.iter().map(|entry| entry.clause).collect();
     for clause in [
-        "D1", "D2", "D3", "D4", "D5", "D6", "D8", "P1", "P2", "P3", "P4", "P7", "P8", "P9",
+        "D1", "D2", "D3", "D4", "D5", "D6", "D8", "P1", "P2", "P3", "P4", "P7", "P8", "P9", "P10",
     ] {
         assert!(
             clauses.contains(&clause),
@@ -95,7 +95,7 @@ async fn a_probe_less_run_skips_the_read_back_clauses_with_the_reason() {
             other => panic!("without a probe, {clause} must skip with the reason, not {other:?}"),
         }
     }
-    for clause in ["P1", "P2", "P3", "P4", "P7", "P8", "P9"] {
+    for clause in ["P1", "P2", "P3", "P4", "P7", "P8", "P9", "P10"] {
         let entry = report
             .entries
             .iter()

@@ -11,10 +11,12 @@
 //! Test-only by construction (`#[cfg(test)]` at the `lib.rs` mod
 //! declaration): nothing shipped can reach a rogue.
 
+use std::collections::HashSet;
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
+use rdlt_connector::core::{CommitMeta, CommitReceipt, LoadId, TableSchema};
 use rdlt_connector::{ConnectorSpec, StreamSpec};
 use rdlt_connector_protocol::proto::connector_server::{Connector, ConnectorServer};
 use rdlt_connector_protocol::proto::destination_service_server::{
@@ -315,6 +317,213 @@ pub(crate) fn serve_destination(path: &Path, discipline: SessionDiscipline) -> J
     let rogue = RogueDestination {
         discipline,
         opened: AtomicBool::new(false),
+    };
+    let serving = tonic::transport::Server::builder()
+        .add_service(DestinationServiceServer::new(rogue))
+        .serve_with_incoming(incoming);
+    tokio::spawn(async move {
+        let _ = serving.await;
+    })
+}
+
+/// How the order-book rogue plays the session grammar — one variant
+/// per deliberate violation the P10 probe must catch, plus the
+/// conformant control that proves the probe's happy path completes
+/// without a spawned bin.
+#[derive(Clone, Copy)]
+pub(crate) enum OrderBookScript {
+    /// Keeps the whole grammar: refuses unordered writes, keeps
+    /// receipts durable across sessions, answers `publish` of an
+    /// already-committed load with the prior receipt.
+    Conformant,
+    /// Answers `written` to a write on a never-ensured table — the
+    /// write-before-ensure refusal is missing.
+    AcceptWriteBeforeEnsure,
+    /// Reports an existing receipt for every asked load, accepts
+    /// `replay`, then ALSO accepts `publish` with a freshly minted
+    /// receipt — the replay-vs-publish exclusivity is missing.
+    PublishOnReplay,
+    /// Never answers `close`: the session goes silent, the reply
+    /// stream stays open — the probe can only time out.
+    HangOnClose,
+    /// Answers `closed`, then emits one `part_closed` event AFTER it —
+    /// the one boundary a part event may never cross.
+    PartEventAfterClose,
+}
+
+/// A scripted destination speaking the FULL session grammar (unlike
+/// [`RogueDestination`], whose P8/P9 probes need only Open/Close).
+/// Receipts live across sessions — the conformant script's durability —
+/// and every `OpenSession` is accepted: P10 never probes the ceiling.
+pub(crate) struct RogueOrderBook {
+    script: OrderBookScript,
+    /// The `(load_id, commit_seq)` pairs a `publish` committed, shared
+    /// across sessions the way a real destination's receipt log is.
+    published: Arc<Mutex<HashSet<(String, u64)>>>,
+}
+
+/// One serialized `CommitReceipt` for `(load, seq)` — the rogue's
+/// receipts are built from the real type so the probe's JSON judgment
+/// reads the shape a shipped connector would serve.
+fn receipt_json(load: &str, seq: u64) -> Vec<u8> {
+    serde_json::to_vec(&CommitReceipt {
+        load_id: LoadId::new(load),
+        commit_seq: seq,
+    })
+    .expect("a CommitReceipt serializes to JSON infallibly")
+}
+
+impl RogueOrderBook {
+    /// Play one request frame by the script. `None` means "answer
+    /// nothing" — the hang script's `close` arm.
+    fn play(
+        &self,
+        ensured: &mut HashSet<String>,
+        request: Option<session_request::Request>,
+    ) -> Option<session_reply::Reply> {
+        let published = || {
+            self.published
+                .lock()
+                .expect("the rogue's receipt set lock is never poisoned")
+        };
+        Some(match request {
+            Some(session_request::Request::Open(_)) => {
+                session_reply::Reply::Opened(proto::Empty {})
+            }
+            Some(session_request::Request::Ensure(ensure)) => {
+                if let Ok(schema) = serde_json::from_slice::<TableSchema>(&ensure.table_schema_json)
+                {
+                    ensured.insert(schema.table.as_str().to_string());
+                }
+                session_reply::Reply::Ensured(proto::Empty {})
+            }
+            Some(session_request::Request::Write(write)) => {
+                if matches!(self.script, OrderBookScript::AcceptWriteBeforeEnsure)
+                    || ensured.contains(&write.table)
+                {
+                    session_reply::Reply::Written(proto::Empty {})
+                } else {
+                    session_reply::Reply::Error(error_frame(
+                        Classification::Fatal,
+                        "write before ensure_table",
+                    ))
+                }
+            }
+            Some(session_request::Request::ExistingReceipt(existing)) => {
+                let known = matches!(self.script, OrderBookScript::PublishOnReplay)
+                    || published().contains(&(existing.load_id.clone(), existing.commit_seq));
+                session_reply::Reply::Receipt(proto::ReceiptReply {
+                    receipt_json: known
+                        .then(|| receipt_json(&existing.load_id, existing.commit_seq)),
+                })
+            }
+            Some(session_request::Request::Replay(_)) => {
+                session_reply::Reply::Replayed(proto::Empty {})
+            }
+            Some(session_request::Request::Publish(publish)) => {
+                match serde_json::from_slice::<CommitMeta>(&publish.commit_meta_json) {
+                    Ok(meta) => {
+                        let receipt = if matches!(self.script, OrderBookScript::PublishOnReplay) {
+                            // The fresh mint: a receipt the reported
+                            // existing one never was — seq bumped.
+                            receipt_json(meta.load_id.as_str(), meta.commit_seq + 1)
+                        } else {
+                            published()
+                                .insert((meta.load_id.as_str().to_string(), meta.commit_seq));
+                            receipt_json(meta.load_id.as_str(), meta.commit_seq)
+                        };
+                        session_reply::Reply::Published(proto::Published {
+                            receipt_json: receipt,
+                        })
+                    }
+                    Err(error) => session_reply::Reply::Error(error_frame(
+                        Classification::Fatal,
+                        &format!("invalid commit_meta_json: {error}"),
+                    )),
+                }
+            }
+            Some(session_request::Request::ReadState(_)) => {
+                session_reply::Reply::State(proto::StateReply {
+                    state_doc_json: None,
+                })
+            }
+            Some(session_request::Request::Close(_)) => match self.script {
+                OrderBookScript::HangOnClose => return None,
+                _ => session_reply::Reply::Closed(proto::Empty {}),
+            },
+            None => session_reply::Reply::Error(error_frame(
+                Classification::Fatal,
+                "the session received a request frame with no payload",
+            )),
+        })
+    }
+}
+
+#[tonic::async_trait]
+impl DestinationService for RogueOrderBook {
+    type OpenSessionStream = ReceiverStream<Result<proto::SessionReply, Status>>;
+
+    async fn open_session(
+        &self,
+        request: Request<Streaming<proto::SessionRequest>>,
+    ) -> Result<Response<Self::OpenSessionStream>, Status> {
+        let rogue = RogueOrderBook {
+            script: self.script,
+            published: Arc::clone(&self.published),
+        };
+        let mut requests = request.into_inner();
+        let (reply_tx, reply_rx) = tokio::sync::mpsc::channel(4);
+        tokio::spawn(async move {
+            let mut ensured = HashSet::new();
+            while let Ok(Some(frame)) = requests.message().await {
+                let closing = matches!(frame.request, Some(session_request::Request::Close(_)));
+                let Some(reply) = rogue.play(&mut ensured, frame.request) else {
+                    // The hang script's Close: answer NOTHING and keep
+                    // the stream open — the certifier must outlive it.
+                    continue;
+                };
+                if reply_tx
+                    .send(Ok(proto::SessionReply { reply: Some(reply) }))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+                if closing {
+                    if matches!(rogue.script, OrderBookScript::PartEventAfterClose) {
+                        // The boundary violation: `closed` was answered
+                        // and a part event follows it anyway.
+                        let _ = reply_tx
+                            .send(Ok(proto::SessionReply {
+                                reply: Some(session_reply::Reply::PartClosed(
+                                    proto::PartClosedEvent {
+                                        table: "p10_order_book".to_string(),
+                                        encoded_bytes: 1,
+                                        reason: "commit".to_string(),
+                                    },
+                                )),
+                            }))
+                            .await;
+                    }
+                    // Reply (and any scripted violation) sent, stream
+                    // ends.
+                    break;
+                }
+            }
+        });
+        Ok(Response::new(ReceiverStream::new(reply_rx)))
+    }
+}
+
+/// Bind the order-book rogue at `path` (synchronously) and serve until
+/// the returned task is dropped — the P10 twin of
+/// [`serve_destination`].
+pub(crate) fn serve_order_book(path: &Path, script: OrderBookScript) -> JoinHandle<()> {
+    let listener = tokio::net::UnixListener::bind(path).expect("bind the rogue's socket");
+    let incoming = UnixListenerStream::new(listener);
+    let rogue = RogueOrderBook {
+        script,
+        published: Arc::new(Mutex::new(HashSet::new())),
     };
     let serving = tonic::transport::Server::builder()
         .add_service(DestinationServiceServer::new(rogue))

@@ -10,7 +10,12 @@
 //!
 //! The same layer carries the write direction's raw session substrate
 //! ([`WireSession`]) — the P8/P9 probes in [`crate::destination`] ride
-//! it, opening sessions with bare `Open` frames on their own dials.
+//! it, opening sessions with bare `Open` frames on their own dials, and
+//! the P10 order-book probe drives the WHOLE session grammar through
+//! [`WireSession::request`]/[`WireSession::close_judged`]: one tagged
+//! reply per request frame, interleaved `part_closed` events skipped
+//! where they are legal, and a judged end where the reply stream must
+//! actually END after `closed`.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -592,6 +597,169 @@ impl WireSession {
             .await;
         while let Ok(Some(_reply)) = self.replies.message().await {}
     }
+
+    /// Send one request frame and await its TAGGED answer. Interleaved
+    /// `part_closed` events are skipped — they are legal anywhere
+    /// before `Close`'s answer (the proto's own interleaving contract),
+    /// and P10's part-event legality judgment lives at
+    /// [`Self::close_judged`], the one boundary an event may not cross.
+    /// A reply stream that ends (or fails) before answering is the
+    /// reply-per-frame violation, named after the unanswered frame.
+    pub(crate) async fn request(
+        &mut self,
+        request: session_request::Request,
+    ) -> Result<WireReply, String> {
+        let tag = request_tag(&request);
+        if self.requests.send(session_frame(request)).await.is_err() {
+            return Err(format!(
+                "the request stream closed before `{tag}` could be sent"
+            ));
+        }
+        loop {
+            match self.replies.message().await {
+                Ok(Some(reply)) => match decode_reply(reply, tag)? {
+                    WireReply::PartClosed => continue,
+                    answer => return Ok(answer),
+                },
+                Ok(None) => {
+                    return Err(format!(
+                        "the session reply stream ended before answering `{tag}`"
+                    ));
+                }
+                Err(status) => {
+                    return Err(format!(
+                        "the session reply stream failed answering `{tag}`: {status}"
+                    ));
+                }
+            }
+        }
+    }
+
+    /// The JUDGED end — P10's close arm, distinct from [`Self::close`]
+    /// (P8/P9's best-effort teardown): `Close` must answer `closed`,
+    /// and after that answer the reply stream must actually END — a
+    /// `part_closed` event (or any other frame) arriving after
+    /// `closed` violates the order book.
+    pub(crate) async fn close_judged(mut self) -> Result<(), String> {
+        match self
+            .request(session_request::Request::Close(proto::Close {}))
+            .await?
+        {
+            WireReply::Closed => {}
+            WireReply::Error(frame) => {
+                return Err(format!("`close` was refused: {}", frame.message));
+            }
+            other => {
+                return Err(format!(
+                    "`close` was answered `{}` — every request's reply must carry its own \
+                     tag (`closed`)",
+                    other.tag()
+                ));
+            }
+        }
+        match self.replies.message().await {
+            Ok(None) => Ok(()),
+            Ok(Some(reply)) => Err(format!(
+                "a `{}` reply arrived after `close` was answered — part events and replies \
+                 are legal only before the session's end",
+                decode_reply(reply, "close").map_or("<no payload>", |r| r.tag())
+            )),
+            Err(status) => Err(format!(
+                "the reply stream failed after `close` was answered: {status}"
+            )),
+        }
+    }
+}
+
+/// One tagged session reply, as [`WireSession::request`] returns it.
+/// Payloads are carried only where the P10 probe consumes them today
+/// (the two receipt-bearing replies); the rest are bare tags — an
+/// unread payload here would be dead weight pretending to be
+/// observation (the [`RawFrame`] rule, write direction).
+pub(crate) enum WireReply {
+    /// `opened`.
+    Opened,
+    /// `ensured`.
+    Ensured,
+    /// `written`.
+    Written,
+    /// `receipt` — `ReceiptReply.receipt_json`, `None` when the server
+    /// knows no receipt for the asked `(load_id, commit_seq)`.
+    Receipt(Option<Vec<u8>>),
+    /// `replayed`.
+    Replayed,
+    /// `published` — `Published.receipt_json`.
+    Published(Vec<u8>),
+    /// `state`.
+    State,
+    /// `closed`.
+    Closed,
+    /// `error` — the in-stream refusal.
+    Error(proto::ErrorFrame),
+    /// `part_closed` — the interleaved telemetry event;
+    /// [`WireSession::request`] skips it, [`WireSession::close_judged`]
+    /// refuses it after `closed`.
+    PartClosed,
+}
+
+impl WireReply {
+    /// The reply's wire tag — the proto oneof's own field name, the
+    /// vocabulary every P10 evidence line speaks.
+    pub(crate) fn tag(&self) -> &'static str {
+        match self {
+            WireReply::Opened => "opened",
+            WireReply::Ensured => "ensured",
+            WireReply::Written => "written",
+            WireReply::Receipt(_) => "receipt",
+            WireReply::Replayed => "replayed",
+            WireReply::Published(_) => "published",
+            WireReply::State => "state",
+            WireReply::Closed => "closed",
+            WireReply::Error(_) => "error",
+            WireReply::PartClosed => "part_closed",
+        }
+    }
+}
+
+/// The request's wire tag (the proto oneof's own field name) — names
+/// the frame in evidence when its answer never arrives or misbehaves.
+fn request_tag(request: &session_request::Request) -> &'static str {
+    match request {
+        session_request::Request::Open(_) => "open",
+        session_request::Request::Ensure(_) => "ensure",
+        session_request::Request::Write(_) => "write",
+        session_request::Request::ExistingReceipt(_) => "existing_receipt",
+        session_request::Request::Replay(_) => "replay",
+        session_request::Request::Publish(_) => "publish",
+        session_request::Request::ReadState(_) => "read_state",
+        session_request::Request::Close(_) => "close",
+    }
+}
+
+/// Map one wire `SessionReply` to its [`WireReply`]. A reply whose
+/// oneof carries no payload is protocol-undefined — an error naming
+/// the request it was supposed to answer, not a census entry (the
+/// session grammar, unlike the read stream, has no legal empty frame).
+fn decode_reply(reply: proto::SessionReply, answering: &str) -> Result<WireReply, String> {
+    match reply.reply {
+        Some(session_reply::Reply::Opened(_)) => Ok(WireReply::Opened),
+        Some(session_reply::Reply::Ensured(_)) => Ok(WireReply::Ensured),
+        Some(session_reply::Reply::Written(_)) => Ok(WireReply::Written),
+        Some(session_reply::Reply::Receipt(receipt)) => {
+            Ok(WireReply::Receipt(receipt.receipt_json))
+        }
+        Some(session_reply::Reply::Replayed(_)) => Ok(WireReply::Replayed),
+        Some(session_reply::Reply::Published(published)) => {
+            Ok(WireReply::Published(published.receipt_json))
+        }
+        Some(session_reply::Reply::State(_)) => Ok(WireReply::State),
+        Some(session_reply::Reply::Closed(_)) => Ok(WireReply::Closed),
+        Some(session_reply::Reply::Error(frame)) => Ok(WireReply::Error(frame)),
+        Some(session_reply::Reply::PartClosed(_)) => Ok(WireReply::PartClosed),
+        None => Err(format!(
+            "a session reply carried no payload (answering `{answering}`)"
+        )),
+    }
 }
 
 /// Why a raw session did not open.
@@ -625,9 +793,10 @@ pub(crate) async fn open_wire_session(
         .await
         .map_err(|error| WireOpenError::Other(format!("dialing the live socket: {error}")))?;
     let mut client = destination_client(channel);
-    // Capacity 2: the Open frame preloads into one slot, and the one
-    // later frame (`close`'s Close) never races anything — the session
-    // is request/reply paced.
+    // Capacity 2: the Open frame preloads into one slot, and every
+    // later frame (P8/P9's Close, P10's order-book frames alike) is
+    // sent one at a time by a request/reply-paced caller — never more
+    // than one in flight.
     let (requests, feed) = mpsc::channel(2);
     requests
         .try_send(session_frame(session_request::Request::Open(proto::Open {

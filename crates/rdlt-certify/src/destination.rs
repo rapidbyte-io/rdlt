@@ -7,13 +7,16 @@
 //! managed adapter, plus the two clauses that exist ONLY out of
 //! process: P8, the one-session ceiling (a second concurrent
 //! `OpenSession` on the LIVE socket must refuse `FailedPrecondition` —
-//! the 038 frozen class), and P9, close-on-abandonment (a session
+//! the 038 frozen class), P9, close-on-abandonment (a session
 //! dropped without `Close` must be reclaimed: within
-//! [`RECLAIM_WINDOW`] a fresh session opens). The P8/P9 probes drive
+//! [`RECLAIM_WINDOW`] a fresh session opens), and P10, the
+//! Backend-direct order book (the raw session choreography driven
+//! frame by frame WITHOUT the sdk `Session` — see [`probe_order_book`]
+//! for the four assertions). The P8/P9/P10 probes drive
 //! RAW wire sessions ([`crate::wire::open_wire_session`]) on their own
 //! dials of the live socket — wire moves the managed adapter
 //! deliberately never makes, and the seam that lets the rogue suite
-//! prove both clauses can fail.
+//! prove the clauses can fail.
 //!
 //! The D-reuse rides a settling adapter, not the managed destination
 //! raw: the in-process suite assumes dropping a session releases it
@@ -34,23 +37,25 @@ use std::path::Path;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use rdlt_connector::core::{LoadId, PipelineId};
+use rdlt_connector::core::{LoadId, PipelineId, WriteMode};
 use rdlt_connector::{
     ConnectorSpec, Destination, DestinationCapabilities, DestinationError, LoadSession, OpenContext,
 };
 use rdlt_connector_client::{destination_client, dial};
 use rdlt_connector_protocol::MAX_FRAME_BYTES;
-use rdlt_connector_protocol::proto::SessionRequest;
+use rdlt_connector_protocol::proto::{self, SessionRequest, session_request};
 use rdlt_runtime::{
     ClientError, ConnectorProvider, LocalBinaryConnectorProvider, ManagedDestination, Role,
 };
 use rdlt_testkit::conformance::destination::{TableProbe, verify_destination};
+use rdlt_testkit::{batch_of, commit_meta_for, schema_for};
+use serde_json::Value;
 
 use crate::report::{CLAUSE_TIMEOUT, Report, timed_out};
 use crate::target::{
     Target, fetch_spec, probe_handshake_line, report_p2, report_p4, resolved_requirement,
 };
-use crate::wire::{self, WireOpenError, WireSession, open_wire_session};
+use crate::wire::{self, WireOpenError, WireReply, WireSession, open_wire_session};
 
 /// The D-clauses the reused testkit suite covers — its module doc's
 /// exact set (D7 has no check there yet; renumbering is forbidden).
@@ -117,7 +122,7 @@ pub async fn certify_destination(target: &Target, probe: Option<&dyn TableProbe>
             .into_iter()
             .chain(wire::DEST_WIRE_CLAUSES)
             .chain(DEST_CLAUSES)
-            .chain(["P8", "P9"])
+            .chain(["P8", "P9", "P10"])
     };
 
     let requirement = match resolved_requirement(&target.requirement, &spec) {
@@ -226,7 +231,8 @@ pub async fn certify_destination(target: &Target, probe: Option<&dyn TableProbe>
         }
     }
 
-    // P8 and P9 need the LIVE socket — the provider's guard carries it.
+    // P8, P9 and P10 need the LIVE socket — the provider's guard
+    // carries it.
     match managed
         .inner
         .guard()
@@ -237,7 +243,8 @@ pub async fn certify_destination(target: &Target, probe: Option<&dyn TableProbe>
                        re-dialed"
                 .to_string();
             report.skip("P8", why.clone());
-            report.skip("P9", why);
+            report.skip("P9", why.clone());
+            report.skip("P10", why);
         }
         Some(socket) => {
             // P8 — the one-session ceiling: with a session held, a
@@ -256,6 +263,9 @@ pub async fn certify_destination(target: &Target, probe: Option<&dyn TableProbe>
                 Ok(Err(why)) => report.fail("P9", why),
                 Err(_elapsed) => report.fail("P9", timed_out()),
             }
+
+            // P10 — the Backend-direct order book.
+            report_p10(&mut report, &socket).await;
         }
     }
 
@@ -432,17 +442,257 @@ async fn probe_abandonment_reclaim(socket: &Path) -> Result<(), String> {
     }
 }
 
+/// The P10 identities — one pipeline of their own so the order-book
+/// probe's commits never collide with the D-suite's or P8/P9's.
+const P10_PIPELINE: &str = "rdlt-certify-p10";
+/// The one load id both passes commit and interrogate.
+const P10_LOAD: &str = "certify-p10";
+/// The one `(load, seq)` idempotency key the probe drives.
+const P10_SEQ: u64 = 1;
+/// The probe's table.
+const P10_TABLE: &str = "p10_order_book";
+
+/// P10 under the clause budget — a probe that stalls (the hang-on-close
+/// rogue's arm) FAILS the clause with the one timeout spelling, the
+/// certifier outliving the hang.
+async fn report_p10(report: &mut Report, socket: &Path) {
+    match tokio::time::timeout(CLAUSE_TIMEOUT, probe_order_book(socket)).await {
+        Ok(Ok(())) => report.pass("P10"),
+        Ok(Err(why)) => report.fail("P10", why),
+        Err(_elapsed) => report.fail("P10", timed_out()),
+    }
+}
+
+/// The P10 probe — the Backend-direct order book: the raw destination
+/// choreography driven frame by frame over the live socket, WITHOUT
+/// the sdk `Session`'s good manners between the certifier and the
+/// server, certifying the exactly-once grammar the wire actually
+/// speaks. Four assertions, two session passes:
+///
+/// - reply-per-frame: every request frame is answered with its OWN
+///   tag ([`expect`]; a stream that ends or stalls instead fails);
+/// - write-before-ensure REFUSED: the deliberate out-of-order `write`
+///   is driven FIRST and must earn a typed error frame;
+/// - replay-vs-publish exclusivity: a fresh session must find the
+///   receipt an earlier session committed (`Backend::existing_receipt`
+///   durability), accept `replay` for it, and answer a `publish` of
+///   that same load with a refusal OR the SAME receipt — never a
+///   fresh mint (rdlt-core's own `CommitReceipt` contract:
+///   "Re-committing the same `(load_id, commit_seq)` MUST return the
+///   prior receipt without re-publishing"; the sdk serve module's 038
+///   F-4 record asked for exactly this Backend-direct clause);
+/// - part-event legality: `part_closed` events are legal anywhere
+///   before `close`'s answer and NOWHERE after it
+///   ([`WireSession::close_judged`] holds the boundary).
+async fn probe_order_book(socket: &Path) -> Result<(), String> {
+    let meta_json = serde_json::to_vec(&commit_meta_for(
+        &PipelineId::new(P10_PIPELINE),
+        &LoadId::new(P10_LOAD),
+        P10_SEQ,
+    ))
+    .expect("a CommitMeta serializes to JSON infallibly");
+
+    // ——— Pass 1: the out-of-order probe, then the canonical sequence.
+    // A violation returns mid-session; the drop is the wire's
+    // abandonment signal and P9 already certified its reclaim.
+    let mut session = settle_open_wire(socket, P10_PIPELINE, P10_LOAD)
+        .await
+        .map_err(|why| format!("could not open the order-book session: {why}"))?;
+
+    // The deliberate out-of-order move FIRST: a `write` on a table no
+    // `ensure` ever named must be refused with a typed error frame.
+    match session.request(write_request()).await? {
+        WireReply::Error(_frame) => {}
+        other => {
+            let answer = match other {
+                WireReply::Written => "ACCEPTED".to_string(),
+                other => format!("answered `{}`", other.tag()),
+            };
+            return Err(format!(
+                "an out-of-order `write` was {answer} — a write to a never-ensured table \
+                 must be refused with a typed error frame"
+            ));
+        }
+    }
+
+    let ensure = session_request::Request::Ensure(proto::Ensure {
+        table_schema_json: serde_json::to_vec(&schema_for(P10_TABLE))
+            .expect("a TableSchema serializes to JSON infallibly"),
+        write_mode_json: serde_json::to_vec(&WriteMode::Append)
+            .expect("a WriteMode serializes to JSON infallibly"),
+    });
+    expect(session.request(ensure).await?, "ensure", "ensured")?;
+    expect(session.request(write_request()).await?, "write", "written")?;
+
+    match receipt_reply(&mut session).await? {
+        // A fresh load: `publish` is the legal continuation.
+        None => expect(
+            session.request(publish_request(&meta_json)).await?,
+            "publish",
+            "published",
+        )?,
+        // An earlier certification of this target already committed
+        // the load: `replay` is the legal continuation.
+        Some(receipt) => expect(
+            session.request(replay_request(&meta_json, receipt)).await?,
+            "replay",
+            "replayed",
+        )?,
+    }
+    let read_state = session_request::Request::ReadState(proto::ReadState {
+        pipeline: P10_PIPELINE.to_string(),
+    });
+    expect(session.request(read_state).await?, "read_state", "state")?;
+    session.close_judged().await?;
+
+    // ——— Pass 2: the exclusivity pass, a FRESH session on the same
+    // load — the receipt must have outlived the session that minted it.
+    let mut session = settle_open_wire(socket, P10_PIPELINE, P10_LOAD)
+        .await
+        .map_err(|why| format!("could not open the exclusivity session: {why}"))?;
+    let Some(existing) = receipt_reply(&mut session).await? else {
+        return Err(
+            "a fresh session's `existing_receipt` reported no receipt for a load an earlier \
+             session committed — the receipt must be durable across sessions"
+                .to_string(),
+        );
+    };
+    expect(
+        session
+            .request(replay_request(&meta_json, existing.clone()))
+            .await?,
+        "replay",
+        "replayed",
+    )?;
+    match session.request(publish_request(&meta_json)).await? {
+        // A refusal is one legal answer to the choreography violation.
+        WireReply::Error(_frame) => {}
+        // The other: the PRIOR receipt, returned without re-publishing.
+        WireReply::Published(published) => {
+            let same_receipt = match (receipt_value(&existing), receipt_value(&published)) {
+                (Some(existing), Some(published)) => existing == published,
+                // Undecodable bytes on either side never equal anything.
+                _ => false,
+            };
+            if !same_receipt {
+                return Err(format!(
+                    "a `publish` for a load whose receipt already exists minted a NEW receipt \
+                     — after `existing_receipt` reports a receipt, `publish` must be refused \
+                     or answer that same receipt (existing {}, published {})",
+                    render_receipt(&existing),
+                    render_receipt(&published)
+                ));
+            }
+        }
+        other => return Err(mismatch("publish", &other, "published")),
+    }
+    session.close_judged().await
+}
+
+/// The probe's one `write` frame: a single-batch Arrow IPC stream of
+/// the testkit's canonical `id: Int64` fixture rows.
+fn write_request() -> session_request::Request {
+    let batch = batch_of(&[1, 2, 3]);
+    let mut bytes = Vec::new();
+    {
+        let mut writer = arrow::ipc::writer::StreamWriter::try_new(&mut bytes, &batch.schema())
+            .expect("an IPC stream writer opens over a Vec");
+        writer.write(&batch).expect("the fixture batch writes");
+        writer.finish().expect("the IPC stream finishes");
+    }
+    session_request::Request::Write(proto::Write {
+        table: P10_TABLE.to_string(),
+        arrow_ipc: bytes,
+    })
+}
+
+/// The probe's `existing_receipt` frame for the one `(load, seq)` key.
+fn existing_receipt_request() -> session_request::Request {
+    session_request::Request::ExistingReceipt(proto::ExistingReceipt {
+        load_id: P10_LOAD.to_string(),
+        commit_seq: P10_SEQ,
+    })
+}
+
+/// The probe's `publish` frame.
+fn publish_request(meta_json: &[u8]) -> session_request::Request {
+    session_request::Request::Publish(proto::Publish {
+        commit_meta_json: meta_json.to_vec(),
+    })
+}
+
+/// The probe's `replay` frame, carrying `receipt` back verbatim.
+fn replay_request(meta_json: &[u8], receipt: Vec<u8>) -> session_request::Request {
+    session_request::Request::Replay(proto::Replay {
+        commit_meta_json: meta_json.to_vec(),
+        receipt_json: receipt,
+    })
+}
+
+/// Ask `existing_receipt` and demand the `receipt` tag back — the
+/// payload (`Some` bytes or an honest `None`) is the caller's judgment.
+async fn receipt_reply(session: &mut WireSession) -> Result<Option<Vec<u8>>, String> {
+    match session.request(existing_receipt_request()).await? {
+        WireReply::Receipt(receipt) => Ok(receipt),
+        WireReply::Error(frame) => {
+            Err(format!("`existing_receipt` was refused: {}", frame.message))
+        }
+        other => Err(mismatch("existing_receipt", &other, "receipt")),
+    }
+}
+
+/// The reply-per-frame judgment: `reply` must carry `want`'s tag. An
+/// error frame renders as a refusal (its cause text is the evidence);
+/// any other tag is the mismatch.
+fn expect(reply: WireReply, request: &str, want: &str) -> Result<(), String> {
+    if reply.tag() == want {
+        return Ok(());
+    }
+    Err(match reply {
+        WireReply::Error(frame) => format!("`{request}` was refused: {}", frame.message),
+        other => mismatch(request, &other, want),
+    })
+}
+
+/// The tags-match violation spelling.
+fn mismatch(request: &str, got: &WireReply, want: &str) -> String {
+    format!(
+        "`{request}` was answered `{}` — every request's reply must carry its own tag \
+         (`{want}`)",
+        got.tag()
+    )
+}
+
+/// A receipt's JSON value, for the same-receipt judgment — `None` when
+/// the bytes do not decode (undecodable never equals anything).
+fn receipt_value(receipt_json: &[u8]) -> Option<Value> {
+    serde_json::from_slice(receipt_json).ok()
+}
+
+/// A receipt for an evidence line — its JSON document, or the honest
+/// marker when the server's bytes were not JSON at all.
+fn render_receipt(receipt_json: &[u8]) -> String {
+    receipt_value(receipt_json)
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "<undecodable receipt>".to_string())
+}
+
 #[cfg(test)]
 mod tests {
-    //! The P8/P9 rogue suite (the T3 carry — both Fail arms were
-    //! code-present but untested): each designated rogue proves its
-    //! clause fails with the pinned evidence. In-process over UDS —
-    //! no spawn, no built bin — so both ride the bare (ungated) suite,
-    //! driving the probe functions directly (the exact strings
+    //! The P8/P9/P10 rogue suite (the T3 carry — the P8/P9 Fail arms
+    //! were code-present but untested; P10's rogues are its
+    //! certification bar): each designated rogue proves its clause
+    //! fails with the pinned evidence. In-process over UDS — no spawn,
+    //! no built bin — so all ride the bare (ungated) suite, driving
+    //! the probe functions directly (the exact strings
     //! `certify_destination` folds into the report's Fail entries).
+    //! The P10 rogue tests live HERE, beside the pub(crate) probe seam
+    //! they drive — the crate's precedent supersedes the plan's
+    //! tests/cases placement.
 
     use super::*;
-    use crate::rogue::{self, SessionDiscipline};
+    use crate::report::Verdict;
+    use crate::rogue::{self, OrderBookScript, SessionDiscipline};
 
     /// P8's designated rogue: a destination that ACCEPTS a second
     /// concurrent session fails the clause with the pinned evidence.
@@ -481,5 +731,112 @@ mod tests {
             why.starts_with(pinned),
             "the evidence must carry the pinned prefix `{pinned}`, got: {why}"
         );
+    }
+
+    /// Serve the order-book rogue and hand back the socket (the
+    /// tempdir rides along so it outlives the probe).
+    fn order_book_rogue(script: OrderBookScript) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = dir.path().join("rogue.sock");
+        let _serving = rogue::serve_order_book(&socket, script);
+        (dir, socket)
+    }
+
+    /// The P10 control: a server that keeps the whole grammar passes
+    /// the probe — proof the driver's happy path completes in the bare
+    /// suite, without a spawned bin (the gated file cell is the
+    /// real-connector twin of this pin).
+    #[tokio::test]
+    async fn a_conformant_order_book_passes_p10() {
+        let (_dir, socket) = order_book_rogue(OrderBookScript::Conformant);
+        probe_order_book(&socket)
+            .await
+            .expect("a conformant order book must pass P10");
+    }
+
+    /// P10's first designated rogue: a destination that answers
+    /// `written` to a write on a never-ensured table fails with the
+    /// pinned evidence — the out-of-order probe is driven FIRST, so
+    /// nothing else in the sequence can mask the missing refusal.
+    #[tokio::test]
+    async fn a_destination_accepting_an_unordered_write_fails_p10() {
+        let (_dir, socket) = order_book_rogue(OrderBookScript::AcceptWriteBeforeEnsure);
+        let why = probe_order_book(&socket)
+            .await
+            .expect_err("the unordered write was accepted — P10 must fail");
+        assert_eq!(
+            why,
+            "an out-of-order `write` was ACCEPTED — a write to a never-ensured table must \
+             be refused with a typed error frame"
+        );
+    }
+
+    /// P10's second designated rogue: a destination that reports an
+    /// existing receipt, accepts `replay`, then ALSO accepts `publish`
+    /// with a freshly minted receipt fails with both receipts named —
+    /// the replay-vs-publish exclusivity violated in the only
+    /// wire-observable way (a refusal and the prior receipt are the
+    /// two legal answers).
+    #[tokio::test]
+    async fn a_destination_minting_a_fresh_receipt_on_a_replayed_load_fails_p10() {
+        let (_dir, socket) = order_book_rogue(OrderBookScript::PublishOnReplay);
+        let why = probe_order_book(&socket)
+            .await
+            .expect_err("the publish minted a fresh receipt — P10 must fail");
+        assert_eq!(
+            why,
+            "a `publish` for a load whose receipt already exists minted a NEW receipt — \
+             after `existing_receipt` reports a receipt, `publish` must be refused or answer \
+             that same receipt (existing {\"load_id\":\"certify-p10\",\"commit_seq\":1}, \
+             published {\"load_id\":\"certify-p10\",\"commit_seq\":2})"
+        );
+    }
+
+    /// P10's part-event boundary rogue: a destination that answers
+    /// `closed` and then emits a `part_closed` event fails with the
+    /// pinned evidence — part events are legal anywhere before
+    /// `close`'s answer and nowhere after it.
+    #[tokio::test]
+    async fn a_part_event_after_the_close_reply_fails_p10() {
+        let (_dir, socket) = order_book_rogue(OrderBookScript::PartEventAfterClose);
+        let why = probe_order_book(&socket)
+            .await
+            .expect_err("a part event crossed the close boundary — P10 must fail");
+        assert_eq!(
+            why,
+            "a `part_closed` reply arrived after `close` was answered — part events and \
+             replies are legal only before the session's end"
+        );
+    }
+
+    /// P10's third designated rogue: a destination that never answers
+    /// `close` proves the CLAUSE_TIMEOUT arm — the certifier OUTLIVES
+    /// the hang and renders the one timeout spelling. The test itself
+    /// is bounded at 45s (CLAUSE_TIMEOUT plus margin) so a broken
+    /// timeout fails THIS test, not the suite; the paused clock
+    /// auto-advances the waits, so neither bound costs wall time.
+    #[tokio::test(start_paused = true)]
+    async fn a_destination_hanging_on_close_fails_p10_by_timeout() {
+        let (_dir, socket) = order_book_rogue(OrderBookScript::HangOnClose);
+
+        let mut report = Report::default();
+        let outcome =
+            tokio::time::timeout(Duration::from_secs(45), report_p10(&mut report, &socket)).await;
+        assert!(
+            outcome.is_ok(),
+            "the certifier must outlive the hang — CLAUSE_TIMEOUT never fired"
+        );
+        let entry = report
+            .entries
+            .iter()
+            .find(|entry| entry.clause == "P10")
+            .expect("report_p10 always writes a P10 entry");
+        match &entry.verdict {
+            Verdict::Fail(why) => assert_eq!(
+                why,
+                "clause timed out after 30s — a connector that stalls fails the clause"
+            ),
+            other => panic!("a hang must Fail P10 by timeout, got {other:?}"),
+        }
     }
 }
