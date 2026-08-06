@@ -74,7 +74,23 @@ pub enum Command {
         /// spawned and asked for its schema.
         #[arg(value_name = "connector")]
         connector: String,
+
+        /// Which half of an out-of-process connector to ask. Without
+        /// it the connector is probed source-first (a dual-role
+        /// connector answers with its source schema); the compiled-in
+        /// spellings already name their role and refuse the flag.
+        #[arg(long, value_enum)]
+        role: Option<SchemaRole>,
     },
+}
+
+/// The two halves a spawned connector can serve its schema as —
+/// `schema --role`'s vocabulary, mapped onto the runtime's `Role` at
+/// the dispatch site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum SchemaRole {
+    Source,
+    Destination,
 }
 
 /// The color ladder. `console` already honours NO_COLOR under

@@ -7,11 +7,13 @@
 //! printed (the compatibility contract's schema half, pinned by
 //! tests/cli_contract.rs); anything else is an OUT-OF-PROCESS connector
 //! — a reverse-DNS id discovered on PATH, or an explicit binary path —
-//! spawned and asked over the config-free `Spec` RPC.
+//! spawned and asked over the config-free `Spec` RPC, source-first or
+//! under exactly the half `--role` names (the dual-role door, 040 T9).
 
 use crate::CliError;
+use crate::args::SchemaRole;
 
-pub(crate) async fn print(connector: &str) -> Result<(), CliError> {
+pub(crate) async fn print(connector: &str, role: Option<SchemaRole>) -> Result<(), CliError> {
     // The frozen kebab spellings, exactly the set the ValueEnum
     // accepted — matched BEFORE any id/path interpretation, so the
     // compiled tier can never be shadowed by a stray binary on PATH.
@@ -27,9 +29,19 @@ pub(crate) async fn print(connector: &str) -> Result<(), CliError> {
         "iceberg-dest" => Some(rdlt::connector::iceberg::destination::config_schema()),
         _ => None,
     };
+    if compiled.is_some() && role.is_some() {
+        // Refused rather than ignored: `file-source --role destination`
+        // would otherwise print the SOURCE schema under a flag claiming
+        // the opposite — the accepted-and-ignored defect class.
+        return Err(CliError::Usage(format!(
+            "`{connector}` is a compiled-in spelling that already names its role; \
+             `--role` selects which half of an out-of-process connector (an id or \
+             binary path) to ask — drop the flag"
+        )));
+    }
     let schema = match compiled {
         Some(schema) => schema,
-        None => spawned_schema(connector).await?,
+        None => spawned_schema(connector, role).await?,
     };
     let json = serde_json::to_string_pretty(&schema)
         .map_err(|e| CliError::Usage(format!("encoding schema: {e}")))?;
@@ -47,7 +59,13 @@ pub(crate) async fn print(connector: &str) -> Result<(), CliError> {
 /// when it names an existing file, as an explicit binary path — spawn
 /// it through the provider, and ask the config-free `Spec` RPC. No
 /// handshake, no config: the schema is the connector's static identity.
-async fn spawned_schema(value: &str) -> Result<serde_json::Value, CliError> {
+/// Without `--role` the provider probes source-first (039's behavior);
+/// with it, exactly the named half is asked and a single-role binary
+/// refusing that half is a refusal, never a silent retry as the other.
+async fn spawned_schema(
+    value: &str,
+    role: Option<SchemaRole>,
+) -> Result<serde_json::Value, CliError> {
     let provider = rdlt::runtime::LocalBinaryConnectorProvider::new();
     let path = std::path::Path::new(value);
     let requirement = if path.is_file() {
@@ -55,12 +73,22 @@ async fn spawned_schema(value: &str) -> Result<serde_json::Value, CliError> {
     } else {
         rdlt::runtime::ConnectorRequirement::new(value)
     };
-    let spec = provider
-        .spec(&requirement)
-        .await
-        // The provider's typed errors — the frozen NotFound spelling
-        // included — render verbatim as config errors (exit 2).
-        .map_err(|e| CliError::Usage(e.to_string()))?;
+    let spec = match role {
+        None => provider.spec(&requirement).await,
+        Some(SchemaRole::Source) => {
+            provider
+                .spec_for_role(&requirement, rdlt::runtime::Role::Source)
+                .await
+        }
+        Some(SchemaRole::Destination) => {
+            provider
+                .spec_for_role(&requirement, rdlt::runtime::Role::Destination)
+                .await
+        }
+    }
+    // The provider's typed errors — the frozen NotFound spelling
+    // included — render verbatim as config errors (exit 2).
+    .map_err(|e| CliError::Usage(e.to_string()))?;
     spec.config_schema.ok_or_else(|| {
         // Frozen spelling: a connector may legitimately describe
         // nothing, and that is the connector's answer, not an IO error.

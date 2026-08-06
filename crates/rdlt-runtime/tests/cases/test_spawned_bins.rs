@@ -30,7 +30,7 @@ use rdlt_connector_protocol::handshake::Line;
 use rdlt_connector_protocol::proto::SpecRequest;
 use rdlt_runtime::{
     ClientError, ConnectorProvider, ConnectorRequirement, LocalBinaryConnectorProvider,
-    ProviderError,
+    ProviderError, Role,
 };
 use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -311,6 +311,168 @@ async fn the_spec_probe_refuses_a_discovered_binary_with_the_wrong_identity() {
         "connector identity mismatch: required `com.example.file`, the connector reported \
          `io.rapidbyte.file`",
         "the rendered refusal names BOTH spellings — the operator's fix is in the message"
+    );
+}
+
+/// The rdlt CLI itself, for the `schema --role` door (040 T9): built
+/// under the same env guard as the connector bins (the Makefile's
+/// spawn-bins line sets it), located by the same target-dir rule, and
+/// failing loudly with instructions when absent — never building
+/// behind the runner's back.
+fn built_cli() -> PathBuf {
+    static BUILT: OnceLock<()> = OnceLock::new();
+    BUILT.get_or_init(|| {
+        if std::env::var_os("RDLT_BUILD_CONNECTOR_BINS").is_none() {
+            return;
+        }
+        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+        // `test --no-run`, not `build`: the workspace gate compiles the
+        // CLI through test-unified features (its own suite spawns the
+        // bin via CARGO_BIN_EXE), and a plain `build` resolves a SECOND
+        // feature variant of the whole facade chain — minutes of
+        // duplicate compilation the gate's cache can never share.
+        let status = std::process::Command::new(&cargo)
+            .current_dir(workspace_root())
+            .args(["test", "-p", "rdlt-cli", "--no-run"])
+            .status()
+            .unwrap_or_else(|error| {
+                panic!("cargo test -p rdlt-cli --no-run did not spawn: {error}")
+            });
+        assert!(status.success(), "cargo test -p rdlt-cli --no-run failed");
+    });
+    let path = target_debug_dir().join("rdlt");
+    assert!(
+        path.is_file(),
+        "the rdlt CLI `{}` is not built — run the Makefile's spawn-bins line \
+         (it sets RDLT_BUILD_CONNECTOR_BINS=1) or `cargo build -p rdlt-cli` first",
+        path.display()
+    );
+    path
+}
+
+/// `spec_for_role` asks exactly the named half — no probing, no
+/// silent retry as the other role. Against the dual-role file bin the
+/// two halves answer DIFFERENT schemas, and the role-less `spec()`
+/// probe answers the SOURCE one (039's source-first behavior, now by
+/// delegation). Against the destination-only snowflake bin, Source is
+/// a spawn-tier refusal (its arg gate rejects the role, so no
+/// handshake line ever arrives) while Destination answers.
+#[tokio::test]
+async fn spec_for_role_asks_exactly_the_named_half() {
+    let provider = LocalBinaryConnectorProvider::new();
+
+    let file_bin = built_bin("rdlt-connector-file");
+    let requirement = ConnectorRequirement::new("io.rapidbyte.file").with_path(&file_bin);
+    let source = provider
+        .spec_for_role(&requirement, Role::Source)
+        .await
+        .expect("the file bin answers its source half");
+    let destination = provider
+        .spec_for_role(&requirement, Role::Destination)
+        .await
+        .expect("the file bin answers its destination half");
+    assert_eq!(source.name, "io.rapidbyte.file");
+    assert_eq!(destination.name, "io.rapidbyte.file");
+    assert_ne!(
+        source.config_schema, destination.config_schema,
+        "the two halves publish different config schemas"
+    );
+    let probed = provider
+        .spec(&requirement)
+        .await
+        .expect("the role-less probe still answers");
+    assert_eq!(
+        probed.config_schema, source.config_schema,
+        "no role = 039's source-first probe, byte-for-byte the source schema"
+    );
+
+    let snowflake_bin = built_bin("rdlt-connector-snowflake");
+    let requirement = ConnectorRequirement::new("io.rapidbyte.snowflake").with_path(&snowflake_bin);
+    let error = provider
+        .spec_for_role(&requirement, Role::Source)
+        .await
+        .expect_err("the destination-only bin's arg gate refuses the source role");
+    assert!(
+        matches!(error, ProviderError::HandshakeLine { .. }),
+        "the refusal is the spawn tier's own (no handshake line), never a silent \
+         retry as the other half: {error:?}"
+    );
+    let destination = provider
+        .spec_for_role(&requirement, Role::Destination)
+        .await
+        .expect("the snowflake bin answers its destination half");
+    assert_eq!(destination.name, "io.rapidbyte.snowflake");
+    assert!(
+        destination.config_schema.is_some(),
+        "the snowflake destination publishes a config schema"
+    );
+}
+
+/// `spec_for_role` keeps the id-resolution identity gate (D-039-2,
+/// the 040 T7 rule): a DISCOVERED binary whose reported name differs
+/// from the requirement id is refused — the last-segment convention
+/// would otherwise resolve `com.example.file` to the real
+/// `rdlt-connector-file` and answer with the wrong connector's schema.
+#[tokio::test]
+async fn spec_for_role_refuses_a_discovered_binary_with_the_wrong_identity() {
+    let _ = built_bin("rdlt-connector-file");
+    let provider = LocalBinaryConnectorProvider::new().with_search_path(target_debug_dir());
+    let error = provider
+        .spec_for_role(&ConnectorRequirement::new("com.example.file"), Role::Source)
+        .await
+        .expect_err("a foreign id must not pass the role probe's identity gate");
+    match &error {
+        ProviderError::Client(ClientError::IdMismatch { expected, reported }) => {
+            assert_eq!(expected, "com.example.file");
+            assert_eq!(reported, "io.rapidbyte.file");
+        }
+        other => panic!("expected the typed IdMismatch, got: {other:?}"),
+    }
+    assert_eq!(
+        error.to_string(),
+        "connector identity mismatch: required `com.example.file`, the connector reported \
+         `io.rapidbyte.file`",
+        "the rendered refusal names BOTH spellings — the operator's fix is in the message"
+    );
+}
+
+/// The CLI door on `spec_for_role` (040 T9): `rdlt schema <file-bin>
+/// --role destination` prints the DESTINATION schema, byte-identical
+/// to the compiled `file-dest` spelling's output (one crate, one
+/// schema, two tiers) and different from the flagless output — which
+/// itself stays 039's source-first probe, byte-identical to
+/// `--role source`.
+#[test]
+fn the_cli_schema_role_flag_selects_the_destination_half() {
+    let cli = built_cli();
+    let file_bin = built_bin("rdlt-connector-file");
+    let run = |args: &[&str]| {
+        let out = std::process::Command::new(&cli)
+            .args(args)
+            .output()
+            .expect("the rdlt CLI runs");
+        assert_eq!(out.status.code(), Some(0), "{args:?}: {out:?}");
+        out.stdout
+    };
+    let bin = file_bin.to_string_lossy();
+
+    let flagless = run(&["schema", &bin]);
+    let source = run(&["schema", &bin, "--role", "source"]);
+    let destination = run(&["schema", &bin, "--role", "destination"]);
+    let compiled_destination = run(&["schema", "file-dest"]);
+
+    assert_eq!(
+        destination, compiled_destination,
+        "--role destination prints the file destination's schema, byte-identical \
+         to the compiled `file-dest` spelling's"
+    );
+    assert_ne!(
+        destination, flagless,
+        "the destination schema differs from the source-first flagless output"
+    );
+    assert_eq!(
+        flagless, source,
+        "no flag stays 039's source-first probe, byte-identical to --role source"
     );
 }
 

@@ -124,8 +124,11 @@ fn main() -> ExitCode {
         )),
         args::Command::Validate { spec } => runtime.block_on(run::validate(spec, verbosity)),
         // Async since 039: an unrecognized spelling spawns the named
-        // connector binary and asks its config-free Spec RPC.
-        args::Command::Schema { connector } => runtime.block_on(schema::print(&connector)),
+        // connector binary and asks its config-free Spec RPC —
+        // source-first, or exactly the half `--role` names (040).
+        args::Command::Schema { connector, role } => {
+            runtime.block_on(schema::print(&connector, role))
+        }
     };
     match outcome {
         Ok(()) => ExitCode::SUCCESS,

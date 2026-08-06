@@ -9,7 +9,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use rdlt_connector::ConnectorSpec;
-use rdlt_connector_client::{ClientError, RemoteDestination, RemoteSource, connector_client, dial};
+use rdlt_connector_client::{
+    ClientError, RemoteDestination, RemoteSource, Role, connector_client, dial,
+};
 use rdlt_connector_protocol::MAX_FRAME_BYTES;
 use rdlt_connector_protocol::handshake::Line;
 use rdlt_connector_protocol::proto::SpecRequest;
@@ -225,14 +227,43 @@ impl LocalBinaryConnectorProvider {
     /// dial, ask, kill. No handshake and no config, so it works with
     /// nothing but the binary (the CLI's `schema <id>` path).
     ///
-    /// A served bin only answers under a role it carries, so the probe
-    /// tries `--role=source` first and falls back to `--role=destination`
-    /// when the first spawn produces no handshake line — a dual-role
-    /// connector therefore answers with its SOURCE schema, and a
-    /// destination-only one (whose arg gate refuses `source`) still
-    /// answers on the second attempt. Both probes null the child's
-    /// stderr: a wrong-role usage refusal is this method's mechanism,
-    /// not something to print at the operator.
+    /// A served bin only answers under a role it carries, so this probe
+    /// delegates to [`Self::spec_for_role`] source-first and retries
+    /// `destination` when the source attempt died BEFORE the wire — a
+    /// dual-role connector therefore answers with its SOURCE schema, and
+    /// a destination-only one (whose arg gate refuses `source`) still
+    /// answers on the second attempt. The CLI's `schema --role` flag is
+    /// the explicit door when the destination half of a dual-role
+    /// connector is the one wanted.
+    pub async fn spec(
+        &self,
+        requirement: &ConnectorRequirement,
+    ) -> Result<ConnectorSpec, ProviderError> {
+        match self.spec_for_role(requirement, Role::Source).await {
+            // Only the pre-wire refusals retry: nothing spawned, or the
+            // process never spoke a handshake line — which is exactly
+            // what a single-role bin's arg gate refusing `source` looks
+            // like. Anything the SERVED wire did (dial, the RPC, the
+            // identity check) is the connector's answer and returns
+            // as-is; NotFound cannot improve on a second walk either.
+            Err(
+                ProviderError::Spawn { .. }
+                | ProviderError::Timeout { .. }
+                | ProviderError::HandshakeLine { .. }
+                | ProviderError::HandshakeLineOverflow { .. },
+            ) => self.spec_for_role(requirement, Role::Destination).await,
+            outcome => outcome,
+        }
+    }
+
+    /// [`Self::spec`] under ONE explicit role — no probing and no
+    /// silent retry: the spawn is `--role=<role>` and a single-role
+    /// binary refusing the asked-for half surfaces as the spawn-tier
+    /// error it is (the CLI's `schema --role` door, 040 T9 — a
+    /// dual-role connector's destination schema is unreachable through
+    /// the source-first probe). The child's stderr is nulled like the
+    /// probe's: its usage refusal is this method's typed answer, not
+    /// something to print at the operator.
     ///
     /// Identity is verified like the run path's (D-039-2, strict
     /// equality): a discovered binary whose reported `name` differs
@@ -242,43 +273,39 @@ impl LocalBinaryConnectorProvider {
     /// connector's schema as if it were the asked-for one. An explicit
     /// `path` on the requirement skips the check: the operator named a
     /// binary, not an id, so whatever it reports IS the answer.
-    pub async fn spec(
+    pub async fn spec_for_role(
         &self,
         requirement: &ConnectorRequirement,
+        role: Role,
     ) -> Result<ConnectorSpec, ProviderError> {
         let (path, binary) = self.resolve(requirement)?;
-        let mut refusal = None;
-        for role in ["source", "destination"] {
-            match self.spawn_and_read_line(&path, &binary, role, true).await {
-                Ok((child, line)) => {
-                    // The guard exists from the moment a socket path is
-                    // known — the child and its socket die with this
-                    // scope whether the RPC below answers or refuses.
-                    let _guard = LifecycleGuard::new(child, line.socket_path.clone());
-                    let channel = dial(&line.socket_path, self.engine_budget_bytes).await?;
-                    let reply = connector_client(channel)
-                        .spec(SpecRequest {})
-                        .await
-                        .map_err(|status| ProviderError::Client(ClientError::Transport(status)))?
-                        .into_inner();
-                    let spec: ConnectorSpec =
-                        serde_json::from_slice(&reply.spec_json).map_err(|error| {
-                            ProviderError::Client(ClientError::Protocol(format!(
-                                "undecodable spec_json in the Spec reply: {error}"
-                            )))
-                        })?;
-                    if requirement.path.is_none() && spec.name != requirement.id {
-                        return Err(ProviderError::Client(ClientError::IdMismatch {
-                            expected: requirement.id.clone(),
-                            reported: spec.name,
-                        }));
-                    }
-                    return Ok(spec);
-                }
-                Err(error) => refusal = Some(error),
-            }
+        let role = match role {
+            Role::Source => "source",
+            Role::Destination => "destination",
+        };
+        let (child, line) = self.spawn_and_read_line(&path, &binary, role, true).await?;
+        // The guard exists from the moment a socket path is known — the
+        // child and its socket die with this scope whether the RPC
+        // below answers or refuses.
+        let _guard = LifecycleGuard::new(child, line.socket_path.clone());
+        let channel = dial(&line.socket_path, self.engine_budget_bytes).await?;
+        let reply = connector_client(channel)
+            .spec(SpecRequest {})
+            .await
+            .map_err(|status| ProviderError::Client(ClientError::Transport(status)))?
+            .into_inner();
+        let spec: ConnectorSpec = serde_json::from_slice(&reply.spec_json).map_err(|error| {
+            ProviderError::Client(ClientError::Protocol(format!(
+                "undecodable spec_json in the Spec reply: {error}"
+            )))
+        })?;
+        if requirement.path.is_none() && spec.name != requirement.id {
+            return Err(ProviderError::Client(ClientError::IdMismatch {
+                expected: requirement.id.clone(),
+                reported: spec.name,
+            }));
         }
-        Err(refusal.expect("both role probes ran, so the last error is recorded"))
+        Ok(spec)
     }
 }
 

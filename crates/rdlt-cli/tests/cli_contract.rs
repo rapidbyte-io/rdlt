@@ -238,6 +238,68 @@ fn schema_for_an_absent_connector_exits_2_with_the_notfound_spelling() {
     );
 }
 
+/// `--role` selects which half of an OUT-OF-PROCESS connector to ask;
+/// the nine compiled spellings each already name their role, so the
+/// flag on one is a contradiction — refused up front (exit 2, the
+/// config code), never accepted-and-ignored.
+#[test]
+fn schema_role_on_a_compiled_spelling_is_refused() {
+    let out = rdlt()
+        .args(["schema", "file-source", "--role", "destination"])
+        .output()
+        .expect("spawn");
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(out.stdout.is_empty(), "no machine output on refusal");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        "error: `file-source` is a compiled-in spelling that already names its \
+         role; `--role` selects which half of an out-of-process connector (an id \
+         or binary path) to ask — drop the flag\n",
+        "the refusal explains itself in full"
+    );
+}
+
+/// An unknown `--role` value is a malformed invocation: clap's
+/// value_enum refuses it at the argument gate with the CLI's
+/// historical usage code (64, like every other bad invocation),
+/// stdout clean.
+#[test]
+fn schema_role_rejects_an_unknown_value_as_usage() {
+    let out = rdlt()
+        .args(["schema", "file-source", "--role", "bogus"])
+        .output()
+        .expect("spawn");
+    assert_eq!(out.status.code(), Some(64), "{out:?}");
+    assert!(out.stdout.is_empty(), "usage text never lands on stdout");
+}
+
+/// `--role` rides the existing spawn tier: an absent connector with
+/// the flag refuses at the same resolve gate as without it — exit 2,
+/// the provider's frozen NotFound spelling verbatim — proving the
+/// flag routes into the out-of-process path rather than growing one
+/// of its own.
+#[test]
+fn schema_role_for_an_absent_connector_exits_2_with_the_notfound_spelling() {
+    let out = rdlt()
+        .args([
+            "schema",
+            "./nonexistent-connector-binary",
+            "--role",
+            "destination",
+        ])
+        .output()
+        .expect("spawn");
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(out.stdout.is_empty(), "no machine output on refusal");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("connector `./nonexistent-connector-binary`")
+            && stderr.contains("no binary")
+            && stderr.contains("on PATH and no explicit path was given"),
+        "the frozen NotFound spelling surfaces verbatim: {stderr}"
+    );
+}
+
 /// A `connector:` pipeline whose binary exists nowhere refuses at the
 /// same gate from BOTH `run` and `validate`: exit 2, the frozen
 /// NotFound spelling on stderr, nothing on stdout — the resolve-class

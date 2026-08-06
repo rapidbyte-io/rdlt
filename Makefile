@@ -49,6 +49,12 @@
 #                                the published surface, not a cosmetic detail
 #   make coverage              line coverage over the whole workspace; the recorded
 #                                floor is 80%, enforced at feature close-out
+#   make certify-snowflake     live snowflake destination certification, BY HAND
+#                                only (never part of check/test — it talks to a
+#                                real account, the snowflake-sweep discipline).
+#                                Reads config from
+#                                ~/.config/rdlt/snowflake/certify.json; without
+#                                that file it announces the skip and exits 0.
 #   make reclaim               remove every container AND volume this workspace
 #                                started (label rdlt-test=1). Safe to run any
 #                                time: it can only match our own label, never
@@ -64,7 +70,7 @@ MUTANTS_TMPDIR ?= $(CURDIR)/target/mutants-tmp
 FUZZ_SECONDS ?= 600
 FUZZ_TARGETS := jsonl_slab cursor_decode file_config arrow_schema_map shred_push pg_copy_decode pg_pgoutput_decode
 
-.PHONY: build release dist lint docs test bench check coverage reclaim
+.PHONY: build release dist lint docs test bench check coverage reclaim certify-snowflake
 
 build:
 	cargo build --workspace
@@ -445,6 +451,26 @@ counts:
 semver:
 	cargo semver-checks check-release -p rdlt-core -p rdlt-connector \
 	  --baseline-rev $(SEMVER_BASELINE)
+
+# Live snowflake destination certification (040 T9) — BY HAND only, the same
+# discipline as the snowflake crash sweep: it talks to a real account, so no
+# check/test block ever invokes it. The config file may hold real credentials;
+# this recipe passes its PATH to --config and never echoes its contents.
+# Without the file it announces the skip and exits 0, so an uncredentialed
+# machine can run it harmlessly. Expected shape with credentials: the
+# handshake and P-clauses run against the real service; the read-back
+# D-clauses may render Skip (the certifier bin carries no --probe yet).
+certify-snowflake:
+	@set -e; \
+	config="$$HOME/.config/rdlt/snowflake/certify.json"; \
+	if [ ! -f "$$config" ]; then \
+		echo "SKIP: no snowflake credentials (~/.config/rdlt/snowflake/certify.json)"; \
+		exit 0; \
+	fi; \
+	cargo build -p rdlt-certify --features bin --bin rdlt-certify; \
+	cargo build -p rdlt-connector-snowflake --features bin-serve --bin rdlt-connector-snowflake; \
+	target/debug/rdlt-certify --role destination --config "$$config" \
+		target/debug/rdlt-connector-snowflake
 
 check: lint
 	$(MAKE) docs
