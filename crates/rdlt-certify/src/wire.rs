@@ -1186,6 +1186,41 @@ mod tests {
         assert_pass(&report, "P7");
     }
 
+    /// The certification bar's oversized-frame arm: a rogue serving a
+    /// read frame LARGER than [`MAX_FRAME_BYTES`] must surface the
+    /// dial-side decode cap as a TYPED refusal — not a hang, not a
+    /// clean end of stream. It reports at P5, the clause walking the
+    /// declared streams' frames when the cap fires: the read stream
+    /// dies with the transport status carrying tonic's own
+    /// length-limit message, and the exact rendering is pinned
+    /// full-string (the firing proof, the K-S closure's shape). Only
+    /// P5 fails — the handshake clauses and P6's induced refusal ride
+    /// their own RPCs, untouched by the reset read stream.
+    #[tokio::test]
+    async fn an_oversized_read_frame_fails_p5_with_the_decode_cap_refusal() {
+        let report = certify_rogue(
+            RogueSource {
+                handshake: HandshakeScript::truthful(),
+                streams: vec![StreamSpec::new("rogue_stream")],
+                read_declared: vec![rogue::oversized_read_frame()],
+                read_undeclared: shaped_refusal(),
+                read_hold_open: false,
+            },
+            "rogue",
+        )
+        .await;
+        assert_fail(
+            &report,
+            "P5",
+            "the read stream failed mid-flight with a transport status: code: 'Operation was \
+             attempted past the valid range', message: \"Error, decoded message length too \
+             large: found 67108870 bytes, the limit is: 67108864 bytes\"",
+        );
+        assert_pass(&report, "P3");
+        assert_pass(&report, "P6");
+        assert_pass(&report, "P7");
+    }
+
     /// P6's designated rogue: an error frame whose MESSAGE begins with
     /// a client rendering fails P6 with the pinned diagnosis, and only
     /// P6 — the frame carries cause text; classification travels as

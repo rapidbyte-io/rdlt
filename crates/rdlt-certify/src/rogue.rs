@@ -20,6 +20,7 @@ use std::sync::{Arc, Mutex};
 
 use rdlt_connector::core::{CommitMeta, CommitReceipt, LoadId, TableSchema};
 use rdlt_connector::{ConnectorSpec, StreamSpec};
+use rdlt_connector_protocol::MAX_FRAME_BYTES;
 use rdlt_connector_protocol::proto::connector_server::{Connector, ConnectorServer};
 use rdlt_connector_protocol::proto::destination_service_server::{
     DestinationService, DestinationServiceServer,
@@ -75,6 +76,20 @@ pub(crate) fn arrow_read_frame(batches: usize) -> proto::ReadFrame {
     }
     proto::ReadFrame {
         frame: Some(read_frame::Frame::ArrowIpc(bytes)),
+    }
+}
+
+/// One `arrow_ipc` read frame whose payload alone is one byte past the
+/// protocol's frame ceiling ([`MAX_FRAME_BYTES`]), so the encoded wire
+/// message (tag + length prefix + payload) lands past it too — the
+/// certification bar's oversized-frame arm. The bytes are deliberately
+/// NOT an Arrow stream: the claim under test is that the dial-side
+/// decode cap refuses the frame at the transport, so no payload decode
+/// ever runs. The sdk's serve half caps its own send size, so an
+/// oversized frame NEEDS a rogue.
+pub(crate) fn oversized_read_frame() -> proto::ReadFrame {
+    proto::ReadFrame {
+        frame: Some(read_frame::Frame::ArrowIpc(vec![0u8; MAX_FRAME_BYTES + 1])),
     }
 }
 

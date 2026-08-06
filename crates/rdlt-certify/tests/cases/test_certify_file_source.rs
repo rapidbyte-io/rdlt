@@ -6,6 +6,11 @@
 //! conformant connector comes out all-Pass — P5 vacuously so here (the
 //! jsonl source serves raw_json frames, never arrow), which is the
 //! clause's recorded posture for JSON-native sources.
+//!
+//! Certification runs TWICE in a row against the same target and the
+//! same fixture directory — the certification bar's repeated element
+//! (no one-shot-only passes): a connector must survive being certified
+//! again from the state the first certification left behind.
 
 use rdlt_certify::{Target, Verdict, certify_source};
 use serde_json::json;
@@ -14,7 +19,9 @@ use super::support::bins::built_bin;
 
 /// A conformant source certifies clean: every entry `Pass`, and the
 /// asserted set covers the S-reuse clauses plus the protocol clauses
-/// this task probes.
+/// this task probes — TWICE in a row, same target, same fixture
+/// directory (each pass spawns fresh connector processes; the shared
+/// directory is the state both passes read).
 #[tokio::test]
 async fn the_file_source_certifies_all_pass() {
     let bin = built_bin("rdlt-connector-file");
@@ -32,21 +39,23 @@ async fn the_file_source_certifies_all_pass() {
         }]
     });
 
-    let report = certify_source(&Target::resolve_path(bin, config)).await;
+    for attempt in 1..=2 {
+        let report = certify_source(&Target::resolve_path(bin.clone(), config.clone())).await;
 
-    let clauses: Vec<&str> = report.entries.iter().map(|entry| entry.clause).collect();
-    for clause in ["S1", "S2", "S4", "P1", "P2", "P3", "P4", "P5", "P6", "P7"] {
+        let clauses: Vec<&str> = report.entries.iter().map(|entry| entry.clause).collect();
+        for clause in ["S1", "S2", "S4", "P1", "P2", "P3", "P4", "P5", "P6", "P7"] {
+            assert!(
+                clauses.contains(&clause),
+                "attempt {attempt}: clause {clause} has no entry — asserted set was {clauses:?}"
+            );
+        }
         assert!(
-            clauses.contains(&clause),
-            "clause {clause} has no entry — asserted set was {clauses:?}"
+            report
+                .entries
+                .iter()
+                .all(|entry| matches!(entry.verdict, Verdict::Pass)),
+            "attempt {attempt}: a conformant source must certify all-Pass:\n{}",
+            report.render_text()
         );
     }
-    assert!(
-        report
-            .entries
-            .iter()
-            .all(|entry| matches!(entry.verdict, Verdict::Pass)),
-        "a conformant source must certify all-Pass:\n{}",
-        report.render_text()
-    );
 }
