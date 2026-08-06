@@ -184,6 +184,19 @@ program; repos split (independent connector versioning becomes real)
 only AFTER protocol v1 freezes — versioning independently against a
 moving wire contract is fiction.
 
+Repo-split direction (owner decision, 2026-08-06, recorded so 041's
+decision arrives pre-shaped rather than reopened): when the split
+happens it is ONE `rdlt-connectors` monorepo for first-party
+connectors — one house style, one gate, one clause vocabulary,
+per-connector RELEASES via crate versions and tags — not
+per-connector repos (repo sprawl, gate drift). The engine repo keeps
+the contract surface: SPI, sdk, protocol, client, runtime, and the
+conformance certifier. The connectors repo is seeded AFTER the D1
+swap, so only sdk-born, kit-certified connector code crosses — the
+certifier is the boundary (a connector enters when `rdlt-certify`
+passes it, the same bar third parties answer to), which is what
+keeps the new repo free of legacy by construction.
+
 Merge policy (owner decision, 2026-08-06): interim program features
 merge to main INDIVIDUALLY as they complete — they are additive and
 inert by construction, per-feature gates stay truthful against real
