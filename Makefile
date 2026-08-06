@@ -192,7 +192,7 @@ ifeq ($(TARGET),)
 			sha256sum "$$req" > "$$venv/.requirements.sha256"; \
 		fi; \
 		tools/check-python-stubs.sh; \
-		PATH="$$(pwd)/$$venv/bin:$$PATH" target/debug/rdlt-certify --role source \
+		PATH="$$(pwd)/$$venv/bin:$$PATH" $${CARGO_TARGET_DIR:-target}/debug/rdlt-certify --role source \
 			--config connectors/python/rdlt-connector-pyjsonl/fixtures/config.json \
 			connectors/python/rdlt-connector-pyjsonl/rdlt-connector-pyjsonl; \
 	else \
@@ -229,7 +229,7 @@ else ifeq ($(TARGET),unit)
 			sha256sum "$$req" > "$$venv/.requirements.sha256"; \
 		fi; \
 		tools/check-python-stubs.sh; \
-		PATH="$$(pwd)/$$venv/bin:$$PATH" target/debug/rdlt-certify --role source \
+		PATH="$$(pwd)/$$venv/bin:$$PATH" $${CARGO_TARGET_DIR:-target}/debug/rdlt-certify --role source \
 			--config connectors/python/rdlt-connector-pyjsonl/fixtures/config.json \
 			connectors/python/rdlt-connector-pyjsonl/rdlt-connector-pyjsonl; \
 	else \
@@ -469,8 +469,8 @@ certify-snowflake:
 	fi; \
 	cargo build -p rdlt-certify --features bin --bin rdlt-certify; \
 	cargo build -p rdlt-connector-snowflake --features bin-serve --bin rdlt-connector-snowflake; \
-	target/debug/rdlt-certify --role destination --config "$$config" \
-		target/debug/rdlt-connector-snowflake
+	$${CARGO_TARGET_DIR:-target}/debug/rdlt-certify --role destination --config "$$config" \
+		$${CARGO_TARGET_DIR:-target}/debug/rdlt-connector-snowflake
 
 check: lint
 	$(MAKE) docs

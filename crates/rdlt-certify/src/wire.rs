@@ -209,17 +209,22 @@ impl WireProbe {
         let parsed = Line::parse(line.trim_end_matches(['\n', '\r']))
             .map_err(|error| format!("the first stdout line is not a handshake line: {error}"))?;
 
-        let channel = dial(&parsed.socket_path, budget_bytes)
+        // Owned BEFORE the dial (the local.rs order): a dial failure
+        // drops the guard, which kills the child AND unlinks the
+        // advertised socket — without it the error path left the
+        // socket file behind (kill_on_drop covers only the process).
+        let spawned = SpawnedConnector {
+            child,
+            socket: parsed.socket_path,
+        };
+        let channel = dial(&spawned.socket, budget_bytes)
             .await
             .map_err(|error| format!("dialing the advertised socket: {error}"))?;
         Ok(Self {
             channel,
             role,
             config: config.clone(),
-            spawned: Some(SpawnedConnector {
-                child,
-                socket: parsed.socket_path,
-            }),
+            spawned: Some(spawned),
         })
     }
 

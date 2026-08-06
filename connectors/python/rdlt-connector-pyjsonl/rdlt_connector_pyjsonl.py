@@ -312,8 +312,16 @@ class SourceService(pb_grpc.SourceServiceServicer):
                     yield pb.ReadFrame(raw_json=bytes(row))
             # One checkpoint per file end: the cursor covers every row
             # above, so a resume from it re-reads nothing and a full
-            # re-read equals covered-rows + resumed-rows exactly.
-            cursor = {"format_version": CURSOR_FORMAT_VERSION, "offset": size}
+            # re-read equals covered-rows + resumed-rows exactly. The
+            # offset is the position actually consumed (tell() on a
+            # binary-mode reader is exact after iteration), not the
+            # fstat-at-open size — the two differ when the file grows
+            # mid-read, and the consumed position is the one the rows
+            # above actually cover.
+            cursor = {
+                "format_version": CURSOR_FORMAT_VERSION,
+                "offset": stream.tell(),
+            }
             yield pb.ReadFrame(checkpoint_cursor_json=json.dumps(cursor).encode())
 
 
@@ -366,11 +374,15 @@ def main():
     pb_grpc.add_ConnectorServicer_to_server(Connector(session), server)
     pb_grpc.add_SourceServiceServicer_to_server(SourceService(session), server)
 
-    # A fresh private directory per process keeps the socket path
-    # collision-free and owner-only (mkdtemp is 0700); the socket itself
-    # is tightened to 0600 before the line advertises it.
-    socket_dir = tempfile.mkdtemp(prefix="rdlt-pyjsonl-")
-    socket_path = os.path.join(socket_dir, "connector.sock")
+    # A pid-derived socket path straight in the system temp directory —
+    # the sdk's own rdlt-{pid}.sock shape, collision-free per live
+    # process. No private directory: the Rust side (probes, guards)
+    # unlinks socket FILES it was advertised, so a bare file is cleaned
+    # up completely where a wrapping directory would be left behind.
+    # The socket is tightened to 0600 before the line advertises it.
+    socket_path = os.path.join(
+        tempfile.gettempdir(), f"rdlt-pyjsonl-{os.getpid()}.sock"
+    )
     server.add_insecure_port(f"unix:{socket_path}")
     os.chmod(socket_path, 0o600)
     server.start()
