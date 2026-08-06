@@ -20,8 +20,20 @@ repository.workspace = true
 # helper requires the bin to already exist and fails loudly, never
 # silently.
 spawn-bins = []
+# The certifier CLI: clap plus a tokio runtime entry point for the
+# `rdlt-certify` bin. Behind `required-features` so no plain workspace
+# command ever compiles the bin — the Makefile builds it explicitly
+# beside the connector bins, and the gated CLI suite enables
+# `spawn-bins,bin` so cargo builds the bin for `CARGO_BIN_EXE_`.
+bin = ["dep:clap", "tokio/rt"]
+
+[[bin]]
+name = "rdlt-certify"
+path = "src/bin/rdlt-certify.rs"
+required-features = ["bin"]
 
 [dependencies]
+clap = { workspace = true, optional = true }
 rdlt-runtime = { workspace = true }
 # P8/P9 drive the LIVE socket directly — a second dial and a raw
 # `OpenSession` are wire moves the managed adapter deliberately never
