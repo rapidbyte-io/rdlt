@@ -54,7 +54,7 @@ schemars directly) so declaration and parser cannot drift.
 ```rust
 #[async_trait]
 impl SourceConnector for MySource {
-    const NAME: &'static str = "mysource";
+    const NAME: &'static str = "io.example.mysource";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
     type Config = Config;
     fn assemble(config: Config) -> Result<Self, ConfigError> { ... }
@@ -64,6 +64,19 @@ impl SourceConnector for MySource {
                          feed: &mut Feed) -> Result<(), SourceError> { ... }
 }
 ```
+
+`NAME` is the connector's **id**, spelled reverse-DNS (in-tree:
+`io.rapidbyte.<name>`, e.g. `io.rapidbyte.postgres`). One const carries
+three derived facts: the wire handshake reports it and the client
+verifies it by strict equality against the requirement's id; discovery
+resolves the id's **last segment** to the binary name on PATH
+(`io.rapidbyte.postgres` → `rdlt-connector-postgres`); and the `Spec`
+RPC answers it as the connector's static identity. A dotless `NAME`
+stays self-consistent for a connector that only ever runs in-process —
+the last-segment convention degenerates to the whole name — but going
+out-of-process later then makes the rename an identity change, so spell
+it reverse-DNS from the start. Both halves of a dual-role connector
+report the SAME id.
 
 The sdk's shell provides the whole SPI. Export the canonical face as a
 type alias and the SPI arrives in one call:

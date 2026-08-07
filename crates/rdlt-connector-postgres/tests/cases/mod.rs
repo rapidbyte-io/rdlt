@@ -2,6 +2,8 @@
 
 mod cdc_rig;
 mod common;
+#[cfg(feature = "spawn-bins")]
+mod support;
 mod test_cdc_cycle;
 mod test_cdc_identity;
 mod test_cdc_recovery;
@@ -25,5 +27,7 @@ mod test_query_streams;
 mod test_reflect;
 mod test_scd2;
 mod test_source_conformance;
+#[cfg(feature = "spawn-bins")]
+mod test_spawned_bin;
 mod test_tls_matrix;
 mod test_unit_isolation;

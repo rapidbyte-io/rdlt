@@ -18,7 +18,11 @@ use crate::session;
 
 #[async_trait]
 impl DestinationConnector for Postgres {
-    const NAME: &'static str = "postgres";
+    // Reverse-DNS, not bare `postgres` — the same id the source half
+    // reports, for the same reason: NAME is what the wire handshake
+    // reports and the client strictly verifies, and D-039-1 derives the
+    // binary name from its last segment (see `source::connector`).
+    const NAME: &'static str = "io.rapidbyte.postgres";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
     type Config = Config;

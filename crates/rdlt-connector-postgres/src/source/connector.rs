@@ -122,7 +122,14 @@ pub(crate) async fn connect(config: &Config) -> Result<session::Connection, Sour
 
 #[async_trait]
 impl SourceConnector for Postgres {
-    const NAME: &'static str = "postgres";
+    // Reverse-DNS, not bare `postgres` (039 T6's id rule, adopted at
+    // 041): NAME is the connector id the wire handshake reports and the
+    // client verifies by STRICT equality against a
+    // `ConnectorRequirement.id` — and D-039-1 keys discovery on the
+    // id's last segment (`io.rapidbyte.postgres` → binary
+    // `rdlt-connector-postgres` on PATH), so the id, the reported
+    // identity and the binary name all derive from this one const.
+    const NAME: &'static str = "io.rapidbyte.postgres";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
     type Config = Config;

@@ -19,6 +19,33 @@ failpoints = ["rdlt-connector-sdk/failpoints"]
 # Container fixtures for tests across the workspace. Test support only, no
 # semver guarantees.
 fixtures = ["dep:rdlt-testkit", "dep:testcontainers-modules"]
+# The out-of-process server binary (039 T6's convention, adopted here at
+# 041). OFF by default, with `required-features` on the [[bin]], so
+# LIBRARY consumers of this crate never pull tonic or clap into their
+# dependency tree — `cargo tree -p rdlt-connector-postgres -e normal -i
+# tonic` (and `-i clap`) at default features stays empty (`-e normal`
+# because the spawn suite's rdlt-runtime DEV-dep carries tonic into
+# test builds; dev-deps never reach a consumer). The bin serves BOTH
+# halves, so the feature carries `source` + `destination` explicitly:
+# `--no-default-features --features bin-serve` still compiles the bin
+# rather than tripping over the role gates.
+bin-serve = ["source", "destination", "rdlt-connector-sdk/serve", "dep:clap"]
+# The spawn suite: tests that spawn the REAL built binary. OFF by
+# default — a plain workspace run must not depend on a bin no workspace
+# command builds. The Makefile's own line enables it AND sets
+# RDLT_BUILD_CONNECTOR_BINS=1 so the suite's helper (re)builds the bin
+# via cargo before spawning; without the env var the helper requires the
+# bin to already exist and fails loudly, never silently.
+spawn-bins = []
+
+# Behind `bin-serve` only — `cargo build` at default features never even
+# discovers this target, so no workspace command pays for tonic. The
+# gate compiles it explicitly (Makefile `test:`, the 024 never-compiled
+# class).
+[[bin]]
+name = "rdlt-connector-postgres"
+path = "src/bin/rdlt-connector-postgres.rs"
+required-features = ["bin-serve"]
 
 [dependencies]
 # The ONE rdlt dependency (the one-dependency rule): the SPI is reached
@@ -27,6 +54,9 @@ fixtures = ["dep:rdlt-testkit", "dep:testcontainers-modules"]
 # it folds into the sdk is an owner decision at the connector rewrites.
 rdlt-connector-sdk = { workspace = true, features = ["schema"] }
 rdlt-connector-sqlcore = { workspace = true }
+# The server binary's argument surface alone (`--role`, the free
+# `--version`); optional so the library surface never carries it.
+clap = { workspace = true, optional = true }
 schemars = { workspace = true }
 arrow-array = { workspace = true }
 arrow-cast = { workspace = true }
@@ -63,6 +93,12 @@ proptest = { workspace = true }
 rdlt-connector-duckdb = { workspace = true }
 rdlt-engine = { workspace = true }
 rdlt-connector-postgres = { path = ".", features = ["fixtures"] }
+# The spawn suite's dial (behind `spawn-bins`): ONE dev-dep whose
+# provider owns the whole spawn → handshake-line → dial → Spec RPC →
+# socket-cleanup lifecycle. Chosen over the rdlt-connector-client +
+# rdlt-connector-protocol pair, which would mean two dev-deps plus
+# hand-rolled socket hygiene for the same assertion.
+rdlt-runtime = { workspace = true }
 rdlt-testkit = { workspace = true }
 tempfile = { workspace = true }
 testcontainers-modules = { workspace = true }

@@ -149,12 +149,17 @@ ifeq ($(TARGET),)
 	# (measured) — separate lines make each module fail its own line.
 	cargo build -p rdlt-connector-file --features bin-serve --bin rdlt-connector-file
 	cargo build -p rdlt-connector-snowflake --features bin-serve --bin rdlt-connector-snowflake
+	cargo build -p rdlt-connector-postgres --features bin-serve --bin rdlt-connector-postgres
 	# The certifier bin rides the same discipline: behind `bin` +
 	# `required-features`, built here explicitly so a CLI that stops
 	# compiling fails the gate rather than rotting unseen.
 	cargo build -p rdlt-certify --features bin --bin rdlt-certify
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-runtime --features spawn-bins -E 'test(test_spawned_bins)'
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-runtime --features spawn-bins -E 'test(test_e2e_file)'
+	# The postgres bin's OWN spawn suite (041) — the crate's gated cases
+	# drive the built bin through the provider's Spec RPC (identity,
+	# version, exit codes), same env-var discipline as the runtime lines.
+	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-postgres --features fixtures,spawn-bins -E 'test(test_spawned_bin)'
 	# Same class, the CERTIFIER's spawn suite (040): rdlt-certify's gated
 	# cases drive the REAL file bin through the certification stack —
 	# source, destination, and the kill matrix (SIGKILL at every K
@@ -208,9 +213,11 @@ else ifeq ($(TARGET),unit)
 	cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(test_serve_destination)'
 	cargo build -p rdlt-connector-file --features bin-serve --bin rdlt-connector-file
 	cargo build -p rdlt-connector-snowflake --features bin-serve --bin rdlt-connector-snowflake
+	cargo build -p rdlt-connector-postgres --features bin-serve --bin rdlt-connector-postgres
 	cargo build -p rdlt-certify --features bin --bin rdlt-certify
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-runtime --features spawn-bins -E 'test(test_spawned_bins)'
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-runtime --features spawn-bins -E 'test(test_e2e_file)'
+	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-postgres --features fixtures,spawn-bins -E 'test(test_spawned_bin)'
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins -E 'test(test_certify_file_source)'
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins -E 'test(test_certify_file_destination)'
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins -E 'test(test_kill_matrix)'
