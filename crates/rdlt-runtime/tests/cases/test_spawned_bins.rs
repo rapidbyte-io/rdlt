@@ -72,6 +72,18 @@ pub(crate) fn built_bin(name: &str) -> PathBuf {
     static BUILT: OnceLock<()> = OnceLock::new();
     BUILT.get_or_init(|| {
         if std::env::var_os("RDLT_BUILD_CONNECTOR_BINS").is_none() {
+            // Opt-in rebuild, deliberately: the gate line sets the var,
+            // and a developer running this suite in a loop should not
+            // pay a cargo invocation per run. The residue is that a
+            // STALE bin passes green here, so say so out loud — silence
+            // is what would make an hours-old binary look like evidence
+            // about the current tree.
+            eprintln!(
+                "note: RDLT_BUILD_CONNECTOR_BINS is unset — spawning the connector \
+                 binaries already on disk WITHOUT rebuilding. Whatever this suite \
+                 proves is about those binaries, not necessarily the current source. \
+                 The Makefile's spawn-bins lines set the var."
+            );
             return;
         }
         let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
@@ -332,6 +344,12 @@ fn built_cli() -> PathBuf {
     static BUILT: OnceLock<()> = OnceLock::new();
     BUILT.get_or_init(|| {
         if std::env::var_os("RDLT_BUILD_CONNECTOR_BINS").is_none() {
+            // Same opt-in rebuild rule as the connector bins above, and
+            // the same residue: an already-present CLI is used as-is.
+            eprintln!(
+                "note: RDLT_BUILD_CONNECTOR_BINS is unset — using the rdlt CLI already \
+                 on disk WITHOUT rebuilding; it may predate the current source."
+            );
             return;
         }
         let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());

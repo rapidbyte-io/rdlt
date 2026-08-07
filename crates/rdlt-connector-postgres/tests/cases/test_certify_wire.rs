@@ -26,16 +26,30 @@ use serde_json::json;
 use super::common::Probe;
 use super::support::spawn::built_bin;
 
-/// The SMALL deterministic certification config — defined ONCE, shared
-/// with the kill matrix's source arm (Task 4). Two cursor-incremental
-/// streams (BOTH cursored: a snapshot stream never checkpoints —
+/// The SMALL deterministic certification config, used by THIS cell's
+/// source arm and nowhere else.
+///
+/// It is deliberately NOT shared with the kill matrix (Task 4), which
+/// defines its own `large_config` in `test_kill_wire.rs` and records
+/// why: the kill arms need a read still in flight when the SIGKILL
+/// lands, so they want thousands of rows past the kit's 64 KiB window,
+/// while this cell wants the opposite — the smallest fixture that still
+/// produces real resume points, so a clause failure names a clause
+/// rather than a timeout. Two configs because the two suites want
+/// opposite sizes, not by oversight. `test_kill_wire.rs`'s module doc
+/// cites `small_config` by NAME when it explains that contrast, which
+/// is the only cross-file relationship between them — hence the private
+/// visibility below.
+///
+/// Two cursor-incremental streams (BOTH cursored: a snapshot stream
+/// never checkpoints —
 /// `source/connector.rs` pins "every run is a full read by definition"
 /// — and S2 fails by name for any stream that cannot certify resume),
 /// with `batch_max_rows: 2` so the five-row stream cuts into three
 /// batches and the tracker emits >=2 intermediate checkpoints (one per
 /// batch whose watermark advanced), giving S1 real resume points to
 /// certify against. No `cdc:` block — the module doc's exclusion.
-pub(crate) fn small_config(conn: &str) -> serde_json::Value {
+fn small_config(conn: &str) -> serde_json::Value {
     json!({
         "conn": conn,
         "tables": [
