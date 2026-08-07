@@ -290,9 +290,18 @@ destination:
 "#,
         )
         .expect_err("an unknown field inside the postgres block must refuse");
+        // The expected-key list is what proves the CONNECTOR document's
+        // vocabulary answered — a bare "unknown field" is satisfied by any
+        // deny gate, including the enum's own, and could not detect a
+        // regression back to a mirror. (Line/column noise trails the
+        // clause, so the pin is the full stable clause, not the full
+        // rendered string.)
         assert!(
-            format!("{err}").contains("unknown field"),
-            "refusal names the unknown field: {err}"
+            format!("{err}").contains(
+                "unknown field `datset`, expected one of `conn`, `dataset`, `tls`, \
+                 `merge_strategy`, `tables`"
+            ),
+            "refusal carries the connector document's field vocabulary: {err}"
         );
     }
 
