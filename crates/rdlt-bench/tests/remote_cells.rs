@@ -23,6 +23,7 @@ use std::path::PathBuf;
 
 use rdlt::pipeline_spec::{DestSpec, SourceSpec, Spec};
 use rdlt::sdk::config::Document;
+use rdlt_bench::runner::PIPELINE_SUBSTITUTION_KEYS;
 use rdlt_bench::template::substitute;
 
 /// The five wire twins and the connector each side must name.
@@ -62,28 +63,47 @@ fn pipelines_dir() -> PathBuf {
         .join("benches/cells/pipelines")
 }
 
-/// The runner's render-time substitution map, with stand-in values —
-/// the same KEYS `run_cell`/`run_once_subprocess` provide, so a
-/// template referencing anything else leaves `{{…}}` behind and fails
+/// The runner's render-time substitution map with stand-in values,
+/// built from the runner's OWN key slice — so a template referencing
+/// anything the runner does not provide leaves `{{…}}` behind and fails
 /// the no-residue assertion below.
+///
+/// The keys are read from [`rdlt_bench::runner::PIPELINE_SUBSTITUTION_KEYS`],
+/// never restated here. A hand-written copy used to sit in this
+/// function, and it made the test agree with itself: renaming a key in
+/// the runner left this list stale, every template still rendered
+/// against the OLD name, and the suite stayed green while a live
+/// session would die on an unrendered `{{bins}}`. The runner's `put`
+/// guard closes the other direction (a substitution the slice does not
+/// name refuses at the source), so neither side can drift alone.
+///
+/// The values are shaped only where a value is inspected: `bins` must
+/// look like a release directory because the assertions below check the
+/// rendered `path:` overrides came from it, and `conn` must be a
+/// libpq string because the configs are pushed through the connectors'
+/// own gates. Everything else is a placeholder.
 fn runner_subs() -> BTreeMap<String, String> {
-    BTreeMap::from(
-        [
-            ("repo", "/repo"),
-            ("benches", "/repo/benches"),
-            ("cli", "/repo/target/release/rdlt"),
-            ("bins", "/repo/target/release"),
-            ("data", "/data"),
-            (
-                "conn",
-                "host=127.0.0.1 port=5439 user=postgres password=postgres dbname=src",
-            ),
-            ("port", "5439"),
-            ("workdir", "/workdir"),
-            ("run", "0"),
-        ]
-        .map(|(k, v)| (k.to_owned(), v.to_owned())),
-    )
+    let value = |key: &str| match key {
+        "repo" => "/repo",
+        "benches" => "/repo/benches",
+        "cli" => "/repo/target/release/rdlt",
+        "bins" => "/repo/target/release",
+        "data" => "/data",
+        "conn" => "host=127.0.0.1 port=5439 user=postgres password=postgres dbname=src",
+        "port" => "5439",
+        "workdir" => "/workdir",
+        "run" => "0",
+        // A key added to the runner without a stand-in here would
+        // otherwise render as an empty string and quietly pass.
+        other => panic!(
+            "runner::PIPELINE_SUBSTITUTION_KEYS gained `{other}` — give it a stand-in \
+             value here so the templates are rendered the way a run renders them"
+        ),
+    };
+    PIPELINE_SUBSTITUTION_KEYS
+        .iter()
+        .map(|key| ((*key).to_owned(), value(key).to_owned()))
+        .collect()
 }
 
 /// Push one `connector:` side's opaque config through the named

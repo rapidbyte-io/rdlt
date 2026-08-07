@@ -15,6 +15,44 @@ use crate::sample::{ResourceUsage, Sampler};
 use crate::template::substitute;
 use crate::{BenchError, Result};
 
+/// Every `{{key}}` a cell's PIPELINE template may reference — the ONE
+/// place the render vocabulary is written down.
+///
+/// `tests/remote_cells.rs` renders the five `-remote` templates exactly
+/// as a live run would, and it builds its stand-in map from THIS slice
+/// rather than a second hand-written list. The hand-written copy it used
+/// to carry made the test agree with itself: a key renamed here left the
+/// test green while a real session died on an unrendered `{{…}}`.
+///
+/// `put` below refuses any key not named here, so the two cannot drift
+/// in the dangerous direction either — adding or renaming a substitution
+/// without touching this slice fails at the first cell that runs, by
+/// name, instead of silently leaving the test's vocabulary behind.
+///
+/// `spec` is deliberately ABSENT: it is inserted by `render_spec`
+/// AFTER the pipeline template has been rendered, so only a `command`
+/// line can see it. A template referencing `{{spec}}` would be asking
+/// for its own path before it exists.
+pub const PIPELINE_SUBSTITUTION_KEYS: &[&str] = &[
+    "benches", "bins", "cli", "conn", "data", "port", "repo", "run", "workdir",
+];
+
+/// Insert one render substitution, refusing a key
+/// [`PIPELINE_SUBSTITUTION_KEYS`] does not name.
+///
+/// The guard is the half of the single-source-of-truth that the test
+/// cannot supply: the test reads the slice, this refuses anything the
+/// slice omits.
+fn put(subs: &mut BTreeMap<String, String>, key: &str, value: String) {
+    assert!(
+        PIPELINE_SUBSTITUTION_KEYS.contains(&key),
+        "`{key}` is not in runner::PIPELINE_SUBSTITUTION_KEYS — add it there \
+         (the remote-cell suite renders templates from that slice, and a key \
+         missing from it is a key no test can see)"
+    );
+    subs.insert(key.to_owned(), value);
+}
+
 /// Attach the path an io failure concerns — a bare `?` on `std::fs` yields
 /// only "io: {e}" (the `From<io::Error>` shape) with no offender named.
 fn at(path: &Path) -> impl Fn(std::io::Error) -> BenchError + '_ {
@@ -78,6 +116,30 @@ fn render_spec(
     std::fs::write(&spec, substitute(&raw, subs)).map_err(at(&spec))?;
     subs.insert("spec".into(), spec.display().to_string());
     Ok(Some(spec))
+}
+
+/// The connector binaries a pipeline template names, read straight off
+/// the UNRENDERED text: every `{{bins}}/<name>` occurrence yields
+/// `<name>`.
+///
+/// Scoped by construction — a template that never mentions `{{bins}}`
+/// (every non-`-remote` cell) yields an empty set, so the precondition
+/// built on this is invisible to them. A `{{bins}}` used as a bare
+/// directory, with no `/<name>` after it, also yields nothing: there is
+/// no binary to name, so there is nothing to check.
+fn required_connector_bins(template: &str) -> BTreeSet<&str> {
+    let mut names = BTreeSet::new();
+    for tail in template.split("{{bins}}/").skip(1) {
+        // A path component ends at whitespace or a YAML quote.
+        let name = tail
+            .split(|c: char| c.is_whitespace() || c == '"' || c == '\'')
+            .next()
+            .unwrap_or("");
+        if !name.is_empty() {
+            names.insert(name);
+        }
+    }
+    names
 }
 
 /// Run the cell's untimed `prepare_sh` (seed refresh, state wipe) if declared.
@@ -212,10 +274,10 @@ fn run_once_subprocess(
     counted: bool,
 ) -> Result<Sample<RunDetail>> {
     let mut subs = subs.clone();
-    subs.insert("workdir".into(), run_dir.display().to_string());
+    put(&mut subs, "workdir", run_dir.display().to_string());
     // Per-run sequence for prepare scripts that need run-unique mutations
     // (the merge-strategy 50%-changed regime, finding 1).
-    subs.insert("run".into(), seq.to_string());
+    put(&mut subs, "run", seq.to_string());
 
     let report_path = run_dir.join("report.json");
     let spec_path = render_spec(cell, &mut subs, paths, run_dir)?;
@@ -454,20 +516,24 @@ pub fn run_cell(
         .first()
         .expect("cell has >= 1 fixture (load-checked)");
     let mut subs: BTreeMap<String, String> = BTreeMap::new();
-    subs.insert("repo".into(), paths.repo.display().to_string());
-    subs.insert("benches".into(), paths.benches.display().to_string());
-    subs.insert("cli".into(), paths.cli.display().to_string());
+    put(&mut subs, "repo", paths.repo.display().to_string());
+    put(&mut subs, "benches", paths.benches.display().to_string());
+    put(&mut subs, "cli", paths.cli.display().to_string());
     // The connector-binary directory (`<target>/release`) for the `-remote`
     // cells' `connector: path:` overrides — release unconditionally, like
     // `cli` above: an absent release bin fails LOUD at spawn, whereas a
     // debug fallback would measure an unoptimized connector silently.
-    subs.insert("bins".into(), paths.bins.display().to_string());
-    subs.insert("data".into(), primary.data_dir.path().display().to_string());
+    put(&mut subs, "bins", paths.bins.display().to_string());
+    put(
+        &mut subs,
+        "data",
+        primary.data_dir.path().display().to_string(),
+    );
     if let Some(conn) = primary.conn() {
-        subs.insert("conn".into(), conn.to_owned());
+        put(&mut subs, "conn", conn.to_owned());
     }
     if let Some(port) = primary.def.port {
-        subs.insert("port".into(), port.to_string());
+        put(&mut subs, "port", port.to_string());
     }
 
     let invocation = tempfile::tempdir().map_err(|e| BenchError(format!("tempdir: {e}")))?;
@@ -481,6 +547,36 @@ pub fn run_cell(
             "release CLI missing at {} — run `make release` first",
             paths.cli.display()
         )));
+    }
+    // The SAME precondition for the connector binaries a `-remote` cell's
+    // template names. Without it the harness seeds the whole fixture (up
+    // to 1M rows, minutes of work) and only then dies at spawn, having
+    // measured nothing. Reads the template once per cell — render_spec
+    // reads it again per run, which is cheap and keeps that function's
+    // one job intact.
+    if let Some(template) = &cell.pipeline {
+        let path = paths.benches.join(template);
+        let raw = std::fs::read_to_string(&path).map_err(|e| {
+            BenchError(format!(
+                "cell `{}`: reading template {}: {e}",
+                cell.id,
+                path.display()
+            ))
+        })?;
+        for name in required_connector_bins(&raw) {
+            let bin = paths.bins.join(name);
+            if !bin.is_file() {
+                return Err(BenchError(format!(
+                    "cell `{}`: connector binary missing at {} — the template names it \
+                     as `{{{{bins}}}}/{name}`; build it with `cargo build --release \
+                     -p {name} --features bin-serve --bin {name}` (release \
+                     unconditionally, like the CLI: a debug fallback would measure an \
+                     unoptimized connector)",
+                    cell.id,
+                    bin.display()
+                )));
+            }
+        }
     }
     let samples = protocol::run_protocol(cell.warmups, cell.runs, |counted| {
         // Reset every store the cell uses — a cross-store cell resets both its
@@ -534,6 +630,39 @@ pub fn run_cell(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The `{{bins}}` precondition's scope, both directions: a
+    /// `-remote`-shaped template names its binaries, and an ordinary one
+    /// names none — which is what keeps the precondition invisible to
+    /// every non-remote cell.
+    #[test]
+    fn connector_bins_are_read_off_the_template_and_only_off_remote_ones() {
+        let remote = "source:\n  connector:\n    path: {{bins}}/rdlt-connector-postgres\n\
+                      destination:\n  connector:\n    path: \"{{bins}}/rdlt-connector-file\"\n";
+        assert_eq!(
+            required_connector_bins(remote)
+                .into_iter()
+                .collect::<Vec<_>>(),
+            ["rdlt-connector-file", "rdlt-connector-postgres"]
+        );
+        // Repeats collapse; the same bin on both sides is one check.
+        let twice = "a {{bins}}/rdlt-connector-postgres b {{bins}}/rdlt-connector-postgres";
+        assert_eq!(required_connector_bins(twice).len(), 1);
+        // An ordinary cell's template, and a bare `{{bins}}` with no
+        // name after it, both demand nothing.
+        assert!(required_connector_bins("source:\n  postgres:\n    conn: {{conn}}\n").is_empty());
+        assert!(required_connector_bins("dir: {{bins}}\n").is_empty());
+    }
+
+    /// The `put` guard is live, not decorative: a key outside
+    /// [`PIPELINE_SUBSTITUTION_KEYS`] refuses. Without this the whole
+    /// single-source-of-truth could rot into a slice nothing consults.
+    #[test]
+    #[should_panic(expected = "PIPELINE_SUBSTITUTION_KEYS")]
+    fn put_refuses_a_key_the_shared_slice_does_not_name() {
+        let mut subs = BTreeMap::new();
+        put(&mut subs, "binaries", "/t/release".into());
+    }
 
     #[test]
     fn report_totals_sum_across_tables() {
