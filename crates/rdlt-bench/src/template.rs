@@ -23,13 +23,13 @@ mod tests {
         // `bins` rides the same map as every other key — the `-remote`
         // cells' `{{bins}}/rdlt-connector-<name>` spelling is plain
         // substitution, nothing special-cased.
-        subs.insert("bins".to_owned(), "/t/debug".to_owned());
+        subs.insert("bins".to_owned(), "/t/release".to_owned());
         assert_eq!(
             substitute(
                 "a {{conn}} b {{typo}} c {{bins}}/rdlt-connector-postgres",
                 &subs
             ),
-            "a pg://x b {{typo}} c /t/debug/rdlt-connector-postgres"
+            "a pg://x b {{typo}} c /t/release/rdlt-connector-postgres"
         );
     }
 }

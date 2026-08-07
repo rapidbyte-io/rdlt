@@ -14,12 +14,14 @@ pub struct Paths {
     pub bars_toml: PathBuf,
     pub results: PathBuf,
     pub cli: PathBuf,
-    /// Where the connector BINARIES land (`<target>/debug`) — the
+    /// Where the connector BINARIES land (`<target>/release`) — the
     /// `{{bins}}` substitution the `-remote` cells' pipeline templates
-    /// point their `connector: path:` overrides at. Debug, not release:
-    /// the bins are built by the Makefile's spawn-bins line (a debug
-    /// `cargo build`), the same location rule the runtime's own
-    /// spawn suite uses.
+    /// point their `connector: path:` overrides at. Release
+    /// UNCONDITIONALLY, the harness convention `cli` already follows: a
+    /// measured cell must spawn the shipped shape, and an absent
+    /// release bin fails LOUD at spawn — a debug (or prefer-what's-
+    /// present) fallback would measure an unoptimized connector
+    /// silently and taint the recorded ratios.
     pub bins: PathBuf,
 }
 
@@ -52,7 +54,7 @@ impl Paths {
             bars_toml: benches.join("bars.toml"),
             results: benches.join("results"),
             cli: target.join("release/rdlt"),
-            bins: target.join("debug"),
+            bins: target.join("release"),
             repo: dir,
             benches,
         })

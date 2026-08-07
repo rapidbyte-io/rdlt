@@ -154,7 +154,9 @@ args = ["pg-to-pg-dedup-1m", "1000000"]
 # same-machine, same-session ratios; Airbyte is deliberately absent — its
 # job wall clock is floor-dominated (~45-60 s regardless of dataset) and
 # adds nothing to a wire-overhead verdict. The connector bins come from
-# `{{bins}}` (<target>/debug — the Makefile's spawn-bins line builds them).
+# `{{bins}}` (<target>/release, unconditionally — a measured cell spawns
+# the shipped shape, same convention as `{{cli}}`; build them with
+# `cargo build --release --features bin-serve`, absent bins fail loud).
 # ===========================================================================
 
 # ---------------------------------------------------------------------------

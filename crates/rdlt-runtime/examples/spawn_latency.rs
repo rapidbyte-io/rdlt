@@ -59,7 +59,10 @@ async fn main() {
     }
 
     samples_ms.sort_by(f64::total_cmp);
-    // Nearest-rank on the sorted samples; N=20 puts p90 at index 18.
+    // The chosen quantile off the sorted samples: round the 0-based
+    // rank q*(N-1). At N=20 that makes p90 samples_ms[17] — the 18th
+    // value — and the median samples_ms[10], the upper of the two
+    // middle values (9.5 rounds up).
     let rank = |q: f64| samples_ms[(q * (samples_ms.len() - 1) as f64).round() as usize];
     println!(
         "spawn -> handshake-complete, io.rapidbyte.postgres (source role), \

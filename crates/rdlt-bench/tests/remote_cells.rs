@@ -72,7 +72,7 @@ fn runner_subs() -> BTreeMap<String, String> {
             ("repo", "/repo"),
             ("benches", "/repo/benches"),
             ("cli", "/repo/target/release/rdlt"),
-            ("bins", "/repo/target/debug"),
+            ("bins", "/repo/target/release"),
             ("data", "/data"),
             (
                 "conn",
@@ -145,7 +145,7 @@ fn the_five_remote_pipelines_render_parse_and_pass_the_connector_gates() {
                     panic!("{file}: the source side carries no `path:` override")
                 });
                 assert!(
-                    bin.starts_with("/repo/target/debug"),
+                    bin.starts_with("/repo/target/release"),
                     "{file}: the source path override must come from {{{{bins}}}}: {}",
                     bin.display()
                 );
@@ -163,7 +163,7 @@ fn the_five_remote_pipelines_render_parse_and_pass_the_connector_gates() {
                     panic!("{file}: the destination side carries no `path:` override")
                 });
                 assert!(
-                    bin.starts_with("/repo/target/debug"),
+                    bin.starts_with("/repo/target/release"),
                     "{file}: the destination path override must come from {{{{bins}}}}: {}",
                     bin.display()
                 );

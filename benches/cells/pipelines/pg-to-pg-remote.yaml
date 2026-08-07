@@ -3,8 +3,10 @@
 # swapped to `connector:` refs, so the engine spawns the postgres bin twice
 # and every batch crosses the connector protocol. Config keys are the
 # in-process twin's, verbatim — the vocabularies are identical by design.
-# `{{bins}}` is the harness's `<target>/debug`, where the Makefile's
-# spawn-bins line puts the connector binaries.
+# `{{bins}}` is the harness's `<target>/release` — a measured cell spawns
+# the SHIPPED shape, same convention as `{{cli}}`; build the bins with
+# `cargo build --release --features bin-serve` first (absent bins fail loud
+# at spawn, never fall back to debug).
 pipeline: bench-pg-to-pg-remote
 workdir: {{workdir}}/.rdlt
 write_mode: replace
