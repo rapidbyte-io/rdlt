@@ -20,6 +20,21 @@
 //! copy of the proto, which is precisely the failure the freeze exists
 //! to prevent, and precisely the one no in-tree test can feel.
 //!
+//! TWO EDGES OF THIS NET, recorded so nobody mistakes it for total.
+//! Both are honest residuals, not oversights:
+//!
+//! - **`reserved N;` statements are skipped.** They carry no `=`, so
+//!   the scanner never sees them. Reusing a reserved number still
+//!   FAILS — the resurrected field is a row the frozen table does not
+//!   have — but it fails as a generic unexpected row, not as "this
+//!   number was retired". If reserved ranges ever appear here and that
+//!   distinction starts to matter, parsing them is a small extension.
+//! - **The table pins NUMBERS, not TYPES.** Changing a field's type at
+//!   the same number — `uint64` to `string`, say — is every bit as
+//!   breaking as a renumber, and this test passes it. Only a golden
+//!   frame catches that, and only where one samples the message. The
+//!   two nets are complementary, not nested.
+//!
 //! What a change to this table MEANS, so the next editor knows: adding
 //! a row is legal (additive evolution — a new field takes a fresh
 //! number, and updating this table is the deliberate moment where that

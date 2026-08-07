@@ -12,9 +12,20 @@
 // removed, narrowed or given a second meaning; a receiver tolerates
 // what a newer peer sends (an unrecognized Classification normalizes
 // safe-loud to FATAL). The crate's README.md carries the rules in full
-// and names the clauses the freeze makes load-bearing; the golden
-// frame pins in tests/cases/test_frames.rs are what actually catch a
-// renumber, since one is silent at the type level.
+// and names the clauses the freeze makes load-bearing.
+//
+// A renumber has to be caught by a net that looks at bytes or at this
+// text: it is silent at the Rust type level, and it is invisible
+// end-to-end too, because both in-tree sides regenerate from THIS file
+// and so agree with each other while disagreeing with the contract —
+// only a third party working from an earlier copy breaks. So two nets
+// guard it, covering different things: tests/cases/test_field_numbers.rs
+// pins NUMBERING exhaustively, reading this file as text and checking
+// every message's every field number (and every enum value, and the set
+// of declared messages) against a frozen table; tests/cases/
+// test_frames.rs pins ENCODING for five representative messages from
+// both directions, byte for byte, proving the generated encoder really
+// emits the numbers declared here.
 //
 // Trust model (owner decision D-038-1): config documents cross this
 // LOCAL socket in the clear; a spawned connector inherits the

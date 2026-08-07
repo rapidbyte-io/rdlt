@@ -27,8 +27,13 @@
 //! handshake for nothing. "v1" is the name of the frozen contract, not
 //! a value on the wire. The crate's `README.md` carries the rules in
 //! full, the named frozen clauses, and what the freeze deliberately
-//! leaves open (a `ReadCredit` message and network transports are both
-//! additive futures this proto keeps room for).
+//! leaves open — three additive doors this proto keeps room for: a
+//! `ReadCredit` message should flow control alone ever prove
+//! insufficient for backpressure; negotiation semantics for
+//! [`proto::HandshakeOk::state_format_versions`], whose field is frozen
+//! at its number but ships EMPTY because there is nothing to negotiate
+//! until a second state-format version exists; and network transports
+//! as a future binding of this same proto.
 //!
 //! Two halves: [`handshake`] is the plaintext stdout line a spawned
 //! connector prints before it starts serving; [`proto`] is the generated

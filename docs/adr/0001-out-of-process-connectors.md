@@ -235,7 +235,11 @@ EXPERIMENTAL markers, and making these rules binding —
    one Arrow batch per frame in both directions, `ErrorFrame.message`
    as cause text only with classification travelling solely as the
    enum, the one-session-per-process ceiling, and the handshake
-   identity rules.
+   identity rules. That enumeration HIGHLIGHTS the wire-shape rules a
+   client author most easily gets wrong; the certifier's full clause
+   set — the source laws, the destination's exactly-once laws, all ten
+   protocol clauses, and the kill matrix — is the behavioral contract,
+   and none of it is less frozen for going unlisted.
 
 The publish posture did NOT move with the freeze: the protocol,
 client, runtime and certifier crates remain `publish = false`, and
