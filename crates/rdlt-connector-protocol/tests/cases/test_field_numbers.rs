@@ -35,6 +35,20 @@
 //!   frame catches that, and only where one samples the message. The
 //!   two nets are complementary, not nested.
 //!
+//! A THIRD gap existed and is now REFUSED rather than enumerated, which
+//! is why the count above is still two. The scanner splits on
+//! whitespace and looks for a bare `=` token, so a field written
+//! compactly — `uint32 foo=3;`, or `string message =2;` — yielded no
+//! `=` token and fell out of BOTH the parsed set and this table, and
+//! the pin then passed green on a field it had never seen. An
+//! exhaustive net that silently drops its subject is worse than no net.
+//! The scanner now PANICS on any statement holding an `=` character it
+//! cannot tokenize (see [`parse`]), so the compact spelling is a loud
+//! failure instead of an invisible hole and the proto's style stays
+//! uniform. Teaching the scanner to parse it would close the hole too,
+//! but at the cost of two legal spellings for the one thing this whole
+//! file exists to keep unambiguous.
+//!
 //! What a change to this table MEANS, so the next editor knows: adding
 //! a row is legal (additive evolution — a new field takes a fresh
 //! number, and updating this table is the deliberate moment where that
@@ -237,7 +251,13 @@ fn every_declared_message_and_enum_is_frozen() {
 /// third party reads, and a parser crate would be one more thing whose
 /// version could change what this test sees. The grammar it needs is
 /// tiny — statements end at `;`, blocks open at `{` and close at `}` —
-/// and everything it cannot understand it ignores rather than guesses.
+/// and everything it cannot understand it ignores rather than guesses —
+/// with ONE exception, which is the point: a statement that plainly
+/// carries a field number (`=` is present) but does not tokenize as
+/// `<name> = <number>` is REFUSED with a panic, never ignored. Ignoring
+/// it would drop the field from this parse and, being invisible, from
+/// the frozen table as well — the pin would then pass green over a
+/// number nobody checked.
 ///
 /// Attribution rules: fields land under the enclosing `message`/`enum`;
 /// a `oneof` re-attributes to its parent message (shared number space);
@@ -282,12 +302,37 @@ fn parse() -> (Vec<(String, String, u32)>, Vec<String>) {
                 ';' => {
                     if let Some(Some(owner)) = scopes.last() {
                         let tokens: Vec<&str> = buffer.split_whitespace().collect();
-                        if let Some(eq) = tokens.iter().position(|t| *t == "=") {
-                            let name = tokens[eq - 1];
-                            let number: u32 = tokens[eq + 1].parse().unwrap_or_else(|_| {
-                                panic!("`{}` in {owner} has no numeric tag", buffer.trim())
-                            });
-                            fields.push((owner.clone(), name.to_string(), number));
+                        match tokens.iter().position(|t| *t == "=") {
+                            Some(eq) => {
+                                let name = tokens[eq - 1];
+                                let number: u32 = tokens[eq + 1].parse().unwrap_or_else(|_| {
+                                    panic!("`{}` in {owner} has no numeric tag", buffer.trim())
+                                });
+                                fields.push((owner.clone(), name.to_string(), number));
+                            }
+                            // REFUSE, never skip. A statement holding an
+                            // `=` character that is not its own token is
+                            // the compact spelling (`uint32 foo=3;`,
+                            // `string message =2;`). Ignoring it — what
+                            // this scanner used to do — dropped the field
+                            // from the parsed set AND from the frozen
+                            // table at once, so the numbering pin passed
+                            // green on a field it never saw: the
+                            // exhaustive net failing open, which is the
+                            // one way it must not fail. `reserved N;` and
+                            // `rpc` lines carry no `=` at all and are
+                            // still ignored, as intended.
+                            None => assert!(
+                                !buffer.contains('='),
+                                "`{}` in {owner} spells its field number without spaces \
+                                 around the `=`. This scanner deliberately understands one \
+                                 spelling — `<type> <name> = <number>;` — and refuses the \
+                                 other rather than silently skipping the field (a skipped \
+                                 field is absent from the frozen table too, and the pin \
+                                 then passes on a number nobody checked). Re-space the \
+                                 statement in the .proto.",
+                                buffer.trim()
+                            ),
                         }
                     }
                     buffer.clear();
