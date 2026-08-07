@@ -120,10 +120,17 @@ rdlt-runtime = { workspace = true }
 # from the published manifest rather than rejecting it, so this entry
 # alone would let the crate package with the cell silently absent. The
 # 023 git-without-version rule that shape echoes governs NORMAL
-# dependencies. What actually blocks publishing this crate is the
-# `rdlt-runtime` dev-dep above, whose workspace entry DOES carry
-# `version = "0.3.0"`: that requirement survives into the published
-# manifest and cannot resolve until rdlt-runtime is on the registry.
+# dependencies. What blocks publishing this crate is everything else,
+# in this order: the NORMAL deps `rdlt-connector-sdk` and
+# `rdlt-connector-sqlcore` block FIRST — a normal dependency is
+# unconditional, so those two must be on the registry at `0.3.0`
+# before any `cargo publish` of this crate can resolve. Behind them
+# sit the dev-deps whose workspace entries DO carry
+# `version = "0.3.0"` and so survive into the published manifest:
+# `rdlt-connector-duckdb`, `rdlt-engine`, `rdlt-testkit` and
+# `rdlt-runtime` alike — `rdlt-runtime` is not special, it is simply
+# the newest of them. `rdlt-certify` is the lone version-less entry
+# and the lone one that would vanish silently.
 rdlt-certify = { workspace = true }
 rdlt-testkit = { workspace = true }
 tempfile = { workspace = true }

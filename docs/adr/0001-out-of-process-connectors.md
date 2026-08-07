@@ -186,9 +186,21 @@ shipping under measurement. The evidence, in the order it landed:
   2026-08-07, five in-process cells beside their spawned-connector
   twins, every arm rowcount-verified): 9.50x against a 4.0x bar,
   60.00x against 40.0x, 52.30x against 45.0x, 2.42x against 2.0x. The
-  wire costs +114 ms to +463 ms per cell (x1.10 to x1.54), and the
-  session ran pessimistic, so the ratios are deflated rather than
-  flattered. Every bar tolerates the wire costing at least 1.43x MORE
+  wire costs +114 ms to +463 ms per cell (x1.10 to x1.54). The session
+  carried asymmetries in BOTH directions and `benches/RESULTS.md`
+  names all three: two cut FOR the wire — the rdlt arms ran 9-20%
+  slow against their own baseline while the competitor moved 1-4%, so
+  every ratio was divided by a high wall and is deflated rather than
+  flattered, and the throttled backpressure window below means the
+  remote arms ran narrower than configured — while one cuts AGAINST
+  it: baseline-first ordering put each remote arm on the quieter
+  machine in four of the five pairs (`loadavg_at_start` fell across
+  the pair), so the measured overhead is if anything an
+  under-statement. None of the three is quantified, so none is netted
+  against another or used to restate a figure, and the verdict is
+  unmoved either way — all four bars still clear when each remote
+  cell's SLOWEST of five runs replaces its median (9.0x / 42.1x /
+  50.3x / 2.3x). Every bar tolerates the wire costing at least 1.43x MORE
   than it measured before that bar would bind; the tightest is the
   `s3jsonl-to-pg-200k` cell, and the figure is derived, not measured —
   reproduce it as: the competitor took 64,480 ms and the bar demands
@@ -239,7 +251,19 @@ EXPERIMENTAL markers, and making these rules binding —
    client author most easily gets wrong; the certifier's full clause
    set — the source laws, the destination's exactly-once laws, all ten
    protocol clauses, and the kill matrix — is the behavioral contract,
-   and none of it is less frozen for going unlisted.
+   and none of it is less frozen for going unlisted. TWO of those
+   rules are stated for both directions but certified on the READ
+   direction only, and the README names both gaps in place rather than
+   letting the enumeration read as a guarantee: the one-batch rule's
+   write half (the certifier's own `Write` frames are single-batch by
+   construction, so a destination that quietly kept the first batch of
+   a multi-batch `Write` certifies clean — owed clause P11) and the
+   cause-text rule's write half (its clause judges an induced READ
+   refusal and is listed in the source wire set alone, so a
+   destination rendering a classification into `ErrorFrame.message`
+   certifies clean — owed clause P12). Both are frozen behavior
+   pinned by this workspace's tests; what is owed is a third party's
+   measurement against them.
 
 The publish posture did NOT move with the freeze: the protocol,
 client, runtime and certifier crates remain `publish = false`, and
@@ -264,8 +288,10 @@ a remote Arrow source runs with a far smaller effective in-flight
 window than configured — which makes the recorded wire overhead
 likely an upper bound, though only likely: no figure has been
 restated on the strength of an unmeasured fix, and a wider window also
-raises resident bytes in a constellation whose RSS already runs 2-3x
-the in-process arm's. This does not reopen the frozen contract: the
+raises resident bytes in a constellation whose peak RSS already runs
+x1.49 to x2.48 the in-process arm's (measured across the five twin
+pairs; largest on `pg-to-pg-1m`, no pair reaching 3x, and two of the
+five below 2x). This does not reopen the frozen contract: the
 proto declares no byte-budget, credit, or window field at all —
 `Read` rides HTTP/2 flow control by design (D6) with the engine's own
 byte-budget channel as the authority — so both the defect and its fix

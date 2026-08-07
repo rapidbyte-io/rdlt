@@ -27,10 +27,14 @@ classified-exclusion records live in [`GOVERNANCE.md`](GOVERNANCE.md).
   `pg-to-pg-dedup-1m-remote` **2.4×** (≥ 2×). The unbarred
   `pg-to-s3parquet-1m-remote` measured 1.7× against its twin's 1.9×.
   The wire costs **+114 ms to +463 ms** per cell (×1.10 to ×1.54 of the
-  in-process wall) and roughly doubles peak RSS and CPU; process spawn is not
-  where it goes — spawn → handshake-complete for the postgres bin is **1.81 ms
-  median** (min 1.63, p90 2.06, 20 sequential cold spawns), so two spawns are
-  ≈3.6 ms of a 114 ms floor.
+  in-process wall); CPU `user_sys` rises **×1.12 to ×1.89** and peak RSS
+  **×1.49 to ×2.48** — both largest on `pg-to-pg-1m`, neither reaching 3× on
+  any pair. So "roughly doubles" was wrong on both counts: no pair doubles its
+  CPU at all, and RSS clears 2× on three of the five pairs while the other two
+  sit at ×1.65 and ×1.49. Process spawn is
+  not where it goes — spawn → handshake-complete for the postgres bin is
+  **1.81 ms median** (min 1.63, p90 2.06, 20 sequential cold spawns), so two
+  spawns are ≈3.6 ms of a 114 ms floor.
   **No bar is minted for any remote cell.** Governance is the same rule that
   left `pg-to-s3parquet-1m` unbarred: a bar sits below a recorded floor and one
   session on a new cell is not a basis for one (018 BR8, constitution
