@@ -102,10 +102,15 @@ different line shape takes format `2`, and a parser refusing a format
 it does not know is behaving correctly.
 
 **5. The named clauses below are frozen behavior, each already pinned
-by a test and by a certifier clause a third-party connector answers
-to.** The freeze makes those pins load-bearing for COMPATIBILITY. Each
-clause's substance is stated here; the certifier ships every clause id
-with its full definition (`rdlt-certify --explain`).
+by a test in this workspace; each one that ALSO carries a certifier
+clause a third-party connector answers to names that clause's id
+below.** The freeze makes those pins load-bearing for COMPATIBILITY.
+Where a bullet names no clause id, the rule is frozen and pinned but a
+third party's own connector is not yet measured against it — read the
+gap as owed work, never as licence. Exactly one such gap exists today
+and it is named in place (the write direction of the one-batch rule).
+Each clause's substance is stated here; the certifier ships every
+clause id with its full definition (`rdlt-certify --explain`).
 
 This list is a HIGHLIGHT, not the whole contract: it names the
 wire-shape rules a client author most easily gets wrong. The
@@ -119,7 +124,17 @@ and none of it is less frozen for going unlisted here.
   normally-completing RPC (see "`Status` vs `ErrorFrame`" below);
 - **one Arrow batch per frame**, in both directions — the write side
   refuses a second batch FATAL, the read side's refusal seat is the
-  client (certifier clause P5);
+  client. **The certifier pins the READ half only**: clause P5 judges
+  read frames on the wire bytes and says nothing about `Write`, and the
+  certifier's own write frames are single-batch BY CONSTRUCTION
+  (`rdlt-certify` builds each one from a single fixture batch), so a
+  third-party DESTINATION that silently accepted a multi-batch `Write`
+  and kept the first batch would certify all-Pass today — the shape of
+  the 038 T5 defect this rule exists to forbid. A write-side clause
+  (P11: a multi-batch `Write` frame must be refused FATAL, never
+  partially accepted) is the certifier's NEXT clause and is owed;
+  until it ships, the write half is frozen by this rule and pinned by
+  this workspace's tests alone;
 - **the error-frame cause-text contract** — `ErrorFrame.message` is
   CAUSE text only; classification travels solely as the enum, and no
   server writes a rendered classification frame into `message`
