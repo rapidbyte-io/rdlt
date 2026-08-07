@@ -206,6 +206,33 @@ impl ByteSized for PushPayload {
     /// What the payload actually holds. A checkpoint holds no rows, costs
     /// nothing, and must never be gated by the budget — a marker that
     /// could not enqueue would stall the commit it announces.
+    ///
+    /// KNOWN OVER-COUNT ON THE ARROW ARM, measured and not yet fixed.
+    /// `RecordBatch::get_array_memory_size()` sums each buffer's
+    /// `Buffer::capacity()` — the whole underlying ALLOCATION, not the
+    /// length of the slice that buffer actually views. Arrow's IPC reader
+    /// allocates the entire message body as ONE buffer and hands every
+    /// column a zero-copy slice of it, so a batch decoded from IPC
+    /// reports roughly `n_buffers × body_len` instead of `body_len`. On
+    /// a 17-buffer batch that is ≈17× the batch's true footprint and
+    /// ≈12× what the in-process arm charges for the same rows (an
+    /// in-process batch built through `MutableBuffer`s over-reports only
+    /// ≈1.4×, from capacity doubling — the two comparators are different
+    /// and must not be conflated).
+    ///
+    /// Two consequences, both live today. A source whose batches arrive
+    /// over the connector wire spends its byte budget ~12× too fast, so
+    /// it runs a far narrower in-flight window than the operator
+    /// configured — throughput, never correctness. And any MB/s figure
+    /// derived from this expression publishes ~12× high; treat wire
+    /// overhead computed against it as an upper bound.
+    ///
+    /// A fix belongs here (nothing about it touches the frozen v0 wire —
+    /// the proto declares no byte-budget, credit or window field), but it
+    /// MUST BE MEASURED, not argued: widening the effective window also
+    /// raises resident buffers, and this house has twice measured an
+    /// allocation-removal that the counting argument predicted as a win
+    /// and the instrument recorded as a LOSS.
     fn byte_size(&self) -> usize {
         match self {
             PushPayload::RawJson(bytes) => bytes.len(),

@@ -105,6 +105,19 @@ pub struct Config {
     pub connection: String,
     /// Target schema (the document vocabulary calls it `dataset`); created
     /// if missing.
+    ///
+    /// OPTIONAL, defaulting to `public`. Worth stating plainly because
+    /// the omission is silent and the consequence is a write to a
+    /// different schema than intended: a document that leaves `dataset`
+    /// out loads into `public`, it is not refused. Until 041 the
+    /// pipeline YAML reached this connector through a hand-mirrored
+    /// facade struct that REQUIRED the key, so a document missing it
+    /// failed to parse; the facade now embeds this type directly (one
+    /// vocabulary, no mirror to drift), which makes the library's
+    /// long-standing default the document's default too. A relaxation,
+    /// never a refusal — but a pipeline that relied on the old refusal
+    /// to catch a typo'd or dropped `dataset:` will now run and land its
+    /// tables in `public`. Spell the key.
     #[serde(rename = "dataset", default = "default_schema")]
     #[schemars(rename = "dataset")]
     pub schema: String,

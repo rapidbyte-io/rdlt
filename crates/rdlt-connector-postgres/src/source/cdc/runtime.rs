@@ -69,6 +69,21 @@ pub(crate) struct Identity {
 /// (`read.rs`, `if target > since`) and reports a clean empty run. No loss
 /// and no falsely-advancing cursor — the stream just stops moving while
 /// looking healthy.
+///
+/// WHY THIS IS A CONTRACT AND NOT A GUARD, since both obvious guards are
+/// wrong. Refusing a second `Read` after a CDC stream ends would break
+/// the engine's own transient retry: retries are RUN-level and each
+/// attempt is a full run from committed state (`rdlt-engine`
+/// `runtime/run.rs`), re-reading every stream inside the same connector
+/// instance — legitimate, common, and indistinguishable at this layer
+/// from a pooled second run. Resetting `target` whenever a fresh
+/// `since` arrives at or before it would fire on exactly that retry
+/// path and re-pin the target mid-run, destroying the cross-table
+/// single-instant view the pinned target exists to provide. A guard that
+/// could tell the two apart needs a RUN identity, and the v0 wire
+/// declares none — it is frozen, and adding one is a protocol decision,
+/// not a connector fix. So the obligation sits with whoever owns process
+/// lifetime.
 pub(crate) struct Runtime {
     pub(super) state: tokio::sync::Mutex<RunState>,
     identities: tokio::sync::OnceCell<BTreeMap<String, Identity>>,

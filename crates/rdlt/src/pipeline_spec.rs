@@ -152,14 +152,20 @@ pub enum DestSpec {
         settings: Option<std::collections::BTreeMap<String, String>>,
     },
     /// A PostgreSQL schema — the crate's full config vocabulary inline
-    /// (`conn`, `dataset` defaulting to `public`, `tls`, `merge_strategy`,
-    /// per-table `tables`).
+    /// (`conn`, `dataset`, `tls`, `merge_strategy`, per-table `tables`).
     ///
     /// The connector's own config type IS the document shape, embedded
     /// rather than mirrored — same reasoning as the file, iceberg, and
     /// snowflake blocks: a hand-mirrored struct fails silently in one
     /// direction, leaving a field configurable from the library and
     /// invisible from YAML with no error anywhere.
+    ///
+    /// ONE user-visible consequence of retiring the mirror: `dataset` is
+    /// now OPTIONAL and defaults to `public`, where the mirror required
+    /// it. A document that omits it therefore loads into `public`
+    /// instead of being refused — a relaxation, never a refusal, but a
+    /// silent one, so a dropped or misspelled `dataset:` lands tables in
+    /// a schema nobody asked for rather than failing the parse.
     #[cfg(feature = "postgres-dest")]
     Postgres(Box<crate::connector::postgres::destination::Config>),
     /// The frozen `parquet:` spelling (equivalent to `file: local parquet`);
