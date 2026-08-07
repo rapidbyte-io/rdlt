@@ -31,6 +31,12 @@ async fn main() {
         .next()
         .map(|raw| raw.parse().expect("N (argv[2]) must be a positive integer"))
         .unwrap_or(20);
+    // `usize` parses "0" happily, so the expect above never fires on it
+    // and the run would instead die deep in the quantile arithmetic
+    // (`samples_ms[0]` on an empty vector, and `len() - 1` underflowing)
+    // — a panic that names an index, not the argument the caller got
+    // wrong. Say what the expect already promises.
+    assert!(n > 0, "N (argv[2]) must be a positive integer, got 0");
 
     let mut requirement = ConnectorRequirement::new("io.rapidbyte.postgres");
     if let Some(bin) = &bin {
