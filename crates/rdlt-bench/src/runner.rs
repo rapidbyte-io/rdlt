@@ -457,6 +457,9 @@ pub fn run_cell(
     subs.insert("repo".into(), paths.repo.display().to_string());
     subs.insert("benches".into(), paths.benches.display().to_string());
     subs.insert("cli".into(), paths.cli.display().to_string());
+    // The connector-binary directory (`<target>/debug`) for the
+    // `-remote` cells' `connector: path:` overrides.
+    subs.insert("bins".into(), paths.bins.display().to_string());
     subs.insert("data".into(), primary.data_dir.path().display().to_string());
     if let Some(conn) = primary.conn() {
         subs.insert("conn".into(), conn.to_owned());

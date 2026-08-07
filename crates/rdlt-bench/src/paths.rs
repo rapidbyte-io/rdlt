@@ -14,6 +14,13 @@ pub struct Paths {
     pub bars_toml: PathBuf,
     pub results: PathBuf,
     pub cli: PathBuf,
+    /// Where the connector BINARIES land (`<target>/debug`) — the
+    /// `{{bins}}` substitution the `-remote` cells' pipeline templates
+    /// point their `connector: path:` overrides at. Debug, not release:
+    /// the bins are built by the Makefile's spawn-bins line (a debug
+    /// `cargo build`), the same location rule the runtime's own
+    /// spawn suite uses.
+    pub bins: PathBuf,
 }
 
 impl Paths {
@@ -30,20 +37,22 @@ impl Paths {
             }
         }
         let benches = dir.join("benches");
+        // Honour CARGO_TARGET_DIR: a contributor who redirects cargo's
+        // output (a shared target dir, a faster disk) otherwise gets a
+        // "CLI missing" failure straight after a successful `make release`.
+        // An absolute override is used as-is; a relative one resolves
+        // against the repo root, exactly as cargo itself treats it.
+        let target = match std::env::var_os("CARGO_TARGET_DIR") {
+            Some(target) => dir.join(target),
+            None => dir.join("target"),
+        };
         Ok(Self {
             cells_dir: benches.join("cells"),
             fixtures_toml: benches.join("fixtures/fixtures.toml"),
             bars_toml: benches.join("bars.toml"),
             results: benches.join("results"),
-            // Honour CARGO_TARGET_DIR: a contributor who redirects cargo's
-            // output (a shared target dir, a faster disk) otherwise gets a
-            // "CLI missing" failure straight after a successful `make release`.
-            // An absolute override is used as-is; a relative one resolves
-            // against the repo root, exactly as cargo itself treats it.
-            cli: match std::env::var_os("CARGO_TARGET_DIR") {
-                Some(target) => dir.join(target).join("release/rdlt"),
-                None => dir.join("target/release/rdlt"),
-            },
+            cli: target.join("release/rdlt"),
+            bins: target.join("debug"),
             repo: dir,
             benches,
         })

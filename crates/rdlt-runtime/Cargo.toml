@@ -20,6 +20,14 @@ repository.workspace = true
 # the bins to already exist and fails loudly, never silently.
 spawn-bins = []
 
+# The 041 spawn-latency instrument (Task 7's by-hand measurement):
+# meaningful only with a real connector bin to spawn, so it rides the
+# same gate as the spawn suite — a plain workspace command never
+# compiles it.
+[[example]]
+name = "spawn_latency"
+required-features = ["spawn-bins"]
+
 [dependencies]
 rdlt-connector = { workspace = true }
 rdlt-connector-client = { workspace = true }

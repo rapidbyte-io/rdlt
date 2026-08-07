@@ -1,0 +1,32 @@
+# 041 e2e matrix cell pg-to-pg-dedup-1m-remote — the wire twin of
+# pg-to-pg-dedup.yaml: the SAME measured LOAD 2 (a query stream re-delivering
+# the 50%-changed events_v2, merged by id into the events_merged table LOAD 1
+# populated) with both sides swapped to `connector:` refs. LOAD 1 stays the
+# cell's untimed prepare_sh against the IN-PROCESS load-1 spec — setup is not
+# the measurement. Config keys are the in-process twin's, verbatim.
+pipeline: bench-pg-to-pg-dedup-remote
+workdir: {{workdir}}/.rdlt
+write_mode:
+  merge:
+    key: [id]
+source:
+  connector:
+    id: io.rapidbyte.postgres
+    path: {{bins}}/rdlt-connector-postgres
+    config:
+      conn: "{{conn}}"
+      # Deliver ONLY the declared query stream: an absent `tables` would add
+      # every table in the schema alongside it.
+      tables: []
+      queries:
+        - name: events_merged
+          sql: "SELECT * FROM events_v2"
+          primary_key: [id]
+destination:
+  connector:
+    id: io.rapidbyte.postgres
+    path: {{bins}}/rdlt-connector-postgres
+    config:
+      conn: "host=127.0.0.1 port=5439 user=postgres password=postgres dbname=dest_rdlt"
+      dataset: bench
+      merge_strategy: upsert
