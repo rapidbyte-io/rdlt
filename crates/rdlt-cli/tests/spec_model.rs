@@ -201,10 +201,10 @@ destination:
         merge_scope: [day, tenant]
 "#,
         );
-        let DestSpec::Postgres { tables, .. } = &parsed.destination else {
+        let DestSpec::Postgres(config) = &parsed.destination else {
             panic!("postgres dest");
         };
-        let events = tables.as_ref().expect("tables")["events"].clone();
+        let events = config.tables["events"].clone();
         let dedup = events.dedup_sort.expect("dedup_sort");
         assert_eq!(dedup.column, "seq");
         assert_eq!(
@@ -214,6 +214,85 @@ destination:
         assert_eq!(
             events.merge_scope.as_deref(),
             Some(&["day".to_string(), "tenant".to_string()][..])
+        );
+    }
+
+    /// The postgres destination block IS the connector's config document,
+    /// embedded rather than mirrored (D-041-6): a document with every key
+    /// set parses through the Spec to the SAME `Config` the document type
+    /// parses directly — so a field added to the connector's vocabulary is
+    /// reachable from pipeline YAML with zero facade code.
+    #[test]
+    fn postgres_spec_embeds_the_connector_document() {
+        let block = r#"
+conn: host=x
+dataset: d
+tls: {mode: require}
+merge_strategy: upsert
+tables:
+  events: {hard_delete: deleted, dedup_sort: {column: seq, order: desc}}
+"#;
+        let parsed = spec(
+            r#"
+pipeline: p
+source:
+  postgres: {config: src.yaml}
+destination:
+  postgres:
+    conn: host=x
+    dataset: d
+    tls: {mode: require}
+    merge_strategy: upsert
+    tables:
+      events: {hard_delete: deleted, dedup_sort: {column: seq, order: desc}}
+"#,
+        );
+        let DestSpec::Postgres(config) = parsed.destination else {
+            panic!("expected postgres dest");
+        };
+        let direct: rdlt::connector::postgres::destination::Config =
+            serde_yaml::from_str(block).expect("the document type parses the same keys directly");
+        assert_eq!(*config, direct, "the spec arm and the document diverge");
+    }
+
+    /// `dataset` is optional in the postgres destination block: the
+    /// document defaults it to "public". D-041-6 relaxed the retired
+    /// mirror's hand-required field to the connector document's default.
+    #[test]
+    fn postgres_dataset_defaults_to_public() {
+        let parsed = spec(
+            r#"
+pipeline: p
+source:
+  postgres: {config: src.yaml}
+destination:
+  postgres: {conn: host=x}
+"#,
+        );
+        let DestSpec::Postgres(config) = parsed.destination else {
+            panic!("expected postgres dest");
+        };
+        assert_eq!(config.schema, "public");
+    }
+
+    /// A typo inside the postgres block refuses at spec load with the
+    /// connector document's own wording — deny_unknown_fields now lives
+    /// on the embedded vocabulary, not a facade mirror.
+    #[test]
+    fn a_postgres_destination_typo_is_refused_at_spec_load() {
+        let err = serde_yaml::from_str::<Spec>(
+            r#"
+pipeline: p
+source:
+  postgres: {config: src.yaml}
+destination:
+  postgres: {conn: host=x, datset: d}
+"#,
+        )
+        .expect_err("an unknown field inside the postgres block must refuse");
+        assert!(
+            format!("{err}").contains("unknown field"),
+            "refusal names the unknown field: {err}"
         );
     }
 

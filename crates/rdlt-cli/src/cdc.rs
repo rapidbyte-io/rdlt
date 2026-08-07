@@ -29,24 +29,15 @@ pub fn cdc_composition_warnings(spec: &Spec, config: &PostgresConfig) -> Vec<Str
         // claimed snowflake and duckdb "cannot remove a flagged row" —
         // false since both ride sqlcore's hard-delete arms — which is
         // exactly the drift one implementation prevents.)
-        DestSpec::Postgres {
-            merge_strategy,
-            tables,
-            ..
-        } => sql_destination_warnings(
+        DestSpec::Postgres(dest) => sql_destination_warnings(
             &mut warnings,
             config,
             &cdc.flag_column,
             matches!(
-                merge_strategy,
+                dest.merge_strategy,
                 Some(rdlt::connector::postgres::destination::MergeStrategy::Upsert)
             ),
-            &|table| {
-                tables
-                    .as_ref()
-                    .and_then(|t| t.get(table))
-                    .and_then(|t| t.hard_delete.clone())
-            },
+            &|table| dest.tables.get(table).and_then(|t| t.hard_delete.clone()),
         ),
         DestSpec::Duckdb {
             merge_strategy,

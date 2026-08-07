@@ -151,28 +151,17 @@ pub enum DestSpec {
         /// Raw `SET <key> = <value>` settings applied to the connection.
         settings: Option<std::collections::BTreeMap<String, String>>,
     },
-    /// A PostgreSQL schema.
+    /// A PostgreSQL schema — the crate's full config vocabulary inline
+    /// (`conn`, `dataset` defaulting to `public`, `tls`, `merge_strategy`,
+    /// per-table `tables`).
+    ///
+    /// The connector's own config type IS the document shape, embedded
+    /// rather than mirrored — same reasoning as the file, iceberg, and
+    /// snowflake blocks: a hand-mirrored struct fails silently in one
+    /// direction, leaving a field configurable from the library and
+    /// invisible from YAML with no error anywhere.
     #[cfg(feature = "postgres-dest")]
-    Postgres {
-        /// libpq connection string.
-        conn: String,
-        /// The schema rows land in. Created if absent.
-        dataset: String,
-        /// Optional TLS block: `tls: {mode: verify_full, root_cert: /ca.pem}`.
-        tls: Option<crate::connector::postgres::tls::Policy>,
-        /// Destination-wide merge strategy
-        /// ("delete_insert" | "upsert" | "scd2").
-        merge_strategy: Option<crate::connector::postgres::destination::MergeStrategy>,
-        /// Per-table options — `tables: <name>: {…}` with
-        /// `merge_strategy`, `hard_delete`, `dedup_sort`, `merge_scope`, and
-        /// `scd2: {valid_from, valid_to, absent}`.
-        tables: Option<
-            std::collections::BTreeMap<
-                String,
-                crate::connector::postgres::destination::TableOptions,
-            >,
-        >,
-    },
+    Postgres(Box<crate::connector::postgres::destination::Config>),
     /// The frozen `parquet:` spelling (equivalent to `file: local parquet`);
     /// the parquet destination lives in the file family.
     #[cfg(feature = "file")]
@@ -588,28 +577,10 @@ async fn build_with<S: rdlt_connector::Source>(
             Ok(builder.destination(dest).build()?)
         }
         #[cfg(feature = "postgres-dest")]
-        DestSpec::Postgres {
-            conn,
-            dataset,
-            tls,
-            merge_strategy,
-            tables,
-        } => {
-            let mut dest =
-                crate::connector::postgres::destination::Postgres::new(conn).schema(dataset);
-            if let Some(policy) = tls {
-                dest = dest.tls(policy.clone());
-            }
-            if merge_strategy.is_some() || tables.is_some() {
-                let options = crate::connector::postgres::destination::DestinationOptions {
-                    merge_strategy: *merge_strategy,
-                    tables: tables.clone().unwrap_or_default(),
-                };
-                dest = dest
-                    .options(options)
-                    .map_err(|e| SpecError::resolve(format!("destination options: {e}")))?;
-            }
-            Ok(builder.destination(dest.into_shell()).build()?)
+        DestSpec::Postgres(config) => {
+            let dest = crate::connector::postgres::destination::Shell::new((**config).clone())
+                .map_err(|e| SpecError::resolve(format!("postgres destination: {e}")))?;
+            Ok(builder.destination(dest).build()?)
         }
         #[cfg(feature = "file")]
         DestSpec::Parquet { path } => {
