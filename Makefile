@@ -70,13 +70,24 @@ MUTANTS_TMPDIR ?= $(CURDIR)/target/mutants-tmp
 FUZZ_SECONDS ?= 600
 FUZZ_TARGETS := jsonl_slab cursor_decode file_config arrow_schema_map shred_push pg_copy_decode pg_pgoutput_decode
 
-.PHONY: build release dist lint docs test bench check coverage reclaim certify-snowflake
+.PHONY: build release connector-bins dist lint docs test bench check coverage reclaim certify-snowflake
 
 build:
 	cargo build --workspace
 
 release:
 	cargo build --release -p rdlt-cli
+
+# The connector BINARIES the `-remote` benchmark cells spawn over the wire.
+# `release` builds the CLI alone, so without this the five remote twins'
+# `connector: path: {{bins}}/…` overrides point at a file the matrix never
+# built and the run dies MID-SESSION, after the fixtures are up. Release
+# unconditionally, matching what `{{bins}}` resolves to (rdlt-bench
+# paths.rs): a measured cell must spawn the shipped shape, and a debug bin
+# beside the release engine would measure the wire's overhead wrong.
+connector-bins:
+	cargo build --release -p rdlt-connector-postgres --features bin-serve --bin rdlt-connector-postgres
+	cargo build --release -p rdlt-connector-file --features bin-serve --bin rdlt-connector-file
 
 # The shipped artifact: release plus symbol stripping. Separate from `release`
 # so day-to-day builds keep their symbols for profiling and backtraces.
@@ -412,10 +423,15 @@ else ifeq ($(TARGET),setup)
 	benches/bench-setup.sh
 else ifeq ($(TARGET),e2e)
 	$(MAKE) release
+	# The matrix includes the `-remote` cells, which spawn connector bins the
+	# CLI build does not produce — build them here, not as a manual preflight.
+	$(MAKE) connector-bins
 	sh -c 'E=$$(command -v podman || command -v docker); "$$E" build -q -t rdlt-baseline benches/competitors/dlt/'
 	cargo run -q -p rdlt-bench -- run
 else ifeq ($(TARGET),matrix)
 	$(MAKE) release
+	# Same as e2e: the `-remote` cells spawn bins `release` never builds.
+	$(MAKE) connector-bins
 	sh -c 'E=$$(command -v podman || command -v docker); "$$E" build -q -t rdlt-baseline benches/competitors/dlt/'
 	cargo run -q -p rdlt-bench -- run
 else ifeq ($(TARGET),gate)
