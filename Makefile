@@ -443,6 +443,11 @@ else
 	# The harness errors loudly when nothing matches (typos stay visible);
 	# `cargo run -p rdlt-bench -- list` shows the matrix.
 	$(MAKE) release
+	# Unconditionally, exactly as `release` above: this arm cannot inspect the
+	# filter, and a `-remote` cell named here would otherwise seed its whole
+	# fixture (up to 1M rows) before dying at spawn on an absent binary. The
+	# build is a sub-second no-op once warm.
+	$(MAKE) connector-bins
 	cargo run -q -p rdlt-bench -- run --filter '$(TARGET)'
 endif
 
