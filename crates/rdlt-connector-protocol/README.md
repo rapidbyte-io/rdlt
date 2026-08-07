@@ -105,12 +105,16 @@ it does not know is behaving correctly.
 by a test in this workspace; each one that ALSO carries a certifier
 clause a third-party connector answers to names that clause's id
 below.** The freeze makes those pins load-bearing for COMPATIBILITY.
-Where a bullet names no clause id, the rule is frozen and pinned but a
-third party's own connector is not yet measured against it — read the
-gap as owed work, never as licence. Exactly one such gap exists today
-and it is named in place (the write direction of the one-batch rule).
-Each clause's substance is stated here; the certifier ships every
-clause id with its full definition (`rdlt-certify --explain`).
+Where a bullet names no clause id — or names one whose certifier scope
+is NARROWER than the bullet's own claim — the rule is frozen and pinned
+by this workspace's tests, but a third party's own connector is not yet
+measured against the uncovered part; read the gap as owed work, never
+as licence. TWO such gaps exist today. Both are on the WRITE direction,
+both are named in place below, and each names the clause that would
+close it: the write half of the one-batch rule (owed clause P11) and
+the write half of the cause-text rule (owed clause P12). Each clause's
+substance is stated here; the certifier ships every clause id with its
+full definition (`rdlt-certify --explain`).
 
 This list is a HIGHLIGHT, not the whole contract: it names the
 wire-shape rules a client author most easily gets wrong. The
@@ -121,7 +125,23 @@ and none of it is less frozen for going unlisted here.
 
 - **the two refusal shapes** — a protocol-state violation answers a raw
   gRPC `Status`, a connector outcome answers an `ErrorFrame` inside a
-  normally-completing RPC (see "`Status` vs `ErrorFrame`" below);
+  normally-completing RPC (see "`Status` vs `ErrorFrame`" below). Three
+  clauses cover this between them: the `Status` half by clause P8,
+  which drives the one protocol-state violation v0 defines — a second
+  concurrent `OpenSession`, refused `FailedPrecondition` (`OpenSession`
+  is the destination service's RPC; the source service runs no session
+  state machine, so there is no source-side counterpart to certify);
+  and the `ErrorFrame` half in both directions — on the source by
+  clause P6, which requires an induced read refusal to arrive as a
+  terminal error frame rather than a clean end of stream, and on the
+  destination by clause P10, which requires a `write` to a
+  never-ensured table, and a `publish` for an already-receipted load,
+  to be refused with a typed error frame inside a session that goes on
+  completing normally. What is NOT covered is the destination frame's
+  own shape: P10 judges only that the refusal IS an error frame and
+  discards its contents, so the classification enum and bare cause text
+  go unjudged in the write direction. That is the same gap the
+  cause-text bullet below discloses (owed clause P12), not a third one;
 - **one Arrow batch per frame**, in both directions — the write side
   refuses a second batch FATAL, the read side's refusal seat is the
   client. **The certifier pins the READ half only**: clause P5 judges
@@ -137,8 +157,23 @@ and none of it is less frozen for going unlisted here.
   this workspace's tests alone;
 - **the error-frame cause-text contract** — `ErrorFrame.message` is
   CAUSE text only; classification travels solely as the enum, and no
-  server writes a rendered classification frame into `message`
-  (clause P6);
+  server writes a rendered classification into `message`. **The
+  certifier pins the READ half only**: clause P6 induces a refusal by
+  reading a reserved nonexistent stream name and then judges the
+  resulting frame — terminal, a real classification enum value, and a
+  message that does not begin with one of the four client renderings
+  (`transient|fatal source|destination error: `) — but P6 is listed
+  only in the certifier's SOURCE wire clause set; the DESTINATION set
+  is P3 and P7 alone, and every destination probe that induces a
+  refusal accepts the error frame and discards it without reading its
+  message. So a third-party DESTINATION that rendered
+  `"fatal destination error: …"` into `ErrorFrame.message` — the 026
+  double-frame class, where the receiving client renders the frame a
+  second time — would certify all-Pass today. A write-side clause
+  (P12: a destination's error-frame message must carry bare cause text,
+  never a rendered classification) is owed beside P11; until it ships,
+  the write half is frozen by this rule and pinned by this workspace's
+  tests alone;
 - **the one-session-per-process ceiling** — a second concurrent
   `OpenSession` on a live socket is refused `FailedPrecondition`
   (clause P8);
