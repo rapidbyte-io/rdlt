@@ -8,6 +8,8 @@ mod test_cdc_cycle;
 mod test_cdc_identity;
 mod test_cdc_recovery;
 mod test_cdc_slot;
+#[cfg(feature = "spawn-bins")]
+mod test_cdc_wire;
 mod test_config;
 mod test_config_schema;
 mod test_copy_wire_pin;
