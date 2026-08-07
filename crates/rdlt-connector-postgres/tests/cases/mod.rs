@@ -23,6 +23,8 @@ mod test_golden_ensure_sql;
 mod test_golden_sql;
 mod test_golden_unit_sql;
 mod test_incremental;
+#[cfg(feature = "spawn-bins")]
+mod test_kill_wire;
 mod test_merge_refinements;
 mod test_merge_strategies;
 mod test_native_types;
