@@ -144,6 +144,15 @@ fn run_one_cell(
     started: &mut BTreeMap<String, fixtures::Started>,
 ) -> rdlt_bench::Result<artifact::Artifact> {
     eprintln!("== {} ({} runs) ==", cell.id, cell.runs);
+    // What must already be on disk — the release CLI, and the connector
+    // binaries a `-remote` cell's template names — asked FIRST, before a
+    // single container starts or a single row is generated. Everything
+    // below this line is expensive and none of it is recoverable: the
+    // fixture seed alone reaches 1M rows, and the competitor baselines
+    // run before the rdlt side. An unbuilt binary is the operator's
+    // cheapest possible mistake to make and should be the cheapest to
+    // learn about.
+    runner::preconditions(cell, paths)?;
     // Bring up every store the cell uses (shared across the invocation), then
     // collect them primary-first — the order the cell declared them in.
     for id in &cell.fixtures {

@@ -142,6 +142,63 @@ fn required_connector_bins(template: &str) -> BTreeSet<&str> {
     names
 }
 
+/// Everything a cell needs ON DISK before anything is built, seeded or
+/// measured: the release CLI, and every connector binary its template
+/// names via `{{bins}}`.
+///
+/// Depends on the cell and the paths and NOTHING else, which is what
+/// lets it run at the very top of `main`'s `run_one_cell` — BEFORE
+/// `fixtures::start` brings up containers and generates datasets, and
+/// before the competitor baselines run. That placement is the whole
+/// point: a missing binary used to surface at spawn, after the fixture
+/// seed (up to 1M rows) and after every dlt/Airbyte arm had already
+/// run, so the operator paid the full cost of the cell to learn they
+/// had not built something. Now nothing is paid.
+///
+/// `run_cell` calls it too. That is not redundancy for its own sake:
+/// `run_cell` is public and `tests/selftest.rs` drives it directly, so
+/// the guarantee has to live at that entry point as well. The cost is
+/// two `stat`s and one small file read.
+pub fn preconditions(cell: &Cell, paths: &Paths) -> Result<()> {
+    // Every cell runs the same way: the release-CLI subprocess, warmups then N
+    // counted runs. A `command` cell (selftest) needs no CLI; a pipeline cell
+    // does, so refuse with the build hint rather than fail mid-protocol.
+    if cell.command.is_none() && !paths.cli.is_file() {
+        return Err(BenchError(format!(
+            "release CLI missing at {} — run `make release` first",
+            paths.cli.display()
+        )));
+    }
+    // The same question for the connector binaries a `-remote` cell's
+    // template names. Reads the template — render_spec reads it again
+    // per run, which is cheap and keeps that function's one job intact.
+    if let Some(template) = &cell.pipeline {
+        let path = paths.benches.join(template);
+        let raw = std::fs::read_to_string(&path).map_err(|e| {
+            BenchError(format!(
+                "cell `{}`: reading template {}: {e}",
+                cell.id,
+                path.display()
+            ))
+        })?;
+        for name in required_connector_bins(&raw) {
+            let bin = paths.bins.join(name);
+            if !bin.is_file() {
+                return Err(BenchError(format!(
+                    "cell `{}`: connector binary missing at {} — the template names it \
+                     as `{{{{bins}}}}/{name}`; build it with `cargo build --release \
+                     -p {name} --features bin-serve --bin {name}` (release \
+                     unconditionally, like the CLI: a debug fallback would measure an \
+                     unoptimized connector)",
+                    cell.id,
+                    bin.display()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Run the cell's untimed `prepare_sh` (seed refresh, state wipe) if declared.
 fn run_prepare(cell: &Cell, subs: &BTreeMap<String, String>) -> Result<()> {
     let Some(prepare) = &cell.prepare_sh else {
@@ -539,45 +596,7 @@ pub fn run_cell(
     let invocation = tempfile::tempdir().map_err(|e| BenchError(format!("tempdir: {e}")))?;
     let mut run_seq = 0u32;
 
-    // Every cell runs the same way: the release-CLI subprocess, warmups then N
-    // counted runs. A `command` cell (selftest) needs no CLI; a pipeline cell
-    // does, so refuse early with the build hint rather than fail mid-protocol.
-    if cell.command.is_none() && !paths.cli.is_file() {
-        return Err(BenchError(format!(
-            "release CLI missing at {} — run `make release` first",
-            paths.cli.display()
-        )));
-    }
-    // The SAME precondition for the connector binaries a `-remote` cell's
-    // template names. Without it the harness seeds the whole fixture (up
-    // to 1M rows, minutes of work) and only then dies at spawn, having
-    // measured nothing. Reads the template once per cell — render_spec
-    // reads it again per run, which is cheap and keeps that function's
-    // one job intact.
-    if let Some(template) = &cell.pipeline {
-        let path = paths.benches.join(template);
-        let raw = std::fs::read_to_string(&path).map_err(|e| {
-            BenchError(format!(
-                "cell `{}`: reading template {}: {e}",
-                cell.id,
-                path.display()
-            ))
-        })?;
-        for name in required_connector_bins(&raw) {
-            let bin = paths.bins.join(name);
-            if !bin.is_file() {
-                return Err(BenchError(format!(
-                    "cell `{}`: connector binary missing at {} — the template names it \
-                     as `{{{{bins}}}}/{name}`; build it with `cargo build --release \
-                     -p {name} --features bin-serve --bin {name}` (release \
-                     unconditionally, like the CLI: a debug fallback would measure an \
-                     unoptimized connector)",
-                    cell.id,
-                    bin.display()
-                )));
-            }
-        }
-    }
+    preconditions(cell, paths)?;
     let samples = protocol::run_protocol(cell.warmups, cell.runs, |counted| {
         // Reset every store the cell uses — a cross-store cell resets both its
         // source and destination fixtures before each run.
