@@ -142,6 +142,124 @@ The protocol stays EXPERIMENTAL — versioned, but not frozen — until
 the conformance kit and at least one non-Rust implementation (a
 deliberately small Python connector) have beaten on it.
 
+*(AMENDED 2026-08-07 — THE EXPERIMENTAL PERIOD IS CLOSED. The wire
+contract is FROZEN, and "v1" is this decision's label for it.)*
+
+The conditions above were met, and one more was demanded before the
+freeze was taken: that the out-of-process shape still be worth
+shipping under measurement. The evidence, in the order it landed:
+
+- **The conformance kit exists and can fail.** `rdlt-certify` spawns
+  any connector executable — resolved by path or by the discovery
+  convention — and certifies it over the real wire against 29 named
+  clauses: the source resume and cancellation laws, the destination's
+  staging invisibility / atomic state-with-data / idempotent receipts /
+  dead-predecessor teardown / idempotent ensure / no-state-when-fresh /
+  merge-upsert laws, ten protocol clauses (one stdout handshake line
+  and nothing after it; typed refusal of an unknown config field;
+  spec/handshake identity agreement; a complete config-free `Spec`
+  reply; one Arrow batch per read frame judged on the wire bytes; a
+  terminal error frame carrying a real classification and bare cause
+  text; a tolerated state-format-version map; the one-session-per-
+  process ceiling; abandoned-session reclaim; and a Backend-direct
+  order book driven frame by frame with no client-side manners in
+  between), and a nine-arm `SIGKILL` matrix. Every clause was proven
+  capable of FAILING against a deliberately broken connector — a green
+  suite that cannot go red certifies nothing.
+- **The kill matrix is a real process kill, not an injected
+  failpoint.** It `SIGKILL`s a live connector at every message
+  boundary and holds the wire to two promises: a typed error within
+  ten seconds (a dead connector must fail the wire, never hang it),
+  and — for the destination arms — exactly-once convergence proven by
+  re-run, where a fresh process re-drives the same load and the table
+  must hold exactly the fixture rows. That is what turned the
+  destination's own durable receipt guard from an assumption into a
+  measured property of a shipped connector reached over the wire.
+- **A non-Rust implementation is certified.** A deliberately small
+  Python connector, written against the `.proto` alone, passes the
+  same certifier binary and the same clauses first-party connectors
+  answer to. The polyglot claim is demonstrated, not asserted.
+- **A first-party destination is certified live.** The snowflake
+  connector passes the destination clauses against the real service,
+  out of process.
+- **The throughput bars hold out of process** (recorded session
+  2026-08-07, five in-process cells beside their spawned-connector
+  twins, every arm rowcount-verified): 9.50x against a 4.0x bar,
+  60.00x against 40.0x, 52.30x against 45.0x, 2.42x against 2.0x. The
+  wire costs +114 ms to +463 ms per cell (x1.10 to x1.54), and the
+  session ran pessimistic, so the ratios are deflated rather than
+  flattered; every bar tolerates at least a 1.43x growth in wire cost
+  before it would bind. Spawn is NOT the cost — spawn through
+  handshake-complete measured 1.63 / 1.81 / 2.06 ms (min / median /
+  p90) — so the frozen contract needs no process-pooling or daemon
+  mechanism, and none was added.
+
+**What "v1" means, precisely.** The wire's version NUMBER stays `0`
+and the file stays `rdlt_connector_v0.proto`. That number is the
+identifier the handshake negotiates; bumping it for a freeze that
+changes no byte would break every connector already shipped and buy
+nothing. A `1` on the wire is reserved for a genuinely incompatible
+protocol, should one ever be needed. "v1" is this ADR's label for the
+FIRST FROZEN CONTRACT, and the freeze consists of: removing the
+EXPERIMENTAL markers, and making these rules binding —
+
+1. field numbers are never renumbered, repurposed, or recycled (a
+   retired number is `reserved`), enforced by golden frame pins that
+   encode representative messages from both directions and compare
+   them against hardcoded bytes, since a renumber is silent at the
+   Rust type level;
+2. evolution is ADDITIVE ONLY — new fields take fresh numbers; new
+   messages, RPCs, `oneof` arms and enum values may be added; nothing
+   is removed, narrowed, made required, or given a second meaning;
+3. a receiver tolerates what a newer peer sends without knowing it,
+   safe-loud (an unrecognized classification normalizes to FATAL
+   rather than being guessed retryable), with the `#[non_exhaustive]`
+   discipline on the Rust types the wire maps onto keeping such
+   additions from being semver breaks;
+4. the handshake line grammar is frozen, carrying its own independent
+   format version as the escape hatch for the line itself;
+5. the named clauses are frozen behavior: the two refusal shapes
+   (protocol-state violations answer a raw gRPC `Status`, connector
+   outcomes answer an `ErrorFrame` inside a normally-completing RPC),
+   one Arrow batch per frame in both directions, `ErrorFrame.message`
+   as cause text only with classification travelling solely as the
+   enum, the one-session-per-process ceiling, and the handshake
+   identity rules.
+
+The publish posture did NOT move with the freeze: the protocol,
+client, runtime and certifier crates remain `publish = false`, and
+the publish wave is separate, owner-scheduled work.
+
+**What the freeze does NOT foreclose, and one live defect that does
+not reopen it.** Additive growth is exactly what rules 1-3 preserve:
+network transports (TCP+mTLS, D3) are a future binding of this same
+proto, and a `ReadCredit` message remains the documented escape hatch
+for backpressure. That hatch matters, because a real defect was
+measured during the benchmark session and it is ENGINE-SIDE, not
+wire-side: the engine's byte accounting sums each Arrow buffer's
+allocated CAPACITY rather than the slice it actually uses, and an
+IPC-decoded batch is a set of zero-copy slices of ONE allocation, so
+such a batch meters at roughly its buffer count times its true size
+(~17x on the measured table; ~12x more than the locally-built batches
+the in-process arm charges, which over-report ~1.4x themselves through
+builder doubling). The same expression meters source backpressure, so
+a remote Arrow source runs with a far smaller effective in-flight
+window than configured — which makes the recorded wire overhead
+likely an upper bound, though only likely: no figure has been
+restated on the strength of an unmeasured fix, and a wider window also
+raises resident bytes in a constellation whose RSS already runs 2-3x
+the in-process arm's. This does not reopen the frozen contract: the
+proto declares no byte-budget, credit, or window field at all —
+`Read` rides HTTP/2 flow control by design (D6) with the engine's own
+byte-budget channel as the authority — so both the defect and its fix
+live entirely in engine/SPI code that no wire byte describes. Should a
+measurement later show flow control insufficient on its own,
+`ReadCredit` is the additive addition the frozen rules already permit.
+
+The sequencing rule below that gates the repo split on this freeze is
+therefore satisfied: independent connector versioning now has a
+standing contract to version against.
+
 **D9 — Sequencing.** Sequential features under this ADR, each
 spec'd/planned/gated/reviewed on its own (the 025-031 program shape;
 no up-front multi-feature specs — later features learn from earlier
@@ -223,7 +341,12 @@ for a clean rollback point.
   every Rust connector binary.
 - This is a multi-feature program (five 037-sized features is the
   honest estimate), with the protocol's experimental period as the
-  guard against enshrining first-draft accidents.
+  guard against enshrining first-draft accidents. *(That guard ran its
+  course and did its job: the period closed 2026-08-07 with the
+  amendment recorded in D8 above, and several first-draft accidents —
+  a silently-truncating multi-batch write, a session shape that made
+  the exactly-once frames inert stubs — were caught and corrected
+  inside it rather than shipped frozen.)*
 
 ## Explicitly out of scope for rdlt (forever, per the vision)
 

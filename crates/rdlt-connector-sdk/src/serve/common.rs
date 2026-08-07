@@ -98,8 +98,10 @@ pub enum ServeError {
 ///
 /// A `serve()` process dies by SIGKILL (the provider's lifecycle), so
 /// nothing here can reclaim its OWN directory on exit — instead each
-/// startup sweeps dead predecessors' directories
-/// ([`sweep_dead_serve_dirs`]) before minting its own.
+/// startup sweeps dead predecessors' directories (the private
+/// `sweep_dead_serve_dirs` below — named, not linked: a public doc
+/// item cannot intra-doc-link a private one without failing the
+/// `-D warnings` docs build) before minting its own.
 pub fn temp_socket_path() -> Result<PathBuf, ServeError> {
     let base = std::env::temp_dir();
     sweep_dead_serve_dirs(&base);

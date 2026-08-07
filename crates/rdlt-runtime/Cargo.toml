@@ -1,8 +1,10 @@
 [package]
 name = "rdlt-runtime"
 description = "rdlt connector runtime: providers that resolve, spawn and supervise out-of-process connectors behind managed SPI adapters"
-# EXPERIMENTAL, like the protocol and client crates it composes (ADR
-# 0001 D8): unpublished until the wire freezes.
+# The wire the crates below it speak is FROZEN (2026-08-07; ADR 0001
+# D8's amendment). Publishing is a separate, owner-scheduled decision
+# that did not move with the freeze — this stays false until that wave
+# runs, in step with the protocol and client crates it composes.
 publish = false
 version.workspace = true
 edition.workspace = true

@@ -1387,9 +1387,12 @@ async fn the_session_slot_releases_after_close_so_a_later_open_session_succeeds(
 /// go away" for the accept loop.
 ///
 /// The TRUE process-kill matrix — SIGKILL against a real out-of-process
-/// connector mid-session — is feature 040's conformance kit to build
-/// (ADR 0001 D8); this is the wire-level approximation available
-/// in-process today.
+/// connector mid-session, at every message boundary, with exactly-once
+/// convergence proven by re-run — now EXISTS as the standalone
+/// certifier's kill matrix (`rdlt-certify --kill-matrix`, built by
+/// feature 040 under ADR 0001 D8). This case stays the wire-level
+/// approximation reachable in-process: it needs no spawned binary, so
+/// it runs in this crate's own offline suite.
 ///
 /// F-7 fix pin (038 T5 review round 2): the severed transport is ALSO an
 /// abandoned-session exit path (I1/F2's `close`-on-every-non-`Close`-exit

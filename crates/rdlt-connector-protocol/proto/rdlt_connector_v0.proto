@@ -1,7 +1,20 @@
-// rdlt connector protocol v0 — EXPERIMENTAL (ADR 0001 D8): versioned
-// but unfrozen until the conformance kit and one non-Rust
-// implementation have exercised it. Field numbers are frozen from
-// day one; evolution is additive.
+// rdlt connector protocol v0 — FROZEN 2026-08-07 (ADR 0001 D8, which
+// records the evidence: a standalone certifier driving any connector
+// binary in any language against 29 fail-proven clauses plus a SIGKILL
+// matrix, a non-Rust connector certified by it, and the throughput
+// bars holding out of process). The version NUMBER stays 0 — it is the
+// handshake's negotiated identifier and moving it would break every
+// shipped connector for a freeze that changes no byte; "v1" names the
+// frozen CONTRACT. Binding from here: field numbers are never
+// renumbered, repurposed, or recycled (a retired number is reserved);
+// evolution is ADDITIVE ONLY — new fields take fresh numbers, new
+// messages/RPCs/oneof arms/enum values may be added, nothing is
+// removed, narrowed or given a second meaning; a receiver tolerates
+// what a newer peer sends (an unrecognized Classification normalizes
+// safe-loud to FATAL). The crate's README.md carries the rules in full
+// and names the clauses the freeze makes load-bearing; the golden
+// frame pins in tests/cases/test_frames.rs are what actually catch a
+// renumber, since one is silent at the type level.
 //
 // Trust model (owner decision D-038-1): config documents cross this
 // LOCAL socket in the clear; a spawned connector inherits the
@@ -12,11 +25,15 @@
 // documents (their own format_version gates are the source of
 // truth); arrow_ipc fields carry Arrow IPC stream bytes.
 //
-// credits: recorded fallback, not in v0 — spike 2026-08-05 bounded
-// peak in-flight to window + <=2 chunks. `Read` stays server-streaming
-// with no client credit arm (Task 1's D6 = RIDES H2); a `ReadCredit`
-// message is the documented escape hatch if a future measurement finds
-// the bound insufficient, not a message this file declares today.
+// credits: recorded fallback, not in v0 — a 2026-08-05 measurement
+// bounded peak in-flight bytes to the h2 window plus <=2 chunks, so
+// `Read` stays server-streaming with no client credit arm and no
+// byte-budget/window field anywhere in this file: backpressure rides
+// h2 flow control by design (ADR 0001 D6), with the engine's own
+// byte-budget channel remaining the authority. A `ReadCredit` message
+// is the documented escape hatch if a future measurement finds that
+// bound insufficient — an ADDITIVE addition the freeze permits, not a
+// message this file declares today.
 syntax = "proto3";
 package rdlt.connector.v0;
 

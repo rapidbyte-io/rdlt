@@ -2,8 +2,9 @@
 name = "rdlt-connector-protocol"
 description = "rdlt out-of-process connector wire protocol v0: the gRPC/protobuf contract and the stdout handshake line"
 readme = "README.md"
-# EXPERIMENTAL (ADR 0001 D8): unpublished until the conformance kit and one
-# non-Rust implementation have exercised the proto.
+# The wire contract is FROZEN (2026-08-07; ADR 0001 D8's amendment). The
+# publish posture is a SEPARATE, owner-scheduled decision and did not
+# move with the freeze — this stays false until the publish wave runs.
 publish = false
 version.workspace = true
 edition.workspace = true

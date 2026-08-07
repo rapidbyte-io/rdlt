@@ -14,27 +14,110 @@ into a server over this protocol; a provider that DIALS a connector
 (feature 039) is the client. This crate is the one thing both sides
 depend on.
 
-## EXPERIMENTAL status
+## FROZEN contract — "v1", frozen 2026-08-07
 
-Governed by `docs/adr/0001-out-of-process-connectors.md`, decision D8.
-**Versioned, not frozen.** Field numbers are pinned from day one —
-evolution is additive only, never a renumbering — but the surface
-itself (message shapes, RPC names, the handshake choreography) may
-still move. It freezes once BOTH of the following have exercised it,
-not before:
+Governed by `docs/adr/0001-out-of-process-connectors.md`, decision D8,
+whose experimental period this freeze CLOSES; the ADR carries the
+amendment and the evidence. In short, three things beat on this wire
+before it froze: a standalone certifier (`rdlt-certify`) that drives
+any connector executable, in any language, against 29 conformance
+clauses — each one proven capable of FAILING against a deliberately
+broken connector, and including a `SIGKILL` matrix at every message
+boundary, which is a truer crash than an injected failpoint; a
+non-Rust connector (a small Python one) certified by that same binary
+against those same clauses; and a recorded benchmark session in which
+every throughput bar the project holds itself to still passed with the
+connectors OUT OF PROCESS, wire and all.
 
-- the protocol conformance kit (feature 040): a standalone certifier
-  that drives any connector executable, in any language, against the
-  same clauses first-party connectors answer to, including a
-  process-kill matrix at every message boundary — a real `SIGKILL`
-  mid-publish is a truer crash than an injected failpoint;
-- at least one non-Rust implementation (feature 040's Python proof
-  connector, deliberately small).
+**"v1" names the contract, not a number on the wire.** The negotiated
+`PROTOCOL_VERSION` stays `0`, and the file stays
+`rdlt_connector_v0.proto`. That number is the identifier both sides
+compare during the handshake; bumping it for a freeze that moves no
+byte would break every shipped handshake and buy nothing. A `1` on this
+wire is reserved for a genuinely incompatible protocol, if one is ever
+needed. What froze is the CONTRACT — the rules below — not the
+identifier.
 
-Until both exist, treat every message shape here as provisional. The
-proto file's own header comment carries the same banner — this README
-and `src/lib.rs` both mirror it rather than being the one place it's
-recorded.
+### The compatibility rules, binding from here
+
+**1. Field numbers are frozen.** No number is renumbered, repurposed,
+or recycled for a new meaning; a retired field's number is `reserved`,
+never handed to something else. This is enforced rather than merely
+promised: `tests/cases/test_frames.rs` encodes five representative
+messages from BOTH directions (`HandshakeRequest`, a `Write` session
+request, a `part_closed` session reply, an `arrow_ipc` read frame, a
+`SpecReply`) with fixed field values and compares the bytes against
+hardcoded hex, alongside a pin that `PROTOCOL_VERSION` is `0`. A
+protobuf renumber is silent at the Rust type level — the struct still
+compiles, the bytes just mean something else — so those golden frames
+are the one net that catches it. Post-freeze they are COMPATIBILITY
+pins, not only correctness pins: a red golden frame means the change
+under it breaks connectors already shipped, and the answer is to
+revise the change, never the hex.
+
+**2. Evolution is additive only.** New fields take fresh numbers on
+existing messages; new messages, new RPCs, new `oneof` arms, and new
+enum values may be added. Nothing is removed, narrowed, made required,
+or given a second meaning. The other half of additive-only is that a
+receiver must TOLERATE what it does not know — an unrecognized enum
+value or `oneof` arm from a newer peer is neither a crash nor a silent
+accept. The shipped posture is safe-loud: the client normalizes an
+`Unspecified` or unrecognized `Classification` to `Fatal` rather than
+guessing that an unknown refusal is retryable, since guessing
+"transient" would retry a permanent failure forever.
+
+**3. The `#[non_exhaustive]` discipline is what makes rule 2
+non-breaking in Rust.** The SPI and client types the wire maps onto —
+error classifications, the source/destination context and request
+structs, destination capabilities, the client's own failure and
+requirement types — are all `#[non_exhaustive]`, so a wire addition can
+grow its Rust counterpart without a semver break, and out-of-crate
+matches already carry the wildcard arm that a new variant needs. An
+addition that would force removing that attribute is not additive; it
+is a new protocol.
+
+**4. The handshake line grammar is frozen** — the five pipe-separated
+fields spelled out below, parsed by splitting on the first four pipes
+only. The line carries its OWN format version (`1`), independent of
+`PROTOCOL_VERSION`, and THAT is the escape hatch for the line itself: a
+different line shape takes format `2`, and a parser refusing a format
+it does not know is behaving correctly.
+
+**5. The named clauses below are frozen behavior, each already pinned
+by a test and by a certifier clause a third-party connector answers
+to.** The freeze makes those pins load-bearing for COMPATIBILITY. Each
+clause's substance is stated here; the certifier ships every clause id
+with its full definition (`rdlt-certify --explain`):
+
+- **the two refusal shapes** — a protocol-state violation answers a raw
+  gRPC `Status`, a connector outcome answers an `ErrorFrame` inside a
+  normally-completing RPC (see "`Status` vs `ErrorFrame`" below);
+- **one Arrow batch per frame**, in both directions — the write side
+  refuses a second batch FATAL, the read side's refusal seat is the
+  client (certifier clause P5);
+- **the error-frame cause-text contract** — `ErrorFrame.message` is
+  CAUSE text only; classification travels solely as the enum, and no
+  server writes a rendered classification frame into `message`
+  (clause P6);
+- **the one-session-per-process ceiling** — a second concurrent
+  `OpenSession` on a live socket is refused `FailedPrecondition`
+  (clause P8);
+- **the handshake identity rules** — the identity a handshake reports
+  must agree with the connector's own `Spec` document and with the id
+  the operator named; a mismatch is refused, never worked around
+  (clause P3), and an unknown config field is refused at the handshake
+  with a typed, classified refusal (clause P2).
+
+**What is NOT foreclosed.** The escape hatch this proto deliberately
+kept is named in its own header: `Read` rides HTTP/2 flow control and
+declares no byte-budget, credit, or window field, so if a future
+measurement finds that bound insufficient, a `ReadCredit` message is an
+ADDITIVE addition the frozen rules permit. Network transports
+(TCP+mTLS) are likewise a future binding of this SAME proto. Freezing
+the contract froze the rules of change, not the surface's growth.
+
+The proto file's own header comment and `src/lib.rs` both mirror this
+status rather than being the one place it is recorded.
 
 ## Trust model (owner decision D-038-1)
 
@@ -168,11 +251,13 @@ A foreign client that gets this wrong is not refereed by this server.
 **The only thing that actually saves exactly-once here is the
 destination's OWN durable receipt guard inside `Backend::publish`** —
 a shipped `Backend` that doesn't keep one is wire-reachably
-double-publishable. Nothing in this codebase currently proves a
-shipped `Backend` keeps that guard when reached over the wire (the
-sdk's conformance kit today only exercises the in-process
-`Session<B>` path, where the choreography IS enforced by the caller);
-feature 040's conformance kit owns closing that gap.
+double-publishable. That guard is now PROVEN over the wire rather than
+assumed: the standalone certifier drives a real spawned connector
+frame by frame and asserts that re-committing the same
+`(load_id, commit_seq)` returns the prior receipt and re-publishes
+nothing, and its kill matrix `SIGKILL`s the connector at every commit
+boundary and requires a fresh process re-driving the same load to
+leave exactly the fixture rows — nothing lost, nothing doubled.
 
 The other non-obvious rule: **the client MUST read replies
 concurrently with sending requests**, not write-everything-then-read.

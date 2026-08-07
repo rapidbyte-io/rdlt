@@ -1,8 +1,10 @@
 [package]
 name = "rdlt-connector-client"
 description = "rdlt out-of-process connector client: dial a served connector over UDS, run the handshake, map wire error frames back to SPI classifications"
-# EXPERIMENTAL, like the protocol crate it speaks (ADR 0001 D8):
-# unpublished until the wire freezes.
+# The wire this crate speaks is FROZEN (2026-08-07; ADR 0001 D8's
+# amendment). Publishing is a separate, owner-scheduled decision that
+# did not move with the freeze — this stays false until that wave runs,
+# in step with the protocol crate.
 publish = false
 version.workspace = true
 edition.workspace = true

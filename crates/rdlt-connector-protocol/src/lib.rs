@@ -1,18 +1,34 @@
 //! # rdlt-connector-protocol — the out-of-process connector wire protocol (v0)
 //!
-//! **EXPERIMENTAL** (ADR 0001 D8): versioned but unfrozen. Field numbers
-//! are frozen from day one — evolution is additive only, never a
-//! renumbering — but the surface itself (message shapes, RPC names, the
-//! handshake choreography) may still move before it freezes. It freezes
-//! once TWO things have both exercised it: the protocol conformance kit
-//! (feature 040's D8 — a standalone certifier that drives any connector
-//! executable, in any language, against the same clauses first-party
-//! connectors answer to, including a process-kill matrix at every
-//! message boundary) and at least one non-Rust implementation (a
-//! deliberately small Python connector, also 040). Until both exist,
-//! nothing outside this repo should assume today's wire shape is the
-//! last one. See `docs/adr/0001-out-of-process-connectors.md` for the
-//! decision record this crate implements.
+//! **FROZEN** as of 2026-08-07
+//! (`docs/adr/0001-out-of-process-connectors.md`, decision D8 — amended
+//! there with the
+//! evidence that closed its experimental period: a standalone certifier
+//! driving any connector executable in any language against 29
+//! fail-proven conformance clauses plus a `SIGKILL` matrix at every
+//! message boundary, a non-Rust connector certified by that same
+//! binary, and a recorded benchmark session in which every throughput
+//! bar held with the connectors out of process).
+//!
+//! Frozen means the RULES OF CHANGE now bind: field numbers are never
+//! renumbered, repurposed, or recycled — a retired number is
+//! `reserved`; evolution is ADDITIVE ONLY (new fields take fresh
+//! numbers; new messages, RPCs, `oneof` arms and enum values may be
+//! added; nothing is removed, narrowed, or given a second meaning); and
+//! a receiver tolerates what a newer peer sends without knowing it —
+//! an unrecognized [`proto::Classification`] normalizes safe-loud to
+//! `Fatal` rather than being guessed retryable. The `#[non_exhaustive]`
+//! discipline on the SPI and client types the wire maps onto is what
+//! keeps such an addition from being a semver break in Rust.
+//!
+//! The negotiated version NUMBER stays `0` (see [`PROTOCOL_VERSION`]):
+//! it is the identifier both sides compare at the handshake, and
+//! bumping it for a freeze that moves no byte would break every shipped
+//! handshake for nothing. "v1" is the name of the frozen contract, not
+//! a value on the wire. The crate's `README.md` carries the rules in
+//! full, the named frozen clauses, and what the freeze deliberately
+//! leaves open (a `ReadCredit` message and network transports are both
+//! additive futures this proto keeps room for).
 //!
 //! Two halves: [`handshake`] is the plaintext stdout line a spawned
 //! connector prints before it starts serving; [`proto`] is the generated

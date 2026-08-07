@@ -1,9 +1,12 @@
 [package]
 name = "rdlt-certify"
 description = "rdlt connector certifier: spawns an out-of-process connector binary and certifies it against the conformance clauses over the wire"
-# EXPERIMENTAL, like the protocol/client/runtime trio it drives (ADR
-# 0001 D8): unpublished until the wire freezes. The workspace dep entry
-# is path-only (no version key) for the same reason.
+# The wire this certifier drives is FROZEN (2026-08-07; ADR 0001 D8's
+# amendment — this binary's clause runs are half the evidence that
+# closed it). Publishing is a separate, owner-scheduled decision that
+# did not move with the freeze — this stays false until that wave runs,
+# in step with the protocol/client/runtime trio, and the workspace dep
+# entry stays path-only (no version key) for the same reason.
 publish = false
 version.workspace = true
 edition.workspace = true

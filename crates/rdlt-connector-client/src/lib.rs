@@ -15,9 +15,14 @@
 //! re-exports [`ConnectorRequirement`] (the client verifies, the
 //! runtime resolves).
 //!
-//! **EXPERIMENTAL**, exactly as far as the protocol crate is (ADR 0001
-//! D8): the wire is versioned but unfrozen, so this crate stays
-//! unpublished alongside it.
+//! The wire this crate speaks is FROZEN (2026-08-07; ADR 0001 D8's
+//! amendment): field numbers never move, evolution is additive only,
+//! and an unrecognized value from a newer peer is tolerated safe-loud
+//! rather than guessed at — which is why [`ClientError::Handshake`]
+//! normalizes an `Unspecified` or unknown [`Classification`] to
+//! `Fatal`. The crate stays unpublished alongside the protocol crate:
+//! that posture is a separate, owner-scheduled decision and did not
+//! move with the freeze.
 //!
 //! The modules are private and the surface below is the one canonical
 //! path to every name — the flat interface Tasks 3-5 consume.

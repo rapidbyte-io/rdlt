@@ -57,8 +57,9 @@ rdlt-connector-sqlcore = { path = "crates/rdlt-connector-sqlcore", version = "0.
 rdlt-connector-protocol = { path = "crates/rdlt-connector-protocol", version = "0.3.0" }
 rdlt-connector-client = { path = "crates/rdlt-connector-client", version = "0.3.0" }
 rdlt-runtime = { path = "crates/rdlt-runtime", version = "0.3.0" }
-# PATH-ONLY, deliberately no `version` key: the certifier is EXPERIMENTAL
-# (ADR 0001 D8) and nothing publishable consumes it. Without a version,
+# PATH-ONLY, deliberately no `version` key: the certifier is unpublished
+# (its own manifest says why — the publish wave is separate,
+# owner-scheduled work) and nothing publishable consumes it. Without a version,
 # cargo REFUSES to package any consumer — so a publishable crate growing
 # an edge to the certifier fails loudly at packaging instead of silently
 # resolving a registry crate that does not exist.
