@@ -188,8 +188,14 @@ shipping under measurement. The evidence, in the order it landed:
   60.00x against 40.0x, 52.30x against 45.0x, 2.42x against 2.0x. The
   wire costs +114 ms to +463 ms per cell (x1.10 to x1.54), and the
   session ran pessimistic, so the ratios are deflated rather than
-  flattered; every bar tolerates at least a 1.43x growth in wire cost
-  before it would bind. Spawn is NOT the cost — spawn through
+  flattered. Every bar tolerates the wire costing at least 1.43x MORE
+  than it measured before that bar would bind; the tightest is the
+  `s3jsonl-to-pg-200k` cell, and the figure is derived, not measured —
+  reproduce it as: the competitor took 64,480 ms and the bar demands
+  40x, so rdlt's budget is 1,612 ms; the cell spent 697.9 ms of
+  in-process work plus 376.7 ms of wire, leaving 537.4 ms of further
+  wire cost available, which is 1.43x the wire cost it actually paid.
+  Spawn is NOT the cost — spawn through
   handshake-complete measured 1.63 / 1.81 / 2.06 ms (min / median /
   p90) — so the frozen contract needs no process-pooling or daemon
   mechanism, and none was added.
@@ -204,10 +210,15 @@ FIRST FROZEN CONTRACT, and the freeze consists of: removing the
 EXPERIMENTAL markers, and making these rules binding —
 
 1. field numbers are never renumbered, repurposed, or recycled (a
-   retired number is `reserved`), enforced by golden frame pins that
-   encode representative messages from both directions and compare
-   them against hardcoded bytes, since a renumber is silent at the
-   Rust type level;
+   retired number is `reserved`). A renumber is silent at the Rust
+   type level AND invisible end-to-end — both in-tree sides regenerate
+   from the same file, so they agree with each other while disagreeing
+   with the contract, and only a third party breaks — so the rule
+   carries two nets: a test that reads the `.proto` as text and pins
+   EVERY message's every field number against a frozen table
+   (exhaustive, the contract's own text), and golden frame pins that
+   encode five representative messages and compare the bytes
+   (a sample, proving the generated encoder really emits them);
 2. evolution is ADDITIVE ONLY — new fields take fresh numbers; new
    messages, RPCs, `oneof` arms and enum values may be added; nothing
    is removed, narrowed, made required, or given a second meaning;
@@ -231,10 +242,12 @@ client, runtime and certifier crates remain `publish = false`, and
 the publish wave is separate, owner-scheduled work.
 
 **What the freeze does NOT foreclose, and one live defect that does
-not reopen it.** Additive growth is exactly what rules 1-3 preserve:
-network transports (TCP+mTLS, D3) are a future binding of this same
-proto, and a `ReadCredit` message remains the documented escape hatch
-for backpressure. That hatch matters, because a real defect was
+not reopen it.** Additive growth is exactly what rules 1-3 preserve.
+Three doors stay open: network transports (TCP+mTLS, D3) as a future
+binding of this same proto; `state_format_versions` negotiation, whose
+field is frozen at its number but ships empty because there is nothing
+to negotiate until a second format version exists; and a `ReadCredit`
+message as the documented escape hatch for backpressure. That hatch matters, because a real defect was
 measured during the benchmark session and it is ENGINE-SIDE, not
 wire-side: the engine's byte accounting sums each Arrow buffer's
 allocated CAPACITY rather than the slice it actually uses, and an

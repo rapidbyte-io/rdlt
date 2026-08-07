@@ -42,18 +42,36 @@ identifier.
 
 **1. Field numbers are frozen.** No number is renumbered, repurposed,
 or recycled for a new meaning; a retired field's number is `reserved`,
-never handed to something else. This is enforced rather than merely
-promised: `tests/cases/test_frames.rs` encodes five representative
-messages from BOTH directions (`HandshakeRequest`, a `Write` session
-request, a `part_closed` session reply, an `arrow_ipc` read frame, a
-`SpecReply`) with fixed field values and compares the bytes against
-hardcoded hex, alongside a pin that `PROTOCOL_VERSION` is `0`. A
-protobuf renumber is silent at the Rust type level — the struct still
-compiles, the bytes just mean something else — so those golden frames
-are the one net that catches it. Post-freeze they are COMPATIBILITY
-pins, not only correctness pins: a red golden frame means the change
-under it breaks connectors already shipped, and the answer is to
-revise the change, never the hex.
+never handed to something else. A renumber is invisible to almost
+every net a repo can have — the Rust structs still compile (names
+don't change), and every end-to-end test still passes, because both
+in-tree sides regenerate from the same `.proto` and so agree with each
+other while disagreeing with the contract. The only party that breaks
+is a third party codegen'd from an earlier copy, which is exactly the
+failure this rule exists to prevent. So the rule carries TWO nets,
+covering different things:
+
+- **numbering, exhaustively** — `tests/cases/test_field_numbers.rs`
+  reads this crate's `.proto` as text and checks EVERY
+  `(message, field, number)` triple, plus every enum value and the set
+  of declared messages, against a frozen table. Every message is
+  covered, not a sample. A renumber, a reused number, a deleted field,
+  or a vanished message fails that test by name;
+- **encoding, end to end, on five representative messages** —
+  `tests/cases/test_frames.rs` encodes `HandshakeRequest`, a `Write`
+  session request, a `part_closed` session reply, an `arrow_ipc` read
+  frame and a `SpecReply` with fixed field values and compares the
+  result against hardcoded hex, alongside a pin that
+  `PROTOCOL_VERSION` is `0`. This proves the whole prost/tonic path
+  actually puts those numbers on the wire — a sample, deliberately,
+  since its subject is the generated encoder rather than the contract
+  text.
+
+Post-freeze both are COMPATIBILITY pins, not only correctness pins: a
+red one means the change under it breaks connectors already shipped,
+and the answer is to revise the change, never the pin. Adding a field
+is legal and updates the number table deliberately; changing or
+removing a row is not.
 
 **2. Evolution is additive only.** New fields take fresh numbers on
 existing messages; new messages, new RPCs, new `oneof` arms, and new
@@ -87,7 +105,14 @@ it does not know is behaving correctly.
 by a test and by a certifier clause a third-party connector answers
 to.** The freeze makes those pins load-bearing for COMPATIBILITY. Each
 clause's substance is stated here; the certifier ships every clause id
-with its full definition (`rdlt-certify --explain`):
+with its full definition (`rdlt-certify --explain`).
+
+This list is a HIGHLIGHT, not the whole contract: it names the
+wire-shape rules a client author most easily gets wrong. The
+certifier's FULL clause set — the source resume and cancellation laws,
+the destination's exactly-once laws, all ten protocol clauses, and the
+`SIGKILL` matrix — is the behavioral contract a connector must pass,
+and none of it is less frozen for going unlisted here.
 
 - **the two refusal shapes** — a protocol-state violation answers a raw
   gRPC `Status`, a connector outcome answers an `ErrorFrame` inside a
@@ -108,13 +133,26 @@ with its full definition (`rdlt-certify --explain`):
   (clause P3), and an unknown config field is refused at the handshake
   with a typed, classified refusal (clause P2).
 
-**What is NOT foreclosed.** The escape hatch this proto deliberately
-kept is named in its own header: `Read` rides HTTP/2 flow control and
-declares no byte-budget, credit, or window field, so if a future
-measurement finds that bound insufficient, a `ReadCredit` message is an
-ADDITIVE addition the frozen rules permit. Network transports
-(TCP+mTLS) are likewise a future binding of this SAME proto. Freezing
-the contract froze the rules of change, not the surface's growth.
+**What is NOT foreclosed.** Three doors are deliberately left open, and
+all three are additive:
+
+- **backpressure credits.** The hatch this proto's own header names:
+  `Read` rides HTTP/2 flow control and declares no byte-budget,
+  credit, or window field at all, so if a future measurement finds
+  that bound insufficient, a `ReadCredit` message is an addition the
+  frozen rules permit;
+- **state-format negotiation.** `state_format_versions` on
+  `HandshakeOk` ships EMPTY in v0 and is threaded through unread (see
+  the note at the end of this README) — with one format version per
+  state kind there is nothing to negotiate yet. The field exists,
+  frozen at its number; the negotiation SEMANTICS belong to the
+  feature that adds a second format version, and defining them then
+  breaks nothing now;
+- **network transports.** TCP+mTLS for provider-managed remote fleets
+  is a future binding of this SAME proto, with its own trust model.
+
+Freezing the contract froze the rules of change, not the surface's
+growth.
 
 The proto file's own header comment and `src/lib.rs` both mirror this
 status rather than being the one place it is recorded.

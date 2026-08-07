@@ -4,7 +4,17 @@
 //! Field numbers are FROZEN; a pin breaks if a number moves — that is the
 //! point. A protobuf field renumber is silent at the type level (the
 //! struct still compiles, the wire bytes just mean something else), so
-//! this is the one net that would actually catch it.
+//! it needs a net that looks at bytes.
+//!
+//! This file is the ENCODING half of that net, and deliberately a
+//! SAMPLE: its subject is the generated encoder, so it proves the whole
+//! prost/tonic path really puts the declared numbers on the wire for
+//! representative messages in both directions. Coverage is the other
+//! half's job — `test_field_numbers.rs` reads the `.proto` itself and
+//! pins EVERY message's every field number against a frozen table, so a
+//! renumber inside a message no golden frame samples fails there. Adding
+//! a message here is welcome; do not treat these five as the coverage
+//! claim.
 
 use prost::Message;
 use rdlt_connector_protocol::PROTOCOL_VERSION;
