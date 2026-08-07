@@ -138,19 +138,32 @@ async fn the_source_kill_matrix_passes_at_every_boundary() {
 /// the kill-can-fail proof: a receipt that did not survive the killed
 /// process, or a rerun that duplicated rows, breaks its exact count).
 ///
-/// FIRST SUSPECT if this cell ever goes transiently red on an arm that
-/// was killed with its transaction still open — K-D2 (post-ensure),
-/// K-D3 (after a write is accepted) and K-D4 (post-write, pre-publish),
-/// with D3 and D4 the likeliest because they hold the most table locks
-/// by then. The re-run's `ensure` races the SERVER's own detection of
-/// the killed backend's dead socket: until the backend aborts, its open
-/// transaction still holds the locks the re-run wants. (K-D5 is killed
-/// post-publish and K-D6 post-close, so their work has already
-/// committed and this race cannot reach them.) Observed zero times
-/// across five recorded runs of this pair plus both runs of the 041
-/// gate, and the worst case is a clause timing out, never corruption
-/// and never a false Pass (the convergence counts are exact). Record
-/// any such failure verbatim; never re-roll it silently into a green.
+/// FIRST SUSPECT if this cell ever goes transiently red on K-D3 (killed
+/// after a write is accepted) or K-D4 (post-write, pre-publish): those
+/// two are killed with the unit transaction OPEN, and the re-run's
+/// `ensure` races the SERVER's own detection of the killed backend's
+/// dead socket — until the backend aborts, its open transaction still
+/// holds the relation locks the re-run wants.
+///
+/// Which arms that race can reach follows from when this destination
+/// opens its transaction, and it is narrower than the boundary order
+/// suggests. The unit is CLOSED between units and opens at the first
+/// write — or at the receipt probe, which is the other thing that
+/// begins it. So:
+///   - K-D1 (post-open) and K-D2 (post-ensure) are killed with the unit
+///     still closed. `ensure` issues its DDL outside any transaction and
+///     postgres auto-commits it, leaving the backend idle rather than
+///     idle-in-transaction, holding nothing. **A transient K-D2 failure
+///     is therefore NOT this race** — look elsewhere, and do not let
+///     this note send you hunting a lock that cannot exist.
+///   - K-D5 (post-publish) and K-D6 (post-close) are killed after the
+///     unit COMMITTED, so the locks are already released.
+///
+/// Observed zero times across five recorded runs of this pair plus both
+/// runs of the 041 gate, and the worst case is a clause timing out,
+/// never corruption and never a false Pass (the convergence counts are
+/// exact). Record any such failure verbatim; never re-roll it silently
+/// into a green.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_destination_kill_matrix_passes_at_every_boundary() {
     let Some(container) = PostgresContainer::start().await else {
