@@ -156,18 +156,41 @@ in-process session. Narrowest margin: `s3jsonl-to-s3parquet-200k-remote` at
 cost (+9.5%), because that cell is dominated by server-side merge work the
 wire does not touch.
 
-**This session ran ~9–20% slower than the previous one on every in-process
-cell** (Trends: pg-to-pg-1m 744.2 → 896.9 ms, s3jsonl-to-s3parquet-200k
-848.9 → 1004.7 ms, pg-to-pg-dedup-1m 4.37 → 4.89 s), and the dlt arms moved
-with it (+1.5% to +4.5%). Machine state, not a regression — start-of-cell
-loadavg ran 1.53–4.84 against a 32-core quiet threshold of 8.0, so every cell
-passed the guard and none is `forced`, but the floor was higher than on
-2026-08-03. The Airbyte arm recorded `Missing{abctl cluster unreachable}` on
-all five in-process cells — the kind cluster was not up on this machine — so
-this session is 2-way and those matrix rows carry the reason rather than a
-number. It does not touch the verdict: both arms of every twin pair were
-measured in the same session minutes apart, and the four bars are compared
-against their VALUES, all of which the remote arms clear.
+**This session ran slower than the 2026-08-01 one, and BOTH arms did — but not
+proportionally. Recorded as an open observation, not attributed.** Measured
+against the artifacts this session replaced:
+
+| Cell | rdlt | dlt |
+|---|---|---|
+| `pg-to-pg-1m` | 744.2 → 896.9 ms (**+20.5%**) | 10.17 → 10.32 s (+1.5%) |
+| `pg-to-s3parquet-1m` | 913.8 → 899.8 ms (**−1.5%**) | 1.67 → 1.69 s (+1.2%) |
+| `s3jsonl-to-pg-200k` | 639.8 → 697.9 ms (**+9.1%**) | 62.76 → 65.23 s (+3.9%) |
+| `s3jsonl-to-s3parquet-200k` | 848.9 → 1004.7 ms (**+18.4%**) | 58.52 → 59.33 s (+1.4%) |
+| `pg-to-pg-dedup-1m` | 4.37 → 4.89 s (**+11.9%**) | 12.45 → 13.01 s (+4.5%) |
+
+rdlt moved +20.5% where dlt moved +1.5% on the same cell — up to **13× more**.
+Uniform machine slowness predicts PROPORTIONAL movement, so the differential is
+NOT explained by "the machine was busier", and this data does not settle what
+it is. A plausible but unsettled mechanism: dlt's walls are 10–65 s and
+Python/IO-dominated, so they are largely insensitive to sustained-clock and
+turbo-residency effects, while rdlt's ~900 ms walls are CPU- and
+bandwidth-bound and are not. Corroborating but not decisive: the branch's
+non-bench diff carries no hot-path change — `rdlt-engine` is untouched, and the
+non-test changes are config-shape resolution in `pipeline_spec.rs`, a `NAME`
+const, and CDC spec plumbing.
+
+**Which way it cuts is the part that matters here: the ratios are DEFLATED.**
+Every remote ratio in this session was divided by an rdlt wall that was high
+relative to its own baseline, so the four bars cleared on a pessimistic
+session. Start-of-cell loadavg ran 1.53–4.84 against a 32-core quiet threshold
+of 8.0, so every cell passed the guard and none is `forced`.
+
+The Airbyte arm recorded `Missing{abctl cluster unreachable}` on all five
+in-process cells — the kind cluster was not up on this machine — so this
+session is 2-way and those matrix rows carry the reason rather than a number.
+None of this touches the verdict: both arms of every twin pair were measured in
+the same session minutes apart, and the four bars are compared against their
+VALUES, all of which the remote arms clear.
 
 **Where the time goes — not spawn.** Spawn → handshake-complete for
 `io.rapidbyte.postgres` (source role, release bin, 20 sequential cold spawns,
@@ -184,13 +207,16 @@ Two spawns per pipeline is ≈3.6 ms — 3% of the smallest per-cell overhead
 and peak RSS goes 113 → 282 MB, which is the signature of an extra
 encode/decode pass and a second process's buffers, not of process startup.
 
-**Treat the overhead band as an UPPER bound.** The byte-accounting caveat below
-records that a decoded-over-the-wire Arrow batch reports ≈17× its real
-footprint, and that the same expression meters source backpressure — so the
-remote arms ran with a far smaller in-flight window than configured. Part of
-the +114…+463 ms is that throttle rather than the socket. Nothing above is
-restated on that basis: the numbers are what was measured, and the verdict is
-green at the upper bound, which is the conservative direction.
+**The overhead band is LIKELY an upper bound — likely, not proven.** The
+byte-accounting caveat below records that a decoded-over-the-wire Arrow batch
+reports ≈17× its real footprint (≈12× its in-process twin's already-inflated
+figure), and that the same expression meters source backpressure — so the
+remote arms ran with a far smaller in-flight window than configured. Widening
+it back should recover some of the +114…+463 ms, but that is the expected
+direction, not a measured one, and a wider window also raises resident buffers
+in a constellation whose RSS is already 2–3× the in-process arm's. The house
+rule applies to this as to any counting argument: guilty until measured
+(019 D-13/D-21). Nothing above is restated on that basis.
 
 ## Caveats
 
@@ -308,12 +334,15 @@ Stated so the numbers stay honest as the matrix fills:
   feeds only MB/s, which is context and has never carried a bar — so
   **read the MB/s cell on `*-remote` pg-source rows as unreliable**.
   **But the same expression meters source backpressure**, so a remote Arrow
-  source spends its byte budget ≈17× faster than the in-process one for
-  identical data and runs with a far smaller in-flight window than configured.
-  That makes the wire overhead recorded above an **upper bound**: some part of
-  the +114…+463 ms is a throttled window, not the cost of the socket. The
-  verdict is unaffected (it is green at the upper bound) and no number here is
-  restated on the strength of a fix that has not been measured.
+  source over-charges its byte budget ≈17× against the batch's TRUE footprint
+  — and ≈12× against what the in-process arm charges for the same data, since
+  that arm over-reports ≈1.4× itself — and therefore runs with a far smaller
+  in-flight window than configured. That makes the wire overhead recorded above
+  **likely an upper bound**: some part of the +114…+463 ms is plausibly a
+  throttled window rather than the socket. Likely, not proven — widening the
+  window also raises resident buffers, and the remote RSS is already 2–3× the
+  in-process arm's, so the net is a measurement nobody has taken. No number
+  here is restated on the strength of an unmeasured fix.
 - **Cold start** lives on the instruments track, not the matrix: a one-row
   file → duckdb pipeline, ≤ 40 ms absolute (`benches/check-cold-start.sh`,
   run by `TARGET=iai make bench` and therefore `make check`).
