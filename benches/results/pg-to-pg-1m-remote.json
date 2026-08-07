@@ -1,102 +1,97 @@
 {
   "format_version": 3,
-  "cell_id": "pg-to-pg-dedup-1m",
+  "cell_id": "pg-to-pg-1m-remote",
   "recorded_at": "2026-08-07",
   "fingerprint": {
     "cpu_model": "AMD RYZEN AI MAX+ 395 w/ Radeon 8060S",
     "kernel": "7.0.12-201.fc44.x86_64",
     "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
     "competitor_pins": {
-      "airbyte": "airbyte 2.1.1",
       "dlt": "dlt 1.29.0",
       "dlt-pyarrow": "dlt 1.29.0"
     },
     "dataset_hashes": {
       "pg:seed_output": "dataset  |  rows   |           content_md5 | -----------+---------+---------------------------------- | events    | 1000000 | e840f51738a6b4b15f9f085ea85e3df8 | events_v2 | 1000000 | 7e208273f4d5333658fff2fa1c9839d9 | (2 rows)"
     },
-    "loadavg_at_start": 4.84,
+    "loadavg_at_start": 1.9,
     "quiet_note": null
   },
   "workload": {},
   "rdlt": {
     "runs_ms": [
-      4850.8556929999995,
-      4977.567195,
-      4821.665716,
-      4891.55064,
-      4938.857785
+      1144.845332,
+      1058.637751,
+      1086.908346,
+      1070.0097349999999,
+      1100.106727
     ],
-    "median_ms": 4891.55064,
-    "p95_ms": 4977.567195,
+    "median_ms": 1086.908346,
+    "p95_ms": 1144.845332,
     "rows": 1000000,
-    "bytes": 198849808,
-    "rows_per_s": 204434.15055803244,
-    "mb_per_s": 38.76847418509278,
+    "bytes": 2413845024,
+    "rows_per_s": 920040.7777529386,
+    "mb_per_s": 2117.9541142044263,
     "cpu": {
-      "mean_util": 0.11338654085177308,
-      "peak_util": 1.3559322033898304,
-      "user_sys_ms": 560,
+      "mean_util": 0.9090027135158132,
+      "peak_util": 2.0,
+      "user_sys_ms": 1000,
       "note": "process TREE sampled at 50ms (root VmHWM exact; tree spikes between polls can be missed; cpu undercounts up to one interval)"
     },
     "rss": {
-      "peak_bytes": 115486720,
+      "peak_bytes": 295792640,
       "note": "process TREE sampled at 50ms (root VmHWM exact; tree spikes between polls can be missed; cpu undercounts up to one interval)"
     }
   },
   "competitors": {
-    "airbyte": {
-      "status": "missing",
-      "reason": "prerequisite failed for `airbyte`: abctl cluster unreachable (kubectl get ns airbyte-abctl)"
-    },
     "dlt": {
       "status": "ok",
       "runs_ms": [
-        13409.16004799874,
-        15339.765767002971,
-        13008.498961997248,
-        12979.857050002463,
-        12886.32999100082
+        10296.901347999665,
+        10623.426692000066,
+        10323.283912999614,
+        10338.511138001197,
+        10245.718212998328
       ],
-      "median_ms": 13008.498961997248,
+      "median_ms": 10323.283912999614,
       "self_timed": true,
       "cpu": {
-        "mean_util": 0.8516204050323767,
+        "mean_util": 1.125060612237718,
         "peak_util": null,
-        "user_sys_ms": 21788,
+        "user_sys_ms": 12570,
         "note": "cgroup v2 cpu.stat, last poll before exit"
       },
       "rss": {
-        "peak_bytes": 807247872,
+        "peak_bytes": 716361728,
         "note": "self-reported ru_maxrss — the recorded statistic (bar derivation)"
       },
-      "ratio_vs_rdlt": 2.659381435330954
+      "ratio_vs_rdlt": 9.497842160280564
     },
     "dlt-pyarrow": {
       "status": "ok",
       "runs_ms": [
-        21785.191228002077,
-        20727.099933999853,
-        21251.918734000355,
-        20811.42767199708,
-        20899.39867599969
+        17613.996832002158,
+        17637.27702200049,
+        17790.082367999275,
+        17452.71028100251,
+        17559.92047700056
       ],
-      "median_ms": 20899.39867599969,
+      "median_ms": 17613.996832002158,
       "self_timed": true,
       "cpu": {
-        "mean_util": 0.8864220159891699,
+        "mean_util": 1.065637601613246,
         "peak_util": null,
-        "user_sys_ms": 36628,
+        "user_sys_ms": 19679,
         "note": "cgroup v2 cpu.stat, last poll before exit"
       },
       "rss": {
-        "peak_bytes": 529993728,
+        "peak_bytes": 453672960,
         "note": "self-reported ru_maxrss — the recorded statistic (bar derivation)"
       },
-      "ratio_vs_rdlt": 4.272550815501664
+      "ratio_vs_rdlt": 16.205595344653062
     }
   },
   "verify": {
-    "events_merged": 1000000
+    "events": 1000000
   },
   "forced": false
 }

@@ -1,74 +1,69 @@
 {
   "format_version": 3,
-  "cell_id": "s3jsonl-to-s3parquet-200k",
+  "cell_id": "s3jsonl-to-s3parquet-200k-remote",
   "recorded_at": "2026-08-07",
   "fingerprint": {
     "cpu_model": "AMD RYZEN AI MAX+ 395 w/ Radeon 8060S",
     "kernel": "7.0.12-201.fc44.x86_64",
     "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
     "competitor_pins": {
-      "airbyte": "airbyte 2.1.1",
       "dlt": "dlt 1.29.0"
     },
     "dataset_hashes": {
-      "rustfs:/var/tmp/rdlt-tests/.tmpfcF3pR/rows.jsonl": "34e4e3d045b4f35e9c8ac8f1c8bba9af3711c341b21f2a8e72c58a401b27b747"
+      "rustfs:/var/tmp/rdlt-tests/.tmpUfxVzM/rows.jsonl": "34e4e3d045b4f35e9c8ac8f1c8bba9af3711c341b21f2a8e72c58a401b27b747"
     },
-    "loadavg_at_start": 1.61,
+    "loadavg_at_start": 1.6,
     "quiet_note": null
   },
   "workload": {},
   "rdlt": {
     "runs_ms": [
-      1009.7913359999999,
-      1004.715386,
-      996.6022260000001,
-      1040.825131,
-      994.464261
+      1163.5352329999998,
+      1080.93849,
+      1119.8118100000002,
+      1112.8583780000001,
+      1119.1466050000001
     ],
-    "median_ms": 1004.715386,
-    "p95_ms": 1040.825131,
+    "median_ms": 1119.1466050000001,
+    "p95_ms": 1163.5352329999998,
     "rows": 600000,
     "bytes": 149965184,
-    "rows_per_s": 597184.0467067357,
-    "mb_per_s": 142.3467245836897,
+    "rows_per_s": 536122.7897394194,
+    "mb_per_s": 127.79196550029965,
     "cpu": {
-      "mean_util": 0.8647872364314156,
-      "peak_util": 1.8333333333333333,
-      "user_sys_ms": 860,
+      "mean_util": 0.8577964635830708,
+      "peak_util": 2.0,
+      "user_sys_ms": 960,
       "note": "process TREE sampled at 50ms (root VmHWM exact; tree spikes between polls can be missed; cpu undercounts up to one interval)"
     },
     "rss": {
-      "peak_bytes": 216875008,
+      "peak_bytes": 322920448,
       "note": "process TREE sampled at 50ms (root VmHWM exact; tree spikes between polls can be missed; cpu undercounts up to one interval)"
     }
   },
   "competitors": {
-    "airbyte": {
-      "status": "missing",
-      "reason": "prerequisite failed for `airbyte`: abctl cluster unreachable (kubectl get ns airbyte-abctl)"
-    },
     "dlt": {
       "status": "ok",
       "runs_ms": [
-        59391.85943399934,
-        59334.14719099892,
-        59475.49170000275,
-        59264.30259500194,
-        58772.82293999815
+        59038.7904800009,
+        58530.8389899983,
+        59081.693553998775,
+        56428.57401500078,
+        58177.37090299852
       ],
-      "median_ms": 59334.14719099892,
+      "median_ms": 58530.8389899983,
       "self_timed": true,
       "cpu": {
-        "mean_util": 1.0367515261102178,
+        "mean_util": 1.0308507870998052,
         "peak_util": null,
-        "user_sys_ms": 61791,
+        "user_sys_ms": 61042,
         "note": "cgroup v2 cpu.stat, last poll before exit"
       },
       "rss": {
-        "peak_bytes": 259198976,
+        "peak_bytes": 256647168,
         "note": "self-reported ru_maxrss — the recorded statistic (bar derivation)"
       },
-      "ratio_vs_rdlt": 59.05567687902305
+      "ratio_vs_rdlt": 52.29952780851111
     }
   },
   "verify": {

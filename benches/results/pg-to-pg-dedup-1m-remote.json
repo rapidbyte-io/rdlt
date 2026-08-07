@@ -1,98 +1,93 @@
 {
   "format_version": 3,
-  "cell_id": "pg-to-pg-dedup-1m",
+  "cell_id": "pg-to-pg-dedup-1m-remote",
   "recorded_at": "2026-08-07",
   "fingerprint": {
     "cpu_model": "AMD RYZEN AI MAX+ 395 w/ Radeon 8060S",
     "kernel": "7.0.12-201.fc44.x86_64",
     "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
     "competitor_pins": {
-      "airbyte": "airbyte 2.1.1",
       "dlt": "dlt 1.29.0",
       "dlt-pyarrow": "dlt 1.29.0"
     },
     "dataset_hashes": {
       "pg:seed_output": "dataset  |  rows   |           content_md5 | -----------+---------+---------------------------------- | events    | 1000000 | e840f51738a6b4b15f9f085ea85e3df8 | events_v2 | 1000000 | 7e208273f4d5333658fff2fa1c9839d9 | (2 rows)"
     },
-    "loadavg_at_start": 4.84,
+    "loadavg_at_start": 2.11,
     "quiet_note": null
   },
   "workload": {},
   "rdlt": {
     "runs_ms": [
-      4850.8556929999995,
-      4977.567195,
-      4821.665716,
-      4891.55064,
-      4938.857785
+      5014.996462,
+      5354.324858,
+      5018.951353,
+      5594.786929,
+      5598.615242
     ],
-    "median_ms": 4891.55064,
-    "p95_ms": 4977.567195,
+    "median_ms": 5354.324858,
+    "p95_ms": 5598.615242,
     "rows": 1000000,
-    "bytes": 198849808,
-    "rows_per_s": 204434.15055803244,
-    "mb_per_s": 38.76847418509278,
+    "bytes": 2391469392,
+    "rows_per_s": 186764.90995982074,
+    "mb_per_s": 425.95154349188545,
     "cpu": {
-      "mean_util": 0.11338654085177308,
-      "peak_util": 1.3559322033898304,
-      "user_sys_ms": 560,
+      "mean_util": 0.1714709724644443,
+      "peak_util": 1.8644067796610169,
+      "user_sys_ms": 960,
       "note": "process TREE sampled at 50ms (root VmHWM exact; tree spikes between polls can be missed; cpu undercounts up to one interval)"
     },
     "rss": {
-      "peak_bytes": 115486720,
+      "peak_bytes": 281305088,
       "note": "process TREE sampled at 50ms (root VmHWM exact; tree spikes between polls can be missed; cpu undercounts up to one interval)"
     }
   },
   "competitors": {
-    "airbyte": {
-      "status": "missing",
-      "reason": "prerequisite failed for `airbyte`: abctl cluster unreachable (kubectl get ns airbyte-abctl)"
-    },
     "dlt": {
       "status": "ok",
       "runs_ms": [
-        13409.16004799874,
-        15339.765767002971,
-        13008.498961997248,
-        12979.857050002463,
-        12886.32999100082
+        13189.729333000289,
+        14036.203658000886,
+        12928.765274002217,
+        12936.71096399703,
+        12940.735697000491
       ],
-      "median_ms": 13008.498961997248,
+      "median_ms": 12940.735697000491,
       "self_timed": true,
       "cpu": {
-        "mean_util": 0.8516204050323767,
+        "mean_util": 0.8454382580351201,
         "peak_util": null,
-        "user_sys_ms": 21788,
+        "user_sys_ms": 21808,
         "note": "cgroup v2 cpu.stat, last poll before exit"
       },
       "rss": {
-        "peak_bytes": 807247872,
+        "peak_bytes": 804945920,
         "note": "self-reported ru_maxrss — the recorded statistic (bar derivation)"
       },
-      "ratio_vs_rdlt": 2.659381435330954
+      "ratio_vs_rdlt": 2.416875337264135
     },
     "dlt-pyarrow": {
       "status": "ok",
       "runs_ms": [
-        21785.191228002077,
-        20727.099933999853,
-        21251.918734000355,
-        20811.42767199708,
-        20899.39867599969
+        22086.20100400003,
+        20860.573858000866,
+        20940.583310002698,
+        20674.318360001052,
+        20994.47072899784
       ],
-      "median_ms": 20899.39867599969,
+      "median_ms": 20940.583310002698,
       "self_timed": true,
       "cpu": {
-        "mean_util": 0.8864220159891699,
+        "mean_util": 0.8953476479131326,
         "peak_util": null,
-        "user_sys_ms": 36628,
+        "user_sys_ms": 36746,
         "note": "cgroup v2 cpu.stat, last poll before exit"
       },
       "rss": {
-        "peak_bytes": 529993728,
+        "peak_bytes": 528912384,
         "note": "self-reported ru_maxrss — the recorded statistic (bar derivation)"
       },
-      "ratio_vs_rdlt": 4.272550815501664
+      "ratio_vs_rdlt": 3.910966156398779
     }
   },
   "verify": {
