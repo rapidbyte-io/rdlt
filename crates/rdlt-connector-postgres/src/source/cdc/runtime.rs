@@ -56,6 +56,19 @@ pub(crate) struct Identity {
 }
 
 /// Run-scoped CDC state on the source (one instance per engine run).
+///
+/// "One per run" is a CONTRACT, not an observation, and out of process it
+/// becomes the provider's: this is a field of the connector instance, so a
+/// spawned connector binary holds exactly one for its lifetime and the
+/// provider ties that lifetime to the engine's handle. An embedder who
+/// POOLS or reuses a connector process across engine runs breaks it, and
+/// the first symptom is silent no-progress rather than an error:
+/// `RunState::target` is pinned once at the first CDC read and nothing
+/// resets it, so run 2 resumes from run 1's committed cursor, finds run
+/// 1's stale target already at or behind it, skips the change pass
+/// (`read.rs`, `if target > since`) and reports a clean empty run. No loss
+/// and no falsely-advancing cursor — the stream just stops moving while
+/// looking healthy.
 pub(crate) struct Runtime {
     pub(super) state: tokio::sync::Mutex<RunState>,
     identities: tokio::sync::OnceCell<BTreeMap<String, Identity>>,

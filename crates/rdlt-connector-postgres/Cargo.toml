@@ -36,6 +36,19 @@ bin-serve = ["source", "destination", "rdlt-connector-sdk/serve", "dep:clap"]
 # RDLT_BUILD_CONNECTOR_BINS=1 so the suite's helper (re)builds the bin
 # via cargo before spawning; without the env var the helper requires the
 # bin to already exist and fails loudly, never silently.
+#
+# WHAT IT GATES, precisely: the `#[cfg(feature = "spawn-bins")]` test
+# modules in `tests/cases/mod.rs` — nothing else. The feature list is
+# EMPTY and the suite's dev-deps (rdlt-runtime, rdlt-certify, and tonic
+# beneath them) are NOT optional, so a bare `cargo test`/`cargo nextest`
+# on this crate compiles them into the test target whether the feature
+# is on or off; the feature saves running the cells, not building their
+# support. No feature CAN gate them: cargo rejects an optional
+# dev-dependency outright ("dev-dependencies are not allowed to be
+# optional"), so the only shape that would is a separate test crate —
+# a move nobody has needed yet. LIBRARY
+# consumers are unaffected either way — dev-dependencies never reach
+# them (see the `bin-serve` note above for the normal-dep half).
 spawn-bins = []
 
 # Behind `bin-serve` only — `cargo build` at default features never even
@@ -93,16 +106,24 @@ proptest = { workspace = true }
 rdlt-connector-duckdb = { workspace = true }
 rdlt-engine = { workspace = true }
 rdlt-connector-postgres = { path = ".", features = ["fixtures"] }
-# The spawn suite's dial (behind `spawn-bins`): ONE dev-dep whose
-# provider owns the whole spawn → handshake-line → dial → Spec RPC →
-# socket-cleanup lifecycle. Chosen over the rdlt-connector-client +
-# rdlt-connector-protocol pair, which would mean two dev-deps plus
-# hand-rolled socket hygiene for the same assertion.
+# The spawn suite's dial: ONE dev-dep whose provider owns the whole
+# spawn → handshake-line → dial → Spec RPC → socket-cleanup lifecycle.
+# Chosen over the rdlt-connector-client + rdlt-connector-protocol pair,
+# which would mean two dev-deps plus hand-rolled socket hygiene for the
+# same assertion. UNCONDITIONAL, not behind `spawn-bins` — see that
+# feature's note: the feature gates the test MODULES, never this entry.
 rdlt-runtime = { workspace = true }
-# The certification cells (041 Task 3, behind `spawn-bins`): the certify
-# library drives the built bin through the full clause suite against a
-# live container. Workspace entry is path-only (no version key), so
-# packaging refuses rather than silently resolving a registry crate.
+# The certification cells (041 Task 3): the certify library drives the
+# built bin through the full clause suite against a live container.
+# Its workspace entry is path-only (no version key) — which is NOT a
+# packaging refusal here: cargo STRIPS a version-less dev-dependency
+# from the published manifest rather than rejecting it, so this entry
+# alone would let the crate package with the cell silently absent. The
+# 023 git-without-version rule that shape echoes governs NORMAL
+# dependencies. What actually blocks publishing this crate is the
+# `rdlt-runtime` dev-dep above, whose workspace entry DOES carry
+# `version = "0.3.0"`: that requirement survives into the published
+# manifest and cannot resolve until rdlt-runtime is on the registry.
 rdlt-certify = { workspace = true }
 rdlt-testkit = { workspace = true }
 tempfile = { workspace = true }

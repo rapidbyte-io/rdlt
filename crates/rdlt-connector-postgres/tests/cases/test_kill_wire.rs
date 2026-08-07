@@ -151,9 +151,10 @@ async fn the_source_kill_matrix_passes_at_every_boundary() {
 /// write — or at the receipt probe, which is the other thing that
 /// begins it. So:
 ///   - K-D1 (post-open) and K-D2 (post-ensure) are killed with the unit
-///     still closed. `ensure` issues its DDL outside any transaction and
-///     postgres auto-commits it, leaving the backend idle rather than
-///     idle-in-transaction, holding nothing. **A transient K-D2 failure
+///     still closed. With nothing open, `ensure`'s DDL runs outside
+///     any transaction and postgres auto-commits it, leaving the
+///     backend idle rather than idle-in-transaction, holding nothing.
+///     **A transient K-D2 failure
 ///     is therefore NOT this race** — look elsewhere, and do not let
 ///     this note send you hunting a lock that cannot exist.
 ///   - K-D5 (post-publish) and K-D6 (post-close) are killed after the
