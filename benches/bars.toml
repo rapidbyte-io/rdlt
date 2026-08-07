@@ -77,6 +77,18 @@ policy = "RESULTS.md policy log 2026-07-25 (bars): floors 60.1x, 61.1x, and 63.6
 # policy rather than caution: a bar sits below its cited floor by design, and
 # this cell's spread in the confirming session was +/-20% — the widest of the
 # five. A tighter bar wants a second session at that spread, not one.
+#
+# AMENDED 2026-08-07 (feature 041 session): "can only rise" was too strong and
+# this cell's own artifact falsified it — the in-process arm recorded 59.06x,
+# BELOW the 60.1x floor the sentence says cannot be gone below. The reasoning
+# was sound about its one variable and wrong about scope: it held everything
+# but the compression change constant, and a ratio also moves with
+# session-to-session machine state. rdlt's ~1.0 s wall on this cell is CPU- and
+# bandwidth-bound while dlt's ~59 s wall is Python/IO-dominated, so the two arms
+# do NOT move together across sessions (RESULTS.md records the same differential
+# on all five cells). Read the sentence above as "the compression change alone
+# cannot lower the ratio". THE BAR IS UNAFFECTED: 45.0 is what binds, and the
+# 041 session cleared it in-process (59.06x) and remote (52.3x).
 
 # Set 2026-07-25 after the cell's scope was corrected (feature 019 US1): the
 # source now delivers only its declared query stream, so the cell measures the

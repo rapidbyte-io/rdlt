@@ -183,7 +183,11 @@ const, and CDC spec plumbing.
 Every remote ratio in this session was divided by an rdlt wall that was high
 relative to its own baseline, so the four bars cleared on a pessimistic
 session. Start-of-cell loadavg ran 1.53–4.84 against a 32-core quiet threshold
-of 8.0, so every cell passed the guard and none is `forced`.
+of 8.0, so every cell passed the guard and none is `forced`. It is NOT the only
+asymmetry in the session, and the other one cuts the other way — the remote arm
+started on the quieter machine in four of the five pairs, which understates the
+wire cost (see the load-symmetry caveat below). Neither is quantified, so
+neither is netted against the other.
 
 The Airbyte arm recorded `Missing{abctl cluster unreachable}` on all five
 in-process cells — the kind cluster was not up on this machine — so this
@@ -203,8 +207,11 @@ each child dropped before the next; `cargo run --release -p rdlt-runtime
 
 Two spawns per pipeline is ≈3.6 ms — 3% of the smallest per-cell overhead
 (114 ms) and 0.8% of the largest (463 ms). The cost is the wire itself: CPU
-`user_sys` roughly doubles across every pair (e.g. pg-to-pg-1m 530 → 1000 ms)
-and peak RSS goes 113 → 282 MB, which is the signature of an extra
+`user_sys` rises on every pair, by **×1.12 to ×1.89** — largest on
+`pg-to-pg-1m` (530 → 1000 ms), smallest on `s3jsonl-to-s3parquet-200k`
+(860 → 960 ms), so "roughly doubles" describes the top of the range and not
+the middle of it — and on that largest pair peak RSS goes 113 → 282 MB, which
+is the signature of an extra
 encode/decode pass and a second process's buffers, not of process startup.
 
 **The overhead band is LIKELY an upper bound — likely, not proven.** The
@@ -214,7 +221,9 @@ figure), and that the same expression meters source backpressure — so the
 remote arms ran with a far smaller in-flight window than configured. Widening
 it back should recover some of the +114…+463 ms, but that is the expected
 direction, not a measured one, and a wider window also raises resident buffers
-in a constellation whose RSS is already 2–3× the in-process arm's. The house
+in a constellation whose peak RSS is already **×1.49 to ×2.48** the in-process
+arm's (measured across the five pairs; largest on `pg-to-pg-1m`, and no pair
+reaches 3×). The house
 rule applies to this as to any counting argument: guilty until measured
 (019 D-13/D-21). Nothing above is restated on that basis.
 
@@ -297,7 +306,9 @@ Stated so the numbers stay honest as the matrix fills:
   `<target>/release` unconditionally — a measured cell spawns the shipped
   shape, never a debug build. `peak RSS` and `CPU` are process-TREE samples,
   so the children are inside them: the remote rows' RSS is the whole
-  constellation (≈2–3× the in-process row), not a regression in the engine.
+  constellation (**×1.49 to ×2.48** the in-process row across the five pairs —
+  ×2.48 / ×2.23 / ×1.65 / ×1.49 / ×2.44 in matrix order), not a regression in
+  the engine.
   The competitor arms are byte-identical to the twin's — dlt is not spawned
   differently — so the ratio column compares like with like. Airbyte is
   deliberately NOT an arm on the remote cells: its job wall is
@@ -312,6 +323,25 @@ Stated so the numbers stay honest as the matrix fills:
   not to the cell. The **median as measured** (1074.6 ms → 60.0×) is what is
   recorded and what the verdict uses; the steady-state tail would read ≈75×,
   and quoting that instead would be picking the number. No re-roll was taken.
+- **The twin pairs are NOT load-symmetric, and the asymmetry cuts AGAINST the
+  wire — disclosed because the other two caveats both cut for it** (041
+  session). Baseline-first ordering runs each in-process arm before its remote
+  twin, and the machine kept settling in between: `loadavg_at_start` fell from
+  the in-process arm to the remote arm on four of the five pairs — `pg-to-pg-1m`
+  1.99 → 1.90, `pg-to-s3parquet-1m` 2.13 → 1.95, `s3jsonl-to-pg-200k`
+  2.26 → 1.53, `pg-to-pg-dedup-1m` 4.84 → 2.11 (the fifth,
+  `s3jsonl-to-s3parquet-200k`, was flat at 1.61 → 1.60). So the REMOTE arm
+  generally ran on the quieter machine, and the measured overhead
+  (+114…+463 ms) is if anything an UNDER-statement of what the wire costs on
+  equal footing. This is the opposite direction from the two caveats above —
+  the deflated-ratio observation and the throttled-window one both argue the
+  remote numbers are pessimistic — and all three are unquantified, so none of
+  them is netted against another or used to restate a figure. **The verdict is
+  unmoved either way**: all four bars clear when each remote cell's SLOWEST of
+  five runs is used instead of its median (9.0× / 42.1× / 50.3× / 2.3× against
+  4 / 40 / 45 / 2), which is a harder test than any load correction implies.
+  Every cell passed the quiet guard (loadavg below 0.25×cores = 8.0) and none
+  is stamped `forced`.
 - **The remote rows' MB/s column is not comparable to their twins', and the
   cause is not cosmetic** (041 session, recorded as a defect, not a result):
   on the two pg-source remote cells the byte total the run reports is ≈12× its
@@ -340,8 +370,9 @@ Stated so the numbers stay honest as the matrix fills:
   in-flight window than configured. That makes the wire overhead recorded above
   **likely an upper bound**: some part of the +114…+463 ms is plausibly a
   throttled window rather than the socket. Likely, not proven — widening the
-  window also raises resident buffers, and the remote RSS is already 2–3× the
-  in-process arm's, so the net is a measurement nobody has taken. No number
+  window also raises resident buffers, and the remote peak RSS is already
+  **×1.49 to ×2.48** the in-process arm's, so the net is a measurement nobody
+  has taken. No number
   here is restated on the strength of an unmeasured fix.
 - **Cold start** lives on the instruments track, not the matrix: a one-row
   file → duckdb pipeline, ≤ 40 ms absolute (`benches/check-cold-start.sh`,
