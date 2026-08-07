@@ -4777,6 +4777,7 @@ dependencies = [
  "jsonschema",
  "proptest",
  "rcgen",
+ "rdlt-certify",
  "rdlt-connector-duckdb",
  "rdlt-connector-postgres",
  "rdlt-connector-sdk",

@@ -166,6 +166,12 @@ ifeq ($(TARGET),)
 	# Skip-not-fail without a container runtime, own line per the
 	# one-module-per-invocation rule.
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-postgres --features fixtures,spawn-bins -E 'test(test_cdc_wire)'
+	# The certification cells (041 Task 3): the spawned pg bin faces the
+	# FULL clause suite over the wire against a live container, both
+	# roles — S1/S2/S4 + P1-P7 (source, certified twice in a row) and
+	# D1-D6 + D8 LIVE + P1-P10 (destination). Skip-not-fail without a
+	# container runtime, own line per the one-module-per-invocation rule.
+	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-postgres --features fixtures,spawn-bins -E 'test(test_certify_wire)'
 	# Same class, the CERTIFIER's spawn suite (040): rdlt-certify's gated
 	# cases drive the REAL file bin through the certification stack —
 	# source, destination, and the kill matrix (SIGKILL at every K
@@ -225,6 +231,7 @@ else ifeq ($(TARGET),unit)
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-runtime --features spawn-bins -E 'test(test_e2e_file)'
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-postgres --features fixtures,spawn-bins -E 'test(test_spawned_bin)'
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-postgres --features fixtures,spawn-bins -E 'test(test_cdc_wire)'
+	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-postgres --features fixtures,spawn-bins -E 'test(test_certify_wire)'
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins -E 'test(test_certify_file_source)'
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins -E 'test(test_certify_file_destination)'
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins -E 'test(test_kill_matrix)'

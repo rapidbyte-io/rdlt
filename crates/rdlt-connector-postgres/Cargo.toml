@@ -99,6 +99,11 @@ rdlt-connector-postgres = { path = ".", features = ["fixtures"] }
 # rdlt-connector-protocol pair, which would mean two dev-deps plus
 # hand-rolled socket hygiene for the same assertion.
 rdlt-runtime = { workspace = true }
+# The certification cells (041 Task 3, behind `spawn-bins`): the certify
+# library drives the built bin through the full clause suite against a
+# live container. Workspace entry is path-only (no version key), so
+# packaging refuses rather than silently resolving a registry crate.
+rdlt-certify = { workspace = true }
 rdlt-testkit = { workspace = true }
 tempfile = { workspace = true }
 testcontainers-modules = { workspace = true }
