@@ -138,15 +138,19 @@ async fn the_source_kill_matrix_passes_at_every_boundary() {
 /// the kill-can-fail proof: a receipt that did not survive the killed
 /// process, or a rerun that duplicated rows, breaks its exact count).
 ///
-/// FIRST SUSPECT if this cell ever goes transiently red on the K-D3 or
-/// K-D4 arm: those two kill the connector mid-transaction, and the
-/// re-run's `ensure` races the SERVER's own detection of the killed
-/// backend's dead socket — until the backend aborts, its open
-/// transaction still holds the table locks the re-run wants. Observed
-/// zero times across five recorded runs of this pair, and the worst
-/// case is a clause timing out, never corruption and never a false
-/// Pass (the convergence counts are exact). Record any such failure
-/// verbatim; never re-roll it silently into a green.
+/// FIRST SUSPECT if this cell ever goes transiently red on an arm that
+/// was killed with its transaction still open — K-D2 (post-ensure),
+/// K-D3 (after a write is accepted) and K-D4 (post-write, pre-publish),
+/// with D3 and D4 the likeliest because they hold the most table locks
+/// by then. The re-run's `ensure` races the SERVER's own detection of
+/// the killed backend's dead socket: until the backend aborts, its open
+/// transaction still holds the locks the re-run wants. (K-D5 is killed
+/// post-publish and K-D6 post-close, so their work has already
+/// committed and this race cannot reach them.) Observed zero times
+/// across five recorded runs of this pair plus both runs of the 041
+/// gate, and the worst case is a clause timing out, never corruption
+/// and never a false Pass (the convergence counts are exact). Record
+/// any such failure verbatim; never re-roll it silently into a green.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_destination_kill_matrix_passes_at_every_boundary() {
     let Some(container) = PostgresContainer::start().await else {
