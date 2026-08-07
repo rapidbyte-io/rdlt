@@ -210,6 +210,16 @@ async fn cdc_crosses_the_wire_and_state_rides_the_checkpoint_cursor() {
     // alike, because the resumed read below NEEDS its retained history.
     // And no consumer holds it: CDC peeks over ordinary SQL, so nothing
     // lingers once the process is gone.
+    //
+    // `active_pid` is read ONCE, with no bounded retry, and that is sound
+    // only because of the sequence above it: `assert_process_dead` has
+    // already established the connector process is gone, so no peek can
+    // still be in flight and the server has nothing left to reap. Were
+    // this assertion ever hoisted above the drain-then-drop pair — or the
+    // drop made asynchronous — it would need a bounded retry, because a
+    // peek that IS in flight legitimately holds the slot mid-run (the
+    // in-process suite depends on exactly that: a concurrent consumer is
+    // refused with a typed error naming the holding pid).
     assert_eq!(
         slot_count().await,
         1,
