@@ -56,13 +56,32 @@ rdlt-connector-postgres = { path = "crates/rdlt-connector-postgres", version = "
 rdlt-connector-sqlcore = { path = "crates/rdlt-connector-sqlcore", version = "0.3.0" }
 rdlt-connector-protocol = { path = "crates/rdlt-connector-protocol", version = "0.3.0" }
 rdlt-connector-client = { path = "crates/rdlt-connector-client", version = "0.3.0" }
-rdlt-runtime = { path = "crates/rdlt-runtime", version = "0.3.0" }
-# PATH-ONLY, deliberately no `version` key: the certifier is unpublished
-# (its own manifest says why — the publish wave is separate,
-# owner-scheduled work) and nothing publishable consumes it. Without a version,
-# cargo REFUSES to package any consumer — so a publishable crate growing
-# an edge to the certifier fails loudly at packaging instead of silently
-# resolving a registry crate that does not exist.
+# PATH-ONLY, deliberately no `version` key — the rule for a `publish =
+# false` crate that a PUBLISHABLE crate consumes. Both of these are
+# unpublished for the same recorded reason (their own manifests say it:
+# the wire is frozen, the publish wave is separate owner-scheduled work),
+# and a version key on such an entry is a trap with two faces, both of
+# them measured on a scratch workspace rather than argued:
+#
+#   * on a NORMAL dep, `cargo package` resolves the version against
+#     crates.io and dies "no matching package named ... found" — a
+#     refusal, but one that reads like a registry outage rather than
+#     "this crate is not published yet";
+#   * on a DEV dep it is worse. Cargo STRIPS a version-less dev-dep from
+#     the packaged manifest entirely (proven: the `[dev-dependencies]`
+#     table comes out empty) but KEEPS a versioned one — so a versioned
+#     entry pointing at an unpublishable crate blocks packaging every
+#     consumer that merely TESTS against it, which is exactly what
+#     rdlt-connector-postgres's spawn suite does.
+#
+# Path-only gets both right: the dev-dep vanishes from the published
+# manifest (the suite is not a consumer's problem), and a normal dep
+# fails at manifest VERIFICATION — "all dependencies must have a version
+# requirement specified when packaging" — before any network round trip,
+# naming the offending dependency. `rdlt` holds exactly such a normal dep
+# on rdlt-runtime and cannot publish until the wave runs; this is the
+# loud way to say so.
+rdlt-runtime = { path = "crates/rdlt-runtime" }
 rdlt-certify = { path = "crates/rdlt-certify" }
 
 # arrow-rs: single workspace-wide major (research.md R10). Pinned to the major that

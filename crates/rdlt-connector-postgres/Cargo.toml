@@ -115,22 +115,36 @@ rdlt-connector-postgres = { path = ".", features = ["fixtures"] }
 rdlt-runtime = { workspace = true }
 # The certification cells (041 Task 3): the certify library drives the
 # built bin through the full clause suite against a live container.
-# Its workspace entry is path-only (no version key) — which is NOT a
-# packaging refusal here: cargo STRIPS a version-less dev-dependency
-# from the published manifest rather than rejecting it, so this entry
-# alone would let the crate package with the cell silently absent. The
-# 023 git-without-version rule that shape echoes governs NORMAL
-# dependencies. What blocks publishing this crate is everything else,
-# in this order: the NORMAL deps `rdlt-connector-sdk` and
-# `rdlt-connector-sqlcore` block FIRST — a normal dependency is
-# unconditional, so those two must be on the registry at `0.3.0`
-# before any `cargo publish` of this crate can resolve. Behind them
-# sit the dev-deps whose workspace entries DO carry
-# `version = "0.3.0"` and so survive into the published manifest:
-# `rdlt-connector-duckdb`, `rdlt-engine`, `rdlt-testkit` and
-# `rdlt-runtime` alike — `rdlt-runtime` is not special, it is simply
-# the newest of them. `rdlt-certify` is the lone version-less entry
-# and the lone one that would vanish silently.
+#
+# PACKAGING, stated once for every dev-dep above and below, because the
+# rule is not the intuitive one and getting it wrong is a release
+# blocker rather than a warning. Cargo STRIPS a version-less
+# (path-only) dev-dependency from the published manifest entirely and
+# KEEPS a versioned one. So a dev-dep's workspace entry decides whether
+# it can block `cargo publish` of THIS crate at all:
+#
+#   * `rdlt-certify` and `rdlt-runtime` are both `publish = false` and
+#     both spelled path-only in the workspace. They are stripped —
+#     packaging this crate never asks the registry about them, and the
+#     cells they drive are simply absent from the published tarball's
+#     manifest. That is the correct shape: a test-only edge to an
+#     unpublished crate must not hold a shipping connector hostage.
+#     (`rdlt-runtime` carried `version = "0.3.0"` until this was
+#     measured, which DID hold it hostage — a `publish = false` crate
+#     named at a version the registry will never serve.)
+#   * `rdlt-connector-duckdb`, `rdlt-engine` and `rdlt-testkit` carry
+#     `version = "0.3.0"` and survive into the published manifest — but
+#     all three are themselves publishable, so once the workspace's
+#     0.3.0 wave lands they resolve. They are a sequencing constraint,
+#     not a blocker.
+#
+# What blocks publishing this crate, in the order cargo hits it: the
+# NORMAL deps `rdlt-connector-sdk` and `rdlt-connector-sqlcore` FIRST —
+# a normal dependency is unconditional, so those two must be on the
+# registry at `0.3.0` before any `cargo publish` here can resolve
+# (verified: `cargo package -p rdlt-connector-postgres --no-verify`
+# dies on `rdlt-connector-sdk` and gets no further). Behind them, the
+# three publishable dev-deps above. Nothing else.
 rdlt-certify = { workspace = true }
 rdlt-testkit = { workspace = true }
 tempfile = { workspace = true }
