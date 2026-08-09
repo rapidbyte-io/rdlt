@@ -26,7 +26,14 @@ impl Rest {
 
 #[async_trait]
 impl SourceConnector for Rest {
-    const NAME: &'static str = "rest";
+    // Reverse-DNS, not bare `rest` (039 T6's id rule, adopted at 042):
+    // NAME is the connector id the wire handshake reports and the
+    // client verifies by STRICT equality against a
+    // `ConnectorRequirement.id` — and D-039-1 keys discovery on the
+    // id's last segment (`io.rapidbyte.rest` → binary
+    // `rdlt-connector-rest` on PATH), so the id, the reported identity
+    // and the binary name all derive from this one const.
+    const NAME: &'static str = "io.rapidbyte.rest";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
     type Config = Config;
